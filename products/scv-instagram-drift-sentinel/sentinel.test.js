@@ -58,7 +58,7 @@ test('accepts the exact healthy v130 release while preserving operational alerts
   assert.equal(result.operational_alert_count, 1)
 })
 
-test('accepts the exact separated golden and v130 snapshot control', async () => {
+test('accepts the exact separated golden and post-reset v130 snapshot control', async () => {
   const catalog = {
     snapshot_count: SNAPSHOT_COUNT,
     named_pointers: {
@@ -74,7 +74,7 @@ test('accepts the exact separated golden and v130 snapshot control', async () =>
     golden_snapshot_id: GOLDEN_SNAPSHOT_ID,
     current_snapshot_id: CURRENT_SNAPSHOT_ID,
     catalog: { key: `${prefix}/SCV_TIMESTAMPED_SNAPSHOT_CATALOG.json`, sha256: SNAPSHOT_CATALOG_SHA256 },
-    seal: { key: `${prefix}/SCV_TIMESTAMPED_SNAPSHOT_CATALOG_SEAL.json`, sha256: '904917305a6192f3b881cbbd3a3ae71a2d4186a1c818f840385c3cd2b9875cb4' },
+    seal: { key: `${prefix}/SCV_TIMESTAMPED_SNAPSHOT_CATALOG_SEAL.json`, sha256: 'e22fe4c7bcf02a489263c00fa77529837e5f47b124336108099742d8e608fe10' },
     restore_tool: { key: `${prefix}/scv-timestamped-restore.js`, sha256: '4044f96616a504c9049657fbe628b63246b56a626fa57cdb5f67dc1307d3f206' },
     restore_requires_exact_snapshot_id: true,
     production_cutover_automatic: false,
@@ -103,7 +103,7 @@ test('rejects a current snapshot pointer that overlays the golden snapshot', asy
     golden_snapshot_id: GOLDEN_SNAPSHOT_ID,
     current_snapshot_id: GOLDEN_SNAPSHOT_ID,
     catalog: { key: `${prefix}/SCV_TIMESTAMPED_SNAPSHOT_CATALOG.json`, sha256: SNAPSHOT_CATALOG_SHA256 },
-    seal: { key: `${prefix}/SCV_TIMESTAMPED_SNAPSHOT_CATALOG_SEAL.json`, sha256: '904917305a6192f3b881cbbd3a3ae71a2d4186a1c818f840385c3cd2b9875cb4' },
+    seal: { key: `${prefix}/SCV_TIMESTAMPED_SNAPSHOT_CATALOG_SEAL.json`, sha256: 'e22fe4c7bcf02a489263c00fa77529837e5f47b124336108099742d8e608fe10' },
     restore_tool: { key: `${prefix}/scv-timestamped-restore.js`, sha256: '4044f96616a504c9049657fbe628b63246b56a626fa57cdb5f67dc1307d3f206' },
     restore_requires_exact_snapshot_id: true,
     production_cutover_automatic: false,
