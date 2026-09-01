@@ -4,7 +4,7 @@ set -euo pipefail
 readonly script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly runtime_root="$(cd "$script_dir/.." && pwd)"
 readonly repository_root="$(cd "$runtime_root/../.." && pwd)"
-readonly version="${OS1_VERSION:-0.2.0}"
+readonly version="${OS1_VERSION:-0.3.1}"
 readonly output_dir="${OS1_RELEASE_OUTPUT_DIR:-$runtime_root/release}"
 readonly stage_dir="$output_dir/stage"
 readonly component_pkg="$output_dir/OS-1-component.pkg"
@@ -55,6 +55,7 @@ codesign --verify --strict --verbose=2 "$stage_dir/usr/local/bin/os1"
 codesign --verify --deep --strict --verbose=2 "$stage_dir/Applications/Open OS-1 Codex.app"
 lipo -archs "$stage_dir/usr/local/bin/os1" | grep -q 'x86_64 arm64\|arm64 x86_64'
 lipo -archs "$stage_dir/Applications/Open OS-1 Codex.app/Contents/MacOS/OS1App" | grep -q 'x86_64 arm64\|arm64 x86_64'
+"$stage_dir/usr/local/bin/os1" self-test
 
 COPYFILE_DISABLE=1 pkgbuild \
   --root "$stage_dir" \

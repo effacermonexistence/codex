@@ -29,16 +29,27 @@ The desktop app follows the same three-pane workflow as Codex:
    either named engine forces that engine for the first governed step.
 3. Enter a task in the bottom composer. Use `Command-Return` to send.
 
-Switching between Codex and Claude does not create a disconnected job. The
-selected project, recent conversation, model output, and governance receipts
-remain in one local session, and the next engine receives the bounded recent
-conversation as untrusted context. Session history is stored only on the Mac,
-is permission-restricted, capped, and expires after 30 days.
+Each OS-1 session pair links one real persistent Codex task and one real
+persistent Claude Code session. Repeated Codex turns resume the same Codex
+thread; repeated Claude turns resume the same Claude session. After the first
+turn in each engine, **Open Codex** and **Open Claude** appear in the header so
+the native provider session can be opened directly. Changing the project folder
+resets both links to prevent a provider session from resuming in the wrong
+workspace.
+
+When the selected engine changes, OS-1 sends a bounded, visible completed-turn
+handoff as untrusted context to the other engine. It does not claim to mirror
+hidden reasoning, an in-progress provider turn, or provider-private runtime
+state. The OS-1 index and visible transcript are stored only on the Mac, are
+permission-restricted, capped, and expire after 30 days.
 
 The equivalent CLI choices are `--provider auto`, `--provider codex`, and
 `--provider claude`. Machine-readable desktop integration uses
-`--output-format json`; a bounded local transcript can be supplied with
-`--context-file` without sending that transcript to the routing request.
+`--output-format json`. Native sessions are resumed with
+`--codex-session-id UUID` and `--claude-session-id UUID`; each JSON step returns
+the actual provider `session_id`. A bounded completed-turn handoff can be
+supplied with `--context-file` without sending that transcript to the routing
+request.
 
 The proprietary route policy is deployed only in the private Cloudflare
 service. The Mac receives a short Ed25519-signed execution ticket and uploads a

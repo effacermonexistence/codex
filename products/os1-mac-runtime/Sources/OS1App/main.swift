@@ -76,14 +76,20 @@ private struct ConversationSession: Codable, Identifiable, Sendable {
     var workspace: String
     var provider: ProviderChoice
     var messages: [ChatMessage]
+    var codexSessionID: String?
+    var claudeSessionID: String?
+    var lastProvider: String?
     var updatedAt: Date
 
     init(
         id: UUID = UUID(),
-        title: String = "New governed task",
+        title: String = "New session pair",
         workspace: String,
         provider: ProviderChoice = .auto,
         messages: [ChatMessage] = [],
+        codexSessionID: String? = nil,
+        claudeSessionID: String? = nil,
+        lastProvider: String? = nil,
         updatedAt: Date = Date()
     ) {
         self.id = id
@@ -91,6 +97,9 @@ private struct ConversationSession: Codable, Identifiable, Sendable {
         self.workspace = workspace
         self.provider = provider
         self.messages = messages
+        self.codexSessionID = codexSessionID
+        self.claudeSessionID = claudeSessionID
+        self.lastProvider = lastProvider
         self.updatedAt = updatedAt
     }
 }
@@ -103,6 +112,7 @@ private struct SessionEnvelope: Codable {
 private struct AppRunStep: Decodable, Sendable {
     let sequence: Int
     let provider: String
+    let sessionID: String
     let permissionProfile: String
     let exitCode: Int32
     let output: String
@@ -111,6 +121,7 @@ private struct AppRunStep: Decodable, Sendable {
 
     enum CodingKeys: String, CodingKey {
         case sequence, provider, output, stderr
+        case sessionID = "session_id"
         case permissionProfile = "permission_profile"
         case exitCode = "exit_code"
         case durationMS = "duration_ms"
@@ -135,14 +146,18 @@ private enum OS1Runner {
         workspace: String,
         prompt: String,
         provider: ProviderChoice,
-        context: String
+        context: String,
+        codexSessionID: String?,
+        claudeSessionID: String?
     ) async throws -> AppRunSummary {
         try await Task.detached(priority: .userInitiated) {
             try runBlocking(
                 workspace: workspace,
                 prompt: prompt,
                 provider: provider,
-                context: context
+                context: context,
+                codexSessionID: codexSessionID,
+                claudeSessionID: claudeSessionID
             )
         }.value
     }
@@ -164,7 +179,9 @@ private enum OS1Runner {
         workspace: String,
         prompt: String,
         provider: ProviderChoice,
-        context: String
+        context: String,
+        codexSessionID: String?,
+        claudeSessionID: String?
     ) throws -> AppRunSummary {
         let fileManager = FileManager.default
         let temporary = fileManager.temporaryDirectory
@@ -202,6 +219,8 @@ private enum OS1Runner {
             )
             arguments += ["--context-file", contextURL.path]
         }
+        if let codexSessionID { arguments += ["--codex-session-id", codexSessionID] }
+        if let claudeSessionID { arguments += ["--claude-session-id", claudeSessionID] }
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: try executable())
@@ -317,7 +336,9 @@ private final class SessionStore: ObservableObject {
         if !sessions[index].messages.isEmpty {
             sessions[index].messages.append(ChatMessage(
                 role: .system,
-                text: "Next turn will run with \(provider.title). The same workspace and conversation context stay attached.",
+                text: provider == .auto
+                    ? "RCC will choose and continue the matching native Codex or Claude session."
+                    : "Next turn will create or resume the linked native \(provider.title) session.",
                 provider: provider.rawValue
             ))
         }
@@ -338,7 +359,18 @@ private final class SessionStore: ObservableObject {
         panel.canCreateDirectories = true
         panel.directoryURL = URL(fileURLWithPath: sessions[index].workspace, isDirectory: true)
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        sessions[index].workspace = url.standardizedFileURL.path
+        let nextWorkspace = url.standardizedFileURL.path
+        if sessions[index].workspace != nextWorkspace,
+           sessions[index].codexSessionID != nil || sessions[index].claudeSessionID != nil {
+            sessions[index].codexSessionID = nil
+            sessions[index].claudeSessionID = nil
+            sessions[index].lastProvider = nil
+            sessions[index].messages.append(ChatMessage(
+                role: .system,
+                text: "Workspace changed. Native Codex and Claude links were reset so sessions cannot resume in the wrong project."
+            ))
+        }
+        sessions[index].workspace = nextWorkspace
         sessions[index].updatedAt = Date()
         statusText = "Workspace connected"
         save()
@@ -360,7 +392,9 @@ private final class SessionStore: ObservableObject {
 
         let sessionID = sessions[index].id
         let provider = sessions[index].provider
-        let context = transcript(for: sessions[index])
+        let codexSessionID = sessions[index].codexSessionID
+        let claudeSessionID = sessions[index].claudeSessionID
+        let context = handoffContext(for: sessions[index], nextProvider: provider)
         if sessions[index].messages.isEmpty {
             sessions[index].title = title(for: request)
         }
@@ -379,7 +413,9 @@ private final class SessionStore: ObservableObject {
                     workspace: workspace,
                     prompt: request,
                     provider: provider,
-                    context: context
+                    context: context,
+                    codexSessionID: codexSessionID,
+                    claudeSessionID: claudeSessionID
                 )
                 guard let target = sessions.firstIndex(where: { $0.id == sessionID }) else { return }
                 if summary.steps.isEmpty {
@@ -390,6 +426,12 @@ private final class SessionStore: ObservableObject {
                     ))
                 }
                 for step in summary.steps {
+                    if step.provider == "codex" {
+                        sessions[target].codexSessionID = step.sessionID
+                    } else if step.provider == "claude" {
+                        sessions[target].claudeSessionID = step.sessionID
+                    }
+                    sessions[target].lastProvider = step.provider
                     let visibleOutput = step.output.trimmingCharacters(in: .whitespacesAndNewlines)
                     let visibleError = step.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
                     sessions[target].messages.append(ChatMessage(
@@ -402,13 +444,13 @@ private final class SessionStore: ObservableObject {
                     ))
                     sessions[target].messages.append(ChatMessage(
                         role: .receipt,
-                        text: "Verified step \(step.sequence) · \(step.durationMS / 1_000)s · exit \(step.exitCode)",
+                        text: "Native \(step.provider) linked · step \(step.sequence) · \(step.durationMS / 1_000)s · exit \(step.exitCode)",
                         provider: step.provider,
                         permissionProfile: step.permissionProfile
                     ))
                 }
                 sessions[target].updatedAt = Date()
-                statusText = "Complete · evidence recorded"
+                statusText = "Native session linked · evidence recorded"
             } catch {
                 guard let target = sessions.firstIndex(where: { $0.id == sessionID }) else { return }
                 sessions[target].messages.append(ChatMessage(
@@ -428,7 +470,9 @@ private final class SessionStore: ObservableObject {
         return String(firstLine.prefix(48))
     }
 
-    private func transcript(for session: ConversationSession) -> String {
+    private func handoffContext(for session: ConversationSession, nextProvider: ProviderChoice) -> String {
+        guard !session.messages.isEmpty else { return "" }
+        if nextProvider != .auto, session.lastProvider == nextProvider.rawValue { return "" }
         let relevant = session.messages.filter { $0.role == .user || $0.role == .assistant }.suffix(16)
         let text = relevant.map { message in
             let speaker = message.role == .user
@@ -437,6 +481,81 @@ private final class SessionStore: ObservableObject {
             return "\(speaker):\n\(String(message.text.prefix(12_000)))"
         }.joined(separator: "\n\n")
         return String(text.suffix(180_000))
+    }
+
+    func openCodexSession() {
+        guard let value = selectedSession?.codexSessionID,
+              UUID(uuidString: value) != nil,
+              let url = URL(string: "codex://threads/\(value)") else {
+            alertMessage = "Run one Codex turn first. Its native Codex task will be linked here."
+            return
+        }
+        guard NSWorkspace.shared.open(url) else {
+            alertMessage = "Codex could not open this native task."
+            return
+        }
+        statusText = "Opened native Codex task"
+    }
+
+    func openClaudeSession() {
+        guard let session = selectedSession,
+              let value = session.claudeSessionID,
+              UUID(uuidString: value) != nil else {
+            alertMessage = "Run one Claude turn first. Its native Claude Code session will be linked here."
+            return
+        }
+        let home = fileManager.homeDirectoryForCurrentUser.path
+        let candidates = [
+            "\(home)/.local/bin/claude",
+            "/opt/homebrew/bin/claude",
+            "/usr/local/bin/claude",
+        ]
+        guard let claude = candidates.first(where: fileManager.isExecutableFile) else {
+            alertMessage = "Claude Code is not installed or signed in on this Mac."
+            return
+        }
+        let command = "cd \(shellQuote(session.workspace)) && exec \(shellQuote(claude)) --resume \(shellQuote(value))"
+        let escaped = command
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+        let arguments = [
+            "-e", "tell application \"Terminal\" to activate",
+            "-e", "tell application \"Terminal\" to do script \"\(escaped)\"",
+        ]
+        statusText = "Opening native Claude Code session…"
+        Task {
+            let failure = await Task.detached(priority: .userInitiated) { () -> String? in
+                let process = Process()
+                let stderr = Pipe()
+                process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+                process.arguments = arguments
+                process.standardError = stderr
+                do {
+                    try process.run()
+                    process.waitUntilExit()
+                    guard process.terminationStatus == 0 else {
+                        let detail = String(
+                            decoding: stderr.fileHandleForReading.readDataToEndOfFile(),
+                            as: UTF8.self
+                        ).trimmingCharacters(in: .whitespacesAndNewlines)
+                        return detail.isEmpty ? "Terminal rejected the session request." : detail
+                    }
+                    return nil
+                } catch {
+                    return error.localizedDescription
+                }
+            }.value
+            if let failure {
+                alertMessage = "Claude Code session could not open: \(failure)"
+                statusText = "Needs attention"
+            } else {
+                statusText = "Opened native Claude Code session"
+            }
+        }
+    }
+
+    private func shellQuote(_ value: String) -> String {
+        "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 
     private var storageURL: URL {
@@ -448,7 +567,7 @@ private final class SessionStore: ObservableObject {
     private func load() {
         guard let data = try? Data(contentsOf: storageURL),
               let envelope = try? JSONDecoder().decode(SessionEnvelope.self, from: data),
-              envelope.schema == 1 else { return }
+              [1, 2].contains(envelope.schema) else { return }
         let cutoff = Date().addingTimeInterval(-30 * 24 * 60 * 60)
         sessions = envelope.sessions
             .filter { $0.updatedAt >= cutoff }
@@ -483,7 +602,7 @@ private final class SessionStore: ObservableObject {
                 }
                 return copy
             }
-            let data = try JSONEncoder().encode(SessionEnvelope(schema: 1, sessions: bounded))
+            let data = try JSONEncoder().encode(SessionEnvelope(schema: 2, sessions: bounded))
             try data.write(to: storageURL, options: [.atomic, .completeFileProtectionUnlessOpen])
             try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: storageURL.path)
         } catch {
@@ -515,7 +634,7 @@ private struct OS1DesktopApp: App {
         .defaultSize(width: 1240, height: 780)
         .commands {
             CommandGroup(replacing: .newItem) {
-                Button("New governed task") { store.createSession() }
+                Button("New session pair") { store.createSession() }
                     .keyboardShortcut("n", modifiers: [.command])
             }
         }
@@ -642,7 +761,7 @@ private struct SessionSidebar: View {
             .padding(.bottom, 18)
 
             Button { store.createSession() } label: {
-                Label("New governed task", systemImage: "square.and.pencil")
+                Label("New session pair", systemImage: "square.and.pencil")
                     .font(.system(size: 13, weight: .semibold))
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, 14)
@@ -668,7 +787,7 @@ private struct SessionSidebar: View {
             .padding(.top, 10)
 
             HStack {
-                Text("SYNCED SESSIONS")
+                Text("SESSION PAIRS")
                     .font(.system(size: 10, weight: .bold, design: .rounded))
                     .tracking(1.2)
                     .foregroundStyle(Theme.muted)
@@ -701,7 +820,7 @@ private struct SessionSidebar: View {
                     Text("Governance active")
                         .font(.system(size: 11, weight: .semibold))
                         .foregroundStyle(Theme.text)
-                    Text("Local engines connected")
+                    Text("Real native sessions")
                         .font(.system(size: 10))
                         .foregroundStyle(Theme.muted)
                 }
@@ -729,10 +848,15 @@ private struct SessionRow: View {
                         .lineLimit(1)
                     Spacer(minLength: 0)
                 }
-                Text(URL(fileURLWithPath: session.workspace).lastPathComponent)
-                    .font(.system(size: 10, design: .monospaced))
-                    .foregroundStyle(Theme.muted)
-                    .lineLimit(1)
+                HStack(spacing: 6) {
+                    Text(URL(fileURLWithPath: session.workspace).lastPathComponent)
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundStyle(Theme.muted)
+                        .lineLimit(1)
+                    Spacer(minLength: 0)
+                    NativeBadge(label: "C", linked: session.codexSessionID != nil, tint: ProviderChoice.codex.tint)
+                    NativeBadge(label: "A", linked: session.claudeSessionID != nil, tint: ProviderChoice.claude.tint)
+                }
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 11)
@@ -745,6 +869,22 @@ private struct SessionRow: View {
             .clipShape(RoundedRectangle(cornerRadius: 8))
         }
         .buttonStyle(.plain)
+    }
+}
+
+private struct NativeBadge: View {
+    let label: String
+    let linked: Bool
+    let tint: Color
+
+    var body: some View {
+        Text(label)
+            .font(.system(size: 8, weight: .bold, design: .rounded))
+            .foregroundStyle(linked ? tint : Theme.muted.opacity(0.55))
+            .frame(width: 17, height: 15)
+            .background(linked ? tint.opacity(0.13) : Color.white.opacity(0.025))
+            .overlay(RoundedRectangle(cornerRadius: 4).stroke(linked ? tint.opacity(0.45) : Theme.border))
+            .clipShape(RoundedRectangle(cornerRadius: 4))
     }
 }
 
@@ -789,6 +929,38 @@ private struct ConversationHeader: View {
             Spacer()
 
             if let session = store.selectedSession {
+                if session.codexSessionID != nil {
+                    Button { store.openCodexSession() } label: {
+                        Label("Open Codex", systemImage: "arrow.up.forward.app")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(ProviderChoice.codex.tint)
+                            .padding(.horizontal, 9)
+                            .frame(height: 35)
+                            .background(ProviderChoice.codex.tint.opacity(0.10))
+                            .overlay(RoundedRectangle(cornerRadius: 8).stroke(ProviderChoice.codex.tint.opacity(0.32)))
+                            .clipShape(RoundedRectangle(cornerRadius: 8))
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(store.isRunning)
+                    .help("Open the actual linked Codex task")
+                }
+
+                if session.claudeSessionID != nil {
+                    Button { store.openClaudeSession() } label: {
+                        Label("Open Claude", systemImage: "terminal")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(ProviderChoice.claude.tint)
+                            .padding(.horizontal, 9)
+                            .frame(height: 35)
+                            .background(ProviderChoice.claude.tint.opacity(0.10))
+                            .overlay(RoundedRectangle(cornerRadius: 8).stroke(ProviderChoice.claude.tint.opacity(0.32)))
+                            .clipShape(RoundedRectangle(cornerRadius: 8))
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(store.isRunning)
+                    .help("Open the actual linked Claude Code session in Terminal")
+                }
+
                 HStack(spacing: 4) {
                     ForEach(ProviderChoice.allCases) { provider in
                         Button { store.chooseProvider(provider) } label: {
@@ -852,15 +1024,15 @@ private struct WelcomeView: View {
                 Text("What are we building?")
                     .font(.system(size: 34, weight: .semibold, design: .rounded))
                     .foregroundStyle(Theme.text)
-                Text("Pick the project folder once. Switch Codex and Claude whenever you want—the workspace and this conversation stay synchronized.")
+                Text("Pick a project once. OS-1 creates real persistent sessions in Codex and Claude Code, then links both to this session pair.")
                     .font(.system(size: 15))
                     .foregroundStyle(Color.white.opacity(0.62))
                     .fixedSize(horizontal: false, vertical: true)
 
                 HStack(spacing: 12) {
                     WelcomeStep(number: "1", title: "Choose folder", detail: "The project OS-1 may inspect or edit")
-                    WelcomeStep(number: "2", title: "Choose engine", detail: "Codex, Claude, or RCC Auto")
-                    WelcomeStep(number: "3", title: "Send a task", detail: "Results return to this conversation")
+                    WelcomeStep(number: "2", title: "Choose engine", detail: "A native Codex or Claude session is created")
+                    WelcomeStep(number: "3", title: "Switch anytime", detail: "Completed turns hand off visibly between both")
                 }
 
                 VStack(alignment: .leading, spacing: 9) {
@@ -1085,6 +1257,10 @@ private struct ComposerView: View {
                 Label(URL(fileURLWithPath: session.workspace).lastPathComponent, systemImage: "folder")
                 Text("·")
                 Text("\(session.provider.title) · RCC governed")
+                Text("·")
+                Text("Codex \(session.codexSessionID == nil ? "not linked" : "linked")")
+                Text("·")
+                Text("Claude \(session.claudeSessionID == nil ? "not linked" : "linked")")
                 Spacer()
                 Text("⌘↩ send")
             }

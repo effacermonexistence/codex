@@ -161,6 +161,7 @@ struct StartExecutionRequest: Codable {
 struct RunStepSummary: Codable {
     let sequence: Int
     let provider: String
+    let sessionID: String
     let permissionProfile: String
     let exitCode: Int32
     let output: String
@@ -169,6 +170,7 @@ struct RunStepSummary: Codable {
 
     enum CodingKeys: String, CodingKey {
         case sequence, provider, output, stderr
+        case sessionID = "session_id"
         case permissionProfile = "permission_profile"
         case exitCode = "exit_code"
         case durationMS = "duration_ms"
@@ -178,6 +180,11 @@ struct RunStepSummary: Codable {
 struct RunSummary: Codable {
     let status: String
     let steps: [RunStepSummary]
+}
+
+struct ProviderExecution {
+    let artifact: Artifact
+    let sessionID: String
 }
 
 enum Base64URL {
@@ -540,32 +547,94 @@ func providerPrompt(current: String, context: String?) -> String {
     """
 }
 
-func execute(ticket: Ticket, prompt: String, workspace: String, timeout: Int) throws -> Artifact {
+func normalizedSessionID(_ value: String?) throws -> String? {
+    guard let value else { return nil }
+    guard let uuid = UUID(uuidString: value) else {
+        throw OS1Error.message("Provider session ID must be a UUID")
+    }
+    return uuid.uuidString.lowercased()
+}
+
+func codexThreadID(from events: Data) -> String? {
+    for line in events.split(separator: 0x0A) {
+        guard let object = try? JSONSerialization.jsonObject(with: Data(line)) as? [String: Any],
+              object["type"] as? String == "thread.started",
+              let value = object["thread_id"] as? String,
+              let uuid = UUID(uuidString: value) else { continue }
+        return uuid.uuidString.lowercased()
+    }
+    return nil
+}
+
+func execute(
+    ticket: Ticket,
+    prompt: String,
+    workspace: String,
+    timeout: Int,
+    providerSessionID: String?
+) throws -> ProviderExecution {
     let started = Date()
     let result: (Int32, Data, Data)
+    let sessionID: String
     if ticket.provider == "codex" {
         let codex = try findExecutable("codex")
         let outputURL = FileManager.default.temporaryDirectory.appendingPathComponent("os1-codex-\(UUID().uuidString).txt")
         defer { try? FileManager.default.removeItem(at: outputURL) }
-        var arguments = [
-            "exec",
-            "--color", "never",
-            "--skip-git-repo-check",
-            "-C", workspace,
-            "-o", outputURL.path,
-        ]
-        switch ticket.permissionProfile {
-        case "read_only": arguments += ["-s", "read-only"]
-        case "full_access": arguments += ["--dangerously-bypass-approvals-and-sandbox"]
-        default: arguments += ["--approve-for-me"]
+        var arguments: [String]
+        if let providerSessionID = try normalizedSessionID(providerSessionID) {
+            switch ticket.permissionProfile {
+            case "read_only": arguments = ["-s", "read-only"]
+            case "full_access": arguments = ["--dangerously-bypass-approvals-and-sandbox"]
+            default: arguments = ["--approve-for-me"]
+            }
+            arguments += [
+                "exec", "resume",
+                "--json",
+                "--skip-git-repo-check",
+                "-o", outputURL.path,
+            ]
+            arguments += [providerSessionID, "-"]
+        } else {
+            arguments = [
+                "exec",
+                "--json",
+                "--color", "never",
+                "--skip-git-repo-check",
+                "-C", workspace,
+                "-o", outputURL.path,
+            ]
+            switch ticket.permissionProfile {
+            case "read_only": arguments += ["-s", "read-only"]
+            case "full_access": arguments += ["--dangerously-bypass-approvals-and-sandbox"]
+            default: arguments += ["--approve-for-me"]
+            }
+            arguments.append("-")
         }
-        arguments.append("-")
-        let raw = try commandOutput(codex, arguments, input: Data(prompt.utf8), timeout: timeout)
+        let raw = try commandOutput(
+            codex,
+            arguments,
+            input: Data(prompt.utf8),
+            timeout: timeout,
+            currentDirectory: workspace
+        )
         let final = (try? Data(contentsOf: outputURL)).flatMap { $0.isEmpty ? nil : $0 } ?? raw.1
         result = (raw.0, final, raw.2)
+        guard let actualSessionID = codexThreadID(from: raw.1) else {
+            throw OS1Error.message("Codex did not return a persistent thread ID")
+        }
+        if let expected = try normalizedSessionID(providerSessionID), expected != actualSessionID {
+            throw OS1Error.message("Codex resumed the wrong thread")
+        }
+        sessionID = actualSessionID
     } else {
         let claude = try findExecutable("claude")
-        var arguments = ["-p", "--output-format", "json", "--no-session-persistence"]
+        let requestedSessionID = try normalizedSessionID(providerSessionID) ?? UUID().uuidString.lowercased()
+        var arguments = ["-p", "--output-format", "json"]
+        if providerSessionID == nil {
+            arguments += ["--session-id", requestedSessionID]
+        } else {
+            arguments += ["--resume", requestedSessionID]
+        }
         switch ticket.permissionProfile {
         case "read_only": arguments += ["--permission-mode", "plan"]
         case "full_access": arguments += ["--allow-dangerously-skip-permissions", "--dangerously-skip-permissions"]
@@ -580,18 +649,27 @@ func execute(ticket: Ticket, prompt: String, workspace: String, timeout: Int) th
         )
         var output = raw.1
         if let object = try? JSONSerialization.jsonObject(with: raw.1) as? [String: Any],
-           let value = object["result"] as? String {
+           let value = object["result"] as? String,
+           let returnedSessionID = object["session_id"] as? String,
+           let normalizedReturned = try normalizedSessionID(returnedSessionID),
+           normalizedReturned == requestedSessionID {
             output = Data(value.utf8)
+            sessionID = normalizedReturned
+        } else {
+            throw OS1Error.message("Claude did not return the requested persistent session ID")
         }
         result = (raw.0, output, raw.2)
     }
-    return Artifact(
-        provider: ticket.provider,
-        exitCode: result.0,
-        output: boundedString(result.1, maximum: 800_000),
-        stderr: boundedString(result.2, maximum: 180_000),
-        durationMS: Int64(Date().timeIntervalSince(started) * 1_000),
-        workspaceDiffHash: workspaceHash(workspace)
+    return ProviderExecution(
+        artifact: Artifact(
+            provider: ticket.provider,
+            exitCode: result.0,
+            output: boundedString(result.1, maximum: 800_000),
+            stderr: boundedString(result.2, maximum: 180_000),
+            durationMS: Int64(Date().timeIntervalSince(started) * 1_000),
+            workspaceDiffHash: workspaceHash(workspace)
+        ),
+        sessionID: sessionID
     )
 }
 
@@ -600,6 +678,8 @@ func runTask(
     workspace: String,
     providerPreference: String,
     context: String?,
+    codexSessionID: String?,
+    claudeSessionID: String?,
     progress: Bool
 ) async throws -> RunSummary {
     let config = try RuntimeConfig.load()
@@ -622,6 +702,10 @@ func runTask(
         as: RouteResponse.self
     )
     var steps: [RunStepSummary] = []
+    var nativeSessions = [
+        "codex": try normalizedSessionID(codexSessionID),
+        "claude": try normalizedSessionID(claudeSessionID),
+    ]
     let localPrompt = providerPrompt(current: prompt, context: context)
 
     for step in 1...config.maximumSteps {
@@ -633,15 +717,19 @@ func runTask(
         if progress {
             print("OS-1 step \(step): \(ticket.provider) / \(ticket.permissionProfile)")
         }
-        let artifact = try execute(
+        let execution = try execute(
             ticket: ticket,
             prompt: localPrompt,
             workspace: canonicalWorkspace,
-            timeout: config.executionTimeoutSeconds
+            timeout: config.executionTimeoutSeconds,
+            providerSessionID: nativeSessions[ticket.provider] ?? nil
         )
+        nativeSessions[ticket.provider] = execution.sessionID
+        let artifact = execution.artifact
         steps.append(RunStepSummary(
             sequence: ticket.sequence,
             provider: ticket.provider,
+            sessionID: execution.sessionID,
             permissionProfile: ticket.permissionProfile,
             exitCode: artifact.exitCode,
             output: artifact.output,
@@ -674,7 +762,7 @@ func runTask(
 
 func printRunSummary(_ summary: RunSummary) {
     for step in summary.steps {
-        print("\n[\(step.provider.uppercased()) · \(step.permissionProfile)]")
+        print("\n[\(step.provider.uppercased()) · \(step.permissionProfile) · \(step.sessionID)]")
         if !step.output.isEmpty { print(step.output) }
         if step.exitCode != 0 && !step.stderr.isEmpty {
             fputs("\(step.stderr)\n", stderr)
@@ -694,13 +782,32 @@ func doctor() throws {
     print("GitHub, Codex, Claude: available")
 }
 
+func selfTest() throws {
+    let session = "8EAA48C6-AF59-4F4C-A2BE-9A0EC3B6FC20"
+    guard try normalizedSessionID(session) == session.lowercased(),
+          (try? normalizedSessionID("most-recent")) == nil else {
+        throw OS1Error.message("Native provider session validation failed")
+    }
+    let events = Data("""
+    {"type":"item.completed","item":{"type":"agent_message","text":"hello"}}
+    {"type":"thread.started","thread_id":"01A05B4D-F206-7C71-BD11-128B24E755E0"}
+    """.utf8)
+    guard codexThreadID(from: events) == "01a05b4d-f206-7c71-bd11-128b24e755e0",
+          codexThreadID(from: Data("not json\n{}\n".utf8)) == nil else {
+        throw OS1Error.message("Codex native thread event validation failed")
+    }
+    print("OS-1 native session self-test: OK")
+}
+
 func usage() {
     print("""
     OS-1 local runtime
 
       os1 doctor
+      os1 self-test
       os1 register
       os1 run --workspace /path/to/project --prompt "task" [--provider auto|codex|claude]
+              [--codex-session-id UUID] [--claude-session-id UUID]
       os1 version
     """)
 }
@@ -712,8 +819,9 @@ struct OS1Main {
             let arguments = Array(CommandLine.arguments.dropFirst())
             guard let command = arguments.first else { usage(); return }
             switch command {
-            case "version", "--version", "-V": print("OS-1 Runtime 0.2.0")
+            case "version", "--version", "-V": print("OS-1 Runtime 0.3.1")
             case "doctor": try doctor()
+            case "self-test": try selfTest()
             case "register":
                 let config = try RuntimeConfig.load()
                 let client = APIClient(config: config, token: try githubToken(), deviceID: try deviceID())
@@ -725,6 +833,8 @@ struct OS1Main {
                 var prompt: String?
                 var providerPreference = "auto"
                 var contextPath: String?
+                var codexSessionID: String?
+                var claudeSessionID: String?
                 var outputFormat = "text"
                 var index = 1
                 while index < arguments.count {
@@ -737,6 +847,10 @@ struct OS1Main {
                         providerPreference = arguments[index + 1]; index += 2
                     case "--context-file" where index + 1 < arguments.count:
                         contextPath = arguments[index + 1]; index += 2
+                    case "--codex-session-id" where index + 1 < arguments.count:
+                        codexSessionID = arguments[index + 1]; index += 2
+                    case "--claude-session-id" where index + 1 < arguments.count:
+                        claudeSessionID = arguments[index + 1]; index += 2
                     case "--output-format" where index + 1 < arguments.count:
                         outputFormat = arguments[index + 1]; index += 2
                     default: throw OS1Error.message("Unknown OS-1 argument")
@@ -756,6 +870,8 @@ struct OS1Main {
                     workspace: workspace,
                     providerPreference: providerPreference,
                     context: try readSessionContext(contextPath),
+                    codexSessionID: codexSessionID,
+                    claudeSessionID: claudeSessionID,
                     progress: outputFormat == "text"
                 )
                 if outputFormat == "json" {
