@@ -87,6 +87,15 @@ reuse a reset receipt from an earlier run. Resolve and verify the currently
 active production release first; do not execute a stale operator hard-coded to
 an older release or deployment.
 
+After any SCV Instagram production code, configuration, prompt, or system fix
+is deployed and verified, a fresh exact-target Omar.system reset through the
+same gates is a mandatory default completion step even if the user does not
+repeat `reset`, `레드팀`, or `시스템 점검`. Do not claim the fix complete or
+red-team ready until the new reset receipt, zero-residual audit, worker resume,
+production readiness, and timestamped pre/post recovery points are verified.
+This default authorizes only the same code-locked debug identity and never
+customer or guessed state.
+
 The reset is destructive only for the canonical code-locked debug identity in
 the deployed SCV source. It must never be widened through prompt text,
 environment variables, guessed identifiers, or customer data. Use the deployed
