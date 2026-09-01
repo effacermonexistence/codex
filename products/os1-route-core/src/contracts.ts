@@ -12,6 +12,7 @@ export type Provider = (typeof PROVIDERS)[number];
 export type Action = (typeof ACTIONS)[number];
 export type PermissionProfile = (typeof PERMISSION_PROFILES)[number];
 export type ProviderPreference = "auto" | Provider;
+export type CapacityPlan = { codex: number; claude: number };
 
 export type TicketUnsigned = {
   execution_id: string;
@@ -137,25 +138,49 @@ function boundedString(
 export function parseStartRequest(value: unknown): {
   task: string;
   provider_preference: ProviderPreference;
+  capacity_plan: CapacityPlan;
 } {
   const legacy = isRecord(value) && hasExactKeys(value, ["task"]);
   const current = isRecord(value) && hasExactKeys(value, [
     "task",
     "provider_preference",
   ]);
+  const capacityAware = isRecord(value) && hasExactKeys(value, [
+    "capacity_plan",
+    "provider_preference",
+    "task",
+  ]);
+  const capacity = isRecord(value) ? value.capacity_plan : undefined;
+  const validCapacity = isRecord(capacity) &&
+    hasExactKeys(capacity, ["claude", "codex"]) &&
+    Number.isSafeInteger(capacity.codex) &&
+    Number.isSafeInteger(capacity.claude) &&
+    (capacity.codex as number) >= 0 &&
+    (capacity.codex as number) <= 100 &&
+    (capacity.claude as number) >= 0 &&
+    (capacity.claude as number) <= 100 &&
+    (capacity.codex as number) + (capacity.claude as number) > 0;
   if (
     !isRecord(value) ||
-    (!legacy && !current) ||
+    (!legacy && !current && !capacityAware) ||
     !boundedString(value.task, 1, 48_000) ||
-    (current && !oneOf(value.provider_preference, ["auto", ...PROVIDERS] as const))
+    ((current || capacityAware) &&
+      !oneOf(value.provider_preference, ["auto", ...PROVIDERS] as const)) ||
+    (capacityAware && !validCapacity)
   ) {
     reject();
   }
   return {
     task: value.task,
-    provider_preference: current
+    provider_preference: current || capacityAware
       ? value.provider_preference as ProviderPreference
       : "auto",
+    capacity_plan: capacityAware
+      ? {
+          codex: (capacity as Record<string, unknown>).codex as number,
+          claude: (capacity as Record<string, unknown>).claude as number,
+        }
+      : { codex: 50, claude: 50 },
   };
 }
 

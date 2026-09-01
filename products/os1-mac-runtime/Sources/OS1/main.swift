@@ -151,11 +151,18 @@ struct Artifact: Codable {
 struct StartExecutionRequest: Codable {
     let task: String
     let providerPreference: String
+    let capacityPlan: CapacityPlan
 
     enum CodingKeys: String, CodingKey {
         case task
         case providerPreference = "provider_preference"
+        case capacityPlan = "capacity_plan"
     }
+}
+
+struct CapacityPlan: Codable {
+    let codex: Int
+    let claude: Int
 }
 
 struct RunStepSummary: Codable {
@@ -680,6 +687,8 @@ func runTask(
     context: String?,
     codexSessionID: String?,
     claudeSessionID: String?,
+    codexCapacity: Int,
+    claudeCapacity: Int,
     progress: Bool
 ) async throws -> RunSummary {
     let config = try RuntimeConfig.load()
@@ -694,7 +703,8 @@ func runTask(
     try await register(client: client, key: key)
     let request = StartExecutionRequest(
         task: prompt,
-        providerPreference: providerPreference
+        providerPreference: providerPreference,
+        capacityPlan: CapacityPlan(codex: codexCapacity, claude: claudeCapacity)
     )
     var route: RouteResponse = try await client.post(
         "/v1/executions",
@@ -808,6 +818,7 @@ func usage() {
       os1 register
       os1 run --workspace /path/to/project --prompt "task" [--provider auto|codex|claude]
               [--codex-session-id UUID] [--claude-session-id UUID]
+              [--codex-capacity 0...100] [--claude-capacity 0...100]
       os1 version
     """)
 }
@@ -819,7 +830,7 @@ struct OS1Main {
             let arguments = Array(CommandLine.arguments.dropFirst())
             guard let command = arguments.first else { usage(); return }
             switch command {
-            case "version", "--version", "-V": print("OS-1 Runtime 0.3.1")
+            case "version", "--version", "-V": print("OS-1 Runtime 0.3.2")
             case "doctor": try doctor()
             case "self-test": try selfTest()
             case "register":
@@ -835,6 +846,8 @@ struct OS1Main {
                 var contextPath: String?
                 var codexSessionID: String?
                 var claudeSessionID: String?
+                var codexCapacity = 30
+                var claudeCapacity = 100
                 var outputFormat = "text"
                 var index = 1
                 while index < arguments.count {
@@ -851,6 +864,16 @@ struct OS1Main {
                         codexSessionID = arguments[index + 1]; index += 2
                     case "--claude-session-id" where index + 1 < arguments.count:
                         claudeSessionID = arguments[index + 1]; index += 2
+                    case "--codex-capacity" where index + 1 < arguments.count:
+                        guard let value = Int(arguments[index + 1]), (0...100).contains(value) else {
+                            throw OS1Error.message("--codex-capacity must be 0...100")
+                        }
+                        codexCapacity = value; index += 2
+                    case "--claude-capacity" where index + 1 < arguments.count:
+                        guard let value = Int(arguments[index + 1]), (0...100).contains(value) else {
+                            throw OS1Error.message("--claude-capacity must be 0...100")
+                        }
+                        claudeCapacity = value; index += 2
                     case "--output-format" where index + 1 < arguments.count:
                         outputFormat = arguments[index + 1]; index += 2
                     default: throw OS1Error.message("Unknown OS-1 argument")
@@ -865,6 +888,9 @@ struct OS1Main {
                 guard ["text", "json"].contains(outputFormat) else {
                     throw OS1Error.message("--output-format must be text or json")
                 }
+                guard codexCapacity + claudeCapacity > 0 else {
+                    throw OS1Error.message("At least one backend capacity must be above zero")
+                }
                 let summary = try await runTask(
                     prompt: prompt,
                     workspace: workspace,
@@ -872,6 +898,8 @@ struct OS1Main {
                     context: try readSessionContext(contextPath),
                     codexSessionID: codexSessionID,
                     claudeSessionID: claudeSessionID,
+                    codexCapacity: codexCapacity,
+                    claudeCapacity: claudeCapacity,
                     progress: outputFormat == "text"
                 )
                 if outputFormat == "json" {

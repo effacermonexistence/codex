@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parsePolicy, select } from "../src/policy";
+import { chooseCapacityAware, parsePolicy, select } from "../src/policy";
 
 const policy = parsePolicy(JSON.stringify({
   version: 1,
@@ -22,6 +22,7 @@ describe("explicit provider preference", () => {
       fallback_provider: "codex",
       permission_profile: "read_only",
       max_steps: 1,
+      budget_protected: false,
     });
   });
 
@@ -31,12 +32,20 @@ describe("explicit provider preference", () => {
       fallback_provider: "claude",
       permission_profile: "workspace_write",
       max_steps: 2,
+      budget_protected: true,
     });
     expect(select(policy, "fix the repository", "claude")).toEqual({
       provider: "claude",
       fallback_provider: "codex",
       permission_profile: "workspace_write",
       max_steps: 2,
+      budget_protected: true,
     });
+  });
+
+  it("spends scarce Codex capacity only at its configured weekly share", () => {
+    const flexible = select(policy, "build the repository", "auto");
+    expect(chooseCapacityAware(flexible, { codex: 25, claude: 100 }, { codex: 0, claude: 0 })).toBe("claude");
+    expect(chooseCapacityAware(flexible, { codex: 25, claude: 100 }, { codex: 0, claude: 2 })).toBe("codex");
   });
 });

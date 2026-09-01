@@ -1,11 +1,14 @@
 export type Provider = "codex" | "claude";
 export type ProviderPreference = "auto" | Provider;
+export type CapacityPlan = { codex: number; claude: number };
+export type UsageCounts = { codex: number; claude: number };
 export type PermissionProfile = "read_only" | "workspace_write" | "full_access";
 export type Step = {
   provider: Provider;
   fallback_provider: Provider;
   permission_profile: PermissionProfile;
   max_steps: number;
+  budget_protected: boolean;
 };
 type Rule = Step & { terms: string[] };
 export type Policy = {
@@ -69,6 +72,7 @@ export function parsePolicy(serialized: string): Policy {
       fallback_provider: rule.fallback_provider,
       permission_profile: rule.permission_profile,
       max_steps: rule.max_steps as number,
+      budget_protected: rule.budget_protected === true,
       terms: rule.terms as string[],
     };
   });
@@ -92,6 +96,7 @@ export function select(
       fallback_provider: preference === "codex" ? "claude" : "codex",
       permission_profile: policy.default_permission_profile,
       max_steps: policy.max_steps,
+      budget_protected: true,
     };
   }
   const folded = task.toLocaleLowerCase("und");
@@ -104,6 +109,7 @@ export function select(
       fallback_provider: rule.fallback_provider,
       permission_profile: rule.permission_profile,
       max_steps: rule.max_steps,
+      budget_protected: rule.budget_protected,
     };
   }
   return {
@@ -111,5 +117,25 @@ export function select(
     fallback_provider: policy.default_provider === "codex" ? "claude" : "codex",
     permission_profile: policy.default_permission_profile,
     max_steps: policy.max_steps,
+    budget_protected: false,
   };
+}
+
+export function chooseCapacityAware(
+  step: Step,
+  capacity: CapacityPlan,
+  usage: UsageCounts,
+): Provider {
+  const primary = step.provider;
+  const fallback = step.fallback_provider;
+  if (capacity[primary] <= 0) return fallback;
+  if (capacity[fallback] <= 0 || step.budget_protected) return primary;
+
+  const weightTotal = capacity.codex + capacity.claude;
+  const nextTotal = usage.codex + usage.claude + 1;
+  const deficit = (provider: Provider): number =>
+    (capacity[provider] / weightTotal) * nextTotal - usage[provider];
+  const primaryDeficit = deficit(primary);
+  const fallbackDeficit = deficit(fallback);
+  return primaryDeficit + 0.05 >= fallbackDeficit ? primary : fallback;
 }

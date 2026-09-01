@@ -79,6 +79,8 @@ private struct ConversationSession: Codable, Identifiable, Sendable {
     var codexSessionID: String?
     var claudeSessionID: String?
     var lastProvider: String?
+    var codexCapacity: Int?
+    var claudeCapacity: Int?
     var updatedAt: Date
 
     init(
@@ -90,6 +92,8 @@ private struct ConversationSession: Codable, Identifiable, Sendable {
         codexSessionID: String? = nil,
         claudeSessionID: String? = nil,
         lastProvider: String? = nil,
+        codexCapacity: Int = 30,
+        claudeCapacity: Int = 100,
         updatedAt: Date = Date()
     ) {
         self.id = id
@@ -100,8 +104,13 @@ private struct ConversationSession: Codable, Identifiable, Sendable {
         self.codexSessionID = codexSessionID
         self.claudeSessionID = claudeSessionID
         self.lastProvider = lastProvider
+        self.codexCapacity = codexCapacity
+        self.claudeCapacity = claudeCapacity
         self.updatedAt = updatedAt
     }
+
+    var effectiveCodexCapacity: Int { codexCapacity ?? 30 }
+    var effectiveClaudeCapacity: Int { claudeCapacity ?? 100 }
 }
 
 private struct SessionEnvelope: Codable {
@@ -148,7 +157,9 @@ private enum OS1Runner {
         provider: ProviderChoice,
         context: String,
         codexSessionID: String?,
-        claudeSessionID: String?
+        claudeSessionID: String?,
+        codexCapacity: Int,
+        claudeCapacity: Int
     ) async throws -> AppRunSummary {
         try await Task.detached(priority: .userInitiated) {
             try runBlocking(
@@ -157,14 +168,17 @@ private enum OS1Runner {
                 provider: provider,
                 context: context,
                 codexSessionID: codexSessionID,
-                claudeSessionID: claudeSessionID
+                claudeSessionID: claudeSessionID,
+                codexCapacity: codexCapacity,
+                claudeCapacity: claudeCapacity
             )
         }.value
     }
 
     private static func executable() throws -> String {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
-        let candidates = [
+        let bundled = Bundle.main.resourceURL?.appendingPathComponent("os1").path
+        let candidates = [bundled].compactMap { $0 } + [
             "/usr/local/bin/os1",
             "/opt/homebrew/bin/os1",
             "\(home)/.local/bin/os1",
@@ -181,7 +195,9 @@ private enum OS1Runner {
         provider: ProviderChoice,
         context: String,
         codexSessionID: String?,
-        claudeSessionID: String?
+        claudeSessionID: String?,
+        codexCapacity: Int,
+        claudeCapacity: Int
     ) throws -> AppRunSummary {
         let fileManager = FileManager.default
         let temporary = fileManager.temporaryDirectory
@@ -221,6 +237,10 @@ private enum OS1Runner {
         }
         if let codexSessionID { arguments += ["--codex-session-id", codexSessionID] }
         if let claudeSessionID { arguments += ["--claude-session-id", claudeSessionID] }
+        arguments += [
+            "--codex-capacity", String(codexCapacity),
+            "--claude-capacity", String(claudeCapacity),
+        ]
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: try executable())
@@ -348,6 +368,20 @@ private final class SessionStore: ObservableObject {
         save()
     }
 
+    func setCapacity(_ provider: ProviderChoice, value: Int) {
+        guard let index = selectedIndex, [0, 10, 25, 50, 75, 100].contains(value) else { return }
+        if provider == .codex { sessions[index].codexCapacity = value }
+        if provider == .claude { sessions[index].claudeCapacity = value }
+        if sessions[index].effectiveCodexCapacity + sessions[index].effectiveClaudeCapacity == 0 {
+            if provider == .codex { sessions[index].claudeCapacity = 10 }
+            if provider == .claude { sessions[index].codexCapacity = 10 }
+        }
+        sessions[index].provider = .auto
+        sessions[index].updatedAt = Date()
+        statusText = "RCC capacity mix updated"
+        save()
+    }
+
     func chooseWorkspace() {
         guard !isRunning, let index = selectedIndex else { return }
         let panel = NSOpenPanel()
@@ -415,7 +449,9 @@ private final class SessionStore: ObservableObject {
                     provider: provider,
                     context: context,
                     codexSessionID: codexSessionID,
-                    claudeSessionID: claudeSessionID
+                    claudeSessionID: claudeSessionID,
+                    codexCapacity: sessions[index].effectiveCodexCapacity,
+                    claudeCapacity: sessions[index].effectiveClaudeCapacity
                 )
                 guard let target = sessions.firstIndex(where: { $0.id == sessionID }) else { return }
                 if summary.steps.isEmpty {
@@ -567,7 +603,7 @@ private final class SessionStore: ObservableObject {
     private func load() {
         guard let data = try? Data(contentsOf: storageURL),
               let envelope = try? JSONDecoder().decode(SessionEnvelope.self, from: data),
-              [1, 2].contains(envelope.schema) else { return }
+              [1, 2, 3].contains(envelope.schema) else { return }
         let cutoff = Date().addingTimeInterval(-30 * 24 * 60 * 60)
         sessions = envelope.sessions
             .filter { $0.updatedAt >= cutoff }
@@ -602,7 +638,7 @@ private final class SessionStore: ObservableObject {
                 }
                 return copy
             }
-            let data = try JSONEncoder().encode(SessionEnvelope(schema: 2, sessions: bounded))
+            let data = try JSONEncoder().encode(SessionEnvelope(schema: 3, sessions: bounded))
             try data.write(to: storageURL, options: [.atomic, .completeFileProtectionUnlessOpen])
             try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: storageURL.path)
         } catch {
@@ -683,11 +719,10 @@ private struct ProviderRail: View {
             .padding(.bottom, 5)
 
             ForEach([ProviderChoice.codex, ProviderChoice.claude]) { provider in
-                RailButton(
+                BackendStatus(
                     provider: provider,
-                    selected: store.selectedSession?.provider == provider,
-                    disabled: store.isRunning
-                ) { store.chooseProvider(provider) }
+                    active: store.selectedSession?.lastProvider == provider.rawValue
+                )
             }
 
             Spacer()
@@ -709,6 +744,24 @@ private struct ProviderRail: View {
         .padding(.vertical, 18)
         .frame(width: 82)
         .background(Color.black.opacity(0.2))
+    }
+}
+
+private struct BackendStatus: View {
+    let provider: ProviderChoice
+    let active: Bool
+
+    var body: some View {
+        VStack(spacing: 7) {
+            Image(systemName: provider.symbol).font(.system(size: 17, weight: .semibold))
+            Text("BACKEND").font(.system(size: 7, weight: .bold, design: .rounded))
+        }
+        .foregroundStyle(active ? provider.tint : Theme.muted)
+        .frame(width: 58, height: 58)
+        .background(active ? provider.tint.opacity(0.12) : Color.clear)
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(active ? provider.tint : Theme.border))
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+        .help("Managed (provider.title) backend")
     }
 }
 
@@ -929,58 +982,45 @@ private struct ConversationHeader: View {
             Spacer()
 
             if let session = store.selectedSession {
-                if session.codexSessionID != nil {
-                    Button { store.openCodexSession() } label: {
-                        Label("Open Codex", systemImage: "arrow.up.forward.app")
-                            .font(.system(size: 10, weight: .semibold))
-                            .foregroundStyle(ProviderChoice.codex.tint)
-                            .padding(.horizontal, 9)
-                            .frame(height: 35)
-                            .background(ProviderChoice.codex.tint.opacity(0.10))
-                            .overlay(RoundedRectangle(cornerRadius: 8).stroke(ProviderChoice.codex.tint.opacity(0.32)))
-                            .clipShape(RoundedRectangle(cornerRadius: 8))
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(store.isRunning)
-                    .help("Open the actual linked Codex task")
-                }
-
-                if session.claudeSessionID != nil {
-                    Button { store.openClaudeSession() } label: {
-                        Label("Open Claude", systemImage: "terminal")
-                            .font(.system(size: 10, weight: .semibold))
-                            .foregroundStyle(ProviderChoice.claude.tint)
-                            .padding(.horizontal, 9)
-                            .frame(height: 35)
-                            .background(ProviderChoice.claude.tint.opacity(0.10))
-                            .overlay(RoundedRectangle(cornerRadius: 8).stroke(ProviderChoice.claude.tint.opacity(0.32)))
-                            .clipShape(RoundedRectangle(cornerRadius: 8))
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(store.isRunning)
-                    .help("Open the actual linked Claude Code session in Terminal")
-                }
-
-                HStack(spacing: 4) {
-                    ForEach(ProviderChoice.allCases) { provider in
-                        Button { store.chooseProvider(provider) } label: {
-                            HStack(spacing: 5) {
-                                Image(systemName: provider.symbol).font(.system(size: 10))
-                                Text(provider.title).font(.system(size: 10, weight: .semibold))
-                            }
-                            .foregroundStyle(session.provider == provider ? provider.tint : Theme.muted)
-                            .padding(.horizontal, 9)
-                            .frame(height: 29)
-                            .background(session.provider == provider ? provider.tint.opacity(0.12) : Color.clear)
-                            .clipShape(RoundedRectangle(cornerRadius: 7))
+                Menu {
+                    Button("Auto routing") { store.chooseProvider(.auto) }
+                    Divider()
+                    Menu("Codex capacity · \(session.effectiveCodexCapacity)%") {
+                        ForEach([0, 10, 25, 50, 75, 100], id: \.self) { value in
+                            Button("\(value)%") { store.setCapacity(.codex, value: value) }
                         }
-                        .buttonStyle(.plain)
-                        .disabled(store.isRunning)
                     }
+                    Menu("Claude capacity · \(session.effectiveClaudeCapacity)%") {
+                        ForEach([0, 10, 25, 50, 75, 100], id: \.self) { value in
+                            Button("\(value)%") { store.setCapacity(.claude, value: value) }
+                        }
+                    }
+                    Divider()
+                    Button("Force Codex next turn") { store.chooseProvider(.codex) }
+                    Button("Force Claude next turn") { store.chooseProvider(.claude) }
+                    Divider()
+                    Button("Inspect Codex backend") { store.openCodexSession() }
+                        .disabled(session.codexSessionID == nil)
+                    Button("Inspect Claude backend") { store.openClaudeSession() }
+                        .disabled(session.claudeSessionID == nil)
+                } label: {
+                    Label(
+                        session.provider == .auto
+                            ? "Auto mix · C\(session.effectiveCodexCapacity) A\(session.effectiveClaudeCapacity)"
+                            : "Override · \(session.provider.title)",
+                        systemImage: "slider.horizontal.3"
+                    )
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(Theme.green)
+                    .padding(.horizontal, 10)
+                    .frame(height: 35)
+                    .background(Theme.green.opacity(0.08))
+                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(Theme.green.opacity(0.3)))
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
                 }
-                .padding(3)
-                .background(Theme.panelRaised)
-                .clipShape(RoundedRectangle(cornerRadius: 9))
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+                .disabled(store.isRunning)
 
                 Button { store.chooseWorkspace() } label: {
                     HStack(spacing: 7) {
@@ -1024,15 +1064,15 @@ private struct WelcomeView: View {
                 Text("What are we building?")
                     .font(.system(size: 34, weight: .semibold, design: .rounded))
                     .foregroundStyle(Theme.text)
-                Text("Pick a project once. OS-1 creates real persistent sessions in Codex and Claude Code, then links both to this session pair.")
+                Text("Pick a project once. OS-1 treats Codex and Claude Code as managed backends, then spends each backend according to task fit and weekly capacity.")
                     .font(.system(size: 15))
                     .foregroundStyle(Color.white.opacity(0.62))
                     .fixedSize(horizontal: false, vertical: true)
 
                 HStack(spacing: 12) {
                     WelcomeStep(number: "1", title: "Choose folder", detail: "The project OS-1 may inspect or edit")
-                    WelcomeStep(number: "2", title: "Choose engine", detail: "A native Codex or Claude session is created")
-                    WelcomeStep(number: "3", title: "Switch anytime", detail: "Completed turns hand off visibly between both")
+                    WelcomeStep(number: "2", title: "Set capacity", detail: "Default mix conserves scarce Codex usage")
+                    WelcomeStep(number: "3", title: "Use OS-1", detail: "RCC selects and resumes the right backend")
                 }
 
                 VStack(alignment: .leading, spacing: 9) {
@@ -1227,7 +1267,7 @@ private struct ComposerView: View {
                     .disabled(store.isRunning)
                     .overlay(alignment: .topLeading) {
                         if store.composer.isEmpty {
-                            Text("Ask \(session.provider.title) to inspect, explain, or change this project…")
+                            Text("Tell OS-1 what outcome you want…")
                                 .font(.system(size: 13))
                                 .foregroundStyle(Color.white.opacity(0.3))
                                 .padding(.horizontal, 13)
@@ -1256,7 +1296,9 @@ private struct ComposerView: View {
             HStack {
                 Label(URL(fileURLWithPath: session.workspace).lastPathComponent, systemImage: "folder")
                 Text("·")
-                Text("\(session.provider.title) · RCC governed")
+                Text("OS-1 · RCC governed")
+                Text("·")
+                Text("capacity C\(session.effectiveCodexCapacity) / A\(session.effectiveClaudeCapacity)")
                 Text("·")
                 Text("Codex \(session.codexSessionID == nil ? "not linked" : "linked")")
                 Text("·")

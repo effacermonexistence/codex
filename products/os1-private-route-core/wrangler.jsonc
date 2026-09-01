@@ -7,10 +7,14 @@
   "workers_dev": false,
   "preview_urls": false,
   "durable_objects": {
-    "bindings": [{ "name": "ROUTES", "class_name": "RouteState" }]
+    "bindings": [
+      { "name": "ROUTES", "class_name": "RouteState" },
+      { "name": "ROUTING_BUDGETS", "class_name": "RoutingBudgetState" }
+    ]
   },
   "migrations": [
-    { "tag": "v1", "new_sqlite_classes": ["RouteState"] }
+    { "tag": "v1", "new_sqlite_classes": ["RouteState"] },
+    { "tag": "v2", "new_sqlite_classes": ["RoutingBudgetState"] }
   ],
   "observability": {
     "enabled": true,

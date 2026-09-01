@@ -4,7 +4,7 @@ set -euo pipefail
 readonly script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly runtime_root="$(cd "$script_dir/.." && pwd)"
 readonly repository_root="$(cd "$runtime_root/../.." && pwd)"
-readonly version="${OS1_VERSION:-0.3.1}"
+readonly version="${OS1_VERSION:-0.3.2}"
 readonly output_dir="${OS1_RELEASE_OUTPUT_DIR:-$runtime_root/release}"
 readonly stage_dir="$output_dir/stage"
 readonly component_pkg="$output_dir/OS-1-component.pkg"
@@ -36,6 +36,8 @@ lipo -create \
   "$output_dir/build-arm64/arm64-apple-macosx/release/os1" \
   "$output_dir/build-x86_64/x86_64-apple-macosx/release/os1" \
   -output "$stage_dir/usr/local/bin/os1"
+install -m 0755 "$stage_dir/usr/local/bin/os1" \
+  "$stage_dir/Applications/Open OS-1 Codex.app/Contents/Resources/os1"
 lipo -create \
   "$output_dir/build-arm64/arm64-apple-macosx/release/OS1App" \
   "$output_dir/build-x86_64/x86_64-apple-macosx/release/OS1App" \
@@ -49,6 +51,9 @@ xattr -cr "$stage_dir"
 
 codesign --force --sign "$codesign_identity" --options runtime \
   --identifier com.omaragi.os1.runtime "$stage_dir/usr/local/bin/os1"
+codesign --force --sign "$codesign_identity" --options runtime \
+  --identifier com.omaragi.os1.runtime.bundled \
+  "$stage_dir/Applications/Open OS-1 Codex.app/Contents/Resources/os1"
 codesign --force --sign "$codesign_identity" --options runtime \
   --identifier com.omaragi.os1 "$stage_dir/Applications/Open OS-1 Codex.app"
 codesign --verify --strict --verbose=2 "$stage_dir/usr/local/bin/os1"

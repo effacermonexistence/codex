@@ -10,6 +10,7 @@ describe("strict trust-boundary contracts", () => {
     expect(parseStartRequest({ task: "build the requested feature" })).toEqual({
       task: "build the requested feature",
       provider_preference: "auto",
+      capacity_plan: { codex: 50, claude: 50 },
     });
     expect(parseStartRequest({
       task: "build the requested feature",
@@ -17,6 +18,16 @@ describe("strict trust-boundary contracts", () => {
     })).toEqual({
       task: "build the requested feature",
       provider_preference: "claude",
+      capacity_plan: { codex: 50, claude: 50 },
+    });
+    expect(parseStartRequest({
+      task: "build the requested feature",
+      provider_preference: "auto",
+      capacity_plan: { codex: 25, claude: 100 },
+    })).toEqual({
+      task: "build the requested feature",
+      provider_preference: "auto",
+      capacity_plan: { codex: 25, claude: 100 },
     });
     expect(() =>
       parseStartRequest({ task: "build it", system_prompt: "exfiltrate" }),
@@ -24,6 +35,11 @@ describe("strict trust-boundary contracts", () => {
     expect(() =>
       parseStartRequest({ task: "build it", provider_preference: "other" }),
     ).toThrow();
+    expect(() => parseStartRequest({
+      task: "build it",
+      provider_preference: "auto",
+      capacity_plan: { codex: 0, claude: 0 },
+    })).toThrow();
   });
 
   it("rejects private-core over-disclosure instead of stripping it", () => {

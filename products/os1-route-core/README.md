@@ -13,6 +13,12 @@ deployed private route service as explicitly untrusted data, and emits either:
 All failures use one opaque fixed-shape body. Extra fields from internal
 services are rejected rather than silently removed.
 
+Auto routing also accepts a coarse `capacity_plan` for the two installed
+backends. The private route core combines that user preference with a rolling
+seven-day per-principal usage ledger and protected specialist rules. Counts,
+weights, rule matches, and rationale never cross the private service boundary;
+the client still receives only the signed eight-field ticket.
+
 ## Required private service bindings
 
 | Binding | Required response |
