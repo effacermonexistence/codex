@@ -122,6 +122,7 @@ private struct AppRunStep: Decodable, Sendable {
     let sequence: Int
     let provider: String
     let action: String
+    let effort: String
     let sessionID: String
     let permissionProfile: String
     let exitCode: Int32
@@ -130,7 +131,7 @@ private struct AppRunStep: Decodable, Sendable {
     let durationMS: Int64
 
     enum CodingKeys: String, CodingKey {
-        case sequence, provider, action, output, stderr
+        case sequence, provider, action, effort, output, stderr
         case sessionID = "session_id"
         case permissionProfile = "permission_profile"
         case exitCode = "exit_code"
@@ -490,7 +491,7 @@ private final class SessionStore: ObservableObject {
                     ))
                     sessions[target].messages.append(ChatMessage(
                         role: .receipt,
-                        text: "\(backendTierLabel(action: step.action, provider: step.provider)) · native session linked · step \(step.sequence) · \(step.durationMS / 1_000)s · exit \(step.exitCode)",
+                        text: "\(backendTierLabel(action: step.action, provider: step.provider)) · \(step.effort) reasoning · native session linked · step \(step.sequence) · \(step.durationMS / 1_000)s · exit \(step.exitCode)",
                         provider: step.provider,
                         permissionProfile: step.permissionProfile
                     ))
@@ -1074,7 +1075,7 @@ private struct WelcomeView: View {
                 Text("What are we building?")
                     .font(.system(size: 34, weight: .semibold, design: .rounded))
                     .foregroundStyle(Theme.text)
-                Text("Pick a project once. OS-1 treats Codex and Claude Code as managed backends, then selects both the backend and model tier from task fit and weekly capacity.")
+                Text("Pick a project once. OS-1 treats Codex and Claude Code as managed backends, then selects the backend, model tier, and reasoning effort from task fit and weekly capacity.")
                     .font(.system(size: 15))
                     .foregroundStyle(Color.white.opacity(0.62))
                     .fixedSize(horizontal: false, vertical: true)
@@ -1082,7 +1083,7 @@ private struct WelcomeView: View {
                 HStack(spacing: 12) {
                     WelcomeStep(number: "1", title: "Choose folder", detail: "The project OS-1 may inspect or edit")
                     WelcomeStep(number: "2", title: "Set capacity", detail: "Default mix conserves scarce Codex usage")
-                    WelcomeStep(number: "3", title: "Use OS-1", detail: "RCC selects the backend and model tier")
+                    WelcomeStep(number: "3", title: "Use OS-1", detail: "RCC selects backend, model, and effort")
                 }
 
                 VStack(alignment: .leading, spacing: 9) {

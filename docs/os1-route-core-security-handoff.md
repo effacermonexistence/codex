@@ -127,8 +127,9 @@ The service must keep all RCC/REVAS material internally and return one of:
 `action` is allowlisted to `agent_run`, `agent_run_efficient`, or
 `agent_run_deep`. These are execution tiers carried inside the same eight-field
 ticket, not extra rationale. The Mac runtime maps the selected tier to a
-provider-specific model profile while the private rule match, capacity ledger,
-weights, and decision reason remain server-only.
+provider-specific model and reasoning-effort profile (`low`, `medium`, or
+`xhigh`) while the private rule match, capacity ledger, weights, and decision
+reason remain server-only.
 
 Reasoning, scores, candidates, policy identifiers, thresholds, prompts,
 versions, and future steps are prohibited. The gateway rejects rather than

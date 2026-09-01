@@ -20,6 +20,17 @@ struct ModelProfiles: Codable {
     let claude: ProviderModelProfile
 }
 
+struct ProviderEffortProfile: Codable {
+    let standard: String
+    let efficient: String
+    let deep: String
+}
+
+struct EffortProfiles: Codable {
+    let codex: ProviderEffortProfile
+    let claude: ProviderEffortProfile
+}
+
 func isSafeModelIdentifier(_ value: String) -> Bool {
     guard !value.isEmpty, value.count <= 128 else { return false }
     return value.unicodeScalars.allSatisfy { scalar in
@@ -30,12 +41,17 @@ func isSafeModelIdentifier(_ value: String) -> Bool {
     }
 }
 
+func isSupportedEffort(_ value: String) -> Bool {
+    ["low", "medium", "high", "xhigh", "max"].contains(value)
+}
+
 struct RuntimeConfig: Codable {
     let apiURL: String
     let ticketVerifyingKeyRaw: String
     let maximumSteps: Int
     let executionTimeoutSeconds: Int
     let modelProfiles: ModelProfiles?
+    let effortProfiles: EffortProfiles?
 
     enum CodingKeys: String, CodingKey {
         case apiURL = "api_url"
@@ -43,6 +59,7 @@ struct RuntimeConfig: Codable {
         case maximumSteps = "maximum_steps"
         case executionTimeoutSeconds = "execution_timeout_seconds"
         case modelProfiles = "model_profiles"
+        case effortProfiles = "effort_profiles"
     }
 
     static func load() throws -> RuntimeConfig {
@@ -71,6 +88,16 @@ struct RuntimeConfig: Codable {
                           profiles.claude.efficient,
                           profiles.claude.deep,
                       ].allSatisfy(isSafeModelIdentifier)
+                  }) ?? true,
+                  value.effortProfiles.map({ profiles in
+                      [
+                          profiles.codex.standard,
+                          profiles.codex.efficient,
+                          profiles.codex.deep,
+                          profiles.claude.standard,
+                          profiles.claude.efficient,
+                          profiles.claude.deep,
+                      ].allSatisfy(isSupportedEffort)
                   }) ?? true else {
                 throw OS1Error.message("OS-1 configuration is invalid")
             }
@@ -205,6 +232,7 @@ struct RunStepSummary: Codable {
     let sequence: Int
     let provider: String
     let action: String
+    let effort: String
     let sessionID: String
     let permissionProfile: String
     let exitCode: Int32
@@ -213,7 +241,7 @@ struct RunStepSummary: Codable {
     let durationMS: Int64
 
     enum CodingKeys: String, CodingKey {
-        case sequence, provider, action, output, stderr
+        case sequence, provider, action, effort, output, stderr
         case sessionID = "session_id"
         case permissionProfile = "permission_profile"
         case exitCode = "exit_code"
@@ -451,6 +479,29 @@ func configuredModel(provider: String, action: String, config: RuntimeConfig) th
     }
 }
 
+func configuredEffort(provider: String, action: String, config: RuntimeConfig) throws -> String {
+    guard let profiles = config.effortProfiles else {
+        throw OS1Error.message("OS-1 effort profiles are missing; reinstall OS-1")
+    }
+    let profile: ProviderEffortProfile
+    switch provider {
+    case "codex": profile = profiles.codex
+    case "claude": profile = profiles.claude
+    default: throw OS1Error.message("Server ticket contract rejected")
+    }
+    let effort: String
+    switch action {
+    case "agent_run": effort = profile.standard
+    case "agent_run_efficient": effort = profile.efficient
+    case "agent_run_deep": effort = profile.deep
+    default: throw OS1Error.message("Server ticket contract rejected")
+    }
+    guard isSupportedEffort(effort) else {
+        throw OS1Error.message("OS-1 effort profile is invalid; reinstall OS-1")
+    }
+    return effort
+}
+
 func commandOutput(
     _ executable: String,
     _ arguments: [String],
@@ -634,7 +685,8 @@ func execute(
     workspace: String,
     timeout: Int,
     providerSessionID: String?,
-    model: String?
+    model: String?,
+    effort: String
 ) throws -> ProviderExecution {
     let started = Date()
     let result: (Int32, Data, Data)
@@ -654,6 +706,7 @@ func execute(
                 "exec", "resume",
             ]
             if let model { arguments += ["--model", model] }
+            arguments += ["--config", "model_reasoning_effort=\"\(effort)\""]
             arguments += [
                 "--json",
                 "--skip-git-repo-check",
@@ -665,6 +718,7 @@ func execute(
                 "exec",
             ]
             if let model { arguments += ["--model", model] }
+            arguments += ["--config", "model_reasoning_effort=\"\(effort)\""]
             arguments += [
                 "--json",
                 "--color", "never",
@@ -700,6 +754,7 @@ func execute(
         let requestedSessionID = try normalizedSessionID(providerSessionID) ?? UUID().uuidString.lowercased()
         var arguments = ["-p", "--output-format", "json"]
         if let model { arguments += ["--model", model] }
+        arguments += ["--effort", effort]
         if providerSessionID == nil {
             arguments += ["--session-id", requestedSessionID]
         } else {
@@ -787,8 +842,10 @@ func runTask(
         }
         guard let ticket = route.ticket else { throw OS1Error.message("Invalid OS-1 route response") }
         try verifyTicket(ticket, config: config)
+        let model = try configuredModel(provider: ticket.provider, action: ticket.action, config: config)
+        let effort = try configuredEffort(provider: ticket.provider, action: ticket.action, config: config)
         if progress {
-            print("OS-1 step \(step): \(ticket.provider) / \(ticket.permissionProfile)")
+            print("OS-1 step \(step): \(ticket.provider) / \(ticket.action) / \(effort) / \(ticket.permissionProfile)")
         }
         let execution = try execute(
             ticket: ticket,
@@ -796,7 +853,8 @@ func runTask(
             workspace: canonicalWorkspace,
             timeout: config.executionTimeoutSeconds,
             providerSessionID: nativeSessions[ticket.provider] ?? nil,
-            model: try configuredModel(provider: ticket.provider, action: ticket.action, config: config)
+            model: model,
+            effort: effort
         )
         nativeSessions[ticket.provider] = execution.sessionID
         let artifact = execution.artifact
@@ -804,6 +862,7 @@ func runTask(
             sequence: ticket.sequence,
             provider: ticket.provider,
             action: ticket.action,
+            effort: effort,
             sessionID: execution.sessionID,
             permissionProfile: ticket.permissionProfile,
             exitCode: artifact.exitCode,
@@ -837,7 +896,7 @@ func runTask(
 
 func printRunSummary(_ summary: RunSummary) {
     for step in summary.steps {
-        print("\n[\(step.provider.uppercased()) · \(step.action) · \(step.permissionProfile) · \(step.sessionID)]")
+        print("\n[\(step.provider.uppercased()) · \(step.action) · \(step.effort) · \(step.permissionProfile) · \(step.sessionID)]")
         if !step.output.isEmpty { print(step.output) }
         if step.exitCode != 0 && !step.stderr.isEmpty {
             fputs("\(step.stderr)\n", stderr)
@@ -848,8 +907,8 @@ func printRunSummary(_ summary: RunSummary) {
 
 func doctor() throws {
     let config = try RuntimeConfig.load()
-    guard config.modelProfiles != nil else {
-        throw OS1Error.message("OS-1 model profiles are missing; reinstall OS-1")
+    guard config.modelProfiles != nil, config.effortProfiles != nil else {
+        throw OS1Error.message("OS-1 model or effort profiles are missing; reinstall OS-1")
     }
     let key = try SigningKey.loadOrCreate()
     _ = try deviceID()
@@ -882,14 +941,21 @@ func selfTest() throws {
         modelProfiles: ModelProfiles(
             codex: ProviderModelProfile(efficient: "codex-fast", deep: "codex-deep"),
             claude: ProviderModelProfile(efficient: "claude-fast", deep: "claude-deep")
+        ),
+        effortProfiles: EffortProfiles(
+            codex: ProviderEffortProfile(standard: "medium", efficient: "low", deep: "xhigh"),
+            claude: ProviderEffortProfile(standard: "medium", efficient: "low", deep: "xhigh")
         )
     )
     guard try configuredModel(provider: "codex", action: "agent_run", config: config) == nil,
           try configuredModel(provider: "codex", action: "agent_run_efficient", config: config) == "codex-fast",
-          try configuredModel(provider: "claude", action: "agent_run_deep", config: config) == "claude-deep" else {
-        throw OS1Error.message("Model profile resolution failed")
+          try configuredModel(provider: "claude", action: "agent_run_deep", config: config) == "claude-deep",
+          try configuredEffort(provider: "codex", action: "agent_run", config: config) == "medium",
+          try configuredEffort(provider: "codex", action: "agent_run_efficient", config: config) == "low",
+          try configuredEffort(provider: "claude", action: "agent_run_deep", config: config) == "xhigh" else {
+        throw OS1Error.message("Model or effort profile resolution failed")
     }
-    print("OS-1 native session and model profile self-test: OK")
+    print("OS-1 native session, model, and effort profile self-test: OK")
 }
 
 func usage() {
@@ -913,7 +979,7 @@ struct OS1Main {
             let arguments = Array(CommandLine.arguments.dropFirst())
             guard let command = arguments.first else { usage(); return }
             switch command {
-            case "version", "--version", "-V": print("OS-1 Runtime 0.3.3")
+            case "version", "--version", "-V": print("OS-1 Runtime 0.3.4")
             case "doctor": try doctor()
             case "self-test": try selfTest()
             case "register":

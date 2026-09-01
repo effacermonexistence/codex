@@ -48,8 +48,10 @@ The equivalent CLI choices are `--provider auto`, `--provider codex`, and
 `--output-format json`. Native sessions are resumed with
 `--codex-session-id UUID` and `--claude-session-id UUID`; each JSON step returns
 the actual provider `session_id` plus an abstract standard, efficient, or deep
-execution action. In Auto, RCC chooses both the backend and that model tier;
-manual provider selection preserves the provider account's default model. A bounded completed-turn handoff can be
+execution action. In Auto, RCC chooses the backend, model tier, and reasoning
+effort; manual provider selection preserves the provider account's default
+model while still selecting medium reasoning. Efficient routes use low effort,
+standard routes use medium, and deep routes use xhigh. A bounded completed-turn handoff can be
 supplied with `--context-file` without sending that transcript to the routing
 request.
 

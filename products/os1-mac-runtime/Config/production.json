@@ -12,5 +12,17 @@
       "efficient": "sonnet",
       "deep": "opus"
     }
+  },
+  "effort_profiles": {
+    "codex": {
+      "standard": "medium",
+      "efficient": "low",
+      "deep": "xhigh"
+    },
+    "claude": {
+      "standard": "medium",
+      "efficient": "low",
+      "deep": "xhigh"
+    }
   }
 }
