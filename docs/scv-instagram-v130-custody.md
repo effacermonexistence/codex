@@ -61,38 +61,50 @@ alert is historical durable quarantine evidence and is not a critical drift.
 
 - Private catalog pointer:
   `scv-instagram-automation/timestamped-snapshots/LATEST.json`
-- Catalog control version: `20260901T071327Z`
-- Snapshot count: `17`
+- Catalog control version: `20260901T082132Z`
+- Snapshot count: `19`
 - April golden snapshot:
   `scv-instagram-20260420T152810-local-origin`
-- Previous current v129 snapshot, retained as history:
-  `scv-instagram-20260901T061107Z-v129-post-omar-reset-current`
-- Current v130 snapshot:
+- Previous current v130 fix snapshot, retained as history:
   `scv-instagram-20260901T070849Z-v130-double-check-divergence-current`
+- Pre-reset v130 snapshot:
+  `scv-instagram-20260901T081723Z-v130-pre-omar-reset`
+- Current post-reset v130 snapshot:
+  `scv-instagram-20260901T081724Z-v130-post-omar-reset-current`
 - Catalog SHA-256:
-  `f25d069bd6eb8be2db7e115bc6e207e51365fc3c0a83ddc9feab7e4c01695b52`
+  `67749b5bd4fd5ebe8ef44e53e360799abc13ee35eef879faf680dc854b06aa5f`
 - Catalog seal SHA-256:
-  `904917305a6192f3b881cbbd3a3ae71a2d4186a1c818f840385c3cd2b9875cb4`
-- Current production-state archive SHA-256:
-  `86c9cdc0c05ba8eb8ebf0938fa45e21b063833dcddb50e5adfdf4cc8920c65d0`
-- Current snapshot manifest SHA-256:
-  `50c710bb7fcdd2f3570130668c906b3da144f5b60ebc60fcf4a41f6cb2fac5db`
-- Current staged-restore receipt SHA-256:
-  `24a82147d2d5e0c61e1eb89227c7aafcd3519f23be0ff6cc9a2d7edb0ac89783`
+  `e22fe4c7bcf02a489263c00fa77529837e5f47b124336108099742d8e608fe10`
+- Pre-reset production-state archive SHA-256:
+  `331a9ffb55acd00ab8cca395ace5f0a8f426c7edf727d449e1f2a142bd8cd316`
+- Post-reset production-state archive SHA-256:
+  `ad388411fd8f27ffb1fda76d94d87b9457495ba4c58b67f4b54535a9f0435cca`
+- Exact-target reset receipt SHA-256:
+  `00d848e32b6da27b11af67a0587c51ea2bf892da0c15382e74ac2cb0d51f68c1`
+- Pre-reset staged-restore receipt SHA-256:
+  `3e5a9c2ce190fc75b36785501dda26dc329dd2bb8c526a6ff945a715cf978348`
+- Post-reset staged-restore receipt SHA-256:
+  `5637d657cdd65f73dedaddbcdf4f582b60f8910659617b54f78a3bea6061fec5`
 
-The golden pointer was not moved or overlaid. The current runtime and production
-state were uploaded under a new timestamp and selected only by their exact
-snapshot ID. The restore tool downloaded both archives from R2, verified their
-hashes, sizes, and tar inventories, and restored them into a newly created
-staging directory with `production_mutated: false`. After publication, every
-control object was downloaded again and compared byte-for-byte with its local
-source. The downloaded control set then completed a second exact-ID staged
-restore. `LATEST.json` was published last.
+The golden pointer was not moved or overlaid. All ten production workers were
+paused for each state capture. The code-locked Omar.system audit went from 19
+matching artifacts before reset to zero afterward, then the exact ten-worker
+set resumed and production readiness stayed healthy. The two timestamps remain
+separately addressable by exact snapshot ID.
+
+The restore tool downloaded the v130 runtime and both state archives from R2,
+verified their hashes, sizes, and tar inventories, and restored them into new
+staging directories with `production_mutated: false`. The restored pre-reset
+state independently audited to 19 matches and the restored post-reset state to
+zero. After publication, every control object was downloaded again and compared
+byte-for-byte with its local source. The downloaded control set then completed
+a second exact-ID restore of both timestamps with the same 19/zero audit result.
+`LATEST.json` was published last.
 
 ## Independent drift sentinel
 
 - Worker: `scv-instagram-drift-sentinel`
-- Worker version: `d309cf7b-3936-4889-b70c-e5b38ad0301c`
+- Worker version: `916603e6-292a-46e9-b01c-b06bd74d05fa`
 - Schedule: every five minutes
 - Safe health endpoint:
   `https://scv-instagram-drift-sentinel.omar-git-r2-backup.workers.dev/health`
