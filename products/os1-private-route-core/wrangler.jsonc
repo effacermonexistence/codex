@@ -2,10 +2,16 @@
   "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "os1-private-route-core",
   "main": "src/index.ts",
-  "compatibility_date": "2026-08-31",
+  "compatibility_date": "2026-09-01",
   "compatibility_flags": ["nodejs_compat"],
   "workers_dev": false,
   "preview_urls": false,
+  "services": [
+    { "binding": "RESULT_EVALUATOR", "service": "os1-result-evaluator" }
+  ],
+  "r2_buckets": [
+    { "binding": "POLICY_BUNDLES", "bucket_name": "omar-active-vault" }
+  ],
   "durable_objects": {
     "bindings": [
       { "name": "ROUTES", "class_name": "RouteState" },
@@ -16,6 +22,11 @@
     { "tag": "v1", "new_sqlite_classes": ["RouteState"] },
     { "tag": "v2", "new_sqlite_classes": ["RoutingBudgetState"] }
   ],
+  "vars": {
+    "POLICY_BUNDLE_KEY": "os1/policies/783aa40d88d8e2583e5172870a5307436319e92ca015a03f01ebd83bd07eacc0.json",
+    "POLICY_BUNDLE_SHA256": "783aa40d88d8e2583e5172870a5307436319e92ca015a03f01ebd83bd07eacc0",
+    "MAX_POLICY_BUNDLE_BYTES": "65536"
+  },
   "observability": {
     "enabled": true,
     "logs": { "enabled": true, "head_sampling_rate": 1 },

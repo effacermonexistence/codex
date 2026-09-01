@@ -30,11 +30,13 @@ export type TicketUnsigned = {
 
 export type Ticket = TicketUnsigned & { signature: string };
 export type CompleteResponse = { status: "complete" };
+export type FailedResponse = { status: "failed" };
 export type RegisteredResponse = { status: "registered" };
 export type ArtifactResponse = { artifact_ref: string };
 export type PublicResponse =
   | Ticket
   | CompleteResponse
+  | FailedResponse
   | RegisteredResponse
   | ArtifactResponse;
 
@@ -51,6 +53,7 @@ export type DeviceRecord = {
 
 export type PrivateDecision =
   | { status: "complete" }
+  | { status: "failed" }
   | {
       status: "step";
       provider: Provider;
@@ -143,14 +146,13 @@ export function parseStartRequest(value: unknown): {
   task: string;
   provider_preference: ProviderPreference;
   capacity_plan: CapacityPlan;
+  executor_contract_version: string;
+  executor_contract_sha256: string;
 } {
-  const legacy = isRecord(value) && hasExactKeys(value, ["task"]);
-  const current = isRecord(value) && hasExactKeys(value, [
-    "task",
-    "provider_preference",
-  ]);
   const capacityAware = isRecord(value) && hasExactKeys(value, [
     "capacity_plan",
+    "executor_contract_sha256",
+    "executor_contract_version",
     "provider_preference",
     "task",
   ]);
@@ -166,25 +168,24 @@ export function parseStartRequest(value: unknown): {
     (capacity.codex as number) + (capacity.claude as number) > 0;
   if (
     !isRecord(value) ||
-    (!legacy && !current && !capacityAware) ||
+    !capacityAware ||
     !boundedString(value.task, 1, 48_000) ||
-    ((current || capacityAware) &&
-      !oneOf(value.provider_preference, ["auto", ...PROVIDERS] as const)) ||
-    (capacityAware && !validCapacity)
+    !oneOf(value.provider_preference, ["auto", ...PROVIDERS] as const) ||
+    !boundedString(value.executor_contract_version, 8, 96, /^[A-Za-z0-9._-]+$/) ||
+    !boundedString(value.executor_contract_sha256, 64, 64, SHA256) ||
+    !validCapacity
   ) {
     reject();
   }
   return {
     task: value.task,
-    provider_preference: current || capacityAware
-      ? value.provider_preference as ProviderPreference
-      : "auto",
-    capacity_plan: capacityAware
-      ? {
-          codex: (capacity as Record<string, unknown>).codex as number,
-          claude: (capacity as Record<string, unknown>).claude as number,
-        }
-      : { codex: 50, claude: 50 },
+    provider_preference: value.provider_preference as ProviderPreference,
+    capacity_plan: {
+      codex: (capacity as Record<string, unknown>).codex as number,
+      claude: (capacity as Record<string, unknown>).claude as number,
+    },
+    executor_contract_version: value.executor_contract_version,
+    executor_contract_sha256: value.executor_contract_sha256,
   };
 }
 
@@ -350,6 +351,10 @@ export function parsePrivateDecision(value: unknown): PrivateDecision {
     if (!hasExactKeys(value, ["status"])) reject();
     return { status: "complete" };
   }
+  if (value.status === "failed") {
+    if (!hasExactKeys(value, ["status"])) reject();
+    return { status: "failed" };
+  }
   if (
     value.status !== "step" ||
     !hasExactKeys(value, [
@@ -391,6 +396,10 @@ export function parsePublicResponse(value: unknown): PublicResponse {
   if (isRecord(value) && value.status === "complete") {
     if (!hasExactKeys(value, ["status"])) reject();
     return { status: "complete" };
+  }
+  if (isRecord(value) && value.status === "failed") {
+    if (!hasExactKeys(value, ["status"])) reject();
+    return { status: "failed" };
   }
   if (isRecord(value) && value.status === "registered") {
     if (!hasExactKeys(value, ["status"])) reject();

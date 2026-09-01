@@ -2,13 +2,12 @@
   "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "os1-route-gateway",
   "main": "src/index.ts",
-  "compatibility_date": "2026-08-31",
+  "compatibility_date": "2026-09-01",
   "compatibility_flags": ["nodejs_compat"],
   "services": [
     { "binding": "AUTH_SERVICE", "service": "os1-auth-service" },
     { "binding": "DEVICE_REGISTRY", "service": "os1-device-registry" },
-    { "binding": "PRIVATE_ROUTE_CORE", "service": "os1-private-route-core" },
-    { "binding": "RESULT_EVALUATOR", "service": "os1-result-evaluator" }
+    { "binding": "PRIVATE_ROUTE_CORE", "service": "os1-private-route-core" }
   ],
   "r2_buckets": [
     { "binding": "RESULTS", "bucket_name": "os1-private-results" },

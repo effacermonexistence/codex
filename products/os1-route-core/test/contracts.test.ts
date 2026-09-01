@@ -6,28 +6,19 @@ import {
 } from "../src/contracts";
 
 describe("strict trust-boundary contracts", () => {
-  it("accepts a strict provider preference while retaining legacy clients", () => {
-    expect(parseStartRequest({ task: "build the requested feature" })).toEqual({
-      task: "build the requested feature",
-      provider_preference: "auto",
-      capacity_plan: { codex: 50, claude: 50 },
-    });
-    expect(parseStartRequest({
-      task: "build the requested feature",
-      provider_preference: "claude",
-    })).toEqual({
-      task: "build the requested feature",
-      provider_preference: "claude",
-      capacity_plan: { codex: 50, claude: 50 },
-    });
+  it("requires the pinned executor contract and capacity-aware client", () => {
     expect(parseStartRequest({
       task: "build the requested feature",
       provider_preference: "auto",
       capacity_plan: { codex: 25, claude: 100 },
+      executor_contract_version: "os1-executor-2026-09-01-v1",
+      executor_contract_sha256: "0".repeat(64),
     })).toEqual({
       task: "build the requested feature",
       provider_preference: "auto",
       capacity_plan: { codex: 25, claude: 100 },
+      executor_contract_version: "os1-executor-2026-09-01-v1",
+      executor_contract_sha256: "0".repeat(64),
     });
     expect(() =>
       parseStartRequest({ task: "build it", system_prompt: "exfiltrate" }),
@@ -39,10 +30,14 @@ describe("strict trust-boundary contracts", () => {
       task: "build it",
       provider_preference: "auto",
       capacity_plan: { codex: 0, claude: 0 },
+      executor_contract_version: "os1-executor-2026-09-01-v1",
+      executor_contract_sha256: "0".repeat(64),
     })).toThrow();
+    expect(() => parseStartRequest({ task: "legacy client" })).toThrow();
   });
 
   it("rejects private-core over-disclosure instead of stripping it", () => {
+    expect(parsePrivateDecision({ status: "failed" })).toEqual({ status: "failed" });
     expect(
       parsePrivateDecision({
         status: "step",

@@ -1,1 +1,1 @@
-TRANSIENT_FAILURE_PATTERNS_JSON="[]"
+# REVAS policy arrives only over the private service binding.

@@ -37,6 +37,10 @@ function isPermission(value: unknown): value is PermissionProfile {
 
 export function parsePolicy(serialized: string): Policy {
   const value = JSON.parse(serialized) as Record<string, unknown>;
+  const policyKeys = Object.keys(value).sort();
+  if (policyKeys.join("\n") !== ["default_permission_profile", "default_provider", "max_steps", "rules", "version"].join("\n")) {
+    throw new Error("invalid policy");
+  }
   if (
     value.version !== 1 ||
     !isProvider(value.default_provider) ||
@@ -54,6 +58,12 @@ export function parsePolicy(serialized: string): Policy {
       throw new Error("invalid policy");
     }
     const rule = candidate as Record<string, unknown>;
+    const ruleKeys = Object.keys(rule).sort();
+    const required = ["fallback_provider", "max_steps", "permission_profile", "provider", "terms"];
+    const optional = [...required, "budget_protected"];
+    if (ruleKeys.join("\n") !== required.sort().join("\n") && ruleKeys.join("\n") !== optional.sort().join("\n")) {
+      throw new Error("invalid policy");
+    }
     if (
       !isProvider(rule.provider) ||
       !isProvider(rule.fallback_provider) ||
@@ -102,8 +112,14 @@ export function select(
     };
   }
   const folded = task.toLocaleLowerCase("und");
+  const containsTerm = (term: string): boolean => {
+    const normalized = term.toLocaleLowerCase("und");
+    if (!/^[a-z0-9 _-]+$/u.test(normalized)) return folded.includes(normalized);
+    const escaped = normalized.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    return new RegExp(`(^|[^a-z0-9_])${escaped}(?=$|[^a-z0-9_])`, "u").test(folded);
+  };
   const rule = policy.rules.find((candidate) =>
-    candidate.terms.some((term) => folded.includes(term.toLocaleLowerCase("und"))),
+    candidate.terms.some(containsTerm),
   );
   if (rule) {
     return {

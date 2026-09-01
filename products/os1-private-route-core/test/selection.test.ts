@@ -65,6 +65,10 @@ describe("explicit provider preference", () => {
     expect(selectAction(flexible, "codex", "auto")).toBe("agent_run");
   });
 
+  it("does not match ASCII routing terms inside larger identifiers", () => {
+    expect(select(policy, "reply exactly OS1_REANALYZE_OK", "auto").budget_protected).toBe(false);
+  });
+
   it("keeps explicit provider overrides on the account default model", () => {
     const manual = select(policy, "analyze the repository", "codex");
     expect(selectAction(manual, "codex", "codex")).toBe("agent_run");

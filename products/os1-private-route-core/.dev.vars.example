@@ -1,1 +1,1 @@
-PRIVATE_ROUTE_POLICY_JSON="{\"version\":1,\"default_provider\":\"codex\",\"default_permission_profile\":\"workspace_write\",\"max_steps\":2,\"rules\":[]}"
+# Production reads a SHA-pinned bundle from the private POLICY_BUNDLES R2 binding.

@@ -21,6 +21,10 @@ describe("public egress", () => {
     );
   });
 
+  it("emits an opaque terminal verification failure", async () => {
+    expect(await publicJson({ status: "failed" }).json()).toEqual({ status: "failed" });
+  });
+
   it("uses one opaque, fixed-shape error body", async () => {
     const first = await opaqueError().text();
     const second = await opaqueError().text();

@@ -18,6 +18,7 @@ do
 done
 pnpm --dir products/os1-route-core test
 pnpm --dir products/os1-private-route-core test
+pnpm --dir products/os1-result-evaluator test
 
 for os1_worker in \
   os1-auth-service \

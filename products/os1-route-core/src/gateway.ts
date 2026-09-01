@@ -4,7 +4,6 @@ import {
   parseDeviceId,
   parseDeviceRegistration,
   parseDeviceRecord,
-  parseEvaluatedResult,
   parsePrivateDecision,
   parsePublicResponse,
   parseResultRequest,
@@ -115,12 +114,12 @@ async function issueTicket(
 
 export async function startExecution(request: Request, env: Env): Promise<Response> {
   const identity = await authenticate(request, env);
-  const { task, provider_preference, capacity_plan } = parseStartRequest(
+  const { task, provider_preference, capacity_plan, executor_contract_version, executor_contract_sha256 } = parseStartRequest(
     await readBoundedJson(request, positiveInteger(env.MAX_REQUEST_BYTES)),
   );
   const executionId = crypto.randomUUID();
   const decision = await privateDecision(env, {
-    version: 1,
+    version: 2,
     execution_id: executionId,
     principal: { subject: identity.subject, device_id: identity.device_id },
     task: {
@@ -128,9 +127,12 @@ export async function startExecution(request: Request, env: Env): Promise<Respon
       content: task,
       provider_preference,
       capacity_plan,
+      executor_contract_version,
+      executor_contract_sha256,
     },
   });
   if (decision.status === "complete") return publicJson({ status: "complete" });
+  if (decision.status === "failed") return publicJson({ status: "failed" });
 
   const ticket = await issueTicket(env, executionId, 1, decision);
   const state = env.EXECUTIONS.getByName(executionId);
@@ -219,36 +221,22 @@ export async function submitResult(request: Request, env: Env): Promise<Response
     return publicJson(parsePublicResponse(JSON.parse(claim.response_json)));
   }
 
-  const evaluated = parseEvaluatedResult(
-    await bindingJson(
-      env.RESULT_EVALUATOR,
-      "/evaluate",
-      {
-        execution_id: result.ticket.execution_id,
-        sequence: result.ticket.sequence,
-        artifact_ref: result.artifact_ref,
-        expected_artifact_hash: result.result_hash,
-      },
-      positiveInteger(env.SERVICE_RESPONSE_BYTES),
-    ),
-  );
-  if (!timingSafeHexEqual(evaluated.verified_artifact_hash, result.result_hash)) {
-    reject();
-  }
-
   const decision = await privateDecision(env, {
-    version: 1,
+    version: 2,
     execution_id: result.ticket.execution_id,
     previous: {
       sequence: result.ticket.sequence,
-      outcome: evaluated.outcome,
-      verified_artifact_hash: evaluated.verified_artifact_hash,
+      artifact_ref: result.artifact_ref,
+      expected_artifact_hash: result.result_hash,
     },
   });
   let response: PublicResponse;
   let next: { sequence: number; nonce: string; expires_at: number } | null;
   if (decision.status === "complete") {
     response = { status: "complete" };
+    next = null;
+  } else if (decision.status === "failed") {
+    response = { status: "failed" };
     next = null;
   } else {
     const ticket = await issueTicket(
