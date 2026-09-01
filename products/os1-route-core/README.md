@@ -19,6 +19,13 @@ seven-day per-principal usage ledger and protected specialist rules. Counts,
 weights, rule matches, and rationale never cross the private service boundary;
 the client still receives only the signed eight-field ticket.
 
+The same private decision assigns an execution tier through the ticket's
+existing `action` field. A current Mac runtime maps that tier to the configured
+Codex or Claude model locally: normal turns preserve the account default,
+capacity-relieved turns use an efficient profile, and protected specialist
+rules use a deep profile. Concrete model aliases are deployment configuration;
+rule terms, weights, match state, and reasoning remain private.
+
 ## Required private service bindings
 
 | Binding | Required response |

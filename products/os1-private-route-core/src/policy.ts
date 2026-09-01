@@ -3,6 +3,7 @@ export type ProviderPreference = "auto" | Provider;
 export type CapacityPlan = { codex: number; claude: number };
 export type UsageCounts = { codex: number; claude: number };
 export type PermissionProfile = "read_only" | "workspace_write" | "full_access";
+export type Action = "agent_run" | "agent_run_efficient" | "agent_run_deep";
 export type Step = {
   provider: Provider;
   fallback_provider: Provider;
@@ -60,6 +61,7 @@ export function parsePolicy(serialized: string): Policy {
       !Number.isSafeInteger(rule.max_steps) ||
       (rule.max_steps as number) < 1 ||
       (rule.max_steps as number) > 4 ||
+      (rule.budget_protected !== undefined && typeof rule.budget_protected !== "boolean") ||
       !Array.isArray(rule.terms) ||
       rule.terms.length === 0 ||
       rule.terms.length > 64 ||
@@ -72,7 +74,7 @@ export function parsePolicy(serialized: string): Policy {
       fallback_provider: rule.fallback_provider,
       permission_profile: rule.permission_profile,
       max_steps: rule.max_steps as number,
-      budget_protected: rule.budget_protected === true,
+      budget_protected: rule.budget_protected !== false,
       terms: rule.terms as string[],
     };
   });
@@ -138,4 +140,15 @@ export function chooseCapacityAware(
   const primaryDeficit = deficit(primary);
   const fallbackDeficit = deficit(fallback);
   return primaryDeficit + 0.05 >= fallbackDeficit ? primary : fallback;
+}
+
+export function selectAction(
+  base: Step,
+  selectedProvider: Provider,
+  preference: ProviderPreference,
+): Action {
+  if (preference !== "auto") return "agent_run";
+  if (base.budget_protected) return "agent_run_deep";
+  if (selectedProvider !== base.provider) return "agent_run_efficient";
+  return "agent_run";
 }

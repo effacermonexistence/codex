@@ -10,23 +10,51 @@ enum OS1Error: Error, CustomStringConvertible {
     }
 }
 
+struct ProviderModelProfile: Codable {
+    let efficient: String
+    let deep: String
+}
+
+struct ModelProfiles: Codable {
+    let codex: ProviderModelProfile
+    let claude: ProviderModelProfile
+}
+
+func isSafeModelIdentifier(_ value: String) -> Bool {
+    guard !value.isEmpty, value.count <= 128 else { return false }
+    return value.unicodeScalars.allSatisfy { scalar in
+        switch scalar.value {
+        case 48...57, 65...90, 97...122, 45, 46, 58, 95: return true
+        default: return false
+        }
+    }
+}
+
 struct RuntimeConfig: Codable {
     let apiURL: String
     let ticketVerifyingKeyRaw: String
     let maximumSteps: Int
     let executionTimeoutSeconds: Int
+    let modelProfiles: ModelProfiles?
 
     enum CodingKeys: String, CodingKey {
         case apiURL = "api_url"
         case ticketVerifyingKeyRaw = "ticket_verifying_key_raw"
         case maximumSteps = "maximum_steps"
         case executionTimeoutSeconds = "execution_timeout_seconds"
+        case modelProfiles = "model_profiles"
     }
 
     static func load() throws -> RuntimeConfig {
         let environment = ProcessInfo.processInfo.environment
+        let bundledConfig = URL(fileURLWithPath: CommandLine.arguments[0])
+            .standardizedFileURL
+            .deletingLastPathComponent()
+            .appendingPathComponent("config.json")
+            .path
         let paths = [
             environment["OS1_CONFIG"],
+            bundledConfig,
             "/Library/Application Support/OS-1/config.json",
             FileManager.default.homeDirectoryForCurrentUser
                 .appendingPathComponent(".config/os1/config.json").path,
@@ -35,7 +63,15 @@ struct RuntimeConfig: Codable {
             let value = try JSONDecoder().decode(RuntimeConfig.self, from: Data(contentsOf: URL(fileURLWithPath: path)))
             guard URL(string: value.apiURL)?.scheme == "https",
                   value.maximumSteps >= 1, value.maximumSteps <= 4,
-                  value.executionTimeoutSeconds >= 60 else {
+                  value.executionTimeoutSeconds >= 60,
+                  value.modelProfiles.map({ profiles in
+                      [
+                          profiles.codex.efficient,
+                          profiles.codex.deep,
+                          profiles.claude.efficient,
+                          profiles.claude.deep,
+                      ].allSatisfy(isSafeModelIdentifier)
+                  }) ?? true else {
                 throw OS1Error.message("OS-1 configuration is invalid")
             }
             return value
@@ -168,6 +204,7 @@ struct CapacityPlan: Codable {
 struct RunStepSummary: Codable {
     let sequence: Int
     let provider: String
+    let action: String
     let sessionID: String
     let permissionProfile: String
     let exitCode: Int32
@@ -176,7 +213,7 @@ struct RunStepSummary: Codable {
     let durationMS: Int64
 
     enum CodingKeys: String, CodingKey {
-        case sequence, provider, output, stderr
+        case sequence, provider, action, output, stderr
         case sessionID = "session_id"
         case permissionProfile = "permission_profile"
         case exitCode = "exit_code"
@@ -380,7 +417,7 @@ func resultBytes(_ result: ResultSubmission) -> Data {
 }
 
 func verifyTicket(_ ticket: Ticket, config: RuntimeConfig) throws {
-    guard ticket.action == "agent_run",
+    guard ["agent_run", "agent_run_efficient", "agent_run_deep"].contains(ticket.action),
           ["codex", "claude"].contains(ticket.provider),
           ["read_only", "workspace_write", "full_access"].contains(ticket.permissionProfile) else {
         throw OS1Error.message("Server ticket contract rejected")
@@ -393,6 +430,24 @@ func verifyTicket(_ ticket: Ticket, config: RuntimeConfig) throws {
     let key = try Curve25519.Signing.PublicKey(rawRepresentation: Base64URL.decode(config.ticketVerifyingKeyRaw))
     guard key.isValidSignature(try Base64URL.decode(ticket.signature), for: ticketBytes(ticket)) else {
         throw OS1Error.message("Server ticket signature rejected")
+    }
+}
+
+func configuredModel(provider: String, action: String, config: RuntimeConfig) throws -> String? {
+    if action == "agent_run" { return nil }
+    guard let profiles = config.modelProfiles else {
+        throw OS1Error.message("OS-1 model profiles are missing; reinstall OS-1")
+    }
+    let profile: ProviderModelProfile
+    switch provider {
+    case "codex": profile = profiles.codex
+    case "claude": profile = profiles.claude
+    default: throw OS1Error.message("Server ticket contract rejected")
+    }
+    switch action {
+    case "agent_run_efficient": return profile.efficient
+    case "agent_run_deep": return profile.deep
+    default: throw OS1Error.message("Server ticket contract rejected")
     }
 }
 
@@ -578,7 +633,8 @@ func execute(
     prompt: String,
     workspace: String,
     timeout: Int,
-    providerSessionID: String?
+    providerSessionID: String?,
+    model: String?
 ) throws -> ProviderExecution {
     let started = Date()
     let result: (Int32, Data, Data)
@@ -596,6 +652,9 @@ func execute(
             }
             arguments += [
                 "exec", "resume",
+            ]
+            if let model { arguments += ["--model", model] }
+            arguments += [
                 "--json",
                 "--skip-git-repo-check",
                 "-o", outputURL.path,
@@ -604,6 +663,9 @@ func execute(
         } else {
             arguments = [
                 "exec",
+            ]
+            if let model { arguments += ["--model", model] }
+            arguments += [
                 "--json",
                 "--color", "never",
                 "--skip-git-repo-check",
@@ -637,6 +699,7 @@ func execute(
         let claude = try findExecutable("claude")
         let requestedSessionID = try normalizedSessionID(providerSessionID) ?? UUID().uuidString.lowercased()
         var arguments = ["-p", "--output-format", "json"]
+        if let model { arguments += ["--model", model] }
         if providerSessionID == nil {
             arguments += ["--session-id", requestedSessionID]
         } else {
@@ -732,13 +795,15 @@ func runTask(
             prompt: localPrompt,
             workspace: canonicalWorkspace,
             timeout: config.executionTimeoutSeconds,
-            providerSessionID: nativeSessions[ticket.provider] ?? nil
+            providerSessionID: nativeSessions[ticket.provider] ?? nil,
+            model: try configuredModel(provider: ticket.provider, action: ticket.action, config: config)
         )
         nativeSessions[ticket.provider] = execution.sessionID
         let artifact = execution.artifact
         steps.append(RunStepSummary(
             sequence: ticket.sequence,
             provider: ticket.provider,
+            action: ticket.action,
             sessionID: execution.sessionID,
             permissionProfile: ticket.permissionProfile,
             exitCode: artifact.exitCode,
@@ -772,7 +837,7 @@ func runTask(
 
 func printRunSummary(_ summary: RunSummary) {
     for step in summary.steps {
-        print("\n[\(step.provider.uppercased()) · \(step.permissionProfile) · \(step.sessionID)]")
+        print("\n[\(step.provider.uppercased()) · \(step.action) · \(step.permissionProfile) · \(step.sessionID)]")
         if !step.output.isEmpty { print(step.output) }
         if step.exitCode != 0 && !step.stderr.isEmpty {
             fputs("\(step.stderr)\n", stderr)
@@ -783,6 +848,9 @@ func printRunSummary(_ summary: RunSummary) {
 
 func doctor() throws {
     let config = try RuntimeConfig.load()
+    guard config.modelProfiles != nil else {
+        throw OS1Error.message("OS-1 model profiles are missing; reinstall OS-1")
+    }
     let key = try SigningKey.loadOrCreate()
     _ = try deviceID()
     for command in ["gh", "codex", "claude"] { _ = try findExecutable(command) }
@@ -806,7 +874,22 @@ func selfTest() throws {
           codexThreadID(from: Data("not json\n{}\n".utf8)) == nil else {
         throw OS1Error.message("Codex native thread event validation failed")
     }
-    print("OS-1 native session self-test: OK")
+    let config = RuntimeConfig(
+        apiURL: "https://example.com",
+        ticketVerifyingKeyRaw: String(repeating: "A", count: 43),
+        maximumSteps: 4,
+        executionTimeoutSeconds: 60,
+        modelProfiles: ModelProfiles(
+            codex: ProviderModelProfile(efficient: "codex-fast", deep: "codex-deep"),
+            claude: ProviderModelProfile(efficient: "claude-fast", deep: "claude-deep")
+        )
+    )
+    guard try configuredModel(provider: "codex", action: "agent_run", config: config) == nil,
+          try configuredModel(provider: "codex", action: "agent_run_efficient", config: config) == "codex-fast",
+          try configuredModel(provider: "claude", action: "agent_run_deep", config: config) == "claude-deep" else {
+        throw OS1Error.message("Model profile resolution failed")
+    }
+    print("OS-1 native session and model profile self-test: OK")
 }
 
 func usage() {
@@ -830,7 +913,7 @@ struct OS1Main {
             let arguments = Array(CommandLine.arguments.dropFirst())
             guard let command = arguments.first else { usage(); return }
             switch command {
-            case "version", "--version", "-V": print("OS-1 Runtime 0.3.2")
+            case "version", "--version", "-V": print("OS-1 Runtime 0.3.3")
             case "doctor": try doctor()
             case "self-test": try selfTest()
             case "register":

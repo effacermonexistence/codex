@@ -1,7 +1,11 @@
 import { reject } from "./errors";
 
 export const PROVIDERS = ["codex", "claude"] as const;
-export const ACTIONS = ["agent_run"] as const;
+export const ACTIONS = [
+  "agent_run",
+  "agent_run_efficient",
+  "agent_run_deep",
+] as const;
 export const PERMISSION_PROFILES = [
   "read_only",
   "workspace_write",

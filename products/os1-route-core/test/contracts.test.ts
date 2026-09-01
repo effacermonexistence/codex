@@ -68,6 +68,23 @@ describe("strict trust-boundary contracts", () => {
     expect(() =>
       parsePrivateDecision({ status: "complete", score: 0.99 }),
     ).toThrow();
+    expect(parsePrivateDecision({
+      status: "step",
+      provider: "claude",
+      action: "agent_run_deep",
+      permission_profile: "read_only",
+    })).toEqual({
+      status: "step",
+      provider: "claude",
+      action: "agent_run_deep",
+      permission_profile: "read_only",
+    });
+    expect(() => parsePrivateDecision({
+      status: "step",
+      provider: "claude",
+      action: "use_opus",
+      permission_profile: "read_only",
+    })).toThrow();
   });
 
   it("requires a signed ticket, artifact hash, R2 reference and device signature", () => {

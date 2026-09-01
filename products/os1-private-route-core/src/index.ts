@@ -7,10 +7,17 @@ import {
   type ProviderPreference,
   type CapacityPlan,
   type Step,
+  type Action,
   chooseCapacityAware,
+  selectAction,
 } from "./policy";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+type RoutedStep = Step & {
+  action: Action;
+  fallback_action: Action;
+};
 
 export class RouteState extends DurableObject<Env> {
   constructor(ctx: DurableObjectState, env: Env) {
@@ -22,25 +29,45 @@ export class RouteState extends DurableObject<Env> {
           provider TEXT NOT NULL,
           fallback_provider TEXT NOT NULL,
           permission_profile TEXT NOT NULL,
+          action TEXT NOT NULL DEFAULT 'agent_run',
+          fallback_action TEXT NOT NULL DEFAULT 'agent_run',
           max_steps INTEGER NOT NULL,
           sequence INTEGER NOT NULL,
           complete INTEGER NOT NULL DEFAULT 0
         )
       `);
+      const columns = new Set(
+        this.ctx.storage.sql
+          .exec<{ name: string }>("PRAGMA table_info(route)")
+          .toArray()
+          .map((column) => column.name),
+      );
+      if (!columns.has("action")) {
+        this.ctx.storage.sql.exec(
+          "ALTER TABLE route ADD COLUMN action TEXT NOT NULL DEFAULT 'agent_run'",
+        );
+      }
+      if (!columns.has("fallback_action")) {
+        this.ctx.storage.sql.exec(
+          "ALTER TABLE route ADD COLUMN fallback_action TEXT NOT NULL DEFAULT 'agent_run'",
+        );
+      }
     });
   }
 
-  begin(step: Step): "created" | "exists" {
+  begin(step: RoutedStep): "created" | "exists" {
     return this.ctx.storage.transactionSync(() => {
       const existing = this.ctx.storage.sql
         .exec<{ present: number }>("SELECT 1 AS present FROM route WHERE singleton=1")
         .toArray()[0];
       if (existing) return "exists";
       this.ctx.storage.sql.exec(
-        "INSERT INTO route(singleton,provider,fallback_provider,permission_profile,max_steps,sequence,complete) VALUES(1,?,?,?,?,1,0)",
+        "INSERT INTO route(singleton,provider,fallback_provider,permission_profile,action,fallback_action,max_steps,sequence,complete) VALUES(1,?,?,?,?,?,?,1,0)",
         step.provider,
         step.fallback_provider,
         step.permission_profile,
+        step.action,
+        step.fallback_action,
         step.max_steps,
       );
       return "created";
@@ -49,17 +76,19 @@ export class RouteState extends DurableObject<Env> {
 
   advance(sequence: number, outcome: "pass" | "fail" | "retry"):
     | { status: "complete" }
-    | { status: "step"; provider: Provider; permission_profile: PermissionProfile } {
+    | { status: "step"; provider: Provider; action: Action; permission_profile: PermissionProfile } {
     return this.ctx.storage.transactionSync(() => {
       const row = this.ctx.storage.sql
         .exec<{
           provider: Provider;
           fallback_provider: Provider;
           permission_profile: PermissionProfile;
+          action: Action;
+          fallback_action: Action;
           max_steps: number;
           sequence: number;
           complete: number;
-        }>("SELECT provider,fallback_provider,permission_profile,max_steps,sequence,complete FROM route WHERE singleton=1")
+        }>("SELECT provider,fallback_provider,permission_profile,action,fallback_action,max_steps,sequence,complete FROM route WHERE singleton=1")
         .toArray()[0];
       if (!row || row.complete === 1 || row.sequence !== sequence) {
         throw new Error("invalid route state");
@@ -69,13 +98,16 @@ export class RouteState extends DurableObject<Env> {
         return { status: "complete" };
       }
       const provider = row.fallback_provider;
+      const action = row.fallback_action;
       this.ctx.storage.sql.exec(
-        "UPDATE route SET provider=?,fallback_provider=?,sequence=? WHERE singleton=1",
+        "UPDATE route SET provider=?,fallback_provider=?,action=?,fallback_action=?,sequence=? WHERE singleton=1",
         provider,
         row.provider,
+        action,
+        row.action,
         sequence + 1,
       );
-      return { status: "step", provider, permission_profile: row.permission_profile };
+      return { status: "step", provider, action, permission_profile: row.permission_profile };
     });
   }
 }
@@ -138,11 +170,11 @@ async function subjectKey(subject: string): Promise<string> {
   return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
-function stepResponse(step: Pick<Step, "provider" | "permission_profile">): Response {
+function stepResponse(step: Pick<RoutedStep, "provider" | "action" | "permission_profile">): Response {
   return Response.json({
     status: "step",
     provider: step.provider,
-    action: "agent_run",
+    action: step.action,
     permission_profile: step.permission_profile,
   });
 }
@@ -207,10 +239,20 @@ export default {
           ? await budget.chooseAndRecord(base, plan)
           : task.provider_preference as Provider;
         if (task.provider_preference !== "auto") await budget.record(provider);
-        const selected: Step = {
+        const action = selectAction(
+          base,
+          provider,
+          task.provider_preference as ProviderPreference,
+        );
+        const fallbackAction: Action = task.provider_preference === "auto" && base.budget_protected
+          ? "agent_run_deep"
+          : "agent_run";
+        const selected: RoutedStep = {
           ...base,
           provider,
           fallback_provider: provider === "codex" ? "claude" : "codex",
+          action,
+          fallback_action: fallbackAction,
         };
         if ((await state.begin(selected)) !== "created") throw new Error("denied");
         return stepResponse(selected);

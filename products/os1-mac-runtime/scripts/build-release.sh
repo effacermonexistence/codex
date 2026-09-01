@@ -4,7 +4,7 @@ set -euo pipefail
 readonly script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly runtime_root="$(cd "$script_dir/.." && pwd)"
 readonly repository_root="$(cd "$runtime_root/../.." && pwd)"
-readonly version="${OS1_VERSION:-0.3.2}"
+readonly version="${OS1_VERSION:-0.3.3}"
 readonly output_dir="${OS1_RELEASE_OUTPUT_DIR:-$runtime_root/release}"
 readonly stage_dir="$output_dir/stage"
 readonly component_pkg="$output_dir/OS-1-component.pkg"
@@ -45,6 +45,8 @@ lipo -create \
 
 install -m 0644 "$runtime_root/Resources/Info.plist" \
   "$stage_dir/Applications/Open OS-1 Codex.app/Contents/Info.plist"
+install -m 0644 "$runtime_root/Config/production.json" \
+  "$stage_dir/Applications/Open OS-1 Codex.app/Contents/Resources/config.json"
 install -m 0644 "$runtime_root/Config/production.json" \
   "$stage_dir/Library/Application Support/OS-1/config.json"
 xattr -cr "$stage_dir"

@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { chooseCapacityAware, parsePolicy, select } from "../src/policy";
+import {
+  chooseCapacityAware,
+  parsePolicy,
+  select,
+  selectAction,
+} from "../src/policy";
 
 const policy = parsePolicy(JSON.stringify({
   version: 1,
@@ -22,7 +27,7 @@ describe("explicit provider preference", () => {
       fallback_provider: "codex",
       permission_profile: "read_only",
       max_steps: 1,
-      budget_protected: false,
+      budget_protected: true,
     });
   });
 
@@ -47,5 +52,21 @@ describe("explicit provider preference", () => {
     const flexible = select(policy, "build the repository", "auto");
     expect(chooseCapacityAware(flexible, { codex: 25, claude: 100 }, { codex: 0, claude: 0 })).toBe("claude");
     expect(chooseCapacityAware(flexible, { codex: 25, claude: 100 }, { codex: 0, claude: 2 })).toBe("codex");
+  });
+
+  it("uses deep tiers for protected specialist rules", () => {
+    const specialist = select(policy, "analyze the repository", "auto");
+    expect(selectAction(specialist, "claude", "auto")).toBe("agent_run_deep");
+  });
+
+  it("uses efficient tiers when capacity moves a flexible task", () => {
+    const flexible = select(policy, "build the repository", "auto");
+    expect(selectAction(flexible, "claude", "auto")).toBe("agent_run_efficient");
+    expect(selectAction(flexible, "codex", "auto")).toBe("agent_run");
+  });
+
+  it("keeps explicit provider overrides on the account default model", () => {
+    const manual = select(policy, "analyze the repository", "codex");
+    expect(selectAction(manual, "codex", "codex")).toBe("agent_run");
   });
 });

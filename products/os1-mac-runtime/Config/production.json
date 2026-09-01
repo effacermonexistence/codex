@@ -2,5 +2,15 @@
   "api_url": "https://os1-route-gateway.omar-git-r2-backup.workers.dev",
   "ticket_verifying_key_raw": "8YEZN8HnEybW2Hz6E3YxC6nTh80R-oXgWCpd-fohkJY",
   "maximum_steps": 4,
-  "execution_timeout_seconds": 1800
+  "execution_timeout_seconds": 1800,
+  "model_profiles": {
+    "codex": {
+      "efficient": "gpt-5.6-luna",
+      "deep": "gpt-5.6-sol"
+    },
+    "claude": {
+      "efficient": "sonnet",
+      "deep": "opus"
+    }
+  }
 }
