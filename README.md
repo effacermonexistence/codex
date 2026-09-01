@@ -120,6 +120,10 @@ production release, perform a fresh code-locked Omar.system-only reset with
 pause/snapshot/restore/audit/resume gates, and only then start the requested
 test. The doctor command verifies that this persistent rule is present and that
 the installed global guidance exactly matches the durable repository copy.
+The same fresh exact-target reset is a mandatory completion gate after every
+deployed SCV Instagram code, configuration, prompt, or system fix, without a
+second reset request. Completion still requires timestamped pre/post recovery
+points, a zero-residual audit, resumed workers, and healthy production.
 
 The GitHub workflow uses GitHub Actions OIDC. No long-lived Cloudflare or R2
 credential is stored in GitHub. The Worker accepts only tokens issued for
