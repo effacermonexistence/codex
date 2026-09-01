@@ -7,11 +7,13 @@
     "check": "tsc --noEmit",
     "deploy": "wrangler deploy",
     "deploy:dry-run": "wrangler deploy --dry-run --outdir dist",
+    "test": "vitest run",
     "types": "wrangler types --env-file .dev.vars.example",
     "types:check": "wrangler types --env-file .dev.vars.example --check"
   },
   "devDependencies": {
     "typescript": "5.9.3",
+    "vitest": "4.1.11",
     "wrangler": "4.127.1"
   }
 }

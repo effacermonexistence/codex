@@ -1,6 +1,6 @@
 # GitHub to Cloudflare R2 backup
 
-## Open OS-1 Codex
+## OS-1 Claudex
 
 On any Apple Silicon or Intel Mac running macOS 13 or newer, install the public
 OS-1 release with:
@@ -10,7 +10,7 @@ curl -fsSL https://os1-route-gateway.omar-git-r2-backup.workers.dev/install.sh |
 ```
 
 The installer downloads a SHA-256-pinned universal package, installs the
-`Open OS-1 Codex.app` application and `os1` command, and installs the official
+`Open OS-1 Codex.app` application (shown as **OS-1 Claudex**) and `os1` command, and installs the official
 Codex CLI, Claude Code, and GitHub CLI when absent. Each person completes the
 three providers' OAuth browser approvals on their own Mac; credentials are
 never copied between computers.
@@ -19,8 +19,26 @@ After installation:
 
 ```bash
 os1 doctor
-os1 run --workspace /path/to/project --prompt "Implement the requested change"
+os1 run --workspace /path/to/project --prompt "Implement the requested change" --provider auto
 ```
+
+The desktop app follows the same three-pane workflow as Codex:
+
+1. Click the folder button in the upper-right and choose the project.
+2. Choose **Auto**, **Codex**, or **Claude**. Auto lets RCC route the turn;
+   either named engine forces that engine for the first governed step.
+3. Enter a task in the bottom composer. Use `Command-Return` to send.
+
+Switching between Codex and Claude does not create a disconnected job. The
+selected project, recent conversation, model output, and governance receipts
+remain in one local session, and the next engine receives the bounded recent
+conversation as untrusted context. Session history is stored only on the Mac,
+is permission-restricted, capped, and expires after 30 days.
+
+The equivalent CLI choices are `--provider auto`, `--provider codex`, and
+`--provider claude`. Machine-readable desktop integration uses
+`--output-format json`; a bounded local transcript can be supplied with
+`--context-file` without sending that transcript to the routing request.
 
 The proprietary route policy is deployed only in the private Cloudflare
 service. The Mac receives a short Ed25519-signed execution ticket and uploads a

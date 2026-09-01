@@ -72,8 +72,8 @@ jobs:
         run: pnpm --dir "products/${{ matrix.worker }}" check
 
       - name: Run adversarial contract tests
-        if: matrix.worker == 'os1-route-core'
-        run: pnpm --dir products/os1-route-core test
+        if: matrix.worker == 'os1-route-core' || matrix.worker == 'os1-private-route-core'
+        run: pnpm --dir "products/${{ matrix.worker }}" test
 
       - name: Build Cloudflare dry-run bundle
         run: pnpm --dir "products/${{ matrix.worker }}" deploy:dry-run

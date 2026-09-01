@@ -11,6 +11,7 @@ export const PERMISSION_PROFILES = [
 export type Provider = (typeof PROVIDERS)[number];
 export type Action = (typeof ACTIONS)[number];
 export type PermissionProfile = (typeof PERMISSION_PROFILES)[number];
+export type ProviderPreference = "auto" | Provider;
 
 export type TicketUnsigned = {
   execution_id: string;
@@ -133,15 +134,29 @@ function boundedString(
   );
 }
 
-export function parseStartRequest(value: unknown): { task: string } {
+export function parseStartRequest(value: unknown): {
+  task: string;
+  provider_preference: ProviderPreference;
+} {
+  const legacy = isRecord(value) && hasExactKeys(value, ["task"]);
+  const current = isRecord(value) && hasExactKeys(value, [
+    "task",
+    "provider_preference",
+  ]);
   if (
     !isRecord(value) ||
-    !hasExactKeys(value, ["task"]) ||
-    !boundedString(value.task, 1, 48_000)
+    (!legacy && !current) ||
+    !boundedString(value.task, 1, 48_000) ||
+    (current && !oneOf(value.provider_preference, ["auto", ...PROVIDERS] as const))
   ) {
     reject();
   }
-  return { task: value.task };
+  return {
+    task: value.task,
+    provider_preference: current
+      ? value.provider_preference as ProviderPreference
+      : "auto",
+  };
 }
 
 export function parseTicket(value: unknown): Ticket {

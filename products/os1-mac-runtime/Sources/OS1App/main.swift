@@ -1,94 +1,1099 @@
 import AppKit
 import Foundation
+import SwiftUI
 
-@MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate {
-    private let workspace = NSTextField(string: FileManager.default.homeDirectoryForCurrentUser.path)
-    private let prompt = NSTextView()
-    private let output = NSTextView()
-    private let runButton = NSButton(title: "Run with OS-1", target: nil, action: nil)
+private enum ProviderChoice: String, CaseIterable, Codable, Identifiable, Sendable {
+    case auto
+    case codex
+    case claude
 
-    func applicationDidFinishLaunching(_ notification: Notification) {
-        let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 760, height: 560),
-            styleMask: [.titled, .closable, .miniaturizable, .resizable],
-            backing: .buffered,
-            defer: false
-        )
-        window.title = "Open OS-1 Codex"
-        window.center()
-
-        let root = NSStackView()
-        root.orientation = .vertical
-        root.spacing = 12
-        root.edgeInsets = NSEdgeInsets(top: 20, left: 20, bottom: 20, right: 20)
-        root.translatesAutoresizingMaskIntoConstraints = false
-
-        let title = NSTextField(labelWithString: "Open OS-1 Codex")
-        title.font = .systemFont(ofSize: 24, weight: .semibold)
-        root.addArrangedSubview(title)
-        root.addArrangedSubview(NSTextField(labelWithString: "Workspace"))
-        root.addArrangedSubview(workspace)
-        root.addArrangedSubview(NSTextField(labelWithString: "Task"))
-        let promptScroll = NSScrollView()
-        promptScroll.hasVerticalScroller = true
-        promptScroll.documentView = prompt
-        promptScroll.heightAnchor.constraint(equalToConstant: 150).isActive = true
-        root.addArrangedSubview(promptScroll)
-        runButton.target = self
-        runButton.action = #selector(runTask)
-        runButton.bezelStyle = .rounded
-        root.addArrangedSubview(runButton)
-        root.addArrangedSubview(NSTextField(labelWithString: "Output"))
-        output.isEditable = false
-        let outputScroll = NSScrollView()
-        outputScroll.hasVerticalScroller = true
-        outputScroll.documentView = output
-        root.addArrangedSubview(outputScroll)
-
-        window.contentView = NSView()
-        window.contentView?.addSubview(root)
-        NSLayoutConstraint.activate([
-            root.leadingAnchor.constraint(equalTo: window.contentView!.leadingAnchor),
-            root.trailingAnchor.constraint(equalTo: window.contentView!.trailingAnchor),
-            root.topAnchor.constraint(equalTo: window.contentView!.topAnchor),
-            root.bottomAnchor.constraint(equalTo: window.contentView!.bottomAnchor),
-        ])
-        window.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .auto: return "Auto"
+        case .codex: return "Codex"
+        case .claude: return "Claude"
+        }
     }
-
-    @objc private func runTask() {
-        let task = prompt.string.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !task.isEmpty else { output.string = "Enter a task first."; return }
-        runButton.isEnabled = false
-        output.string = "OS-1 is running…"
-        let selectedWorkspace = workspace.stringValue
-        Task { @MainActor [weak self] in
-            let text = await Task.detached(priority: .userInitiated) {
-                let process = Process()
-                process.executableURL = URL(fileURLWithPath: "/usr/local/bin/os1")
-                process.arguments = ["run", "--workspace", selectedWorkspace, "--prompt", task]
-                let pipe = Pipe()
-                process.standardOutput = pipe
-                process.standardError = pipe
-                do {
-                    try process.run()
-                    let data = pipe.fileHandleForReading.readDataToEndOfFile()
-                    process.waitUntilExit()
-                    return String(decoding: data, as: UTF8.self)
-                } catch {
-                    return "OS-1 failed to start: \(error)"
-                }
-            }.value
-            self?.output.string = text
-            self?.runButton.isEnabled = true
+    var subtitle: String {
+        switch self {
+        case .auto: return "RCC chooses"
+        case .codex: return "Build & edit"
+        case .claude: return "Analyze & review"
+        }
+    }
+    var symbol: String {
+        switch self {
+        case .auto: return "sparkles"
+        case .codex: return "chevron.left.forwardslash.chevron.right"
+        case .claude: return "sun.max.fill"
+        }
+    }
+    var tint: Color {
+        switch self {
+        case .auto: return Color(red: 0.38, green: 0.86, blue: 0.58)
+        case .codex: return Color(red: 0.82, green: 0.51, blue: 0.94)
+        case .claude: return Color(red: 0.93, green: 0.49, blue: 0.34)
         }
     }
 }
 
-let application = NSApplication.shared
-let delegate = AppDelegate()
-application.delegate = delegate
-application.setActivationPolicy(.regular)
-application.run()
+private enum MessageRole: String, Codable, Sendable {
+    case user
+    case assistant
+    case receipt
+    case system
+}
+
+private struct ChatMessage: Codable, Identifiable, Sendable {
+    let id: UUID
+    let role: MessageRole
+    let text: String
+    let provider: String?
+    let permissionProfile: String?
+    let timestamp: Date
+
+    init(
+        id: UUID = UUID(),
+        role: MessageRole,
+        text: String,
+        provider: String? = nil,
+        permissionProfile: String? = nil,
+        timestamp: Date = Date()
+    ) {
+        self.id = id
+        self.role = role
+        self.text = text
+        self.provider = provider
+        self.permissionProfile = permissionProfile
+        self.timestamp = timestamp
+    }
+}
+
+private struct ConversationSession: Codable, Identifiable, Sendable {
+    let id: UUID
+    var title: String
+    var workspace: String
+    var provider: ProviderChoice
+    var messages: [ChatMessage]
+    var updatedAt: Date
+
+    init(
+        id: UUID = UUID(),
+        title: String = "New governed task",
+        workspace: String,
+        provider: ProviderChoice = .auto,
+        messages: [ChatMessage] = [],
+        updatedAt: Date = Date()
+    ) {
+        self.id = id
+        self.title = title
+        self.workspace = workspace
+        self.provider = provider
+        self.messages = messages
+        self.updatedAt = updatedAt
+    }
+}
+
+private struct SessionEnvelope: Codable {
+    let schema: Int
+    let sessions: [ConversationSession]
+}
+
+private struct AppRunStep: Decodable, Sendable {
+    let sequence: Int
+    let provider: String
+    let permissionProfile: String
+    let exitCode: Int32
+    let output: String
+    let stderr: String
+    let durationMS: Int64
+
+    enum CodingKeys: String, CodingKey {
+        case sequence, provider, output, stderr
+        case permissionProfile = "permission_profile"
+        case exitCode = "exit_code"
+        case durationMS = "duration_ms"
+    }
+}
+
+private struct AppRunSummary: Decodable, Sendable {
+    let status: String
+    let steps: [AppRunStep]
+}
+
+private enum RunnerError: LocalizedError {
+    case message(String)
+
+    var errorDescription: String? {
+        switch self { case .message(let value): return value }
+    }
+}
+
+private enum OS1Runner {
+    static func run(
+        workspace: String,
+        prompt: String,
+        provider: ProviderChoice,
+        context: String
+    ) async throws -> AppRunSummary {
+        try await Task.detached(priority: .userInitiated) {
+            try runBlocking(
+                workspace: workspace,
+                prompt: prompt,
+                provider: provider,
+                context: context
+            )
+        }.value
+    }
+
+    private static func executable() throws -> String {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        let candidates = [
+            "/usr/local/bin/os1",
+            "/opt/homebrew/bin/os1",
+            "\(home)/.local/bin/os1",
+        ]
+        guard let path = candidates.first(where: FileManager.default.isExecutableFile) else {
+            throw RunnerError.message("OS-1 runtime is missing. Reinstall OS-1, then try again.")
+        }
+        return path
+    }
+
+    private static func runBlocking(
+        workspace: String,
+        prompt: String,
+        provider: ProviderChoice,
+        context: String
+    ) throws -> AppRunSummary {
+        let fileManager = FileManager.default
+        let temporary = fileManager.temporaryDirectory
+            .appendingPathComponent("os1-app-\(UUID().uuidString)", isDirectory: true)
+        try fileManager.createDirectory(
+            at: temporary,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        defer { try? fileManager.removeItem(at: temporary) }
+
+        let stdoutURL = temporary.appendingPathComponent("stdout.json")
+        let stderrURL = temporary.appendingPathComponent("stderr.txt")
+        fileManager.createFile(atPath: stdoutURL.path, contents: nil)
+        fileManager.createFile(atPath: stderrURL.path, contents: nil)
+        let stdout = try FileHandle(forWritingTo: stdoutURL)
+        let stderr = try FileHandle(forWritingTo: stderrURL)
+
+        var arguments = [
+            "run",
+            "--workspace", workspace,
+            "--prompt", prompt,
+            "--provider", provider.rawValue,
+            "--output-format", "json",
+        ]
+        if !context.isEmpty {
+            let contextURL = temporary.appendingPathComponent("session-context.txt")
+            try Data(context.utf8).write(
+                to: contextURL,
+                options: [.atomic, .completeFileProtectionUnlessOpen]
+            )
+            try fileManager.setAttributes(
+                [.posixPermissions: 0o600],
+                ofItemAtPath: contextURL.path
+            )
+            arguments += ["--context-file", contextURL.path]
+        }
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: try executable())
+        process.arguments = arguments
+        process.standardOutput = stdout
+        process.standardError = stderr
+        var environment = ProcessInfo.processInfo.environment
+        let home = fileManager.homeDirectoryForCurrentUser.path
+        let preferredPath = [
+            "\(home)/.local/bin",
+            "/opt/homebrew/bin",
+            "/usr/local/bin",
+            "/usr/bin",
+            "/bin",
+            "/usr/sbin",
+            "/sbin",
+            environment["PATH"] ?? "",
+        ].joined(separator: ":")
+        environment["PATH"] = preferredPath
+        process.environment = environment
+
+        do {
+            try process.run()
+            process.waitUntilExit()
+            try stdout.close()
+            try stderr.close()
+        } catch {
+            try? stdout.close()
+            try? stderr.close()
+            throw RunnerError.message("OS-1 could not start: \(error.localizedDescription)")
+        }
+
+        let outputData = try Data(contentsOf: stdoutURL)
+        let errorText = String(decoding: try Data(contentsOf: stderrURL), as: UTF8.self)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard process.terminationStatus == 0 else {
+            let fallback = String(decoding: outputData, as: UTF8.self)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            throw RunnerError.message(errorText.isEmpty ? fallback : errorText)
+        }
+        do {
+            return try JSONDecoder().decode(AppRunSummary.self, from: outputData)
+        } catch {
+            throw RunnerError.message("OS-1 returned an unreadable result.")
+        }
+    }
+}
+
+@MainActor
+private final class SessionStore: ObservableObject {
+    @Published var sessions: [ConversationSession] = []
+    @Published var selectedSessionID: UUID?
+    @Published var composer = ""
+    @Published var search = ""
+    @Published var isRunning = false
+    @Published var statusText = "Ready"
+    @Published var alertMessage: String?
+
+    private let fileManager = FileManager.default
+
+    init() {
+        load()
+        if sessions.isEmpty {
+            createSession(provider: .auto)
+        } else {
+            selectedSessionID = sessions.first?.id
+        }
+    }
+
+    var selectedIndex: Int? {
+        sessions.firstIndex(where: { $0.id == selectedSessionID })
+    }
+
+    var selectedSession: ConversationSession? {
+        guard let index = selectedIndex else { return nil }
+        return sessions[index]
+    }
+
+    var filteredSessions: [ConversationSession] {
+        let query = search.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return sessions }
+        return sessions.filter {
+            $0.title.localizedCaseInsensitiveContains(query) ||
+            $0.workspace.localizedCaseInsensitiveContains(query)
+        }
+    }
+
+    func createSession(provider: ProviderChoice? = nil) {
+        let inherited = provider ?? selectedSession?.provider ?? .auto
+        let session = ConversationSession(
+            workspace: fileManager.homeDirectoryForCurrentUser.path,
+            provider: inherited
+        )
+        sessions.insert(session, at: 0)
+        selectedSessionID = session.id
+        composer = ""
+        statusText = "Choose a workspace, then describe the task"
+        save()
+    }
+
+    func select(_ id: UUID) {
+        selectedSessionID = id
+        composer = ""
+        statusText = "Ready"
+    }
+
+    func chooseProvider(_ provider: ProviderChoice) {
+        guard let index = selectedIndex else { return }
+        let previous = sessions[index].provider
+        guard previous != provider else { return }
+        sessions[index].provider = provider
+        sessions[index].updatedAt = Date()
+        if !sessions[index].messages.isEmpty {
+            sessions[index].messages.append(ChatMessage(
+                role: .system,
+                text: "Next turn will run with \(provider.title). The same workspace and conversation context stay attached.",
+                provider: provider.rawValue
+            ))
+        }
+        statusText = provider == .auto
+            ? "RCC will choose the next engine"
+            : "Next turn: \(provider.title)"
+        save()
+    }
+
+    func chooseWorkspace() {
+        guard !isRunning, let index = selectedIndex else { return }
+        let panel = NSOpenPanel()
+        panel.title = "Choose the project folder OS-1 may work in"
+        panel.prompt = "Use this folder"
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.canCreateDirectories = true
+        panel.directoryURL = URL(fileURLWithPath: sessions[index].workspace, isDirectory: true)
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        sessions[index].workspace = url.standardizedFileURL.path
+        sessions[index].updatedAt = Date()
+        statusText = "Workspace connected"
+        save()
+    }
+
+    func useSuggestion(_ value: String) {
+        composer = value
+    }
+
+    func send() {
+        let request = composer.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !request.isEmpty, !isRunning, let index = selectedIndex else { return }
+        var isDirectory: ObjCBool = false
+        let workspace = sessions[index].workspace
+        guard fileManager.fileExists(atPath: workspace, isDirectory: &isDirectory), isDirectory.boolValue else {
+            alertMessage = "Choose an existing project folder before sending the task."
+            return
+        }
+
+        let sessionID = sessions[index].id
+        let provider = sessions[index].provider
+        let context = transcript(for: sessions[index])
+        if sessions[index].messages.isEmpty {
+            sessions[index].title = title(for: request)
+        }
+        sessions[index].messages.append(ChatMessage(role: .user, text: request))
+        sessions[index].updatedAt = Date()
+        composer = ""
+        isRunning = true
+        statusText = provider == .auto
+            ? "RCC is choosing the best engine…"
+            : "\(provider.title) is working…"
+        save()
+
+        Task {
+            do {
+                let summary = try await OS1Runner.run(
+                    workspace: workspace,
+                    prompt: request,
+                    provider: provider,
+                    context: context
+                )
+                guard let target = sessions.firstIndex(where: { $0.id == sessionID }) else { return }
+                if summary.steps.isEmpty {
+                    sessions[target].messages.append(ChatMessage(
+                        role: .assistant,
+                        text: "The governed route completed without an additional model step.",
+                        provider: provider.rawValue
+                    ))
+                }
+                for step in summary.steps {
+                    let visibleOutput = step.output.trimmingCharacters(in: .whitespacesAndNewlines)
+                    let visibleError = step.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+                    sessions[target].messages.append(ChatMessage(
+                        role: .assistant,
+                        text: visibleOutput.isEmpty
+                            ? (visibleError.isEmpty ? "The engine finished without text output." : visibleError)
+                            : visibleOutput,
+                        provider: step.provider,
+                        permissionProfile: step.permissionProfile
+                    ))
+                    sessions[target].messages.append(ChatMessage(
+                        role: .receipt,
+                        text: "Verified step \(step.sequence) · \(step.durationMS / 1_000)s · exit \(step.exitCode)",
+                        provider: step.provider,
+                        permissionProfile: step.permissionProfile
+                    ))
+                }
+                sessions[target].updatedAt = Date()
+                statusText = "Complete · evidence recorded"
+            } catch {
+                guard let target = sessions.firstIndex(where: { $0.id == sessionID }) else { return }
+                sessions[target].messages.append(ChatMessage(
+                    role: .system,
+                    text: error.localizedDescription
+                ))
+                sessions[target].updatedAt = Date()
+                statusText = "Needs attention"
+            }
+            isRunning = false
+            save()
+        }
+    }
+
+    private func title(for request: String) -> String {
+        let firstLine = request.split(separator: "\n", maxSplits: 1).first.map(String.init) ?? request
+        return String(firstLine.prefix(48))
+    }
+
+    private func transcript(for session: ConversationSession) -> String {
+        let relevant = session.messages.filter { $0.role == .user || $0.role == .assistant }.suffix(16)
+        let text = relevant.map { message in
+            let speaker = message.role == .user
+                ? "USER"
+                : (message.provider?.uppercased() ?? "ASSISTANT")
+            return "\(speaker):\n\(String(message.text.prefix(12_000)))"
+        }.joined(separator: "\n\n")
+        return String(text.suffix(180_000))
+    }
+
+    private var storageURL: URL {
+        fileManager.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/OS-1", isDirectory: true)
+            .appendingPathComponent("sessions.json", isDirectory: false)
+    }
+
+    private func load() {
+        guard let data = try? Data(contentsOf: storageURL),
+              let envelope = try? JSONDecoder().decode(SessionEnvelope.self, from: data),
+              envelope.schema == 1 else { return }
+        let cutoff = Date().addingTimeInterval(-30 * 24 * 60 * 60)
+        sessions = envelope.sessions
+            .filter { $0.updatedAt >= cutoff }
+            .sorted { $0.updatedAt > $1.updatedAt }
+            .prefix(30)
+            .map { session in
+                var bounded = session
+                bounded.messages = Array(session.messages.suffix(40))
+                return bounded
+            }
+    }
+
+    private func save() {
+        let directory = storageURL.deletingLastPathComponent()
+        do {
+            try fileManager.createDirectory(
+                at: directory,
+                withIntermediateDirectories: true,
+                attributes: [.posixPermissions: 0o700]
+            )
+            let bounded = sessions.sorted { $0.updatedAt > $1.updatedAt }.prefix(30).map { session in
+                var copy = session
+                copy.messages = Array(session.messages.suffix(40)).map { message in
+                    ChatMessage(
+                        id: message.id,
+                        role: message.role,
+                        text: String(message.text.prefix(120_000)),
+                        provider: message.provider,
+                        permissionProfile: message.permissionProfile,
+                        timestamp: message.timestamp
+                    )
+                }
+                return copy
+            }
+            let data = try JSONEncoder().encode(SessionEnvelope(schema: 1, sessions: bounded))
+            try data.write(to: storageURL, options: [.atomic, .completeFileProtectionUnlessOpen])
+            try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: storageURL.path)
+        } catch {
+            alertMessage = "Session history could not be saved: \(error.localizedDescription)"
+        }
+    }
+}
+
+private enum Theme {
+    static let background = Color(red: 0.035, green: 0.035, blue: 0.045)
+    static let panel = Color(red: 0.055, green: 0.055, blue: 0.068)
+    static let panelRaised = Color(red: 0.075, green: 0.075, blue: 0.092)
+    static let border = Color.white.opacity(0.09)
+    static let muted = Color.white.opacity(0.48)
+    static let text = Color.white.opacity(0.93)
+    static let green = Color(red: 0.35, green: 0.92, blue: 0.55)
+}
+
+@main
+private struct OS1DesktopApp: App {
+    @StateObject private var store = SessionStore()
+
+    var body: some Scene {
+        WindowGroup("OS-1 Claudex") {
+            RootView(store: store)
+                .preferredColorScheme(.dark)
+        }
+        .windowStyle(.hiddenTitleBar)
+        .defaultSize(width: 1240, height: 780)
+        .commands {
+            CommandGroup(replacing: .newItem) {
+                Button("New governed task") { store.createSession() }
+                    .keyboardShortcut("n", modifiers: [.command])
+            }
+        }
+    }
+}
+
+private struct RootView: View {
+    @ObservedObject var store: SessionStore
+
+    var body: some View {
+        HStack(spacing: 0) {
+            ProviderRail(store: store)
+            Divider().overlay(Theme.border)
+            SessionSidebar(store: store)
+            Divider().overlay(Theme.border)
+            ConversationView(store: store)
+        }
+        .frame(minWidth: 1_040, minHeight: 680)
+        .background(Theme.background)
+        .alert("OS-1 Claudex", isPresented: Binding(
+            get: { store.alertMessage != nil },
+            set: { if !$0 { store.alertMessage = nil } }
+        )) {
+            Button("OK", role: .cancel) { store.alertMessage = nil }
+        } message: {
+            Text(store.alertMessage ?? "")
+        }
+    }
+}
+
+private struct ProviderRail: View {
+    @ObservedObject var store: SessionStore
+
+    var body: some View {
+        VStack(spacing: 18) {
+            ZStack {
+                Circle()
+                    .fill(AngularGradient(
+                        colors: [.pink, .purple, .orange, .pink],
+                        center: .center
+                    ))
+                Circle().fill(Theme.background).padding(7)
+                Circle().fill(Color.white.opacity(0.9)).frame(width: 7, height: 7)
+            }
+            .frame(width: 38, height: 38)
+            .padding(.bottom, 5)
+
+            ForEach([ProviderChoice.codex, ProviderChoice.claude]) { provider in
+                RailButton(
+                    provider: provider,
+                    selected: store.selectedSession?.provider == provider,
+                    disabled: store.isRunning
+                ) { store.chooseProvider(provider) }
+            }
+
+            Spacer()
+
+            RailButton(
+                provider: .auto,
+                selected: store.selectedSession?.provider == .auto,
+                disabled: store.isRunning
+            ) { store.chooseProvider(.auto) }
+
+            VStack(spacing: 5) {
+                Circle().fill(Theme.green).frame(width: 7, height: 7)
+                    .shadow(color: Theme.green.opacity(0.7), radius: 5)
+                Text("RCC")
+                    .font(.system(size: 9, weight: .bold, design: .rounded))
+                    .foregroundStyle(Theme.muted)
+            }
+        }
+        .padding(.vertical, 18)
+        .frame(width: 82)
+        .background(Color.black.opacity(0.2))
+    }
+}
+
+private struct RailButton: View {
+    let provider: ProviderChoice
+    let selected: Bool
+    let disabled: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            VStack(spacing: 7) {
+                Image(systemName: provider.symbol)
+                    .font(.system(size: 17, weight: .semibold))
+                Text(provider.title.uppercased())
+                    .font(.system(size: 8, weight: .bold, design: .rounded))
+            }
+            .foregroundStyle(selected ? provider.tint : Theme.muted)
+            .frame(width: 58, height: 58)
+            .background(selected ? provider.tint.opacity(0.12) : Color.clear)
+            .overlay(
+                RoundedRectangle(cornerRadius: 10)
+                    .stroke(selected ? provider.tint : Theme.border, lineWidth: selected ? 1.5 : 1)
+            )
+            .clipShape(RoundedRectangle(cornerRadius: 10))
+        }
+        .buttonStyle(.plain)
+        .disabled(disabled)
+        .help("Use \(provider.title) for the next turn")
+    }
+}
+
+private struct SessionSidebar: View {
+    @ObservedObject var store: SessionStore
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("OS-1")
+                    .font(.system(size: 11, weight: .bold, design: .rounded))
+                    .tracking(2.4)
+                    .foregroundStyle(Theme.muted)
+                Text("CLAUDEX")
+                    .font(.system(size: 19, weight: .bold, design: .rounded))
+                    .tracking(1.6)
+                    .foregroundStyle(Theme.text)
+            }
+            .padding(.horizontal, 18)
+            .padding(.top, 23)
+            .padding(.bottom, 18)
+
+            Button { store.createSession() } label: {
+                Label("New governed task", systemImage: "square.and.pencil")
+                    .font(.system(size: 13, weight: .semibold))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 14)
+                    .frame(height: 44)
+                    .background(Theme.panelRaised)
+                    .overlay(RoundedRectangle(cornerRadius: 9).stroke(Theme.border))
+                    .clipShape(RoundedRectangle(cornerRadius: 9))
+            }
+            .buttonStyle(.plain)
+            .padding(.horizontal, 14)
+
+            HStack(spacing: 8) {
+                Image(systemName: "magnifyingglass").foregroundStyle(Theme.muted)
+                TextField("Search sessions", text: $store.search)
+                    .textFieldStyle(.plain)
+            }
+            .padding(.horizontal, 12)
+            .frame(height: 38)
+            .background(Color.black.opacity(0.16))
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Theme.border))
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .padding(.horizontal, 14)
+            .padding(.top, 10)
+
+            HStack {
+                Text("SYNCED SESSIONS")
+                    .font(.system(size: 10, weight: .bold, design: .rounded))
+                    .tracking(1.2)
+                    .foregroundStyle(Theme.muted)
+                Spacer()
+                Text("\(store.filteredSessions.count)")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(Theme.muted)
+            }
+            .padding(.horizontal, 18)
+            .padding(.top, 20)
+            .padding(.bottom, 8)
+
+            ScrollView {
+                LazyVStack(spacing: 4) {
+                    ForEach(store.filteredSessions) { session in
+                        SessionRow(
+                            session: session,
+                            selected: store.selectedSessionID == session.id
+                        ) { store.select(session.id) }
+                    }
+                }
+                .padding(.horizontal, 8)
+            }
+
+            Spacer(minLength: 0)
+
+            HStack(spacing: 8) {
+                Circle().fill(Theme.green).frame(width: 7, height: 7)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Governance active")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(Theme.text)
+                    Text("Local engines connected")
+                        .font(.system(size: 10))
+                        .foregroundStyle(Theme.muted)
+                }
+            }
+            .padding(16)
+        }
+        .frame(width: 270)
+        .background(Theme.panel)
+    }
+}
+
+private struct SessionRow: View {
+    let session: ConversationSession
+    let selected: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 7) {
+                    Circle().fill(session.provider.tint).frame(width: 6, height: 6)
+                    Text(session.title)
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(Theme.text)
+                        .lineLimit(1)
+                    Spacer(minLength: 0)
+                }
+                Text(URL(fileURLWithPath: session.workspace).lastPathComponent)
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundStyle(Theme.muted)
+                    .lineLimit(1)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 11)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(selected ? Color.white.opacity(0.07) : Color.clear)
+            .overlay(
+                RoundedRectangle(cornerRadius: 8)
+                    .stroke(selected ? Theme.border : Color.clear)
+            )
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+private struct ConversationView: View {
+    @ObservedObject var store: SessionStore
+
+    var body: some View {
+        VStack(spacing: 0) {
+            ConversationHeader(store: store)
+            Divider().overlay(Theme.border)
+            if let session = store.selectedSession {
+                if session.messages.isEmpty {
+                    WelcomeView(store: store, session: session)
+                } else {
+                    MessageTimeline(session: session, isRunning: store.isRunning)
+                }
+                ComposerView(store: store, session: session)
+            }
+        }
+        .background(Theme.background)
+    }
+}
+
+private struct ConversationHeader: View {
+    @ObservedObject var store: SessionStore
+
+    var body: some View {
+        HStack(spacing: 14) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(store.selectedSession?.title ?? "OS-1 Claudex")
+                    .font(.system(size: 14, weight: .bold))
+                    .foregroundStyle(Theme.text)
+                    .lineLimit(1)
+                HStack(spacing: 6) {
+                    Circle().fill(Theme.green).frame(width: 6, height: 6)
+                    Text(store.statusText)
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(Theme.muted)
+                        .lineLimit(1)
+                }
+            }
+            Spacer()
+
+            if let session = store.selectedSession {
+                HStack(spacing: 4) {
+                    ForEach(ProviderChoice.allCases) { provider in
+                        Button { store.chooseProvider(provider) } label: {
+                            HStack(spacing: 5) {
+                                Image(systemName: provider.symbol).font(.system(size: 10))
+                                Text(provider.title).font(.system(size: 10, weight: .semibold))
+                            }
+                            .foregroundStyle(session.provider == provider ? provider.tint : Theme.muted)
+                            .padding(.horizontal, 9)
+                            .frame(height: 29)
+                            .background(session.provider == provider ? provider.tint.opacity(0.12) : Color.clear)
+                            .clipShape(RoundedRectangle(cornerRadius: 7))
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(store.isRunning)
+                    }
+                }
+                .padding(3)
+                .background(Theme.panelRaised)
+                .clipShape(RoundedRectangle(cornerRadius: 9))
+
+                Button { store.chooseWorkspace() } label: {
+                    HStack(spacing: 7) {
+                        Image(systemName: "folder")
+                        Text(URL(fileURLWithPath: session.workspace).lastPathComponent)
+                            .lineLimit(1)
+                    }
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(Theme.text)
+                    .padding(.horizontal, 11)
+                    .frame(height: 35)
+                    .background(Theme.panelRaised)
+                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(Theme.border))
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                }
+                .buttonStyle(.plain)
+                .disabled(store.isRunning)
+                .help(session.workspace)
+            }
+        }
+        .padding(.horizontal, 18)
+        .frame(height: 64)
+        .background(Theme.panel.opacity(0.8))
+    }
+}
+
+private struct WelcomeView: View {
+    @ObservedObject var store: SessionStore
+    let session: ConversationSession
+
+    private let suggestions = [
+        "Inspect this project and explain the safest next step.",
+        "Find the current bug, fix it, and verify the result.",
+        "Review the repository and make the smallest production-ready improvement.",
+    ]
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 24) {
+                Spacer(minLength: 34)
+                Text("What are we building?")
+                    .font(.system(size: 34, weight: .semibold, design: .rounded))
+                    .foregroundStyle(Theme.text)
+                Text("Pick the project folder once. Switch Codex and Claude whenever you want—the workspace and this conversation stay synchronized.")
+                    .font(.system(size: 15))
+                    .foregroundStyle(Color.white.opacity(0.62))
+                    .fixedSize(horizontal: false, vertical: true)
+
+                HStack(spacing: 12) {
+                    WelcomeStep(number: "1", title: "Choose folder", detail: "The project OS-1 may inspect or edit")
+                    WelcomeStep(number: "2", title: "Choose engine", detail: "Codex, Claude, or RCC Auto")
+                    WelcomeStep(number: "3", title: "Send a task", detail: "Results return to this conversation")
+                }
+
+                VStack(alignment: .leading, spacing: 9) {
+                    Text("TRY ONE")
+                        .font(.system(size: 10, weight: .bold, design: .rounded))
+                        .tracking(1.4)
+                        .foregroundStyle(Theme.muted)
+                    ForEach(suggestions, id: \.self) { suggestion in
+                        Button { store.useSuggestion(suggestion) } label: {
+                            HStack {
+                                Text(suggestion)
+                                    .font(.system(size: 12))
+                                    .foregroundStyle(Theme.text)
+                                Spacer()
+                                Image(systemName: "arrow.up.left")
+                                    .font(.system(size: 10))
+                                    .foregroundStyle(Theme.muted)
+                            }
+                            .padding(.horizontal, 14)
+                            .frame(height: 42)
+                            .background(Theme.panelRaised)
+                            .overlay(RoundedRectangle(cornerRadius: 9).stroke(Theme.border))
+                            .clipShape(RoundedRectangle(cornerRadius: 9))
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                Spacer(minLength: 20)
+            }
+            .padding(.horizontal, 52)
+            .frame(maxWidth: 850, alignment: .leading)
+            .frame(maxWidth: .infinity)
+        }
+    }
+}
+
+private struct WelcomeStep: View {
+    let number: String
+    let title: String
+    let detail: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(number)
+                .font(.system(size: 10, weight: .bold, design: .monospaced))
+                .foregroundStyle(Theme.green)
+            Text(title)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(Theme.text)
+            Text(detail)
+                .font(.system(size: 11))
+                .foregroundStyle(Theme.muted)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, minHeight: 108, alignment: .topLeading)
+        .background(Theme.panel)
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Theme.border))
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+    }
+}
+
+private struct MessageTimeline: View {
+    let session: ConversationSession
+    let isRunning: Bool
+
+    var body: some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(spacing: 16) {
+                    ForEach(session.messages) { message in
+                        MessageView(message: message).id(message.id)
+                    }
+                    if isRunning {
+                        HStack(spacing: 10) {
+                            ProgressView().controlSize(.small)
+                            Text("Working in \(session.workspace)…")
+                                .font(.system(size: 12))
+                                .foregroundStyle(Theme.muted)
+                            Spacer()
+                        }
+                        .padding(.vertical, 12)
+                        .id("running")
+                    }
+                }
+                .padding(.horizontal, 34)
+                .padding(.vertical, 28)
+                .frame(maxWidth: 900)
+                .frame(maxWidth: .infinity)
+            }
+            .onAppear {
+                if let last = session.messages.last { proxy.scrollTo(last.id, anchor: .bottom) }
+            }
+            .onChange(of: session.messages.count) { _ in
+                if let last = session.messages.last {
+                    withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo(last.id, anchor: .bottom) }
+                }
+            }
+        }
+    }
+}
+
+private struct MessageView: View {
+    let message: ChatMessage
+
+    var body: some View {
+        switch message.role {
+        case .user:
+            HStack {
+                Spacer(minLength: 100)
+                Text(message.text)
+                    .font(.system(size: 13))
+                    .foregroundStyle(Theme.text)
+                    .textSelection(.enabled)
+                    .padding(.horizontal, 15)
+                    .padding(.vertical, 12)
+                    .background(Color.white.opacity(0.09))
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
+            }
+        case .assistant:
+            VStack(alignment: .leading, spacing: 9) {
+                HStack(spacing: 7) {
+                    Image(systemName: message.provider == "claude"
+                        ? ProviderChoice.claude.symbol
+                        : ProviderChoice.codex.symbol)
+                    Text((message.provider ?? "OS-1").uppercased())
+                    if let permission = message.permissionProfile {
+                        Text("· \(permission.replacingOccurrences(of: "_", with: " "))")
+                            .foregroundStyle(Theme.muted)
+                    }
+                }
+                .font(.system(size: 10, weight: .bold, design: .rounded))
+                .foregroundStyle(message.provider == "claude"
+                    ? ProviderChoice.claude.tint
+                    : ProviderChoice.codex.tint)
+                Text(message.text)
+                    .font(.system(size: 13))
+                    .foregroundStyle(Theme.text)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        case .receipt:
+            HStack(spacing: 9) {
+                Image(systemName: "checkmark.shield.fill").foregroundStyle(Theme.green)
+                Text("RCC GOVERNANCE RECEIPT")
+                    .font(.system(size: 9, weight: .bold, design: .rounded))
+                    .tracking(1.1)
+                Text(message.text)
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundStyle(Theme.muted)
+                Spacer()
+                Text("VERIFIED")
+                    .font(.system(size: 9, weight: .bold, design: .rounded))
+                    .foregroundStyle(Theme.green)
+            }
+            .padding(.horizontal, 12)
+            .frame(height: 39)
+            .background(Theme.panel)
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Theme.border))
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+        case .system:
+            HStack(spacing: 8) {
+                Image(systemName: "info.circle")
+                Text(message.text)
+                    .font(.system(size: 11))
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer()
+            }
+            .foregroundStyle(Theme.muted)
+            .padding(.vertical, 4)
+        }
+    }
+}
+
+private struct ComposerView: View {
+    @ObservedObject var store: SessionStore
+    let session: ConversationSession
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        VStack(spacing: 8) {
+            HStack(alignment: .bottom, spacing: 12) {
+                TextEditor(text: $store.composer)
+                    .font(.system(size: 13))
+                    .foregroundStyle(Theme.text)
+                    .scrollContentBackground(.hidden)
+                    .focused($focused)
+                    .frame(minHeight: 54, maxHeight: 120)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 6)
+                    .disabled(store.isRunning)
+                    .overlay(alignment: .topLeading) {
+                        if store.composer.isEmpty {
+                            Text("Ask \(session.provider.title) to inspect, explain, or change this project…")
+                                .font(.system(size: 13))
+                                .foregroundStyle(Color.white.opacity(0.3))
+                                .padding(.horizontal, 13)
+                                .padding(.vertical, 14)
+                                .allowsHitTesting(false)
+                        }
+                    }
+
+                Button { store.send() } label: {
+                    Image(systemName: store.isRunning ? "hourglass" : "arrow.up")
+                        .font(.system(size: 14, weight: .bold))
+                        .foregroundStyle(Color.black.opacity(0.86))
+                        .frame(width: 38, height: 38)
+                        .background(session.provider.tint)
+                        .clipShape(Circle())
+                }
+                .buttonStyle(.plain)
+                .disabled(store.isRunning || store.composer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .keyboardShortcut(.return, modifiers: [.command])
+            }
+            .padding(10)
+            .background(Theme.panelRaised)
+            .overlay(RoundedRectangle(cornerRadius: 13).stroke(Theme.border))
+            .clipShape(RoundedRectangle(cornerRadius: 13))
+
+            HStack {
+                Label(URL(fileURLWithPath: session.workspace).lastPathComponent, systemImage: "folder")
+                Text("·")
+                Text("\(session.provider.title) · RCC governed")
+                Spacer()
+                Text("⌘↩ send")
+            }
+            .font(.system(size: 10, weight: .medium))
+            .foregroundStyle(Theme.muted)
+        }
+        .padding(.horizontal, 24)
+        .padding(.top, 10)
+        .padding(.bottom, 16)
+        .background(Theme.background)
+    }
+}

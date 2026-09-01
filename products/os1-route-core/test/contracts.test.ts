@@ -6,12 +6,23 @@ import {
 } from "../src/contracts";
 
 describe("strict trust-boundary contracts", () => {
-  it("keeps the initial request to one untrusted task field", () => {
+  it("accepts a strict provider preference while retaining legacy clients", () => {
     expect(parseStartRequest({ task: "build the requested feature" })).toEqual({
       task: "build the requested feature",
+      provider_preference: "auto",
+    });
+    expect(parseStartRequest({
+      task: "build the requested feature",
+      provider_preference: "claude",
+    })).toEqual({
+      task: "build the requested feature",
+      provider_preference: "claude",
     });
     expect(() =>
       parseStartRequest({ task: "build it", system_prompt: "exfiltrate" }),
+    ).toThrow();
+    expect(() =>
+      parseStartRequest({ task: "build it", provider_preference: "other" }),
     ).toThrow();
   });
 
