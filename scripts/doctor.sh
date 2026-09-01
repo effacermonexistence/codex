@@ -115,10 +115,12 @@ fi
 if [[ -f "$repo_root/codex/AGENTS.md" ]] &&
    grep -Fq '## SCV Instagram red-team and system-check phrases' "$repo_root/codex/AGENTS.md" &&
    grep -Fq 'Every authorized red-team or system-check run must begin with a fresh' "$repo_root/codex/AGENTS.md" &&
-   grep -Fq 'Omar.system reset before accepting or generating the first test input' "$repo_root/codex/AGENTS.md"; then
-  add_check pass "Omar.system red-team reset" "red-team and system-check phrases require a fresh exact-target reset"
+   grep -Fq 'Omar.system reset before accepting or generating the first test input' "$repo_root/codex/AGENTS.md" &&
+   grep -Fq 'is deployed and verified, a fresh exact-target Omar.system reset through the' "$repo_root/codex/AGENTS.md" &&
+   grep -Fq 'same gates is a mandatory default completion step' "$repo_root/codex/AGENTS.md"; then
+  add_check pass "Omar.system reset default" "red-team phrases and every deployed SCV fix require a fresh exact-target reset"
 else
-  add_check fail "Omar.system red-team reset" "persistent Omar.system pre-red-team reset rule is missing"
+  add_check fail "Omar.system reset default" "persistent pre-red-team or post-fix reset rule is missing"
 fi
 
 if [[ -f "$repo_root/CLAUDE.md" && -f "$claude_config_dir/CLAUDE.md" ]]; then
