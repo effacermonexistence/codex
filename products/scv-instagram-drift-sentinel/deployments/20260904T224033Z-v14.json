@@ -1,0 +1,25 @@
+{
+  "schema": "scv-instagram-drift-sentinel-deployment-2026-09-04-v1",
+  "worker": "scv-instagram-drift-sentinel",
+  "sentinel_schema": "scv-instagram-drift-sentinel-2026-09-04-v14-v151-current-recovery-point",
+  "deployed_version_id": "baef157e-4d83-4150-9107-9d8ff4e95534",
+  "schedule": "*/5 * * * *",
+  "first_passing_scheduled_run_utc": "2026-09-04T22:40:33.000Z",
+  "health_http_status": 200,
+  "attestation": {
+    "key": "scv-instagram-automation/drift-attestations/2026-09-04/20260904T224033000Z.json",
+    "sha256": "bda874db69c4bb9ffffc4015ea82871b3ebc539c8738531e43e71cc7783cd4af",
+    "r2_readback_hash_matched": true
+  },
+  "result": {
+    "ok": true,
+    "consecutive_failures": 0,
+    "production_ready": true,
+    "staging_ready": true,
+    "pinned_object_count": 11,
+    "pinned_objects_verified": 11,
+    "frozen_gold_verified": true
+  },
+  "contains_credentials": false,
+  "contains_customer_data": false
+}
