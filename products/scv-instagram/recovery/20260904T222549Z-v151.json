@@ -1,0 +1,53 @@
+{
+  "schema": "scv-instagram-public-recovery-record-2026-09-04-v1",
+  "recovery_point_id": "scv-instagram-20260904T222549Z-v151-clean-current",
+  "captured_at_utc": "2026-09-04T22:25:49Z",
+  "release": {
+    "release_id": "scv-instagram-single-20260904-v151",
+    "content_fingerprint_sha256": "d60dfc9f1f082f9d5e268556c0eb43364b5f1d9b1217f6a1f95d04546043c151",
+    "release_manifest_sha256": "b307c86bb59e1287afe746f50d8ccd036d7b1bea70820ef3f1facce6baef7d6c",
+    "runtime_key": "scv-instagram-automation/release-ready/20260904T221512Z/v151/scv-instagram-single-20260904T221512Z-v151-liveness-and-recoverability.tar.gz",
+    "runtime_sha256": "5b70ce46742e342a855152734be267ad5b98807918c68c174eddf024ee467fdd",
+    "runtime_bytes": 1409301
+  },
+  "production_state": {
+    "key": "scv-instagram-automation/timestamped-snapshots/omar-system-reset/20260904T222549Z/post-reset/prod-v151.tar.gz",
+    "sha256": "493382b7c383ffe0c7ad17a7d09a17b4b9095f1baca0eeeebd83e1949da322bb",
+    "bytes": 4044415,
+    "namespace_tree_sha256": "336e513903a4b12022885e798d415250b8dd9da91cad7b0296ab6f59a9351e62",
+    "namespace_entry_count": 2128,
+    "omar_system_residual_count": 0
+  },
+  "pre_reset_production_state": {
+    "key": "scv-instagram-automation/timestamped-snapshots/omar-system-reset/20260904T222549Z/pre-reset/prod-v151.tar.gz",
+    "sha256": "a6f6c51ea077b5117d06aeb75ec67814fb910c728b8b9d5cf03efd7ac04efb2a",
+    "bytes": 4231470,
+    "namespace_tree_sha256": "2d720d7f58bc49e117ec98dc83afd4da0ba62f134c42d169c528c2c24027bca3",
+    "namespace_entry_count": 2161
+  },
+  "reset_receipt": {
+    "key": "scv-instagram-automation/timestamped-snapshots/omar-system-reset/20260904T222549Z/execution.omar-system-purge.json",
+    "sha256": "1d812f0a4e052a4edb9661a78b87e9ceb2e4dad5e1d7bd54af7f128454f1567f"
+  },
+  "verification": {
+    "full_local_suite_exit_zero": true,
+    "sealed_release_suite_exit_zero": true,
+    "isolated_staging_suite_exit_zero": true,
+    "live_redteam_cases": 18,
+    "live_redteam_provider_accepted": 18,
+    "live_redteam_semantic_passed": 18,
+    "expected_workers_paused_and_resumed": 10,
+    "pre_and_post_restore_drills_passed": true,
+    "r2_downloaded_staged_restore_passed": true,
+    "r2_staged_restore_receipt_sha256": "52339abf167ecd6dbed4e476fa68cdbdd60862d036dc5223042a051dd67b3615",
+    "r2_objects_read_back_byte_identical": true,
+    "instagram_visibility_claimed": false
+  },
+  "restore_boundary": {
+    "r2_only_self_contained": false,
+    "reason": "The hash-bound source and state are complete; rebuilding still depends on the container base image, package registries and external production services.",
+    "production_cutover_automatic": false
+  },
+  "contains_credentials": false,
+  "contains_customer_data": false
+}

@@ -1,31 +1,34 @@
-const SENTINEL_SCHEMA = 'scv-instagram-drift-sentinel-2026-09-04-v13-v150-name-authority-pointer'
+const SENTINEL_SCHEMA = 'scv-instagram-drift-sentinel-2026-09-04-v14-v151-current-recovery-point'
 // GOLD-3 (2026-09-03): v148 (owner-verified v145 plus the owner-ordered polish, live red-team verified) frozen as the reference; the pointer and manifest below are pinned by hash.
 const GOLD_LATEST_KEY = 'scv-instagram-automation/gold/LATEST.json'
 const GOLD_MANIFEST_KEY = 'scv-instagram-automation/gold/SCV_GOLD_MANIFEST_v148.json'
 const GOLD_MANIFEST_SHA256 = '31ea4507381e6ec2c3ce4458d70af4a311f331a4a26651f5d9234a01312766cc'
-// The frozen gold is a REFERENCE, not necessarily the running release: v149 and v150 shipped fixes
-// whose live red-team was not fully clean, so the gold pointer deliberately still describes v148.
+// The frozen gold is a REFERENCE, not necessarily the running release: later releases shipped fixes,
+// so the gold pointer deliberately still describes v148.
 // Comparing the gold manifest against the running release id made the check fail by construction.
 const GOLD_RELEASE_ID = 'scv-instagram-single-20260902-v148'
 const GOLD_CONTENT_FINGERPRINT = '3a9a18631443f4738d13dd803f080979ff4d21ab0d9de1f5054b2f26e2ea3609'
-const RELEASE_ID = 'scv-instagram-single-20260902-v150'
-const CONTENT_FINGERPRINT = 'ea240f8a53946778211cc98bcf2eadbe819bbde876251e5b865e1a736e689e42'
-const RELEASE_MANIFEST = 'b92b028ed6ba88455325433cdc6038a21b9cddc1653fdc19db036976259befc1'
+const RELEASE_ID = 'scv-instagram-single-20260904-v151'
+const CONTENT_FINGERPRINT = 'd60dfc9f1f082f9d5e268556c0eb43364b5f1d9b1217f6a1f95d04546043c151'
+const RELEASE_MANIFEST = 'b307c86bb59e1287afe746f50d8ccd036d7b1bea70820ef3f1facce6baef7d6c'
 const VISIBLE_MODEL = 'gpt-5.4-mini-2026-03-17'
-const SNAPSHOT_CONTROL_VERSION = '20260904T054643Z'
-const SNAPSHOT_COUNT = 71
+const RECOVERY_LATEST_KEY = 'scv-instagram-automation/recovery-points/LATEST.json'
+const RECOVERY_CATALOG_KEY = 'scv-instagram-automation/recovery-points/catalogs/20260904T223113Z/RECOVERY_POINT_CATALOG.json'
+const RECOVERY_CATALOG_SHA256 = '97129fd50a26fc87d9f47d203a1c37f195417174e9cafa10c6147052637395b8'
+const CURRENT_RECOVERY_POINT_ID = 'scv-instagram-20260904T222549Z-v151-clean-current'
+const CURRENT_RECOVERY_POINT_KEY = 'scv-instagram-automation/recovery-points/20260904T222549Z/SCV_RECOVERY_POINT.json'
+const CURRENT_RECOVERY_POINT_SHA256 = '75440f5063fb7deab879df404ea8fa7011fece7c3da1f7af93c042ee9a337a5a'
+const PREVIOUS_RECOVERY_POINT_ID = 'scv-instagram-20260904T210539Z-v150-clean-current-before-v151'
+const PREVIOUS_RECOVERY_POINT_KEY = 'scv-instagram-automation/recovery-points/20260904T210539Z/SCV_RECOVERY_POINT.json'
+const PREVIOUS_RECOVERY_POINT_SHA256 = '4d4274e7ac9393313ef77662116e076d85bbe0b98e70ab26bb97df7dba9b23da'
+const RESTORE_TOOL_KEY = 'scv-instagram-automation/recovery-points/20260904T222549Z/restore-recovery-point.js'
+const RESTORE_TOOL_SHA256 = 'b03571cee66bbb7bf08bcecda38a6ba7657a0426e51b0f6c61337171f39883a3'
 const GOLDEN_SNAPSHOT_ID = 'scv-instagram-20260420T152810-local-origin'
-const PRE_RESET_SNAPSHOT_ID = 'scv-instagram-20260904T054557Z-v150-pre-omar-reset'
-const CURRENT_SNAPSHOT_ID = 'scv-instagram-20260904T054601Z-v150-post-omar-reset-current'
-const SNAPSHOT_CATALOG_SHA256 = '3c682c94e317934e5d2b5d4a8b8bbd795140fa16e2eecc5c8048aa07698444c3'
-const SNAPSHOT_SEAL_SHA256 = 'c04c45fcb0b54e3fda550f1e7f5196713e0a1a5c4fca6aaf019a602e4cce36e8'
-const SNAPSHOT_RESTORE_TOOL_SHA256 = '4044f96616a504c9049657fbe628b63246b56a626fa57cdb5f67dc1307d3f206'
-const RESET_RECEIPT_SHA256 = '178f127f08e75f3d30814ce2377e7a9f4283e2f22fd335895e4dcbcd0fe63595'
-// v150 hand-over reset after the stored-name and single-pass design-turn fixes: the pre-reset
-// audit count is pinned per release from the receipt; the post-reset point must be zero.
+const APRIL_GOLDEN_KEY = 'scv-instagram-automation/timestamped-snapshots/2026-04-20/20260420T152810-local/origin-snapshot.tar.gz'
+const APRIL_GOLDEN_SHA256 = '1e5225d4d494e55cefec5ee0a58be61e92eeccab6e2d3ea9d1d0f02ccdceba98'
+const APRIL_GOLDEN_BYTES = 40715
+const RESET_RECEIPT_SHA256 = '1d812f0a4e052a4edb9661a78b87e9ceb2e4dad5e1d7bd54af7f128454f1567f'
 const PRE_RESET_AUDIT_REMAINING_COUNT = 33
-const PRE_RESTORE_RECEIPT_SHA256 = 'd1ddd53f397acba2481a877581d1347f6770c4251fc8574b3b1aee6e69b85624'
-const POST_RESTORE_RECEIPT_SHA256 = 'b65e7fa665f4c0da35c0c068be472fef192cba8880ca96c9ec6e73567343b965'
 const MAX_CANARY_AGE_MS = 90 * 60 * 1000
 const MAX_DRIFT_AGE_MS = 3 * 60 * 1000
 const FETCH_TIMEOUT_MS = 20_000
@@ -33,8 +36,39 @@ const FETCH_TIMEOUT_MS = 20_000
 // v5 sentinel reported snapshot_catalog_object_too_large; the bound is a guard
 // against runaway bodies, not a size budget for the catalog.
 const MAX_BODY_BYTES = 1024 * 1024
+const MAX_RECOVERY_COMPONENT_BYTES = 8 * 1024 * 1024
 const PREFIX = 'scv-instagram-automation/drift-attestations'
-const SNAPSHOT_LATEST_KEY = 'scv-instagram-automation/timestamped-snapshots/LATEST.json'
+
+const EXPECTED_RECOVERY_COMPONENTS = Object.freeze([
+  Object.freeze({ name: 'runtime', required: true,
+    key: 'scv-instagram-automation/release-ready/20260904T221512Z/v151/scv-instagram-single-20260904T221512Z-v151-liveness-and-recoverability.tar.gz',
+    sha256: '5b70ce46742e342a855152734be267ad5b98807918c68c174eddf024ee467fdd', bytes: 1409301 }),
+  Object.freeze({ name: 'release_manifest', required: true,
+    key: 'scv-instagram-automation/recovery-points/20260904T222549Z/SCV_SINGLE_RELEASE.json',
+    sha256: RELEASE_MANIFEST, bytes: 44201 }),
+  Object.freeze({ name: 'production_state', required: true,
+    key: 'scv-instagram-automation/timestamped-snapshots/omar-system-reset/20260904T222549Z/post-reset/prod-v151.tar.gz',
+    sha256: '493382b7c383ffe0c7ad17a7d09a17b4b9095f1baca0eeeebd83e1949da322bb', bytes: 4044415,
+    namespace_tree_sha256: '336e513903a4b12022885e798d415250b8dd9da91cad7b0296ab6f59a9351e62', namespace_entry_count: 2128 }),
+  Object.freeze({ name: 'pre_reset_production_state', required: false,
+    key: 'scv-instagram-automation/timestamped-snapshots/omar-system-reset/20260904T222549Z/pre-reset/prod-v151.tar.gz',
+    sha256: 'a6f6c51ea077b5117d06aeb75ec67814fb910c728b8b9d5cf03efd7ac04efb2a', bytes: 4231470,
+    namespace_tree_sha256: '2d720d7f58bc49e117ec98dc83afd4da0ba62f134c42d169c528c2c24027bca3', namespace_entry_count: 2161 }),
+  Object.freeze({ name: 'reset_receipt', required: true,
+    key: 'scv-instagram-automation/timestamped-snapshots/omar-system-reset/20260904T222549Z/execution.omar-system-purge.json',
+    sha256: RESET_RECEIPT_SHA256, bytes: 6552 }),
+  Object.freeze({ name: 'production_environment_manifest', required: true,
+    key: 'scv-instagram-automation/recovery-points/20260904T222549Z/SCV_PRODUCTION_ENV_MANIFEST.json',
+    sha256: 'd89775731a4f32fdeba734f64bb28604e3d9a794863837fbcab749fa936f3b03', bytes: 19886 }),
+  Object.freeze({ name: 'live_redteam_evidence', required: true,
+    key: 'scv-instagram-automation/recovery-points/20260904T222549Z/SCV_LIVE_REDTEAM_EVIDENCE.json',
+    sha256: 'f9cf1288bb7a8737a30523fd81869d91532d6fdea3bbc4d73bfa454078ec78a9', bytes: 13937 }),
+  Object.freeze({ name: 'final_production_readiness', required: true,
+    key: 'scv-instagram-automation/recovery-points/20260904T222549Z/SCV_PRODUCTION_READINESS.json',
+    sha256: '1b658be94aa21ec57713ca9870d7316bdfb3fe37215398b6090aa1c9ccfcd0af', bytes: 1938 }),
+  Object.freeze({ name: 'restore_tool', required: true,
+    key: RESTORE_TOOL_KEY, sha256: RESTORE_TOOL_SHA256, bytes: 6317 })
+])
 
 const TARGETS = Object.freeze([
   Object.freeze({
@@ -157,98 +191,182 @@ async function sha256(bytes) {
   return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('')
 }
 
-async function readBoundedR2Json(archive, key) {
+async function readBoundedR2Object(archive, key, maxBytes = MAX_BODY_BYTES) {
   const object = await archive.get(key)
   if (!object) return { ok: false, reason: 'object_missing' }
   const bytes = new Uint8Array(await object.arrayBuffer())
-  if (bytes.byteLength > MAX_BODY_BYTES) return { ok: false, reason: 'object_too_large' }
+  if (bytes.byteLength > maxBytes) return { ok: false, reason: 'object_too_large' }
+  return { ok: true, bytes }
+}
+
+async function readBoundedR2Json(archive, key, maxBytes = MAX_BODY_BYTES) {
+  const result = await readBoundedR2Object(archive, key, maxBytes)
+  if (!result.ok) return result
   try {
-    return { ok: true, bytes, value: JSON.parse(new TextDecoder().decode(bytes)) }
+    return { ...result, value: JSON.parse(new TextDecoder().decode(result.bytes)) }
   } catch {
     return { ok: false, reason: 'invalid_json' }
   }
 }
 
-async function checkSnapshotControl(archive, options = {}) {
+async function verifyPinnedObject(archive, expected, options = {}) {
   const hashImpl = options.hashImpl || sha256
+  const result = await readBoundedR2Object(
+    archive,
+    expected.key,
+    options.maxBytes || MAX_RECOVERY_COMPONENT_BYTES
+  )
+  if (!result.ok) return { ok: false, reason: result.reason, key: expected.key }
+  if (result.bytes.byteLength !== expected.bytes) {
+    return { ok: false, reason: 'byte_count', key: expected.key, actual_bytes: result.bytes.byteLength }
+  }
+  const actualSha256 = await hashImpl(result.bytes, expected.key)
+  if (actualSha256 !== expected.sha256) {
+    return { ok: false, reason: 'sha256', key: expected.key, actual_sha256: actualSha256 }
+  }
+  return { ok: true, key: expected.key, bytes: result.bytes.byteLength, sha256: actualSha256 }
+}
+
+async function checkRecoveryPoint(archive, options = {}) {
+  const hashImpl = options.hashImpl || sha256
+  const verifyObject = options.verifyObject || ((expected) => verifyPinnedObject(archive, expected, { hashImpl }))
   const reasons = []
   const check = (condition, reason) => { if (!condition) reasons.push(reason) }
   try {
-    const latestResult = await readBoundedR2Json(archive, SNAPSHOT_LATEST_KEY)
+    const latestResult = await readBoundedR2Json(archive, RECOVERY_LATEST_KEY)
     if (!latestResult.ok) {
-      return { ok: false, reasons: [`snapshot_latest_${latestResult.reason}`] }
+      return { ok: false, reasons: [`recovery_latest_${latestResult.reason}`] }
     }
     const latest = latestResult.value
-    const expectedPrefix = `scv-instagram-automation/timestamped-snapshots/control/${SNAPSHOT_CONTROL_VERSION}`
-    check(latest?.control_version === SNAPSHOT_CONTROL_VERSION, 'snapshot_control_version')
-    check(Number(latest?.snapshot_count) === SNAPSHOT_COUNT, 'snapshot_count')
+    check(latest?.bucket === 'omar-private-archive', 'recovery_bucket')
     check(latest?.golden_snapshot_id === GOLDEN_SNAPSHOT_ID, 'golden_snapshot_id')
-    check(latest?.current_snapshot_id === CURRENT_SNAPSHOT_ID, 'current_snapshot_id')
-    check(latest?.catalog?.key === `${expectedPrefix}/SCV_TIMESTAMPED_SNAPSHOT_CATALOG.json`, 'snapshot_catalog_key')
-    check(latest?.catalog?.sha256 === SNAPSHOT_CATALOG_SHA256, 'snapshot_catalog_pointer_hash')
-    check(latest?.seal?.key === `${expectedPrefix}/SCV_TIMESTAMPED_SNAPSHOT_CATALOG_SEAL.json`, 'snapshot_seal_key')
-    check(latest?.seal?.sha256 === SNAPSHOT_SEAL_SHA256, 'snapshot_seal_pointer_hash')
-    check(latest?.restore_tool?.key === `${expectedPrefix}/scv-timestamped-restore.js`, 'snapshot_restore_tool_key')
-    check(latest?.restore_tool?.sha256 === SNAPSHOT_RESTORE_TOOL_SHA256, 'snapshot_restore_tool_pointer_hash')
-    check(latest?.restore_receipts?.pre_v150_omar_reset?.key ===
-      `${expectedPrefix}/receipts/pre-v150-omar-reset-20260904T054557Z.json`,
-    'snapshot_pre_restore_receipt_key')
-    check(latest?.restore_receipts?.pre_v150_omar_reset?.sha256 === PRE_RESTORE_RECEIPT_SHA256,
-      'snapshot_pre_restore_receipt_hash')
-    check(latest?.restore_receipts?.current_post_v150_omar_reset?.key ===
-      `${expectedPrefix}/receipts/current-post-v150-omar-reset-20260904T054601Z.json`,
-    'snapshot_post_restore_receipt_key')
-    check(latest?.restore_receipts?.current_post_v150_omar_reset?.sha256 ===
-      POST_RESTORE_RECEIPT_SHA256, 'snapshot_post_restore_receipt_hash')
-    check(latest?.restore_requires_exact_snapshot_id === true, 'snapshot_exact_id_required')
-    check(latest?.production_cutover_automatic === false, 'snapshot_automatic_cutover')
-    check(latest?.private_r2_only === true, 'snapshot_private_r2')
+    check(latest?.golden_preserved_separately === true, 'golden_not_separate')
+    check(latest?.current_recovery_point_id === CURRENT_RECOVERY_POINT_ID, 'current_recovery_point_id')
+    check(latest?.current_recovery_point?.key === CURRENT_RECOVERY_POINT_KEY, 'current_recovery_point_key')
+    check(latest?.current_recovery_point?.sha256 === CURRENT_RECOVERY_POINT_SHA256,
+      'current_recovery_point_pointer_hash')
+    check(latest?.previous_recovery_point_id === PREVIOUS_RECOVERY_POINT_ID, 'previous_recovery_point_id')
+    check(latest?.catalog?.key === RECOVERY_CATALOG_KEY, 'recovery_catalog_key')
+    check(latest?.catalog?.sha256 === RECOVERY_CATALOG_SHA256, 'recovery_catalog_pointer_hash')
+    check(latest?.restore_tool?.key === RESTORE_TOOL_KEY, 'restore_tool_key')
+    check(latest?.restore_tool?.sha256 === RESTORE_TOOL_SHA256, 'restore_tool_pointer_hash')
+    check(latest?.restore_requires_exact_recovery_point_id === true, 'recovery_exact_id_required')
+    check(latest?.production_cutover_automatic === false, 'recovery_automatic_cutover')
+    check(latest?.private_r2_only === true, 'recovery_private_r2')
 
-    if (typeof latest?.catalog?.key === 'string') {
-      const catalogResult = await readBoundedR2Json(archive, latest.catalog.key)
-      if (!catalogResult.ok) {
-        reasons.push(`snapshot_catalog_${catalogResult.reason}`)
-      } else {
-        const catalog = catalogResult.value
-        check(await hashImpl(catalogResult.bytes) === SNAPSHOT_CATALOG_SHA256, 'snapshot_catalog_object_hash')
-        check(Number(catalog?.snapshot_count) === SNAPSHOT_COUNT, 'snapshot_catalog_count')
-        check(catalog?.named_pointers?.golden === GOLDEN_SNAPSHOT_ID, 'snapshot_catalog_golden')
-        check(catalog?.named_pointers?.current === CURRENT_SNAPSHOT_ID, 'snapshot_catalog_current')
-        check(catalog?.named_pointers?.golden !== catalog?.named_pointers?.current, 'snapshot_catalog_distinct')
-        const preReset = Array.isArray(catalog?.snapshots)
-          ? catalog.snapshots.find((snapshot) => snapshot?.snapshot_id === PRE_RESET_SNAPSHOT_ID)
-          : null
-        const current = Array.isArray(catalog?.snapshots)
-          ? catalog.snapshots.find((snapshot) => snapshot?.snapshot_id === CURRENT_SNAPSHOT_ID)
-          : null
-        check(preReset?.release_id === RELEASE_ID, 'snapshot_pre_reset_release')
-        check(Number(preReset?.omar_system_audit_remaining_count) === PRE_RESET_AUDIT_REMAINING_COUNT,
-          'snapshot_pre_reset_audit_count')
-        check(current?.release_id === RELEASE_ID, 'snapshot_current_release')
-        check(current?.previous_snapshot_id === PRE_RESET_SNAPSHOT_ID,
-          'snapshot_current_previous_link')
-        check(current?.current_reference === true, 'snapshot_current_reference')
-        check(Number(current?.omar_system_audit_remaining_count) === 0,
-          'snapshot_current_zero_residual')
-        check(current?.reset_receipt?.sha256 === RESET_RECEIPT_SHA256,
-          'snapshot_current_reset_receipt_hash')
+    const catalogResult = await readBoundedR2Json(archive, RECOVERY_CATALOG_KEY)
+    let catalog = null
+    if (!catalogResult.ok) {
+      reasons.push(`recovery_catalog_${catalogResult.reason}`)
+    } else {
+      catalog = catalogResult.value
+      check(await hashImpl(catalogResult.bytes, RECOVERY_CATALOG_KEY) === RECOVERY_CATALOG_SHA256,
+        'recovery_catalog_object_hash')
+      check(catalog?.current_recovery_point_id === CURRENT_RECOVERY_POINT_ID,
+        'recovery_catalog_current')
+      check(catalog?.golden_reference?.snapshot_id === GOLDEN_SNAPSHOT_ID, 'recovery_catalog_golden')
+      check(catalog?.golden_reference?.key === APRIL_GOLDEN_KEY, 'recovery_catalog_golden_key')
+      check(catalog?.golden_reference?.sha256 === APRIL_GOLDEN_SHA256, 'recovery_catalog_golden_hash')
+      check(Number(catalog?.golden_reference?.bytes) === APRIL_GOLDEN_BYTES,
+        'recovery_catalog_golden_bytes')
+      check(catalog?.golden_reference?.preserved_separately_from_current === true,
+        'recovery_catalog_golden_not_separate')
+      check(catalog?.restore_requires_exact_recovery_point_id === true,
+        'recovery_catalog_exact_id_required')
+      check(catalog?.production_cutover_automatic === false, 'recovery_catalog_automatic_cutover')
+      const previous = Array.isArray(catalog?.recovery_points)
+        ? catalog.recovery_points.find((point) => point?.recovery_point_id === PREVIOUS_RECOVERY_POINT_ID)
+        : null
+      const current = Array.isArray(catalog?.recovery_points)
+        ? catalog.recovery_points.find((point) => point?.recovery_point_id === CURRENT_RECOVERY_POINT_ID)
+        : null
+      check(previous?.key === PREVIOUS_RECOVERY_POINT_KEY, 'recovery_catalog_previous_key')
+      check(previous?.sha256 === PREVIOUS_RECOVERY_POINT_SHA256, 'recovery_catalog_previous_hash')
+      check(previous?.current === false, 'recovery_catalog_previous_not_historical')
+      check(previous?.staged_restore_verified === true, 'recovery_catalog_previous_restore')
+      check(current?.key === CURRENT_RECOVERY_POINT_KEY, 'recovery_catalog_current_key')
+      check(current?.sha256 === CURRENT_RECOVERY_POINT_SHA256, 'recovery_catalog_current_hash')
+      check(current?.current === true, 'recovery_catalog_current_flag')
+      check(current?.staged_restore_verified === true, 'recovery_catalog_current_restore')
+      check(Number(current?.live_redteam_cases_passed) === 18, 'recovery_catalog_redteam')
+    }
+
+    const pointResult = await readBoundedR2Json(archive, CURRENT_RECOVERY_POINT_KEY)
+    let point = null
+    if (!pointResult.ok) {
+      reasons.push(`current_recovery_point_${pointResult.reason}`)
+    } else {
+      point = pointResult.value
+      check(await hashImpl(pointResult.bytes, CURRENT_RECOVERY_POINT_KEY) === CURRENT_RECOVERY_POINT_SHA256,
+        'current_recovery_point_object_hash')
+      check(point?.recovery_point_id === CURRENT_RECOVERY_POINT_ID, 'recovery_point_identity')
+      check(point?.immutable === true && point?.current_at_capture === true, 'recovery_point_immutability')
+      check(point?.release?.release_id === RELEASE_ID, 'recovery_point_release')
+      check(point?.release?.content_fingerprint_sha256 === CONTENT_FINGERPRINT,
+        'recovery_point_fingerprint')
+      check(point?.release?.release_manifest_sha256 === RELEASE_MANIFEST,
+        'recovery_point_manifest')
+      check(point?.capture_evidence?.full_local_test_exit_zero === true, 'recovery_point_local_tests')
+      check(point?.capture_evidence?.staging_isolated_full_test_exit_zero === true,
+        'recovery_point_staging_tests')
+      check(Number(point?.capture_evidence?.live_redteam_semantic_passed) === 18,
+        'recovery_point_redteam')
+      check(Number(point?.capture_evidence?.paused_worker_count) === 10,
+        'recovery_point_worker_barrier')
+      check(Number(point?.capture_evidence?.post_reset_omar_system_residual_count) === 0,
+        'recovery_point_zero_residual')
+      check(point?.capture_evidence?.r2_component_readback_byte_identical === true,
+        'recovery_point_r2_readback')
+      check(point?.capture_evidence?.final_production_ok === true, 'recovery_point_production_ready')
+      check(point?.capture_evidence?.final_fail_close_active === false,
+        'recovery_point_fail_close')
+      check(point?.secret_recovery?.values_in_manifest === false, 'recovery_point_secret_values')
+      check(point?.restore_conditions?.r2_only_self_contained === false,
+        'recovery_point_external_dependencies_claim')
+      const components = new Map(
+        Array.isArray(point?.components) ? point.components.map((component) => [component?.name, component]) : []
+      )
+      for (const expected of EXPECTED_RECOVERY_COMPONENTS) {
+        const actual = components.get(expected.name)
+        check(actual?.key === expected.key, `recovery_component_${expected.name}_key`)
+        check(actual?.sha256 === expected.sha256, `recovery_component_${expected.name}_hash`)
+        check(Number(actual?.bytes) === expected.bytes, `recovery_component_${expected.name}_bytes`)
+        check(actual?.required === expected.required, `recovery_component_${expected.name}_required`)
+        if ('namespace_tree_sha256' in expected) {
+          check(actual?.namespace_tree_sha256 === expected.namespace_tree_sha256,
+            `recovery_component_${expected.name}_tree`)
+          check(Number(actual?.namespace_entry_count) === expected.namespace_entry_count,
+            `recovery_component_${expected.name}_entries`)
+        }
       }
+    }
+
+    const pinnedObjects = [
+      ...EXPECTED_RECOVERY_COMPONENTS,
+      { key: PREVIOUS_RECOVERY_POINT_KEY, sha256: PREVIOUS_RECOVERY_POINT_SHA256, bytes: 4188 },
+      { key: APRIL_GOLDEN_KEY, sha256: APRIL_GOLDEN_SHA256, bytes: APRIL_GOLDEN_BYTES }
+    ]
+    const objectChecks = await Promise.all(pinnedObjects.map((expected) => verifyObject(expected)))
+    for (const result of objectChecks) {
+      if (!result.ok) reasons.push(`recovery_object_${result.reason}:${result.key}`)
     }
     return {
       ok: reasons.length === 0,
-      control_version: String(latest?.control_version || ''),
-      snapshot_count: Number(latest?.snapshot_count || 0),
+      current_recovery_point_id: String(latest?.current_recovery_point_id || ''),
+      previous_recovery_point_id: String(latest?.previous_recovery_point_id || ''),
       golden_snapshot_id: String(latest?.golden_snapshot_id || ''),
-      current_snapshot_id: String(latest?.current_snapshot_id || ''),
+      recovery_point_sha256: String(latest?.current_recovery_point?.sha256 || ''),
       catalog_sha256: String(latest?.catalog?.sha256 || ''),
+      pinned_object_count: pinnedObjects.length,
+      pinned_objects_verified: objectChecks.filter((result) => result.ok).length,
       reasons
     }
   } catch (error) {
     return {
       ok: false,
-      reasons: ['snapshot_control_read_failed'],
+      reasons: ['recovery_point_check_failed'],
       error_name: String(error?.name || 'Error').slice(0, 80),
-      error_message: String(error?.message || error || 'snapshot_control_read_failed').slice(0, 240)
+      error_message: String(error?.message || error || 'recovery_point_check_failed').slice(0, 240)
     }
   }
 }
@@ -290,12 +408,12 @@ async function checkGold(archive, options = {}) {
 
 async function runSentinel(env, options = {}) {
   const checkedAt = new Date(options.now || Date.now()).toISOString()
-  const [checks, snapshotControl, gold] = await Promise.all([
+  const [checks, recoveryPoint, gold] = await Promise.all([
     Promise.all(TARGETS.map((target) => checkTarget(target, options.fetchImpl || fetch))),
-    checkSnapshotControl(env.ARCHIVE),
+    checkRecoveryPoint(env.ARCHIVE),
     checkGold(env.ARCHIVE)
   ])
-  const ok = checks.every((check) => check.ok === true) && snapshotControl.ok === true && gold.ok === true
+  const ok = checks.every((check) => check.ok === true) && recoveryPoint.ok === true && gold.ok === true
   const previous = await readState(env.ARCHIVE)
   const consecutiveFailures = ok ? 0 : Number(previous?.consecutive_failures || 0) + 1
   const receipt = {
@@ -309,15 +427,15 @@ async function runSentinel(env, options = {}) {
       release_manifest_sha256: RELEASE_MANIFEST,
       visible_model: VISIBLE_MODEL
     },
-    expected_snapshot: {
-      control_version: SNAPSHOT_CONTROL_VERSION,
-      snapshot_count: SNAPSHOT_COUNT,
+    expected_recovery: {
+      current_recovery_point_id: CURRENT_RECOVERY_POINT_ID,
+      current_recovery_point_sha256: CURRENT_RECOVERY_POINT_SHA256,
+      previous_recovery_point_id: PREVIOUS_RECOVERY_POINT_ID,
       golden_snapshot_id: GOLDEN_SNAPSHOT_ID,
-      current_snapshot_id: CURRENT_SNAPSHOT_ID,
-      catalog_sha256: SNAPSHOT_CATALOG_SHA256
+      catalog_sha256: RECOVERY_CATALOG_SHA256
     },
     checks,
-    snapshot_control: snapshotControl,
+    recovery_point: recoveryPoint,
     gold: { ...gold, expected_manifest_key: GOLD_MANIFEST_KEY, expected_manifest_sha256: GOLD_MANIFEST_SHA256, expected_release_id: GOLD_RELEASE_ID, expected_content_fingerprint_sha256: GOLD_CONTENT_FINGERPRINT },
     consecutive_failures: consecutiveFailures,
     contains_credentials: false,
@@ -347,7 +465,7 @@ async function runSentinel(env, options = {}) {
     consecutive_failures: consecutiveFailures,
     attestation: { bucket: 'omar-private-archive', key, sha256: receiptSha256 },
     expected_release: receipt.expected_release,
-    expected_snapshot: receipt.expected_snapshot
+    expected_recovery: receipt.expected_recovery
   }
   await env.ARCHIVE.put(`${PREFIX}/LATEST.json`, `${JSON.stringify(latest, null, 2)}\n`, {
     httpMetadata: { contentType: 'application/json' }
@@ -377,12 +495,13 @@ export default {
     const expectedReleaseMatches = latest?.expected_release?.release_id === RELEASE_ID &&
       latest?.expected_release?.content_fingerprint_sha256 === CONTENT_FINGERPRINT &&
       latest?.expected_release?.release_manifest_sha256 === RELEASE_MANIFEST
-    const expectedSnapshotMatches = latest?.expected_snapshot?.control_version === SNAPSHOT_CONTROL_VERSION &&
-      Number(latest?.expected_snapshot?.snapshot_count) === SNAPSHOT_COUNT &&
-      latest?.expected_snapshot?.golden_snapshot_id === GOLDEN_SNAPSHOT_ID &&
-      latest?.expected_snapshot?.current_snapshot_id === CURRENT_SNAPSHOT_ID &&
-      latest?.expected_snapshot?.catalog_sha256 === SNAPSHOT_CATALOG_SHA256
-    const healthy = latest?.ok === true && expectedReleaseMatches && expectedSnapshotMatches
+    const expectedRecoveryMatches =
+      latest?.expected_recovery?.current_recovery_point_id === CURRENT_RECOVERY_POINT_ID &&
+      latest?.expected_recovery?.current_recovery_point_sha256 === CURRENT_RECOVERY_POINT_SHA256 &&
+      latest?.expected_recovery?.previous_recovery_point_id === PREVIOUS_RECOVERY_POINT_ID &&
+      latest?.expected_recovery?.golden_snapshot_id === GOLDEN_SNAPSHOT_ID &&
+      latest?.expected_recovery?.catalog_sha256 === RECOVERY_CATALOG_SHA256
+    const healthy = latest?.ok === true && expectedReleaseMatches && expectedRecoveryMatches
     return json({
       ok: healthy,
       schema: SENTINEL_SCHEMA,
@@ -398,12 +517,12 @@ export default {
         content_fingerprint_sha256: CONTENT_FINGERPRINT,
         release_manifest_sha256: RELEASE_MANIFEST
       },
-      expected_snapshot: {
-        control_version: SNAPSHOT_CONTROL_VERSION,
-        snapshot_count: SNAPSHOT_COUNT,
+      expected_recovery: {
+        current_recovery_point_id: CURRENT_RECOVERY_POINT_ID,
+        current_recovery_point_sha256: CURRENT_RECOVERY_POINT_SHA256,
+        previous_recovery_point_id: PREVIOUS_RECOVERY_POINT_ID,
         golden_snapshot_id: GOLDEN_SNAPSHOT_ID,
-        current_snapshot_id: CURRENT_SNAPSHOT_ID,
-        catalog_sha256: SNAPSHOT_CATALOG_SHA256
+        catalog_sha256: RECOVERY_CATALOG_SHA256
       }
     }, healthy ? 200 : 503)
   },
@@ -424,24 +543,32 @@ export {
   GOLD_RELEASE_ID,
   GOLD_CONTENT_FINGERPRINT,
   checkGold,
+  APRIL_GOLDEN_KEY,
+  APRIL_GOLDEN_SHA256,
+  CURRENT_RECOVERY_POINT_ID,
+  CURRENT_RECOVERY_POINT_KEY,
+  CURRENT_RECOVERY_POINT_SHA256,
+  EXPECTED_RECOVERY_COMPONENTS,
   PRE_RESET_AUDIT_REMAINING_COUNT,
   CONTENT_FINGERPRINT,
-  CURRENT_SNAPSHOT_ID,
   GOLDEN_SNAPSHOT_ID,
   MAX_CANARY_AGE_MS,
   MAX_DRIFT_AGE_MS,
   RELEASE_ID,
   RELEASE_MANIFEST,
-  PRE_RESET_SNAPSHOT_ID,
-  PRE_RESTORE_RECEIPT_SHA256,
-  POST_RESTORE_RECEIPT_SHA256,
+  PREVIOUS_RECOVERY_POINT_ID,
+  PREVIOUS_RECOVERY_POINT_KEY,
+  PREVIOUS_RECOVERY_POINT_SHA256,
+  RECOVERY_CATALOG_KEY,
+  RECOVERY_CATALOG_SHA256,
+  RECOVERY_LATEST_KEY,
   RESET_RECEIPT_SHA256,
+  RESTORE_TOOL_KEY,
+  RESTORE_TOOL_SHA256,
   SENTINEL_SCHEMA,
-  SNAPSHOT_CATALOG_SHA256,
-  SNAPSHOT_CONTROL_VERSION,
-  SNAPSHOT_COUNT,
   VISIBLE_MODEL,
-  checkSnapshotControl,
+  checkRecoveryPoint,
   evaluateEndpoint,
-  runSentinel
+  runSentinel,
+  verifyPinnedObject
 }

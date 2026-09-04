@@ -3,7 +3,13 @@
 This directory contains a **sanitized, non-deployable public source mirror** of
 the SCV Instagram v122 runtime. It exists so the source shape, contracts, and
 recovery tooling can live in the public `effacermonexistence/codex` repository
-without publishing customer-derived identifiers or message content.
+without publishing customer-derived identifiers or message content. It is not
+the running private v151 source and must not be deployed as though it were.
+
+The current private v151 recovery coordinates are mirrored without credentials
+in `recovery/LATEST.json` and documented in
+`../../docs/scv-instagram-v151-custody.md`. The exact source archive and current
+state remain hash-bound in the private R2 bucket.
 
 ## Two-layer custody
 
