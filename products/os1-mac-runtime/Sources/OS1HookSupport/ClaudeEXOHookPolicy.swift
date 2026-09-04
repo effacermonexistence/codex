@@ -4,8 +4,8 @@ import Foundation
 public enum ClaudeEXOHookPolicy {
     // Leave a cushion between the internal deadline and Claude Code's process
     // timeout so EXO has time to remove any placement it created.
-    public static let operationTimeoutSeconds: TimeInterval = 12
-    public static let commandTimeoutSeconds = 15
+    public static let operationTimeoutSeconds: TimeInterval = 30
+    public static let commandTimeoutSeconds = 35
     public static let failureCooldownSeconds: TimeInterval = 60
 }
 

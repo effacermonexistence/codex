@@ -14,7 +14,9 @@ hook is added.
 The hook uses only the loopback EXO API at `127.0.0.1:52415`. It requires two
 distinct connected nodes and creates a `Pipeline`/`MlxRing` instance with a
 minimum node count of two. It deletes that exact temporary instance after the
-draft completes or fails. There is no single-node fallback.
+draft completes or fails. The production profile caps each draft at 256 tokens
+and gives EXO 30 seconds, with a separate 35-second Claude hook limit that
+preserves cleanup headroom. There is no single-node fallback.
 
 The hook is fail-open for Claude Code availability. It serializes local draft
 inference so concurrent prompts cannot create overlapping EXO instances,

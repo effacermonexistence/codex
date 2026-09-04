@@ -7,7 +7,7 @@
   "exo_model_id": "mlx-community/Qwen3-0.6B-4bit",
   "exo_minimum_nodes": 2,
   "exo_startup_timeout_seconds": 180,
-  "exo_maximum_output_tokens": 1024,
+  "exo_maximum_output_tokens": 256,
   "model_profiles": {
     "codex": {
       "standard": "gpt-5.6-terra",
