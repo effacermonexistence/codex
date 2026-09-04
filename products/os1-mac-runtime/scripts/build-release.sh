@@ -12,6 +12,7 @@ readonly audit_dir="$output_dir/audit"
 readonly component_pkg="$output_dir/OS-1-component.pkg"
 readonly unsigned_pkg="$output_dir/OS-1-${version}-unsigned.pkg"
 readonly final_pkg="$output_dir/OS-1-${version}.pkg"
+readonly component_plist="$runtime_root/InstallerComponents.plist"
 readonly arm64_build_dir="${OS1_ARM64_BUILD_DIR:-$runtime_root/.build-release-arm64}"
 readonly x86_64_build_dir="${OS1_X86_64_BUILD_DIR:-$runtime_root/.build-release-x86_64}"
 readonly skip_build="${OS1_SKIP_BUILD:-0}"
@@ -130,6 +131,7 @@ lipo -archs "$stage_dir/Applications/Open OS-1 Codex.app/Contents/MacOS/OS1App" 
 
 COPYFILE_DISABLE=1 pkgbuild \
   --root "$stage_dir" \
+  --component-plist "$component_plist" \
   --scripts "$runtime_root/InstallerScripts" \
   --identifier com.omaragi.os1 \
   --version "$version" \

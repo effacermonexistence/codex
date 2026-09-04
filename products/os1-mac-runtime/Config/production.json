@@ -3,6 +3,11 @@
   "ticket_verifying_key_raw": "8YEZN8HnEybW2Hz6E3YxC6nTh80R-oXgWCpd-fohkJY",
   "maximum_steps": 4,
   "execution_timeout_seconds": 1800,
+  "exo_api_url": "http://127.0.0.1:52415",
+  "exo_model_id": "mlx-community/Qwen3-0.6B-4bit",
+  "exo_minimum_nodes": 2,
+  "exo_startup_timeout_seconds": 180,
+  "exo_maximum_output_tokens": 1024,
   "model_profiles": {
     "codex": {
       "standard": "gpt-5.6-terra",

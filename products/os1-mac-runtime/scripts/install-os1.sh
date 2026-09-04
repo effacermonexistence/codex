@@ -306,6 +306,8 @@ if ! sudo installer -pkg "$os1_tmp/OS-1.pkg" -target /; then
   exit 1
 fi
 
+/usr/local/bin/os1 configure-claude-exo
+
 if [[ "$skip_login" != "1" && -t 0 ]]; then
   gh auth status --hostname github.com >/dev/null 2>&1 || \
     gh auth login --hostname github.com --git-protocol https --web

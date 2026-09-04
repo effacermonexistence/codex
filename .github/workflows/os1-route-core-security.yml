@@ -112,6 +112,9 @@ jobs:
           bash -n products/os1-mac-runtime/scripts/archive-private-release.sh
           bash -n products/os1-mac-runtime/InstallerScripts/postinstall
 
+      - name: Test Claude EXO hook safeguards
+        run: swift run --package-path products/os1-mac-runtime os1-hook-tests
+
       - name: Assert Apple distribution credentials are mandatory
         run: |
           if OS1_RELEASE_MODE=distribution products/os1-mac-runtime/scripts/build-release.sh; then
