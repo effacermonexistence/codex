@@ -321,6 +321,7 @@ if gh auth status --hostname github.com >/dev/null 2>&1 && \
    claude auth status 2>/dev/null | grep -q '"loggedIn": true'; then
   /usr/local/bin/os1 register || exit 1
   /usr/local/bin/os1 doctor || exit 1
+  /usr/local/bin/os1 configure-fleet-agent --role auto || exit 1
 else
-  echo "Finish the three one-time logins, then run: os1 register && os1 doctor"
+  echo "Finish the three one-time logins, then run: os1 register && os1 doctor && os1 configure-fleet-agent --role auto"
 fi

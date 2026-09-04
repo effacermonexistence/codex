@@ -39,7 +39,7 @@ function positiveInteger(value: string): number {
   return parsed;
 }
 
-async function authenticate(request: Request, env: Env): Promise<AuthIdentity> {
+export async function authenticate(request: Request, env: Env): Promise<AuthIdentity> {
   const authorization = request.headers.get("authorization");
   if (!authorization?.startsWith("Bearer ") || authorization.length > 8_192) {
     reject();
@@ -180,7 +180,7 @@ export async function registerDevice(
   return publicJson(parsePublicResponse(value));
 }
 
-async function verifiedDeviceKey(
+export async function verifiedDeviceKey(
   env: Env,
   identity: AuthIdentity,
 ): Promise<JsonWebKey> {

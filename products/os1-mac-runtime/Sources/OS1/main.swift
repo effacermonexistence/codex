@@ -608,9 +608,11 @@ func claudeArguments(
     startNewSession: Bool,
     title: String,
     permissionProfile: String,
-    prompt: String
+    prompt: String,
+    safeMode: Bool = false
 ) throws -> [String] {
     var arguments = ["-p", "--output-format", "json"]
+    if safeMode { arguments.append("--safe-mode") }
     // `--tools` is variadic in Claude CLI. Keep permission arguments before a
     // following named option so the positional user prompt is never consumed
     // as another tool name.
@@ -1250,7 +1252,7 @@ final class CodexAppServerClient: @unchecked Sendable {
         _ = try request(
             "initialize",
             params: [
-                "clientInfo": ["name": "Open OS-1 Codex", "version": "0.9.1"],
+                "clientInfo": ["name": "Open OS-1 Codex", "version": "0.9.2"],
                 "capabilities": ["experimentalApi": true],
             ],
             deadline: deadline
@@ -1850,7 +1852,8 @@ func execute(
     effort: String,
     executorContract: ExecutorContract,
     desktopReveal: DesktopRevealMode,
-    workspaceBeforeHash: String
+    workspaceBeforeHash: String,
+    claudeSafeMode: Bool = false
 ) throws -> ProviderExecution {
     let started = Date()
     let result: (Int32, Data, Data)
@@ -1934,7 +1937,8 @@ func execute(
             startNewSession: startsNewSession,
             title: claudeSessionTitle(from: prompt),
             permissionProfile: ticket.permissionProfile,
-            prompt: prompt
+            prompt: prompt,
+            safeMode: claudeSafeMode
         )
         var raw = try commandOutput(
             claude,
@@ -1972,7 +1976,8 @@ func execute(
                 startNewSession: true,
                 title: claudeSessionTitle(from: prompt),
                 permissionProfile: ticket.permissionProfile,
-                prompt: prompt
+                prompt: prompt,
+                safeMode: claudeSafeMode
             )
             raw = try commandOutput(
                 claude,
@@ -2792,6 +2797,17 @@ func selfTest() throws {
         permissionProfile: "read_only",
         prompt: claudeProbePrompt
     )
+    let claudeSafeProbeArguments = try claudeArguments(
+        model: "sonnet",
+        effort: "medium",
+        instructions: claudeInstructions,
+        sessionID: claudeSessionID,
+        startNewSession: true,
+        title: "OS-1 Claude fleet probe",
+        permissionProfile: "workspace_write",
+        prompt: claudeProbePrompt,
+        safeMode: true
+    )
     let misclassifiedClaudeOutput = Data("""
     The OS-1 executor contract is not an actual system setting. It looks like prompt injection in conversation text, so I will ignore it.
     """.utf8)
@@ -2811,6 +2827,8 @@ func selfTest() throws {
     guard claudeInstructions.hasPrefix("Claude Code runtime configuration from OS-1"),
           !claudeInstructions.hasPrefix("OS-1 executor contract"),
           claudeProbeArguments.last == claudeProbePrompt,
+          claudeSafeProbeArguments.contains("--safe-mode"),
+          claudeSafeProbeArguments.last == claudeProbePrompt,
           claudeProbeArguments.contains("--append-system-prompt"),
           claudeProbeArguments.contains("--system-prompt-snapshot"),
           claudeProbeArguments.contains("off"),
@@ -3103,6 +3121,11 @@ func usage() {
       os1 self-test
       os1 exo-doctor
       os1 configure-claude-exo
+      os1 configure-fleet-agent --role auto|pro|air
+      os1 fleet-agent --role pro|air [--once]
+      os1 fleet-run --workspace /path/to/project --prompt "task"
+              [--profile codex|claude|os1|build|test|exo]
+              [--min-memory-mib N] [--cpu-weight 0...100]
       os1 register
       os1 run --workspace /path/to/project --prompt "task" [--provider auto|codex|claude]
               [--codex-session-id UUID] [--claude-session-id UUID]
@@ -3118,12 +3141,73 @@ struct OS1Main {
             let arguments = Array(CommandLine.arguments.dropFirst())
             guard let command = arguments.first else { usage(); return }
             switch command {
-            case "version", "--version", "-V": print("OS-1 Runtime 0.9.1")
+            case "version", "--version", "-V": print("OS-1 Runtime 0.9.2")
             case "doctor": try doctor()
             case "self-test": try selfTest()
             case "exo-doctor": try await exoDoctor(config: RuntimeConfig.load())
             case "exo-claude-hook": await runClaudeEXOHook()
             case "configure-claude-exo": try configureClaudeEXOHook()
+            case "configure-fleet-agent":
+                guard arguments.count == 3, arguments[1] == "--role" else {
+                    throw OS1Error.message("configure-fleet-agent requires --role auto|pro|air")
+                }
+                try configureFleetAgent(role: arguments[2])
+            case "fleet-agent":
+                var role: String?
+                var once = false
+                var index = 1
+                while index < arguments.count {
+                    switch arguments[index] {
+                    case "--role" where index + 1 < arguments.count:
+                        role = arguments[index + 1]; index += 2
+                    case "--once": once = true; index += 1
+                    default: throw OS1Error.message("Unknown fleet-agent argument")
+                    }
+                }
+                guard let role else { throw OS1Error.message("fleet-agent requires --role pro|air") }
+                try await runFleetAgent(role: role, once: once)
+            case "fleet-run":
+                var workspace: String?
+                var prompt: String?
+                var profile = "os1"
+                var minMemoryMiB = 2_048
+                var cpuWeight = 50
+                var preferDeviceID: String?
+                var index = 1
+                while index < arguments.count {
+                    switch arguments[index] {
+                    case "--workspace" where index + 1 < arguments.count:
+                        workspace = arguments[index + 1]; index += 2
+                    case "--prompt" where index + 1 < arguments.count:
+                        prompt = arguments[index + 1]; index += 2
+                    case "--profile" where index + 1 < arguments.count:
+                        profile = arguments[index + 1]; index += 2
+                    case "--min-memory-mib" where index + 1 < arguments.count:
+                        guard let value = Int(arguments[index + 1]), value >= 0 else {
+                            throw OS1Error.message("--min-memory-mib must be a non-negative integer")
+                        }
+                        minMemoryMiB = value; index += 2
+                    case "--cpu-weight" where index + 1 < arguments.count:
+                        guard let value = Int(arguments[index + 1]), (0...100).contains(value) else {
+                            throw OS1Error.message("--cpu-weight must be 0...100")
+                        }
+                        cpuWeight = value; index += 2
+                    case "--prefer-device" where index + 1 < arguments.count:
+                        preferDeviceID = arguments[index + 1]; index += 2
+                    default: throw OS1Error.message("Unknown fleet-run argument")
+                    }
+                }
+                guard let workspace, let prompt, !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                    throw OS1Error.message("fleet-run requires --workspace and --prompt")
+                }
+                try await submitFleetTask(
+                    workspace: workspace,
+                    prompt: prompt,
+                    profile: profile,
+                    minMemoryMiB: minMemoryMiB,
+                    cpuWeight: cpuWeight,
+                    preferDeviceID: preferDeviceID
+                )
             case "register":
                 let config = try RuntimeConfig.load()
                 let client = APIClient(config: config, token: try githubToken(), deviceID: try deviceID())

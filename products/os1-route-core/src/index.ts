@@ -1,6 +1,15 @@
 import { opaqueError } from "./egress";
 import { RequestRejected } from "./errors";
 import { ExecutionState } from "./execution-state";
+import { FleetState } from "./fleet-state";
+import {
+  fleetClaim,
+  fleetComplete,
+  fleetHeartbeat,
+  fleetSnapshot,
+  fleetStatus,
+  fleetSubmit,
+} from "./fleet-gateway";
 import {
   registerDevice,
   startExecution,
@@ -9,7 +18,7 @@ import {
 } from "./gateway";
 import { releaseRequest } from "./releases";
 
-export { ExecutionState };
+export { ExecutionState, FleetState };
 
 async function handleRequest(request: Request, env: Env): Promise<Response> {
   const requestId = crypto.randomUUID();
@@ -29,6 +38,12 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
     if (url.pathname === "/v1/executions") return await startExecution(request, env);
     if (url.pathname === "/v1/artifacts") return await uploadArtifact(request, env);
     if (url.pathname === "/v1/results") return await submitResult(request, env);
+    if (url.pathname === "/v1/fleet/heartbeat") return await fleetHeartbeat(request, env);
+    if (url.pathname === "/v1/fleet/submit") return await fleetSubmit(request, env);
+    if (url.pathname === "/v1/fleet/claim") return await fleetClaim(request, env);
+    if (url.pathname === "/v1/fleet/complete") return await fleetComplete(request, env);
+    if (url.pathname === "/v1/fleet/status") return await fleetStatus(request, env);
+    if (url.pathname === "/v1/fleet/snapshot") return await fleetSnapshot(request, env);
     throw new RequestRejected();
   } catch (error) {
     console.error(
