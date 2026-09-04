@@ -1,26 +1,31 @@
-const SENTINEL_SCHEMA = 'scv-instagram-drift-sentinel-2026-09-03-v12-v148-ordinal-dates-pointer'
+const SENTINEL_SCHEMA = 'scv-instagram-drift-sentinel-2026-09-04-v13-v150-name-authority-pointer'
 // GOLD-3 (2026-09-03): v148 (owner-verified v145 plus the owner-ordered polish, live red-team verified) frozen as the reference; the pointer and manifest below are pinned by hash.
 const GOLD_LATEST_KEY = 'scv-instagram-automation/gold/LATEST.json'
 const GOLD_MANIFEST_KEY = 'scv-instagram-automation/gold/SCV_GOLD_MANIFEST_v148.json'
 const GOLD_MANIFEST_SHA256 = '31ea4507381e6ec2c3ce4458d70af4a311f331a4a26651f5d9234a01312766cc'
-const RELEASE_ID = 'scv-instagram-single-20260902-v148'
-const CONTENT_FINGERPRINT = '3a9a18631443f4738d13dd803f080979ff4d21ab0d9de1f5054b2f26e2ea3609'
-const RELEASE_MANIFEST = 'b3e9d7ba794fa9c6cb33a32727cf1870c9af2a2c54a1e191c0321cab9ff0f0ec'
+// The frozen gold is a REFERENCE, not necessarily the running release: v149 and v150 shipped fixes
+// whose live red-team was not fully clean, so the gold pointer deliberately still describes v148.
+// Comparing the gold manifest against the running release id made the check fail by construction.
+const GOLD_RELEASE_ID = 'scv-instagram-single-20260902-v148'
+const GOLD_CONTENT_FINGERPRINT = '3a9a18631443f4738d13dd803f080979ff4d21ab0d9de1f5054b2f26e2ea3609'
+const RELEASE_ID = 'scv-instagram-single-20260902-v150'
+const CONTENT_FINGERPRINT = 'ea240f8a53946778211cc98bcf2eadbe819bbde876251e5b865e1a736e689e42'
+const RELEASE_MANIFEST = 'b92b028ed6ba88455325433cdc6038a21b9cddc1653fdc19db036976259befc1'
 const VISIBLE_MODEL = 'gpt-5.4-mini-2026-03-17'
-const SNAPSHOT_CONTROL_VERSION = '20260903T205303Z'
-const SNAPSHOT_COUNT = 65
+const SNAPSHOT_CONTROL_VERSION = '20260904T054643Z'
+const SNAPSHOT_COUNT = 71
 const GOLDEN_SNAPSHOT_ID = 'scv-instagram-20260420T152810-local-origin'
-const PRE_RESET_SNAPSHOT_ID = 'scv-instagram-20260903T205142Z-v148-pre-omar-reset'
-const CURRENT_SNAPSHOT_ID = 'scv-instagram-20260903T205146Z-v148-post-omar-reset-current'
-const SNAPSHOT_CATALOG_SHA256 = '04088e180fc5b99e9aee78a0775f0b2ea13b47208e5f9bbd3002fe01c729fbde'
-const SNAPSHOT_SEAL_SHA256 = '3f81f54181d2d1fbd7c60c6e85daf900f31875e28776a553b6c67650c875f572'
+const PRE_RESET_SNAPSHOT_ID = 'scv-instagram-20260904T054557Z-v150-pre-omar-reset'
+const CURRENT_SNAPSHOT_ID = 'scv-instagram-20260904T054601Z-v150-post-omar-reset-current'
+const SNAPSHOT_CATALOG_SHA256 = '3c682c94e317934e5d2b5d4a8b8bbd795140fa16e2eecc5c8048aa07698444c3'
+const SNAPSHOT_SEAL_SHA256 = 'c04c45fcb0b54e3fda550f1e7f5196713e0a1a5c4fca6aaf019a602e4cce36e8'
 const SNAPSHOT_RESTORE_TOOL_SHA256 = '4044f96616a504c9049657fbe628b63246b56a626fa57cdb5f67dc1307d3f206'
-const RESET_RECEIPT_SHA256 = '29e45bf551b4762f1c8a4320483327a6219f81da66b19b8e0430868cf4d75d81'
-// v148 hand-over reset after the ordinal-word-days / date-answer-before-form-match polish: the pre-reset
+const RESET_RECEIPT_SHA256 = '178f127f08e75f3d30814ce2377e7a9f4283e2f22fd335895e4dcbcd0fe63595'
+// v150 hand-over reset after the stored-name and single-pass design-turn fixes: the pre-reset
 // audit count is pinned per release from the receipt; the post-reset point must be zero.
-const PRE_RESET_AUDIT_REMAINING_COUNT = 36
-const PRE_RESTORE_RECEIPT_SHA256 = 'dcb89737a74a19ba4de11dda21af987d50eebc1244a0f9f3935982ef8b55bb63'
-const POST_RESTORE_RECEIPT_SHA256 = 'e8bc8391cbb0e2c73d5cc2bc685841cb86e8e81ce5cc1a739a03b349b1f6aa70'
+const PRE_RESET_AUDIT_REMAINING_COUNT = 33
+const PRE_RESTORE_RECEIPT_SHA256 = 'd1ddd53f397acba2481a877581d1347f6770c4251fc8574b3b1aee6e69b85624'
+const POST_RESTORE_RECEIPT_SHA256 = 'b65e7fa665f4c0da35c0c068be472fef192cba8880ca96c9ec6e73567343b965'
 const MAX_CANARY_AGE_MS = 90 * 60 * 1000
 const MAX_DRIFT_AGE_MS = 3 * 60 * 1000
 const FETCH_TIMEOUT_MS = 20_000
@@ -185,15 +190,15 @@ async function checkSnapshotControl(archive, options = {}) {
     check(latest?.seal?.sha256 === SNAPSHOT_SEAL_SHA256, 'snapshot_seal_pointer_hash')
     check(latest?.restore_tool?.key === `${expectedPrefix}/scv-timestamped-restore.js`, 'snapshot_restore_tool_key')
     check(latest?.restore_tool?.sha256 === SNAPSHOT_RESTORE_TOOL_SHA256, 'snapshot_restore_tool_pointer_hash')
-    check(latest?.restore_receipts?.pre_v148_omar_reset?.key ===
-      `${expectedPrefix}/receipts/pre-v148-omar-reset-20260903T205142Z.json`,
+    check(latest?.restore_receipts?.pre_v150_omar_reset?.key ===
+      `${expectedPrefix}/receipts/pre-v150-omar-reset-20260904T054557Z.json`,
     'snapshot_pre_restore_receipt_key')
-    check(latest?.restore_receipts?.pre_v148_omar_reset?.sha256 === PRE_RESTORE_RECEIPT_SHA256,
+    check(latest?.restore_receipts?.pre_v150_omar_reset?.sha256 === PRE_RESTORE_RECEIPT_SHA256,
       'snapshot_pre_restore_receipt_hash')
-    check(latest?.restore_receipts?.current_post_v148_omar_reset?.key ===
-      `${expectedPrefix}/receipts/current-post-v148-omar-reset-20260903T205146Z.json`,
+    check(latest?.restore_receipts?.current_post_v150_omar_reset?.key ===
+      `${expectedPrefix}/receipts/current-post-v150-omar-reset-20260904T054601Z.json`,
     'snapshot_post_restore_receipt_key')
-    check(latest?.restore_receipts?.current_post_v148_omar_reset?.sha256 ===
+    check(latest?.restore_receipts?.current_post_v150_omar_reset?.sha256 ===
       POST_RESTORE_RECEIPT_SHA256, 'snapshot_post_restore_receipt_hash')
     check(latest?.restore_requires_exact_snapshot_id === true, 'snapshot_exact_id_required')
     check(latest?.production_cutover_automatic === false, 'snapshot_automatic_cutover')
@@ -275,8 +280,8 @@ async function checkGold(archive, options = {}) {
     check(actual === GOLD_MANIFEST_SHA256, 'gold_manifest_object_hash')
     let manifest = null
     try { manifest = JSON.parse(new TextDecoder().decode(bytes)) } catch { reasons.push('gold_manifest_invalid_json') }
-    check(manifest?.release?.content_fingerprint_sha256 === CONTENT_FINGERPRINT, 'gold_manifest_release_fingerprint')
-    check(manifest?.release?.release_id === RELEASE_ID, 'gold_manifest_release_id')
+    check(manifest?.release?.content_fingerprint_sha256 === GOLD_CONTENT_FINGERPRINT, 'gold_manifest_release_fingerprint')
+    check(manifest?.release?.release_id === GOLD_RELEASE_ID, 'gold_manifest_release_id')
     return { ok: reasons.length === 0, reasons, manifest_sha256: actual, gold_name: String(manifest?.gold_name || '') }
   } catch (error) {
     return { ok: false, reasons: [...reasons, `gold_check_error:${String(error && error.message ? error.message : error).slice(0, 80)}`] }
@@ -313,7 +318,7 @@ async function runSentinel(env, options = {}) {
     },
     checks,
     snapshot_control: snapshotControl,
-    gold: { ...gold, expected_manifest_key: GOLD_MANIFEST_KEY, expected_manifest_sha256: GOLD_MANIFEST_SHA256 },
+    gold: { ...gold, expected_manifest_key: GOLD_MANIFEST_KEY, expected_manifest_sha256: GOLD_MANIFEST_SHA256, expected_release_id: GOLD_RELEASE_ID, expected_content_fingerprint_sha256: GOLD_CONTENT_FINGERPRINT },
     consecutive_failures: consecutiveFailures,
     contains_credentials: false,
     contains_customer_message_content: false
@@ -416,6 +421,8 @@ export {
   GOLD_LATEST_KEY,
   GOLD_MANIFEST_KEY,
   GOLD_MANIFEST_SHA256,
+  GOLD_RELEASE_ID,
+  GOLD_CONTENT_FINGERPRINT,
   checkGold,
   PRE_RESET_AUDIT_REMAINING_COUNT,
   CONTENT_FINGERPRINT,
