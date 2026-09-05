@@ -307,6 +307,7 @@ if ! sudo installer -pkg "$os1_tmp/OS-1.pkg" -target /; then
 fi
 
 /usr/local/bin/os1 configure-claude-exo
+/usr/local/bin/os1 configure-codex-exo
 
 if [[ "$skip_login" != "1" && -t 0 ]]; then
   gh auth status --hostname github.com >/dev/null 2>&1 || \

@@ -50,11 +50,11 @@ func testCircuitBreaker() throws {
 }
 
 func testTimeoutHeadroom() throws {
-    try expect(ClaudeEXOHookPolicy.operationTimeoutSeconds == 30, "EXO operation budget regressed")
-    try expect(ClaudeEXOHookPolicy.commandTimeoutSeconds == 35, "Claude timeout is not encoded in seconds")
+    try expect(ClaudeEXOHookPolicy.operationTimeoutSeconds == 60, "EXO operation budget regressed")
+    try expect(ClaudeEXOHookPolicy.commandTimeoutSeconds == 65, "prompt hook timeout is not encoded in seconds")
     try expect(
         Double(ClaudeEXOHookPolicy.commandTimeoutSeconds) - ClaudeEXOHookPolicy.operationTimeoutSeconds >= 5,
-        "Claude process timeout does not leave five seconds of cleanup headroom"
+        "host process timeout does not leave five seconds of cleanup headroom"
     )
 }
 

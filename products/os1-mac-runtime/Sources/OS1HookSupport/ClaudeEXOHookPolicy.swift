@@ -2,10 +2,10 @@ import Darwin
 import Foundation
 
 public enum ClaudeEXOHookPolicy {
-    // Leave a cushion between the internal deadline and Claude Code's process
-    // timeout so EXO has time to remove any placement it created.
-    public static let operationTimeoutSeconds: TimeInterval = 30
-    public static let commandTimeoutSeconds = 35
+    // Leave a cushion between the internal deadline and the host agent's
+    // process timeout so EXO has time to remove any placement it created.
+    public static let operationTimeoutSeconds: TimeInterval = 60
+    public static let commandTimeoutSeconds = 65
     public static let failureCooldownSeconds: TimeInterval = 60
 }
 
