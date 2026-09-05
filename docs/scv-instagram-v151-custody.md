@@ -60,6 +60,40 @@ Existing v17/v50 ManyChat route screenshots and route-attestation JSON were loca
 historical migration restore. They show old routing, but not a complete current flow export
 or the full External Request body/headers. They do not close the current ManyChat/E2E gap.
 
+## Sandbox artifact-integrity fault drill (2026-09-05 UTC)
+
+The original v151 point and all older evidence remain unchanged. A new drill
+downloaded 60 pinned objects from R2 into a separate private directory and
+injected faults only into fresh local copies. Before the fix, 129/131 checks
+passed: deliberately changing an OS archive or environment manifest after the
+initial acquisition check could still produce an artifact-level success receipt.
+This was an injected test failure, not corruption of the real R2 objects.
+
+The recovery tool now re-verifies all artifacts after source/state restoration
+and before writing a receipt. Its digest also rejects pathname replacement or
+link changes during a read. The same 131-check matrix then passed in full,
+including both previously failing cases; the untouched source mirror was
+re-verified. All 24 unit tests passed on both Node 20 and Node 24, and TypeScript
+and the public-mirror checks passed.
+
+A further fresh R2 run at `2026-09-05T03:56:15.360Z` verified all 60 objects again,
+all 254 source files and the 2,128-entry saved state tree, with
+`final_artifacts_reverified_before_receipt: 60`. This is isolated filesystem
+testing, not a new VM, network-isolated application boot or a fresh full runtime
+suite. A separate read-only audit at `2026-09-05T03:56:40.259Z` confirmed the
+existing restored staging container still had the exact source, 98 expected
+staging environment values and nine live workers. No customer routing,
+production state, secret values or Omar.system reset was changed by this work.
+
+The new private extension is
+`scv-instagram-automation/recovery-extensions/20260905T035715Z-v151-sandbox-ef97a81d/SCV_SANDBOX_RECOVERY_EXTENSION.json`,
+SHA-256 `0698a0b39399e74115e1b3499273dabacfda0832aa701c35486374f1927393db`.
+All 16 components and the manifest were downloaded from R2 and byte-matched.
+Both before-fix false-positive receipts are preserved and explicitly labelled
+as failed fault-test evidence. They must never be presented as a successful
+restore. This extension does not close the full ManyChat configuration,
+Instagram-visible round-trip or target-specific production cutover gates.
+
 ## Active release
 
 - Release: `scv-instagram-single-20260904-v151`

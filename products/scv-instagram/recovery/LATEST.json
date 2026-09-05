@@ -1,6 +1,6 @@
 {
   "schema": "scv-instagram-public-recovery-pointer-2026-09-04-v1",
-  "updated_at_utc": "2026-09-05T02:31:16Z",
+  "updated_at_utc": "2026-09-05T03:57:15Z",
   "private_bucket": "omar-private-archive",
   "golden_reference": {
     "snapshot_id": "scv-instagram-20260420T152810-local-origin",
@@ -36,6 +36,15 @@
     "sha256": "e557bad9768e7be9cce5f8a293cd5bbfea77cab3566fc1734dc1b87096b5106d",
     "bytes": 2804,
     "r2_components_readback_verified": 7
+  },
+  "sandbox_integrity_evidence": {
+    "key": "scv-instagram-automation/recovery-extensions/20260905T035715Z-v151-sandbox-ef97a81d/SCV_SANDBOX_RECOVERY_EXTENSION.json",
+    "sha256": "0698a0b39399e74115e1b3499273dabacfda0832aa701c35486374f1927393db",
+    "bytes": 7305,
+    "r2_components_readback_verified": 16,
+    "fault_checks_passed": 131,
+    "fault_checks_total": 131,
+    "isolation": "new private local file copies; application not executed"
   },
   "full_system_restore_verified": false,
   "production_cutover_automatic": false,

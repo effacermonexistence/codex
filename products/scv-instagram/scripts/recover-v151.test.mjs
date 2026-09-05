@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { POINT, ROOTS, safeRelative, reference, mergeReferences, digest, verify,
-  newDirectory, validateArchive, verifyCanonical, stateTree, recover } from './recover-v151.mjs';
+  newDirectory, validateArchive, verifyCanonical, stateTree, recover, verifyFinalArtifacts } from './recover-v151.mjs';
 
 // Generated synthetic fixtures only. Never production files or user directories.
 function fixture(t) {
@@ -33,6 +33,18 @@ test('byte corruption fails verification', t => {
   const pin = { key: 'data', bytes: 5, sha256: digest(file) }; verify(file, pin);
   fs.writeFileSync(file, 'wrong'); assert.throws(() => verify(file, pin), /mismatch/);
 });
+for (const mutation of ['corrupt', 'missing', 'symlink']) {
+  test('final audit catches ' + mutation + ' after initial artifact verification', t => {
+    const root = fixture(t), key = 'scv-instagram-automation/fixture/data';
+    fs.mkdirSync(path.dirname(path.join(root, key)), { recursive: true });
+    const file = write(root, key, 'saved');
+    const ref = { key, bytes: 5, sha256: digest(file) };
+    verify(file, ref); assert.equal(verifyFinalArtifacts(root, [ref]), 1);
+    if (mutation === 'corrupt') fs.writeFileSync(file, 'wrong');
+    else { fs.unlinkSync(file); if (mutation === 'symlink') fs.symlinkSync(write(root, 'substitute', 'saved'), file); }
+    assert.throws(() => verifyFinalArtifacts(root, [ref]));
+  });
+}
 test('links cannot substitute for recovery artifacts', t => {
   const root = fixture(t), file = write(root, 'data', 'saved');
   fs.symlinkSync(file, path.join(root, 'symlink'));
