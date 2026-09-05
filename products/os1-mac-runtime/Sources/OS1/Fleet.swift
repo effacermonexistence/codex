@@ -3,6 +3,9 @@ import Darwin
 import Foundation
 
 private let fleetProfiles = ["codex", "claude", "os1", "build", "test", "exo"]
+let fleetAgentCycleInterval: Duration = .seconds(20)
+let fleetJobStatusInterval: Duration = .seconds(5)
+let fleetLaunchAgentThrottleIntervalSeconds = 20
 
 private struct FleetNodeHeartbeat: Codable {
     let role: String
@@ -601,9 +604,13 @@ func runFleetAgent(role: String, once: Bool) async throws {
     let config = try RuntimeConfig.load()
     let key = try SigningKey.loadOrCreate()
     let client = APIClient(config: config, token: try githubToken(), deviceID: try deviceID())
-    try await register(client: client, key: key)
+    var registered = false
     repeat {
         do {
+            if !registered {
+                try await register(client: client, key: key)
+                registered = true
+            }
             let node = try await sendFleetHeartbeat(client: client, key: key, role: role)
             if let assignment = try await fleetClaim(client: client, key: key) {
                 do {
@@ -624,7 +631,7 @@ func runFleetAgent(role: String, once: Bool) async throws {
             if once { throw error }
             fputs("OS-1 fleet agent retry: \(error)\n", stderr)
         }
-        try await Task.sleep(for: .seconds(5))
+        try await Task.sleep(for: fleetAgentCycleInterval)
     } while true
 }
 
@@ -696,7 +703,7 @@ func submitFleetTask(
     print("OS-1 fleet job \(assignment.jobID): \(assignment.executionMode) on \(assignment.executorDeviceID)")
     let deadline = Date().addingTimeInterval(3_600)
     while Date() < deadline {
-        try await Task.sleep(for: .seconds(2))
+        try await Task.sleep(for: fleetJobStatusInterval)
         let statusAt = fleetNowMs()
         let statusNonce = try randomNonce()
         let signature = Base64URL.encode(try key.sign(statusBytes(
@@ -746,7 +753,7 @@ func configureFleetAgent(role requestedRole: String) throws {
         "ProgramArguments": [executable, "fleet-agent", "--role", role],
         "RunAtLoad": true,
         "KeepAlive": true,
-        "ThrottleInterval": 5,
+        "ThrottleInterval": fleetLaunchAgentThrottleIntervalSeconds,
         "StandardOutPath": logDirectory.appendingPathComponent("agent.log").path,
         "StandardErrorPath": logDirectory.appendingPathComponent("agent.log").path,
         "ProcessType": "Background",

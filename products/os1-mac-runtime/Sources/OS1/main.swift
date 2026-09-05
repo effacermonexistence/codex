@@ -2577,6 +2577,12 @@ func doctor() throws {
 }
 
 func selfTest() throws {
+    guard fleetAgentCycleInterval >= .seconds(15),
+          fleetAgentCycleInterval < .seconds(30),
+          fleetJobStatusInterval >= .seconds(5),
+          fleetLaunchAgentThrottleIntervalSeconds >= 20 else {
+        throw OS1Error.message("Fleet request cadence validation failed")
+    }
     let session = "8EAA48C6-AF59-4F4C-A2BE-9A0EC3B6FC20"
     guard try normalizedSessionID(session) == session.lowercased(),
           (try? normalizedSessionID("most-recent")) == nil else {
