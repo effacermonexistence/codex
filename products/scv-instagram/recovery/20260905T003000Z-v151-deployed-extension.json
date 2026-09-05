@@ -1,0 +1,36 @@
+{
+  "schema": "scv-public-deployed-recovery-extension-pointer-v1",
+  "private_bucket": "omar-private-archive",
+  "base_recovery_point_id": "scv-instagram-20260904T222549Z-v151-clean-current",
+  "prior_extension": {
+    "key": "scv-instagram-automation/recovery-extensions/20260904T234500Z-v151/SCV_RECOVERY_EXTENSION.json",
+    "sha256": "204e5791a376b3506667dc0cc66510012e95f985a3ee72a676ba037c26ccaef7"
+  },
+  "deployed_extension": {
+    "key": "scv-instagram-automation/recovery-extensions/20260905T003000Z-v151-deployed/SCV_DEPLOYED_RECOVERY_EXTENSION.json",
+    "sha256": "16729e0f0a749ca3c70828329d9f1251953a4f9a7178c5a3f36202bb7b9d8a32",
+    "bytes": 11256,
+    "components_full_r2_readback_verified": 30
+  },
+  "staging_deployment_id": "a4b49244-bc1e-4866-b925-f85078863738",
+  "staging_image_digest": "sha256:8eca4e8a72a7aa4529e5ef579deeee7efbe9d20ff72ce7c4ade420a0672fdb7d",
+  "verified": {
+    "registry_independent_new_container": true,
+    "canonical_source_files": 254,
+    "pre_worker_state_entries": 2128,
+    "production_environment_reconstructed_values": 112,
+    "staging_translated_values_verified": 98,
+    "expected_staging_workers_alive": 9,
+    "fresh_model_voice_vision_canary": true,
+    "recovered_manychat_and_gmail_authentication": true
+  },
+  "not_yet_verified": [
+    "full ManyChat flow, trigger and External Request definition restoration",
+    "real ManyChat-origin inbound and Instagram-visible outbound round trip",
+    "production restoration cutover"
+  ],
+  "full_system_restore_verified": false,
+  "production_mutated_by_this_drill": false,
+  "contains_credentials": false,
+  "contains_customer_data": false
+}

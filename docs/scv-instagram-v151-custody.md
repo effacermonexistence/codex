@@ -4,13 +4,49 @@ v151 is the running production and staging release. It closes the two liveness r
 after v150 and establishes a separate, timestamped recovery point for the exact clean production state.
 The April origin snapshot remains a separate frozen reference; it is not overwritten by the current point.
 
+## Deployed recovery extension (2026-09-05 UTC)
+
+The complete system recovery claim is **not yet verified**. The new evidence now proves an actual
+fresh staging container restored from the saved source, state, OS/dependencies and reconstructed
+environment, rather than only an extracted directory or an offline harness.
+
+- Successful restored staging deployment: `a4b49244-bc1e-4866-b925-f85078863738`.
+- Image: `sha256:8eca4e8a72a7aa4529e5ef579deeee7efbe9d20ff72ce7c4ade420a0672fdb7d`.
+- All 254 canonical source files and the exact 2,128-entry pre-worker state matched.
+- All 112 production environment values were reconstructed, including seven actual frozen secret
+  reads. The new container verified 98 image/application values after an explicit staging safety
+  translation. Authentic new platform IDs and staging's own authentication boundaries were used.
+- Nine staging workers are alive; customer sends and customer Gmail reading remain withheld.
+  This is not a claim that the ten-worker production topology was restored unchanged in staging.
+- Node 20.20.2 and ffmpeg run with real OCI devices and `/proc`. The fresh live model, voice and
+  vision canary passed at `2026-09-05T00:26:32.218Z`.
+- A `FROM scratch` build used the captured OS closure, with no base-image, npm or apt downloads.
+  A lossless xz encoding fixed the upload-size rejection without removing runtime files. Its full
+  R2 readback matched; both gzip and xz decode to the same SHA-256-bound tar stream.
+- The previous staging namespace was backed up, restore-drilled, read back from R2 and preserved
+  on the volume. The original production point, April reference and GOLD-3 were not overwritten.
+
+Read the non-secret extension pointer at
+`products/scv-instagram/recovery/20260905T003000Z-v151-deployed-extension.json`.
+It locates two private R2 extensions; the latest manifest is SHA-256
+`16729e0f0a749ca3c70828329d9f1251953a4f9a7178c5a3f36202bb7b9d8a32`, with 30 fully read-back
+proof/tooling components. Failed attempts are retained in that evidence, including the unchanged
+source correctly rejecting production-only capabilities in staging before workers started.
+
+Still unproved: restoring full ManyChat flow/trigger/External Request definitions, a genuine
+ManyChat-origin inbound plus Instagram-visible reply, and an actual production cutover. The current
+ManyChat API inventory is not a flow definition. The task browser requires ManyChat sign-in.
+Recovered ManyChat/Gmail authentication and `/readyz` must not be substituted for visible E2E proof.
+No production fix or new live red-team/reset was performed by this deployed restore drill.
+
 ## Active release
 
 - Release: `scv-instagram-single-20260904-v151`
 - Content fingerprint: `d60dfc9f1f082f9d5e268556c0eb43364b5f1d9b1217f6a1f95d04546043c151`
 - Release manifest SHA-256: `b307c86bb59e1287afe746f50d8ccd036d7b1bea70820ef3f1facce6baef7d6c`
 - Production deployment: `2bb8c04a-6645-41a1-ab5e-10109a193d99`
-- Staging deployment: `83b839b5-1e06-420f-8f7d-5dd432e0deb6`
+- Staging deployment at initial release: `83b839b5-1e06-420f-8f7d-5dd432e0deb6`
+- Current restored staging deployment: `a4b49244-bc1e-4866-b925-f85078863738`
 - Exact private runtime archive: `scv-instagram-automation/release-ready/20260904T221512Z/v151/scv-instagram-single-20260904T221512Z-v151-liveness-and-recoverability.tar.gz`
 - Runtime archive SHA-256: `5b70ce46742e342a855152734be267ad5b98807918c68c174eddf024ee467fdd`
 
@@ -86,7 +122,14 @@ attestation at `2026-09-04T22:40:33.000Z`: production and staging passed, 11/11 
 passed, GOLD-3 passed, and consecutive failures returned to zero. The attestation was downloaded again
 from R2 and matched SHA-256 `bda874db69c4bb9ffffc4015ea82871b3ebc539c8738531e43e71cc7783cd4af`.
 
-This is a tested recovery point, not an offline appliance image. R2 contains the complete hash-bound
-source and production state, while a rebuild still needs a compatible Linux container host, the base
-image and package registries, the separately managed secret values, and the external OpenAI, ManyChat
-and Gmail services. Production cutover remains an explicit operator action after staged validation.
+The later extensions close the formerly missing OS/dependency and secret-value reconstruction
+gaps; a compatible Linux/OCI host and authorized external accounts/services remain necessary.
+R2 objects and timestamped secret copies are append-only by operator policy, not provider-enforced
+immutable storage. Account loss, provider revocation/outages and future model availability are not
+guaranteed by an archive. This is timestamp recovery, not replication of all future messages.
+Production cutover remains an explicit operator action after staged validation.
+
+The sentinel attestation above is historical evidence, not proof of current scheduler freshness.
+An observation on 2026-09-05 still returned a last-success timestamp of `2026-09-04T23:25:29.000Z`;
+therefore do not claim a fresh five-minute attestation from that response. The deployed restore
+extension is separately hash-verified and has not been added to the sentinel's original pin set.
