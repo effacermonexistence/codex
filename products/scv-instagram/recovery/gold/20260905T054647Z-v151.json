@@ -1,0 +1,41 @@
+{
+  "schema": "scv-approved-recovery-gold-v1",
+  "gold_id": "scv-instagram-recovery-gold-20260905T054647Z-v151",
+  "approved_by_owner": true,
+  "promoted_at_utc": "2026-09-05T05:46:47Z",
+  "snapshot_at_utc": "2026-09-04T22:25:49Z",
+  "snapshot_at_america_los_angeles": "2026-09-04T15:25:49-07:00",
+  "meaning": "Latest explicitly approved recovery baseline, not latest edits, deployment, backup or behavioral GOLD-3",
+  "bucket": "omar-private-archive",
+  "r2_record_key": "scv-instagram-automation/recovery-gold/20260905T054647Z/GOLD.json",
+  "recovery_point_id": "scv-instagram-20260904T222549Z-v151-clean-current",
+  "release_id": "scv-instagram-single-20260904-v151",
+  "descriptor_sha256": "b307c86bb59e1287afe746f50d8ccd036d7b1bea70820ef3f1facce6baef7d6c",
+  "content_fingerprint_sha256": "d60dfc9f1f082f9d5e268556c0eb43364b5f1d9b1217f6a1f95d04546043c151",
+  "manifests": [
+    { "key": "scv-instagram-automation/recovery-points/20260904T222549Z/SCV_RECOVERY_POINT.json", "bytes": 5725, "sha256": "75440f5063fb7deab879df404ea8fa7011fece7c3da1f7af93c042ee9a337a5a" },
+    { "key": "scv-instagram-automation/recovery-extensions/20260904T234500Z-v151/SCV_RECOVERY_EXTENSION.json", "bytes": 6273, "sha256": "204e5791a376b3506667dc0cc66510012e95f985a3ee72a676ba037c26ccaef7" },
+    { "key": "scv-instagram-automation/recovery-extensions/20260905T003000Z-v151-deployed/SCV_DEPLOYED_RECOVERY_EXTENSION.json", "bytes": 11256, "sha256": "16729e0f0a749ca3c70828329d9f1251953a4f9a7178c5a3f36202bb7b9d8a32" }
+  ],
+  "included": ["sealed code and prompts", "application configuration", "frozen secret generation references", "OS and dependencies", "separately timestamped saved state"],
+  "manychat_configuration_in_scope": false,
+  "default_restore_mode": "code-prompt-settings; preserve current customer state",
+  "timestamped_customer_state_restore_requires_explicit_request": true,
+  "ordinary_edit_or_deploy_promotes_gold": false,
+  "preserve_april_gold_and_behavioral_gold3": true,
+  "current_production_readonly_match": {
+    "checked_at_utc": "2026-09-05T05:45:41.486Z",
+    "source_files_matched": 254,
+    "environment_hashes_checked": 112,
+    "matching_environment_hashes": 111,
+    "different_platform_identity_fields": ["HOSTNAME"],
+    "saved_values_modified": false,
+    "state_snapshot_recaptured": false
+  },
+  "activation": "operator must resolve current target, preserve live state, restore, deploy and verify; acquisition alone is not activation",
+  "production_cutover_automatic": false,
+  "append_only_by_operator_policy": true,
+  "provider_immutable": false,
+  "contains_credentials": false,
+  "contains_customer_data": false
+}

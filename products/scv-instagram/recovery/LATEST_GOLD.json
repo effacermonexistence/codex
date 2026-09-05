@@ -1,0 +1,15 @@
+{
+  "schema": "scv-latest-approved-recovery-gold-pointer-v1",
+  "gold_id": "scv-instagram-recovery-gold-20260905T054647Z-v151",
+  "record": {
+    "path": "gold/20260905T054647Z-v151.json",
+    "key": "scv-instagram-automation/recovery-gold/20260905T054647Z/GOLD.json",
+    "bytes": 2645,
+    "sha256": "df23980a283223bd37517a55753f23ea3c56568ec2c443eceab6822a0ade9a6a"
+  },
+  "instructions": "products/scv-instagram/recovery/GOLD-RESTORE.md",
+  "entry_point": "products/scv-instagram/scripts/recover-gold.mjs",
+  "meaning": "latest owner-approved recovery baseline, not latest edited code",
+  "ordinary_edits_update_this_pointer": false,
+  "manychat_configuration_in_scope": false
+}
