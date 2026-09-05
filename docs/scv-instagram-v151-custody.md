@@ -35,9 +35,30 @@ source correctly rejecting production-only capabilities in staging before worker
 
 Still unproved: restoring full ManyChat flow/trigger/External Request definitions, a genuine
 ManyChat-origin inbound plus Instagram-visible reply, and an actual production cutover. The current
-ManyChat API inventory is not a flow definition. The task browser requires ManyChat sign-in.
+ManyChat API inventory is not a flow definition. The task-scoped browser has not exposed an
+authenticated ManyChat tab; this is not evidence that the user is logged out elsewhere.
 Recovered ManyChat/Gmail authentication and `/readyz` must not be substituted for visible E2E proof.
 No production fix or new live red-team/reset was performed by this deployed restore drill.
+
+## Portable artifact recovery entry point (2026-09-05 UTC)
+
+`products/scv-instagram/scripts/recover-v151.mjs` now collects the exact point and both
+extensions without relying on this Mac's historical work directories. See
+`products/scv-instagram/recovery/RECOVER-V151.md` for the command and remaining gates.
+A fresh authenticated R2 run verified all 60 pinned objects and restored the 254 canonical
+files plus the exact 2,128-entry state tree. A second offline run into a different directory
+passed the same checks. All 21 rejection/verification tests passed. The tool never executes
+restored source, reads secret values, changes production, routes traffic, or treats this
+artifact-level success as full-system recovery.
+
+The private portable-recovery extension is pinned in `recovery/LATEST.json` at
+`scv-instagram-automation/recovery-extensions/20260905T023116Z-v151-portable-b3a949eb/SCV_PORTABLE_RECOVERY_EXTENSION.json`,
+SHA-256 `e557bad9768e7be9cce5f8a293cd5bbfea77cab3566fc1734dc1b87096b5106d`.
+Its seven tooling/evidence objects and the manifest were fully downloaded from R2 and byte-matched.
+
+Existing v17/v50 ManyChat route screenshots and route-attestation JSON were located in a
+historical migration restore. They show old routing, but not a complete current flow export
+or the full External Request body/headers. They do not close the current ManyChat/E2E gap.
 
 ## Active release
 
