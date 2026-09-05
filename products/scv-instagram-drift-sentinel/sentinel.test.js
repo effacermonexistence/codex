@@ -24,6 +24,9 @@ import {
   RECOVERY_LATEST_KEY,
   RELEASE_ID,
   RELEASE_MANIFEST,
+  RECOVERY_POINT_RELEASE_ID,
+  RECOVERY_POINT_CONTENT_FINGERPRINT,
+  RECOVERY_POINT_RELEASE_MANIFEST,
   RESET_RECEIPT_SHA256,
   RESTORE_TOOL_KEY,
   RESTORE_TOOL_SHA256,
@@ -71,7 +74,7 @@ function healthyBody() {
   }
 }
 
-test('accepts the exact healthy v151 release while preserving operational alerts', () => {
+test('accepts the exact healthy v152 release while preserving operational alerts', () => {
   const result = evaluateEndpoint(target, 200, healthyBody())
   assert.equal(result.ok, true)
   assert.equal(result.operational_alert_count, 1)
@@ -125,9 +128,9 @@ function recoveryFixture() {
     immutable: true,
     current_at_capture: true,
     release: {
-      release_id: RELEASE_ID,
-      content_fingerprint_sha256: CONTENT_FINGERPRINT,
-      release_manifest_sha256: RELEASE_MANIFEST
+      release_id: RECOVERY_POINT_RELEASE_ID,
+      content_fingerprint_sha256: RECOVERY_POINT_CONTENT_FINGERPRINT,
+      release_manifest_sha256: RECOVERY_POINT_RELEASE_MANIFEST
     },
     components: EXPECTED_RECOVERY_COMPONENTS.map((component) => ({ ...component })),
     secret_recovery: { values_in_manifest: false },
