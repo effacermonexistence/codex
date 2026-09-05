@@ -47,12 +47,23 @@ export function digest(file) {
     check(opened.ino === st.ino && opened.dev === st.dev, 'artifact_changed_before_read');
     let n; while ((n = fs.readSync(fd, block, 0, block.length, null))) hash.update(block.subarray(0, n));
     const after = fs.fstatSync(fd);
-    check(after.size === st.size && after.mtimeMs === st.mtimeMs && after.ctimeMs === st.ctimeMs, 'artifact_changed_during_read');
+    const linked = fs.lstatSync(file);
+    check(after.size === st.size && after.mtimeMs === st.mtimeMs && after.ctimeMs === st.ctimeMs &&
+      after.nlink === 1 && linked.isFile() && linked.ino === after.ino && linked.dev === after.dev &&
+      linked.size === after.size && linked.mtimeMs === after.mtimeMs && linked.ctimeMs === after.ctimeMs &&
+      fs.realpathSync(file) === path.resolve(file), 'artifact_changed_during_read');
     return hash.digest('hex');
   } finally { fs.closeSync(fd); }
 }
 export function verify(file, ref) {
   check(fs.lstatSync(file).size === ref.bytes && digest(file) === ref.sha256, 'artifact_pin_mismatch:' + ref.key);
+}
+export function verifyFinalArtifacts(objects, refs) {
+  // A successful earlier download is not evidence that the file is still intact
+  // when the restore receipt is written. Recheck OS, environment and proof files
+  // too, not only the source/state archives consumed by stage().
+  for (const ref of mergeReferences(refs)) verify(path.join(objects, ref.key), ref);
+  return refs.length;
 }
 export function newDirectory(target) {
   const resolved = path.resolve(target), parent = path.dirname(resolved);
@@ -174,10 +185,12 @@ export async function recover({ point, target, offlineRoot, progress = () => {} 
     const failed = results.find(r => r.status === 'rejected'); if (failed) throw failed.reason;
   }
   const restored = stage(root, base);
+  const finalArtifactCount = verifyFinalArtifacts(objects, [...verified.values()]);
   const receipt = {
     schema: 'scv-v151-portable-acquisition-and-offline-restore-v1', at_utc: new Date().toISOString(),
     recovery_point_id: POINT, source: offlineRoot ? 'offline_byte_verified_mirror' : 'fresh_authenticated_r2_get',
     artifact_acquisition_verified: true, artifacts: [...verified.values()], ...restored,
+    final_artifacts_reverified_before_receipt: finalArtifactCount,
     production_mutated: false, remote_writes: false, secret_values_recovered_in_this_run: false,
     os_archives_byte_verified_not_booted_in_this_run: true,
     full_manychat_configuration_restored: false, instagram_visible_roundtrip_verified: false,

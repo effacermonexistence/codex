@@ -48,6 +48,21 @@ For another offline drill, pass `--offline-root /absolute/prior-recovery/objects
 and a different new `--target`. Every input is byte-verified again; no network is
 used. The program does not execute restored application code in either mode.
 
+Before writing a receipt, the tool re-verifies **all 60 downloaded artifacts**,
+including OS, environment-manifest and historical-proof files. A prior successful
+download is not treated as a lasting integrity guarantee. Receipts include
+`final_artifacts_reverified_before_receipt: 60`; they describe that verification
+run, not protection against later edits or hostile concurrent filesystem access.
+
+The 2026-09-05 private fault drill injected corruption and missing files for all
+60 artifacts, exercised eight full acquisition/restore scenarios, and checked
+three restored-tree mutations: 131 checks total. Before the fix, two deliberately
+late mutations could incorrectly receive an artifact-level success receipt.
+After the fix, all 131 checks passed and the original 60 objects were re-verified.
+This drill used isolated local file copies, **not** a fresh VM or network-isolated
+application boot. It did not read secrets, send messages, reset a test identity,
+change production, or close the ManyChat/Instagram E2E gates below.
+
 ## Required next gates — not automatic or already passed by this command
 
 1. Use the pinned secret-recovery tooling to create a **new ephemeral job** and
