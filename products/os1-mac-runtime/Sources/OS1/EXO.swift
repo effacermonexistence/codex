@@ -50,6 +50,12 @@ private struct EXOInstance {
     let runnerIDs: Set<String>
 }
 
+private struct PersistentEXOInstance: Codable {
+    let instanceID: String
+    let runnerIDs: [String]
+    let modelID: String
+}
+
 private enum EXOJSON {
     static func object(_ data: Data) throws -> [String: Any] {
         guard let value = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
@@ -257,6 +263,35 @@ private struct EXOClient {
         )
     }
 
+    private func cachedInstance(at stateURL: URL) -> EXOInstance? {
+        guard let data = try? Data(contentsOf: stateURL),
+              let record = try? JSONDecoder().decode(PersistentEXOInstance.self, from: data),
+              record.modelID == configuration.modelID,
+              UUID(uuidString: record.instanceID) != nil,
+              Set(record.runnerIDs).count >= configuration.minimumNodes else {
+            try? FileManager.default.removeItem(at: stateURL)
+            return nil
+        }
+        return EXOInstance(id: record.instanceID, runnerIDs: Set(record.runnerIDs))
+    }
+
+    private func persist(_ instance: EXOInstance, at stateURL: URL) throws {
+        let record = PersistentEXOInstance(
+            instanceID: instance.id,
+            runnerIDs: instance.runnerIDs.sorted(),
+            modelID: configuration.modelID
+        )
+        let data = try JSONEncoder().encode(record)
+        try data.write(to: stateURL, options: [.atomic])
+    }
+
+    private func instanceExists(_ instance: EXOInstance, deadline: Date?) async throws -> Bool {
+        let response = try await request(path: "/state", deadline: deadline)
+        let state = try EXOJSON.object(response)
+        let instances = try EXOJSON.dictionary(state["instances"], named: "instances")
+        return instances[instance.id] != nil
+    }
+
     func doctor() async throws -> [String] {
         try await topology()
     }
@@ -282,6 +317,51 @@ private struct EXOClient {
             throw error
         }
     }
+
+    func inferPersistent(
+        prompt: String,
+        stateURL: URL,
+        deadline: Date? = nil
+    ) async throws -> EXOInferenceResult {
+        guard !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              prompt.utf8.count <= 48_000 else {
+            throw OS1Error.message("EXO prompt is invalid")
+        }
+        _ = try await topology(deadline: deadline)
+
+        let instance: EXOInstance
+        if let cached = cachedInstance(at: stateURL),
+           try await instanceExists(cached, deadline: deadline) {
+            instance = cached
+        } else {
+            try? FileManager.default.removeItem(at: stateURL)
+            let placed = try await placement(deadline: deadline)
+            do {
+                try persist(placed, at: stateURL)
+            } catch {
+                await remove(placed)
+                throw error
+            }
+            instance = placed
+        }
+
+        do {
+            // Keep a successfully started small hook instance warm across
+            // prompts. Failed partial placements are removed so they cannot
+            // accumulate stale runners or consume capacity indefinitely.
+            try await waitUntilReady(instance, deadline: deadline)
+            let started = Date()
+            let output = try await chat(prompt: prompt, deadline: deadline)
+            return EXOInferenceResult(
+                output: output,
+                durationMS: Int64(Date().timeIntervalSince(started) * 1_000)
+            )
+        } catch {
+            await remove(instance)
+            try? FileManager.default.removeItem(at: stateURL)
+            throw error
+        }
+    }
 }
 
 func exoDoctor(config: RuntimeConfig) async throws {
@@ -294,6 +374,19 @@ func exoDoctor(config: RuntimeConfig) async throws {
 func executeEXO(prompt: String, config: RuntimeConfig, deadline: Date? = nil) async throws -> EXOInferenceResult {
     try await EXOClient(configuration: try EXOConfiguration(runtimeConfig: config)).infer(
         prompt: prompt,
+        deadline: deadline
+    )
+}
+
+func executePersistentEXO(
+    prompt: String,
+    config: RuntimeConfig,
+    stateURL: URL,
+    deadline: Date? = nil
+) async throws -> EXOInferenceResult {
+    try await EXOClient(configuration: try EXOConfiguration(runtimeConfig: config)).inferPersistent(
+        prompt: prompt,
+        stateURL: stateURL,
         deadline: deadline
     )
 }
