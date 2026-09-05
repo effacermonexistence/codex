@@ -1,6 +1,6 @@
 {
   "schema": "scv-instagram-public-recovery-pointer-2026-09-04-v1",
-  "updated_at_utc": "2026-09-05T00:36:03Z",
+  "updated_at_utc": "2026-09-05T02:31:16Z",
   "private_bucket": "omar-private-archive",
   "golden_reference": {
     "snapshot_id": "scv-instagram-20260420T152810-local-origin",
@@ -29,6 +29,14 @@
   },
   "restore_requires_exact_recovery_point_id": true,
   "recovery_extensions_pointer": "20260905T003000Z-v151-deployed-extension.json",
+  "portable_artifact_restore_tool": "products/scv-instagram/scripts/recover-v151.mjs",
+  "portable_artifact_restore_instructions": "products/scv-instagram/recovery/RECOVER-V151.md",
+  "portable_artifact_restore_evidence": {
+    "key": "scv-instagram-automation/recovery-extensions/20260905T023116Z-v151-portable-b3a949eb/SCV_PORTABLE_RECOVERY_EXTENSION.json",
+    "sha256": "e557bad9768e7be9cce5f8a293cd5bbfea77cab3566fc1734dc1b87096b5106d",
+    "bytes": 2804,
+    "r2_components_readback_verified": 7
+  },
   "full_system_restore_verified": false,
   "production_cutover_automatic": false,
   "contains_credentials": false,
