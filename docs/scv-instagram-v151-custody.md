@@ -4,6 +4,34 @@ v151 is the running production and staging release. It closes the two liveness r
 after v150 and establishes a separate, timestamped recovery point for the exact clean production state.
 The April origin snapshot remains a separate frozen reference; it is not overwritten by the current point.
 
+## Owner-approved fallback Gold (2026-09-05 UTC)
+
+For the user's later wording edits in Claude, the shared Codex/Claude recovery
+target is now `products/scv-instagram/recovery/LATEST_GOLD.json`, not the most
+recent edit, deployment or backup. It pins
+`scv-instagram-recovery-gold-20260905T054647Z-v151`, promoted at
+`2026-09-05T05:46:47Z` from the existing `2026-09-04T22:25:49Z` snapshot.
+The dated Gold record SHA-256 is
+`df23980a283223bd37517a55753f23ea3c56568ec2c443eceab6822a0ade9a6a`.
+Do not confuse its promotion time with a new customer-state capture.
+
+The owner explicitly excludes ManyChat configuration from this fallback scope.
+The older full-system verdicts below remain historical evidence, not a reason to
+reintroduce a missing-ManyChat-export gate into this request. Ordinary edits must
+not advance the approved Gold. April Gold and behavioral GOLD-3 are untouched.
+The common procedure is `products/scv-instagram/recovery/GOLD-RESTORE.md`.
+
+At `2026-09-05T05:45:41.486Z`, read-only production inspection matched all 254
+source files and 111/112 saved environment hashes; only platform-assigned
+`HOSTNAME` differed. No saved value was changed. The new Gold acquisition entry
+point downloaded all 60 pinned R2 objects and restored the exact source and
+2,128-entry saved state at `2026-09-05T05:53:32.475Z`. All 36 combined unit tests
+passed on both Node 20 and 24; both agent instruction sections are identical.
+This promotion does not deploy or perform a production rollback. Returning an
+operating server to Gold still requires the guide's actual activation checks,
+preserving current customers unless historical data replacement is separately
+requested. Acquisition must not be reported as activation.
+
 ## Deployed recovery extension (2026-09-05 UTC)
 
 The complete system recovery claim is **not yet verified**. The new evidence now proves an actual

@@ -30,6 +30,8 @@
   "restore_requires_exact_recovery_point_id": true,
   "recovery_extensions_pointer": "20260905T003000Z-v151-deployed-extension.json",
   "portable_artifact_restore_tool": "products/scv-instagram/scripts/recover-v151.mjs",
+  "latest_approved_recovery_gold": "LATEST_GOLD.json",
+  "gold_restore_instructions": "GOLD-RESTORE.md",
   "portable_artifact_restore_instructions": "products/scv-instagram/recovery/RECOVER-V151.md",
   "portable_artifact_restore_evidence": {
     "key": "scv-instagram-automation/recovery-extensions/20260905T023116Z-v151-portable-b3a949eb/SCV_PORTABLE_RECOVERY_EXTENSION.json",

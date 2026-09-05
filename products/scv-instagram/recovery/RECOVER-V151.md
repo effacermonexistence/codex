@@ -1,5 +1,10 @@
 # Recover saved v151 artifacts without the original Mac
 
+For the owner's **latest approved Gold** wording fallback (ManyChat excluded),
+start with [GOLD-RESTORE.md](GOLD-RESTORE.md) and `LATEST_GOLD.json`. The historical
+full-system checks below describe a broader scope; they must not reintroduce a
+ManyChat export requirement into the explicitly narrowed Gold fallback request.
+
 This entry point downloads the exact timestamped recovery point and both later
 extensions from private R2, verifies every SHA-256 and byte count, and reconstructs
 the sealed source and saved production-state tree in a **new private directory**.

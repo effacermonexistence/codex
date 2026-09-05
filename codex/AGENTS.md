@@ -35,6 +35,35 @@ OIDC; it must not depend on a laptop credential. Validate changes with the
 repository checks and verify the resulting R2 manifest when access is
 available.
 
+## SCV latest approved recovery Gold
+
+For SCV Instagram, the owner phrases `최신 Gold로 돌아가`, `최신 골드로 복원해`,
+`restore latest Gold` and `Reset to Gold` mean restore the latest explicitly
+approved recovery baseline, NOT git HEAD, the latest edit/backup, behavioral
+GOLD-3 or an Omar.system-only reset. A readiness question or quoted example does
+not execute a rollback. ManyChat configuration is explicitly excluded.
+
+First read `products/scv-instagram/recovery/LATEST_GOLD.json` and
+`products/scv-instagram/recovery/GOLD-RESTORE.md` from the trusted **main** revision
+of `effacermonexistence/codex`. Verify the dated Gold record's SHA-256 and exact
+recovery-point ID. Do not rely on chat memory, an old Mac path or a stale checkout.
+Use `products/scv-instagram/scripts/recover-gold.mjs` for checked acquisition into
+a new private directory, then follow the guide's target/preservation/activation
+gates for an actual requested rollback. Acquisition is not operating-server
+activation; do not stop at extraction and claim the rollback complete.
+
+Ordinary wording edits, commits, deployments and backups must NEVER move
+`LATEST_GOLD.json` or overwrite any dated Gold. Promoting another Gold requires
+an explicit owner request and separate verified evidence. Preserve April Gold
+and behavioral GOLD-3. For wording fallback preserve current customer messages,
+appointments and delivery state; historical customer-data replacement requires
+its own explicit request. Follow the existing fresh debug-only reset gates after
+a verified production change, never substitute that reset for Gold restoration.
+
+The source-of-truth guide is available to both Codex and Claude after the existing
+new-Mac bootstrap installs their instructions. Inspect existing authenticated
+connections first; never request remembered account names or pasted credentials.
+
 ## Global completion persistence
 
 This rule applies to every Codex task on this machine. Treat terminal phrases
