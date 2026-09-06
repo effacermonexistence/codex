@@ -9,6 +9,9 @@ and an exact command that waits for the signed result. Success requires:
 
 - the same `os1-fleet-objective-v1` selects the executor from fresh CPU, memory,
   queue, capability, and availability heartbeats;
+- an explicitly preferred device wins when fresh, sufficiently provisioned and
+  provider-ready; only an absent/ineligible preferred device falls back to the
+  resource score and deterministic device-ID tie break;
 - the foreground hook returns quickly after enqueue instead of running a second
   provider synchronously;
 - the selected background agent actually claims and executes the task;
