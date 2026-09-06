@@ -6490,6 +6490,7 @@ func usage() {
       os1 fleet-snapshot
       os1 fleet-run --workspace /path --prompt "task" [--profile codex|claude|os1|build|test|exo]
       os1 fleet-wait --job UUID [--timeout-seconds 5...3600]
+      os1 fleet-result --job UUID [--timeout-seconds 5...3600]
       os1 fleet-resume-submit --intent SHA256
       os1 agent --role pro|air [--once]
       os1 configure-fleet-agent --role auto|pro|air

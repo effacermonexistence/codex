@@ -70,7 +70,7 @@ func fleetCommand(_ arguments: [String]) async throws -> Bool {
                     cpuWeight: cpuWeight,
                     preferDeviceID: preferDeviceID
                 )
-            case "fleet-wait":
+            case "fleet-wait", "fleet-result":
                 var jobID: String?
                 var timeoutSeconds = 3_600
                 var index = 1
@@ -87,7 +87,7 @@ func fleetCommand(_ arguments: [String]) async throws -> Bool {
                     }
                 }
                 guard let jobID else { throw OS1Error.message("fleet-wait requires --job UUID") }
-                print(try await waitForFleetTask(jobID: jobID, timeoutSeconds: timeoutSeconds))
+                print(try await (command == "fleet-result" ? readFleetResult(jobID: jobID, timeoutSeconds: timeoutSeconds) : waitForFleetTask(jobID: jobID, timeoutSeconds: timeoutSeconds)))
             case "fleet-snapshot":
                 guard arguments.count == 1 else { throw OS1Error.message("fleet-snapshot takes no arguments") }
                 print(try await fleetSnapshotJSON())

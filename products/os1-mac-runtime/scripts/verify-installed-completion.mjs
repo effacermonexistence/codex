@@ -24,7 +24,7 @@ function check(name, fn) { fn(); checks.push({ name, status: 'PASS' }); }
 check('Installed version/build', () => {
   const info = path.join(app, 'Contents/Info.plist');
   assert.equal(run('/usr/bin/plutil', ['-extract', 'CFBundleShortVersionString', 'raw', '-o', '-', info]).trim(), '0.9.21');
-  assert.equal(run('/usr/bin/plutil', ['-extract', 'CFBundleVersion', 'raw', '-o', '-', info]).trim(), '69');
+  assert.equal(run('/usr/bin/plutil', ['-extract', 'CFBundleVersion', 'raw', '-o', '-', info]).trim(), '70');
 });
 check('Installed executable catalog covers current visible supported models and efforts', () => {
   const config = JSON.parse(fs.readFileSync(path.join(app, 'Contents/Resources/config.json'), 'utf8'));

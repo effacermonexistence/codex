@@ -48,15 +48,8 @@ private func promptHookInput() throws -> PromptHookInput {
     // Claude provides the transcript position rather than a turn UUID. Bind
     // replays to that position; never deduplicate every equal prompt forever.
     if eventID == nil, let path = value["transcript_path"] as? String {
-        let url = URL(fileURLWithPath: path).resolvingSymlinksInPath()
-        let root = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".claude/projects").resolvingSymlinksInPath().path
-        if url.path.hasPrefix(root + "/"),
-           let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
-           attributes[.type] as? FileAttributeType == .typeRegular,
-           let size = attributes[.size] as? NSNumber,
-           let inode = attributes[.systemFileNumber] as? NSNumber {
-            eventID = "transcript:\(url.path):\(inode):\(size)"
-        }
+        eventID = PromptEventIdentity.claudeTranscript(path: path,
+            projectsRoot: FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".claude/projects"))
     }
     return PromptHookInput(
         prompt: prompt,
@@ -107,9 +100,9 @@ private func automaticFleetContext(receipt: FleetEnqueueReceipt, executable: Str
     Selected executor: \(receipt.executorDeviceID)
 
     The selected Pro/Air background agent has accepted the request. Before using any write tool or giving the final answer, run this exact command and wait for its verified result:
-    \(shellQuoted(executable)) fleet-wait --job \(shellQuoted(receipt.jobID))
+    \(shellQuoted(executable)) fleet-result --job \(shellQuoted(receipt.jobID))
 
-    Do not duplicate the same work while that job is pending. Treat the returned execution receipt as a candidate: verify its output and, when it contains result_branch/result_commit, fetch and inspect that exact commit before integrating it. A wait timeout or network error is NOT execution failure: repeat fleet-wait with this same job ID. Only after a terminal failure may you reconcile the remote partial changes before resuming the uncompleted work. This routes whole Codex/Claude jobs between Macs; it does not claim transparent pooling of hosted-model inference or arbitrary macOS CPU, RAM, and GPU processes.
+    This command only reads OS1's locally mirrored result; it never loads credentials, invokes Secure Enclave, or re-executes the task. Do not duplicate the same work while that job is pending. Treat the returned execution receipt as a candidate: verify its output and, when it contains result_branch/result_commit, fetch and inspect that exact commit before integrating it. A wait timeout is NOT execution failure: repeat fleet-result with this same job ID. Only after a terminal failure may you reconcile the remote partial changes before resuming the uncompleted work. This routes whole Codex/Claude jobs between Macs; it does not claim transparent pooling of hosted-model inference or arbitrary macOS CPU, RAM, and GPU processes.
     """
 }
 

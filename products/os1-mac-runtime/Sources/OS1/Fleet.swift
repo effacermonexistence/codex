@@ -238,7 +238,7 @@ private struct FleetStatusRequest: Codable {
     }
 }
 
-private struct FleetJobStatus: Decodable {
+private struct FleetJobStatus: Codable {
     let jobID: String
     let state: String
     let profile: String
@@ -517,13 +517,13 @@ private func executeFleetAssignment(_ assignment: FleetAssignment, role: String,
             throw OS1Error.message("EXO fleet work was not assigned as distributed inference")
         }
         let inference = try await executeEXO(prompt: assignment.task, config: config)
-        run = RunSummary(status: "complete", steps: [RunStepSummary(
+        run = RunSummary(status: "candidate", steps: [RunStepSummary(
             sequence: 1,
             provider: "local",
             action: "exo_distributed_inference",
             model: config.exoModelID ?? "mlx-community/Qwen3-0.6B-4bit",
             effort: "none",
-            revasDisposition: "adopted",
+            revasDisposition: "unverified_candidate",
             sessionID: assignment.jobID,
             permissionProfile: "read_only",
             exitCode: 0,
@@ -614,6 +614,7 @@ func runFleetAgent(role: String, once: Bool) async throws {
                 registered = true
             }
             let node = try await sendFleetHeartbeat(client: client, key: key, role: role)
+            try? await refreshFleetResultCache(client: client, key: key)
             var active: FleetAgentWork?
             if FileManager.default.fileExists(atPath: activeFile.path) {
                 active = try JSONDecoder().decode(FleetAgentWork.self, from: Data(contentsOf: activeFile))
@@ -666,6 +667,7 @@ func runFleetAgent(role: String, once: Bool) async throws {
                     throw OS1Error.message("Fleet result outbox is invalid; preserved without re-execution")
                 }
                 try await completeFleetJob(client: client, key: key, assignment: work.assignment, outcome: outcome, result: result)
+                try? await refreshFleetResultCache(client: client, key: key)
                 try fleetPersist(work, at: fleetJobDirectory(work.assignment.jobID).appendingPathComponent("fleet-result.json"))
                 try FileManager.default.removeItem(at: activeFile)
             }
@@ -694,6 +696,7 @@ private func fleetHeartbeatDuringWork(role: String) async {
             try await Task.sleep(for: .seconds(10))
             let client = APIClient(config: try RuntimeConfig.load(), token: try githubToken(), deviceID: try deviceID(), requestTimeoutSeconds: 10)
             _ = try await sendFleetHeartbeat(client: client, key: SigningKey.loadOrCreate(), role: role)
+            try? await refreshFleetResultCache(client: client, key: SigningKey.loadOrCreate())
         } catch is CancellationError { return }
         catch { if !Task.isCancelled { fputs("OS-1 Fleet heartbeat temporarily unavailable\n", stderr) } }
     }
@@ -888,12 +891,21 @@ func waitForFleetTask(jobID: String, timeoutSeconds: Int = 3_600) async throws -
         guard status.jobID.lowercased() == jobID.lowercased() else {
             throw OS1Error.message("Fleet result job identity mismatch")
         }
+        if let result = try fleetValidatedResult(status, jobID: jobID) { return result }
+    }
+    throw OS1Error.message("Fleet wait ended; job may still be running. Resume fleet-wait with the same job ID; do not submit duplicate work.")
+}
+
+private func fleetValidatedResult(_ status: FleetJobStatus, jobID: String) throws -> String? {
+        guard status.jobID.lowercased() == jobID.lowercased(), status.objectiveVersion == "os1-fleet-objective-v1" else {
+            throw OS1Error.message("Fleet result objective identity mismatch")
+        }
         if status.state == "complete" {
             guard let result = status.result, let hash = status.resultHash,
                   sha256Hex(Data(result.utf8)) == hash,
                   let receipt = try? JSONDecoder().decode(FleetExecutionReceipt.self, from: Data(result.utf8)),
                   receipt.jobID.lowercased() == jobID.lowercased(), receipt.deviceID == status.executorDeviceID,
-                  receipt.profile == status.profile, receipt.run.status == "complete" else {
+                  receipt.profile == status.profile, fleetResultStatusIsValid(receipt.run, profile: receipt.profile) else {
                 throw OS1Error.message("Fleet result integrity check failed")
             }
             return result
@@ -901,8 +913,97 @@ func waitForFleetTask(jobID: String, timeoutSeconds: Int = 3_600) async throws -
         if status.state == "failed" || status.state == "expired" {
             throw OS1Error.message("Fleet job \(status.state): \(status.result ?? "no result")")
         }
+        return nil
+}
+
+private func fleetResultCacheURL(_ jobID: String) throws -> URL {
+    guard UUID(uuidString: jobID) != nil else { throw OS1Error.message("Invalid Fleet result ID") }
+    return FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".os1/fleet/results", isDirectory: true)
+        .appendingPathComponent(jobID.lowercased() + ".json")
+}
+
+private func fleetMirrorOrder(_ ids: [String], checkedAt: [String: Date]) -> [String] {
+    ids.enumerated().sorted {
+        let a = checkedAt[$0.element] ?? .distantPast
+        let b = checkedAt[$1.element] ?? .distantPast
+        return a == b ? $0.offset < $1.offset : a < b
+    }.map(\.element)
+}
+
+private actor FleetMirrorSchedule {
+    static let shared = FleetMirrorSchedule()
+    private var checkedAt: [String: Date] = [:]
+    func reserve(_ ids: [String]) -> Set<String> {
+        let live = Set(ids)
+        checkedAt = checkedAt.filter { live.contains($0.key) }
+        let selected = Array(fleetMirrorOrder(ids, checkedAt: checkedAt).prefix(4))
+        for id in selected { checkedAt[id] = Date() }
+        return Set(selected)
     }
-    throw OS1Error.message("Fleet wait ended; job may still be running. Resume fleet-wait with the same job ID; do not submit duplicate work.")
+}
+
+private func refreshFleetResultCache(client: APIClient, key: SigningKey) async throws {
+    let manager = FileManager.default
+    let root = manager.homeDirectoryForCurrentUser.appendingPathComponent(".os1/fleet/submissions", isDirectory: true)
+    guard let files = try? manager.contentsOfDirectory(at: root, includingPropertiesForKeys: [.contentModificationDateKey]) else { return }
+    // A bounded read-only mirror, not another executor. Existing receipts never
+    // trigger more provider calls or include tokens, keys or authentication data.
+    var candidates: [(FleetEnqueueReceipt, URL)] = []
+    for file in files.filter({ $0.pathExtension == "json" }).sorted(by: {
+        ((try? $0.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast) >
+        ((try? $1.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast)
+    }).prefix(512) {
+        guard let bytes = try? Data(contentsOf: file), bytes.count <= 256_000,
+              let intent = try? JSONDecoder().decode(FleetSubmissionIntent.self, from: bytes), intent.deviceID == client.deviceID,
+              let receipt = intent.receipt else { continue }
+        let target = try fleetResultCacheURL(receipt.jobID)
+        if manager.fileExists(atPath: target.path) { continue }
+        candidates.append((receipt, target))
+    }
+    let selected = await FleetMirrorSchedule.shared.reserve(candidates.map { $0.0.jobID })
+    for (receipt, target) in candidates where selected.contains(receipt.jobID) {
+      do {
+        let now = fleetNowMs(), nonce = try randomNonce()
+        let signature = Base64URL.encode(try key.sign(statusBytes(deviceID: client.deviceID, jobID: receipt.jobID, sentAtMs: now, nonce: nonce)))
+        let status: FleetJobStatus = try await client.post("/v1/fleet/status",
+            body: FleetStatusRequest(jobID: receipt.jobID, sentAtMs: now, nonce: nonce, signature: signature), as: FleetJobStatus.self)
+        guard status.jobID == receipt.jobID, status.executorDeviceID == receipt.executorDeviceID,
+              status.profile == receipt.profile, status.objectiveVersion == receipt.objectiveVersion,
+              status.executionMode == receipt.executionMode,
+              ["complete", "failed", "expired"].contains(status.state) else { continue }
+        // Mirror the immutable terminal response, not an assertion of task
+        // success. The reader validates it before returning any result. An old
+        // invalid receipt must surface its rejection, not starve newer jobs.
+        try manager.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        try fleetPersist(status, at: target)
+      } catch is CancellationError { throw CancellationError() }
+      catch { fputs("OS-1 Fleet result mirror retry: \(receipt.jobID)\n", stderr) }
+    }
+}
+
+private func readFleetCachedResult(at target: URL, jobID: String) throws -> String? {
+    let attributes = try FileManager.default.attributesOfItem(atPath: target.path)
+    guard attributes[.type] as? FileAttributeType == .typeRegular,
+          (attributes[.ownerAccountID] as? NSNumber)?.uint32Value == getuid(),
+          (attributes[.posixPermissions] as? NSNumber)?.intValue == 0o600,
+          (attributes[.size] as? NSNumber)?.intValue ?? Int.max <= 4_000_000 else {
+        throw OS1Error.message("Fleet result cache ownership or permissions rejected")
+    }
+    let status = try JSONDecoder().decode(FleetJobStatus.self, from: Data(contentsOf: target))
+    return try fleetValidatedResult(status, jobID: jobID)
+}
+
+func readFleetResult(jobID: String, timeoutSeconds: Int = 300) async throws -> String {
+    guard (5...3_600).contains(timeoutSeconds) else { throw OS1Error.message("Invalid Fleet result wait limit") }
+    let target = try fleetResultCacheURL(jobID)
+    let deadline = Date().addingTimeInterval(TimeInterval(timeoutSeconds))
+    repeat {
+        if FileManager.default.fileExists(atPath: target.path) {
+            if let result = try readFleetCachedResult(at: target, jobID: jobID) { return result }
+        }
+        try await Task.sleep(for: .seconds(1))
+    } while Date() < deadline
+    throw OS1Error.message("Fleet result is still pending in OS1. Resume fleet-result with this same job ID; do not duplicate the task.")
 }
 
 func fleetSnapshotJSON() async throws -> String {
@@ -1011,9 +1112,21 @@ func configureFleetAgent(role requestedRole: String) async throws {
     print("OS-1 fleet agent installed (\(role))")
 }
 
+func fleetResultStatusIsValid(_ run: RunSummary, profile: String) -> Bool {
+    guard !run.steps.isEmpty, run.steps.allSatisfy({ $0.exitCode == 0 }) else { return false }
+    if profile == "exo" {
+        return run.status == "candidate" && run.steps.allSatisfy {
+            $0.action == "exo_distributed_inference" && $0.revasDisposition == "unverified_candidate"
+        }
+    }
+    return run.status == "complete" && run.steps.allSatisfy { $0.revasDisposition == "adopted" || $0.revasDisposition == "control_verified" }
+}
+
 func fleetSelfTest() throws {
+    var checks = 0
     func check(_ value: Bool, _ message: String) throws {
         if !value { throw OS1Error.message("Fleet self-test: " + message) }
+        checks += 1
     }
     let original = try RuntimeConfig.load()
     var config = original
@@ -1048,5 +1161,38 @@ func fleetSelfTest() throws {
     try fleetPersist(active, at: url)
     let recovered = try JSONDecoder().decode(FleetAgentWork.self, from: Data(contentsOf: url))
     try check(recovered.phase == "delivery_pending" && recovered.result == "preserved output" && recovered.assignment.jobID == assignment.jobID, "result recovery lost identity")
-    print("OS-1 Fleet self-test: 9 checks OK; config, local-only EXO, private intent and result preservation")
+    let candidate = RunStepSummary(sequence: 1, provider: "local", action: "exo_distributed_inference",
+        model: "fixture", effort: "none", revasDisposition: "unverified_candidate", sessionID: "fixture",
+        permissionProfile: "read_only", exitCode: 0, output: "2", stderr: "", durationMS: 1, nativeRecord: nil)
+    try check(fleetResultStatusIsValid(RunSummary(status: "candidate", steps: [candidate]), profile: "exo"), "EXO candidate transport rejected")
+    try check(!fleetResultStatusIsValid(RunSummary(status: "complete", steps: [candidate]), profile: "exo"), "unverified EXO called complete")
+    try check(!fleetResultStatusIsValid(RunSummary(status: "complete", steps: [candidate]), profile: "codex"), "EXO candidate adopted as native result")
+    let receipt = FleetExecutionReceipt(jobID: assignment.jobID, nodeRole: "air", deviceID: "air", profile: "exo",
+        repository: request.workspaceRepository, revision: request.workspaceRevision, resultBranch: nil, resultCommit: nil,
+        run: RunSummary(status: "candidate", steps: [candidate]))
+    let result = String(decoding: try JSONEncoder().encode(receipt), as: UTF8.self)
+    func fixture(state: String = "complete", hash: String? = nil) -> FleetJobStatus {
+        FleetJobStatus(jobID: assignment.jobID, state: state, profile: "exo", executionMode: "distributed_exo",
+            executorDeviceID: "air", objectiveVersion: "os1-fleet-objective-v1", result: result,
+            resultHash: hash ?? sha256Hex(Data(result.utf8)))
+    }
+    try fleetPersist(fixture(), at: url)
+    try check(try readFleetCachedResult(at: url, jobID: assignment.jobID) == result, "read-only result lost verified bytes")
+    try check((try? readFleetCachedResult(at: url, jobID: UUID().uuidString)) == nil, "cross-job cached result accepted")
+    try fleetPersist(fixture(hash: String(repeating: "0", count: 64)), at: url)
+    try check((try? readFleetCachedResult(at: url, jobID: assignment.jobID)) == nil, "corrupt cached hash accepted")
+    try fleetPersist(fixture(state: "claimed"), at: url)
+    try check(try readFleetCachedResult(at: url, jobID: assignment.jobID) == nil, "pending receipt became a result")
+    try fleetPersist(fixture(state: "failed"), at: url)
+    try check((try? readFleetCachedResult(at: url, jobID: assignment.jobID)) == nil, "terminal failure became success")
+    try fleetPersist(fixture(), at: url)
+    try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: url.path)
+    try check((try? readFleetCachedResult(at: url, jobID: assignment.jobID)) == nil, "public-readable cache accepted")
+    try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+    let link = directory.appendingPathComponent("link.json")
+    try FileManager.default.createSymbolicLink(at: link, withDestinationURL: url)
+    try check((try? readFleetCachedResult(at: link, jobID: assignment.jobID)) == nil, "cache symlink accepted")
+    try check(fleetMirrorOrder(["new", "old", "pending"], checkedAt: ["pending": Date()]) == ["new", "old", "pending"], "pending job starves unchecked results")
+    try check(fleetMirrorOrder(["new", "old"], checkedAt: ["new": Date(), "old": .distantPast]) == ["old", "new"], "old result starves behind new jobs")
+    print("OS-1 Fleet self-test: \(checks) checks OK; config, EXO candidate, private read-only result validation and fair result polling")
 }

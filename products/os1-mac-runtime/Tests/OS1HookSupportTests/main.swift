@@ -116,13 +116,32 @@ func testSettingsPreservation() throws {
     } catch HookSettingsError.invalid { }
 }
 
+func testFirstPromptIdentity() throws {
+    let root = try temporaryDirectory()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let transcript = root.appendingPathComponent("first.jsonl")
+    let initial = PromptEventIdentity.claudeTranscript(path: transcript.path, projectsRoot: root)
+    try expect(initial?.hasSuffix(":initial") == true, "first native prompt has no stable identity")
+    try expect(initial == PromptEventIdentity.claudeTranscript(path: transcript.path, projectsRoot: root), "first prompt retry identity drifted")
+    try Data("first user turn\n".utf8).write(to: transcript)
+    let next = PromptEventIdentity.claudeTranscript(path: transcript.path, projectsRoot: root)
+    try expect(next != nil && next != initial, "later prompt reused first event identity")
+    try expect(next == PromptEventIdentity.claudeTranscript(path: transcript.path, projectsRoot: root), "transcript position is not stable")
+    try expect(PromptEventIdentity.claudeTranscript(path: root.deletingLastPathComponent().appendingPathComponent("outside.jsonl").path, projectsRoot: root) == nil, "outside transcript accepted")
+    try expect(PromptEventIdentity.claudeTranscript(path: root.path, projectsRoot: root) == nil, "directory accepted as transcript")
+    let link = root.appendingPathComponent("escape.jsonl")
+    try FileManager.default.createSymbolicLink(atPath: link.path, withDestinationPath: "/private/tmp/escaped.jsonl")
+    try expect(PromptEventIdentity.claudeTranscript(path: link.path, projectsRoot: root) == nil, "symlink escape accepted")
+}
+
 do {
     try testExclusiveLease()
     try testCircuitBreaker()
     try testTimeoutHeadroom()
     try testAutomaticFleetExecutorBypass()
     try testSettingsPreservation()
-    print("OS1HookSupportTests: PASS (5 test groups)")
+    try testFirstPromptIdentity()
+    print("OS1HookSupportTests: PASS (6 test groups)")
 } catch {
     fputs("OS1HookSupportTests: FAIL: \(error)\n", stderr)
     exit(1)
