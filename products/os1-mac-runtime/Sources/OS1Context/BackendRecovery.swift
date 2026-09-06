@@ -177,4 +177,3 @@ public struct BackendRecoveryCheckpoint: Codable, Sendable {
         self.nativeSessionID = nativeSessionID.flatMap { UUID(uuidString: $0)?.uuidString.lowercased() }
     }
 }
-

@@ -1003,8 +1003,11 @@ func configureFleetAgent(role requestedRole: String) async throws {
     _ = try? commandOutput(launchctl, ["bootout", "gui/\(getuid())/\(label)"], timeout: 20)
     let bootstrapped = try commandOutput(launchctl, ["bootstrap", "gui/\(getuid())", plist.path], timeout: 20)
     guard bootstrapped.0 == 0 else { throw OS1Error.message("Fleet LaunchAgent installation failed") }
-    let kicked = try commandOutput(launchctl, ["kickstart", "-k", "gui/\(getuid())/\(label)"], timeout: 20)
-    guard kicked.0 == 0 else { throw OS1Error.message("Fleet LaunchAgent start failed") }
+    // RunAtLoad already starts the newly bootstrapped agent. An immediate
+    // kickstart -k kills that healthy process and waits through launchd's
+    // throttle interval, racing our timeout and interrupting claimed work.
+    let loaded = try commandOutput(launchctl, ["print", "gui/\(getuid())/\(label)"], timeout: 10)
+    guard loaded.0 == 0 else { throw OS1Error.message("Fleet LaunchAgent registration was not verified") }
     print("OS-1 fleet agent installed (\(role))")
 }
 
