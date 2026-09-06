@@ -12,7 +12,7 @@
     <key>BundleOverwriteAction</key>
     <string>upgrade</string>
     <key>RootRelativeBundlePath</key>
-    <string>Applications/Open OS-1 Codex.app</string>
+    <string>Applications/OS-1 CLODEX.app</string>
   </dict>
 </array>
 </plist>

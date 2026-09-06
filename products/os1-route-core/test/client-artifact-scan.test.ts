@@ -13,6 +13,19 @@ afterEach(async () => {
 });
 
 describe("client release artifact hygiene gate", () => {
+  it("allows only the known public glyph-name token, not other font contents", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "os1-font-"));
+    temporaryDirectories.push(directory);
+    const file = join(directory, "latinmodern-math.otf");
+    const glyphNames = "stDeltaGammaLambdaOmegaPhiPiPsiSigmaThetaUpsilonXiuni2127uni2126AlphaBetaEpsilonZetaEtaIotaKappaMuNuOmicronRhoTauChiDelta";
+    await writeFile(file, glyphNames);
+    expect((await scanClientArtifacts([directory])).findings).toEqual([]);
+    await writeFile(file, glyphNames + "\n" + "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz+/" + "\nprivate routing prompt");
+    const result = await scanClientArtifacts([directory]);
+    expect(result.findings.some(finding => finding.kind === "high_entropy")).toBe(true);
+    expect(result.findings.some(finding => finding.kind === "forbidden_content")).toBe(true);
+  });
+
   it("passes a minimal client artifact", async () => {
     const directory = await mkdtemp(join(tmpdir(), "os1-clean-"));
     temporaryDirectories.push(directory);

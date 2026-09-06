@@ -32,6 +32,13 @@
   "entropy": {
     "minimumLength": 48,
     "minimumBitsPerCharacter": 4.7,
-    "allowedTokenSha256": []
+    "allowedTokenSha256": ["4544effe5a9ad41e0e790122f148b492ddc3b2eb84ec9094c1741699300d2ae4"]
+  },
+  "publicTokenProvenance": {
+    "4544effe5a9ad41e0e790122f148b492ddc3b2eb84ec9094c1741699300d2ae4": {
+      "description": "Concatenated public Greek glyph names, not a credential. No whole-font or extension exemption.",
+      "source": "https://github.com/mgriebling/SwiftMath/blob/fa8244ed032f4a1ade4cb0571bf87d2f1a9fd2d7/Sources/SwiftMath/mathFonts.bundle/latinmodern-math.otf",
+      "fileSHA256": "6075562b771f8b82f0c179e363389684f2dd09de30038269e2628e504bd7be0f"
+    }
   }
 }

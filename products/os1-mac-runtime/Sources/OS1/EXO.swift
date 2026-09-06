@@ -12,6 +12,7 @@ struct EXOConfiguration {
         guard let apiURL = URL(string: apiURLString),
               apiURL.scheme == "http",
               apiURL.port == 52_415,
+              apiURL.user == nil, apiURL.password == nil, apiURL.query == nil, apiURL.fragment == nil,
               ["127.0.0.1", "localhost", "::1"].contains(apiURL.host?.lowercased() ?? ""),
               apiURL.path.isEmpty || apiURL.path == "/" else {
             throw OS1Error.message("EXO must use the local loopback API on port 52415")

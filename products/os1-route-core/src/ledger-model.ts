@@ -25,7 +25,8 @@ export type ClaimCommand = {
 };
 
 export type ClaimDecision =
-  | { kind: "claimed" }
+  | { kind: "claimed"; claim_token?: string }
+  | { kind: "pending"; retry_after_ms: number }
   | { kind: "completed"; response_json: string }
   | { kind: "rejected" };
 

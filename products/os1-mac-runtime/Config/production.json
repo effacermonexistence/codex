@@ -34,6 +34,12 @@
   },
   "execution_profiles": {
     "os1_exact": { "provider": "local", "model": "local-deterministic", "effort": "none" },
+    "cx_6astra_low": { "provider": "codex", "model": "gpt-6-astra", "effort": "low" },
+    "cx_6astra_medium": { "provider": "codex", "model": "gpt-6-astra", "effort": "medium" },
+    "cx_6astra_high": { "provider": "codex", "model": "gpt-6-astra", "effort": "high" },
+    "cx_6astra_xhigh": { "provider": "codex", "model": "gpt-6-astra", "effort": "xhigh" },
+    "cx_6astra_max": { "provider": "codex", "model": "gpt-6-astra", "effort": "max" },
+    "cx_6astra_ultra": { "provider": "codex", "model": "gpt-6-astra", "effort": "ultra" },
     "cx_56sol_low": { "provider": "codex", "model": "gpt-5.6-sol", "effort": "low" },
     "cx_56sol_medium": { "provider": "codex", "model": "gpt-5.6-sol", "effort": "medium" },
     "cx_56sol_high": { "provider": "codex", "model": "gpt-5.6-sol", "effort": "high" },

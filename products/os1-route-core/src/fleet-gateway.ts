@@ -91,7 +91,9 @@ export async function fleetSubmit(request: Request, env: Env): Promise<Response>
     expires_at_ms: submit.submitted_at_ms + JOB_TTL_MS,
     request_nonce: submit.nonce,
   };
-  return fleetJson(await state.submit(spec));
+  const response = await state.submit(spec);
+  if (response.status === "rejected") reject();
+  return fleetJson(response);
 }
 
 export async function fleetClaim(request: Request, env: Env): Promise<Response> {
@@ -99,7 +101,7 @@ export async function fleetClaim(request: Request, env: Env): Promise<Response> 
   const claim = body as ReturnType<typeof parseFleetClaim>;
   fresh(claim.sent_at_ms);
   const state = await fleet(env, identity.subject);
-  return fleetJson(await state.claim(identity.device_id, claim.sent_at_ms));
+  return fleetJson(await state.claim(identity.device_id, claim.sent_at_ms, claim.nonce));
 }
 
 export async function fleetComplete(request: Request, env: Env): Promise<Response> {

@@ -1,0 +1,5 @@
+USER:
+야,야 R2 연결 됐냐고
+
+OS-1:
+R2 연결됨 — omar-private-archive 접근 확인

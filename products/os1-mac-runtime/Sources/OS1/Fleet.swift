@@ -1,6 +1,8 @@
 import CryptoKit
+import CoreFoundation
 import Darwin
 import Foundation
+import OS1HookSupport
 
 private let fleetProfiles = ["codex", "claude", "os1", "build", "test", "exo"]
 let fleetAgentCycleInterval: Duration = .seconds(20)
@@ -282,6 +284,22 @@ private func fleetNowMs() -> Int64 {
     Int64(Date().timeIntervalSince1970 * 1_000)
 }
 
+private func requireFleetReceiptProtocol(_ config: RuntimeConfig) async throws {
+    guard let base = URL(string: config.apiURL), let url = URL(string: "/v1/capabilities", relativeTo: base) else {
+        throw OS1Error.message("Invalid Fleet service URL")
+    }
+    var request = URLRequest(url: url)
+    request.timeoutInterval = 5
+    request.cachePolicy = .reloadIgnoringLocalCacheData
+    let (data, response) = try await URLSession.shared.data(for: request)
+    guard (response as? HTTPURLResponse)?.statusCode == 200, data.count <= 4096,
+          let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+          let protocolVersion = object["fleet_receipt_protocol"] as? NSNumber,
+          CFGetTypeID(protocolVersion) != CFBooleanGetTypeID(), protocolVersion.doubleValue == 1 else {
+        throw OS1Error.message("Fleet service does not support safe submission recovery; no job submitted")
+    }
+}
+
 private func fleetBytes(_ kind: String, deviceID: String, fields: [CustomStringConvertible?]) -> Data {
     let values = fields.map { item -> String in
         guard let item else { return "" }
@@ -374,8 +392,7 @@ private func fleetLoadAverageMilli() -> Int {
 }
 
 private func fleetEXONodes(config: RuntimeConfig) async -> Int {
-    let raw = config.exoAPIURL ?? "http://127.0.0.1:52415"
-    guard let base = URL(string: raw) else { return 0 }
+    guard let base = try? EXOConfiguration(runtimeConfig: config).apiURL else { return 0 }
     var request = URLRequest(url: base.appendingPathComponent("state/topology"))
     request.timeoutInterval = 3
     do {
@@ -419,16 +436,16 @@ private func sendFleetHeartbeat(client: APIClient, key: SigningKey, role: String
     return node
 }
 
-private func fleetClaim(client: APIClient, key: SigningKey) async throws -> FleetAssignment? {
+private func fleetClaim(client: APIClient, key: SigningKey, nonce: String) async throws -> FleetAssignment? {
     let now = fleetNowMs()
-    let nonce = try randomNonce()
     let signature = Base64URL.encode(try key.sign(claimBytes(deviceID: client.deviceID, sentAtMs: now, nonce: nonce)))
-    let response: FleetClaimResponse = try await client.post(
+    let response: FleetClaimResponse = try await client.deliver(
         "/v1/fleet/claim",
         body: FleetClaimRequest(sentAtMs: now, nonce: nonce, signature: signature),
         as: FleetClaimResponse.self
     )
-    guard response.status == "idle" || response.status == "claimed" else {
+    guard (response.status == "idle" && response.assignment == nil) ||
+          (response.status == "claimed" && response.assignment?.executorDeviceID == client.deviceID) else {
         throw OS1Error.message("Fleet claim response rejected")
     }
     return response.assignment
@@ -459,8 +476,8 @@ private func fleetCheckout(_ assignment: FleetAssignment) throws -> String {
     let workspace = assignment.workspaceSubpath.isEmpty
         ? repository
         : repository.appendingPathComponent(assignment.workspaceSubpath, isDirectory: true)
-    let root = repository.standardizedFileURL.path + "/"
-    let path = workspace.standardizedFileURL.path
+    let root = repository.resolvingSymlinksInPath().path + "/"
+    let path = workspace.resolvingSymlinksInPath().path
     guard (path + "/").hasPrefix(root), FileManager.default.fileExists(atPath: path) else {
         throw OS1Error.message("Fleet workspace path rejected")
     }
@@ -488,101 +505,6 @@ private func fleetCommitResult(_ assignment: FleetAssignment, workspace: String)
     return (branch, String(decoding: revision.1, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines))
 }
 
-private func executeFleetClaude(
-    assignment: FleetAssignment,
-    workspace: String,
-    config: RuntimeConfig
-) throws -> RunSummary {
-    let formatter = ISO8601DateFormatter()
-    formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-    let ticket = Ticket(
-        executionID: assignment.jobID,
-        sequence: 1,
-        provider: "claude",
-        action: "cl_sonnet_medium",
-        permissionProfile: "workspace_write",
-        expiresAt: formatter.string(from: Date().addingTimeInterval(3_600)),
-        nonce: Base64URL.encode(Data(repeating: 0, count: 32)),
-        signature: Base64URL.encode(Data(repeating: 0, count: 64))
-    )
-    let execution = try execute(
-        ticket: ticket,
-        prompt: assignment.task,
-        workspace: workspace,
-        timeout: config.executionTimeoutSeconds,
-        providerSessionID: nil,
-        model: "sonnet",
-        effort: "medium",
-        executorContract: config.executorContract,
-        desktopReveal: .never,
-        workspaceBeforeHash: workspaceHash(workspace),
-        claudeSafeMode: true
-    )
-    let artifact = execution.artifact
-    return RunSummary(status: "complete", steps: [RunStepSummary(
-        sequence: 1,
-        provider: artifact.provider,
-        action: artifact.action,
-        model: artifact.model,
-        effort: artifact.effort,
-        revasDisposition: "fleet_device_verified",
-        sessionID: execution.sessionID,
-        permissionProfile: artifact.permissionProfile,
-        exitCode: artifact.exitCode,
-        output: artifact.output,
-        stderr: artifact.stderr,
-        durationMS: artifact.durationMS,
-        nativeRecord: execution.nativeRecord
-    )])
-}
-
-private func executeFleetCodex(
-    assignment: FleetAssignment,
-    prompt: String,
-    workspace: String,
-    config: RuntimeConfig
-) throws -> RunSummary {
-    let formatter = ISO8601DateFormatter()
-    formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-    let ticket = Ticket(
-        executionID: assignment.jobID,
-        sequence: 1,
-        provider: "codex",
-        action: "cx_56luna_low",
-        permissionProfile: "workspace_write",
-        expiresAt: formatter.string(from: Date().addingTimeInterval(3_600)),
-        nonce: Base64URL.encode(Data(repeating: 0, count: 32)),
-        signature: Base64URL.encode(Data(repeating: 0, count: 64))
-    )
-    let execution = try execute(
-        ticket: ticket,
-        prompt: prompt,
-        workspace: workspace,
-        timeout: config.executionTimeoutSeconds,
-        providerSessionID: nil,
-        model: "gpt-5.6-luna",
-        effort: "low",
-        executorContract: config.executorContract,
-        desktopReveal: .never,
-        workspaceBeforeHash: workspaceHash(workspace)
-    )
-    let artifact = execution.artifact
-    return RunSummary(status: "complete", steps: [RunStepSummary(
-        sequence: 1,
-        provider: artifact.provider,
-        action: artifact.action,
-        model: artifact.model,
-        effort: artifact.effort,
-        revasDisposition: "fleet_device_verified",
-        sessionID: execution.sessionID,
-        permissionProfile: artifact.permissionProfile,
-        exitCode: artifact.exitCode,
-        output: artifact.output,
-        stderr: artifact.stderr,
-        durationMS: artifact.durationMS,
-        nativeRecord: execution.nativeRecord
-    )])
-}
 
 private func executeFleetAssignment(_ assignment: FleetAssignment, role: String, config: RuntimeConfig) async throws -> String {
     guard fleetProfiles.contains(assignment.profile), assignment.objectiveVersion == "os1-fleet-objective-v1" else {
@@ -619,15 +541,14 @@ private func executeFleetAssignment(_ assignment: FleetAssignment, role: String,
         case "test": prompt = "Run and verify the requested repository tests.\n\n\(assignment.task)"
         default: prompt = assignment.task
         }
-        if assignment.profile == "claude" {
-            run = try executeFleetClaude(assignment: assignment, workspace: workspace, config: config)
-        } else {
-            run = try executeFleetCodex(
-                assignment: assignment,
-                prompt: prompt,
-                workspace: workspace,
-                config: config
-            )
+        run = try await runTask(
+            prompt: prompt, workspace: workspace,
+            providerPreference: ["codex", "claude"].contains(assignment.profile) ? assignment.profile : "auto",
+            context: nil, codexSessionID: nil, claudeSessionID: nil,
+            codexCapacity: 100, claudeCapacity: 100, progress: false, desktopReveal: .never
+        )
+        guard run.status == "complete", !run.steps.isEmpty, run.steps.allSatisfy({ $0.exitCode == 0 }) else {
+            throw OS1Error.message("Fleet governed execution has not completed")
         }
         published = try fleetCommitResult(assignment, workspace: workspace)
     }
@@ -668,14 +589,23 @@ private func completeFleetJob(
         resultHash: request.resultHash, completedAtMs: request.completedAtMs, nonce: request.nonce,
         signature: Base64URL.encode(try key.sign(completeBytes(deviceID: client.deviceID, request: request)))
     )
-    let response: [String: String] = try await client.post("/v1/fleet/complete", body: request, as: [String: String].self)
+    let response: [String: String] = try await client.deliver("/v1/fleet/complete", body: request, as: [String: String].self)
     guard response["status"] == "stored" else { throw OS1Error.message("Fleet result was not stored") }
 }
 
 func runFleetAgent(role: String, once: Bool) async throws {
     let config = try RuntimeConfig.load()
+    try await requireFleetReceiptProtocol(config)
     let key = try SigningKey.loadOrCreate()
-    let client = APIClient(config: config, token: try githubToken(), deviceID: try deviceID())
+    let client = APIClient(config: config, token: try githubToken(), deviceID: try deviceID(), requestTimeoutSeconds: 10)
+    let root = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".os1/fleet", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+    guard let lease = try ExclusiveHookLease.tryAcquire(at: root.appendingPathComponent("main-agent.lock")) else {
+        throw OS1Error.message("Another OS1 Fleet agent already owns execution")
+    }
+    defer { withExtendedLifetime(lease) {} }
+    let activeFile = root.appendingPathComponent("main-agent-active.json")
+    let claimFile = root.appendingPathComponent("main-agent-claim.json")
     var registered = false
     repeat {
         do {
@@ -684,16 +614,60 @@ func runFleetAgent(role: String, once: Bool) async throws {
                 registered = true
             }
             let node = try await sendFleetHeartbeat(client: client, key: key, role: role)
-            if let assignment = try await fleetClaim(client: client, key: key) {
-                do {
-                    let result = try await executeFleetAssignment(assignment, role: role, config: config)
-                    try await completeFleetJob(client: client, key: key, assignment: assignment, outcome: "complete", result: result)
-                } catch {
-                    let result = String(decoding: try JSONEncoder().encode([
-                        "error": String(String(describing: error).prefix(8_000)),
-                    ]), as: UTF8.self)
-                    try await completeFleetJob(client: client, key: key, assignment: assignment, outcome: "failed", result: result)
+            var active: FleetAgentWork?
+            if FileManager.default.fileExists(atPath: activeFile.path) {
+                active = try JSONDecoder().decode(FleetAgentWork.self, from: Data(contentsOf: activeFile))
+            } else {
+                let nonce: String
+                if FileManager.default.fileExists(atPath: claimFile.path) {
+                    nonce = try JSONDecoder().decode(String.self, from: Data(contentsOf: claimFile))
+                } else {
+                    nonce = try randomNonce()
+                    try fleetPersist(nonce, at: claimFile)
                 }
+                if let assignment = try await fleetClaim(client: client, key: key, nonce: nonce) {
+                    active = FleetAgentWork(assignment: assignment)
+                    try fleetPersist(active!, at: activeFile)
+                }
+                try FileManager.default.removeItem(at: claimFile)
+            }
+            if var work = active {
+                guard work.assignment.executorDeviceID == client.deviceID else {
+                    throw OS1Error.message("Fleet active job belongs to another device")
+                }
+                if work.phase == "running" {
+                    // A process crash is not permission to repeat external writes.
+                    throw OS1Error.message("Fleet job \(work.assignment.jobID) was interrupted; native execution reconciliation is required. Preserved state prevents duplicate execution.")
+                }
+                if work.phase == "claimed" {
+                    guard work.assignment.expiresAtMs > fleetNowMs() else {
+                        throw OS1Error.message("Fleet assignment expired before execution; preserved for reconciliation")
+                    }
+                    work.phase = "running"
+                    try fleetPersist(work, at: activeFile)
+                    let heartbeat = Task.detached { await fleetHeartbeatDuringWork(role: role) }
+                    do {
+                        work.result = try await executeFleetAssignment(work.assignment, role: role, config: config)
+                        work.outcome = "complete"
+                    } catch {
+                        work.result = String(decoding: try JSONEncoder().encode([
+                            "error": String(String(describing: error).prefix(8_000)),
+                            "job_id": work.assignment.jobID,
+                            "partial_work": "Inspect this job's native records and checkout before resuming remaining work.",
+                        ]), as: UTF8.self)
+                        work.outcome = "failed"
+                    }
+                    heartbeat.cancel()
+                    _ = await heartbeat.result
+                    work.phase = "delivery_pending"
+                    try fleetPersist(work, at: activeFile)
+                }
+                guard work.phase == "delivery_pending", let result = work.result, let outcome = work.outcome else {
+                    throw OS1Error.message("Fleet result outbox is invalid; preserved without re-execution")
+                }
+                try await completeFleetJob(client: client, key: key, assignment: work.assignment, outcome: outcome, result: result)
+                try fleetPersist(work, at: fleetJobDirectory(work.assignment.jobID).appendingPathComponent("fleet-result.json"))
+                try FileManager.default.removeItem(at: activeFile)
             }
             if once {
                 print("OS-1 fleet agent: OK (\(role), \(node.zeroTierIP), EXO nodes \(node.exoNodes))")
@@ -705,6 +679,24 @@ func runFleetAgent(role: String, once: Bool) async throws {
         }
         try await Task.sleep(for: fleetAgentCycleInterval)
     } while true
+}
+
+private struct FleetAgentWork: Codable {
+    let assignment: FleetAssignment
+    var phase = "claimed"
+    var outcome: String? = nil
+    var result: String? = nil
+}
+
+private func fleetHeartbeatDuringWork(role: String) async {
+    while !Task.isCancelled {
+        do {
+            try await Task.sleep(for: .seconds(10))
+            let client = APIClient(config: try RuntimeConfig.load(), token: try githubToken(), deviceID: try deviceID(), requestTimeoutSeconds: 10)
+            _ = try await sendFleetHeartbeat(client: client, key: SigningKey.loadOrCreate(), role: role)
+        } catch is CancellationError { return }
+        catch { if !Task.isCancelled { fputs("OS-1 Fleet heartbeat temporarily unavailable\n", stderr) } }
+    }
 }
 
 private func fleetWorkspaceIdentity(_ workspace: String) throws -> (String, String, String) {
@@ -720,19 +712,30 @@ private func fleetWorkspaceIdentity(_ workspace: String) throws -> (String, Stri
     let remote = try commandOutput(git, ["-C", root, "remote", "get-url", "origin"], timeout: 20)
     guard revision.0 == 0, remote.0 == 0 else { throw OS1Error.message("Fleet Git identity is unavailable") }
     let remoteText = String(decoding: remote.1, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
-    var normalized = remoteText
-        .replacingOccurrences(of: "git@github.com:", with: "")
-        .replacingOccurrences(of: "https://github.com/", with: "")
-        .replacingOccurrences(of: "ssh://git@github.com/", with: "")
-        .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+    let prefixes = ["git@github.com:", "https://github.com/", "ssh://git@github.com/"]
+    guard let prefix = prefixes.first(where: { remoteText.hasPrefix($0) }) else {
+        throw OS1Error.message("Fleet requires an authenticated GitHub origin")
+    }
+    var normalized = String(remoteText.dropFirst(prefix.count))
     if normalized.hasSuffix(".git") {
         normalized.removeLast(4)
     }
-    guard normalized.split(separator: "/").count == 2 else { throw OS1Error.message("Fleet requires a GitHub origin") }
-    let rootURL = URL(fileURLWithPath: root).standardizedFileURL
-    let workspaceURL = URL(fileURLWithPath: workspace).standardizedFileURL
+    let revisionText = String(decoding: revision.1, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+    guard normalized.range(of: "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$", options: .regularExpression) != nil,
+          !normalized.split(separator: "/").contains(where: { $0 == "." || $0 == ".." }),
+          revisionText.range(of: "^[0-9a-f]{40}$", options: .regularExpression) != nil else {
+        throw OS1Error.message("Fleet GitHub repository or revision is invalid")
+    }
+    let rootURL = URL(fileURLWithPath: root).resolvingSymlinksInPath()
+    let workspaceURL = URL(fileURLWithPath: workspace).resolvingSymlinksInPath()
+    guard (workspaceURL.path + "/").hasPrefix(rootURL.path + "/") else {
+        throw OS1Error.message("Fleet workspace escapes its Git repository")
+    }
     let relative = workspaceURL.path == rootURL.path ? "" : String(workspaceURL.path.dropFirst(rootURL.path.count + 1))
-    return (normalized, String(decoding: revision.1, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines), relative)
+    guard relative.range(of: "^(?:[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*)?$", options: .regularExpression) != nil else {
+        throw OS1Error.message("Fleet workspace subpath is unsupported")
+    }
+    return (normalized, revisionText, relative)
 }
 
 func enqueueFleetTask(
@@ -741,49 +744,124 @@ func enqueueFleetTask(
     profile: String,
     minMemoryMiB: Int,
     cpuWeight: Int,
-    preferDeviceID: String?
+    preferDeviceID: String?,
+    intentID requestedIntentID: String? = nil
 ) async throws -> FleetEnqueueReceipt {
-    guard fleetProfiles.contains(profile), (0...100).contains(cpuWeight), minMemoryMiB >= 0 else {
+    guard fleetProfiles.contains(profile), (0...100).contains(cpuWeight), (0...1_048_576).contains(minMemoryMiB),
+          !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, prompt.utf8.count <= 48_000 else {
         throw OS1Error.message("Fleet task requirements are invalid")
     }
-    let config = try RuntimeConfig.load()
-    let key = try SigningKey.loadOrCreate()
     let id = try deviceID()
-    let client = APIClient(config: config, token: try githubToken(), deviceID: id)
-    try await register(client: client, key: key)
-    let role = ProcessInfo.processInfo.hostName.lowercased().contains("air") ? "air" : "pro"
-    _ = try await sendFleetHeartbeat(client: client, key: key, role: role)
     let identity = try fleetWorkspaceIdentity(workspace)
     let now = fleetNowMs()
     let nonce = try randomNonce()
-    var request = FleetSubmitRequest(
+    let intentID = requestedIntentID ?? sha256Hex(Data(nonce.utf8))
+    let file = try fleetIntentURL(intentID)
+    if FileManager.default.fileExists(atPath: file.path) {
+        let prior = try JSONDecoder().decode(FleetSubmissionIntent.self, from: Data(contentsOf: file))
+        guard prior.deviceID == id, prior.request.profile == profile, prior.request.task == prompt,
+              prior.request.workspaceRepository == identity.0, prior.request.workspaceRevision == identity.1,
+              prior.request.workspaceSubpath == identity.2,
+              prior.request.requirements.minMemoryMiB == minMemoryMiB,
+              prior.request.requirements.cpuWeight == cpuWeight,
+              prior.request.requirements.preferDeviceID == preferDeviceID else {
+            throw OS1Error.message("Fleet submission identity conflicts with preserved intent")
+        }
+        return try await resumeFleetSubmission(intentID)
+    }
+    // Finish local capability/auth checks before the intent becomes potentially
+    // dispatched. Never advertise this submitting process as an agent heartbeat.
+    let client = APIClient(config: try RuntimeConfig.load(), token: try githubToken(), deviceID: id, requestTimeoutSeconds: 10)
+    try await requireFleetReceiptProtocol(client.config)
+    try await register(client: client, key: SigningKey.loadOrCreate())
+    let request = FleetSubmitRequest(
         profile: profile, task: prompt, workspaceRepository: identity.0,
         workspaceRevision: identity.1, workspaceSubpath: identity.2,
         requirements: FleetRequirements(minMemoryMiB: minMemoryMiB, cpuWeight: cpuWeight, preferDeviceID: preferDeviceID),
         submittedAtMs: now, nonce: nonce, signature: ""
     )
-    request = FleetSubmitRequest(
-        profile: request.profile, task: request.task, workspaceRepository: request.workspaceRepository,
-        workspaceRevision: request.workspaceRevision, workspaceSubpath: request.workspaceSubpath,
-        requirements: request.requirements, submittedAtMs: request.submittedAtMs, nonce: request.nonce,
-        signature: Base64URL.encode(try key.sign(submitBytes(deviceID: id, request: request)))
-    )
-    let submitted: FleetSubmitResponse = try await client.post("/v1/fleet/submit", body: request, as: FleetSubmitResponse.self)
-    guard submitted.status == "queued", let assignment = submitted.assignment else {
-        throw OS1Error.message("No eligible OS-1 fleet node is online")
+    try fleetPersist(FleetSubmissionIntent(deviceID: id, request: request), at: file)
+    return try await resumeFleetSubmission(intentID)
+}
+
+enum FleetSubmissionError: Error, CustomStringConvertible {
+    case noCapacity
+    case pending(String)
+    var description: String {
+        switch self {
+        case .noCapacity: return "No eligible OS-1 fleet node is online; no remote job was created"
+        case .pending(let id): return "Fleet submission delivery is uncertain; recover with fleet-resume-submit --intent \(id). Do not submit duplicate work."
+        }
     }
-    guard assignment.profile == profile,
-          assignment.objectiveVersion == "os1-fleet-objective-v1",
-          assignment.executionMode == (profile == "exo" ? "distributed_exo" : "single_node") else {
-        throw OS1Error.message("OS-1 Fleet assignment contract rejected")
+}
+
+private struct FleetSubmissionIntent: Codable {
+    let deviceID: String
+    let request: FleetSubmitRequest
+    var receipt: FleetEnqueueReceipt? = nil
+    var noCapacity = false
+}
+
+private func fleetPersist<T: Encodable>(_ value: T, at url: URL) throws {
+    try JSONEncoder().encode(value).write(to: url, options: [.atomic, .completeFileProtectionUnlessOpen])
+    try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+}
+
+private func fleetIntentURL(_ id: String) throws -> URL {
+    guard id.range(of: "^[0-9a-f]{64}$", options: .regularExpression) != nil else {
+        throw OS1Error.message("Invalid Fleet submission intent identifier")
     }
-    return FleetEnqueueReceipt(
-        jobID: assignment.jobID,
-        profile: assignment.profile,
-        executionMode: assignment.executionMode,
-        executorDeviceID: assignment.executorDeviceID,
-        objectiveVersion: assignment.objectiveVersion
-    )
+    let root = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".os1/fleet/submissions", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+    return root.appendingPathComponent(id + ".json")
+}
+
+func resumeFleetSubmission(_ intentID: String) async throws -> FleetEnqueueReceipt {
+    let file = try fleetIntentURL(intentID)
+    do {
+        var intent = try JSONDecoder().decode(FleetSubmissionIntent.self, from: Data(contentsOf: file))
+        let id = try deviceID()
+        guard intent.deviceID == id else { throw OS1Error.message("Fleet intent belongs to another device") }
+        if let receipt = intent.receipt { return receipt }
+        if intent.noCapacity { throw FleetSubmissionError.noCapacity }
+        let key = try SigningKey.loadOrCreate()
+        let original = intent.request
+        let unsigned = FleetSubmitRequest(
+            profile: original.profile, task: original.task, workspaceRepository: original.workspaceRepository,
+            workspaceRevision: original.workspaceRevision, workspaceSubpath: original.workspaceSubpath,
+            requirements: original.requirements, submittedAtMs: fleetNowMs(), nonce: original.nonce, signature: ""
+        )
+        let request = FleetSubmitRequest(
+            profile: unsigned.profile, task: unsigned.task, workspaceRepository: unsigned.workspaceRepository,
+            workspaceRevision: unsigned.workspaceRevision, workspaceSubpath: unsigned.workspaceSubpath,
+            requirements: unsigned.requirements, submittedAtMs: unsigned.submittedAtMs, nonce: unsigned.nonce,
+            signature: Base64URL.encode(try key.sign(submitBytes(deviceID: id, request: unsigned)))
+        )
+        let client = APIClient(config: try RuntimeConfig.load(), token: try githubToken(), deviceID: id, requestTimeoutSeconds: 10)
+        try await requireFleetReceiptProtocol(client.config)
+        let response: FleetSubmitResponse = try await client.deliver("/v1/fleet/submit", body: request, as: FleetSubmitResponse.self)
+        if response.status == "no_capacity", response.assignment == nil {
+            intent.noCapacity = true
+            try fleetPersist(intent, at: file)
+            throw FleetSubmissionError.noCapacity
+        }
+        guard response.status == "queued", let assignment = response.assignment,
+              assignment.submitterDeviceID == id, assignment.profile == original.profile,
+              assignment.task == original.task, assignment.workspaceRepository == original.workspaceRepository,
+              assignment.workspaceRevision == original.workspaceRevision, assignment.workspaceSubpath == original.workspaceSubpath,
+              UUID(uuidString: assignment.jobID) != nil,
+              assignment.objectiveVersion == "os1-fleet-objective-v1",
+              assignment.executionMode == (original.profile == "exo" ? "distributed_exo" : "single_node") else {
+            throw OS1Error.message("Fleet assignment does not match the preserved objective")
+        }
+        let receipt = FleetEnqueueReceipt(jobID: assignment.jobID, profile: assignment.profile,
+            executionMode: assignment.executionMode, executorDeviceID: assignment.executorDeviceID,
+            objectiveVersion: assignment.objectiveVersion)
+        intent.receipt = receipt
+        try fleetPersist(intent, at: file)
+        return receipt
+    } catch FleetSubmissionError.noCapacity { throw FleetSubmissionError.noCapacity }
+    catch { throw FleetSubmissionError.pending(intentID) }
 }
 
 func waitForFleetTask(jobID: String, timeoutSeconds: Int = 3_600) async throws -> String {
@@ -807,14 +885,24 @@ func waitForFleetTask(jobID: String, timeoutSeconds: Int = 3_600) async throws -
             body: FleetStatusRequest(jobID: jobID, sentAtMs: statusAt, nonce: statusNonce, signature: signature),
             as: FleetJobStatus.self
         )
+        guard status.jobID.lowercased() == jobID.lowercased() else {
+            throw OS1Error.message("Fleet result job identity mismatch")
+        }
         if status.state == "complete" {
-            return status.result ?? ""
+            guard let result = status.result, let hash = status.resultHash,
+                  sha256Hex(Data(result.utf8)) == hash,
+                  let receipt = try? JSONDecoder().decode(FleetExecutionReceipt.self, from: Data(result.utf8)),
+                  receipt.jobID.lowercased() == jobID.lowercased(), receipt.deviceID == status.executorDeviceID,
+                  receipt.profile == status.profile, receipt.run.status == "complete" else {
+                throw OS1Error.message("Fleet result integrity check failed")
+            }
+            return result
         }
         if status.state == "failed" || status.state == "expired" {
             throw OS1Error.message("Fleet job \(status.state): \(status.result ?? "no result")")
         }
     }
-    throw OS1Error.message("Fleet job timed out")
+    throw OS1Error.message("Fleet wait ended; job may still be running. Resume fleet-wait with the same job ID; do not submit duplicate work.")
 }
 
 func fleetSnapshotJSON() async throws -> String {
@@ -870,7 +958,7 @@ private func fleetConfiguredRole(_ requestedRole: String) throws -> String {
     throw OS1Error.message("Fleet supports MacBook Air and MacBook Pro roles")
 }
 
-func configureFleetAgent(role requestedRole: String) throws {
+func configureFleetAgent(role requestedRole: String) async throws {
     let role = try fleetConfiguredRole(requestedRole)
     let executable = URL(fileURLWithPath: CommandLine.arguments[0]).standardizedFileURL.path
     let home = FileManager.default.homeDirectoryForCurrentUser
@@ -888,11 +976,28 @@ func configureFleetAgent(role requestedRole: String) throws {
         "StandardErrorPath": logDirectory.appendingPathComponent("agent.log").path,
         "ProcessType": "Standard",
         "EnvironmentVariables": [
-            "OS1_CONFIG": home.appendingPathComponent(".local/lib/os1/config.json").path,
+            "OS1_CONFIG": home.appendingPathComponent(".local/bin/config.json").path,
             "PATH": "\(home.path)/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
         ],
     ]
     let data = try PropertyListSerialization.data(fromPropertyList: object, format: .xml, options: 0)
+    if let old = try? Data(contentsOf: plist), old == data,
+       let running = try? commandOutput("/bin/launchctl", ["print", "gui/\(getuid())/\(label)"], timeout: 10),
+       running.0 == 0 {
+        print("OS-1 fleet agent already configured (\(role)); service was not restarted")
+        return
+    }
+    let snapshot = try JSONDecoder().decode(FleetSnapshotResponse.self, from: Data(try await fleetSnapshotJSON().utf8))
+    let id = try deviceID()
+    guard snapshot.nodes.first(where: { $0.deviceID == id })?.queueDepth ?? 0 == 0,
+          !FileManager.default.fileExists(atPath: logDirectory.appendingPathComponent("main-agent-active.json").path) else {
+        throw OS1Error.message("Fleet is busy; installation preserves the running job. Retry configuration after its terminal result.")
+    }
+    if let old = try? Data(contentsOf: plist) {
+        let backup = logDirectory.appendingPathComponent("agent-before-" + UUID().uuidString + ".plist")
+        try old.write(to: backup, options: [.atomic])
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: backup.path)
+    }
     try data.write(to: plist, options: .atomic)
     let launchctl = "/bin/launchctl"
     _ = try? commandOutput(launchctl, ["bootout", "gui/\(getuid())/\(label)"], timeout: 20)
@@ -901,4 +1006,44 @@ func configureFleetAgent(role requestedRole: String) throws {
     let kicked = try commandOutput(launchctl, ["kickstart", "-k", "gui/\(getuid())/\(label)"], timeout: 20)
     guard kicked.0 == 0 else { throw OS1Error.message("Fleet LaunchAgent start failed") }
     print("OS-1 fleet agent installed (\(role))")
+}
+
+func fleetSelfTest() throws {
+    func check(_ value: Bool, _ message: String) throws {
+        if !value { throw OS1Error.message("Fleet self-test: " + message) }
+    }
+    let original = try RuntimeConfig.load()
+    var config = original
+    config.exoMaximumOutputTokens = 123
+    config.exoMinimumNodes = 2
+    let decoded = try JSONDecoder().decode(RuntimeConfig.self, from: JSONEncoder().encode(config))
+    try check(decoded.exoMaximumOutputTokens == 123, "EXO decoder ignored explicit settings")
+    try check(try EXOConfiguration(runtimeConfig: decoded).maximumOutputTokens == 123, "EXO limits drifted")
+    for address in ["http://example.com:52415", "http://127.0.0.1:80", "http://user:pass@127.0.0.1:52415", "https://127.0.0.1:52415"] {
+        var invalid = original
+        invalid.exoAPIURL = address
+        try check((try? EXOConfiguration(runtimeConfig: invalid)) == nil, "non-loopback or credential URL accepted")
+    }
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent("os1-fleet-self-test-" + UUID().uuidString)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let request = FleetSubmitRequest(profile: "codex", task: "fixture", workspaceRepository: "owner/repo",
+        workspaceRevision: String(repeating: "a", count: 40), workspaceSubpath: "",
+        requirements: FleetRequirements(minMemoryMiB: 2048, cpuWeight: 50, preferDeviceID: nil),
+        submittedAtMs: 1000, nonce: String(repeating: "n", count: 32), signature: "")
+    let url = directory.appendingPathComponent("intent.json")
+    try fleetPersist(FleetSubmissionIntent(deviceID: "fixture", request: request), at: url)
+    let restored = try JSONDecoder().decode(FleetSubmissionIntent.self, from: Data(contentsOf: url))
+    try check(restored.request.task == request.task && restored.request.nonce == request.nonce && restored.receipt == nil, "intent round trip changed objective")
+    try check((try FileManager.default.attributesOfItem(atPath: url.path)[.posixPermissions] as? NSNumber)?.intValue == 0o600, "intent is not private")
+    let assignment = FleetAssignment(jobID: UUID().uuidString, submitterDeviceID: "fixture", profile: "codex", task: request.task,
+        workspaceRepository: request.workspaceRepository, workspaceRevision: request.workspaceRevision, workspaceSubpath: "",
+        requirements: request.requirements, createdAtMs: 1000, expiresAtMs: 2000, objectiveVersion: "os1-fleet-objective-v1",
+        executionMode: "single_node", executorDeviceID: "air", score: 1)
+    var active = FleetAgentWork(assignment: assignment)
+    active.phase = "delivery_pending"; active.outcome = "complete"; active.result = "preserved output"
+    try fleetPersist(active, at: url)
+    let recovered = try JSONDecoder().decode(FleetAgentWork.self, from: Data(contentsOf: url))
+    try check(recovered.phase == "delivery_pending" && recovered.result == "preserved output" && recovered.assignment.jobID == assignment.jobID, "result recovery lost identity")
+    print("OS-1 Fleet self-test: 9 checks OK; config, local-only EXO, private intent and result preservation")
 }

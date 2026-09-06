@@ -4,8 +4,10 @@ set -euo pipefail
 readonly script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly runtime_root="$(cd "$script_dir/.." && pwd)"
 readonly output_dir="${OS1_RELEASE_OUTPUT_DIR:-$runtime_root/release}"
-readonly package_path="${OS1_BETA_SOURCE_PACKAGE:-$output_dir/OS-1-0.9.4.pkg}"
 readonly manifest_path="${OS1_BETA_SOURCE_MANIFEST:-$output_dir/latest.json}"
+readonly manifest_version="$(plutil -extract version raw -o - "$manifest_path")"
+[[ "$manifest_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+readonly package_path="${OS1_BETA_SOURCE_PACKAGE:-$output_dir/OS-1-$manifest_version.pkg}"
 
 case "$output_dir" in
   "$runtime_root"/release|/tmp/os1-release.*) ;;

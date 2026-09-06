@@ -1,4 +1,5 @@
 import { reject } from "./errors";
+import { validExecutionContext, type ExecutionContext } from "./execution-context";
 import runtimeConfig from "../../os1-mac-runtime/Config/production.json";
 
 export const PROVIDERS = ["local", "codex", "claude"] as const;
@@ -154,6 +155,7 @@ export function parseStartRequest(value: unknown): {
   executor_contract_version: string;
   executor_contract_sha256: string;
   available_codex_models: CodexModelCapability[];
+  execution_context?: ExecutionContext;
 } {
   const capacityAware = isRecord(value) && hasExactKeys(value, [
     "capacity_plan",
@@ -162,6 +164,7 @@ export function parseStartRequest(value: unknown): {
     "executor_contract_version",
     "provider_preference",
     "task",
+    ...(isRecord(value) && value.execution_context !== undefined ? ["execution_context"] : []),
   ]);
   const capacity = isRecord(value) ? value.capacity_plan : undefined;
   const availableModels = isRecord(value) ? value.available_codex_models : undefined;
@@ -174,7 +177,9 @@ export function parseStartRequest(value: unknown): {
     (capacity.claude as number) >= 0 &&
     (capacity.claude as number) <= 100 &&
     (capacity.codex as number) + (capacity.claude as number) > 0;
-  const validModels = Array.isArray(availableModels) && availableModels.length >= 1 &&
+  const completionAware = isRecord(value) && validExecutionContext(value.execution_context) &&
+    value.execution_context.completion_feedback !== undefined;
+  const validModels = Array.isArray(availableModels) && availableModels.length >= (completionAware ? 0 : 1) &&
     availableModels.length <= 32 && new Set(availableModels.map((candidate) =>
       isRecord(candidate) ? candidate.slug : undefined)).size === availableModels.length &&
     availableModels.every((candidate) => isRecord(candidate) &&
@@ -197,11 +202,13 @@ export function parseStartRequest(value: unknown): {
     !oneOf(value.provider_preference, ["auto", ...BACKEND_PROVIDERS] as const) ||
     !boundedString(value.executor_contract_version, 8, 96, /^[A-Za-z0-9._-]+$/) ||
     !boundedString(value.executor_contract_sha256, 64, 64, SHA256) ||
-    !validCapacity || !validModels
+    !validCapacity || !validModels ||
+    (value.execution_context !== undefined && !validExecutionContext(value.execution_context))
   ) {
     reject();
   }
   return {
+    ...(value.execution_context !== undefined ? { execution_context: value.execution_context as ExecutionContext } : {}),
     task: value.task,
     provider_preference: value.provider_preference as ProviderPreference,
     capacity_plan: {

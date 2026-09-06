@@ -128,7 +128,8 @@ export function parseFleetSubmit(value: unknown): FleetSubmitRequest {
   ]) || !commonSigned(value) || !FLEET_PROFILES.includes(value.profile as FleetProfile) ||
       !bounded(value.task, 1, 48_000) || !bounded(value.workspace_repository, 3, 200, REPOSITORY) ||
       !bounded(value.workspace_revision, 40, 40, REVISION) ||
-      !bounded(value.workspace_subpath, 0, 384, SUBPATH)) reject();
+      !bounded(value.workspace_subpath, 0, 384, SUBPATH) ||
+      (value.workspace_subpath as string).split("/").some((part) => part === "." || part === "..")) reject();
   return {
     profile: value.profile as FleetProfile,
     task: value.task as string,
