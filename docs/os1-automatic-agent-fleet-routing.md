@@ -48,6 +48,8 @@ inference profile.
 4. Detect executor checkout paths and fail open there to prevent recursion.
 5. Preserve the prior EXO draft as a fallback only when safe immutable Fleet
    submission is unavailable.
+6. Let the background agent wait for the existing per-device `gh` keychain
+   credential during heavy load; never copy that token into its service file.
 
 ## Alternatives and rollback
 

@@ -1074,7 +1074,11 @@ private func fallbackPriority(_ slug: String) -> Int {
 
 func githubToken() throws -> String {
     let gh = try findExecutable("gh")
-    let result = try commandOutput(gh, ["auth", "token", "--hostname", "github.com"], timeout: 20)
+    // A GUI LaunchAgent can take longer than an interactive shell to unlock
+    // the existing gh keychain item while the Mac is under heavy load. Keep
+    // the official per-device login as the authority and allow that read to
+    // settle instead of copying the token into the service environment.
+    let result = try commandOutput(gh, ["auth", "token", "--hostname", "github.com"], timeout: 120)
     guard result.0 == 0, let token = String(data: result.1, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines), token.count >= 20 else {
         throw OS1Error.message("GitHub login required: gh auth login --hostname github.com --git-protocol https --web")
     }
@@ -1255,7 +1259,7 @@ final class CodexAppServerClient: @unchecked Sendable {
         _ = try request(
             "initialize",
             params: [
-                "clientInfo": ["name": "Open OS-1 Codex", "version": "0.9.3"],
+                "clientInfo": ["name": "Open OS-1 Codex", "version": "0.9.4"],
                 "capabilities": ["experimentalApi": true],
             ],
             deadline: deadline
@@ -3350,7 +3354,7 @@ struct OS1Main {
             let arguments = Array(CommandLine.arguments.dropFirst())
             guard let command = arguments.first else { usage(); return }
             switch command {
-            case "version", "--version", "-V": print("OS-1 Runtime 0.9.3")
+            case "version", "--version", "-V": print("OS-1 Runtime 0.9.4")
             case "doctor": try doctor()
             case "self-test": try selfTest()
             case "exo-doctor": try await exoDoctor(config: RuntimeConfig.load())
