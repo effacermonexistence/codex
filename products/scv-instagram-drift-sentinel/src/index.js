@@ -1,4 +1,4 @@
-const SENTINEL_SCHEMA = 'scv-instagram-drift-sentinel-2026-09-05-v15-v152-running-release-v151-recovery-gold'
+const SENTINEL_SCHEMA = 'scv-instagram-drift-sentinel-2026-09-05-v16-v153-running-release-v151-recovery-gold'
 // GOLD-3 (2026-09-03): v148 (owner-verified v145 plus the owner-ordered polish, live red-team verified) frozen as the reference; the pointer and manifest below are pinned by hash.
 const GOLD_LATEST_KEY = 'scv-instagram-automation/gold/LATEST.json'
 const GOLD_MANIFEST_KEY = 'scv-instagram-automation/gold/SCV_GOLD_MANIFEST_v148.json'
@@ -8,12 +8,12 @@ const GOLD_MANIFEST_SHA256 = '31ea4507381e6ec2c3ce4458d70af4a311f331a4a26651f5d9
 // Comparing the gold manifest against the running release id made the check fail by construction.
 const GOLD_RELEASE_ID = 'scv-instagram-single-20260902-v148'
 const GOLD_CONTENT_FINGERPRINT = '3a9a18631443f4738d13dd803f080979ff4d21ab0d9de1f5054b2f26e2ea3609'
-// v15 (2026-09-05): the RUNNING release (v152, the owner's first experiment-round fix) and the
+// v16 (2026-09-05): the RUNNING release (v153, the anchored-reference fix) and the
 // latest RECOVERY POINT (the owner-approved v151 Gold) are different objects; the recovery-point
 // checks below pin the Gold's own release identity.
-const RELEASE_ID = 'scv-instagram-single-20260905-v152'
-const CONTENT_FINGERPRINT = '46d222d1c413b518078aec1b05b36f92979355814623cfacbf5aedd429583a67'
-const RELEASE_MANIFEST = '95365181be58a0edc10517a861534cab877ea8d03581a970552e20835ac91fa1'
+const RELEASE_ID = 'scv-instagram-single-20260905-v153'
+const CONTENT_FINGERPRINT = 'a62b7c21ba0498c1fc44e7f4993265d204fcbcdf8d8eca8ef6ca17875e5088fb'
+const RELEASE_MANIFEST = 'ea0da362d9814fb9817a4de04843cc04dd581a8b262e524f680dec91111c1e0d'
 const RECOVERY_POINT_RELEASE_ID = 'scv-instagram-single-20260904-v151'
 const RECOVERY_POINT_CONTENT_FINGERPRINT = 'd60dfc9f1f082f9d5e268556c0eb43364b5f1d9b1217f6a1f95d04546043c151'
 const RECOVERY_POINT_RELEASE_MANIFEST = 'b307c86bb59e1287afe746f50d8ccd036d7b1bea70820ef3f1facce6baef7d6c'
