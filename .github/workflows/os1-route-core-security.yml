@@ -154,8 +154,8 @@ jobs:
           sudo installer \
             -pkg "$beta_test_dir/${beta_name}/OS-1.pkg" \
             -target /
-          test -x /usr/local/bin/os1
-          test -x "/Applications/OS-1 CLODEX.app/Contents/MacOS/OS1App"
+          test -x /usr/local/bin/os1 || { echo "Installed canonical OS1 CLI is missing or not executable"; exit 1; }
+          test -x "/Applications/OS-1 CLODEX.app/Contents/MacOS/OS1App" || { echo "Installed canonical OS1 app is missing or not executable"; exit 1; }
           codesign --verify --strict /usr/local/bin/os1
           codesign --verify --deep --strict "/Applications/OS-1 CLODEX.app"
           /usr/local/bin/os1 self-test

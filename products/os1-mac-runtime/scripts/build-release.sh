@@ -168,6 +168,7 @@ OS1_CONFIG="$stage_dir/Library/Application Support/OS-1/config.json" "$stage_dir
 
 COPYFILE_DISABLE=1 pkgbuild \
   --root "$stage_dir" \
+  --component-plist "$runtime_root/InstallerComponents.plist" \
   --scripts "$runtime_root/InstallerScripts" \
   --identifier com.omaragi.os1 \
   --version "$version" \
@@ -197,6 +198,9 @@ fi
 
 pkgutil --expand-full "$final_pkg" "$audit_dir/expanded"
 expanded_payload="$audit_dir/expanded/OS-1-component.pkg/Payload"
+[[ "$(/usr/bin/xmllint --xpath 'count(/pkg-info/relocate/bundle)' "$audit_dir/expanded/OS-1-component.pkg/PackageInfo")" == "0" ]] || {
+  echo "Refusing a relocatable application package." >&2; exit 1;
+}
 while IFS= read -r payload_file; do
   relative_path="${payload_file#"$expanded_payload/"}"
   case "$relative_path" in
