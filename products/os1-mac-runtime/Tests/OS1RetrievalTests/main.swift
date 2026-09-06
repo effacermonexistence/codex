@@ -1,6 +1,6 @@
 import Foundation
+import OS1Context
 
-@main
 struct RetrievalRelevanceFixture {
     private static func check(_ value: @autoclosure () -> Bool, _ message: String) {
         precondition(value(), message)
@@ -56,3 +56,5 @@ struct RetrievalRelevanceFixture {
         print("OS-1 retrieval relevance fixture: OK")
     }
 }
+
+RetrievalRelevanceFixture.main()

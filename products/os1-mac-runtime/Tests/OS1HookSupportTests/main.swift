@@ -134,6 +134,53 @@ func testFirstPromptIdentity() throws {
     try expect(PromptEventIdentity.claudeTranscript(path: link.path, projectsRoot: root) == nil, "symlink escape accepted")
 }
 
+func testPromptIntentPolicy() throws {
+    // Exact text that the Claude Code harness passed through the prompt channel
+    // on 2026-09-06 and that OS1 dispatched as Fleet job 3d1eeb4f (failed:
+    // "Fleet revision fetch failed"). It must never be dispatched again.
+    let harness = """
+    <task-notification>
+    <task-id>b8okh0shh</task-id>
+    <status>failed</status>
+    <summary>Background command "Retry the SwiftPM build" failed with exit code 1</summary>
+    </task-notification>
+    """
+    try expect(PromptIntentPolicy.decision(for: harness) == .harnessGenerated, "task-notification block was treated as a user request")
+    for block in ["<system-reminder>\nx\n</system-reminder>", "<command-message>foo</command-message>\n<command-name>foo</command-name>",
+                  "<<autonomous-loop-dynamic>>", "[SYSTEM NOTIFICATION - NOT USER INPUT]\nsomething", "<ci-monitor-event>x</ci-monitor-event>"] {
+        try expect(PromptIntentPolicy.decision(for: block) == .harnessGenerated, "harness block dispatched: \(block.prefix(24))")
+    }
+    for phrase in ["계속 진행해", "계속해줘", "  continue  ", "ok", "네", "go on", "다시 해봐", "Proceed."] {
+        try expect(PromptIntentPolicy.decision(for: phrase) == .notStandalone, "continuation phrase dispatched: \(phrase)")
+    }
+    for deictic in ["그거 설명해 봐 조금 더 자세히 부탁해", "이거 고쳐줘 아까 말한 대로 진행하면 돼", "that one, explain it again in more detail please"] {
+        try expect(PromptIntentPolicy.decision(for: deictic) == .notStandalone, "context-dependent prompt dispatched: \(deictic)")
+    }
+    try expect(PromptIntentPolicy.decision(for: "1 플러스 1") == .notStandalone, "tiny prompt dispatched as a remote job")
+    for task in ["R2에서 QMGR 통합 연구 자료를 가져와서 OPT benchmark와 매핑해 줘",
+                 "products/os1-mac-runtime 에서 swift build 를 실행하고 실패한 테스트를 고쳐라",
+                 "Read-only cross-Mac Fleet check. Do not modify files or use tools. Reply with exactly AIR_OK",
+                 "이 저장소의 products/os1-route-core 라우팅 코드를 검토해서 정적 티어 규칙을 찾아 보고서를 써 줘"] {
+        try expect(PromptIntentPolicy.decision(for: task) == .dispatch, "standalone task blocked: \(task.prefix(30))")
+    }
+    // A long prompt that merely contains the word "this" in the middle is fine.
+    try expect(PromptIntentPolicy.decision(for: "Audit the Fleet agent retry loop in Sources/OS1/Fleet.swift and explain why this loop repeats") == .dispatch,
+        "mid-sentence deictic word blocked a standalone task")
+}
+
+func testEXODraftPolicy() throws {
+    // Verbatim low-value drafts injected on 2026-09-06.
+    try expect(!EXODraftPolicy.isUseful("안녕하세요! 감사합니다. 이 질문에 답변해 드릴 수 있습니다."), "greeting-only draft accepted")
+    try expect(!EXODraftPolicy.isUseful("네, 코덱스한테 안줘도 되겠다는 말이 니가 해라 니가 해라 니가 고쳐 왜냐면"), "echo draft under the minimum accepted")
+    try expect(!EXODraftPolicy.isUseful(""), "empty draft accepted")
+    try expect(!EXODraftPolicy.isUseful("I'm sorry, as an AI I cannot help with that request at this time."), "refusal boilerplate accepted")
+    let substantive = """
+    The failing step is fleetWorkspaceIdentity: it validates a GitHub origin but never checks that HEAD exists on origin, \
+    so a local-only commit is dispatched and the executor's `git fetch origin <sha>` fails. Add a for-each-ref --contains guard.
+    """
+    try expect(EXODraftPolicy.isUseful(substantive), "substantive draft rejected")
+}
+
 do {
     try testExclusiveLease()
     try testCircuitBreaker()
@@ -141,7 +188,9 @@ do {
     try testAutomaticFleetExecutorBypass()
     try testSettingsPreservation()
     try testFirstPromptIdentity()
-    print("OS1HookSupportTests: PASS (6 test groups)")
+    try testPromptIntentPolicy()
+    try testEXODraftPolicy()
+    print("OS1HookSupportTests: PASS (8 test groups)")
 } catch {
     fputs("OS1HookSupportTests: FAIL: \(error)\n", stderr)
     exit(1)

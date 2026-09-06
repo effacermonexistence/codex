@@ -729,6 +729,15 @@ private func fleetWorkspaceIdentity(_ workspace: String) throws -> (String, Stri
           revisionText.range(of: "^[0-9a-f]{40}$", options: .regularExpression) != nil else {
         throw OS1Error.message("Fleet GitHub repository or revision is invalid")
     }
+    // The executor clones from origin and fetches exactly this revision, so a
+    // commit that only exists locally can never run remotely. Local tracking
+    // refs may be stale after a force push; read the exact commit at origin.
+    let gh = try findExecutable("gh")
+    let reachable = try commandOutput(gh, ["api", "repos/\(normalized)/commits/\(revisionText)", "--jq", ".sha"], timeout: 20)
+    guard reachable.0 == 0,
+          String(decoding: reachable.1, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines) == revisionText else {
+        throw OS1Error.message("Fleet requires the workspace revision to exist on origin; push HEAD before Fleet dispatch")
+    }
     let rootURL = URL(fileURLWithPath: root).resolvingSymlinksInPath()
     let workspaceURL = URL(fileURLWithPath: workspace).resolvingSymlinksInPath()
     guard (workspaceURL.path + "/").hasPrefix(rootURL.path + "/") else {

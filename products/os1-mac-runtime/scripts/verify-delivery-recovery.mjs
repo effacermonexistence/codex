@@ -36,9 +36,34 @@ for(const id of ids){
   }
   const fixture=path.join(box,forged.id+'.json');
   fs.writeFileSync(fixture,JSON.stringify(forged),{mode:0o600,flag:'wx'});
-  try { assert.throws(()=>run(forged.id),'Forged local completion must not be adopted'); }
+  try {
+    let rejected = false;
+    try { run(forged.id); }
+    catch(error) {
+      assert.equal(error.status, 1, 'Negative control must exit normally as rejected, not time out or crash');
+      assert.match(String(error.stderr), /HTTP (400|401|403)/,
+        'An outage/unrelated error is not evidence that a forged signature was rejected');
+      rejected = true;
+    }
+    assert(rejected, 'Forged local completion must not be adopted');
+  }
   finally { fs.unlinkSync(fixture); }
   assert.equal(digest(fs.readFileSync(nativePath)),before);
+  const rejectedCopy = JSON.parse(original);
+  rejectedCopy.id = randomUUID() + '-1';
+  rejectedCopy.localRejection = 'test: source contract rejected this paid candidate';
+  const rejectedFixture = path.join(box, rejectedCopy.id + '.json');
+  fs.writeFileSync(rejectedFixture, JSON.stringify(rejectedCopy), {mode:0o600,flag:'wx'});
+  try {
+    let blocked = false;
+    try { run(rejectedCopy.id); }
+    catch(error) {
+      assert.equal(error.status, 1);
+      assert.match(String(error.stderr), /로컬 검증을 통과하지 못했습니다/);
+      blocked = true;
+    }
+    assert(blocked, 'Delivery must not launder a locally rejected candidate into adoption');
+  } finally { fs.unlinkSync(rejectedFixture); }
   reports.push({deliveryID:id,provider:step.provider,replays:2,nativeUnchanged:true,forgedCompletionRejected:true});
 }
 fs.writeFileSync(path.join(output,'delivery-recovery-audit.json'),JSON.stringify({status:'PASS',

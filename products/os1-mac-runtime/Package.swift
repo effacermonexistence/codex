@@ -27,5 +27,7 @@ let package = Package(
         // suite runnable without installing Xcode or fetching dependencies.
         .executableTarget(name: "OS1ContextTests", dependencies: ["OS1Context"], path: "Tests/OS1ContextTests"),
         .executableTarget(name: "OS1HookSupportTests", dependencies: ["OS1HookSupport"], path: "Tests/OS1HookSupportTests"),
+        .executableTarget(name: "RetrievalRelevanceTests", dependencies: ["OS1Context"],
+                          path: "Tests/OS1RetrievalTests"),
     ]
 )

@@ -613,6 +613,17 @@ private func interactionSelfTest() throws {
         mixedScriptsRendered.attribute(.os1MathSource, at:0, effectiveRange:nil) as? String == mixedScripts &&
         MathTypesetter.copyable(mixedScriptsRendered) == mixedScripts, "ASCII scripts must not disable CJK top-level typesetting")
     let nestedCJK = #"$\frac{\text{한글}}{2}$"#
+    let freshMixed = "\\[\n\\text{양자 채널}\n\\rightarrow\n\\text{정적 뉴턴 중력원}\n\\quad\\color{gray}{\\dashrightarrow}\\quad\n\\text{공변적 GR 이론}\n\\]"
+    let freshMixedRendered = MathTypesetter.render(freshMixed, display: true)
+    try check(!freshMixedRendered.string.contains("\\") && !freshMixedRendered.string.contains("$") &&
+        !freshMixedRendered.string.contains("\n") && freshMixedRendered.string.contains("공변적 GR 이론"),
+        "fresh multiline CJK/color/dashed arrow leaks raw TeX")
+    try check(MathTypesetter.copyable(freshMixedRendered) == freshMixed, "fresh multilingual copy source changed")
+    for formula in [#"$\color{gray}{\dashrightarrow}$"#, #"$\textcolor{blue}{\dashleftarrow}$"#] {
+        let output = MathTypesetter.render(formula)
+        try check(output.attribute(.attachment, at: 0, effectiveRange: nil) is NSTextAttachment &&
+            MathTypesetter.copyable(output) == formula, "standard colored/dashed symbol unsupported")
+    }
     try check(MathTypesetter.render(nestedCJK).string.contains("한글") &&
         MathTypesetter.copyable(MathTypesetter.render(nestedCJK)) == nestedCJK, "nested CJK must remain visible")
 
@@ -947,11 +958,15 @@ private final class VoiceDictationController: ObservableObject {
     private var finishTimeoutTask: Task<Void, Never>?
     private var restartTask: Task<Void, Never>?
     private var localTranscriptionTask: Task<Void, Never>?
+    private var localProcessCancellation: VoiceProcessCancellation?
     private var localWhisper: LocalWhisperConfiguration?
     private var localRecordingURL: URL?
     private var baseText = ""
     private var committedTranscript = ""
     private var currentTranscript = ""
+    private var lastPublishedText = ""
+    private var lastDictatedText = ""
+    private var onReadComposer: (() -> String)?
     private var onTranscript: ((String) -> Void)?
     private var onFailure: ((String) -> Void)?
     private var onFinish: (() -> Void)?
@@ -980,6 +995,7 @@ private final class VoiceDictationController: ObservableObject {
 
     func toggle(
         initialText: String,
+        readComposer: (() -> String)? = nil,
         onTranscript: @escaping (String) -> Void,
         onFailure: @escaping (String) -> Void
     ) {
@@ -988,6 +1004,9 @@ private final class VoiceDictationController: ObservableObject {
             return
         }
         baseText = initialText
+        lastPublishedText = initialText
+        lastDictatedText = ""
+        onReadComposer = readComposer
         committedTranscript = ""
         currentTranscript = ""
         localWhisper = localWhisperConfiguration()
@@ -999,7 +1018,9 @@ private final class VoiceDictationController: ObservableObject {
         phase = .authorizing
         elapsedSeconds = 0
         startElapsedTimer()
-        Task { await authorizeAndStart() }
+        recognitionGeneration += 1
+        let generation = recognitionGeneration
+        Task { await authorizeAndStart(generation: generation) }
     }
 
     /// Finish keeps the recognition task alive briefly so the final spoken
@@ -1031,7 +1052,9 @@ private final class VoiceDictationController: ObservableObject {
     /// microphone was started.
     func cancel() {
         guard isActive else { return }
-        let restore = baseText
+        let current = onReadComposer?() ?? lastPublishedText
+        let restore = DictationDraft.replacing(current: current, previous: lastPublishedText,
+            dictated: lastDictatedText, replacement: "", initial: baseText) ?? current
         let transcriptHandler = onTranscript
         resetRecognition(cancelTask: true)
         phase = .idle
@@ -1066,6 +1089,8 @@ private final class VoiceDictationController: ObservableObject {
         finishTimeoutTask = nil
         localTranscriptionTask?.cancel()
         localTranscriptionTask = nil
+        localProcessCancellation?.cancel()
+        localProcessCancellation = nil
         stopAudioCapture()
         if cancelTask { recognitionTask?.cancel() }
         recognitionTask = nil
@@ -1076,7 +1101,7 @@ private final class VoiceDictationController: ObservableObject {
         removeLocalRecording()
     }
 
-    private func authorizeAndStart() async {
+    private func authorizeAndStart(generation: Int) async {
         let microphoneGranted: Bool
         switch AVCaptureDevice.authorizationStatus(for: .audio) {
         case .notDetermined:
@@ -1086,7 +1111,7 @@ private final class VoiceDictationController: ObservableObject {
         default:
             microphoneGranted = false
         }
-        guard phase == .authorizing, wantsRecording else { return }
+        guard phase == .authorizing, wantsRecording, recognitionGeneration == generation else { return }
         guard microphoneGranted else {
             fail("Microphone access is off. Allow OS-1 CLODEX in System Settings → Privacy & Security → Microphone.")
             return
@@ -1098,6 +1123,7 @@ private final class VoiceDictationController: ObservableObject {
                 try startLocalWhisperCapture()
                 return
             } catch {
+                stopAudioCapture()
                 localWhisper = nil
                 removeLocalRecording()
             }
@@ -1114,7 +1140,7 @@ private final class VoiceDictationController: ObservableObject {
         case let existing:
             speechStatus = existing
         }
-        guard phase == .authorizing, wantsRecording else { return }
+        guard phase == .authorizing, wantsRecording, recognitionGeneration == generation else { return }
         guard speechStatus == .authorized else {
             fail("Local Whisper is unavailable and Speech Recognition access is off. Install Handy or allow OS-1 CLODEX in System Settings → Privacy & Security → Speech Recognition.")
             return
@@ -1189,13 +1215,14 @@ private final class VoiceDictationController: ObservableObject {
     private func startRecognition() throws {
         let locale = preferredDictationLocale()
         guard let recognizer = SFSpeechRecognizer(locale: locale),
-              recognizer.isAvailable else {
-            throw RunnerError.message("Speech recognition is not available on this Mac right now.")
+              recognizer.isAvailable, recognizer.supportsOnDeviceRecognition else {
+            throw RunnerError.message("이 언어의 기기 내 받아쓰기를 사용할 수 없습니다. 로컬 Whisper 모델을 준비해 주세요. 녹음은 외부 서버로 보내지 않았습니다.")
         }
 
         recognitionTask?.cancel()
         recognitionTask = nil
         let request = SFSpeechAudioBufferRecognitionRequest()
+        request.requiresOnDeviceRecognition = true
         request.shouldReportPartialResults = true
         request.taskHint = .dictation
         request.contextualStrings = [
@@ -1296,12 +1323,16 @@ private final class VoiceDictationController: ObservableObject {
     ) {
         let generation = recognitionGeneration
         localTranscriptionTask?.cancel()
+        localProcessCancellation?.cancel()
+        let cancellation = VoiceProcessCancellation()
+        localProcessCancellation = cancellation
         localTranscriptionTask = Task { [weak self] in
             do {
                 let transcript = try await Task.detached(priority: .userInitiated) {
                     try Self.performLocalWhisperTranscription(
                         configuration: configuration,
-                        recordingURL: recordingURL
+                        recordingURL: recordingURL,
+                        cancellation: cancellation
                     )
                 }.value
                 guard !Task.isCancelled, let self,
@@ -1321,25 +1352,26 @@ private final class VoiceDictationController: ObservableObject {
 
     nonisolated private static func performLocalWhisperTranscription(
         configuration: LocalWhisperConfiguration,
-        recordingURL: URL
+        recordingURL: URL,
+        cancellation: VoiceProcessCancellation
     ) throws -> String {
         let waveURL = recordingURL.deletingLastPathComponent().appendingPathComponent("recording.wav")
         defer { try? FileManager.default.removeItem(at: recordingURL.deletingLastPathComponent()) }
 
-        _ = try runProcess(
-            executableURL: URL(fileURLWithPath: "/usr/bin/afconvert"),
+        _ = try VoiceProcess.run(
+            executable: URL(fileURLWithPath: "/usr/bin/afconvert"),
             arguments: [
                 "-f", "WAVE", "-d", "LEI16@16000", "-c", "1",
                 recordingURL.path, waveURL.path,
-            ]
+            ], cancellation: cancellation, timeout: 30
         )
-        let output = try runProcess(
-            executableURL: configuration.executableURL,
+        let output = try VoiceProcess.run(
+            executable: configuration.executableURL,
             arguments: [
                 "--transcribe-file", waveURL.path,
                 "--model", configuration.modelID,
                 "--json",
-            ]
+            ], cancellation: cancellation
         )
         let decoder = JSONDecoder()
         let result: LocalWhisperResult
@@ -1361,29 +1393,6 @@ private final class VoiceDictationController: ObservableObject {
         return transcript
     }
 
-    nonisolated private static func runProcess(
-        executableURL: URL,
-        arguments: [String]
-    ) throws -> Data {
-        let process = Process()
-        let standardOutput = Pipe()
-        let standardError = Pipe()
-        process.executableURL = executableURL
-        process.arguments = arguments
-        process.standardOutput = standardOutput
-        process.standardError = standardError
-        try process.run()
-        process.waitUntilExit()
-        let output = standardOutput.fileHandleForReading.readDataToEndOfFile()
-        let errorOutput = standardError.fileHandleForReading.readDataToEndOfFile()
-        guard process.terminationStatus == 0 else {
-            let detail = String(data: errorOutput, encoding: .utf8)?
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            throw RunnerError.message(detail?.isEmpty == false ? detail! : "Voice engine exited unexpectedly.")
-        }
-        return output
-    }
-
     private func removeLocalRecording() {
         guard let localRecordingURL else { return }
         try? FileManager.default.removeItem(at: localRecordingURL.deletingLastPathComponent())
@@ -1400,7 +1409,21 @@ private final class VoiceDictationController: ObservableObject {
 
     private func publishTranscript() {
         let dictated = dictationText(committed: committedTranscript, current: currentTranscript)
-        onTranscript?(composerText(base: baseText, dictated: dictated))
+        let current = onReadComposer?() ?? lastPublishedText
+        guard let merged = DictationDraft.replacing(current: current, previous: lastPublishedText,
+            dictated: lastDictatedText, replacement: dictated, initial: baseText) else {
+            // A user edited the owned dictation span. User input wins; stop
+            // rather than overwrite it with a late recognition callback.
+            let failure = onFailure
+            resetRecognition(cancelTask: true)
+            phase = .idle; level = 0
+            clearCallbacks()
+            failure?("직접 수정한 입력을 보존하고 받아쓰기를 멈췄습니다.")
+            return
+        }
+        lastPublishedText = merged
+        lastDictatedText = dictated
+        onTranscript?(merged)
     }
 
     private func commitCurrentSegment() {
@@ -1427,12 +1450,16 @@ private final class VoiceDictationController: ObservableObject {
             Task { @MainActor [weak self] in
                 guard let self, self.phase != .idle else { return }
                 self.elapsedSeconds += 1
+                if self.elapsedSeconds >= 300 && self.phase == .listening { self.finish() }
             }
         }
     }
 
     private func clearCallbacks() {
         onTranscript = nil
+        onReadComposer = nil
+        lastPublishedText = ""
+        lastDictatedText = ""
         onFailure = nil
         onFinish = nil
         baseText = ""
@@ -2040,6 +2067,8 @@ private struct PendingSubmission: Identifiable, Codable, Equatable, Sendable {
     let claudeCapacity: Int
     let readOnlyReconciliation: Bool?
     var deliveryID: String? = nil
+    var savedResultNeedsReview: Bool? = nil
+    var preflightOnly: Bool? = true
 
     init(
         id: UUID = UUID(),
@@ -2311,9 +2340,9 @@ private enum OS1Runner {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         let bundled = Bundle.main.resourceURL?.appendingPathComponent("os1").path
         let candidates = [bundled].compactMap { $0 } + [
+            "\(home)/.local/bin/os1",
             "/usr/local/bin/os1",
             "/opt/homebrew/bin/os1",
-            "\(home)/.local/bin/os1",
         ]
         guard let path = candidates.first(where: FileManager.default.isExecutableFile) else {
             throw RunnerError.message("OS-1 runtime is missing. Reinstall OS-1, then try again.")
@@ -2416,6 +2445,8 @@ private enum OS1Runner {
         let journal = journalRoot.appendingPathComponent((submissionID?.uuidString ?? UUID().uuidString) + ".jsonl")
         if !fileManager.fileExists(atPath:journal.path) { fileManager.createFile(atPath:journal.path,contents:nil,attributes:[.posixPermissions:0o600]) }
         environment["OS1_EVENT_JOURNAL"] = journal.path
+        environment["OS1_ALLOW_AUTHENTICATION"] = "1"
+        if let submissionID { environment["OS1_CANCEL_FILE"] = ExecutionCancellation.url(submissionID: submissionID).path }
         process.environment = environment
 
         do {
@@ -2435,7 +2466,7 @@ private enum OS1Runner {
         guard process.terminationStatus == 0 else {
             if let data = try? Data(contentsOf: failureURL), data.count < 4096,
                let notice = try? JSONDecoder().decode(BackendFailureNotice.self, from: data),
-               ["claude", "codex"].contains(notice.provider) {
+               ["claude", "codex", "local"].contains(notice.provider) {
                 throw RunnerError.backend(notice)
             }
             let fallback = String(decoding: outputData, as: UTF8.self)
@@ -2895,6 +2926,7 @@ private final class SessionStore: ObservableObject {
     func toggleVoiceDictation() {
         voiceDictation.toggle(
             initialText: composer,
+            readComposer: { [weak self] in self?.composer ?? "" },
             onTranscript: { [weak self] value in
                 self?.composer = value
             },
@@ -2980,6 +3012,8 @@ private final class SessionStore: ObservableObject {
               let index = sessions.firstIndex(where: { $0.id == submission.sessionID }) else {
             return
         }
+        // Only an admitted attempt owns this exact cancellation marker.
+        try? FileManager.default.removeItem(at: ExecutionCancellation.url(submissionID: submission.id))
         let existingUserMessage = sessions[index].messages.contains { $0.id == submission.userMessageID }
         let context: String
         do {
@@ -3025,6 +3059,19 @@ private final class SessionStore: ObservableObject {
                             guard let self, self.activeRuns[submission.sessionID]?.submissionID == submission.id else { return }
                             self.activeRuns[submission.sessionID]?.activity = activity
                             self.activeRuns[submission.sessionID]?.provider = activity.provider.flatMap(ProviderChoice.init(rawValue:))
+                            if let nativeID = activity.nativeSessionID, UUID(uuidString: nativeID) != nil,
+                               let index = self.sessions.firstIndex(where: { $0.id == submission.sessionID }) {
+                                if activity.provider == "codex", self.sessions[index].codexSessionID != nativeID {
+                                    self.sessions[index].codexSessionID = nativeID; self.save()
+                                } else if activity.provider == "claude", self.sessions[index].claudeSessionID != nativeID {
+                                    self.sessions[index].claudeSessionID = nativeID; self.save()
+                                }
+                            }
+                            if [.executing, .verifying, .syncing, .recovering].contains(activity.phase),
+                               self.inFlightSubmissions[submission.sessionID]?.preflightOnly == true {
+                                self.inFlightSubmissions[submission.sessionID]?.preflightOnly = false
+                                self.save()
+                            }
                             if self.selectedSessionID == submission.sessionID { self.statusText = activity.label }
                         }
                     }
@@ -3102,12 +3149,15 @@ private final class SessionStore: ObservableObject {
                         if let deliveryID = notice.deliveryID,
                            let result = try? DeliveryOutbox().read(deliveryID), !result.output.isEmpty {
                             sessions[target].lastFailure?.deliveryID = deliveryID
+                            let verdict = result.response.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }?["status"] as? String
+                            let needsReview = result.localRejection != nil || (verdict != nil && verdict != "complete")
+                            sessions[target].lastFailure?.savedResultNeedsReview = needsReview
                             let previewID = UUID(uuidString:String(deliveryID.prefix(36)))!
                             if !sessions[target].messages.contains(where: { $0.id == previewID }) {
                                 sessions[target].messages.append(ChatMessage(id:previewID, role: .assistant, text: result.output,
                                     provider: notice.provider, permissionProfile: notice.permissionProfile, nativeRecordVerified: false))
                                 sessions[target].messages.append(ChatMessage(role: .receipt,
-                                    text: "답변 로컬 저장됨 · 서버 검증·전달 대기 · 아직 완료 판정 아님", nativeRecordVerified: false))
+                                    text: needsReview ? "답변 원본 보존됨 · 검증 미통과 · 아직 완료 판정 아님" : "답변 로컬 저장됨 · 서버 검증·전달 대기 · 아직 완료 판정 아님", nativeRecordVerified: false))
                             }
                         }
                         if let source = notice.source,
@@ -3199,6 +3249,7 @@ private final class SessionStore: ObservableObject {
     func retrySelectedFailure() {
         guard !isRunning, let failed = selectedSession?.lastFailure,
               activeRuns.count < Self.maximumConcurrentSessions else { return }
+        if failed.savedResultNeedsReview == true { reconcileSelectedFailure(); return }
         if failed.deliveryID != nil { start(failed); return }
         guard selectedSession?.lastBackendFailure?.requiresReadback != true else {
             reconcileSelectedFailure(); return
@@ -3207,9 +3258,18 @@ private final class SessionStore: ObservableObject {
         // and source. Never automatically replay an uncertain write.
         start(failed)
     }
+
+    func cancelSelectedRun() {
+        guard let id = selectedSessionID, let active = activeRuns[id] else { return }
+        do {
+            try ExecutionCancellation.request(submissionID: active.submissionID)
+            sessionStatuses[id] = "작업 중지 중 · 실행된 변경은 보존합니다"
+            statusText = sessionStatuses[id]!
+        } catch { alertMessage = "작업 중지 요청을 저장하지 못했습니다." }
+    }
     func reconcileSelectedFailure() {
         guard !isRunning, let failed = selectedSession?.lastFailure,
-              selectedSession?.lastBackendFailure?.requiresReadback == true,
+              (selectedSession?.lastBackendFailure?.requiresReadback == true || failed.savedResultNeedsReview == true),
               activeRuns.count < Self.maximumConcurrentSessions else { return }
         let request = BackendRecovery.readbackPrompt(objective: failed.request)
         let message = ChatMessage(role: .user, text: request)
@@ -3265,8 +3325,13 @@ private final class SessionStore: ObservableObject {
             var recovered = pending
             if let result = DeliveryOutbox().forSubmission(pending.id.uuidString) {
                 recovered.deliveryID = result.id
+                let verdict = result.response.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }?["status"] as? String
+                recovered.savedResultNeedsReview = result.localRejection != nil || (verdict != nil && verdict != "complete")
                 sessions[index].lastBackendFailure = BackendFailureNotice(provider:sessions[index].lastProvider ?? "codex",
                     sessionID:nil,blocker:.deliveryPending,dispatchStage:.dispatched,source:result.source,deliveryID:result.id)
+            } else if pending.preflightOnly == true {
+                sessions[index].lastBackendFailure = BackendFailureNotice(provider: "local",
+                    sessionID: nil, blocker: .unclassified, dispatchStage: .notDispatched)
             } else {
                 sessions[index].lastBackendFailure = BackendFailureNotice(provider:sessions[index].lastProvider ?? "codex",
                     sessionID:nil,blocker:.effectsUncertain,dispatchStage:.dispatched)
@@ -5414,7 +5479,7 @@ private struct ComposerView: View {
                         .font(.system(size: 12)).foregroundStyle(Theme.muted)
                         .textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
                 }
-                Button(session.lastFailure?.deliveryID != nil ? "저장된 결과 전달 · 모델 재실행 없음" : session.lastBackendFailure?.requiresReadback == true
+                Button(session.lastFailure?.savedResultNeedsReview == true ? "저장된 결과·현재 상태 검토 · 변경 재실행 없음" : session.lastFailure?.deliveryID != nil ? "저장된 결과 전달 · 모델 재실행 없음" : session.lastBackendFailure?.requiresReadback == true
                     ? "현재 상태 확인 · 재실행하지 않음" : "OS-1에서 다시 확인하고 시도") { store.retrySelectedFailure() }
                     .font(.system(size: 12, weight: .medium))
                     .disabled(store.activeRuns.count >= SessionStore.maximumConcurrentSessions)
@@ -5454,6 +5519,13 @@ private struct ComposerView: View {
                     finish: store.finishVoiceDictation,
                     cancel: { _ = store.cancelVoiceDictation() }
                 )
+
+                if store.isRunning {
+                    Button { store.cancelSelectedRun() } label: {
+                        Image(systemName: "stop.fill").frame(width: 36, height: 36)
+                    }.buttonStyle(.plain).help("현재 대화의 작업 중지")
+                    .accessibilityLabel("작업 중지")
+                }
 
                 Button { store.send() } label: {
                     Image(systemName: "arrow.up")

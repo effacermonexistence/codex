@@ -19,6 +19,7 @@ private func XCTAssertThrowsError<T>(_ value: @autoclosure () throws -> T) {
 @main
 final class SourceContextTests {
     static func main() throws {
+        voiceProcessChildIfRequested()
         let suite = SourceContextTests()
         try suite.testSnapshotRoundTripAndRestart()
         try suite.testCorruptionAndMissingFileFailClosed()
@@ -33,6 +34,9 @@ final class SourceContextTests {
         try runCompletionFeedbackFixtures()
         try runBackendRecoveryFixtures()
         try runExecutionFixtures()
+        try runResearchBundleFixtures()
+        try runVoiceProcessFixtures()
+        try runTakeoverFixtures()
         print("OS-1 source context and output: 11 regression groups passed")
     }
     func testRetrievedAnswerPresentation() {

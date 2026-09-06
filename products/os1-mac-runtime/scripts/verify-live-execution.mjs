@@ -54,7 +54,8 @@ for(const provider of providerArg ? [providerArg] : ['codex','claude']) {
   assert.equal(step.native_record.persistence,'verified');
   assert(step.output.includes('EXECUTION_OK'));
   assert(step.permission_profile==='read_only');
-  if(provider!=='claude') assert.notEqual(step.model,'gpt-5.3-codex-spark','Exhausted Spark must be excluded');
+  // Feasibility comes from the current catalog/quota observations, not a
+  // historical hard-coded model ban in an acceptance test.
   if(provider==='auto') assert(step.output.includes(workspace),'Actual shell working directory missing');
   if(provider==='auto' && coldStartArg==='cold-start') {
     assert.equal(step.model,'gpt-5.6-luna');
@@ -63,6 +64,8 @@ for(const provider of providerArg ? [providerArg] : ['codex','claude']) {
   const events=fs.readFileSync(journal,'utf8').trim().split('\n').filter(Boolean).map(JSON.parse);
   const publicEvents=events.filter(e=>e.phase==='executing' && e.publicText?.length);
   assert(publicEvents.length>0,`${provider} public progress never reached OS1`);
+  assert(events.some(e=>e.phase==='executing' && e.provider===step.provider && e.nativeSessionID===step.session_id),
+    'Live backend identity must match the adopted native session before completion');
   assert((publicEvents[0].timestamp+978307200)*1000<result.ended);
   const box=path.join(os.homedir(),'Library/Application Support/OS-1/execution-outbox');
   const id=fs.readFileSync(path.join(box,'submission-'+submission+'.ref'),'utf8');
@@ -82,7 +85,7 @@ for(const provider of providerArg ? [providerArg] : ['codex','claude']) {
   results.push({provider,model:step.model,effort:step.effort,sessionID:step.session_id,deliveryID:id,
     elapsedMS:result.ended-result.started,publicEvents:publicEvents.length,
     firstPublicMS:(publicEvents[0].timestamp+978307200)*1000-result.started,
-    outputSHA256:hash(step.output),replays:2,nativeRecordUnchanged:true});
+    outputSHA256:hash(step.output),replays:2,nativeRecordUnchanged:true,liveNativeIdentityMatched:true});
   console.log(JSON.stringify(results.at(-1)));
 }
 fs.writeFileSync(path.join(output,'live-execution-audit.json'),JSON.stringify({timestamp:new Date().toISOString(),
