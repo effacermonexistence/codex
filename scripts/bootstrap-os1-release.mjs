@@ -45,9 +45,14 @@ export function verifyInnerManifest(m, bytes) {
   assert.equal(m.object_key,`os1/releases/${PIN.version}/OS-1-${PIN.version}.pkg`);
   verifyBytes(bytes,PIN.pkgSHA);
 }
+export function requestHeaders(url,token) {
+  const metadata=url.startsWith(api+'/');
+  return {'user-agent':'OS1-verified-bootstrap/1','accept':metadata?'application/vnd.github+json':'*/*',
+    ...(metadata&&token?{authorization:'Bearer '+token}:{})};
+}
 async function download(url,maxBytes) {
-  const response=await fetch(url,{signal:AbortSignal.timeout(60000),headers:{'user-agent':'OS1-verified-bootstrap/1','accept':url.startsWith(api)?'application/vnd.github+json':'*/*'}});
-  assert(response.ok,`Download failed: HTTP ${response.status}`);
+  const response=await fetch(url,{signal:AbortSignal.timeout(60000),headers:requestHeaders(url,process.env.GH_TOKEN??process.env.GITHUB_TOKEN)});
+  assert(response.ok,`Download failed: HTTP ${response.status} from ${new URL(url).hostname}`);
   const chunks=[];let size=0;
   for await(const chunk of response.body){size+=chunk.length;assert(size<=maxBytes,'Download too large');chunks.push(chunk);}
   return Buffer.concat(chunks);

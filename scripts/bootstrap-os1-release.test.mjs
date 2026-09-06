@@ -1,7 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { PIN, assetURL, stableSupportsFleet, verifyRelease, verifyBytes, verifyInnerManifest } from './bootstrap-os1-release.mjs';
+import { PIN, assetURL, requestHeaders, stableSupportsFleet, verifyRelease, verifyBytes, verifyInnerManifest } from './bootstrap-os1-release.mjs';
+
+test('CI metadata authentication is never forwarded to assets or other hosts',()=>{
+  assert.equal(requestHeaders('https://api.github.com/repos/effacermonexistence/codex/releases/tags/'+PIN.tag,'fixture').authorization,'Bearer fixture');
+  for(const url of [assetURL,'https://example.com','https://api.github.com.evil.test/repos/effacermonexistence/codex/releases', 'https://api.github.com/repos/other/repository/releases'])assert.equal(requestHeaders(url,'fixture').authorization,undefined);
+});
 
 test('stable compatibility never mistakes an old or unversioned build for Fleet',()=>{
   for(const m of [{version:'0.9.1'},{version:'0.9.20'},{version:'0.9.21'},{version:'0.9.21',build:'69'}])assert.equal(stableSupportsFleet(m),false);

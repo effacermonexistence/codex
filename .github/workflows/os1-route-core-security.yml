@@ -125,6 +125,8 @@ jobs:
           bash -n scripts/bootstrap-new-mac.sh
 
       - name: Verify new-Mac pinned release selection and tamper rejection
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           node --test scripts/bootstrap-os1-release.test.mjs
           node scripts/bootstrap-os1-release.mjs --verify-only
