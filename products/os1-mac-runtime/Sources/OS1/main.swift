@@ -1255,7 +1255,7 @@ final class CodexAppServerClient: @unchecked Sendable {
         _ = try request(
             "initialize",
             params: [
-                "clientInfo": ["name": "Open OS-1 Codex", "version": "0.9.2"],
+                "clientInfo": ["name": "Open OS-1 Codex", "version": "0.9.3"],
                 "capabilities": ["experimentalApi": true],
             ],
             deadline: deadline
@@ -2955,16 +2955,32 @@ private func promptHookResponse(context: String? = nil) {
     }
 }
 
-private func promptHookPrompt() throws -> String {
+private struct PromptHookInput {
+    let prompt: String
+    let cwd: String
+    let sessionID: String
+    let turnID: String?
+}
+
+private func promptHookInput() throws -> PromptHookInput {
     let input = FileHandle.standardInput.readDataToEndOfFile()
     guard input.count <= 256_000,
           let value = try JSONSerialization.jsonObject(with: input) as? [String: Any],
           let prompt = value["prompt"] as? String,
+          let cwd = value["cwd"] as? String,
+          let sessionID = value["session_id"] as? String,
           !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-          prompt.utf8.count <= 48_000 else {
+          prompt.utf8.count <= 48_000,
+          !cwd.isEmpty,
+          !sessionID.isEmpty else {
         throw OS1Error.message("Invalid agent prompt hook input")
     }
-    return prompt
+    return PromptHookInput(
+        prompt: prompt,
+        cwd: cwd,
+        sessionID: sessionID,
+        turnID: value["turn_id"] as? String
+    )
 }
 
 private func exoReadyForPromptHook(config: RuntimeConfig, deadline: Date) async -> Bool {
@@ -2998,15 +3014,115 @@ private func promptHookStateDirectory() throws -> URL {
     return directory
 }
 
-private func runEXOPromptHook(consumerName: String) async {
+private func automaticFleetContext(receipt: FleetEnqueueReceipt, executable: String) -> String {
+    """
+    OS-1 Fleet automatic execution accepted this exact user request.
+    Objective: \(receipt.objectiveVersion)
+    Job: \(receipt.jobID)
+    Profile: \(receipt.profile)
+    Execution mode: \(receipt.executionMode)
+    Selected executor: \(receipt.executorDeviceID)
+
+    The selected Pro/Air background agent is executing the request now. Before using any write tool or giving the final answer, run this exact command and wait for its signed result:
+    \(shellQuoted(executable)) fleet-wait --job \(shellQuoted(receipt.jobID))
+
+    Do not duplicate the same work while that job is pending. Treat the returned execution receipt as a candidate: verify its output and, when it contains result_branch/result_commit, fetch and inspect that exact commit before integrating it. If waiting fails or the executor reports failure, continue the original request locally and report the genuine failure. This routes whole Codex/Claude jobs between Macs; it does not claim transparent pooling of hosted-model inference or arbitrary macOS CPU, RAM, and GPU processes.
+    """
+}
+
+private func pruneAutomaticFleetHookCache(_ directory: URL, now: Date = Date()) {
+    let fileManager = FileManager.default
+    let cutoff = now.addingTimeInterval(-7 * 24 * 60 * 60)
+    guard let files = try? fileManager.contentsOfDirectory(
+        at: directory,
+        includingPropertiesForKeys: [.contentModificationDateKey, .isRegularFileKey],
+        options: [.skipsHiddenFiles]
+    ) else { return }
+    for file in files.prefix(2_000) {
+        guard let values = try? file.resourceValues(forKeys: [.contentModificationDateKey, .isRegularFileKey]),
+              values.isRegularFile == true,
+              let modified = values.contentModificationDate,
+              modified < cutoff else { continue }
+        try? fileManager.removeItem(at: file)
+    }
+}
+
+private func automaticFleetSubmission(
+    input: PromptHookInput,
+    profile: String,
+    stateDirectory: URL
+) async throws -> String? {
+    let fileManager = FileManager.default
+    let home = fileManager.homeDirectoryForCurrentUser.path
+    if AutomaticFleetHookPolicy.isExecutorWorkspace(cwd: input.cwd, homeDirectory: home) {
+        return nil
+    }
+
+    let executable = try configuredOS1Executable()
+    let submissions = stateDirectory.appendingPathComponent("fleet-hook-submissions", isDirectory: true)
+    try fileManager.createDirectory(
+        at: submissions,
+        withIntermediateDirectories: true,
+        attributes: [.posixPermissions: 0o700]
+    )
+    pruneAutomaticFleetHookCache(submissions)
+
+    let cacheURL: URL?
+    if let turnID = input.turnID, !turnID.isEmpty {
+        let digest = sha256Hex(Data([input.sessionID, turnID, profile, input.cwd, input.prompt].joined(separator: "\n").utf8))
+        cacheURL = submissions.appendingPathComponent("\(digest).json")
+    } else {
+        cacheURL = nil
+    }
+    if let cacheURL,
+       let data = try? Data(contentsOf: cacheURL),
+       let cached = try? JSONDecoder().decode(FleetEnqueueReceipt.self, from: data) {
+        return automaticFleetContext(receipt: cached, executable: executable)
+    }
+
+    let receipt = try await enqueueFleetTask(
+        workspace: input.cwd,
+        prompt: input.prompt,
+        profile: profile,
+        minMemoryMiB: AutomaticFleetHookPolicy.minimumMemoryMiB,
+        cpuWeight: AutomaticFleetHookPolicy.cpuWeight,
+        preferDeviceID: nil
+    )
+    if let cacheURL {
+        let data = try JSONEncoder().encode(receipt)
+        try data.write(to: cacheURL, options: [.atomic, .completeFileProtectionUnlessOpen])
+        try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: cacheURL.path)
+    }
+    return automaticFleetContext(receipt: receipt, executable: executable)
+}
+
+private func runEXOPromptHook(consumerName: String, fleetProfile: String) async {
     do {
         guard ["Codex", "Claude Code"].contains(consumerName) else {
             promptHookResponse()
             return
         }
         let config = try RuntimeConfig.load()
-        let prompt = try promptHookPrompt()
+        let input = try promptHookInput()
         let stateDirectory = try promptHookStateDirectory()
+
+        if AutomaticFleetHookPolicy.isExecutorWorkspace(
+            cwd: input.cwd,
+            homeDirectory: FileManager.default.homeDirectoryForCurrentUser.path
+        ) {
+            promptHookResponse()
+            return
+        }
+
+        if let context = try await automaticFleetSubmission(
+            input: input,
+            profile: fleetProfile,
+            stateDirectory: stateDirectory
+        ) {
+            promptHookResponse(context: context)
+            return
+        }
+
         guard let lease = try ExclusiveHookLease.tryAcquire(
             at: stateDirectory.appendingPathComponent("exo-prompt-hook.lock")
         ) else {
@@ -3031,7 +3147,7 @@ private func runEXOPromptHook(consumerName: String) async {
                 return
             }
             let inference = try await executePersistentEXO(
-                prompt: prompt,
+                prompt: input.prompt,
                 config: config,
                 stateURL: stateDirectory.appendingPathComponent("exo-prompt-hook-instance.json"),
                 deadline: deadline
@@ -3056,11 +3172,11 @@ private func runEXOPromptHook(consumerName: String) async {
 }
 
 func runClaudeEXOHook() async {
-    await runEXOPromptHook(consumerName: "Claude Code")
+    await runEXOPromptHook(consumerName: "Claude Code", fleetProfile: "claude")
 }
 
 func runCodexEXOHook() async {
-    await runEXOPromptHook(consumerName: "Codex")
+    await runEXOPromptHook(consumerName: "Codex", fleetProfile: "codex")
 }
 
 private func configuredOS1Executable() throws -> String {
@@ -3217,6 +3333,8 @@ func usage() {
       os1 fleet-run --workspace /path/to/project --prompt "task"
               [--profile codex|claude|os1|build|test|exo]
               [--min-memory-mib N] [--cpu-weight 0...100]
+      os1 fleet-wait --job UUID [--timeout-seconds 5...3600]
+      os1 fleet-snapshot
       os1 register
       os1 run --workspace /path/to/project --prompt "task" [--provider auto|codex|claude]
               [--codex-session-id UUID] [--claude-session-id UUID]
@@ -3232,7 +3350,7 @@ struct OS1Main {
             let arguments = Array(CommandLine.arguments.dropFirst())
             guard let command = arguments.first else { usage(); return }
             switch command {
-            case "version", "--version", "-V": print("OS-1 Runtime 0.9.2")
+            case "version", "--version", "-V": print("OS-1 Runtime 0.9.3")
             case "doctor": try doctor()
             case "self-test": try selfTest()
             case "exo-doctor": try await exoDoctor(config: RuntimeConfig.load())
@@ -3301,6 +3419,27 @@ struct OS1Main {
                     cpuWeight: cpuWeight,
                     preferDeviceID: preferDeviceID
                 )
+            case "fleet-wait":
+                var jobID: String?
+                var timeoutSeconds = 3_600
+                var index = 1
+                while index < arguments.count {
+                    switch arguments[index] {
+                    case "--job" where index + 1 < arguments.count:
+                        jobID = arguments[index + 1]; index += 2
+                    case "--timeout-seconds" where index + 1 < arguments.count:
+                        guard let value = Int(arguments[index + 1]), (5...3_600).contains(value) else {
+                            throw OS1Error.message("--timeout-seconds must be 5...3600")
+                        }
+                        timeoutSeconds = value; index += 2
+                    default: throw OS1Error.message("Unknown fleet-wait argument")
+                    }
+                }
+                guard let jobID else { throw OS1Error.message("fleet-wait requires --job UUID") }
+                print(try await waitForFleetTask(jobID: jobID, timeoutSeconds: timeoutSeconds))
+            case "fleet-snapshot":
+                guard arguments.count == 1 else { throw OS1Error.message("fleet-snapshot takes no arguments") }
+                print(try await fleetSnapshotJSON())
             case "register":
                 let config = try RuntimeConfig.load()
                 let client = APIClient(config: config, token: try githubToken(), deviceID: try deviceID())
