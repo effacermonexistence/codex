@@ -55,5 +55,30 @@ try {
   equal(await call('claim',['air',now+3,'claim-one'],'empty'),c);
   equal((await call('jobStatus',['pro','second',now+3600001],'empty')).state,'expired');
   equal(await call('complete',['air','second','complete','late','hash',now+3600002],'empty'),{status:'rejected'});
+  // Placement preference survives the real SQLite submit/claim/receipt boundary.
+  for (const profile of ['codex','claude','exo']) {
+    const fleetName='preferred-'+profile;
+    await call('heartbeat',[{...node,load_average_1m:20,memory_available_mib:2048,queue_depth:8}],fleetName);
+    await call('heartbeat',[{...node,device_id:'pro',role:'pro',hostname:'pro',load_average_1m:0,
+      cpu_logical_count:14,memory_total_mib:36864,memory_available_mib:36864}],fleetName);
+    const preferredSpec={...spec,job_id:'preferred-'+profile,profile,request_nonce:'private-nonce-'+profile,
+      requirements:{...spec.requirements,prefer_device_id:'air'}};
+    const placed=await call('submit',[preferredSpec],fleetName);
+    equal(placed.status,'queued');equal(placed.assignment.executor_device_id,'air');
+    equal(placed.assignment.execution_mode,profile==='exo'?'distributed_exo':'single_node');
+    equal(Object.hasOwn(placed.assignment,'request_nonce'),false);
+    equal(JSON.stringify(placed).includes(preferredSpec.request_nonce),false);
+    equal(await call('claim',['pro',now+1,'pro-claim'],fleetName),{status:'idle'});
+    equal((await call('claim',['air',now+2,'air-claim'],fleetName)).assignment,placed.assignment);
+    equal(await call('jobStatus',['foreign-owner',preferredSpec.job_id,now+3],fleetName),null);
+    equal(await call('jobStatus',['pro',preferredSpec.job_id,now+3],'other-fleet'),null);
+    // Changed resource conditions must not reassign an already accepted objective.
+    await call('heartbeat',[{...node,has_codex:false,has_claude:false,exo_ready:false,last_seen_ms:now+31001}],fleetName);
+    await call('heartbeat',[{...node,device_id:'pro',role:'pro',last_seen_ms:now+31001}],fleetName);
+    equal(await call('submit',[{...preferredSpec,job_id:'replay',created_at_ms:now+31001}],fleetName),placed);
+    const fallback=await call('submit',[{...preferredSpec,job_id:'fallback',request_nonce:'fallback',created_at_ms:now+31001}],fleetName);
+    equal(fallback.assignment.executor_device_id,'pro');
+    equal(await call('submit',[{...preferredSpec,requirements:{...preferredSpec.requirements,prefer_device_id:'pro'}}],fleetName),{status:'rejected'});
+  }
   console.log(`Fleet SQLite recovery: ${checks} checks passed; submit/claim/result replay creates no duplicate work.`);
 } finally {await mf.dispose();}

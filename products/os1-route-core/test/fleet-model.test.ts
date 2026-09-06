@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   FLEET_OBJECTIVE_VERSION,
+  FLEET_PROFILES,
   placeFleetJob,
   type FleetNode,
 } from "../src/fleet-model";
@@ -28,6 +29,69 @@ function node(overrides: Partial<FleetNode>): FleetNode {
 }
 
 describe("fleet objective", () => {
+  for (const profile of FLEET_PROFILES) {
+    it(`honors an eligible preferred device despite a large score gap for ${profile}`, () => {
+      const preferred = node({ device_id: "device:air", role: "air", cpu_logical_count: 10,
+        load_average_1m: 20, memory_total_mib: 16_384, memory_available_mib: 2_048, queue_depth: 8 });
+      const other = node({ load_average_1m: 0, memory_available_mib: 36_864 });
+      const requirements = { min_memory_mib: 2_048, cpu_weight: 100, prefer_device_id: preferred.device_id };
+      for (const nodes of [[other, preferred], [preferred, other]]) {
+        expect(placeFleetJob(nodes, profile, requirements, now)?.executor_device_id).toBe(preferred.device_id);
+      }
+    });
+  }
+
+  for (const [name, overrides] of [
+    ["stale", { last_seen_ms: now - 30_001 }],
+    ["insufficient memory", { memory_available_mib: 2_047 }],
+    ["missing provider", { has_claude: false }],
+  ] as const) {
+    it(`falls back only after preferred eligibility fails: ${name}`, () => {
+      const preferred = node({ device_id: "device:air", role: "air", ...overrides });
+      const requirements = { min_memory_mib: 2_048, cpu_weight: 50, prefer_device_id: preferred.device_id };
+      expect(placeFleetJob([preferred, node({})], "claude", requirements, now)?.executor_device_id).toBe("device:pro");
+      expect(placeFleetJob([preferred], "claude", requirements, now)).toBeNull();
+    });
+  }
+
+  it("preserves exact eligibility boundaries before applying preference", () => {
+    const preferred = node({ device_id: "device:air", last_seen_ms: now - 30_000, memory_available_mib: 2_048 });
+    expect(placeFleetJob([node({}), preferred], "codex", {
+      min_memory_mib: 2_048, cpu_weight: 50, prefer_device_id: preferred.device_id,
+    }, now)?.executor_device_id).toBe(preferred.device_id);
+  });
+
+  it("falls back for absent preference with deterministic ties, without mutating inputs", () => {
+    const nodes = Object.freeze([Object.freeze(node({ device_id: "device:z" })), Object.freeze(node({ device_id: "device:a" }))]);
+    for (const preferred of [null, "device:other-owner"]) {
+      const requirements = Object.freeze({ min_memory_mib: 2_048, cpu_weight: 50, prefer_device_id: preferred });
+      const expected = placeFleetJob(nodes, "codex", requirements, now);
+      expect(expected?.executor_device_id).toBe("device:a");
+      expect(placeFleetJob([...nodes].reverse(), "codex", requirements, now)).toEqual(expected);
+      expect(placeFleetJob([], "codex", requirements, now)).toBeNull();
+    }
+  });
+
+  it("does not distribute to a preferred node with unready or one-node EXO", () => {
+    const requirements = { min_memory_mib: 1_024, cpu_weight: 50, prefer_device_id: "device:air" };
+    for (const overrides of [{ exo_ready: false }, { exo_nodes: 1 }]) {
+      const preferred = node({ device_id: "device:air", ...overrides });
+      expect(placeFleetJob([preferred, node({})], "exo", requirements, now)).toMatchObject({
+        executor_device_id: "device:pro", execution_mode: "distributed_exo",
+      });
+      expect(placeFleetJob([preferred], "exo", requirements, now)).toBeNull();
+    }
+  });
+
+  it("returns only the placement contract, never node credentials or request fields", () => {
+    const preferred = { ...node({ device_id: "device:air" }), authorization: "fixture-secret", signature: "fixture-signature" };
+    const placement = placeFleetJob([preferred], "codex", {
+      min_memory_mib: 2_048, cpu_weight: 50, prefer_device_id: preferred.device_id,
+    }, now);
+    expect(Object.keys(placement!).sort()).toEqual(["execution_mode", "executor_device_id", "objective_version", "score"]);
+    expect(JSON.stringify(placement)).not.toContain("fixture-");
+  });
+
   it("selects the node with more usable headroom", () => {
     const placement = placeFleetJob([
       node({ device_id: "device:pro", load_average_1m: 14, queue_depth: 2 }),

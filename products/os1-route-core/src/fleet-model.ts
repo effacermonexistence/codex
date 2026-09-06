@@ -76,7 +76,10 @@ export function placeFleetJob(
     .map((node) => ({ node, score: score(node, requirements) }))
     .sort((left, right) => left.score - right.score ||
       left.node.device_id.localeCompare(right.node.device_id));
-  const selected = eligible[0];
+  // An explicit device choice is a priority among eligible nodes, not a small
+  // score discount that resource pressure can override. Never bypass the gates.
+  const selected = eligible.find(({ node }) => node.device_id === requirements.prefer_device_id)
+    ?? eligible[0];
   if (!selected) return null;
   return {
     objective_version: FLEET_OBJECTIVE_VERSION,
