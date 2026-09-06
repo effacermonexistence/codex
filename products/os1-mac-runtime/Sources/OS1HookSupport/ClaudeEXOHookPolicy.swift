@@ -21,6 +21,60 @@ public enum AutomaticFleetHookPolicy {
     }
 }
 
+public enum ProviderReadinessPolicy {
+    public static func canAdvertise(
+        executableExists: Bool,
+        exitCode: Int32?,
+        observedOutput: String?,
+        expectedOutput: String
+    ) -> Bool {
+        guard executableExists,
+              exitCode == 0,
+              let observedOutput else { return false }
+        return observedOutput.trimmingCharacters(in: .whitespacesAndNewlines) == expectedOutput
+    }
+}
+
+public struct CodexExecJSONResult: Sendable {
+    public let threadID: String
+    public let output: String
+    public let completed: Bool
+
+    public init(threadID: String, output: String, completed: Bool) {
+        self.threadID = threadID
+        self.output = output
+        self.completed = completed
+    }
+}
+
+public func parseCodexExecJSONL(_ data: Data) -> CodexExecJSONResult? {
+    var threadID: String?
+    var messages: [String] = []
+    var completed = false
+
+    for line in data.split(separator: 0x0A) {
+        guard let object = try? JSONSerialization.jsonObject(with: Data(line)) as? [String: Any],
+              let type = object["type"] as? String else { continue }
+        switch type {
+        case "thread.started":
+            threadID = object["thread_id"] as? String
+        case "item.completed":
+            guard let item = object["item"] as? [String: Any],
+                  item["type"] as? String == "agent_message",
+                  let text = item["text"] as? String else { continue }
+            messages.append(text)
+        case "turn.completed":
+            completed = true
+        default:
+            continue
+        }
+    }
+
+    guard let threadID, UUID(uuidString: threadID) != nil,
+          completed, let output = messages.last else { return nil }
+    return CodexExecJSONResult(threadID: threadID, output: output, completed: completed)
+}
+
 public final class ExclusiveHookLease: @unchecked Sendable {
     private let descriptor: Int32
 

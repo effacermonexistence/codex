@@ -1,11 +1,30 @@
 import CryptoKit
 import Darwin
 import Foundation
+import OS1HookSupport
 
 private let fleetProfiles = ["codex", "claude", "os1", "build", "test", "exo"]
 let fleetAgentCycleInterval: Duration = .seconds(20)
 let fleetJobStatusInterval: Duration = .seconds(5)
 let fleetLaunchAgentThrottleIntervalSeconds = 20
+private let fleetProviderReadinessRefreshSeconds: TimeInterval = 30 * 60
+private let fleetProviderReadinessMaximumAgeMs: Int64 = 45 * 60 * 1_000
+
+private struct FleetProviderReadiness: Codable {
+    let checkedAtMs: Int64
+    let codexExecutable: String?
+    let claudeExecutable: String?
+    let hasCodex: Bool
+    let hasClaude: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case checkedAtMs = "checked_at_ms"
+        case codexExecutable = "codex_executable"
+        case claudeExecutable = "claude_executable"
+        case hasCodex = "has_codex"
+        case hasClaude = "has_claude"
+    }
+}
 
 private struct FleetNodeHeartbeat: Codable {
     let role: String
@@ -354,6 +373,114 @@ private func fleetLoadAverageMilli() -> Int {
     return max(0, Int((loads[0] * 1_000).rounded()))
 }
 
+private func fleetProviderReadinessURL() -> URL {
+    FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent(".os1/fleet/provider-readiness.json")
+}
+
+private func fleetProviderProbeWorkspace() throws -> String {
+    let directory = FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent(".os1/fleet/provider-readiness-workspace", isDirectory: true)
+    try FileManager.default.createDirectory(
+        at: directory,
+        withIntermediateDirectories: true,
+        attributes: [.posixPermissions: 0o700]
+    )
+    return directory.path
+}
+
+private func fleetProbeCodex(executable: String, workspace: String) -> Bool {
+    let marker = "OS1_CODEX_PROVIDER_READY"
+    let prompt = "Read only. Do not modify files. Reply exactly \(marker)."
+    guard let raw = try? commandOutput(
+        executable,
+        [
+            "exec", "--json", "--ignore-user-config", "--ephemeral",
+            "--sandbox", "read-only", "--model", "gpt-5.6-luna",
+            "-c", "model_reasoning_effort=\"low\"", "--skip-git-repo-check",
+            "--cd", workspace, prompt,
+        ],
+        input: Data(),
+        timeout: 120,
+        currentDirectory: workspace
+    ) else { return false }
+    let parsed = parseCodexExecJSONL(raw.1)
+    return ProviderReadinessPolicy.canAdvertise(
+        executableExists: true,
+        exitCode: raw.0,
+        observedOutput: parsed?.output,
+        expectedOutput: marker
+    )
+}
+
+private func fleetProbeClaude(executable: String, workspace: String) -> Bool {
+    guard let auth = try? commandOutput(executable, ["auth", "status"], timeout: 30),
+          auth.0 == 0,
+          let status = try? JSONSerialization.jsonObject(with: auth.1) as? [String: Any],
+          status["loggedIn"] as? Bool == true else { return false }
+    let marker = "OS1_CLAUDE_PROVIDER_READY"
+    let prompt = "Read only. Do not modify files. Reply exactly \(marker)."
+    guard let raw = try? commandOutput(
+        executable,
+        [
+            "-p", "--output-format", "json", "--safe-mode",
+            "--permission-mode", "dontAsk", "--tools", "Read,Glob,Grep",
+            "--model", "sonnet", "--effort", "low", prompt,
+        ],
+        input: Data(),
+        timeout: 120,
+        currentDirectory: workspace
+    ),
+    let object = try? JSONSerialization.jsonObject(with: raw.1) as? [String: Any],
+    object["is_error"] as? Bool != true,
+    (object["permission_denials"] as? [[String: Any]] ?? []).isEmpty else { return false }
+    return ProviderReadinessPolicy.canAdvertise(
+        executableExists: true,
+        exitCode: raw.0,
+        observedOutput: object["result"] as? String,
+        expectedOutput: marker
+    )
+}
+
+private func probeFleetProviderReadiness() -> FleetProviderReadiness {
+    let workspace = (try? fleetProviderProbeWorkspace()) ?? NSTemporaryDirectory()
+    let codex = try? findExecutable("codex")
+    let claude = try? findExecutable("claude")
+    let record = FleetProviderReadiness(
+        checkedAtMs: fleetNowMs(),
+        codexExecutable: codex,
+        claudeExecutable: claude,
+        hasCodex: codex.map { fleetProbeCodex(executable: $0, workspace: workspace) } ?? false,
+        hasClaude: claude.map { fleetProbeClaude(executable: $0, workspace: workspace) } ?? false
+    )
+    let url = fleetProviderReadinessURL()
+    if let data = try? JSONEncoder().encode(record) {
+        try? FileManager.default.createDirectory(
+            at: url.deletingLastPathComponent(),
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        try? data.write(to: url, options: .atomic)
+        try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+    }
+    return record
+}
+
+private func cachedFleetProviderReadiness() -> FleetProviderReadiness {
+    let unavailable = FleetProviderReadiness(
+        checkedAtMs: 0, codexExecutable: nil, claudeExecutable: nil,
+        hasCodex: false, hasClaude: false
+    )
+    let url = fleetProviderReadinessURL()
+    guard let data = try? Data(contentsOf: url),
+          let record = try? JSONDecoder().decode(FleetProviderReadiness.self, from: data),
+          fleetNowMs() - record.checkedAtMs >= 0,
+          fleetNowMs() - record.checkedAtMs <= fleetProviderReadinessMaximumAgeMs,
+          record.codexExecutable == (try? findExecutable("codex")),
+          record.claudeExecutable == (try? findExecutable("claude")) else { return unavailable }
+    return record
+}
+
 private func fleetEXONodes(config: RuntimeConfig) async -> Int {
     let raw = config.exoAPIURL ?? "http://127.0.0.1:52415"
     guard let base = URL(string: raw) else { return 0 }
@@ -368,9 +495,14 @@ private func fleetEXONodes(config: RuntimeConfig) async -> Int {
     } catch { return 0 }
 }
 
-private func fleetHeartbeatNode(role: String, config: RuntimeConfig) async throws -> FleetNodeHeartbeat {
+private func fleetHeartbeatNode(
+    role: String,
+    config: RuntimeConfig,
+    providerReadiness: FleetProviderReadiness? = nil
+) async throws -> FleetNodeHeartbeat {
     guard role == "pro" || role == "air" else { throw OS1Error.message("Fleet role must be pro or air") }
     let exoNodes = await fleetEXONodes(config: config)
+    let readiness = providerReadiness ?? cachedFleetProviderReadiness()
     return FleetNodeHeartbeat(
         role: role,
         hostname: ProcessInfo.processInfo.hostName,
@@ -380,15 +512,24 @@ private func fleetHeartbeatNode(role: String, config: RuntimeConfig) async throw
         memoryTotalMiB: Int(ProcessInfo.processInfo.physicalMemory / 1_048_576),
         memoryAvailableMiB: fleetAvailableMemoryMiB(),
         queueDepth: 0,
-        hasCodex: (try? findExecutable("codex")) != nil,
-        hasClaude: (try? findExecutable("claude")) != nil,
+        hasCodex: readiness.hasCodex,
+        hasClaude: readiness.hasClaude,
         exoReady: exoNodes >= 2,
         exoNodes: exoNodes
     )
 }
 
-private func sendFleetHeartbeat(client: APIClient, key: SigningKey, role: String) async throws -> FleetNodeHeartbeat {
-    let node = try await fleetHeartbeatNode(role: role, config: client.config)
+private func sendFleetHeartbeat(
+    client: APIClient,
+    key: SigningKey,
+    role: String,
+    providerReadiness: FleetProviderReadiness? = nil
+) async throws -> FleetNodeHeartbeat {
+    let node = try await fleetHeartbeatNode(
+        role: role,
+        config: client.config,
+        providerReadiness: providerReadiness
+    )
     let now = fleetNowMs()
     let nonce = try randomNonce()
     let signature = Base64URL.encode(try key.sign(heartbeatBytes(deviceID: client.deviceID, sentAtMs: now, nonce: nonce, node: node)))
@@ -517,12 +658,46 @@ private func executeFleetClaude(
     )])
 }
 
+private func codexFleetRolloutPath(
+    sessionID: String,
+    modifiedAfter: Date,
+    containing output: String
+) -> String? {
+    let sessions = FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent(".codex/sessions", isDirectory: true)
+    let deadline = Date().addingTimeInterval(4)
+    repeat {
+        if let enumerator = FileManager.default.enumerator(
+            at: sessions,
+            includingPropertiesForKeys: [.isRegularFileKey, .contentModificationDateKey, .fileSizeKey],
+            options: [.skipsHiddenFiles, .skipsPackageDescendants]
+        ) {
+            for case let candidate as URL in enumerator {
+                guard candidate.lastPathComponent.contains(sessionID),
+                      candidate.pathExtension == "jsonl",
+                      let values = try? candidate.resourceValues(
+                        forKeys: [.isRegularFileKey, .contentModificationDateKey, .fileSizeKey]
+                      ),
+                      values.isRegularFile == true,
+                      (values.fileSize ?? 0) > 0,
+                      (values.contentModificationDate ?? .distantPast) >= modifiedAfter.addingTimeInterval(-1),
+                      let data = try? Data(contentsOf: candidate),
+                      String(decoding: data.suffix(512 * 1_024), as: UTF8.self).contains(output) else { continue }
+                return candidate.path
+            }
+        }
+        Thread.sleep(forTimeInterval: 0.2)
+    } while Date() < deadline
+    return nil
+}
+
 private func executeFleetCodex(
     assignment: FleetAssignment,
     prompt: String,
     workspace: String,
     config: RuntimeConfig
 ) throws -> RunSummary {
+    let started = Date()
     let formatter = ISO8601DateFormatter()
     formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
     let ticket = Ticket(
@@ -535,33 +710,60 @@ private func executeFleetCodex(
         nonce: Base64URL.encode(Data(repeating: 0, count: 32)),
         signature: Base64URL.encode(Data(repeating: 0, count: 64))
     )
-    let execution = try execute(
-        ticket: ticket,
-        prompt: prompt,
-        workspace: workspace,
+    let codex = try findExecutable("codex")
+    let governedPrompt = """
+    \(executorInstructions(contract: config.executorContract, ticket: ticket))
+
+    Current fleet task:
+    \(prompt)
+    """
+    let raw = try commandOutput(
+        codex,
+        [
+            "exec", "--json", "--ignore-user-config",
+            "--sandbox", "workspace-write", "--approve-for-me",
+            "--model", "gpt-5.6-luna", "-c", "model_reasoning_effort=\"low\"",
+            "--thread-source", "os1", "--cd", workspace, governedPrompt,
+        ],
+        input: Data(),
         timeout: config.executionTimeoutSeconds,
-        providerSessionID: nil,
-        model: "gpt-5.6-luna",
-        effort: "low",
-        executorContract: config.executorContract,
-        desktopReveal: .never,
-        workspaceBeforeHash: workspaceHash(workspace)
+        currentDirectory: workspace
     )
-    let artifact = execution.artifact
+    guard raw.0 == 0 else {
+        let detail = boundedString(raw.2, maximum: 8_000)
+        throw OS1Error.message("Codex CLI execution failed with status \(raw.0): \(detail)")
+    }
+    guard let parsed = parseCodexExecJSONL(raw.1) else {
+        throw OS1Error.message("Codex CLI completion record was not verified")
+    }
+    let recordPath = codexFleetRolloutPath(
+        sessionID: parsed.threadID,
+        modifiedAfter: started,
+        containing: parsed.output
+    )
+    let nativeRecord = NativeRecordEvidence(
+        turnID: nil,
+        recordPath: recordPath,
+        persistence: recordPath == nil ? "unverified: Codex rollout for this fleet turn not found" : "verified",
+        desktopVisibility: "not_revealed"
+    )
+    guard nativeRecord.isVerified else {
+        throw OS1Error.message("Codex native fleet record was not verified")
+    }
     return RunSummary(status: "complete", steps: [RunStepSummary(
         sequence: 1,
-        provider: artifact.provider,
-        action: artifact.action,
-        model: artifact.model,
-        effort: artifact.effort,
+        provider: "codex",
+        action: "cx_56luna_low",
+        model: "gpt-5.6-luna",
+        effort: "low",
         revasDisposition: "fleet_device_verified",
-        sessionID: execution.sessionID,
-        permissionProfile: artifact.permissionProfile,
-        exitCode: artifact.exitCode,
-        output: artifact.output,
-        stderr: artifact.stderr,
-        durationMS: artifact.durationMS,
-        nativeRecord: execution.nativeRecord
+        sessionID: parsed.threadID,
+        permissionProfile: "workspace_write",
+        exitCode: raw.0,
+        output: boundedString(Data(parsed.output.utf8), maximum: 800_000),
+        stderr: boundedString(raw.2, maximum: 180_000),
+        durationMS: Int64(Date().timeIntervalSince(started) * 1_000),
+        nativeRecord: nativeRecord
     )])
 }
 
@@ -658,13 +860,24 @@ func runFleetAgent(role: String, once: Bool) async throws {
     let key = try SigningKey.loadOrCreate()
     let client = APIClient(config: config, token: try githubToken(), deviceID: try deviceID())
     var registered = false
+    var providerReadiness = probeFleetProviderReadiness()
+    var providerReadinessCheckedAt = Date()
     repeat {
         do {
             if !registered {
                 try await register(client: client, key: key)
                 registered = true
             }
-            let node = try await sendFleetHeartbeat(client: client, key: key, role: role)
+            if Date().timeIntervalSince(providerReadinessCheckedAt) >= fleetProviderReadinessRefreshSeconds {
+                providerReadiness = probeFleetProviderReadiness()
+                providerReadinessCheckedAt = Date()
+            }
+            let node = try await sendFleetHeartbeat(
+                client: client,
+                key: key,
+                role: role,
+                providerReadiness: providerReadiness
+            )
             if let assignment = try await fleetClaim(client: client, key: key) {
                 do {
                     let result = try await executeFleetAssignment(assignment, role: role, config: config)

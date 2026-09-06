@@ -77,12 +77,62 @@ func testAutomaticFleetExecutorBypass() throws {
     try expect(AutomaticFleetHookPolicy.cpuWeight == 50, "automatic fleet CPU weight drifted")
 }
 
+func testProviderReadinessRequiresExecution() throws {
+    try expect(
+        !ProviderReadinessPolicy.canAdvertise(
+            executableExists: true,
+            exitCode: 1,
+            observedOutput: "login required",
+            expectedOutput: "READY"
+        ),
+        "binary presence incorrectly advertised a failed provider"
+    )
+    try expect(
+        !ProviderReadinessPolicy.canAdvertise(
+            executableExists: true,
+            exitCode: 0,
+            observedOutput: "wrong",
+            expectedOutput: "READY"
+        ),
+        "unexpected provider output was accepted"
+    )
+    try expect(
+        ProviderReadinessPolicy.canAdvertise(
+            executableExists: true,
+            exitCode: 0,
+            observedOutput: "READY\n",
+            expectedOutput: "READY"
+        ),
+        "successful exact provider probe was rejected"
+    )
+}
+
+func testCodexExecJSONLParser() throws {
+    let session = "01a07483-b424-7b81-a4a4-3a056c9bcf3e"
+    let transcript = Data("""
+    {"type":"thread.started","thread_id":"\(session)"}
+    {"type":"turn.started"}
+    {"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"READY"}}
+    {"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}
+    """.utf8)
+    let parsed = parseCodexExecJSONL(transcript)
+    try expect(parsed?.threadID == session, "Codex exec thread identity was not parsed")
+    try expect(parsed?.output == "READY", "Codex exec final answer was not parsed")
+    try expect(parsed?.completed == true, "Codex exec completion was not verified")
+    try expect(
+        parseCodexExecJSONL(Data("{\"type\":\"thread.started\",\"thread_id\":\"\(session)\"}".utf8)) == nil,
+        "incomplete Codex exec stream was accepted"
+    )
+}
+
 do {
     try testExclusiveLease()
     try testCircuitBreaker()
     try testTimeoutHeadroom()
     try testAutomaticFleetExecutorBypass()
-    print("OS1HookSupportTests: PASS (4 tests)")
+    try testProviderReadinessRequiresExecution()
+    try testCodexExecJSONLParser()
+    print("OS1HookSupportTests: PASS (6 tests)")
 } catch {
     fputs("OS1HookSupportTests: FAIL: \(error)\n", stderr)
     exit(1)
