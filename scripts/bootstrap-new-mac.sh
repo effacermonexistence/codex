@@ -159,7 +159,7 @@ fi
 
 "$install_root/scripts/bootstrap-claude-code.sh"
 if [[ "${OMAR_SKIP_OS1:-0}" != "1" ]]; then
-  "$install_root/products/os1-mac-runtime/scripts/install-os1.sh"
+  "$node_install_root/bin/node" "$install_root/scripts/bootstrap-os1-release.mjs"
 fi
 
 pnpm --dir "$install_root" install --frozen-lockfile

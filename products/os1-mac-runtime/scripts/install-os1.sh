@@ -251,6 +251,19 @@ if [[ "$(stat -f '%z' "$os1_tmp/OS-1.pkg")" != "$os1_size" ]]; then
   echo "OS-1 refused a package whose size disagrees with the manifest." >&2
   exit 1
 fi
+# Recheck after downloading: a stable pointer can change between bootstrap's
+# selection and this install. Never install an old runtime then fail its hooks.
+if [[ "${OS1_REQUIRE_FLEET_RELEASE:-0}" == "1" ]]; then
+  IFS=. read -r os1_major_version os1_minor_version os1_patch_version <<< "$os1_version"
+  os1_fleet_compatible=0
+  if (( 10#$os1_major_version > 0 || 10#$os1_minor_version > 9 || (10#$os1_minor_version == 9 && 10#$os1_patch_version > 21) )); then
+    os1_fleet_compatible=1
+  elif [[ "$os1_version" == "0.9.21" ]]; then
+    os1_build="$(plutil -extract build raw -o - "$os1_tmp/latest.json" 2>/dev/null || true)"
+    if [[ "$os1_build" =~ ^[0-9]+$ ]] && (( 10#$os1_build >= 70 )); then os1_fleet_compatible=1; fi
+  fi
+  [[ "$os1_fleet_compatible" == 1 ]] || { echo 'OS1 stable release changed or lacks Fleet; rerun the verified bootstrap.' >&2; exit 1; }
+fi
 if ! printf '%s  %s\n' "$os1_sha256" "$os1_tmp/OS-1.pkg" | shasum -a 256 -c -; then
   echo "OS-1 refused a package whose SHA-256 disagrees with the manifest." >&2
   exit 1
