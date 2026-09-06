@@ -323,14 +323,33 @@ private func statusBytes(deviceID: String, jobID: String, sentAtMs: Int64, nonce
 }
 
 private func fleetZeroTierIP() throws -> String {
-    let ifconfig = try commandOutput("/sbin/ifconfig", [], timeout: 10)
-    guard ifconfig.0 == 0 else { throw OS1Error.message("ZeroTier interface inspection failed") }
-    let tokens = String(decoding: ifconfig.1, as: UTF8.self).split { $0.isWhitespace }.map(String.init)
-    guard let address = tokens.first(where: { value in
-        let parts = value.split(separator: ".")
-        return parts.count == 4 && value.hasPrefix("10.215.90.")
-    }) else { throw OS1Error.message("OS-1 ZeroTier address is unavailable") }
-    return address
+    var interfaces: UnsafeMutablePointer<ifaddrs>?
+    guard getifaddrs(&interfaces) == 0, let first = interfaces else {
+        throw OS1Error.message("ZeroTier interface inspection failed")
+    }
+    defer { freeifaddrs(first) }
+
+    var cursor: UnsafeMutablePointer<ifaddrs>? = first
+    while let interface = cursor?.pointee {
+        defer { cursor = interface.ifa_next }
+        guard let socketAddress = interface.ifa_addr,
+              socketAddress.pointee.sa_family == UInt8(AF_INET) else { continue }
+        var buffer = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+        guard getnameinfo(
+            socketAddress,
+            socklen_t(socketAddress.pointee.sa_len),
+            &buffer,
+            socklen_t(buffer.count),
+            nil,
+            0,
+            NI_NUMERICHOST
+        ) == 0 else { continue }
+        let value = String(decoding: buffer.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }, as: UTF8.self)
+        if value.hasPrefix("10.215.90."), value.split(separator: ".").count == 4 {
+            return value
+        }
+    }
+    throw OS1Error.message("OS-1 ZeroTier address is unavailable")
 }
 
 private func fleetAvailableMemoryMiB() -> Int {

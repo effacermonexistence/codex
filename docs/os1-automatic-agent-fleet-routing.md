@@ -50,6 +50,8 @@ inference profile.
    submission is unavailable.
 6. Let the background agent wait for the existing per-device `gh` keychain
    credential during heavy load; never copy that token into its service file.
+7. Read the ZeroTier address through the native interface API so heartbeat
+   liveness does not depend on spawning `ifconfig` under host load.
 
 ## Alternatives and rollback
 
