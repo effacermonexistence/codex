@@ -19,6 +19,13 @@ public enum AutomaticFleetHookPolicy {
         let executorRoot = home + "/.os1/fleet/jobs/"
         return (workspace + "/").hasPrefix(executorRoot)
     }
+
+    public static func providerProfile(configuredProfile: String?, turnID: String?) -> String {
+        if configuredProfile == "codex" || configuredProfile == "claude" {
+            return configuredProfile!
+        }
+        return turnID?.isEmpty == false ? "codex" : "claude"
+    }
 }
 
 public enum ProviderReadinessPolicy {

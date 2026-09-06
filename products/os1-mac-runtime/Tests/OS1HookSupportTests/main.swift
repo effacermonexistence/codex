@@ -75,6 +75,14 @@ func testAutomaticFleetExecutorBypass() throws {
     )
     try expect(AutomaticFleetHookPolicy.minimumMemoryMiB == 2_048, "automatic fleet memory floor drifted")
     try expect(AutomaticFleetHookPolicy.cpuWeight == 50, "automatic fleet CPU weight drifted")
+    try expect(
+        AutomaticFleetHookPolicy.providerProfile(configuredProfile: nil, turnID: "turn-1") == "codex",
+        "trusted compatibility hook did not identify a Codex turn"
+    )
+    try expect(
+        AutomaticFleetHookPolicy.providerProfile(configuredProfile: nil, turnID: nil) == "claude",
+        "trusted compatibility hook did not identify a Claude turn"
+    )
 }
 
 func testProviderReadinessRequiresExecution() throws {
