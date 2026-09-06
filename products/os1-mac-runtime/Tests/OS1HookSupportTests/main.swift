@@ -133,6 +133,18 @@ func testCodexExecJSONLParser() throws {
     )
 }
 
+func testCodexFleetArgumentsDoNotConflict() throws {
+    let arguments = CodexFleetCLIArguments.execution(
+        model: "gpt-5.6-luna",
+        effort: "low",
+        workspace: "/tmp/project",
+        prompt: "task"
+    )
+    try expect(arguments.contains("--approve-for-me"), "Codex Fleet automatic review was not enabled")
+    try expect(!arguments.contains("--sandbox"), "Codex Fleet passed mutually exclusive sandbox flags")
+    try expect(arguments.contains("--ignore-user-config"), "Codex Fleet recursion isolation was not enabled")
+}
+
 do {
     try testExclusiveLease()
     try testCircuitBreaker()
@@ -140,7 +152,8 @@ do {
     try testAutomaticFleetExecutorBypass()
     try testProviderReadinessRequiresExecution()
     try testCodexExecJSONLParser()
-    print("OS1HookSupportTests: PASS (6 tests)")
+    try testCodexFleetArgumentsDoNotConflict()
+    print("OS1HookSupportTests: PASS (7 tests)")
 } catch {
     fputs("OS1HookSupportTests: FAIL: \(error)\n", stderr)
     exit(1)

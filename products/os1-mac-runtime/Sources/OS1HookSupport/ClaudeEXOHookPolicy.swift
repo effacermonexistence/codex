@@ -42,6 +42,16 @@ public enum ProviderReadinessPolicy {
     }
 }
 
+public enum CodexFleetCLIArguments {
+    public static func execution(model: String, effort: String, workspace: String, prompt: String) -> [String] {
+        [
+            "exec", "--json", "--ignore-user-config", "--approve-for-me",
+            "--model", model, "-c", "model_reasoning_effort=\"\(effort)\"",
+            "--thread-source", "os1", "--cd", workspace, prompt,
+        ]
+    }
+}
+
 public struct CodexExecJSONResult: Sendable {
     public let threadID: String
     public let output: String

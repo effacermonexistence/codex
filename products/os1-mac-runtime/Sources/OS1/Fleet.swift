@@ -719,12 +719,12 @@ private func executeFleetCodex(
     """
     let raw = try commandOutput(
         codex,
-        [
-            "exec", "--json", "--ignore-user-config",
-            "--sandbox", "workspace-write", "--approve-for-me",
-            "--model", "gpt-5.6-luna", "-c", "model_reasoning_effort=\"low\"",
-            "--thread-source", "os1", "--cd", workspace, governedPrompt,
-        ],
+        CodexFleetCLIArguments.execution(
+            model: "gpt-5.6-luna",
+            effort: "low",
+            workspace: workspace,
+            prompt: governedPrompt
+        ),
         input: Data(),
         timeout: config.executionTimeoutSeconds,
         currentDirectory: workspace
