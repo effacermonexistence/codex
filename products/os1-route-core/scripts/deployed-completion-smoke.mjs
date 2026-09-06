@@ -56,7 +56,7 @@ if (cap.status !== 200) {
   console.log(JSON.stringify(blocked));
   process.exit(2);
 }
-assert.deepEqual(JSON.parse(capabilityText), { completion_feedback_schema: 1, execution_protocol: 1 });
+assert.deepEqual(JSON.parse(capabilityText), { completion_feedback_schema: 1, execution_protocol: 1, fleet_receipt_protocol: 1 });
 checks.push('Three-service capability negotiation and minimal egress');
 const base = await route();
 assert.equal(base.provider, 'codex');

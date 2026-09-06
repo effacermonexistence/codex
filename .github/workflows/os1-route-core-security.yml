@@ -161,6 +161,12 @@ jobs:
           /usr/local/bin/os1 self-test
           "/Applications/OS-1 CLODEX.app/Contents/MacOS/OS1App" --self-test
 
+      - name: Diagnose known compiler-string fingerprints without disclosing tokens
+        if: failure()
+        run: |
+          binary='products/os1-mac-runtime/release/stage/Applications/OS-1 CLODEX.app/Contents/MacOS/OS1App'
+          if test -f "$binary"; then node products/os1-route-core/scripts/explain-client-scan.mjs "$binary"; fi
+
       - name: Reject a beta manifest that disagrees with the package
         run: |
           set -euo pipefail
