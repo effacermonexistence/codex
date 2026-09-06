@@ -93,6 +93,6 @@ async function main() {
       ...(verifyOnly?{OS1_VERIFY_ONLY:'1',OS1_SKIP_PREREQUISITES:'1',OS1_SKIP_LOGIN:'1'}:{})}});
   } finally { fs.rmSync(directory,{recursive:true,force:true}); }
 }
-if(process.argv[1]&&import.meta.url===pathToFileURL(path.resolve(process.argv[1])).href) {
+if(process.argv[1]&&import.meta.url===pathToFileURL(fs.realpathSync(process.argv[1])).href) {
   main().catch(error=>{console.error('OS1 bootstrap release rejected:',error.message);process.exitCode=1;});
 }
