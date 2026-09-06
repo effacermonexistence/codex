@@ -32,6 +32,45 @@
   "entropy": {
     "minimumLength": 48,
     "minimumBitsPerCharacter": 4.7,
-    "allowedTokenSha256": []
+    "allowedTokenSha256": [
+      "4544effe5a9ad41e0e790122f148b492ddc3b2eb84ec9094c1741699300d2ae4",
+      "93a96d32223dd3bf727190674fb37acdaeea59e58957d33fdc02180714858eb1",
+      "3e3dbe24f9812025ab9c44171f2eb3fbfeb7d5693ddec1bdc97f235944a6fb75",
+      "f49c6a7490cb5306045ca3a947c53bdf20d3730ccce063a39e4f601ea3d511fe",
+      "cc2bb401e7897d11049267c8563d58cba8c90e11769bb4f342a375b72a67f677",
+      "a9c2c295255a763e6d4b2684f491b36e699954692f852e970cdbbc6b7aabc124"
+    ]
+  },
+  "publicTokenProvenance": {
+    "4544effe5a9ad41e0e790122f148b492ddc3b2eb84ec9094c1741699300d2ae4": {
+      "description": "Concatenated public Greek glyph names, not a credential. No whole-font or extension exemption.",
+      "source": "https://github.com/mgriebling/SwiftMath/blob/fa8244ed032f4a1ade4cb0571bf87d2f1a9fd2d7/Sources/SwiftMath/mathFonts.bundle/latinmodern-math.otf",
+      "fileSHA256": "6075562b771f8b82f0c179e363389684f2dd09de30038269e2628e504bd7be0f"
+    },
+    "93a96d32223dd3bf727190674fb37acdaeea59e58957d33fdc02180714858eb1": {
+      "description": "Exact public Swift compiler type encoding for SpeechAudioBufferSink; no Mach-O, symbol-prefix or section-wide exemption.",
+      "publicToken": "_TtC6OS1AppP33_E4338E7CE7A60E44AE4AAB89C865B63321SpeechAudioBufferSink",
+      "source": "products/os1-mac-runtime/Sources/OS1App/OS1App.swift"
+    },
+    "3e3dbe24f9812025ab9c44171f2eb3fbfeb7d5693ddec1bdc97f235944a6fb75": {
+      "description": "Exact public Swift compiler type encoding for TranscriptSnapshotSurface; no Mach-O, symbol-prefix or section-wide exemption.",
+      "publicToken": "_TtC6OS1AppP33_E4338E7CE7A60E44AE4AAB89C865B63325TranscriptSnapshotSurface",
+      "source": "products/os1-mac-runtime/Sources/OS1App/OS1App.swift"
+    },
+    "f49c6a7490cb5306045ca3a947c53bdf20d3730ccce063a39e4f601ea3d511fe": {
+      "description": "Exact public Swift compiler type encoding for ContinuousTranscriptTextView; no Mach-O, symbol-prefix or section-wide exemption.",
+      "publicToken": "_TtC6OS1AppP33_E4338E7CE7A60E44AE4AAB89C865B63328ContinuousTranscriptTextView",
+      "source": "products/os1-mac-runtime/Sources/OS1App/OS1App.swift"
+    },
+    "cc2bb401e7897d11049267c8563d58cba8c90e11769bb4f342a375b72a67f677": {
+      "description": "Exact public Swift compiler type encoding for ContinuousTranscriptView.Coordinator; no Mach-O, symbol-prefix or section-wide exemption.",
+      "publicToken": "_TtCV6OS1AppP33_E4338E7CE7A60E44AE4AAB89C865B63324ContinuousTranscriptView11Coordinator",
+      "source": "products/os1-mac-runtime/Sources/OS1App/OS1App.swift"
+    },
+    "a9c2c295255a763e6d4b2684f491b36e699954692f852e970cdbbc6b7aabc124": {
+      "description": "Exact public Swift compiler type encoding for BundleManager; no Mach-O, symbol-prefix or section-wide exemption.",
+      "publicToken": "_TtC9SwiftMathP33_8258232E753A187089D8181EFE1F648A13BundleManager",
+      "source": "https://github.com/mgriebling/SwiftMath/blob/fa8244ed032f4a1ade4cb0571bf87d2f1a9fd2d7/Sources/SwiftMath/MathRender/MTFont.swift"
+    }
   }
 }

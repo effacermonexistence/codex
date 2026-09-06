@@ -1,4 +1,4 @@
-import { reject } from "./errors";
+import { reject, ResultServiceUnavailable } from "./errors";
 
 export async function readBoundedJson(
   requestOrResponse: Request | Response,
@@ -45,15 +45,21 @@ export async function bindingJson(
   body: unknown,
   maximumResponseBytes: number,
   authorization?: string,
+  resultDelivery = false,
 ): Promise<unknown> {
   const headers = new Headers({ "content-type": "application/json" });
   if (authorization) headers.set("authorization", authorization);
-  const response = await binding.fetch(`https://service.internal${path}`, {
+  let response: Response;
+  try { response = await binding.fetch(`https://service.internal${path}`, {
     method: "POST",
     headers,
     body: JSON.stringify(body),
     signal: AbortSignal.timeout(5_000),
-  });
+  }); } catch (error) {
+    if (resultDelivery) throw new ResultServiceUnavailable();
+    throw error;
+  }
+  if (resultDelivery && response.status >= 500) throw new ResultServiceUnavailable();
   if (!response.ok) reject();
   return readBoundedJson(response, maximumResponseBytes);
 }

@@ -73,8 +73,65 @@ func testAutomaticFleetExecutorBypass() throws {
         ),
         "ordinary workspace was mistaken for a fleet executor checkout"
     )
+    try expect(
+        AutomaticFleetHookPolicy.shouldBypass(
+            cwd: "/Users/test/work/project",
+            homeDirectory: "/Users/test",
+            environment: [AutomaticFleetHookPolicy.internalProviderEnvironmentKey: "1"]
+        ),
+        "OS-1 internal provider execution did not bypass recursive routing"
+    )
+    try expect(
+        !AutomaticFleetHookPolicy.shouldBypass(
+            cwd: "/Users/test/work/project",
+            homeDirectory: "/Users/test",
+            environment: [:]
+        ),
+        "ordinary provider prompt unexpectedly bypassed automatic routing"
+    )
     try expect(AutomaticFleetHookPolicy.minimumMemoryMiB == 2_048, "automatic fleet memory floor drifted")
     try expect(AutomaticFleetHookPolicy.cpuWeight == 50, "automatic fleet CPU weight drifted")
+}
+
+func testSettingsPreservation() throws {
+    let other: [String: Any] = ["type": "command", "command": "unrelated-audit-hook"]
+    let document: [String: Any] = ["preferences": ["retained": true], "hooks": [
+        "Stop": [["hooks": [other]]],
+        "UserPromptSubmit": [["matcher": "", "hooks": [other,
+          ["command": "'/old/os1-fleet' exo-codex-hook", "type": "command"]]]]
+    ]]
+    let replacement: [String: Any] = ["command": "'/new/os1' exo-codex-hook", "type": "command", "timeout": 65]
+    let merged = try HookSettings.merging(document, command: "exo-codex-hook", replacement: replacement)
+    let again = try HookSettings.merging(merged, command: "exo-codex-hook", replacement: replacement)
+    try expect(try JSONSerialization.data(withJSONObject: merged, options: [.sortedKeys]) ==
+        JSONSerialization.data(withJSONObject: again, options: [.sortedKeys]), "hook install is not idempotent")
+    let hooks = merged["hooks"] as! [String: Any]
+    let entries = hooks["UserPromptSubmit"] as! [[String: Any]]
+    try expect(entries.count == 2, "unrelated sibling hook was dropped")
+    try expect((entries[0]["hooks"] as? [[String: Any]])?.first?["command"] as? String == "unrelated-audit-hook", "sibling command changed")
+    try expect(hooks["Stop"] != nil && merged["preferences"] != nil, "unrelated settings were dropped")
+    do {
+        _ = try HookSettings.merging(["hooks": ["UserPromptSubmit": "malformed"]], command: "exo-codex-hook", replacement: replacement)
+        throw TestFailure.assertion("malformed settings were overwritten")
+    } catch HookSettingsError.invalid { }
+}
+
+func testFirstPromptIdentity() throws {
+    let root = try temporaryDirectory()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let transcript = root.appendingPathComponent("first.jsonl")
+    let initial = PromptEventIdentity.claudeTranscript(path: transcript.path, projectsRoot: root)
+    try expect(initial?.hasSuffix(":initial") == true, "first native prompt has no stable identity")
+    try expect(initial == PromptEventIdentity.claudeTranscript(path: transcript.path, projectsRoot: root), "first prompt retry identity drifted")
+    try Data("first user turn\n".utf8).write(to: transcript)
+    let next = PromptEventIdentity.claudeTranscript(path: transcript.path, projectsRoot: root)
+    try expect(next != nil && next != initial, "later prompt reused first event identity")
+    try expect(next == PromptEventIdentity.claudeTranscript(path: transcript.path, projectsRoot: root), "transcript position is not stable")
+    try expect(PromptEventIdentity.claudeTranscript(path: root.deletingLastPathComponent().appendingPathComponent("outside.jsonl").path, projectsRoot: root) == nil, "outside transcript accepted")
+    try expect(PromptEventIdentity.claudeTranscript(path: root.path, projectsRoot: root) == nil, "directory accepted as transcript")
+    let link = root.appendingPathComponent("escape.jsonl")
+    try FileManager.default.createSymbolicLink(atPath: link.path, withDestinationPath: "/private/tmp/escaped.jsonl")
+    try expect(PromptEventIdentity.claudeTranscript(path: link.path, projectsRoot: root) == nil, "symlink escape accepted")
 }
 
 do {
@@ -82,7 +139,9 @@ do {
     try testCircuitBreaker()
     try testTimeoutHeadroom()
     try testAutomaticFleetExecutorBypass()
-    print("OS1HookSupportTests: PASS (4 tests)")
+    try testSettingsPreservation()
+    try testFirstPromptIdentity()
+    print("OS1HookSupportTests: PASS (6 test groups)")
 } catch {
     fputs("OS1HookSupportTests: FAIL: \(error)\n", stderr)
     exit(1)

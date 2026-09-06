@@ -13,6 +13,40 @@ afterEach(async () => {
 });
 
 describe("client release artifact hygiene gate", () => {
+
+  it("allows exact audited public compiler type tokens, never a general binary exemption", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "os1-public-types-"));
+    temporaryDirectories.push(directory);
+    const file = join(directory, "OS1App.bin");
+    const publicTypes = [
+      "_TtC6OS1AppP33_E4338E7CE7A60E44AE4AAB89C865B63321SpeechAudioBufferSink",
+      "_TtC6OS1AppP33_E4338E7CE7A60E44AE4AAB89C865B63325TranscriptSnapshotSurface",
+      "_TtC6OS1AppP33_E4338E7CE7A60E44AE4AAB89C865B63328ContinuousTranscriptTextView",
+      "_TtCV6OS1AppP33_E4338E7CE7A60E44AE4AAB89C865B63324ContinuousTranscriptView11Coordinator",
+      "_TtC9SwiftMathP33_8258232E753A187089D8181EFE1F648A13BundleManager"
+];
+    await writeFile(file, publicTypes.join("\n"));
+    expect((await scanClientArtifacts([directory])).findings).toEqual([]);
+    await writeFile(file, publicTypes.join("\n") + "\n" + publicTypes[0] + "Extra" +
+      "\n" + "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz+/" +
+      "\nprivate routing prompt");
+    const result = await scanClientArtifacts([directory]);
+    expect(result.findings.filter(finding => finding.kind === "high_entropy").length).toBeGreaterThanOrEqual(2);
+    expect(result.findings.some(finding => finding.kind === "forbidden_content")).toBe(true);
+  });
+  it("allows only the known public glyph-name token, not other font contents", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "os1-font-"));
+    temporaryDirectories.push(directory);
+    const file = join(directory, "latinmodern-math.otf");
+    const glyphNames = "stDeltaGammaLambdaOmegaPhiPiPsiSigmaThetaUpsilonXiuni2127uni2126AlphaBetaEpsilonZetaEtaIotaKappaMuNuOmicronRhoTauChiDelta";
+    await writeFile(file, glyphNames);
+    expect((await scanClientArtifacts([directory])).findings).toEqual([]);
+    await writeFile(file, glyphNames + "\n" + "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz+/" + "\nprivate routing prompt");
+    const result = await scanClientArtifacts([directory]);
+    expect(result.findings.some(finding => finding.kind === "high_entropy")).toBe(true);
+    expect(result.findings.some(finding => finding.kind === "forbidden_content")).toBe(true);
+  });
+
   it("passes a minimal client artifact", async () => {
     const directory = await mkdtemp(join(tmpdir(), "os1-clean-"));
     temporaryDirectories.push(directory);

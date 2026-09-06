@@ -23,6 +23,13 @@ export type FleetJobSpec = {
 };
 
 export type FleetAssignment = Omit<FleetJobSpec, "request_nonce"> & FleetPlacement;
+export type FleetSubmission = { status: "queued"; assignment: FleetAssignment } | { status: "no_capacity" } | { status: "rejected" };
+
+function submissionIdentity(spec: FleetJobSpec): string {
+  return JSON.stringify([spec.submitter_device_id, spec.profile, spec.task,
+    spec.workspace_repository, spec.workspace_revision, spec.workspace_subpath,
+    spec.requirements.min_memory_mib, spec.requirements.cpu_weight, spec.requirements.prefer_device_id]);
+}
 
 export type FleetJobStatus = {
   job_id: string;
@@ -163,6 +170,19 @@ export class FleetState extends DurableObject<Env> {
           created_at_ms INTEGER NOT NULL,
           PRIMARY KEY(device_id, nonce)
         );
+        CREATE TABLE IF NOT EXISTS fleet_submission_receipts (
+          device_id TEXT NOT NULL,
+          nonce TEXT NOT NULL,
+          objective_key TEXT NOT NULL,
+          response_json TEXT NOT NULL,
+          PRIMARY KEY(device_id, nonce)
+        );
+        CREATE TABLE IF NOT EXISTS fleet_claim_receipts (
+          device_id TEXT NOT NULL,
+          nonce TEXT NOT NULL,
+          response_json TEXT NOT NULL,
+          PRIMARY KEY(device_id, nonce)
+        );
       `);
     });
   }
@@ -190,15 +210,30 @@ export class FleetState extends DurableObject<Env> {
     return { status: "online", stale_after_ms: FLEET_NODE_STALE_AFTER_MS };
   }
 
-  submit(spec: FleetJobSpec): { status: "queued"; assignment: FleetAssignment } | { status: "no_capacity" } {
+  submit(spec: FleetJobSpec): FleetSubmission {
     return this.ctx.storage.transactionSync(() => {
       this.expire(spec.created_at_ms);
+      const receipt = this.ctx.storage.sql.exec<{ objective_key: string; response_json: string }>(
+        "SELECT objective_key, response_json FROM fleet_submission_receipts WHERE device_id=? AND nonce=?",
+        spec.submitter_device_id, spec.request_nonce,
+      ).toArray()[0];
+      if (receipt) return receipt.objective_key === submissionIdentity(spec)
+        ? JSON.parse(receipt.response_json) as FleetSubmission : { status: "rejected" };
+      const record = (response: FleetSubmission): FleetSubmission => {
+        this.ctx.storage.sql.exec(
+          "INSERT INTO fleet_submission_receipts(device_id, nonce, objective_key, response_json) VALUES (?, ?, ?, ?)",
+          spec.submitter_device_id, spec.request_nonce, submissionIdentity(spec), JSON.stringify(response),
+        );
+        return response;
+      };
       const duplicate = this.ctx.storage.sql.exec<{ nonce: string }>(
         "SELECT nonce FROM fleet_submit_nonces WHERE device_id=? AND nonce=?",
         spec.submitter_device_id,
         spec.request_nonce,
       ).toArray()[0];
-      if (duplicate) return { status: "no_capacity" };
+      // An old client may already have queued work without a recovery receipt.
+      // Never mislabel that uncertainty as permission to execute again locally.
+      if (duplicate) return { status: "rejected" };
       this.ctx.storage.sql.exec(
         "INSERT INTO fleet_submit_nonces(device_id, nonce, created_at_ms) VALUES (?, ?, ?)",
         spec.submitter_device_id,
@@ -214,7 +249,7 @@ export class FleetState extends DurableObject<Env> {
         return { ...node, queue_depth: node.queue_depth + queued };
       });
       const placement = placeFleetJob(nodes, spec.profile, spec.requirements, spec.created_at_ms);
-      if (!placement) return { status: "no_capacity" };
+      if (!placement) return record({ status: "no_capacity" });
       this.ctx.storage.sql.exec(
         `INSERT INTO fleet_jobs (
           job_id, submitter_device_id, executor_device_id, profile, task,
@@ -226,13 +261,26 @@ export class FleetState extends DurableObject<Env> {
         JSON.stringify(spec.requirements), placement.objective_version, placement.execution_mode,
         placement.score, spec.created_at_ms, spec.expires_at_ms,
       );
-      return { status: "queued", assignment: assignedSpec(spec, placement) };
+      return record({ status: "queued", assignment: assignedSpec(spec, placement) });
     });
   }
 
-  claim(deviceId: string, nowMs: number): { status: "idle" } | { status: "claimed"; assignment: FleetAssignment } {
+  claim(deviceId: string, nowMs: number, nonce?: string): { status: "idle" } | { status: "claimed"; assignment: FleetAssignment } {
     return this.ctx.storage.transactionSync(() => {
       this.expire(nowMs);
+      if (nonce) {
+        const prior = this.ctx.storage.sql.exec<{ response_json: string }>(
+          "SELECT response_json FROM fleet_claim_receipts WHERE device_id=? AND nonce=?", deviceId, nonce,
+        ).toArray()[0];
+        if (prior) return JSON.parse(prior.response_json);
+      }
+      const record = <T extends { status: string }>(response: T): T => {
+        if (nonce) this.ctx.storage.sql.exec(
+          "INSERT INTO fleet_claim_receipts(device_id, nonce, response_json) VALUES (?, ?, ?)",
+          deviceId, nonce, JSON.stringify(response),
+        );
+        return response;
+      };
       const row = this.ctx.storage.sql.exec<JobRow>(
         `SELECT * FROM fleet_jobs
          WHERE executor_device_id=? AND state='queued' AND expires_at_ms>=?
@@ -240,13 +288,13 @@ export class FleetState extends DurableObject<Env> {
         deviceId,
         nowMs,
       ).toArray()[0];
-      if (!row) return { status: "idle" };
+      if (!row) return record({ status: "idle" as const });
       this.ctx.storage.sql.exec(
         "UPDATE fleet_jobs SET state='claimed', claimed_at_ms=? WHERE job_id=? AND state='queued'",
         nowMs,
         row.job_id,
       );
-      return { status: "claimed", assignment: assignment({ ...row, state: "claimed", claimed_at_ms: nowMs }) };
+      return record({ status: "claimed" as const, assignment: assignment({ ...row, state: "claimed", claimed_at_ms: nowMs }) });
     });
   }
 
@@ -260,6 +308,8 @@ export class FleetState extends DurableObject<Env> {
   ): { status: "stored" } | { status: "rejected" } {
     return this.ctx.storage.transactionSync(() => {
       const row = this.ctx.storage.sql.exec<JobRow>("SELECT * FROM fleet_jobs WHERE job_id=?", jobId).toArray()[0];
+      if (row && row.executor_device_id === deviceId && row.state === outcome &&
+          row.result_hash === resultHash && row.result === result) return { status: "stored" };
       if (!row || row.executor_device_id !== deviceId || row.state !== "claimed" ||
           completedAtMs < (row.claimed_at_ms ?? row.created_at_ms)) return { status: "rejected" };
       this.ctx.storage.sql.exec(
@@ -279,8 +329,9 @@ export class FleetState extends DurableObject<Env> {
   jobStatus(submitterDeviceId: string, jobId: string, nowMs: number): FleetJobStatus | null {
     this.expire(nowMs);
     const row = this.ctx.storage.sql.exec<JobRow>(
-      "SELECT * FROM fleet_jobs WHERE job_id=? AND submitter_device_id=?",
+      "SELECT * FROM fleet_jobs WHERE job_id=? AND (submitter_device_id=? OR executor_device_id=?)",
       jobId,
+      submitterDeviceId,
       submitterDeviceId,
     ).toArray()[0];
     return row ? status(row) : null;
@@ -288,7 +339,13 @@ export class FleetState extends DurableObject<Env> {
 
   snapshot(nowMs: number): { nodes: FleetNode[] } {
     this.expire(nowMs);
-    const nodes = this.ctx.storage.sql.exec<NodeRow>("SELECT * FROM fleet_nodes ORDER BY device_id").toArray().map(fleetNode);
+    const nodes = this.ctx.storage.sql.exec<NodeRow>("SELECT * FROM fleet_nodes ORDER BY device_id").toArray().map(row => {
+      const node = fleetNode(row);
+      const active = this.ctx.storage.sql.exec<{ count: number }>(
+        "SELECT COUNT(*) AS count FROM fleet_jobs WHERE executor_device_id=? AND state IN ('queued','claimed')", node.device_id,
+      ).one().count;
+      return { ...node, queue_depth: node.queue_depth + active };
+    });
     return { nodes };
   }
 

@@ -8,3 +8,7 @@ export class RequestRejected extends Error {
 export function reject(): never {
   throw new RequestRejected();
 }
+
+export class ResultServiceUnavailable extends Error {
+  constructor() { super("result service unavailable"); this.name = "ResultServiceUnavailable"; }
+}

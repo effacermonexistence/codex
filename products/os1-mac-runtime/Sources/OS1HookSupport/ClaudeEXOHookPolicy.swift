@@ -12,10 +12,20 @@ public enum ClaudeEXOHookPolicy {
 public enum AutomaticFleetHookPolicy {
     public static let minimumMemoryMiB = 2_048
     public static let cpuWeight = 50
+    public static let internalProviderEnvironmentKey = "OS1_INTERNAL_PROVIDER_EXECUTION"
+
+    public static func shouldBypass(
+        cwd: String,
+        homeDirectory: String,
+        environment: [String: String]
+    ) -> Bool {
+        environment[internalProviderEnvironmentKey] == "1" ||
+            isExecutorWorkspace(cwd: cwd, homeDirectory: homeDirectory)
+    }
 
     public static func isExecutorWorkspace(cwd: String, homeDirectory: String) -> Bool {
-        let home = URL(fileURLWithPath: homeDirectory, isDirectory: true).standardizedFileURL.path
-        let workspace = URL(fileURLWithPath: cwd, isDirectory: true).standardizedFileURL.path
+        let home = URL(fileURLWithPath: homeDirectory, isDirectory: true).resolvingSymlinksInPath().path
+        let workspace = URL(fileURLWithPath: cwd, isDirectory: true).resolvingSymlinksInPath().path
         let executorRoot = home + "/.os1/fleet/jobs/"
         return (workspace + "/").hasPrefix(executorRoot)
     }

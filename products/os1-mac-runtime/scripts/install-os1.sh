@@ -12,8 +12,9 @@ readonly beta_manifest_path="${OS1_BETA_MANIFEST_PATH:-}"
 readonly skip_prerequisites="${OS1_SKIP_PREREQUISITES:-0}"
 readonly skip_login="${OS1_SKIP_LOGIN:-0}"
 readonly verify_only="${OS1_VERIFY_ONLY:-0}"
+readonly enable_fleet="${OS1_ENABLE_FLEET:-1}"
 
-for os1_flag in "$allow_unnotarized_beta" "$skip_prerequisites" "$skip_login" "$verify_only"; do
+for os1_flag in "$allow_unnotarized_beta" "$skip_prerequisites" "$skip_login" "$verify_only" "$enable_fleet"; do
   case "$os1_flag" in 0|1) ;; *) echo "OS-1 installer flags must be 0 or 1." >&2; exit 1 ;; esac
 done
 
@@ -39,7 +40,7 @@ verify_unnotarized_beta_package() {
   local payload_root="$component_root/Payload"
   local scripts_root="$component_root/Scripts"
   local package_info="$component_root/PackageInfo"
-  local app_path="$payload_root/Applications/Open OS-1 Codex.app"
+  local app_path="$payload_root/Applications/OS-1 CLODEX.app"
   local cli_path="$payload_root/usr/local/bin/os1"
   local bundled_cli_path="$app_path/Contents/Resources/os1"
   local app_config="$app_path/Contents/Resources/config.json"
@@ -68,11 +69,11 @@ verify_unnotarized_beta_package() {
     echo "OS-1 beta verification found missing component metadata." >&2
     return 1
   }
-  [[ "$(find "$component_root" -type f -print | wc -l | tr -d ' ')" == "15" ]] || {
+  [[ "$(find "$component_root" -type f -print | wc -l | tr -d ' ')" == "21" ]] || {
     echo "OS-1 beta verification found an unexpected component file count." >&2
     return 1
   }
-  [[ "$(find "$payload_root" -type f -print | wc -l | tr -d ' ')" == "12" ]] || {
+  [[ "$(find "$payload_root" -type f -print | wc -l | tr -d ' ')" == "18" ]] || {
     echo "OS-1 beta verification found an unexpected payload file count." >&2
     return 1
   }
@@ -104,16 +105,22 @@ verify_unnotarized_beta_package() {
   while IFS= read -r payload_file; do
     relative_path="${payload_file#"$payload_root/"}"
     case "$relative_path" in
-      "Applications/Open OS-1 Codex.app/Contents/MacOS/OS1App"|\
-      "Applications/Open OS-1 Codex.app/Contents/Resources/os1"|\
-      "Applications/Open OS-1 Codex.app/Contents/Resources/OmarAGI.png"|\
-      "Applications/Open OS-1 Codex.app/Contents/Resources/Codex.png"|\
-      "Applications/Open OS-1 Codex.app/Contents/Resources/ClaudeCode.png"|\
-      "Applications/Open OS-1 Codex.app/Contents/Resources/Constellation.png"|\
-      "Applications/Open OS-1 Codex.app/Contents/Resources/OmarAGI.icns"|\
-      "Applications/Open OS-1 Codex.app/Contents/Resources/config.json"|\
-      "Applications/Open OS-1 Codex.app/Contents/Info.plist"|\
-      "Applications/Open OS-1 Codex.app/Contents/_CodeSignature/CodeResources"|\
+      "Applications/OS-1 CLODEX.app/Contents/MacOS/OS1App"|\
+      "Applications/OS-1 CLODEX.app/Contents/Resources/os1"|\
+      "Applications/OS-1 CLODEX.app/Contents/Resources/OmarAGI.png"|\
+      "Applications/OS-1 CLODEX.app/Contents/Resources/Codex.png"|\
+      "Applications/OS-1 CLODEX.app/Contents/Resources/ClaudeCode.png"|\
+      "Applications/OS-1 CLODEX.app/Contents/Resources/Constellation.png"|\
+      "Applications/OS-1 CLODEX.app/Contents/Resources/OmarAGI.icns"|\
+      "Applications/OS-1 CLODEX.app/Contents/Resources/config.json"|\
+      "Applications/OS-1 CLODEX.app/Contents/Info.plist"|\
+      "Applications/OS-1 CLODEX.app/Contents/Resources/SwiftMath_SwiftMath.bundle/Info.plist"|\
+      "Applications/OS-1 CLODEX.app/Contents/Resources/SwiftMath_SwiftMath.bundle/SwiftMath-LICENSE.txt"|\
+      "Applications/OS-1 CLODEX.app/Contents/Resources/SwiftMath_SwiftMath.bundle/mathFonts.bundle/latinmodern-math.otf"|\
+      "Applications/OS-1 CLODEX.app/Contents/Resources/SwiftMath_SwiftMath.bundle/mathFonts.bundle/latinmodern-math.plist"|\
+      "Applications/OS-1 CLODEX.app/Contents/Resources/SwiftMath_SwiftMath.bundle/mathFonts.bundle/LICENSE"|\
+      "Applications/OS-1 CLODEX.app/Contents/Resources/SwiftMath_SwiftMath.bundle/mathFonts.bundle/GUST-FONT-LICENSE.txt"|\
+      "Applications/OS-1 CLODEX.app/Contents/_CodeSignature/CodeResources"|\
       "usr/local/bin/os1"|\
       "Library/Application Support/OS-1/config.json") ;;
       *) echo "OS-1 beta verification refused an unexpected payload file: $relative_path" >&2; return 1 ;;
@@ -125,11 +132,13 @@ verify_unnotarized_beta_package() {
     case "$relative_path" in
       ""|\
       "/Applications"|\
-      "/Applications/Open OS-1 Codex.app"|\
-      "/Applications/Open OS-1 Codex.app/Contents"|\
-      "/Applications/Open OS-1 Codex.app/Contents/MacOS"|\
-      "/Applications/Open OS-1 Codex.app/Contents/Resources"|\
-      "/Applications/Open OS-1 Codex.app/Contents/_CodeSignature"|\
+      "/Applications/OS-1 CLODEX.app"|\
+      "/Applications/OS-1 CLODEX.app/Contents"|\
+      "/Applications/OS-1 CLODEX.app/Contents/MacOS"|\
+      "/Applications/OS-1 CLODEX.app/Contents/Resources"|\
+      "/Applications/OS-1 CLODEX.app/Contents/Resources/SwiftMath_SwiftMath.bundle"|\
+      "/Applications/OS-1 CLODEX.app/Contents/Resources/SwiftMath_SwiftMath.bundle/mathFonts.bundle"|\
+      "/Applications/OS-1 CLODEX.app/Contents/_CodeSignature"|\
       "/Library"|\
       "/Library/Application Support"|\
       "/Library/Application Support/OS-1"|\
@@ -306,8 +315,25 @@ if ! sudo installer -pkg "$os1_tmp/OS-1.pkg" -target /; then
   exit 1
 fi
 
-/usr/local/bin/os1 configure-claude-exo
-/usr/local/bin/os1 configure-codex-exo
+# The user's PATH already prefers ~/.local/bin. Updating only /usr/local/bin
+# leaves an old shadow CLI running indefinitely. Preserve the exact old public
+# files, then install the verified main body and matching public configuration.
+os1_user_backup="$(mktemp -d "$HOME/.os1-install-backup.XXXXXX")"
+chmod 0700 "$os1_user_backup"
+if [[ -e "$local_bin/os1" ]]; then
+  if ! codesign -d --verbose=2 "$local_bin/os1" 2>&1 | grep -Eq '^Identifier=com\.omaragi\.os1\.runtime(\.bundled)?$'; then
+    echo "Refusing to overwrite a non-OS1 executable at $local_bin/os1." >&2
+    exit 1
+  fi
+  cp -p "$local_bin/os1" "$os1_user_backup/os1"
+fi
+[[ ! -f "$local_bin/config.json" ]] || cp -p "$local_bin/config.json" "$os1_user_backup/config.json"
+install -m 0755 /usr/local/bin/os1 "$local_bin/os1"
+install -m 0644 '/Library/Application Support/OS-1/config.json' "$local_bin/config.json"
+cmp -s /usr/local/bin/os1 "$local_bin/os1"
+"$local_bin/os1" fleet-self-test
+"$local_bin/os1" configure-codex-exo
+"$local_bin/os1" configure-claude-exo
 
 if [[ "$skip_login" != "1" && -t 0 ]]; then
   gh auth status --hostname github.com >/dev/null 2>&1 || \
@@ -316,13 +342,19 @@ if [[ "$skip_login" != "1" && -t 0 ]]; then
   claude auth status 2>/dev/null | grep -q '"loggedIn": true' || claude auth login
 fi
 
-echo "Installed Open OS-1 Codex $os1_version."
+echo "Installed OS-1 CLODEX $os1_version."
 if gh auth status --hostname github.com >/dev/null 2>&1 && \
    codex login status >/dev/null 2>&1 && \
    claude auth status 2>/dev/null | grep -q '"loggedIn": true'; then
-  /usr/local/bin/os1 register || exit 1
-  /usr/local/bin/os1 doctor || exit 1
-  /usr/local/bin/os1 configure-fleet-agent --role auto || exit 1
+  "$local_bin/os1" register || exit 1
+  "$local_bin/os1" doctor || exit 1
+  if [[ "$enable_fleet" == 1 ]]; then
+    "$local_bin/os1" configure-fleet-agent --role auto || {
+      echo "OS1 is installed; automatic Fleet agent setup needs a supported role or local service access." >&2
+      exit 1
+    }
+  fi
 else
-  echo "Finish the three one-time logins, then run: os1 register && os1 doctor && os1 configure-fleet-agent --role auto"
+  echo "Finish the three per-device logins, then run: os1 register && os1 doctor && os1 configure-fleet-agent --role auto"
 fi
+echo "Codex applies its own one-time /hooks review; installation does not bypass native trust."

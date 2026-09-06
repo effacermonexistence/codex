@@ -30,6 +30,8 @@ import {
 import { assertTicketDeliveryHygiene, publicJson } from "./egress";
 import { reject } from "./errors";
 import { bindingJson, readBoundedJson } from "./io";
+import { completionFeedbackMatchesTask } from "./execution-context";
+import { parseAttemptStart, verifyAttemptStart } from "./attempt-contract";
 
 export const PRIVATE_CORE_PROTOCOL_VERSION = 3;
 
@@ -67,6 +69,7 @@ async function verifyTicketFresh(ticket: Ticket, env: Env): Promise<void> {
 async function privateDecision(
   env: Env,
   body: unknown,
+  resultDelivery = false,
 ): Promise<PrivateDecision> {
   return parsePrivateDecision(
     await bindingJson(
@@ -74,6 +77,8 @@ async function privateDecision(
       "/decide",
       body,
       positiveInteger(env.SERVICE_RESPONSE_BYTES),
+      undefined,
+      resultDelivery,
     ),
   );
 }
@@ -116,9 +121,10 @@ async function issueTicket(
 
 export async function startExecution(request: Request, env: Env): Promise<Response> {
   const identity = await authenticate(request, env);
-  const { task, provider_preference, capacity_plan, executor_contract_version, executor_contract_sha256, available_codex_models } = parseStartRequest(
+  const { task, provider_preference, capacity_plan, executor_contract_version, executor_contract_sha256, available_codex_models, execution_context } = parseStartRequest(
     await readBoundedJson(request, positiveInteger(env.MAX_REQUEST_BYTES)),
   );
+  if (!(await completionFeedbackMatchesTask(execution_context, task))) reject();
   const executionId = crypto.randomUUID();
   const decision = await privateDecision(env, {
     version: PRIVATE_CORE_PROTOCOL_VERSION,
@@ -130,6 +136,7 @@ export async function startExecution(request: Request, env: Env): Promise<Respon
       provider_preference,
       capacity_plan,
       available_codex_models,
+      ...(execution_context ? { execution_context } : {}),
       executor_contract_version,
       executor_contract_sha256,
     },
@@ -206,7 +213,9 @@ export async function submitResult(request: Request, env: Env): Promise<Response
   const result = parseResultRequest(
     await readBoundedJson(request, positiveInteger(env.MAX_REQUEST_BYTES)),
   );
-  await verifyTicketFresh(result.ticket, env);
+  // Signature is immutable. Freshness is enforced by the identity-bound DO:
+  // dispatch TTL and an acknowledged execution's delivery lease are different.
+  if (!(await verifyTicket(result.ticket, env.TICKET_VERIFYING_KEY_SPKI))) reject();
   const deviceKey = await verifiedDeviceKey(env, identity);
   if (!(await verifyDeviceResult(result, deviceKey))) reject();
 
@@ -220,6 +229,8 @@ export async function submitResult(request: Request, env: Env): Promise<Response
     now: Date.now(),
   });
   if (claim.kind === "rejected") reject();
+  if (claim.kind === "pending") return Response.json({ error: "verification_pending", retry_after_ms: claim.retry_after_ms },
+    { status: 409, headers: { "cache-control": "no-store" } });
   if (claim.kind === "completed") {
     return publicJson(parsePublicResponse(JSON.parse(claim.response_json)));
   }
@@ -232,7 +243,7 @@ export async function submitResult(request: Request, env: Env): Promise<Response
       artifact_ref: result.artifact_ref,
       expected_artifact_hash: result.result_hash,
     },
-  });
+  }, true);
   let response: PublicResponse;
   let next: { sequence: number; nonce: string; expires_at: number } | null;
   if (decision.status === "complete") {
@@ -258,6 +269,7 @@ export async function submitResult(request: Request, env: Env): Promise<Response
 
   const responseJson = JSON.stringify(response);
   const finalized = await state.finalize({
+    claim_token: claim.claim_token,
     sequence: result.ticket.sequence,
     result_hash: result.result_hash,
     response_json: responseJson,
@@ -275,7 +287,7 @@ export async function uploadArtifact(
   const upload = parseArtifactUploadRequest(
     await readBoundedJson(request, positiveInteger(env.MAX_ARTIFACT_REQUEST_BYTES)),
   );
-  await verifyTicketFresh(upload.ticket, env);
+  if (!(await verifyTicket(upload.ticket, env.TICKET_VERIFYING_KEY_SPKI))) reject();
   const artifactRef = resultArtifactRef(upload.ticket, upload.result_hash);
   const result = {
     ticket: upload.ticket,
@@ -285,6 +297,12 @@ export async function uploadArtifact(
   };
   const deviceKey = await verifiedDeviceKey(env, identity);
   if (!(await verifyDeviceResult(result, deviceKey))) reject();
+
+  if (!(await env.EXECUTIONS.getByName(upload.ticket.execution_id).permitsArtifact({
+    subject_hash: await sha256Hex(identity.subject), device_id: identity.device_id,
+    sequence: upload.ticket.sequence, nonce: upload.ticket.nonce,
+    result_hash: upload.result_hash, now: Date.now(),
+  }))) reject();
 
   const bytes = base64UrlDecode(upload.artifact_base64);
   if (
@@ -308,4 +326,19 @@ export async function uploadArtifact(
     },
   });
   return publicJson({ artifact_ref: artifactRef });
+}
+
+export async function acknowledgeAttempt(request: Request, env: Env): Promise<Response> {
+  const identity = await authenticate(request, env);
+  const value = parseAttemptStart(await readBoundedJson(request, positiveInteger(env.MAX_REQUEST_BYTES)));
+  if (!(await verifyTicket(value.ticket, env.TICKET_VERIFYING_KEY_SPKI)) ||
+      !(await verifyAttemptStart(value, await verifiedDeviceKey(env, identity)))) reject();
+  const lease = await env.EXECUTIONS.getByName(value.ticket.execution_id).startAttempt({
+    subject_hash: await sha256Hex(identity.subject), device_id: identity.device_id,
+    sequence: value.ticket.sequence, nonce: value.ticket.nonce, now: Date.now(),
+  });
+  if (!lease) reject();
+  return Response.json({ execution_id: value.ticket.execution_id, sequence: value.ticket.sequence,
+    execution_deadline: new Date(lease.execution_deadline).toISOString(),
+    submission_deadline: new Date(lease.submission_deadline).toISOString() }, { headers: { "cache-control": "no-store" } });
 }

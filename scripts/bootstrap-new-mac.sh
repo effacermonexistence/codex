@@ -235,7 +235,7 @@ echo
 echo "Installed durable setup at: $install_root"
 echo "Installed Codex instructions: $codex_config_dir/AGENTS.md"
 echo "Installed Claude instructions: $claude_config_dir/CLAUDE.md"
-echo "Installed Open OS-1 Codex: /Applications/Open OS-1 Codex.app"
+echo "Installed OS-1 CLODEX: /Applications/OS-1 CLODEX.app"
 echo "Node.js: $(node --version)"
 echo "pnpm: $(pnpm --version)"
 echo "Codex CLI: $(codex --version)"

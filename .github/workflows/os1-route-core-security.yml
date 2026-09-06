@@ -78,6 +78,13 @@ jobs:
       - name: Build Cloudflare dry-run bundle
         run: pnpm --dir "products/${{ matrix.worker }}" deploy:dry-run
 
+      - name: Verify durable Fleet and execution receipt recovery
+        if: matrix.worker == 'os1-route-core'
+        run: |
+          cd products/os1-route-core
+          node test/fleet-state.integration.mjs
+          node test/execution-state.integration.mjs
+
   mac-runtime:
     name: Build and scan universal Mac release
     runs-on: macos-15
@@ -113,7 +120,7 @@ jobs:
           bash -n products/os1-mac-runtime/InstallerScripts/postinstall
 
       - name: Test Claude EXO hook safeguards
-        run: swift run --package-path products/os1-mac-runtime os1-hook-tests
+        run: swift run --package-path products/os1-mac-runtime OS1HookSupportTests
 
       - name: Assert Apple distribution credentials are mandatory
         run: |
@@ -147,12 +154,18 @@ jobs:
           sudo installer \
             -pkg "$beta_test_dir/${beta_name}/OS-1.pkg" \
             -target /
-          test -x /usr/local/bin/os1
-          test -x "/Applications/Open OS-1 Codex.app/Contents/MacOS/OS1App"
+          test -x /usr/local/bin/os1 || { echo "Installed canonical OS1 CLI is missing or not executable"; exit 1; }
+          test -x "/Applications/OS-1 CLODEX.app/Contents/MacOS/OS1App" || { echo "Installed canonical OS1 app is missing or not executable"; exit 1; }
           codesign --verify --strict /usr/local/bin/os1
-          codesign --verify --deep --strict "/Applications/Open OS-1 Codex.app"
+          codesign --verify --deep --strict "/Applications/OS-1 CLODEX.app"
           /usr/local/bin/os1 self-test
-          "/Applications/Open OS-1 Codex.app/Contents/MacOS/OS1App" --self-test
+          "/Applications/OS-1 CLODEX.app/Contents/MacOS/OS1App" --self-test
+
+      - name: Diagnose known compiler-string fingerprints without disclosing tokens
+        if: failure()
+        run: |
+          binary='products/os1-mac-runtime/release/stage/Applications/OS-1 CLODEX.app/Contents/MacOS/OS1App'
+          if test -f "$binary"; then node products/os1-route-core/scripts/explain-client-scan.mjs "$binary"; fi
 
       - name: Reject a beta manifest that disagrees with the package
         run: |

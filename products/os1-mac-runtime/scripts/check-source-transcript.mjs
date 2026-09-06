@@ -1,0 +1,14 @@
+import { readFileSync, writeFileSync, mkdtempSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
+const [runtime, context, transcript, prompt] = process.argv.slice(2);
+const rows = readFileSync(transcript, 'utf8').trim().split('\n').map(line => JSON.parse(line));
+const finals = rows.filter(r => r.type === 'response_item' && r.payload.type === 'message' && r.payload.role === 'assistant');
+const final = finals.at(-1);
+const text = final.payload.content.filter(c => c.type === 'output_text').map(c => c.text).join('\n');
+const dir = mkdtempSync(join(tmpdir(), 'os1-source-check-'));
+const file = join(dir, 'answer.txt');
+writeFileSync(file, text, { mode: 0o600 });
+console.log(execFileSync(resolve(runtime), ['check-source-output', context, file, prompt], { encoding: 'utf8' }));
+console.log(JSON.stringify({ bytes: Buffer.byteLength(text), channel: final.payload.phase, file }));
