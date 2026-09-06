@@ -132,6 +132,22 @@ private struct FleetAssignment: Codable {
     }
 }
 
+struct FleetEnqueueReceipt: Codable {
+    let jobID: String
+    let profile: String
+    let executionMode: String
+    let executorDeviceID: String
+    let objectiveVersion: String
+
+    enum CodingKeys: String, CodingKey {
+        case profile
+        case jobID = "job_id"
+        case executionMode = "execution_mode"
+        case executorDeviceID = "executor_device_id"
+        case objectiveVersion = "objective_version"
+    }
+}
+
 private struct FleetSubmitResponse: Decodable {
     let status: String
     let assignment: FleetAssignment?
@@ -151,6 +167,43 @@ private struct FleetClaimRequest: Codable {
 private struct FleetClaimResponse: Decodable {
     let status: String
     let assignment: FleetAssignment?
+}
+
+private struct FleetSnapshotNode: Codable {
+    let deviceID: String
+    let role: String
+    let hostname: String
+    let zeroTierIP: String
+    let cpuLogicalCount: Int
+    let loadAverage1m: Double
+    let memoryTotalMiB: Int
+    let memoryAvailableMiB: Int
+    let queueDepth: Int
+    let hasCodex: Bool
+    let hasClaude: Bool
+    let exoReady: Bool
+    let exoNodes: Int
+    let lastSeenMs: Int64
+
+    enum CodingKeys: String, CodingKey {
+        case role, hostname
+        case deviceID = "device_id"
+        case zeroTierIP = "zerotier_ip"
+        case cpuLogicalCount = "cpu_logical_count"
+        case loadAverage1m = "load_average_1m"
+        case memoryTotalMiB = "memory_total_mib"
+        case memoryAvailableMiB = "memory_available_mib"
+        case queueDepth = "queue_depth"
+        case hasCodex = "has_codex"
+        case hasClaude = "has_claude"
+        case exoReady = "exo_ready"
+        case exoNodes = "exo_nodes"
+        case lastSeenMs = "last_seen_ms"
+    }
+}
+
+private struct FleetSnapshotResponse: Codable {
+    let nodes: [FleetSnapshotNode]
 }
 
 private struct FleetCompleteRequest: Codable {
@@ -270,14 +323,33 @@ private func statusBytes(deviceID: String, jobID: String, sentAtMs: Int64, nonce
 }
 
 private func fleetZeroTierIP() throws -> String {
-    let ifconfig = try commandOutput("/sbin/ifconfig", [], timeout: 10)
-    guard ifconfig.0 == 0 else { throw OS1Error.message("ZeroTier interface inspection failed") }
-    let tokens = String(decoding: ifconfig.1, as: UTF8.self).split { $0.isWhitespace }.map(String.init)
-    guard let address = tokens.first(where: { value in
-        let parts = value.split(separator: ".")
-        return parts.count == 4 && value.hasPrefix("10.215.90.")
-    }) else { throw OS1Error.message("OS-1 ZeroTier address is unavailable") }
-    return address
+    var interfaces: UnsafeMutablePointer<ifaddrs>?
+    guard getifaddrs(&interfaces) == 0, let first = interfaces else {
+        throw OS1Error.message("ZeroTier interface inspection failed")
+    }
+    defer { freeifaddrs(first) }
+
+    var cursor: UnsafeMutablePointer<ifaddrs>? = first
+    while let interface = cursor?.pointee {
+        defer { cursor = interface.ifa_next }
+        guard let socketAddress = interface.ifa_addr,
+              socketAddress.pointee.sa_family == UInt8(AF_INET) else { continue }
+        var buffer = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+        guard getnameinfo(
+            socketAddress,
+            socklen_t(socketAddress.pointee.sa_len),
+            &buffer,
+            socklen_t(buffer.count),
+            nil,
+            0,
+            NI_NUMERICHOST
+        ) == 0 else { continue }
+        let value = String(decoding: buffer.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }, as: UTF8.self)
+        if value.hasPrefix("10.215.90."), value.split(separator: ".").count == 4 {
+            return value
+        }
+    }
+    throw OS1Error.message("OS-1 ZeroTier address is unavailable")
 }
 
 private func fleetAvailableMemoryMiB() -> Int {
@@ -663,14 +735,14 @@ private func fleetWorkspaceIdentity(_ workspace: String) throws -> (String, Stri
     return (normalized, String(decoding: revision.1, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines), relative)
 }
 
-func submitFleetTask(
+func enqueueFleetTask(
     workspace: String,
     prompt: String,
     profile: String,
     minMemoryMiB: Int,
     cpuWeight: Int,
     preferDeviceID: String?
-) async throws {
+) async throws -> FleetEnqueueReceipt {
     guard fleetProfiles.contains(profile), (0...100).contains(cpuWeight), minMemoryMiB >= 0 else {
         throw OS1Error.message("Fleet task requirements are invalid")
     }
@@ -700,29 +772,87 @@ func submitFleetTask(
     guard submitted.status == "queued", let assignment = submitted.assignment else {
         throw OS1Error.message("No eligible OS-1 fleet node is online")
     }
-    print("OS-1 fleet job \(assignment.jobID): \(assignment.executionMode) on \(assignment.executorDeviceID)")
-    let deadline = Date().addingTimeInterval(3_600)
+    guard assignment.profile == profile,
+          assignment.objectiveVersion == "os1-fleet-objective-v1",
+          assignment.executionMode == (profile == "exo" ? "distributed_exo" : "single_node") else {
+        throw OS1Error.message("OS-1 Fleet assignment contract rejected")
+    }
+    return FleetEnqueueReceipt(
+        jobID: assignment.jobID,
+        profile: assignment.profile,
+        executionMode: assignment.executionMode,
+        executorDeviceID: assignment.executorDeviceID,
+        objectiveVersion: assignment.objectiveVersion
+    )
+}
+
+func waitForFleetTask(jobID: String, timeoutSeconds: Int = 3_600) async throws -> String {
+    guard UUID(uuidString: jobID) != nil, (5...3_600).contains(timeoutSeconds) else {
+        throw OS1Error.message("Fleet wait request is invalid")
+    }
+    let config = try RuntimeConfig.load()
+    let key = try SigningKey.loadOrCreate()
+    let id = try deviceID()
+    let client = APIClient(config: config, token: try githubToken(), deviceID: id)
+    let deadline = Date().addingTimeInterval(TimeInterval(timeoutSeconds))
     while Date() < deadline {
         try await Task.sleep(for: fleetJobStatusInterval)
         let statusAt = fleetNowMs()
         let statusNonce = try randomNonce()
         let signature = Base64URL.encode(try key.sign(statusBytes(
-            deviceID: id, jobID: assignment.jobID, sentAtMs: statusAt, nonce: statusNonce
+            deviceID: id, jobID: jobID, sentAtMs: statusAt, nonce: statusNonce
         )))
         let status: FleetJobStatus = try await client.post(
             "/v1/fleet/status",
-            body: FleetStatusRequest(jobID: assignment.jobID, sentAtMs: statusAt, nonce: statusNonce, signature: signature),
+            body: FleetStatusRequest(jobID: jobID, sentAtMs: statusAt, nonce: statusNonce, signature: signature),
             as: FleetJobStatus.self
         )
         if status.state == "complete" {
-            print(status.result ?? "")
-            return
+            return status.result ?? ""
         }
         if status.state == "failed" || status.state == "expired" {
             throw OS1Error.message("Fleet job \(status.state): \(status.result ?? "no result")")
         }
     }
     throw OS1Error.message("Fleet job timed out")
+}
+
+func fleetSnapshotJSON() async throws -> String {
+    let config = try RuntimeConfig.load()
+    let key = try SigningKey.loadOrCreate()
+    let id = try deviceID()
+    let client = APIClient(config: config, token: try githubToken(), deviceID: id)
+    let now = fleetNowMs()
+    let nonce = try randomNonce()
+    let signature = Base64URL.encode(try key.sign(claimBytes(deviceID: id, sentAtMs: now, nonce: nonce)))
+    let snapshot: FleetSnapshotResponse = try await client.post(
+        "/v1/fleet/snapshot",
+        body: FleetClaimRequest(sentAtMs: now, nonce: nonce, signature: signature),
+        as: FleetSnapshotResponse.self
+    )
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+    return String(decoding: try encoder.encode(snapshot), as: UTF8.self)
+}
+
+func submitFleetTask(
+    workspace: String,
+    prompt: String,
+    profile: String,
+    minMemoryMiB: Int,
+    cpuWeight: Int,
+    preferDeviceID: String?
+) async throws {
+    let receipt = try await enqueueFleetTask(
+        workspace: workspace,
+        prompt: prompt,
+        profile: profile,
+        minMemoryMiB: minMemoryMiB,
+        cpuWeight: cpuWeight,
+        preferDeviceID: preferDeviceID
+    )
+    print("OS-1 fleet job \(receipt.jobID): \(receipt.executionMode) on \(receipt.executorDeviceID)")
+    print(try await waitForFleetTask(jobID: receipt.jobID))
 }
 
 private func fleetConfiguredRole(_ requestedRole: String) throws -> String {
@@ -756,7 +886,7 @@ func configureFleetAgent(role requestedRole: String) throws {
         "ThrottleInterval": fleetLaunchAgentThrottleIntervalSeconds,
         "StandardOutPath": logDirectory.appendingPathComponent("agent.log").path,
         "StandardErrorPath": logDirectory.appendingPathComponent("agent.log").path,
-        "ProcessType": "Background",
+        "ProcessType": "Standard",
         "EnvironmentVariables": [
             "OS1_CONFIG": home.appendingPathComponent(".local/lib/os1/config.json").path,
             "PATH": "\(home.path)/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",

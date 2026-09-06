@@ -58,11 +58,31 @@ func testTimeoutHeadroom() throws {
     )
 }
 
+func testAutomaticFleetExecutorBypass() throws {
+    try expect(
+        AutomaticFleetHookPolicy.isExecutorWorkspace(
+            cwd: "/Users/test/.os1/fleet/jobs/11111111-1111-4111-8111-111111111111/repository",
+            homeDirectory: "/Users/test"
+        ),
+        "fleet executor checkout did not bypass recursive routing"
+    )
+    try expect(
+        !AutomaticFleetHookPolicy.isExecutorWorkspace(
+            cwd: "/Users/test/work/project",
+            homeDirectory: "/Users/test"
+        ),
+        "ordinary workspace was mistaken for a fleet executor checkout"
+    )
+    try expect(AutomaticFleetHookPolicy.minimumMemoryMiB == 2_048, "automatic fleet memory floor drifted")
+    try expect(AutomaticFleetHookPolicy.cpuWeight == 50, "automatic fleet CPU weight drifted")
+}
+
 do {
     try testExclusiveLease()
     try testCircuitBreaker()
     try testTimeoutHeadroom()
-    print("OS1HookSupportTests: PASS (3 tests)")
+    try testAutomaticFleetExecutorBypass()
+    print("OS1HookSupportTests: PASS (4 tests)")
 } catch {
     fputs("OS1HookSupportTests: FAIL: \(error)\n", stderr)
     exit(1)

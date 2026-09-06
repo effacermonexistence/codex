@@ -9,6 +9,18 @@ public enum ClaudeEXOHookPolicy {
     public static let failureCooldownSeconds: TimeInterval = 60
 }
 
+public enum AutomaticFleetHookPolicy {
+    public static let minimumMemoryMiB = 2_048
+    public static let cpuWeight = 50
+
+    public static func isExecutorWorkspace(cwd: String, homeDirectory: String) -> Bool {
+        let home = URL(fileURLWithPath: homeDirectory, isDirectory: true).standardizedFileURL.path
+        let workspace = URL(fileURLWithPath: cwd, isDirectory: true).standardizedFileURL.path
+        let executorRoot = home + "/.os1/fleet/jobs/"
+        return (workspace + "/").hasPrefix(executorRoot)
+    }
+}
+
 public final class ExclusiveHookLease: @unchecked Sendable {
     private let descriptor: Int32
 
