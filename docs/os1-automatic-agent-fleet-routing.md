@@ -52,6 +52,8 @@ inference profile.
    credential during heavy load; never copy that token into its service file.
 7. Read the ZeroTier address through the native interface API so heartbeat
    liveness does not depend on spawning `ifconfig` under host load.
+8. Run the user-requested Fleet executor as a standard LaunchAgent so macOS
+   does not indefinitely defer it as inefficient background work under load.
 
 ## Alternatives and rollback
 

@@ -886,7 +886,7 @@ func configureFleetAgent(role requestedRole: String) throws {
         "ThrottleInterval": fleetLaunchAgentThrottleIntervalSeconds,
         "StandardOutPath": logDirectory.appendingPathComponent("agent.log").path,
         "StandardErrorPath": logDirectory.appendingPathComponent("agent.log").path,
-        "ProcessType": "Background",
+        "ProcessType": "Standard",
         "EnvironmentVariables": [
             "OS1_CONFIG": home.appendingPathComponent(".local/lib/os1/config.json").path,
             "PATH": "\(home.path)/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
