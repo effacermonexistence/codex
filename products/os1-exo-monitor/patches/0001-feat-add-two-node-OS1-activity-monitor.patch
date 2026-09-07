@@ -1,0 +1,1382 @@
+From a229544390c4a131c80382e931fcc479f47ac814 Mon Sep 17 00:00:00 2001
+From: LUA <lua@LUAs-MBP.localdomain>
+Date: Mon, 7 Sep 2026 14:03:26 -0700
+Subject: [PATCH 1/3] feat: add two-node OS1 activity monitor
+
+---
+ DESIGN-OS1-ACTIVITY-MONITOR.md                |  63 ++
+ dashboard/src/lib/components/HeaderNav.svelte |  18 +
+ dashboard/src/routes/activity/+page.svelte    | 728 ++++++++++++++++++
+ scripts/build_activity_runtime.py             | 160 ++++
+ src/exo/api/main.py                           | 248 ++++++
+ src/exo/api/tests/test_activity_monitor.py    |  63 ++
+ 6 files changed, 1280 insertions(+)
+ create mode 100644 DESIGN-OS1-ACTIVITY-MONITOR.md
+ create mode 100644 dashboard/src/routes/activity/+page.svelte
+ create mode 100644 scripts/build_activity_runtime.py
+ create mode 100644 src/exo/api/tests/test_activity_monitor.py
+
+diff --git a/DESIGN-OS1-ACTIVITY-MONITOR.md b/DESIGN-OS1-ACTIVITY-MONITOR.md
+new file mode 100644
+index 00000000..c9bac46c
+--- /dev/null
++++ b/DESIGN-OS1-ACTIVITY-MONITOR.md
+@@ -0,0 +1,63 @@
++# OS1 cluster activity monitor design
++
++## Objective and acceptance checks
++
++Add one Activity Monitor-style view to the existing EXO dashboard. The same
++view must work when opened from either Mac and show both EXO nodes, measured
++CPU, memory, GPU, power/energy, disk, and network activity, plus OS1 Fleet work
++placement. It must not claim that macOS transparently pools arbitrary process
++memory or GPU resources.
++
++Acceptance checks:
++
++1. EXO continues to report the same two-node topology and run inference.
++2. No second `macmon` process is introduced; EXO's existing GPU/power sampler
++   remains authoritative.
++3. A read-only `/activity/local` endpoint reports bounded, non-secret local
++   counters and sanitized OS1 Fleet metadata.
++4. The dashboard polls each node over its existing cluster address and renders
++   current values, freshness, history, and recent placement metadata.
++5. The displayed convergence value is deterministic and documented: it is a
++   balance score derived from the spread in observed normalized load. It is not
++   a correctness probability or an optimality guarantee.
++6. Type checks, dashboard checks/build, targeted backend tests, installed-node
++   API checks, visual QA, two-node checks, and a stability window pass.
++
++## Failure boundary and invariants
++
++EXO already distributes CPU/GPU/memory/power samples in cluster state, but the
++dashboard has no consolidated Activity Monitor view and does not expose disk or
++network throughput. OS1 Fleet placement is available through a local CLI and
++result receipts but is not surfaced in EXO.
++
++Preserve the current EXO peer identity, follower/master behavior, event log,
++models, ZeroTier configuration, OS1 credentials, and user files. Do not modify
++the signed `/Applications/EXO.app` bundle. Do not return prompts, model output,
++tokens, credentials, or authentication caches from the monitoring endpoint.
++
++## Architecture
++
++- Extend the existing EXO API process with `/activity/local`.
++- Use `psutil` counters already bundled with EXO for CPU, memory, disk, and
++  network rates. Reuse the existing cluster `nodeSystem` values for GPU,
++  temperature, and power; never launch another `macmon` sampler.
++- Cache the global OS1 Fleet snapshot and expose only node readiness/resource
++  fields. Read recent local receipts and expose metadata only.
++- Add `/activity` to the Svelte dashboard. It reads cluster state once per
++  second, discovers the two node API addresses from EXO network interfaces,
++  polls each local endpoint, and merges results by EXO node ID.
++- Compute normalized observed load per node as
++  `0.35 CPU + 0.35 memory + 0.20 GPU + 0.10 queue pressure`. The convergence
++  score is `100 - (max load - min load) * 100`, clamped to 0..100. A stale or
++  missing node makes the status unavailable instead of fabricating a score.
++
++## Alternatives and rollback
++
++A separate monitor app or sidecar would duplicate lifecycle and sharing logic,
++so it is rejected. Starting a second `macmon` sampler is rejected because it
++can contend with Metal inference. Browser-only metrics cannot access system
++counters or OS1 receipts.
++
++Installation uses a new custom EXO runtime directory and an atomic LaunchAgent
++path switch. Rollback restores the prior ProgramArguments/environment and
++restarts only the exact EXO service.
+diff --git a/dashboard/src/lib/components/HeaderNav.svelte b/dashboard/src/lib/components/HeaderNav.svelte
+index d7dab78d..817db665 100644
+--- a/dashboard/src/lib/components/HeaderNav.svelte
++++ b/dashboard/src/lib/components/HeaderNav.svelte
+@@ -220,6 +220,24 @@
+         <span class="hidden sm:inline">Home</span>
+       </button>
+     {/if}
++    <a
++      href="/#/activity"
++      class="text-xs md:text-sm text-white/70 hover:text-exo-yellow transition-colors tracking-wider uppercase flex items-center gap-1.5 md:gap-2 cursor-pointer"
++      title="Two-node CPU, memory, GPU, energy, disk, network, and Fleet activity"
++    >
++      <svg
++        class="w-4 h-4"
++        viewBox="0 0 24 24"
++        fill="none"
++        stroke="currentColor"
++        stroke-width="2"
++        stroke-linecap="round"
++        stroke-linejoin="round"
++      >
++        <path d="M3 12h4l2-7 4 14 2-7h6" />
++      </svg>
++      <span class="hidden lg:inline">Activity</span>
++    </a>
+     <a
+       href="/#/downloads"
+       class="text-xs md:text-sm text-white/70 hover:text-exo-yellow transition-colors tracking-wider uppercase flex items-center gap-1.5 md:gap-2 cursor-pointer"
+diff --git a/dashboard/src/routes/activity/+page.svelte b/dashboard/src/routes/activity/+page.svelte
+new file mode 100644
+index 00000000..997860a9
+--- /dev/null
++++ b/dashboard/src/routes/activity/+page.svelte
+@@ -0,0 +1,728 @@
++<script lang="ts">
++  import { onMount } from "svelte";
++  import HeaderNav from "$lib/components/HeaderNav.svelte";
++
++  interface MemoryValue {
++    inBytes: number;
++  }
++
++  interface NodeIdentity {
++    modelId?: string;
++    chipId?: string;
++    friendlyName?: string;
++  }
++
++  interface NodeMemory {
++    ramTotal?: MemoryValue;
++    ramAvailable?: MemoryValue;
++  }
++
++  interface NodeSystem {
++    gpuUsage?: number;
++    temp?: number;
++    sysPower?: number;
++    pcpuUsage?: number;
++    ecpuUsage?: number;
++  }
++
++  interface ClusterState {
++    topology?: { nodes?: string[] };
++    nodeIdentities?: Record<string, NodeIdentity>;
++    nodeMemory?: Record<string, NodeMemory>;
++    nodeSystem?: Record<string, NodeSystem>;
++    nodeNetwork?: Record<
++      string,
++      { interfaces?: Array<{ name?: string; ipAddress?: string }> }
++    >;
++    nodeDisk?: Record<
++      string,
++      { total?: MemoryValue; available?: MemoryValue }
++    >;
++  }
++
++  interface FleetNode {
++    cpu_logical_count?: number;
++    device_id?: string;
++    exo_nodes?: number;
++    exo_ready?: boolean;
++    has_claude?: boolean;
++    has_codex?: boolean;
++    hostname?: string;
++    last_seen_ms?: number;
++    load_average_1m?: number;
++    memory_available_mib?: number;
++    memory_total_mib?: number;
++    queue_depth?: number;
++    role?: string;
++    zerotier_ip?: string;
++  }
++
++  interface FleetJob {
++    execution_mode?: string;
++    executor_device_id?: string;
++    job_id?: string;
++    objective_version?: string;
++    profile?: string;
++    state?: string;
++    updated_at_ms?: number;
++  }
++
++  interface LocalActivity {
++    node_id: string;
++    sampled_at: string;
++    sample_interval_seconds: number;
++    cpu: {
++      system_percent: number;
++      per_core_percent: number[];
++      logical_count: number;
++      load_average_1m: number;
++      exo_process_percent: number;
++    };
++    memory: {
++      total_bytes: number;
++      used_bytes: number;
++      available_bytes: number;
++      swap_total_bytes: number;
++      swap_used_bytes: number;
++      exo_process_resident_bytes: number;
++    };
++    gpu: {
++      usage_percent: number;
++      temperature_celsius: number;
++      performance_cpu_percent: number;
++      efficiency_cpu_percent: number;
++    };
++    energy: {
++      system_power_watts: number;
++      monitor_session_joules: number;
++      monitor_session_watt_hours: number;
++      monitor_uptime_seconds: number;
++    };
++    disk: {
++      read_bytes_per_second: number;
++      write_bytes_per_second: number;
++      read_operations_per_second: number;
++      write_operations_per_second: number;
++    };
++    network: {
++      received_bytes_per_second: number;
++      sent_bytes_per_second: number;
++      received_bytes_total: number;
++      sent_bytes_total: number;
++    };
++    exo: {
++      topology_nodes: number;
++      instances: number;
++      runners: number;
++      tasks: number;
++      last_event_applied_index: number;
++    };
++    fleet: {
++      nodes?: FleetNode[];
++      recent_jobs?: FleetJob[];
++      error?: string | null;
++      cache_age_seconds?: number;
++    };
++  }
++
++  interface HistoryPoint {
++    at: number;
++    cpu: number;
++    memory: number;
++    gpu: number;
++    power: number;
++    disk: number;
++    network: number;
++  }
++
++  interface NodeRow {
++    nodeId: string;
++    name: string;
++    model: string;
++    ip: string;
++    activity: LocalActivity | null;
++    fleet: FleetNode | null;
++    cpu: number;
++    memoryPercent: number;
++    memoryUsed: number;
++    memoryTotal: number;
++    gpu: number;
++    temperature: number;
++    power: number;
++    diskRead: number;
++    diskWrite: number;
++    networkReceive: number;
++    networkSend: number;
++    diskAvailable: number;
++    diskTotal: number;
++    stale: boolean;
++  }
++
++  let clusterState: ClusterState | null = $state(null);
++  let activities: Record<string, LocalActivity> = $state({});
++  let histories: Record<string, HistoryPoint[]> = $state({});
++  let stateError: string | null = $state(null);
++  let lastRefresh = $state(0);
++  let polling = false;
++  let balance = $derived(convergence());
++  let totals = $derived(clusterTotals());
++
++  function clampPercent(value: number): number {
++    return Math.max(0, Math.min(100, Number.isFinite(value) ? value : 0));
++  }
++
++  function formatPercent(value: number): string {
++    return `${clampPercent(value).toFixed(0)}%`;
++  }
++
++  function formatBytes(value: number): string {
++    if (!Number.isFinite(value) || value <= 0) return "0 B";
++    const units = ["B", "KB", "MB", "GB", "TB"];
++    const exponent = Math.min(
++      Math.floor(Math.log(value) / Math.log(1024)),
++      units.length - 1,
++    );
++    return `${(value / 1024 ** exponent).toFixed(exponent > 2 ? 1 : 0)} ${units[exponent]}`;
++  }
++
++  function formatRate(value: number): string {
++    return `${formatBytes(value)}/s`;
++  }
++
++  function formatDuration(milliseconds: number): string {
++    if (!Number.isFinite(milliseconds) || milliseconds < 0) return "—";
++    if (milliseconds < 1000) return `${Math.round(milliseconds)} ms`;
++    return `${(milliseconds / 1000).toFixed(1)} s`;
++  }
++
++  function nodeIp(nodeId: string): string {
++    const interfaces = clusterState?.nodeNetwork?.[nodeId]?.interfaces ?? [];
++    const zeroTier = interfaces.find((item) =>
++      item.ipAddress?.startsWith("10.215."),
++    );
++    return zeroTier?.ipAddress ?? interfaces[0]?.ipAddress ?? "";
++  }
++
++  function fleetNodes(): FleetNode[] {
++    const byId = new Map<string, FleetNode>();
++    for (const activity of Object.values(activities)) {
++      for (const node of activity.fleet.nodes ?? []) {
++        const key = node.device_id ?? node.hostname ?? node.zerotier_ip;
++        if (key) byId.set(key, node);
++      }
++    }
++    return [...byId.values()];
++  }
++
++  function recentJobs(): FleetJob[] {
++    const byId = new Map<string, FleetJob>();
++    for (const activity of Object.values(activities)) {
++      for (const job of activity.fleet.recent_jobs ?? []) {
++        if (job.job_id) byId.set(job.job_id, job);
++      }
++    }
++    return [...byId.values()]
++      .sort((a, b) => (b.updated_at_ms ?? 0) - (a.updated_at_ms ?? 0))
++      .slice(0, 12);
++  }
++
++  function nodeRows(): NodeRow[] {
++    const now = Date.now();
++    return (clusterState?.topology?.nodes ?? []).map((nodeId) => {
++      const identity = clusterState?.nodeIdentities?.[nodeId];
++      const memory = clusterState?.nodeMemory?.[nodeId];
++      const system = clusterState?.nodeSystem?.[nodeId];
++      const disk = clusterState?.nodeDisk?.[nodeId];
++      const ip = nodeIp(nodeId);
++      const activity = activities[nodeId] ?? null;
++      const fleet =
++        fleetNodes().find((item) => item.zerotier_ip === ip) ?? null;
++      const memoryTotal =
++        activity?.memory.total_bytes ?? memory?.ramTotal?.inBytes ?? 0;
++      const memoryUsed =
++        activity?.memory.used_bytes ??
++        Math.max(
++          memoryTotal - (memory?.ramAvailable?.inBytes ?? memoryTotal),
++          0,
++        );
++      const sampledAt = activity ? Date.parse(activity.sampled_at) : 0;
++
++      return {
++        nodeId,
++        name: identity?.friendlyName ?? fleet?.role ?? nodeId.slice(0, 12),
++        model: identity?.modelId ?? identity?.chipId ?? "Unknown Mac",
++        ip,
++        activity,
++        fleet,
++        cpu:
++          activity?.cpu.system_percent ??
++          ((system?.pcpuUsage ?? 0) + (system?.ecpuUsage ?? 0)) * 50,
++        memoryPercent: memoryTotal > 0 ? (memoryUsed / memoryTotal) * 100 : 0,
++        memoryUsed,
++        memoryTotal,
++        gpu: activity?.gpu.usage_percent ?? (system?.gpuUsage ?? 0) * 100,
++        temperature:
++          activity?.gpu.temperature_celsius ?? system?.temp ?? 0,
++        power: activity?.energy.system_power_watts ?? system?.sysPower ?? 0,
++        diskRead: activity?.disk.read_bytes_per_second ?? 0,
++        diskWrite: activity?.disk.write_bytes_per_second ?? 0,
++        networkReceive: activity?.network.received_bytes_per_second ?? 0,
++        networkSend: activity?.network.sent_bytes_per_second ?? 0,
++        diskAvailable: disk?.available?.inBytes ?? 0,
++        diskTotal: disk?.total?.inBytes ?? 0,
++        stale: !activity || now - sampledAt > 15_000,
++      };
++    });
++  }
++
++  function clusterTotals() {
++    const rows = nodeRows();
++    return {
++      cpu: rows.length
++        ? rows.reduce((sum, row) => sum + row.cpu, 0) / rows.length
++        : 0,
++      memoryUsed: rows.reduce((sum, row) => sum + row.memoryUsed, 0),
++      memoryTotal: rows.reduce((sum, row) => sum + row.memoryTotal, 0),
++      gpu: rows.length
++        ? rows.reduce((sum, row) => sum + row.gpu, 0) / rows.length
++        : 0,
++      power: rows.reduce((sum, row) => sum + row.power, 0),
++      disk: rows.reduce((sum, row) => sum + row.diskRead + row.diskWrite, 0),
++      network: rows.reduce(
++        (sum, row) => sum + row.networkReceive + row.networkSend,
++        0,
++      ),
++    };
++  }
++
++  function convergence(): {
++    score: number | null;
++    spread: number | null;
++    status: string;
++  } {
++    const rows = nodeRows();
++    if (rows.length < 2 || rows.some((row) => row.stale)) {
++      return { score: null, spread: null, status: "WAITING FOR 2 FRESH NODES" };
++    }
++    const loads = rows.map((row) => {
++      const queuePressure = Math.min((row.fleet?.queue_depth ?? 0) / 4, 1);
++      return (
++        0.35 * (clampPercent(row.cpu) / 100) +
++        0.35 * (clampPercent(row.memoryPercent) / 100) +
++        0.2 * (clampPercent(row.gpu) / 100) +
++        0.1 * queuePressure
++      );
++    });
++    const spread = (Math.max(...loads) - Math.min(...loads)) * 100;
++    return {
++      score: Math.max(0, Math.min(100, 100 - spread)),
++      spread,
++      status: spread <= 15 ? "CONVERGED" : "OBSERVED LOAD IMBALANCE",
++    };
++  }
++
++  function sparkline(nodeId: string, field: keyof HistoryPoint): string {
++    const points = histories[nodeId] ?? [];
++    if (points.length < 2) return "";
++    const values = points.map((point) => Number(point[field]));
++    const maximum = Math.max(...values, field === "power" ? 1 : 100);
++    return values
++      .map((value, index) => {
++        const x = (index / Math.max(values.length - 1, 1)) * 100;
++        const y = 28 - (Math.max(value, 0) / maximum) * 26;
++        return `${x.toFixed(1)},${y.toFixed(1)}`;
++      })
++      .join(" ");
++  }
++
++  function appendHistory(activity: LocalActivity): void {
++    const memoryPercent = activity.memory.total_bytes
++      ? (activity.memory.used_bytes / activity.memory.total_bytes) * 100
++      : 0;
++    const next: HistoryPoint = {
++      at: Date.now(),
++      cpu: activity.cpu.system_percent,
++      memory: memoryPercent,
++      gpu: activity.gpu.usage_percent,
++      power: activity.energy.system_power_watts,
++      disk:
++        activity.disk.read_bytes_per_second +
++        activity.disk.write_bytes_per_second,
++      network:
++        activity.network.received_bytes_per_second +
++        activity.network.sent_bytes_per_second,
++    };
++    histories = {
++      ...histories,
++      [activity.node_id]: [...(histories[activity.node_id] ?? []), next].slice(
++        -60,
++      ),
++    };
++  }
++
++  async function fetchJson(url: string): Promise<unknown> {
++    const controller = new AbortController();
++    const timeout = window.setTimeout(() => controller.abort(), 7000);
++    try {
++      const response = await fetch(url, {
++        cache: "no-store",
++        signal: controller.signal,
++      });
++      if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
++      return await response.json();
++    } finally {
++      window.clearTimeout(timeout);
++    }
++  }
++
++  async function poll(): Promise<void> {
++    if (polling) return;
++    polling = true;
++    try {
++      clusterState = (await fetchJson("/state")) as ClusterState;
++      stateError = null;
++
++      const origins = new Set<string>([window.location.origin]);
++      for (const nodeId of clusterState.topology?.nodes ?? []) {
++        const ip = nodeIp(nodeId);
++        if (ip) origins.add(`http://${ip}:52415`);
++      }
++
++      const results = await Promise.allSettled(
++        [...origins].map(async (origin) => {
++          return (await fetchJson(`${origin}/activity/local`)) as LocalActivity;
++        }),
++      );
++      const nextActivities = { ...activities };
++      for (const result of results) {
++        if (result.status === "fulfilled" && result.value.node_id) {
++          nextActivities[result.value.node_id] = result.value;
++          appendHistory(result.value);
++        }
++      }
++      activities = nextActivities;
++      lastRefresh = Date.now();
++    } catch (error) {
++      stateError = error instanceof Error ? error.message : "EXO state unavailable";
++    } finally {
++      polling = false;
++    }
++  }
++
++  onMount(() => {
++    void poll();
++    const interval = window.setInterval(() => void poll(), 1000);
++    return () => window.clearInterval(interval);
++  });
++</script>
++
++<svelte:head>
++  <title>Cluster Activity — EXO</title>
++  <meta
++    name="description"
++    content="Two-node EXO and OS1 Fleet resource activity monitor"
++  />
++</svelte:head>
++
++<div class="min-h-screen bg-exo-black text-white grid-bg">
++  <HeaderNav showHome={true} />
++
++  <main class="mx-auto max-w-[1600px] px-4 md:px-8 pb-12">
++    <section
++      class="command-panel rounded-lg p-5 md:p-7 mb-5 border-t border-t-exo-yellow/40"
++    >
++      <div class="flex flex-col xl:flex-row xl:items-end justify-between gap-5">
++        <div>
++          <div class="text-[11px] tracking-[0.28em] text-exo-yellow uppercase mb-2">
++            OS1 Fleet Objective Function · Live telemetry
++          </div>
++          <h1 class="text-2xl md:text-3xl font-semibold tracking-tight">
++            Two-Mac Cluster Activity
++          </h1>
++          <p class="mt-2 text-sm text-white/55 max-w-3xl">
++            EXO 추론 자원과 OS1의 Codex·Claude 작업 단위 배정을 한 화면에서
++            봅니다. 모든 값은 실측값이며 1초 간격으로 갱신됩니다.
++          </p>
++        </div>
++
++        <div class="grid grid-cols-2 gap-3 min-w-[320px]">
++          <div class="rounded border border-white/10 bg-black/30 px-4 py-3">
++            <div class="text-[10px] text-white/45 tracking-widest uppercase">
++              Balance convergence
++            </div>
++            <div class="mt-1 text-2xl font-semibold text-exo-yellow">
++              {balance.score === null ? "—" : `${balance.score.toFixed(1)}`}
++              <span class="text-xs text-white/40">/100</span>
++            </div>
++          </div>
++          <div class="rounded border border-white/10 bg-black/30 px-4 py-3">
++            <div class="text-[10px] text-white/45 tracking-widest uppercase">
++              Status
++            </div>
++            <div
++              class="mt-2 text-xs font-semibold {balance.score !== null &&
++              balance.score >= 85
++                ? 'text-emerald-400'
++                : 'text-amber-300'}"
++            >
++              {balance.status}
++            </div>
++            <div class="mt-1 text-[10px] text-white/35">
++              load spread {balance.spread === null
++                ? "—"
++                : `${balance.spread.toFixed(1)} pts`}
++            </div>
++          </div>
++        </div>
++      </div>
++
++      <div class="mt-4 flex flex-wrap items-center gap-x-5 gap-y-2 text-[11px]">
++        <span class="text-white/45">Objective</span>
++        <span class="text-white/80">os1-fleet-objective-v1</span>
++        <span class="text-white/45">EXO topology</span>
++        <span class="text-white/80"
++          >{clusterState?.topology?.nodes?.length ?? 0} nodes</span
++        >
++        <span class="text-white/45">Last refresh</span>
++        <span class="text-white/80"
++          >{lastRefresh ? new Date(lastRefresh).toLocaleTimeString() : "—"}</span
++        >
++        {#if stateError}
++          <span class="text-red-400">{stateError}</span>
++        {/if}
++      </div>
++    </section>
++
++    <section class="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-7 gap-3 mb-5">
++      {#each [
++        ["CPU AVG", formatPercent(totals.cpu)],
++        ["MEMORY", `${formatBytes(totals.memoryUsed)} / ${formatBytes(totals.memoryTotal)}`],
++        ["GPU AVG", formatPercent(totals.gpu)],
++        ["ENERGY", `${totals.power.toFixed(1)} W`],
++        ["DISK I/O", formatRate(totals.disk)],
++        ["NETWORK", formatRate(totals.network)],
++        ["FLEET QUEUE", `${fleetNodes().reduce((sum, node) => sum + (node.queue_depth ?? 0), 0)}`],
++      ] as summary}
++        <div class="command-panel rounded px-4 py-3 min-w-0">
++          <div class="text-[9px] text-white/40 tracking-[0.18em]">
++            {summary[0]}
++          </div>
++          <div class="mt-1 text-sm text-white/90 truncate" title={summary[1]}>
++            {summary[1]}
++          </div>
++        </div>
++      {/each}
++    </section>
++
++    <section class="grid grid-cols-1 2xl:grid-cols-2 gap-5 mb-5">
++      {#each nodeRows() as row}
++        <article
++          class="command-panel rounded-lg p-5 border-l-2 {row.stale
++            ? 'border-l-amber-400'
++            : 'border-l-emerald-400'}"
++        >
++          <div class="flex items-start justify-between gap-4 mb-5">
++            <div>
++              <div class="flex items-center gap-2">
++                <span
++                  class="h-2 w-2 rounded-full {row.stale
++                    ? 'bg-amber-400'
++                    : 'bg-emerald-400 status-pulse'}"
++                ></span>
++                <h2 class="text-lg font-semibold">{row.name}</h2>
++                <span class="text-[10px] text-exo-yellow uppercase"
++                  >{row.fleet?.role ?? "EXO"}</span
++                >
++              </div>
++              <div class="mt-1 text-xs text-white/45">
++                {row.model} · {row.ip || "address pending"}
++              </div>
++            </div>
++            <div class="text-right text-[10px] text-white/40">
++              <div>{row.activity?.cpu.logical_count ?? 0} logical CPU</div>
++              <div>
++                EXO {row.activity?.exo.topology_nodes ?? 0} · queue {row.fleet?.queue_depth ?? 0}
++              </div>
++            </div>
++          </div>
++
++          <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
++            <div class="rounded border border-white/10 bg-black/25 p-3">
++              <div class="flex justify-between text-[10px] text-white/45">
++                <span>CPU</span><span>{formatPercent(row.cpu)}</span>
++              </div>
++              <svg class="mt-2 h-8 w-full" viewBox="0 0 100 30" preserveAspectRatio="none">
++                <polyline
++                  points={sparkline(row.nodeId, "cpu")}
++                  fill="none"
++                  stroke="var(--exo-yellow)"
++                  stroke-width="1.5"
++                  vector-effect="non-scaling-stroke"
++                />
++              </svg>
++              <div class="mt-1 text-[9px] text-white/35">
++                EXO process {formatPercent(row.activity?.cpu.exo_process_percent ?? 0)}
++              </div>
++            </div>
++
++            <div class="rounded border border-white/10 bg-black/25 p-3">
++              <div class="flex justify-between text-[10px] text-white/45">
++                <span>MEMORY</span><span>{formatPercent(row.memoryPercent)}</span>
++              </div>
++              <div class="mt-3 h-2 rounded bg-white/10 overflow-hidden">
++                <div
++                  class="h-full bg-blue-400 transition-all duration-500"
++                  style={`width: ${clampPercent(row.memoryPercent)}%`}
++                ></div>
++              </div>
++              <div class="mt-3 text-[9px] text-white/35">
++                {formatBytes(row.memoryUsed)} / {formatBytes(row.memoryTotal)}
++              </div>
++            </div>
++
++            <div class="rounded border border-white/10 bg-black/25 p-3">
++              <div class="flex justify-between text-[10px] text-white/45">
++                <span>GPU</span><span>{formatPercent(row.gpu)}</span>
++              </div>
++              <svg class="mt-2 h-8 w-full" viewBox="0 0 100 30" preserveAspectRatio="none">
++                <polyline
++                  points={sparkline(row.nodeId, "gpu")}
++                  fill="none"
++                  stroke="#a78bfa"
++                  stroke-width="1.5"
++                  vector-effect="non-scaling-stroke"
++                />
++              </svg>
++              <div class="mt-1 text-[9px] text-white/35">
++                {row.temperature.toFixed(0)}°C · P {formatPercent(row.activity?.gpu.performance_cpu_percent ?? 0)} · E {formatPercent(row.activity?.gpu.efficiency_cpu_percent ?? 0)}
++              </div>
++            </div>
++
++            <div class="rounded border border-white/10 bg-black/25 p-3">
++              <div class="flex justify-between text-[10px] text-white/45">
++                <span>ENERGY</span><span>{row.power.toFixed(1)} W</span>
++              </div>
++              <svg class="mt-2 h-8 w-full" viewBox="0 0 100 30" preserveAspectRatio="none">
++                <polyline
++                  points={sparkline(row.nodeId, "power")}
++                  fill="none"
++                  stroke="#34d399"
++                  stroke-width="1.5"
++                  vector-effect="non-scaling-stroke"
++                />
++              </svg>
++              <div class="mt-1 text-[9px] text-white/35">
++                session {row.activity?.energy.monitor_session_watt_hours.toFixed(3) ?? "0.000"} Wh
++              </div>
++            </div>
++          </div>
++
++          <div class="mt-3 grid grid-cols-1 md:grid-cols-3 gap-3 text-[10px]">
++            <div class="rounded border border-white/10 px-3 py-2.5">
++              <div class="text-white/40">DISK</div>
++              <div class="mt-1 flex justify-between">
++                <span>Read {formatRate(row.diskRead)}</span>
++                <span>Write {formatRate(row.diskWrite)}</span>
++              </div>
++              <div class="mt-1 text-white/35">
++                {formatBytes(row.diskAvailable)} free / {formatBytes(row.diskTotal)}
++              </div>
++            </div>
++            <div class="rounded border border-white/10 px-3 py-2.5">
++              <div class="text-white/40">NETWORK</div>
++              <div class="mt-1 flex justify-between">
++                <span>In {formatRate(row.networkReceive)}</span>
++                <span>Out {formatRate(row.networkSend)}</span>
++              </div>
++              <div class="mt-1 text-white/35">ZeroTier · EXO API 52415</div>
++            </div>
++            <div class="rounded border border-white/10 px-3 py-2.5">
++              <div class="text-white/40">OS1 EXECUTOR</div>
++              <div class="mt-1 flex justify-between">
++                <span>Codex {row.fleet?.has_codex ? "READY" : "—"}</span>
++                <span>Claude {row.fleet?.has_claude ? "READY" : "—"}</span>
++              </div>
++              <div class="mt-1 text-white/35">
++                heartbeat {formatDuration(Date.now() - (row.fleet?.last_seen_ms ?? 0))}
++              </div>
++            </div>
++          </div>
++        </article>
++      {/each}
++    </section>
++
++    <section class="grid grid-cols-1 xl:grid-cols-[1.35fr_1fr] gap-5">
++      <div class="command-panel rounded-lg overflow-hidden">
++        <div class="px-5 py-4 border-b border-white/10 flex items-center justify-between">
++          <div>
++            <h2 class="text-sm font-semibold">Recent automatic placement</h2>
++            <p class="text-[10px] text-white/40 mt-1">
++              Prompt와 모델 출력은 표시하지 않고 배정 메타데이터만 표시합니다.
++            </p>
++          </div>
++          <span class="text-[10px] text-exo-yellow">WORK UNIT ROUTING</span>
++        </div>
++        <div class="overflow-x-auto">
++          <table class="w-full text-left text-[11px]">
++            <thead class="text-white/35 border-b border-white/10">
++              <tr>
++                <th class="px-5 py-3 font-normal">TIME</th>
++                <th class="px-3 py-3 font-normal">PROVIDER</th>
++                <th class="px-3 py-3 font-normal">EXECUTOR</th>
++                <th class="px-3 py-3 font-normal">MODE</th>
++                <th class="px-5 py-3 font-normal text-right">STATE</th>
++              </tr>
++            </thead>
++            <tbody>
++              {#each recentJobs() as job}
++                {@const executor = fleetNodes().find(
++                  (node) => node.device_id === job.executor_device_id,
++                )}
++                <tr class="border-b border-white/5 last:border-0">
++                  <td class="px-5 py-3 text-white/45">
++                    {job.updated_at_ms
++                      ? new Date(job.updated_at_ms).toLocaleTimeString()
++                      : "—"}
++                  </td>
++                  <td class="px-3 py-3 uppercase">{job.profile ?? "—"}</td>
++                  <td class="px-3 py-3 text-exo-yellow uppercase">
++                    {executor?.role ?? job.executor_device_id?.slice(-8) ?? "—"}
++                  </td>
++                  <td class="px-3 py-3 text-white/55">
++                    {job.execution_mode ?? "—"}
++                  </td>
++                  <td
++                    class="px-5 py-3 text-right {job.state === 'complete'
++                      ? 'text-emerald-400'
++                      : 'text-red-400'}"
++                  >
++                    {job.state ?? "—"}
++                  </td>
++                </tr>
++              {:else}
++                <tr><td class="px-5 py-8 text-white/35" colspan="5"
++                    >No local Fleet receipts yet.</td
++                  ></tr
++                >
++              {/each}
++            </tbody>
++          </table>
++        </div>
++      </div>
++
++      <div class="command-panel rounded-lg p-5">
++        <h2 class="text-sm font-semibold">Convergence definition</h2>
++        <p class="mt-3 text-xs leading-5 text-white/55">
++          각 노드의 관측 부하는 CPU 35% + 메모리 35% + GPU 20% + OS1 queue
++          pressure 10%로 계산합니다. 두 노드 부하의 차이가 0이면 100입니다.
++          노드가 누락되거나 15초 이상 오래되면 점수를 만들지 않습니다.
++        </p>
++        <div class="mt-4 rounded border border-amber-300/20 bg-amber-300/5 p-3 text-[10px] leading-4 text-amber-100/70">
++          이 값은 현재 관측된 균형 편차입니다. 일반 macOS 프로세스의 RAM·GPU를
++          투명하게 하나로 합친다는 뜻이 아닙니다. EXO 추론은 모델 shard 단위,
++          Codex·Claude는 OS1 작업 단위로 배정됩니다.
++        </div>
++      </div>
++    </section>
++  </main>
++</div>
+diff --git a/scripts/build_activity_runtime.py b/scripts/build_activity_runtime.py
+new file mode 100644
+index 00000000..7dd3cb2c
+--- /dev/null
++++ b/scripts/build_activity_runtime.py
+@@ -0,0 +1,160 @@
++#!/usr/bin/env python3
++"""Patch one Python module in an existing PyInstaller EXO executable.
++
++The script preserves every other PYZ code object and CArchive entry byte for
++byte, then appends the rebuilt archive to a supplied PyInstaller bootloader.
++Run it with the same Python minor version as the target EXO runtime.
++"""
++
++from __future__ import annotations
++
++import argparse
++import importlib.util
++import marshal
++import struct
++import zlib
++from pathlib import Path
++
++from PyInstaller.archive.readers import CArchiveReader, ZlibArchiveReader
++from PyInstaller.archive.writers import CArchiveWriter
++from PyInstaller.building.utils import replace_filename_in_code_object
++from PyInstaller.utils import osx
++
++
++def rebuild_pyz(original_pyz: Path, source_main: Path, output_pyz: Path) -> None:
++    reader = ZlibArchiveReader(str(original_pyz), check_pymagic=True)
++    replacement = compile(
++        source_main.read_text(encoding="utf-8"),
++        "exo/api/main.py",
++        "exec",
++        optimize=0,
++    )
++    replacement = replace_filename_in_code_object(replacement, "exo/api/main.py")
++    replacement_blob = zlib.compress(marshal.dumps(replacement), level=6)
++
++    entries: list[tuple[str, tuple[int, int, int]]] = []
++    with original_pyz.open("rb") as source, output_pyz.open("wb") as target:
++        original_header = source.read(17)
++        target.write(original_header)
++
++        for name, (typecode, offset, length) in reader.toc.items():
++            new_offset = target.tell()
++            if name == "exo.api.main":
++                blob = replacement_blob
++            else:
++                source.seek(offset)
++                blob = source.read(length)
++            target.write(blob)
++            entries.append((name, (typecode, new_offset, len(blob))))
++
++        toc_offset = target.tell()
++        marshal.dump(entries, target)
++        target.seek(0)
++        target.write(b"PYZ\0")
++        target.write(importlib.util.MAGIC_NUMBER)
++        target.write(struct.pack("!i", toc_offset))
++
++
++def rebuild_executable(
++    base_executable: Path,
++    replacement_pyz: Path,
++    bootloader: Path,
++    output_executable: Path,
++) -> None:
++    reader = CArchiveReader(str(base_executable))
++    with base_executable.open("rb") as source:
++        source.seek(reader._end_offset - reader._COOKIE_LENGTH)  # noqa: SLF001
++        cookie = source.read(reader._COOKIE_LENGTH)  # noqa: SLF001
++        _, _, _, _, python_version, python_library = struct.unpack(
++            reader._COOKIE_FORMAT, cookie  # noqa: SLF001
++        )
++
++        archive = bytearray()
++        toc: list[tuple[int, int, int, int, str, str]] = []
++        for option in reader.options:
++            toc.append((len(archive), 0, 0, 0, "o", option))
++
++        for name, (
++            offset,
++            compressed_length,
++            uncompressed_length,
++            compressed,
++            typecode,
++        ) in reader.toc.items():
++            data_offset = len(archive)
++            if name == "PYZ.pyz":
++                blob = replacement_pyz.read_bytes()
++                compressed_length = len(blob)
++                uncompressed_length = len(blob)
++                compressed = 0
++            else:
++                source.seek(reader._start_offset + offset)  # noqa: SLF001
++                blob = source.read(compressed_length)
++            archive.extend(blob)
++            toc.append(
++                (
++                    data_offset,
++                    compressed_length,
++                    uncompressed_length,
++                    compressed,
++                    typecode,
++                    name,
++                )
++            )
++
++    toc_offset = len(archive)
++    toc_blob = CArchiveWriter._serialize_toc(toc)  # noqa: SLF001
++    archive.extend(toc_blob)
++    archive_length = len(archive) + reader._COOKIE_LENGTH  # noqa: SLF001
++    archive.extend(
++        struct.pack(
++            reader._COOKIE_FORMAT,  # noqa: SLF001
++            reader._COOKIE_MAGIC_PATTERN,  # noqa: SLF001
++            archive_length,
++            toc_offset,
++            len(toc_blob),
++            python_version,
++            python_library,
++        )
++    )
++
++    output_executable.write_bytes(bootloader.read_bytes() + archive)
++    osx.fix_exe_for_code_signing(str(output_executable))
++    output_executable.chmod(0o755)
++
++
++def parse_args() -> argparse.Namespace:
++    parser = argparse.ArgumentParser()
++    parser.add_argument("--base-executable", type=Path, required=True)
++    parser.add_argument("--source-main", type=Path, required=True)
++    parser.add_argument("--bootloader", type=Path, required=True)
++    parser.add_argument("--output-executable", type=Path, required=True)
++    parser.add_argument("--output-pyz", type=Path, required=True)
++    return parser.parse_args()
++
++
++def main() -> None:
++    args = parse_args()
++    args.output_executable.parent.mkdir(parents=True, exist_ok=True)
++    args.output_pyz.parent.mkdir(parents=True, exist_ok=True)
++
++    base_reader = CArchiveReader(str(args.base_executable))
++    original_pyz = args.output_pyz.with_suffix(".original.pyz")
++    original_pyz.write_bytes(base_reader.extract("PYZ.pyz"))
++    try:
++        rebuild_pyz(original_pyz, args.source_main, args.output_pyz)
++        rebuild_executable(
++            args.base_executable,
++            args.output_pyz,
++            args.bootloader,
++            args.output_executable,
++        )
++    finally:
++        original_pyz.unlink(missing_ok=True)
++
++    print(f"wrote {args.output_executable}")
++    print(f"wrote {args.output_pyz}")
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/src/exo/api/main.py b/src/exo/api/main.py
+index 37557f5b..b282ad65 100644
+--- a/src/exo/api/main.py
++++ b/src/exo/api/main.py
+@@ -3,6 +3,7 @@ import contextlib
+ import hashlib
+ import json
+ import random
++import shutil
+ import time
+ from collections.abc import AsyncGenerator, Awaitable, Callable, Iterable
+ from datetime import datetime, timezone
+@@ -12,6 +13,7 @@ from typing import Annotated, Any, Literal, cast
+ from uuid import uuid4
+ 
+ import anyio
++import psutil
+ from anyio import BrokenResourceError, ClosedResourceError
+ from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
+ from fastapi.middleware.cors import CORSMiddleware
+@@ -200,6 +202,82 @@ from exo.utils.task_group import TaskGroup
+ 
+ _API_EVENT_LOG_DIR = EXO_EVENT_LOG_DIR / "api"
+ ONBOARDING_COMPLETE_FILE = EXO_CACHE_HOME / "onboarding_complete"
++OS1_FLEET_CACHE_SECONDS = 10.0
++OS1_FLEET_RESULT_LIMIT = 20
++
++
++def _counter_rate(current: int, previous: int, elapsed: float) -> float:
++    """Return a non-negative per-second counter rate."""
++    if elapsed <= 0:
++        return 0.0
++    return max(current - previous, 0) / elapsed
++
++
++def _sanitize_fleet_snapshot(payload: object) -> dict[str, object]:
++    """Keep only non-secret resource and readiness fields from OS1 Fleet."""
++    if not isinstance(payload, dict):
++        return {"nodes": []}
++    raw_nodes = payload.get("nodes")
++    if not isinstance(raw_nodes, list):
++        return {"nodes": []}
++
++    allowed = {
++        "cpu_logical_count",
++        "device_id",
++        "exo_nodes",
++        "exo_ready",
++        "has_claude",
++        "has_codex",
++        "hostname",
++        "last_seen_ms",
++        "load_average_1m",
++        "memory_available_mib",
++        "memory_total_mib",
++        "queue_depth",
++        "role",
++        "zerotier_ip",
++    }
++    nodes: list[dict[str, object]] = []
++    for raw_node in raw_nodes:
++        if isinstance(raw_node, dict):
++            nodes.append(
++                {str(key): value for key, value in raw_node.items() if key in allowed}
++            )
++    return {"nodes": nodes}
++
++
++def _read_recent_fleet_jobs(
++    result_directory: Path, limit: int = OS1_FLEET_RESULT_LIMIT
++) -> list[dict[str, object]]:
++    """Read recent Fleet receipt metadata without exposing prompts or output."""
++    if not result_directory.is_dir():
++        return []
++
++    result_files = sorted(
++        result_directory.glob("*.json"),
++        key=lambda path: path.stat().st_mtime,
++        reverse=True,
++    )[:limit]
++    allowed = {
++        "execution_mode",
++        "executor_device_id",
++        "job_id",
++        "objective_version",
++        "profile",
++        "state",
++    }
++    jobs: list[dict[str, object]] = []
++    for result_file in result_files:
++        try:
++            raw = json.loads(result_file.read_text(encoding="utf-8"))
++        except (OSError, json.JSONDecodeError):
++            continue
++        if not isinstance(raw, dict):
++            continue
++        job = {str(key): value for key, value in raw.items() if key in allowed}
++        job["updated_at_ms"] = int(result_file.stat().st_mtime * 1000)
++        jobs.append(job)
++    return jobs
+ 
+ 
+ def _format_to_content_type(image_format: Literal["png", "jpeg", "webp"] | None) -> str:
+@@ -238,6 +316,18 @@ class API:
+         self.last_completed_election: int = 0
+         self.port = port
+         self._sent_image_hashes: set[str] = set()
++        self._activity_lock = anyio.Lock()
++        self._activity_started_at = time.monotonic()
++        self._activity_previous_at = self._activity_started_at
++        self._activity_previous_disk = psutil.disk_io_counters()
++        self._activity_previous_network = psutil.net_io_counters()
++        self._activity_energy_joules = 0.0
++        self._activity_fleet_cache: dict[str, object] = {"nodes": []}
++        self._activity_fleet_cache_at = 0.0
++        self._activity_fleet_error: str | None = None
++        self._activity_process = psutil.Process()
++        psutil.cpu_percent(interval=None)
++        self._activity_process.cpu_percent(interval=None)
+ 
+         self.paused: bool = False
+         self.paused_ev: anyio.Event = anyio.Event()
+@@ -365,6 +455,7 @@ class API:
+ 
+         self.app.get("/state")(self.get_state)
+         self.app.get("/state/{path:path}")(self.get_state)
++        self.app.get("/activity/local")(self.get_local_activity)
+         self.app.get("/events")(self.stream_events)
+         self.app.post("/download/start")(self.start_download)
+         self.app.delete("/download/{node_id}/{model_id:path}")(self.delete_download)
+@@ -395,6 +486,163 @@ class API:
+                 detail=f"unable to find path '{path.replace('/', '.')}' in state json",
+             ) from e
+ 
++    async def _refresh_fleet_snapshot(self, now: float) -> None:
++        if now - self._activity_fleet_cache_at < OS1_FLEET_CACHE_SECONDS:
++            return
++
++        os1_binary = Path.home() / ".local" / "bin" / "os1"
++        if not os1_binary.is_file():
++            resolved = shutil.which("os1")
++            if resolved is None:
++                self._activity_fleet_error = "OS1 Runtime is not installed"
++                self._activity_fleet_cache_at = now
++                return
++            os1_binary = Path(resolved)
++
++        try:
++            with anyio.fail_after(5):
++                process = await anyio.run_process(
++                    [str(os1_binary), "fleet-snapshot"],
++                    check=False,
++                )
++            if process.returncode != 0:
++                self._activity_fleet_error = (
++                    f"fleet-snapshot exited with status {process.returncode}"
++                )
++            else:
++                payload = json.loads(process.stdout.decode("utf-8"))
++                self._activity_fleet_cache = _sanitize_fleet_snapshot(payload)
++                self._activity_fleet_error = None
++        except TimeoutError:
++            self._activity_fleet_error = "fleet-snapshot timed out"
++        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
++            self._activity_fleet_error = (
++                f"fleet-snapshot unavailable: {type(exc).__name__}"
++            )
++        finally:
++            self._activity_fleet_cache_at = now
++
++    async def get_local_activity(self) -> dict[str, object]:
++        """Return read-only local metrics for the cluster Activity Monitor."""
++        async with self._activity_lock:
++            now = time.monotonic()
++            elapsed = max(now - self._activity_previous_at, 0.001)
++
++            disk = psutil.disk_io_counters()
++            network = psutil.net_io_counters()
++            memory = psutil.virtual_memory()
++            swap = psutil.swap_memory()
++            cpu_percent = psutil.cpu_percent(interval=None)
++            cpu_per_core = psutil.cpu_percent(interval=None, percpu=True)
++            process_cpu_percent = self._activity_process.cpu_percent(interval=None)
++            process_memory = self._activity_process.memory_info()
++
++            previous_disk = self._activity_previous_disk
++            previous_network = self._activity_previous_network
++            self._activity_previous_at = now
++            self._activity_previous_disk = disk
++            self._activity_previous_network = network
++
++            system = self.state.node_system.get(self.node_id)
++            system_power_watts = system.sys_power if system is not None else 0.0
++            self._activity_energy_joules += max(system_power_watts, 0.0) * elapsed
++
++            await self._refresh_fleet_snapshot(now)
++            fleet_results = Path.home() / ".os1" / "fleet" / "results"
++
++            disk_payload: dict[str, object] = {
++                "read_bytes_per_second": 0.0,
++                "write_bytes_per_second": 0.0,
++                "read_operations_per_second": 0.0,
++                "write_operations_per_second": 0.0,
++            }
++            if disk is not None and previous_disk is not None:
++                disk_payload = {
++                    "read_bytes_per_second": _counter_rate(
++                        disk.read_bytes, previous_disk.read_bytes, elapsed
++                    ),
++                    "write_bytes_per_second": _counter_rate(
++                        disk.write_bytes, previous_disk.write_bytes, elapsed
++                    ),
++                    "read_operations_per_second": _counter_rate(
++                        disk.read_count, previous_disk.read_count, elapsed
++                    ),
++                    "write_operations_per_second": _counter_rate(
++                        disk.write_count, previous_disk.write_count, elapsed
++                    ),
++                }
++
++            network_payload: dict[str, object] = {
++                "received_bytes_per_second": 0.0,
++                "sent_bytes_per_second": 0.0,
++                "received_bytes_total": 0,
++                "sent_bytes_total": 0,
++            }
++            if network is not None:
++                network_payload["received_bytes_total"] = network.bytes_recv
++                network_payload["sent_bytes_total"] = network.bytes_sent
++                if previous_network is not None:
++                    network_payload["received_bytes_per_second"] = _counter_rate(
++                        network.bytes_recv, previous_network.bytes_recv, elapsed
++                    )
++                    network_payload["sent_bytes_per_second"] = _counter_rate(
++                        network.bytes_sent, previous_network.bytes_sent, elapsed
++                    )
++
++            load_average = psutil.getloadavg()
++            return {
++                "schema": 1,
++                "node_id": str(self.node_id),
++                "sampled_at": datetime.now(timezone.utc).isoformat(),
++                "sample_interval_seconds": elapsed,
++                "cpu": {
++                    "system_percent": cpu_percent,
++                    "per_core_percent": cpu_per_core,
++                    "logical_count": psutil.cpu_count(logical=True) or 0,
++                    "load_average_1m": load_average[0],
++                    "exo_process_percent": process_cpu_percent,
++                },
++                "memory": {
++                    "total_bytes": memory.total,
++                    "used_bytes": memory.used,
++                    "available_bytes": memory.available,
++                    "swap_total_bytes": swap.total,
++                    "swap_used_bytes": swap.used,
++                    "exo_process_resident_bytes": process_memory.rss,
++                },
++                "gpu": {
++                    "usage_percent": (system.gpu_usage * 100) if system else 0.0,
++                    "temperature_celsius": system.temp if system else 0.0,
++                    "performance_cpu_percent": (
++                        system.pcpu_usage * 100 if system else 0.0
++                    ),
++                    "efficiency_cpu_percent": (
++                        system.ecpu_usage * 100 if system else 0.0
++                    ),
++                },
++                "energy": {
++                    "system_power_watts": system_power_watts,
++                    "monitor_session_joules": self._activity_energy_joules,
++                    "monitor_session_watt_hours": self._activity_energy_joules / 3600,
++                    "monitor_uptime_seconds": now - self._activity_started_at,
++                },
++                "disk": disk_payload,
++                "network": network_payload,
++                "exo": {
++                    "topology_nodes": len(self.state.topology.list_nodes()),
++                    "instances": len(self.state.instances),
++                    "runners": len(self.state.runners),
++                    "tasks": len(self.state.tasks),
++                    "last_event_applied_index": self.state.last_event_applied_idx,
++                },
++                "fleet": {
++                    **self._activity_fleet_cache,
++                    "cache_age_seconds": max(now - self._activity_fleet_cache_at, 0),
++                    "error": self._activity_fleet_error,
++                    "recent_jobs": _read_recent_fleet_jobs(fleet_results),
++                },
++            }
++
+     async def place_instance(self, payload: PlaceInstanceParams):
+         command = PlaceInstance(
+             model_card=await ModelCard.load(payload.model_id),
+diff --git a/src/exo/api/tests/test_activity_monitor.py b/src/exo/api/tests/test_activity_monitor.py
+new file mode 100644
+index 00000000..0706a427
+--- /dev/null
++++ b/src/exo/api/tests/test_activity_monitor.py
+@@ -0,0 +1,63 @@
++import json
++from pathlib import Path
++
++from exo.api.main import (
++    _counter_rate,
++    _read_recent_fleet_jobs,
++    _sanitize_fleet_snapshot,
++)
++
++
++def test_counter_rate_is_per_second_and_never_negative() -> None:
++    assert _counter_rate(150, 100, 2.0) == 25.0
++    assert _counter_rate(90, 100, 1.0) == 0.0
++    assert _counter_rate(150, 100, 0.0) == 0.0
++
++
++def test_fleet_snapshot_excludes_unknown_or_sensitive_fields() -> None:
++    sanitized = _sanitize_fleet_snapshot(
++        {
++            "nodes": [
++                {
++                    "device_id": "device:test",
++                    "hostname": "test.local",
++                    "queue_depth": 1,
++                    "secret": "must-not-leak",
++                }
++            ],
++            "credential": "must-not-leak",
++        }
++    )
++
++    assert sanitized == {
++        "nodes": [
++            {
++                "device_id": "device:test",
++                "hostname": "test.local",
++                "queue_depth": 1,
++            }
++        ]
++    }
++
++
++def test_recent_fleet_jobs_exposes_metadata_only(tmp_path: Path) -> None:
++    receipt = {
++        "job_id": "job-1",
++        "profile": "codex",
++        "state": "complete",
++        "executor_device_id": "device:air",
++        "execution_mode": "single_node",
++        "objective_version": "os1-fleet-objective-v1",
++        "result": "private model output",
++        "result_hash": "private-hash",
++    }
++    (tmp_path / "job-1.json").write_text(json.dumps(receipt), encoding="utf-8")
++
++    jobs = _read_recent_fleet_jobs(tmp_path)
++
++    assert len(jobs) == 1
++    assert jobs[0]["job_id"] == "job-1"
++    assert jobs[0]["profile"] == "codex"
++    assert "updated_at_ms" in jobs[0]
++    assert "result" not in jobs[0]
++    assert "result_hash" not in jobs[0]
+-- 
+2.50.1 (Apple Git-155)
+

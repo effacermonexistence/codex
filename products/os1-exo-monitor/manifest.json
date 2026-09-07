@@ -1,0 +1,21 @@
+{
+  "schema": 1,
+  "product": "os1-exo-cluster-activity-monitor",
+  "exo_version": "1.0.71",
+  "upstream_repository": "exo-explore/exo",
+  "upstream_commit": "fd707de30b42db4211d15da96b9052e1dc280ed1",
+  "overlay_repository": "effacermonexistence/exo",
+  "overlay_branch": "os1/exo-cluster-activity-monitor",
+  "overlay_commit": "c3c0b2bea196ceed8d9feda9036c58e4d7a424fd",
+  "mail_patch_sha256": [
+    "146ac665e74063f7444142c3d65735f6a2da64011c0893e8fdfc8c0c75207158",
+    "dbb90c311805aa2d79460ff5ac917a6b169faa16c7f81a38fb4d49da7e060b90",
+    "7ba836a4aaa01c10b81bb6923888b34fb6b88fc538214d9120cd2cb84148c698"
+  ],
+  "dashboard_index_sha256": "e69379d595ac3f5ae020d94cea2a2aea6cf6d8bac7cb2ac40bc7d5e830734cc8",
+  "source_overlay_sha256": "eb4e16d606fb1ec5467597f99ae8e56c50ccc020a9d6343e783707063115a30d",
+  "pro_verified_runtime_sha256": "ef0956c4d658e7c911990c8a9f01ccf070ad68bc0b0c13be1c2dd691c19ae20a",
+  "pro_verified_pyz_sha256": "cc85a8c2a295a43b818ff7e66a8356594e774067816b041cb6b63d70cec56c86",
+  "objective_version": "os1-fleet-objective-v1",
+  "dashboard_path": "/#/activity"
+}
