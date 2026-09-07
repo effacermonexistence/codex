@@ -1,0 +1,15 @@
+{
+  "schema": 1,
+  "product": "os1-exo-cluster-activity-monitor",
+  "exo_version": "1.0.71",
+  "upstream_repository": "exo-explore/exo",
+  "upstream_commit": "fd707de30b42db4211d15da96b9052e1dc280ed1",
+  "overlay_repository": "effacermonexistence/exo",
+  "overlay_branch": "os1/exo-cluster-activity-monitor",
+  "overlay_commit": "a22954430d91bb43dbbf7e5e28ec1f0570bf91bc",
+  "mail_patch_sha256": "fce18c52b5644e27fdd9562cb94c07fcdcaddbf61e87a8669a5be99dc7302232",
+  "pro_verified_runtime_sha256": "9ae667f2679a47e6751801369b52fe267b21497b9b6b41741be555820c794c5d",
+  "pro_verified_pyz_sha256": "96576a679efa6b0608a297002e4b6b1eae6e0ff3a493c8044a8ebaacc43f45d4",
+  "objective_version": "os1-fleet-objective-v1",
+  "dashboard_path": "/#/activity"
+}
