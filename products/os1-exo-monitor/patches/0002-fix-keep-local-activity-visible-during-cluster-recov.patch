@@ -1,7 +1,7 @@
 From bb3c0e6fd9bbae2f9675a760b96a065d994e94ef Mon Sep 17 00:00:00 2001
 From: LUA <lua@LUAs-MBP.localdomain>
 Date: Mon, 7 Sep 2026 14:27:06 -0700
-Subject: [PATCH 2/3] fix: keep local activity visible during cluster recovery
+Subject: [PATCH 2/5] fix: keep local activity visible during cluster recovery
 
 ---
  dashboard/src/routes/activity/+page.svelte | 18 +++++++++++++++---
