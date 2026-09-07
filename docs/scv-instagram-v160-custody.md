@@ -8,15 +8,19 @@ historical public source mirror and not a promotion of recovery Gold.
 
 | Field | Verified value |
 | --- | --- |
-| Release | `scv-instagram-single-20260907-v160` |
+| release id | `scv-instagram-single-20260907-v160` |
 | Base release | `scv-instagram-single-20260907-v159` |
-| Content fingerprint | `bcebc9bd25df0ca8a116394879959ec46fa0d1de582f25b35a6648848a2be507` |
-| Release descriptor SHA-256 | `9e41f9f7d8f750bc8a3a75c9c5e6abb0a312496f1a44b8699347c2b1cd5c4dbb` |
+| content fingerprint | `bcebc9bd25df0ca8a116394879959ec46fa0d1de582f25b35a6648848a2be507` |
+| release manifest sha256 | `9e41f9f7d8f750bc8a3a75c9c5e6abb0a312496f1a44b8699347c2b1cd5c4dbb` |
 | Runtime inventory | 256 files, plus `SCV_SINGLE_RELEASE.json` |
 | Node | `20.20.2` |
 | Staging deployment | `1735d6b7-3995-4a20-ab0c-ba6d80bb1e6f` |
 | Production deployment | `1c098ab6-6c27-4a97-be52-4ba48fa59566` |
 | Approved recovery Gold, unchanged | `scv-instagram-recovery-gold-20260905T054647Z-v151` |
+| runtime archive (R2) | `scv-instagram-automation/release-ready/20260907T180929Z/v160/scv-instagram-single-20260907T180929Z-v160-voice-continuity.tar.gz` sha256 `fa0267138bc7ac106c3765ba96407c7bb98c3f021cad9bccee92cc8e760e31e4` (1451425 bytes, readback byte-identical) |
+
+The four lower-case custody field labels are a compatibility contract consumed
+by installed OS1 clients; preserve them when preparing future release records.
 
 Private bucket: `omar-private-archive`.
 
