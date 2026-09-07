@@ -821,6 +821,7 @@ func sourceRoutingTask(_ prompt: String, hasSource: Bool) -> String {
     }
     var text = prompt.precomposedStringWithCanonicalMapping
     let prohibitions = [
+        ScopeResolution.enumeratedProhibitionPattern,
         #"(?:파일|코드|저장소|계정|서버)(?:\s*(?:이나|나|또는|및|과|와|·|,)\s*(?:파일|코드|저장소|계정|서버))*\s*(?:은|는|을|를)?\s*(?:수정|변경|편집|작성|삭제)(?:은|는|을|를)?(?:하거나\s*(?:테스트|빌드)(?:를|는|도)?\s*(?:실행|수행))?\s*하지\s*마(?:세요|십시오)?[.!]?"#,
         #"(?i)\b(?:do not|don't|never)\s+(?:modify|edit|change|write|create|delete)\s+(?:any\s+)?(?:files?|code|accounts?)(?:\s+files?)?[.!]?"#,
     ]
@@ -2170,7 +2171,7 @@ private func protectedRouteMaterialRequested(_ rawPrompt: String, context: Strin
 /// A second, content-level guard protects against innocuous-looking filenames
 /// that contain executable route policy or evaluator internals.  Paths alone
 /// are not a security boundary.
-private func protectedRouteMaterialInEvidence(_ text: String) -> Bool {
+func protectedRouteMaterialInEvidence(_ text: String) -> Bool {
     let value = text.precomposedStringWithCanonicalMapping.lowercased()
     let criticalFingerprints = [
         "r2_routed_rcc_sha256", "rcc_route_map", ["darwin", "router", "state"].joined(separator: "_"),
@@ -2247,7 +2248,7 @@ private func verifiedMirrorContainsR2Object(
     }
 }
 
-private struct R2EvidenceBundle: Codable {
+struct R2EvidenceBundle: Codable {
     let modelPayload: String
     let userOutput: String
     let evidenceSHA256: String
@@ -2272,7 +2273,7 @@ private func evidenceSupportsQMGRSubject(_ evidence: R2EvidenceBundle) -> Bool {
 
 private func repairsMismatchedResearchSource(_ prompt: String, context: String?,
                                            evidence: R2EvidenceBundle?) -> Bool {
-    if evidence?.verificationMode == SCVProjectMaterials.verificationMode && !qmGRMaterialRequested(prompt) { return false }
+    if SCVProjectMaterials.isVerificationMode(evidence?.verificationMode) && !qmGRMaterialRequested(prompt) { return false }
     guard let evidence, !evidenceSupportsQMGRSubject(evidence),
           !detachesConversationSource(prompt), !requestsFreshSource(prompt),
           r2RetrievalRequiresTransformation(prompt) else { return false }
@@ -3172,7 +3173,7 @@ private func preparedStateBundle(_ evidence: R2EvidenceBundle, context: TaskCont
     let archiveLink = evidence.userOutput.range(of: #"\[소스 파일 열기\]\(<[^>]+>\)"#, options: .regularExpression)
         .map { String(evidence.userOutput[$0]) }
     let package = evidence.sources.first.map { source in
-        "- 실제 소스 압축파일: \(source["object_key"] ?? "?") · sha256 \((source["bundle_sha256"] ?? "").prefix(12))… · \(source["object_size"] ?? "?")바이트"
+        "- 실제 소스 압축파일: \(source["object_key"] ?? "등록된 운영 원본") · sha256 \((source["bundle_sha256"] ?? "").prefix(12))… · \(source["object_size"] ?? "?")바이트"
     }
     var lines = [reused
         ? "이미 연결된 Instagram 자동화 자료를 재사용했습니다. 새로 내려받지 않았고, 같은 자료 기준으로 준비된 상태입니다."
@@ -3397,15 +3398,17 @@ private func runR2RetrievalControl(
         .appendingPathComponent("Library/Application Support/OS-1/control-receipts", isDirectory: true)
     try FileManager.default.createDirectory(at: receiptRoot, withIntermediateDirectories: true)
     let receiptURL = receiptRoot.appendingPathComponent("\(operationID).json")
+    let registered = evidence.verificationMode == RegisteredProjectSource.verificationMode
     let receipt: [String: Any] = [
         "schema": 1,
         "operation_id": operationID,
-        "operation": "r2_retrieval",
+        "operation": registered ? "registered_source_retrieval" : "r2_retrieval",
         "issued_at": ISO8601DateFormatter().string(from: Date()),
-        "bucket": "omar-private-archive",
+        "bucket": registered ? NSNull() : "omar-private-archive",
         "verification_mode": evidence.verificationMode,
         "verified_readback_captured_at": evidence.capturedAt,
-        "r2_verified": true,
+        "r2_verified": !registered,
+        "registered_source_verified": registered,
         "relevance_check": objective.materialKind == .scvProject ? "pinned-project-source-package" :
             (objective.materialKind == .qmGR ? "pinned-research-source-identities" : "all-query-terms-in-delivered-source"),
         "archive_coverage": "selected-verified-sources-not-exhaustive-bucket-inventory",
@@ -3433,7 +3436,7 @@ private func runR2RetrievalControl(
     return RunSummary(status: "complete", steps: [RunStepSummary(
         sequence: 1,
         provider: "local",
-        action: "r2_retrieval",
+        action: registered ? "registered_source_retrieval" : "r2_retrieval",
         model: "os1-evidence-resolver",
         effort: "none",
         revasDisposition: "control_verified",
@@ -3837,10 +3840,10 @@ func readSessionContext(_ path: String?) throws -> String? {
 }
 
 private func sourceExecutionDirective(_ preloadedR2Evidence: R2EvidenceBundle?, required sourceUseRequired: Bool) -> String {
-    if let evidence = preloadedR2Evidence, evidence.verificationMode == SCVProjectMaterials.verificationMode {
+    if let evidence = preloadedR2Evidence, SCVProjectMaterials.isVerificationMode(evidence.verificationMode) {
         return """
 
-        OS-1 has attached the SCV Instagram project's hash-verified R2 technical source snapshot (retrieved \(evidence.capturedAt)).
+        OS-1 has attached the SCV Instagram project's hash-verified technical source snapshot (captured \(evidence.capturedAt)). Its source transport is \(evidence.verificationMode). Registered local bytes are NOT evidence of an R2 download or GitHub custody publication.
         Answer the CURRENT request using those originals when relevant, not a sanitized local mirror or old transcript claims.
         Acquisition is already complete: do not rerun tests, search HOME or demand a clone merely to explain/design from the supplied source.
         The recorded recovery release is NOT proof of the currently active server release. Distinguish source facts, proposed edits,
@@ -3890,7 +3893,7 @@ func providerPrompt(current: String, context: String?, r2Evidence: String? = nil
         guard !protectedRouteMaterialInEvidence(r2Evidence) else {
             throw OS1Error.message("OS-1 blocked protected route material before model dispatch")
         }
-        sections.append("--- PRELOADED R2 SOURCE DATA ---\n\(r2Evidence)\n--- END PRELOADED R2 SOURCE DATA ---")
+        sections.append("--- PRELOADED SOURCE DATA ---\n\(r2Evidence)\n--- END PRELOADED SOURCE DATA ---")
     }
     sections.append("--- CURRENT USER REQUEST ---\n\(current)")
     return sections.joined(separator: "\n\n")
@@ -3961,7 +3964,7 @@ final class CodexAppServerClient: @unchecked Sendable {
         _ = try request(
             "initialize",
             params: [
-                "clientInfo": ["name": "OS-1 CLODEX", "version": "0.9.28"],
+                "clientInfo": ["name": "OS-1 CLODEX", "version": "0.9.30"],
                 "capabilities": ["experimentalApi": true],
             ],
             deadline: deadline
@@ -5536,10 +5539,10 @@ func runTask(
     let kind: TaskContext.ObjectiveKind = preparation.map {
         $0.modifies ? .modify : ($0.kind == .explainFromContext ? .explain : .prepare)
     } ?? TaskContext.ObjectiveKind.classify(prompt)
-    let resolvedScope: TaskContext.Scope = requireReadOnly ? .readOnly : scopeResolution.scope
+    let resolvedScope: TaskContext.Scope = requireReadOnly || preparation?.modifies == false ? .readOnly : scopeResolution.scope
     if taskState.objective.requestText != prompt || taskState.objective.kind != kind || taskState.objective.scope != resolvedScope {
         taskState.setObjective(TaskContext.Objective(requestText: prompt, kind: kind,
-            scope: requireReadOnly ? .readOnly : scopeResolution.scope, prohibitions: scopeResolution.prohibitions), now: objectiveStartedAt)
+            scope: resolvedScope, prohibitions: scopeResolution.prohibitions), now: objectiveStartedAt)
     }
     let config = try RuntimeConfig.load()
     let canonicalWorkspace = URL(fileURLWithPath: workspace).standardizedFileURL.path
@@ -5548,9 +5551,10 @@ func runTask(
         throw OS1Error.message("Workspace directory does not exist")
     }
     let pinnedEvidence = try (requireReadOnly || !requestsFreshSource(prompt)) ? attachedSource.map { try loadSource($0) } : nil
-    let sourceSelectionContext = pinnedEvidence?.verificationMode == SCVProjectMaterials.verificationMode &&
+    let discussesPinnedProvenance = pinnedEvidence != nil && RegisteredProjectSource.discussesAttachedProvenance(prompt)
+    let sourceSelectionContext = SCVProjectMaterials.isVerificationMode(pinnedEvidence?.verificationMode) &&
         !qmGRMaterialRequested(prompt) ? nil : context
-    var r2Objective = requireReadOnly ? nil : resolveR2RetrievalObjective(prompt: prompt, context: sourceSelectionContext)
+    var r2Objective = requireReadOnly || discussesPinnedProvenance ? nil : resolveR2RetrievalObjective(prompt: prompt, context: sourceSelectionContext)
     // Work preparation is a task capability: an aliased project ("인스타",
     // "instagram") or the conversation's bound project selects the adapter.
     // A bare "준비해" without a project resolves to nothing and stays a normal
@@ -5562,7 +5566,7 @@ func runTask(
     // Older snapshots selected the recovery archive while only displaying an
     // operating release. Re-acquire them once on preparation, never reuse the
     // misleading combination as if it were prepared operating source.
-    let scvAttached = pinnedEvidence?.verificationMode == SCVProjectMaterials.verificationMode &&
+    let scvAttached = SCVProjectMaterials.isVerificationMode(pinnedEvidence?.verificationMode) &&
         pinnedEvidence?.sources.first?["selected_release_id"] != nil &&
         (scvLive == nil || (pinnedEvidence?.sources.first?["selected_release_id"] == scvLive?.id &&
                            pinnedEvidence?.sources.first?["live_manifest_sha256"] == scvLive?.manifestSHA256))
@@ -5582,7 +5586,7 @@ func runTask(
     }
     let requestsR2Retrieval = r2Objective != nil
     RuntimeActivity.emit(.source)
-    if !requireReadOnly, !requestsR2Retrieval, let targets = connectionControlTargets(prompt) {
+    if !requireReadOnly, !discussesPinnedProvenance, !requestsR2Retrieval, let targets = connectionControlTargets(prompt) {
         var summary = try runConnectionControl(targets)
         summary.sourceContext = attachedSource
         summary.taskContext = taskState
@@ -5605,18 +5609,39 @@ func runTask(
     // Once attached, source delivery does not depend on spelling, pronouns,
     // immediately preceding USER text, backend identity, or transcript limits.
     // Explicit/new retrieval still executes a real R2 read and replaces it.
-    let preparedAlready = scvPreparation && scvAttached && !requestsFreshSource(prompt)
+    let explicitRemoteSource = !discussesPinnedProvenance && !RegisteredProjectSource.mayUseForPreparation(prompt)
+    let localAttachedForRemote = explicitRemoteSource && pinnedEvidence?.verificationMode == RegisteredProjectSource.verificationMode
+    let preparedAlready = scvPreparation && scvAttached && !requestsFreshSource(prompt) && !localAttachedForRemote
     let mayContinueSource = r2Objective == nil || preparedAlready || (r2Objective!.requiresTransformation && !requestsFreshSource(prompt))
     let attachedEvidence = mayContinueSource && !(scvPreparation && !scvAttached) ? pinnedEvidence : nil
     let repairedSource = !requireReadOnly && repairsMismatchedResearchSource(prompt, context: context, evidence: attachedEvidence)
-    let reuseSource = requireReadOnly || preparedAlready ||
-        (!repairedSource && reusesAttachedEvidence(prompt, objective: r2Objective, evidence: attachedEvidence))
+    let reuseSource = requireReadOnly || discussesPinnedProvenance || preparedAlready ||
+        (!localAttachedForRemote && !repairedSource && reusesAttachedEvidence(prompt, objective: r2Objective, evidence: attachedEvidence))
     let r2Evidence: R2EvidenceBundle?
     if repairedSource {
         _ = try verifyR2Connection()
         r2Evidence = try optResearchEvidence()
     } else {
-        r2Evidence = try reuseSource ? attachedEvidence : r2RetrievalEvidence(prompt, context: sourceSelectionContext, objective: r2Objective, scvLive: scvLive)
+        do {
+            if reuseSource {
+                r2Evidence = attachedEvidence
+            } else {
+                var registered: R2EvidenceBundle?
+                if scvPreparation, !explicitRemoteSource, let scvLive {
+                    do { registered = try registeredSCVProjectEvidence(live: scvLive) }
+                    catch {
+                        // Corrupt cache bytes are not adopted, but do not block
+                        // an independently verifiable exact remote source.
+                        RuntimeActivity.emit(.source, publicText: "등록 원본 검증을 통과하지 못해 GitHub·R2의 동일 운영 원본을 확인합니다.")
+                    }
+                }
+                r2Evidence = try registered ?? r2RetrievalEvidence(prompt, context: sourceSelectionContext, objective: r2Objective, scvLive: scvLive)
+            }
+        } catch {
+            guard scvPreparation, let scvLive else { throw error }
+            return sourcePreparationPending(live: scvLive, error: error, state: taskState,
+                executionID: executionID, startedAt: objectiveStartedAt)
+        }
     }
     let sourceContext: SourceReference?
     if reuseSource, attachedSource?.kind == .snapshot {
@@ -5629,20 +5654,28 @@ func runTask(
     if let r2Evidence, let sourceContext {
         // Sources accumulate on the task; the same snapshot is deduplicated
         // by digest, a replaced research map supersedes the mismatched one.
-        let isProjectSource = r2Evidence.verificationMode == SCVProjectMaterials.verificationMode
+        let isProjectSource = SCVProjectMaterials.isVerificationMode(r2Evidence.verificationMode)
+        let registered = r2Evidence.verificationMode == RegisteredProjectSource.verificationMode
         let previous = isProjectSource
             ? taskState.activeSources.first(where: { $0.provenance.repository == SCVProjectMaterials.repository && $0.role == .sourceCode })?.id
             : (repairedSource ? taskState.activeSources.first(where: { $0.role == .retrievedSnapshot })?.id : nil)
         taskState.attachSemantic(TaskContext.TaskSource(role: isProjectSource ? .sourceCode : .retrievedSnapshot,
-            label: isProjectSource ? "SCV Instagram runtime source package (R2, verified)" : "R2 retrieval snapshot (\(r2Evidence.verificationMode))",
+            label: isProjectSource ? "SCV Instagram runtime source package (\(registered ? "registered local" : "R2"), verified)" : "R2 retrieval snapshot (\(r2Evidence.verificationMode))",
             reference: sourceContext,
             provenance: TaskContext.Provenance(repository: r2Evidence.sources.first?["repository"],
-                commit: r2Evidence.sources.first?["repository_sha"], bucket: "omar-private-archive",
+                commit: r2Evidence.sources.first?["repository_sha"], bucket: registered ? nil : "omar-private-archive",
                 key: r2Evidence.sources.first?["object_key"], sha256: sourceContext.sha256,
                 bytes: r2Evidence.sources.first?["object_size"].flatMap(Int.init), retrievedAt: Date()),
             coverage: isProjectSource ? .excerpt : .full, verification: .verified), replacing: previous, now: Date())
-        if let baseline = r2Evidence.projectBaseline ?? legacyProjectBaseline(r2Evidence), taskState.project != baseline {
+        if var baseline = r2Evidence.projectBaseline ?? legacyProjectBaseline(r2Evidence), taskState.project != baseline {
+            if registered, taskState.project?.projectID == baseline.projectID {
+                baseline.recoveryBaseline = taskState.project?.recoveryBaseline
+            }
             taskState.setProject(baseline)
+        }
+        if isProjectSource {
+            taskState.sourcePreparation = nil
+            taskState.blockers.removeAll { $0.hasPrefix("source_preparation:") }
         }
     }
     if scvPreparation, taskState.project != nil, taskState.facts.isEmpty {
@@ -7547,6 +7580,7 @@ func usage() {
       os1 configure-codex-exo
       os1 configure-claude-exo
       os1 audit-codex-usage /path/to/native-record.jsonl TURN_UUID
+      os1 source-register scv-instagram /absolute/runtime-source.tar.gz
       os1 register
       os1 run --workspace /path/to/project --prompt "task" [--provider auto|codex|claude]
               [--codex-session-id UUID] [--claude-session-id UUID]
@@ -7564,7 +7598,7 @@ struct OS1Main {
             guard let command = arguments.first else { usage(); return }
             if try await fleetCommand(arguments) { return }
             switch command {
-            case "version", "--version", "-V": print("OS-1 Runtime 0.9.28 (unified-execution-custody-build79)")
+            case "version", "--version", "-V": print("OS-1 Runtime 0.9.30 (source-preparation-recovery-build81)")
             case "doctor": try doctor()
             case "sidebar-pin":
                 guard (4...5).contains(arguments.count), arguments[1] == "codex",
@@ -7591,6 +7625,20 @@ struct OS1Main {
                 let summary = try await resumeDelivery(arguments[1])
                 print(String(decoding: try JSONEncoder().encode(summary), as: UTF8.self))
             case "r2-tool-path": print(try managedR2Executable())
+            case "source-register":
+                guard arguments.count == 3, arguments[1] == "scv-instagram", arguments[2].hasPrefix("/") else {
+                    throw OS1Error.message("Expected: os1 source-register scv-instagram /absolute/runtime-source.tar.gz")
+                }
+                let live = try readSCVLiveRelease()
+                let archive = try RegisteredProjectSource.readArchive(URL(fileURLWithPath: arguments[2]))
+                let saved = try RegisteredProjectSource.register(archive, live: live)
+                print(String(decoding: try JSONSerialization.data(withJSONObject: [
+                    "status": "source_registered", "release_id": live.id,
+                    "manifest_sha256": live.manifestSHA256, "sha256": saved.verified.sha256,
+                    "imported_archive_sha256": ProjectMaterialObject.digest(archive),
+                    "bytes": saved.verified.archive.count, "verified_source_files": saved.verified.files.count - 1,
+                    "source_archive_path": saved.url.path, "r2_downloaded": false, "production_changed": false,
+                ], options: [.sortedKeys]), as: UTF8.self))
             case "self-test": try selfTest()
             case "audit-codex-usage":
                 guard arguments.count == 3, UUID(uuidString: arguments[2]) != nil else {

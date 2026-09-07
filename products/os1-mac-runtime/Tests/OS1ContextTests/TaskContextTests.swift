@@ -56,6 +56,12 @@ func runTaskContextFixtures(root: URL) throws {
     let compound = ScopeResolution.resolve("파일·서버를 변경하거나 테스트를 실행하지 마. Node 버전만 알려줘")
     try check(compound.scope == .readOnly && compound.prohibitions.contains("do not change files or servers or run tests"), "compound prohibition read-only")
     let editNoTests = ScopeResolution.resolve("함수를 수정해. 테스트는 실행하지 마")
+    for request in ["파일 수정, 테스트 실행, 설치, 배포, 복원은 하지 마세요.",
+                    "코드 변경·테스트·배포는 하지 마. 릴리스 알려줘", "파일 수정 및 설치는 하지 마세요."] {
+        let resolved = ScopeResolution.resolve(request)
+        try check(resolved.scope == .readOnly && resolved.prohibitions.contains("do not modify files"), "grouped trailing prohibition must forbid file writes")
+        try check(ScopeResolution.resolve(request.decomposedStringWithCanonicalMapping) == resolved, "grouped prohibition survives Korean normalization")
+    }
     try check(editNoTests.scope == .workspaceWrite && editNoTests.prohibitions == ["do not run tests"], "edit but no tests")
     let contradictory = ScopeResolution.resolve("파일은 수정해. 수정하지 마")
     try check(contradictory.scope == .readOnly, "contradictory request takes the safer reading")

@@ -71,6 +71,9 @@ public struct SCVProjectMaterials: Sendable {
     public static let repository = "effacermonexistence/codex"
     public static let pointerPath = "products/scv-instagram/recovery/LATEST.json"
     public static let verificationMode = "live-r2-project-source-package-v1"
+    public static func isVerificationMode(_ mode: String?) -> Bool {
+        mode == verificationMode || mode == RegisteredProjectSource.verificationMode
+    }
     public let recoveryID: String
     public let capturedAt: String
     public let releaseID: String

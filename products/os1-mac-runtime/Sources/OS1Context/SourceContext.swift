@@ -124,10 +124,11 @@ public struct SourceContextStore: Sendable {
               let size = attrs[.size] as? NSNumber, size.intValue <= 1_000_000,
               let data = try? Data(contentsOf: path),
               let value = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              value["operation"] as? String == "r2_retrieval",
+              (value["operation"] as? String == "r2_retrieval" || value["operation"] as? String == "registered_source_retrieval"),
               value["operation_id"] as? String == id.uuidString.lowercased(),
-              value["bucket"] as? String == "omar-private-archive",
-              value["r2_verified"] as? Bool == true,
+              ((value["operation"] as? String == "r2_retrieval" && value["bucket"] as? String == "omar-private-archive" && value["r2_verified"] as? Bool == true) ||
+               (value["operation"] as? String == "registered_source_retrieval" && value["bucket"] is NSNull && value["r2_verified"] as? Bool == false &&
+                value["registered_source_verified"] as? Bool == true && value["verification_mode"] as? String == RegisteredProjectSource.verificationMode)),
               value["model_invoked"] as? Bool == false,
               // Old UI trimmed terminal newlines before persisting display
               // text. Reconstruct only that known serialization difference;

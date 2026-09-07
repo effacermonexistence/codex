@@ -8,6 +8,13 @@ public struct RetrievedAnswer: Sendable {
     public let technical: String
 
     public static func fromEvidence(output: String, sourcePaths: [String]) -> RetrievedAnswer? {
+        if output.hasPrefix("등록 원본에서 Instagram 자동화 수정 준비 자료를 검증해 회수했습니다."),
+           sourcePaths.contains("source-inventory.txt"), sourcePaths.contains("Dockerfile"),
+           let start = output.range(of: "### Dockerfile"), let provenance = output.range(of: "원본 검증 기준:"),
+           let newline = output.firstIndex(of: "\n") {
+            return RetrievedAnswer(overview: String(output[output.index(after: newline)..<provenance.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines),
+                original: String(output[start.lowerBound...]), technical: String(output[provenance.lowerBound..<start.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines))
+        }
         guard output.hasPrefix("R2에서"), output.contains("자료를 검증해 회수했습니다."), !sourcePaths.isEmpty else { return nil }
         if output.hasPrefix("R2에서 Instagram 자동화 수정 준비 자료를 검증해 회수했습니다."),
            sourcePaths.contains("source-inventory.txt"), sourcePaths.contains("Dockerfile"),
