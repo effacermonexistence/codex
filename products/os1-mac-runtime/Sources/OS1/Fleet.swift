@@ -608,13 +608,21 @@ func runFleetAgent(role: String, once: Bool) async throws {
     let activeFile = root.appendingPathComponent("main-agent-active.json")
     let claimFile = root.appendingPathComponent("main-agent-claim.json")
     var registered = false
+    var initialHeartbeat: FleetNodeHeartbeat?
+    var heartbeatPublisher: Task<Void, Never>?
+    defer { heartbeatPublisher?.cancel() }
     repeat {
         do {
             if !registered {
                 try await register(client: client, key: key)
+                initialHeartbeat = try await sendFleetHeartbeat(client: client, key: key, role: role)
                 registered = true
+                if !once {
+                    // Liveness must not wait for result mirroring, claim, Git,
+                    // native execution, publication or delivery retries.
+                    heartbeatPublisher = Task.detached { await fleetHeartbeatService(role: role) }
+                }
             }
-            let node = try await sendFleetHeartbeat(client: client, key: key, role: role)
             try? await refreshFleetResultCache(client: client, key: key)
             var active: FleetAgentWork?
             if FileManager.default.fileExists(atPath: activeFile.path) {
@@ -647,7 +655,6 @@ func runFleetAgent(role: String, once: Bool) async throws {
                     }
                     work.phase = "running"
                     try fleetPersist(work, at: activeFile)
-                    let heartbeat = Task.detached { await fleetHeartbeatDuringWork(role: role) }
                     do {
                         work.result = try await executeFleetAssignment(work.assignment, role: role, config: config)
                         work.outcome = "complete"
@@ -659,8 +666,6 @@ func runFleetAgent(role: String, once: Bool) async throws {
                         ]), as: UTF8.self)
                         work.outcome = "failed"
                     }
-                    heartbeat.cancel()
-                    _ = await heartbeat.result
                     work.phase = "delivery_pending"
                     try fleetPersist(work, at: activeFile)
                 }
@@ -673,6 +678,7 @@ func runFleetAgent(role: String, once: Bool) async throws {
                 try FileManager.default.removeItem(at: activeFile)
             }
             if once {
+                guard let node = initialHeartbeat else { throw OS1Error.message("Fleet heartbeat was not published") }
                 print("OS-1 fleet agent: OK (\(role), \(node.zeroTierIP), EXO nodes \(node.exoNodes))")
                 return
             }
@@ -691,16 +697,47 @@ private struct FleetAgentWork: Codable {
     var result: String? = nil
 }
 
-private func fleetHeartbeatDuringWork(role: String) async {
+private func fleetHeartbeatService(role: String) async {
+    await runFleetHeartbeatPublisher(interval: .seconds(10)) {
+        let client = APIClient(config: try RuntimeConfig.load(), token: try githubToken(), deviceID: try deviceID(), requestTimeoutSeconds: 10)
+        _ = try await sendFleetHeartbeat(client: client, key: SigningKey.loadOrCreate(), role: role)
+        // No result mirroring here: slow status calls must not delay liveness.
+    }
+}
+
+private func runFleetHeartbeatPublisher(interval: Duration,
+                                       publish: @Sendable () async throws -> Void) async {
     while !Task.isCancelled {
         do {
-            try await Task.sleep(for: .seconds(10))
-            let client = APIClient(config: try RuntimeConfig.load(), token: try githubToken(), deviceID: try deviceID(), requestTimeoutSeconds: 10)
-            _ = try await sendFleetHeartbeat(client: client, key: SigningKey.loadOrCreate(), role: role)
-            try? await refreshFleetResultCache(client: client, key: SigningKey.loadOrCreate())
+            try await Task.sleep(for: interval)
+            try Task.checkCancellation()
+            try await publish()
         } catch is CancellationError { return }
         catch { if !Task.isCancelled { fputs("OS-1 Fleet heartbeat temporarily unavailable\n", stderr) } }
     }
+}
+
+private actor FleetHeartbeatTestCounter {
+    var count = 0
+    func tick() { count += 1 }
+}
+
+func fleetHeartbeatSelfTest() async throws {
+    let counter = FleetHeartbeatTestCounter()
+    let publisher = Task.detached {
+        await runFleetHeartbeatPublisher(interval: .milliseconds(20)) { await counter.tick() }
+    }
+    // Represents a slow claim/result/checkout path. It must not own the clock.
+    try await Task.sleep(for: .milliseconds(200))
+    let duringSlowWork = await counter.count
+    publisher.cancel()
+    _ = await publisher.result
+    let stopped = await counter.count
+    try await Task.sleep(for: .milliseconds(60))
+    guard duringSlowWork >= 3, await counter.count == stopped else {
+        throw OS1Error.message("Fleet heartbeat publisher stalled behind work or ignored cancellation")
+    }
+    print("OS1 Fleet heartbeat: 2 checks PASS; slow work does not block publisher, cancellation stops it")
 }
 
 private func fleetWorkspaceIdentity(_ workspace: String) throws -> (String, String, String) {

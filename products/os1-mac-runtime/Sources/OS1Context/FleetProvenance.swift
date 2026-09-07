@@ -1,7 +1,7 @@
 import Foundation
 
 public enum OS1RuntimeBuild {
-    public static let identity = "0.9.22/72-air-fleet-repair-20260906-v2"
+    public static let identity = "0.9.22/73-air-fleet-repair-20260906-v3"
 }
 
 public struct FleetRunProvenance: Codable, Sendable {

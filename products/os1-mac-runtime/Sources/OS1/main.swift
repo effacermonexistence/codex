@@ -6556,6 +6556,7 @@ struct OS1Main {
                 try selfTest()
                 try providerReadinessSelfTest()
                 try automaticAppFleetSelfTest()
+                try await fleetHeartbeatSelfTest()
             case "audit-codex-usage":
                 guard arguments.count == 3, UUID(uuidString: arguments[2]) != nil else {
                     throw OS1Error.message("Expected native JSONL path and exact turn UUID")
