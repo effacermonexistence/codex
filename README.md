@@ -203,7 +203,7 @@ upstream merge that triggers the GitHub Actions upload to R2.
 
 Product-specific release and custody coordinates are deliberately kept out of
 the global Codex and Claude instructions. The active SCV Instagram release record
-is `docs/scv-instagram-v159-custody.md`; the current recovery record (the owner-approved
+is `docs/scv-instagram-v160-custody.md`; the current recovery record (the owner-approved
 recovery Gold, v151) is `docs/scv-instagram-v151-custody.md`. GOLD-3 remains
 the separately frozen v148 behavioral reference in
 `docs/scv-instagram-gold-3-2026-09-03.md`; GOLD-2 and the v138 to v150 release
