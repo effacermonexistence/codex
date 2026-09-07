@@ -156,3 +156,34 @@ permissions. Rebuild, repeat lock/context tests, wait for clean CI, and replace
 the installed binaries only after validation. Earlier artifact hashes above
 remain historical receipts; the final compatibility install will have its own
 receipt and recovery directory.
+
+### Compatibility follow-up adopted — 2026-09-07 06:18:33 UTC
+
+Code commit `81714ff0db7ea443bdd455a59247cfd115711ac3` passed all six jobs of
+[the clean GitHub security/build workflow](https://github.com/effacermonexistence/codex/actions/runs/34089792356),
+including the universal Mac package, beta-bundle verification, and tamper
+rejection. The standard local universal build and regression suites also passed.
+Two new real Codex calls retained the same native session and source under
+read-only scope (16.9 s and 17.6 s), without opening a backend app.
+
+This compatibility build has now replaced the earlier local build77. Installation
+re-ran runtime/app/queue/parallel/Fleet tests and preserved every existing message,
+pin, draft and binding in all 44 conversations. Fleet restarted as PID 16911.
+
+Final recovery root (supersedes the earlier artifact identifiers):
+`/Users/lua/.os1/recovery/shared-task-context-20260907-build77-portable`.
+
+- App executable SHA-256:
+  `83bc040fe1cd132a145a899288512ac79650b8b1b67d4440619025f51ec75e5a`
+- Installed/bundled CLI SHA-256:
+  `e2aaba3b00066d9c873d3b83400017cf224c9a8f58eba1efd08b6164848aef71`
+- Development package SHA-256:
+  `eb2680d83783a0de4cc3461f4d1be2bf1423e0179391963c4c5b474788861e40`
+
+The automatic OIDC R2 backup for the code commit also passed. Its remote manifest
+and actual 8,641,392-byte Git bundle were downloaded and verified, including
+`git bundle verify` and SHA-256
+`461d3af8c569145b47bebf6bfb73e4f1f8dab1d9947ddff18e13d375c6135d47`.
+All external-quota, public-notarization, production-state and global-optimality
+limitations above remain unchanged. Publication is on
+`os1/shared-task-context-20260906`, not a merge into `main`.
