@@ -142,3 +142,17 @@ development install, not a notarized public release, a production-server
 deployment, an upstream-main merge, or proof of globally optimal model selection.
 Claude's successful live continuation remains an external-quota-dependent test;
 it is not reported as passed and repeated paid retries were not used to conceal it.
+
+## Clean-CI compatibility follow-up
+
+The first publication's Worker security jobs and R2 backup passed, but its Mac
+build exposed an inherited ABI declaration conflict: CompletionFeedback declared
+`flock` using `@_silgen_name` (thin Swift convention), while ConnectionFlow used
+the SDK's C declaration in the same module. Local compiler success did not cover
+that runner toolchain. Direct `Darwin.flock` also resolves to the structure, not
+the function, on this Mac's SDK. Use a tiny C wrapper including `sys/file.h` to
+preserve the C ABI on both toolchains; do not disable locking, remove a gate or loosen
+permissions. Rebuild, repeat lock/context tests, wait for clean CI, and replace
+the installed binaries only after validation. Earlier artifact hashes above
+remain historical receipts; the final compatibility install will have its own
+receipt and recovery directory.

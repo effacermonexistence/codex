@@ -10,7 +10,8 @@ let package = Package(
     ],
     dependencies: [.package(url: "https://github.com/mgriebling/SwiftMath.git", exact: "1.7.3")],
     targets: [
-        .target(name: "OS1Context"),
+        .target(name: "OS1System"),
+        .target(name: "OS1Context", dependencies: ["OS1System"]),
         .target(name: "OS1HookSupport"),
         .executableTarget(name: "OS1", dependencies: ["OS1Context", "OS1HookSupport"],
                           swiftSettings: [.unsafeFlags(["-parse-as-library"])]),

@@ -1,5 +1,6 @@
 import Foundation
 import Darwin
+import OS1System
 
 /// Failures are classified before considering OAuth. Transport errors never
 /// justify replacing an identity or opening another login window.
@@ -34,8 +35,8 @@ public final class ConnectionLease {
         descriptor = Darwin.open(root.appendingPathComponent(service + ".lock").path, O_CREAT | O_RDWR | O_NOFOLLOW, 0o600)
         guard descriptor >= 0 else { throw ConnectionFailure.unavailable }
     }
-    public func tryAcquire() -> Bool { flock(descriptor, LOCK_EX | LOCK_NB) == 0 }
-    deinit { flock(descriptor, LOCK_UN); Darwin.close(descriptor) }
+    public func tryAcquire() -> Bool { os1_flock(descriptor, LOCK_EX | LOCK_NB) == 0 }
+    deinit { _ = os1_flock(descriptor, LOCK_UN); Darwin.close(descriptor) }
 }
 
 /// Process-local cancellation supplied by the owning OS1 submission. The path
