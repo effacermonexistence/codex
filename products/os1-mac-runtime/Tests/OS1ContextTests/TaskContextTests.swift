@@ -166,11 +166,11 @@ func runTaskContextFixtures(root: URL) throws {
         NativeRecord(id: "a2", ordinal: 4, role: "assistant", text: "부분 출력…", complete: false),
     ]
     let first1 = NativeIngestion.newRecords(records, after: nil, sentByOS1: sent, seen: ["a1"])
-    try check(first1.records.map(\.id) == ["u2"] && first1.nextCursor == "4", "OS1-sent prompt, already-seen and partial records are excluded")
+    try check(first1.records.map(\.id) == ["u2"] && first1.nextCursor == "3", "OS1-sent prompt, already-seen and partial records are excluded without skipping unfinished work")
     let again = NativeIngestion.newRecords(records, after: first1.nextCursor, sentByOS1: sent, seen: ["a1", "u2"])
-    try check(again.records.isEmpty && again.nextCursor == "4", "nothing new after the cursor")
+    try check(again.records.isEmpty && again.nextCursor == "3", "unfinished record keeps the committed cursor unchanged")
     let completed = records.dropLast() + [NativeRecord(id: "a2", ordinal: 4, role: "assistant", text: "완료된 답", complete: true)]
-    let later = NativeIngestion.newRecords(Array(completed), after: "3", sentByOS1: sent, seen: ["a1", "u2"])
+    let later = NativeIngestion.newRecords(Array(completed), after: again.nextCursor, sentByOS1: sent, seen: ["a1", "u2"])
     try check(later.records.map(\.id) == ["a2"], "a record completed later is ingested once its ordinal passes the cursor")
     let held = Set(["야 인스타그램 수정 좀 하자 준비해", "준비 상태를 확인했습니다."].map(NativeIngestion.digestOf))
     try check(NativeIngestion.newRecords(records, after: nil, sentByOS1: held, seen: []).records.map(\.id) == ["u2"],
@@ -193,9 +193,12 @@ func runTaskContextFixtures(root: URL) throws {
         try check(merged.bindings.map(\.nativeSessionID) == ["01a07994-0000-4000-8000-000000000000"], "bookkeeping bindings merge in")
         try check(merged.executions.map(\.executionID) == ["e1"], "executions merge in")
         try check(merged.contextRevision > app.contextRevision, "merge bumps the revision")
-        let foreign = TaskContext(conversationID: UUID(), objective: TaskContext.Objective(requestText: "x"))
-        try check(app.adopting(foreign, handedRevision: app.contextRevision).objective.requestText == "다른 요청",
-                  "a result for another conversation never replaces the objective")
+        var foreign = TaskContext(conversationID: UUID(), objective: TaskContext.Objective(requestText: "x"))
+        foreign.attachSemantic(TaskContext.TaskSource(role: .userDocument, label: "unrelated private data"))
+        foreign.bind(provider: "claude", nativeSessionID: UUID().uuidString)
+        foreign.facts.append(TaskContext.Fact(text: "unrelated project fact", verified: true))
+        try check(app.adopting(foreign, handedRevision: app.contextRevision) == app,
+                  "a foreign conversation must not change sources, bindings, facts or any other state")
         try check(TaskContext.explicitDecisions(in: "결정: Node 20으로 간다\n그리고 수정해\ndecision: keep v151 as Gold") == ["Node 20으로 간다", "keep v151 as Gold"],
                   "explicit decision lines are extracted, ordinary lines are not")
         try check(TaskContext.explicitDecisions(in: "결정은 나중에").isEmpty, "'결정은' is not a decision marker")

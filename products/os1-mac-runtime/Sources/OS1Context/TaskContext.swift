@@ -329,8 +329,9 @@ public struct TaskContext: Codable, Equatable, Sendable {
     /// If nothing changed in the app since the handoff, the result replaces the
     /// stored context. Otherwise the app keeps its newer objective/decisions
     /// and only merges bookkeeping (sources, bindings, executions, project,
-    /// facts) from the result. A result for another conversation only merges.
+    /// facts) from the result. A result for another conversation is rejected.
     public func adopting(_ result: TaskContext, handedRevision: Int?) -> TaskContext {
+        guard result.conversationID == conversationID else { return self }
         if let handedRevision, handedRevision == contextRevision, result.conversationID == conversationID,
            result.contextRevision >= contextRevision {
             return result
@@ -718,8 +719,11 @@ public enum NativeIngestion {
         var out: [NativeRecord] = []
         var last = start
         for record in all.sorted(by: { $0.ordinal < $1.ordinal }) where record.ordinal > start {
+            // Do not commit a cursor beyond a record that may later become
+            // complete. Otherwise the next poll permanently loses its answer.
+            guard record.complete else { break }
             last = max(last, record.ordinal)
-            guard record.complete, !seen.contains(record.id) else { continue }
+            guard !seen.contains(record.id) else { continue }
             // Anything OS1 already holds verbatim (its own prompts, adopted
             // outputs) is not ingested a second time, whatever the role.
             if digests.contains(digestOf(record.text)) { continue }

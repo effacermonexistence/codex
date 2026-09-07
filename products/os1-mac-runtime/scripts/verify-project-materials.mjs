@@ -25,15 +25,19 @@ const save = (name, value) => {
   const target = path.join(output, name);
   fs.writeFileSync(target, value, { mode: 0o600 }); return target;
 };
-const request = '인스타그램은 오토매이션 수정 좀 보자 데이트 다 가져와 봐';
+const requests = [
+  ['acquire-NFC', '인스타그램은 오토매이션 수정 좀 보자 데이트 다 가져와 봐'],
+  ['prepare-NFC', '야 인스타그램 수정 좀 하자 준비해'],
+  ['prepare-NFD', '야 인스타그램 수정 좀 하자 준비해'.normalize('NFD')],
+];
 const checks = [], records = [];
 const failures = [];
 function check(name, callback) {
   try { callback(); checks.push({ name: name, status: 'PASS' }); }
   catch (error) { failures.push(name); checks.push({ name: name, status: 'FAIL', error: String(error && error.message || error) }); }
 }
-for (const normalization of ['NFC', 'NFD']) {
-  const raw = run(runtime, ['run', '--workspace', os.homedir(), '--prompt', request.normalize(normalization),
+for (const [normalization, request] of requests) {
+  const raw = run(runtime, ['run', '--workspace', os.homedir(), '--prompt', request,
     '--provider', 'auto', '--desktop-reveal', 'never', '--output-format', 'json'], 180000);
   const file = save(`run-${normalization}.json`, raw), summary = JSON.parse(raw);
   check(`${normalization}: source acquisition, not agent execution`, () => {
@@ -65,9 +69,16 @@ for (const normalization of ['NFC', 'NFD']) {
   assert(archive);
   const directory = path.dirname(archive), descriptor = JSON.parse(fs.readFileSync(path.join(directory, 'SCV_RECOVERY_POINT.json')));
   check(`${normalization}: runtime source bytes verified, customer-state files excluded`, () => {
-    const runtimeComponent = descriptor.components.find(c => c.name === 'runtime');
+    const runtimeComponent = summary.taskContext.project.operatingRecord;
+    assert(runtimeComponent && runtimeComponent.id !== descriptor.release.release_id,
+      'fixture expects a newer operating release than the preserved recovery baseline');
     const sourceBytes = fs.readFileSync(archive);
     assert.equal(sourceBytes.length, runtimeComponent.bytes); assert.equal(sha(sourceBytes), runtimeComponent.sha256);
+    const embedded = JSON.parse(run('/usr/bin/tar', ['-xOf', archive, 'SCV_SINGLE_RELEASE.json']));
+    assert.equal(embedded.release_id, runtimeComponent.id);
+    assert.equal(receipt.sources[0].object_key, runtimeComponent.key);
+    assert.equal(snapshot.projectBaseline.recoveryBaseline.sha256, descriptor.components.find(c => c.name === 'runtime').sha256);
+    assert.equal(snapshot.projectBaseline.liveVerified, undefined);
     assert.deepEqual(fs.readdirSync(directory).sort(), [path.basename(archive), 'LATEST.json', 'SCV_RECOVERY_POINT.json', 'SCV_SINGLE_RELEASE.json'].sort());
     assert.equal(fs.statSync(archive).mode & 0o777, 0o600);
   });
@@ -81,17 +92,29 @@ for (const normalization of ['NFC', 'NFD']) {
     assert(!text.includes('git diff 비어')); assert(!text.includes('wrong_node'));
     const context = JSON.parse(fs.readFileSync(image + '.context.json', 'utf8'));
     assert.deepEqual(context.source, ref);
+    assert.equal(context.taskContext.conversationID, summary.taskContext.conversationID);
   });
-  const answer = save(`answer-${normalization}.txt`, '가져온 SCV Instagram 자료는 복구 기록의 소스입니다. 운영 배포 버전은 아직 확인하지 않았습니다. Dockerfile과 상태 스키마를 기준으로 설명할 수 있습니다.');
+  const answer = save(`answer-${normalization}.txt`, '가져온 SCV Instagram 자료는 운영 릴리스 기록에 지정된 소스입니다. 별도로 보존한 과거 복구 기준과 구분해야 합니다. 운영 서버의 실제 배포 버전은 아직 확인하지 않았습니다. Dockerfile과 상태 스키마를 기준으로 설명할 수 있습니다.');
   const validation = JSON.parse(run(runtime, ['check-source-output', image + '.context.json', answer, '가져온 인스타그램 자료를 설명해줘']));
   check(`${normalization}: next-turn loader retains source`, () => {
     assert.equal(validation.source_contract, true); assert.equal(validation.capability_failure, false);
   });
   records.push({ normalization, durationMS: step.duration_ms, receipt: step.native_record.record_path,
     source: ref, archive, archiveSHA256: sha(fs.readFileSync(archive)), modelCalls: 0 });
+  if (normalization === 'prepare-NFC') {
+    const repeated = JSON.parse(run(runtime, ['run', '--workspace', os.homedir(), '--prompt', '그 프로젝트 이어서 하자',
+      '--context-file', image + '.context.json', '--provider', 'auto', '--desktop-reveal', 'never', '--output-format', 'json'], 180000));
+    save('prepare-reused.json', JSON.stringify(repeated));
+    check('Preparation reuses exactly the attached operating source without model execution', () => {
+      assert.equal(repeated.steps.length, 1); assert.equal(repeated.steps[0].provider, 'local');
+      assert(repeated.steps[0].output.includes('새로 내려받지 않았고'));
+      assert.deepEqual(repeated.sourceContext, ref);
+      assert.equal(repeated.taskContext.conversationID, summary.taskContext.conversationID);
+    });
+  }
 }
 check('Existing conversations unchanged', () => assert(fs.readFileSync(sessionFile).equals(before)));
 save('project-materials-audit.json', JSON.stringify({ timestamp: new Date().toISOString(), app,
   runtimeSHA256: sha(fs.readFileSync(runtime)), checks, records, productionChanged: false }, null, 2) + '\n');
-console.log(JSON.stringify({ passed: checks.length, modelCalls: 0, output }));
+console.log(JSON.stringify({ passed: checks.length - failures.length, failed: failures.length, modelCalls: 0, output }));
 process.exit(failures.length === 0 ? 0 : 1);

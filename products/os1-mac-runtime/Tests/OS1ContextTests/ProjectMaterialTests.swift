@@ -45,6 +45,17 @@ func runProjectMaterialFixtures() throws {
     let plan = try SCVProjectMaterials(pointer:pinned, descriptor:data)
     try check(plan.runtime.name == "runtime" && plan.release.name == "release_manifest")
     try check(plan.releaseID == "scv-instagram-fixture-v1")
+    let operating = TaskContext.BaselineRecord(id: "scv-instagram-fixture-v2",
+        key: "scv-instagram-automation/release-ready/fixture/v2.tar.gz",
+        sha256: String(repeating: "a", count: 64), bytes: 1441639)
+    let chosen = try plan.preparationArchive(operating: operating)
+    try check(chosen.key == operating.key && chosen.sha256 == operating.sha256 && chosen.bytes == operating.bytes)
+    try check(chosen != plan.runtime && plan.releaseID == "scv-instagram-fixture-v1")
+    try check(try plan.preparationArchive(operating: nil) == plan.runtime)
+    rejects { _ = try plan.preparationArchive(operating: TaskContext.BaselineRecord(id: "v2")) }
+    var unsafe = operating
+    unsafe.key = "scv-instagram-automation/timestamped-snapshots/customers.tar.gz"
+    rejects { _ = try plan.preparationArchive(operating: unsafe) }
     try plan.runtime.verify(runtime); count += 1
     try plan.release.verify(manifest); count += 1
     rejects { try plan.runtime.verify(Data("changed".utf8)) }

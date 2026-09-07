@@ -127,6 +127,19 @@ public struct SCVProjectMaterials: Sendable {
         return paths
     }
 
+    /// Preparation selects bytes, not just a display label. An incomplete
+    /// operating record cannot silently fall back to a different source.
+    public func preparationArchive(operating: TaskContext.BaselineRecord?) throws -> ProjectMaterialObject {
+        guard let operating else { return runtime }
+        guard let key = operating.key, ProjectMaterialObject.validKey(key),
+              key.hasPrefix("scv-instagram-automation/release-ready/"), key.hasSuffix(".tar.gz"),
+              let digest = operating.sha256, ProjectMaterialObject.validSHA(digest),
+              let bytes = operating.bytes, bytes > 0, bytes <= 20_000_000 else {
+            throw ProjectMaterialError.invalidManifest
+        }
+        return ProjectMaterialObject(name: "runtime", key: key, sha256: digest, bytes: bytes)
+    }
+
     public static func validSourceRecord(_ source: [String: String]) -> Bool {
         source["repository"] == repository && ProjectMaterialObject.validSHA(source["repository_sha"] ?? "", count: 40) &&
             source["pointer_path"] == pointerPath && ProjectMaterialObject.validSHA(source["descriptor_sha256"] ?? "") &&

@@ -187,7 +187,7 @@ private func providerIntentSelfTest() throws {
     let restoredSession = try JSONDecoder().decode(ConversationSession.self, from: JSONEncoder().encode(sourceSession))
     let actualHandoff = try SessionHandoff.decode(sessionHandoff(restoredSession))
     guard actualHandoff.source == sourceRef,
-          !actualHandoff.transcript.contains("다음 요청 0\n"),
+          actualHandoff.transcript.contains("다음 요청 0\n"),
           actualHandoff.transcript.contains("다음 요청 41\n"),
           migratedSourceReference(ConversationSession(workspace: "/tmp")) == nil else {
         throw RunnerError.message("OS-1 persisted conversation source handoff failed")
@@ -838,7 +838,15 @@ private func parallelInteractionSelfTest() async throws {
     try check(store.activeRuns.isEmpty && store.queuedSubmissions.isEmpty, "scheduler did not drain")
     try check(peak >= 2 && childIDs.count == 3, "different sessions must overlap real child processes")
     try check(started["B1"]! < ended["A1"]! && started["A2"]! >= ended["A1"]!, "FIFO/overlap interval invariant")
-    try check(contexts["A2"]!.contains("answer A1") && !contexts["B1"]!.contains("A1"), "cross-session context or stale FIFO handoff")
+    // Compare conversational text, not the serialized envelope: a random UUID
+    // legitimately contains "A1" and used to make this assertion flaky.
+    let aContext = try SessionHandoff.decode(contexts["A2"])
+    let bContext = try SessionHandoff.decode(contexts["B1"])
+    let coincidentID = try SessionHandoff(transcript: "USER:\nB1", source: SourceReference(kind: .snapshot,
+        id: UUID(uuidString: "00000000-0000-4000-8000-0000000000A1")!, sha256: String(repeating: "b", count: 64))).encoded()
+    let coincidentTranscript = try SessionHandoff.decode(coincidentID).transcript
+    try check(aContext.transcript.contains("answer A1") && !bContext.transcript.contains("A1") &&
+        coincidentID.contains("A1") && !coincidentTranscript.contains("A1"), "cross-session context or stale FIFO handoff")
     try check(store.selectedSessionID == idle && store.composer == "preserve unsent draft" && store.statusText == idleStatus,
         "background completion overwrote foreground state")
     store.select(b); store.composer = "FAIL"; store.send()
@@ -1587,6 +1595,8 @@ private struct NativeSessionMessage: Identifiable, Sendable {
     let role: MessageRole
     let text: String
     let timestamp: Date?
+    var ordinal: Int? = nil
+    var complete: Bool = true
 }
 
 private func sidebarNativeLess(_ lhs: NativeSessionSummary, _ rhs: NativeSessionSummary) -> Bool {
@@ -1653,10 +1663,10 @@ private enum NativeSessionReader {
         }.sorted(by: sidebarNativeLess)
     }
 
-    static func transcript(for session: NativeSessionSummary) throws -> [NativeSessionMessage] {
+    static func transcript(for session: NativeSessionSummary, forIngestion: Bool = false) throws -> [NativeSessionMessage] {
         switch session.provider {
-        case .codex: return try codexTranscript(sessionID: session.id)
-        case .claude: return try claudeTranscript(session: session)
+        case .codex: return try codexTranscript(sessionID: session.id, forIngestion: forIngestion)
+        case .claude: return try claudeTranscript(session: session, forIngestion: forIngestion)
         case .auto: return []
         }
     }
@@ -1747,7 +1757,7 @@ private enum NativeSessionReader {
         )
     }
 
-    private static func codexTranscript(sessionID: String) throws -> [NativeSessionMessage] {
+    private static func codexTranscript(sessionID: String, forIngestion: Bool) throws -> [NativeSessionMessage] {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         let path = "\(home)/.codex/thread_history_1.sqlite"
         var database: OpaquePointer?
@@ -1757,13 +1767,13 @@ private enum NativeSessionReader {
         }
         defer { sqlite3_close(database) }
         let query = """
-        SELECT item_type, item_json, created_at_ms
+        SELECT item_type, item_json, created_at_ms, rollout_ordinal, turn_status
         FROM (
-          SELECT rollout_ordinal, item_type, item_json, created_at_ms
-          FROM thread_items
-          WHERE thread_id = ? AND item_type IN ('userMessage', 'agentMessage')
-          ORDER BY rollout_ordinal DESC
-          LIMIT 400
+          SELECT i.rollout_ordinal, i.item_type, i.item_json, i.created_at_ms, t.status AS turn_status
+          FROM thread_items i LEFT JOIN thread_turns t ON i.thread_id = t.thread_id AND i.turn_id = t.turn_id
+          WHERE i.thread_id = ? AND i.item_type IN ('userMessage', 'agentMessage')
+          ORDER BY i.rollout_ordinal DESC
+          \(forIngestion ? "" : "LIMIT 400")
         )
         ORDER BY rollout_ordinal ASC
         """
@@ -1788,6 +1798,7 @@ private enum NativeSessionReader {
                 text = visible
             } else {
                 role = .assistant
+                if forIngestion, ["failed", "interrupted"].contains(columnText(statement, 4)) { continue }
                 text = item["text"] as? String ?? ""
             }
             let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1796,7 +1807,9 @@ private enum NativeSessionReader {
                 id: (item["id"] as? String) ?? "codex-\(result.count)",
                 role: role,
                 text: trimmed,
-                timestamp: Date(timeIntervalSince1970: Double(sqlite3_column_int64(statement, 2)) / 1_000)
+                timestamp: Date(timeIntervalSince1970: Double(sqlite3_column_int64(statement, 2)) / 1_000),
+                ordinal: Int(sqlite3_column_int64(statement, 3)),
+                complete: role == .user || columnText(statement, 4) == "completed"
             ))
         }
         return result
@@ -1924,11 +1937,11 @@ private enum NativeSessionReader {
         return result
     }
 
-    private static func claudeTranscript(session: NativeSessionSummary) throws -> [NativeSessionMessage] {
+    private static func claudeTranscript(session: NativeSessionSummary, forIngestion: Bool) throws -> [NativeSessionMessage] {
         guard let sourcePath = session.sourcePath else { return [] }
-        let records = try readJSONLines(URL(fileURLWithPath: sourcePath), maximumBytes: 4 * 1_024 * 1_024)
+        let records = try readJSONLines(URL(fileURLWithPath: sourcePath), maximumBytes: forIngestion ? nil : 4 * 1_024 * 1_024)
         var result: [NativeSessionMessage] = []
-        for record in records {
+        for (ordinal, record) in records.enumerated() {
             guard let type = record["type"] as? String, type == "user" || type == "assistant",
                   let message = record["message"] as? [String: Any] else { continue }
             let raw = textContent(message["content"])
@@ -1941,10 +1954,11 @@ private enum NativeSessionReader {
                 id: (record["uuid"] as? String) ?? "claude-\(result.count)",
                 role: type == "user" ? .user : .assistant,
                 text: text,
-                timestamp: timestamp
+                timestamp: timestamp,
+                ordinal: ordinal
             ))
         }
-        return Array(result.suffix(400))
+        return forIngestion ? result : Array(result.suffix(400))
     }
 
     private static func columnText(_ statement: OpaquePointer, _ index: Int32) -> String {
@@ -2149,10 +2163,12 @@ private func sessionHandoff(_ session: ConversationSession, before userMessageID
     if let id = userMessageID, let index = session.messages.firstIndex(where: { $0.id == id }) {
         bounded = session.messages[..<index]
     } else { bounded = session.messages[...] }
-    let text = bounded.filter { $0.role == .user || $0.role == .assistant }.suffix(16).map { message in
+    // Retain all available turns up to the transport's UTF-8 byte budget,
+    // instead of discarding a decision solely because it is 17 messages old.
+    let text = bounded.filter { $0.role == .user || $0.role == .assistant }.map { message in
         var speaker = message.role == .user ? "USER" : providerDisplayName(message.provider)
         if message.nativeIngestedID != nil { speaker += " [native session, outside OS-1]" }
-        var content = String(message.text.prefix(12_000))
+        var content = message.text
         if message.role == .assistant, message.nativeRecordVerified == false {
             content = "[UNVERIFIED BACKEND OUTPUT — saved locally, not adopted or completed]\n" + content
         }
@@ -3225,9 +3241,8 @@ private final class SessionStore: ObservableObject {
             prohibitions: resolution.prohibitions))
         sessions[index].taskContext = taskContext
         appendTaskEvent(conversationID: sessions[index].id, kind: "objective", summary: submission.request)
-        let context: String
         do {
-            context = try sessionHandoff(sessions[index], before: existingUserMessage ? submission.userMessageID : nil)
+            _ = try sessionHandoff(sessions[index], before: existingUserMessage ? submission.userMessageID : nil)
         } catch {
             if !existingUserMessage {
                 sessions[index].messages.append(ChatMessage(id: submission.userMessageID, role: .user, text: submission.request))
@@ -3264,7 +3279,24 @@ private final class SessionStore: ObservableObject {
 
         Task {
             do {
-                let summary = try await runOperation(submission, context, codexSessionID, claudeSessionID,
+                // Selection-triggered ingestion may still be reading when the
+                // user presses Enter. Await the bound native history before
+                // forming this attempt's handoff; never dispatch stale context.
+                guard let currentIndex = sessions.firstIndex(where: { $0.id == submission.sessionID }) else { return }
+                let bindings = sessions[currentIndex].taskContext?.bindings ?? []
+                let held = Set(sessions[currentIndex].messages.filter { $0.role == .user || $0.role == .assistant }.map { NativeIngestion.digestOf($0.text) })
+                let seen = Set(sessions[currentIndex].messages.compactMap(\.nativeIngestedID))
+                if customStorageRoot == nil, !bindings.isEmpty {
+                    let records = await Task.detached(priority: .utility) {
+                        Self.readBoundNativeRecords(bindings, held: held, seen: seen)
+                    }.value
+                    guard activeRuns[submission.sessionID]?.submissionID == submission.id else { return }
+                    applyIngestedRecords(records, conversationID: submission.sessionID, preparingSubmission: submission.id)
+                }
+                guard let refreshed = sessions.firstIndex(where: { $0.id == submission.sessionID }) else { return }
+                let refreshedContext = try sessionHandoff(sessions[refreshed], before: submission.userMessageID)
+                activeRuns[submission.sessionID]?.handedRevision = sessions[refreshed].taskContext?.contextRevision
+                let summary = try await runOperation(submission, refreshedContext, codexSessionID, claudeSessionID,
                     { [weak self] activity in
                         Task { @MainActor in
                             guard let self, self.activeRuns[submission.sessionID]?.submissionID == submission.id else { return }
@@ -3459,29 +3491,37 @@ private final class SessionStore: ObservableObject {
         let held = Set(sessions[index].messages.filter { $0.role == .user || $0.role == .assistant }.map { NativeIngestion.digestOf($0.text) })
         let seen = Set(sessions[index].messages.compactMap(\.nativeIngestedID))
         Task.detached(priority: .utility) { [bindings, held, seen] in
+            let finished = Self.readBoundNativeRecords(bindings, held: held, seen: seen)
+            await MainActor.run { self.applyIngestedRecords(finished, conversationID: conversationID) }
+        }
+    }
+
+    nonisolated private static func readBoundNativeRecords(_ bindings: [TaskContext.BackendBinding], held: Set<String>, seen: Set<String>) -> [NativeIngestionOutcome] {
             var outcome: [NativeIngestionOutcome] = []
             for binding in bindings {
                 guard let provider = ProviderChoice(rawValue: binding.provider), provider != .auto,
                       let summary = (try? NativeSessionReader.sessions(for: provider, including: binding.nativeSessionID))?
                         .first(where: { $0.id.lowercased() == binding.nativeSessionID.lowercased() }),
-                      let transcript = try? NativeSessionReader.transcript(for: summary) else { continue }
+                      let transcript = try? NativeSessionReader.transcript(for: summary, forIngestion: true) else { continue }
                 let all = transcript.enumerated().compactMap { item -> NativeRecord? in
                     guard item.element.role == .user || item.element.role == .assistant else { return nil }
-                    return NativeRecord(id: "\(binding.provider):\(item.element.id)", ordinal: item.offset,
-                                        role: item.element.role.rawValue, text: item.element.text, complete: true)
+                    return NativeRecord(id: "\(binding.provider):\(item.element.id)", ordinal: item.element.ordinal ?? item.offset,
+                                        role: item.element.role.rawValue, text: item.element.text, complete: item.element.complete)
                 }
-                // A first ingestion of a long native history is bounded to its tail.
-                let start = binding.lastIngestedCursor ?? (all.count > 40 ? String(all.count - 41) : nil)
-                let fresh = NativeIngestion.newRecords(all, after: start, sentByOS1: held, seen: seen)
+                // Store the complete native history locally; the provider
+                // handoff has its own byte budget. Do not silently lose the
+                // original objective on the first synchronization.
+                let fresh = NativeIngestion.newRecords(all, after: binding.lastIngestedCursor, sentByOS1: held, seen: seen)
                 outcome.append(NativeIngestionOutcome(binding: binding, records: fresh.records, cursor: fresh.nextCursor))
             }
-            let finished = outcome
-            await MainActor.run { self.applyIngestedRecords(finished, conversationID: conversationID) }
-        }
+            return outcome
     }
 
-    private func applyIngestedRecords(_ outcome: [NativeIngestionOutcome], conversationID: UUID) {
-        guard let index = sessions.firstIndex(where: { $0.id == conversationID }), !isSessionRunning(conversationID) else { return }
+    private func applyIngestedRecords(_ outcome: [NativeIngestionOutcome], conversationID: UUID, preparingSubmission: UUID? = nil) {
+        guard let index = sessions.firstIndex(where: { $0.id == conversationID }),
+              !isSessionRunning(conversationID) || (preparingSubmission != nil && activeRuns[conversationID]?.submissionID == preparingSubmission && activeRuns[conversationID]?.activity.phase == .preparing) else { return }
+        let beforeID = preparingSubmission == nil ? nil : inFlightSubmissions[conversationID]?.userMessageID
+        var insertionIndex = beforeID.flatMap { id in sessions[index].messages.firstIndex(where: { $0.id == id }) } ?? sessions[index].messages.count
         var changed = false
         var ingestedCount = 0
         for item in outcome {
@@ -3490,15 +3530,18 @@ private final class SessionStore: ObservableObject {
             }) else { continue }
             let known = Set(sessions[index].messages.compactMap(\.nativeIngestedID))
             for record in item.records where !known.contains(record.id) {
-                sessions[index].messages.append(ChatMessage(role: record.role == "user" ? .user : .assistant, text: record.text,
-                    provider: item.binding.provider, nativeIngestedID: record.id))
+                sessions[index].messages.insert(ChatMessage(role: record.role == "user" ? .user : .assistant, text: record.text,
+                    provider: item.binding.provider, nativeRecordVerified: record.role == "user" ? nil : false,
+                    nativeIngestedID: record.id), at: insertionIndex)
+                insertionIndex += 1
                 ingestedCount += 1
                 changed = true
             }
             if !item.records.isEmpty {
-                sessions[index].messages.append(ChatMessage(role: .receipt,
+                sessions[index].messages.insert(ChatMessage(role: .receipt,
                     text: "\(providerDisplayName(item.binding.provider)) 앱에서 직접 진행한 기록 \(item.records.count)건을 이 대화에 흡수했습니다 · OS-1 외부 작업, 채택 판정 아님",
-                    provider: item.binding.provider))
+                    provider: item.binding.provider), at: insertionIndex)
+                insertionIndex += 1
             }
             if let cursor = item.cursor, sessions[index].taskContext?.bindings[bindingIndex].lastIngestedCursor != cursor {
                 sessions[index].taskContext?.bindings[bindingIndex].lastIngestedCursor = cursor
@@ -4247,9 +4290,10 @@ private struct OS1DesktopApp: App {
                     let requestIndex = args.firstIndex(of: "--request")
                     let request = requestIndex.flatMap { $0 + 1 < args.count ? args[$0 + 1] : nil }
                         ?? "R2에서 QM·GR과 Orthogonal Projection Term 원본을 가져와."
-                    var preview = ConversationSession(workspace: FileManager.default.homeDirectoryForCurrentUser.path,
+                    var preview = ConversationSession(id: summary.taskContext?.conversationID ?? UUID(), workspace: FileManager.default.homeDirectoryForCurrentUser.path,
                         messages: [ChatMessage(role: .user, text: request)])
                     preview.sourceContext = summary.sourceContext
+                    preview.taskContext = summary.taskContext
                     for step in steps {
                         preview.messages.append(ChatMessage(role: .assistant, text: step.output, provider: step.provider,
                             permissionProfile: step.permissionProfile))
