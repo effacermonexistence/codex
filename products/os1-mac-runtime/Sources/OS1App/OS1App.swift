@@ -969,6 +969,21 @@ private func parallelInteractionSelfTest() async throws {
     let failedReviewReload = SessionStore(storageRoot: failedReviewRoot)
     try check(failedReviewReload.selectedSession!.lastFailure?.recoveryAttempted == true &&
         failedReviewReload.selectedSession!.taskContext?.objective.requestText == "DEPLOY ONCE", "restart forgot recovery budget or objective")
+    // A stop can race with a previously emitted effects-uncertain notice.
+    var cancelledCalls = 0
+    let cancelledStore = SessionStore(storageRoot: root.appendingPathComponent("cancel-review"), runOperation: { _, _, _, _, _ in
+        cancelledCalls += 1
+        try await Task.sleep(for: .milliseconds(150))
+        throw RunnerError.backend(BackendFailureNotice(provider: "claude", sessionID: interruptedID,
+            blocker: .effectsUncertain, dispatchStage: .dispatched, permissionProfile: "workspace_write"))
+    })
+    cancelledStore.composer = "CANCEL THIS WRITE"; cancelledStore.send()
+    let cancelledSubmission = cancelledStore.activeRuns[cancelledStore.selectedSessionID!]!.submissionID
+    cancelledStore.cancelSelectedRun()
+    while !cancelledStore.activeRuns.isEmpty { try await Task.sleep(for: .milliseconds(50)) }
+    try check(cancelledCalls == 1 && cancelledStore.selectedSession!.lastFailure?.recoveryAttempted != true,
+        "cancellation raced into automatic recovery")
+    try? FileManager.default.removeItem(at: ExecutionCancellation.url(submissionID: cancelledSubmission))
     print("Parallel sessions: \(checks) checks passed; real child-process overlap, per-session FIFO/context/status, explicit retry, four-session limit, paused restart/cancellation")
 }
 
@@ -3556,7 +3571,8 @@ private final class SessionStore: ObservableObject {
                UnifiedExecution.automaticallyReconcile(sessions[target].lastBackendFailure,
                     alreadyAttempted: sessions[target].lastFailure?.recoveryAttempted == true,
                     internalReview: submission.recoveryParentID != nil,
-                    providerPreference: submission.provider.rawValue) {
+                    providerPreference: submission.provider.rawValue,
+                    cancellationRequested: FileManager.default.fileExists(atPath: ExecutionCancellation.url(submissionID: submission.id).path)) {
                 beginReconciliation(conversationID: submission.sessionID)
             }
             ingestNativeRecords(conversationID: submission.sessionID)

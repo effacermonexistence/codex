@@ -38,6 +38,7 @@ func runUnifiedExecutionFixtures() throws {
         try check(!UnifiedExecution.automaticallyReconcile(notice, alreadyAttempted: true, internalReview: false, providerPreference: "auto"), "one automatic readback only")
         try check(!UnifiedExecution.automaticallyReconcile(notice, alreadyAttempted: false, internalReview: true, providerPreference: "auto"), "no recursive review")
         try check(!UnifiedExecution.automaticallyReconcile(notice, alreadyAttempted: false, internalReview: false, providerPreference: "claude"), "explicit provider stays pinned")
+        try check(!UnifiedExecution.automaticallyReconcile(notice, alreadyAttempted: false, internalReview: false, providerPreference: "auto", cancellationRequested: true), "cancellation marker outranks stale failure notice")
     }
     for provider in ["codex", "claude"] {
         try check(BackendRecovery.alternate(requested: "auto", failed: provider, permission: "read_only", blocker: .incomplete,

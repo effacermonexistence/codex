@@ -46,8 +46,9 @@ public enum UnifiedExecution {
     }
 
     public static func automaticallyReconcile(_ notice: BackendFailureNotice?, alreadyAttempted: Bool,
-                                               internalReview: Bool, providerPreference: String) -> Bool {
-        guard let notice, providerPreference == "auto", !alreadyAttempted, !internalReview else { return false }
+                                               internalReview: Bool, providerPreference: String,
+                                               cancellationRequested: Bool = false) -> Bool {
+        guard let notice, providerPreference == "auto", !alreadyAttempted, !internalReview, !cancellationRequested else { return false }
         // A denial, authentication failure, cancellation or explicit budget cap
         // must not be relabelled as an alternate-provider recovery opportunity.
         return notice.blocker == .effectsUncertain && notice.requiresReadback
