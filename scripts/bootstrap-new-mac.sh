@@ -60,6 +60,7 @@ ditto "$bootstrap_tmp/${repo_name}-${repo_branch}" "$install_root"
 chmod 0755 \
   "$install_root/scripts/bootstrap-new-mac.sh" \
   "$install_root/scripts/bootstrap-claude-code.sh" \
+  "$install_root/scripts/install-os1-exo-monitor-from-r2.sh" \
   "$install_root/scripts/restore-from-r2.sh" \
   "$install_root/scripts/doctor.sh" \
   "$install_root/products/os1-mac-runtime/scripts/install-os1.sh"
@@ -221,6 +222,28 @@ install_with_backup() {
 install_with_backup "$install_root/codex/AGENTS.md" "$codex_config_dir/AGENTS.md"
 install_with_backup "$install_root/CLAUDE.md" "$claude_config_dir/CLAUDE.md"
 
+install_executable_with_backup() {
+  local source_file="$1"
+  local destination_file="$2"
+  local backup_file
+
+  mkdir -p "$(dirname "$destination_file")"
+  if [[ -f "$destination_file" ]] && cmp -s "$source_file" "$destination_file"; then
+    chmod 0755 "$destination_file"
+    return
+  fi
+  if [[ -e "$destination_file" ]]; then
+    backup_file="${destination_file}.before-omar-bootstrap.$(date -u +%Y%m%dT%H%M%SZ)"
+    cp -p "$destination_file" "$backup_file"
+    echo "Preserved existing file: $backup_file"
+  fi
+  install -m 0755 "$source_file" "$destination_file"
+}
+
+install_executable_with_backup \
+  "$install_root/scripts/install-os1-exo-monitor-from-r2.sh" \
+  "$local_bin/os1-exo-monitor-sync"
+
 if ! cmp -s "$install_root/codex/AGENTS.md" "$codex_config_dir/AGENTS.md"; then
   echo "Codex global instruction verification failed" >&2
   exit 1
@@ -236,6 +259,7 @@ echo "Installed durable setup at: $install_root"
 echo "Installed Codex instructions: $codex_config_dir/AGENTS.md"
 echo "Installed Claude instructions: $claude_config_dir/CLAUDE.md"
 echo "Installed OS-1 CLODEX: /Applications/OS-1 CLODEX.app"
+echo "Installed R2 EXO monitor sync: $local_bin/os1-exo-monitor-sync"
 echo "Node.js: $(node --version)"
 echo "pnpm: $(pnpm --version)"
 echo "Codex CLI: $(codex --version)"

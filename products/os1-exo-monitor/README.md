@@ -42,6 +42,25 @@ switches only that EXO service, preserves event logs/models/credentials,
 verifies peer identity, and waits for the two-node topology. On failure after
 the switch it restores the prior plist, source overlay state, and service.
 
+## R2 handoff between Macs
+
+The reviewed product is also published as a small immutable package in the
+private `omar-private-archive` bucket. The mutable
+`os1-exo-monitor/latest.json` pointer is written only after the immutable
+package, release manifest, and stable installer exist. On a Mac that has run
+the standard bootstrap and completed its own Wrangler OAuth, synchronize with:
+
+```bash
+os1-exo-monitor-sync air
+# use `pro` on the Pro; append `--verify-only` to download and verify only
+```
+
+The sync command downloads the pointer and package directly from R2, requires
+the repository-pinned Wrangler 4.127.1, validates product/repository identity,
+object-key shape, SHA-256, byte count, and every archive path, then invokes the
+same reversible node installer. No Git checkout, pasted instruction block, or
+credential transfer between Macs is required.
+
 ## Convergence definition
 
 The visible balance score is deterministic:
