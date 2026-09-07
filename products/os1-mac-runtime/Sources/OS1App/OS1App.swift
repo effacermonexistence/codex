@@ -984,6 +984,54 @@ private func parallelInteractionSelfTest() async throws {
     try check(cancelledCalls == 1 && cancelledStore.selectedSession!.lastFailure?.recoveryAttempted != true,
         "cancellation raced into automatic recovery")
     try? FileManager.default.removeItem(at: ExecutionCancellation.url(submissionID: cancelledSubmission))
+    // The preparation boundary precedes model dispatch, but must still return
+    // its observation and unfinished objective to this same manager.
+    let sourceRoot = root.appendingPathComponent("source-pending"), registrationRoot = root.appendingPathComponent("registry")
+    let manifestHash = String(repeating: "c", count: 64)
+    let liveData = try JSONSerialization.data(withJSONObject: ["ok": true, "release": ["ok": true, "mode": "production",
+        "release_phase": "active", "phase_ready": true, "release_id": "scv-instagram-single-20260907-v161",
+        "content_fingerprint_sha256": String(repeating: "b", count: 64), "release_manifest_sha256": manifestHash]])
+    let live = try SCVLiveRelease(data: liveData)
+    var preparationCalls = 0
+    let sourceStore = SessionStore(storageRoot: sourceRoot, runOperation: { submission, context, _, _, _ in
+        preparationCalls += 1
+        var state = try SessionHandoff.decode(context).taskContext!
+        state.sourcePreparation = SourcePreparationState(live: live, reason: "publication pending")
+        state.touch()
+        return AppRunSummary(status: "source_pending", steps: [AppRunStep(sequence: 1, provider: "local",
+            action: "source_preparation_pending", model: nil, effort: "none", revasDisposition: "pending",
+            sessionID: UUID().uuidString, permissionProfile: "local_control", exitCode: 0,
+            output: "fixture exact source not acquired; original objective retained", stderr: "", durationMS: 1, nativeRecord: nil)], taskContext: state)
+    })
+    let prepareRequest = "야 인스타그램 오토메이션 수정해야 되니까 준비해라"
+    sourceStore.composer = prepareRequest; sourceStore.send()
+    while !sourceStore.activeRuns.isEmpty { try await Task.sleep(for: .milliseconds(50)) }
+    let sourceID = sourceStore.selectedSessionID!, originalID = sourceStore.selectedSession!.taskContext!.objectiveID
+    try check(sourceStore.selectedSession!.taskContext?.sourcePreparation?.manifestSHA256 == manifestHash &&
+        sourceStore.selectedSession!.lastFailure?.request == prepareRequest &&
+        sourceStore.selectedSession!.taskContext?.objective.scope == .readOnly,
+        "preflight lost source identity/objective or granted writes to a preparation-only request")
+    let pendingReload = SessionStore(storageRoot: sourceRoot)
+    try check(pendingReload.selectedSession!.taskContext?.sourcePreparation?.releaseID == live.id &&
+        pendingReload.selectedSession!.taskContext?.objectiveID == originalID, "pending source lost at restart")
+    sourceStore.resumeRegisteredSourcePreparations(root: registrationRoot)
+    try check(preparationCalls == 1, "source polling must not retry without new evidence")
+    let incoming = registrationRoot.appendingPathComponent(manifestHash).appendingPathComponent("source.tar.gz")
+    try FileManager.default.createDirectory(at: incoming.deletingLastPathComponent(), withIntermediateDirectories: true)
+    try Data("fixture registration arrival; verifier mocked here, real archive checked in context tests".utf8).write(to: incoming)
+    sourceStore.createSession(); let foregroundID = sourceStore.selectedSessionID!
+    sourceStore.composer = "untouched draft"
+    sourceStore.resumeRegisteredSourcePreparations(root: registrationRoot)
+    while !sourceStore.activeRuns.isEmpty { try await Task.sleep(for: .milliseconds(50)) }
+    sourceStore.resumeRegisteredSourcePreparations(root: registrationRoot)
+    try check(preparationCalls == 2 && sourceStore.activeRuns.isEmpty, "pending preparation spun indefinitely on the same artifact")
+    let retriedSession = sourceStore.sessions.first { $0.id == sourceID }!
+    try check(retriedSession.messages.filter { $0.role == .user }.map(\.text) == [prepareRequest] &&
+        retriedSession.taskContext?.objectiveID == originalID, "automatic preparation recovery duplicated or replaced user objective")
+    try check(sourceStore.selectedSessionID == foregroundID && sourceStore.composer == "untouched draft", "background acquisition stole foreground/draft")
+    let retryReload = SessionStore(storageRoot: sourceRoot)
+    try check(retryReload.sessions.first { $0.id == sourceID }?.lastFailure?.sourceRetryIdentity == manifestHash,
+        "source retry budget not persisted")
     print("Parallel sessions: \(checks) checks passed; real child-process overlap, per-session FIFO/context/status, explicit retry, four-session limit, paused restart/cancellation")
 }
 
@@ -2255,6 +2303,7 @@ private struct PendingSubmission: Identifiable, Codable, Equatable, Sendable {
     // user turn or a replacement objective. Optional for older session stores.
     var recoveryParentID: UUID? = nil
     var recoveryAttempted: Bool? = nil
+    var sourceRetryIdentity: String? = nil
 
     init(
         id: UUID = UUID(),
@@ -2337,6 +2386,18 @@ private func stepRecordIsVerified(_ step: AppRunStep) -> Bool {
           let attributes = try? FileManager.default.attributesOfItem(atPath: path),
           (attributes[.posixPermissions] as? NSNumber)?.intValue == 0o600 else { return false }
     switch step.action {
+    case "registered_source_retrieval":
+        guard receipt["operation"] as? String == "registered_source_retrieval",
+              receipt["verification_mode"] as? String == RegisteredProjectSource.verificationMode,
+              receipt["registered_source_verified"] as? Bool == true,
+              receipt["r2_verified"] as? Bool == false, receipt["bucket"] is NSNull,
+              receipt["model_invoked"] as? Bool == false,
+              receipt["source_count"] as? Int == 5,
+              let sources = receipt["sources"] as? [[String: String]], sources.count == 5,
+              Set(sources.compactMap { $0["source_path"] }) == Set(RegisteredProjectSource.selectedPaths + ["source-inventory.txt"]),
+              sources.allSatisfy(RegisteredProjectSource.validSourceRecord) else { return false }
+        return ProjectMaterialObject.validSHA(receipt["evidence_sha256"] as? String ?? "") &&
+            ProjectMaterialObject.validSHA(receipt["request_sha256"] as? String ?? "")
     case "r2_retrieval":
         guard receipt["operation"] as? String == "r2_retrieval",
               receipt["bucket"] as? String == "omar-private-archive",
@@ -3326,12 +3387,13 @@ private final class SessionStore: ObservableObject {
         // The task context changes only when a run actually begins, so a
         // queued turn never invalidates the in-flight one.
         var taskContext = migratedTaskContext(sessions[index], sourceContext: sessions[index].sourceContext)
-        if submission.recoveryParentID == nil {
+        if submission.recoveryParentID == nil && !(submission.sourceRetryIdentity != nil && existingUserMessage &&
+            taskContext.objective.requestText == submission.request) {
         for decision in TaskContext.explicitDecisions(in: submission.request) { taskContext.decideSemantic(decision) }
         let resolution = ScopeResolution.resolve(submission.request)
         taskContext.setObjective(TaskContext.Objective(requestText: submission.request,
             kind: TaskContext.ObjectiveKind.classify(submission.request),
-            scope: submission.readOnlyReconciliation == true ? .readOnly : resolution.scope,
+            scope: submission.readOnlyReconciliation == true || PreparationIntent.detect(submission.request)?.modifies == false ? .readOnly : resolution.scope,
             prohibitions: resolution.prohibitions))
         sessions[index].taskContext = taskContext
         appendTaskEvent(conversationID: sessions[index].id, kind: "objective", summary: submission.request)
@@ -3433,6 +3495,15 @@ private final class SessionStore: ObservableObject {
                         summary: "submission \(submission.id.uuidString.lowercased()) handed revision \(handedRevision ?? -1)")
                     if currentSubmission { sessionStatuses[submission.sessionID] = "늦은 결과 보존 · 채택 안 함" }
                 } else {
+                if summary.status == "source_pending", let result = summary.taskContext,
+                   result.conversationID == submission.sessionID, result.sourcePreparation?.canLookForRegistration == true,
+                   summary.steps.allSatisfy({ $0.provider == "local" && $0.action == "source_preparation_pending" }) {
+                    sessions[target].taskContext = sessions[target].taskContext?.adopting(result, handedRevision: handedRevision) ?? result
+                    appendTaskEvent(conversationID: submission.sessionID, kind: "source_pending",
+                        summary: "Original objective retained; " + result.sourcePreparation!.releaseID + " source not acquired; no model dispatched")
+                    pausedQueueIDs.formUnion(queuedSubmissions.filter { $0.sessionID == submission.sessionID }.map(\.id))
+                    throw RunnerError.message(summary.steps.first?.output ?? "운영 원본 확보 대기 중 · 준비 미완료")
+                }
                 if summary.status != "complete" {
                     throw RunnerError.message("OS-1 did not return a completed governed run.")
                 }
@@ -3447,7 +3518,7 @@ private final class SessionStore: ObservableObject {
                    visibleSteps.contains(where: {
                        $0.provider != submission.provider.rawValue &&
                            !($0.provider == "local" && [
-                               "protected_material_guard", "r2_retrieval", "connection_check", "source_status", "work_preparation",
+                               "protected_material_guard", "r2_retrieval", "registered_source_retrieval", "connection_check", "source_status", "work_preparation",
                            ].contains($0.action))
                    }) {
                     throw RunnerError.message("OS-1 rejected a backend mismatch. The request targeted \(submission.provider.title), but a different backend answered.")
@@ -3869,6 +3940,7 @@ private final class SessionStore: ObservableObject {
 
     func refreshSidebarMetadata() async {
         guard customStorageRoot == nil, !sidebarPollRunning else { return }
+        resumeRegisteredSourcePreparations()
         sidebarPollRunning = true
         defer { sidebarPollRunning = false }
         for provider in [ProviderChoice.codex, .claude] {
@@ -3958,9 +4030,35 @@ private final class SessionStore: ObservableObject {
     }
     func resumeQueue() {
         pausedQueueIDs = Set(queuedSubmissions.filter { next in
-            sessions.first(where: { $0.id == next.sessionID })?.lastBackendFailure != nil
+            let session = sessions.first(where: { $0.id == next.sessionID })
+            return session?.lastBackendFailure != nil || session?.taskContext?.sourcePreparation != nil
         }.map(\.id))
         runNextQueuedSubmissionIfNeeded()
+    }
+    /// A new registered artifact is an external-state change, not a reason to
+    /// rerun a failed model. One preflight-only preparation retry per identity;
+    /// no automatic mutation, login, remote-source substitution or UI reveal.
+    func resumeRegisteredSourcePreparations(root: URL = RegisteredProjectSource.defaultRoot) {
+        for session in sessions {
+            guard activeRuns.count < Self.maximumConcurrentSessions,
+                  !isSessionRunning(session.id), session.lastBackendFailure == nil,
+                  let pending = session.taskContext?.sourcePreparation, pending.canLookForRegistration,
+                  let failed = session.lastFailure, failed.preflightOnly == true,
+                  failed.sourceRetryIdentity != pending.manifestSHA256,
+                  let intent = PreparationIntent.detect(failed.request), !intent.modifies,
+                  intent.kind != .explainFromContext,
+                  RegisteredProjectSource.mayUseForPreparation(failed.request),
+                  !FileManager.default.fileExists(atPath: ExecutionCancellation.url(submissionID: failed.id).path),
+                  FileManager.default.fileExists(atPath: root.appendingPathComponent(pending.manifestSHA256).appendingPathComponent("source.tar.gz").path),
+                  let index = sessions.firstIndex(where: { $0.id == session.id }) else { continue }
+            var retry = failed
+            retry.sourceRetryIdentity = pending.manifestSHA256
+            sessions[index].lastFailure = retry
+            save() // persist the budget before dispatch; survives app restart
+            appendTaskEvent(conversationID: session.id, kind: "source_recovery",
+                summary: "Registered source arrived; revalidating the original preparation without a backend handoff")
+            start(retry)
+        }
     }
     func retrySelectedFailure() {
         guard !isRunning, let failed = selectedSession?.lastFailure,
@@ -5773,7 +5871,8 @@ private func timelineNormalizedText(_ value: String) -> String {
 
 private func retrievalPresentation(messages: [ChatMessage], index: Int, sourceStore: SourceContextStore) -> RetrievedAnswer? {
     let message = messages[index]
-    guard message.role == .assistant, message.provider == "local", message.text.hasPrefix("R2에서"),
+    guard message.role == .assistant, message.provider == "local",
+          (message.text.hasPrefix("R2에서") || message.text.hasPrefix("등록 원본에서")),
           index + 1 < messages.count else { return nil }
     let receipt = messages[index + 1]
     guard receipt.role == .receipt, receipt.provider == "local", receipt.nativeRecordVerified == true,
@@ -6559,7 +6658,7 @@ private struct ComposerView: View {
                 Text("Claude \(session.claudeSessionID == nil ? "not linked" : "linked")")
                 if let source = session.sourceContext {
                     Text("·")
-                    Label("R2 source attached", systemImage: "paperclip")
+                    Label("Source attached", systemImage: "paperclip")
                         .foregroundStyle(Theme.pink)
                         .help("이 대화의 다음 요청에 같은 검증 자료를 전달합니다. 새 주제로 바꾸려면 ‘자료 연결 해제’라고 요청하세요. SHA-256: \(source.sha256)")
                 }

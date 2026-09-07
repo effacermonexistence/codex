@@ -176,6 +176,8 @@ public struct TaskContext: Codable, Equatable, Sendable {
     public var facts: [Fact]
     public var nextSteps: [String]
     public var blockers: [String]
+    /// Acquisition is owned by OS1 even when no backend has been dispatched.
+    public var sourcePreparation: SourcePreparationState?
 
     public init(conversationID: UUID, objective: Objective, projectID: String? = nil, now: Date = Date()) {
         schemaVersion = Self.schemaVersion; contextRevision = 1
@@ -352,6 +354,7 @@ public struct TaskContext: Codable, Equatable, Sendable {
         for execution in result.executions { merged.record(execution: execution) }
         if merged.project == nil, let project = result.project { merged.project = project; merged.projectID = project.projectID }
         for fact in result.facts where !merged.facts.contains(fact) { merged.facts.append(fact) }
+        if result.objectiveID == objectiveID { merged.sourcePreparation = result.sourcePreparation }
         if merged.nextSteps.isEmpty { merged.nextSteps = result.nextSteps }
         merged.touch()
         return merged
@@ -588,6 +591,12 @@ public struct PreparationIntent: Equatable, Sendable {
         // themselves make the request a backend modification.
         var remaining = value
         for marker in (prepareMarkers + continueMarkers).sorted(by: { $0.count > $1.count }) { remaining = remaining.replacingOccurrences(of: marker, with: " ") }
+        if kind == .prepare, ["준비", "get ready", "prepare"].contains(where: value.contains) {
+            // A future reason for preparation is not an instruction to edit
+            // now. Concrete imperatives (e.g. 준비하고 가격 로직 수정해) survive.
+            remaining = remaining.replacingOccurrences(of: #"(?:수정|변경|고치|손보)(?:해야\s*(?:되|하)(?:니까|니|므로)|할\s*(?:건데|거니까)|하려(?:고|니까))"#,
+                with: " ", options: .regularExpression)
+        }
         let wantsChange = ["손봐", "손 봐", "수정", "고치", "고쳐", "바꾸", "구현", "fix", "modify", "edit", "change", "implement"].contains(where: remaining.contains)
         return PreparationIntent(kind: kind, projectID: projectID, modifies: kind != .explainFromContext && wantsChange && !prohibited)
     }
