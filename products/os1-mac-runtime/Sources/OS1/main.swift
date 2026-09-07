@@ -31,7 +31,7 @@ enum OS1Error: Error, CustomStringConvertible {
 
     var isTerminalBackendFailure: Bool {
         if isTerminalPermissionFailure { return true }
-        if case .backendBlocked(let blocker) = self { return blocker.requiresReconciliation || blocker == .cancelled }
+        if case .backendBlocked(let blocker) = self { return blocker.requiresReconciliation || [.cancelled, .budgetExhausted].contains(blocker) }
         return false
     }
 }
@@ -1181,7 +1181,6 @@ struct ClaudePrintResult {
 
 func parseClaudePrintResult(_ data: Data, requestedSessionID: String) throws -> ClaudePrintResult {
     guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-          let value = object["result"] as? String,
           let returnedSessionID = object["session_id"] as? String,
           let normalizedReturned = try normalizedSessionID(returnedSessionID),
           normalizedReturned == requestedSessionID else {
@@ -1195,22 +1194,26 @@ func parseClaudePrintResult(_ data: Data, requestedSessionID: String) throws -> 
         // changing denial counts may turn a policy denial into a model retry.
         throw OS1Error.toolPermissionDenied(provider: "Claude", tools: tools, count: denials.count)
     }
-    if object["is_error"] as? Bool == true {
-        throw OS1Error.message("Claude reported an execution failure. OS-1 did not verify this step.")
+    if let blocker = UnifiedExecution.claudeTerminalBlocker(status: 0, object: object) {
+        throw OS1Error.backendBlocked(blocker)
     }
-
+    guard let value = object["result"] as? String else {
+        throw OS1Error.message("Claude did not return a completed result.")
+    }
     return ClaudePrintResult(output: Data(value.utf8), sessionID: normalizedReturned)
 }
 
 func parseClaudeCommandResult(_ status: Int32, _ data: Data, requestedSessionID: String) throws -> ClaudePrintResult {
-    if let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-       BackendRecovery.claudeQuotaFailure(status: status, object: object) {
-        throw OS1Error.backendBlocked(.quotaExhausted)
+    // Bind even error variants to this invocation before trusting their cause.
+    guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+          let returned = object["session_id"] as? String,
+          try normalizedSessionID(returned) == requestedSessionID else {
+        throw OS1Error.message("Claude did not return the requested persistent session ID")
     }
-    if let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-       (object["permission_denials"] as? [Any] ?? []).isEmpty,
-       status != 0 || object["is_error"] as? Bool == true,
-       let blocker = BackendBlocker.reported(in: object["result"] as? String ?? "") {
+    if let blocker = UnifiedExecution.claudeTerminalBlocker(status: status, object: object) {
+        if blocker == .policyDenied, !(object["permission_denials"] as? [Any] ?? []).isEmpty {
+            return try parseClaudePrintResult(data, requestedSessionID: requestedSessionID)
+        }
         throw OS1Error.backendBlocked(blocker)
     }
     if status != 0 {
@@ -3902,6 +3905,7 @@ func normalizedSessionID(_ value: String?) throws -> String? {
 }
 
 final class CodexAppServerClient: @unchecked Sendable {
+    private(set) var interruptedPublicProgress = ""
     private let process = Process()
     private let input = Pipe()
     private let output = Pipe()
@@ -3957,7 +3961,7 @@ final class CodexAppServerClient: @unchecked Sendable {
         _ = try request(
             "initialize",
             params: [
-                "clientInfo": ["name": "OS-1 CLODEX", "version": "0.9.27"],
+                "clientInfo": ["name": "OS-1 CLODEX", "version": "0.9.28"],
                 "capabilities": ["experimentalApi": true],
             ],
             deadline: deadline
@@ -4260,6 +4264,8 @@ final class CodexAppServerClient: @unchecked Sendable {
 
     private func waitForTurn(threadID: String, turnID: String, deadline: Date) throws -> Data {
         let stream = ExecutionStream()
+        interruptedPublicProgress = ""
+        defer { interruptedPublicProgress = stream.text }
         var revision = 0
         while true {
             let message: [String: Any]
@@ -4665,6 +4671,19 @@ func claudeTranscriptContains(_ url: URL, assistantText: String) -> Bool {
     return false
 }
 
+private func interruptedExecution(ticket: Ticket, model: String?, effort: String, contract: ExecutorContract,
+                                  sessionID: String, publicProgress: String, beforeHash: String,
+                                  workspace: String, started: Date, cause: Error) -> RejectedProviderExecution {
+    let record = NativeRecordEvidence(turnID: nil, recordPath: nil,
+        persistence: "interrupted_unverified", desktopVisibility: "external_app_not_opened")
+    let artifact = Artifact(provider: ticket.provider, action: ticket.action, permissionProfile: ticket.permissionProfile,
+        model: model ?? "provider-default", effort: effort, executorContractVersion: contract.version,
+        executorContractSHA256: contract.sha256, exitCode: 69, output: String(publicProgress.suffix(24_000)), stderr: "",
+        durationMS: Int64(Date().timeIntervalSince(started) * 1_000), workspaceBeforeHash: beforeHash,
+        workspaceAfterHash: workspaceHash(workspace), nativeRecord: record)
+    return RejectedProviderExecution(execution: ProviderExecution(artifact: artifact, sessionID: sessionID, nativeRecord: record), cause: cause)
+}
+
 private func execute(
     ticket: Ticket,
     prompt: String,
@@ -4702,7 +4721,7 @@ private func execute(
     \(hasPreloadedR2Evidence ? "This turn is snapshot-only: assess the supplied evidence now, without starting or announcing a local inventory, shell command, fresh R2 lookup, or restore drill. No such live checks have occurred in this turn. Never print simulated tool invocation/result markup. Reading supplied snapshot text is not a fresh check of today's machine, remote bucket or scheduler. Describe missing checks as a proposed plan, not as tool unavailability. Lead with the bounded answer, cite the relevant source briefly, and give a short prioritized plan; a full disaster-recovery manual was not requested." : "")
     \(hasPreloadedR2Evidence ? "Readiness acceptance must separate source-code bytes from service configuration, runtime data and per-device authentication/secret prerequisites. Explicitly state which coverage is unknown. A successful upload or commit schedule does not prove recoverability: include an isolated restore test with concrete pass conditions and recovery-point/data-loss limits. Do not claim a drill ran, promise unconditional 100% recovery, ask for pasted secrets, copy authentication caches or redirect the user to a backend. These are assessment/plan requirements, not authorization to execute them." : "")
     """ : ""
-    let presentationDirective = "\n" + HumanOutputContract.instructions(for: lockedObjective) + readinessDirective +
+    let presentationDirective = "\n" + UnifiedExecution.instructions + "\n" + HumanOutputContract.instructions(for: lockedObjective) + readinessDirective +
         publicWebLookupInstructions(prompt: lockedObjective, hasPreloadedSource: hasPreloadedR2Evidence)
     let instructions = executorInstructions(contract: executorContract, ticket: ticket) + evidenceDirective + presentationDirective
     if ticket.provider == "codex" {
@@ -4727,7 +4746,8 @@ private func execute(
             title: codexSessionTitle(from: lockedObjective),
             deadline: deadline
         )
-        let turn = try appServer.runTurn(
+        let turn: CodexTurnOutput
+        do { turn = try appServer.runTurn(
             threadID: actualSessionID,
             prompt: prompt,
             workspace: workspace,
@@ -4736,7 +4756,11 @@ private func execute(
             permissionProfile: ticket.permissionProfile,
             deadline: deadline,
             onDispatch: { onDispatch?(actualSessionID) }
-        )
+        ) } catch {
+            throw interruptedExecution(ticket: ticket, model: model, effort: effort, contract: executorContract,
+                sessionID: actualSessionID, publicProgress: appServer.interruptedPublicProgress,
+                beforeHash: workspaceBeforeHash, workspace: workspace, started: started, cause: error)
+        }
         // Account for this exact native turn before any quality guard rejects
         // it. Never hide a second paid repair inside one signed route ticket.
         var recordPath: String?
@@ -4763,6 +4787,9 @@ private func execute(
             persistence = "unverified: \(error)"
         }
         validateCandidate = {
+        if UnifiedExecution.requestsManualBackendHandoff(String(decoding: turn.output, as: UTF8.self), request: lockedObjective) {
+            throw OS1Error.backendBlocked(BackendBlocker.reported(in: String(decoding: turn.output, as: UTF8.self)) ?? .incomplete)
+        }
         guard !providerOutputDeclaresCapabilityFailure(turn.output, prompt: lockedObjective) else {
             throw OS1Error.backendBlocked(BackendBlocker.reported(in: String(decoding: turn.output, as: UTF8.self)) ?? .capabilityUnavailable)
         }
@@ -4832,7 +4859,8 @@ private func execute(
         if projectlessRead && !sourceOnly { arguments.insert("--safe-mode", at: 1) }
         let stream = ExecutionStream()
         var revision = 0
-        let raw = try commandOutput(
+        let raw: (Int32, Data, Data)
+        do { raw = try commandOutput(
             claude,
             arguments,
             timeout: timeout,
@@ -4847,11 +4875,25 @@ private func execute(
                         publicText: stream.text, tool: stream.tool)
                 }
             }
-        )
+        ) } catch {
+            stream.finishClaude()
+            if let result = stream.result { onUsage?(CompletionUsageParser.parseClaudeResult(result)) }
+            throw interruptedExecution(ticket: ticket, model: model, effort: effort, contract: executorContract,
+                sessionID: activeSessionID, publicProgress: stream.text, beforeHash: workspaceBeforeHash,
+                workspace: workspace, started: started, cause: error)
+        }
         stream.finishClaude()
         let resultData = stream.result ?? raw.1
         onUsage?(CompletionUsageParser.parseClaudeResult(resultData))
-        let parsed = try parseClaudeCommandResult(raw.0, resultData, requestedSessionID: activeSessionID)
+        let parsed: ClaudePrintResult
+        do { parsed = try parseClaudeCommandResult(raw.0, resultData, requestedSessionID: activeSessionID) }
+        catch {
+            let object = (try? JSONSerialization.jsonObject(with: resultData)) as? [String: Any]
+            let progress = object?["session_id"] as? String == activeSessionID ? (object?["result"] as? String ?? stream.text) : stream.text
+            throw interruptedExecution(ticket: ticket, model: model, effort: effort, contract: executorContract,
+                sessionID: activeSessionID, publicProgress: progress, beforeHash: workspaceBeforeHash,
+                workspace: workspace, started: started, cause: error)
+        }
         let outputIssues = outputContractIssues(parsed.output, prompt: lockedObjective, snapshotOnly: hasPreloadedR2Evidence)
         let rejectedConfiguration = claudeOutputMisclassifiedRuntimeConfiguration(parsed.output)
         let rejectedClarification = claudeOutputDefersRequestedDeliverable(parsed.output, prompt: prompt)
@@ -4868,6 +4910,9 @@ private func execute(
             )
         } ?? false)
         validateCandidate = {
+        if UnifiedExecution.requestsManualBackendHandoff(String(decoding: parsed.output, as: UTF8.self), request: lockedObjective) {
+            throw OS1Error.backendBlocked(BackendBlocker.reported(in: String(decoding: parsed.output, as: UTF8.self)) ?? .incomplete)
+        }
         if rejectedCapability {
             throw OS1Error.backendBlocked(BackendBlocker.reported(in: String(decoding: parsed.output, as: UTF8.self)) ?? .capabilityUnavailable)
         }
@@ -5431,7 +5476,8 @@ func completionLocallyAdoptable(failure: String?, exitCode: Int32, output: Strin
 
 func completionFailureOutcome(_ reason: String?) -> CompletionOutcome {
     let value = (reason ?? "").lowercased()
-    if [BackendBlocker.cancelled.message.lowercased(), BackendBlocker.effectsUncertain.message.lowercased()].contains(value) {
+    if [BackendBlocker.cancelled.message.lowercased(), BackendBlocker.effectsUncertain.message.lowercased(),
+        BackendBlocker.budgetExhausted.message.lowercased()].contains(value) {
         return .verificationUnavailable
     }
     if value == BackendBlocker.quotaExhausted.message.lowercased() { return .quotaExhausted }
@@ -5714,6 +5760,7 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
     var quotaUnavailableProviders = Set<String>()
     var lastLocalFailure: String?
     var sourceBackendSwitched = false
+    var continuation: BackendContinuation?
     var lastFailureNotice: BackendFailureNotice?
     var adoptedResultReturned = false
     defer {
@@ -5724,7 +5771,10 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
         "codex": try normalizedSessionID(repairedSource ? nil : codexSessionID),
         "claude": try normalizedSessionID(repairedSource ? nil : claudeSessionID),
     ]
-    for step in 1...config.maximumSteps {
+    // An automatic readback is bounded separately: at most a probe plus one
+    // eligible alternate. It never recursively starts another review.
+    let attemptLimit = requireReadOnly ? min(2, config.maximumSteps) : config.maximumSteps
+    for step in 1...attemptLimit {
         if ExecutionCancellation.isCancelled { throw OS1Error.backendBlocked(.cancelled) }
         if route.status == "complete" {
             let adopted = steps.filter { $0.revasDisposition == "adopted" }
@@ -5780,6 +5830,10 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
             print("OS-1 step \(step): \(ticket.provider) / \(ticket.action) / \(effort) / \(ticket.permissionProfile)")
         }
         let beforeHash = workspaceHash(canonicalWorkspace)
+        let attemptPrompt = localPrompt + (try continuation?.handoffBlock() ?? "")
+        let attemptInputSHA256 = CompletionFeedbackScope.inputDigest(assembledInput: attemptPrompt,
+            codexSessionID: nativeSessions["codex"] ?? nil, claudeSessionID: nativeSessions["claude"] ?? nil,
+            workspace: canonicalWorkspace)
         let attemptStartedAt = Date()
         var attemptUsage: CompletionMeasuredUsage?
         var attemptFailure: String?
@@ -5821,7 +5875,7 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
             do {
                 execution = try execute(
                     ticket: ticket,
-                    prompt: localPrompt,
+                    prompt: attemptPrompt,
                     workspace: canonicalWorkspace,
                     timeout: attemptTimeout,
                     providerSessionID: nativeSessions[ticket.provider] ?? nil,
@@ -5853,18 +5907,22 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
                 attemptFailure = reason
                 lastLocalFailure = reason
                 recordExecutionFailure(ticket: ticket, model: model, effort: effort, reason: reason, source: sourceContext)
+                continuation = BackendContinuation(provider: ticket.provider, nativeSessionID: interruptedSessionID,
+                    blocker: backendBlocker(error) ?? .unclassified,
+                    publicProgress: (error as? RejectedProviderExecution)?.execution.artifact.output ?? "")
                 if backendBlocker(error) == .quotaExhausted {
                     lastFailureNotice = BackendFailureNotice(provider: ticket.provider, sessionID: interruptedSessionID,
                         blocker: BackendRecovery.classifiedBlocker(.quotaExhausted, permission: ticket.permissionProfile,
                             stage: dispatchStage, workspaceChanged: workspaceHash(canonicalWorkspace) != beforeHash),
-                        dispatchStage: dispatchStage, source: sourceContext, permissionProfile: ticket.permissionProfile)
+                        dispatchStage: dispatchStage, source: sourceContext, permissionProfile: ticket.permissionProfile,
+                        publicProgress: (error as? RejectedProviderExecution)?.execution.artifact.output)
                     lastFailureNotice?.emit()
                     recordCompletionAttempt(store: feedbackStore, scope: feedbackScope, ticket: ticket,
                         model: model, effort: effort, outcome: .quotaExhausted, usage: attemptUsage,
                         startedAt: attemptStartedAt, source: sourceContext)
                     attemptRecorded = true
                     failedCandidates.insert(candidateKey)
-                    guard providerPreference == "auto", step < config.maximumSteps,
+                    guard providerPreference == "auto", step < attemptLimit,
                           BackendRecovery.permitsAutomaticReplay(permission: ticket.permissionProfile, stage: dispatchStage) else { throw error }
                     if ticket.provider == "codex" {
                         codexCatalog = ActiveCodexCatalog(models: codexCatalog.models.filter { $0.slug != model }, source: codexCatalog.source)
@@ -5876,6 +5934,11 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
                         failed: ticket.provider, codexAvailable: !codexCatalog.models.isEmpty,
                         claudeAvailable: hasClaudeExecutable && !quotaUnavailableProviders.contains("claude")) else { throw error }
                     var freshContext = request.executionContext
+                    if let existing = freshContext, let continuation {
+                        freshContext = ExecutionInputContext(inputUTF8Bytes: existing.inputUTF8Bytes + (try continuation.handoffBlock()).utf8.count,
+                            sourceUTF8Bytes: existing.sourceUTF8Bytes, historyUTF8Bytes: existing.historyUTF8Bytes,
+                            completionFeedback: existing.completionFeedback)
+                    }
                     if feedbackSupported {
                         freshContext?.completionFeedback = try feedbackStore.load(scope: feedbackScope)?.publicFeedback()
                     }
@@ -5890,7 +5953,7 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
                     lastFailureNotice = nil
                     continue
                 }
-                if let failure = error as? OS1Error, failure.isTerminalBackendFailure {
+                if let failure = ((error as? RejectedProviderExecution)?.cause ?? error) as? OS1Error, failure.isTerminalBackendFailure {
                     terminalPermissionFailure = failure
                 }
                 let afterHash = workspaceHash(canonicalWorkspace)
@@ -5900,7 +5963,8 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
                 let safeBlocker = BackendRecovery.classifiedBlocker(blocker, permission: ticket.permissionProfile,
                     stage: dispatchStage, workspaceChanged: beforeHash != afterHash)
                 lastFailureNotice = BackendFailureNotice(provider: ticket.provider, sessionID: interruptedSessionID,
-                    blocker: safeBlocker, dispatchStage: dispatchStage, source: sourceContext, permissionProfile: ticket.permissionProfile)
+                    blocker: safeBlocker, dispatchStage: dispatchStage, source: sourceContext, permissionProfile: ticket.permissionProfile,
+                    publicProgress: (error as? RejectedProviderExecution)?.execution.artifact.output)
                 if safeBlocker.requiresReconciliation, terminalPermissionFailure == nil {
                     terminalPermissionFailure = .backendBlocked(safeBlocker)
                 }
@@ -5909,13 +5973,13 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
                         failed: ticket.provider, permission: ticket.permissionProfile, blocker: safeBlocker,
                         codexAvailable: !codexCatalog.models.isEmpty && codexCapacity > 0,
                         claudeAvailable: hasClaudeExecutable && claudeCapacity > 0,
-                        alreadySwitched: sourceBackendSwitched, remainingAttempts: config.maximumSteps - step,
+                        alreadySwitched: sourceBackendSwitched, remainingAttempts: attemptLimit - step,
                         dispatchStage: dispatchStage, unavailableProviders: quotaUnavailableProviders)
                 }
                 recordBackendCheckpoint(BackendRecoveryCheckpoint(executionID: ticket.executionID,
                     sequence: ticket.sequence, provider: ticket.provider, permissionProfile: ticket.permissionProfile,
                     objectiveSHA256: feedbackScope.objectiveSHA256, sourceSHA256: sourceContext?.sha256,
-                    assembledInputSHA256: feedbackScope.assembledInputSHA256,
+                    assembledInputSHA256: attemptInputSHA256,
                     workspaceBeforeSHA256: beforeHash, workspaceAfterSHA256: afterHash,
                     blocker: safeBlocker, nextProvider: sourceRecoveryProvider,
                     dispatchStage: dispatchStage, nativeSessionID: interruptedSessionID))
@@ -5937,7 +6001,8 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
             // custody and never replay its writes merely because delivery failed.
             lastFailureNotice = BackendFailureNotice(provider: ticket.provider, sessionID: execution.sessionID,
                 blocker: ticket.permissionProfile == "workspace_write" ? .effectsUncertain : .unclassified,
-                dispatchStage: dispatchStage, source: sourceContext, permissionProfile: ticket.permissionProfile)
+                dispatchStage: dispatchStage, source: sourceContext, permissionProfile: ticket.permissionProfile,
+                publicProgress: execution.artifact.output)
         }
         let artifact = execution.artifact
         let artifactData = try JSONEncoder().encode(artifact)
@@ -5986,8 +6051,9 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
                 permissionProfile: ticket.permissionProfile, deliveryID: delivery.id)
             throw terminalPermissionFailure ?? OS1Error.backendBlocked(.deliveryPending)
         }
-        guard route.status != "complete" || completionLocallyAdoptable(failure: attemptFailure,
-            exitCode: artifact.exitCode, output: artifact.output, persistence: execution.nativeRecord.persistence) else {
+        let locallyAdoptable = completionLocallyAdoptable(failure: attemptFailure,
+            exitCode: artifact.exitCode, output: artifact.output, persistence: execution.nativeRecord.persistence)
+        guard route.status != "complete" || locallyAdoptable || sourceRecoveryProvider != nil else {
             recordExecutionFailure(ticket: ticket, model: model, effort: effort,
                 reason: "verifier_completed_locally_rejected_candidate", source: sourceContext)
             recordCompletionAttempt(store: feedbackStore, scope: feedbackScope, ticket: ticket,
@@ -5996,7 +6062,7 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
             attemptRecorded = true
             throw OS1Error.message("서버의 완료 판정과 실제 실행 증거가 일치하지 않아 결과를 채택하지 않았습니다. 요청과 원본은 보존했습니다.")
         }
-        let revasDisposition = route.status == "complete" ? "adopted" : (route.ticket == nil ? "rejected" : "retry")
+        let revasDisposition = route.status == "complete" && locallyAdoptable ? "adopted" : (route.ticket == nil ? "rejected" : "retry")
         recordCompletionAttempt(store: feedbackStore, scope: feedbackScope, ticket: ticket,
             model: model, effort: effort,
             outcome: revasDisposition == "adopted" ? .adopted : completionFailureOutcome(attemptFailure),
@@ -6016,12 +6082,17 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
                 reason: "terminal_backend_blocker_no_model_retry", source: sourceContext)
             throw failure
         }
-        if let recovery = sourceRecoveryProvider, step < config.maximumSteps {
+        if let recovery = sourceRecoveryProvider, step < attemptLimit {
             RuntimeActivity.emit(.recovering, provider: recovery)
             // The failed artifact still goes through REVAS. Request a fresh,
             // signed route with a capability constraint; never edit an issued
             // ticket or reuse a failed candidate. One switch, same total budget.
             var recoveryContext = request.executionContext
+            if let existing = recoveryContext, let continuation {
+                recoveryContext = ExecutionInputContext(inputUTF8Bytes: existing.inputUTF8Bytes + (try continuation.handoffBlock()).utf8.count,
+                    sourceUTF8Bytes: existing.sourceUTF8Bytes, historyUTF8Bytes: existing.historyUTF8Bytes,
+                    completionFeedback: existing.completionFeedback)
+            }
             if feedbackSupported {
                 recoveryContext?.completionFeedback = try ((try? feedbackStore.load(scope: feedbackScope)) ??
                     CompletionFeedbackLedger(scope: feedbackScope)).publicFeedback()
@@ -6846,6 +6917,29 @@ func selfTest() throws {
         throw OS1Error.message("Transient failures must retain their bounded recovery path")
     }
     var protocolRecoveryChecks = 0
+    for (subtype, expected) in [("error_max_turns", BackendBlocker.incomplete),
+                               ("error_max_budget_usd", .budgetExhausted),
+                               ("error_during_execution", .unclassified),
+                               ("error_max_structured_output_retries", .incomplete)] {
+        for status: Int32 in [0, 1] {
+            let fixture: [String: Any] = ["type": "result", "subtype": subtype, "is_error": true,
+                "session_id": claudeSessionID, "usage": ["input_tokens": 23, "output_tokens": 7]]
+            let bytes = try JSONSerialization.data(withJSONObject: fixture)
+            var actual: BackendBlocker?
+            do { _ = try parseClaudeCommandResult(status, bytes, requestedSessionID: claudeSessionID) }
+            catch { actual = backendBlocker(error) }
+            guard actual == expected else { throw OS1Error.message("Result-less Claude error lost terminal subtype") }
+            protocolRecoveryChecks += 1
+        }
+    }
+    let otherSessionError: [String: Any] = ["type": "result", "subtype": "error_max_turns", "session_id": UUID().uuidString]
+    do {
+        _ = try parseClaudeCommandResult(1, JSONSerialization.data(withJSONObject: otherSessionError), requestedSessionID: claudeSessionID)
+        throw OS1Error.message("Other session result adopted")
+    } catch {
+        guard String(describing: error).contains("requested persistent session ID") else { throw error }
+        protocolRecoveryChecks += 1
+    }
     for (text, expected) in [
         ("Failed to upload code with status code 401 Unauthorized", BackendBlocker.authenticationRequired),
         ("Permission denied by Claude Code auto mode classifier. Blocked by classifier.", .policyDenied),
@@ -7470,7 +7564,7 @@ struct OS1Main {
             guard let command = arguments.first else { usage(); return }
             if try await fleetCommand(arguments) { return }
             switch command {
-            case "version", "--version", "-V": print("OS-1 Runtime 0.9.27 (live-preparation-custody-build78)")
+            case "version", "--version", "-V": print("OS-1 Runtime 0.9.28 (unified-execution-custody-build79)")
             case "doctor": try doctor()
             case "sidebar-pin":
                 guard (4...5).contains(arguments.count), arguments[1] == "codex",

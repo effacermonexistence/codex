@@ -895,17 +895,24 @@ private func parallelInteractionSelfTest() async throws {
         try await Task.sleep(for: .milliseconds(120))
         if submission.request == "DEPLOY" {
             throw RunnerError.backend(BackendFailureNotice(provider: "claude", sessionID: interruptedID,
-                blocker: .effectsUncertain, dispatchStage: .dispatched, source: recoverySource))
+                blocker: .effectsUncertain, dispatchStage: .dispatched, source: recoverySource,
+                permissionProfile: "workspace_write", publicProgress: "step one recorded; remote outcome unknown"))
         }
         if submission.readOnlyReconciliation == true {
-            try check(claudeID == interruptedID && context.contains("DEPLOY"), "readback lost interrupted session or objective")
+            try check(claudeID == interruptedID && context.contains("DEPLOY") && context.contains("step one recorded"), "readback lost interrupted session, objective or progress")
+        }
+        var returnedContext = try SessionHandoff.decode(context).taskContext
+        if submission.readOnlyReconciliation == true {
+            returnedContext?.setObjective(TaskContext.Objective(requestText: submission.request, kind: .explain, scope: .readOnly))
         }
         return AppRunSummary(status: "complete", steps: [AppRunStep(sequence: 1, provider: "codex",
             action: "test", model: "fixture", effort: "low", revasDisposition: "adopted", sessionID: UUID().uuidString,
-            permissionProfile: "read_only", exitCode: 0, output: "verified readback only", stderr: "", durationMS: 120, nativeRecord: nil)])
+            permissionProfile: "read_only", exitCode: 0, output: "verified readback only", stderr: "", durationMS: 120, nativeRecord: nil)],
+            taskContext: returnedContext)
     })
     let recoveryID = recoveryStore.selectedSessionID!
     recoveryStore.composer = "DEPLOY"; recoveryStore.send()
+    let originalObjectiveID = recoveryStore.selectedSession!.taskContext!.objectiveID
     recoveryStore.composer = "AFTER DEPLOY"; recoveryStore.send()
     recoveryStore.createSession(); recoveryStore.composer = "INDEPENDENT"; recoveryStore.send()
     while !recoveryStore.activeRuns.isEmpty { try await Task.sleep(for: .milliseconds(50)) }
@@ -913,7 +920,13 @@ private func parallelInteractionSelfTest() async throws {
     try check(recoveryStore.selectedSession!.claudeSessionID == interruptedID, "failed native session must remain inspectable")
     try check(recoveryStore.selectedSession!.lastBackendFailure?.requiresReadback == true, "typed blocker lost")
     try check(recoveryStore.selectedSession!.sourceContext == recoverySource, "interrupted source snapshot lost")
-    try check(recoveryRequests.count == 2 && recoveryRequests.contains(where: { $0.request == "INDEPENDENT" }), "failure replayed dependent or blocked independent work")
+    try check(recoveryRequests.count == 3 && recoveryRequests.filter { $0.readOnlyReconciliation == true }.count == 1 &&
+        recoveryRequests.contains(where: { $0.request == "INDEPENDENT" }), "automatic recovery absent, replayed dependent or blocked independent work")
+    try check(recoveryStore.selectedSession!.taskContext!.objectiveID == originalObjectiveID &&
+        recoveryStore.selectedSession!.taskContext!.objective.requestText == "DEPLOY", "internal recovery replaced original objective")
+    try check(recoveryStore.selectedSession!.messages.filter { $0.role == .user }.map(\.text) == ["DEPLOY"], "synthetic user turn leaked")
+    try check(recoveryStore.selectedSession!.lastFailure?.request == "DEPLOY" &&
+        recoveryStore.selectedSession!.lastFailure?.recoveryAttempted == true && recoveryStore.statusText.contains("미완료"), "readback falsely completed original work")
     recoveryStore.resumeQueue()
     try check(recoveryStore.activeRuns.isEmpty && recoveryStore.queuedSubmissions.count == 1, "resume-all bypassed unresolved failure")
     let recoveredStore = SessionStore(storageRoot: recoveryRoot)
@@ -921,14 +934,41 @@ private func parallelInteractionSelfTest() async throws {
         "restart lost failure custody")
     recoveryStore.retrySelectedFailure()
     while !recoveryStore.activeRuns.isEmpty { try await Task.sleep(for: .milliseconds(50)) }
-    try check(recoveryRequests.count == 3 && recoveryRequests.last?.readOnlyReconciliation == true,
+    try check(recoveryRequests.count == 4 && recoveryRequests.last?.readOnlyReconciliation == true,
         "retry must request a read-only assessment instead of replay")
     try check(recoveryRequests.last?.provider == .auto && recoveryRequests.last?.request.contains("DEPLOY") == true,
         "readback lost routing or objective")
     try check(recoveryRequests.filter { $0.request == "DEPLOY" }.count == 1 && recoveryStore.queuedSubmissions.count == 1,
         "assessment replayed the original action or implicitly resumed dependents")
     let savedReadback = try JSONDecoder().decode(PendingSubmission.self, from: JSONEncoder().encode(recoveryRequests.last!))
-    try check(savedReadback.readOnlyReconciliation == true, "read-only boundary must survive queue persistence")
+    try check(savedReadback.readOnlyReconciliation == true && savedReadback.recoveryParentID != nil, "read-only and original-request boundary must survive persistence")
+    let reviewCrashRoot = root.appendingPathComponent("review-crash")
+    try FileManager.default.createDirectory(at: reviewCrashRoot, withIntermediateDirectories: true)
+    var interruptedEnvelope = try JSONSerialization.jsonObject(with: Data(contentsOf: recoveryRoot.appendingPathComponent("sessions.json"))) as! [String: Any]
+    interruptedEnvelope["inFlight"] = [try JSONSerialization.jsonObject(with: JSONEncoder().encode(savedReadback))]
+    try JSONSerialization.data(withJSONObject: interruptedEnvelope).write(to: reviewCrashRoot.appendingPathComponent("sessions.json"))
+    let reviewCrashStore = SessionStore(storageRoot: reviewCrashRoot)
+    let crashSession = reviewCrashStore.sessions.first { $0.id == recoveryID }!
+    try check(crashSession.lastFailure?.request == "DEPLOY" && crashSession.taskContext?.objectiveID == originalObjectiveID &&
+        crashSession.lastFailure?.recoveryAttempted == true && reviewCrashStore.activeRuns.isEmpty,
+        "crash during readback replaced original objective or automatically restarted")
+    // Automatic inspection can also fail. Preserve the same original request,
+    // never recursively inspect an inspection or silently open another writer.
+    var failedReviewCalls = 0
+    let failedReviewRoot = root.appendingPathComponent("failed-review")
+    let failedReviewStore = SessionStore(storageRoot: failedReviewRoot, runOperation: { submission, _, _, _, _ in
+        failedReviewCalls += 1
+        try await Task.sleep(for: .milliseconds(50))
+        throw RunnerError.backend(BackendFailureNotice(provider: "claude", sessionID: interruptedID,
+            blocker: .effectsUncertain, dispatchStage: .dispatched, permissionProfile: "workspace_write"))
+    })
+    failedReviewStore.composer = "DEPLOY ONCE"; failedReviewStore.send()
+    while !failedReviewStore.activeRuns.isEmpty { try await Task.sleep(for: .milliseconds(50)) }
+    try check(failedReviewCalls == 2 && failedReviewStore.selectedSession!.lastFailure?.request == "DEPLOY ONCE",
+        "failed reconciliation recursed or replaced original work")
+    let failedReviewReload = SessionStore(storageRoot: failedReviewRoot)
+    try check(failedReviewReload.selectedSession!.lastFailure?.recoveryAttempted == true &&
+        failedReviewReload.selectedSession!.taskContext?.objective.requestText == "DEPLOY ONCE", "restart forgot recovery budget or objective")
     print("Parallel sessions: \(checks) checks passed; real child-process overlap, per-session FIFO/context/status, explicit retry, four-session limit, paused restart/cancellation")
 }
 
@@ -2196,6 +2236,10 @@ private struct PendingSubmission: Identifiable, Codable, Equatable, Sendable {
     var deliveryID: String? = nil
     var savedResultNeedsReview: Bool? = nil
     var preflightOnly: Bool? = true
+    // Internal recovery is a phase of the original request, never a synthetic
+    // user turn or a replacement objective. Optional for older session stores.
+    var recoveryParentID: UUID? = nil
+    var recoveryAttempted: Bool? = nil
 
     init(
         id: UUID = UUID(),
@@ -3267,6 +3311,7 @@ private final class SessionStore: ObservableObject {
         // The task context changes only when a run actually begins, so a
         // queued turn never invalidates the in-flight one.
         var taskContext = migratedTaskContext(sessions[index], sourceContext: sessions[index].sourceContext)
+        if submission.recoveryParentID == nil {
         for decision in TaskContext.explicitDecisions(in: submission.request) { taskContext.decideSemantic(decision) }
         let resolution = ScopeResolution.resolve(submission.request)
         taskContext.setObjective(TaskContext.Objective(requestText: submission.request,
@@ -3275,20 +3320,21 @@ private final class SessionStore: ObservableObject {
             prohibitions: resolution.prohibitions))
         sessions[index].taskContext = taskContext
         appendTaskEvent(conversationID: sessions[index].id, kind: "objective", summary: submission.request)
+        }
         do {
-            _ = try sessionHandoff(sessions[index], before: existingUserMessage ? submission.userMessageID : nil)
+            _ = try sessionHandoff(sessions[index], before: existingUserMessage && submission.recoveryParentID == nil ? submission.userMessageID : nil)
         } catch {
-            if !existingUserMessage {
+            if !existingUserMessage && submission.recoveryParentID == nil {
                 sessions[index].messages.append(ChatMessage(id: submission.userMessageID, role: .user, text: submission.request))
             }
-            sessions[index].lastFailure = submission
+            if submission.recoveryParentID == nil { sessions[index].lastFailure = submission }
             sessions[index].messages.append(ChatMessage(role: .system, text: error.localizedDescription))
             sessionStatuses[submission.sessionID] = "Needs attention"
             if selectedSessionID == submission.sessionID { statusText = "Needs attention" }
             save()
             return
         }
-        if !existingUserMessage {
+        if !existingUserMessage && submission.recoveryParentID == nil {
             sessions[index].messages.append(ChatMessage(
                 id: submission.userMessageID,
                 role: .user,
@@ -3298,15 +3344,15 @@ private final class SessionStore: ObservableObject {
         }
         let codexSessionID = sessions[index].codexSessionID
         let claudeSessionID = sessions[index].claudeSessionID
-        sessions[index].lastFailure = nil
-        sessions[index].lastBackendFailure = nil
+        if submission.recoveryParentID == nil {
+            sessions[index].lastFailure = nil
+            sessions[index].lastBackendFailure = nil
+        }
         inFlightSubmissions[submission.sessionID] = submission
         activeRuns[submission.sessionID] = ActiveRun(submissionID: submission.id, started: Date(),
             activity: RuntimeActivity(.preparing), provider: submission.provider == .auto ? nil : submission.provider,
             handedRevision: sessions[index].taskContext?.contextRevision)
-        let startingStatus = submission.provider == .auto
-            ? "RCC is choosing the best engine…"
-            : "\(submission.provider.title) is working…"
+        let startingStatus = submission.recoveryParentID != nil ? "OS1이 중단된 작업 상태 확인 중" : "OS1 작업 준비 중"
         sessionStatuses[submission.sessionID] = startingStatus
         if selectedSessionID == submission.sessionID { statusText = startingStatus }
         save()
@@ -3328,7 +3374,7 @@ private final class SessionStore: ObservableObject {
                     applyIngestedRecords(records, conversationID: submission.sessionID, preparingSubmission: submission.id)
                 }
                 guard let refreshed = sessions.firstIndex(where: { $0.id == submission.sessionID }) else { return }
-                let refreshedContext = try sessionHandoff(sessions[refreshed], before: submission.userMessageID)
+                let refreshedContext = try sessionHandoff(sessions[refreshed], before: submission.recoveryParentID == nil ? submission.userMessageID : nil)
                 activeRuns[submission.sessionID]?.handedRevision = sessions[refreshed].taskContext?.contextRevision
                 let summary = try await runOperation(submission, refreshedContext, codexSessionID, claudeSessionID,
                     { [weak self] activity in
@@ -3405,7 +3451,8 @@ private final class SessionStore: ObservableObject {
                 }
                 sessions[target].sourceContextVersion = 2
                 if let result = summary.taskContext {
-                    sessions[target].taskContext = sessions[target].taskContext?.adopting(result, handedRevision: handedRevision) ?? result
+                    sessions[target].taskContext = sessions[target].taskContext?.adopting(result,
+                        handedRevision: submission.recoveryParentID == nil ? handedRevision : nil) ?? result
                     appendTaskEvent(conversationID: submission.sessionID, kind: "adopted",
                         summary: visibleSteps.map { "\($0.provider) \($0.action)" }.joined(separator: ", "))
                 }
@@ -3445,12 +3492,24 @@ private final class SessionStore: ObservableObject {
                 sessionStatuses[submission.sessionID] = allVerified
                     ? "답변 수신 · 실행 기록 확인됨"
                     : "답변 수신 · 실행 기록 미확인"
+                if submission.recoveryParentID != nil {
+                    sessionStatuses[submission.sessionID] = "상태 확인됨 · 원래 작업은 아직 미완료"
+                    appendTaskEvent(conversationID: submission.sessionID, kind: "reconciled",
+                        summary: "Read-only findings preserved; original objective and uncertain-effect boundary remain pending")
+                }
                 }
             } catch {
                 if let target = sessions.firstIndex(where: { $0.id == submission.sessionID }) {
-                    sessions[target].lastFailure = submission
-                    if let failure = error as? RunnerError, case .backend(let notice) = failure {
+                    if submission.recoveryParentID == nil { sessions[target].lastFailure = submission }
+                    if submission.recoveryParentID == nil, let failure = error as? RunnerError, case .backend(let notice) = failure {
                         sessions[target].lastBackendFailure = notice
+                        if notice.deliveryID == nil, let progress = notice.publicProgress, !progress.isEmpty {
+                            sessions[target].messages.append(ChatMessage(role: .assistant, text: progress,
+                                provider: notice.provider, permissionProfile: notice.permissionProfile, nativeRecordVerified: false))
+                            sessions[target].messages.append(ChatMessage(role: .receipt,
+                                text: "중단 전 받은 내용 · 검증·완료 미확인 · OS1에 보존됨", provider: notice.provider,
+                                permissionProfile: notice.permissionProfile, nativeRecordVerified: false))
+                        }
                         if let deliveryID = notice.deliveryID,
                            let result = try? DeliveryOutbox().read(deliveryID), !result.output.isEmpty {
                             sessions[target].lastFailure?.deliveryID = deliveryID
@@ -3493,6 +3552,13 @@ private final class SessionStore: ObservableObject {
             inFlightSubmissions.removeValue(forKey: submission.sessionID)
             if selectedSessionID == submission.sessionID { statusText = sessionStatuses[submission.sessionID] ?? "Ready" }
             save()
+            if let target = sessions.firstIndex(where: { $0.id == submission.sessionID }),
+               UnifiedExecution.automaticallyReconcile(sessions[target].lastBackendFailure,
+                    alreadyAttempted: sessions[target].lastFailure?.recoveryAttempted == true,
+                    internalReview: submission.recoveryParentID != nil,
+                    providerPreference: submission.provider.rawValue) {
+                beginReconciliation(conversationID: submission.sessionID)
+            }
             ingestNativeRecords(conversationID: submission.sessionID)
             runNextQueuedSubmissionIfNeeded()
         }
@@ -3905,14 +3971,21 @@ private final class SessionStore: ObservableObject {
         guard !isRunning, let failed = selectedSession?.lastFailure,
               (selectedSession?.lastBackendFailure?.requiresReadback == true || failed.savedResultNeedsReview == true),
               activeRuns.count < Self.maximumConcurrentSessions else { return }
+        beginReconciliation(conversationID: failed.sessionID)
+    }
+    private func beginReconciliation(conversationID: UUID) {
+        guard !isSessionRunning(conversationID), activeRuns.count < Self.maximumConcurrentSessions,
+              let index = sessions.firstIndex(where: { $0.id == conversationID }),
+              let failed = sessions[index].lastFailure else { return }
         let request = BackendRecovery.readbackPrompt(objective: failed.request)
-        let message = ChatMessage(role: .user, text: request)
-        guard let index = selectedIndex else { return }
-        sessions[index].messages.append(message)
-        let readback = PendingSubmission(sessionID: failed.sessionID, userMessageID: message.id,
+        var readback = PendingSubmission(sessionID: failed.sessionID, userMessageID: failed.userMessageID,
             request: request, provider: .auto, workspace: failed.workspace,
             codexCapacity: failed.codexCapacity, claudeCapacity: failed.claudeCapacity,
             readOnlyReconciliation: true)
+        readback.recoveryParentID = failed.id
+        sessions[index].lastFailure?.recoveryAttempted = true
+        appendTaskEvent(conversationID: conversationID, kind: "reconciling", summary: "OS1 owns bounded read-only recovery of the original request")
+        save() // persist the one-review budget before dispatch, including a crash
         start(readback)
     }
     func flushPendingState() { draftSaveTask?.cancel(); save() }
@@ -3978,6 +4051,10 @@ private final class SessionStore: ObservableObject {
         queuedSubmissions = (envelope.queued ?? []).filter { queued in sessions.contains { $0.id == queued.sessionID } }
         for pending in envelope.inFlight ?? [] {
             guard let index = sessions.firstIndex(where: { $0.id == pending.sessionID }) else { continue }
+            if pending.recoveryParentID != nil, sessions[index].lastFailure != nil {
+                sessions[index].lastFailure?.recoveryAttempted = true
+                continue // retain original objective/blocker; never replay interrupted recovery on launch
+            }
             var recovered = pending
             if let result = DeliveryOutbox().forSubmission(pending.id.uuidString) {
                 recovered.deliveryID = result.id

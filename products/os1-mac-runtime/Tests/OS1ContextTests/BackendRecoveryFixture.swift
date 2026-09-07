@@ -64,7 +64,7 @@ func runBackendRecoveryFixtures() throws {
     check(!fields.keys.contains("token") && !fields.keys.contains("prompt") && !fields.keys.contains("output"), "no raw model content or credentials")
     check(!fields.keys.contains("complete") && !fields.keys.contains("verified"), "checkpoint is not completion proof")
     let activity = RuntimeActivity(.recovering, provider: "codex")
-    check(activity.label.contains("Codex") && activity.label.contains("이어가는 중"), "visible recovery")
+    check(activity.label.contains("OS1") && activity.label.contains("이어가는 중") && activity.provider == "codex", "OS1 owns progress; backend remains auditable")
     for stage in [BackendDispatchStage.notDispatched, .dispatched] {
         for permission in ["read_only", "workspace_write"] {
             let blocker = BackendRecovery.classifiedBlocker(.capabilityUnavailable, permission: permission,
@@ -115,4 +115,5 @@ func runBackendRecoveryFixtures() throws {
         check(message.contains(String(status)) && !message.contains("private-service-secret"), "safe status without raw service body")
     }
     print("OS1 backend recovery: \(count) deterministic checks passed")
+    try runUnifiedExecutionFixtures()
 }

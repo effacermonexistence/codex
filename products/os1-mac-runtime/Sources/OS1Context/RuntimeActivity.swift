@@ -24,10 +24,10 @@ public struct RuntimeActivity: Codable, Equatable, Sendable {
         case .source: return "연결·자료 확인 중"
         case .authorizing: return "공식 로그인 승인 대기 중 · 승인 후 같은 작업을 이어갑니다"
         case .routing: return "실행 모델 선택 중"
-        case .executing: return "\(provider == "claude" ? "Claude" : provider == "codex" ? "Codex" : "OS-1") 작업 중"
+        case .executing: return "OS1 작업 중"
         case .verifying: return "결과 검증 중"
         case .syncing: return "대화 기록 동기화 중"
-        case .recovering: return "\(provider == "codex" ? "Codex" : provider == "claude" ? "Claude" : "다른 백엔드")로 작업 이어가는 중"
+        case .recovering: return "OS1이 작업 이어가는 중"
         }
     }
     public static func emit(_ phase: Phase, provider: String? = nil, model: String? = nil, effort: String? = nil, publicText: String? = nil, tool: String? = nil, nativeSessionID: String? = nil) {

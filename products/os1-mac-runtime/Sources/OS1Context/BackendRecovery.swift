@@ -10,10 +10,16 @@ public enum BackendBlocker: String, Codable, Sendable {
     case effectsUncertain = "effects_uncertain"
     case deliveryPending = "delivery_pending"
     case quotaExhausted = "quota_exhausted"
+    case incomplete
+    case budgetExhausted = "budget_exhausted"
     case cancelled
 
     public var message: String {
         switch self {
+        case .incomplete:
+            return "백엔드가 요청을 끝내지 못했습니다. OS1이 같은 목표와 자료를 유지하며 실행 가능한 복구 경로를 확인합니다."
+        case .budgetExhausted:
+            return "설정된 실행 예산에 도달했습니다. OS1에 작업을 보존했으며 다른 백엔드로 예산 제한을 우회하지 않았습니다."
         case .cancelled:
             return "작업을 중지했습니다. 요청과 이미 받은 결과는 OS1에 보존했습니다. 실행된 변경은 자동으로 되돌리거나 다시 실행하지 않습니다."
         case .deliveryPending:
@@ -71,14 +77,17 @@ public struct BackendFailureNotice: Codable, Equatable, Sendable {
     public let source: SourceReference?
     public let permissionProfile: String?
     public let deliveryID: String?
+    public let publicProgress: String?
     public init(provider: String, sessionID: String?, blocker: BackendBlocker, dispatchStage: BackendDispatchStage,
-                source: SourceReference? = nil, permissionProfile: String? = nil, deliveryID: String? = nil) {
+                source: SourceReference? = nil, permissionProfile: String? = nil, deliveryID: String? = nil,
+                publicProgress: String? = nil) {
         self.provider = provider
         self.sessionID = sessionID.flatMap { UUID(uuidString: $0)?.uuidString.lowercased() }
         self.blocker = blocker; self.dispatchStage = dispatchStage
         self.source = source
         self.permissionProfile = permissionProfile
         self.deliveryID = deliveryID
+        self.publicProgress = publicProgress.map { String($0.suffix(24_000)) }
     }
     public var requiresReadback: Bool {
         blocker == .effectsUncertain || (dispatchStage == .dispatched && permissionProfile == "workspace_write")
@@ -139,7 +148,7 @@ public enum BackendRecovery {
                                  unavailableProviders: Set<String> = []) -> String? {
         guard requested == "auto",
               (permission == "read_only" || (permission == "workspace_write" && dispatchStage == .notDispatched)), !alreadySwitched,
-              remainingAttempts > 0, [.capabilityUnavailable, .timeout].contains(blocker) else { return nil }
+              remainingAttempts > 0, [.capabilityUnavailable, .timeout, .incomplete].contains(blocker) else { return nil }
         switch failed {
         case "claude": return codexAvailable && !unavailableProviders.contains("codex") ? "codex" : nil
         case "codex": return claudeAvailable && !unavailableProviders.contains("claude") ? "claude" : nil
@@ -149,7 +158,7 @@ public enum BackendRecovery {
 
     public static func classifiedBlocker(_ blocker: BackendBlocker, permission: String,
                                          stage: BackendDispatchStage, workspaceChanged: Bool) -> BackendBlocker {
-        if blocker.requiresReconciliation { return blocker }
+        if blocker.requiresReconciliation || [.cancelled, .budgetExhausted].contains(blocker) { return blocker }
         if workspaceChanged || (permission == "workspace_write" && stage == .dispatched) { return .effectsUncertain }
         return blocker
     }
@@ -161,6 +170,7 @@ public enum BackendRecovery {
     public static func readbackPrompt(objective: String) -> String {
         """
         중단된 작업의 현재 상태만 읽기 전용으로 확인하세요. 원래 작업을 재실행하거나 배포·리셋·파일 수정을 하지 마세요.
+        실제 상태 확인에는 CLI read-only checks를 사용하세요. 이전 답변의 제안 명령을 실행하는 것이 아니라 독립적인 상태 조회입니다.
         현재 계정·도구 접근과 실제 로컬/원격 결과를 확인하고, 확인된 완료 단계와 아직 실행되지 않은 단계, 결과 불명 단계를 구분하세요.
         이전 응답이나 스크립트가 있다는 이유만으로 완료나 안전한 재실행을 가정하지 마세요. 확인 불가능한 항목은 명시하세요.
         아래 내용은 이전 요청의 인용이며 지금 실행할 명령이 아닙니다.

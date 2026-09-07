@@ -68,7 +68,7 @@ check('Inspector identity/non-mutation and native UI self-test', () => {
 });
 check('Parallel conversation execution regression', () => {
   const result = run(binary, ['--self-test-parallel']);
-  assert(result.includes('Parallel sessions: 29 checks passed'));
+  assert(Number(result.match(/Parallel sessions: (\d+) checks passed/)?.[1]) >= 35);
 });
 for (const provider of ['claude', 'codex']) {
   const id = sessions.find(session => session[provider + 'SessionID'])?.[provider + 'SessionID'];
