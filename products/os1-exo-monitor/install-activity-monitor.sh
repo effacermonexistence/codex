@@ -87,7 +87,7 @@ TASK_LABEL="$(plutil -extract Label raw "$TASK_PLIST")"
 TASK_BASE_EXECUTABLE="$(plutil -extract ProgramArguments.0 raw "$TASK_PLIST")"
 [[ -x "$TASK_BASE_EXECUTABLE" ]] || { echo "configured EXO executable is missing" >&2; exit 1; }
 TASK_OLD_NODE_ID="$(curl -fsS --max-time 5 http://127.0.0.1:52415/node_id 2>/dev/null | tr -d '"' || true)"
-TASK_RELEASE_ID="c3c0b2be"
+TASK_RELEASE_ID="0c5ce61b"
 TASK_RUNTIME="$TASK_USER_HOME/.os1/exo-1.0.71-activity-monitor-$TASK_RELEASE_ID"
 if [[ -e "$TASK_RUNTIME" ]]; then
   TASK_RUNTIME="$TASK_RUNTIME-$(date -u +%Y%m%dT%H%M%SZ)"
@@ -135,7 +135,7 @@ if [[ "$(basename "$TASK_BASE_EXECUTABLE")" == "run-air.sh" ]]; then
   mv "$TASK_BOOTSTRAP_DEST.new" "$TASK_BOOTSTRAP_DEST"
   TASK_NEW_EXECUTABLE="$TASK_BASE_EXECUTABLE"
 else
-  TASK_EXO_COMMIT="c3c0b2bea196ceed8d9feda9036c58e4d7a424fd"
+  TASK_EXO_COMMIT="0c5ce61b9fa3300cbb62a0bdd9e975f046a1d3ca"
   TASK_SOURCE="$TASK_TEMP_ROOT/exo"
   git clone --filter=blob:none --no-checkout https://github.com/effacermonexistence/exo.git "$TASK_SOURCE"
   git -C "$TASK_SOURCE" checkout --detach "$TASK_EXO_COMMIT"

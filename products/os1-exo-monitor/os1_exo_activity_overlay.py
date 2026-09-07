@@ -8,6 +8,7 @@ come from the sampler EXO already owns.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import shutil
 import socket
@@ -20,6 +21,7 @@ import anyio
 import psutil
 
 FLEET_CACHE_SECONDS = 10.0
+FLEET_TIMEOUT_SECONDS = 30.0
 FLEET_RESULT_LIMIT = 20
 _ROUTE = "/activity/local"
 _PATCH_MARKER = "_os1_activity_monitor_installed"
@@ -106,6 +108,7 @@ def _ensure_activity_state(api: Any) -> None:
     api._os1_activity_fleet_cache = {"nodes": []}
     api._os1_activity_fleet_cache_at = 0.0
     api._os1_activity_fleet_error = None
+    api._os1_activity_fleet_refresh_task = None
     api._os1_activity_process = psutil.Process()
     psutil.cpu_percent(interval=None)
     api._os1_activity_process.cpu_percent(interval=None)
@@ -124,7 +127,7 @@ async def _refresh_fleet_snapshot(api: Any, now: float) -> None:
         os1_binary = Path(resolved)
 
     try:
-        with anyio.fail_after(5):
+        with anyio.fail_after(FLEET_TIMEOUT_SECONDS):
             process = await anyio.run_process(
                 [str(os1_binary), "fleet-snapshot"],
                 check=False,
@@ -167,7 +170,14 @@ async def _get_local_activity(api: Any) -> dict[str, object]:
         system = api.state.node_system.get(api.node_id)
         system_power_watts = system.sys_power if system is not None else 0.0
         api._os1_activity_energy_joules += max(system_power_watts, 0.0) * elapsed
-        await _refresh_fleet_snapshot(api, now)
+        fleet_refresh = api._os1_activity_fleet_refresh_task
+        if (
+            now - api._os1_activity_fleet_cache_at >= FLEET_CACHE_SECONDS
+            and (fleet_refresh is None or fleet_refresh.done())
+        ):
+            api._os1_activity_fleet_refresh_task = asyncio.create_task(
+                _refresh_fleet_snapshot(api, now)
+            )
 
         local_addresses = {
             address.address
