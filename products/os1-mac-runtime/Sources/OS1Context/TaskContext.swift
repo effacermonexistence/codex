@@ -636,6 +636,10 @@ public struct ScopeResolution: Equatable, Sendable {
     public let scope: TaskContext.Scope
     public let prohibitions: [String]
 
+    // A shared trailing negation applies to the entire bounded action list,
+    // not just its final item (e.g. "파일 수정, 테스트 실행, 배포는 하지 마").
+    public static let enumeratedProhibitionPattern = #"(?:파일|코드)\s*(?:수정|변경|편집)(?:\s*(?:[,·/]|및)\s*(?:(?:테스트|빌드)\s*(?:실행)?|설치|배포|복원|복구|삭제|업로드|리셋|초기화)){1,8}\s*(?:은|는|을|를)?\s*하지\s*마(?:세요|십시오)?"#
+
     static let positiveEdit = ["손봐", "손 봐", "수정해", "수정하고", "수정 해", "고쳐", "고치고", "바꿔", "바꾸고", "구현해", "추가해", "삭제해", "리팩터", "만들어",
                                "fix ", "modify ", "edit ", "implement ", "add ", "remove ", "rename ", "change the code", "update the code"]
     static let negatedTargets: [(pattern: String, prohibition: String)] = [
@@ -655,6 +659,24 @@ public struct ScopeResolution: Equatable, Sendable {
         let value = prompt.precomposedStringWithCanonicalMapping.lowercased()
         var prohibitions: [String] = []
         var remaining = value
+        if let pattern = try? NSRegularExpression(pattern: enumeratedProhibitionPattern) {
+            let range = NSRange(remaining.startIndex..<remaining.endIndex, in: remaining)
+            let matches = pattern.matches(in: remaining, range: range)
+            if !matches.isEmpty {
+                prohibitions.append("do not modify files")
+                for match in matches {
+                    guard let captured = Range(match.range, in: remaining) else { continue }
+                    let clause = String(remaining[captured])
+                    for (word, prohibition) in [("테스트", "do not run tests"), ("빌드", "do not build"),
+                        ("설치", "do not install"), ("배포", "do not deploy"), ("복원", "do not restore"),
+                        ("복구", "do not restore"), ("삭제", "do not delete"), ("업로드", "do not upload"),
+                        ("리셋", "do not reset"), ("초기화", "do not reset")] where clause.contains(word) {
+                        if !prohibitions.contains(prohibition) { prohibitions.append(prohibition) }
+                    }
+                }
+                remaining = pattern.stringByReplacingMatches(in: remaining, range: range, withTemplate: "read-only")
+            }
+        }
         // Longest patterns first so a compound prohibition is recognized as a
         // whole before one of its clauses is consumed.
         for target in negatedTargets.sorted(by: { $0.pattern.count > $1.pattern.count }) where remaining.contains(target.pattern) {

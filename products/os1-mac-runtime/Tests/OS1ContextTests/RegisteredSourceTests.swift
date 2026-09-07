@@ -47,11 +47,15 @@ func runRegisteredSourceFixtures() throws {
     rejects { _ = try RegisteredProjectSource.verify(good, live: live(id: "scv-instagram-single-20260907-v162")) }
     rejects { _ = try RegisteredProjectSource.verify(good, live: live(fp: String(repeating: "b", count: 64))) }
     rejects { _ = try RegisteredProjectSource.verify(good, live: live(Data("{}".utf8))) }
-    for entries in [Array(entries.dropLast()), Array(entries.dropFirst()), entries + [entries[0]],
-                    entries + [("unlisted-private.txt", Data("not source".utf8))],
-                    entries + [("../escape", Data())], entries + [("/absolute", Data())], entries + [("a/./b", Data())],
-                    entries + [("a//b", Data())], entries + [("-option", Data())], entries + [("newline\n", Data())]] {
-        rejects { _ = try RegisteredProjectSource.verify(gzip(tar(entries)), live: identity) }
+    var invalidArchives: [[(String, Data)]] = []
+    invalidArchives.append(Array(entries.dropLast()))
+    invalidArchives.append(Array(entries.dropFirst()))
+    invalidArchives.append(entries + [entries[0]])
+    for path in ["unlisted-private.txt", "../escape", "/absolute", "a/./b", "a//b", "-option", "newline\n"] {
+        invalidArchives.append(entries + [(path, Data())])
+    }
+    for invalid in invalidArchives {
+        rejects { _ = try RegisteredProjectSource.verify(gzip(tar(invalid)), live: identity) }
     }
     var mutated = entries; mutated[0].1 = Data("different source".utf8)
     rejects { _ = try RegisteredProjectSource.verify(gzip(tar(mutated)), live: identity) }

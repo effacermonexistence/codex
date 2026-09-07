@@ -70,6 +70,13 @@ questions now reuse an already-verified snapshot; fresh acquisition, source
 switch and connection imperatives remain distinct. The footer says “Source
 attached” instead of falsely labelling every transport as R2.
 
+The real backend follow-up also caught a grouped-negation defect: “file edits,
+tests, install, deploy, restore — do none of these” was routed as a write,
+so a correct no-change answer failed the write verifier. The bounded action
+list now carries its trailing prohibition to every member. The unchanged
+request reaches the executor; the routing projection removes prohibited action
+verbs and hard-requires a read-only ticket. The verifier was not weakened.
+
 ## Method and limits
 
 The objective, source continuity, execution, receipt/UI, cost and security

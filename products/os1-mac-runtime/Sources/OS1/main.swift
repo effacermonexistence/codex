@@ -821,6 +821,7 @@ func sourceRoutingTask(_ prompt: String, hasSource: Bool) -> String {
     }
     var text = prompt.precomposedStringWithCanonicalMapping
     let prohibitions = [
+        ScopeResolution.enumeratedProhibitionPattern,
         #"(?:파일|코드|저장소|계정|서버)(?:\s*(?:이나|나|또는|및|과|와|·|,)\s*(?:파일|코드|저장소|계정|서버))*\s*(?:은|는|을|를)?\s*(?:수정|변경|편집|작성|삭제)(?:은|는|을|를)?(?:하거나\s*(?:테스트|빌드)(?:를|는|도)?\s*(?:실행|수행))?\s*하지\s*마(?:세요|십시오)?[.!]?"#,
         #"(?i)\b(?:do not|don't|never)\s+(?:modify|edit|change|write|create|delete)\s+(?:any\s+)?(?:files?|code|accounts?)(?:\s+files?)?[.!]?"#,
     ]
