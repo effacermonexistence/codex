@@ -15,12 +15,15 @@ macOS processes share one transparent memory or GPU address space.
 - EXO upstream: `exo-explore/exo` tag `v1.0.71`
 - Upstream commit: `fd707de30b42db4211d15da96b9052e1dc280ed1`
 - Omar fork branch: `effacermonexistence/exo:os1/exo-cluster-activity-monitor`
-- Overlay commit: `a229544390c4a131c80382e931fcc479f47ac814`
-- Portable mail patch: `patches/0001-feat-add-two-node-OS1-activity-monitor.patch`
+- Overlay commit: `c3c0b2bea196ceed8d9feda9036c58e4d7a424fd`
+- Portable mail patches: `patches/0001-*` through `patches/0003-*`
+- Prebuilt dashboard: `dashboard-build/` (no Node/npm needed on the target Mac)
 
-The runtime builder replaces only `exo.api.main` in the currently installed
-PyInstaller archive. Every other module is preserved byte-for-byte, which keeps
-the per-device peer-ID, follower/master, and bounded-retry repairs already
+On a packaged Pro runtime, the builder replaces only `exo.api.main` in a new
+PyInstaller archive. Every other module is preserved byte-for-byte. On the
+source-based Air runtime, the installer adds a reversible `.pth` overlay that
+registers the read-only endpoint without replacing any EXO source. Both modes
+keep the per-device peer-ID, follower/master, and bounded-retry repairs already
 installed on each Mac. The signed `/Applications/EXO.app` is never modified.
 
 ## Install or recover one node
@@ -33,11 +36,11 @@ products/os1-exo-monitor/install-activity-monitor.sh pro
 products/os1-exo-monitor/install-activity-monitor.sh air
 ```
 
-The installer discovers the exact existing EXO LaunchAgent and executable,
-builds a separate ad-hoc-signed runtime, backs up the plist, switches only that
-service, preserves event logs/models/credentials, verifies peer identity, and
-waits for the two-node topology. On failure after the switch it restores the
-prior plist and service.
+The installer discovers the exact existing EXO LaunchAgent and whether it is a
+packaged Pro or source-based Air runtime. It backs up every changed file,
+switches only that EXO service, preserves event logs/models/credentials,
+verifies peer identity, and waits for the two-node topology. On failure after
+the switch it restores the prior plist, source overlay state, and service.
 
 ## Convergence definition
 
