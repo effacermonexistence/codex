@@ -10,7 +10,8 @@ let package = Package(
     ],
     dependencies: [.package(url: "https://github.com/mgriebling/SwiftMath.git", exact: "1.7.3")],
     targets: [
-        .target(name: "OS1Context"),
+        .target(name: "OS1System"),
+        .target(name: "OS1Context", dependencies: ["OS1System"]),
         .target(name: "OS1HookSupport"),
         .executableTarget(name: "OS1", dependencies: ["OS1Context", "OS1HookSupport"],
                           swiftSettings: [.unsafeFlags(["-parse-as-library"])]),
@@ -27,5 +28,7 @@ let package = Package(
         // suite runnable without installing Xcode or fetching dependencies.
         .executableTarget(name: "OS1ContextTests", dependencies: ["OS1Context"], path: "Tests/OS1ContextTests"),
         .executableTarget(name: "OS1HookSupportTests", dependencies: ["OS1HookSupport"], path: "Tests/OS1HookSupportTests"),
+        .executableTarget(name: "RetrievalRelevanceTests", dependencies: ["OS1Context"],
+                          path: "Tests/OS1RetrievalTests"),
     ]
 )

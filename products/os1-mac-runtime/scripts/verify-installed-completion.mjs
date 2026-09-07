@@ -7,8 +7,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-const [appArg, baselineArg, outputArg] = process.argv.slice(2);
-assert(appArg && baselineArg && outputArg, 'app-bundle baseline-app-bundle private-output-dir');
+const [appArg, baselineArg, outputArg, expectedVersion, expectedBuild] = process.argv.slice(2);
+assert(appArg && baselineArg && outputArg && expectedVersion && expectedBuild,
+  'app-bundle baseline-app-bundle private-output-dir expected-version expected-build');
 const app = path.resolve(appArg), baseline = path.resolve(baselineArg), output = path.resolve(outputArg);
 fs.mkdirSync(output, { recursive: true, mode: 0o700 });
 const binary = path.join(app, 'Contents/MacOS/OS1App');
@@ -20,11 +21,14 @@ const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 const run = (exe, args) => execFileSync(exe, args, { encoding: 'utf8', timeout: 45000,
   maxBuffer: 4 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'] });
 const checks = [], records = [];
-function check(name, fn) { fn(); checks.push({ name, status: 'PASS' }); }
+function check(name, fn) {
+  try { fn(); checks.push({ name, status: 'PASS' }); }
+  catch (error) { checks.push({ name, status: 'FAIL', error: String(error.message).slice(0, 700) }); }
+}
 check('Installed version/build', () => {
   const info = path.join(app, 'Contents/Info.plist');
-  assert.equal(run('/usr/bin/plutil', ['-extract', 'CFBundleShortVersionString', 'raw', '-o', '-', info]).trim(), '0.9.21');
-  assert.equal(run('/usr/bin/plutil', ['-extract', 'CFBundleVersion', 'raw', '-o', '-', info]).trim(), '70');
+  assert.equal(run('/usr/bin/plutil', ['-extract', 'CFBundleShortVersionString', 'raw', '-o', '-', info]).trim(), expectedVersion);
+  assert.equal(run('/usr/bin/plutil', ['-extract', 'CFBundleVersion', 'raw', '-o', '-', info]).trim(), expectedBuild);
 });
 check('Installed executable catalog covers current visible supported models and efforts', () => {
   const config = JSON.parse(fs.readFileSync(path.join(app, 'Contents/Resources/config.json'), 'utf8'));
@@ -56,7 +60,7 @@ check('Both binaries are universal', () => {
 check('Runtime preflight/feedback/replay/adoption and native regressions', () => {
   const result = run(runtime, ['self-test']);
   assert(result.includes('22 checks OK') && result.includes('self-test: OK'));
-  assert(result.includes('backend protocol recovery: 20 checks OK'));
+  assert(Number(result.match(/backend protocol recovery: (\d+) checks OK/)?.[1]) >= 22);
   assert(result.includes('automatic Codex/Claude open callbacks = 0; explicit session reveal preserved'));
 });
 check('Inspector identity/non-mutation and native UI self-test', () => {
@@ -64,14 +68,12 @@ check('Inspector identity/non-mutation and native UI self-test', () => {
 });
 check('Parallel conversation execution regression', () => {
   const result = run(binary, ['--self-test-parallel']);
-  assert(result.includes('Parallel sessions: 29 checks passed'));
+  assert(Number(result.match(/Parallel sessions: (\d+) checks passed/)?.[1]) >= 35);
 });
-for (const [provider, id] of [
-  ['claude', 'bae5987c-3fd1-4d08-a85c-6d9c18d41e86'],
-  ['codex', '01a060aa-882d-7742-ad84-ccd00748150c'],
-]) {
+for (const provider of ['claude', 'codex']) {
+  const id = sessions.find(session => session[provider + 'SessionID'])?.[provider + 'SessionID'];
   check(`Actual ${provider} record uses the stored conversation ID`, () => {
-    assert(sessions.some(session => session[provider + 'SessionID'] === id));
+    assert(id, 'No stored native session ID; cannot claim native-record coverage');
     const record = JSON.parse(run(binary, ['--audit-backend-record', provider, id]));
     assert.equal(record.requestedID, id);
     assert.equal(record.matchedID, id);
@@ -103,4 +105,6 @@ const report = {
 };
 const destination = path.join(output, 'installed-completion-audit.json');
 fs.writeFileSync(destination, JSON.stringify(report, null, 2) + '\n', { mode: 0o600 });
-console.log(JSON.stringify({ passed: checks.length, modelCalls: 0, report: destination }));
+console.log(JSON.stringify({ passed: checks.filter(c => c.status === 'PASS').length,
+  failed: checks.filter(c => c.status === 'FAIL'), modelCalls: 0, report: destination }));
+if (checks.some(c => c.status === 'FAIL')) process.exitCode = 1;

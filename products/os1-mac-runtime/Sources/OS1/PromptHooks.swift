@@ -189,6 +189,13 @@ private func runEXOPromptHook(consumerName: String, fleetProfile: String) async 
         let input = try promptHookInput()
         let stateDirectory = try promptHookStateDirectory()
 
+        // Harness-synthesized blocks and conversation-dependent follow-ups are
+        // not standalone jobs: no Fleet dispatch, no EXO draft, no wait advice.
+        guard PromptIntentPolicy.decision(for: input.prompt) == .dispatch else {
+            promptHookResponse()
+            return
+        }
+
         if AutomaticFleetHookPolicy.shouldBypass(
             cwd: input.cwd,
             homeDirectory: FileManager.default.homeDirectoryForCurrentUser.path,
@@ -250,6 +257,10 @@ private func runEXOPromptHook(consumerName: String, fleetProfile: String) async 
             )
             try? breaker.recordSuccess()
             let output = String(inference.output.prefix(8_000))
+            guard EXODraftPolicy.isUseful(output) else {
+                promptHookResponse()
+                return
+            }
             promptHookResponse(context: """
             Two-Mac local EXO draft (read-only, Pipeline/MlxRing):
             \(output)

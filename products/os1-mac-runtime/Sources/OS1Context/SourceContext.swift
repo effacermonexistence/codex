@@ -14,28 +14,39 @@ public struct SourceReference: Codable, Equatable, Sendable {
 }
 
 public struct SessionHandoff: Codable, Sendable {
+    public static let currentFormat = "os1-session-handoff-v3"
+    public static let acceptedFormats: Set<String> = ["os1-session-handoff-v2", currentFormat]
+
     public let format: String
     public let transcript: String
     public let source: SourceReference?
+    /// v3: the OS1-owned task state (objective, decisions, project baseline,
+    /// all bound sources, bindings, executions). Absent on v2 handoffs.
+    public let taskContext: TaskContext?
 
-    public init(transcript: String, source: SourceReference?) {
-        format = "os1-session-handoff-v2"
+    public init(transcript: String, source: SourceReference?, taskContext: TaskContext? = nil) {
+        format = Self.currentFormat
         // Budget bytes, not Swift characters: Korean can consume 3+ bytes each.
         var bytes = Data(transcript.utf8).suffix(150_000)
         while !bytes.isEmpty && String(data: bytes, encoding: .utf8) == nil { bytes = bytes.dropFirst() }
         self.transcript = String(data: bytes, encoding: .utf8) ?? ""
         self.source = source
+        self.taskContext = taskContext
     }
 
     public func encoded() throws -> String {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.withoutEscapingSlashes]
+        encoder.dateEncodingStrategy = .iso8601
         var bounded = self
         while true {
             let data = try encoder.encode(bounded)
             if data.count <= 190_000 { return String(decoding: data, as: UTF8.self) }
+            // The task context is the part that must survive; only the
+            // transcript shrinks.
             guard !bounded.transcript.isEmpty else { throw SourceContextError.invalid }
-            bounded = SessionHandoff(transcript: String(bounded.transcript.suffix(bounded.transcript.count / 2)), source: source)
+            bounded = SessionHandoff(transcript: String(bounded.transcript.suffix(bounded.transcript.count / 2)),
+                                     source: source, taskContext: taskContext)
         }
     }
 
@@ -45,10 +56,12 @@ public struct SessionHandoff: Codable, Sendable {
             return SessionHandoff(transcript: value, source: nil)
         }
         // Legacy text may itself be JSON. Only the exact transport discriminator
-        // opts in; malformed v2 must fail rather than silently drop attachments.
+        // opts in; malformed v2/v3 must fail rather than silently drop attachments.
         if value.contains("os1-session-handoff-") {
-            let result = try JSONDecoder().decode(Self.self, from: Data(value.utf8))
-            guard result.format == "os1-session-handoff-v2" else { throw SourceContextError.invalid }
+            let decoder = JSONDecoder()
+            decoder.dateDecodingStrategy = .iso8601
+            let result = try decoder.decode(Self.self, from: Data(value.utf8))
+            guard acceptedFormats.contains(result.format) else { throw SourceContextError.invalid }
             return result
         }
         return SessionHandoff(transcript: value, source: nil)

@@ -2,9 +2,13 @@ import CryptoKit
 import CoreFoundation
 import Darwin
 import Foundation
+import OS1System
 
-@_silgen_name("flock")
-private func completionFeedbackFlock(_ descriptor: Int32, _ operation: Int32) -> Int32
+// Preserve flock's C ABI across SDK import/name changes. Do not declare a
+// libc function with @_silgen_name (which gives it a thin Swift convention).
+private func completionFeedbackFlock(_ descriptor: Int32, _ operation: Int32) -> Int32 {
+    os1_flock(descriptor, operation)
+}
 
 public enum CompletionOutcome: String, Codable, Sendable {
     case adopted

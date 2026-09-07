@@ -7,12 +7,21 @@ extension NSAttributedString.Key {
 
 /// Offline TeX typesetting inside the single, selectable native transcript.
 enum MathTypesetter {
+    private static let standardSymbols: Void = {
+        for (name, base, glyph) in [("dashrightarrow", "rightarrow", "⇢"), ("dashleftarrow", "leftarrow", "⇠")] {
+            if let atom = MTMathAtomFactory.atom(forLatexSymbol: base) {
+                atom.nucleus = glyph
+                MTMathAtomFactory.add(latexSymbol: name, value: atom)
+            }
+        }
+    }()
     nonisolated(unsafe) private static let cache: NSCache<NSString, NSImage> = {
         let result = NSCache<NSString, NSImage>(); result.countLimit = 256
         result.totalCostLimit = 32 * 1024 * 1024; return result
     }()
 
     static func render(_ source: String, display: Bool = false) -> NSAttributedString {
+        _ = standardSymbols
         let trim = source.trimmingCharacters(in: .whitespacesAndNewlines)
         let delimiters = [("$$", "$$"), (#"\["#, #"\]"#), (#"\("#, #"\)"#), ("$", "$")]
         guard let pair = delimiters.first(where: { trim.hasPrefix($0.0) && trim.hasSuffix($0.1) }),
@@ -30,10 +39,17 @@ enum MathTypesetter {
         // SwiftMath 1.7 does not parse LaTeX's standard \operatorname command.
         // Normalize bounded plain names only; copyable text remains bound to
         // `source` below and therefore preserves the original TeX.
-        let renderLatex = latex.replacingOccurrences(
+        var renderLatex = latex.replacingOccurrences(
             of: #"\\operatorname\{([A-Za-z]{1,64})\}"#,
             with: #"\\mathrm{$1}"#,
             options: .regularExpression)
+        // SwiftMath accepts hex color values; standard TeX names otherwise
+        // produce a missing/incorrect color. Normalize presentation only.
+        for (name, hex) in [("gray", "808080"), ("grey", "808080"), ("white", "FFFFFF"),
+                            ("black", "000000"), ("red", "FF0000"), ("green", "008000"), ("blue", "0000FF")] {
+            renderLatex = renderLatex.replacingOccurrences(of: "\\color{\(name)}", with: "\\color{#\(hex)}")
+                .replacingOccurrences(of: "\\textcolor{\(name)}", with: "\\textcolor{#\(hex)}")
+        }
         let size: CGFloat = display ? 18 : 15
         let key = "\(size):\(renderLatex)" as NSString
         let image: NSImage
@@ -79,7 +95,8 @@ enum MathTypesetter {
             .font: NSFont.systemFont(ofSize: display ? 18 : 15), .foregroundColor: NSColor.white,
         ]
         func appendMath(_ range: NSRange) -> Bool {
-            let chunk = text.substring(with: range)
+            let chunk = text.substring(with: range).replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
             guard !containsCJK(chunk) else { return false }
             let nonSpacing = chunk.replacingOccurrences(of: #"\\(?:qquad|quad|,|;|!| )"#, with: "", options: .regularExpression)
                 .trimmingCharacters(in: .whitespacesAndNewlines)

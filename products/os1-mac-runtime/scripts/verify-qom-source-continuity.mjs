@@ -69,7 +69,11 @@ const checks = [], audit = { schema: 'os1-qom-source-continuity-audit-v1', mode,
   configSHA256: hash(fs.readFileSync(config)), baselineSHA256: hash(beforeBaseline), incident, checks, runs: [],
   modelCalls: 0,
   accounting: 'All byte counts and hashes are exact. Token counts come only from adopted native usage when exposed; rejected-candidate token usage is unavailable.' };
-function check(name, fn) { fn(); checks.push({ name, status: 'PASS' }); }
+const failures = [];
+function check(name, fn) {
+  try { fn(); checks.push({ name, status: 'PASS' }); }
+  catch (error) { failures.push(name); checks.push({ name, status: 'FAIL', error: String(error && error.message || error) }); }
+}
 function directoryManifest(directory) {
   return hash(JSON.stringify(fs.readdirSync(directory).sort().map(name => {
     const stat = fs.statSync(path.join(directory, name)); return [name, stat.size, stat.mtimeMs, stat.mode & 0o777];
@@ -433,3 +437,4 @@ if (failure) audit.failure = String(failure.message || failure).slice(0, 500);
 const auditFile = save('audit.json', audit);
 console.log(JSON.stringify({ passed: audit.passed, checks: checks.length, audit: auditFile }));
 if (failure) process.exitCode = 1;
+process.exit(failures.length === 0 ? 0 : 1);
