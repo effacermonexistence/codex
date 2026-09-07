@@ -62,7 +62,7 @@ if [[ ! -x "$TASK_BASE_EXECUTABLE" ]]; then
 fi
 
 TASK_OLD_NODE_ID="$(curl -fsS --max-time 5 http://127.0.0.1:52415/node_id 2>/dev/null | tr -d '"' || true)"
-TASK_OVERLAY_COMMIT="a22954430d91bb43dbbf7e5e28ec1f0570bf91bc"
+TASK_OVERLAY_COMMIT="a229544390c4a131c80382e931fcc479f47ac814"
 TASK_SOURCE="$TASK_TEMP_ROOT/exo"
 git clone --filter=blob:none --no-checkout https://github.com/effacermonexistence/exo.git "$TASK_SOURCE"
 git -C "$TASK_SOURCE" checkout --detach "$TASK_OVERLAY_COMMIT"

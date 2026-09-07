@@ -15,7 +15,7 @@ macOS processes share one transparent memory or GPU address space.
 - EXO upstream: `exo-explore/exo` tag `v1.0.71`
 - Upstream commit: `fd707de30b42db4211d15da96b9052e1dc280ed1`
 - Omar fork branch: `effacermonexistence/exo:os1/exo-cluster-activity-monitor`
-- Overlay commit: `a22954430d91bb43dbbf7e5e28ec1f0570bf91bc`
+- Overlay commit: `a229544390c4a131c80382e931fcc479f47ac814`
 - Portable mail patch: `patches/0001-feat-add-two-node-OS1-activity-monitor.patch`
 
 The runtime builder replaces only `exo.api.main` in the currently installed
@@ -47,4 +47,3 @@ The visible balance score is deterministic:
 
 It is shown only when both node samples are newer than 15 seconds. It is an
 observed load-balance indicator, not a probability or optimality guarantee.
-
