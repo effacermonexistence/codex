@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import fs from 'node:fs'
 import {
   GOLD_LATEST_KEY,
   GOLD_MANIFEST_KEY,
@@ -38,6 +39,29 @@ import {
 
 const target = { name: 'production', mode: 'production' }
 
+test('active custody is readable by installed OS1 and matches sentinel release pins', () => {
+  const version = RELEASE_ID.match(/-v(\d+)$/)[1]
+  const markdown = fs.readFileSync(new URL(`../../docs/scv-instagram-v${version}-custody.md`, import.meta.url), 'utf8')
+  // SCVCustodyRecord.parse and SCVLiveRelease.matches use these exact,
+  // case-sensitive table labels. Do not replace them with display aliases.
+  const cell = field => markdown.split('\n').find(line => {
+    const cells = line.split('|')
+    return cells.length === 4 && cells[0].trim() === '' && cells[1].trim() === field && cells[3].trim() === ''
+  })?.split('|')[2].trim()
+  const tick = field => cell(field)?.match(/`([^`]+)`/)?.[1]
+  assert.equal(tick('release id'), RELEASE_ID)
+  assert.equal(tick('content fingerprint'), CONTENT_FINGERPRINT)
+  assert.equal(tick('release manifest sha256'), RELEASE_MANIFEST)
+  const archive = cell('runtime archive (R2)')
+  assert(archive, 'runtime source must be in the OS1-readable custody table')
+  const values = [...archive.matchAll(/`([^`]+)`/g)].map(match => match[1])
+  assert.equal(values.length, 2)
+  assert.match(values[0], /^scv-instagram-automation\/release-ready\/[A-Za-z0-9/_-]+\.tar\.gz$/)
+  assert(!values[0].includes('..'))
+  assert.match(values[1], /^[a-f0-9]{64}$/)
+  assert(Number(archive.match(/\(([0-9]{1,12}) bytes/)?.[1]) > 0)
+})
+
 function healthyBody() {
   return {
     ok: true,
@@ -74,7 +98,7 @@ function healthyBody() {
   }
 }
 
-test('accepts the exact healthy v157 release while preserving operational alerts', () => {
+test('accepts the exact healthy v160 release while preserving operational alerts', () => {
   const result = evaluateEndpoint(target, 200, healthyBody())
   assert.equal(result.ok, true)
   assert.equal(result.operational_alert_count, 1)
