@@ -13,8 +13,9 @@ readonly skip_prerequisites="${OS1_SKIP_PREREQUISITES:-0}"
 readonly skip_login="${OS1_SKIP_LOGIN:-0}"
 readonly verify_only="${OS1_VERIFY_ONLY:-0}"
 readonly enable_fleet="${OS1_ENABLE_FLEET:-1}"
+readonly user_repair_install="${OS1_USER_REPAIR_INSTALL:-0}"
 
-for os1_flag in "$allow_unnotarized_beta" "$skip_prerequisites" "$skip_login" "$verify_only" "$enable_fleet"; do
+for os1_flag in "$allow_unnotarized_beta" "$skip_prerequisites" "$skip_login" "$verify_only" "$enable_fleet" "$user_repair_install"; do
   case "$os1_flag" in 0|1) ;; *) echo "OS-1 installer flags must be 0 or 1." >&2; exit 1 ;; esac
 done
 
@@ -287,6 +288,16 @@ fi
 if [[ "$verify_only" == "1" ]]; then
   echo "OS-1 package verification succeeded; installation was not performed."
   exit 0
+fi
+
+if [[ "$user_repair_install" == "1" ]]; then
+  [[ "$allow_unnotarized_beta" == 1 && -n "$beta_package_path" && -n "$beta_manifest_path" &&
+     -d "$os1_tmp/expanded/OS-1-component.pkg/Payload" ]] || {
+    echo 'Per-user repair requires an explicitly verified local beta payload.' >&2; exit 1;
+  }
+  /usr/bin/python3 "$(dirname "${BASH_SOURCE[0]}")/install-user-repair.py" \
+    "$os1_tmp/expanded/OS-1-component.pkg/Payload" "$os1_version"
+  exit $?
 fi
 
 mkdir -p "$local_bin" || exit 1

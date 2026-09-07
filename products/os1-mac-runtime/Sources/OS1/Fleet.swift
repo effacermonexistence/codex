@@ -2,6 +2,7 @@ import CryptoKit
 import CoreFoundation
 import Darwin
 import Foundation
+import OS1Context
 import OS1HookSupport
 
 private let fleetProfiles = ["codex", "claude", "os1", "build", "test", "exo"]
@@ -259,7 +260,7 @@ private struct FleetJobStatus: Codable {
 }
 
 private struct FleetExecutionReceipt: Codable {
-    let schema = 1
+    var schema = 1
     let jobID: String
     let nodeRole: String
     let deviceID: String
@@ -416,8 +417,8 @@ private func fleetHeartbeatNode(role: String, config: RuntimeConfig) async throw
         memoryTotalMiB: Int(ProcessInfo.processInfo.physicalMemory / 1_048_576),
         memoryAvailableMiB: fleetAvailableMemoryMiB(),
         queueDepth: 0,
-        hasCodex: (try? findExecutable("codex")) != nil,
-        hasClaude: (try? findExecutable("claude")) != nil,
+        hasCodex: fleetProviderReady("codex"),
+        hasClaude: fleetProviderReady("claude"),
         exoReady: exoNodes >= 2,
         exoNodes: exoNodes
     )
@@ -981,7 +982,7 @@ private func refreshFleetResultCache(client: APIClient, key: SigningKey) async t
     }
 }
 
-private func readFleetCachedResult(at target: URL, jobID: String) throws -> String? {
+private func readPrivateFleetCache(at target: URL) throws -> Data {
     let attributes = try FileManager.default.attributesOfItem(atPath: target.path)
     guard attributes[.type] as? FileAttributeType == .typeRegular,
           (attributes[.ownerAccountID] as? NSNumber)?.uint32Value == getuid(),
@@ -989,7 +990,11 @@ private func readFleetCachedResult(at target: URL, jobID: String) throws -> Stri
           (attributes[.size] as? NSNumber)?.intValue ?? Int.max <= 4_000_000 else {
         throw OS1Error.message("Fleet result cache ownership or permissions rejected")
     }
-    let status = try JSONDecoder().decode(FleetJobStatus.self, from: Data(contentsOf: target))
+    return try Data(contentsOf: target)
+}
+
+private func readFleetCachedResult(at target: URL, jobID: String) throws -> String? {
+    let status = try JSONDecoder().decode(FleetJobStatus.self, from: readPrivateFleetCache(at: target))
     return try fleetValidatedResult(status, jobID: jobID)
 }
 
@@ -1042,6 +1047,172 @@ func submitFleetTask(
     )
     print("OS-1 fleet job \(receipt.jobID): \(receipt.executionMode) on \(receipt.executorDeviceID)")
     print(try await waitForFleetTask(jobID: receipt.jobID))
+}
+
+// The v1 Fleet wire transports a clean Git revision and bounded text, not local
+// source receipts or native sessions. Preserve those locally rather than drop
+// them or pretend another Mac can resume an Air-local provider session.
+func automaticAppFleetLocalReason(context: String?, requireReadOnly: Bool,
+                                 promptBytes: Int, internalExecution: Bool,
+                                 provider: String, codexCapacity: Int, claudeCapacity: Int) throws -> String? {
+    if internalExecution { return "executor_recursion_guard" }
+    if requireReadOnly { return "local_reconciliation_custody" }
+    if try SessionHandoff.decode(context).source != nil { return "local_source_receipt_custody" }
+    if promptBytes > 48_000 { return "context_exceeds_fleet_v1_limit" }
+    if provider == "auto" && (codexCapacity != 100 || claudeCapacity != 100) {
+        return "provider_capacity_constraints_not_in_fleet_v1"
+    }
+    return nil
+}
+
+private func appFleetRun(_ raw: String, receipt: FleetEnqueueReceipt,
+                         repository: String, revision: String) throws -> RunSummary {
+    let result = try JSONDecoder().decode(FleetExecutionReceipt.self, from: Data(raw.utf8))
+    guard result.schema == 1, result.jobID == receipt.jobID, result.deviceID == receipt.executorDeviceID,
+          result.profile == receipt.profile, result.repository == repository, result.revision == revision,
+          receipt.objectiveVersion == "os1-fleet-objective-v1", receipt.executionMode == "single_node",
+          fleetResultStatusIsValid(result.run, profile: receipt.profile), result.run.sourceContext == nil,
+          result.run.steps.allSatisfy({
+              ["codex", "claude"].contains($0.provider) &&
+                  (receipt.profile == "os1" || $0.provider == receipt.profile) &&
+                  $0.revasDisposition == "adopted" && $0.nativeRecord?.persistence == "verified" &&
+                  UUID(uuidString: $0.sessionID) != nil
+          }) else { throw OS1Error.message("OS1 app rejected mismatched or unverified Fleet result; no local re-execution") }
+    var summary = result.run
+    summary.fleet = FleetRunProvenance(executorDeviceID: result.deviceID, jobID: result.jobID,
+                                      resultSHA256: sha256Hex(Data(raw.utf8)))
+    return summary
+}
+
+func runTaskWithAutomaticFleet(prompt: String, workspace: String, providerPreference: String,
+                               context: String?, codexSessionID: String?, claudeSessionID: String?,
+                               codexCapacity: Int, claudeCapacity: Int, progress: Bool,
+                               desktopReveal: DesktopRevealMode, requireReadOnly: Bool) async throws -> RunSummary {
+    let submission = ProcessInfo.processInfo.environment["OS1_SUBMISSION_ID"]
+    let intent: String? = try submission.flatMap { value in
+        guard UUID(uuidString: value) != nil else { return nil }
+        return sha256Hex(try JSONEncoder().encode(["os1-app-fleet-v1", try deviceID(), value]))
+    }
+    let existingIntent = try intent.map { FileManager.default.fileExists(atPath: try fleetIntentURL($0).path) } ?? false
+    func local(_ reason: String) async throws -> RunSummary {
+        guard !existingIntent else {
+            throw OS1Error.message("This app submission has preserved Fleet custody; resume intent " +
+                (intent ?? "") + ". A changed workspace/context must not trigger duplicate local execution.")
+        }
+        RuntimeActivity.emit(.preparing, publicText: "OS1 로컬 실행: " + reason)
+        var summary = try await runTask(prompt: prompt, workspace: workspace, providerPreference: providerPreference,
+            context: context, codexSessionID: codexSessionID, claudeSessionID: claudeSessionID,
+            codexCapacity: codexCapacity, claudeCapacity: claudeCapacity, progress: progress,
+            desktopReveal: desktopReveal, requireReadOnly: requireReadOnly)
+        summary.fleet = FleetRunProvenance(executorDeviceID: try deviceID(), localReason: reason)
+        return summary
+    }
+    let bypass = AutomaticFleetHookPolicy.shouldBypass(cwd: workspace,
+        homeDirectory: FileManager.default.homeDirectoryForCurrentUser.path,
+        environment: ProcessInfo.processInfo.environment)
+    let handoff = try SessionHandoff.decode(context)
+    let task = try providerPrompt(current: prompt, context: handoff.transcript.isEmpty ? nil : handoff.transcript)
+    if let reason = try automaticAppFleetLocalReason(context: context, requireReadOnly: requireReadOnly,
+        promptBytes: task.utf8.count, internalExecution: bypass, provider: providerPreference,
+        codexCapacity: codexCapacity, claudeCapacity: claudeCapacity) {
+        return try await local(reason)
+    }
+    if protectedRouteMaterialRequested(prompt, context: context) || protectedRouteMaterialInEvidence(task) {
+        return try await local("protected_input_boundary")
+    }
+    let identity: (String, String, String)
+    do { identity = try fleetWorkspaceIdentity(workspace) }
+    catch { return try await local("workspace_not_a_clean_transportable_git_revision") }
+    guard let intent else {
+        return try await local("missing_recoverable_app_submission_id")
+    }
+    let stateURL = try fleetIntentURL(intent).deletingLastPathComponent().appendingPathComponent(intent + ".app-result.json")
+    let receipt: FleetEnqueueReceipt
+    do {
+        receipt = try await enqueueFleetTask(workspace: workspace, prompt: task,
+            profile: providerPreference == "auto" ? "os1" : providerPreference,
+            minMemoryMiB: AutomaticFleetHookPolicy.minimumMemoryMiB,
+            cpuWeight: AutomaticFleetHookPolicy.cpuWeight, preferDeviceID: nil, intentID: intent)
+    } catch FleetSubmissionError.noCapacity {
+        // Server proved that it created no job. An uncertain delivery is NOT
+        // caught here: its preserved intent must be resumed, never duplicated.
+        return try await local("no_eligible_fleet_executor")
+    }
+    RuntimeActivity.emit(.executing, publicText: "Fleet " + receipt.executorDeviceID + " · " + receipt.jobID)
+    let raw: String
+    if FileManager.default.fileExists(atPath: stateURL.path) {
+        raw = try JSONDecoder().decode(String.self, from: readPrivateFleetCache(at: stateURL))
+    } else {
+        do { raw = try await waitForFleetTask(jobID: receipt.jobID) }
+        catch {
+            throw OS1Error.message("Fleet job " + receipt.jobID + " remains in custody. " +
+                "Inspect fleet-result with this job ID; no local task was re-executed. " + String(describing: error))
+        }
+        _ = try appFleetRun(raw, receipt: receipt, repository: identity.0, revision: identity.1)
+        try fleetPersist(raw, at: stateURL)
+    }
+    return try appFleetRun(raw, receipt: receipt, repository: identity.0, revision: identity.1)
+}
+
+func automaticAppFleetSelfTest() throws {
+    func reason(_ context: String? = nil, readOnly: Bool = false, bytes: Int = 20,
+                internalRun: Bool = false, provider: String = "codex", cx: Int = 30, cl: Int = 100) throws -> String? {
+        try automaticAppFleetLocalReason(context: context, requireReadOnly: readOnly, promptBytes: bytes,
+            internalExecution: internalRun, provider: provider, codexCapacity: cx, claudeCapacity: cl)
+    }
+    guard try reason() == nil, try reason("prior transcript") == nil,
+          try reason(readOnly: true) == "local_reconciliation_custody",
+          try reason(bytes: 48_001) == "context_exceeds_fleet_v1_limit",
+          try reason(internalRun: true) == "executor_recursion_guard",
+          try reason(provider: "auto") == "provider_capacity_constraints_not_in_fleet_v1",
+          try reason(provider: "auto", cx: 100) == nil else {
+        throw OS1Error.message("App Fleet custody regression failed")
+    }
+    let wrong = FleetEnqueueReceipt(jobID: UUID().uuidString, profile: "codex", executionMode: "single_node",
+        executorDeviceID: "device:fixture", objectiveVersion: "os1-fleet-objective-v1")
+    guard (try? appFleetRun("{}", receipt: wrong, repository: "owner/repo", revision: String(repeating: "a", count: 40))) == nil else {
+        throw OS1Error.message("App Fleet accepted an incomplete result")
+    }
+    let source = try SessionHandoff(transcript: "fixture", source: SourceReference(
+        kind: .snapshot, id: UUID(), sha256: String(repeating: "a", count: 64))).encoded()
+    guard try reason(source) == "local_source_receipt_custody" else {
+        throw OS1Error.message("App Fleet discarded a local source receipt")
+    }
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent("os1-app-cache-test-" + UUID().uuidString)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let cache = directory.appendingPathComponent("result.json"), link = directory.appendingPathComponent("link.json")
+    try fleetPersist("fixture", at: cache)
+    guard try JSONDecoder().decode(String.self, from: readPrivateFleetCache(at: cache)) == "fixture" else {
+        throw OS1Error.message("App Fleet private cache roundtrip failed")
+    }
+    try FileManager.default.createSymbolicLink(at: link, withDestinationURL: cache)
+    guard (try? readPrivateFleetCache(at: link)) == nil else {
+        throw OS1Error.message("App Fleet accepted symlinked result cache")
+    }
+    try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: cache.path)
+    guard (try? readPrivateFleetCache(at: cache)) == nil else {
+        throw OS1Error.message("App Fleet accepted nonprivate result cache")
+    }
+    let fixtureStep = RunStepSummary(sequence: 1, provider: "codex", action: "agent_run", model: "fixture",
+        effort: "low", revasDisposition: "adopted", sessionID: UUID().uuidString, permissionProfile: "read_only",
+        exitCode: 0, output: "fixture", stderr: "", durationMS: 1,
+        nativeRecord: NativeRecordEvidence(turnID: UUID().uuidString, recordPath: "/fixture", persistence: "verified", desktopVisibility: "not_revealed"))
+    var fixture = FleetExecutionReceipt(jobID: wrong.jobID, nodeRole: "air", deviceID: wrong.executorDeviceID,
+        profile: "codex", repository: "owner/repo", revision: String(repeating: "a", count: 40),
+        resultBranch: nil, resultCommit: nil, run: RunSummary(status: "complete", steps: [fixtureStep]))
+    func checked(_ value: FleetExecutionReceipt) throws -> RunSummary {
+        try appFleetRun(String(decoding: JSONEncoder().encode(value), as: UTF8.self), receipt: wrong,
+                        repository: "owner/repo", revision: String(repeating: "a", count: 40))
+    }
+    guard try checked(fixture).fleet?.jobID == wrong.jobID else {
+        throw OS1Error.message("App Fleet rejected bound fixture")
+    }
+    fixture.schema = 99
+    guard (try? checked(fixture)) == nil else {
+        throw OS1Error.message("App Fleet accepted unknown receipt schema")
+    }
+    print("OS1 app Fleet: 14 checks PASS; continuity, limits, private cache, receipt schema and recursion")
 }
 
 private func fleetConfiguredRole(_ requestedRole: String) throws -> String {

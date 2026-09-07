@@ -50,6 +50,11 @@ public enum BackendBlocker: String, Codable, Sendable {
             "403 forbidden", "not logged in", "please log in again", "authentication failed"].contains(where: text.contains) {
             return .authenticationRequired
         }
+        if ["you've hit your session limit", "you’ve hit your session limit",
+            "you've hit your usage limit", "you’ve hit your usage limit",
+            "usage limit exceeded", "rate limit exceeded"].contains(where: text.contains) {
+            return .quotaExhausted
+        }
         return nil
     }
 }

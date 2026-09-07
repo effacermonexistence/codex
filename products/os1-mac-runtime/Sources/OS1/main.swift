@@ -550,6 +550,7 @@ struct RunSummary: Codable {
     let status: String
     let steps: [RunStepSummary]
     var sourceContext: SourceReference? = nil
+    var fleet: FleetRunProvenance? = nil
 }
 
 struct ProviderExecution {
@@ -754,7 +755,12 @@ func claudeOutputDefersRequestedDeliverable(_ data: Data, prompt: String) -> Boo
 /// before spending a model turn; the signed route service can then issue a
 /// different provider ticket.
 func promptRequiresShellCapability(_ prompt: String) -> Bool {
-    let value = prompt.precomposedStringWithCanonicalMapping.lowercased()
+    var value = prompt.precomposedStringWithCanonicalMapping.lowercased()
+    // A complete prohibition is not a request for a shell. Only remove
+    // bounded negative clauses; mixed or unrecognized clauses remain
+    // conservative, and any following positive action is still inspected.
+    let prohibitedExecution = #"\b(?:do\s+not|don't|never)\s+(?:run|execute)\s+(?:any\s+)?(?:tools?|commands?|shell\s+commands?)(?:\s*,\s*(?:change|modify|edit)\s+(?:any\s+)?files?)?(?:\s*,?\s*(?:or|and)\s+(?:run|execute)\s+(?:any\s+)?(?:tools?|commands?|shell\s+commands?))*\s*(?=[.!?;]|$)"#
+    value = value.replacingOccurrences(of: prohibitedExecution, with: "", options: .regularExpression)
     let explicitShell = [
         "bash", "terminal", "shell", "command line", " cli", "cli ", "wrangler", "gh cli",
         "git push", "git pull", "git clone", "pnpm ", "npm ", "swift build", "xcodebuild", "docker ",
@@ -2021,7 +2027,7 @@ private func sourceStatusRequested(_ prompt: String, context: String? = nil) -> 
 /// valid for the owner, but it must terminate on the OS-1 control surface so
 /// no prompt, retry, transcript, or model session can become an exfiltration
 /// path.
-private func protectedRouteMaterialRequested(_ prompt: String, context: String? = nil) -> Bool {
+func protectedRouteMaterialRequested(_ prompt: String, context: String? = nil) -> Bool {
     let value = prompt.precomposedStringWithCanonicalMapping.lowercased()
     // A follow-up to a local guard remains a guard explanation. Never turn
     // "설명해봐" into an archive search for the preceding protected request.
@@ -2064,7 +2070,7 @@ private func protectedRouteMaterialRequested(_ prompt: String, context: String? 
 /// A second, content-level guard protects against innocuous-looking filenames
 /// that contain executable route policy or evaluator internals.  Paths alone
 /// are not a security boundary.
-private func protectedRouteMaterialInEvidence(_ text: String) -> Bool {
+func protectedRouteMaterialInEvidence(_ text: String) -> Bool {
     let value = text.precomposedStringWithCanonicalMapping.lowercased()
     let criticalFingerprints = [
         "r2_routed_rcc_sha256", "rcc_route_map", ["darwin", "router", "state"].joined(separator: "_"),
@@ -3360,11 +3366,11 @@ final class CodexAppServerClient: @unchecked Sendable {
         stderrHandle = try FileHandle(forWritingTo: temporary)
 
         process.executableURL = URL(fileURLWithPath: executable)
-        // OS-1 does not need the user's unrelated Cloudflare MCP to create a
-        // native Codex thread. When that MCP is logged out, app-server startup
-        // otherwise waits through repeated OAuth transport failures before a
-        // simple turn can begin.
-        process.arguments = ["app-server", "-c", "mcp_servers.cloudflare-api.enabled=false"]
+        // Preserve native MCP configuration. Synthesizing an enabled=false
+        // table for an absent server has no transport and causes Codex to
+        // exit before initialize. Provider recursion is handled by the
+        // execution ownership marker, not by changing unrelated MCPs.
+        process.arguments = ["app-server"]
         process.environment = ProviderExecutionEnvironment.marked(ProcessInfo.processInfo.environment)
         process.currentDirectoryURL = URL(fileURLWithPath: workspace, isDirectory: true)
         process.standardInput = input
@@ -4832,8 +4838,15 @@ func runTask(
     claudeCapacity: Int,
     progress: Bool,
     desktopReveal: DesktopRevealMode = .never,
-    requireReadOnly: Bool = false
+    requireReadOnly: Bool = false,
+    automaticFleet: Bool = false
 ) async throws -> RunSummary {
+    if automaticFleet {
+        return try await runTaskWithAutomaticFleet(prompt: prompt, workspace: workspace, providerPreference: providerPreference,
+            context: context, codexSessionID: codexSessionID, claudeSessionID: claudeSessionID,
+            codexCapacity: codexCapacity, claudeCapacity: claudeCapacity, progress: progress,
+            desktopReveal: desktopReveal, requireReadOnly: requireReadOnly)
+    }
     RuntimeActivity.emit(.preparing)
     let handoff = try SessionHandoff.decode(context)
     let sourceDetached = detachesConversationSource(prompt)
@@ -5089,6 +5102,8 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
                 )
             } catch {
                 let reason = String(describing: error)
+                recordFleetProviderEvidence(provider: ticket.provider,
+                    failure: (backendBlocker(error) ?? .unclassified).rawValue)
                 attemptFailure = reason
                 lastLocalFailure = reason
                 recordExecutionFailure(ticket: ticket, model: model, effort: effort, reason: reason, source: sourceContext)
@@ -5159,6 +5174,7 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
                 dispatchStage: dispatchStage, source: sourceContext, permissionProfile: ticket.permissionProfile)
         }
         let artifact = execution.artifact
+        recordFleetProviderEvidence(provider: ticket.provider, execution: execution)
         let artifactData = try JSONEncoder().encode(artifact)
         let resultHash = sha256Hex(artifactData)
         RuntimeActivity.emit(.verifying, provider: ticket.provider, model: model, effort: effort)
@@ -6278,6 +6294,12 @@ func selfTest() throws {
         ("test execution needs shell", promptRequiresShellCapability("현재 프로젝트에서 pnpm test 실행해")),
         ("R2 concept is informational", !promptRequiresShellCapability("R2가 무엇인지 개념만 설명해")),
         ("test strategy is informational", !promptRequiresShellCapability("테스트 전략이 뭔지 설명해")),
+        ("exact output with prohibited tools is not a shell demand", !promptRequiresShellCapability("Read-only verification. Do not run tools, change files, or execute commands. Reply with exactly this one line and nothing else: AIR_CLAUDE_FLEET_OK")),
+        ("negative command instruction is not a shell demand", !promptRequiresShellCapability("Don't execute any commands. Reply OK.")),
+        ("negative shell instruction is not a shell demand", !promptRequiresShellCapability("Never run shell commands; explain the answer.")),
+        ("positive command after prohibition retains demand", promptRequiresShellCapability("Do not execute commands. Run npm test.")),
+        ("mixed clause remains conservative", promptRequiresShellCapability("Do not run tools, but execute npm test.")),
+        ("explicit terminal demand remains constrained", promptRequiresShellCapability("Use the terminal to inspect this repository.")),
         ("incident capability refusal rejected", providerOutputDeclaresCapabilityFailure(
             incidentClaudeOutput,
             prompt: incidentPrompt
@@ -6487,6 +6509,7 @@ func usage() {
 
       os1 doctor
       os1 self-test
+      os1 codex-protocol-self-test
       os1 fleet-snapshot
       os1 fleet-run --workspace /path --prompt "task" [--profile codex|claude|os1|build|test|exo]
       os1 fleet-wait --job UUID [--timeout-seconds 5...3600]
@@ -6515,14 +6538,24 @@ struct OS1Main {
             guard let command = arguments.first else { usage(); return }
             if try await fleetCommand(arguments) { return }
             switch command {
-            case "version", "--version", "-V": print("OS-1 Runtime 0.9.21 (governed-fleet-body-and-delivery-recovery)")
+            case "version", "--version", "-V": print("OS-1 Runtime " + OS1RuntimeBuild.identity)
             case "doctor": try doctor()
+            case "codex-protocol-self-test":
+                guard arguments.count == 1 else { throw OS1Error.message("codex-protocol-self-test takes no arguments") }
+                let client = try CodexAppServerClient(executable: findExecutable("codex"),
+                    workspace: FileManager.default.currentDirectoryPath)
+                defer { client.close() }
+                try client.initialize(deadline: Date().addingTimeInterval(15))
+                print("Codex app-server initialize: PASS; created threads=0; model requests=0")
             case "resume-delivery":
                 guard arguments.count == 2 else { throw OS1Error.message("Expected stored result identifier") }
                 let summary = try await resumeDelivery(arguments[1])
                 print(String(decoding: try JSONEncoder().encode(summary), as: UTF8.self))
             case "r2-tool-path": print(try managedR2Executable())
-            case "self-test": try selfTest()
+            case "self-test":
+                try selfTest()
+                try providerReadinessSelfTest()
+                try automaticAppFleetSelfTest()
             case "audit-codex-usage":
                 guard arguments.count == 3, UUID(uuidString: arguments[2]) != nil else {
                     throw OS1Error.message("Expected native JSONL path and exact turn UUID")
@@ -6561,6 +6594,7 @@ struct OS1Main {
                 try await register(client: client, key: key)
                 print("OS-1 device registered (\(key.securityMode))")
             case "run":
+                var fleetAutomatic = false
                 var workspace: String?
                 var prompt: String?
                 var providerPreference = "auto"
@@ -6606,6 +6640,8 @@ struct OS1Main {
                         desktopReveal = mode; index += 2
                     case "--read-only-reconciliation":
                         requireReadOnly = true; index += 1
+                    case "--fleet-auto":
+                        fleetAutomatic = true; index += 1
                     default: throw OS1Error.message("Unknown OS-1 argument")
                     }
                 }
@@ -6632,7 +6668,8 @@ struct OS1Main {
                     claudeCapacity: claudeCapacity,
                     progress: outputFormat == "text",
                     desktopReveal: desktopReveal,
-                    requireReadOnly: requireReadOnly
+                    requireReadOnly: requireReadOnly,
+                    automaticFleet: fleetAutomatic
                 )
                 if outputFormat == "json" {
                     let encoder = JSONEncoder()

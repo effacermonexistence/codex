@@ -2228,6 +2228,7 @@ private struct AppRunSummary: Decodable, Sendable {
     let status: String
     let steps: [AppRunStep]
     var sourceContext: SourceReference? = nil
+    var fleet: FleetRunProvenance? = nil
 }
 
 private enum RunnerError: LocalizedError {
@@ -2354,6 +2355,7 @@ private enum OS1Runner {
 
         var arguments = [
             "run",
+            "--fleet-auto",
             "--workspace", workspace,
             "--prompt", prompt,
             "--provider", provider.rawValue,
@@ -3057,7 +3059,13 @@ private final class SessionStore: ObservableObject {
                 sessions[target].sourceContext = summary.sourceContext
                 sessions[target].sourceContextVersion = 2
                 for step in visibleSteps {
-                    if step.provider == "codex" {
+                    // Fleet executor sessions remain on the executor. Continue
+                    // with the preserved transcript; never resume a remote ID
+                    // against this Mac's native provider store.
+                    if summary.fleet?.jobID != nil {
+                        if step.provider == "codex" { sessions[target].codexSessionID = nil }
+                        if step.provider == "claude" { sessions[target].claudeSessionID = nil }
+                    } else if step.provider == "codex" {
                         sessions[target].codexSessionID = step.sessionID
                     } else if step.provider == "claude" {
                         sessions[target].claudeSessionID = step.sessionID
@@ -3081,6 +3089,8 @@ private final class SessionStore: ObservableObject {
                     sessions[target].messages.append(ChatMessage(
                         role: .receipt,
                         text: "\(backendTierLabel(action: step.action, provider: step.provider)) · \(step.model ?? "provider default") · \(step.effort) reasoning · \(step.revasDisposition == "control_verified" ? "OS-1 control verified" : "REVAS adopted") · \(nativeRecordReceipt(step)) · step \(step.sequence) · \(step.durationMS / 1_000)s · exit \(step.exitCode)" +
+                            (summary.fleet.map { " · Fleet executor: " + ($0.executorDeviceID ?? "local") +
+                                ($0.jobID.map { " · job " + $0 } ?? " · local: " + ($0.localReason ?? "unspecified")) } ?? "") +
                             (step.provider != "local" && summary.sourceContext != nil
                                 ? " · source snapshot delivered: \(summary.sourceContext!.sha256)" : ""),
                         provider: step.provider,
