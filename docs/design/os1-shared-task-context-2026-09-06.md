@@ -209,7 +209,21 @@ Labels: **fixture** = deterministic check in `TaskContextTests`/`SourceContextTe
 | 31 | inaccessible context | fixture | ingestion cursor unchanged on read failure; no "fully synced" claim |
 | 32 | evaluator failure | fixture | scratch harness exits non-zero on the first failed check; `verify-*.mjs` record FAIL entries |
 
-## 12. What was not verified in this pass
+## 12. Verification state after the sandbox test pass
 
-- `os1 self-test`, the `OS1ContextTests` executable and the app self-test could not run in the session sandbox (Foundation temporary directory denied). Their new assertions are present but unexecuted; the task-context fixture section ran through a scratch harness (79 checks + N).
-- No live R2 or GitHub read, no installed-build replacement, no user-flow verification on the installed app.
+Executed (see the checkpoint document for logs and the exact method):
+`OS1ContextTests` (13 groups, task-context fixtures 94 checks), `OS1HookSupportTests`
+(8 groups), `os1 self-test` with the new pins, `OS-1 CLODEX.app --self-test`
+including `taskContextSelfTest`, and two offline integration runs through the
+real `os1` binary: the local-workspace preparation of `os1-clodex` and the
+case-B reuse path with an existing SCV snapshot attached through a v3 handoff
+(receipts verified, task context returned).
+
+Not executed: the fresh SCV acquisition (live R2 + GitHub reads, blocked by the
+sandbox proxy/credentials), the installed-build replacement, and the user flow
+on the installed app.
+
+Acceptance-table updates from this pass: items 1 (reuse half), 3, 4, 5, 19, 22,
+28 and 30 moved from "pinned/typecheck" to executed (self-test or integration
+run); item 1's fresh-acquisition half and items 9, 13, 14, 18, 20, 21, 23–27
+still need the installed build or a live backend.

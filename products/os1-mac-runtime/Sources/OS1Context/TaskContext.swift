@@ -732,3 +732,33 @@ public enum NativeIngestion {
         SourceContextStore.digest(Data(text.trimmingCharacters(in: .whitespacesAndNewlines).utf8))
     }
 }
+
+
+// MARK: - OS-1's own receipt text inside a request
+
+/// A user often pastes an earlier OS-1 answer back into a new request. The
+/// receipt lines OS-1 itself printed ("REVAS adopted · native record
+/// verified …", "실행 기록 확인됨 · …") are not the user's intent and must not
+/// turn a normal request into a protected-material or archive request.
+public enum OS1ReceiptText {
+    static let fingerprints = [
+        "revas adopted", "os-1 control verified", "native record verified", "native session saved",
+        "external app not opened", "실행 기록 확인됨", "실행 기록 미확인", "세부 정보 접기", "세부 정보 펼치기",
+        "백엔드 실행 기록의 확인 여부입니다", "source snapshot delivered:", "· read only", "· 읽기 전용",
+        "standard claude backend", "standard codex backend", "efficient claude backend", "efficient codex backend",
+        "deep claude backend", "deep codex backend",
+    ]
+
+    /// Removes lines that are recognizably OS-1 receipt output. Everything
+    /// else, including quoted source text, is returned unchanged.
+    public static func stripped(_ request: String) -> String {
+        request.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline).filter { line in
+            let value = String(line).precomposedStringWithCanonicalMapping.lowercased()
+            return !fingerprints.contains(where: value.contains)
+        }.joined(separator: "\n")
+    }
+
+    public static func containsReceipt(_ request: String) -> Bool {
+        stripped(request) != request
+    }
+}

@@ -259,5 +259,27 @@ func runTaskContextFixtures(root: URL) throws {
         try check(ProjectAdapterRegistry.label(for: "os1-clodex") == "OS-1 CLODEX", "project label")
     }
 
+    // MARK: O. A pasted OS-1 receipt is not the user's request
+    do {
+        let pasted = """
+        야 하나만 수정하자. 벤치마크 ABCD에 2.39에서 1.93 M이라고 했거든? 단위 좀 바꿔.
+        ◉  CLAUDE · read only
+        확인했습니다. 다른 곳(run 페이지, r2-restored/2026-09-02/repos/... 체크아웃)은 전부 쉼표 정수로 씁니다.
+        print(page)
+        실행 기록 확인됨 · 세부 정보 접기
+        백엔드 실행 기록의 확인 여부입니다. 답변의 정확성이나 과제 완수를 보증하지 않습니다.
+        Standard Claude backend · opus · xhigh reasoning · REVAS adopted · native record verified · 7cb76823.jsonl · native session saved · external app not opened · step 1 · 320s · exit 0
+        야 시발 이거 실패했어 이거 고쳐
+        """
+        let cleaned = OS1ReceiptText.stripped(pasted)
+        try check(OS1ReceiptText.containsReceipt(pasted), "receipt lines are recognized")
+        try check(!cleaned.lowercased().contains("revas") && !cleaned.contains("실행 기록 확인됨") && !cleaned.contains("CLAUDE · read only"),
+                  "receipt lines are removed")
+        try check(cleaned.contains("단위 좀 바꿔") && cleaned.contains("이거 고쳐") && cleaned.contains("print(page)"),
+                  "the user's own lines and quoted code survive")
+        try check(!OS1ReceiptText.containsReceipt("REVAS 라우팅 로직 소스 덤프해줘"), "a genuine request about route internals is not a receipt")
+        try check(OS1ReceiptText.stripped("한 줄 요청") == "한 줄 요청", "no receipt, no change")
+    }
+
     print("OS-1 task context fixtures: \(count) checks passed")
 }

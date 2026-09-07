@@ -48,16 +48,33 @@ string exception.
 
 ## Tests completed and where the result came from
 
+All binaries below were built with `swiftc` from the published tree (no
+SwiftPM in the sandbox). Test processes ran under two small interposer
+dylibs (`DYLD_INSERT_LIBRARIES`) that only redirect the per-user temp
+directory (`confstr`, `_dirhelper`, Foundation's `TemporaryItems`
+item-replacement path) and the home directory (`getpwuid`) into
+sandbox-writable folders; nothing in the product code was changed for that.
+A plain `perl`/`timeout` wrapper strips `DYLD_*` (SIP), so a tiny own
+launcher (`alarmrun`) was used.
+
 | check | result | produced by |
 | --- | --- | --- |
-| `runTaskContextFixtures` (sections A–M, 79 checks) | PASS | scratch harness `$TMPDIR/tc/harness` built with `swiftc` from `Sources/OS1Context/*.swift` + `Tests/OS1ContextTests/TaskContextTests.swift`; log `$TMPDIR/build-os1.log` |
-| `OS1Context`, `OS1HookSupport`, `os1` compile (Swift 6, macOS 13 target) | PASS | same harness build; binary `$TMPDIR/tc/os1` prints its version |
-| `OS1App` sources typecheck (with SwiftMath 1.7.3 module built from the local SwiftPM cache) | PASS | `swiftc -typecheck` |
-| `os1 self-test` (includes new routing/preparation/prepared-state pins) | NOT RUN | Foundation `temporaryDirectory` is `/var/folders/…/T`, denied by the session sandbox |
-| `OS1ContextTests` executable (`13 regression groups`) | NOT RUN | same sandbox limit; the task-context section of it ran through the scratch harness above |
-| `OS-1 CLODEX.app --self-test` (`taskContextSelfTest`) | NOT RUN | same sandbox limit; app not built (SwiftPM unavailable in sandbox) |
-| live R2 / GitHub reads for the preparation flow (`scvProjectEvidence`, `scvOperatingRecord`) | NOT RUN | `gh api` TLS failure inside the sandbox; requires the installed build |
+| `runTaskContextFixtures` (sections A–O, 94 checks) | PASS | scratch harness and the `OS1ContextTests` executable |
+| `OS1ContextTests` executable (13 regression groups: recovery 72, execution/outbox 16, research bundle 16, voice 6, takeover 37, project materials 46, task context 94, source context + handoff v3) | PASS | `$TMPDIR/tc/OS1ContextTests`, log `$TMPDIR/ctxtests.log` |
+| `OS1HookSupportTests` (8 groups) | PASS | `$TMPDIR/tc/OS1HookSupportTests` |
+| `os1 self-test` (incl. new pins: routing scope without a source, preparation intent, prepared-state bundle, task-context prompt block, pasted-receipt guard, legacy snapshot baseline) | PASS | `$TMPDIR/tc/os1 self-test`, log `$TMPDIR/os1-selftest.log` |
+| `OS-1 CLODEX.app --self-test` (incl. `taskContextSelfTest`; sidebar sync 33 checks, 0 model calls, 0 backend writes) | PASS | app linked with `swiftc` against SwiftMath 1.7.3 built from the local SwiftPM cache with a synthesized resource-bundle accessor; log `$TMPDIR/app-selftest.log` |
+| offline integration run 1: `os1 run --prompt "OS1 앱 수정 좀 하자 준비해"` in the git worktree | PASS | local `work_preparation` control answer (workspace, HEAD revision, three baseline lines, next steps), receipt id/sha match, 0600, `taskContext` returned with the workspace source and the execution |
+| offline integration run 2: case B `"야 인스타그램 수정 좀 하자 준비해"` with an existing SCV snapshot attached through a v3 handoff | PASS | reuse path: no download, "이미 연결된 … 재사용" answer, receipt `source_inherited_from_context=true`, `taskContext.projectID = scv-instagram` with the verified source; a legacy snapshot without a stored baseline now derives the recovery pointer from its source records (operating release stays "none recorded" until GitHub is read) |
+| live R2 / GitHub reads for the fresh preparation flow (`scvProjectEvidence`, `scvOperatingRecord`) | NOT RUN | `gh api` fails on the sandbox proxy TLS chain; wrangler refuses without an API token in non-interactive mode |
 | installed-flow verification (cases A and B on the installed app) | NOT RUN | install not possible from this sandbox |
+
+Also fixed and verified in this pass: a user pasting an earlier OS-1 answer
+with its receipt line ("… REVAS adopted · native record verified …") was
+classified as a protected-material request and answered with the guard text
+(observed live: Fleet job `a18fce3f`). `OS1ReceiptText.stripped` removes
+OS-1's own receipt lines before classification; fixture O and a self-test pin
+cover the exact pasted request and a genuine route-internals request.
 
 ## Failed tests
 
