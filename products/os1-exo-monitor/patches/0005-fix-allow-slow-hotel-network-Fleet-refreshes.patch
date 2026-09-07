@@ -1,7 +1,7 @@
 From 0c5ce61b9fa3300cbb62a0bdd9e975f046a1d3ca Mon Sep 17 00:00:00 2001
 From: LUA <lua@LUAs-MBP.localdomain>
 Date: Mon, 7 Sep 2026 15:17:54 -0700
-Subject: [PATCH 5/5] fix: allow slow hotel-network Fleet refreshes
+Subject: [PATCH 5/6] fix: allow slow hotel-network Fleet refreshes
 
 ---
  src/exo/api/main.py | 3 ++-

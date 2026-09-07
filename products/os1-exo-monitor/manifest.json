@@ -6,18 +6,19 @@
   "upstream_commit": "fd707de30b42db4211d15da96b9052e1dc280ed1",
   "overlay_repository": "effacermonexistence/exo",
   "overlay_branch": "os1/exo-cluster-activity-monitor",
-  "overlay_commit": "0c5ce61b9fa3300cbb62a0bdd9e975f046a1d3ca",
+  "overlay_commit": "0f340ce530d0df5fcb646bbad02e7eac7f01830c",
   "mail_patch_sha256": [
-    "c0a96641a40ecb46a009fde8c1336b051948a668ab82773daf9ef7bc1fca70f9",
-    "895afb7f85ca92afa0cea78602fd4a9e4ee52b1af3b72ddd75de0fba83942192",
-    "10f0dde771d19cc3e6454c8b36ea4c5ba2e1af0e1f6902aa336d271b2e0da371",
-    "fdf366af9d562b22880a5ac9aab469cdb4bd1aea9e26a8f3a2c219f9a40c2867",
-    "ba60b9e85153a7061f9789fa7cf49d00d8d1680cd118a277772590edc96aa2ce"
+    "ab292fe3afab987ff866b43d8fd55d2533067c0d07fc5ad4674d5ed6cbd3240a",
+    "80de88a1b4fe0523cd28a10f080882fa3d675169a6de3e63922ae39b7df0cfe6",
+    "20b999ce65ef809d69fd738397e0f58f93c28dc594081ffa1dd060c7943e238c",
+    "6940ebef0c2e4109512ccbac6a5b4b4c1548351e315b40eaffc3a60d51685e6e",
+    "c241b3d5afb58f3cce41445de635a67d360f9120d33cab52303190d5f19a1c3d",
+    "dc46aab52c705b5789775490be7ba1a73bc3052bf43a67eaf5e3f7bab0ff6157"
   ],
   "dashboard_index_sha256": "2ea267a0a0ff374d524a7a622fd1aa6a2c27446d583ac0c6942cd1cc678c3c4d",
-  "source_overlay_sha256": "1fe9229ca64bc90539b481973330e57772ce5fd08764c0f8910898554de68c8b",
-  "pro_verified_runtime_sha256": "ca9a2e14549ff914bba33143e8672eb49ee43a5943be72631ef521b9fcd5a8f4",
-  "pro_verified_pyz_sha256": "5dce0d2364ccb239065264eb91b2f20885225fd606ee4942654b3d28272c6cfc",
+  "source_overlay_sha256": "2073a6455dde5972b9db91a13924ea9bae29114149969a6217bfd2bc07c1c7d3",
+  "pro_verified_runtime_sha256": "b7fbb483ca7b563f70ce63f6e6571b529a82537d07070fff687ee16206073f04",
+  "pro_verified_pyz_sha256": "91b7664c10fa5ba6004bafc4d05e0a19226243494ea68221d81d458e4bada7c4",
   "objective_version": "os1-fleet-objective-v1",
   "dashboard_path": "/#/activity"
 }

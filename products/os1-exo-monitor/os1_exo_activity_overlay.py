@@ -147,7 +147,9 @@ async def _refresh_fleet_snapshot(api: Any, now: float) -> None:
             f"fleet-snapshot unavailable: {type(exc).__name__}"
         )
     finally:
-        api._os1_activity_fleet_cache_at = now
+        # Age from completion so a slow hotel-network refresh does not cause a
+        # new child process on the very next one-second telemetry request.
+        api._os1_activity_fleet_cache_at = time.monotonic()
 
 
 async def _get_local_activity(api: Any) -> dict[str, object]:

@@ -1,7 +1,7 @@
 From 56103325c840dd77075c37d62b9dc55c7ffb8a96 Mon Sep 17 00:00:00 2001
 From: LUA <lua@LUAs-MBP.localdomain>
 Date: Mon, 7 Sep 2026 15:12:48 -0700
-Subject: [PATCH 4/5] perf: refresh Fleet activity metadata without blocking
+Subject: [PATCH 4/6] perf: refresh Fleet activity metadata without blocking
  samples
 
 ---

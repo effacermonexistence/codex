@@ -15,8 +15,8 @@ macOS processes share one transparent memory or GPU address space.
 - EXO upstream: `exo-explore/exo` tag `v1.0.71`
 - Upstream commit: `fd707de30b42db4211d15da96b9052e1dc280ed1`
 - Omar fork branch: `effacermonexistence/exo:os1/exo-cluster-activity-monitor`
-- Overlay commit: `0c5ce61b9fa3300cbb62a0bdd9e975f046a1d3ca`
-- Portable mail patches: `patches/0001-*` through `patches/0005-*`
+- Overlay commit: `0f340ce530d0df5fcb646bbad02e7eac7f01830c`
+- Portable mail patches: `patches/0001-*` through `patches/0006-*`
 - Prebuilt dashboard: `dashboard-build/` (no Node/npm needed on the target Mac)
 
 On a packaged Pro runtime, the builder replaces only `exo.api.main` in a new
