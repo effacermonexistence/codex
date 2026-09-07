@@ -1,0 +1,27 @@
+From 0f340ce530d0df5fcb646bbad02e7eac7f01830c Mon Sep 17 00:00:00 2001
+From: LUA <lua@LUAs-MBP.localdomain>
+Date: Mon, 7 Sep 2026 15:30:41 -0700
+Subject: [PATCH 6/6] fix: age Fleet cache from refresh completion
+
+---
+ src/exo/api/main.py | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/src/exo/api/main.py b/src/exo/api/main.py
+index d2c0f8f6..5b89ebfe 100644
+--- a/src/exo/api/main.py
++++ b/src/exo/api/main.py
+@@ -524,7 +524,9 @@ class API:
+                 f"fleet-snapshot unavailable: {type(exc).__name__}"
+             )
+         finally:
+-            self._activity_fleet_cache_at = now
++            # Age the cache from completion, not from the start of a slow
++            # hotel-network request, otherwise every UI poll starts a new one.
++            self._activity_fleet_cache_at = time.monotonic()
+ 
+     async def get_local_activity(self) -> dict[str, object]:
+         """Return read-only local metrics for the cluster Activity Monitor."""
+-- 
+2.50.1 (Apple Git-155)
+
