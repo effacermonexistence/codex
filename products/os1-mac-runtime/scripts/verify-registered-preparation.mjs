@@ -37,6 +37,14 @@ for (const [label, request] of [['NFC', exact], ['NFD', exact.normalize('NFD')]]
     assert.equal(result.taskContext.objective.scope, 'read_only');
     assert.equal(result.taskContext.objective.requestText, request); assert(!result.taskContext.sourcePreparation);
   });
+  // A concurrent operating release can legitimately become source_pending.
+  // Preserve that failed acceptance check and its observed release; do not
+  // replace the useful result with an undefined native-record exception.
+  if (!step?.native_record?.record_path) {
+    records.push({ label, status: result.status, action: step?.action,
+      pendingRelease: result.taskContext?.sourcePreparation?.releaseID, modelCalls: 0 });
+    continue;
+  }
   const receipt = JSON.parse(fs.readFileSync(step.native_record.record_path));
   const source = receipt.sources[0], archive = fs.readFileSync(source.source_archive_path);
   const embedded = execFileSync('/usr/bin/tar', ['-xOf', source.source_archive_path, 'SCV_SINGLE_RELEASE.json']);

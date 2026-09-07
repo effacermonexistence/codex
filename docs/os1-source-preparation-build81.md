@@ -102,3 +102,11 @@ existing execution/context regressions, and the installed read-only incident
 replay are required. Build 79 app/CLI are backed up before replacement; the
 stable signing requirement and all conversations/pins/drafts must be retained.
 Rollback replaces binaries only, never current session state.
+
+During final verification the separately managed operating release advanced
+from v161 to v162. The same binary detected the new manifest and returned
+`source_pending` instead of reusing the older registered source. Registering
+the independently checked v162 SOURCE package is an OS1 acquisition step only;
+its producer retains ownership of deployment, reset, sentinel and R2 custody.
+The installed replay reports this transition explicitly if publication races
+with a test, rather than crashing while reading an absent completion receipt.
