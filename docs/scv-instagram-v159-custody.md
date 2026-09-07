@@ -59,7 +59,8 @@ stays v84.
   responses-required hard harness (`SCV_OPENAI_RESPONSES_REQUIRED=1`) 109 checks ok.
 - Golden conversation replays on the candidate: gold-a 16/17 exact, gold-b 6/7 exact; the two divergences are the
   v152-inherited "yes 3pm works" turns declared in the change card; no unexpected divergence.
-- Full local suite, run step by step because the sandbox cannot bind ports: {SUITE_FINAL}.
+- Full local suite on the sealed tree: 81 stages, 75 passed and 6 blocked only by sandbox port-binding EPERM; no other failure.
+- Codex closed the environment gap on staging deployment `7f38825e-cfe4-4598-974c-0d6d0c843981`: all 255 installed files and the release descriptor match the v159 hashes. Both `test:single-release` and the full `npm test` passed in a fresh isolated copy with an empty environment. This includes the voice-info regression and the formerly port-blocked transport tests.
 - `test:single-release` split on the sealed tree: 20/22 ok, the 2 failures are the sandbox port-binding EPERM
   harnesses (`outbox-strict-marker-gate`, `outbox-adoption`); the seal fingerprint is unchanged after the tests.
 - Startup gate (`scv-executed-path-startup-gate-harness.js`) passes on the sealed code.
