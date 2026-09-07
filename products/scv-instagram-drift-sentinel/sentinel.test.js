@@ -74,7 +74,7 @@ function healthyBody() {
   }
 }
 
-test('accepts the exact healthy v158 release while preserving operational alerts', () => {
+test('accepts the exact healthy v159 release while preserving operational alerts', () => {
   const result = evaluateEndpoint(target, 200, healthyBody())
   assert.equal(result.ok, true)
   assert.equal(result.operational_alert_count, 1)
