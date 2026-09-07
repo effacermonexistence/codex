@@ -554,7 +554,8 @@ public struct PreparationIntent: Equatable, Sendable {
         ("scv-instagram", ["인스타", "instagram", "scv"]),
         ("os1-clodex", ["os1", "os-1", "clodex", "클로덱스"]),
     ]
-    static let prepareMarkers = ["준비해", "준비하자", "준비 좀", "준비할", "준비 해", "수정 좀 하자", "수정하자", "수정 하자", "고치자", "고쳐보자",
+    static let prepareMarkers = ["손보자", "손 보자", "손좀 보자", "손 좀 보자", "손보려고", "손볼 건데", "손볼건데",
+                                 "준비해", "준비하자", "준비 좀", "준비할", "준비 해", "수정 좀 하자", "수정하자", "수정 하자", "고치자", "고쳐보자",
                                  "작업하자", "작업 시작", "시작하자", "prepare", "let's fix", "let's modify", "let's work on", "let's start",
                                  "get ready", "set up for", "이제 고치자", "이제 수정"]
     static let continueMarkers = ["이어서", "계속하자", "계속 하자", "지난번 하던", "하던 거", "하던거", "아까 하던", "아까 결정한", "아까 결정",
@@ -563,7 +564,7 @@ public struct PreparationIntent: Equatable, Sendable {
     static let explainMarkers = ["설명해", "설명 해", "설명만", "알려줘", "explain", "describe", "walk me through"]
     static let modificationProhibitions = ["수정하지 마", "수정하지마", "수정 하지 마", "고치지 마", "바꾸지 마", "변경하지 마", "설명만", "do not modify",
                                            "don't modify", "do not change", "don't change", "explain only", "read only", "읽기만"]
-    static let refusalMarkers = ["준비하지 마", "준비 하지 마", "이어서 하지 마", "계속하지 마", "don't prepare", "do not prepare", "don't continue"]
+    static let refusalMarkers = ["손보지 마", "손보지마", "손대지 마", "손대지마", "준비하지 마", "준비 하지 마", "이어서 하지 마", "계속하지 마", "don't prepare", "do not prepare", "don't continue"]
 
     public static func detect(_ prompt: String) -> PreparationIntent? {
         let value = prompt.precomposedStringWithCanonicalMapping.lowercased()
@@ -580,13 +581,14 @@ public struct PreparationIntent: Equatable, Sendable {
         if explains && (continues || prohibited) && !prepare { kind = .explainFromContext }
         else if prepare { kind = .prepare }
         else if continues { kind = .continueWork }
+        else if projectID != nil && ScopeResolution.resolve(value).scope == .workspaceWrite { kind = .prepare }
         else { return nil }
         // "수정 좀 하자 준비해" is an intent to prepare, not a described change:
         // only change verbs that survive removing the preparation phrases
         // themselves make the request a backend modification.
         var remaining = value
-        for marker in prepareMarkers + continueMarkers { remaining = remaining.replacingOccurrences(of: marker, with: " ") }
-        let wantsChange = ["수정", "고치", "고쳐", "바꾸", "구현", "fix", "modify", "edit", "change", "implement"].contains(where: remaining.contains)
+        for marker in (prepareMarkers + continueMarkers).sorted(by: { $0.count > $1.count }) { remaining = remaining.replacingOccurrences(of: marker, with: " ") }
+        let wantsChange = ["손봐", "손 봐", "수정", "고치", "고쳐", "바꾸", "구현", "fix", "modify", "edit", "change", "implement"].contains(where: remaining.contains)
         return PreparationIntent(kind: kind, projectID: projectID, modifies: kind != .explainFromContext && wantsChange && !prohibited)
     }
 }
@@ -625,7 +627,7 @@ public struct ScopeResolution: Equatable, Sendable {
     public let scope: TaskContext.Scope
     public let prohibitions: [String]
 
-    static let positiveEdit = ["수정해", "수정하고", "수정 해", "고쳐", "고치고", "바꿔", "바꾸고", "구현해", "추가해", "삭제해", "리팩터", "만들어",
+    static let positiveEdit = ["손봐", "손 봐", "수정해", "수정하고", "수정 해", "고쳐", "고치고", "바꿔", "바꾸고", "구현해", "추가해", "삭제해", "리팩터", "만들어",
                                "fix ", "modify ", "edit ", "implement ", "add ", "remove ", "rename ", "change the code", "update the code"]
     static let negatedTargets: [(pattern: String, prohibition: String)] = [
         ("서버는 변경하지 마", "do not change the server"), ("서버를 변경하지 마", "do not change the server"), ("서버 변경하지 마", "do not change the server"),
@@ -635,7 +637,7 @@ public struct ScopeResolution: Equatable, Sendable {
         ("파일·서버를 변경하거나 테스트를 실행하지 마", "do not change files or servers or run tests"),
         ("업로드하지 마", "do not upload"), ("삭제하지 마", "do not delete"), ("리셋하지 마", "do not reset"), ("초기화하지 마", "do not reset"),
     ]
-    static let generalProhibitions = ["수정하지 마", "수정하지마", "수정 하지 마", "수정하지 말고", "고치지 마", "고치지 말고", "바꾸지 마", "바꾸지 말고",
+    static let generalProhibitions = ["손보지 마", "손보지마", "손대지 마", "손대지마", "수정하지 마", "수정하지마", "수정 하지 마", "수정하지 말고", "고치지 마", "고치지 말고", "바꾸지 마", "바꾸지 말고",
                                       "변경하지 마", "변경하지 말고", "수정은 하지 마", "수정은 하지마", "변경은 하지 마", "편집은 하지 마",
                                       "편집하지 마", "설명만", "read only", "read-only", "do not modify", "don't modify",
                                       "do not change", "don't change", "explain only", "no changes"]

@@ -29,6 +29,8 @@ const requests = [
   ['acquire-NFC', '인스타그램은 오토매이션 수정 좀 보자 데이트 다 가져와 봐'],
   ['prepare-NFC', '야 인스타그램 수정 좀 하자 준비해'],
   ['prepare-NFD', '야 인스타그램 수정 좀 하자 준비해'.normalize('NFD')],
+  ['incident-NFC', '인스타그램 오토메이션 좀 손보자'],
+  ['incident-NFD', '인스타그램 오토메이션 좀 손보자'.normalize('NFD')],
 ];
 const checks = [], records = [];
 const failures = [];
@@ -62,8 +64,9 @@ for (const [normalization, request] of requests) {
     assert(snapshot.modelPayload.includes('SCV DESIGN INTENT LOCK'));
     assert(snapshot.modelPayload.includes('scv-structured-state-schema.js'));
     assert(snapshot.modelPayload.includes('verify --version'));
-    assert(snapshot.modelPayload.includes('not a restoration or a live production check'));
-    assert(step.output.includes('운영 서버의 현재 배포 버전은 아직 조회하지 않았습니다'));
+    assert(snapshot.modelPayload.includes('read-only live release identity check, not a restoration or production change'));
+    assert(step.output.includes('운영 서버 /readyz에서'));
+    assert.equal(summary.taskContext.objective.scope, 'read_only');
   });
   const archive = step.output.match(/\[소스 파일 열기\]\(<([^>]+)>\)/)?.[1];
   assert(archive);
@@ -78,7 +81,11 @@ for (const [normalization, request] of requests) {
     assert.equal(embedded.release_id, runtimeComponent.id);
     assert.equal(receipt.sources[0].object_key, runtimeComponent.key);
     assert.equal(snapshot.projectBaseline.recoveryBaseline.sha256, descriptor.components.find(c => c.name === 'runtime').sha256);
-    assert.equal(snapshot.projectBaseline.liveVerified, undefined);
+    assert.equal(snapshot.projectBaseline.liveVerified.id, runtimeComponent.id);
+    assert.equal(snapshot.projectBaseline.liveVerified.sha256, runtimeComponent.sha256);
+    const manifestBytes = fs.readFileSync(path.join(directory, 'SCV_SINGLE_RELEASE.json'));
+    assert.equal(sha(manifestBytes), receipt.sources[0].live_manifest_sha256);
+    assert(snapshot.projectBaseline.liveVerified.verifiedAt);
     assert.deepEqual(fs.readdirSync(directory).sort(), [path.basename(archive), 'LATEST.json', 'SCV_RECOVERY_POINT.json', 'SCV_SINGLE_RELEASE.json'].sort());
     assert.equal(fs.statSync(archive).mode & 0o777, 0o600);
   });

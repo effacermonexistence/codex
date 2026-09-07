@@ -2394,6 +2394,40 @@ private func nativeRecordReceipt(_ step: AppRunStep) -> String {
     return parts.joined(separator: " · ")
 }
 
+private func savedResultReceipt(_ result: DeliveryRecord, id: UUID = UUID(), timestamp: Date = Date()) -> ChatMessage {
+    let step = try? JSONDecoder().decode(AppRunStep.self, from: result.step)
+    let verified = SavedResultEvidence.codexRecordVerified(result)
+    let verdict = result.response.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }?["status"] as? String
+    let review = result.localRejection != nil || (verdict != nil && verdict != "complete")
+    let disposition = review ? "결과 검토 필요 · 과제 완료 판정 아님" : "서버 검증·전달 대기 · 과제 완료 판정 아님"
+    var parts = [verified ? "백엔드 실행 기록·답변 원본 확인됨" : "답변 원본 보존됨 · 백엔드 실행 기록 미확인", disposition]
+    if let step {
+        parts += [step.provider, step.model ?? "provider default", step.effort + " reasoning",
+                  "step \(step.sequence)", "\(step.durationMS / 1_000)s", "exit \(step.exitCode)"]
+    }
+    return ChatMessage(id: id, role: .receipt, text: parts.joined(separator: " · "),
+        provider: step?.provider, permissionProfile: step?.permissionProfile, timestamp: timestamp, nativeRecordVerified: verified)
+}
+
+/// Refresh only the visible receipt for a saved failed attempt. Original chat
+/// bytes, user messages, answer and unfinished objective remain untouched.
+private func presentedMessages(_ session: ConversationSession) -> [ChatMessage] {
+    var messages = session.messages
+    guard let deliveryID = session.lastFailure?.deliveryID,
+          let previewID = UUID(uuidString: String(deliveryID.prefix(36))),
+          let index = messages.firstIndex(where: { $0.id == previewID && $0.role == .assistant }),
+          index + 1 < messages.count, messages[index + 1].role == .receipt,
+          let result = try? DeliveryOutbox().read(deliveryID), result.output == messages[index].text else { return messages }
+    messages[index + 1] = savedResultReceipt(result, id: messages[index + 1].id, timestamp: messages[index + 1].timestamp)
+    if messages[index + 1].nativeRecordVerified == true, index + 2 < messages.count,
+       messages[index + 2].role == .system, messages[index + 2].text == BackendBlocker.unclassified.message {
+        let old = messages[index + 2]
+        messages[index + 2] = ChatMessage(id: old.id, role: old.role,
+            text: "저장된 답변은 확인됐습니다. 다만 이 시도의 과제 완료 판정은 통과하지 못했습니다.", timestamp: old.timestamp)
+    }
+    return messages
+}
+
 private struct AppRunSummary: Decodable, Sendable {
     let status: String
     let steps: [AppRunStep]
@@ -3427,8 +3461,7 @@ private final class SessionStore: ObservableObject {
                             if !sessions[target].messages.contains(where: { $0.id == previewID }) {
                                 sessions[target].messages.append(ChatMessage(id:previewID, role: .assistant, text: result.output,
                                     provider: notice.provider, permissionProfile: notice.permissionProfile, nativeRecordVerified: false))
-                                sessions[target].messages.append(ChatMessage(role: .receipt,
-                                    text: needsReview ? "답변 원본 보존됨 · 검증 미통과 · 아직 완료 판정 아님" : "답변 로컬 저장됨 · 서버 검증·전달 대기 · 아직 완료 판정 아님", nativeRecordVerified: false))
+                                sessions[target].messages.append(savedResultReceipt(result))
                             }
                         }
                         if let source = notice.source,
@@ -3832,13 +3865,13 @@ private final class SessionStore: ObservableObject {
     func copyConversation(_ id: UUID) {
         guard let session = sessions.first(where: { $0.id == id }) else { return }
         NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(completeTranscriptText(session.messages), forType: .string)
+        NSPasteboard.general.setString(completeTranscriptText(presentedMessages(session)), forType: .string)
     }
     func exportConversation(_ id: UUID) {
         guard let session = sessions.first(where: { $0.id == id }) else { return }
         let panel = NSSavePanel(); panel.nameFieldStringValue = "OS-1 conversation.md"
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        do { try completeTranscriptText(session.messages).write(to: url, atomically: true, encoding: .utf8) }
+        do { try completeTranscriptText(presentedMessages(session)).write(to: url, atomically: true, encoding: .utf8) }
         catch { alertMessage = error.localizedDescription }
     }
     func resumeQueue() {
@@ -4321,7 +4354,7 @@ private struct OS1DesktopApp: App {
                     return try JSONDecoder().decode(RuntimeActivity.self, from:data)
                 }
                 let waiting = args.contains("--waiting") || progress != nil
-                let messages = waiting ? Array(session.messages.prefix(4)) : session.messages
+                let messages = waiting ? Array(presentedMessages(session).prefix(4)) : presentedMessages(session)
                 let expanded = args.contains("--receipt-open")
                     ? Set(messages.filter { $0.role == .receipt }.map { $0.id.uuidString + "-receipt" }) : Set<String>()
                 let document = timelineAttributedDocument(messages: messages, queuedSubmissions: [], isRunning: waiting,
@@ -4392,7 +4425,7 @@ private struct OS1DesktopApp: App {
                     if let source = value as? String { math.append(source) }
                 }
                 try JSONEncoder().encode(math).write(to: output.appendingPathExtension("math.json"))
-                try completeTranscriptText(session.messages).write(to: output.appendingPathExtension("copy.txt"), atomically: true, encoding: .utf8)
+                try completeTranscriptText(presentedMessages(session)).write(to: output.appendingPathExtension("copy.txt"), atomically: true, encoding: .utf8)
                 try sessionHandoff(session).write(to: output.appendingPathExtension("context.json"), atomically: true, encoding: .utf8)
                 print(output.path); exit(EXIT_SUCCESS)
             } catch { fputs("\(error.localizedDescription)\n", stderr); exit(EXIT_FAILURE) }
@@ -6119,7 +6152,7 @@ private struct MessageTimeline: View {
     var body: some View {
         ContinuousTranscriptView(
             sessionID: session.id,
-            messages: session.messages,
+            messages: presentedMessages(session),
             queuedSubmissions: queuedSubmissions,
             isRunning: isRunning,
             workspace: session.workspace,

@@ -49,6 +49,28 @@ func runProjectMaterialFixtures() throws {
         key: "scv-instagram-automation/release-ready/fixture/v2.tar.gz",
         sha256: String(repeating: "a", count: 64), bytes: 1441639)
     let chosen = try plan.preparationArchive(operating: operating)
+    let liveID = "scv-instagram-single-20260907-v159"
+    let liveManifest = try encode(["release_id": liveID])
+    let liveManifestHash = ProjectMaterialObject.digest(liveManifest)
+    let fingerprint = String(repeating: "b", count: 64)
+    let releaseFields: [String: Any] = ["ok": true, "mode": "production", "release_phase": "active", "phase_ready": true,
+        "release_id": liveID, "content_fingerprint_sha256": fingerprint, "release_manifest_sha256": liveManifestHash]
+    let live = try SCVLiveRelease(data: encode(["ok": true, "release": releaseFields]))
+    let record = TaskContext.BaselineRecord(id: liveID, key: operating.key, sha256: operating.sha256, bytes: operating.bytes)
+    let tick = String(UnicodeScalar(96))
+    let custody = "| content fingerprint | " + tick + fingerprint + tick + " |\n| release manifest sha256 | " + tick + liveManifestHash + tick + " |"
+    try check(live.version == 159 && live.matches(custody: custody, record: record))
+    try check(!live.matches(custody: custody, record: operating))
+    try check(!live.matches(custody: custody.replacingOccurrences(of: fingerprint, with: runtimeHash), record: record))
+    try check(live.verifiedRecord(from: record).verifiedAt == live.verifiedAt)
+    try live.verifyManifest(liveManifest); count += 1
+    rejects { try live.verifyManifest(Data("{}".utf8)) }
+    for (key, value) in [("ok", false as Any), ("mode", "staging"), ("release_phase", "prepared"),
+                         ("phase_ready", false), ("release_id", "../../v159"), ("release_manifest_sha256", "bad")] {
+        var fields = releaseFields; fields[key] = value
+        rejects { _ = try SCVLiveRelease(data: encode(["ok": true, "release": fields])) }
+    }
+    rejects { _ = try SCVLiveRelease(data: encode(["ok": false, "release": releaseFields])) }
     try check(chosen.key == operating.key && chosen.sha256 == operating.sha256 && chosen.bytes == operating.bytes)
     try check(chosen != plan.runtime && plan.releaseID == "scv-instagram-fixture-v1")
     try check(try plan.preparationArchive(operating: nil) == plan.runtime)

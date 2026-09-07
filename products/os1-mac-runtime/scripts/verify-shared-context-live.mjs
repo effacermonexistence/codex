@@ -65,8 +65,17 @@ for (const [i, provider] of providers.entries()) {
   assert.equal(summary.taskContext.conversationID, conversationID);
   assert.deepEqual(summary.sourceContext, reference);
   assert.equal(summary.taskContext.project.operatingRecord.id, task.project.operatingRecord.id);
-  assert(step.output.includes('v157') && step.output.includes('20.20.2') && step.output.includes('v151'));
-  assert(/미확인|확인하지|조회하지|조회하지는|검증하지|하지 않았|안 했|안했/.test(step.output), 'must preserve live-state uncertainty');
+  const operatingVersion = task.project.operatingRecord.id.match(/v\d+$/)?.[0];
+  const recoveryVersion = task.project.recoveryBaseline.recordedAt?.match(/release [^)]*-(v\d+)/)?.[1]
+    ?? task.project.recoveryBaseline.id.match(/-(v\d+)(?:-|$)/)?.[1];
+  assert(operatingVersion && recoveryVersion);
+  assert(step.output.includes(operatingVersion) && step.output.includes('20.20.2') && step.output.includes(recoveryVersion));
+  if (task.project.liveVerified) {
+    assert(/readyz|운영 서버|운영 상태/.test(step.output), 'must report the supplied live identity observation');
+    assert(/확인|조회|관측/.test(step.output), 'live observation missing');
+  } else {
+    assert(/미확인|확인하지|조회하지|조회하지는|검증하지|하지 않았|안 했|안했/.test(step.output), 'must preserve live-state uncertainty');
+  }
   const events = fs.existsSync(journal) ? fs.readFileSync(journal, 'utf8').split('\n').filter(Boolean).map(JSON.parse) : [];
   const publicProgress = events.some(e => e.phase === 'executing' && e.publicText);
   if (!reused) assert(publicProgress, 'public progress absent');

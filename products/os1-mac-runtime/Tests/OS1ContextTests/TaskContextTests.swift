@@ -14,6 +14,16 @@ func runTaskContextFixtures(root: URL) throws {
 
     // A. Preparation / continuation intent is project-independent and honors negation.
     let caseB = "야 인스타그램 수정 좀 하자 준비해"
+    for text in ["인스타그램 오토메이션 좀 손보자", "인스타 자동화 손 좀 보자", "인스타그램 손볼 건데",
+                 "인스타그램 오토메이션 좀 손보자".decomposedStringWithCanonicalMapping, "OS1 손보자"] {
+        try check(PreparationIntent.detect(text)?.kind == .prepare && PreparationIntent.detect(text)?.modifies == false,
+                  "bare work intent prepares without inventing a change: \(text)")
+        try check(TaskContext.ObjectiveKind.classify(text) == .prepare, "work request is not other")
+    }
+    try check(PreparationIntent.detect("인스타그램 가격이 두 번 나가는 버그 손봐줘")?.modifies == true, "specific repair retains edit intent")
+    try check(ScopeResolution.resolve("가격 안내 파일 손봐줘. 배포하지 마").scope == .workspaceWrite, "specific edit scope with no deployment")
+    try check(PreparationIntent.detect("인스타그램 손보지 마") == nil, "no acquisition for refusal")
+    try check(PreparationIntent.detect("\"인스타그램 손보자\" 번역해줘") == nil, "quoted repair is not a repair")
     for text in [caseB, caseB.decomposedStringWithCanonicalMapping, "인스타그램 수정 좀 하자 준비해"] {
         let intent = PreparationIntent.detect(text)
         // Bare preparation: no described change, so OS1 answers locally and the

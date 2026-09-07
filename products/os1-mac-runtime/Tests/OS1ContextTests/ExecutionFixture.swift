@@ -59,5 +59,35 @@ func runExecutionFixtures() throws {
     check(try DeliveryOutbox(root:root).read(id).output == record.output)
     check((try FileManager.default.attributesOfItem(atPath:root.appendingPathComponent(id + ".json").path)[.posixPermissions] as? NSNumber)?.intValue == 0o600)
     do { _ = try DeliveryOutbox(root:root).read("../../secrets"); fatalError("path escape") } catch { checks += 1 }
+    let session = UUID().uuidString.lowercased(), turn = UUID().uuidString.lowercased()
+    let nativeURL = root.appendingPathComponent("native.jsonl")
+    let answer = "준비 상태는 확인했지만 과제 완료는 아닙니다."
+    let rows: [[String: Any]] = [
+        ["type": "session_meta", "payload": ["id": session]],
+        ["type": "event_msg", "payload": ["type": "task_complete", "turn_id": turn, "last_agent_message": answer]],
+    ]
+    let nativeData = try rows.reduce(into: Data()) { bytes, row in
+        bytes.append(try JSONSerialization.data(withJSONObject: row)); bytes.append(10)
+    }
+    try nativeData.write(to: nativeURL)
+    let native: [String: Any] = ["turn_id": turn, "record_path": nativeURL.path, "persistence": "verified"]
+    let finished: [String: Any] = ["provider": "codex", "output": answer, "native_record": native]
+    var step = finished; step["session_id"] = session
+    let artifact = try JSONSerialization.data(withJSONObject: finished)
+    let artifactHash = SHA256.hash(data: artifact).map { String(format: "%02x", $0) }.joined()
+    func saved(_ text: String = answer, _ metadata: [String: Any]? = nil) throws -> DeliveryRecord {
+        DeliveryRecord(id: id, apiURL: "https://fixture", deviceID: "fixture", resultSHA256: artifactHash,
+            artifact: artifact, upload: Data(), submission: Data(),
+            step: try JSONSerialization.data(withJSONObject: metadata ?? step), source: nil, output: text,
+            localRejection: "capability_unavailable")
+    }
+    check(SavedResultEvidence.codexRecordVerified(try saved()))
+    check(!SavedResultEvidence.codexRecordVerified(try saved("tampered answer")))
+    var wrongSession = step; wrongSession["session_id"] = UUID().uuidString
+    check(!SavedResultEvidence.codexRecordVerified(try saved(answer, wrongSession)))
+    try Data("{}".utf8).write(to: nativeURL)
+    check(!SavedResultEvidence.codexRecordVerified(try saved()))
+    try FileManager.default.removeItem(at: nativeURL)
+    check(!SavedResultEvidence.codexRecordVerified(try saved()))
     print("Execution stream, privacy, quota and durable outbox: \(checks) checks passed")
 }

@@ -42,6 +42,12 @@ func runBackendRecoveryFixtures() throws {
         check(BackendRecovery.alternate(requested: "auto", failed: failed, permission: "read_only",
             blocker: .timeout, codexAvailable: failed == "codex", claudeAvailable: failed == "claude",
             alreadySwitched: false, remainingAttempts: 3) == nil, "missing alternate")
+        for blocker in [BackendBlocker.capabilityUnavailable, .timeout] {
+            check(BackendRecovery.alternate(requested: "auto", failed: failed, permission: "read_only",
+                blocker: blocker, codexAvailable: true, claudeAvailable: true,
+                alreadySwitched: false, remainingAttempts: 3, unavailableProviders: [other]) == nil,
+                "an earlier exhausted provider cannot re-enter through capability recovery")
+        }
     }
     let checkpoint = BackendRecoveryCheckpoint(executionID: UUID().uuidString, sequence: 2,
         provider: "claude", permissionProfile: "read_only", objectiveSHA256: String(repeating: "a", count: 64),

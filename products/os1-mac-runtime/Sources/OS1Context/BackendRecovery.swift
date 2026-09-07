@@ -135,13 +135,14 @@ public enum BackendRecovery {
                                  blocker: BackendBlocker, codexAvailable: Bool,
                                  claudeAvailable: Bool, alreadySwitched: Bool,
                                  remainingAttempts: Int,
-                                 dispatchStage: BackendDispatchStage = .dispatched) -> String? {
+                                 dispatchStage: BackendDispatchStage = .dispatched,
+                                 unavailableProviders: Set<String> = []) -> String? {
         guard requested == "auto",
               (permission == "read_only" || (permission == "workspace_write" && dispatchStage == .notDispatched)), !alreadySwitched,
               remainingAttempts > 0, [.capabilityUnavailable, .timeout].contains(blocker) else { return nil }
         switch failed {
-        case "claude": return codexAvailable ? "codex" : nil
-        case "codex": return claudeAvailable ? "claude" : nil
+        case "claude": return codexAvailable && !unavailableProviders.contains("codex") ? "codex" : nil
+        case "codex": return claudeAvailable && !unavailableProviders.contains("claude") ? "claude" : nil
         default: return nil
         }
     }
