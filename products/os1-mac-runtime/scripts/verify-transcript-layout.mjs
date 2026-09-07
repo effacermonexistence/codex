@@ -22,7 +22,11 @@ const json = file => JSON.parse(fs.readFileSync(file, 'utf8'));
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 const beforeContext = JSON.parse(run(baseline, ['--export-session-context', sessionID]));
 const checks = [], measurements = [];
-function check(name, fn) { fn(); checks.push({name, status:'PASS'}); }
+const failures = [];
+function check(name, fn) {
+  try { fn(); checks.push({ name: name, status: 'PASS' }); }
+  catch (error) { failures.push(name); checks.push({ name: name, status: 'FAIL', error: String(error && error.message || error) }); }
+}
 function cellsFit(cells, width) {
   for (const cell of cells) {
     assert(cell.height > 0 && cell.width > 0);
@@ -84,4 +88,5 @@ const report = {timestamp:new Date().toISOString(), app, appSHA256:hash(fs.readF
   checks, measurements, sessionStoreSHA256:hash(before), modelCalls:0,
   limitation:'Native AppKit raster/layout and actual disclosure delegate replay; not a physical drag or a pixel-identical Codex specification.'};
 fs.writeFileSync(path.join(output,'report.json'), JSON.stringify(report,null,2)+'\n',{mode:0o600});
-console.log(JSON.stringify({passed:checks.length, failed:0, minimumGapPoints:Math.min(...measurements.map(m=>m.minGapPoints)), report:path.join(output,'report.json')}));
+console.log(JSON.stringify({passed:checks.length, failed: failures.length, minimumGapPoints:Math.min(...measurements.map(m=>m.minGapPoints)), report:path.join(output,'report.json')}));
+process.exit(failures.length === 0 ? 0 : 1);

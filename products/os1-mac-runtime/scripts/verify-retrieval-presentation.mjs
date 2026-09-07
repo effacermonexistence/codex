@@ -27,7 +27,11 @@ const digest = data => createHash('sha256').update(data).digest('hex');
 const run = (exe, argv) => execFileSync(exe, argv, { encoding: 'utf8', timeout: 30000, maxBuffer: 8 * 1024 * 1024 });
 const beforeContext = JSON.parse(run(baseline, ['--export-session-context', sessionID]));
 const checks = [];
-function check(name, fn) { fn(); checks.push({ name, status: 'PASS' }); }
+const failures = [];
+function check(name, fn) {
+  try { fn(); checks.push({ name, status: 'PASS' }); }
+  catch (error) { failures.push(name); checks.push({ name, status: 'FAIL', error: String(error && error.message || error) }); }
+}
 const normal = path.join(output, 'default.png');
 const expanded = path.join(output, 'expanded.png');
 run(app, ['--self-test']);
@@ -85,4 +89,5 @@ const report = { timestamp: new Date().toISOString(), sessionID, app, appSHA256:
   sessionStoreSHA256: digest(bytesBefore), checks, modelCalls: 0, r2Writes: 0,
   images: [normal, expanded], limitation: 'Visual proof is a native AppKit transcript render, not foreground window automation.' };
 fs.writeFileSync(path.join(output, 'report.json'), JSON.stringify(report, null, 2) + '\n', { mode: 0o600 });
-console.log(JSON.stringify({ passed: checks.length, failed: 0, modelCalls: 0, report: path.join(output, 'report.json') }));
+console.log(JSON.stringify({ passed: checks.length, failed: failures.length, modelCalls: 0, report: path.join(output, 'report.json') }));
+process.exit(failures.length === 0 ? 0 : 1);

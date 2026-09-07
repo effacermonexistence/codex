@@ -71,11 +71,16 @@ for (index, id) in args.dropFirst(3).enumerated() {
 }
 let backendIDs: Set<String> = ["com.openai.codex", "com.anthropic.claudefordesktop", "com.omaragi.os1"]
 let unexpected = activations.filter { backendIDs.contains($0["bundleID"] ?? "") }
-let report: [String: Any] = ["status": unexpected.isEmpty ? "PASS" : "REVIEW_FOREGROUND_EVENTS",
+// Same blind spot as the passive wrapper: a watched app already in front
+// cannot be observed activating. Report UNKNOWN instead of a vacuous PASS.
+let blind = backendIDs.contains(startForeground)
+let status = blind ? "UNKNOWN_WATCHED_APP_ALREADY_FRONTMOST" : (unexpected.isEmpty ? "PASS" : "REVIEW_FOREGROUND_EVENTS")
+let report: [String: Any] = ["status": status, "observable": !blind,
     "modelCalls": 0, "initialForeground": startForeground, "finalForeground": foreground(),
     "activationEvents": activations, "backendOrOS1Activations": unexpected.count, "replays": replays,
     "limitation": "Passive observation cannot attribute user-initiated activation. Callback regression tests cover explicit vs automatic policy; no physical clicks are simulated."]
 try JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]).write(to: destination)
 try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: destination.path)
-print("Focus replay: \(replays.count) records, \(unexpected.count) backend/OS-1 activations, 0 model calls. Report: \(destination.path)")
+print("Focus replay: \(status) — \(replays.count) records, \(unexpected.count) backend/OS-1 activations, 0 model calls. Report: \(destination.path)")
+exit(status == "PASS" ? 0 : 1)
 if !unexpected.isEmpty { exit(1) }

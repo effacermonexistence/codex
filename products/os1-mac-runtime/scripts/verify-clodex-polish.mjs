@@ -29,7 +29,11 @@ const run = (exe, args, options = {}) => execFileSync(exe, args, {
   encoding:'utf8', timeout:45000, maxBuffer:8_000_000, ...options
 });
 const checks = [];
-function check(name, fn) { fn(); checks.push(name); }
+const failures = [];
+function check(name, fn) {
+  try { fn(); checks.push(name); }
+  catch (error) { failures.push(name); checks.push(name + ' [FAIL]'); }
+}
 const context = JSON.parse(run(baseline, ['--export-session-context', sessionID]));
 for (const width of [660, 900, 1100]) {
   const image = path.join(out, `incident-${width}.png`);
@@ -121,3 +125,4 @@ const report = {timestamp:new Date().toISOString(), app, appSHA256:hash(fs.readF
   limitation:'Native replay and bounded source-only sandbox regression, not proof of physical mouse behavior or globally optimal routing.'};
 save('report.json', report);
 console.log(JSON.stringify({passed:checks.length, out, live}));
+process.exit(failures.length === 0 ? 0 : 1);

@@ -54,7 +54,11 @@ function expectedMathSources(source) {
   return formulas;
 }
 const checks = [];
-function check(name, fn) { fn(); checks.push({ name, status: 'PASS' }); }
+const failures = [];
+function check(name, fn) {
+  try { fn(); checks.push({ name, status: 'PASS' }); }
+  catch (error) { failures.push(name); checks.push({ name, status: 'FAIL', error: String(error && error.message || error) }); }
+}
 check('Math-source oracle preserves inline, display and escaped delimiter boundaries', () => {
   const fixture = 'inline $x_1$ and \\(y\\)\n$$\n\\operatorname{diag}(A)\n$$\n`$code$`\n```tex\n$also_code$\n```\nescaped \\$5';
   assert.deepEqual(expectedMathSources(fixture), [
@@ -102,4 +106,5 @@ const report = { timestamp: new Date().toISOString(), app, appSHA256: digest(fs.
   sessionID, renderedFormulas: formulas.length, modelCalls: 0, sessionStoreSHA256: digest(before), checks,
   limitation: 'Native AppKit/SwiftUI diagnostic replay, not physical mouse/keyboard or foreground-window automation.' };
 fs.writeFileSync(path.join(output, 'report.json'), JSON.stringify(report, null, 2) + '\n', { mode: 0o600 });
-console.log(JSON.stringify({ passed: checks.length, failed: 0, renderedFormulas: formulas.length, modelCalls: 0, report: path.join(output, 'report.json') }));
+console.log(JSON.stringify({ passed: checks.length, failed: failures.length, renderedFormulas: formulas.length, modelCalls: 0, report: path.join(output, 'report.json') }));
+process.exit(failures.length === 0 ? 0 : 1);

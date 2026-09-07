@@ -6,6 +6,7 @@ import OS1Context
 import SQLite3
 @preconcurrency import Speech
 import SwiftUI
+import UniformTypeIdentifiers
 
 private enum ProviderChoice: String, CaseIterable, Codable, Identifiable, Sendable {
     case auto
@@ -120,6 +121,56 @@ private func nativeSessionURL(provider: ProviderChoice, sessionID: String?) -> U
 private func visibleAdoptedSteps(_ steps: [AppRunStep]) -> [AppRunStep] {
     steps.filter {
         $0.revasDisposition == "adopted" || $0.revasDisposition == "control_verified"
+    }
+}
+
+@MainActor
+private func taskContextSelfTest() throws {
+    // v3 handoff carries the OS-1 task context through the session codec.
+    var session = ConversationSession(workspace: "/tmp")
+    var context = TaskContext.migrated(conversationID: session.id, request: "야 인스타그램 수정 좀 하자 준비해", workspace: "/tmp",
+        sourceContext: nil, codexSessionID: nil, claudeSessionID: nil)
+    context.decideSemantic("Node 20.20.2 only")
+    session.taskContext = context
+    session.messages = [ChatMessage(role: .user, text: "야 인스타그램 수정 좀 하자 준비해")]
+    let restored = try JSONDecoder().decode(ConversationSession.self, from: JSONEncoder().encode(session))
+    let handoff = try SessionHandoff.decode(sessionHandoff(restored))
+    guard handoff.format == SessionHandoff.currentFormat, handoff.taskContext?.conversationID == session.id,
+          handoff.taskContext?.activeDecisions.map(\.text) == ["Node 20.20.2 only"] else {
+        throw RunnerError.message("OS-1 v3 handoff lost the task context")
+    }
+    var ingested = restored
+    ingested.messages.append(ChatMessage(role: .assistant, text: "native answer", provider: "codex", nativeIngestedID: "codex:abc"))
+    guard try SessionHandoff.decode(sessionHandoff(ingested)).transcript.contains("[native session, outside OS-1]") else {
+        throw RunnerError.message("Native-ingested turns must be labeled in the handoff")
+    }
+    // Adoption against the handed revision.
+    var runtime = context
+    runtime.bind(provider: "codex", nativeSessionID: UUID().uuidString)
+    let handed = context.contextRevision
+    guard context.adopting(runtime, handedRevision: handed).bindings.count == 1 else {
+        throw RunnerError.message("Unchanged context must adopt the runtime result")
+    }
+    var changed = context
+    changed.setObjective(TaskContext.Objective(requestText: "다른 요청"))
+    let merged = changed.adopting(runtime, handedRevision: handed)
+    guard merged.objective.requestText == "다른 요청", merged.bindings.count == 1, !changed.acceptsLateResult(fromRevision: handed) else {
+        throw RunnerError.message("Changed context must keep its objective and treat the handed revision as late")
+    }
+    // Legacy and partially unreadable envelopes.
+    let good = "{\"id\":\"\(UUID().uuidString)\",\"title\":\"t\",\"workspace\":\"/tmp\",\"provider\":\"auto\",\"messages\":[],\"updatedAt\":0}"
+    let legacy = try JSONDecoder().decode(SessionEnvelope.self, from: Data("{\"schema\":4,\"sessions\":[\(good)]}".utf8))
+    guard legacy.sessions.count == 1, legacy.sessions[0].taskContext == nil,
+          migratedTaskContext(legacy.sessions[0], sourceContext: nil).conversationID == legacy.sessions[0].id else {
+        throw RunnerError.message("Legacy envelope migration failed")
+    }
+    let broken = Data("{\"schema\":4,\"sessions\":[{\"id\":\"not-a-uuid\"},\(good)]}".utf8)
+    guard (try? JSONDecoder().decode(SessionEnvelope.self, from: broken)) == nil,
+          try JSONDecoder().decode(LenientSessionEnvelope.self, from: broken).sessions.compactMap(\.value).count == 1 else {
+        throw RunnerError.message("Lenient envelope must keep the readable conversation")
+    }
+    guard TaskContext.explicitDecisions(in: "결정: Node 20으로 간다\n그리고 수정해") == ["Node 20으로 간다"] else {
+        throw RunnerError.message("Explicit decision capture failed")
     }
 }
 
@@ -613,6 +664,17 @@ private func interactionSelfTest() throws {
         mixedScriptsRendered.attribute(.os1MathSource, at:0, effectiveRange:nil) as? String == mixedScripts &&
         MathTypesetter.copyable(mixedScriptsRendered) == mixedScripts, "ASCII scripts must not disable CJK top-level typesetting")
     let nestedCJK = #"$\frac{\text{한글}}{2}$"#
+    let freshMixed = "\\[\n\\text{양자 채널}\n\\rightarrow\n\\text{정적 뉴턴 중력원}\n\\quad\\color{gray}{\\dashrightarrow}\\quad\n\\text{공변적 GR 이론}\n\\]"
+    let freshMixedRendered = MathTypesetter.render(freshMixed, display: true)
+    try check(!freshMixedRendered.string.contains("\\") && !freshMixedRendered.string.contains("$") &&
+        !freshMixedRendered.string.contains("\n") && freshMixedRendered.string.contains("공변적 GR 이론"),
+        "fresh multiline CJK/color/dashed arrow leaks raw TeX")
+    try check(MathTypesetter.copyable(freshMixedRendered) == freshMixed, "fresh multilingual copy source changed")
+    for formula in [#"$\color{gray}{\dashrightarrow}$"#, #"$\textcolor{blue}{\dashleftarrow}$"#] {
+        let output = MathTypesetter.render(formula)
+        try check(output.attribute(.attachment, at: 0, effectiveRange: nil) is NSTextAttachment &&
+            MathTypesetter.copyable(output) == formula, "standard colored/dashed symbol unsupported")
+    }
     try check(MathTypesetter.render(nestedCJK).string.contains("한글") &&
         MathTypesetter.copyable(MathTypesetter.render(nestedCJK)) == nestedCJK, "nested CJK must remain visible")
 
@@ -947,11 +1009,15 @@ private final class VoiceDictationController: ObservableObject {
     private var finishTimeoutTask: Task<Void, Never>?
     private var restartTask: Task<Void, Never>?
     private var localTranscriptionTask: Task<Void, Never>?
+    private var localProcessCancellation: VoiceProcessCancellation?
     private var localWhisper: LocalWhisperConfiguration?
     private var localRecordingURL: URL?
     private var baseText = ""
     private var committedTranscript = ""
     private var currentTranscript = ""
+    private var lastPublishedText = ""
+    private var lastDictatedText = ""
+    private var onReadComposer: (() -> String)?
     private var onTranscript: ((String) -> Void)?
     private var onFailure: ((String) -> Void)?
     private var onFinish: (() -> Void)?
@@ -980,6 +1046,7 @@ private final class VoiceDictationController: ObservableObject {
 
     func toggle(
         initialText: String,
+        readComposer: (() -> String)? = nil,
         onTranscript: @escaping (String) -> Void,
         onFailure: @escaping (String) -> Void
     ) {
@@ -988,6 +1055,9 @@ private final class VoiceDictationController: ObservableObject {
             return
         }
         baseText = initialText
+        lastPublishedText = initialText
+        lastDictatedText = ""
+        onReadComposer = readComposer
         committedTranscript = ""
         currentTranscript = ""
         localWhisper = localWhisperConfiguration()
@@ -999,7 +1069,9 @@ private final class VoiceDictationController: ObservableObject {
         phase = .authorizing
         elapsedSeconds = 0
         startElapsedTimer()
-        Task { await authorizeAndStart() }
+        recognitionGeneration += 1
+        let generation = recognitionGeneration
+        Task { await authorizeAndStart(generation: generation) }
     }
 
     /// Finish keeps the recognition task alive briefly so the final spoken
@@ -1031,7 +1103,9 @@ private final class VoiceDictationController: ObservableObject {
     /// microphone was started.
     func cancel() {
         guard isActive else { return }
-        let restore = baseText
+        let current = onReadComposer?() ?? lastPublishedText
+        let restore = DictationDraft.replacing(current: current, previous: lastPublishedText,
+            dictated: lastDictatedText, replacement: "", initial: baseText) ?? current
         let transcriptHandler = onTranscript
         resetRecognition(cancelTask: true)
         phase = .idle
@@ -1066,6 +1140,8 @@ private final class VoiceDictationController: ObservableObject {
         finishTimeoutTask = nil
         localTranscriptionTask?.cancel()
         localTranscriptionTask = nil
+        localProcessCancellation?.cancel()
+        localProcessCancellation = nil
         stopAudioCapture()
         if cancelTask { recognitionTask?.cancel() }
         recognitionTask = nil
@@ -1076,7 +1152,7 @@ private final class VoiceDictationController: ObservableObject {
         removeLocalRecording()
     }
 
-    private func authorizeAndStart() async {
+    private func authorizeAndStart(generation: Int) async {
         let microphoneGranted: Bool
         switch AVCaptureDevice.authorizationStatus(for: .audio) {
         case .notDetermined:
@@ -1086,7 +1162,7 @@ private final class VoiceDictationController: ObservableObject {
         default:
             microphoneGranted = false
         }
-        guard phase == .authorizing, wantsRecording else { return }
+        guard phase == .authorizing, wantsRecording, recognitionGeneration == generation else { return }
         guard microphoneGranted else {
             fail("Microphone access is off. Allow OS-1 CLODEX in System Settings → Privacy & Security → Microphone.")
             return
@@ -1098,6 +1174,7 @@ private final class VoiceDictationController: ObservableObject {
                 try startLocalWhisperCapture()
                 return
             } catch {
+                stopAudioCapture()
                 localWhisper = nil
                 removeLocalRecording()
             }
@@ -1114,7 +1191,7 @@ private final class VoiceDictationController: ObservableObject {
         case let existing:
             speechStatus = existing
         }
-        guard phase == .authorizing, wantsRecording else { return }
+        guard phase == .authorizing, wantsRecording, recognitionGeneration == generation else { return }
         guard speechStatus == .authorized else {
             fail("Local Whisper is unavailable and Speech Recognition access is off. Install Handy or allow OS-1 CLODEX in System Settings → Privacy & Security → Speech Recognition.")
             return
@@ -1189,13 +1266,14 @@ private final class VoiceDictationController: ObservableObject {
     private func startRecognition() throws {
         let locale = preferredDictationLocale()
         guard let recognizer = SFSpeechRecognizer(locale: locale),
-              recognizer.isAvailable else {
-            throw RunnerError.message("Speech recognition is not available on this Mac right now.")
+              recognizer.isAvailable, recognizer.supportsOnDeviceRecognition else {
+            throw RunnerError.message("이 언어의 기기 내 받아쓰기를 사용할 수 없습니다. 로컬 Whisper 모델을 준비해 주세요. 녹음은 외부 서버로 보내지 않았습니다.")
         }
 
         recognitionTask?.cancel()
         recognitionTask = nil
         let request = SFSpeechAudioBufferRecognitionRequest()
+        request.requiresOnDeviceRecognition = true
         request.shouldReportPartialResults = true
         request.taskHint = .dictation
         request.contextualStrings = [
@@ -1296,12 +1374,16 @@ private final class VoiceDictationController: ObservableObject {
     ) {
         let generation = recognitionGeneration
         localTranscriptionTask?.cancel()
+        localProcessCancellation?.cancel()
+        let cancellation = VoiceProcessCancellation()
+        localProcessCancellation = cancellation
         localTranscriptionTask = Task { [weak self] in
             do {
                 let transcript = try await Task.detached(priority: .userInitiated) {
                     try Self.performLocalWhisperTranscription(
                         configuration: configuration,
-                        recordingURL: recordingURL
+                        recordingURL: recordingURL,
+                        cancellation: cancellation
                     )
                 }.value
                 guard !Task.isCancelled, let self,
@@ -1321,25 +1403,26 @@ private final class VoiceDictationController: ObservableObject {
 
     nonisolated private static func performLocalWhisperTranscription(
         configuration: LocalWhisperConfiguration,
-        recordingURL: URL
+        recordingURL: URL,
+        cancellation: VoiceProcessCancellation
     ) throws -> String {
         let waveURL = recordingURL.deletingLastPathComponent().appendingPathComponent("recording.wav")
         defer { try? FileManager.default.removeItem(at: recordingURL.deletingLastPathComponent()) }
 
-        _ = try runProcess(
-            executableURL: URL(fileURLWithPath: "/usr/bin/afconvert"),
+        _ = try VoiceProcess.run(
+            executable: URL(fileURLWithPath: "/usr/bin/afconvert"),
             arguments: [
                 "-f", "WAVE", "-d", "LEI16@16000", "-c", "1",
                 recordingURL.path, waveURL.path,
-            ]
+            ], cancellation: cancellation, timeout: 30
         )
-        let output = try runProcess(
-            executableURL: configuration.executableURL,
+        let output = try VoiceProcess.run(
+            executable: configuration.executableURL,
             arguments: [
                 "--transcribe-file", waveURL.path,
                 "--model", configuration.modelID,
                 "--json",
-            ]
+            ], cancellation: cancellation
         )
         let decoder = JSONDecoder()
         let result: LocalWhisperResult
@@ -1361,29 +1444,6 @@ private final class VoiceDictationController: ObservableObject {
         return transcript
     }
 
-    nonisolated private static func runProcess(
-        executableURL: URL,
-        arguments: [String]
-    ) throws -> Data {
-        let process = Process()
-        let standardOutput = Pipe()
-        let standardError = Pipe()
-        process.executableURL = executableURL
-        process.arguments = arguments
-        process.standardOutput = standardOutput
-        process.standardError = standardError
-        try process.run()
-        process.waitUntilExit()
-        let output = standardOutput.fileHandleForReading.readDataToEndOfFile()
-        let errorOutput = standardError.fileHandleForReading.readDataToEndOfFile()
-        guard process.terminationStatus == 0 else {
-            let detail = String(data: errorOutput, encoding: .utf8)?
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            throw RunnerError.message(detail?.isEmpty == false ? detail! : "Voice engine exited unexpectedly.")
-        }
-        return output
-    }
-
     private func removeLocalRecording() {
         guard let localRecordingURL else { return }
         try? FileManager.default.removeItem(at: localRecordingURL.deletingLastPathComponent())
@@ -1400,7 +1460,21 @@ private final class VoiceDictationController: ObservableObject {
 
     private func publishTranscript() {
         let dictated = dictationText(committed: committedTranscript, current: currentTranscript)
-        onTranscript?(composerText(base: baseText, dictated: dictated))
+        let current = onReadComposer?() ?? lastPublishedText
+        guard let merged = DictationDraft.replacing(current: current, previous: lastPublishedText,
+            dictated: lastDictatedText, replacement: dictated, initial: baseText) else {
+            // A user edited the owned dictation span. User input wins; stop
+            // rather than overwrite it with a late recognition callback.
+            let failure = onFailure
+            resetRecognition(cancelTask: true)
+            phase = .idle; level = 0
+            clearCallbacks()
+            failure?("직접 수정한 입력을 보존하고 받아쓰기를 멈췄습니다.")
+            return
+        }
+        lastPublishedText = merged
+        lastDictatedText = dictated
+        onTranscript?(merged)
     }
 
     private func commitCurrentSegment() {
@@ -1427,12 +1501,16 @@ private final class VoiceDictationController: ObservableObject {
             Task { @MainActor [weak self] in
                 guard let self, self.phase != .idle else { return }
                 self.elapsedSeconds += 1
+                if self.elapsedSeconds >= 300 && self.phase == .listening { self.finish() }
             }
         }
     }
 
     private func clearCallbacks() {
         onTranscript = nil
+        onReadComposer = nil
+        lastPublishedText = ""
+        lastDictatedText = ""
         onFailure = nil
         onFinish = nil
         baseText = ""
@@ -1462,6 +1540,9 @@ private struct NativeSessionSummary: Identifiable, Sendable {
     let updatedAt: Date
     let sourcePath: String?
     var linkedTitle: String?
+    var isPinned = false
+    var pinPosition: Int?
+    var pinSyncNote: String?
 
     var displayTitle: String {
         let value = (linkedTitle ?? title).trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1508,6 +1589,15 @@ private struct NativeSessionMessage: Identifiable, Sendable {
     let timestamp: Date?
 }
 
+private func sidebarNativeLess(_ lhs: NativeSessionSummary, _ rhs: NativeSessionSummary) -> Bool {
+    if lhs.isPinned != rhs.isPinned { return lhs.isPinned }
+    if lhs.isPinned, lhs.pinPosition != rhs.pinPosition {
+        return (lhs.pinPosition ?? Int.max) < (rhs.pinPosition ?? Int.max)
+    }
+    if lhs.updatedAt != rhs.updatedAt { return lhs.updatedAt > rhs.updatedAt }
+    return lhs.id < rhs.id
+}
+
 private func transcriptStableID(_ value: String) -> UUID {
     let hex = SHA256.hash(data: Data(value.utf8)).prefix(16).map { String(format: "%02x", $0) }.joined()
     let parts = [0..<8, 8..<12, 12..<16, 16..<20, 20..<32].map { range in
@@ -1544,11 +1634,23 @@ private enum NativeSessionReader {
         case .auto:
             return []
         }
-        if let recordedSessionID,
-           let index = result.firstIndex(where: { $0.id == recordedSessionID }), index != 0 {
-            result.insert(result.remove(at: index), at: 0)
+        let pinReadback = try? NativeSidebar.read(provider.rawValue)
+        let pins = pinReadback ?? [:]
+        if provider == .codex {
+            // Pins must not disappear behind the recent-session page bound.
+            let loaded = Set(result.map(\.id))
+            for (id, pin) in pins where pin.pinned && !loaded.contains(id) {
+                if let session = try codexSession(sessionID: id) { result.append(session) }
+            }
         }
-        return result
+        var seen = Set<String>()
+        return result.filter { seen.insert($0.id).inserted }.map { session in
+            var value = session
+            value.isPinned = pins[value.id]?.pinned ?? false
+            value.pinPosition = pins[value.id]?.position
+            if pinReadback == nil { value.pinSyncNote = "백엔드 핀 상태 미확인" }
+            return value
+        }.sorted(by: sidebarNativeLess)
     }
 
     static func transcript(for session: NativeSessionSummary) throws -> [NativeSessionMessage] {
@@ -1712,6 +1814,7 @@ private enum NativeSessionReader {
         ) else { return [] }
         var files: [(URL, Date)] = []
         for case let url as URL in enumerator where url.pathExtension == "jsonl" {
+            guard SidebarOrder.claudeConversationID(file: url, projectsRoot: root) != nil else { continue }
             let values = try? url.resourceValues(forKeys: [.contentModificationDateKey, .isRegularFileKey])
             guard values?.isRegularFile == true else { continue }
             files.append((url, values?.contentModificationDate ?? .distantPast))
@@ -1719,13 +1822,13 @@ private enum NativeSessionReader {
         files.sort { $0.1 > $1.1 }
         return files.compactMap { url, modifiedAt in
             guard let records = try? readJSONLines(url, maximumBytes: 768 * 1_024), !records.isEmpty else { return nil }
-            var id = url.deletingPathExtension().lastPathComponent
+            let id = url.deletingPathExtension().lastPathComponent
             var workspace = ""
             var timestamp: Date?
             var title = ""
             var hasVisibleConversation = false
             for record in records {
-                if let value = record["sessionId"] as? String, !value.isEmpty { id = value }
+                // Copied historical turns and child logs cannot rename this file's identity.
                 if let value = record["cwd"] as? String, !value.isEmpty { workspace = value }
                 if let value = record["timestamp"] as? String, let date = iso8601.date(from: value) {
                     timestamp = timestamp.map { max($0, date) } ?? date
@@ -1914,6 +2017,9 @@ private struct ChatMessage: Codable, Identifiable, Equatable, Sendable {
     /// Receipts record native readback; false on an assistant message marks
     /// provisional custody only. Absent on historical adopted messages.
     let nativeRecordVerified: Bool?
+    /// Set when the message was read back from a bound native session rather
+    /// than sent or adopted through OS-1 (provider:recordID).
+    let nativeIngestedID: String?
 
     init(
         id: UUID = UUID(),
@@ -1922,7 +2028,8 @@ private struct ChatMessage: Codable, Identifiable, Equatable, Sendable {
         provider: String? = nil,
         permissionProfile: String? = nil,
         timestamp: Date = Date(),
-        nativeRecordVerified: Bool? = nil
+        nativeRecordVerified: Bool? = nil,
+        nativeIngestedID: String? = nil
     ) {
         self.id = id
         self.role = role
@@ -1931,6 +2038,7 @@ private struct ChatMessage: Codable, Identifiable, Equatable, Sendable {
         self.permissionProfile = permissionProfile
         self.timestamp = timestamp
         self.nativeRecordVerified = nativeRecordVerified
+        self.nativeIngestedID = nativeIngestedID
     }
 }
 
@@ -1948,10 +2056,14 @@ private struct ConversationSession: Codable, Identifiable, Sendable {
     var codexCapacity: Int?
     var claudeCapacity: Int?
     var pinnedAt: Date?
+    var sidebarPosition: Int?
     var archived: Bool?
     var draft: String?
     var lastFailure: PendingSubmission?
     var lastBackendFailure: BackendFailureNotice?
+    /// OS-1 owned shared task state (objective, decisions, project baseline,
+    /// bound sources, backend bindings, executions). Migrated on load.
+    var taskContext: TaskContext?
     var updatedAt: Date
 
     init(
@@ -1991,6 +2103,30 @@ private struct SessionEnvelope: Codable {
     let sessions: [ConversationSession]
     var queued: [PendingSubmission]? = nil
     var inFlight: [PendingSubmission]? = nil
+    var sidebarIntents: [String: SidebarPinIntent]? = nil
+    var nativePinnedOrders: [String: [String]]? = nil
+}
+
+/// One unreadable conversation must not hide every other one.
+private struct LossyDecodable<Value: Decodable>: Decodable {
+    let value: Value?
+    init(from decoder: Decoder) throws { value = try? Value(from: decoder) }
+}
+
+private struct LenientSessionEnvelope: Decodable {
+    let schema: Int
+    let sessions: [LossyDecodable<ConversationSession>]
+    var queued: [PendingSubmission]? = nil
+    var inFlight: [PendingSubmission]? = nil
+    var sidebarIntents: [String: SidebarPinIntent]? = nil
+    var nativePinnedOrders: [String: [String]]? = nil
+}
+
+private func migratedTaskContext(_ session: ConversationSession, sourceContext: SourceReference?) -> TaskContext {
+    session.taskContext ?? TaskContext.migrated(conversationID: session.id,
+        request: session.messages.last(where: { $0.role == .user })?.text ?? "", workspace: session.workspace,
+        sourceContext: sourceContext, codexSessionID: session.codexSessionID, claudeSessionID: session.claudeSessionID,
+        now: session.updatedAt)
 }
 
 private func migratedSourceReference(_ session: ConversationSession, store: SourceContextStore = SourceContextStore()) -> SourceReference? {
@@ -2014,7 +2150,8 @@ private func sessionHandoff(_ session: ConversationSession, before userMessageID
         bounded = session.messages[..<index]
     } else { bounded = session.messages[...] }
     let text = bounded.filter { $0.role == .user || $0.role == .assistant }.suffix(16).map { message in
-        let speaker = message.role == .user ? "USER" : providerDisplayName(message.provider)
+        var speaker = message.role == .user ? "USER" : providerDisplayName(message.provider)
+        if message.nativeIngestedID != nil { speaker += " [native session, outside OS-1]" }
         var content = String(message.text.prefix(12_000))
         if message.role == .assistant, message.nativeRecordVerified == false {
             content = "[UNVERIFIED BACKEND OUTPUT — saved locally, not adopted or completed]\n" + content
@@ -2026,7 +2163,8 @@ private func sessionHandoff(_ session: ConversationSession, before userMessageID
     }.joined(separator: "\n\n")
     var sourceSession = session
     if session.sourceContextVersion != 2 { sourceSession.messages = Array(bounded) }
-    return try SessionHandoff(transcript: text, source: migratedSourceReference(sourceSession)).encoded()
+    return try SessionHandoff(transcript: text, source: migratedSourceReference(sourceSession),
+                              taskContext: session.taskContext).encoded()
 }
 
 private struct PendingSubmission: Identifiable, Codable, Equatable, Sendable {
@@ -2040,6 +2178,8 @@ private struct PendingSubmission: Identifiable, Codable, Equatable, Sendable {
     let claudeCapacity: Int
     let readOnlyReconciliation: Bool?
     var deliveryID: String? = nil
+    var savedResultNeedsReview: Bool? = nil
+    var preflightOnly: Bool? = true
 
     init(
         id: UUID = UUID(),
@@ -2130,6 +2270,7 @@ private func stepRecordIsVerified(_ step: AppRunStep) -> Bool {
                   "live-manifest-verified-cache-readback",
                   "live-content-addressed-r2-readback+base-bundle",
                   "live-r2-opt-research-map+separate-qmgr-v1",
+                  SCVProjectMaterials.verificationMode,
               ].contains(verificationMode),
               receipt["r2_verified"] as? Bool == true,
               receipt["model_invoked"] as? Bool == false,
@@ -2164,6 +2305,13 @@ private func stepRecordIsVerified(_ step: AppRunStep) -> Bool {
                 ((source["retrieved_content_sha256"] as? String)?.count == 64 ||
                     (source["source_content_sha256"] as? String)?.count == 64)
         }
+        if verificationMode == SCVProjectMaterials.verificationMode {
+            let typed = sources.compactMap { $0 as? [String: String] }
+            let paths = Set(typed.compactMap { $0["source_path"] })
+            return sourceCount == 5 && typed.count == 5 &&
+                paths == Set(["Dockerfile", "package.json", "SCV_DESIGN_INTENT_LOCK.md", "scv-structured-state-schema.js", "source-inventory.txt"]) &&
+                typed.allSatisfy(SCVProjectMaterials.validSourceRecord)
+        }
         if verificationMode == "live-content-addressed-r2-readback+base-bundle" {
             return sourceCount == 8 && sources.allSatisfy(validSupplement)
         }
@@ -2191,6 +2339,12 @@ private func stepRecordIsVerified(_ step: AppRunStep) -> Bool {
     case "protected_material_guard":
         return receipt["operation"] as? String == "protected_route_material_guard" &&
             receipt["model_egress_blocked"] as? Bool == true
+    case "work_preparation":
+        return receipt["operation"] as? String == "work_preparation" &&
+            (receipt["project_id"] as? String)?.isEmpty == false &&
+            (receipt["workspace"] as? String)?.isEmpty == false &&
+            (receipt["workspace_manifest_sha256"] as? String)?.count == 64 &&
+            receipt["model_invoked"] as? Bool == false
     default:
         return false
     }
@@ -2228,6 +2382,13 @@ private struct AppRunSummary: Decodable, Sendable {
     let status: String
     let steps: [AppRunStep]
     var sourceContext: SourceReference? = nil
+    var taskContext: TaskContext? = nil
+}
+
+private struct NativeIngestionOutcome: Sendable {
+    let binding: TaskContext.BackendBinding
+    let records: [NativeRecord]
+    let cursor: String?
 }
 
 private enum RunnerError: LocalizedError {
@@ -2264,6 +2425,25 @@ private func compactSessionAge(_ date: Date) -> String {
 }
 
 private enum OS1Runner {
+    static func pinNativeSession(id: String, pinned: Bool, before: String?) async throws {
+        try await Task.detached(priority: .userInitiated) {
+            let process = Process(), output = Pipe()
+            process.executableURL = URL(fileURLWithPath: try executable())
+            process.arguments = ["sidebar-pin", "codex", id, String(pinned)] + (before.map { [$0] } ?? [])
+            process.currentDirectoryURL = FileManager.default.homeDirectoryForCurrentUser
+            process.standardOutput = output
+            process.standardError = FileHandle.nullDevice
+            try process.run()
+            let deadline = Date().addingTimeInterval(40)
+            while process.isRunning && Date() < deadline { try await Task.sleep(for: .milliseconds(50)) }
+            if process.isRunning { process.terminate(); throw RunnerError.message("Codex 핀 변경 확인 시간이 초과됐습니다. 상태를 새로 확인하세요.") }
+            process.waitUntilExit()
+            let text = String(decoding: output.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+            guard process.terminationStatus == 0, text.contains("OS1_SIDEBAR_VERIFIED") else {
+                throw RunnerError.message("Codex 핀 변경을 확인하지 못했습니다. OS1에만 저장된 상태입니다.")
+            }
+        }.value
+    }
     static func observeActivity(_ process: Process, at url: URL, onActivity: (RuntimeActivity) -> Void) {
         var lastActivity: RuntimeActivity?
         func readLatest() {
@@ -2311,9 +2491,9 @@ private enum OS1Runner {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         let bundled = Bundle.main.resourceURL?.appendingPathComponent("os1").path
         let candidates = [bundled].compactMap { $0 } + [
+            "\(home)/.local/bin/os1",
             "/usr/local/bin/os1",
             "/opt/homebrew/bin/os1",
-            "\(home)/.local/bin/os1",
         ]
         guard let path = candidates.first(where: FileManager.default.isExecutableFile) else {
             throw RunnerError.message("OS-1 runtime is missing. Reinstall OS-1, then try again.")
@@ -2416,6 +2596,8 @@ private enum OS1Runner {
         let journal = journalRoot.appendingPathComponent((submissionID?.uuidString ?? UUID().uuidString) + ".jsonl")
         if !fileManager.fileExists(atPath:journal.path) { fileManager.createFile(atPath:journal.path,contents:nil,attributes:[.posixPermissions:0o600]) }
         environment["OS1_EVENT_JOURNAL"] = journal.path
+        environment["OS1_ALLOW_AUTHENTICATION"] = "1"
+        if let submissionID { environment["OS1_CANCEL_FILE"] = ExecutionCancellation.url(submissionID: submissionID).path }
         process.environment = environment
 
         do {
@@ -2435,7 +2617,7 @@ private enum OS1Runner {
         guard process.terminationStatus == 0 else {
             if let data = try? Data(contentsOf: failureURL), data.count < 4096,
                let notice = try? JSONDecoder().decode(BackendFailureNotice.self, from: data),
-               ["claude", "codex"].contains(notice.provider) {
+               ["claude", "codex", "local"].contains(notice.provider) {
                 throw RunnerError.backend(notice)
             }
             let fallback = String(decoding: outputData, as: UTF8.self)
@@ -2457,10 +2639,14 @@ private final class SessionStore: ObservableObject {
         let started: Date
         var activity: RuntimeActivity
         var provider: ProviderChoice?
+        /// Task-context revision handed to this run; a result is adopted only
+        /// if no objective/decision change happened after it.
+        var handedRevision: Int? = nil
     }
     typealias RunOperation = @MainActor (PendingSubmission, String, String?, String?,
         @escaping @Sendable (RuntimeActivity) -> Void) async throws -> AppRunSummary
     typealias NativeSessionOpener = (URL) -> Bool
+    typealias NativePinOperation = @MainActor (String, Bool, String?) async throws -> Void
     // Admission is global; ownership, sequencing, context and display are not.
     static let maximumConcurrentSessions = 4
     @Published var activeRuns: [UUID: ActiveRun] = [:]
@@ -2500,8 +2686,15 @@ private final class SessionStore: ObservableObject {
     private var draftSaveTask: Task<Void, Never>?
     private let customStorageRoot: URL?
     private let nativeSessionOpener: NativeSessionOpener
+    private let nativePinOperation: NativePinOperation?
     private var nativeSyncRequestID: UUID?
     private var nativeTranscriptRequestID: UUID?
+    @Published var sidebarSyncNotice: String?
+    private var sidebarIntents: [String: SidebarPinIntent] = [:]
+    private var nativePinnedOrders: [String: [String]] = [:]
+    private var observedNativePins: [String: NativePinState] = [:]
+    private var sidebarPollRunning = false
+    private var sidebarMutationTask: Task<Void, Never>?
 
     let voiceDictation = VoiceDictationController()
 
@@ -2510,10 +2703,12 @@ private final class SessionStore: ObservableObject {
     init(
         storageRoot: URL? = nil,
         runOperation: RunOperation? = nil,
+        nativePinOperation: NativePinOperation? = nil,
         nativeSessionOpener: @escaping NativeSessionOpener = { NSWorkspace.shared.open($0) }
     ) {
         customStorageRoot = storageRoot
         self.nativeSessionOpener = nativeSessionOpener
+        self.nativePinOperation = nativePinOperation
         self.runOperation = runOperation ?? { submission, context, codexID, claudeID, onActivity in
             try await OS1Runner.run(workspace: submission.workspace, prompt: submission.request,
                 provider: submission.provider, context: context, codexSessionID: codexID, claudeSessionID: claudeID,
@@ -2549,23 +2744,49 @@ private final class SessionStore: ObservableObject {
         activeRuns[sessionID] != nil
     }
 
+    private var orderedSessions: [ConversationSession] {
+        sessions.sorted {
+            if ($0.pinnedAt != nil) != ($1.pinnedAt != nil) { return $0.pinnedAt != nil }
+            if let first = $0.pinnedAt, let second = $1.pinnedAt {
+                if $0.sidebarPosition != $1.sidebarPosition { return ($0.sidebarPosition ?? Int.max) < ($1.sidebarPosition ?? Int.max) }
+                if first != second { return first > second }
+            }
+            if $0.updatedAt != $1.updatedAt { return $0.updatedAt > $1.updatedAt }
+            return $0.id.uuidString < $1.id.uuidString
+        }
+    }
+
     var filteredSessions: [ConversationSession] {
         let query = search.trimmingCharacters(in: .whitespacesAndNewlines)
-        return sessions.filter {
+        return orderedSessions.filter {
             ($0.archived == true) == showArchived && (query.isEmpty ||
             $0.title.localizedCaseInsensitiveContains(query) || $0.workspace.localizedCaseInsensitiveContains(query) ||
             $0.messages.contains(where: { $0.text.localizedCaseInsensitiveContains(query) }))
-        }.sorted {
-            if ($0.pinnedAt != nil) != ($1.pinnedAt != nil) { return $0.pinnedAt != nil }
-            if let first = $0.pinnedAt, let second = $1.pinnedAt { return first > second }
-            return $0.updatedAt > $1.updatedAt
         }
+    }
+
+    private var pinnedConversations: [ConversationSession] {
+        orderedSessions.filter { $0.archived != true && $0.pinnedAt != nil }
+    }
+
+    private var orderedNativeSessions: [NativeSessionSummary] {
+        nativeSessions.map { value in
+            var row = value
+            if let intent = sidebarIntents[SidebarOrder.key(provider: value.provider.rawValue, id: value.id)] {
+                row.isPinned = intent.pinned; row.pinPosition = intent.position
+                row.pinSyncNote = intent.status == "local_only" ? "OS1에만 저장 · Claude 앱 미반영" : "백엔드 반영 확인 중"
+                if intent.status == "failed" { row.pinSyncNote = "백엔드 미확인 · 다시 시도" }
+            }
+            if row.isPinned, let rank = nativePinnedOrders[row.provider.rawValue]?.firstIndex(of: row.id) { row.pinPosition = rank }
+            return row
+        }.sorted(by: sidebarNativeLess)
     }
 
     var filteredNativeSessions: [NativeSessionSummary] {
         let query = nativeSearch.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !query.isEmpty else { return nativeSessions }
-        return nativeSessions.filter {
+        let ordered = orderedNativeSessions
+        guard !query.isEmpty else { return ordered }
+        return ordered.filter {
             $0.displayTitle.localizedCaseInsensitiveContains(query) ||
             $0.workspace.localizedCaseInsensitiveContains(query) ||
             $0.id.localizedCaseInsensitiveContains(query)
@@ -2596,6 +2817,7 @@ private final class SessionStore: ObservableObject {
         selectedSessionID = id
         composer = selectedSession?.draft ?? ""
         statusText = isSessionRunning(id) ? activeActivity.label : (sessionStatuses[id] ?? "Ready")
+        ingestNativeRecords(conversationID: id)
     }
 
     func chooseProvider(_ provider: ProviderChoice) {
@@ -2772,6 +2994,12 @@ private final class SessionStore: ObservableObject {
 
     func selectNativeSession(_ id: String) {
         guard nativeSessions.contains(where: { $0.id == id }) else { return }
+        // Inspecting a known backend updates the shared selection, not routing.
+        // An unrelated native record never borrows another conversation's draft.
+        let owners = nativeOwnerIndices(surface, id: id)
+        if owners.count == 1, let index = owners.first {
+            select(sessions[index].id)
+        }
         selectedNativeSessionID = id
         statusText = id == linkedNativeSessionID(for: surface)
             ? "Current \(surface.title) session · read-only synchronized"
@@ -2895,6 +3123,7 @@ private final class SessionStore: ObservableObject {
     func toggleVoiceDictation() {
         voiceDictation.toggle(
             initialText: composer,
+            readComposer: { [weak self] in self?.composer ?? "" },
             onTranscript: { [weak self] value in
                 self?.composer = value
             },
@@ -2929,6 +3158,8 @@ private final class SessionStore: ObservableObject {
         if !isRunning, ["자료 연결 해제", "detach source"].contains(request.precomposedStringWithCanonicalMapping.lowercased()) {
             sessions[index].sourceContext = nil
             sessions[index].sourceContextVersion = 2
+            sessions[index].taskContext?.sources.removeAll()
+            sessions[index].taskContext?.touch()
             sessions[index].messages.append(ChatMessage(role: .user, text: request))
             sessions[index].messages.append(ChatMessage(role: .system, text: "이 대화의 자료 연결을 해제했습니다."))
             sessions[index].updatedAt = Date()
@@ -2980,7 +3211,20 @@ private final class SessionStore: ObservableObject {
               let index = sessions.firstIndex(where: { $0.id == submission.sessionID }) else {
             return
         }
+        // Only an admitted attempt owns this exact cancellation marker.
+        try? FileManager.default.removeItem(at: ExecutionCancellation.url(submissionID: submission.id))
         let existingUserMessage = sessions[index].messages.contains { $0.id == submission.userMessageID }
+        // The task context changes only when a run actually begins, so a
+        // queued turn never invalidates the in-flight one.
+        var taskContext = migratedTaskContext(sessions[index], sourceContext: sessions[index].sourceContext)
+        for decision in TaskContext.explicitDecisions(in: submission.request) { taskContext.decideSemantic(decision) }
+        let resolution = ScopeResolution.resolve(submission.request)
+        taskContext.setObjective(TaskContext.Objective(requestText: submission.request,
+            kind: TaskContext.ObjectiveKind.classify(submission.request),
+            scope: submission.readOnlyReconciliation == true ? .readOnly : resolution.scope,
+            prohibitions: resolution.prohibitions))
+        sessions[index].taskContext = taskContext
+        appendTaskEvent(conversationID: sessions[index].id, kind: "objective", summary: submission.request)
         let context: String
         do {
             context = try sessionHandoff(sessions[index], before: existingUserMessage ? submission.userMessageID : nil)
@@ -3009,7 +3253,8 @@ private final class SessionStore: ObservableObject {
         sessions[index].lastBackendFailure = nil
         inFlightSubmissions[submission.sessionID] = submission
         activeRuns[submission.sessionID] = ActiveRun(submissionID: submission.id, started: Date(),
-            activity: RuntimeActivity(.preparing), provider: submission.provider == .auto ? nil : submission.provider)
+            activity: RuntimeActivity(.preparing), provider: submission.provider == .auto ? nil : submission.provider,
+            handedRevision: sessions[index].taskContext?.contextRevision)
         let startingStatus = submission.provider == .auto
             ? "RCC is choosing the best engine…"
             : "\(submission.provider.title) is working…"
@@ -3025,6 +3270,15 @@ private final class SessionStore: ObservableObject {
                             guard let self, self.activeRuns[submission.sessionID]?.submissionID == submission.id else { return }
                             self.activeRuns[submission.sessionID]?.activity = activity
                             self.activeRuns[submission.sessionID]?.provider = activity.provider.flatMap(ProviderChoice.init(rawValue:))
+                            if let nativeID = activity.nativeSessionID,
+                               let provider = activity.provider.flatMap(ProviderChoice.init(rawValue:)) {
+                                self.recordNativeSession(provider, id: nativeID, conversationID: submission.sessionID)
+                            }
+                            if [.executing, .verifying, .syncing, .recovering].contains(activity.phase),
+                               self.inFlightSubmissions[submission.sessionID]?.preflightOnly == true {
+                                self.inFlightSubmissions[submission.sessionID]?.preflightOnly = false
+                                self.save()
+                            }
                             if self.selectedSessionID == submission.sessionID { self.statusText = activity.label }
                         }
                     }
@@ -3032,6 +3286,26 @@ private final class SessionStore: ObservableObject {
                 guard let target = sessions.firstIndex(where: { $0.id == submission.sessionID }) else {
                     throw RunnerError.message("The queued OS-1 session no longer exists.")
                 }
+                let handedRevision = activeRuns[submission.sessionID]?.handedRevision
+                let currentSubmission = activeRuns[submission.sessionID]?.submissionID == submission.id
+                let semanticallyCurrent = handedRevision.map { sessions[target].taskContext?.acceptsLateResult(fromRevision: $0) ?? true } ?? true
+                if !currentSubmission || !semanticallyCurrent {
+                    // A result arriving after a newer request or decision is
+                    // preserved verbatim and never adopted as the current answer.
+                    for step in visibleAdoptedSteps(summary.steps) {
+                        let visibleOutput = step.output.trimmingCharacters(in: .whitespacesAndNewlines)
+                        guard !visibleOutput.isEmpty else { continue }
+                        sessions[target].messages.append(ChatMessage(role: .assistant, text: visibleOutput, provider: step.provider,
+                            permissionProfile: step.permissionProfile, nativeRecordVerified: false))
+                        sessions[target].messages.append(ChatMessage(role: .receipt,
+                            text: "늦게 도착한 결과 · 이후 요청 또는 결정이 먼저 반영되어 채택하지 않음 · 기록은 보존됨",
+                            provider: step.provider, permissionProfile: step.permissionProfile, nativeRecordVerified: false))
+                    }
+                    sessions[target].updatedAt = Date()
+                    appendTaskEvent(conversationID: submission.sessionID, kind: "late_result_preserved",
+                        summary: "submission \(submission.id.uuidString.lowercased()) handed revision \(handedRevision ?? -1)")
+                    if currentSubmission { sessionStatuses[submission.sessionID] = "늦은 결과 보존 · 채택 안 함" }
+                } else {
                 if summary.status != "complete" {
                     throw RunnerError.message("OS-1 did not return a completed governed run.")
                 }
@@ -3046,7 +3320,7 @@ private final class SessionStore: ObservableObject {
                    visibleSteps.contains(where: {
                        $0.provider != submission.provider.rawValue &&
                            !($0.provider == "local" && [
-                               "protected_material_guard", "r2_retrieval", "connection_check", "source_status",
+                               "protected_material_guard", "r2_retrieval", "connection_check", "source_status", "work_preparation",
                            ].contains($0.action))
                    }) {
                     throw RunnerError.message("OS-1 rejected a backend mismatch. The request targeted \(submission.provider.title), but a different backend answered.")
@@ -3054,13 +3328,24 @@ private final class SessionStore: ObservableObject {
                 if visibleSteps.contains(where: { UUID(uuidString: $0.sessionID) == nil }) {
                     throw RunnerError.message("OS-1 rejected an invalid native backend session link.")
                 }
-                sessions[target].sourceContext = summary.sourceContext
+                // A run that returns no snapshot (protected-material control,
+                // delivery resume) must not drop the conversation's attachment;
+                // only an explicit detach in the request clears it.
+                if let source = summary.sourceContext {
+                    sessions[target].sourceContext = source
+                } else if detachesConversationSource(submission.request) {
+                    sessions[target].sourceContext = nil
+                    sessions[target].taskContext?.sources.removeAll()
+                }
                 sessions[target].sourceContextVersion = 2
+                if let result = summary.taskContext {
+                    sessions[target].taskContext = sessions[target].taskContext?.adopting(result, handedRevision: handedRevision) ?? result
+                    appendTaskEvent(conversationID: submission.sessionID, kind: "adopted",
+                        summary: visibleSteps.map { "\($0.provider) \($0.action)" }.joined(separator: ", "))
+                }
                 for step in visibleSteps {
-                    if step.provider == "codex" {
-                        sessions[target].codexSessionID = step.sessionID
-                    } else if step.provider == "claude" {
-                        sessions[target].claudeSessionID = step.sessionID
+                    if let provider = ProviderChoice(rawValue: step.provider) {
+                        recordNativeSession(provider, id: step.sessionID, conversationID: submission.sessionID)
                     }
                 }
                 for step in visibleSteps {
@@ -3094,6 +3379,7 @@ private final class SessionStore: ObservableObject {
                 sessionStatuses[submission.sessionID] = allVerified
                     ? "답변 수신 · 실행 기록 확인됨"
                     : "답변 수신 · 실행 기록 미확인"
+                }
             } catch {
                 if let target = sessions.firstIndex(where: { $0.id == submission.sessionID }) {
                     sessions[target].lastFailure = submission
@@ -3102,12 +3388,15 @@ private final class SessionStore: ObservableObject {
                         if let deliveryID = notice.deliveryID,
                            let result = try? DeliveryOutbox().read(deliveryID), !result.output.isEmpty {
                             sessions[target].lastFailure?.deliveryID = deliveryID
+                            let verdict = result.response.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }?["status"] as? String
+                            let needsReview = result.localRejection != nil || (verdict != nil && verdict != "complete")
+                            sessions[target].lastFailure?.savedResultNeedsReview = needsReview
                             let previewID = UUID(uuidString:String(deliveryID.prefix(36)))!
                             if !sessions[target].messages.contains(where: { $0.id == previewID }) {
                                 sessions[target].messages.append(ChatMessage(id:previewID, role: .assistant, text: result.output,
                                     provider: notice.provider, permissionProfile: notice.permissionProfile, nativeRecordVerified: false))
                                 sessions[target].messages.append(ChatMessage(role: .receipt,
-                                    text: "답변 로컬 저장됨 · 서버 검증·전달 대기 · 아직 완료 판정 아님", nativeRecordVerified: false))
+                                    text: needsReview ? "답변 원본 보존됨 · 검증 미통과 · 아직 완료 판정 아님" : "답변 로컬 저장됨 · 서버 검증·전달 대기 · 아직 완료 판정 아님", nativeRecordVerified: false))
                             }
                         }
                         if let source = notice.source,
@@ -3116,8 +3405,9 @@ private final class SessionStore: ObservableObject {
                             sessions[target].sourceContextVersion = 2
                         }
                         if let id = notice.sessionID, UUID(uuidString: id) != nil {
-                            if notice.provider == "codex" { sessions[target].codexSessionID = id }
-                            if notice.provider == "claude" { sessions[target].claudeSessionID = id }
+                            if let provider = ProviderChoice(rawValue: notice.provider) {
+                                recordNativeSession(provider, id: id, conversationID: submission.sessionID)
+                            }
                         }
                         // Dependent turns cannot silently execute past a denied
                         // action or a write with an unknown external outcome.
@@ -3132,12 +3422,96 @@ private final class SessionStore: ObservableObject {
                 }
                 sessionStatuses[submission.sessionID] = "Needs attention"
             }
+            // A superseded attempt must not release the newer run's admission.
+            guard activeRuns[submission.sessionID]?.submissionID == submission.id else { save(); return }
             activeRuns.removeValue(forKey: submission.sessionID)
             inFlightSubmissions.removeValue(forKey: submission.sessionID)
             if selectedSessionID == submission.sessionID { statusText = sessionStatuses[submission.sessionID] ?? "Ready" }
             save()
+            ingestNativeRecords(conversationID: submission.sessionID)
             runNextQueuedSubmissionIfNeeded()
         }
+    }
+
+    // MARK: - Shared task context bookkeeping
+
+    private var taskEventLog: TaskEventLog {
+        TaskEventLog(root: (customStorageRoot ?? fileManager.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/OS-1", isDirectory: true))
+            .appendingPathComponent("task-events", isDirectory: true))
+    }
+
+    private func appendTaskEvent(conversationID: UUID, kind: String, summary: String) {
+        let revision = sessions.first(where: { $0.id == conversationID })?.taskContext?.contextRevision ?? 0
+        try? taskEventLog.append(TaskEvent(revision: revision, at: Date(), kind: kind, summary: String(summary.prefix(300))),
+                                 conversationID: conversationID)
+    }
+
+    /// Incremental read-back of the native sessions bound to a conversation.
+    /// Work the user did directly in the Codex/Claude app becomes part of the
+    /// OS-1 record, labeled as outside work; what OS-1 itself sent or adopted
+    /// is skipped by digest, and each binding keeps its own cursor.
+    func ingestNativeRecords(conversationID: UUID) {
+        guard customStorageRoot == nil, !isSessionRunning(conversationID),
+              let index = sessions.firstIndex(where: { $0.id == conversationID }),
+              let context = sessions[index].taskContext, !context.bindings.isEmpty else { return }
+        let bindings = context.bindings
+        let held = Set(sessions[index].messages.filter { $0.role == .user || $0.role == .assistant }.map { NativeIngestion.digestOf($0.text) })
+        let seen = Set(sessions[index].messages.compactMap(\.nativeIngestedID))
+        Task.detached(priority: .utility) { [bindings, held, seen] in
+            var outcome: [NativeIngestionOutcome] = []
+            for binding in bindings {
+                guard let provider = ProviderChoice(rawValue: binding.provider), provider != .auto,
+                      let summary = (try? NativeSessionReader.sessions(for: provider, including: binding.nativeSessionID))?
+                        .first(where: { $0.id.lowercased() == binding.nativeSessionID.lowercased() }),
+                      let transcript = try? NativeSessionReader.transcript(for: summary) else { continue }
+                let all = transcript.enumerated().compactMap { item -> NativeRecord? in
+                    guard item.element.role == .user || item.element.role == .assistant else { return nil }
+                    return NativeRecord(id: "\(binding.provider):\(item.element.id)", ordinal: item.offset,
+                                        role: item.element.role.rawValue, text: item.element.text, complete: true)
+                }
+                // A first ingestion of a long native history is bounded to its tail.
+                let start = binding.lastIngestedCursor ?? (all.count > 40 ? String(all.count - 41) : nil)
+                let fresh = NativeIngestion.newRecords(all, after: start, sentByOS1: held, seen: seen)
+                outcome.append(NativeIngestionOutcome(binding: binding, records: fresh.records, cursor: fresh.nextCursor))
+            }
+            let finished = outcome
+            await MainActor.run { self.applyIngestedRecords(finished, conversationID: conversationID) }
+        }
+    }
+
+    private func applyIngestedRecords(_ outcome: [NativeIngestionOutcome], conversationID: UUID) {
+        guard let index = sessions.firstIndex(where: { $0.id == conversationID }), !isSessionRunning(conversationID) else { return }
+        var changed = false
+        var ingestedCount = 0
+        for item in outcome {
+            guard let bindingIndex = sessions[index].taskContext?.bindings.firstIndex(where: {
+                $0.provider == item.binding.provider && $0.nativeSessionID == item.binding.nativeSessionID
+            }) else { continue }
+            let known = Set(sessions[index].messages.compactMap(\.nativeIngestedID))
+            for record in item.records where !known.contains(record.id) {
+                sessions[index].messages.append(ChatMessage(role: record.role == "user" ? .user : .assistant, text: record.text,
+                    provider: item.binding.provider, nativeIngestedID: record.id))
+                ingestedCount += 1
+                changed = true
+            }
+            if !item.records.isEmpty {
+                sessions[index].messages.append(ChatMessage(role: .receipt,
+                    text: "\(providerDisplayName(item.binding.provider)) 앱에서 직접 진행한 기록 \(item.records.count)건을 이 대화에 흡수했습니다 · OS-1 외부 작업, 채택 판정 아님",
+                    provider: item.binding.provider))
+            }
+            if let cursor = item.cursor, sessions[index].taskContext?.bindings[bindingIndex].lastIngestedCursor != cursor {
+                sessions[index].taskContext?.bindings[bindingIndex].lastIngestedCursor = cursor
+                sessions[index].taskContext?.touch()
+                changed = true
+            }
+        }
+        guard changed else { return }
+        sessions[index].updatedAt = Date()
+        if ingestedCount > 0 {
+            appendTaskEvent(conversationID: conversationID, kind: "native_ingested", summary: "\(ingestedCount) records")
+        }
+        save()
     }
 
     private func runNextQueuedSubmissionIfNeeded() {
@@ -3157,7 +3531,241 @@ private final class SessionStore: ObservableObject {
     func togglePin(_ id: UUID) {
         guard let index = sessions.firstIndex(where: { $0.id == id }) else { return }
         sessions[index].pinnedAt = sessions[index].pinnedAt == nil ? Date() : nil
+        sessions[index].sidebarPosition = sessions[index].pinnedAt == nil ? nil : -1
+        normalizePinnedOrder()
+        syncPinForConversation(id)
         save()
+    }
+
+    private func normalizePinnedOrder() {
+        for (rank, row) in pinnedConversations.enumerated() {
+            if let index = sessions.firstIndex(where: { $0.id == row.id }) { sessions[index].sidebarPosition = rank }
+        }
+    }
+
+    func movePinned(_ id: UUID, before target: UUID?) {
+        let order = pinnedConversations.map { $0.id.uuidString }
+        let moved = SidebarOrder.moving(id.uuidString, before: target?.uuidString, in: order)
+        guard order != moved else { return }
+        for (rank, key) in moved.enumerated() {
+            if let index = sessions.firstIndex(where: { $0.id.uuidString == key }) { sessions[index].sidebarPosition = rank }
+        }
+        syncPinForConversation(id)
+        save()
+    }
+
+    func shiftPinned(_ id: UUID, down: Bool) {
+        let order = pinnedConversations.map(\.id)
+        guard let index = order.firstIndex(of: id) else { return }
+        if down, index + 1 < order.count { movePinned(id, before: index + 2 < order.count ? order[index + 2] : nil) }
+        if !down, index > 0 { movePinned(id, before: order[index - 1]) }
+    }
+
+    private func syncPinForConversation(_ id: UUID, excluding: ProviderChoice? = nil, only: ProviderChoice? = nil) {
+        guard let row = sessions.first(where: { $0.id == id }) else { return }
+        let order = pinnedConversations
+        for provider in [ProviderChoice.codex, .claude] where provider != excluding && (only == nil || provider == only) {
+            let nativeID = provider == .codex ? row.codexSessionID : row.claudeSessionID
+            guard let nativeID else { continue }
+            guard nativeOwnerIndices(provider, id: nativeID).count == 1 else {
+                sidebarSyncNotice = "같은 백엔드 기록에 여러 OS1 대화가 연결되어 핀 변경을 보류했습니다."
+                continue
+            }
+            let nextID: String? = order.firstIndex(where: { $0.id == id }).flatMap { index in
+                order.dropFirst(index + 1).compactMap { provider == .codex ? $0.codexSessionID : $0.claudeSessionID }.first
+            }
+            queueNativePin(provider, id: nativeID, pinned: row.pinnedAt != nil,
+                position: row.sidebarPosition, before: nextID)
+        }
+    }
+
+    private func nativeOwnerIndices(_ provider: ProviderChoice, id: String) -> [Int] {
+        sessions.indices.filter { (provider == .codex ? sessions[$0].codexSessionID : sessions[$0].claudeSessionID) == id }
+    }
+
+    // A backend can first become known after the user pinned an OS1 conversation.
+    // Bind only the exact reported ID, and propagate only to the newly linked peer.
+    func recordNativeSession(_ provider: ProviderChoice, id: String, conversationID: UUID) {
+        guard [.codex, .claude].contains(provider), UUID(uuidString: id) != nil,
+              let index = sessions.firstIndex(where: { $0.id == conversationID }) else { return }
+        let oldID = provider == .codex ? sessions[index].codexSessionID : sessions[index].claudeSessionID
+        guard oldID != id else { return }
+        if provider == .codex { sessions[index].codexSessionID = id }
+        else { sessions[index].claudeSessionID = id }
+        if sessions[index].pinnedAt != nil { syncPinForConversation(conversationID, only: provider) }
+        save()
+    }
+
+    func toggleNativePin(_ id: String) {
+        guard let row = orderedNativeSessions.first(where: { $0.id == id }) else { return }
+        let owners = nativeOwnerIndices(surface, id: id)
+        guard owners.count <= 1 else {
+            sidebarSyncNotice = "같은 백엔드 기록에 여러 OS1 대화가 연결되어 핀 변경을 보류했습니다."
+            return
+        }
+        if let ownerIndex = owners.first {
+            let owner = sessions[ownerIndex]
+            if let index = sessions.firstIndex(where: { $0.id == owner.id }) {
+                sessions[index].pinnedAt = row.isPinned ? (sessions[index].pinnedAt ?? Date()) : nil
+            }
+            togglePin(owner.id)
+        } else {
+            let first = orderedNativeSessions.first(where: { $0.isPinned && $0.id != id })?.id
+            queueNativePin(surface, id: id, pinned: !row.isPinned, position: -1, before: first)
+            save()
+        }
+    }
+
+    func moveNativePin(_ id: String, before target: String?) {
+        let order = orderedNativeSessions.filter(\.isPinned).map(\.id)
+        let moved = SidebarOrder.moving(id, before: target, in: order)
+        guard moved != order, let rank = moved.firstIndex(of: id) else { return }
+        // Reordering is scoped to this provider's real IDs. Other pins survive.
+        for (index, nativeID) in moved.enumerated() {
+            let key = SidebarOrder.key(provider: surface.rawValue, id: nativeID)
+            if var intent = sidebarIntents[key] { intent.position = index; sidebarIntents[key] = intent }
+            if let i = nativeSessions.firstIndex(where: { $0.id == nativeID }) { nativeSessions[i].pinPosition = index }
+        }
+        queueNativePin(surface, id: id, pinned: true, position: rank, before: target)
+        applyNativeOrderToConversations(provider: surface, nativeIDs: moved)
+        let owners = nativeOwnerIndices(surface, id: id)
+        if owners.count == 1, let index = owners.first {
+            syncPinForConversation(sessions[index].id, excluding: surface)
+        }
+        save()
+    }
+
+    func shiftNativePin(_ id: String, down: Bool) {
+        let order = orderedNativeSessions.filter(\.isPinned).map(\.id)
+        guard let index = order.firstIndex(of: id) else { return }
+        if down, index + 1 < order.count { moveNativePin(id, before: index + 2 < order.count ? order[index + 2] : nil) }
+        if !down, index > 0 { moveNativePin(id, before: order[index - 1]) }
+    }
+
+    func retryNativePin(_ id: String) {
+        guard surface == .codex, let row = orderedNativeSessions.first(where: { $0.id == id }) else { return }
+        let pinnedIDs = orderedNativeSessions.filter(\.isPinned).map(\.id)
+        let next = pinnedIDs.firstIndex(of: id).flatMap { $0 + 1 < pinnedIDs.count ? pinnedIDs[$0 + 1] : nil }
+        queueNativePin(.codex, id: id, pinned: row.isPinned, position: row.pinPosition, before: next)
+        save()
+    }
+
+    private func queueNativePin(_ provider: ProviderChoice, id: String, pinned: Bool, position: Int?, before: String?) {
+        let key = SidebarOrder.key(provider: provider.rawValue, id: id)
+        if nativePinnedOrders[provider.rawValue] == nil {
+            let observed = customStorageRoot == nil ? (try? NativeSidebar.read(provider.rawValue)) : nil
+            nativePinnedOrders[provider.rawValue] = observed?.filter { $0.value.pinned }
+                .sorted { ($0.value.position ?? Int.max, $0.key) < ($1.value.position ?? Int.max, $1.key) }.map(\.key)
+                ?? nativeSessions.filter { $0.provider == provider && $0.isPinned }.sorted(by: sidebarNativeLess).map(\.id)
+        }
+        var order = nativePinnedOrders[provider.rawValue] ?? []
+        if pinned {
+            if !order.contains(id) { order.append(id) }
+            order = SidebarOrder.moving(id, before: before, in: order)
+        } else { order.removeAll { $0 == id } }
+        nativePinnedOrders[provider.rawValue] = order
+        let intent = SidebarPinIntent(pinned: pinned, position: position, status: provider == .claude ? "local_only" : "pending")
+        sidebarIntents[key] = intent
+        if provider == .claude {
+            sidebarSyncNotice = "OS1에 저장됨 · Claude 앱의 핀/순서 변경 연결은 아직 지원되지 않습니다."
+            return
+        }
+        guard customStorageRoot == nil || nativePinOperation != nil else { return }
+        let previous = sidebarMutationTask
+        sidebarMutationTask = Task { [weak self] in
+            await previous?.value
+            guard let self else { return }
+            // Preserve dependency order: pin B before A requires the preceding
+            // pin-A operation even if a later move-A superseded A's UI intent.
+            // Revision guards below suppress stale acknowledgements, not writes.
+            do {
+                if let operation = self.nativePinOperation { try await operation(id, pinned, before) }
+                else { try await OS1Runner.pinNativeSession(id: id, pinned: pinned, before: before) }
+                guard self.sidebarIntents[key]?.revision == intent.revision else { return }
+                self.sidebarIntents.removeValue(forKey: key)
+                if self.sidebarIntents.isEmpty { self.sidebarSyncNotice = nil }
+                await self.refreshSidebarMetadata()
+            } catch {
+                guard self.sidebarIntents[key]?.revision == intent.revision else { return }
+                self.sidebarIntents[key]?.status = "failed"
+                self.sidebarSyncNotice = error.localizedDescription
+            }
+            self.save()
+        }
+    }
+
+    func awaitSidebarMutations() async { await sidebarMutationTask?.value }
+
+    private func applyNativeOrderToConversations(provider: ProviderChoice, nativeIDs: [String]) {
+        let current = pinnedConversations.map { $0.id.uuidString }
+        let linked = nativeIDs.compactMap { nativeID -> String? in
+            let owners = nativeOwnerIndices(provider, id: nativeID)
+            guard owners.count == 1, let index = owners.first, sessions[index].pinnedAt != nil else { return nil }
+            return sessions[index].id.uuidString
+        }
+        let reordered = SidebarOrder.replacingSubset(linked, in: current)
+        for (rank, id) in reordered.enumerated() {
+            if let index = sessions.firstIndex(where: { $0.id.uuidString == id }) { sessions[index].sidebarPosition = rank }
+        }
+    }
+
+    func refreshSidebarMetadata() async {
+        guard customStorageRoot == nil, !sidebarPollRunning else { return }
+        sidebarPollRunning = true
+        defer { sidebarPollRunning = false }
+        for provider in [ProviderChoice.codex, .claude] {
+            do {
+                let pins = try await Task.detached(priority: .utility) { try NativeSidebar.read(provider.rawValue) }.value
+                applySidebarSnapshot(provider, pins: pins)
+            } catch {
+                if surface == provider { sidebarSyncNotice = error.localizedDescription }
+            }
+        }
+    }
+
+    func applySidebarSnapshot(_ provider: ProviderChoice, pins: [String: NativePinState]) {
+        if !sidebarIntents.keys.contains(where: { $0.hasPrefix(provider.rawValue + ":") }) {
+            if provider == .codex {
+                nativePinnedOrders[provider.rawValue] = pins.filter { $0.value.pinned }
+                    .sorted { ($0.value.position ?? Int.max, $0.key) < ($1.value.position ?? Int.max, $1.key) }.map(\.key)
+            } else {
+                // No authoritative manual order is persisted by Claude. Let
+                // the catalog's recency sort apply, not a fabricated rank.
+                nativePinnedOrders.removeValue(forKey: provider.rawValue)
+            }
+        }
+        var changed = false
+        var propagate: Set<UUID> = []
+        for (id, pin) in pins {
+            let key = SidebarOrder.key(provider: provider.rawValue, id: id)
+            let old = observedNativePins.updateValue(pin, forKey: key)
+            if surface == provider, let index = nativeSessions.firstIndex(where: { $0.id == id }) {
+                nativeSessions[index].isPinned = pin.pinned; nativeSessions[index].pinPosition = pin.position
+            }
+            let owners = nativeOwnerIndices(provider, id: id)
+            guard sidebarIntents[key] == nil, old != pin,
+                  owners.count == 1, let index = owners.first else { continue }
+            let other = provider == .codex ? sessions[index].claudeSessionID : sessions[index].codexSessionID
+            let otherProvider = provider == .codex ? "claude" : "codex"
+            // Do not let a stale unavailable peer undo an explicit local intent.
+            if let other, let intent = sidebarIntents[SidebarOrder.key(provider: otherProvider, id: other)],
+               intent.status != "local_only" { continue }
+            if old != nil || pin.pinned {
+                sessions[index].pinnedAt = pin.pinned ? (sessions[index].pinnedAt ?? Date()) : nil
+                sessions[index].sidebarPosition = pin.position
+                changed = true
+                if old != nil { propagate.insert(sessions[index].id) }
+            }
+        }
+        if changed {
+            if provider == .codex {
+                let ids = pins.filter { $0.value.pinned }
+                    .sorted { ($0.value.position ?? Int.max, $0.key) < ($1.value.position ?? Int.max, $1.key) }.map(\.key)
+                applyNativeOrderToConversations(provider: provider, nativeIDs: ids)
+            }
+            for id in propagate { syncPinForConversation(id, excluding: provider) }
+            save()
+        }
     }
     func setArchived(_ id: UUID, _ archived: Bool) {
         guard !isSessionRunning(id), !queuedSubmissions.contains(where: { $0.sessionID == id }),
@@ -3199,6 +3807,7 @@ private final class SessionStore: ObservableObject {
     func retrySelectedFailure() {
         guard !isRunning, let failed = selectedSession?.lastFailure,
               activeRuns.count < Self.maximumConcurrentSessions else { return }
+        if failed.savedResultNeedsReview == true { reconcileSelectedFailure(); return }
         if failed.deliveryID != nil { start(failed); return }
         guard selectedSession?.lastBackendFailure?.requiresReadback != true else {
             reconcileSelectedFailure(); return
@@ -3207,9 +3816,18 @@ private final class SessionStore: ObservableObject {
         // and source. Never automatically replay an uncertain write.
         start(failed)
     }
+
+    func cancelSelectedRun() {
+        guard let id = selectedSessionID, let active = activeRuns[id] else { return }
+        do {
+            try ExecutionCancellation.request(submissionID: active.submissionID)
+            sessionStatuses[id] = "작업 중지 중 · 실행된 변경은 보존합니다"
+            statusText = sessionStatuses[id]!
+        } catch { alertMessage = "작업 중지 요청을 저장하지 못했습니다." }
+    }
     func reconcileSelectedFailure() {
         guard !isRunning, let failed = selectedSession?.lastFailure,
-              selectedSession?.lastBackendFailure?.requiresReadback == true,
+              (selectedSession?.lastBackendFailure?.requiresReadback == true || failed.savedResultNeedsReview == true),
               activeRuns.count < Self.maximumConcurrentSessions else { return }
         let request = BackendRecovery.readbackPrompt(objective: failed.request)
         let message = ChatMessage(role: .user, text: request)
@@ -3247,17 +3865,39 @@ private final class SessionStore: ObservableObject {
     }
 
     private func load() {
-        guard let data = try? Data(contentsOf: storageURL),
-              let envelope = try? JSONDecoder().decode(SessionEnvelope.self, from: data),
-              [1, 2, 3, 4].contains(envelope.schema) else { return }
+        guard let data = try? Data(contentsOf: storageURL) else { return }
+        let envelope: SessionEnvelope
+        if let strict = try? JSONDecoder().decode(SessionEnvelope.self, from: data) {
+            envelope = strict
+        } else if let lenient = try? JSONDecoder().decode(LenientSessionEnvelope.self, from: data) {
+            // Keep every readable conversation and preserve the original file
+            // before anything is written back; nothing is deleted.
+            let stamp = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "-")
+            let preserved = storageURL.deletingLastPathComponent().appendingPathComponent("sessions.unreadable-\(stamp).json")
+            try? data.write(to: preserved, options: [.atomic])
+            let readable = lenient.sessions.compactMap(\.value)
+            envelope = SessionEnvelope(schema: lenient.schema, sessions: readable, queued: lenient.queued,
+                inFlight: lenient.inFlight, sidebarIntents: lenient.sidebarIntents, nativePinnedOrders: lenient.nativePinnedOrders)
+            alertMessage = "대화 \(lenient.sessions.count - readable.count)개를 읽지 못했습니다. 원본 파일을 \(preserved.lastPathComponent)으로 보존했고 나머지 대화는 그대로 불러왔습니다."
+        } else { return }
+        guard [1, 2, 3, 4].contains(envelope.schema) else { return }
         sessions = envelope.sessions
             .sorted { $0.updatedAt > $1.updatedAt }
             .map { session in
                 var bounded = session
                 bounded.sourceContext = migratedSourceReference(session)
                 bounded.sourceContextVersion = 2
+                bounded.taskContext = migratedTaskContext(session, sourceContext: bounded.sourceContext)
                 return bounded
             }
+        sidebarIntents = envelope.sidebarIntents ?? [:]
+        for key in sidebarIntents.keys where sidebarIntents[key]?.status == "pending" {
+            sidebarIntents[key]?.status = "failed" // crash means unknown, not an infinite spinner
+        }
+        if sidebarIntents.values.contains(where: { $0.status == "local_only" }) {
+            sidebarSyncNotice = "OS1에 저장됨 · Claude 앱의 핀/순서 변경 연결은 아직 지원되지 않습니다."
+        } else if !sidebarIntents.isEmpty { sidebarSyncNotice = "백엔드에 반영됐는지 확인되지 않은 핀 변경이 있습니다." }
+        nativePinnedOrders = envelope.nativePinnedOrders ?? [:]
         // Persist waiting requests but never silently execute them on app launch.
         queuedSubmissions = (envelope.queued ?? []).filter { queued in sessions.contains { $0.id == queued.sessionID } }
         for pending in envelope.inFlight ?? [] {
@@ -3265,8 +3905,13 @@ private final class SessionStore: ObservableObject {
             var recovered = pending
             if let result = DeliveryOutbox().forSubmission(pending.id.uuidString) {
                 recovered.deliveryID = result.id
+                let verdict = result.response.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }?["status"] as? String
+                recovered.savedResultNeedsReview = result.localRejection != nil || (verdict != nil && verdict != "complete")
                 sessions[index].lastBackendFailure = BackendFailureNotice(provider:sessions[index].lastProvider ?? "codex",
                     sessionID:nil,blocker:.deliveryPending,dispatchStage:.dispatched,source:result.source,deliveryID:result.id)
+            } else if pending.preflightOnly == true {
+                sessions[index].lastBackendFailure = BackendFailureNotice(provider: "local",
+                    sessionID: nil, blocker: .unclassified, dispatchStage: .notDispatched)
             } else {
                 sessions[index].lastBackendFailure = BackendFailureNotice(provider:sessions[index].lastProvider ?? "codex",
                     sessionID:nil,blocker:.effectsUncertain,dispatchStage:.dispatched)
@@ -3285,7 +3930,8 @@ private final class SessionStore: ObservableObject {
             )
             let bounded = sessions.sorted { $0.updatedAt > $1.updatedAt }
             let data = try JSONEncoder().encode(SessionEnvelope(schema: 4, sessions: bounded, queued: queuedSubmissions,
-                inFlight:Array(inFlightSubmissions.values)))
+                inFlight:Array(inFlightSubmissions.values), sidebarIntents: sidebarIntents,
+                nativePinnedOrders: nativePinnedOrders))
             try data.write(to: storageURL, options: [.atomic, .completeFileProtectionUnlessOpen])
             try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: storageURL.path)
         } catch {
@@ -3383,12 +4029,14 @@ private func renderBackendInspectorPreview(to output: URL) throws {
     let currentID = "01a060ab-f53b-71c3-a38e-e77b1b98ea74"
     let missingID = "bae5987c-3fd1-4d08-a85c-6d9c18d41e86"
     let unrelatedID = "17db0272-fc3c-402b-9f09-2cda62056a9a"
-    let current = NativeSessionSummary(id: currentID, provider: .codex,
+    var current = NativeSessionSummary(id: currentID, provider: .codex,
         title: "Current recorded backend", workspace: "/tmp/os1-fixture", workspaceLabel: nil,
         updatedAt: Date(), sourcePath: nil, linkedTitle: "Inspector fixture")
-    let unrelated = NativeSessionSummary(id: unrelatedID, provider: .codex,
+    current.isPinned = true; current.pinPosition = 1
+    var unrelated = NativeSessionSummary(id: unrelatedID, provider: .codex,
         title: "Unlinked local record", workspace: "/tmp/unlinked", workspaceLabel: nil,
         updatedAt: Date().addingTimeInterval(-120), sourcePath: nil, linkedTitle: nil)
+    unrelated.isPinned = true; unrelated.pinPosition = 0
 
     func makeStore(
         name: String,
@@ -3472,6 +4120,20 @@ private struct OS1DesktopApp: App {
     @StateObject private var store: SessionStore
 
     init() {
+        if CommandLine.arguments.contains("--audit-sidebar") {
+            do {
+                var report: [String: Any] = [:]
+                for provider in [ProviderChoice.codex, .claude] {
+                    let rows = try NativeSessionReader.sessions(for: provider)
+                    let pins = rows.filter(\.isPinned)
+                    report[provider.rawValue] = ["pinnedIDs": pins.map(\.id), "visibleCount": rows.count,
+                        "manualOrderVerified": provider == .codex,
+                        "nativeMutationSupported": provider == .codex]
+                }
+                print(String(decoding: try JSONSerialization.data(withJSONObject: report, options: [.sortedKeys]), as: UTF8.self))
+                exit(EXIT_SUCCESS)
+            } catch { fputs("\(error.localizedDescription)\n", stderr); exit(EXIT_FAILURE) }
+        }
         if let flag = CommandLine.arguments.firstIndex(of: "--audit-backend-record") {
             do {
                 let args = CommandLine.arguments
@@ -3504,6 +4166,14 @@ private struct OS1DesktopApp: App {
         if CommandLine.arguments.contains("--self-test-parallel") {
             Task { @MainActor in
                 do { try await parallelInteractionSelfTest(); exit(EXIT_SUCCESS) }
+                catch { fputs("\(error.localizedDescription)\n", stderr); exit(EXIT_FAILURE) }
+            }
+            NSApplication.shared.run()
+            exit(EXIT_FAILURE)
+        }
+        if CommandLine.arguments.contains("--self-test-sidebar-queue") {
+            Task { @MainActor in
+                do { try await sidebarQueueSelfTest(); exit(EXIT_SUCCESS) }
                 catch { fputs("\(error.localizedDescription)\n", stderr); exit(EXIT_FAILURE) }
             }
             NSApplication.shared.run()
@@ -3574,8 +4244,11 @@ private struct OS1DesktopApp: App {
                     let summary = try JSONDecoder().decode(AppRunSummary.self, from: Data(contentsOf: URL(fileURLWithPath: args[flag + 1])))
                     let steps = visibleAdoptedSteps(summary.steps)
                     guard summary.status == "complete", !steps.isEmpty, steps.allSatisfy(stepRecordIsVerified) else { throw SourceContextError.invalid }
+                    let requestIndex = args.firstIndex(of: "--request")
+                    let request = requestIndex.flatMap { $0 + 1 < args.count ? args[$0 + 1] : nil }
+                        ?? "R2에서 QM·GR과 Orthogonal Projection Term 원본을 가져와."
                     var preview = ConversationSession(workspace: FileManager.default.homeDirectoryForCurrentUser.path,
-                        messages: [ChatMessage(role: .user, text: "R2에서 QM·GR과 Orthogonal Projection Term 원본을 가져와.")])
+                        messages: [ChatMessage(role: .user, text: request)])
                     preview.sourceContext = summary.sourceContext
                     for step in steps {
                         preview.messages.append(ChatMessage(role: .assistant, text: step.output, provider: step.provider,
@@ -3724,7 +4397,9 @@ private struct OS1DesktopApp: App {
         if CommandLine.arguments.contains("--self-test") {
             do {
                 try providerIntentSelfTest()
+                try taskContextSelfTest()
                 try interactionSelfTest()
+                try sidebarSynchronizationSelfTest()
                 print("OS-1 app provider intent, source continuity, voice, math, selection, pin/archive/drafts/queue self-test: OK")
                 exit(EXIT_SUCCESS)
             } catch {
@@ -3780,6 +4455,163 @@ private struct OS1DesktopApp: App {
     }
 }
 
+@MainActor
+private func sidebarQueueSelfTest() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("os1-sidebar-queue-" + UUID().uuidString)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    var backend: [String] = []
+    var calls = 0
+    let store = SessionStore(storageRoot: root, nativePinOperation: { id, pinned, before in
+        try await Task.sleep(for: .milliseconds(5))
+        if let before, !backend.contains(before) { throw RunnerError.message("Missing move-before dependency") }
+        if pinned {
+            if !backend.contains(id) { backend.append(id) }
+            backend = SidebarOrder.moving(id, before: before, in: backend)
+        } else { backend.removeAll { $0 == id } }
+        calls += 1
+    })
+    let aID = "00000000-0000-4000-8000-000000000011", bID = "00000000-0000-4000-8000-000000000012"
+    let a = ConversationSession(title: "A", workspace: "/tmp", codexSessionID: aID)
+    let b = ConversationSession(title: "B", workspace: "/tmp", codexSessionID: bID)
+    store.sessions = [a, b]
+    store.togglePin(a.id); store.togglePin(b.id); store.movePinned(a.id, before: b.id)
+    await store.awaitSidebarMutations()
+    guard backend == [aID, bID], calls == 3, store.sidebarSyncNotice == nil else {
+        throw RunnerError.message("Sidebar queue: rapid pin/move dependency ordering failed")
+    }
+    store.togglePin(a.id); store.togglePin(a.id); store.movePinned(a.id, before: nil)
+    await store.awaitSidebarMutations()
+    guard backend == [bID, aID], calls == 6, store.sidebarSyncNotice == nil else {
+        throw RunnerError.message("Sidebar queue: rapid unpin/repin/reorder failed")
+    }
+    let failed = SessionStore(storageRoot: root.appendingPathComponent("failed"), nativePinOperation: { _, _, _ in
+        throw RunnerError.message("fixture backend unavailable")
+    })
+    failed.sessions = [a]; failed.togglePin(a.id)
+    await failed.awaitSidebarMutations()
+    guard failed.sidebarSyncNotice == "fixture backend unavailable", failed.sessions[0].pinnedAt != nil else {
+        throw RunnerError.message("Sidebar queue: failure lost local intent or falsely confirmed")
+    }
+    let restarted = SessionStore(storageRoot: root.appendingPathComponent("failed"))
+    guard restarted.sessions[0].pinnedAt != nil, restarted.sidebarSyncNotice != nil else {
+        throw RunnerError.message("Sidebar queue: failed intent did not survive restart")
+    }
+    print("Sidebar queue: 4 checks passed; model calls 0; live backend writes 0")
+}
+
+@MainActor
+private func sidebarSynchronizationSelfTest() throws {
+    var checks = 0
+    func check(_ value: Bool, _ label: String) throws {
+        guard value else { throw RunnerError.message("Sidebar regression: " + label) }
+        checks += 1
+    }
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("os1-sidebar-test-" + UUID().uuidString)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let store = SessionStore(storageRoot: root)
+    let codexA = "00000000-0000-4000-8000-000000000001", codexB = "00000000-0000-4000-8000-000000000002"
+    let claudeA = "00000000-0000-4000-8000-000000000003", claudeB = "00000000-0000-4000-8000-000000000004"
+    var a = ConversationSession(title: "A", workspace: "/tmp", codexSessionID: codexA, claudeSessionID: claudeA)
+    var b = ConversationSession(title: "B", workspace: "/tmp", codexSessionID: codexB, claudeSessionID: claudeB)
+    a.updatedAt = Date(timeIntervalSince1970: 10); b.updatedAt = a.updatedAt
+    a.draft = "draft-a"; b.draft = "draft-b"
+    store.sessions = [a, b]
+    store.select(a.id); store.togglePin(a.id); store.togglePin(b.id)
+    try check(store.filteredSessions.map(\.id) == [b.id, a.id], "new pin first")
+    store.movePinned(a.id, before: b.id)
+    try check(store.filteredSessions.map(\.id) == [a.id, b.id], "explicit move")
+    store.select(b.id); store.showClodexHome()
+    try check(store.filteredSessions.map(\.id) == [a.id, b.id], "selection cannot reorder")
+    try check(store.composer == "draft-b", "draft ownership")
+    store.flushPendingState()
+    let reload = SessionStore(storageRoot: root)
+    try check(reload.filteredSessions.map(\.id) == [a.id, b.id], "order survives restart")
+    try check(reload.sessions.allSatisfy { $0.updatedAt == a.updatedAt && $0.messages.isEmpty }, "metadata only")
+    func rows(_ provider: ProviderChoice, _ ids: [String]) -> [NativeSessionSummary] {
+        ids.map { NativeSessionSummary(id: $0, provider: provider, title: $0, workspace: "/tmp",
+            workspaceLabel: nil, updatedAt: Date(timeIntervalSince1970: 10), sourcePath: nil) }
+    }
+    reload.surface = .codex; reload.nativeSessions = rows(.codex, [codexB, codexA])
+    try check(reload.filteredNativeSessions.map(\.id) == [codexA, codexB], "Codex projection matches pending OS1 order")
+    reload.surface = .claude; reload.nativeSessions = rows(.claude, [claudeB, claudeA])
+    try check(reload.filteredNativeSessions.map(\.id) == [claudeA, claudeB], "Claude local projection matches OS1 order")
+    try check(reload.filteredNativeSessions.allSatisfy { $0.pinSyncNote?.contains("미반영") == true }, "unsupported Claude is not success")
+    reload.toggleNativePin(claudeA)
+    try check(reload.sessions.first(where: { $0.id == a.id })?.pinnedAt == nil, "native unpin updates linked OS1")
+    reload.surface = .codex; reload.nativeSessions = rows(.codex, [codexB, codexA])
+    try check(reload.filteredNativeSessions.first(where: { $0.id == codexA })?.isPinned == false, "unpin reaches other projection")
+    reload.togglePin(a.id)
+    reload.search = "A"
+    reload.movePinned(a.id, before: nil)
+    reload.search = ""
+    try check(reload.filteredSessions.map(\.id) == [b.id, a.id], "OS1 search cannot erase hidden pin rank")
+    reload.nativeSearch = codexA
+    reload.moveNativePin(codexA, before: codexB)
+    reload.nativeSearch = ""
+    try check(reload.filteredNativeSessions.map(\.id) == [codexA, codexB], "native search preserves hidden pin rank")
+    var late = ConversationSession(title: "Late", workspace: "/tmp")
+    late.draft = "late-draft"
+    reload.sessions.append(late)
+    reload.togglePin(late.id)
+    let lateID = "00000000-0000-4000-8000-000000000005"
+    reload.recordNativeSession(.codex, id: lateID, conversationID: late.id)
+    reload.nativeSessions.append(contentsOf: rows(.codex, [lateID]))
+    try check(reload.filteredNativeSessions.first?.id == lateID && reload.filteredNativeSessions.first?.isPinned == true, "late backend binding inherits existing pin")
+    reload.recordNativeSession(.codex, id: lateID, conversationID: late.id)
+    try check(reload.filteredNativeSessions.first?.id == lateID && reload.sessions.first(where: { $0.id == late.id })?.draft == "late-draft", "duplicate binding preserves order and draft")
+    reload.recordNativeSession(.codex, id: "not-a-uuid", conversationID: late.id)
+    try check(reload.sessions.first(where: { $0.id == late.id })?.codexSessionID == lateID, "invalid native binding rejected")
+    var duplicate = ConversationSession(title: "Duplicate", workspace: "/tmp", codexSessionID: codexA)
+    duplicate.draft = "duplicate-draft"
+    reload.sessions.append(duplicate)
+    let oldPin = reload.sessions.first(where: { $0.id == a.id })?.pinnedAt
+    reload.toggleNativePin(codexA)
+    try check(reload.sessions.first(where: { $0.id == a.id })?.pinnedAt == oldPin && reload.sidebarSyncNotice?.contains("여러 OS1") == true, "ambiguous owner cannot mutate arbitrary conversation")
+    let external = SessionStore(storageRoot: root.appendingPathComponent("external"))
+    external.sessions = [a, b]
+    external.applySidebarSnapshot(.codex, pins: [codexA: NativePinState(pinned: false, position: nil), codexB: NativePinState(pinned: false, position: nil)])
+    external.applySidebarSnapshot(.codex, pins: [codexA: NativePinState(pinned: true, position: 1), codexB: NativePinState(pinned: true, position: 0)])
+    try check(external.filteredSessions.map(\.id) == [b.id, a.id] && external.sessions.allSatisfy { $0.pinnedAt != nil }, "external Codex pins and order flow into OS1")
+    external.surface = .claude; external.nativeSessions = rows(.claude, [claudeA, claudeB])
+    try check(external.filteredNativeSessions.map(\.id) == [claudeB, claudeA], "external Codex order reaches Claude local projection")
+    external.applySidebarSnapshot(.claude, pins: [claudeA: NativePinState(pinned: false, position: nil), claudeB: NativePinState(pinned: false, position: nil)])
+    try check(external.sessions.allSatisfy { $0.pinnedAt != nil }, "stale Claude metadata cannot undo pending local presentation")
+    external.applySidebarSnapshot(.codex, pins: [codexA: NativePinState(pinned: false, position: nil), codexB: NativePinState(pinned: true, position: 0)])
+    try check(external.sessions.first(where: { $0.id == a.id })?.pinnedAt == nil && external.filteredNativeSessions.first(where: { $0.id == claudeA })?.isPinned == false, "new external Codex unpin supersedes old Claude local intent")
+    try check(SidebarOrder.moving("a", before: "b", in: ["a", "b"]) == ["a", "b"], "move idempotence")
+    try check(SidebarOrder.moving("a", before: "missing", in: ["a", "b"]) == ["a", "b"], "unknown target rejected")
+    try check(SidebarOrder.moving("a", before: nil, in: ["a", "b"]) == ["b", "a"], "append")
+    try check(SidebarOrder.replacingSubset(["b", "a"], in: ["x", "a", "y", "b"]) == ["x", "b", "y", "a"], "preserve unrelated pins")
+    try check(SidebarOrder.key(provider: "claude", id: codexA) != SidebarOrder.key(provider: "codex", id: codexA), "provider isolation")
+    let same = rows(.codex, [codexB, codexA]).sorted(by: sidebarNativeLess)
+    try check(same.map(\.id) == [codexA, codexB], "stable tie order")
+    // Exact native metadata schema: current Codex uses sections, not legacy is_pinned.
+    let dbRoot = root.appendingPathComponent(".codex")
+    try FileManager.default.createDirectory(at: dbRoot, withIntermediateDirectories: true)
+    var db: OpaquePointer?
+    guard sqlite3_open(dbRoot.appendingPathComponent("state_5.sqlite").path, &db) == SQLITE_OK else { throw SourceContextError.invalid }
+    let sql = "CREATE TABLE threads (id TEXT, archived INTEGER, thread_section_id TEXT, section_position INTEGER);" +
+        "INSERT INTO threads VALUES ('a',0,'\(NativeSidebar.codexPinnedSection)',2),('b',0,'\(NativeSidebar.codexPinnedSection)',1),('c',1,'\(NativeSidebar.codexPinnedSection)',0),('d',0,NULL,NULL);"
+    guard sqlite3_exec(db, sql, nil, nil, nil) == SQLITE_OK else { sqlite3_close(db); throw SourceContextError.invalid }
+    sqlite3_close(db)
+    let snapshot = try NativeSidebar.read("codex", home: root)
+    try check(snapshot["a"]?.pinned == true && snapshot["b"]?.position == 1 && snapshot["c"] == nil && snapshot["d"]?.pinned == false, "authoritative pin schema / archived exclusion")
+    let claudeRoot = root.appendingPathComponent("Library/Application Support/Claude/claude-code-sessions")
+    try FileManager.default.createDirectory(at: claudeRoot, withIntermediateDirectories: true)
+    try JSONSerialization.data(withJSONObject: ["cliSessionId": claudeA, "isStarred": true])
+        .write(to: claudeRoot.appendingPathComponent("local_fixture.json"))
+    let claude = try NativeSidebar.read("claude", home: root)
+    try check(claude[claudeA]?.pinned == true && claude[claudeA]?.position == nil, "Claude order remains unknown")
+    let projects = root.appendingPathComponent("projects")
+    try check(SidebarOrder.claudeConversationID(file: projects.appendingPathComponent("project/\(claudeA).jsonl"), projectsRoot: projects) == claudeA, "canonical Claude session")
+    try check(SidebarOrder.claudeConversationID(file: projects.appendingPathComponent("project/\(claudeA)/subagents/agent-1.jsonl"), projectsRoot: projects) == nil, "child logs are not duplicate parent sessions")
+    try check(SidebarOrder.claudeConversationID(file: projects.appendingPathComponent("project/backup/\(claudeA).jsonl"), projectsRoot: projects) == nil, "backups are not conversations")
+    try check(SidebarOrder.claudeConversationID(file: root.appendingPathComponent("elsewhere/\(claudeA).jsonl"), projectsRoot: projects) == nil, "source boundary")
+    print("Sidebar synchronization: \(checks) checks passed; model calls 0; live backend writes 0")
+}
+
 private struct RootView: View {
     @ObservedObject var store: SessionStore
 
@@ -3798,6 +4630,12 @@ private struct RootView: View {
         .frame(minWidth: 1_100, maxWidth: .infinity, minHeight: 680, maxHeight: .infinity)
         .background(Theme.background)
         .ignoresSafeArea()
+        .task {
+            while !Task.isCancelled {
+                await store.refreshSidebarMetadata()
+                try? await Task.sleep(for: .seconds(3))
+            }
+        }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in store.flushPendingState() }
         .alert("OS-1 CLODEX", isPresented: Binding(
             get: { store.alertMessage != nil },
@@ -3935,7 +4773,7 @@ private struct NativeSessionBrowser: View {
                             .font(.system(size: 9, weight: .bold, design: .rounded))
                             .foregroundStyle(Theme.muted)
                     }
-                    Text("LOCAL RECORDS · \(store.nativeSessions.count) · BROWSE ONLY")
+                    Text("LOCAL RECORDS · \(store.nativeSessions.count) · PIN MANAGEMENT")
                         .font(.system(size: 8, weight: .medium, design: .rounded))
                         .foregroundStyle(Theme.muted)
                 }
@@ -3982,17 +4820,45 @@ private struct NativeSessionBrowser: View {
                     ScrollView {
                         LazyVStack(spacing: 6) {
                             ForEach(store.filteredNativeSessions) { session in
+                                if session.id == store.filteredNativeSessions.first?.id && session.isPinned {
+                                    Text("PINNED").font(.system(size: 9, weight: .bold)).foregroundStyle(Theme.muted)
+                                        .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 13)
+                                }
                                 NativeSessionRow(
                                     session: session,
                                     selected: store.selectedNativeSessionID == session.id,
                                     current: store.linkedNativeSessionID(for: provider) == session.id,
                                     tint: provider.tint
                                 ) { store.selectNativeSession(session.id) }
+                                .contextMenu {
+                                    Button(session.isPinned ? "고정 해제" : "상단에 고정") { store.toggleNativePin(session.id) }
+                                    if session.isPinned {
+                                        Button("핀 순서 위로") { store.shiftNativePin(session.id, down: false) }
+                                        Button("핀 순서 아래로") { store.shiftNativePin(session.id, down: true) }
+                                    }
+                                    if provider == .codex, session.pinSyncNote != nil {
+                                        Button("백엔드에 다시 반영") { store.retryNativePin(session.id) }
+                                    }
+                                }
+                                .onDrag { NSItemProvider(object: "\(provider.rawValue):\(session.id)" as NSString) }
+                                .onDrop(of: [UTType.plainText], isTargeted: nil) { items in
+                                    acceptSidebarDrop(items, prefix: provider.rawValue) { id in
+                                        guard store.surface == provider, session.isPinned else { return }
+                                        store.moveNativePin(id, before: session.id)
+                                    }
+                                }
                             }
                         }
                         .padding(.horizontal, 20)
                         .padding(.bottom, 12)
                     }
+                }
+                if let notice = store.sidebarSyncNotice {
+                    Text(notice).font(.system(size: 10)).foregroundStyle(Theme.pink)
+                        .padding(12).frame(maxWidth: .infinity, alignment: .leading)
+                } else if provider == .claude {
+                    Text("Claude 앱의 핀 표시를 읽습니다. 앱 간 핀 변경·수동 순서는 아직 동기화되지 않습니다.")
+                        .font(.system(size: 10)).foregroundStyle(Theme.muted).padding(12)
                 }
             }
             .frame(width: 315)
@@ -4031,6 +4897,7 @@ private struct NativeSessionRow: View {
         Button(action: action) {
             VStack(alignment: .leading, spacing: 7) {
                 HStack(spacing: 7) {
+                    if session.isPinned { Image(systemName: "pin.fill").font(.system(size: 10)).foregroundStyle(tint) }
                     Circle().fill(current ? Theme.green : (session.linkedTitle == nil ? Theme.muted : tint))
                         .frame(width: 6, height: 6)
                     Text(session.displayTitle)
@@ -4053,6 +4920,7 @@ private struct NativeSessionRow: View {
                 }
                 .font(.system(size: 9, weight: .medium))
                 .foregroundStyle(Theme.muted)
+                if let note = session.pinSyncNote { Text(note).font(.system(size: 9)).foregroundStyle(Theme.pink) }
             }
             .padding(.horizontal, 13)
             .padding(.vertical, 13)
@@ -4245,6 +5113,18 @@ private struct RailButton: View {
     }
 }
 
+@MainActor
+private func acceptSidebarDrop(_ items: [NSItemProvider], prefix: String, action: @escaping @MainActor (String) -> Void) -> Bool {
+    guard let first = items.first, first.canLoadObject(ofClass: NSString.self) else { return false }
+    _ = first.loadObject(ofClass: NSString.self) { object, _ in
+        guard let value = object as? String, value.hasPrefix(prefix + ":") else { return }
+        let id = String(value.dropFirst(prefix.count + 1))
+        guard UUID(uuidString: id) != nil else { return }
+        Task { @MainActor in action(id) }
+    }
+    return true
+}
+
 private struct SessionSidebar: View {
     @ObservedObject var store: SessionStore
     @FocusState private var searching: Bool
@@ -4328,6 +5208,10 @@ private struct SessionSidebar: View {
                         ) { store.select(session.id) }
                         .contextMenu {
                             Button(session.pinnedAt == nil ? "상단에 고정" : "고정 해제") { store.togglePin(session.id) }
+                            if session.pinnedAt != nil {
+                                Button("핀 순서 위로") { store.shiftPinned(session.id, down: false) }
+                                Button("핀 순서 아래로") { store.shiftPinned(session.id, down: true) }
+                            }
                             Button("이름 변경…") { store.promptRename(session.id) }
                             Button("대화 전체 복사") { store.copyConversation(session.id) }
                             Button("대화 내보내기…") { store.exportConversation(session.id) }
@@ -4335,12 +5219,22 @@ private struct SessionSidebar: View {
                             Button(session.archived == true ? "보관 해제" : "보관") { store.setArchived(session.id, session.archived != true) }
                                 .disabled(store.isSessionRunning(session.id) || store.queuedSubmissions.contains(where: { $0.sessionID == session.id }))
                         }
+                        .onDrag { NSItemProvider(object: "os1:\(session.id.uuidString)" as NSString) }
+                        .onDrop(of: [UTType.plainText], isTargeted: nil) { items in
+                            acceptSidebarDrop(items, prefix: "os1") { id in
+                                guard let id = UUID(uuidString: id), session.pinnedAt != nil else { return }
+                                store.movePinned(id, before: session.id)
+                            }
+                        }
                     }
                 }
                 .padding(.horizontal, 20)
             }
 
             Spacer(minLength: 0)
+            if let notice = store.sidebarSyncNotice {
+                Text(notice).font(.system(size: 10)).foregroundStyle(Theme.pink).padding(12)
+            }
         }
         .frame(width: 315)
         .background(Color.black.opacity(0.72))
@@ -5414,7 +6308,7 @@ private struct ComposerView: View {
                         .font(.system(size: 12)).foregroundStyle(Theme.muted)
                         .textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
                 }
-                Button(session.lastFailure?.deliveryID != nil ? "저장된 결과 전달 · 모델 재실행 없음" : session.lastBackendFailure?.requiresReadback == true
+                Button(session.lastFailure?.savedResultNeedsReview == true ? "저장된 결과·현재 상태 검토 · 변경 재실행 없음" : session.lastFailure?.deliveryID != nil ? "저장된 결과 전달 · 모델 재실행 없음" : session.lastBackendFailure?.requiresReadback == true
                     ? "현재 상태 확인 · 재실행하지 않음" : "OS-1에서 다시 확인하고 시도") { store.retrySelectedFailure() }
                     .font(.system(size: 12, weight: .medium))
                     .disabled(store.activeRuns.count >= SessionStore.maximumConcurrentSessions)
@@ -5454,6 +6348,13 @@ private struct ComposerView: View {
                     finish: store.finishVoiceDictation,
                     cancel: { _ = store.cancelVoiceDictation() }
                 )
+
+                if store.isRunning {
+                    Button { store.cancelSelectedRun() } label: {
+                        Image(systemName: "stop.fill").frame(width: 36, height: 36)
+                    }.buttonStyle(.plain).help("현재 대화의 작업 중지")
+                    .accessibilityLabel("작업 중지")
+                }
 
                 Button { store.send() } label: {
                     Image(systemName: "arrow.up")

@@ -729,6 +729,25 @@ private func fleetWorkspaceIdentity(_ workspace: String) throws -> (String, Stri
           revisionText.range(of: "^[0-9a-f]{40}$", options: .regularExpression) != nil else {
         throw OS1Error.message("Fleet GitHub repository or revision is invalid")
     }
+    // The executor clones from origin and fetches exactly this revision, so a
+    // commit that only exists locally can never run remotely. Local tracking
+    // refs may be stale after a force push; read the exact commit at origin.
+    // Fast, offline first: a commit that no origin/* tracking ref contains was
+    // never pushed from here, so skip the network round trip entirely.
+    let tracked = try commandOutput(git, ["-C", root, "for-each-ref", "--contains", revisionText, "refs/remotes/origin/"], timeout: 20)
+    guard tracked.0 == 0, !tracked.1.isEmpty else {
+        throw OS1Error.message("Fleet requires the workspace revision to exist on origin; push HEAD before Fleet dispatch")
+    }
+    let gh = try findExecutable("gh")
+    let reachable = try commandOutput(gh, ["api", "repos/\(normalized)/commits/\(revisionText)", "--jq", ".sha"], timeout: 20)
+    guard reachable.0 == 0 else {
+        // Not proof of absence: an offline or TLS-intercepted session cannot
+        // confirm publication, and the foreground path remains available.
+        throw OS1Error.message("Fleet could not confirm the workspace revision on GitHub; dispatch skipped without a remote job")
+    }
+    guard String(decoding: reachable.1, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines) == revisionText else {
+        throw OS1Error.message("Fleet requires the workspace revision to exist on origin; push HEAD before Fleet dispatch")
+    }
     let rootURL = URL(fileURLWithPath: root).resolvingSymlinksInPath()
     let workspaceURL = URL(fileURLWithPath: workspace).resolvingSymlinksInPath()
     guard (workspaceURL.path + "/").hasPrefix(rootURL.path + "/") else {

@@ -9,6 +9,14 @@ public struct RetrievedAnswer: Sendable {
 
     public static func fromEvidence(output: String, sourcePaths: [String]) -> RetrievedAnswer? {
         guard output.hasPrefix("R2에서"), output.contains("자료를 검증해 회수했습니다."), !sourcePaths.isEmpty else { return nil }
+        if output.hasPrefix("R2에서 Instagram 자동화 수정 준비 자료를 검증해 회수했습니다."),
+           sourcePaths.contains("source-inventory.txt"), sourcePaths.contains("Dockerfile"),
+           let start = output.range(of: "### Dockerfile"), let provenance = output.range(of: "GitHub 기준:") {
+            let overview = String(output[output.index(after: output.firstIndex(of: "\n")!)..<provenance.lowerBound])
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            return RetrievedAnswer(overview: overview, original: String(output[start.lowerBound...]),
+                technical: String(output[provenance.lowerBound..<start.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines))
+        }
         if sourcePaths.contains("docs/CONCEPTUAL_ORIGIN.md"), sourcePaths.contains("docs/OPERATOR.md"),
            sourcePaths.contains("docs/EQUATION_INSERTIONS.md"),
            let start = output.range(of: "### README.md") {

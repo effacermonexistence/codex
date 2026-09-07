@@ -30,8 +30,14 @@ process.waitUntilExit()
 RunLoop.current.run(until: Date().addingTimeInterval(2))
 let ids: Set<String> = ["com.openai.codex", "com.anthropic.claudefordesktop", "com.omaragi.os1"]
 let unexpected = events.filter { ids.contains($0["bundleID"] ?? "") }
+// An app that is already frontmost never emits an activation event, so a run
+// that starts with a backend or OS-1 in front cannot prove "no activation".
+let blind = ids.contains(initial)
+let status = blind ? "UNKNOWN_WATCHED_APP_ALREADY_FRONTMOST"
+    : (process.terminationStatus == 0 && unexpected.isEmpty ? "PASS" : "REVIEW")
 let report: [String: Any] = [
-    "status": process.terminationStatus == 0 && unexpected.isEmpty ? "PASS" : "REVIEW",
+    "status": status,
+    "observable": !blind,
     "exitCode": process.terminationStatus,
     "initialForeground": initial,
     "finalForeground": NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? "unknown",
@@ -41,5 +47,5 @@ let report: [String: Any] = [
 ]
 try JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]).write(to: reportURL)
 try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: reportURL.path)
-print("Passive execution focus: \(unexpected.count) backend/OS-1 activations. Report: \(reportURL.path)")
-exit(process.terminationStatus == 0 && unexpected.isEmpty ? 0 : 1)
+print("Passive execution focus: \(status) — \(unexpected.count) backend/OS-1 activations. Report: \(reportURL.path)")
+exit(status == "PASS" ? 0 : 1)

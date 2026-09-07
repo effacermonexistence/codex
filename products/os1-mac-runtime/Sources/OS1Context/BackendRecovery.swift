@@ -10,9 +10,12 @@ public enum BackendBlocker: String, Codable, Sendable {
     case effectsUncertain = "effects_uncertain"
     case deliveryPending = "delivery_pending"
     case quotaExhausted = "quota_exhausted"
+    case cancelled
 
     public var message: String {
         switch self {
+        case .cancelled:
+            return "작업을 중지했습니다. 요청과 이미 받은 결과는 OS1에 보존했습니다. 실행된 변경은 자동으로 되돌리거나 다시 실행하지 않습니다."
         case .deliveryPending:
             return "백엔드 답변을 OS1에 저장했습니다. 서버 검증·전달은 아직 끝나지 않았습니다. ‘저장된 결과 전달’을 누르면 모델을 다시 실행하지 않고 저장된 답변만 재접수합니다."
         case .quotaExhausted:
@@ -86,9 +89,35 @@ public struct BackendFailureNotice: Codable, Equatable, Sendable {
         try? data.write(to: URL(fileURLWithPath: path), options: .atomic)
         try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path)
     }
+    public static func clear() {
+        guard let path = ProcessInfo.processInfo.environment["OS1_FAILURE_FILE"] else { return }
+        try? FileManager.default.removeItem(at: URL(fileURLWithPath: path))
+    }
 }
 
 public enum BackendRecovery {
+    /// Protocol error data only: quoted quota text in a successful answer is
+    /// not evidence that the account is exhausted. Denials take precedence.
+    public static func claudeQuotaFailure(status: Int32, object: [String: Any]) -> Bool {
+        guard status != 0 || object["is_error"] as? Bool == true,
+              (object["permission_denials"] as? [Any] ?? []).isEmpty else { return false }
+        let errors = object["errors"] as? [String] ?? []
+        let text = ([object["result"] as? String ?? ""] + errors).joined(separator: "\n").lowercased()
+        return ["you've hit your session limit", "you’ve hit your session limit", "usage limit reached",
+                "usage limit exceeded", "rate limit exceeded", "rate_limit_error", "insufficient_quota"]
+            .contains(where: text.contains)
+    }
+    public static func quotaRecoveryPreference(requested: String, failed: String,
+                                               codexAvailable: Bool, claudeAvailable: Bool) -> String? {
+        guard requested == "auto" else { return nil }
+        // Claude's session quota is account-wide, not an effort/quality issue.
+        if failed == "claude" { return codexAvailable ? "codex" : nil }
+        if failed == "codex" { return codexAvailable ? "codex" : (claudeAvailable ? "claude" : nil) }
+        return nil
+    }
+    public static func permitsAutomaticReplay(permission: String, stage: BackendDispatchStage) -> Bool {
+        permission == "read_only" || stage == .notDispatched
+    }
     public static func serviceFailure(status: Int, body: Data) -> String {
         let text = String(decoding: body.prefix(256), as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
         if status == 429 && text == "error code: 1027" {
