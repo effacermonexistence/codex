@@ -12,6 +12,18 @@ This repository is the source of truth for the automatic GitHub-to-R2 backup.
 - Never commit API tokens, OAuth tokens, Wrangler credential files, or GitHub PATs.
 - Never change repository visibility, branch protection, or billing settings unless the user explicitly requests it.
 
+## EXO activity-monitor R2 handoff
+
+When the user asks either Mac to get, synchronize, or install the shared EXO
+Activity Monitor from R2, do not ask them to relay a command block from the
+other Mac. Inspect the existing Wrangler connection, then run
+`~/.local/bin/os1-exo-monitor-sync air` on the Air or use role `pro` on the Pro.
+The trusted private pointer is
+`omar-private-archive/os1-exo-monitor/latest.json`; the sync program verifies
+the immutable package SHA-256, byte count, repository identity, and archive
+paths before invoking the rollback-capable installer. Never transfer Wrangler
+credentials, OAuth caches, EXO models, or event logs between devices.
+
 Before deploying Worker changes:
 
 ```bash

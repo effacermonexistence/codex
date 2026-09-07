@@ -16,6 +16,7 @@
     "check:scv-instagram": "node products/scv-instagram/scripts/verify-public-mirror.mjs",
     "check:scv-instagram:syntax": "find products/scv-instagram/runtime -type f -name '*.js' -not -path '*/node_modules/*' -exec node --check {} +",
     "check:scv-instagram:all": "pnpm run check:scv-instagram && pnpm run check:scv-instagram:syntax",
+    "check:exo-monitor-r2": "bash scripts/test-os1-exo-monitor-r2.sh",
     "check:all": "pnpm run types && pnpm run check && pnpm run deploy:dry-run"
   },
   "dependencies": {

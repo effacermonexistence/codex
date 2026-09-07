@@ -35,6 +35,18 @@ OIDC; it must not depend on a laptop credential. Validate changes with the
 repository checks and verify the resulting R2 manifest when access is
 available.
 
+## EXO activity-monitor R2 handoff
+
+When the user asks either Mac to get, synchronize, or install the shared EXO
+Activity Monitor from R2, do not ask them to relay a command block from the
+other Mac. Inspect the existing Wrangler connection, then run
+`~/.local/bin/os1-exo-monitor-sync air` on the Air or use role `pro` on the Pro.
+The trusted private pointer is
+`omar-private-archive/os1-exo-monitor/latest.json`; the sync program verifies
+the immutable package SHA-256, byte count, repository identity, and archive
+paths before invoking the rollback-capable installer. Never transfer Wrangler
+credentials, OAuth caches, EXO models, or event logs between devices.
+
 ## SCV latest approved recovery Gold
 
 For SCV Instagram, the owner phrases `최신 Gold로 돌아가`, `최신 골드로 복원해`,
