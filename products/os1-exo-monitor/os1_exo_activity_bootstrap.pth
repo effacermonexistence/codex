@@ -1,1 +1,1 @@
-import os1_exo_activity_overlay
+import os; os.environ.get("OS1_EXO_ACTIVITY_DASHBOARD_DIR") and __import__("os1_exo_activity_overlay")
