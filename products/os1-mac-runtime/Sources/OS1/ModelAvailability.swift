@@ -40,7 +40,8 @@ enum ModelAvailability {
             !claudeRows([sonnet]).contains { $0.model == "fable" },
             claudeRows([sonnet])[0].efforts == ["medium"],
             claudeRows([]).isEmpty,
-            !claudeRows([defaults]).contains { $0.model == "fable" || $0.model == "sonnet" },
+            claudeRows([defaults]).isEmpty,
+            !claudeRows([defaults, sonnet]).contains { $0.model == "opus" },
             claudeRows([["value": "fable"]]).isEmpty,
             claudeRows([fable.merging(["supportedEffortLevels": ["ultra"]]) { _, n in n }]).isEmpty,
         ]
@@ -64,7 +65,10 @@ enum ModelAvailability {
     static func claudeRows(_ rows: [[String: Any]]) -> [NativeClaudeModel] {
         var result: [NativeClaudeModel] = []
         for row in rows {
-            guard let value = row["value"] as? String, value.count <= 128,
+            // Native Claude keeps a synthetic default row even when
+            // availableModels excludes its resolved family. It is not evidence
+            // that OS1 may explicitly select that family or full model ID.
+            guard let value = row["value"] as? String, value != "default", value.count <= 128,
                   value.range(of: #"^[A-Za-z0-9][A-Za-z0-9._:\[\]-]*$"#, options: .regularExpression) != nil,
                   row["supportsEffort"] as? Bool == true,
                   let rawEfforts = row["supportedEffortLevels"] as? [String] else { continue }
@@ -78,7 +82,7 @@ enum ModelAvailability {
             }
             for model in Set([value, resolved] + (alias.map { [$0] } ?? [])) where isSafeModelIdentifier(model) {
                 if !result.contains(where: { $0.model == model }) {
-                    result.append(NativeClaudeModel(model: model, invocation: value == "default" ? resolved : value, efforts: efforts))
+                    result.append(NativeClaudeModel(model: model, invocation: value, efforts: efforts))
                 }
             }
         }
