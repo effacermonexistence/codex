@@ -96,7 +96,7 @@ public enum HumanOutputContract {
                (stagePattern.numberOfMatches(in: text, range: NSRange(location: 0, length: ns.length)) >= 8 || schemaRequest) {
                 issues.append("Replace the identifier-dominated wide architecture matrix with concise named components, their purpose and dependencies in readable steps. Preserve technical details but do not use an ID dump as the main answer.")
             }
-            if (intent.contains("qmgr") || (intent.contains("qm") && intent.contains("gr"))),
+            if ResearchMaterialIntent.qmGR(request),
                ["스키마", "설계", "schema", "architecture"].contains(where: intent.contains),
                (text.contains("최종 승인조건") || text.contains("통합\"이라고 주장할 수")),
                !["충분조건이 아", "충분하지", "보장하지", "관측", "실증", "empirical"].contains(where: text.contains) {
