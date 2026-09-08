@@ -92,26 +92,28 @@ describe("fleet objective", () => {
     expect(JSON.stringify(placement)).not.toContain("fixture-");
   });
 
-  it("selects the node with more usable headroom", () => {
-    const placement = placeFleetJob([
-      node({ device_id: "device:pro", load_average_1m: 14, queue_depth: 2 }),
-      node({
-        device_id: "device:air",
-        role: "air",
-        hostname: "air",
-        zerotier_ip: "10.215.90.216",
-        cpu_logical_count: 10,
-        load_average_1m: 1,
-        memory_total_mib: 16_384,
-        memory_available_mib: 12_000,
-      }),
-    ], "codex", { min_memory_mib: 2_048, cpu_weight: 50, prefer_device_id: null }, now);
-    expect(placement).toMatchObject({
-      objective_version: FLEET_OBJECTIVE_VERSION,
-      execution_mode: "single_node",
-      executor_device_id: "device:air",
+  for (const profile of ["codex", "claude"] as const) {
+    it(`automatically selects the node with more usable headroom for ${profile}`, () => {
+      const placement = placeFleetJob([
+        node({ device_id: "device:pro", load_average_1m: 14, queue_depth: 2 }),
+        node({
+          device_id: "device:air",
+          role: "air",
+          hostname: "air",
+          zerotier_ip: "10.215.90.216",
+          cpu_logical_count: 10,
+          load_average_1m: 1,
+          memory_total_mib: 16_384,
+          memory_available_mib: 12_000,
+        }),
+      ], profile, { min_memory_mib: 2_048, cpu_weight: 50, prefer_device_id: null }, now);
+      expect(placement).toMatchObject({
+        objective_version: FLEET_OBJECTIVE_VERSION,
+        execution_mode: "single_node",
+        executor_device_id: "device:air",
+      });
     });
-  });
+  }
 
   it("rejects stale, undersized, and incapable nodes", () => {
     const placement = placeFleetJob([
