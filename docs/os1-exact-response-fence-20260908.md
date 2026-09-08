@@ -69,3 +69,14 @@ require a separate positive mutation to grant write scope, and keep conflicting
 blanket prohibitions read-only. Repeat the exact failed probe on installed build90.
 This follow-on change requires a signed local app/CLI upgrade with session and
 signing-identity preservation; the remote-only repair did not.
+
+## Client-normalized contract view
+
+An end-to-end boundary review also reproduced the same mismatch when the
+existing client replaces a complete prohibition with the standalone marker
+`read-only`. The private derived contract view now recognizes that exact marker
+as a scope-only clause. It does not discard a review request beginning with
+`read-only`, a conditional marker, or other output requirements. The original
+task and read-only permission stay intact. Tests cover both original and
+client-normalized wire forms with paired wrong-answer controls. This server-only
+follow-up uses a new immutable policy; build90 binaries do not need replacing.

@@ -65,6 +65,16 @@ class ResponseFence(unittest.TestCase):
             self.assertEqual(self.verify("Read-only. Return exactly VERSION_1.2" + suffix,
                                          output="VERSION_1.2")["outcome"], "pass")
 
+    def test_client_normalized_fence_retains_response_contract(self):
+        for suffix in ("read-only", "read-only.", "read only", "read-only\nread-only"):
+            prompt = "Read-only check: reply with exactly READ_ONLY_OK. " + suffix
+            with self.subTest(suffix=suffix):
+                self.assertEqual(self.route(prompt)["permission_profile"], "read_only")
+                self.assertEqual(self.verify(prompt)["reason_code"], "EXACT_RESPONSE_VERIFIED")
+                self.assertEqual(self.verify(prompt, "WRONG")["reason_code"], "EXACT_RESPONSE_MISMATCH")
+        for suffix in ("read-only review of result.txt", "read-only, then explain why", "read-only unless approved"):
+            self.assertFalse(core._bounded_exact_response_task("Reply exactly READ_ONLY_OK. " + suffix))
+
     def test_wrong_or_extra_output_fails(self):
         for output in ("WRONG", "READ_ONLY_OK\nverified", "READ_ONLY_OK."):
             self.assertEqual(self.verify(INCIDENT, output)["reason_code"], "EXACT_RESPONSE_MISMATCH")
