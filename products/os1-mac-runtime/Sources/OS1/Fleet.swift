@@ -607,6 +607,8 @@ func runFleetAgent(role: String, once: Bool) async throws {
     let activeFile = root.appendingPathComponent("main-agent-active.json")
     let claimFile = root.appendingPathComponent("main-agent-claim.json")
     var registered = false
+    var maintenance: Task<Void, Never>?
+    defer { maintenance?.cancel() }
     repeat {
         do {
             if !registered {
@@ -614,7 +616,13 @@ func runFleetAgent(role: String, once: Bool) async throws {
                 registered = true
             }
             let node = try await sendFleetHeartbeat(client: client, key: key, role: role)
-            try? await refreshFleetResultCache(client: client, key: key)
+            if once {
+                try? await refreshFleetResultCache(client: client, key: key)
+            } else if maintenance == nil {
+                // Own maintenance across idle, running and delivery phases.
+                // Result latency must never consume the heartbeat's freshness budget.
+                maintenance = Task.detached { await runFleetMaintenance(role: role) }
+            }
             var active: FleetAgentWork?
             if FileManager.default.fileExists(atPath: activeFile.path) {
                 active = try JSONDecoder().decode(FleetAgentWork.self, from: Data(contentsOf: activeFile))
@@ -646,7 +654,6 @@ func runFleetAgent(role: String, once: Bool) async throws {
                     }
                     work.phase = "running"
                     try fleetPersist(work, at: activeFile)
-                    let heartbeat = Task.detached { await fleetHeartbeatDuringWork(role: role) }
                     do {
                         work.result = try await executeFleetAssignment(work.assignment, role: role, config: config)
                         work.outcome = "complete"
@@ -658,8 +665,6 @@ func runFleetAgent(role: String, once: Bool) async throws {
                         ]), as: UTF8.self)
                         work.outcome = "failed"
                     }
-                    heartbeat.cancel()
-                    _ = await heartbeat.result
                     work.phase = "delivery_pending"
                     try fleetPersist(work, at: activeFile)
                 }
@@ -667,7 +672,7 @@ func runFleetAgent(role: String, once: Bool) async throws {
                     throw OS1Error.message("Fleet result outbox is invalid; preserved without re-execution")
                 }
                 try await completeFleetJob(client: client, key: key, assignment: work.assignment, outcome: outcome, result: result)
-                try? await refreshFleetResultCache(client: client, key: key)
+                if once { try? await refreshFleetResultCache(client: client, key: key) }
                 try fleetPersist(work, at: fleetJobDirectory(work.assignment.jobID).appendingPathComponent("fleet-result.json"))
                 try FileManager.default.removeItem(at: activeFile)
             }
@@ -690,16 +695,19 @@ private struct FleetAgentWork: Codable {
     var result: String? = nil
 }
 
-private func fleetHeartbeatDuringWork(role: String) async {
-    while !Task.isCancelled {
-        do {
-            try await Task.sleep(for: .seconds(10))
+private func runFleetMaintenance(role: String) async {
+    await FleetMaintenance.run(
+        heartbeat: {
             let client = APIClient(config: try RuntimeConfig.load(), token: try githubToken(), deviceID: try deviceID(), requestTimeoutSeconds: 10)
             _ = try await sendFleetHeartbeat(client: client, key: SigningKey.loadOrCreate(), role: role)
-            try? await refreshFleetResultCache(client: client, key: SigningKey.loadOrCreate())
-        } catch is CancellationError { return }
-        catch { if !Task.isCancelled { fputs("OS-1 Fleet heartbeat temporarily unavailable\n", stderr) } }
-    }
+        },
+        mirror: {
+            let client = APIClient(config: try RuntimeConfig.load(), token: try githubToken(), deviceID: try deviceID(), requestTimeoutSeconds: 10)
+            try await refreshFleetResultCache(client: client, key: SigningKey.loadOrCreate())
+        },
+        onHeartbeatFailure: { fputs("OS-1 Fleet heartbeat temporarily unavailable\n", stderr) },
+        onMirrorFailure: { fputs("OS-1 Fleet result mirror temporarily unavailable\n", stderr) }
+    )
 }
 
 private func fleetWorkspaceIdentity(_ workspace: String) throws -> (String, String, String) {

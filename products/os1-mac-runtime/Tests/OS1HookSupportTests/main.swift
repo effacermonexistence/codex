@@ -181,6 +181,69 @@ func testEXODraftPolicy() throws {
     try expect(EXODraftPolicy.isUseful(substantive), "substantive draft rejected")
 }
 
+private enum MaintenanceFixtureError: Error { case transient }
+
+private actor MaintenanceProbe {
+    var heartbeats = 0
+    var mirrors = 0
+    var activeMirrors = 0
+    var maximumActiveMirrors = 0
+
+    func heartbeat() -> Int { heartbeats += 1; return heartbeats }
+    func startMirror() -> Int {
+        mirrors += 1
+        activeMirrors += 1
+        maximumActiveMirrors = max(maximumActiveMirrors, activeMirrors)
+        return mirrors
+    }
+    func finishMirror() { activeMirrors -= 1 }
+    func snapshot() -> (Int, Int, Int, Int) {
+        (heartbeats, mirrors, activeMirrors, maximumActiveMirrors)
+    }
+}
+
+func testFleetMaintenanceIsolation() async throws {
+    let probe = MaintenanceProbe()
+    let task = Task {
+        await FleetMaintenance.run(
+            heartbeatInterval: .milliseconds(10), mirrorInterval: .milliseconds(10),
+            heartbeat: {
+                if await probe.heartbeat() == 1 { throw MaintenanceFixtureError.transient }
+            },
+            mirror: {
+                let attempt = await probe.startMirror()
+                do {
+                    if attempt == 1 { throw MaintenanceFixtureError.transient }
+                    // Simulate a slow status batch while the heartbeat continues.
+                    try await Task.sleep(for: .seconds(2))
+                    await probe.finishMirror()
+                } catch {
+                    await probe.finishMirror()
+                    throw error
+                }
+            }
+        )
+    }
+    defer { task.cancel() }
+    let deadline = ContinuousClock.now.advanced(by: .seconds(1))
+    while ContinuousClock.now < deadline {
+        let state = await probe.snapshot()
+        if state.0 >= 8 && state.1 == 2 && state.2 == 1 { break }
+        try await Task.sleep(for: .milliseconds(5))
+    }
+    let during = await probe.snapshot()
+    try expect(during.0 >= 8, "slow result mirror starved the heartbeat or heartbeat error stopped retries")
+    try expect(during.1 == 2 && during.2 == 1, "mirror did not recover independently from its first failure")
+    try expect(during.3 == 1, "result mirror batches overlapped")
+    task.cancel()
+    await task.value
+    let stopped = await probe.snapshot()
+    try expect(stopped.2 == 0, "cancellation did not drain the active mirror")
+    try await Task.sleep(for: .milliseconds(40))
+    let later = await probe.snapshot()
+    try expect(later.0 == stopped.0 && later.1 == stopped.1, "maintenance outlived its owner cancellation")
+}
+
 do {
     try testExclusiveLease()
     try testCircuitBreaker()
@@ -190,7 +253,8 @@ do {
     try testFirstPromptIdentity()
     try testPromptIntentPolicy()
     try testEXODraftPolicy()
-    print("OS1HookSupportTests: PASS (8 test groups)")
+    try await testFleetMaintenanceIsolation()
+    print("OS1HookSupportTests: PASS (9 test groups)")
 } catch {
     fputs("OS1HookSupportTests: FAIL: \(error)\n", stderr)
     exit(1)
