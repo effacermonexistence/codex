@@ -1,4 +1,4 @@
-const SENTINEL_SCHEMA = 'scv-instagram-drift-sentinel-2026-09-08-v27-v166-running-release-v151-recovery-gold'
+const SENTINEL_SCHEMA = 'scv-instagram-drift-sentinel-2026-09-08-v28-v167-running-release-v151-recovery-gold'
 // GOLD-3 (2026-09-03): v148 (owner-verified v145 plus the owner-ordered polish, live red-team verified) frozen as the reference; the pointer and manifest below are pinned by hash.
 const GOLD_LATEST_KEY = 'scv-instagram-automation/gold/LATEST.json'
 const GOLD_MANIFEST_KEY = 'scv-instagram-automation/gold/SCV_GOLD_MANIFEST_v148.json'
@@ -11,9 +11,9 @@ const GOLD_CONTENT_FINGERPRINT = '3a9a18631443f4738d13dd803f080979ff4d21ab0d9de1
 // v16 (2026-09-05): the RUNNING release (v153, the anchored-reference fix) and the
 // latest RECOVERY POINT (the owner-approved v151 Gold) are different objects; the recovery-point
 // checks below pin the Gold's own release identity.
-const RELEASE_ID = 'scv-instagram-single-20260908-v166'
-const CONTENT_FINGERPRINT = '61816561349e8a36d6657164f2526b0bfbc07b5579ac2472301d7c9e32449555'
-const RELEASE_MANIFEST = 'a3a649254c1800abb8dcd57a4c3c4c3385461e239552e09c11ba4fd457888a37'
+const RELEASE_ID = 'scv-instagram-single-20260908-v167'
+const CONTENT_FINGERPRINT = '6b85a63a25c23e9815491413eeb895e6b78ed8faa523f18aefea6b88f392faa7'
+const RELEASE_MANIFEST = '2f12a00d12114bbbb05080438dda88a6278a82ae65a9fc9aaaff70a2a25ad4b6'
 const RECOVERY_POINT_RELEASE_ID = 'scv-instagram-single-20260904-v151'
 const RECOVERY_POINT_CONTENT_FINGERPRINT = 'd60dfc9f1f082f9d5e268556c0eb43364b5f1d9b1217f6a1f95d04546043c151'
 const RECOVERY_POINT_RELEASE_MANIFEST = 'b307c86bb59e1287afe746f50d8ccd036d7b1bea70820ef3f1facce6baef7d6c'
