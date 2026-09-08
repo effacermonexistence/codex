@@ -42,7 +42,8 @@ function verifyReceipt({mirror, receipt, intent, marker, profile, revision, expe
   assert.equal(step.revas_disposition, 'adopted');
   assert.equal(step.native_record.persistence, 'verified');
   assert(/^[a-f0-9-]{36}$/i.test(step.session_id));
-  for (const text of [marker, expected.release, expected.objective_version]) assert(step.output.includes(text));
+  assert.equal(typeof expected.release_id,'string','source release_id is required');
+  for (const text of [marker, expected.release_id, expected.objective_version]) assert(step.output.includes(text));
   assert(!result.result_branch && !result.result_commit, 'read-only job published changes');
   return {provider:profile, job_id:mirror.job_id, executor_device_id:mirror.executor_device_id,
     executor_role:result.node_role, automatic:true, preferred_device:null,
@@ -51,7 +52,7 @@ function verifyReceipt({mirror, receipt, intent, marker, profile, revision, expe
 }
 
 function selfTest() {
-  const marker = 'FIXTURE', revision = 'a'.repeat(40), expected = {release:'release', objective_version:objective};
+  const marker = 'FIXTURE', revision = 'a'.repeat(40), expected = {release_id:'release', objective_version:objective};
   const result = {job_id:randomUUID(), device_id:'device:test', profile:'codex', repository, revision,
     node_role:'pro', run:{status:'complete', steps:[{provider:'codex', exit_code:0, permission_profile:'read_only',
       revas_disposition:'adopted', native_record:{persistence:'verified'}, session_id:randomUUID(),
@@ -70,6 +71,7 @@ function selfTest() {
     value => value.intent.request.requirements.prefer_device_id = 'device:test',
     value => value.intent.request.workspace_revision = 'b'.repeat(40),
     value => value.receipt.executor_device_id = 'device:unrelated',
+    value => { delete value.expected.release_id; },
     value => { const r = JSON.parse(value.mirror.result); r.run.steps[0].permission_profile = 'workspace_write'; value.mirror.result=JSON.stringify(r);value.mirror.result_hash=hash(value.mirror.result); },
     value => { const r = JSON.parse(value.mirror.result); r.run.steps.push(r.run.steps[0]); value.mirror.result=JSON.stringify(r);value.mirror.result_hash=hash(value.mirror.result); },
   ];
@@ -80,6 +82,7 @@ function selfTest() {
 async function run() {
   const args = process.argv.slice(2);
   if (args.length === 1 && args[0] === '--self-test') return selfTest();
+  if (args.length === 2 && args[0] === '--verify-existing') return verifyExisting(args[1]);
   assert(args.length === 5 && args[0] === '--run' && args[1] === '--role' && args[3] === '--revision',
     'Usage: --self-test OR --run --role pro|air --revision EXACT_PUBLISHED_SHA');
   const role = args[2], revision = args[4];
@@ -121,7 +124,7 @@ async function run() {
     delete env.OS1_INTERNAL_PROVIDER_EXECUTION;
     const probes = await Promise.all(['codex','claude'].map(async profile => {
       const marker = `OS1_NATIVE_${role.toUpperCase()}_${profile.toUpperCase()}_${randomUUID()}`;
-      const prompt = `Read products/os1-exo-monitor/manifest.json and report its release and objective_version fields. Do not change files, services, repository refs, or settings. Include the verification label ${marker} in the final answer.`;
+      const prompt = `Read products/os1-exo-monitor/manifest.json and report its release_id and objective_version fields. Do not change files, services, repository refs, or settings. Include the verification label ${marker} in the final answer.`;
       const binary = profile === 'claude' ? join(home,'.local/bin/claude') : [
         '/Applications/ChatGPT.app/Contents/Resources/codex',
         '/Applications/Codex.app/Contents/Resources/codex',
@@ -186,6 +189,52 @@ async function run() {
     // Compact non-secret result only. Native transcripts stay on their device.
     console.log(JSON.stringify(report));
   }
+}
+
+// Repairs verification-only defects without another native/model invocation.
+function verifyExisting(directory) {
+  assert(directory.startsWith(tmpdir()+'os1-native-fleet-proof-') || directory.startsWith(join(tmpdir(),'os1-native-fleet-proof-')));
+  assert(!directory.slice(directory.indexOf('os1-native-fleet-proof-')).includes('/'));
+  const original=json(join(directory,'acceptance.json'));
+  assert.equal(original.objective_version,objective);
+  const home=homedir(),os1=join(home,'.local/bin/os1'),cache=join(home,'Library/Caches/com.omaragi.os1/fleet-hook-submissions');
+  assert.equal(hash(readFileSync(os1)),original.installed_os1_sha256);
+  const deviceID=readFileSync(join(home,'Library/Application Support/OS-1/device/device-id'),'utf8').trim();
+  const args=JSON.parse(command('/usr/bin/plutil',['-extract','ProgramArguments','json','-o','-',join(home,'Library/LaunchAgents/com.os1.fleet-agent.plist')]));
+  assert(args.includes('--role') && args[args.indexOf('--role')+1]===original.foreground_role);
+  const expected=json(join(directory,'repository/products/os1-exo-monitor/manifest.json'));
+  const checks=[];
+  for (const profile of ['codex','claude']) {
+    const probe=json(join(directory,profile+'-probe.json'));
+    assert.equal(probe.code,0);assert.equal(probe.timed_out,false);assert.equal(probe.native_terminal,true);
+    const raw=readFileSync(join(directory,profile+'.jsonl'),'utf8');
+    assert.equal(hash(raw),probe.events_sha256);
+    const events=raw.split('\n').flatMap(line=>{try{return[JSON.parse(line)];}catch{return[];}});
+    if(profile==='codex') {
+      assert(events.some(e=>e.type==='turn.completed'));
+      assert(events.some(e=>e.item?.type==='agent_message'&&e.item.text?.includes(probe.marker)));
+    } else {
+      const final=events.findLast(e=>e.type==='result');assert(final?.is_error===false&&final.result.includes(probe.marker));
+    }
+    const matches=readdirSync(cache).filter(name=>/^[a-f0-9]{64}\.json$/.test(name)).flatMap(name=>{
+      const receipt=json(join(cache,name));
+      if (!/^[a-f0-9-]{36}$/i.test(receipt.job_id ?? '')) return [];
+      const path=join(home,'.os1/fleet/results',receipt.job_id+'.json');if(!existsSync(path))return[];
+      const mirror=json(path);return mirror.profile===profile&&mirror.result?.includes(probe.marker)?[{name,receipt,mirror}]:[];
+    });
+    assert.equal(matches.length,1);
+    const {name,receipt,mirror}=matches[0],intent=json(join(home,'.os1/fleet/submissions',name));
+    assert.equal(intent.deviceID ?? intent.device_id,deviceID);
+    assert(intent.request.submitted_at_ms>=Date.parse(original.started_at)&&intent.request.submitted_at_ms<=Date.parse(original.finished_at));
+    checks.push({...verifyReceipt({receipt,mirror,intent,marker:probe.marker,profile,revision:original.source_revision,expected}),foreground_duration_ms:probe.duration_ms});
+  }
+  assert.equal(command('git',['-C',join(directory,'repository'),'status','--porcelain']),'');
+  const report={...original,status:'PASS',error:undefined,checks,foreground_device_id:deviceID,
+    fixture_unchanged:true,verification_only:true,additional_model_calls:0,
+    corrected_verifier_source_sha256:hash(readFileSync(new URL(import.meta.url))),
+    verified_at:new Date().toISOString(),original_acceptance_sha256:hash(readFileSync(join(directory,'acceptance.json')))};
+  save(join(directory,'acceptance-reverified.json'),report);
+  console.log(JSON.stringify(report));
 }
 
 await run();
