@@ -1,0 +1,68 @@
+.git
+.wrangler
+.gitignore
+.env
+.env.*
+node_modules
+npm-debug.log*
+*.tmp
+*.lock
+!package-lock.json
+*.key
+*PRIVATE*.pem
+SCV_PRODUCTION_RELEASE_APPROVAL.json
+.bkit/
+.omc/
+ops/
+artifacts/
+
+# Legacy sealed surfaces are intentionally unavailable to the explicit
+# single_release_v1 runtime. The unchanged legacy path is packaged separately.
+SCV_GOLDEN_PRODUCTION_RELEASE.json
+SCV_GOLDEN_SNAPSHOT_MANIFEST.json
+SCV_IMMUTABLE_DRIFT_SEAL.json
+scv-immutable-drift-firewall.js
+
+# The explicit single-release artifact has its own minimal entrypoint. Keep the
+# legacy/mixed entry file in the worktree, not in this Docker context.
+scv-production-entry.js
+scv-production-activation-latch.js
+scv-production-activation-latch-harness.js
+
+# Mutable learning state is never an image input. It belongs on runtime state,
+# not in a sealed source artifact.
+dm_conversion_events.jsonl
+dm_conversion_state.json
+dm_darwin_state.json
+dm_hinton_state.json
+
+# Runtime state belongs only on the namespaced Railway volume.
+inbox/
+outbox/
+reactbox/
+reactbox_done/
+reactbox_failed/
+thread-state/
+thread-state_pre_migration/
+thread-history/
+thread-state_quarantine_contaminated/
+thread-history_quarantine_contaminated/
+inbox_quarantine_superseded/
+inbox_quarantine_deadletter/
+inbox_quarantine_corrupt/
+outbox_quarantine_stale/
+outbox_quarantine_non_authoritative/
+outbox_quarantine_contract_harness/
+outbox_quarantine_failed/
+outbox_quarantine_corrupt_adoption/
+outbox_human_agent_required/
+outbox_quarantine_pre_single_control/
+outbox-idempotency/
+accepted-unverified-boundary-pending/
+accepted-unverified-delivery-publications/
+control-events/
+control-decisions/
+control-locks/
+form-submissions/
+logs/
+dm_conversion_events.jsonl

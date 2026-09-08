@@ -1,0 +1,139 @@
+{
+  "receipt_version": "scv-omar-system-live-e2e-completion-v1",
+  "created_at": "2026-07-25T15:29:00Z",
+  "result": "PASS",
+  "proof_mode": "single_live_end_to_end_completion",
+  "scope": {
+    "debug_account": "omar.system",
+    "contact_id": "1537753982",
+    "non_test_accounts_touched": false,
+    "actual_payment_sent": false
+  },
+  "runtime": {
+    "project": "scv-dm-cloud-survival",
+    "environment": "production",
+    "deployment_id": "83ad0d30-52f6-4d26-8ec3-df9d71886b6c",
+    "health_ok": true,
+    "mode": "transport_only",
+    "runtime_namespace": "prod",
+    "contract_harness": "scv-contract-harness-lock-2026-07-25-v94-atomic-client-turn-authority",
+    "hard_harness": "scv-hard-harness-lock-2026-07-25-v113-atomic-client-turn-authority",
+    "control_plane": "scv-single-control-plane-2026-07-12-v3-route-frozen-liveness",
+    "control_epoch": "scv-control-epoch-2026-07-12-v3-route-frozen-liveness",
+    "immutable_drift_firewall_ok": true,
+    "immutable_drift_firewall_checked": 178,
+    "golden_snapshot_guard_ok": true,
+    "golden_snapshot_guard_checked": 363
+  },
+  "pre_run_reset": {
+    "target_only": "omar.system / contact 1537753982",
+    "pre_audit_remaining_count": 42,
+    "deleted_file_count": 33,
+    "removed_log_lines": 9,
+    "reset_watermark_at": "2026-07-25T15:22:45.559Z",
+    "post_audit_remaining_count": 0,
+    "post_audit_remaining_log_lines": 0
+  },
+  "live_path": [
+    {
+      "step": 1,
+      "input": "can I please get more information?",
+      "message_id": "1784993044876",
+      "result": "assistant gave process overview, profile/highlight reference, custom-work permission, and an answerable design question"
+    },
+    {
+      "step": 2,
+      "input": "I love your style",
+      "message_id": "1784993065324",
+      "result": "assistant acknowledged naturally and led toward a concrete reference"
+    },
+    {
+      "step": 3,
+      "input": "do you also do black and gray?",
+      "message_id": "1784993090145",
+      "result": "assistant answered the question and kept the design consultation moving"
+    },
+    {
+      "step": 4,
+      "input": "black-and-gray Tesla concept, surreal twist, upper arm, approximately 4 inches",
+      "message_id": "1784993117521",
+      "result": "assistant acknowledged the design, preserved in-person size finalization, and offered the form"
+    },
+    {
+      "step": 5,
+      "input": "yeah send it over",
+      "message_id": "1784993164954",
+      "result": "application link sent exactly once with a live date call-to-action"
+    },
+    {
+      "step": 6,
+      "input": "real submission through https://www.effacermonexistence.com/apply",
+      "result": "browser displayed Thank you; Gmail reader recorded submission UID 4385"
+    },
+    {
+      "step": 7,
+      "input": "just submitted it",
+      "message_id": "1784993252790",
+      "result": "assistant moved directly to appointment availability"
+    },
+    {
+      "step": 8,
+      "input": "August 2 at 2pm works for me",
+      "message_id": "1784993278020",
+      "result": "assistant emitted the canonical four-field, line-separated double-check"
+    },
+    {
+      "step": 9,
+      "input": "yes, that's perfect",
+      "message_id": "1784993305577",
+      "result": "assistant moved immediately to the one-shot deposit handoff"
+    }
+  ],
+  "form_receipt": {
+    "gmail_uid": "4385",
+    "subject": "Form Submission - New Form 2",
+    "recorded_at": "2026-07-25T15:27:33.875Z",
+    "instagram": "omar.system",
+    "name": "Omar System E2E Live",
+    "phone": "4155550170",
+    "thread_state_source": "gmail_form_email"
+  },
+  "double_check": {
+    "name": "Omar System E2E Live",
+    "phone_number": "4155550170",
+    "appointment_date": "2nd of August",
+    "time": "2pm",
+    "format": "one_field_per_line",
+    "client_confirmation": "yes, that's perfect"
+  },
+  "deposit_handoff": {
+    "triggered_immediately_after_confirmation": true,
+    "amount": 100,
+    "destination_redacted": true,
+    "bubble_count": 4,
+    "route_lock": "double_check_confirmed_fixed_deposit_handoff",
+    "closed_transition_action": "deposit_handoff",
+    "closed_transition_reason": "four_field_double_check_confirmed",
+    "closed_transition_verifier_reason": "closed_transition_valid",
+    "control_candidate_passes": 1,
+    "control_route_frozen": true,
+    "packet_sha256": "7576ec21a323ce6b7541c974c6583e1473b90e2e73bcf55047b0655fc7450918",
+    "control_receipt_sha256": "c59f9206bf47396f241fa2b500c7e4fe1079b780a133120d7f738a7463ddeb0e"
+  },
+  "delivery_verification": {
+    "manychat_http_status": 200,
+    "manychat_body_status": "success",
+    "safari_instagram_visible": true,
+    "instagram_seen_marker_visible": true,
+    "visible_redacted_tail_sha256": "6f2d15fcc859ec8de580862755ca1e4010ffd1bbd0f582c08b488699fce0735b"
+  },
+  "source": {
+    "branch": "codex/scv-closed-contract-20260712",
+    "source_commit": "44f1739e66bb569cf7acd08267d0ffa58dd14e06",
+    "receipt_parent_commit": "865dca3bf5391aa8c7bd421a36bf8c816e470fd3"
+  },
+  "claim_boundary": {
+    "proven": "One fresh production Omar.system cycle completed from clean backend state through a real form submission, Gmail identity adoption, date/time selection, four-field double-check, explicit confirmation, ManyChat delivery, and visible Instagram deposit handoff.",
+    "not_proven": "This single cycle is not a universal or 100-percent future reliability guarantee, and no real deposit payment was made."
+  }
+}

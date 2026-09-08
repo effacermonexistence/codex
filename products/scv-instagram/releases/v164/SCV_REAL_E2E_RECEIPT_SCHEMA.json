@@ -1,0 +1,95 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "schema_version": "scv-real-instagram-e2e-receipt-2026-07-26-v2-exclusive-owner",
+  "hash_algorithm": "sha256(canonical_json_without_declared_sha256)",
+  "declared_sha256": "d77a5428bc9f5f0d1fc238d4786c6707b0706283e45452339a1b1d3e8bb87d23",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schema",
+    "ok",
+    "release_id",
+    "content_fingerprint_sha256",
+    "release_manifest_sha256",
+    "started_at_utc",
+    "completed_at_utc",
+    "test_window_hours",
+    "staging",
+    "isolation",
+    "production_exclusion",
+    "ingress",
+    "decision",
+    "outbound",
+    "visible_receipt",
+    "production_mutation",
+    "secrets_included"
+  ],
+  "properties": {
+    "schema": {
+      "const": "scv-real-instagram-e2e-receipt-2026-07-26-v2-exclusive-owner"
+    },
+    "ok": {
+      "const": true
+    },
+    "test_window_hours": {
+      "const": 24
+    },
+    "production_mutation": {
+      "const": false
+    },
+    "secrets_included": {
+      "const": false
+    },
+    "ingress": {
+      "type": "object",
+      "required": [
+        "route",
+        "instagram_username",
+        "contact_id",
+        "message_id",
+        "source_interaction_at_utc",
+        "manychat_observed",
+        "direct_http_canary"
+      ]
+    },
+    "outbound": {
+      "type": "object",
+      "required": [
+        "adapter",
+        "endpoint",
+        "contact_id",
+        "accepted",
+        "http_status",
+        "sent_at_utc",
+        "visible_text_sha256"
+      ]
+    },
+    "production_exclusion": {
+      "type": "object",
+      "required": [
+        "source",
+        "checked_at_utc",
+        "environment_id",
+        "service_id",
+        "instagram_username",
+        "contact_id",
+        "can_reply_to_test_account",
+        "configuration_sha256",
+        "evidence_file",
+        "evidence_sha256"
+      ]
+    },
+    "visible_receipt": {
+      "type": "object",
+      "required": [
+        "channel",
+        "instagram_username",
+        "observed",
+        "observed_at_utc",
+        "visible_text_sha256",
+        "screenshot_file",
+        "screenshot_sha256"
+      ]
+    }
+  }
+}

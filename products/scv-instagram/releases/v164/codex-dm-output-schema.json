@@ -1,0 +1,103 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "reply_text",
+    "acknowledged_fields",
+    "questioned_fields",
+    "next_action_reflected",
+    "bubbles"
+  ],
+  "properties": {
+    "reply_text": {
+      "type": "string",
+      "minLength": 1
+    },
+    "acknowledged_fields": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "enum": [
+          "social_context",
+          "tattoo_intent",
+          "design_direction",
+          "reference_media",
+          "placement",
+          "size",
+          "form_offer",
+          "form_link",
+          "form_submission",
+          "appointment_date",
+          "appointment_month",
+          "appointment_time",
+          "name",
+          "phone_number",
+          "double_check_confirmation",
+          "deposit",
+          "price",
+          "studio_location",
+          "missing_context",
+          "human_handoff",
+          "double_check_revision_field"
+        ]
+      }
+    },
+    "questioned_fields": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "enum": [
+          "social_context",
+          "tattoo_intent",
+          "design_direction",
+          "reference_media",
+          "placement",
+          "size",
+          "form_offer",
+          "form_link",
+          "form_submission",
+          "appointment_date",
+          "appointment_month",
+          "appointment_time",
+          "name",
+          "phone_number",
+          "double_check_confirmation",
+          "deposit",
+          "price",
+          "studio_location",
+          "missing_context",
+          "human_handoff",
+          "double_check_revision_field"
+        ]
+      }
+    },
+    "next_action_reflected": {
+      "type": "string",
+      "minLength": 1
+    },
+    "bubbles": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "text",
+          "delay_ms"
+        ],
+        "properties": {
+          "text": {
+            "type": "string"
+          },
+          "delay_ms": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      }
+    }
+  }
+}

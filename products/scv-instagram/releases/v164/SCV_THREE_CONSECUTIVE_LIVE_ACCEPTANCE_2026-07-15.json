@@ -1,0 +1,218 @@
+{
+  "artifact_id": "scv-v24-three-consecutive-live-acceptance-20260715",
+  "acceptance_rule": "three new Omar.system full-funnel completions consecutively after target-only reset; any failure resets the streak to zero",
+  "previous_two_run_acceptance_retracted": true,
+  "locked_source_commit": "196c73312102cffa62eea72e7a63744e0b0a3335",
+  "corrected_proof_tag": "scv-closed-contract-20260712-v24-three-consecutive",
+  "corrected_proof_r2_path": "omar-active-vault/artifacts/scv-instagram/2026-07-15/scv-closed-contract-20260712-v24-three-consecutive/",
+  "streak_started_at_utc": "2026-07-15T06:22:00Z",
+  "streak_completed_at_utc": "2026-07-15T06:34:30Z",
+  "consecutive_required": 3,
+  "consecutive_passed": 3,
+  "intervening_failures": 0,
+  "visible_assertions_passed": 21,
+  "visible_assertions_failed": 0,
+  "runs": [
+    {
+      "sequence": 1,
+      "status": "PASS",
+      "runtime_deployment": "84d06372-7753-4699-ab92-c28f6765acec",
+      "test_identity": {
+        "name": "Omar System Replay Nine",
+        "phone_last4": "0179"
+      },
+      "expected_visible": {
+        "appointment_date": "5th of September",
+        "time": "2pm",
+        "double_check": true,
+        "deposit_amount": 100,
+        "zelle_address_present": true
+      },
+      "visible_assertions": {
+        "passed": 7,
+        "failed": 0
+      },
+      "transcript_sha256": "88faabdfba94f49dc7a3bca157fca443e7648c30d7302167ccc72326c71a1a46",
+      "gmail_events": [
+        {
+          "timestamp": "2026-07-15T06:24:27.664373809Z",
+          "type": "gmail_form_submission_recorded",
+          "instagram": "omar.system",
+          "phone_len": 10
+        },
+        {
+          "timestamp": "2026-07-15T06:24:40.259602022Z",
+          "type": "form_submission_matched",
+          "mode": "verbal",
+          "score": 140,
+          "margin": 140,
+          "why": [
+            "handle_exact",
+            "after_link_45m",
+            "fresh_10m"
+          ]
+        }
+      ]
+    },
+    {
+      "sequence": 2,
+      "status": "PASS",
+      "runtime_deployment": "b9bb9762-a868-43ed-8722-1d90ff352918",
+      "test_identity": {
+        "name": "Omar System Replay Ten",
+        "phone_last4": "0180"
+      },
+      "expected_visible": {
+        "appointment_date": "6th of September",
+        "time": "3:30pm",
+        "double_check": true,
+        "deposit_amount": 100,
+        "zelle_address_present": true
+      },
+      "visible_assertions": {
+        "passed": 7,
+        "failed": 0
+      },
+      "transcript_sha256": "5ee4b5c91bc5598a4f9941b56d6a32b55098c57de5de01630696a05f7a89f54d",
+      "gmail_events": [
+        {
+          "timestamp": "2026-07-15T06:29:05.555835276Z",
+          "type": "gmail_form_submission_recorded",
+          "instagram": "omar.system",
+          "phone_len": 10
+        },
+        {
+          "timestamp": "2026-07-15T06:29:05.556794732Z",
+          "type": "form_submission_matched",
+          "mode": "verbal",
+          "score": 140,
+          "margin": 140,
+          "why": [
+            "handle_exact",
+            "after_link_45m",
+            "fresh_10m"
+          ]
+        }
+      ]
+    },
+    {
+      "sequence": 3,
+      "status": "PASS",
+      "runtime_deployment": "25457b88-c417-4bd5-b3b4-ec132bfda78d",
+      "test_identity": {
+        "name": "Omar System Replay Eleven",
+        "phone_last4": "0181"
+      },
+      "expected_visible": {
+        "appointment_date": "12th of September",
+        "time": "2pm",
+        "double_check": true,
+        "deposit_amount": 100,
+        "zelle_address_present": true
+      },
+      "visible_assertions": {
+        "passed": 7,
+        "failed": 0
+      },
+      "transcript_sha256": "d7b92c7ecd52fbe594c5f2581c2b5bda7de271ae10580aa8d977d3e23eba81e4",
+      "gmail_events": [
+        {
+          "timestamp": "2026-07-15T06:33:03.649020322Z",
+          "type": "gmail_form_submission_recorded",
+          "instagram": "omar.system",
+          "phone_len": 10
+        },
+        {
+          "timestamp": "2026-07-15T06:33:09.998489128Z",
+          "type": "form_submission_matched",
+          "mode": "verbal",
+          "score": 140,
+          "margin": 140,
+          "why": [
+            "handle_exact",
+            "after_link_45m",
+            "fresh_10m"
+          ]
+        }
+      ]
+    }
+  ],
+  "reset_receipts": {
+    "before_run_2": {
+      "label": "streak-reset-before-2",
+      "purge_deployment": "8b59b162-7a25-49c0-9842-3392862ded94",
+      "purge_status": "SUCCESS",
+      "purge_events": [
+        {
+          "timestamp": "2026-07-15T06:26:52.417259894Z",
+          "event": "scv_test_account_chat_purge",
+          "deleted_count": 28,
+          "remaining_count": 0,
+          "reset_watermark_at": "2026-07-15T06:26:51.836Z"
+        }
+      ],
+      "runtime_deployment": "b9bb9762-a868-43ed-8722-1d90ff352918",
+      "runtime_status": "SUCCESS",
+      "runtime_events": [
+        {
+          "timestamp": "2026-07-15T06:27:07.891650725Z",
+          "event": "scv_test_account_chat_purge_skipped",
+          "env_flag": "SCV_PURGE_TEST_ACCOUNT_ON_STARTUP"
+        }
+      ]
+    },
+    "before_run_3": {
+      "label": "streak-reset-before-3",
+      "purge_deployment": "536d6d9a-9aa2-4c5b-acfa-baa9bf401857",
+      "purge_status": "SUCCESS",
+      "purge_events": [
+        {
+          "timestamp": "2026-07-15T06:30:59.978710536Z",
+          "event": "scv_test_account_chat_purge",
+          "deleted_count": 27,
+          "remaining_count": 0,
+          "reset_watermark_at": "2026-07-15T06:30:59.369Z"
+        }
+      ],
+      "runtime_deployment": "25457b88-c417-4bd5-b3b4-ec132bfda78d",
+      "runtime_status": "SUCCESS",
+      "runtime_events": [
+        {
+          "timestamp": "2026-07-15T06:31:15.289025190Z",
+          "event": "scv_test_account_chat_purge_skipped",
+          "env_flag": "SCV_PURGE_TEST_ACCOUNT_ON_STARTUP"
+        }
+      ]
+    },
+    "after_run_3": {
+      "label": "final-reset-after-three-streak",
+      "purge_deployment": "8b5d4894-f0c3-459e-9c47-de453ae408ec",
+      "purge_status": "SUCCESS",
+      "purge_events": [
+        {
+          "timestamp": "2026-07-15T06:35:38.838990454Z",
+          "event": "scv_test_account_chat_purge",
+          "deleted_count": 27,
+          "remaining_count": 0,
+          "reset_watermark_at": "2026-07-15T06:35:38.222Z"
+        }
+      ],
+      "runtime_deployment": "dda3a5f6-0229-4f74-b4cb-6e024f890630",
+      "runtime_status": "SUCCESS",
+      "runtime_events": [
+        {
+          "timestamp": "2026-07-15T06:35:55.359332778Z",
+          "event": "scv_test_account_chat_purge_skipped",
+          "env_flag": "SCV_PURGE_TEST_ACCOUNT_ON_STARTUP"
+        }
+      ]
+    }
+  },
+  "final_runtime_deployment": "dda3a5f6-0229-4f74-b4cb-6e024f890630",
+  "final_omar_state_remaining_count": 0,
+  "non_test_accounts_paused": true,
+  "omar_delay_zero": true,
+  "raw_transcripts_committed": false,
+  "raw_transcript_policy": "raw Safari transcript files remain local temporary evidence; hashes and exact required-field assertions are committed",
+  "created_at_utc": "2026-07-15T06:37:02.568111Z"
+}
