@@ -18,7 +18,28 @@ export type ExecutionContext = {
   source_utf8_bytes: number;
   history_utf8_bytes: number;
   completion_feedback?: CompletionFeedback;
+  available_claude_models?: ClaudeModelCapability[];
 };
+
+export type ClaudeModelCapability = { model: string; supported_efforts: string[] };
+export function validClaudeCatalog(value: unknown): value is ClaudeModelCapability[] {
+  return Array.isArray(value) && value.length <= 32 &&
+    value.every(row => exactRecord(row, ["model", "supported_efforts"]) &&
+      typeof row.model === "string" && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(row.model) &&
+      Array.isArray(row.supported_efforts) && row.supported_efforts.length > 0 && row.supported_efforts.length <= 5 &&
+      new Set(row.supported_efforts).size === row.supported_efforts.length &&
+      row.supported_efforts.every(e => ["low", "medium", "high", "xhigh", "max"].includes(e))) &&
+    new Set(value.map(row => row.model)).size === value.length;
+}
+
+/** Independent ticket-boundary check; inventories can exclude, never grant. */
+export function availableModelTuple(context: ExecutionContext | undefined, codex: { slug: string; supported_efforts: string[] }[],
+  provider: string, model: string, effort: string): boolean {
+  if (provider === "local") return true;
+  if (provider === "codex") return codex.some(row => row.slug === model && row.supported_efforts.includes(effort));
+  return provider === "claude" && (context?.available_claude_models === undefined ||
+    context.available_claude_models.some(row => row.model === model && row.supported_efforts.includes(effort)));
+}
 
 function exactRecord(value: unknown, keys: string[]): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value) &&
@@ -47,12 +68,14 @@ export function validExecutionContext(value: unknown): value is ExecutionContext
   if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
   const v = value as Record<string, unknown>;
   const keys = ["history_utf8_bytes", "input_utf8_bytes", "source_utf8_bytes"];
-  const expected = [...keys, ...(v.completion_feedback !== undefined ? ["completion_feedback"] : [])].sort();
+  const expected = [...keys, ...(v.completion_feedback !== undefined ? ["completion_feedback"] : []),
+    ...(v.available_claude_models !== undefined ? ["available_claude_models"] : [])].sort();
   if (Object.keys(v).sort().join() !== expected.join() ||
       keys.some(key => !Number.isSafeInteger(v[key]) || (v[key] as number) < 0 || (v[key] as number) > 4_000_000)) return false;
   return (v.input_utf8_bytes as number) > 0 &&
     (v.source_utf8_bytes as number) + (v.history_utf8_bytes as number) <= (v.input_utf8_bytes as number) &&
-    (v.completion_feedback === undefined || validCompletionFeedback(v.completion_feedback));
+    (v.completion_feedback === undefined || validCompletionFeedback(v.completion_feedback)) &&
+    (v.available_claude_models === undefined || (validClaudeCatalog(v.available_claude_models) && validCompletionFeedback(v.completion_feedback)));
 }
 
 /** Bind observations to the exact transmitted UTF-8 routing task, not a label. */

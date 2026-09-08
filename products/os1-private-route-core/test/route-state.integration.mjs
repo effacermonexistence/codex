@@ -44,6 +44,7 @@ const context = (observations = []) => ({
   input_utf8_bytes: 1_000,
   source_utf8_bytes: 600,
   history_utf8_bytes: 200,
+  available_claude_models: [{ model: "claude-test", supported_efforts: ["medium", "high"] }],
   completion_feedback: { schema: 1, objective_sha256: hex("a"), observations },
 });
 const step = (provider, action, id) => ({

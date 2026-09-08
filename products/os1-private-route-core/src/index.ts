@@ -2,6 +2,7 @@ import { DurableObject } from "cloudflare:workers";
 import { appendCompletionObservation, completionFeedbackMatchesTask, validCompletionFeedback, validExecutionContext,
   type CompletionObservation, type ExecutionContext } from "./execution-context";
 import { supportsCompletionFeedback } from "./capabilities";
+import { availableModelTuple } from "../../os1-route-core/src/execution-context";
 import {
   executionProfileFor, loadPolicyBundle, parseExecutionProfiles,
   type ExecutionProfiles, type ExecutionProvider, type PolicyBundle,
@@ -110,6 +111,9 @@ async function routeWithRcc(env: Env, bundle: PolicyBundle, context: RouteContex
     throw new Error("private route denied");
   }
   const provider = value.provider as ExecutionProvider;
+  if (!availableModelTuple(context.execution_context, context.available_codex_models, provider, value.model, value.effort)) {
+    throw new Error("private route outside current model inventory");
+  }
   return {
     provider,
     action: profileAction(bundle.execution_profiles, provider, value.model, value.effort),
@@ -307,7 +311,9 @@ export default {
       if (request.method === "GET" && new URL(request.url).pathname === "/capabilities") {
         const bundle = await loadPolicyBundle(env);
         const supported = await supportsCompletionFeedback(env.RCC_V26, bundle.rcc.policy_sha256);
-        return Response.json({ completion_feedback_schema: supported ? 1 : null }, {
+        const models = supported && await supportsCompletionFeedback(env.RCC_V26, bundle.rcc.policy_sha256, true);
+        return Response.json({ completion_feedback_schema: supported ? 1 : null,
+          ...(models ? { model_availability_schema: 1 } : {}) }, {
           headers: { "cache-control": "no-store" },
         });
       }

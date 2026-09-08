@@ -7,7 +7,7 @@
   "workers_dev": false,
   "preview_urls": false,
   "services": [
-    { "binding": "RCC_V26", "service": "os1-rcc-v26-private-v28" }
+    { "binding": "RCC_V26", "service": "os1-rcc-v26-private-v29" }
   ],
   "r2_buckets": [
     { "binding": "RESULTS", "bucket_name": "os1-private-results" }
