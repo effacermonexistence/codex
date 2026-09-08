@@ -452,11 +452,13 @@ struct ExecutionInputContext: Codable {
     let sourceUTF8Bytes: Int
     let historyUTF8Bytes: Int
     var completionFeedback: PublicCompletionFeedback? = nil
+    var availableClaudeModels: [ClaudeModelCapability]? = nil
     enum CodingKeys: String, CodingKey {
         case inputUTF8Bytes = "input_utf8_bytes"
         case sourceUTF8Bytes = "source_utf8_bytes"
         case historyUTF8Bytes = "history_utf8_bytes"
         case completionFeedback = "completion_feedback"
+        case availableClaudeModels = "available_claude_models"
     }
 }
 
@@ -1686,33 +1688,7 @@ func activeCodexCatalog(
         }
     }
 
-    guard let profile = config.modelProfiles?.codex else {
-        throw OS1Error.message("Codex model catalog is unavailable; open Codex once, then retry")
-    }
-    var seen = Set<String>()
-    let fallback = [profile.deep, profile.standard, profile.efficient].compactMap { slug -> CodexModelCapability? in
-        guard isSafeModelIdentifier(slug), seen.insert(slug).inserted else { return nil }
-        let supportsUltra = slug == "gpt-5.6-sol" || slug == "gpt-5.6-terra" || slug == "gpt-daybreak-blue-latest"
-        return CodexModelCapability(
-            slug: slug,
-            defaultEffort: slug == profile.efficient ? "low" : "medium",
-            supportedEfforts: ["low", "medium", "high", "xhigh", "max"] + (supportsUltra ? ["ultra"] : []),
-            priority: fallbackPriority(slug)
-        )
-    }.sorted { ($0.priority, $0.slug) < ($1.priority, $1.slug) }
-    guard !fallback.isEmpty else {
-        throw OS1Error.message("Codex model catalog is empty; reinstall OS-1")
-    }
-    return ActiveCodexCatalog(models: fallback, source: "OS-1 fallback profile")
-}
-
-private func fallbackPriority(_ slug: String) -> Int {
-    switch slug {
-    case "gpt-5.6-sol": return 1
-    case "gpt-5.6-terra": return 2
-    case "gpt-5.6-luna": return 3
-    default: return 100
-    }
+    throw OS1Error.message("Codex model metadata is unavailable; static profiles are not account availability")
 }
 
 func githubToken() throws -> String {
@@ -3680,7 +3656,7 @@ struct APIClient {
 
     /// Metadata negotiation only: never spends a model call or changes auth.
     /// Older/offline gateways retain their existing three-field contract.
-    func supportsCompletionFeedback() async -> Bool {
+    func supportsCompletionFeedback(requireModelAvailability: Bool = false) async -> Bool {
         guard let base = URL(string: config.apiURL),
               let url = URL(string: "/v1/capabilities", relativeTo: base) else { return false }
         var request = URLRequest(url: url)
@@ -3689,7 +3665,12 @@ struct APIClient {
         do {
             let (data, response) = try await URLSession.shared.data(for: request)
             guard let http = response as? HTTPURLResponse else { return false }
-            return completionFeedbackCapability(data, status: http.statusCode)
+            guard completionFeedbackCapability(data, status: http.statusCode) else { return false }
+            if !requireModelAvailability { return true }
+            let value = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+            guard let schema = value?["model_availability_schema"] as? NSNumber,
+                  CFGetTypeID(schema) != CFBooleanGetTypeID() else { return false }
+            return schema.doubleValue == 1
         } catch { return false }
     }
 
@@ -3978,7 +3959,7 @@ final class CodexAppServerClient: @unchecked Sendable {
         _ = try request(
             "initialize",
             params: [
-                "clientInfo": ["name": "OS-1 CLODEX", "version": "0.9.42"],
+                "clientInfo": ["name": "OS-1 CLODEX", "version": "0.9.43"],
                 "capabilities": ["experimentalApi": true],
             ],
             deadline: deadline
@@ -3988,6 +3969,24 @@ final class CodexAppServerClient: @unchecked Sendable {
 
     func rateLimits(deadline: Date) throws -> [String: Any] {
         try request("account/rateLimits/read", params: [:], deadline: deadline)
+    }
+
+    func models(deadline: Date) throws -> [CodexModelCapability] {
+        let account = try request("account/read", params: ["refreshToken": false], deadline: deadline)
+        guard account["account"] is [String: Any] else { throw OS1Error.message("Codex account is unavailable") }
+        var rows: [[String: Any]] = [], cursor: String?, seen = Set<String>()
+        repeat {
+            var params: [String: Any] = ["limit": 100, "includeHidden": false]
+            if let cursor { params["cursor"] = cursor }
+            let page = try request("model/list", params: params, deadline: deadline)
+            guard let values = page["data"] as? [[String: Any]], rows.count + values.count <= 256 else {
+                throw OS1Error.message("Invalid Codex model inventory")
+            }
+            rows += values
+            cursor = page["nextCursor"] as? String
+            if let cursor, !seen.insert(cursor).inserted { throw OS1Error.message("Repeated model-list cursor") }
+        } while cursor != nil
+        return ModelAvailability.codexRows(rows)
     }
 
     // Metadata only: never starts/resumes a turn or acquires its writer.
@@ -4802,6 +4801,9 @@ private func execute(
             onLaunch: { onDispatch?(expectedSessionID) }, submissionID: ExecutionSteering.currentSubmission)
         defer { appServer.close() }
         try appServer.initialize(deadline: deadline)
+        guard let model, try appServer.models(deadline: min(deadline, Date().addingTimeInterval(12))).contains(where: {
+            $0.slug == model && $0.supportedEfforts.contains(effort)
+        }) else { throw OS1Error.backendBlocked(.capabilityUnavailable) }
         let actualSessionID = try appServer.startOrResumeThread(
             existingSessionID: expectedSessionID,
             workspace: workspace,
@@ -4929,8 +4931,11 @@ private func execute(
             : previousSessionID!
         let startsNewSession = previousSessionID == nil || desktopOwnsPrevious || sourceOnly
         let activeSessionID = requestedSessionID
+        guard let nativeModel = try ModelAvailability.claudeModels(workspace: executionWorkspace).first(where: {
+            $0.model == model && $0.efforts.contains(effort)
+        }) else { throw OS1Error.backendBlocked(.capabilityUnavailable) }
         var arguments = try claudeArguments(
-            model: model,
+            model: nativeModel.invocation,
             effort: effort,
             instructions: claudeExecutorInstructions(contract: executorContract, ticket: ticket) + evidenceDirective + presentationDirective,
             sessionID: activeSessionID,
@@ -5310,7 +5315,7 @@ func runLocalTask(
         summary.sourceContext = try persistSource(r2Evidence)
         return summary
     }
-    let codexCatalog = try activeCodexCatalog(config: config)
+    let codexCatalog = (try? ModelAvailability.codexCatalog(workspace: workspace, config: config)) ?? ActiveCodexCatalog(models: [], source: "unavailable")
     var steps: [RunStepSummary] = []
     var nativeSessions = [
         "codex": try normalizedSessionID(codexSessionID),
@@ -5822,21 +5827,10 @@ func runTask(
     let id = try deviceID()
     let client = APIClient(config: config, token: try githubToken(), deviceID: id)
     try await register(client: client, key: key)
-    let hasCodexExecutable = (try? findExecutable("codex")) != nil
-    let hasClaudeExecutable = (try? findExecutable("claude")) != nil
-    var codexCatalog = hasCodexExecutable
-        ? executableCodexCatalog((try? activeCodexCatalog(config: config)) ?? ActiveCodexCatalog(models: [], source: "unavailable"), config: config)
-        : ActiveCodexCatalog(models: [], source: "executable unavailable")
-    if hasCodexExecutable, let executable = try? findExecutable("codex"),
-       let probe = try? CodexAppServerClient(executable: executable, workspace: canonicalWorkspace) {
-        defer { probe.close() }
-        let deadline = Date().addingTimeInterval(8)
-        if (try? probe.initialize(deadline: deadline)) != nil,
-           let limits = try? probe.rateLimits(deadline: deadline) {
-            let excluded = CodexQuota.excludedModels(limits, models: codexCatalog.models.map(\.slug))
-            codexCatalog = ActiveCodexCatalog(models: codexCatalog.models.filter { !excluded.contains($0.slug) }, source: codexCatalog.source)
-        }
-    }
+    var codexCatalog = (try? ModelAvailability.codexCatalog(workspace: canonicalWorkspace, config: config)) ??
+        ActiveCodexCatalog(models: [], source: "native account metadata unavailable")
+    let claudeCatalog = (try? ModelAvailability.claudeCatalog(workspace: canonicalWorkspace, config: config)) ?? []
+    let hasClaudeExecutable = !claudeCatalog.isEmpty
     let repairedContext = repairedSource ? (context ?? "") + """
 
 
@@ -5861,7 +5855,10 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
         executorContractSHA256: config.executorContract.sha256,
         assembledInputSHA256: CompletionFeedbackScope.inputDigest(assembledInput: localPrompt,
             codexSessionID: codexSessionID, claudeSessionID: claudeSessionID, workspace: canonicalWorkspace))
-    let feedbackSupported = await client.supportsCompletionFeedback()
+    let feedbackSupported = await client.supportsCompletionFeedback(requireModelAvailability: true)
+    guard feedbackSupported else {
+        throw OS1Error.message("사용자별 모델 확인을 지원하는 라우팅 서버에 연결하지 못했습니다. 모델을 임의 선택하지 않았으며 유료 호출은 하지 않았습니다.")
+    }
     guard feedbackSupported || !codexCatalog.models.isEmpty else {
         // Legacy servers require a nonempty Codex catalog even for Claude.
         // Never fabricate an installed capability to satisfy that old schema.
@@ -5869,6 +5866,7 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
     }
     var inputContext = try executionInputContext(prompt: prompt, assembled: localPrompt,
         history: context, evidence: r2Evidence, config: config)
+    inputContext.availableClaudeModels = claudeCatalog
     if feedbackSupported {
         inputContext.completionFeedback = try ((try? feedbackStore.load(scope: feedbackScope)) ??
             CompletionFeedbackLedger(scope: feedbackScope)).publicFeedback()
@@ -5950,8 +5948,10 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
         guard ticket.provider != "codex" || codexCatalog.models.contains(where: {
             $0.slug == model && $0.supportedEfforts.contains(effort)
         }) else { throw OS1Error.message("라우팅된 Codex 모델·effort가 현재 실행 환경과 맞지 않아 유료 호출 전에 차단했습니다.") }
-        guard ticket.provider != "claude" || hasClaudeExecutable else {
-            throw OS1Error.message("라우팅된 Claude 실행 환경이 없어 유료 호출 전에 차단했습니다.")
+        guard ticket.provider != "claude" || claudeCatalog.contains(where: {
+            $0.model == model && $0.supportedEfforts.contains(effort)
+        }) else {
+            throw OS1Error.message("라우팅된 Claude 모델·effort가 현재 계정의 모델 목록과 달라 유료 호출 전에 차단했습니다.")
         }
         let startData = Data(["os1-attempt-start-v1", ticket.executionID, String(ticket.sequence), ticket.nonce, ticket.signature].joined(separator: "\n").utf8)
         let lease: AttemptStartReceipt = try await client.post("/v1/attempts/start",
@@ -6073,7 +6073,7 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
                     if let existing = freshContext, let continuation {
                         freshContext = ExecutionInputContext(inputUTF8Bytes: existing.inputUTF8Bytes + (try continuation.handoffBlock()).utf8.count,
                             sourceUTF8Bytes: existing.sourceUTF8Bytes, historyUTF8Bytes: existing.historyUTF8Bytes,
-                            completionFeedback: existing.completionFeedback)
+                            completionFeedback: existing.completionFeedback, availableClaudeModels: existing.availableClaudeModels)
                     }
                     if feedbackSupported {
                         freshContext?.completionFeedback = try feedbackStore.load(scope: feedbackScope)?.publicFeedback()
@@ -6238,7 +6238,7 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
             if let existing = recoveryContext, let continuation {
                 recoveryContext = ExecutionInputContext(inputUTF8Bytes: existing.inputUTF8Bytes + (try continuation.handoffBlock()).utf8.count,
                     sourceUTF8Bytes: existing.sourceUTF8Bytes, historyUTF8Bytes: existing.historyUTF8Bytes,
-                    completionFeedback: existing.completionFeedback)
+                    completionFeedback: existing.completionFeedback, availableClaudeModels: existing.availableClaudeModels)
             }
             if feedbackSupported {
                 recoveryContext?.completionFeedback = try ((try? feedbackStore.load(scope: feedbackScope)) ??
@@ -7857,6 +7857,7 @@ func selfTest() throws {
         throw OS1Error.message("Completion-first runtime regression: " + failedCompletionChecks.joined(separator: ", "))
     }
     print("OS-1 completion preflight, feedback wire, replay guard and adoption: \(completionChecks.count) checks OK")
+    try ModelAvailability.selfTest()
     print("OS-1 native session, permission orchestration, model, effort, and executor contract self-test: OK")
 }
 
@@ -7895,7 +7896,7 @@ struct OS1Main {
             guard let command = arguments.first else { usage(); return }
             if try await fleetCommand(arguments) { return }
             switch command {
-            case "version", "--version", "-V": print("OS-1 Runtime 0.9.42 (steering-provenance-build93)")
+            case "version", "--version", "-V": print("OS-1 Runtime 0.9.43 (account-model-availability-build94)")
             case "doctor": try doctor()
             case "sidebar-pin":
                 guard (4...5).contains(arguments.count), arguments[1] == "codex",
@@ -7937,6 +7938,13 @@ struct OS1Main {
                     "source_archive_path": saved.url.path, "r2_downloaded": false, "production_changed": false,
                 ], options: [.sortedKeys]), as: UTF8.self))
             case "self-test": try selfTest()
+            case "model-inventory":
+                let config = try RuntimeConfig.load()
+                let workspace = FileManager.default.currentDirectoryPath
+                let codex = (try? ModelAvailability.codexCatalog(workspace: workspace, config: config).models) ?? []
+                let claude = (try? ModelAvailability.claudeCatalog(workspace: workspace, config: config)) ?? []
+                struct Inventory: Encodable { let codex: [CodexModelCapability]; let claude: [ClaudeModelCapability] }
+                print(String(decoding: try JSONEncoder().encode(Inventory(codex: codex, claude: claude)), as: UTF8.self))
             case "audit-codex-usage":
                 guard arguments.count == 3, UUID(uuidString: arguments[2]) != nil else {
                     throw OS1Error.message("Expected native JSONL path and exact turn UUID")
