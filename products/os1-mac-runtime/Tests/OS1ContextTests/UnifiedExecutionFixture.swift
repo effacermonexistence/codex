@@ -19,6 +19,9 @@ func runUnifiedExecutionFixtures() throws {
     try check(UnifiedExecution.claudeTerminalBlocker(status: 1, object: ["subtype": "error_max_turns", "errors": ["HTTP 401"]]) == .authenticationRequired, "auth before incompletion")
     try check(UnifiedExecution.claudeTerminalBlocker(status: 1, object: ["subtype": "error_max_turns", "permission_denials": [["tool_name": "Bash"]], "errors": ["You've hit your session limit"]]) == .policyDenied, "denial before fallback")
     try check(UnifiedExecution.claudeTerminalBlocker(status: 0, object: ["subtype": "success", "result": "You've hit your session limit is an example"]) == nil, "quoted error not protocol failure")
+    let safetyError = "This request was blocked by our safety systems. Reason: Potentially unintended activity."
+    try check(UnifiedExecution.claudeTerminalBlocker(status: 1, object: ["is_error": true, "errors": [safetyError]]) == .safetyBlocked, "provider safety enforcement distinct from approval")
+    try check(UnifiedExecution.claudeTerminalBlocker(status: 0, object: ["subtype": "success", "result": safetyError]) == nil, "successful explanation may quote safety error")
     for text in ["Open Codex and finish the deployment.", "Please switch to Claude Code to continue.",
                  "Paste this handoff into Codex.", "코덱스한테 넘겨 주세요.", "클로드 코드에서 실행해 주세요."] {
         try check(UnifiedExecution.requestsManualBackendHandoff(text, request: "Fix the pending task"), "reject user-as-handoff-transport: \(text)")
@@ -32,7 +35,7 @@ func runUnifiedExecutionFixtures() throws {
     try check(UnifiedExecution.requestsManualBackendHandoff("Open Codex", request: "Explain the research material"), "ordinary explanation must be answered here")
     try check(UnifiedExecution.claudeTerminalBlocker(status: 0, object: ["subtype": "success", "stop_reason": "max_tokens"]) == .incomplete, "truncated answer is not completion")
     let id = UUID().uuidString
-    for blocker in [BackendBlocker.effectsUncertain, .policyDenied, .authenticationRequired, .cancelled, .budgetExhausted, .deliveryPending, .quotaExhausted] {
+    for blocker in [BackendBlocker.effectsUncertain, .policyDenied, .safetyBlocked, .authenticationRequired, .cancelled, .budgetExhausted, .deliveryPending, .quotaExhausted] {
         let notice = BackendFailureNotice(provider: "claude", sessionID: id, blocker: blocker, dispatchStage: .dispatched, permissionProfile: "workspace_write")
         try check(UnifiedExecution.automaticallyReconcile(notice, alreadyAttempted: false, internalReview: false, providerPreference: "auto") == (blocker == .effectsUncertain), "exact automatic readback boundary")
         try check(!UnifiedExecution.automaticallyReconcile(notice, alreadyAttempted: true, internalReview: false, providerPreference: "auto"), "one automatic readback only")
