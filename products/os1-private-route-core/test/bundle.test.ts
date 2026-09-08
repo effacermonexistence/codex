@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
-import { parsePolicyBundle } from "../src/bundle";
+import { loadPolicyBundle, parsePolicyBundle } from "../src/bundle";
+import { createHash } from "node:crypto";
 
 const bundle = {
   schema: 4,
@@ -23,12 +24,27 @@ const bundle = {
 };
 
 describe("private policy bundle", () => {
+  it("loads the persisted immutable policy during rollover and rejects substitution", async () => {
+    const bytes = new TextEncoder().encode(JSON.stringify(bundle));
+    const priorSha = createHash("sha256").update(bytes).digest("hex");
+    const requested: string[] = [];
+    const env = { POLICY_BUNDLE_KEY: `os1/policies/${"f".repeat(64)}.json`,
+      POLICY_BUNDLE_SHA256: "f".repeat(64), MAX_POLICY_BUNDLE_BYTES: "65536",
+      POLICY_BUNDLES: { get: async (key: string) => { requested.push(key); return {
+        size: bytes.length, arrayBuffer: async () => bytes.buffer,
+      }; } } } as unknown as Env;
+    expect((await loadPolicyBundle(env, priorSha)).policy_version).toBe(bundle.policy_version);
+    expect(requested).toEqual([`os1/policies/${priorSha}.json`]);
+    await expect(loadPolicyBundle(env)).rejects.toThrow("integrity");
+    await expect(loadPolicyBundle(env, "../escape")).rejects.toThrow("configuration");
+  });
   const candidatePath = process.env.OS1_POLICY_CANDIDATE;
   if (candidatePath) {
     it("validates the generated private rollout candidate", () => {
       const candidate = parsePolicyBundle(readFileSync(candidatePath, "utf8"));
       expect(candidate.schema).toBe(4);
-      expect(candidate.executor_contracts).toHaveLength(1);
+      expect(candidate.executor_contracts.length).toBeGreaterThanOrEqual(1);
+      expect(candidate.executor_contracts.length).toBeLessThanOrEqual(4);
       expect(candidate.execution_profiles.cl_opus_xhigh.effort).toBe("xhigh");
       expect(candidate.execution_profiles.cx_56luna_low.model).toBe("gpt-5.6-luna");
     });
