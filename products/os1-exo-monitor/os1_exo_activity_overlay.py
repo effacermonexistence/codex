@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import os
 import shutil
 import socket
@@ -27,14 +28,13 @@ FLEET_TIMEOUT_SECONDS = 30.0
 FLEET_RESULT_LIMIT = 20
 _ROUTE = "/activity/local"
 _PATCH_MARKER = "_os1_activity_monitor_installed"
-
-
 OS1_ROAMING_STALE_SECONDS = 60.0
 OS1_ROAMING_STATES = {
     "starting",
     "connected",
     "waiting_for_network",
     "reconnecting",
+    "synchronizing",
     "waiting_for_idle",
     "recovering",
     "cooldown",
@@ -105,8 +105,96 @@ def _read_roaming_status(path: Path, now: datetime | None = None) -> dict[str, o
         return {**unavailable, "state": "invalid"}
 
 
+
+SENSOR_STALE_SECONDS = 15.0
+SENSOR_MAX_INTEGRATION_GAP_SECONDS = 5.0
+
+
+class _SensorTelemetry:
+    """Observe EXO's sampler; never start a second process or infer zero."""
+
+    def __init__(self) -> None:
+        self.sample: dict[str, Any] | None = None
+        self.invalid = False
+        self.joules = 0.0
+        self.covered_seconds = 0.0
+
+    def observe(self, profile: Any, raw: str, now: float, wall_now: datetime) -> None:
+        try:
+            timestamp = datetime.fromisoformat(json.loads(raw)["timestamp"].replace("Z", "+00:00"))
+            if timestamp.tzinfo is None:
+                raise ValueError("sensor timestamp has no timezone")
+            fields = {name: float(getattr(profile, name)) for name in
+                      ("gpu_usage", "temp", "sys_power", "pcpu_usage", "ecpu_usage")}
+            if not all(math.isfinite(value) for value in fields.values()):
+                raise ValueError("sensor values must be finite")
+            if not all(0 <= fields[name] <= 1 for name in ("gpu_usage", "pcpu_usage", "ecpu_usage")):
+                raise ValueError("sensor utilization is outside its unit interval")
+            if fields["sys_power"] < 0 or not -100 <= fields["temp"] <= 200:
+                raise ValueError("sensor power or temperature is invalid")
+            age = (wall_now - timestamp).total_seconds()
+            if age < -5 or age > SENSOR_STALE_SECONDS:
+                raise ValueError("sensor timestamp is not current")
+        except (KeyError, AttributeError, TypeError, ValueError, json.JSONDecodeError):
+            self.invalid = True
+            self.sample = None
+            return
+        previous = self.sample
+        if previous is not None and not self.invalid:
+            elapsed = timestamp.timestamp() - previous["sampled_seconds"]
+            # Trapezoidal integration covers only consecutive measured samples.
+            # A paused sampler or unopened dashboard cannot accrue fake energy.
+            if 0 < elapsed <= SENSOR_MAX_INTEGRATION_GAP_SECONDS:
+                self.joules += (previous["fields"]["sys_power"] + fields["sys_power"]) * 0.5 * elapsed
+                self.covered_seconds += elapsed
+        self.sample = {"fields": fields, "observed_at": now,
+                       "sampled_at": timestamp.isoformat(), "sampled_seconds": timestamp.timestamp(),
+                       "initial_age": max(age, 0)}
+        self.invalid = False
+
+    def snapshot(self, now: float) -> tuple[dict[str, Any] | None, dict[str, object]]:
+        age = None if self.sample is None else self.sample["initial_age"] + now - self.sample["observed_at"]
+        state = "invalid" if self.invalid else ("unavailable" if age is None else
+                  ("available" if 0 <= age <= SENSOR_STALE_SECONDS else "stale"))
+        status = {"state": state, "source": "exo_macmon", "sample_age_seconds": age,
+                  "sampled_at": None if self.sample is None else self.sample["sampled_at"]}
+        return (self.sample["fields"] if state == "available" else None), status
+
+
+_sensors = _SensorTelemetry()
+
+
+def _configure_existing_sampler() -> None:
+    # Air's maintained wrapper already names the installed EXO resources.
+    # PATH need not contain that private bundle directory. Keep explicit user
+    # configuration authoritative and never install or invoke a sampler here.
+    if os.environ.get("EXO_MACMON_PATH"):
+        return
+    resource_directory = os.environ.get("EXO_RESOURCES_DIR")
+    if resource_directory:
+        candidate = Path(resource_directory) / "macmon"
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            os.environ["EXO_MACMON_PATH"] = str(candidate)
+
+
+def _track_existing_sampler() -> None:
+    from exo.utils.info_gatherer.macmon import MacmonMetrics
+
+    if getattr(MacmonMetrics, "_os1_activity_sample_tracking", False):
+        return
+    original = MacmonMetrics.from_raw_json
+
+    @classmethod
+    def observe(cls: Any, raw: str) -> Any:
+        result = original(raw)
+        _sensors.observe(result.system_profile, raw, time.monotonic(), datetime.now(timezone.utc))
+        return result
+
+    MacmonMetrics.from_raw_json = observe
+    MacmonMetrics._os1_activity_sample_tracking = True
+
+
 def _counter_rate(current: int, previous: int, elapsed: float) -> float:
-    """Return a non-negative per-second counter rate."""
     if elapsed <= 0:
         return 0.0
     return max(current - previous, 0) / elapsed
@@ -181,15 +269,16 @@ def _ensure_activity_state(api: Any) -> None:
     api._os1_activity_lock = anyio.Lock()
     api._os1_activity_started_at = started_at
     api._os1_activity_previous_at = started_at
+    api._os1_activity_cached_snapshot = None
     api._os1_activity_previous_disk = psutil.disk_io_counters()
     api._os1_activity_previous_network = psutil.net_io_counters()
-    api._os1_activity_energy_joules = 0.0
     api._os1_activity_fleet_cache = {"nodes": []}
     api._os1_activity_fleet_cache_at = 0.0
     api._os1_activity_fleet_error = None
     api._os1_activity_fleet_refresh_task = None
     api._os1_activity_process = psutil.Process()
     psutil.cpu_percent(interval=None)
+    psutil.cpu_percent(interval=None, percpu=True)
     api._os1_activity_process.cpu_percent(interval=None)
 
 
@@ -235,7 +324,12 @@ async def _get_local_activity(api: Any) -> dict[str, object]:
     _ensure_activity_state(api)
     async with api._os1_activity_lock:
         now = time.monotonic()
-        elapsed = max(now - api._os1_activity_previous_at, 0.001)
+        if api._os1_activity_cached_snapshot is not None and now - api._os1_activity_previous_at < 0.8:
+            return api._os1_activity_cached_snapshot
+        if now - api._os1_activity_previous_at < 0.1:
+            await anyio.sleep(0.1 - (now - api._os1_activity_previous_at))
+            now = time.monotonic()
+        elapsed = now - api._os1_activity_previous_at
         disk = psutil.disk_io_counters()
         network = psutil.net_io_counters()
         memory = psutil.virtual_memory()
@@ -248,9 +342,7 @@ async def _get_local_activity(api: Any) -> dict[str, object]:
         api._os1_activity_previous_disk = disk
         api._os1_activity_previous_network = network
 
-        system = api.state.node_system.get(api.node_id)
-        system_power_watts = system.sys_power if system is not None else 0.0
-        api._os1_activity_energy_joules += max(system_power_watts, 0.0) * elapsed
+        sensors, sensor_status = _sensors.snapshot(now)
         fleet_refresh = api._os1_activity_fleet_refresh_task
         if (
             now - api._os1_activity_fleet_cache_at >= FLEET_CACHE_SECONDS
@@ -317,14 +409,11 @@ async def _get_local_activity(api: Any) -> dict[str, object]:
                 )
 
         load_average = psutil.getloadavg()
-        return {
-            "schema": 1,
+        payload: dict[str, object] = {
+            "schema": 2,
             "node_id": str(api.node_id),
             "sampled_at": datetime.now(timezone.utc).isoformat(),
             "sample_interval_seconds": elapsed,
-            "roaming": _read_roaming_status(
-                Path.home() / ".os1" / "exo-roaming" / "status.json"
-            ),
             "host": {
                 "hostname": local_fleet_node.get("hostname", socket.gethostname()),
                 "device_id": local_fleet_node.get("device_id"),
@@ -349,25 +438,28 @@ async def _get_local_activity(api: Any) -> dict[str, object]:
                 "exo_process_resident_bytes": process_memory.rss,
             },
             "gpu": {
-                "usage_percent": (system.gpu_usage * 100) if system else 0.0,
-                "temperature_celsius": system.temp if system else 0.0,
+                "usage_percent": sensors["gpu_usage"] * 100 if sensors else None,
+                "temperature_celsius": sensors["temp"] if sensors else None,
                 "performance_cpu_percent": (
-                    system.pcpu_usage * 100 if system else 0.0
+                    sensors["pcpu_usage"] * 100 if sensors else None
                 ),
                 "efficiency_cpu_percent": (
-                    system.ecpu_usage * 100 if system else 0.0
+                    sensors["ecpu_usage"] * 100 if sensors else None
                 ),
             },
+            "sensor_status": sensor_status,
             "energy": {
-                "system_power_watts": system_power_watts,
-                "monitor_session_joules": api._os1_activity_energy_joules,
+                "system_power_watts": sensors["sys_power"] if sensors else None,
+                "monitor_session_joules": _sensors.joules if sensors and _sensors.covered_seconds > 0 else None,
                 "monitor_session_watt_hours": (
-                    api._os1_activity_energy_joules / 3600
+                    _sensors.joules / 3600 if sensors and _sensors.covered_seconds > 0 else None
                 ),
+                "sampled_duration_seconds": _sensors.covered_seconds,
                 "monitor_uptime_seconds": now - api._os1_activity_started_at,
             },
             "disk": disk_payload,
             "network": network_payload,
+            "roaming": _read_roaming_status(Path.home() / ".os1" / "exo-roaming" / "status.json"),
             "exo": {
                 "topology_nodes": len(api.state.topology.list_nodes()),
                 "instances": len(api.state.instances),
@@ -388,6 +480,9 @@ async def _get_local_activity(api: Any) -> dict[str, object]:
             },
         }
 
+        api._os1_activity_cached_snapshot = payload
+        return payload
+
 
 def _configure_activity_dashboard() -> None:
     """Apply the monitor directory after the Air wrapper sets its defaults."""
@@ -401,10 +496,12 @@ def _configure_activity_dashboard() -> None:
 def install() -> None:
     # EXO reads its dashboard environment during import, so do this first.
     _configure_activity_dashboard()
+    _configure_existing_sampler()
     from exo.api.main import API
 
     if getattr(API, _PATCH_MARKER, False):
         return
+    _track_existing_sampler()
     original_setup_routes = API._setup_routes
 
     def setup_routes_with_activity(api: Any) -> None:

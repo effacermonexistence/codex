@@ -1,0 +1,1982 @@
+diff --git a/dashboard/src/routes/activity/+page.svelte b/dashboard/src/routes/activity/+page.svelte
+index 37a0f216..69e6cb4b 100644
+--- a/dashboard/src/routes/activity/+page.svelte
++++ b/dashboard/src/routes/activity/+page.svelte
+@@ -1,6 +1,17 @@
+ <script lang="ts">
+   import { onMount } from "svelte";
++  import { createActivityPoller, isFreshSample, privateActivityOrigin } from "$lib/utils/activityPolling";
+   import HeaderNav from "$lib/components/HeaderNav.svelte";
++  import {
++    balanceScore,
++    completeSum,
++    finiteMetric,
++    formatMetric,
++    sensorValues,
++    sparklinePath,
++    type SensorActivity,
++    type SensorState,
++  } from "$lib/utils/activityTelemetry";
+ 
+   interface MemoryValue {
+     inBytes: number;
+@@ -17,27 +28,15 @@
+     ramAvailable?: MemoryValue;
+   }
+ 
+-  interface NodeSystem {
+-    gpuUsage?: number;
+-    temp?: number;
+-    sysPower?: number;
+-    pcpuUsage?: number;
+-    ecpuUsage?: number;
+-  }
+-
+   interface ClusterState {
+     topology?: { nodes?: string[] };
+     nodeIdentities?: Record<string, NodeIdentity>;
+     nodeMemory?: Record<string, NodeMemory>;
+-    nodeSystem?: Record<string, NodeSystem>;
+     nodeNetwork?: Record<
+       string,
+       { interfaces?: Array<{ name?: string; ipAddress?: string }> }
+     >;
+-    nodeDisk?: Record<
+-      string,
+-      { total?: MemoryValue; available?: MemoryValue }
+-    >;
++    nodeDisk?: Record<string, { total?: MemoryValue; available?: MemoryValue }>;
+   }
+ 
+   interface FleetNode {
+@@ -67,7 +66,7 @@
+     updated_at_ms?: number;
+   }
+ 
+-  interface LocalActivity {
++  interface LocalActivity extends SensorActivity {
+     api_origin?: string;
+     node_id: string;
+     sampled_at: string;
+@@ -93,18 +92,6 @@
+       swap_used_bytes: number;
+       exo_process_resident_bytes: number;
+     };
+-    gpu: {
+-      usage_percent: number;
+-      temperature_celsius: number;
+-      performance_cpu_percent: number;
+-      efficiency_cpu_percent: number;
+-    };
+-    energy: {
+-      system_power_watts: number;
+-      monitor_session_joules: number;
+-      monitor_session_watt_hours: number;
+-      monitor_uptime_seconds: number;
+-    };
+     disk: {
+       read_bytes_per_second: number;
+       write_bytes_per_second: number;
+@@ -146,12 +133,12 @@
+ 
+   interface HistoryPoint {
+     at: number;
+-    cpu: number;
+-    memory: number;
+-    gpu: number;
+-    power: number;
+-    disk: number;
+-    network: number;
++    cpu: number | null;
++    memory: number | null;
++    gpu: number | null;
++    power: number | null;
++    disk: number | null;
++    network: number | null;
+   }
+ 
+   interface NodeRow {
+@@ -161,17 +148,22 @@
+     ip: string;
+     activity: LocalActivity | null;
+     fleet: FleetNode | null;
+-    cpu: number;
+-    memoryPercent: number;
+-    memoryUsed: number;
+-    memoryTotal: number;
+-    gpu: number;
+-    temperature: number;
+-    power: number;
+-    diskRead: number;
+-    diskWrite: number;
+-    networkReceive: number;
+-    networkSend: number;
++    cpu: number | null;
++    memoryPercent: number | null;
++    memoryUsed: number | null;
++    memoryTotal: number | null;
++    gpu: number | null;
++    temperature: number | null;
++    power: number | null;
++    sensorState: SensorState;
++    performanceCpu: number | null;
++    efficiencyCpu: number | null;
++    wattHours: number | null;
++    sampledSeconds: number | null;
++    diskRead: number | null;
++    diskWrite: number | null;
++    networkReceive: number | null;
++    networkSend: number | null;
+     diskAvailable: number;
+     diskTotal: number;
+     stale: boolean;
+@@ -183,19 +175,25 @@
+   let stateError: string | null = $state(null);
+   let lastRefresh = $state(0);
+   let observedAt = $state(Date.now());
+-  let polling = false;
++  let paused = $state(false);
++  let updateSeconds = $state(1);
++  let transport: Record<string, { latency: number; error: string | null }> = $state({});
++  let poller: ReturnType<typeof createActivityPoller> | undefined;
++  const origins = new Map<string, string>();
++  let localNodeId = "";
+   let balance = $derived(convergence());
+   let totals = $derived(clusterTotals());
+ 
+-  function clampPercent(value: number): number {
+-    return Math.max(0, Math.min(100, Number.isFinite(value) ? value : 0));
++  function clampPercent(value: number | null): number {
++    return Math.max(0, Math.min(100, value !== null && Number.isFinite(value) ? value : 0));
+   }
+ 
+-  function formatPercent(value: number): string {
+-    return `${clampPercent(value).toFixed(0)}%`;
++  function formatPercent(value: number | null): string {
++    return formatMetric(finiteMetric(value, 0, 100), 0, "%");
+   }
+ 
+-  function formatBytes(value: number): string {
++  function formatBytes(value: number | null): string {
++    if (value === null) return "Unavailable";
+     if (!Number.isFinite(value) || value <= 0) return "0 B";
+     const units = ["B", "KB", "MB", "GB", "TB"];
+     const exponent = Math.min(
+@@ -205,7 +203,8 @@
+     return `${(value / 1024 ** exponent).toFixed(exponent > 2 ? 1 : 0)} ${units[exponent]}`;
+   }
+ 
+-  function formatRate(value: number): string {
++  function formatRate(value: number | null): string {
++    if (value === null) return "Unavailable";
+     return `${formatBytes(value)}/s`;
+   }
+ 
+@@ -255,7 +254,6 @@
+     return [...nodeIds].map((nodeId) => {
+       const identity = clusterState?.nodeIdentities?.[nodeId];
+       const memory = clusterState?.nodeMemory?.[nodeId];
+-      const system = clusterState?.nodeSystem?.[nodeId];
+       const disk = clusterState?.nodeDisk?.[nodeId];
+       const activity = activities[nodeId] ?? null;
+       const originIp = activity?.api_origin
+@@ -278,6 +276,12 @@
+           0,
+         );
+       const sampledAt = activity ? Date.parse(activity.sampled_at) : 0;
++      const sensors = sensorValues(activity, now);
++      const stale =
++        !activity ||
++        !Number.isFinite(sampledAt) ||
++        now - sampledAt > 15_000 ||
++        sampledAt > now + 5000;
+ 
+       return {
+         nodeId,
+@@ -287,7 +291,7 @@
+             ? "MacBook Pro"
+             : fleet?.role === "air"
+               ? "MacBook Air"
+-              : activity?.host?.hostname ?? nodeId.slice(0, 12)),
++              : (activity?.host?.hostname ?? nodeId.slice(0, 12))),
+         model:
+           identity?.modelId ??
+           identity?.chipId ??
+@@ -299,27 +303,25 @@
+         ip,
+         activity,
+         fleet,
+-        cpu:
+-          activity?.cpu.system_percent ??
+-          ((system?.pcpuUsage ?? 0) + (system?.ecpuUsage ?? 0)) * 50,
+-        memoryPercent: memoryTotal > 0 ? (memoryUsed / memoryTotal) * 100 : 0,
+-        memoryUsed,
+-        memoryTotal,
+-        gpu: activity?.gpu.usage_percent ?? (system?.gpuUsage ?? 0) * 100,
+-        temperature:
+-          activity?.gpu.temperature_celsius ?? system?.temp ?? 0,
+-        power: activity?.energy.system_power_watts ?? system?.sysPower ?? 0,
+-        diskRead: activity?.disk.read_bytes_per_second ?? 0,
+-        diskWrite: activity?.disk.write_bytes_per_second ?? 0,
+-        networkReceive: activity?.network.received_bytes_per_second ?? 0,
+-        networkSend: activity?.network.sent_bytes_per_second ?? 0,
++        cpu: stale ? null : finiteMetric(activity?.cpu.system_percent, 0, 100),
++        memoryPercent: !stale && memoryTotal > 0 ? (memoryUsed / memoryTotal) * 100 : null,
++        memoryUsed: stale ? null : memoryUsed,
++        memoryTotal: stale ? null : memoryTotal,
++        gpu: stale ? null : sensors.gpu,
++        temperature: stale ? null : sensors.temperature,
++        power: stale ? null : sensors.power,
++        sensorState: sensors.state,
++        performanceCpu: stale ? null : sensors.performanceCpu,
++        efficiencyCpu: stale ? null : sensors.efficiencyCpu,
++        wattHours: stale ? null : sensors.wattHours,
++        sampledSeconds: stale ? null : sensors.sampledSeconds,
++        diskRead: stale ? null : finiteMetric(activity?.disk.read_bytes_per_second),
++        diskWrite: stale ? null : finiteMetric(activity?.disk.write_bytes_per_second),
++        networkReceive: stale ? null : finiteMetric(activity?.network.received_bytes_per_second),
++        networkSend: stale ? null : finiteMetric(activity?.network.sent_bytes_per_second),
+         diskAvailable: disk?.available?.inBytes ?? 0,
+         diskTotal: disk?.total?.inBytes ?? 0,
+-        stale:
+-          !activity ||
+-          !Number.isFinite(sampledAt) ||
+-          now - sampledAt > 15_000 ||
+-          sampledAt - now > 5_000,
++        stale,
+       };
+     });
+   }
+@@ -338,6 +340,7 @@
+       connected: "연결 정상 · Wi-Fi 이동 감시 중",
+       waiting_for_network: "네트워크 또는 상대 Mac 연결 대기",
+       reconnecting: "네트워크 복구됨 · EXO 재연결 중",
++      synchronizing: "EXO 기록 동기화 중 · 실시간 측정은 계속됩니다",
+       waiting_for_idle: "실행 중인 작업 보호 · 복구 대기",
+       recovering: "EXO 자동 복구 중",
+       cooldown: "재시도 간격 대기",
+@@ -350,23 +353,27 @@
+     };
+   }
+ 
++  function rowTransport(row: NodeRow) {
++    return transport[row.activity?.api_origin ?? privateActivityOrigin(row.ip) ?? ""];
++  }
++
++  function fleetFresh(node: FleetNode | null): boolean {
++    const age = observedAt - (node?.last_seen_ms ?? 0);
++    return age >= -5000 && age <= 30000;
++  }
++
+   function clusterTotals() {
+     const rows = nodeRows();
++    const cpu = completeSum(rows.map((row) => row.cpu));
++    const gpu = completeSum(rows.map((row) => row.gpu));
+     return {
+-      cpu: rows.length
+-        ? rows.reduce((sum, row) => sum + row.cpu, 0) / rows.length
+-        : 0,
+-      memoryUsed: rows.reduce((sum, row) => sum + row.memoryUsed, 0),
+-      memoryTotal: rows.reduce((sum, row) => sum + row.memoryTotal, 0),
+-      gpu: rows.length
+-        ? rows.reduce((sum, row) => sum + row.gpu, 0) / rows.length
+-        : 0,
+-      power: rows.reduce((sum, row) => sum + row.power, 0),
+-      disk: rows.reduce((sum, row) => sum + row.diskRead + row.diskWrite, 0),
+-      network: rows.reduce(
+-        (sum, row) => sum + row.networkReceive + row.networkSend,
+-        0,
+-      ),
++      cpu: cpu === null ? null : cpu / rows.length,
++      memoryUsed: completeSum(rows.map((row) => row.memoryUsed)),
++      memoryTotal: completeSum(rows.map((row) => row.memoryTotal)),
++      gpu: gpu === null ? null : gpu / rows.length,
++      power: completeSum(rows.map((row) => row.power)),
++      disk: completeSum(rows.flatMap((row) => [row.diskRead, row.diskWrite])),
++      network: completeSum(rows.flatMap((row) => [row.networkReceive, row.networkSend])),
+     };
+   }
+ 
+@@ -375,51 +382,36 @@
+     spread: number | null;
+     status: string;
+   } {
+-    const rows = nodeRows();
+-    if (rows.length < 2 || rows.some((row) => row.stale)) {
+-      return { score: null, spread: null, status: "WAITING FOR 2 FRESH NODES" };
+-    }
+-    const loads = rows.map((row) => {
+-      const queuePressure = Math.min((row.fleet?.queue_depth ?? 0) / 4, 1);
+-      return (
+-        0.35 * (clampPercent(row.cpu) / 100) +
+-        0.35 * (clampPercent(row.memoryPercent) / 100) +
+-        0.2 * (clampPercent(row.gpu) / 100) +
+-        0.1 * queuePressure
+-      );
+-    });
+-    const spread = (Math.max(...loads) - Math.min(...loads)) * 100;
+-    return {
+-      score: Math.max(0, Math.min(100, 100 - spread)),
+-      spread,
+-      status: spread <= 15 ? "CONVERGED" : "OBSERVED LOAD IMBALANCE",
+-    };
++    return balanceScore(
++      nodeRows().map((row) => ({
++        ...row,
++        queue:
++          observedAt - (row.fleet?.last_seen_ms ?? 0) <= 30_000
++            ? finiteMetric(row.fleet?.queue_depth)
++            : null,
++      })),
++    );
+   }
+ 
+   function sparkline(nodeId: string, field: keyof HistoryPoint): string {
+     const points = histories[nodeId] ?? [];
+-    if (points.length < 2) return "";
+-    const values = points.map((point) => Number(point[field]));
+-    const maximum = Math.max(...values, field === "power" ? 1 : 100);
+-    return values
+-      .map((value, index) => {
+-        const x = (index / Math.max(values.length - 1, 1)) * 100;
+-        const y = 28 - (Math.max(value, 0) / maximum) * 26;
+-        return `${x.toFixed(1)},${y.toFixed(1)}`;
+-      })
+-      .join(" ");
++    return sparklinePath(
++      points.map((point) => point[field]),
++      ["cpu", "gpu", "memory"].includes(field) ? 100 : 1,
++    );
+   }
+ 
+   function appendHistory(activity: LocalActivity): void {
+     const memoryPercent = activity.memory.total_bytes
+       ? (activity.memory.used_bytes / activity.memory.total_bytes) * 100
+       : 0;
++    const sensors = sensorValues(activity, Date.now());
+     const next: HistoryPoint = {
+-      at: Date.now(),
++      at: Date.parse(activity.sampled_at),
+       cpu: activity.cpu.system_percent,
+       memory: memoryPercent,
+-      gpu: activity.gpu.usage_percent,
+-      power: activity.energy.system_power_watts,
++      gpu: sensors.gpu,
++      power: sensors.power,
+       disk:
+         activity.disk.read_bytes_per_second +
+         activity.disk.write_bytes_per_second,
+@@ -427,73 +419,108 @@
+         activity.network.received_bytes_per_second +
+         activity.network.sent_bytes_per_second,
+     };
++    const previous = histories[activity.node_id] ?? [];
++    const last = previous.at(-1);
++    const gap: HistoryPoint[] = last && next.at - last.at > Math.max(3000, updateSeconds * 2000)
++      ? [{ at: last.at + 1, cpu: null, memory: null, gpu: null, power: null, disk: null, network: null }]
++      : [];
+     histories = {
+       ...histories,
+-      [activity.node_id]: [...(histories[activity.node_id] ?? []), next].slice(
++      [activity.node_id]: [...previous, ...gap, next].slice(
+         -60,
+       ),
+     };
+   }
+ 
+-  async function fetchJson(url: string): Promise<unknown> {
+-    const controller = new AbortController();
+-    const timeout = window.setTimeout(() => controller.abort(), 7000);
+-    try {
+-      const response = await fetch(url, {
+-        cache: "no-store",
+-        signal: controller.signal,
+-      });
+-      if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
+-      return await response.json();
+-    } finally {
+-      window.clearTimeout(timeout);
++  function reconcileOrigins(): void {
++    if (!poller) return;
++    const desired = new Set([window.location.origin]);
++    const localIp = activities[localNodeId]?.host?.zerotier_ip;
++    // Keep telemetry reachable while EXO replays its state or elects a master.
++    // Fleet contains already-enrolled devices, not arbitrary user input.
++    for (const node of fleetNodes()) {
++      if (!node.zerotier_ip || node.zerotier_ip === localIp) continue;
++      const origin = privateActivityOrigin(node.zerotier_ip);
++      if (origin) desired.add(origin);
+     }
+-  }
+-
+-  async function poll(): Promise<void> {
+-    observedAt = Date.now();
+-    if (polling) return;
+-    polling = true;
+-    try {
+-      clusterState = (await fetchJson("/state")) as ClusterState;
+-      stateError = null;
+-
+-      const origins = new Set<string>([window.location.origin]);
+-      for (const nodeId of clusterState.topology?.nodes ?? []) {
+-        const ip = nodeIp(nodeId);
+-        if (ip) origins.add(`http://${ip}:52415`);
+-      }
+-
+-      const results = await Promise.allSettled(
+-        [...origins].map(async (origin) => {
+-          const activity = (await fetchJson(
+-            `${origin}/activity/local`,
+-          )) as LocalActivity;
+-          activity.api_origin = origin;
+-          return activity;
+-        }),
+-      );
+-      const nextActivities = { ...activities };
+-      for (const result of results) {
+-        if (result.status === "fulfilled" && result.value.node_id) {
+-          nextActivities[result.value.node_id] = result.value;
+-          appendHistory(result.value);
+-        }
++    for (const nodeId of clusterState?.topology?.nodes ?? []) {
++      if (nodeId === localNodeId) continue;
++      const ip = nodeIp(nodeId);
++      // Only the paired cluster's private addresses, never arbitrary public hosts.
++      const origin = privateActivityOrigin(ip);
++      if (origin) desired.add(origin);
++    }
++    for (const origin of origins.keys()) {
++      if (!desired.has(origin)) {
++        poller.remove(origin);
++        origins.delete(origin);
+       }
+-      activities = nextActivities;
+-      lastRefresh = Date.now();
+-    } catch (error) {
+-      stateError = error instanceof Error ? error.message : "EXO state unavailable";
+-    } finally {
+-      polling = false;
+     }
++    for (const origin of desired) {
++      if (!origins.has(origin)) origins.set(origin, "");
++      poller.set(origin, `${origin}/activity/local`, updateSeconds * 1000);
++    }
++  }
++
++  function togglePause(): void {
++    paused = !paused;
++    poller?.pause(paused);
++    poller?.tick();
+   }
+ 
+   onMount(() => {
+-    void poll();
+-    const interval = window.setInterval(() => void poll(), 1000);
+-    return () => window.clearInterval(interval);
++    poller = createActivityPoller({
++      onData(key, data, latency) {
++        if (key === "state") {
++          clusterState = data as ClusterState;
++          stateError = null;
++          reconcileOrigins();
++          return;
++        }
++        if (!isFreshSample(data, Date.now())) {
++          transport = { ...transport, [key]: { latency, error: "오래되거나 잘못된 표본" } };
++          return;
++        }
++        const activity = data as LocalActivity;
++        if (!activity.cpu || !activity.memory || !activity.disk || !activity.network || !activity.exo || !activity.fleet || !activity.gpu || !activity.energy) {
++          transport = { ...transport, [key]: { latency, error: "불완전한 표본" } };
++          return;
++        }
++        activity.api_origin = key;
++        const previousNode = origins.get(key);
++        origins.set(key, activity.node_id);
++        if (key === window.location.origin) localNodeId = activity.node_id;
++        transport = { ...transport, [key]: { latency, error: null } };
++        const previous = activities[activity.node_id];
++        // A cached response is not a new sample and must not create chart points.
++        if (!previous || Date.parse(activity.sampled_at) > Date.parse(previous.sampled_at)) {
++          const next = { ...activities };
++          if (previousNode && previousNode !== activity.node_id) delete next[previousNode];
++          next[activity.node_id] = activity;
++          activities = next;
++          appendHistory(activity);
++          lastRefresh = Date.now();
++        }
++        reconcileOrigins();
++      },
++      onError(key, error) {
++        if (key === "state") stateError = `Topology: ${error} · 로컬 측정은 계속됩니다`;
++        else transport = { ...transport, [key]: { latency: transport[key]?.latency ?? 0, error } };
++      },
++    });
++    poller.set("state", "/state", 5000);
++    reconcileOrigins();
++    poller.tick();
++    const interval = window.setInterval(() => {
++      observedAt = Date.now();
++      poller?.tick();
++    }, 250);
++    return () => {
++      window.clearInterval(interval);
++      poller?.dispose();
++    };
+   });
++
+ </script>
+ 
+ <svelte:head>
+@@ -513,7 +540,9 @@
+     >
+       <div class="flex flex-col xl:flex-row xl:items-end justify-between gap-5">
+         <div>
+-          <div class="text-[11px] tracking-[0.28em] text-exo-yellow uppercase mb-2">
++          <div
++            class="text-[11px] tracking-[0.28em] text-exo-yellow uppercase mb-2"
++          >
+             OS1 Fleet Objective Function · Live telemetry
+           </div>
+           <h1 class="text-2xl md:text-3xl font-semibold tracking-tight">
+@@ -521,7 +550,10 @@
+           </h1>
+           <p class="mt-2 text-sm text-white/55 max-w-3xl">
+             EXO 추론 자원과 OS1의 Codex·Claude 작업 단위 배정을 한 화면에서
+-            봅니다. 모든 값은 실측값이며 1초 간격으로 갱신됩니다.
++            봅니다. 각 Mac을 독립적으로 {updateSeconds}초마다 측정하며, 센서가 없거나 오래된 값은
++            Unavailable로 표시합니다. 전력·에너지는 유효한 센서 표본만
++            사용합니다. 그래프는 최근 60개 표본이며, 끊긴 구간은 연결하지 않습니다.
++            Fleet 배정 정보는 별도 갱신되며 heartbeat 시각을 함께 표시합니다.
+           </p>
+         </div>
+ 
+@@ -563,9 +595,20 @@
+         <span class="text-white/80"
+           >{clusterState?.topology?.nodes?.length ?? 0} nodes</span
+         >
+-        <span class="text-white/45">Last refresh</span>
++        <label class="text-white/45" for="activity-frequency">갱신 주기</label>
++        <select id="activity-frequency" class="bg-black border border-white/20 rounded px-2 py-1"
++          bind:value={updateSeconds} onchange={() => reconcileOrigins()}>
++          <option value={1}>1초</option><option value={2}>2초</option><option value={5}>5초</option>
++        </select>
++        <button class="border border-white/20 rounded px-3 py-1" onclick={togglePause}>
++          {paused ? "실시간 재개" : "일시정지"}
++        </button>
++        <span class={paused ? "text-amber-300" : "text-emerald-400"}>{paused ? "PAUSED · 마지막 표본" : "LIVE"}</span>
++        <span class="text-white/45">마지막 새 표본</span>
+         <span class="text-white/80"
+-          >{lastRefresh ? new Date(lastRefresh).toLocaleTimeString() : "—"}</span
++          >{lastRefresh
++            ? new Date(lastRefresh).toLocaleTimeString()
++            : "—"}</span
+         >
+         {#if stateError}
+           <span class="text-red-400">{stateError}</span>
+@@ -574,15 +617,7 @@
+     </section>
+ 
+     <section class="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-7 gap-3 mb-5">
+-      {#each [
+-        ["CPU AVG", formatPercent(totals.cpu)],
+-        ["MEMORY", `${formatBytes(totals.memoryUsed)} / ${formatBytes(totals.memoryTotal)}`],
+-        ["GPU AVG", formatPercent(totals.gpu)],
+-        ["ENERGY", `${totals.power.toFixed(1)} W`],
+-        ["DISK I/O", formatRate(totals.disk)],
+-        ["NETWORK", formatRate(totals.network)],
+-        ["FLEET QUEUE", `${fleetNodes().reduce((sum, node) => sum + (node.queue_depth ?? 0), 0)}`],
+-      ] as summary}
++      {#each [["CPU AVG", formatPercent(totals.cpu)], ["MEMORY", `${formatBytes(totals.memoryUsed)} / ${formatBytes(totals.memoryTotal)}`], ["GPU AVG", formatPercent(totals.gpu)], ["POWER", formatMetric(totals.power, 1, " W")], ["DISK I/O", formatRate(totals.disk)], ["NETWORK", formatRate(totals.network)], ["FLEET QUEUE", `${fleetNodes().reduce((sum, node) => sum + (node.queue_depth ?? 0), 0)}`]] as summary}
+         <div class="command-panel rounded px-4 py-3 min-w-0">
+           <div class="text-[9px] text-white/40 tracking-[0.18em]">
+             {summary[0]}
+@@ -622,7 +657,16 @@
+             <div class="text-right text-[10px] text-white/40">
+               <div>{row.activity?.cpu.logical_count ?? 0} logical CPU</div>
+               <div>
+-                EXO {row.activity?.exo.topology_nodes ?? 0} · queue {row.fleet?.queue_depth ?? 0}
++                <span data-testid="sample-age">
++                  {paused ? "PAUSED" : row.stale ? "STALE" : rowTransport(row)?.error ? "RETRYING" : "LIVE"}
++                  · {formatDuration(Math.max(0, observedAt - Date.parse(row.activity?.sampled_at ?? "")))} 전
++                </span>
++              </div>
++              <div>응답 {formatDuration(rowTransport(row)?.latency ?? NaN)}</div>
++              <div class="text-amber-300">{rowTransport(row)?.error ?? ""}</div>
++              <div>
++                EXO {row.activity?.exo.topology_nodes ?? 0} · queue {row.fleet
++                  ?.queue_depth ?? 0}
+               </div>
+             </div>
+           </div>
+@@ -646,9 +690,13 @@
+               <div class="flex justify-between text-[10px] text-white/45">
+                 <span>CPU</span><span>{formatPercent(row.cpu)}</span>
+               </div>
+-              <svg class="mt-2 h-8 w-full" viewBox="0 0 100 30" preserveAspectRatio="none">
+-                <polyline
+-                  points={sparkline(row.nodeId, "cpu")}
++              <svg
++                class="mt-2 h-8 w-full"
++                viewBox="0 0 100 30"
++                preserveAspectRatio="none"
++              >
++                <path
++                  d={sparkline(row.nodeId, "cpu")}
+                   fill="none"
+                   stroke="var(--exo-yellow)"
+                   stroke-width="1.5"
+@@ -656,15 +704,22 @@
+                 />
+               </svg>
+               <div class="mt-1 text-[9px] text-white/35">
+-                EXO process {formatPercent(row.activity?.cpu.exo_process_percent ?? 0)}
++                EXO process {formatMetric(
++                  row.stale ? null : row.activity?.cpu.exo_process_percent, 0, "%",
++                )}
+               </div>
+             </div>
+ 
+             <div class="rounded border border-white/10 bg-black/25 p-3">
+               <div class="flex justify-between text-[10px] text-white/45">
+-                <span>MEMORY</span><span>{formatPercent(row.memoryPercent)}</span>
++                <span>MEMORY</span><span
++                  >{formatPercent(row.memoryPercent)}</span
++                >
+               </div>
+-              <div class="mt-3 h-2 rounded bg-white/10 overflow-hidden">
++              <svg class="mt-2 h-8 w-full" viewBox="0 0 100 30" preserveAspectRatio="none">
++                <path d={sparkline(row.nodeId, "memory")} fill="none" stroke="#60a5fa" stroke-width="1.5" vector-effect="non-scaling-stroke" />
++              </svg>
++              <div class="mt-1 h-2 rounded bg-white/10 overflow-hidden">
+                 <div
+                   class="h-full bg-blue-400 transition-all duration-500"
+                   style={`width: ${clampPercent(row.memoryPercent)}%`}
+@@ -679,9 +734,13 @@
+               <div class="flex justify-between text-[10px] text-white/45">
+                 <span>GPU</span><span>{formatPercent(row.gpu)}</span>
+               </div>
+-              <svg class="mt-2 h-8 w-full" viewBox="0 0 100 30" preserveAspectRatio="none">
+-                <polyline
+-                  points={sparkline(row.nodeId, "gpu")}
++              <svg
++                class="mt-2 h-8 w-full"
++                viewBox="0 0 100 30"
++                preserveAspectRatio="none"
++              >
++                <path
++                  d={sparkline(row.nodeId, "gpu")}
+                   fill="none"
+                   stroke="#a78bfa"
+                   stroke-width="1.5"
+@@ -689,17 +748,27 @@
+                 />
+               </svg>
+               <div class="mt-1 text-[9px] text-white/35">
+-                {row.temperature.toFixed(0)}°C · P {formatPercent(row.activity?.gpu.performance_cpu_percent ?? 0)} · E {formatPercent(row.activity?.gpu.efficiency_cpu_percent ?? 0)}
++                {formatMetric(row.temperature, 0, "°C")} · P {formatPercent(
++                  row.performanceCpu,
++                )} · E {formatPercent(row.efficiencyCpu)}
++              </div>
++              <div class="mt-1 text-[9px] text-white/35">
++                Sensor {row.sensorState} · EXO macmon
+               </div>
+             </div>
+ 
+             <div class="rounded border border-white/10 bg-black/25 p-3">
+               <div class="flex justify-between text-[10px] text-white/45">
+-                <span>ENERGY</span><span>{row.power.toFixed(1)} W</span>
++                <span>POWER</span><span>{formatMetric(row.power, 1, " W")}</span
++                >
+               </div>
+-              <svg class="mt-2 h-8 w-full" viewBox="0 0 100 30" preserveAspectRatio="none">
+-                <polyline
+-                  points={sparkline(row.nodeId, "power")}
++              <svg
++                class="mt-2 h-8 w-full"
++                viewBox="0 0 100 30"
++                preserveAspectRatio="none"
++              >
++                <path
++                  d={sparkline(row.nodeId, "power")}
+                   fill="none"
+                   stroke="#34d399"
+                   stroke-width="1.5"
+@@ -707,7 +776,14 @@
+                 />
+               </svg>
+               <div class="mt-1 text-[9px] text-white/35">
+-                session {row.activity?.energy.monitor_session_watt_hours.toFixed(3) ?? "0.000"} Wh
++                sampled energy {formatMetric(row.wattHours, 3, " Wh")}
++              </div>
++              <div class="mt-1 text-[9px] text-white/35">
++                valid sample coverage {formatMetric(
++                  row.sampledSeconds,
++                  1,
++                  " s",
++                )}
+               </div>
+             </div>
+           </div>
+@@ -715,16 +791,24 @@
+           <div class="mt-3 grid grid-cols-1 md:grid-cols-3 gap-3 text-[10px]">
+             <div class="rounded border border-white/10 px-3 py-2.5">
+               <div class="text-white/40">DISK</div>
++              <svg class="mt-2 h-8 w-full" viewBox="0 0 100 30" preserveAspectRatio="none">
++                <path d={sparkline(row.nodeId, "disk")} fill="none" stroke="#60a5fa" stroke-width="1.5" vector-effect="non-scaling-stroke" />
++              </svg>
+               <div class="mt-1 flex justify-between">
+                 <span>Read {formatRate(row.diskRead)}</span>
+                 <span>Write {formatRate(row.diskWrite)}</span>
+               </div>
+               <div class="mt-1 text-white/35">
+-                {formatBytes(row.diskAvailable)} free / {formatBytes(row.diskTotal)}
++                {formatBytes(row.diskAvailable)} free / {formatBytes(
++                  row.diskTotal,
++                )}
+               </div>
+             </div>
+             <div class="rounded border border-white/10 px-3 py-2.5">
+               <div class="text-white/40">NETWORK</div>
++              <svg class="mt-2 h-8 w-full" viewBox="0 0 100 30" preserveAspectRatio="none">
++                <path d={sparkline(row.nodeId, "network")} fill="none" stroke="#60a5fa" stroke-width="1.5" vector-effect="non-scaling-stroke" />
++              </svg>
+               <div class="mt-1 flex justify-between">
+                 <span>In {formatRate(row.networkReceive)}</span>
+                 <span>Out {formatRate(row.networkSend)}</span>
+@@ -734,11 +818,13 @@
+             <div class="rounded border border-white/10 px-3 py-2.5">
+               <div class="text-white/40">OS1 EXECUTOR</div>
+               <div class="mt-1 flex justify-between">
+-                <span>Codex {row.fleet?.has_codex ? "READY" : "—"}</span>
+-                <span>Claude {row.fleet?.has_claude ? "READY" : "—"}</span>
++                <span>Codex {fleetFresh(row.fleet) ? row.fleet?.has_codex ? "READY" : "—" : "STALE"}</span>
++                <span>Claude {fleetFresh(row.fleet) ? row.fleet?.has_claude ? "READY" : "—" : "STALE"}</span>
+               </div>
+               <div class="mt-1 text-white/35">
+-                heartbeat {formatDuration(Date.now() - (row.fleet?.last_seen_ms ?? 0))}
++                heartbeat {formatDuration(
++                  row.fleet?.last_seen_ms ? Math.max(0, observedAt - row.fleet.last_seen_ms) : NaN,
++                )}
+               </div>
+             </div>
+           </div>
+@@ -748,7 +834,9 @@
+ 
+     <section class="grid grid-cols-1 xl:grid-cols-[1.35fr_1fr] gap-5">
+       <div class="command-panel rounded-lg overflow-hidden">
+-        <div class="px-5 py-4 border-b border-white/10 flex items-center justify-between">
++        <div
++          class="px-5 py-4 border-b border-white/10 flex items-center justify-between"
++        >
+           <div>
+             <h2 class="text-sm font-semibold">Recent automatic placement</h2>
+             <p class="text-[10px] text-white/40 mt-1">
+@@ -795,7 +883,8 @@
+                   </td>
+                 </tr>
+               {:else}
+-                <tr><td class="px-5 py-8 text-white/35" colspan="5"
++                <tr
++                  ><td class="px-5 py-8 text-white/35" colspan="5"
+                     >No local Fleet receipts yet.</td
+                   ></tr
+                 >
+@@ -810,9 +899,13 @@
+         <p class="mt-3 text-xs leading-5 text-white/55">
+           각 노드의 관측 부하는 CPU 35% + 메모리 35% + GPU 20% + OS1 queue
+           pressure 10%로 계산합니다. 두 노드 부하의 차이가 0이면 100입니다.
+-          노드가 누락되거나 15초 이상 오래되면 점수를 만들지 않습니다.
++          정확히 두 노드의 새 표본과 유효한 CPU·메모리·GPU·전력 및 queue 값이
++          모두 확인될 때만 계산합니다. 센서가 없거나 15초 이상 오래되면 점수를
++          만들지 않습니다. Unavailable은 측정된 0이 아닙니다.
+         </p>
+-        <div class="mt-4 rounded border border-amber-300/20 bg-amber-300/5 p-3 text-[10px] leading-4 text-amber-100/70">
++        <div
++          class="mt-4 rounded border border-amber-300/20 bg-amber-300/5 p-3 text-[10px] leading-4 text-amber-100/70"
++        >
+           이 값은 현재 관측된 균형 편차입니다. 일반 macOS 프로세스의 RAM·GPU를
+           투명하게 하나로 합친다는 뜻이 아닙니다. EXO 추론은 모델 shard 단위,
+           Codex·Claude는 OS1 작업 단위로 배정됩니다.
+diff --git a/src/exo/api/main.py b/src/exo/api/main.py
+index 08b447b5..535bb76f 100644
+--- a/src/exo/api/main.py
++++ b/src/exo/api/main.py
+@@ -3,12 +3,14 @@ import base64
+ import contextlib
+ import hashlib
+ import json
++import math
+ import random
+ import shutil
+ import socket
+ import time
+ from collections.abc import AsyncGenerator, Awaitable, Callable, Iterable
+-from datetime import datetime, timezone
++from dataclasses import dataclass
++from datetime import UTC, datetime
+ from http import HTTPStatus
+ from ipaddress import ip_address
+ from pathlib import Path
+@@ -180,6 +182,7 @@ from exo.shared.types.events import (
+     TracesMerged,
+ )
+ from exo.shared.types.memory import Memory
++from exo.shared.types.profiling import SystemPerformanceProfile
+ from exo.shared.types.state import State
+ from exo.shared.types.tasks import (
+     ImageEdits as ImageEditsTask,
+@@ -200,6 +203,7 @@ from exo.shared.types.worker.shards import Sharding
+ from exo.utils.banner import print_startup_banner
+ from exo.utils.channels import Receiver, Sender, channel
+ from exo.utils.disk_event_log import DiskEventLog
++from exo.utils.info_gatherer.macmon import MacmonMetrics
+ from exo.utils.power_sampler import PowerSampler
+ from exo.utils.task_group import TaskGroup
+ 
+@@ -214,6 +218,7 @@ OS1_ROAMING_STATES = {
+     "connected",
+     "waiting_for_network",
+     "reconnecting",
++    "synchronizing",
+     "waiting_for_idle",
+     "recovering",
+     "cooldown",
+@@ -252,7 +257,7 @@ def _read_roaming_status(path: Path, now: datetime | None = None) -> dict[str, o
+         sampled = datetime.fromisoformat(sampled_at)
+         if sampled.tzinfo is None:
+             return {**unavailable, "state": "invalid"}
+-        age = ((now or datetime.now(timezone.utc)) - sampled).total_seconds()
++        age = ((now or datetime.now(UTC)) - sampled).total_seconds()
+         result: dict[str, object] = {
+             "schema": 1,
+             "available": True,
+@@ -371,6 +376,116 @@ def _ensure_seed(params: AdvancedImageParams | None) -> AdvancedImageParams:
+     return params
+ 
+ 
++@dataclass
++class _ActivitySensorSample:
++    profile: SystemPerformanceProfile
++    timestamp: datetime
++    observed_at: float
++    initial_age: float
++
++
++class _SensorTelemetry:
++    """Observe the existing EXO sampler, never synthesize missing measurements."""
++
++    def __init__(self) -> None:
++        self.sample: _ActivitySensorSample | None = None
++        self.invalid = False
++        self.joules = 0.0
++        self.covered_seconds = 0.0
++
++    def observe(
++        self,
++        profile: SystemPerformanceProfile,
++        raw: str,
++        now: float,
++        wall_now: datetime,
++    ) -> None:
++        try:
++            payload = cast(dict[str, object], json.loads(raw))
++            raw_timestamp = payload.get("timestamp")
++            if not isinstance(raw_timestamp, str):
++                raise TypeError("missing sensor timestamp")
++            timestamp = datetime.fromisoformat(raw_timestamp)
++            if timestamp.tzinfo is None:
++                raise ValueError("timezone required")
++            values = (
++                profile.gpu_usage,
++                profile.pcpu_usage,
++                profile.ecpu_usage,
++                profile.sys_power,
++                profile.temp,
++            )
++            if not all(math.isfinite(value) for value in values):
++                raise ValueError("nonfinite sensor value")
++            if (
++                not all(0 <= value <= 1 for value in values[:3])
++                or profile.sys_power < 0
++                or not 0 <= profile.temp <= 150
++            ):
++                raise ValueError("sensor value outside range")
++            age = (wall_now - timestamp).total_seconds()
++            if age < -5 or age > 15:
++                raise ValueError("sensor timestamp not current")
++        except (AttributeError, TypeError, ValueError):
++            self.invalid = True
++            self.sample = None
++            return
++        previous = self.sample
++        if previous is not None:
++            elapsed = (timestamp - previous.timestamp).total_seconds()
++            if 0 < elapsed <= 5:
++                self.joules += (
++                    (previous.profile.sys_power + profile.sys_power) * 0.5 * elapsed
++                )
++                self.covered_seconds += elapsed
++        self.sample = _ActivitySensorSample(profile, timestamp, now, max(age, 0))
++        self.invalid = False
++
++    def snapshot(
++        self, now: float
++    ) -> tuple[SystemPerformanceProfile | None, dict[str, object]]:
++        sample = self.sample
++        age = None if sample is None else sample.initial_age + now - sample.observed_at
++        state = (
++            "invalid"
++            if self.invalid
++            else "unavailable"
++            if age is None
++            else "available"
++            if 0 <= age <= 15
++            else "stale"
++        )
++        return (
++            sample.profile if sample is not None and state == "available" else None
++        ), {
++            "state": state,
++            "source": "exo_macmon",
++            "sample_age_seconds": age,
++            "sampled_at": sample.timestamp.isoformat() if sample else None,
++        }
++
++
++_activity_sensors = _SensorTelemetry()
++_activity_sensor_tracking = False
++
++
++def _track_activity_sampler() -> None:
++    global _activity_sensor_tracking
++    if _activity_sensor_tracking:
++        return
++    original = MacmonMetrics.from_raw_json
++
++    def observe(cls: type[MacmonMetrics], raw: str) -> MacmonMetrics:
++        result = original(raw)
++        _activity_sensors.observe(
++            result.system_profile, raw, time.monotonic(), datetime.now(UTC)
++        )
++        return result
++
++    MacmonMetrics.from_raw_json = classmethod(observe)
++    _activity_sensor_tracking = True
++
++
+ class API:
+     def __init__(
+         self,
+@@ -399,13 +514,15 @@ class API:
+         self._activity_previous_at = self._activity_started_at
+         self._activity_previous_disk = psutil.disk_io_counters()
+         self._activity_previous_network = psutil.net_io_counters()
+-        self._activity_energy_joules = 0.0
++        self._activity_cached_snapshot: dict[str, object] | None = None
++        _track_activity_sampler()
+         self._activity_fleet_cache: dict[str, object] = {"nodes": []}
+         self._activity_fleet_cache_at = 0.0
+         self._activity_fleet_error: str | None = None
+         self._activity_fleet_refresh_task: asyncio.Task[None] | None = None
+         self._activity_process = psutil.Process()
+         psutil.cpu_percent(interval=None)
++        psutil.cpu_percent(interval=None, percpu=True)
+         self._activity_process.cpu_percent(interval=None)
+ 
+         self.paused: bool = False
+@@ -607,7 +724,15 @@ class API:
+         """Return read-only local metrics for the cluster Activity Monitor."""
+         async with self._activity_lock:
+             now = time.monotonic()
+-            elapsed = max(now - self._activity_previous_at, 0.001)
++            if (
++                self._activity_cached_snapshot is not None
++                and now - self._activity_previous_at < 0.8
++            ):
++                return self._activity_cached_snapshot
++            if now - self._activity_previous_at < 0.1:
++                await anyio.sleep(0.1 - (now - self._activity_previous_at))
++                now = time.monotonic()
++            elapsed = now - self._activity_previous_at
+ 
+             disk = psutil.disk_io_counters()
+             network = psutil.net_io_counters()
+@@ -624,9 +749,7 @@ class API:
+             self._activity_previous_disk = disk
+             self._activity_previous_network = network
+ 
+-            system = self.state.node_system.get(self.node_id)
+-            system_power_watts = system.sys_power if system is not None else 0.0
+-            self._activity_energy_joules += max(system_power_watts, 0.0) * elapsed
++            system, sensor_status = _activity_sensors.snapshot(now)
+ 
+             fleet_refresh = self._activity_fleet_refresh_task
+             if now - self._activity_fleet_cache_at >= OS1_FLEET_CACHE_SECONDS and (
+@@ -693,10 +816,10 @@ class API:
+                     )
+ 
+             load_average = psutil.getloadavg()
+-            return {
+-                "schema": 1,
++            payload: dict[str, object] = {
++                "schema": 2,
+                 "node_id": str(self.node_id),
+-                "sampled_at": datetime.now(timezone.utc).isoformat(),
++                "sampled_at": datetime.now(UTC).isoformat(),
+                 "sample_interval_seconds": elapsed,
+                 "host": {
+                     "hostname": local_fleet_node.get("hostname", socket.gethostname()),
+@@ -720,19 +843,25 @@ class API:
+                     "exo_process_resident_bytes": process_memory.rss,
+                 },
+                 "gpu": {
+-                    "usage_percent": (system.gpu_usage * 100) if system else 0.0,
+-                    "temperature_celsius": system.temp if system else 0.0,
++                    "usage_percent": (system.gpu_usage * 100) if system else None,
++                    "temperature_celsius": system.temp if system else None,
+                     "performance_cpu_percent": (
+-                        system.pcpu_usage * 100 if system else 0.0
++                        system.pcpu_usage * 100 if system else None
+                     ),
+                     "efficiency_cpu_percent": (
+-                        system.ecpu_usage * 100 if system else 0.0
++                        system.ecpu_usage * 100 if system else None
+                     ),
+                 },
++                "sensor_status": sensor_status,
+                 "energy": {
+-                    "system_power_watts": system_power_watts,
+-                    "monitor_session_joules": self._activity_energy_joules,
+-                    "monitor_session_watt_hours": self._activity_energy_joules / 3600,
++                    "system_power_watts": system.sys_power if system else None,
++                    "monitor_session_joules": _activity_sensors.joules
++                    if system and _activity_sensors.covered_seconds > 0
++                    else None,
++                    "monitor_session_watt_hours": _activity_sensors.joules / 3600
++                    if system and _activity_sensors.covered_seconds > 0
++                    else None,
++                    "sampled_duration_seconds": _activity_sensors.covered_seconds,
+                     "monitor_uptime_seconds": now - self._activity_started_at,
+                 },
+                 "disk": disk_payload,
+@@ -754,6 +883,8 @@ class API:
+                     "recent_jobs": _read_recent_fleet_jobs(fleet_results),
+                 },
+             }
++            self._activity_cached_snapshot = payload
++            return payload
+ 
+     async def place_instance(self, payload: PlaceInstanceParams):
+         command = PlaceInstance(
+@@ -996,9 +1127,7 @@ class API:
+ 
+     async def _token_chunk_stream(
+         self, command_id: CommandId
+-    ) -> AsyncGenerator[
+-        TokenChunk | ErrorChunk | ToolCallChunk | PrefillProgressChunk, None
+-    ]:
++    ) -> AsyncGenerator[TokenChunk | ErrorChunk | ToolCallChunk | PrefillProgressChunk]:
+         """Yield chunks for a given command until completion.
+ 
+         This is the internal low-level stream used by all API adapters.
+@@ -1329,7 +1458,7 @@ class API:
+         command_id: CommandId,
+         num_images: int,
+         response_format: str,
+-    ) -> AsyncGenerator[str, None]:
++    ) -> AsyncGenerator[str]:
+         """Generate SSE stream of partial and final images."""
+         # Track chunks: {(image_index, is_partial): {chunk_index: data}}
+         image_chunks: dict[tuple[int, bool], dict[int, str]] = {}
+@@ -2287,9 +2416,7 @@ class API:
+             # Extract task_id from filename (trace_{task_id}.json)
+             task_id = trace_file.stem.removeprefix("trace_")
+             stat = trace_file.stat()
+-            created_at = datetime.fromtimestamp(
+-                stat.st_mtime, tz=timezone.utc
+-            ).isoformat()
++            created_at = datetime.fromtimestamp(stat.st_mtime, tz=UTC).isoformat()
+             traces.append(
+                 TraceListItem(
+                     task_id=task_id,
+diff --git a/dashboard/src/lib/utils/activityPolling.ts b/dashboard/src/lib/utils/activityPolling.ts
+new file mode 100644
+index 00000000..db4b1a4d
+--- /dev/null
++++ b/dashboard/src/lib/utils/activityPolling.ts
+@@ -0,0 +1,82 @@
++/** Independent, bounded polling: a slow peer must never hold local samples. */
++export function createActivityPoller(options: {
++  fetcher?: typeof fetch;
++  now?: () => number;
++  timeoutMs?: number;
++  onData: (key: string, data: unknown, latencyMs: number) => void;
++  onError: (key: string, error: string) => void;
++}) {
++  const fetcher = options.fetcher ?? fetch;
++  const now = options.now ?? Date.now;
++  const targets = new Map<string, { url: string; interval: number; due: number }>();
++  const active = new Map<string, AbortController>();
++  let paused = false;
++  let disposed = false;
++  function remove(key: string) {
++    targets.delete(key);
++    active.get(key)?.abort();
++    active.delete(key);
++  }
++  async function request(key: string, target: { url: string; interval: number; due: number }) {
++    const controller = new AbortController();
++    active.set(key, controller);
++    const started = now();
++    target.due = started + target.interval;
++    const timeout = setTimeout(() => controller.abort(), options.timeoutMs ?? 2500);
++    try {
++      const response = await fetcher(target.url, { signal: controller.signal, cache: "no-store" });
++      if (!response.ok) throw new Error(`HTTP ${response.status}`);
++      const data: unknown = await response.json();
++      if (!disposed && !paused && active.get(key) === controller && !controller.signal.aborted) {
++        options.onData(key, data, now() - started);
++      }
++    } catch (error) {
++      if (!disposed && !paused && active.get(key) === controller) {
++        options.onError(key, controller.signal.aborted ? "응답 시간 초과" : String(error));
++      }
++    } finally {
++      clearTimeout(timeout);
++      if (active.get(key) === controller) active.delete(key);
++    }
++  }
++  return {
++    set(key: string, url: string, interval: number) {
++      const previous = targets.get(key);
++      targets.set(key, { url, interval, due: previous?.due ?? 0 });
++    },
++    remove,
++    tick() {
++      if (paused || disposed) return;
++      for (const [key, target] of targets) {
++        if (!active.has(key) && now() >= target.due) void request(key, target);
++      }
++    },
++    pause(value: boolean) {
++      paused = value;
++      if (value) {
++        for (const controller of active.values()) controller.abort();
++        active.clear();
++      } else for (const target of targets.values()) target.due = 0;
++    },
++    dispose() {
++      disposed = true;
++      for (const key of targets.keys()) remove(key);
++    },
++  };
++}
++
++export function isFreshSample(value: unknown, now: number): value is { node_id: string; sampled_at: string } {
++  if (!value || typeof value !== "object") return false;
++  const data = value as Record<string, unknown>;
++  if (typeof data.node_id !== "string" || !data.node_id || typeof data.sampled_at !== "string") return false;
++  const timestamp = Date.parse(data.sampled_at);
++  return Number.isFinite(timestamp) && now - timestamp <= 15_000 && timestamp - now <= 5000;
++}
++
++export function privateActivityOrigin(ip: string): string | null {
++  const parts = ip.split(".");
++  if (parts.length !== 4 || parts.some((part) => !/^\d{1,3}$/.test(part) || Number(part) > 255)) return null;
++  const [first, second] = parts.map(Number);
++  return first === 10 || (first === 192 && second === 168) || (first === 172 && second >= 16 && second <= 31)
++    ? `http://${ip}:52415` : null;
++}
+diff --git a/dashboard/src/lib/utils/activityTelemetry.ts b/dashboard/src/lib/utils/activityTelemetry.ts
+new file mode 100644
+index 00000000..d20127dc
+--- /dev/null
++++ b/dashboard/src/lib/utils/activityTelemetry.ts
+@@ -0,0 +1,196 @@
++export type SensorState = "available" | "unavailable" | "stale" | "invalid";
++
++export interface SensorActivity {
++  sampled_at: string;
++  sensor_status?: {
++    state: SensorState;
++    source: "exo_macmon";
++    sample_age_seconds: number | null;
++    sampled_at: string | null;
++  };
++  gpu: {
++    usage_percent: number | null;
++    temperature_celsius: number | null;
++    performance_cpu_percent: number | null;
++    efficiency_cpu_percent: number | null;
++  };
++  energy: {
++    system_power_watts: number | null;
++    monitor_session_joules: number | null;
++    monitor_session_watt_hours: number | null;
++    monitor_uptime_seconds: number;
++    sampled_duration_seconds?: number;
++  };
++}
++
++export function finiteMetric(
++  value: unknown,
++  minimum = 0,
++  maximum = Infinity,
++): number | null {
++  return typeof value === "number" &&
++    Number.isFinite(value) &&
++    value >= minimum &&
++    value <= maximum
++    ? value
++    : null;
++}
++
++export function sensorState(
++  activity: SensorActivity | null,
++  now: number,
++): SensorState {
++  const status = activity?.sensor_status;
++  // Legacy endpoints used zero for absent sensors. They provide no measurement evidence.
++  if (!status || status.source !== "exo_macmon") return "unavailable";
++  if (status.state !== "available") {
++    return ["unavailable", "stale", "invalid"].includes(status.state)
++      ? status.state
++      : "invalid";
++  }
++  const age = finiteMetric(status.sample_age_seconds);
++  const measuredAt = status.sampled_at ? Date.parse(status.sampled_at) : NaN;
++  const responseAt = Date.parse(activity!.sampled_at);
++  if (
++    age === null ||
++    !Number.isFinite(measuredAt) ||
++    !Number.isFinite(responseAt) ||
++    measuredAt > now + 5000 ||
++    responseAt > now + 5000
++  )
++    return "invalid";
++  // The cached response ages while a peer is unreachable; polling is not a new sensor sample.
++  if (
++    Math.max(
++      age + Math.max(0, now - responseAt) / 1000,
++      (now - measuredAt) / 1000,
++    ) > 15
++  )
++    return "stale";
++  return "available";
++}
++
++export function sensorValues(activity: SensorActivity | null, now: number) {
++  let state = sensorState(activity, now);
++  if (
++    state === "available" &&
++    (finiteMetric(activity?.gpu.usage_percent, 0, 100) === null ||
++      finiteMetric(activity?.gpu.temperature_celsius, 0, 150) === null ||
++      finiteMetric(activity?.gpu.performance_cpu_percent, 0, 100) === null ||
++      finiteMetric(activity?.gpu.efficiency_cpu_percent, 0, 100) === null ||
++      finiteMetric(activity?.energy.system_power_watts, 0, 10000) === null)
++  )
++    state = "invalid";
++  const valid = state === "available";
++  return {
++    state,
++    gpu: valid ? finiteMetric(activity?.gpu.usage_percent, 0, 100) : null,
++    temperature: valid
++      ? finiteMetric(activity?.gpu.temperature_celsius, 0, 150)
++      : null,
++    performanceCpu: valid
++      ? finiteMetric(activity?.gpu.performance_cpu_percent, 0, 100)
++      : null,
++    efficiencyCpu: valid
++      ? finiteMetric(activity?.gpu.efficiency_cpu_percent, 0, 100)
++      : null,
++    power: valid
++      ? finiteMetric(activity?.energy.system_power_watts, 0, 10000)
++      : null,
++    wattHours: valid
++      ? finiteMetric(activity?.energy.monitor_session_watt_hours)
++      : null,
++    sampledSeconds: valid
++      ? finiteMetric(activity?.energy.sampled_duration_seconds)
++      : null,
++  };
++}
++
++export function completeSum(values: Array<number | null>): number | null {
++  if (!values.length || values.some((value) => finiteMetric(value) === null))
++    return null;
++  return (values as number[]).reduce((sum, value) => sum + value, 0);
++}
++
++export function formatMetric(
++  value: number | null | undefined,
++  decimals = 0,
++  suffix = "",
++): string {
++  return finiteMetric(value) === null
++    ? "Unavailable"
++    : `${value!.toFixed(decimals)}${suffix}`;
++}
++
++export function sparklinePath(
++  values: Array<number | null>,
++  floor = 100,
++): string {
++  const valid = values.map((value) => finiteMetric(value));
++  if (values.length < 2) return "";
++  const maximum = Math.max(
++    floor,
++    ...valid.filter((value): value is number => value !== null),
++  );
++  let connected = false;
++  return valid
++    .map((value, index) => {
++      if (value === null) {
++        connected = false;
++        return "";
++      }
++      const x = (index / (values.length - 1)) * 100;
++      const y = 28 - (value / maximum) * 26;
++      const command = `${connected ? "L" : "M"}${x.toFixed(1)},${y.toFixed(1)}`;
++      connected = true;
++      return command;
++    })
++    .filter(Boolean)
++    .join(" ");
++}
++
++export function balanceScore(
++  rows: Array<{
++    stale: boolean;
++    sensorState: SensorState;
++    cpu: number | null;
++    memoryPercent: number | null;
++    gpu: number | null;
++    power: number | null;
++    queue: number | null;
++  }>,
++) {
++  if (rows.length !== 2 || rows.some((row) => row.stale))
++    return { score: null, spread: null, status: "WAITING FOR 2 FRESH NODES" };
++  if (
++    rows.some(
++      (row) =>
++        row.sensorState !== "available" ||
++        finiteMetric(row.gpu, 0, 100) === null ||
++        finiteMetric(row.power, 0, 10000) === null,
++    )
++  )
++    return { score: null, spread: null, status: "SENSOR DATA UNAVAILABLE" };
++  if (
++    rows.some(
++      (row) =>
++        finiteMetric(row.cpu, 0, 100) === null ||
++        finiteMetric(row.memoryPercent, 0, 100) === null ||
++        finiteMetric(row.queue) === null,
++    )
++  )
++    return { score: null, spread: null, status: "LOAD DATA UNAVAILABLE" };
++  const loads = rows.map(
++    (row) =>
++      0.35 * row.cpu! +
++      0.35 * row.memoryPercent! +
++      0.2 * row.gpu! +
++      10 * Math.min(row.queue! / 4, 1),
++  );
++  const spread = Math.max(...loads) - Math.min(...loads);
++  return {
++    score: 100 - spread,
++    spread,
++    status: spread <= 15 ? "CONVERGED" : "OBSERVED LOAD IMBALANCE",
++  };
++}
+diff --git a/dashboard/tests/activity-polling.test.mjs b/dashboard/tests/activity-polling.test.mjs
+new file mode 100644
+index 00000000..a6326cd1
+--- /dev/null
++++ b/dashboard/tests/activity-polling.test.mjs
+@@ -0,0 +1,79 @@
++import assert from "node:assert/strict";
++import test from "node:test";
++import { createActivityPoller, isFreshSample, privateActivityOrigin } from "../src/lib/utils/activityPolling.ts";
++const flush = () => new Promise((resolve) => setImmediate(resolve));
++
++test("only valid paired private IPv4 origins are eligible", () => {
++  for (const ip of ["10.215.90.216", "10.215.90.72", "192.168.1.3", "172.16.1.2"]) assert.equal(privateActivityOrigin(ip), `http://${ip}:52415`);
++  for (const ip of ["example.com", "8.8.8.8", "172.15.1.2", "10.0.0.999", "10.0.0.1/path"]) assert.equal(privateActivityOrigin(ip), null);
++});
++
++test("slow peers and failed topology never hold a local response; no overlaps", async () => {
++  const received = [], errors = [], requests = [];
++  let now = 1000;
++  const poller = createActivityPoller({
++    now: () => now,
++    fetcher: async (url, { signal }) => {
++      requests.push(url);
++      if (url === "/state") throw Error("offline");
++      if (url === "/air") return new Promise((resolve, reject) => signal.addEventListener("abort", () => reject(Error("aborted"))));
++      return { ok: true, json: async () => ({ at: now }) };
++    },
++    onData: (key, data) => received.push([key, data.at]),
++    onError: (key) => errors.push(key),
++  });
++  poller.set("state", "/state", 5000);
++  poller.set("air", "/air", 1000);
++  poller.set("local", "/local", 1000);
++  poller.tick(); await flush();
++  assert.deepEqual(received, [["local", 1000]]);
++  assert.deepEqual(errors, ["state"]);
++  now += 1000; poller.tick(); await flush();
++  assert.deepEqual(received, [["local", 1000], ["local", 2000]]);
++  assert.equal(requests.filter((url) => url === "/air").length, 1);
++  poller.dispose(); await flush();
++  assert.deepEqual(errors, ["state"]);
++});
++
++test("pause, target removal and disposal abort requests and suppress late callbacks", async () => {
++  let resolveResponse, count = 0, signal;
++  const received = [];
++  const poller = createActivityPoller({
++    fetcher: async (_url, options) => {
++      count++; signal = options.signal;
++      return new Promise((resolve) => { resolveResponse = resolve; });
++    },
++    onData: (key) => received.push(key), onError: () => assert.fail("cancel callback"),
++  });
++  poller.set("local", "/local", 1000); poller.tick();
++  poller.pause(true); assert.equal(signal.aborted, true);
++  resolveResponse({ ok: true, json: async () => ({}) }); await flush();
++  poller.tick(); assert.equal(count, 1); assert.deepEqual(received, []);
++  poller.pause(false); poller.tick(); assert.equal(count, 2);
++  poller.remove("local"); assert.equal(signal.aborted, true);
++  resolveResponse({ ok: true, json: async () => ({}) }); await flush();
++  assert.deepEqual(received, []); poller.dispose();
++});
++
++test("timeouts are visible and recover on the next independent tick", async () => {
++  const errors = [], received = [];
++  let blocked = true;
++  const poller = createActivityPoller({ timeoutMs: 10,
++    fetcher: async (_url, { signal }) => blocked
++      ? new Promise((_resolve, reject) => signal.addEventListener("abort", () => reject(Error("timeout"))))
++      : { ok: true, json: async () => ({}) },
++    onData: (key) => received.push(key), onError: (key) => errors.push(key),
++  });
++  poller.set("local", "/local", 0); poller.tick();
++  await new Promise((resolve) => setTimeout(resolve, 30));
++  assert.deepEqual(errors, ["local"]);
++  blocked = false; poller.tick(); await flush();
++  assert.deepEqual(received, ["local"]); poller.dispose();
++});
++
++test("old, malformed and future packets cannot advance freshness", () => {
++  const now = Date.now();
++  for (const offset of [-16000, 6000]) assert.equal(isFreshSample({ node_id: "pro", sampled_at: new Date(now + offset).toISOString() }, now), false);
++  for (const value of [null, {}, { node_id: "pro", sampled_at: "bad" }]) assert.equal(isFreshSample(value, now), false);
++  assert.equal(isFreshSample({ node_id: "pro", sampled_at: new Date(now).toISOString() }, now), true);
++});
+diff --git a/dashboard/tests/activity-telemetry.test.mjs b/dashboard/tests/activity-telemetry.test.mjs
+new file mode 100644
+index 00000000..ba96dae6
+--- /dev/null
++++ b/dashboard/tests/activity-telemetry.test.mjs
+@@ -0,0 +1,138 @@
++import assert from "node:assert/strict";
++import test from "node:test";
++import {
++  balanceScore,
++  completeSum,
++  finiteMetric,
++  formatMetric,
++  sensorState,
++  sensorValues,
++  sparklinePath,
++} from "../src/lib/utils/activityTelemetry.ts";
++
++const now = Date.parse("2026-09-08T00:00:10Z");
++const sample = () => ({
++  sampled_at: new Date(now).toISOString(),
++  sensor_status: {
++    state: "available",
++    source: "exo_macmon",
++    sample_age_seconds: 1,
++    sampled_at: new Date(now - 1000).toISOString(),
++  },
++  gpu: {
++    usage_percent: 0,
++    temperature_celsius: 38,
++    performance_cpu_percent: 0,
++    efficiency_cpu_percent: 12,
++  },
++  energy: {
++    system_power_watts: 0,
++    monitor_session_joules: 0,
++    monitor_session_watt_hours: 0,
++    monitor_uptime_seconds: 40,
++    sampled_duration_seconds: 3,
++  },
++});
++
++test("legacy Pro zero defaults are unavailable without sensor provenance", () => {
++  const legacy = sample();
++  delete legacy.sensor_status;
++  const values = sensorValues(legacy, now);
++  assert.equal(values.state, "unavailable");
++  for (const field of [
++    "gpu",
++    "temperature",
++    "power",
++    "wattHours",
++    "sampledSeconds",
++  ])
++    assert.equal(values[field], null);
++  assert.equal(formatMetric(values.gpu, 0, "%"), "Unavailable");
++});
++
++test("real measured zero remains zero and coverage is not process uptime", () => {
++  const values = sensorValues(sample(), now);
++  assert.equal(values.state, "available");
++  assert.equal(formatMetric(values.gpu, 0, "%"), "0%");
++  assert.equal(formatMetric(values.power, 1, " W"), "0.0 W");
++  assert.equal(values.sampledSeconds, 3);
++});
++
++test("cached packets age independently of successful endpoint polling", () => {
++  assert.equal(sensorState(sample(), now + 14000), "available");
++  assert.equal(sensorState(sample(), now + 15001), "stale");
++  assert.equal(sensorValues(sample(), now + 15001).gpu, null);
++});
++
++test("invalid metadata, future timestamps, NaN, infinities and out of range values fail closed", () => {
++  for (const value of [NaN, Infinity, -1, "0", null, undefined])
++    assert.equal(finiteMetric(value), null);
++  for (const state of ["unavailable", "stale", "invalid"]) {
++    const activity = sample();
++    activity.sensor_status.state = state;
++    assert.equal(sensorValues(activity, now).power, null);
++  }
++  const invalid = sample();
++  invalid.sensor_status.sample_age_seconds = NaN;
++  assert.equal(sensorState(invalid, now), "invalid");
++  const future = sample();
++  future.sensor_status.sampled_at = new Date(now + 6000).toISOString();
++  assert.equal(sensorState(future, now), "invalid");
++  const bounds = sample();
++  bounds.gpu.usage_percent = 101;
++  bounds.energy.system_power_watts = -10;
++  assert.equal(sensorValues(bounds, now).gpu, null);
++  assert.equal(sensorValues(bounds, now).power, null);
++});
++
++test("missing energy coverage and first sensor interval are never formatted as zero", () => {
++  const first = sample();
++  first.energy.monitor_session_watt_hours = null;
++  delete first.energy.sampled_duration_seconds;
++  const values = sensorValues(first, now);
++  assert.equal(formatMetric(values.wattHours, 3, " Wh"), "Unavailable");
++  assert.equal(values.sampledSeconds, null);
++});
++
++test("cluster totals require every node and retain measured zero", () => {
++  assert.equal(completeSum([0, 0]), 0);
++  assert.equal(completeSum([15, null]), null);
++  assert.equal(completeSum([]), null);
++});
++
++test("graphs split missing intervals instead of inventing zeros or bridging gaps", () => {
++  assert.equal(
++    sparklinePath([10, null, 20, 30]),
++    "M0.0,25.4 M66.7,22.8 L100.0,20.2",
++  );
++  assert.equal(sparklinePath([null, null]), "");
++  assert.equal(sparklinePath([NaN, Infinity]), "");
++  assert.equal(sparklinePath([0, 0]), "M0.0,28.0 L100.0,28.0");
++});
++
++test("balance requires exactly two fresh measured nodes and fresh queue data", () => {
++  const row = {
++    stale: false,
++    sensorState: "available",
++    cpu: 10,
++    memoryPercent: 20,
++    gpu: 0,
++    power: 0,
++    queue: 0,
++  };
++  assert.equal(balanceScore([row, row]).score, 100);
++  for (const change of [
++    { stale: true },
++    { sensorState: "unavailable" },
++    { sensorState: "stale" },
++    { gpu: null },
++    { power: null },
++    { queue: null },
++    { cpu: NaN },
++    { gpu: 101 },
++  ]) {
++    assert.equal(balanceScore([row, { ...row, ...change }]).score, null);
++  }
++  assert.equal(balanceScore([row]).score, null);
++  assert.equal(balanceScore([row, row, row]).score, null);
++});
+diff --git a/dashboard/tests/activity-dashboard-browser.test.mjs b/dashboard/tests/activity-dashboard-browser.test.mjs
+new file mode 100644
+index 00000000..93a8712e
+--- /dev/null
++++ b/dashboard/tests/activity-dashboard-browser.test.mjs
+@@ -0,0 +1,215 @@
++// Run against a built dashboard with OS1_TEST_PLAYWRIGHT_MODULE pointing at an
++// existing Playwright installation. The browser gets synthetic read-only data;
++// it cannot reach either production EXO endpoint.
++import assert from "node:assert/strict";
++import { createServer } from "node:http";
++import { readFile } from "node:fs/promises";
++import { resolve, sep } from "node:path";
++import { createRequire } from "node:module";
++
++const require = createRequire(import.meta.url);
++const { chromium } = require(
++  process.env.OS1_TEST_PLAYWRIGHT_MODULE || "playwright",
++);
++const root = resolve("build");
++const server = createServer(async (request, response) => {
++  const target = resolve(
++    root,
++    `.${new URL(request.url, "http://localhost").pathname}`,
++  );
++  if (target !== root && !target.startsWith(root + sep)) {
++    response.writeHead(403).end();
++    return;
++  }
++  const file = target === root ? resolve(root, "index.html") : target;
++  const extension = file.split(".").pop();
++  const types = {
++    html: "text/html",
++    js: "application/javascript",
++    css: "text/css",
++    json: "application/json",
++    png: "image/png",
++    svg: "image/svg+xml",
++    woff2: "font/woff2",
++  };
++  try {
++    response
++      .writeHead(200, {
++        "content-type": types[extension] || "application/octet-stream",
++      })
++      .end(await readFile(file));
++  } catch {
++    response.writeHead(404).end();
++  }
++});
++await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
++const origin = `http://127.0.0.1:${server.address().port}`;
++const fleet = ["air", "pro"].map((role) => ({
++  role,
++  device_id: role,
++  zerotier_ip: role === "air" ? "10.215.90.216" : "10.215.90.72",
++  last_seen_ms: Date.now(),
++  queue_depth: 0,
++  has_codex: true,
++  has_claude: true,
++}));
++const fixture = (role, available) => ({
++  node_id: role,
++  sampled_at: new Date().toISOString(),
++  sample_interval_seconds: 1,
++  host: {
++    role,
++    device_id: role,
++    zerotier_ip: fleet.find((node) => node.role === role).zerotier_ip,
++  },
++  cpu: {
++    system_percent: 10,
++    per_core_percent: [10],
++    logical_count: 10,
++    load_average_1m: 1,
++    exo_process_percent: 0,
++  },
++  memory: {
++    total_bytes: 16000000000,
++    used_bytes: 8000000000,
++    available_bytes: 8000000000,
++    swap_total_bytes: 0,
++    swap_used_bytes: 0,
++    exo_process_resident_bytes: 1,
++  },
++  gpu: {
++    usage_percent: 0,
++    temperature_celsius: available ? 40 : 0,
++    performance_cpu_percent: 0,
++    efficiency_cpu_percent: 0,
++  },
++  energy: {
++    system_power_watts: 0,
++    monitor_session_joules: 0,
++    monitor_session_watt_hours: 0,
++    monitor_uptime_seconds: 60,
++    sampled_duration_seconds: 2,
++  },
++  ...(available
++    ? {
++        sensor_status: {
++          state: "available",
++          source: "exo_macmon",
++          sample_age_seconds: 0,
++          sampled_at: new Date().toISOString(),
++        },
++      }
++    : {}),
++  disk: { read_bytes_per_second: 0, write_bytes_per_second: 0 },
++  network: { received_bytes_per_second: 0, sent_bytes_per_second: 0 },
++  exo: { topology_nodes: 2, instances: 0, runners: 0, tasks: 0 },
++  fleet: { nodes: fleet, recent_jobs: [] },
++});
++const state = {
++  topology: { nodes: ["air", "pro"] },
++  nodeIdentities: {
++    air: { friendlyName: "MacBook Air" },
++    pro: { friendlyName: "MacBook Pro" },
++  },
++  nodeSystem: {},
++  nodeNetwork: Object.fromEntries(
++    fleet.map((node) => [
++      node.role,
++      { interfaces: [{ name: "test", ipAddress: node.zerotier_ip }] },
++    ]),
++  ),
++};
++const browser = await chromium.launch({ headless: true, channel: process.env.OS1_TEST_BROWSER_CHANNEL || undefined });
++try {
++  for (const available of [false, true]) {
++    const page = await browser.newPage({
++      viewport: { width: 1440, height: 1100 },
++    });
++    const failures = [];
++    let localSamples = 0, peerSamples = 0, topologyOffline = false, peerOffline = false;
++    page.on("pageerror", (error) => failures.push(error.message));
++    await page.route("**/*", async (route) => {
++      const url = new URL(route.request().url());
++      assert.equal(
++        route.request().method(),
++        "GET",
++        "dashboard must remain read-only",
++      );
++      if (url.pathname === "/state") return route.fulfill(topologyOffline ? { status: 503, body: "offline fixture" } : { json: state });
++      if (url.pathname === "/activity/local") {
++        const peer = url.hostname === "10.215.90.72";
++        if (peer) { peerSamples++; if (peerOffline) return route.abort(); }
++        else localSamples++;
++        return route.fulfill({
++          json: fixture(
++            url.hostname === "10.215.90.72" ? "pro" : "air",
++            url.hostname === "10.215.90.72" ? available : true,
++          ),
++          headers: { "access-control-allow-origin": "*" },
++        });
++      }
++      if (url.origin !== origin) return route.abort();
++      return route.continue();
++    });
++    await page.goto(`${origin}/#/activity`);
++    await page
++      .getByRole("heading", { name: "MacBook Pro", exact: true })
++      .waitFor();
++    const pro = page
++      .locator("article")
++      .filter({
++        has: page.getByRole("heading", { name: "MacBook Pro", exact: true }),
++      });
++    if (!available) {
++      await page
++        .getByText("SENSOR DATA UNAVAILABLE", { exact: true })
++        .waitFor();
++      assert.match(await pro.innerText(), /Sensor unavailable/);
++      assert.match(await pro.innerText(), /Unavailable/);
++      assert.doesNotMatch(await pro.innerText(), /0\.0 W|0°C|0\.000 Wh/);
++      assert.ok(
++        (await page.locator("main").innerText()).includes(
++          "GPU AVG\nUnavailable",
++        ),
++      );
++    } else {
++      await page.getByText("CONVERGED", { exact: true }).waitFor();
++      assert.match(await pro.innerText(), /0\.0 W/);
++      assert.match(await pro.innerText(), /valid sample coverage 2\.0 s/);
++      const liveCount = localSamples;
++      await page.getByRole("button", { name: "일시정지", exact: true }).click();
++      await page.waitForTimeout(1600);
++      assert.equal(localSamples, liveCount, "pause must stop polling, not just repainting");
++      assert.match(await pro.innerText(), /PAUSED/);
++      await page.getByRole("button", { name: "실시간 재개", exact: true }).click();
++      topologyOffline = true;
++      peerOffline = true;
++      const independentStart = localSamples;
++      await page.waitForTimeout(16500);
++      assert.ok(localSamples >= independentStart + 12, "local samples continue through topology + peer failures");
++      assert.match(await pro.innerText(), /STALE/);
++      assert.match(await pro.innerText(), /Read Unavailable/);
++      assert.match(await page.locator("article").filter({ has: page.getByRole("heading", { name: "MacBook Air", exact: true }) }).innerText(), /LIVE/);
++      assert.ok(peerSamples > 2);
++      peerOffline = false; topologyOffline = false;
++      await page.waitForTimeout(1500);
++      assert.match(await pro.innerText(), /LIVE/);
++      await page.getByLabel("갱신 주기", { exact: true }).selectOption("5");
++      assert.match(await page.locator("main").innerText(), /독립적으로 5초마다/);
++      await page.getByLabel("갱신 주기", { exact: true }).selectOption("1");
++    }
++    assert.deepEqual(failures, []);
++    if (process.env.OS1_TEST_SCREENSHOT_DIR)
++      await page.screenshot({
++        path: `${process.env.OS1_TEST_SCREENSHOT_DIR}/${available ? "measured-zero" : "legacy-unavailable"}.png`,
++        fullPage: true,
++      });
++    await page.close();
++  }
++  process.stdout.write(
++    "PASS: built dashboard legacy-unavailable + measured-zero browser checks; no JS errors; GET-only\n",
++  );
++} finally {
++  await browser.close();
++  await new Promise((resolve) => server.close(resolve));
++}
+diff --git a/scripts/test_activity_realtime.py b/scripts/test_activity_realtime.py
+new file mode 100644
+index 00000000..e5d58f44
+--- /dev/null
++++ b/scripts/test_activity_realtime.py
+@@ -0,0 +1,134 @@
++"""Dependency-light tests of the exact packaged API source (no model loading)."""
++
++import ast
++import asyncio
++import json
++import math
++import time
++import unittest
++from dataclasses import dataclass
++from datetime import UTC, datetime, timedelta
++from pathlib import Path
++from types import SimpleNamespace
++from typing import cast
++
++SOURCE = Path(__file__).parents[1] / "src/exo/api/main.py"
++TREE = ast.parse(SOURCE.read_text())
++SCOPE = dict(
++    dataclass=dataclass,
++    datetime=datetime,
++    UTC=UTC,
++    json=json,
++    math=math,
++    cast=cast,
++    SystemPerformanceProfile=SimpleNamespace,
++)
++PARTS = [
++    node
++    for node in TREE.body
++    if isinstance(node, ast.ClassDef)
++    and node.name in {"_ActivitySensorSample", "_SensorTelemetry"}
++]
++exec(compile(ast.Module(body=PARTS, type_ignores=[]), str(SOURCE), "exec"), SCOPE)
++
++
++class SensorTests(unittest.TestCase):
++    def setUp(self):
++        self.sensor = SCOPE["_SensorTelemetry"]()
++        self.wall = datetime(2026, 9, 8, tzinfo=UTC)
++        self.profile = SimpleNamespace(
++            gpu_usage=0, pcpu_usage=0.1, ecpu_usage=0.2, sys_power=10, temp=40
++        )
++
++    def sample(self, offset=0):
++        wall = self.wall + timedelta(seconds=offset)
++        self.sensor.observe(
++            self.profile,
++            json.dumps({"timestamp": wall.isoformat()}),
++            100 + offset,
++            wall,
++        )
++
++    def test_unavailable_is_not_zero(self):
++        profile, status = self.sensor.snapshot(100)
++        self.assertIsNone(profile)
++        self.assertEqual(status["state"], "unavailable")
++
++    def test_measured_zero_and_stale(self):
++        self.sample()
++        profile, status = self.sensor.snapshot(101)
++        self.assertEqual(profile.gpu_usage, 0)
++        self.assertEqual(status["state"], "available")
++        self.assertIsNone(self.sensor.snapshot(116)[0])
++        self.assertEqual(self.sensor.snapshot(116)[1]["state"], "stale")
++
++    def test_energy_only_consecutive_sensor_samples(self):
++        self.sample()
++        self.sample(1)
++        self.assertEqual(self.sensor.joules, 10)
++        self.assertEqual(self.sensor.covered_seconds, 1)
++        self.sample(1)  # duplicate timestamp
++        self.sample(20)  # gap cannot accrue fabricated energy
++        self.assertEqual(self.sensor.joules, 10)
++        self.sample(21)
++        self.assertEqual(self.sensor.joules, 20)
++
++    def test_bad_values_fail_closed(self):
++        for field, value in [("gpu_usage", 1.1), ("temp", math.nan), ("sys_power", -1)]:
++            previous = getattr(self.profile, field)
++            setattr(self.profile, field, value)
++            self.sample()
++            self.assertEqual(self.sensor.snapshot(100)[1]["state"], "invalid")
++            setattr(self.profile, field, previous)
++
++    def test_old_future_and_naive_timestamps_fail_closed(self):
++        for raw in [
++            "bad",
++            "2026-09-08T00:00:00",
++            "2026-09-08T00:00:06Z",
++            "2026-09-07T23:59:44Z",
++        ]:
++            self.sensor.observe(
++                self.profile, json.dumps({"timestamp": raw}), 100, self.wall
++            )
++            self.assertEqual(self.sensor.snapshot(100)[1]["state"], "invalid")
++
++    def test_polling_snapshot_cannot_accrue_energy(self):
++        self.sample()
++        for now in range(100, 300):
++            self.sensor.snapshot(now)
++        self.assertEqual(self.sensor.joules, 0)
++
++
++class CacheTests(unittest.IsolatedAsyncioTestCase):
++    async def test_parallel_views_share_one_sample_and_counter_window(self):
++        api_class = next(
++            node
++            for node in TREE.body
++            if isinstance(node, ast.ClassDef) and node.name == "API"
++        )
++        method = next(
++            node
++            for node in api_class.body
++            if isinstance(node, ast.AsyncFunctionDef)
++            and node.name == "get_local_activity"
++        )
++        namespace = dict(time=time)
++        exec(
++            compile(ast.Module(body=[method], type_ignores=[]), str(SOURCE), "exec"),
++            namespace,
++        )
++        snapshot = {"sampled_at": "same real sample"}
++        api = SimpleNamespace(
++            _activity_lock=asyncio.Lock(),
++            _activity_previous_at=time.monotonic(),
++            _activity_cached_snapshot=snapshot,
++        )
++        results = await asyncio.gather(
++            *(namespace["get_local_activity"](api) for _ in range(20))
++        )
++        self.assertTrue(all(result is snapshot for result in results))
++
++
++if __name__ == "__main__":
++    unittest.main()

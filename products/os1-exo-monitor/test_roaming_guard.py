@@ -20,6 +20,15 @@ def state(nodes=('air', 'pro'), now=NOW):
 
 
 class RoamingPolicyTests(unittest.TestCase):
+    def test_progressing_event_replay_is_never_interrupted(self):
+        memory = {'fingerprint': 'same', 'bad_since': NOW - 999}
+        for index in range(20):
+            local = {**state(now=NOW-600), 'lastEventAppliedIdx': index * 1000}
+            self.assertEqual(decide(local, state(), CONFIG, memory, NOW + index * 30, 'same'), ('synchronizing', False))
+        frozen = {**state(now=NOW-600), 'lastEventAppliedIdx': 19000}
+        self.assertFalse(decide(frozen, state(), CONFIG, memory, NOW + 690, 'same')[1])
+        self.assertTrue(decide(frozen, state(), CONFIG, memory, NOW + 781, 'same')[1])
+
     def test_wifi_change_does_not_restart_healthy_exo(self):
         memory = {'fingerprint': 'hotel-a', 'bad_since': NOW - 1000}
         self.assertEqual(decide(state(), state(), CONFIG, memory, NOW, 'hotel-b'), ('connected', False))
