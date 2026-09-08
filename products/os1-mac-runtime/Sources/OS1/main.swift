@@ -3990,7 +3990,7 @@ final class CodexAppServerClient: @unchecked Sendable {
         _ = try request(
             "initialize",
             params: [
-                "clientInfo": ["name": "OS-1 CLODEX", "version": "0.9.38"],
+                "clientInfo": ["name": "OS-1 CLODEX", "version": "0.9.39"],
                 "capabilities": ["experimentalApi": true],
             ],
             deadline: deadline
@@ -6469,9 +6469,22 @@ func selfTest() throws {
     try steeringProtocolSelfTest()
     for request in ["인스타그램 가격 버그 손봐줘", "파일을 수정해. 서버를 변경하지 마.",
                     "Create auto-review-probe.txt and verify its exact bytes",
-                    "Create auto-review-probe.txt and write exactly OS1_AUTO_REVIEW_OK followed by one newline, then verify its exact bytes. Do not modify anything else."] {
+                    "Create auto-review-probe.txt and write exactly OS1_AUTO_REVIEW_OK followed by one newline, then verify its exact bytes. Do not modify anything else.",
+                    "Create auto-review-probe.txt and write exactly OS1_AUTO_REVIEW_OK to it, then verify the exact bytes. Do not modify any other files, services or settings. Do not deploy or publish.",
+                    "Create result.txt. Never change other files."] {
         guard sourceAwareRoutingTask(request, evidence: nil).hasPrefix("Modify workspace files") else {
             throw OS1Error.message("Concrete repair routing scope regression")
+        }
+    }
+    let relativeFence = "Do not modify any other files, services or settings"
+    guard ScopeResolution.resolve("Create result.txt. " + relativeFence + ".").prohibitions.contains(relativeFence.lowercased()) else {
+        throw OS1Error.message("Relative target prohibition was not preserved")
+    }
+    for request in [relativeFence + ".", "Create result.txt. Do not modify files.",
+                    "Read-only. Create result.txt. Do not modify other files.",
+                    "Create result.txt. Do not modify other files, but change settings."] {
+        guard ScopeResolution.resolve(request).scope == .readOnly else {
+            throw OS1Error.message("Relative fence broadened contradictory or unspecified authority")
         }
     }
     for request in ["인스타그램 오토메이션 좀 손보자", "코드 구조 설명해줘", "파일 수정하지 마",
@@ -7845,7 +7858,7 @@ struct OS1Main {
             guard let command = arguments.first else { usage(); return }
             if try await fleetCommand(arguments) { return }
             switch command {
-            case "version", "--version", "-V": print("OS-1 Runtime 0.9.38 (fleet-liveness-build89)")
+            case "version", "--version", "-V": print("OS-1 Runtime 0.9.39 (response-fence-build90)")
             case "doctor": try doctor()
             case "sidebar-pin":
                 guard (4...5).contains(arguments.count), arguments[1] == "codex",

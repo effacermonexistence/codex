@@ -653,6 +653,10 @@ public struct ScopeResolution: Equatable, Sendable {
     // not just its final item (e.g. "파일 수정, 테스트 실행, 배포는 하지 마").
     public static let enumeratedProhibitionPattern = #"(?:파일|코드)\s*(?:수정|변경|편집)(?:\s*(?:[,·/]|및)\s*(?:(?:테스트|빌드)\s*(?:실행)?|설치|배포|복원|복구|삭제|업로드|리셋|초기화)){1,8}\s*(?:은|는|을|를)?\s*하지\s*마(?:세요|십시오)?"#
 
+    // Relative scope fences constrain a separately authorized edit. Consume
+    // only complete bounded clauses, not "... but change ..." or filenames.
+    static let relativeTargetFencePattern = #"(?i)(?:^|(?<=[.!?;\n]))\s*(?:do not|don't|never)\s+(?:modify|edit|change|delete|remove|write(?: to)?)\s+(?:any\s+)?other\s+(?:files?|folders?|directories|services?|settings)(?:\s*(?:,\s*(?:(?:and|or)\s+)?|(?:and|or)\s+)(?:other\s+)?(?:files?|folders?|directories|services?|settings)){0,8}\s*(?=[.!?;\n]|$)"#
+
     static let positiveEdit = ["손봐", "손 봐", "수정해", "수정하고", "수정 해", "고쳐", "고치고", "바꿔", "바꾸고", "구현해", "추가해", "삭제해", "리팩터", "만들어",
                                "fix ", "modify ", "edit ", "implement ", "add ", "remove ", "rename ", "change the code", "update the code"]
     // English imperatives often identify the target by filename instead of
@@ -691,6 +695,14 @@ public struct ScopeResolution: Equatable, Sendable {
         let value = prompt.precomposedStringWithCanonicalMapping.lowercased()
         var prohibitions: [String] = []
         var remaining = value
+        if let pattern = try? NSRegularExpression(pattern: relativeTargetFencePattern) {
+            let range = NSRange(remaining.startIndex..<remaining.endIndex, in: remaining)
+            for match in pattern.matches(in: remaining, range: range) {
+                guard let captured = Range(match.range, in: remaining) else { continue }
+                prohibitions.append(String(remaining[captured]).trimmingCharacters(in: .whitespacesAndNewlines))
+            }
+            remaining = pattern.stringByReplacingMatches(in: remaining, range: range, withTemplate: " ")
+        }
         if let pattern = try? NSRegularExpression(pattern: enumeratedProhibitionPattern) {
             let range = NSRange(remaining.startIndex..<remaining.endIndex, in: remaining)
             let matches = pattern.matches(in: remaining, range: range)
