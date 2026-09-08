@@ -134,6 +134,9 @@ jobs:
       - name: Test Claude EXO hook safeguards
         run: swift run --package-path products/os1-mac-runtime OS1HookSupportTests
 
+      - name: Reject false-positive native Fleet acceptance receipts
+        run: node products/os1-mac-runtime/scripts/verify-native-fleet.mjs --self-test
+
       - name: Assert Apple distribution credentials are mandatory
         run: |
           if OS1_RELEASE_MODE=distribution products/os1-mac-runtime/scripts/build-release.sh; then
