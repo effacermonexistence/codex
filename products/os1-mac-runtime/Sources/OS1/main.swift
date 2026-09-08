@@ -3990,7 +3990,7 @@ final class CodexAppServerClient: @unchecked Sendable {
         _ = try request(
             "initialize",
             params: [
-                "clientInfo": ["name": "OS-1 CLODEX", "version": "0.9.35"],
+                "clientInfo": ["name": "OS-1 CLODEX", "version": "0.9.36"],
                 "capabilities": ["experimentalApi": true],
             ],
             deadline: deadline
@@ -4063,8 +4063,8 @@ final class CodexAppServerClient: @unchecked Sendable {
         var params: [String: Any] = [
             "cwd": workspace,
             "developerInstructions": instructions,
-            "approvalPolicy": "never",
-            "approvalsReviewer": "auto_review",
+            "approvalPolicy": UnifiedExecution.codexApprovalPolicy,
+            "approvalsReviewer": UnifiedExecution.codexApprovalsReviewer,
             "sandbox": sandbox,
             "runtimeWorkspaceRoots": [workspace],
         ]
@@ -4181,8 +4181,8 @@ final class CodexAppServerClient: @unchecked Sendable {
             "input": [["type": "text", "text": prompt]],
             "cwd": workspace,
             "effort": effort,
-            "approvalPolicy": "never",
-            "approvalsReviewer": "auto_review",
+            "approvalPolicy": UnifiedExecution.codexApprovalPolicy,
+            "approvalsReviewer": UnifiedExecution.codexApprovalsReviewer,
             "sandboxPolicy": sandboxPolicy,
             "runtimeWorkspaceRoots": [workspace],
             "turnTrigger": "os1",
@@ -7297,7 +7297,9 @@ func selfTest() throws {
     let wireParams = wireRequest["params"] as! [String: Any]
     guard (wireParams["input"] as? [[String: Any]])?.first?["text"] as? String == sourcePrompt,
           wireParams["threadId"] as? String == recoveredSession,
-          wireParams["approvalPolicy"] as? String == "never",
+          wireParams["approvalPolicy"] as? String == UnifiedExecution.codexApprovalPolicy,
+          wireParams["approvalPolicy"] as? String == "on-request",
+          wireParams["approvalsReviewer"] as? String == UnifiedExecution.codexApprovalsReviewer,
           wireParams["approvalsReviewer"] as? String == "auto_review",
           (wireParams["sandboxPolicy"] as? [String: Any])?["type"] as? String == "readOnly" else {
         throw OS1Error.message("Recovery changed the objective, source, session or permission on the wire")
@@ -7840,7 +7842,7 @@ struct OS1Main {
             guard let command = arguments.first else { usage(); return }
             if try await fleetCommand(arguments) { return }
             switch command {
-            case "version", "--version", "-V": print("OS-1 Runtime 0.9.35 (approval-boundaries-build86)")
+            case "version", "--version", "-V": print("OS-1 Runtime 0.9.36 (automatic-review-build87)")
             case "doctor": try doctor()
             case "sidebar-pin":
                 guard (4...5).contains(arguments.count), arguments[1] == "codex",

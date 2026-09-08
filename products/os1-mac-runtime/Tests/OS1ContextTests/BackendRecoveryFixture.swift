@@ -116,8 +116,12 @@ func runBackendRecoveryFixtures() throws {
     let savedSafety = try JSONDecoder().decode(BackendFailureNotice.self, from: JSONEncoder().encode(safetyNotice))
     check(savedSafety == safetyNotice, "safety denial and progress survive failure transport")
     check(UnifiedExecution.permissionInstructions.contains("without asking for the same consent again") &&
+        UnifiedExecution.permissionInstructions.contains("reviewed automatically") &&
+        UnifiedExecution.permissionInstructions.contains("existing reviewed repository operator scripts") &&
         UnifiedExecution.permissionInstructions.contains("not blanket approval") &&
         UnifiedExecution.permissionInstructions.contains("must not be bypassed"), "bounded non-redundant consent instruction")
+    check(UnifiedExecution.codexApprovalPolicy == "on-request" &&
+        UnifiedExecution.codexApprovalsReviewer == "auto_review", "automatic reviewer must have an interactive approval policy")
     check(BackendFailureNotice(provider: "claude", sessionID: "../escape", blocker: .timeout, dispatchStage: .dispatched).sessionID == nil, "reject invalid native IDs")
     check(BackendRecovery.readbackPrompt(objective: "deploy v152").contains("deploy v152") &&
         BackendRecovery.readbackPrompt(objective: "deploy v152").contains("지금 실행할 명령이 아닙니다"), "readback retains objective but not replay authority")
