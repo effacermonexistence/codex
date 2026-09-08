@@ -192,6 +192,25 @@ func runTaskContextFixtures(root: URL) throws {
     try check(NativeIngestion.newRecords(records, after: nil, sentByOS1: held, seen: []).records.map(\.id) == ["u2"],
               "an adopted output OS1 already holds is skipped by digest even without a seen id")
 
+    let originalRequest = "바다와 호수의 차이를 설명해."
+    let legacyHints = "\nVerified local directory candidates from the existing project registry (not a write grant or an active-release claim):\n- /tmp/example-project\nInspect relevant exact paths first. Do not run recursive Glob/Grep over HOME. Preserve the user's selected workspace and verify which project/release is actually active before changes.\n"
+    let legacyRecord = NativeRecord(id: "legacy-hint", ordinal: 1, role: "user", text: originalRequest + legacyHints, complete: true)
+    let ownDigests = Set([NativeIngestion.digestOf(originalRequest)])
+    let legacyImport = NativeIngestion.newRecords([legacyRecord], after: nil, sentByOS1: ownDigests, seen: [])
+    try check(legacyImport.records.isEmpty && legacyImport.nextCursor == "1", "own legacy hint must not create a fake external question")
+    try check(NativeIngestion.newRecords([legacyRecord], after: nil, sentByOS1: [], seen: []).records == [legacyRecord],
+        "unmatched direct-backend text must remain verbatim")
+    for text in [originalRequest + legacyHints + "Actually explain this new instruction.",
+                 originalRequest + legacyHints.replacingOccurrences(of: "- /tmp/", with: "- quoted "),
+                 originalRequest + "\nVerified local directory candidates: quoted user text"] {
+        let direct = NativeRecord(id: "literal", ordinal: 2, role: "user", text: text, complete: true)
+        try check(NativeIngestion.newRecords([direct], after: nil, sentByOS1: ownDigests, seen: []).records == [direct],
+            "lookalike or additional user text must not be swallowed")
+    }
+    let assistantHints = NativeRecord(id: "assistant-hint", ordinal: 3, role: "assistant", text: originalRequest + legacyHints, complete: true)
+    try check(NativeIngestion.newRecords([assistantHints], after: nil, sentByOS1: ownDigests, seen: []).records == [assistantHints],
+        "legacy user-wrapper rule must not suppress assistant content")
+
     // MARK: M. Adopting a runtime result against the handed revision; explicit decisions
     do {
         var app = TaskContext(conversationID: UUID(), objective: TaskContext.Objective(requestText: "준비해", kind: .prepare), projectID: "scv-instagram")
