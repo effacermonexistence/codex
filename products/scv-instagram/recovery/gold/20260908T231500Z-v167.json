@@ -1,0 +1,52 @@
+{
+  "schema": "scv-approved-recovery-gold-v1",
+  "gold_id": "scv-instagram-recovery-gold-20260908T231500Z-v167",
+  "approved_by_owner": true,
+  "promoted_at_utc": "2026-09-08T23:15:00Z",
+  "snapshot_at_utc": "2026-09-08T22:15:57Z",
+  "snapshot_at_america_los_angeles": "2026-09-08T15:15:57-07:00",
+  "meaning": "Second explicitly approved recovery baseline (v167, 2026-09-08). Separate from the first Gold (v151, 2026-09-05), which stays restorable by its own id. Not latest edits, deployment, backup or behavioral GOLD-3",
+  "bucket": "omar-private-archive",
+  "r2_record_key": "scv-instagram-automation/recovery-gold/20260908T231500Z/GOLD.json",
+  "recovery_point_id": "scv-instagram-20260908T221557Z-v167-clean-current",
+  "release_id": "scv-instagram-single-20260908-v167",
+  "descriptor_sha256": "2f12a00d12114bbbb05080438dda88a6278a82ae65a9fc9aaaff70a2a25ad4b6",
+  "content_fingerprint_sha256": "6b85a63a25c23e9815491413eeb895e6b78ed8faa523f18aefea6b88f392faa7",
+  "manifests": [
+    {
+      "key": "scv-instagram-automation/recovery-points/20260908T221557Z/SCV_RECOVERY_POINT.json",
+      "bytes": 7099,
+      "sha256": "fb71ecc4d4662972a4256ae41fbeba09e99ac9360540d075a2e2d0da2c3a5fb6"
+    },
+    {
+      "key": "scv-instagram-automation/recovery-extensions/20260908T223100Z-v167/SCV_RECOVERY_EXTENSION.json",
+      "bytes": 4296,
+      "sha256": "61548a196b36ae1274fbeada94e63cde08bf623cc4bc4284dd6ee8ac1f9c5e23"
+    }
+  ],
+  "included": [
+    "sealed code and prompts",
+    "application configuration",
+    "frozen secret generation references",
+    "OS and dependencies (when the closure extension is listed)",
+    "separately timestamped saved state",
+    "owner-verified pre-reset state capture"
+  ],
+  "previous_gold": {
+    "gold_id": "scv-instagram-recovery-gold-20260905T054647Z-v151",
+    "record_path": "gold/20260905T054647Z-v151.json",
+    "untouched": true,
+    "restorable_by": "recover-gold.mjs --gold scv-instagram-recovery-gold-20260905T054647Z-v151"
+  },
+  "manychat_configuration_in_scope": false,
+  "default_restore_mode": "code-prompt-settings; preserve current customer state",
+  "timestamped_customer_state_restore_requires_explicit_request": true,
+  "ordinary_edit_or_deploy_promotes_gold": false,
+  "preserve_april_gold_and_behavioral_gold3": true,
+  "activation": "operator must resolve current target, preserve live state, restore, deploy and verify; acquisition alone is not activation",
+  "production_cutover_automatic": false,
+  "append_only_by_operator_policy": true,
+  "provider_immutable": false,
+  "contains_credentials": false,
+  "contains_customer_data": false
+}

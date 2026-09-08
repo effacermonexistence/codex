@@ -1,4 +1,4 @@
-const SENTINEL_SCHEMA = 'scv-instagram-drift-sentinel-2026-09-08-v28-v167-running-release-v151-recovery-gold'
+const SENTINEL_SCHEMA = 'scv-instagram-drift-sentinel-2026-09-08-v29-v167-running-release-v167-recovery-gold'
 // GOLD-3 (2026-09-03): v148 (owner-verified v145 plus the owner-ordered polish, live red-team verified) frozen as the reference; the pointer and manifest below are pinned by hash.
 const GOLD_LATEST_KEY = 'scv-instagram-automation/gold/LATEST.json'
 const GOLD_MANIFEST_KEY = 'scv-instagram-automation/gold/SCV_GOLD_MANIFEST_v148.json'
@@ -8,33 +8,39 @@ const GOLD_MANIFEST_SHA256 = '31ea4507381e6ec2c3ce4458d70af4a311f331a4a26651f5d9
 // Comparing the gold manifest against the running release id made the check fail by construction.
 const GOLD_RELEASE_ID = 'scv-instagram-single-20260902-v148'
 const GOLD_CONTENT_FINGERPRINT = '3a9a18631443f4738d13dd803f080979ff4d21ab0d9de1f5054b2f26e2ea3609'
-// v16 (2026-09-05): the RUNNING release (v153, the anchored-reference fix) and the
-// latest RECOVERY POINT (the owner-approved v151 Gold) are different objects; the recovery-point
-// checks below pin the Gold's own release identity.
+// v29 (2026-09-08): the running release and latest approved recovery Gold are both v167.
+// v151 remains a separately pinned previous recovery point and GOLD-3 v148 remains unchanged.
 const RELEASE_ID = 'scv-instagram-single-20260908-v167'
 const CONTENT_FINGERPRINT = '6b85a63a25c23e9815491413eeb895e6b78ed8faa523f18aefea6b88f392faa7'
 const RELEASE_MANIFEST = '2f12a00d12114bbbb05080438dda88a6278a82ae65a9fc9aaaff70a2a25ad4b6'
-const RECOVERY_POINT_RELEASE_ID = 'scv-instagram-single-20260904-v151'
-const RECOVERY_POINT_CONTENT_FINGERPRINT = 'd60dfc9f1f082f9d5e268556c0eb43364b5f1d9b1217f6a1f95d04546043c151'
-const RECOVERY_POINT_RELEASE_MANIFEST = 'b307c86bb59e1287afe746f50d8ccd036d7b1bea70820ef3f1facce6baef7d6c'
+const RECOVERY_POINT_RELEASE_ID = 'scv-instagram-single-20260908-v167'
+const RECOVERY_POINT_CONTENT_FINGERPRINT = '6b85a63a25c23e9815491413eeb895e6b78ed8faa523f18aefea6b88f392faa7'
+const RECOVERY_POINT_RELEASE_MANIFEST = '2f12a00d12114bbbb05080438dda88a6278a82ae65a9fc9aaaff70a2a25ad4b6'
 const VISIBLE_MODEL = 'gpt-5.4-mini-2026-03-17'
 const RECOVERY_LATEST_KEY = 'scv-instagram-automation/recovery-points/LATEST.json'
-const RECOVERY_CATALOG_KEY = 'scv-instagram-automation/recovery-points/catalogs/20260904T223113Z/RECOVERY_POINT_CATALOG.json'
-const RECOVERY_CATALOG_SHA256 = '97129fd50a26fc87d9f47d203a1c37f195417174e9cafa10c6147052637395b8'
-const CURRENT_RECOVERY_POINT_ID = 'scv-instagram-20260904T222549Z-v151-clean-current'
-const CURRENT_RECOVERY_POINT_KEY = 'scv-instagram-automation/recovery-points/20260904T222549Z/SCV_RECOVERY_POINT.json'
-const CURRENT_RECOVERY_POINT_SHA256 = '75440f5063fb7deab879df404ea8fa7011fece7c3da1f7af93c042ee9a337a5a'
-const PREVIOUS_RECOVERY_POINT_ID = 'scv-instagram-20260904T210539Z-v150-clean-current-before-v151'
-const PREVIOUS_RECOVERY_POINT_KEY = 'scv-instagram-automation/recovery-points/20260904T210539Z/SCV_RECOVERY_POINT.json'
-const PREVIOUS_RECOVERY_POINT_SHA256 = '4d4274e7ac9393313ef77662116e076d85bbe0b98e70ab26bb97df7dba9b23da'
-const RESTORE_TOOL_KEY = 'scv-instagram-automation/recovery-points/20260904T222549Z/restore-recovery-point.js'
+const RECOVERY_CATALOG_KEY = 'scv-instagram-automation/recovery-points/catalogs/20260908T231800Z/RECOVERY_POINT_CATALOG.json'
+const RECOVERY_CATALOG_SHA256 = '1ba20b317f8b821e2ba48fe8e74b4e2983020c76c755cb612cd8b33c5bfaa9cb'
+const CURRENT_RECOVERY_POINT_ID = 'scv-instagram-20260908T221557Z-v167-clean-current'
+const CURRENT_RECOVERY_POINT_KEY = 'scv-instagram-automation/recovery-points/20260908T221557Z/SCV_RECOVERY_POINT.json'
+const CURRENT_RECOVERY_POINT_SHA256 = 'fb71ecc4d4662972a4256ae41fbeba09e99ac9360540d075a2e2d0da2c3a5fb6'
+const PREVIOUS_RECOVERY_POINT_ID = 'scv-instagram-20260904T222549Z-v151-clean-current'
+const PREVIOUS_RECOVERY_POINT_KEY = 'scv-instagram-automation/recovery-points/20260904T222549Z/SCV_RECOVERY_POINT.json'
+const PREVIOUS_RECOVERY_POINT_SHA256 = '75440f5063fb7deab879df404ea8fa7011fece7c3da1f7af93c042ee9a337a5a'
+const RESTORE_TOOL_KEY = 'scv-instagram-automation/recovery-points/20260908T221557Z/restore-recovery-point.js'
 const RESTORE_TOOL_SHA256 = 'b03571cee66bbb7bf08bcecda38a6ba7657a0426e51b0f6c61337171f39883a3'
+const APPROVED_RECOVERY_GOLD_ID = 'scv-instagram-recovery-gold-20260908T231500Z-v167'
+const APPROVED_RECOVERY_GOLD_RECORD_KEY = 'scv-instagram-automation/recovery-gold/20260908T231500Z/GOLD.json'
+const APPROVED_RECOVERY_GOLD_RECORD_SHA256 = '41ec7dae8f527470f0c471e5425605ff692306c81eab6cf8d7e9c4f9b2605038'
+const APPROVED_RECOVERY_GOLD_RECORD_BYTES = 2608
+const APPROVED_RECOVERY_EXTENSION_KEY = 'scv-instagram-automation/recovery-extensions/20260908T223100Z-v167/SCV_RECOVERY_EXTENSION.json'
+const APPROVED_RECOVERY_EXTENSION_SHA256 = '61548a196b36ae1274fbeada94e63cde08bf623cc4bc4284dd6ee8ac1f9c5e23'
+const APPROVED_RECOVERY_EXTENSION_BYTES = 4296
 const GOLDEN_SNAPSHOT_ID = 'scv-instagram-20260420T152810-local-origin'
 const APRIL_GOLDEN_KEY = 'scv-instagram-automation/timestamped-snapshots/2026-04-20/20260420T152810-local/origin-snapshot.tar.gz'
 const APRIL_GOLDEN_SHA256 = '1e5225d4d494e55cefec5ee0a58be61e92eeccab6e2d3ea9d1d0f02ccdceba98'
 const APRIL_GOLDEN_BYTES = 40715
-const RESET_RECEIPT_SHA256 = '1d812f0a4e052a4edb9661a78b87e9ceb2e4dad5e1d7bd54af7f128454f1567f'
-const PRE_RESET_AUDIT_REMAINING_COUNT = 33
+const RESET_RECEIPT_SHA256 = 'ef11b1fb98bb1115ae0416c5a7ba5a2f15edb5eddb420fa9a16a26c8be53d6e0'
+const PRE_RESET_AUDIT_REMAINING_COUNT = 24
 const MAX_CANARY_AGE_MS = 90 * 60 * 1000
 const MAX_DRIFT_AGE_MS = 3 * 60 * 1000
 const FETCH_TIMEOUT_MS = 20_000
@@ -47,33 +53,41 @@ const PREFIX = 'scv-instagram-automation/drift-attestations'
 
 const EXPECTED_RECOVERY_COMPONENTS = Object.freeze([
   Object.freeze({ name: 'runtime', required: true,
-    key: 'scv-instagram-automation/release-ready/20260904T221512Z/v151/scv-instagram-single-20260904T221512Z-v151-liveness-and-recoverability.tar.gz',
-    sha256: '5b70ce46742e342a855152734be267ad5b98807918c68c174eddf024ee467fdd', bytes: 1409301 }),
+    key: 'scv-instagram-automation/release-ready/20260908T203126Z/v167/scv-instagram-single-20260908-v167-any-picture-is-a-design-r2.tar.gz',
+    sha256: '94ce2f59b5f3724118cfcabe16cfb7f267f00f7c6f01841be42dbf6c77e56afe', bytes: 1494324 }),
   Object.freeze({ name: 'release_manifest', required: true,
-    key: 'scv-instagram-automation/recovery-points/20260904T222549Z/SCV_SINGLE_RELEASE.json',
-    sha256: RECOVERY_POINT_RELEASE_MANIFEST, bytes: 44201 }),
+    key: 'scv-instagram-automation/recovery-points/20260908T221557Z/SCV_SINGLE_RELEASE.json',
+    sha256: '2f12a00d12114bbbb05080438dda88a6278a82ae65a9fc9aaaff70a2a25ad4b6', bytes: 45038 }),
   Object.freeze({ name: 'production_state', required: true,
-    key: 'scv-instagram-automation/timestamped-snapshots/omar-system-reset/20260904T222549Z/post-reset/prod-v151.tar.gz',
-    sha256: '493382b7c383ffe0c7ad17a7d09a17b4b9095f1baca0eeeebd83e1949da322bb', bytes: 4044415,
-    namespace_tree_sha256: '336e513903a4b12022885e798d415250b8dd9da91cad7b0296ab6f59a9351e62', namespace_entry_count: 2128 }),
+    key: 'scv-instagram-automation/timestamped-snapshots/omar-system-reset/20260908T221109Z/post-reset/prod-v167.tar.gz',
+    sha256: '54673012af4fc4e5f84e2a214ef5a5328512ad541b9c8bd19a23e7743eee7e37', bytes: 4713305,
+    namespace_tree_sha256: '926ddb10093d2ad88664770ed042434e79f230ee5d303573c5a281d3d2a0edbb', namespace_entry_count: 2609 }),
   Object.freeze({ name: 'pre_reset_production_state', required: false,
-    key: 'scv-instagram-automation/timestamped-snapshots/omar-system-reset/20260904T222549Z/pre-reset/prod-v151.tar.gz',
-    sha256: 'a6f6c51ea077b5117d06aeb75ec67814fb910c728b8b9d5cf03efd7ac04efb2a', bytes: 4231470,
-    namespace_tree_sha256: '2d720d7f58bc49e117ec98dc83afd4da0ba62f134c42d169c528c2c24027bca3', namespace_entry_count: 2161 }),
+    key: 'scv-instagram-automation/timestamped-snapshots/omar-system-reset/20260908T221109Z/pre-reset/prod-v167.tar.gz',
+    sha256: 'ff358835adc8642c10cdc86e9c744552c035254a735b41a7f805820fb3a64c9b', bytes: 4801376,
+    namespace_tree_sha256: '8d55ffadbbe0260aff12ad25e7b33c7434492376de27dcf68be1e81fc9256a02', namespace_entry_count: 2633 }),
   Object.freeze({ name: 'reset_receipt', required: true,
-    key: 'scv-instagram-automation/timestamped-snapshots/omar-system-reset/20260904T222549Z/execution.omar-system-purge.json',
-    sha256: RESET_RECEIPT_SHA256, bytes: 6552 }),
+    key: 'scv-instagram-automation/timestamped-snapshots/omar-system-reset/20260908T221109Z/execution.omar-system-purge.json',
+    sha256: 'ef11b1fb98bb1115ae0416c5a7ba5a2f15edb5eddb420fa9a16a26c8be53d6e0', bytes: 5814 }),
   Object.freeze({ name: 'production_environment_manifest', required: true,
-    key: 'scv-instagram-automation/recovery-points/20260904T222549Z/SCV_PRODUCTION_ENV_MANIFEST.json',
-    sha256: 'd89775731a4f32fdeba734f64bb28604e3d9a794863837fbcab749fa936f3b03', bytes: 19886 }),
+    key: 'scv-instagram-automation/recovery-points/20260908T221557Z/SCV_PRODUCTION_ENV_MANIFEST.json',
+    sha256: '1e1dae021e5a31e339dfded166f002640abce8c8ad51429e8d650caa5f78330f', bytes: 19886 }),
   Object.freeze({ name: 'live_redteam_evidence', required: true,
-    key: 'scv-instagram-automation/recovery-points/20260904T222549Z/SCV_LIVE_REDTEAM_EVIDENCE.json',
-    sha256: 'f9cf1288bb7a8737a30523fd81869d91532d6fdea3bbc4d73bfa454078ec78a9', bytes: 13937 }),
+    key: 'scv-instagram-automation/recovery-points/20260908T221557Z/SCV_LIVE_REDTEAM_EVIDENCE.json',
+    sha256: '10f2b1bace8ab9ef86aadaf9c59f1643bef2924fe356367fd282562a41372687', bytes: 1243 }),
   Object.freeze({ name: 'final_production_readiness', required: true,
-    key: 'scv-instagram-automation/recovery-points/20260904T222549Z/SCV_PRODUCTION_READINESS.json',
-    sha256: '1b658be94aa21ec57713ca9870d7316bdfb3fe37215398b6090aa1c9ccfcd0af', bytes: 1938 }),
+    key: 'scv-instagram-automation/recovery-points/20260908T221557Z/SCV_PRODUCTION_READINESS.json',
+    sha256: '59f485b9aaa1da0b4bc16d08506de1a842da69a7911a18cdc3deba4406f15bb6', bytes: 1939 }),
   Object.freeze({ name: 'restore_tool', required: true,
-    key: RESTORE_TOOL_KEY, sha256: RESTORE_TOOL_SHA256, bytes: 6317 })
+    key: 'scv-instagram-automation/recovery-points/20260908T221557Z/restore-recovery-point.js',
+    sha256: 'b03571cee66bbb7bf08bcecda38a6ba7657a0426e51b0f6c61337171f39883a3', bytes: 6317 }),
+  Object.freeze({ name: 'owner_verified_state_capture', required: false,
+    key: 'scv-instagram-automation/timestamped-snapshots/gold/20260908T221005Z/prod-v167-gold.tar.gz',
+    sha256: '0afeceee3d477e332c3e768ff675911560aa61882152d03c0570a6f9ed5b1fb0', bytes: 4801333,
+    namespace_tree_sha256: 'ea95946196f4dc6bebfa6a3a72e4b38c9224dc83780be9859ee684abe18284cf', namespace_entry_count: 2633 }),
+  Object.freeze({ name: 'owner_verified_state_capture_receipt', required: false,
+    key: 'scv-instagram-automation/timestamped-snapshots/gold/20260908T221005Z/execution.omar-system-gold-capture.json',
+    sha256: 'f4d334ae2d92502fb79a6f9bada2d849b91fe6fe7d7015127474ac00a073d445', bytes: 2490 })
 ])
 
 const TARGETS = Object.freeze([
@@ -256,6 +270,9 @@ async function checkRecoveryPoint(archive, options = {}) {
     check(latest?.catalog?.sha256 === RECOVERY_CATALOG_SHA256, 'recovery_catalog_pointer_hash')
     check(latest?.restore_tool?.key === RESTORE_TOOL_KEY, 'restore_tool_key')
     check(latest?.restore_tool?.sha256 === RESTORE_TOOL_SHA256, 'restore_tool_pointer_hash')
+    check(latest?.approved_gold?.gold_id === APPROVED_RECOVERY_GOLD_ID, 'approved_recovery_gold_id')
+    check(latest?.approved_gold?.record_key === APPROVED_RECOVERY_GOLD_RECORD_KEY, 'approved_recovery_gold_record_key')
+    check(latest?.approved_gold?.record_sha256 === APPROVED_RECOVERY_GOLD_RECORD_SHA256, 'approved_recovery_gold_record_hash')
     check(latest?.restore_requires_exact_recovery_point_id === true, 'recovery_exact_id_required')
     check(latest?.production_cutover_automatic === false, 'recovery_automatic_cutover')
     check(latest?.private_r2_only === true, 'recovery_private_r2')
@@ -294,7 +311,10 @@ async function checkRecoveryPoint(archive, options = {}) {
       check(current?.sha256 === CURRENT_RECOVERY_POINT_SHA256, 'recovery_catalog_current_hash')
       check(current?.current === true, 'recovery_catalog_current_flag')
       check(current?.staged_restore_verified === true, 'recovery_catalog_current_restore')
-      check(Number(current?.live_redteam_cases_passed) === 18, 'recovery_catalog_redteam')
+      check(Number(current?.live_redteam_cases_passed) === 1, 'recovery_catalog_redteam')
+      check(current?.approved_gold_id === APPROVED_RECOVERY_GOLD_ID, 'recovery_catalog_approved_gold_id')
+      check(current?.gold_record_key === APPROVED_RECOVERY_GOLD_RECORD_KEY, 'recovery_catalog_gold_record_key')
+      check(current?.gold_record_sha256 === APPROVED_RECOVERY_GOLD_RECORD_SHA256, 'recovery_catalog_gold_record_hash')
     }
 
     const pointResult = await readBoundedR2Json(archive, CURRENT_RECOVERY_POINT_KEY)
@@ -315,7 +335,7 @@ async function checkRecoveryPoint(archive, options = {}) {
       check(point?.capture_evidence?.full_local_test_exit_zero === true, 'recovery_point_local_tests')
       check(point?.capture_evidence?.staging_isolated_full_test_exit_zero === true,
         'recovery_point_staging_tests')
-      check(Number(point?.capture_evidence?.live_redteam_semantic_passed) === 18,
+      check(Number(point?.capture_evidence?.live_redteam_semantic_passed) === 1,
         'recovery_point_redteam')
       check(Number(point?.capture_evidence?.paused_worker_count) === 10,
         'recovery_point_worker_barrier')
@@ -349,8 +369,10 @@ async function checkRecoveryPoint(archive, options = {}) {
 
     const pinnedObjects = [
       ...EXPECTED_RECOVERY_COMPONENTS,
-      { key: PREVIOUS_RECOVERY_POINT_KEY, sha256: PREVIOUS_RECOVERY_POINT_SHA256, bytes: 4188 },
-      { key: APRIL_GOLDEN_KEY, sha256: APRIL_GOLDEN_SHA256, bytes: APRIL_GOLDEN_BYTES }
+      { key: PREVIOUS_RECOVERY_POINT_KEY, sha256: PREVIOUS_RECOVERY_POINT_SHA256, bytes: 5725 },
+      { key: APRIL_GOLDEN_KEY, sha256: APRIL_GOLDEN_SHA256, bytes: APRIL_GOLDEN_BYTES },
+      { key: APPROVED_RECOVERY_GOLD_RECORD_KEY, sha256: APPROVED_RECOVERY_GOLD_RECORD_SHA256, bytes: APPROVED_RECOVERY_GOLD_RECORD_BYTES },
+      { key: APPROVED_RECOVERY_EXTENSION_KEY, sha256: APPROVED_RECOVERY_EXTENSION_SHA256, bytes: APPROVED_RECOVERY_EXTENSION_BYTES }
     ]
     const objectChecks = await Promise.all(pinnedObjects.map((expected) => verifyObject(expected)))
     for (const result of objectChecks) {
@@ -438,7 +460,9 @@ async function runSentinel(env, options = {}) {
       current_recovery_point_sha256: CURRENT_RECOVERY_POINT_SHA256,
       previous_recovery_point_id: PREVIOUS_RECOVERY_POINT_ID,
       golden_snapshot_id: GOLDEN_SNAPSHOT_ID,
-      catalog_sha256: RECOVERY_CATALOG_SHA256
+      catalog_sha256: RECOVERY_CATALOG_SHA256,
+      approved_recovery_gold_id: APPROVED_RECOVERY_GOLD_ID,
+      approved_recovery_gold_record_sha256: APPROVED_RECOVERY_GOLD_RECORD_SHA256
     },
     checks,
     recovery_point: recoveryPoint,
@@ -506,7 +530,9 @@ export default {
       latest?.expected_recovery?.current_recovery_point_sha256 === CURRENT_RECOVERY_POINT_SHA256 &&
       latest?.expected_recovery?.previous_recovery_point_id === PREVIOUS_RECOVERY_POINT_ID &&
       latest?.expected_recovery?.golden_snapshot_id === GOLDEN_SNAPSHOT_ID &&
-      latest?.expected_recovery?.catalog_sha256 === RECOVERY_CATALOG_SHA256
+      latest?.expected_recovery?.catalog_sha256 === RECOVERY_CATALOG_SHA256 &&
+      latest?.expected_recovery?.approved_recovery_gold_id === APPROVED_RECOVERY_GOLD_ID &&
+      latest?.expected_recovery?.approved_recovery_gold_record_sha256 === APPROVED_RECOVERY_GOLD_RECORD_SHA256
     const healthy = latest?.ok === true && expectedReleaseMatches && expectedRecoveryMatches
     return json({
       ok: healthy,
@@ -528,7 +554,9 @@ export default {
         current_recovery_point_sha256: CURRENT_RECOVERY_POINT_SHA256,
         previous_recovery_point_id: PREVIOUS_RECOVERY_POINT_ID,
         golden_snapshot_id: GOLDEN_SNAPSHOT_ID,
-        catalog_sha256: RECOVERY_CATALOG_SHA256
+        catalog_sha256: RECOVERY_CATALOG_SHA256,
+        approved_recovery_gold_id: APPROVED_RECOVERY_GOLD_ID,
+        approved_recovery_gold_record_sha256: APPROVED_RECOVERY_GOLD_RECORD_SHA256
       }
     }, healthy ? 200 : 503)
   },
