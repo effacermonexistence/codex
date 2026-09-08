@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { executionBindingMatches, type Artifact } from "../src/evaluator";
+import { executionBindingMatches, verificationRequestForIssuedPolicy, type Artifact } from "../src/evaluator";
 
 const empty = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
 const base: Artifact = {
@@ -12,6 +12,15 @@ const base: Artifact = {
 };
 
 describe("source-locked REVAS evaluator boundary", () => {
+  it("verifies an in-flight result with the RCC policy that issued its route", () => {
+    const issuingPolicy = "a".repeat(64);
+    expect(verificationRequestForIssuedPolicy(issuingPolicy, { route_id: "route", attempt: 1 })).toEqual({
+      policy_sha256: issuingPolicy,
+      route_id: "route",
+      attempt: 1,
+    });
+  });
+
   it("rejects client-side model, effort, permission, and contract substitution", () => {
     const expected = {
       provider: base.provider,

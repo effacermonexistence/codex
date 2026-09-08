@@ -489,6 +489,7 @@ public extension TaskContext.ObjectiveKind {
         let value = request.precomposedStringWithCanonicalMapping.lowercased()
         if ScopeResolution.resolve(value).scope == .readOnly,
            ["설명", "explain", "왜", "why", "뭐야", "what is", "어떻게 되", "알려줘"].contains(where: value.contains) { return .explain }
+        if ScopeResolution.resolve(value).scope == .workspaceWrite { return .modify }
         if ["검증", "verify", "확인해", "테스트해", "check that"].contains(where: value.contains) { return .verify }
         if PreparationIntent.detect(request) != nil { return .prepare }
         if ProjectMaterialIntent.scv(request)?.requiresTransformation == false { return .acquire }
@@ -569,6 +570,16 @@ public struct PreparationIntent: Equatable, Sendable {
                                            "don't modify", "do not change", "don't change", "explain only", "read only", "읽기만"]
     static let refusalMarkers = ["손보지 마", "손보지마", "손대지 마", "손대지마", "준비하지 마", "준비 하지 마", "이어서 하지 마", "계속하지 마", "don't prepare", "do not prepare", "don't continue"]
 
+    private static func containsProjectAlias(_ alias: String, in value: String) -> Bool {
+        // ASCII project names must be standalone tokens. Without this guard,
+        // content such as OS1_AUTO_REVIEW_OK is mistaken for a request to
+        // prepare the OS1 project and the requested file mutation never runs.
+        guard alias.unicodeScalars.allSatisfy({ $0.isASCII }) else { return value.contains(alias) }
+        let escaped = NSRegularExpression.escapedPattern(for: alias)
+        return value.range(of: #"(?i)(?<![A-Za-z0-9_])"# + escaped + #"(?![A-Za-z0-9_])"#,
+                           options: .regularExpression) != nil
+    }
+
     public static func detect(_ prompt: String) -> PreparationIntent? {
         let value = prompt.precomposedStringWithCanonicalMapping.lowercased()
         guard !value.isEmpty else { return nil }
@@ -579,7 +590,9 @@ public struct PreparationIntent: Equatable, Sendable {
         let prepare = prepareMarkers.contains(where: value.contains)
         let continues = continueMarkers.contains(where: value.contains)
         let explains = explainMarkers.contains(where: value.contains)
-        let projectID = projectAliases.first { $0.aliases.contains(where: value.contains) }?.id
+        let projectID = projectAliases.first { project in
+            project.aliases.contains { containsProjectAlias($0, in: value) }
+        }?.id
         let kind: Kind
         if explains && (continues || prohibited) && !prepare { kind = .explainFromContext }
         else if prepare { kind = .prepare }
@@ -642,7 +655,26 @@ public struct ScopeResolution: Equatable, Sendable {
 
     static let positiveEdit = ["손봐", "손 봐", "수정해", "수정하고", "수정 해", "고쳐", "고치고", "바꿔", "바꾸고", "구현해", "추가해", "삭제해", "리팩터", "만들어",
                                "fix ", "modify ", "edit ", "implement ", "add ", "remove ", "rename ", "change the code", "update the code"]
+    // English imperatives often identify the target by filename instead of
+    // saying "file" (for example, "create result.txt"). Keep this narrower
+    // than a bare "write" so ordinary requests such as "write a summary" do
+    // not gain workspace authority.
+    static let positiveFileEditPatterns = [
+        #"(?i)\b(?:create|write|save|rename|delete|remove|edit|modify|update)\s+(?:(?:a|an|the)\s+)?(?:file|directory|folder)\b"#,
+        #"(?i)\b(?:create|write|save|rename|delete|remove|edit|modify|update)\s+(?:(?:a|an|the)\s+)?[A-Za-z0-9][A-Za-z0-9._-]*\.[A-Za-z0-9]{1,16}\b"#,
+        #"(?i)\b(?:write|save)\s+(?:the\s+)?(?:result|content|output|changes?)\s+(?:in|into|to)\b"#,
+    ]
     static let negatedTargets: [(pattern: String, prohibition: String)] = [
+        // A trailing scope fence narrows an explicit edit; it does not revoke
+        // that edit. Consume it before the generic prohibition detector so
+        // "create x; do not modify anything else" remains a bounded write.
+        ("do not modify anything else", "do not modify anything else"),
+        ("don't modify anything else", "do not modify anything else"),
+        ("do not change anything else", "do not modify anything else"),
+        ("don't change anything else", "do not modify anything else"),
+        ("다른 것은 수정하지 마", "do not modify anything else"),
+        ("다른 건 수정하지 마", "do not modify anything else"),
+        ("그 외에는 수정하지 마", "do not modify anything else"),
         ("서버는 변경하지 마", "do not change the server"), ("서버를 변경하지 마", "do not change the server"), ("서버 변경하지 마", "do not change the server"),
         ("배포하지 마", "do not deploy"), ("배포는 하지 마", "do not deploy"), ("do not deploy", "do not deploy"), ("don't deploy", "do not deploy"),
         ("테스트를 실행하지 마", "do not run tests"), ("테스트 실행하지 마", "do not run tests"), ("테스트는 실행하지 마", "do not run tests"),
@@ -684,7 +716,8 @@ public struct ScopeResolution: Equatable, Sendable {
             remaining = remaining.replacingOccurrences(of: target.pattern, with: " ")
         }
         let generallyProhibited = generalProhibitions.contains(where: remaining.contains)
-        let asksEdit = positiveEdit.contains(where: remaining.contains)
+        let asksEdit = positiveEdit.contains(where: remaining.contains) ||
+            positiveFileEditPatterns.contains { remaining.range(of: $0, options: .regularExpression) != nil }
         if generallyProhibited && !asksEdit {
             if !prohibitions.contains("do not modify files") { prohibitions.append("do not modify files") }
             return ScopeResolution(scope: .readOnly, prohibitions: prohibitions)

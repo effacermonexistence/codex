@@ -11,6 +11,18 @@ export type ExpectedExecution = Pick<Artifact,
   "executor_contract_version" | "executor_contract_sha256"
 >;
 
+/**
+ * Bind result verification to the immutable RCC adapter that issued the
+ * route. During a rolling deployment, using the evaluator's current default
+ * adapter can reject a valid in-flight result at the policy-identity gate.
+ */
+export function verificationRequestForIssuedPolicy<T extends Record<string, unknown>>(
+  rccPolicySha256: string,
+  request: T,
+): T & { policy_sha256: string } {
+  return { policy_sha256: rccPolicySha256, ...request };
+}
+
 export function executionBindingMatches(artifact: Artifact, expected: ExpectedExecution): boolean {
   return artifact.provider === expected.provider &&
     artifact.action === expected.action &&

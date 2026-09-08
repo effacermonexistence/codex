@@ -1,4 +1,7 @@
 import { DurableObject } from "cloudflare:workers";
+import { appendCompletionObservation, completionFeedbackMatchesTask, validCompletionFeedback, validExecutionContext,
+  type CompletionObservation, type ExecutionContext } from "./execution-context";
+import { supportsCompletionFeedback } from "./capabilities";
 import {
   executionProfileFor, loadPolicyBundle, parseExecutionProfiles,
   type ExecutionProfiles, type ExecutionProvider, type PolicyBundle,
@@ -31,6 +34,8 @@ type RouteContext = {
   provider_preference: ProviderPreference;
   capacity_plan: CapacityPlan;
   available_codex_models: CodexModel[];
+  execution_context?: ExecutionContext;
+  current_run_observations?: CompletionObservation[];
   attempt: number;
 };
 type RouteSnapshot = RoutedStep & RouteContext & {
@@ -52,8 +57,8 @@ function exact(value: Record<string, unknown>, keys: readonly string[]): boolean
 function record(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
-function validCatalog(value: unknown): value is CodexModel[] {
-  return Array.isArray(value) && value.length >= 1 && value.length <= 32 &&
+function validCatalog(value: unknown, allowEmpty = false): value is CodexModel[] {
+  return Array.isArray(value) && value.length >= (allowEmpty ? 0 : 1) && value.length <= 32 &&
     new Set(value.map((item) => record(item) ? item.slug : undefined)).size === value.length &&
     value.every((item) => record(item) && exact(item, ["default_effort", "priority", "slug", "supported_efforts"]) &&
       typeof item.slug === "string" && MODEL.test(item.slug) && typeof item.default_effort === "string" &&
@@ -81,16 +86,21 @@ function profileAction(profiles: ExecutionProfiles, provider: ExecutionProvider,
   return matches[0]![0];
 }
 
-async function routeWithRcc(env: Env, bundle: PolicyBundle, context: RouteContext, retryProvider = ""): Promise<RoutedStep> {
+async function routeWithRcc(env: Env, bundle: PolicyBundle, context: RouteContext, retryProvider = ""): Promise<RoutedStep | undefined> {
   const value = await boundedBindingJson(env.RCC_V26, "route", {
     prompt: context.task,
+    policy_sha256: bundle.rcc.policy_sha256,
     provider_preference: context.provider_preference,
     codex_capacity: context.capacity_plan.codex,
     claude_capacity: context.capacity_plan.claude,
     attempt: context.attempt,
     retry_provider: retryProvider,
     available_codex_models: context.available_codex_models,
+    ...(context.execution_context ? { execution_context: context.execution_context } : {}),
+    ...(context.execution_context?.completion_feedback ? { current_run_observations: context.current_run_observations ?? [] } : {}),
   });
+  if (context.execution_context?.completion_feedback && record(value) && exact(value, ["status", "policy_sha256"]) &&
+    value.status === "no_eligible" && value.policy_sha256 === bundle.rcc.policy_sha256) return undefined;
   if (!record(value) || !exact(value, ["provider", "provider_pinned", "permission_profile", "model", "effort", "verification_profile", "route_id", "policy_sha256"]) ||
     !["local", "codex", "claude"].includes(String(value.provider)) || typeof value.provider_pinned !== "boolean" ||
     !["read_only", "workspace_write"].includes(String(value.permission_profile)) ||
@@ -125,6 +135,14 @@ export class RouteState extends DurableObject<Env> {
         rcc_policy_sha256 TEXT NOT NULL, executor_contract_version TEXT NOT NULL,
         executor_contract_sha256 TEXT NOT NULL, execution_profiles_json TEXT NOT NULL,
         verified_artifact_hash TEXT)`);
+      const columns = this.ctx.storage.sql.exec<{ name: string }>("PRAGMA table_info(route)").toArray();
+      if (!columns.some(column => column.name === "execution_context_json")) {
+        this.ctx.storage.sql.exec("ALTER TABLE route ADD COLUMN execution_context_json TEXT");
+      }
+      if (!columns.some(column => column.name === "current_run_observations_json")) {
+        this.ctx.storage.sql.exec("ALTER TABLE route ADD COLUMN current_run_observations_json TEXT");
+      }
+      this.ctx.storage.sql.exec("CREATE TABLE IF NOT EXISTS decisions (sequence INTEGER PRIMARY KEY, artifact_hash TEXT NOT NULL, response_json TEXT NOT NULL)");
     });
   }
 
@@ -143,8 +161,18 @@ export class RouteState extends DurableObject<Env> {
         input.policy_version, input.policy_sha256, input.rcc_policy_sha256,
         input.executor_contract_version, input.executor_contract_sha256, JSON.stringify(input.execution_profiles),
       );
+      if (input.execution_context) this.ctx.storage.sql.exec(
+        "UPDATE route SET execution_context_json=? WHERE singleton=1", JSON.stringify(input.execution_context));
       return "created";
     });
+  }
+
+  recordedDecision(sequence: number, hash: string): unknown | null {
+    const row = this.ctx.storage.sql.exec<{ artifact_hash: string; response_json: string }>(
+      "SELECT * FROM decisions WHERE sequence=?", sequence).toArray()[0];
+    if (!row) return null;
+    if (row.artifact_hash !== hash) throw new Error("result binding mismatch");
+    return JSON.parse(row.response_json);
   }
 
   snapshot(sequence: number): RouteSnapshot {
@@ -155,7 +183,12 @@ export class RouteState extends DurableObject<Env> {
     const profiles = parseExecutionProfiles(JSON.parse(String(row.execution_profiles_json)) as unknown);
     const expected = executionProfileFor(profiles, provider, action);
     const catalog = JSON.parse(String(row.codex_catalog_json)) as unknown;
-    if (!validCatalog(catalog)) throw new Error("invalid route state");
+    const executionContext: unknown = row.execution_context_json ? JSON.parse(String(row.execution_context_json)) : undefined;
+    if (executionContext !== undefined && !validExecutionContext(executionContext)) throw new Error("invalid route context");
+    if (!validCatalog(catalog, Boolean((executionContext as ExecutionContext | undefined)?.completion_feedback))) throw new Error("invalid route state");
+    const currentRun: unknown = row.current_run_observations_json ? JSON.parse(String(row.current_run_observations_json)) : [];
+    if (!Array.isArray(currentRun) || currentRun.length > 4 || !validCompletionFeedback({ schema: 1,
+      objective_sha256: "0".repeat(64), observations: currentRun })) throw new Error("invalid current run observations");
     return {
       provider, action, permission_profile: String(row.permission_profile) as PermissionProfile,
       max_steps: Number(row.max_steps), provider_pinned: Number(row.provider_pinned) === 1,
@@ -163,6 +196,8 @@ export class RouteState extends DurableObject<Env> {
       task: String(row.task), provider_preference: String(row.provider_preference) as ProviderPreference,
       capacity_plan: { codex: Number(row.codex_capacity), claude: Number(row.claude_capacity) },
       available_codex_models: catalog, attempt: Number(row.attempt), sequence: Number(row.sequence),
+      ...(executionContext ? { execution_context: executionContext as ExecutionContext } : {}),
+      current_run_observations: currentRun as CompletionObservation[],
       expected_model: expected.model, expected_effort: expected.effort,
       policy_version: String(row.policy_version), policy_sha256: String(row.policy_sha256),
       rcc_policy_sha256: String(row.rcc_policy_sha256),
@@ -171,21 +206,32 @@ export class RouteState extends DurableObject<Env> {
     };
   }
 
-  advance(sequence: number, outcome: "pass" | "fail" | "retry", verifiedHash: string, next?: RoutedStep):
+  advance(sequence: number, outcome: "pass" | "fail" | "retry", verifiedHash: string, next?: RoutedStep,
+    executionContext?: ExecutionContext, currentRun?: CompletionObservation[]):
     | { status: "complete" } | { status: "failed" }
     | { status: "step"; provider: ExecutionProvider; action: string; permission_profile: PermissionProfile } {
     return this.ctx.storage.transactionSync(() => {
+      const recorded = this.recordedDecision(sequence, verifiedHash);
+      if (recorded) return recorded as ReturnType<RouteState["advance"]>;
+      const persist = <T>(value: T): T => {
+        this.ctx.storage.sql.exec("INSERT INTO decisions VALUES(?,?,?)", sequence, verifiedHash, JSON.stringify(value));
+        return value;
+      };
       const row = this.ctx.storage.sql.exec<{ max_steps: number; sequence: number; complete: number }>(
         "SELECT max_steps,sequence,complete FROM route WHERE singleton=1",
       ).toArray()[0];
       if (!row || row.complete === 1 || row.sequence !== sequence) throw new Error("invalid route state");
+      if (executionContext) this.ctx.storage.sql.exec(
+        "UPDATE route SET execution_context_json=? WHERE singleton=1", JSON.stringify(executionContext));
+      if (currentRun) this.ctx.storage.sql.exec(
+        "UPDATE route SET current_run_observations_json=? WHERE singleton=1", JSON.stringify(currentRun));
       if (outcome === "pass") {
         this.ctx.storage.sql.exec("UPDATE route SET complete=1,verified_artifact_hash=? WHERE singleton=1", verifiedHash);
-        return { status: "complete" };
+        return persist({ status: "complete" as const });
       }
       if (outcome === "fail" || sequence >= row.max_steps || !next) {
         this.ctx.storage.sql.exec("UPDATE route SET complete=1,verified_artifact_hash=? WHERE singleton=1", verifiedHash);
-        return { status: "failed" };
+        return persist({ status: "failed" as const });
       }
       this.ctx.storage.sql.exec(
         `UPDATE route SET provider=?,action=?,permission_profile=?,provider_pinned=?,route_id=?,verification_profile=?,
@@ -193,7 +239,7 @@ export class RouteState extends DurableObject<Env> {
         next.provider, next.action, next.permission_profile, next.provider_pinned ? 1 : 0, next.route_id,
         next.verification_profile, sequence + 1, sequence + 1, verifiedHash,
       );
-      return { status: "step", provider: next.provider, action: next.action, permission_profile: next.permission_profile };
+      return persist({ status: "step" as const, provider: next.provider, action: next.action, permission_profile: next.permission_profile });
     });
   }
 }
@@ -258,6 +304,13 @@ export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const stage = { current: "request" };
     try {
+      if (request.method === "GET" && new URL(request.url).pathname === "/capabilities") {
+        const bundle = await loadPolicyBundle(env);
+        const supported = await supportsCompletionFeedback(env.RCC_V26, bundle.rcc.policy_sha256);
+        return Response.json({ completion_feedback_schema: supported ? 1 : null }, {
+          headers: { "cache-control": "no-store" },
+        });
+      }
       if (request.method !== "POST" || new URL(request.url).pathname !== "/decide") throw new Error("denied");
       stage.current = "parse";
       const body = await request.json<unknown>();
@@ -267,16 +320,20 @@ export default {
       if (record(body.task)) {
         stage.current = "validate_start";
         const task = body.task;
-        if (!exact(task, ["available_codex_models", "capacity_plan", "content", "executor_contract_sha256", "executor_contract_version", "provider_preference", "trust"]) ||
+        if (!exact(task, ["available_codex_models", "capacity_plan", "content", "executor_contract_sha256", "executor_contract_version", "provider_preference", "trust",
+          ...(task.execution_context !== undefined ? ["execution_context"] : [])]) ||
           task.trust !== "untrusted_user_data" || typeof task.content !== "string" || task.content.length < 1 || task.content.length > 48_000 ||
           !["auto", "codex", "claude"].includes(String(task.provider_preference)) || typeof task.executor_contract_version !== "string" ||
           typeof task.executor_contract_sha256 !== "string" || !SHA256.test(task.executor_contract_sha256) ||
           !record(task.capacity_plan) || !exact(task.capacity_plan, ["claude", "codex"]) ||
-          !Number.isSafeInteger(task.capacity_plan.codex) || !Number.isSafeInteger(task.capacity_plan.claude) || !validCatalog(task.available_codex_models)) throw new Error("denied");
+          !Number.isSafeInteger(task.capacity_plan.codex) || !Number.isSafeInteger(task.capacity_plan.claude) ||
+          !validCatalog(task.available_codex_models, validExecutionContext(task.execution_context) && Boolean(task.execution_context.completion_feedback)) ||
+          (task.execution_context !== undefined && !validExecutionContext(task.execution_context))) throw new Error("denied");
         const plan = task.capacity_plan as CapacityPlan;
         if (plan.codex < 0 || plan.codex > 100 || plan.claude < 0 || plan.claude > 100 || plan.codex + plan.claude === 0) throw new Error("denied");
         if (!record(body.principal) || !exact(body.principal, ["device_id", "subject"]) ||
           typeof body.principal.subject !== "string" || body.principal.subject.length < 1 || typeof body.principal.device_id !== "string") throw new Error("denied");
+        if (!(await completionFeedbackMatchesTask(task.execution_context as ExecutionContext | undefined, task.content))) throw new Error("denied");
         stage.current = "budget";
         const budget = env.ROUTING_BUDGETS.getByName(await budgetObjectName(env, body.principal.subject));
         if (!(await budget.consumeStart(positiveInteger(env.MAX_ROUTE_STARTS_PER_HOUR)))) throw new Error("denied");
@@ -287,9 +344,11 @@ export default {
         const context: RouteContext = {
           task: task.content, provider_preference: task.provider_preference as ProviderPreference,
           capacity_plan: plan, available_codex_models: task.available_codex_models, attempt: 1,
+          ...(task.execution_context ? { execution_context: task.execution_context as ExecutionContext } : {}),
         };
         stage.current = "route";
         const selected = await routeWithRcc(env, bundle, context);
+        if (!selected) return Response.json({ status: "failed" });
         stage.current = "usage";
         if (selected.provider !== "local") await budget.record(selected.provider);
         stage.current = "persist";
@@ -304,6 +363,8 @@ export default {
         !Number.isSafeInteger(body.previous.sequence) || typeof body.previous.artifact_ref !== "string" || !ARTIFACT_REF.test(body.previous.artifact_ref) ||
         typeof body.previous.expected_artifact_hash !== "string" || !SHA256.test(body.previous.expected_artifact_hash)) throw new Error("denied");
       const sequence = body.previous.sequence as number;
+      const recorded = await state.recordedDecision(sequence, body.previous.expected_artifact_hash);
+      if (recorded) return Response.json(recorded);
       const snapshot = await state.snapshot(sequence);
       const evaluated = await evaluate(env, {
         execution_id: body.execution_id, sequence, task: snapshot.task,
@@ -318,16 +379,29 @@ export default {
         artifact_ref: body.previous.artifact_ref, expected_artifact_hash: body.previous.expected_artifact_hash,
       });
       if (evaluated.verified_artifact_hash !== body.previous.expected_artifact_hash) throw new Error("denied");
+      const observation: CompletionObservation | undefined = snapshot.provider === "local" ? undefined : {
+          provider: snapshot.provider, model: snapshot.expected_model, effort: snapshot.expected_effort,
+          outcome: evaluated.outcome === "pass" ? "adopted" : "quality_failure",
+          input_tokens: null, output_tokens: null, duration_ms: null,
+        };
+      const executionContext = observation ? appendCompletionObservation(snapshot.execution_context, observation) : snapshot.execution_context;
+      // This separate server-owned list avoids confusing historical provider
+      // failures with current-run steps after a local deterministic execution.
+      const currentRun = executionContext?.completion_feedback && observation ?
+        [...(snapshot.current_run_observations ?? []), observation].slice(-4) : snapshot.current_run_observations;
       let next: RoutedStep | undefined;
       if (evaluated.outcome === "retry" && sequence < snapshot.max_steps) {
-        const bundle = await loadPolicyBundle(env);
+        // Continue the policy already locked in trusted persisted state, not a
+        // newer deployment's policy. The immutable bundle loader rechecks SHA.
+        const bundle = await loadPolicyBundle(env, snapshot.policy_sha256);
         if (bundle.rcc.policy_sha256 !== snapshot.rcc_policy_sha256) throw new Error("policy changed during execution");
         const context: RouteContext = { task: snapshot.task, provider_preference: snapshot.provider_preference,
-          capacity_plan: snapshot.capacity_plan, available_codex_models: snapshot.available_codex_models, attempt: sequence + 1 };
+          capacity_plan: snapshot.capacity_plan, available_codex_models: snapshot.available_codex_models,
+          execution_context: executionContext, current_run_observations: currentRun, attempt: sequence + 1 };
         const retryProvider = evaluated.next_provider === "local" ? "" : evaluated.next_provider;
         next = await routeWithRcc(env, bundle, context, retryProvider);
       }
-      const decision = await state.advance(sequence, evaluated.outcome, evaluated.verified_artifact_hash, next);
+      const decision = await state.advance(sequence, evaluated.outcome, evaluated.verified_artifact_hash, next, executionContext, currentRun);
       return decision.status === "step" ? stepResponse(decision) : Response.json(decision);
     } catch {
       console.error(JSON.stringify({ event: "private_route_denied", stage: stage.current }));

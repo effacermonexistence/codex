@@ -1,4 +1,4 @@
-import { executionBindingMatches, type Artifact } from "./evaluator";
+import { executionBindingMatches, verificationRequestForIssuedPolicy, type Artifact } from "./evaluator";
 
 const SHA256 = /^[0-9a-f]{64}$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -60,13 +60,16 @@ async function verifyWithRcc(env: Env, body: unknown): Promise<{ outcome: "pass"
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
+    const stage = { current: "request" };
     try {
       if (request.method !== "POST" || new URL(request.url).pathname !== "/evaluate") throw new Error("denied");
+      stage.current = "parse";
       const body = await request.json<unknown>();
       const keys = ["execution_id", "sequence", "task", "expected_provider", "expected_action", "expected_permission_profile",
         "expected_model", "expected_effort", "policy_version", "policy_sha256", "rcc_policy_sha256", "route_id",
         "verification_profile", "provider_pinned", "executor_contract_version", "executor_contract_sha256",
         "artifact_ref", "expected_artifact_hash"];
+      stage.current = "validate_request";
       if (!record(body) || !exact(body, keys) || typeof body.execution_id !== "string" || !UUID.test(body.execution_id) ||
         !Number.isSafeInteger(body.sequence) || (body.sequence as number) < 1 || (body.sequence as number) > 4 ||
         typeof body.task !== "string" || body.task.length < 1 || body.task.length > 48_000 ||
@@ -83,33 +86,41 @@ export default {
         body.executor_contract_version.length < 8 || body.executor_contract_version.length > 96 ||
         typeof body.executor_contract_sha256 !== "string" || !SHA256.test(body.executor_contract_sha256) ||
         typeof body.artifact_ref !== "string" || typeof body.expected_artifact_hash !== "string" || !SHA256.test(body.expected_artifact_hash)) throw new Error("denied");
+      stage.current = "validate_reference";
       const match = body.artifact_ref.match(ARTIFACT_REF);
       if (!match || match[1] !== body.execution_id || Number(match[2]) !== body.sequence || match[3] !== body.expected_artifact_hash) throw new Error("denied");
       const key = body.artifact_ref.slice("r2://os1-private-results/".length);
+      stage.current = "load_artifact";
       const object = await env.RESULTS.get(key);
       if (!object || object.size < 2 || object.size > 1_048_576 || object.customMetadata?.execution_id !== body.execution_id ||
         object.customMetadata?.sequence !== String(body.sequence) || object.customMetadata?.result_hash !== body.expected_artifact_hash) throw new Error("denied");
+      stage.current = "verify_artifact_hash";
       const bytes = await object.arrayBuffer();
       const verifiedHash = await sha256Hex(bytes);
       if (verifiedHash !== body.expected_artifact_hash) throw new Error("denied");
+      stage.current = "parse_artifact";
       const artifact = parseArtifact(JSON.parse(new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(bytes)));
+      stage.current = "verify_execution_binding";
       if (!executionBindingMatches(artifact, {
         provider: body.expected_provider as Artifact["provider"], action: body.expected_action,
         permission_profile: body.expected_permission_profile as Artifact["permission_profile"], model: body.expected_model,
         effort: body.expected_effort, executor_contract_version: body.executor_contract_version,
         executor_contract_sha256: body.executor_contract_sha256,
       })) throw new Error("denied");
-      const verified = await verifyWithRcc(env, {
+      stage.current = "verify_with_rcc";
+      const verified = await verifyWithRcc(env, verificationRequestForIssuedPolicy(body.rcc_policy_sha256 as string, {
         route_id: body.route_id, prompt: body.task, output: artifact.output, stderr: artifact.stderr,
         verification_profile: body.verification_profile, native_persistence: artifact.native_record.persistence,
         exit_code: artifact.exit_code, attempt: body.sequence, before_workspace_hash: artifact.workspace_before_hash,
         after_workspace_hash: artifact.workspace_after_hash, provider_pinned: body.provider_pinned, provider: artifact.provider,
-      });
+      }));
+      stage.current = "verify_policy_identity";
       if (verified.policy_sha256 !== body.rcc_policy_sha256) throw new Error("denied");
       const executionHash = await sha256Hex(new TextEncoder().encode(body.execution_id).buffer as ArrayBuffer);
       console.log(JSON.stringify({ event: "revas_evaluation", execution_hash: executionHash.slice(0, 16), sequence: body.sequence, outcome: verified.outcome }));
       return Response.json({ outcome: verified.outcome, verified_artifact_hash: verifiedHash, next_provider: verified.next_provider });
     } catch {
+      console.error(JSON.stringify({ event: "result_evaluation_denied", stage: stage.current }));
       return Response.json({ error: "denied" }, { status: 400 });
     }
   },

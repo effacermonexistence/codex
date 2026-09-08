@@ -160,6 +160,15 @@ func runTaskContextFixtures(root: URL) throws {
     try check(TaskContext.ObjectiveKind.classify("인스타그램은 오토매이션 수정 좀 보자 데이트 다 가져와 봐") == .acquire, "case A classifies as acquisition")
     try check(TaskContext.ObjectiveKind.classify("이 함수가 왜 느린지 설명해줘") == .explain, "explanation")
     try check(TaskContext.ObjectiveKind.classify("함수를 수정해") == .modify, "modification")
+    try check(TaskContext.ObjectiveKind.classify("Create result.txt and verify its exact bytes") == .modify,
+              "filename-targeted English imperative is a modification")
+    let boundedCreate = ScopeResolution.resolve("Create auto-review-probe.txt and write exactly OS1_AUTO_REVIEW_OK followed by one newline, then verify its exact bytes. Do not modify anything else.")
+    try check(boundedCreate.scope == .workspaceWrite && boundedCreate.prohibitions == ["do not modify anything else"],
+              "a trailing scope fence keeps an explicit filename creation writable")
+    try check(PreparationIntent.detect("Create auto-review-probe.txt and write exactly OS1_AUTO_REVIEW_OK followed by one newline, then verify its exact bytes. Do not modify anything else.") == nil,
+              "an OS1 marker inside requested file content is not a project-preparation alias")
+    try check(ScopeResolution.resolve("Write a concise summary of this function").scope == .readOnly,
+              "ordinary generated prose does not gain workspace authority")
     let encoder = JSONEncoder(); encoder.dateEncodingStrategy = .iso8601
     let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .iso8601
     let round = try decoder.decode(TaskContext.self, from: try encoder.encode(context))
