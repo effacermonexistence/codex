@@ -766,7 +766,7 @@ func claudeOutputDefersRequestedDeliverable(_ data: Data, prompt: String) -> Boo
 /// before spending a model turn; the signed route service can then issue a
 /// different provider ticket.
 func promptRequiresShellCapability(_ prompt: String) -> Bool {
-    let value = prompt.precomposedStringWithCanonicalMapping.lowercased()
+    let value = ShellCapabilityIntent.classificationText(prompt)
     let explicitShell = [
         "bash", "terminal", "shell", "command line", " cli", "cli ", "wrangler", "gh cli",
         "git push", "git pull", "git clone", "pnpm ", "npm ", "swift build", "xcodebuild", "docker ",
@@ -777,11 +777,9 @@ func promptRequiresShellCapability(_ prompt: String) -> Bool {
         "실행해", "실행 해", "실행시켜", "돌려", "설치해", "설치 해", "빌드해", "빌드 해",
         "테스트해", "테스트 해", "테스트 돌", "배포해", "배포 해", "업로드해", "업로드 해",
         "다운로드해", "다운로드 해", "커밋해", "커밋 해", "푸시해", "푸시 해", "병합해", "병합 해",
-        "동기화해", "동기화 해", "run ", "execute ", "install ", "build ", "test ", "deploy ",
-        "upload ", "download ", "commit ", "merge ", "sync ",
-        "세팅", "셋업", "setup ", "set up ",
+        "동기화해", "동기화 해", "세팅", "셋업",
     ].contains { value.contains($0) }
-    if executionActions { return true }
+    if executionActions || ShellCapabilityIntent.hasEnglishImperative(value) { return true }
 
     let externalSystem = mentionsR2Source(value) || [
         "github", "기타부", "기탑", "cloudflare", "클라우드플레어", "railway",
@@ -3990,7 +3988,7 @@ final class CodexAppServerClient: @unchecked Sendable {
         _ = try request(
             "initialize",
             params: [
-                "clientInfo": ["name": "OS-1 CLODEX", "version": "0.9.39"],
+                "clientInfo": ["name": "OS-1 CLODEX", "version": "0.9.40"],
                 "capabilities": ["experimentalApi": true],
             ],
             deadline: deadline
@@ -7620,6 +7618,15 @@ func selfTest() throws {
         ("test execution needs shell", promptRequiresShellCapability("현재 프로젝트에서 pnpm test 실행해")),
         ("R2 concept is informational", !promptRequiresShellCapability("R2가 무엇인지 개념만 설명해")),
         ("test strategy is informational", !promptRequiresShellCapability("테스트 전략이 뭔지 설명해")),
+        ("test evidence is an artifact, not execution", !promptRequiresShellCapability(
+            "Read the existing private temporary test evidence. Report acceptance.json and the test markers. Do not execute the diagnostic again and do not modify any file, service, setting or runtime.")),
+        ("build results are not a build request", !promptRequiresShellCapability(
+            "Read the build results and explain the failed test artifacts. Never run commands.")),
+        ("prohibited shell does not require shell", !promptRequiresShellCapability(
+            "Read manifest.json. Do not run Bash or shell commands, install tools or change settings.")),
+        ("positive contrast retains shell capability", promptRequiresShellCapability(
+            "Do not deploy, but run the tests.")),
+        ("imperative test still needs shell", promptRequiresShellCapability("Test the application and report results.")),
         ("incident capability refusal rejected", providerOutputDeclaresCapabilityFailure(
             incidentClaudeOutput,
             prompt: incidentPrompt
@@ -7858,7 +7865,7 @@ struct OS1Main {
             guard let command = arguments.first else { usage(); return }
             if try await fleetCommand(arguments) { return }
             switch command {
-            case "version", "--version", "-V": print("OS-1 Runtime 0.9.39 (response-fence-build90)")
+            case "version", "--version", "-V": print("OS-1 Runtime 0.9.40 (capability-intent-build91)")
             case "doctor": try doctor()
             case "sidebar-pin":
                 guard (4...5).contains(arguments.count), arguments[1] == "codex",
