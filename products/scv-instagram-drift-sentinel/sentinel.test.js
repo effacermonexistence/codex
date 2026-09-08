@@ -114,6 +114,11 @@ function recoveryFixture() {
     previous_recovery_point_id: PREVIOUS_RECOVERY_POINT_ID,
     catalog: { key: RECOVERY_CATALOG_KEY, sha256: RECOVERY_CATALOG_SHA256 },
     restore_tool: { key: RESTORE_TOOL_KEY, sha256: RESTORE_TOOL_SHA256 },
+    approved_gold: {
+      gold_id: 'scv-instagram-recovery-gold-20260908T231500Z-v167',
+      record_key: 'scv-instagram-automation/recovery-gold/20260908T231500Z/GOLD.json',
+      record_sha256: '41ec7dae8f527470f0c471e5425605ff692306c81eab6cf8d7e9c4f9b2605038'
+    },
     restore_requires_exact_recovery_point_id: true,
     production_cutover_automatic: false,
     private_r2_only: true
@@ -140,7 +145,10 @@ function recoveryFixture() {
         sha256: CURRENT_RECOVERY_POINT_SHA256,
         current: true,
         staged_restore_verified: true,
-        live_redteam_cases_passed: 18
+        live_redteam_cases_passed: 1,
+        approved_gold_id: 'scv-instagram-recovery-gold-20260908T231500Z-v167',
+        gold_record_key: 'scv-instagram-automation/recovery-gold/20260908T231500Z/GOLD.json',
+        gold_record_sha256: '41ec7dae8f527470f0c471e5425605ff692306c81eab6cf8d7e9c4f9b2605038'
       }
     ],
     current_recovery_point_id: CURRENT_RECOVERY_POINT_ID,
@@ -161,7 +169,7 @@ function recoveryFixture() {
     capture_evidence: {
       full_local_test_exit_zero: true,
       staging_isolated_full_test_exit_zero: true,
-      live_redteam_semantic_passed: 18,
+      live_redteam_semantic_passed: 1,
       paused_worker_count: 10,
       post_reset_omar_system_residual_count: 0,
       r2_component_readback_byte_identical: true,
@@ -191,11 +199,11 @@ function recoveryFixture() {
   }
 }
 
-test('accepts the exact current v151 point while keeping v150 and April golden separate', async () => {
+test('accepts the exact current v167 Gold while keeping v151 and April golden separate', async () => {
   const fixture = recoveryFixture()
   const result = await checkRecoveryPoint(fixture.archive, fixture.options)
   assert.equal(result.ok, true)
-  assert.equal(result.pinned_object_count, EXPECTED_RECOVERY_COMPONENTS.length + 2)
+  assert.equal(result.pinned_object_count, EXPECTED_RECOVERY_COMPONENTS.length + 4)
   assert.deepEqual(result.reasons, [])
 })
 

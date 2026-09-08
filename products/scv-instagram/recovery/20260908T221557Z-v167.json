@@ -1,0 +1,75 @@
+{
+  "schema": "scv-instagram-public-recovery-record-2026-09-04-v1",
+  "recovery_point_id": "scv-instagram-20260908T221557Z-v167-clean-current",
+  "captured_at_utc": "2026-09-08T22:15:57Z",
+  "release": {
+    "release_id": "scv-instagram-single-20260908-v167",
+    "content_fingerprint_sha256": "6b85a63a25c23e9815491413eeb895e6b78ed8faa523f18aefea6b88f392faa7",
+    "release_manifest_sha256": "2f12a00d12114bbbb05080438dda88a6278a82ae65a9fc9aaaff70a2a25ad4b6",
+    "runtime_key": "scv-instagram-automation/release-ready/20260908T203126Z/v167/scv-instagram-single-20260908-v167-any-picture-is-a-design-r2.tar.gz",
+    "runtime_sha256": "94ce2f59b5f3724118cfcabe16cfb7f267f00f7c6f01841be42dbf6c77e56afe",
+    "runtime_bytes": 1494324
+  },
+  "production_state": {
+    "key": "scv-instagram-automation/timestamped-snapshots/omar-system-reset/20260908T221109Z/post-reset/prod-v167.tar.gz",
+    "sha256": "54673012af4fc4e5f84e2a214ef5a5328512ad541b9c8bd19a23e7743eee7e37",
+    "bytes": 4713305,
+    "namespace_tree_sha256": "926ddb10093d2ad88664770ed042434e79f230ee5d303573c5a281d3d2a0edbb",
+    "namespace_entry_count": 2609,
+    "omar_system_residual_count": 0
+  },
+  "pre_reset_production_state": {
+    "key": "scv-instagram-automation/timestamped-snapshots/omar-system-reset/20260908T221109Z/pre-reset/prod-v167.tar.gz",
+    "sha256": "ff358835adc8642c10cdc86e9c744552c035254a735b41a7f805820fb3a64c9b",
+    "bytes": 4801376,
+    "namespace_tree_sha256": "8d55ffadbbe0260aff12ad25e7b33c7434492376de27dcf68be1e81fc9256a02",
+    "namespace_entry_count": 2633
+  },
+  "reset_receipt": {
+    "key": "scv-instagram-automation/timestamped-snapshots/omar-system-reset/20260908T221109Z/execution.omar-system-purge.json",
+    "sha256": "ef11b1fb98bb1115ae0416c5a7ba5a2f15edb5eddb420fa9a16a26c8be53d6e0"
+  },
+  "owner_verified_state_capture": {
+    "key": "scv-instagram-automation/timestamped-snapshots/gold/20260908T221005Z/prod-v167-gold.tar.gz",
+    "sha256": "0afeceee3d477e332c3e768ff675911560aa61882152d03c0570a6f9ed5b1fb0",
+    "bytes": 4801333,
+    "namespace_tree_sha256": "ea95946196f4dc6bebfa6a3a72e4b38c9224dc83780be9859ee684abe18284cf",
+    "namespace_entry_count": 2633
+  },
+  "verification": {
+    "full_local_test_exit_zero": true,
+    "sealed_release_test_exit_zero": true,
+    "staging_isolated_full_test_exit_zero": true,
+    "live_redteam_cases": 1,
+    "live_redteam_provider_accepted": 1,
+    "live_redteam_semantic_passed": 1,
+    "instagram_visibility_claimed": false,
+    "all_expected_workers_paused": true,
+    "paused_worker_count": 10,
+    "post_reset_omar_system_residual_count": 0,
+    "in_container_pre_restore_drill": true,
+    "in_container_post_restore_drill": true,
+    "owner_verified_state_capture_restore_drill": true,
+    "r2_component_readback_byte_identical": true,
+    "final_production_ok": true,
+    "final_fail_close_active": false,
+    "final_critical_drift_alert_count": 0
+  },
+  "restore_boundary": {
+    "required_services": [
+      "Cloudflare R2",
+      "Cloudflare Secrets Store",
+      "Railway or an equivalent Linux container host",
+      "Docker image registry",
+      "Debian package repositories",
+      "npm registry",
+      "OpenAI",
+      "ManyChat",
+      "Gmail IMAP"
+    ],
+    "r2_only_self_contained": false,
+    "reason": "The point records the source, state, configuration and service dependencies; its Gold record pins the separate OS/dependency closure extension. External providers still require authorized access."
+  },
+  "contains_credentials": false,
+  "contains_customer_data": false
+}

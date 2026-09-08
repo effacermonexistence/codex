@@ -1,6 +1,6 @@
 {
   "schema": "scv-instagram-public-recovery-pointer-2026-09-04-v1",
-  "updated_at_utc": "2026-09-05T03:57:15Z",
+  "updated_at_utc": "2026-09-08T23:18:00Z",
   "private_bucket": "omar-private-archive",
   "golden_reference": {
     "snapshot_id": "scv-instagram-20260420T152810-local-origin",
@@ -10,36 +10,36 @@
     "preserved_separately_from_current": true
   },
   "current_recovery_point": {
+    "recovery_point_id": "scv-instagram-20260908T221557Z-v167-clean-current",
+    "key": "scv-instagram-automation/recovery-points/20260908T221557Z/SCV_RECOVERY_POINT.json",
+    "sha256": "fb71ecc4d4662972a4256ae41fbeba09e99ac9360540d075a2e2d0da2c3a5fb6"
+  },
+  "previous_recovery_point": {
     "recovery_point_id": "scv-instagram-20260904T222549Z-v151-clean-current",
     "key": "scv-instagram-automation/recovery-points/20260904T222549Z/SCV_RECOVERY_POINT.json",
     "sha256": "75440f5063fb7deab879df404ea8fa7011fece7c3da1f7af93c042ee9a337a5a"
   },
-  "previous_recovery_point": {
-    "recovery_point_id": "scv-instagram-20260904T210539Z-v150-clean-current-before-v151",
-    "key": "scv-instagram-automation/recovery-points/20260904T210539Z/SCV_RECOVERY_POINT.json",
-    "sha256": "4d4274e7ac9393313ef77662116e076d85bbe0b98e70ab26bb97df7dba9b23da"
-  },
   "catalog": {
-    "key": "scv-instagram-automation/recovery-points/catalogs/20260904T223113Z/RECOVERY_POINT_CATALOG.json",
-    "sha256": "97129fd50a26fc87d9f47d203a1c37f195417174e9cafa10c6147052637395b8"
+    "key": "scv-instagram-automation/recovery-points/catalogs/20260908T231800Z/RECOVERY_POINT_CATALOG.json",
+    "sha256": "1ba20b317f8b821e2ba48fe8e74b4e2983020c76c755cb612cd8b33c5bfaa9cb"
   },
   "restore_tool": {
-    "key": "scv-instagram-automation/recovery-points/20260904T222549Z/restore-recovery-point.js",
+    "key": "scv-instagram-automation/recovery-points/20260908T221557Z/restore-recovery-point.js",
     "sha256": "b03571cee66bbb7bf08bcecda38a6ba7657a0426e51b0f6c61337171f39883a3"
   },
   "restore_requires_exact_recovery_point_id": true,
-  "recovery_extensions_pointer": "20260905T003000Z-v151-deployed-extension.json",
+  "recovery_extensions_pointer": "20260908T223100Z-v167-extension.json",
   "portable_artifact_restore_tool": "products/scv-instagram/scripts/recover-v151.mjs",
   "latest_approved_recovery_gold": "LATEST_GOLD.json",
   "gold_restore_instructions": "GOLD-RESTORE.md",
-  "portable_artifact_restore_instructions": "products/scv-instagram/recovery/RECOVER-V151.md",
-  "portable_artifact_restore_evidence": {
+  "portable_artifact_restore_instructions": "products/scv-instagram/recovery/RECOVER-V167.md",
+  "previous_v151_portable_artifact_restore_evidence": {
     "key": "scv-instagram-automation/recovery-extensions/20260905T023116Z-v151-portable-b3a949eb/SCV_PORTABLE_RECOVERY_EXTENSION.json",
     "sha256": "e557bad9768e7be9cce5f8a293cd5bbfea77cab3566fc1734dc1b87096b5106d",
     "bytes": 2804,
     "r2_components_readback_verified": 7
   },
-  "sandbox_integrity_evidence": {
+  "previous_v151_sandbox_integrity_evidence": {
     "key": "scv-instagram-automation/recovery-extensions/20260905T035715Z-v151-sandbox-ef97a81d/SCV_SANDBOX_RECOVERY_EXTENSION.json",
     "sha256": "0698a0b39399e74115e1b3499273dabacfda0832aa701c35486374f1927393db",
     "bytes": 7305,

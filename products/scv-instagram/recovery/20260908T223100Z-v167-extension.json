@@ -1,0 +1,35 @@
+{
+  "schema": "scv-instagram-public-recovery-extension-record-v1",
+  "recovery_point_id": "scv-instagram-20260908T221557Z-v167-clean-current",
+  "extension": {
+    "key": "scv-instagram-automation/recovery-extensions/20260908T223100Z-v167/SCV_RECOVERY_EXTENSION.json",
+    "sha256": "61548a196b36ae1274fbeada94e63cde08bf623cc4bc4284dd6ee8ac1f9c5e23",
+    "bytes": 4296,
+    "components_readback_verified": 8
+  },
+  "os_closure": {
+    "key": "scv-instagram-automation/recovery-points/20260908T221557Z/runtime-os-linux-amd64-v167.tar.gz",
+    "sha256": "7e7f79e24f51f8e7f9d7383b0432e0a914e779839313d951b8db9dcdb38caff4",
+    "bytes": 238162938,
+    "r2_readback_byte_identical": true
+  },
+  "frozen_secret_generation": {
+    "provider": "cloudflare_secrets_store",
+    "generation": "v167_20260908T221557Z_",
+    "active_secret_count": 7,
+    "server_side_duplicate": true,
+    "plaintext_exported": false,
+    "existing_secrets_modified": false
+  },
+  "verification": {
+    "fresh_linux_restore": true,
+    "runtime_files_verified": 259,
+    "production_state_entries_verified": 2609,
+    "full_offline_suite_exit": 0,
+    "registry_install_used": false,
+    "live_secret_values_used": false,
+    "production_mutated": false
+  },
+  "contains_credentials": false,
+  "contains_customer_data": false
+}

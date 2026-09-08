@@ -12,11 +12,12 @@ source archive, hashes, deployment identities, and test evidence are recorded in
 Acquire and verify that exact private artifact before preparing an operational
 change; do not treat this historical v122 mirror as the active checkout.
 
-The separately approved **recovery Gold remains v151**, not the active release.
-Its recovery coordinates are mirrored without credentials
-in `recovery/LATEST.json` and documented in
-`../../docs/scv-instagram-v151-custody.md`. The exact source archive and current
-state remain hash-bound in the private R2 bucket.
+The latest explicitly approved **recovery Gold is v167**
+(`scv-instagram-recovery-gold-20260908T231500Z-v167`). Its recovery coordinates
+are in `recovery/LATEST_GOLD.json` and `recovery/RECOVER-V167.md`. The first Gold,
+v151 (`scv-instagram-recovery-gold-20260905T054647Z-v151`), remains byte-identical
+and independently selectable by its exact id. Both private artifact chains are
+hash-bound in R2; behavioral GOLD-3 v148 and the April Golden remain separate.
 
 ## Two-layer custody
 
