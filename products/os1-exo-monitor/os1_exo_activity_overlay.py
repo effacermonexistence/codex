@@ -14,6 +14,7 @@ import shutil
 import socket
 import time
 from datetime import datetime, timezone
+from ipaddress import ip_address
 from pathlib import Path
 from typing import Any, cast
 
@@ -27,7 +28,84 @@ _ROUTE = "/activity/local"
 _PATCH_MARKER = "_os1_activity_monitor_installed"
 
 
+OS1_ROAMING_STALE_SECONDS = 60.0
+OS1_ROAMING_STATES = {
+    "starting",
+    "connected",
+    "waiting_for_network",
+    "reconnecting",
+    "waiting_for_idle",
+    "recovering",
+    "cooldown",
+    "attention_required",
+    "degraded",
+}
+
+
+def _read_roaming_status(path: Path, now: datetime | None = None) -> dict[str, object]:
+    """Read bounded, non-secret roaming evidence without controlling the service."""
+    unavailable: dict[str, object] = {
+        "available": False,
+        "stale": True,
+        "state": "unavailable",
+    }
+    try:
+        with path.open("rb") as status_file:
+            encoded = status_file.read(16_385)
+        if len(encoded) > 16_384:
+            return {**unavailable, "state": "invalid"}
+        raw: object = json.loads(encoded)
+        if not isinstance(raw, dict):
+            return {**unavailable, "state": "invalid"}
+        payload = cast(dict[str, object], raw)
+        sampled_at = payload.get("sampled_at")
+        state = payload.get("state")
+        role = payload.get("role")
+        if (
+            payload.get("schema") != 1
+            or role not in ("air", "pro")
+            or not isinstance(state, str)
+            or state not in OS1_ROAMING_STATES
+            or not isinstance(sampled_at, str)
+        ):
+            return {**unavailable, "state": "invalid"}
+        sampled = datetime.fromisoformat(sampled_at)
+        if sampled.tzinfo is None:
+            return {**unavailable, "state": "invalid"}
+        age = ((now or datetime.now(timezone.utc)) - sampled).total_seconds()
+        result: dict[str, object] = {
+            "schema": 1,
+            "available": True,
+            "stale": age > OS1_ROAMING_STALE_SECONDS or age < -5,
+            "age_seconds": max(age, 0.0),
+            "state": state,
+            "role": role,
+            "sampled_at": sampled.isoformat(),
+        }
+        for key in ("network_changed_at", "last_recovery_at"):
+            value = payload.get(key)
+            if isinstance(value, str):
+                parsed = datetime.fromisoformat(value)
+                if parsed.tzinfo is not None:
+                    result[key] = parsed.isoformat()
+        recovery_count = payload.get("recovery_count")
+        if type(recovery_count) is int and recovery_count >= 0:
+            result["recovery_count"] = recovery_count
+        peer_reachable = payload.get("peer_reachable")
+        if isinstance(peer_reachable, bool):
+            result["peer_reachable"] = peer_reachable
+        peer_api_ip = payload.get("peer_api_ip")
+        if isinstance(peer_api_ip, str):
+            result["peer_api_ip"] = str(ip_address(peer_api_ip))
+        return result
+    except FileNotFoundError:
+        return unavailable
+    except (OSError, ValueError, UnicodeDecodeError):
+        return {**unavailable, "state": "invalid"}
+
+
 def _counter_rate(current: int, previous: int, elapsed: float) -> float:
+    """Return a non-negative per-second counter rate."""
     if elapsed <= 0:
         return 0.0
     return max(current - previous, 0) / elapsed
@@ -243,6 +321,9 @@ async def _get_local_activity(api: Any) -> dict[str, object]:
             "node_id": str(api.node_id),
             "sampled_at": datetime.now(timezone.utc).isoformat(),
             "sample_interval_seconds": elapsed,
+            "roaming": _read_roaming_status(
+                Path.home() / ".os1" / "exo-roaming" / "status.json"
+            ),
             "host": {
                 "hostname": local_fleet_node.get("hostname", socket.gethostname()),
                 "device_id": local_fleet_node.get("device_id"),

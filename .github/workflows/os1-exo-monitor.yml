@@ -1,0 +1,30 @@
+name: OS1 EXO monitor safety
+
+on:
+  push:
+    paths:
+      - "products/os1-exo-monitor/**"
+      - "scripts/*os1-exo-monitor*"
+      - ".github/workflows/os1-exo-monitor.yml"
+  pull_request:
+    paths:
+      - "products/os1-exo-monitor/**"
+      - "scripts/*os1-exo-monitor*"
+      - ".github/workflows/os1-exo-monitor.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  roaming-safety:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Test recovery policy and exact-service rollback without live operations
+        run: python3 -m unittest discover -s products/os1-exo-monitor -p test_roaming_guard.py -v
+      - name: Validate installer shell syntax
+        run: bash -n products/os1-exo-monitor/install-activity-monitor.sh scripts/install-os1-exo-monitor-from-r2.sh scripts/publish-os1-exo-monitor-r2.sh

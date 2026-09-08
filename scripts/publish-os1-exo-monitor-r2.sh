@@ -3,12 +3,13 @@ set -Eeuo pipefail
 
 readonly task_bucket="omar-private-archive"
 readonly task_product="os1-exo-cluster-activity-monitor"
-readonly task_release_id="0f340ce530d0-exo171-v1"
-readonly task_overlay_commit="0f340ce530d0df5fcb646bbad02e7eac7f01830c"
 readonly task_script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly task_project_root="$(cd "$task_script_dir/.." && pwd)"
 readonly task_product_root="$task_project_root/products/os1-exo-monitor"
 readonly task_wrangler="$task_project_root/node_modules/.bin/wrangler"
+readonly task_release_id="$(node -p "JSON.parse(require('fs').readFileSync('$task_product_root/manifest.json')).release_id")"
+readonly task_overlay_commit="$(node -p "JSON.parse(require('fs').readFileSync('$task_product_root/manifest.json')).overlay_commit")"
+[[ "$task_release_id" =~ ^[A-Za-z0-9._-]+$ && "$task_overlay_commit" =~ ^[0-9a-f]{40}$ ]]
 
 [[ -x "$task_wrangler" ]]
 [[ "$("$task_wrangler" --version 2>/dev/null | head -1)" == "4.127.1" ]]
@@ -25,14 +26,8 @@ cleanup() {
 }
 trap cleanup EXIT
 
-mkdir -p "$task_tmp/stage/os1-exo-monitor"
-rsync -a \
-  --exclude '.gitignore' \
-  --exclude '__pycache__' \
-  --exclude '.pytest_cache' \
-  "$task_product_root/" "$task_tmp/stage/os1-exo-monitor/"
-COPYFILE_DISABLE=1 tar -czf "$task_tmp/os1-exo-monitor.tar.gz" \
-  -C "$task_tmp/stage" os1-exo-monitor
+git -C "$task_project_root" archive --format=tar --prefix=os1-exo-monitor/ \
+  HEAD:products/os1-exo-monitor | gzip -n > "$task_tmp/os1-exo-monitor.tar.gz"
 
 task_package_sha256="$(shasum -a 256 "$task_tmp/os1-exo-monitor.tar.gz" | awk '{print $1}')"
 task_package_bytes="$(/usr/bin/stat -f '%z' "$task_tmp/os1-exo-monitor.tar.gz")"

@@ -1,0 +1,331 @@
+From fb174031378cd6ab1c1bf842a2958e4f250b84e2 Mon Sep 17 00:00:00 2001
+From: LUA <lua@LUAs-MBP.localdomain>
+Date: Mon, 7 Sep 2026 16:56:09 -0700
+Subject: [PATCH] feat: show verified Wi-Fi roaming recovery status in Activity
+
+---
+ dashboard/src/routes/activity/+page.svelte | 63 +++++++++++++++-
+ src/exo/api/main.py                        | 83 +++++++++++++++++++++-
+ src/exo/api/tests/test_activity_monitor.py | 63 ++++++++++++++++
+ 3 files changed, 204 insertions(+), 5 deletions(-)
+
+diff --git a/dashboard/src/routes/activity/+page.svelte b/dashboard/src/routes/activity/+page.svelte
+index 4364d823..37a0f216 100644
+--- a/dashboard/src/routes/activity/+page.svelte
++++ b/dashboard/src/routes/activity/+page.svelte
+@@ -117,6 +117,18 @@
+       received_bytes_total: number;
+       sent_bytes_total: number;
+     };
++    roaming?: {
++      available: boolean;
++      stale: boolean;
++      state: string;
++      sampled_at?: string;
++      age_seconds?: number;
++      recovery_count?: number;
++      peer_reachable?: boolean;
++      peer_api_ip?: string;
++      network_changed_at?: string;
++      last_recovery_at?: string;
++    };
+     exo: {
+       topology_nodes: number;
+       instances: number;
+@@ -170,6 +182,7 @@
+   let histories: Record<string, HistoryPoint[]> = $state({});
+   let stateError: string | null = $state(null);
+   let lastRefresh = $state(0);
++  let observedAt = $state(Date.now());
+   let polling = false;
+   let balance = $derived(convergence());
+   let totals = $derived(clusterTotals());
+@@ -234,7 +247,7 @@
+   }
+ 
+   function nodeRows(): NodeRow[] {
+-    const now = Date.now();
++    const now = observedAt;
+     const nodeIds = new Set([
+       ...(clusterState?.topology?.nodes ?? []),
+       ...Object.keys(activities),
+@@ -302,11 +315,41 @@
+         networkSend: activity?.network.sent_bytes_per_second ?? 0,
+         diskAvailable: disk?.available?.inBytes ?? 0,
+         diskTotal: disk?.total?.inBytes ?? 0,
+-        stale: !activity || now - sampledAt > 15_000,
++        stale:
++          !activity ||
++          !Number.isFinite(sampledAt) ||
++          now - sampledAt > 15_000 ||
++          sampledAt - now > 5_000,
+       };
+     });
+   }
+ 
++  function roamingStatus(row: NodeRow): { label: string; healthy: boolean } {
++    const roaming = row.activity?.roaming;
++    if (!roaming?.available) {
++      return { label: "자동 복구 정보 없음 · 설치 확인 필요", healthy: false };
++    }
++    const age = observedAt - Date.parse(roaming.sampled_at ?? "");
++    if (row.stale || roaming.stale || !Number.isFinite(age) || age > 60_000 || age < -5_000) {
++      return { label: "자동 복구 상태 갱신 대기", healthy: false };
++    }
++    const labels: Record<string, string> = {
++      starting: "자동 복구 시작 중",
++      connected: "연결 정상 · Wi-Fi 이동 감시 중",
++      waiting_for_network: "네트워크 또는 상대 Mac 연결 대기",
++      reconnecting: "네트워크 복구됨 · EXO 재연결 중",
++      waiting_for_idle: "실행 중인 작업 보호 · 복구 대기",
++      recovering: "EXO 자동 복구 중",
++      cooldown: "재시도 간격 대기",
++      attention_required: "자동 복구 점검 필요",
++      degraded: "연결 복구 확인 필요",
++    };
++    return {
++      label: labels[roaming.state] ?? "자동 복구 상태 확인 필요",
++      healthy: roaming.state === "connected",
++    };
++  }
++
+   function clusterTotals() {
+     const rows = nodeRows();
+     return {
+@@ -408,6 +451,7 @@
+   }
+ 
+   async function poll(): Promise<void> {
++    observedAt = Date.now();
+     if (polling) return;
+     polling = true;
+     try {
+@@ -552,6 +596,7 @@
+ 
+     <section class="grid grid-cols-1 2xl:grid-cols-2 gap-5 mb-5">
+       {#each nodeRows() as row}
++        {@const roaming = roamingStatus(row)}
+         <article
+           class="command-panel rounded-lg p-5 border-l-2 {row.stale
+             ? 'border-l-amber-400'
+@@ -582,6 +627,20 @@
+             </div>
+           </div>
+ 
++          <div
++            class="mb-4 rounded border px-3 py-2 text-[11px] {roaming.healthy
++              ? 'border-emerald-400/20 bg-emerald-400/5 text-emerald-300'
++              : 'border-amber-400/20 bg-amber-400/5 text-amber-200'}"
++          >
++            <span class="mr-2 text-white/45">Wi-Fi 이동</span>
++            {roaming.label}
++            {#if row.activity?.roaming?.available && !row.activity.roaming.stale && !row.stale}
++              <span class="ml-2 text-white/40">
++                복구 {row.activity.roaming.recovery_count ?? 0}회
++              </span>
++            {/if}
++          </div>
++
+           <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+             <div class="rounded border border-white/10 bg-black/25 p-3">
+               <div class="flex justify-between text-[10px] text-white/45">
+diff --git a/src/exo/api/main.py b/src/exo/api/main.py
+index 5b89ebfe..08b447b5 100644
+--- a/src/exo/api/main.py
++++ b/src/exo/api/main.py
+@@ -10,6 +10,7 @@ import time
+ from collections.abc import AsyncGenerator, Awaitable, Callable, Iterable
+ from datetime import datetime, timezone
+ from http import HTTPStatus
++from ipaddress import ip_address
+ from pathlib import Path
+ from typing import Annotated, Any, Literal, cast
+ from uuid import uuid4
+@@ -207,6 +208,80 @@ ONBOARDING_COMPLETE_FILE = EXO_CACHE_HOME / "onboarding_complete"
+ OS1_FLEET_CACHE_SECONDS = 10.0
+ OS1_FLEET_TIMEOUT_SECONDS = 30.0
+ OS1_FLEET_RESULT_LIMIT = 20
++OS1_ROAMING_STALE_SECONDS = 60.0
++OS1_ROAMING_STATES = {
++    "starting",
++    "connected",
++    "waiting_for_network",
++    "reconnecting",
++    "waiting_for_idle",
++    "recovering",
++    "cooldown",
++    "attention_required",
++    "degraded",
++}
++
++
++def _read_roaming_status(path: Path, now: datetime | None = None) -> dict[str, object]:
++    """Read bounded, non-secret roaming evidence without controlling the service."""
++    unavailable: dict[str, object] = {
++        "available": False,
++        "stale": True,
++        "state": "unavailable",
++    }
++    try:
++        with path.open("rb") as status_file:
++            encoded = status_file.read(16_385)
++        if len(encoded) > 16_384:
++            return {**unavailable, "state": "invalid"}
++        raw: object = json.loads(encoded)
++        if not isinstance(raw, dict):
++            return {**unavailable, "state": "invalid"}
++        payload = cast(dict[str, object], raw)
++        sampled_at = payload.get("sampled_at")
++        state = payload.get("state")
++        role = payload.get("role")
++        if (
++            payload.get("schema") != 1
++            or role not in ("air", "pro")
++            or not isinstance(state, str)
++            or state not in OS1_ROAMING_STATES
++            or not isinstance(sampled_at, str)
++        ):
++            return {**unavailable, "state": "invalid"}
++        sampled = datetime.fromisoformat(sampled_at)
++        if sampled.tzinfo is None:
++            return {**unavailable, "state": "invalid"}
++        age = ((now or datetime.now(timezone.utc)) - sampled).total_seconds()
++        result: dict[str, object] = {
++            "schema": 1,
++            "available": True,
++            "stale": age > OS1_ROAMING_STALE_SECONDS or age < -5,
++            "age_seconds": max(age, 0.0),
++            "state": state,
++            "role": role,
++            "sampled_at": sampled.isoformat(),
++        }
++        for key in ("network_changed_at", "last_recovery_at"):
++            value = payload.get(key)
++            if isinstance(value, str):
++                parsed = datetime.fromisoformat(value)
++                if parsed.tzinfo is not None:
++                    result[key] = parsed.isoformat()
++        recovery_count = payload.get("recovery_count")
++        if type(recovery_count) is int and recovery_count >= 0:
++            result["recovery_count"] = recovery_count
++        peer_reachable = payload.get("peer_reachable")
++        if isinstance(peer_reachable, bool):
++            result["peer_reachable"] = peer_reachable
++        peer_api_ip = payload.get("peer_api_ip")
++        if isinstance(peer_api_ip, str):
++            result["peer_api_ip"] = str(ip_address(peer_api_ip))
++        return result
++    except FileNotFoundError:
++        return unavailable
++    except (OSError, ValueError, UnicodeDecodeError):
++        return {**unavailable, "state": "invalid"}
+ 
+ 
+ def _counter_rate(current: int, previous: int, elapsed: float) -> float:
+@@ -554,9 +629,8 @@ class API:
+             self._activity_energy_joules += max(system_power_watts, 0.0) * elapsed
+ 
+             fleet_refresh = self._activity_fleet_refresh_task
+-            if (
+-                now - self._activity_fleet_cache_at >= OS1_FLEET_CACHE_SECONDS
+-                and (fleet_refresh is None or fleet_refresh.done())
++            if now - self._activity_fleet_cache_at >= OS1_FLEET_CACHE_SECONDS and (
++                fleet_refresh is None or fleet_refresh.done()
+             ):
+                 self._activity_fleet_refresh_task = asyncio.create_task(
+                     self._refresh_fleet_snapshot(now)
+@@ -663,6 +737,9 @@ class API:
+                 },
+                 "disk": disk_payload,
+                 "network": network_payload,
++                "roaming": _read_roaming_status(
++                    Path.home() / ".os1" / "exo-roaming" / "status.json"
++                ),
+                 "exo": {
+                     "topology_nodes": len(self.state.topology.list_nodes()),
+                     "instances": len(self.state.instances),
+diff --git a/src/exo/api/tests/test_activity_monitor.py b/src/exo/api/tests/test_activity_monitor.py
+index 7faaab43..106e517c 100644
+--- a/src/exo/api/tests/test_activity_monitor.py
++++ b/src/exo/api/tests/test_activity_monitor.py
+@@ -1,10 +1,12 @@
+ import json
+ import socket
++from datetime import datetime, timedelta, timezone
+ from pathlib import Path
+ 
+ from exo.api.main import (
+     _counter_rate,
+     _read_recent_fleet_jobs,
++    _read_roaming_status,
+     _sanitize_fleet_snapshot,
+ )
+ 
+@@ -66,3 +68,64 @@ def test_recent_fleet_jobs_exposes_metadata_only(tmp_path: Path) -> None:
+ 
+ def test_hostname_is_available_for_activity_fallback() -> None:
+     assert socket.gethostname()
++
++
++def test_roaming_status_requires_fresh_evidence_and_excludes_private_fields(
++    tmp_path: Path,
++) -> None:
++    now = datetime(2026, 9, 7, tzinfo=timezone.utc)
++    path = tmp_path / "status.json"
++    payload = {
++        "schema": 1,
++        "role": "pro",
++        "state": "connected",
++        "sampled_at": now.isoformat(),
++        "recovery_count": 1,
++        "peer_reachable": True,
++        "peer_api_ip": "10.215.90.216",
++        "ssid": "private hotel network",
++        "token": "must-not-leak",
++    }
++    path.write_text(json.dumps(payload), encoding="utf-8")
++
++    fresh = _read_roaming_status(path, now=now)
++    assert fresh["available"] is True
++    assert fresh["stale"] is False
++    assert fresh["peer_api_ip"] == "10.215.90.216"
++    assert "ssid" not in fresh
++    assert "token" not in fresh
++    assert _read_roaming_status(path, now=now + timedelta(seconds=61))["stale"]
++    assert _read_roaming_status(path, now=now - timedelta(seconds=10))["stale"]
++
++
++def test_roaming_status_missing_corrupt_and_oversized_are_unavailable(
++    tmp_path: Path,
++) -> None:
++    path = tmp_path / "status.json"
++    assert _read_roaming_status(path) == {
++        "available": False,
++        "stale": True,
++        "state": "unavailable",
++    }
++    for content in ("{", "[]", "x" * 16_385):
++        path.write_text(content, encoding="utf-8")
++        status = _read_roaming_status(path)
++        assert status["available"] is False
++        assert status["stale"] is True
++
++
++def test_roaming_status_naive_timestamp_and_unknown_state_are_not_healthy(
++    tmp_path: Path,
++) -> None:
++    path = tmp_path / "status.json"
++    for state, sampled_at in (
++        ("connected", "2026-09-07T00:00:00"),
++        ("private detail", "2026-09-07T00:00:00Z"),
++    ):
++        path.write_text(
++            json.dumps(
++                {"schema": 1, "role": "air", "state": state, "sampled_at": sampled_at}
++            ),
++            encoding="utf-8",
++        )
++        assert _read_roaming_status(path)["available"] is False
+-- 
+2.50.1 (Apple Git-155)
+
