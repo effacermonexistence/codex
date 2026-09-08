@@ -6,9 +6,9 @@ recovery tooling can live in the public `effacermonexistence/codex` repository
 without publishing customer-derived identifiers or message content. It is not
 the currently running private source and must not be deployed as though it were.
 
-The active release is `scv-instagram-single-20260908-v166`. Its verified private
+The active release is `scv-instagram-single-20260908-v167`. Its verified private
 source archive, hashes, deployment identities, and test evidence are recorded in
-[`../../docs/scv-instagram-v166-custody.md`](../../docs/scv-instagram-v166-custody.md).
+[`../../docs/scv-instagram-v167-custody.md`](../../docs/scv-instagram-v167-custody.md).
 Acquire and verify that exact private artifact before preparing an operational
 change; do not treat this historical v122 mirror as the active checkout.
 
