@@ -105,3 +105,34 @@ test('source archives reject symlinks and hardlinks before extraction', t => {
   fs.linkSync(path.join(data, 'file'), path.join(data, 'hardlink'));
   assert.throws(() => validateArchive(tar('hardlink.tar.gz', ['file', 'hardlink'])), /link_or_special/);
 });
+
+// A Gold record may pin its own manifest chain. The chain is verified exactly like the v151 chain:
+// the point manifest must carry the requested point id and every extension must link to the point.
+import { validateManifestChain } from './recover-v151.mjs';
+test('pinned manifest chain: point id, base links and prior-extension links are enforced', () => {
+  const point = 'scv-instagram-20260908T213000Z-v167-clean-current';
+  const chain = [
+    { key: 'scv-instagram-automation/recovery-points/20260908T213000Z/SCV_RECOVERY_POINT.json', bytes: 10, sha256: 'a'.repeat(64) },
+    { key: 'scv-instagram-automation/recovery-extensions/20260908T220000Z-v167/SCV_RECOVERY_EXTENSION.json', bytes: 10, sha256: 'b'.repeat(64) },
+    { key: 'scv-instagram-automation/recovery-extensions/20260908T230000Z-v167-deployed/SCV_DEPLOYED_RECOVERY_EXTENSION.json', bytes: 10, sha256: 'c'.repeat(64) }
+  ];
+  const component = { key: 'scv-instagram-automation/recovery-points/20260908T213000Z/SCV_SINGLE_RELEASE.json', bytes: 5, sha256: 'd'.repeat(64) };
+  const base = { recovery_point_id: point, components: [component] };
+  const closure = { base_recovery_point: { id: point, key: chain[0].key, sha256: chain[0].sha256 }, components: [], os_closure: { key: 'scv-instagram-automation/recovery-points/20260908T213000Z/runtime-os.tar.gz', bytes: 7, sha256: 'e'.repeat(64) } };
+  const deployed = { base_recovery_point: { id: point, key: chain[0].key, sha256: chain[0].sha256 }, prior_extension: { key: chain[1].key, sha256: chain[1].sha256 }, components: [] };
+  assert.equal(validateManifestChain(point, chain, [base, closure, deployed]).length, 5);
+  assert.throws(() => validateManifestChain(point, chain, [{ ...base, recovery_point_id: 'other' }, closure, deployed]), /manifest_point_mismatch/);
+  assert.throws(() => validateManifestChain(point, chain, [base, { ...closure, base_recovery_point: { ...closure.base_recovery_point, sha256: 'f'.repeat(64) } }, deployed]), /base_link_mismatch/);
+  assert.throws(() => validateManifestChain(point, chain, [base, closure, { ...deployed, prior_extension: { key: chain[1].key, sha256: 'f'.repeat(64) } }]), /extension_link_mismatch/);
+  assert.throws(() => validateManifestChain(point, [{ ...chain[0], key: 'scv-instagram-automation/other/SCV_RECOVERY_POINT.json' }], [base]), /point_manifest_key_invalid/);
+  assert.throws(() => validateManifestChain(point, chain, [base, closure]), /manifest_chain_incomplete/);
+});
+test('a pinned chain never falls back to the v151 point', async t => {
+  const root = fixture(t), mirror = path.join(root, 'mirror');
+  const key = 'scv-instagram-automation/recovery-points/20260908T213000Z/SCV_RECOVERY_POINT.json', file = path.join(mirror, key);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, JSON.stringify({ recovery_point_id: 'scv-instagram-20260904T222549Z-v151-clean-current', components: [] }));
+  const roots = [{ key, bytes: fs.statSync(file).size, sha256: digest(file) }];
+  await assert.rejects(recover({ point: 'scv-instagram-20260908T213000Z-v167-clean-current', roots, target: path.join(root, 'new'), offlineRoot: mirror }), /manifest_point_mismatch/);
+  await assert.rejects(recover({ point: 'latest', roots, target: path.join(root, 'new2'), offlineRoot: mirror }), /exact_recovery_point_required/);
+});

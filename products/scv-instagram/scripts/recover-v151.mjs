@@ -153,8 +153,32 @@ function downloadWithWrangler(wrangler, object, to) {
     child.once('close', code => { clearTimeout(timer); code === 0 ? resolve() : reject(new Error('r2_download_failed:' + object.key)); });
   });
 }
-export async function recover({ point, target, offlineRoot, progress = () => {} }) {
-  check(point === POINT, 'exact_recovery_point_required');
+// A dated Gold record may pin its own manifest chain (`roots`): the point manifest first, then any
+// extensions. Without `roots` this remains the exact v151 command. Every chain is verified the same
+// way: the point manifest must carry the requested point id, every extension must link back to the
+// point by key + sha256, and a prior_extension link must name an earlier manifest of the same chain.
+const POINT_MANIFEST_KEY = /^scv-instagram-automation\/recovery-points\/\d{8}T\d{6}Z\/SCV_RECOVERY_POINT\.json$/;
+export function validateManifestChain(point, chain, manifests) {
+  check(chain.length >= 1 && manifests.length === chain.length, 'manifest_chain_incomplete');
+  check(POINT_MANIFEST_KEY.test(chain[0].key), 'point_manifest_key_invalid');
+  const [base, ...extensions] = manifests;
+  check(base?.recovery_point_id === point, 'manifest_point_mismatch');
+  extensions.forEach((extension, index) => {
+    check(extension?.base_recovery_point?.id === point && extension.base_recovery_point.key === chain[0].key &&
+      extension.base_recovery_point.sha256 === chain[0].sha256, 'base_link_mismatch');
+    if (extension.prior_extension) {
+      const earlier = chain.slice(1, index + 1);
+      check(earlier.some(ref => ref.key === extension.prior_extension.key && ref.sha256 === extension.prior_extension.sha256), 'extension_link_mismatch');
+    }
+  });
+  return mergeReferences([...chain, ...manifests.flatMap(m => Array.isArray(m.components) ? m.components : []),
+    ...manifests.flatMap(m => [m.os_closure, m.os_xz].filter(Boolean))]);
+}
+export async function recover({ point, target, offlineRoot, progress = () => {}, roots = null }) {
+  const pinned = Array.isArray(roots) && roots.length > 0;
+  if (!pinned) check(point === POINT, 'exact_recovery_point_required');
+  check(typeof point === 'string' && /^scv-instagram-\d{8}T\d{6}Z-v\d+-[a-z0-9-]+$/.test(point), 'exact_recovery_point_required');
+  const chain = pinned ? roots.map(reference) : ROOTS;
   const root = newDirectory(target), objects = path.join(root, 'objects'); fs.mkdirSync(objects, { mode: 0o700 });
   const wrangler = path.join(REPO, 'node_modules/.bin/wrangler');
   if (!offlineRoot) {
@@ -173,12 +197,10 @@ export async function recover({ point, target, offlineRoot, progress = () => {} 
     fs.chmodSync(to, 0o600); verify(to, ref); verified.set(ref.key, reference(ref));
     progress({ verified_objects: verified.size, key: ref.key });
   }
-  for (const ref of ROOTS) await acquire(ref);
-  const [base, closure, deployed] = ROOTS.map(ref => JSON.parse(fs.readFileSync(path.join(objects, ref.key))));
-  check(base.recovery_point_id === POINT && closure.base_recovery_point.id === POINT && deployed.base_recovery_point.id === POINT, 'manifest_point_mismatch');
-  for (const manifest of [closure, deployed]) check(manifest.base_recovery_point.sha256 === ROOTS[0].sha256 && manifest.base_recovery_point.key === ROOTS[0].key, 'base_link_mismatch');
-  check(deployed.prior_extension.sha256 === ROOTS[1].sha256 && deployed.prior_extension.key === ROOTS[1].key, 'extension_link_mismatch');
-  const refs = mergeReferences([...ROOTS, ...base.components, ...closure.components, ...deployed.components, closure.os_closure, deployed.os_xz]);
+  for (const ref of chain) await acquire(ref);
+  const manifests = chain.map(ref => JSON.parse(fs.readFileSync(path.join(objects, ref.key))));
+  const base = manifests[0];
+  const refs = validateManifestChain(point, chain, manifests);
   // Bounded pairwise parallel reads. On failure, let both settle before returning.
   for (let i = 0; i < refs.length; i += 2) {
     const results = await Promise.allSettled(refs.slice(i, i + 2).map(acquire));
@@ -187,8 +209,10 @@ export async function recover({ point, target, offlineRoot, progress = () => {} 
   const restored = stage(root, base);
   const finalArtifactCount = verifyFinalArtifacts(objects, [...verified.values()]);
   const receipt = {
-    schema: 'scv-v151-portable-acquisition-and-offline-restore-v1', at_utc: new Date().toISOString(),
-    recovery_point_id: POINT, source: offlineRoot ? 'offline_byte_verified_mirror' : 'fresh_authenticated_r2_get',
+    schema: pinned ? 'scv-recovery-gold-portable-acquisition-and-offline-restore-v2' : 'scv-v151-portable-acquisition-and-offline-restore-v1',
+    at_utc: new Date().toISOString(),
+    recovery_point_id: point, manifest_chain: chain.length, extensions: chain.length - 1,
+    source: offlineRoot ? 'offline_byte_verified_mirror' : 'fresh_authenticated_r2_get',
     artifact_acquisition_verified: true, artifacts: [...verified.values()], ...restored,
     final_artifacts_reverified_before_receipt: finalArtifactCount,
     production_mutated: false, remote_writes: false, secret_values_recovered_in_this_run: false,
