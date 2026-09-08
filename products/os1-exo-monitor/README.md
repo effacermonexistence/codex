@@ -42,6 +42,23 @@ switches only that EXO service, preserves event logs/models/credentials,
 verifies peer identity, and waits for the two-node topology. On failure after
 the switch it restores the prior plist, source overlay state, and service.
 
+Air source layouts using `run-air.sh` and `source/src/exo` are supported even
+when EXO is not installed inside the virtual environment's `site-packages`.
+The wrapper stays byte-identical: `OS1_EXO_ACTIVITY_DASHBOARD_DIR` is applied by
+the monitor overlay before EXO imports its dashboard settings. The Air mode
+does not fall through into packaged-Pro rebuilding.
+
+Recovery covers pre-switch file failures and explicit validation exits, not
+only shell command errors. Both startup files are staged before replacement.
+Failed recovery is reported as incomplete rather than successful. Backups stay
+under `~/.os1/recovery/exo-activity-monitor-<UTC timestamp>/`.
+
+Regression tests (use a Python environment with pytest, anyio and psutil):
+
+```bash
+python -m pytest products/os1-exo-monitor/test_activity_overlay.py products/os1-exo-monitor/test_activity_installer.py
+```
+
 ## R2 handoff between Macs
 
 The reviewed product is also published as a small immutable package in the

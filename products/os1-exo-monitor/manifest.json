@@ -16,7 +16,8 @@
     "dc46aab52c705b5789775490be7ba1a73bc3052bf43a67eaf5e3f7bab0ff6157"
   ],
   "dashboard_index_sha256": "2ea267a0a0ff374d524a7a622fd1aa6a2c27446d583ac0c6942cd1cc678c3c4d",
-  "source_overlay_sha256": "2073a6455dde5972b9db91a13924ea9bae29114149969a6217bfd2bc07c1c7d3",
+  "source_overlay_sha256": "39e7f03349dda49b1eba46506e6bd62f4f31edf2f1aeeae371dc8248ac587861",
+  "air_compatibility_repair": "source-layout-dashboard-and-transactional-rollback-20260907",
   "pro_verified_runtime_sha256": "b7fbb483ca7b563f70ce63f6e6571b529a82537d07070fff687ee16206073f04",
   "pro_verified_pyz_sha256": "91b7664c10fa5ba6004bafc4d05e0a19226243494ea68221d81d458e4bada7c4",
   "objective_version": "os1-fleet-objective-v1",
