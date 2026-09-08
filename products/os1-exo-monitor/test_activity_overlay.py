@@ -1,5 +1,7 @@
 import importlib
 import sys
+import json
+from datetime import datetime, timedelta, timezone
 from types import ModuleType, SimpleNamespace
 
 
@@ -55,3 +57,27 @@ def test_overlay_sanitizes_fleet_fields() -> None:
             "token": "do-not-expose",
         }
     ) == {"nodes": [{"device_id": "device:test", "queue_depth": 2}]}
+
+
+def test_roaming_status_freshness_and_allowlist(tmp_path):
+    overlay = importlib.import_module("os1_exo_activity_overlay")
+    now = datetime(2026, 9, 7, tzinfo=timezone.utc)
+    path = tmp_path / "status.json"
+    path.write_text(json.dumps({"schema": 1, "role": "pro", "state": "connected",
+                               "sampled_at": now.isoformat(), "ssid": "private", "token": "private"}))
+    result = overlay._read_roaming_status(path, now)
+    assert result["available"] and not result["stale"]
+    assert "ssid" not in result and "token" not in result
+    assert overlay._read_roaming_status(path, now + timedelta(seconds=61))["stale"]
+    assert overlay._read_roaming_status(path, now - timedelta(seconds=10))["stale"]
+
+
+def test_roaming_missing_invalid_and_oversized_fail_closed(tmp_path):
+    overlay = importlib.import_module("os1_exo_activity_overlay")
+    path = tmp_path / "status.json"
+    assert not overlay._read_roaming_status(path)["available"]
+    for content in ("{", "[]", "x" * 16_385,
+                    '{"schema":1,"role":"pro","state":"connected","sampled_at":"2026-09-07T00:00:00"}'):
+        path.write_text(content)
+        result = overlay._read_roaming_status(path)
+        assert not result["available"] and result["stale"]

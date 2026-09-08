@@ -14,9 +14,9 @@ macOS processes share one transparent memory or GPU address space.
 
 - EXO upstream: `exo-explore/exo` tag `v1.0.71`
 - Upstream commit: `fd707de30b42db4211d15da96b9052e1dc280ed1`
-- Omar fork branch: `effacermonexistence/exo:os1/exo-cluster-activity-monitor`
-- Overlay commit: `0f340ce530d0df5fcb646bbad02e7eac7f01830c`
-- Portable mail patches: `patches/0001-*` through `patches/0006-*`
+- Omar fork branch: `effacermonexistence/exo:os1/exo-wifi-roaming-monitor`
+- Overlay commit: `fb174031378cd6ab1c1bf842a2958e4f250b84e2`
+- Portable mail patches: `patches/0001-*` through `patches/0007-*`
 - Prebuilt dashboard: `dashboard-build/` (no Node/npm needed on the target Mac)
 
 On a packaged Pro runtime, the builder replaces only `exo.api.main` in a new
@@ -60,6 +60,28 @@ the repository-pinned Wrangler 4.127.1, validates product/repository identity,
 object-key shape, SHA-256, byte count, and every archive path, then invokes the
 same reversible node installer. No Git checkout, pasted instruction block, or
 credential transfer between Macs is required.
+
+## Moving between Wi-Fi networks
+
+Both nodes use their existing ZeroTier addresses, which are independent of
+hotel Wi-Fi addresses. The installer adds `com.os1.exo-roaming`: a small local
+guard that checks every 15 seconds. It waits while the peer is offline and gives
+EXO time to reconnect. A persistent idle split can restart only the local EXO
+service, after 90 seconds on Pro or 180 seconds on Air, at most twice per hour.
+Loaded models and active or unknown tasks defer recovery. The Activity page
+shows the current recovery state; no SSIDs or Wi-Fi credentials are stored.
+
+An existing healthy Pro can install only the guard with its managed Python:
+`python3.13 products/os1-exo-monitor/roaming_guard.py --install pro`.
+The regular R2 installer includes the guard for Air and Pro.
+
+Hotel captive portals still require that hotel's sign-in. Connectivity cannot
+be guaranteed where Internet or all usable ZeroTier transport is blocked.
+An inference running at the moment of disconnection may fail and need retry;
+automatic reconnection does not migrate or resume an in-flight generation.
+
+Tests simulate changing network, missing transport, stale topology, active
+work, changed peer identity and restart backoff without changing real Wi-Fi.
 
 ## Convergence definition
 

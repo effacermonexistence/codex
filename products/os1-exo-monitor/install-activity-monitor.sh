@@ -87,7 +87,7 @@ TASK_LABEL="$(plutil -extract Label raw "$TASK_PLIST")"
 TASK_BASE_EXECUTABLE="$(plutil -extract ProgramArguments.0 raw "$TASK_PLIST")"
 [[ -x "$TASK_BASE_EXECUTABLE" ]] || { echo "configured EXO executable is missing" >&2; exit 1; }
 TASK_OLD_NODE_ID="$(curl -fsS --max-time 5 http://127.0.0.1:52415/node_id 2>/dev/null | tr -d '"' || true)"
-TASK_RELEASE_ID="0f340ce5"
+TASK_RELEASE_ID="fb174031-roaming-v2"
 TASK_RUNTIME="$TASK_USER_HOME/.os1/exo-1.0.71-activity-monitor-$TASK_RELEASE_ID"
 if [[ -e "$TASK_RUNTIME" ]]; then
   TASK_RUNTIME="$TASK_RUNTIME-$(date -u +%Y%m%dT%H%M%SZ)"
@@ -129,13 +129,14 @@ if [[ "$(basename "$TASK_BASE_EXECUTABLE")" == "run-air.sh" ]]; then
     TASK_BOOTSTRAP_EXISTED=1
     cp "$TASK_BOOTSTRAP_DEST" "$TASK_BOOTSTRAP_BACKUP"
   fi
+  TASK_SWITCHED=1
   cp "$TASK_OVERLAY_SOURCE" "$TASK_OVERLAY_DEST.new"
   mv "$TASK_OVERLAY_DEST.new" "$TASK_OVERLAY_DEST"
   cp "$TASK_BOOTSTRAP_SOURCE" "$TASK_BOOTSTRAP_DEST.new"
   mv "$TASK_BOOTSTRAP_DEST.new" "$TASK_BOOTSTRAP_DEST"
   TASK_NEW_EXECUTABLE="$TASK_BASE_EXECUTABLE"
 else
-  TASK_EXO_COMMIT="0f340ce530d0df5fcb646bbad02e7eac7f01830c"
+  TASK_EXO_COMMIT="fb174031378cd6ab1c1bf842a2958e4f250b84e2"
   TASK_SOURCE="$TASK_TEMP_ROOT/exo"
   git clone --filter=blob:none --no-checkout https://github.com/effacermonexistence/exo.git "$TASK_SOURCE"
   git -C "$TASK_SOURCE" checkout --detach "$TASK_EXO_COMMIT"
@@ -175,6 +176,7 @@ else
   codesign --force --sign - "$TASK_RUNTIME/bin/exo"
   codesign --verify --strict --verbose=2 "$TASK_RUNTIME/bin/exo"
   TASK_NEW_EXECUTABLE="$TASK_RUNTIME/bin/exo"
+  TASK_SWITCHED=1
   /usr/libexec/PlistBuddy -c "Set :ProgramArguments:0 $TASK_NEW_EXECUTABLE" "$TASK_PLIST"
 fi
 
@@ -200,7 +202,7 @@ curl -fsS --max-time 10 http://127.0.0.1:52415/activity/local >/dev/null
 TASK_NEW_NODE_ID="$(curl -fsS --max-time 5 http://127.0.0.1:52415/node_id | tr -d '"')"
 if [[ -n "$TASK_OLD_NODE_ID" && "$TASK_NEW_NODE_ID" != "$TASK_OLD_NODE_ID" ]]; then
   echo "EXO peer identity changed unexpectedly" >&2
-  exit 1
+  false
 fi
 
 TASK_TOPOLOGY_NODES=0
@@ -211,6 +213,25 @@ do
   sleep 1
 done
 [[ "$TASK_TOPOLOGY_NODES" -eq 2 ]]
+
+TASK_GUARD_PYTHON="${TASK_PYTHON:-}"
+for task_candidate in "$TASK_GUARD_PYTHON" "$TASK_USER_HOME/.local/bin/python3.13" "/opt/homebrew/bin/python3" "/usr/bin/python3"
+do
+  if [[ -x "$task_candidate" ]] && "$task_candidate" -c 'import sys; assert sys.version_info >= (3,10)' 2>/dev/null; then
+    TASK_GUARD_PYTHON="$task_candidate"
+    break
+  fi
+done
+[[ -x "$TASK_GUARD_PYTHON" ]]
+# A local topology can replay two nodes before the peer sees fresh heartbeats.
+# Wait for both APIs, not just a local node count, before enrolling the guard.
+TASK_PEER_DEADLINE=$((SECONDS + 120))
+until "$TASK_GUARD_PYTHON" "$TASK_PRODUCT_ROOT/roaming_guard.py" --check-peers "$TASK_ROLE" > "$TASK_TEMP_ROOT/peer-check.json" 2>/dev/null
+do
+  [[ "$SECONDS" -lt "$TASK_PEER_DEADLINE" ]]
+  sleep 3
+done
+"$TASK_GUARD_PYTHON" "$TASK_PRODUCT_ROOT/roaming_guard.py" --install "$TASK_ROLE"
 
 TASK_SWITCHED=0
 trap - ERR

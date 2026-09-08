@@ -1,24 +1,27 @@
 {
   "schema": 1,
+  "release_id": "exo171-roaming-v2",
   "product": "os1-exo-cluster-activity-monitor",
   "exo_version": "1.0.71",
   "upstream_repository": "exo-explore/exo",
   "upstream_commit": "fd707de30b42db4211d15da96b9052e1dc280ed1",
   "overlay_repository": "effacermonexistence/exo",
-  "overlay_branch": "os1/exo-cluster-activity-monitor",
-  "overlay_commit": "0f340ce530d0df5fcb646bbad02e7eac7f01830c",
+  "overlay_branch": "os1/exo-wifi-roaming-monitor",
+  "overlay_commit": "fb174031378cd6ab1c1bf842a2958e4f250b84e2",
   "mail_patch_sha256": [
     "ab292fe3afab987ff866b43d8fd55d2533067c0d07fc5ad4674d5ed6cbd3240a",
     "80de88a1b4fe0523cd28a10f080882fa3d675169a6de3e63922ae39b7df0cfe6",
     "20b999ce65ef809d69fd738397e0f58f93c28dc594081ffa1dd060c7943e238c",
     "6940ebef0c2e4109512ccbac6a5b4b4c1548351e315b40eaffc3a60d51685e6e",
     "c241b3d5afb58f3cce41445de635a67d360f9120d33cab52303190d5f19a1c3d",
-    "dc46aab52c705b5789775490be7ba1a73bc3052bf43a67eaf5e3f7bab0ff6157"
+    "dc46aab52c705b5789775490be7ba1a73bc3052bf43a67eaf5e3f7bab0ff6157",
+    "399d10390d4c91604f73b2644cb3ff7fc167c34ed1b6887e41f95435aec44bcb"
   ],
-  "dashboard_index_sha256": "2ea267a0a0ff374d524a7a622fd1aa6a2c27446d583ac0c6942cd1cc678c3c4d",
-  "source_overlay_sha256": "2073a6455dde5972b9db91a13924ea9bae29114149969a6217bfd2bc07c1c7d3",
-  "pro_verified_runtime_sha256": "b7fbb483ca7b563f70ce63f6e6571b529a82537d07070fff687ee16206073f04",
-  "pro_verified_pyz_sha256": "91b7664c10fa5ba6004bafc4d05e0a19226243494ea68221d81d458e4bada7c4",
+  "dashboard_index_sha256": "afab7f3830078bda3aed4e987f9411f812bceb69a0a3b0209412de69a68b6f18",
+  "source_overlay_sha256": "a595688fb924df8a51531ad69f8cade6a270a78aeb33c148dd022c28c66df10f",
+  "roaming_guard_sha256": "137b333d959e9658868f0606ab1588d96ea7ea69967c697251db9d50959fb633",
+  "pro_verified_runtime_sha256": "c07e17313f9a31f809187489cd9df766f5fd0a0ab3d902151b9ca9cda94c03f2",
+  "pro_verified_pyz_sha256": "80bd24c5679d4274de493f65a77253dad1eb86404ecac2933452e53ea0e5cac8",
   "objective_version": "os1-fleet-objective-v1",
   "dashboard_path": "/#/activity"
 }
