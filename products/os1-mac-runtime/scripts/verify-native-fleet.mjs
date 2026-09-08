@@ -52,6 +52,9 @@ function verifyReceipt({mirror, receipt, intent, marker, profile, revision, expe
 }
 
 function selfTest() {
+  const sourceManifest=json(new URL('../../os1-exo-monitor/manifest.json',import.meta.url));
+  assert.equal(typeof sourceManifest.release_id,'string');
+  assert.equal(sourceManifest.objective_version,objective);
   const marker = 'FIXTURE', revision = 'a'.repeat(40), expected = {release_id:'release', objective_version:objective};
   const result = {job_id:randomUUID(), device_id:'device:test', profile:'codex', repository, revision,
     node_role:'pro', run:{status:'complete', steps:[{provider:'codex', exit_code:0, permission_profile:'read_only',
@@ -76,7 +79,7 @@ function selfTest() {
     value => { const r = JSON.parse(value.mirror.result); r.run.steps.push(r.run.steps[0]); value.mirror.result=JSON.stringify(r);value.mirror.result_hash=hash(value.mirror.result); },
   ];
   for (const change of changes) { const bad = structuredClone(input); change(bad); assert.throws(() => verifyReceipt(bad)); }
-  console.log(JSON.stringify({status:'PASS', checks:changes.length+1, model_calls:0}));
+  console.log(JSON.stringify({status:'PASS', checks:changes.length+2, model_calls:0}));
 }
 
 async function run() {
