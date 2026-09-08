@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "release_id": "exo171-roaming-v2",
+  "release_id": "exo171-roaming-v3",
   "product": "os1-exo-cluster-activity-monitor",
   "exo_version": "1.0.71",
   "upstream_repository": "exo-explore/exo",
@@ -18,7 +18,8 @@
     "399d10390d4c91604f73b2644cb3ff7fc167c34ed1b6887e41f95435aec44bcb"
   ],
   "dashboard_index_sha256": "afab7f3830078bda3aed4e987f9411f812bceb69a0a3b0209412de69a68b6f18",
-  "source_overlay_sha256": "a595688fb924df8a51531ad69f8cade6a270a78aeb33c148dd022c28c66df10f",
+  "source_overlay_sha256": "218087c2d66742e11e067edcfe03dea414c5f8a50ece18902791d6c56997d6a5",
+  "source_bootstrap_sha256": "0dad3105a70eb0d43dc3460076e4c3615542898378d3b4012ac654f1340f1cf9",
   "roaming_guard_sha256": "137b333d959e9658868f0606ab1588d96ea7ea69967c697251db9d50959fb633",
   "pro_verified_runtime_sha256": "c07e17313f9a31f809187489cd9df766f5fd0a0ab3d902151b9ca9cda94c03f2",
   "pro_verified_pyz_sha256": "80bd24c5679d4274de493f65a77253dad1eb86404ecac2933452e53ea0e5cac8",
