@@ -1,0 +1,80 @@
+{
+  "artifact_id": "scv-v33-r2-restore-and-visible-delivery-receipt-2026-07-25-v1",
+  "created_at_utc": "2026-07-25T15:18:20Z",
+  "source_repo": "effacermonexistence/omar-benchmark-replay-live-source",
+  "source_branch": "codex/scv-closed-contract-20260712",
+  "source_tag": "scv-closed-contract-20260712-v33",
+  "tag_commit": "44f1739e66bb569cf7acd08267d0ffa58dd14e06",
+  "github_remote_commit_verified": true,
+  "source_r2_uri": "omar-r2:omar-active-vault/artifacts/scv-instagram/2026-07-25/scv-closed-contract-20260712-v33/",
+  "archive": {
+    "name": "scv-closed-contract-20260712-v33-source.tar.gz",
+    "sha256": "f81139394d005089cb44ad51d4570f0496dc45a6bcd292633856d4ea5e4b1ee0",
+    "bytes": 730851,
+    "tracked_file_count": 140,
+    "root": "scv-closed-contract-20260712-v33/files",
+    "live_client_runtime_state_included": false,
+    "external_credentials_included": false
+  },
+  "secret_scan": {
+    "status": "PASS",
+    "sensitive_filenames": 0,
+    "credential_pattern_hits": 0
+  },
+  "upload_verification": {
+    "rclone_check": "0 differences; 4 matching files before receipt upload",
+    "source_manifest_present": true,
+    "sha256_sidecar_present": true,
+    "root_cause_artifact_present": true
+  },
+  "clean_r2_restore": {
+    "download_sha256_match": true,
+    "extracted_file_count": 140,
+    "npm_ci_exit": 0,
+    "npm_test_exit": 0,
+    "contract_lock_version": "scv-contract-harness-lock-2026-07-25-v94-atomic-client-turn-authority",
+    "contract_harness_checked": 207,
+    "closed_transition_lock_version": "scv-closed-transition-harness-2026-07-25-v51-atomic-client-turn-authority",
+    "closed_transition_assertions": 9922,
+    "single_control_checked": 96,
+    "runner_semantic_repair_checked": 182,
+    "unanswered_coalesce_checked": 19,
+    "hard_harness_lock_version": "scv-hard-harness-lock-2026-07-25-v113-atomic-client-turn-authority",
+    "hard_harness_checked": 85,
+    "golden_guard_checked": 363,
+    "immutable_firewall_checked": 178,
+    "snapshot_isolation_checked": 123,
+    "golden_manifest_sha256": "a719a800386b3c9781f5162b525db99569ddaf0cc8bf13f61233a0bd6b56f03c",
+    "immutable_seal_sha256": "e0f9df33fdbe9999687aed08e17fc56ddd9638d62486828f604db76ce9b88ce9"
+  },
+  "production_replay": {
+    "deployment_id": "83ad0d30-52f6-4d26-8ec3-df9d71886b6c",
+    "inbound_atomic_turn": [
+      "OK, send it over",
+      "By the way, is is it free?"
+    ],
+    "route_after_fix": "send_form",
+    "manychat_http_accepted": true,
+    "visible_outbound_bubbles": [
+      "the rate is 150 an hour for pieces done in my style",
+      "i'll send the form now so we can confirm a date",
+      "https://www.effacermonexistence.com/apply",
+      "just throw me a couple dates that work for you around august 1 or soon after"
+    ]
+  },
+  "instagram_visible_delivery": {
+    "verified_at_utc": "2026-07-25T15:18:20Z",
+    "surface": "Safari Instagram direct-message DOM",
+    "thread_url": "https://www.instagram.com/direct/t/107383997324301/",
+    "page_title": "Instagram • Messages",
+    "consent_visible": true,
+    "price_question_visible": true,
+    "price_reply_visible": true,
+    "form_motion_visible": true,
+    "form_link_visible": true,
+    "availability_tail_visible": true,
+    "seen_marker_visible": true
+  },
+  "non_test_accounts_paused": true,
+  "claim_boundary": "The exact failed atomic client turn was replayed through production, accepted by ManyChat, and independently observed in the already-open Safari Instagram thread with all four outbound bubbles and the Seen marker. The immutable v33 source artifact was downloaded from R2 into a fresh path and passed the full deterministic suite. This proves this exact incident path and restore artifact; it is not a universal no-future-bug or global STABLE_READY claim."
+}

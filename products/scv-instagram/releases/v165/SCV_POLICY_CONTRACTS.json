@@ -1,0 +1,105 @@
+{
+  "contract_bundle_version": "scv-policy-contracts-2026-07-26-v1",
+  "hash_algorithm": "sha256(canonical_json_without_declared_sha256)",
+  "declared_sha256": "fb98093e90b0bcb0817f5686acf430a075f9eedce3ba787db7ffd17681e62aca",
+  "booking_policy": {
+    "version": "scv-booking-policy-contract-2026-07-26-v1",
+    "authority": "deterministic_code_only",
+    "timezone": "America/Los_Angeles",
+    "minimum_lead_days": 7,
+    "maximum_horizon_days": null,
+    "availability_source": "minimum_date_plus_code_slots",
+    "external_calendar_present": false,
+    "rules": [
+      "earliest_available_date is the current Los Angeles calendar date plus seven calendar days",
+      "a fully specified requested date before earliest_available_date is TOO_SOON",
+      "a fully specified requested date on or after earliest_available_date is AVAILABLE",
+      "there is no maximum future booking horizon",
+      "a monthless day such as 27th must produce ASK_CLARIFICATION unless an authoritative immediately preceding scheduling turn supplies the month",
+      "absence from close_booking_options_local is never evidence of unavailability",
+      "the model may phrase a decision but may not decide date legality or availability"
+    ]
+  },
+  "design_intake_policy": {
+    "version": "scv-design-intake-policy-contract-2026-07-26-v1",
+    "authority": "deterministic_transition_plus_model_surface",
+    "rules": [
+      "pure social conversation does not enter the tattoo funnel",
+      "tattoo signal opens design intake",
+      "one concrete subject motif grounded reference or subject bounded creative freedom is enough design authority to offer the form",
+      "a compliment capability question placement or size alone is not design authority",
+      "placement and exact size are decided in person and are not required booking gates",
+      "once design authority exists do not reopen an abstract design interview",
+      "a missing referent or missing attachment must be clarified before funnel advancement",
+      "a reference source need not already look like a finished tattoo"
+    ]
+  },
+  "conversation_progression_policy": {
+    "version": "scv-conversation-progression-policy-contract-2026-07-26-v1",
+    "authority": "single_control_plane",
+    "macro_convergence": "human_relationship_continuity",
+    "micro_convergence": "tattoo_booking_after_client_tattoo_signal",
+    "stages": [
+      "open_conversation",
+      "design_intake",
+      "awaiting_form_permission_answer",
+      "awaiting_form_submission",
+      "awaiting_form_submission_for_accepted_slot",
+      "awaiting_design_direction",
+      "awaiting_date",
+      "awaiting_time",
+      "awaiting_form_identity_match",
+      "awaiting_name_used_on_form",
+      "awaiting_phone_used_on_form",
+      "ready_for_double_check",
+      "awaiting_double_check_confirmation",
+      "deposit_pending",
+      "deposit_requested"
+    ],
+    "actions": [
+      "deposit_hold",
+      "deposit_pending_continue",
+      "deposit_handoff",
+      "double_check",
+      "await_double_check_confirmation",
+      "send_form",
+      "clarify_form_permission",
+      "post_form_availability",
+      "post_form_time",
+      "post_form_identity",
+      "accepted_slot_progress",
+      "resolve_context",
+      "keep_consultation_in_dm",
+      "offer_form",
+      "design_intake",
+      "tattoo_continue",
+      "social_continue",
+      "general_continue"
+    ],
+    "required_progression": [
+      "social until client tattoo signal",
+      "design authority",
+      "form offer once",
+      "form link once after consent",
+      "form submission",
+      "date",
+      "time",
+      "name and phone used on form",
+      "one four field double check",
+      "deposit handoff immediately after confirmation"
+    ],
+    "forbidden": [
+      "empty reply for valid unsuppressed inbound",
+      "reasking a known field",
+      "inventing a business rule or unavailable date",
+      "guessing an ambiguous month",
+      "answering only part of a compound direct question",
+      "repeating form offer form link double check or deposit handoff without explicit resend or correction",
+      "advancing a missing context turn",
+      "allowing a rejected candidate to mutate adopted state"
+    ],
+    "verifier_failure_policy": "one model reauthor then route bounded deterministic recovery",
+    "normal_visible_authorship": "model_authored_under_locked_action",
+    "recovery_visible_authorship": "deterministic_only_after_second_candidate_rejection"
+  }
+}

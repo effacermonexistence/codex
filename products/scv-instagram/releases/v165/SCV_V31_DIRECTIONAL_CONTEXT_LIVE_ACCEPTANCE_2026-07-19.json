@@ -1,0 +1,114 @@
+{
+  "artifact_id": "scv-v31-directional-context-live-acceptance-2026-07-19-v1",
+  "created_at_utc": "2026-07-20T02:39:00Z",
+  "objective": "Verify that an unresolved directional pointer is not treated as understood, that the required clarification survives the executed post-filter path, and that the preserved form offer advances only after explicit client consent.",
+  "scope": {
+    "target": "Omar.system debug account only",
+    "contact_id": "1537753982",
+    "non_test_accounts_paused": true,
+    "fast_target_force_zero_delay": true,
+    "middleware_role": "transport_only"
+  },
+  "executed_path": [
+    "visible Instagram inbound on Omar.system",
+    "ManyChat webhook transport",
+    "single control route resolver",
+    "model candidate",
+    "discourse and closed-transition verifiers",
+    "route-aware deterministic post-filter",
+    "adoption gate",
+    "outbox / ManyChat sendContent HTTP 200",
+    "visible Instagram DM receipt in Safari DOM"
+  ],
+  "failure_family": "MISSING_REFERENT_FALSE_UNDERSTANDING_AND_CLARIFICATION_STRIP",
+  "root_cause": [
+    "An opaque spatial pointer could be washed into resolved context by a prior generic acknowledgement or concrete but dimension-incompatible history.",
+    "A candidate could claim understanding before asking a clarification, and the later question could incorrectly wash the false-understanding prefix.",
+    "The global size and placement question filter could delete the clarification required by the frozen RESOLVE_CONTEXT route, exhausting retries into silence."
+  ],
+  "general_fix": [
+    "Require a dimension-compatible current anchor before a spatial directional pointer can be resolved.",
+    "Reject the entire packet when it claims understanding, approval, or evaluation before the missing referent is identified.",
+    "Require one open identification question; unresolved placeholder choices such as same/new or this/that do not satisfy the gate.",
+    "Preserve a verifier-approved clarification through the route-aware post-filter while keeping ordinary size and placement probing restricted.",
+    "Keep an open form offer pending through non-consent placement or timing details and send the form only after grounded current-turn consent."
+  ],
+  "source": {
+    "branch": "codex/scv-closed-contract-20260712",
+    "runtime_source_commit": "d88e082f907c457afb91e646bbe58aab7f1f650c",
+    "runtime_deployment_id": "1d112dc9-d938-4072-8547-76e5497388e6",
+    "contract_lock_version": "scv-contract-harness-lock-2026-07-19-v77-generalized-temporal-intent",
+    "hard_harness_lock_version": "scv-hard-harness-lock-2026-07-19-v89-route-required-context-clarification",
+    "closed_transition_contract_version": "scv-closed-transition-contract-2026-07-19-v32-route-required-context-clarification",
+    "closed_transition_harness_version": "scv-closed-transition-harness-2026-07-19-v35-route-required-context-clarification"
+  },
+  "deterministic_verification": {
+    "npm_test_exit": 0,
+    "contract_harness_checked": 153,
+    "hard_harness_checked": 74,
+    "closed_transition_checked": 9810,
+    "discourse_continuity_checked": 85,
+    "runner_semantic_repair_checked": 147,
+    "immutable_drift_firewall_checked": 136,
+    "golden_snapshot_guard_checked": 282,
+    "snapshot_isolation_checked": 64,
+    "core_repeat_runs": 3,
+    "core_repeat_result": "3/3 PASS",
+    "secret_scan": "PASS",
+    "git_diff_check": "PASS"
+  },
+  "immutable_identity": {
+    "golden_manifest_sha256": "80f575547223209ebbd58a1b00eebca7913b7fa90164e86f7ff38a36775bde24",
+    "immutable_seal_sha256": "3bffbfa94e5954038e09dd0fd9ac3f1b718e4c241a78fd153941a7b8bdf13e45",
+    "remote_health_matches_local": true
+  },
+  "live_acceptance": {
+    "safari_tail_sha256": "b22c3a92645374f926728a24ba31682d8d0054935200f890ad665aaeeb422d25",
+    "visible_assertions_passed": 10,
+    "visible_assertions_failed": 0,
+    "rows": [
+      {
+        "sequence": 1,
+        "input": "I'm tryna go kinda over there with it",
+        "expected": "Ask what over there means without claiming understanding, approval, or a guessed referent.",
+        "actual": "could you tell me a bit more about where exactly you mean by over there?",
+        "actual_visible_count": 1,
+        "forbidden_false_understanding_visible_count": 0,
+        "forbidden_placeholder_choice_visible_count": 0,
+        "manychat_http_status": 200,
+        "grade": "PASS"
+      },
+      {
+        "sequence": 2,
+        "input": "I mean wrapping it lower toward my forearm",
+        "expected": "Acknowledge the newly grounded placement direction without jumping to calendar scheduling or repeating the form offer.",
+        "actual": "got it wrapping lower by the forearm sounds like a clean flow",
+        "actual_visible_count": 1,
+        "manychat_http_status": 200,
+        "grade": "PASS"
+      },
+      {
+        "sequence": 3,
+        "input": "yeah sure send it",
+        "expected": "Treat the current turn as explicit consent, send the apply link exactly once, and leave an answerable availability CTA.",
+        "actual_bubbles": [
+          "ok cool i’ll send it over now",
+          "https://www.effacermonexistence.com/apply",
+          "throw me a couple dates you’re thinking about here so i can see what works on my end"
+        ],
+        "apply_link_visible_count": 1,
+        "availability_cta_visible_count": 1,
+        "manychat_http_status": 200,
+        "grade": "PASS"
+      }
+    ]
+  },
+  "runtime_state_after_acceptance": {
+    "SCV_PAUSE_ALL": "0",
+    "SCV_PAUSE_NON_TEST": "1",
+    "SCV_PURGE_TEST_ACCOUNT_ON_STARTUP": "0",
+    "omar_system_testable": true,
+    "non_test_accounts_paused": true
+  },
+  "claim_boundary": "This proves the enumerated real Omar.system directional-context and form-consent rows plus the matching deterministic verifier path. It is not a new three-run full-funnel deposit proof and does not claim STABLE_READY while unrelated persistent backlog and quarantine alerts remain."
+}

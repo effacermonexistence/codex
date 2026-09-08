@@ -1,0 +1,57 @@
+{
+  "artifact_id": "scv-v31-r2-restore-receipt-2026-07-19-v1",
+  "created_at_utc": "2026-07-20T02:44:29Z",
+  "source_tag": "scv-closed-contract-20260712-v31",
+  "tag_commit": "eca134d05e2b8d554b51ef271f65b94f234f623e",
+  "runtime_source_commit": "d88e082f907c457afb91e646bbe58aab7f1f650c",
+  "source_r2_uri": "omar-r2:omar-active-vault/artifacts/scv-instagram/2026-07-19/scv-closed-contract-20260712-v31/",
+  "archive": {
+    "name": "scv-closed-contract-20260712-v31-source.tar.gz",
+    "sha256": "55cc1694e1d8a57863826f1d3afd77012e43e549df41074dcce1df12f96f5867",
+    "bytes": 535926,
+    "tracked_file_count": 124,
+    "root": "scv-closed-contract-20260712-v31/files",
+    "secrets_included": false,
+    "runtime_state_included": false
+  },
+  "upload_verification": {
+    "rclone_source_check": "0 differences; 4 matching files before receipt upload",
+    "source_manifest_present": true,
+    "sha256_sidecar_present": true,
+    "live_acceptance_artifact_present": true
+  },
+  "clean_r2_restore": {
+    "download_sha256_match": true,
+    "extracted_file_count": 124,
+    "golden_manifest_sha256_match": true,
+    "immutable_seal_sha256_match": true,
+    "npm_ci_exit": 0,
+    "npm_test_exit": 0,
+    "contract_lock_version": "scv-contract-harness-lock-2026-07-19-v77-generalized-temporal-intent",
+    "hard_harness_lock_version": "scv-hard-harness-lock-2026-07-19-v89-route-required-context-clarification",
+    "closed_transition_lock_version": "scv-closed-transition-harness-2026-07-19-v35-route-required-context-clarification",
+    "discourse_continuity_lock_version": "scv-discourse-continuity-harness-2026-07-19-v14-directional-deixis-needs-dimension-compatible-anchor",
+    "contract_harness_checked": 153,
+    "hard_harness_checked": 74,
+    "closed_transition_assertions": 9810,
+    "discourse_continuity_checked": 85,
+    "runner_semantic_repair_checked": 147,
+    "single_control_checked": 83,
+    "golden_guard_checks": 282,
+    "immutable_firewall_checks": 136,
+    "snapshot_isolation_checks": 64
+  },
+  "immutable_identity": {
+    "golden_manifest_sha256": "80f575547223209ebbd58a1b00eebca7913b7fa90164e86f7ff38a36775bde24",
+    "immutable_seal_sha256": "3bffbfa94e5954038e09dd0fd9ac3f1b718e4c241a78fd153941a7b8bdf13e45"
+  },
+  "live_acceptance": {
+    "artifact": "SCV_V31_DIRECTIONAL_CONTEXT_LIVE_ACCEPTANCE_2026-07-19.json",
+    "real_omar_system_rows": 3,
+    "visible_assertions_passed": 10,
+    "visible_assertions_failed": 0,
+    "deployment_id": "1d112dc9-d938-4072-8547-76e5497388e6",
+    "non_test_accounts_paused": true
+  },
+  "claim_boundary": "The immutable v31 source artifact was downloaded from R2 into a fresh path and its full deterministic suite passed. Live acceptance remains limited to the three enumerated Omar.system directional-context and form-consent rows with 10/10 visible assertions. This is not a new three-run full-funnel deposit proof, and STABLE_READY is not claimed while unrelated persistent backlog and quarantine alerts remain and external ManyChat/API continuity stays outside the internal anti-drift seal."
+}

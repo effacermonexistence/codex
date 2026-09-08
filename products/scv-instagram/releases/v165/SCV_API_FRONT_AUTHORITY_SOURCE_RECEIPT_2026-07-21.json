@@ -1,0 +1,77 @@
+{
+  "receipt_version": "scv-api-front-authority-source-receipt-2026-07-21-v1",
+  "live_object": "Instagram DM OpenAI semantic-call front authority",
+  "runtime_injection_order": [
+    "OMAR_LUA_RCC_ENGINE_v26_CLEAN_CONSOLIDATED",
+    "TALEK_LUA_SELF_IDENTITY_CORE_PROMPT",
+    "lua-dm-master-prompt-v17",
+    "surface_or_bounded_output_lock"
+  ],
+  "injected_exact_sources": [
+    {
+      "source": "/Users/effacermonexistencecodex/.codex/attachments/4ff35388-3e35-4228-acf3-140356adea06/pasted-text.txt",
+      "runtime_copy": "prompt-authority/OMAR_LUA_RCC_ENGINE_v26_CLEAN_CONSOLIDATED.txt",
+      "bytes": 126140,
+      "sha256": "8a626fcbdf109ed23a203ba4169fa20c4904642d102e97b8ac0ad3b01d15ebfc"
+    },
+    {
+      "source": "/Users/effacermonexistencecodex/.codex/attachments/51fac53c-1f2f-4af8-974b-4ee452c63484/pasted-text.txt",
+      "runtime_copy": "prompt-authority/TALEK_LUA_SELF_IDENTITY_CORE_PROMPT.txt",
+      "bytes": 11033,
+      "sha256": "5d619da8c3e07079a5bc2a53de4fd2e8a6d179192a62ee0715986379e52b9fda"
+    },
+    {
+      "source": "lua-dm-master-prompt-v17.txt",
+      "runtime_copy": "lua-dm-master-prompt-v17.txt",
+      "bytes": 81291,
+      "sha256": "8c271f1d957a7d31d2d552a4c174446691cc84e04d54d9dbff5b4e2c8cfee3e4"
+    }
+  ],
+  "provided_non_prompt_artifacts": [
+    {
+      "path": "/Users/effacermonexistencecodex/Desktop/OMARAGI_CANONICAL_LOGIC_CORE/OMARAGI_CANONICAL_LOGIC_CORE.txt",
+      "bytes": 1228625,
+      "sha256": "b090d361894ba5025ad90b4f7e8dcbfe016804bdb473e265009558760d70be33",
+      "classification": "benchmark execution code inventory",
+      "instagram_runtime_prompt_injected": false
+    },
+    {
+      "path": "/Users/effacermonexistencecodex/Desktop/OMARAGI_CANONICAL_LOGIC_CORE/OMARAGI_CANONICAL_ALL_IN_ONE_REVIEW.txt",
+      "bytes": 1690944,
+      "sha256": "8d2694df0b874e04941a29239cc5b7346a03f3f110c64fea675c582a718db720",
+      "classification": "benchmark review and execution inventory",
+      "instagram_runtime_prompt_injected": false
+    },
+    {
+      "path": "/Users/effacermonexistencecodex/Desktop/OMARAGI_CANONICAL_LOGIC_CORE/OMARAGI_CANONICAL_RUNTIME_DATA_BUNDLE",
+      "file_count": 46,
+      "classification": "benchmark samples, fixtures, proof artifacts, and historical runtime state",
+      "instagram_runtime_prompt_injected": false
+    },
+    {
+      "path": "/Users/effacermonexistencecodex/Desktop/OMARAGI_CANONICAL_LOGIC_CORE/canonical_lane_registry.py",
+      "present_at_intake": false,
+      "available_split": [
+        "canonical_lane_metadata.py",
+        "canonical_lane_dispatch.py"
+      ],
+      "instagram_runtime_prompt_injected": false
+    }
+  ],
+  "scope_boundary": "The canonical logic core package is benchmark/BYOK executable implementation and data, not Instagram conversational instruction text. Importing it into every DM would violate lane isolation and contaminate the client-authoring context. Its provenance is recorded here; it remains excluded from the Instagram prompt body.",
+  "audio_transcription_boundary": "The OpenAI audio transcription endpoint has no system-message role. It remains verbatim evidence extraction; the downstream ASR adjudication and every visible reply generation receive the full locked authority.",
+  "secrets_included": false,
+  "runtime_lock_version": "scv-api-prompt-authority-2026-07-21-v1-v26-identity-master-front",
+  "harness_lock_version": "scv-api-prompt-authority-harness-2026-07-21-v1-all-semantic-call-sites-fail-closed",
+  "harness_checked": 46,
+  "actual_visible_reply_system_sha256": "5315ad90f1d192e7b9b5165a812b12ef464f3f4b1a2b244f91b26eecfbf05ada",
+  "actual_visible_reply_system_bytes": 221730,
+  "bounded_system_probe_sha256": "5840a458574c7d64ab1247178fb0fe3ecc2c3ec4295747f746133a39708ab587",
+  "semantic_call_sites": {
+    "visible_reply": "authority_bound",
+    "intent_classifier": "authority_bound",
+    "asr_candidate_adjudicator": "authority_bound",
+    "vision_evidence_extractor": "authority_bound",
+    "audio_transcription": "verbatim_evidence_then_authority_bound_adjudication"
+  }
+}

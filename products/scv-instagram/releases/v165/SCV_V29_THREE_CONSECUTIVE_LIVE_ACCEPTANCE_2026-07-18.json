@@ -1,0 +1,164 @@
+{
+  "artifact_id": "scv-v29-open-vocabulary-three-consecutive-live-acceptance-20260718",
+  "acceptance_rule": "three new Omar.system full-funnel completions consecutively after target-only reset; any failure resets the streak to zero",
+  "locked_source_commit": "42b8815e5935b69da6dbe3019dcd6e50ea15e729",
+  "locked_source_tag": "scv-closed-contract-20260712-v29",
+  "proof_tag": "scv-closed-contract-20260712-v29-three-consecutive",
+  "runtime_deployment": "58efc505-1ec7-415b-a294-74ca355a3dcb",
+  "source_r2_path": "omar-active-vault/artifacts/scv-instagram/2026-07-18/scv-closed-contract-20260712-v29/",
+  "proof_r2_path": "omar-active-vault/artifacts/scv-instagram/2026-07-18/scv-closed-contract-20260712-v29-three-consecutive/",
+  "source_archive_sha256": "876e2c5235673868388b10d824df426e46dabacb3ae2691b87f175ca2cfff9aa",
+  "source_archive_file_count": 120,
+  "clean_r2_restore": {
+    "download_sha_match": true,
+    "extracted_file_count": 120,
+    "npm_test_exit": 0,
+    "contract_lock_version": "scv-contract-harness-lock-2026-07-18-v62-open-vocabulary-design-subject-lock",
+    "hard_harness_lock_version": "scv-hard-harness-lock-2026-07-18-v63-open-vocabulary-design-route-lock",
+    "closed_transition_assertions": 9751,
+    "golden_guard_checks": 254,
+    "immutable_firewall_checks": 108,
+    "snapshot_isolation_checks": 37
+  },
+  "streak_started_at_utc": "2026-07-18T04:23:59.280Z",
+  "streak_completed_at_utc": "2026-07-18T04:31:34.670Z",
+  "consecutive_required": 3,
+  "consecutive_passed": 3,
+  "intervening_failures": 0,
+  "visible_assertions_passed": 24,
+  "visible_assertions_failed": 0,
+  "assertion_set_per_run": [
+    "unknown_open_vocabulary_design_subject_received_a_reply",
+    "form_offer_present_and_not_repeated_before_consent",
+    "exact_apply_url_sent_once_after_consent",
+    "actual_form_submission_advanced_to_availability",
+    "name_phone_appointment_date_and_time_rendered_as_four_line_double_check",
+    "appointment_date_used_day_first_ordinal_of_month_surface",
+    "natural_confirmation_advanced_immediately_to_deposit",
+    "deposit_amount_100_and_zelle_address_visible"
+  ],
+  "runs": [
+    {
+      "sequence": 1,
+      "status": "PASS",
+      "design_subject": "colorful Luna moth",
+      "placement": "upper shoulder",
+      "size": "4 by 4 inches",
+      "form_submission_phrase": "I just submitted the form.",
+      "confirmation_phrase": "Yes, that's all correct.",
+      "test_identity": {
+        "name": "Omar Test A",
+        "phone_last4": "0111"
+      },
+      "expected_visible": {
+        "appointment_date": "25th of July",
+        "time": "2pm",
+        "double_check": true,
+        "deposit_amount": 100,
+        "zelle_address_present": true
+      },
+      "visible_assertions": {
+        "passed": 8,
+        "failed": 0
+      },
+      "control_receipt_sha256": "9d666677a469b822b3dd00e088d7aeb4276fef0d366512139b9c050ee181cbb5",
+      "packet_sha256": "7576ec21a323ce6b7541c974c6583e1473b90e2e73bcf55047b0655fc7450918",
+      "closed_transition_action": "deposit_handoff",
+      "closed_transition_reason": "four_field_double_check_confirmed",
+      "started_at_utc": "2026-07-18T04:23:59.280Z",
+      "completed_at_utc": "2026-07-18T04:26:31.051Z"
+    },
+    {
+      "sequence": 2,
+      "status": "PASS",
+      "design_subject": "iridescent axolotl",
+      "placement": "outer forearm",
+      "size": "5 by 3 inches",
+      "form_submission_phrase": "Just submitted it.",
+      "confirmation_phrase": "Perfect, everything is correct.",
+      "test_identity": {
+        "name": "Omar Test B",
+        "phone_last4": "0112"
+      },
+      "expected_visible": {
+        "appointment_date": "1st of August",
+        "time": "3pm",
+        "double_check": true,
+        "deposit_amount": 100,
+        "zelle_address_present": true
+      },
+      "visible_assertions": {
+        "passed": 8,
+        "failed": 0
+      },
+      "control_receipt_sha256": "0bdeb726f9cebee1bba088e778164dfafd71fab36dfd2d5dcb19f0d89e26161b",
+      "packet_sha256": "7576ec21a323ce6b7541c974c6583e1473b90e2e73bcf55047b0655fc7450918",
+      "closed_transition_action": "deposit_handoff",
+      "closed_transition_reason": "four_field_double_check_confirmed",
+      "started_after_reset_at_utc": "2026-07-18T04:27:05.173Z",
+      "completed_before_next_reset_at_utc": "2026-07-18T04:29:29.593Z"
+    },
+    {
+      "sequence": 3,
+      "status": "PASS",
+      "design_subject": "fine-line nautilus shell tattoo",
+      "placement": "left ribs",
+      "size": "6 inches",
+      "form_submission_phrase": "I just sent you the form.",
+      "confirmation_phrase": "Yeah, that's perfect.",
+      "test_identity": {
+        "name": "Omar Test C",
+        "phone_last4": "0113"
+      },
+      "expected_visible": {
+        "appointment_date": "2nd of August",
+        "time": "1pm",
+        "double_check": true,
+        "deposit_amount": 100,
+        "zelle_address_present": true
+      },
+      "visible_assertions": {
+        "passed": 8,
+        "failed": 0
+      },
+      "control_receipt_sha256": "0fdfc4ff33da54efb4c55526c83c612853533da8392e15e2d283ef929769229c",
+      "packet_sha256": "7576ec21a323ce6b7541c974c6583e1473b90e2e73bcf55047b0655fc7450918",
+      "closed_transition_action": "deposit_handoff",
+      "closed_transition_reason": "four_field_double_check_confirmed",
+      "started_at_utc": "2026-07-18T04:29:41.173Z",
+      "completed_at_utc": "2026-07-18T04:31:34.670Z"
+    }
+  ],
+  "target_only_resets": [
+    {
+      "before_run": 1,
+      "reset_watermark_at": "2026-07-18T04:23:49.249Z",
+      "remaining_count": 0
+    },
+    {
+      "before_run": 2,
+      "reset_watermark_at": "2026-07-18T04:27:05.173Z",
+      "remaining_count": 0
+    },
+    {
+      "before_run": 3,
+      "reset_watermark_at": "2026-07-18T04:29:29.593Z",
+      "remaining_count": 0
+    }
+  ],
+  "runtime_scope": {
+    "test_account": "omar.system",
+    "non_test_accounts_paused": true,
+    "SCV_PAUSE_ALL": "0",
+    "SCV_PAUSE_NON_TEST": "1",
+    "final_omar_state_preserved_for_visible_inspection": true
+  },
+  "stability_truth": {
+    "transport_ok": true,
+    "stable_ready": false,
+    "reason": "persistent pre-existing non-test inbox/reactbox/quarantine backlog remains paused and was neither sent nor deleted during Omar.system testing"
+  },
+  "raw_transcripts_committed": false,
+  "raw_transcript_policy": "visible Safari receipts were inspected directly; immutable controller receipt hashes and exact required-surface assertions are committed without publishing client conversation history",
+  "created_at_utc": "2026-07-18T04:35:45Z"
+}

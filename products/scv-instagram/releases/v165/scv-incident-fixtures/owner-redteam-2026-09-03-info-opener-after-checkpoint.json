@@ -1,0 +1,266 @@
+{
+  "schema": "scv-incident-fixture-2026-09-03-owner-redteam-info-opener-after-checkpoint",
+  "seed_state": {
+    "contact_id": "1537753982",
+    "thread_id": "1537753982",
+    "message_id": "legacy-manychat-b6e1bcb0d86e5ea676c361052899d563",
+    "message_id_authority": "provider_verified_legacy_manychat",
+    "message_id_retry_window_ms": 0,
+    "instagram_username": "omar.system",
+    "text": "Hi, can I please get more information?",
+    "text_source": "message_text",
+    "media_type": "",
+    "manychat_tags": [
+      "scv_omar_e2e_1537753982",
+      "opening_sent"
+    ],
+    "recovered_via": "",
+    "recovered_from_ig_last_interaction": "",
+    "recovered_from_last_seen": "",
+    "recovered_from_message_id": "",
+    "recovered_from_at": "",
+    "source_interaction_at": "2026-09-03T04:50:30.000Z",
+    "manychat_latest_interaction_at": "2026-09-02T21:50:30-07:00",
+    "automation_suppressed": false,
+    "automation_suppressed_tag": "",
+    "automation_suppressed_reason": "",
+    "raw_body_sha256": "f4d171e876ec86938262703cc2ad0c9f86654a9295e2ce56e9322003738f60a2",
+    "received_at": "2026-09-03T04:50:31.562Z",
+    "tattoo_intent_active": true,
+    "form_link_sent": true,
+    "form_offer_asked": true,
+    "form_submitted": true,
+    "known_client_anchored_inspiration": true,
+    "known_requested_date": "september 9",
+    "known_requested_time": "2pm",
+    "last_offered_date": "september 9",
+    "last_offered_time": "2pm",
+    "accepted_offered_date": "september 9",
+    "accepted_offered_time": "2pm",
+    "last_rejected_client_date": "September 5",
+    "last_rejected_client_date_message_id": "legacy-manychat-876405e22f0dd79687c853cc3a47a9fd",
+    "known_design_context": "Can we do September 5?",
+    "openai_previous_response_id": "resp_039ac0f40974bded006a98e2c1402487d0a19fe5b4a4aa563d",
+    "openai_conversation_model": "gpt-5.4-mini-2026-03-17",
+    "openai_conversation_api_version": "scv-openai-responses-conversation-2026-08-24-v7-native-chain-visible-reconciliation",
+    "openai_conversation_last_message_id": "legacy-manychat-489d2726bb337b0667f51f0399dd918d",
+    "control_plane_id": "scv-single-control-plane-2026-07-12-v3-route-frozen-liveness",
+    "control_epoch": "scv-control-epoch-2026-07-12-v3-route-frozen-liveness",
+    "control_revision": 7,
+    "ingress_revision": 8,
+    "control_event_revision": 8,
+    "latest_ingress_message_id": "legacy-manychat-b6e1bcb0d86e5ea676c361052899d563",
+    "latest_ingress_at": "2026-09-03T04:50:30.000Z",
+    "latest_ingress_text_sha256": "382bb11cf101f09e90086496f6f0ae0e4de19304f9f45bb108d5096310535996",
+    "control_recent_receipts": [
+      {
+        "receipt_version": "scv-control-receipt-v2-payload-bound",
+        "control_plane_id": "scv-single-control-plane-2026-07-12-v3-route-frozen-liveness",
+        "control_epoch": "scv-control-epoch-2026-07-12-v3-route-frozen-liveness",
+        "thread_id": "1537753982",
+        "message_id": "legacy-manychat-bd66f013b091c621b1379e71d37f21ef",
+        "control_revision": 1,
+        "ingress_revision": 1,
+        "state_sha256": "d122c27ecc721ef353652e5e8d59bf7921dd22fafc5f5d4140e7427edb9171e7",
+        "packet_sha256": "bffc7fb1cee38904e01fc8a7b94834fc6abcedc3f792ab86ce873b1495d8828c",
+        "receipt_sha256": "990c58da0e4d30d783ce63f0f9c984af91526b7357047b1c0552cb43de47a8c6"
+      },
+      {
+        "receipt_version": "scv-control-receipt-v2-payload-bound",
+        "control_plane_id": "scv-single-control-plane-2026-07-12-v3-route-frozen-liveness",
+        "control_epoch": "scv-control-epoch-2026-07-12-v3-route-frozen-liveness",
+        "thread_id": "1537753982",
+        "message_id": "legacy-manychat-584014919f402cab4bef6836fc290a74",
+        "control_revision": 2,
+        "ingress_revision": 3,
+        "state_sha256": "dcad1af1910aad961910e213dc2ccfe81e29480f5562b53077f05dbf6ebf2e7d",
+        "packet_sha256": "2794588da2e8ac224c02a49bd439012e0a7594df62afffa65708395c9ca3ea88",
+        "receipt_sha256": "4f1ebf4d762f243d59ff5d952fffd7588377a8f3407593e5965c3a6c0306cee0"
+      },
+      {
+        "receipt_version": "scv-control-receipt-v2-payload-bound",
+        "control_plane_id": "scv-single-control-plane-2026-07-12-v3-route-frozen-liveness",
+        "control_epoch": "scv-control-epoch-2026-07-12-v3-route-frozen-liveness",
+        "thread_id": "1537753982",
+        "message_id": "legacy-manychat-174ef360ed86cb5190dad213710bf553",
+        "control_revision": 3,
+        "ingress_revision": 4,
+        "state_sha256": "781938082554edc5c62fdaeb2b445546bc49c1a061ac93887c82429dbfb65942",
+        "packet_sha256": "dcd7dfc66d40fc7a7617839ed7c02a48661765f90aec5077e889396c39f582b8",
+        "receipt_sha256": "34506fa31943f292d59d3a62dc7259b6d7db83fc6ff088153651981f78f4cd3b"
+      },
+      {
+        "receipt_version": "scv-control-receipt-v2-payload-bound",
+        "control_plane_id": "scv-single-control-plane-2026-07-12-v3-route-frozen-liveness",
+        "control_epoch": "scv-control-epoch-2026-07-12-v3-route-frozen-liveness",
+        "thread_id": "1537753982",
+        "message_id": "legacy-manychat-489d2726bb337b0667f51f0399dd918d",
+        "control_revision": 4,
+        "ingress_revision": 5,
+        "state_sha256": "5e423f60bb7bce9c1b23afd6fedd8fa45f85bbe34b23e49704641a6c865d6a0d",
+        "packet_sha256": "191e8c0dfac1166efbb6f4637bd72caa030dbe9c89d04ee3fff22a59376e4077",
+        "receipt_sha256": "21ee98aa04fcc791941694d5513c5208db2569acffbf084426a5aca0d83c6851"
+      },
+      {
+        "receipt_version": "scv-control-receipt-v2-payload-bound",
+        "control_plane_id": "scv-single-control-plane-2026-07-12-v3-route-frozen-liveness",
+        "control_epoch": "scv-control-epoch-2026-07-12-v3-route-frozen-liveness",
+        "thread_id": "1537753982",
+        "message_id": "legacy-manychat-876405e22f0dd79687c853cc3a47a9fd",
+        "control_revision": 5,
+        "ingress_revision": 6,
+        "state_sha256": "7797af086b4fb30efd59b383681c5c01536f35d02838d2868365a35cfaedfba1",
+        "packet_sha256": "9e2f4503b53694fc481c59cc2ae0f32fb4685a72c75e69059a936b5b51a43549",
+        "receipt_sha256": "48bab948676dc06134d11f778e9ae9fc44a36179517473e24973cd3c3b8b1b9a"
+      },
+      {
+        "receipt_version": "scv-control-receipt-v2-payload-bound",
+        "control_plane_id": "scv-single-control-plane-2026-07-12-v3-route-frozen-liveness",
+        "control_epoch": "scv-control-epoch-2026-07-12-v3-route-frozen-liveness",
+        "thread_id": "1537753982",
+        "message_id": "legacy-manychat-f6b581f5ed8b2e6b37905b41cd0f0aaa",
+        "control_revision": 6,
+        "ingress_revision": 7,
+        "state_sha256": "b5d5cbf4db7d02e9229c3d5df8c855f323dcbccf6b98e11632e5e31ebdbb08e8",
+        "packet_sha256": "5fe7a09a2ac0ef538cbebb9b538d42a27547a1709c14381f0b6da40859b0dde5",
+        "receipt_sha256": "958df995663f4428883be81c4cace9ba250dea08fbbd2a71f8d66d0103d49fd3"
+      },
+      {
+        "receipt_version": "scv-control-receipt-v2-payload-bound",
+        "control_plane_id": "scv-single-control-plane-2026-07-12-v3-route-frozen-liveness",
+        "control_epoch": "scv-control-epoch-2026-07-12-v3-route-frozen-liveness",
+        "thread_id": "1537753982",
+        "message_id": "legacy-manychat-b6e1bcb0d86e5ea676c361052899d563",
+        "control_revision": 7,
+        "ingress_revision": 8,
+        "state_sha256": "b5d5cbf4db7d02e9229c3d5df8c855f323dcbccf6b98e11632e5e31ebdbb08e8",
+        "packet_sha256": "f958570c877f9776f148eeb2cfa73f8a9f7819f6bfacd719f72bc0a8164dc3b3",
+        "receipt_sha256": "eb955e9e89de4a86453088e2df9d3cf73dd0b9d26a993985a6e0487ae56373bf"
+      }
+    ],
+    "last_control_message_id": "legacy-manychat-b6e1bcb0d86e5ea676c361052899d563",
+    "last_control_committed_at": "2026-09-03T04:51:58.901Z",
+    "control_state_sha256": "b5d5cbf4db7d02e9229c3d5df8c855f323dcbccf6b98e11632e5e31ebdbb08e8",
+    "structured_state_schema_version": "scv-structured-state-schema-2026-08-25-v2-rejected-date-authority",
+    "structured_state_schema_sha256": "3385af6c6e830ce99a98da781403eb9aee2a3708af2d3afe5320302580abf7ac",
+    "booking_stage_hint": "awaiting_form_identity_match",
+    "next_action": "post_form_identity"
+  },
+  "history_before_live_turn": [
+    {
+      "role": "user",
+      "text": "Hi, can I please get more information?",
+      "at": "2026-09-03T02:54:45.000Z",
+      "message_id": "legacy-manychat-bd66f013b091c621b1379e71d37f21ef"
+    },
+    {
+      "role": "assistant_attempted",
+      "text": "hiii!! sure thing!! a model spot is a limited spot i open for a few pieces in my style and we make the tattoo from what you want \ud83d\udda4",
+      "at": "2026-09-03T02:54:50.210Z",
+      "message_id": "legacy-manychat-bd66f013b091c621b1379e71d37f21ef"
+    },
+    {
+      "role": "assistant_attempted",
+      "text": "you can scroll my profile and highlights for inspo or if there is already an idea in your head i can customize it for you :) tell me what you are thinking",
+      "at": "2026-09-03T02:54:51.156Z",
+      "message_id": "legacy-manychat-bd66f013b091c621b1379e71d37f21ef"
+    },
+    {
+      "role": "user",
+      "text": "I\u2019m thinking of this one",
+      "at": "2026-09-03T02:54:58.000Z",
+      "message_id": "legacy-manychat-2ccb0fcd1738417d33a8a3690b27a248"
+    },
+    {
+      "role": "user",
+      "text": "sent a reference post: This is a screenshot of a social media post discussing the term \"Daybreak Blue\" and showing a dropdown menu with selectable model names. It is a chat/app screenshot.",
+      "at": "2026-09-03T02:55:02.000Z",
+      "message_id": "legacy-manychat-584014919f402cab4bef6836fc290a74"
+    },
+    {
+      "role": "assistant_attempted",
+      "text": "yeah I can work with this",
+      "at": "2026-09-03T02:55:24.120Z",
+      "message_id": "legacy-manychat-584014919f402cab4bef6836fc290a74"
+    },
+    {
+      "role": "assistant_attempted",
+      "text": "it can be custom from here want me to send the form",
+      "at": "2026-09-03T02:55:25.110Z",
+      "message_id": "legacy-manychat-584014919f402cab4bef6836fc290a74"
+    },
+    {
+      "role": "user",
+      "text": "Yes, please",
+      "at": "2026-09-03T02:55:57.000Z",
+      "message_id": "legacy-manychat-174ef360ed86cb5190dad213710bf553"
+    },
+    {
+      "role": "assistant_attempted",
+      "text": "perfect send the form here https://www.effacermonexistence.com/apply",
+      "at": "2026-09-03T02:56:08.484Z",
+      "message_id": "legacy-manychat-174ef360ed86cb5190dad213710bf553"
+    },
+    {
+      "role": "assistant_attempted",
+      "text": "and send me a couple dates that work for you here so I can check the schedule",
+      "at": "2026-09-03T02:56:09.401Z",
+      "message_id": "legacy-manychat-174ef360ed86cb5190dad213710bf553"
+    },
+    {
+      "role": "user",
+      "text": "Done",
+      "at": "2026-09-03T03:00:10.000Z",
+      "message_id": "legacy-manychat-489d2726bb337b0667f51f0399dd918d"
+    },
+    {
+      "role": "assistant_attempted",
+      "text": "got it thanks",
+      "at": "2026-09-03T03:00:39.162Z",
+      "message_id": "legacy-manychat-489d2726bb337b0667f51f0399dd918d"
+    },
+    {
+      "role": "assistant_attempted",
+      "text": "send me a couple dates that work and I\u2019ll check the schedule",
+      "at": "2026-09-03T03:00:40.154Z",
+      "message_id": "legacy-manychat-489d2726bb337b0667f51f0399dd918d"
+    },
+    {
+      "role": "user",
+      "text": "Can we do September 5?",
+      "at": "2026-09-03T03:00:49.000Z",
+      "message_id": "legacy-manychat-876405e22f0dd79687c853cc3a47a9fd"
+    },
+    {
+      "role": "assistant_attempted",
+      "text": "September 5 is too soon for scheduling and my earliest opening is september 9 (wednesday) at 2pm",
+      "at": "2026-09-03T03:00:56.145Z",
+      "message_id": "legacy-manychat-876405e22f0dd79687c853cc3a47a9fd"
+    },
+    {
+      "role": "assistant_attempted",
+      "text": "does september 9 (wednesday) at 2pm work for you",
+      "at": "2026-09-03T03:00:57.026Z",
+      "message_id": "legacy-manychat-876405e22f0dd79687c853cc3a47a9fd"
+    },
+    {
+      "role": "user",
+      "text": "Yeah, sure",
+      "at": "2026-09-03T03:01:05.000Z",
+      "message_id": "legacy-manychat-f6b581f5ed8b2e6b37905b41cd0f0aaa"
+    },
+    {
+      "role": "assistant_attempted",
+      "text": "Name : Omar System\nPhone Number : 4155550199\nAppointment date : september 9\nTime : 2pm\n\ncan you double check this just to make sure",
+      "at": "2026-09-03T03:02:00.064Z",
+      "message_id": "legacy-manychat-f6b581f5ed8b2e6b37905b41cd0f0aaa"
+    }
+  ],
+  "live_text": "Hi, can I please get more information?",
+  "observed_v142": {
+    "route": "await_double_check_confirmation/four_field_double_check_already_sent_wait_without_repeating",
+    "executor": "deterministic_route_aware_visible_after_failure_exhaustion",
+    "visible": "which one should i fix the date the time or the name and number?",
+    "latency_s": 88
+  }
+}

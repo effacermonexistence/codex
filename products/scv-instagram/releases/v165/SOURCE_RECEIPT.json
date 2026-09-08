@@ -1,0 +1,9 @@
+{
+  "schema": "scv-public-materialized-sealed-source-2026-09-08-v1",
+  "release_id": "scv-instagram-single-20260908-v165",
+  "content_fingerprint_sha256": "312b964f793c82ae6f73dbce9e60c4dfeab5a4c97d644f3b662e5092ce266aa8",
+  "release_manifest_sha256": "569002bf3392725473c48dc136964ed558ce93a6bee4d164a71a7ecde768210c",
+  "manifest_listed_files": 258,
+  "source_values_included": false,
+  "credentials_included": false
+}
