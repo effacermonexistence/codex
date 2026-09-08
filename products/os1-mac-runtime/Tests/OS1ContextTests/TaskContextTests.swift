@@ -66,6 +66,14 @@ func runTaskContextFixtures(root: URL) throws {
     let contradictory = ScopeResolution.resolve("파일은 수정해. 수정하지 마")
     try check(contradictory.scope == .readOnly, "contradictory request takes the safer reading")
     try check(ScopeResolution.resolve("복구할 수 있어?").scope == .readOnly, "capability question is not a change")
+    let fleetReadOnlyAudit = ScopeResolution.resolve("""
+        Read-only reconciliation of failed OS1 Fleet job 4c7663db-6087-4fe4-8fbd-1d524cf427aa.
+        This is not permission to replay that job or perform any installation. Using only read tools,
+        inspect the current checkout and report the recorded failure. Do not run commands, restart
+        services, change files, read authentication caches or quote private log payloads.
+        """)
+    try check(fleetReadOnlyAudit.scope == .readOnly && fleetReadOnlyAudit.prohibitions.contains("do not modify files"),
+              "a quoted Fleet failure audit remains read-only even when it names installation and files")
 
     // C. Baseline selection distinguishes recovery, recorded operating, live.
     let v151 = TaskContext.BaselineRecord(id: "scv-instagram-20260904T222549Z-v151-clean-current",
