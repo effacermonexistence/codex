@@ -7,8 +7,9 @@ import os from 'node:os';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 
-const [sourceArg, recoveryArg, expectedBuild] = process.argv.slice(2);
+const [sourceArg, recoveryArg, expectedBuild, queueMode] = process.argv.slice(2);
 assert(sourceArg && recoveryArg && /^\d+$/.test(expectedBuild), 'staged-app new-private-recovery-dir expected-build');
+assert(queueMode === undefined || queueMode === '--preserve-queue', 'unknown install option');
 const source = fs.realpathSync(sourceArg), home = os.homedir();
 const recovery = path.resolve(recoveryArg), app = path.join(home, 'Applications/OS-1 CLODEX.app');
 const cli = path.join(home, '.local/bin/os1'), resource = path.join(source, 'Contents/Resources/os1');
@@ -16,6 +17,9 @@ const store = path.join(home, 'Library/Application Support/OS-1/sessions.json');
 const fleetRoot = path.join(home, '.os1/fleet');
 const service = `gui/${process.getuid()}/com.os1.fleet-agent`;
 const plist = path.join(home, 'Library/LaunchAgents/com.os1.fleet-agent.plist');
+// Queue repair upgrades may preserve a stranded queue. They must never clear,
+// reorder or execute it: OS1 reloads every saved entry under a restart hold.
+const originalQueue = JSON.parse(fs.readFileSync(store)).queued ?? [];
 assert(recovery.startsWith(path.join(home, '.os1/recovery/') ) && !fs.existsSync(recovery));
 assert(!fs.lstatSync(app).isSymbolicLink() && !fs.lstatSync(cli).isSymbolicLink());
 const run = (exe, args, timeout = 60000) => execFileSync(exe, args, {
@@ -36,7 +40,8 @@ const requirement = file => {
 const idle = () => {
   const state = JSON.parse(fs.readFileSync(store));
   assert.equal((state.inFlight ?? []).length, 0, 'active user task; leave the installation unchanged');
-  assert.equal((state.queued ?? []).length, 0, 'queued user task; leave the installation unchanged');
+  if (queueMode === '--preserve-queue') assert.deepEqual(state.queued ?? [], originalQueue, 'queue changed during installation');
+  else assert.equal((state.queued ?? []).length, 0, 'queued user task; leave the installation unchanged');
   for (const name of ['main-agent-active.json', 'main-agent-claim.json']) {
     assert(!fs.existsSync(path.join(fleetRoot, name)), 'Fleet work/claim unresolved; do not interrupt it');
   }
@@ -99,6 +104,8 @@ try {
   if (wasRunning.length) run('/usr/bin/open', ['-g', app]);
   await wait(3000);
   const after = JSON.parse(fs.readFileSync(store));
+  assert.deepEqual(after.queued ?? [], originalQueue, 'installation changed or ran a queued request');
+  assert.equal((after.inFlight ?? []).length, 0, 'installation started a request');
   for (const previous of original.sessions) {
     const current = after.sessions.find(s => s.id === previous.id); assert(current, 'conversation lost');
     for (const key of ['workspace', 'title', 'draft', 'pinnedAt', 'sidebarPosition', 'archived', 'codexSessionID', 'claudeSessionID']) {
