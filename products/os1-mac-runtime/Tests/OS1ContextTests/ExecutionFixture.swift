@@ -57,6 +57,19 @@ func runExecutionFixtures() throws {
         upload:Data(),submission:Data(),step:Data(),source:nil,output:"finished paid result")
     try DeliveryOutbox(root:root).save(record)
     check(try DeliveryOutbox(root:root).read(id).output == record.output)
+    check(try DeliveryOutbox(root:root).read(id).localRejection == nil)
+    let rejectedID = UUID().uuidString + "-1"
+    let rejected = DeliveryRecord(id:rejectedID,apiURL:"https://fixture",deviceID:"device",resultSHA256:hash,
+        artifact:data,upload:Data(),submission:Data(),step:Data(),source:nil,output:"finished paid result",
+        localRejection:"presentation_rejected")
+    try DeliveryOutbox(root:root).save(rejected)
+    let recovered = try DeliveryOutbox(root:root).read(rejectedID)
+    check(recovered.localRejection == "presentation_rejected")
+    check(recovered.artifact == data && recovered.output == rejected.output)
+    // Legacy successful records omit this optional field and remain readable.
+    var legacy = try JSONSerialization.jsonObject(with: JSONEncoder().encode(record)) as! [String: Any]
+    legacy.removeValue(forKey: "localRejection")
+    check(try JSONDecoder().decode(DeliveryRecord.self, from: JSONSerialization.data(withJSONObject: legacy)).localRejection == nil)
     check((try FileManager.default.attributesOfItem(atPath:root.appendingPathComponent(id + ".json").path)[.posixPermissions] as? NSNumber)?.intValue == 0o600)
     do { _ = try DeliveryOutbox(root:root).read("../../secrets"); fatalError("path escape") } catch { checks += 1 }
     print("Execution stream, privacy, quota and durable outbox: \(checks) checks passed")

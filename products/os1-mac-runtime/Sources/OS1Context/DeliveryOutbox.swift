@@ -14,12 +14,17 @@ public struct DeliveryRecord: Codable, Sendable {
     public let source: SourceReference?
     public let output: String
     public let submissionID: String?
+    /// A returned native candidate may be healthy while locally rejected for
+    /// this task. Persist that veto across crashes and result-delivery replay.
+    public let localRejection: String?
     public var response: Data?
     public init(id: String, apiURL: String, deviceID: String, resultSHA256: String,
-                artifact: Data, upload: Data, submission: Data, step: Data, source: SourceReference?, output: String) {
+                artifact: Data, upload: Data, submission: Data, step: Data, source: SourceReference?, output: String,
+                localRejection: String? = nil) {
         self.id = id; self.apiURL = apiURL; self.deviceID = deviceID; self.resultSHA256 = resultSHA256
         self.artifact = artifact; self.upload = upload; self.submission = submission
         self.step = step; self.source = source; self.output = output
+        self.localRejection = localRejection
         submissionID = ProcessInfo.processInfo.environment["OS1_SUBMISSION_ID"].flatMap { UUID(uuidString:$0)?.uuidString }
     }
 }

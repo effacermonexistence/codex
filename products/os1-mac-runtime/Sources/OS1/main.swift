@@ -559,6 +559,39 @@ struct ProviderExecution {
     let nativeRecord: NativeRecordEvidence
 }
 
+/// Retain the actual paid candidate when task validation rejects it. Native
+/// health and rejected-result custody do not grant permission to adopt/replay.
+struct RejectedProviderExecution: Error, CustomStringConvertible {
+    let execution: ProviderExecution
+    let cause: Error
+    var description: String { String(describing: cause) }
+}
+
+/// This signed task does not fit the intentionally bounded lane. No native
+/// process or authentication probe has run, so this refusal is not evidence
+/// that the provider itself is unhealthy.
+struct ProviderTaskCapabilityMismatch: Error, CustomStringConvertible {
+    var description: String { OS1Error.backendBlocked(.capabilityUnavailable).description }
+}
+
+func providerUnderlyingError(_ error: Error) -> Error {
+    if let rejected = error as? RejectedProviderExecution { return providerUnderlyingError(rejected.cause) }
+    return error
+}
+
+func validateProviderCandidate(_ candidate: ProviderExecution,
+                               onNativeExecution: ((ProviderExecution) -> Void)? = nil,
+                               validation: () throws -> Void) throws -> ProviderExecution {
+    onNativeExecution?(candidate)
+    do { try validation() }
+    catch { throw RejectedProviderExecution(execution: candidate, cause: error) }
+    return candidate
+}
+
+func providerAttemptMayReplay(permission: String, stage: BackendDispatchStage) -> Bool {
+    permission == "read_only" || (permission == "workspace_write" && stage == .notDispatched)
+}
+
 /// Converts a local backend transport or quota failure into a bounded,
 /// non-success artifact. The private evaluator may use this only to reject the
 /// candidate and issue a fresh signed ticket. A client capability constraint
@@ -785,6 +818,14 @@ func promptRequiresShellCapability(_ prompt: String) -> Bool {
         "최신", "가져", "목록", "connect", "sync", "verify", "inspect", "latest", "fetch", "list",
     ].contains { value.contains($0) }
     return externalSystem && externalOperation
+}
+
+func validateProviderTaskCapability(provider: String, permissionProfile: String,
+                                    hasPreloadedEvidence: Bool, prompt: String) throws {
+    if provider == "claude", permissionProfile == "read_only", !hasPreloadedEvidence,
+       promptRequiresShellCapability(prompt) {
+        throw ProviderTaskCapabilityMismatch()
+    }
 }
 
 /// This is a public capability constraint, not a routing heuristic: the
@@ -4069,19 +4110,17 @@ private func execute(
     preloadedR2Evidence: R2EvidenceBundle? = nil,
     sourceUseRequired: Bool = true,
     onUsage: ((CompletionMeasuredUsage?) -> Void)? = nil,
-    onDispatch: ((String?) -> Void)? = nil
+    onDispatch: ((String?) -> Void)? = nil,
+    onNativeExecution: ((ProviderExecution) -> Void)? = nil
 ) throws -> ProviderExecution {
     let started = Date()
     let lockedObjective = objectivePrompt ?? prompt
-    if ticket.provider == "claude",
-       ticket.permissionProfile == "read_only",
-       preloadedR2Evidence == nil,
-       promptRequiresShellCapability(lockedObjective) {
-        throw OS1Error.backendBlocked(.capabilityUnavailable)
-    }
+    try validateProviderTaskCapability(provider: ticket.provider, permissionProfile: ticket.permissionProfile,
+                                      hasPreloadedEvidence: preloadedR2Evidence != nil, prompt: lockedObjective)
     let result: (Int32, Data, Data)
     let sessionID: String
     let nativeRecord: NativeRecordEvidence
+    var validateCandidate: (() throws -> Void)?
     let hasPreloadedR2Evidence = preloadedR2Evidence != nil
     let evidenceDirective = sourceExecutionDirective(preloadedR2Evidence, required: sourceUseRequired)
     let readinessDirective = asksRecoveryReadiness(lockedObjective) ? """
@@ -4142,6 +4181,7 @@ private func execute(
         } catch {
             persistence = "unverified: \(error)"
         }
+        validateCandidate = {
         guard !providerOutputDeclaresCapabilityFailure(turn.output, prompt: lockedObjective) else {
             throw OS1Error.backendBlocked(BackendBlocker.reported(in: String(decoding: turn.output, as: UTF8.self)) ?? .capabilityUnavailable)
         }
@@ -4162,6 +4202,7 @@ private func execute(
                sourceRepositories: preloadedR2Evidence.sources.compactMap { $0["repository"] }
            ) {
             throw OS1Error.message("Codex did not satisfy the verified R2 retrieval contract. This step was not verified.")
+        }
         }
         result = (0, turn.output, appServer.stderr())
         // Release this process's writer lock before the Desktop is asked to
@@ -4245,6 +4286,7 @@ private func execute(
                 sourceRepositories: $0.sources.compactMap { $0["repository"] }
             )
         } ?? false)
+        validateCandidate = {
         if rejectedCapability {
             throw OS1Error.backendBlocked(BackendBlocker.reported(in: String(decoding: parsed.output, as: UTF8.self)) ?? .capabilityUnavailable)
         }
@@ -4258,6 +4300,7 @@ private func execute(
                 (rejectedClarification ? "requested deliverable" :
                     (rejectedConfiguration ? "executor configuration" : "presentation/structure checks"))
             throw OS1Error.message("Claude answer failed \(reason). \(outputIssues.joined(separator: " ")) A different governed route is required; this candidate was not adopted.")
+        }
         }
         sessionID = parsed.sessionID
         result = (raw.0, parsed.output, raw.2)
@@ -4273,7 +4316,7 @@ private func execute(
             desktopVisibility: transcript == nil ? "transcript_unavailable" : "pending_adoption"
         )
     }
-    return ProviderExecution(
+    let candidate = ProviderExecution(
         artifact: Artifact(
             provider: ticket.provider,
             action: ticket.action,
@@ -4293,6 +4336,9 @@ private func execute(
         sessionID: sessionID,
         nativeRecord: nativeRecord
     )
+    return try validateProviderCandidate(candidate, onNativeExecution: onNativeExecution) {
+        try validateCandidate?()
+    }
 }
 
 private let publicArithmeticWords: [String: String] = [
@@ -4622,7 +4668,8 @@ func runLocalTask(
                 )
             }
         } catch {
-            if let failure = error as? OS1Error, failure.isTerminalBackendFailure {
+            let underlying = providerUnderlyingError(error)
+            if let failure = underlying as? OS1Error, failure.isTerminalBackendFailure {
                 recordExecutionFailure(ticket: ticket, model: decision.model, effort: decision.effort,
                     reason: failure.description, source: nil)
                 throw failure
@@ -4729,6 +4776,8 @@ func sourceOnlyFailoverProvider(requested: String, failed: String, permission: S
 }
 
 func backendBlocker(_ error: Error) -> BackendBlocker? {
+    if let rejected = error as? RejectedProviderExecution { return backendBlocker(rejected.cause) }
+    if error is ProviderTaskCapabilityMismatch { return .capabilityUnavailable }
     if let failure = error as? OS1Error {
         if failure.isTerminalPermissionFailure { return .policyDenied }
         if case .backendBlocked(let blocker) = failure { return blocker }
@@ -5040,6 +5089,8 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
         var attemptRecorded = false
         var dispatchStage = BackendDispatchStage.notDispatched
         var interruptedSessionID: String?
+        var nativeHealth = FleetProviderAttemptHealth(provider: ticket.provider)
+        defer { recordFleetProviderEvidence(nativeHealth) }
         // Capture paid work even when artifact encoding, signing, upload, or
         // validation fails. Such a result is unknown, never free or adopted.
         defer {
@@ -5098,21 +5149,27 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
                             blocker: ticket.permissionProfile == "workspace_write" ? .effectsUncertain : .unclassified,
                             dispatchStage: .dispatched, source: sourceContext, permissionProfile: ticket.permissionProfile)
                         lastFailureNotice?.emit()
-                    }
+                    },
+                    onNativeExecution: { nativeHealth.observeNative($0) }
                 )
             } catch {
                 let reason = String(describing: error)
-                recordFleetProviderEvidence(provider: ticket.provider,
-                    failure: (backendBlocker(error) ?? .unclassified).rawValue)
+                nativeHealth.failed(error, dispatchStage: dispatchStage)
                 attemptFailure = reason
                 lastLocalFailure = reason
                 recordExecutionFailure(ticket: ticket, model: model, effort: effort, reason: reason, source: sourceContext)
-                if backendBlocker(error) == .quotaExhausted {
+                if backendBlocker(error) == .quotaExhausted, !(error is RejectedProviderExecution) {
+                    lastFailureNotice = BackendFailureNotice(provider: ticket.provider, sessionID: interruptedSessionID,
+                        blocker: BackendRecovery.classifiedBlocker(.quotaExhausted, permission: ticket.permissionProfile,
+                            stage: dispatchStage, workspaceChanged: workspaceHash(canonicalWorkspace) != beforeHash),
+                        dispatchStage: dispatchStage, source: sourceContext, permissionProfile: ticket.permissionProfile)
+                    lastFailureNotice?.emit()
                     recordCompletionAttempt(store: feedbackStore, scope: feedbackScope, ticket: ticket,
                         model: model, effort: effort, outcome: .quotaExhausted, usage: attemptUsage,
                         startedAt: attemptStartedAt, source: sourceContext)
                     attemptRecorded = true
-                    guard providerPreference == "auto", step < config.maximumSteps else { throw error }
+                    guard providerPreference == "auto", step < config.maximumSteps,
+                          providerAttemptMayReplay(permission: ticket.permissionProfile, stage: dispatchStage) else { throw error }
                     codexCatalog = ActiveCodexCatalog(models: codexCatalog.models.filter { $0.slug != model }, source: codexCatalog.source)
                     let next = StartExecutionRequest(task: request.task, providerPreference: request.providerPreference,
                         capacityPlan: request.capacityPlan, executorContractVersion: request.executorContractVersion,
@@ -5124,8 +5181,13 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
                     lastFailureNotice = nil
                     continue
                 }
-                if let failure = error as? OS1Error, failure.isTerminalBackendFailure {
+                if let failure = providerUnderlyingError(error) as? OS1Error, failure.isTerminalBackendFailure {
                     terminalPermissionFailure = failure
+                }
+                if error is RejectedProviderExecution, backendBlocker(error) == .quotaExhausted {
+                    // Preserve the real returned candidate before stopping.
+                    // A quota message must not authorize another paid attempt.
+                    terminalPermissionFailure = .backendBlocked(.quotaExhausted)
                 }
                 let afterHash = workspaceHash(canonicalWorkspace)
                 let blocker = backendBlocker(error) ?? .unclassified
@@ -5153,10 +5215,10 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
                     workspaceBeforeSHA256: beforeHash, workspaceAfterSHA256: afterHash,
                     blocker: safeBlocker, nextProvider: sourceRecoveryProvider,
                     dispatchStage: dispatchStage, nativeSessionID: interruptedSessionID))
-                // Fail closed locally, but do not terminate the governed run.
-                // A non-zero, content-free artifact lets REVAS reject this
-                // attempt and choose the next route with a new signed ticket.
-                execution = unavailableProviderExecution(
+                // Preserve a real paid candidate even when locally rejected.
+                // Only a backend without a candidate uses the synthetic failure
+                // artifact; neither may bypass the local adoption/replay veto.
+                execution = (error as? RejectedProviderExecution)?.execution ?? unavailableProviderExecution(
                     ticket: ticket,
                     model: model,
                     effort: effort,
@@ -5174,7 +5236,6 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
                 dispatchStage: dispatchStage, source: sourceContext, permissionProfile: ticket.permissionProfile)
         }
         let artifact = execution.artifact
-        recordFleetProviderEvidence(provider: ticket.provider, execution: execution)
         let artifactData = try JSONEncoder().encode(artifact)
         let resultHash = sha256Hex(artifactData)
         RuntimeActivity.emit(.verifying, provider: ticket.provider, model: model, effort: effort)
@@ -5199,10 +5260,14 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
         var delivery = DeliveryRecord(id: "\(ticket.executionID)-\(ticket.sequence)", apiURL: config.apiURL, deviceID: id,
             resultSHA256: resultHash, artifact: artifactData, upload: try JSONEncoder().encode(upload),
             submission: try JSONEncoder().encode(submission), step: try JSONEncoder().encode(pendingStep),
-            source: sourceContext, output: artifact.output)
+            source: sourceContext, output: artifact.output, localRejection: attemptFailure)
         // Custody must succeed before the first network write. Never discard a
         // finished paid result in a temporary process-output directory.
         try DeliveryOutbox().save(delivery)
+        lastFailureNotice = BackendFailureNotice(provider: ticket.provider, sessionID: execution.sessionID,
+            blocker: ticket.permissionProfile == "workspace_write" && dispatchStage == .dispatched ? .effectsUncertain : .unclassified,
+            dispatchStage: dispatchStage, source: sourceContext, permissionProfile: ticket.permissionProfile,
+            deliveryID: delivery.id)
         do {
             let uploaded: [String: String] = try await client.deliver("/v1/artifacts", body: upload, as: [String: String].self)
             guard uploaded["artifact_ref"] == artifactRef else { throw OS1Error.message("Artifact upload binding failed") }
@@ -5231,6 +5296,10 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
             usage: attemptUsage, startedAt: attemptStartedAt, source: sourceContext)
         attemptRecorded = true
         if revasDisposition != "adopted" { failedCandidates.insert(candidateKey) }
+        if revasDisposition != "adopted",
+           !providerAttemptMayReplay(permission: ticket.permissionProfile, stage: dispatchStage) {
+            throw OS1Error.backendBlocked(.effectsUncertain)
+        }
         if let failure = terminalPermissionFailure {
             // The failed, content-free artifact was reported, but do not run
             // any retry/upgrade ticket for policy/auth or unknown write effects.
@@ -5318,6 +5387,9 @@ func resumeDelivery(_ identifier: String) async throws -> RunSummary {
     let box = DeliveryOutbox()
     var record = try box.read(identifier)
     guard record.apiURL == config.apiURL, record.deviceID == id else { throw OS1Error.message("저장된 결과의 계정·서버 경계가 다릅니다. 재전송하지 않았습니다.") }
+    guard record.localRejection == nil else {
+        throw OS1Error.message("저장된 후보는 로컬 검증에서 거절됐습니다. 원본은 보존했으며 재전송·채택·새 모델 실행을 하지 않았습니다.")
+    }
     let step = try JSONDecoder().decode(RunStepSummary.self, from: record.step)
     let artifact = try JSONDecoder().decode(Artifact.self, from: record.artifact)
     let submission = try JSONDecoder().decode(ResultSubmission.self, from: record.submission)

@@ -859,6 +859,75 @@ private func parallelInteractionSelfTest() async throws {
         "assessment replayed the original action or implicitly resumed dependents")
     let savedReadback = try JSONDecoder().decode(PendingSubmission.self, from: JSONEncoder().encode(recoveryRequests.last!))
     try check(savedReadback.readOnlyReconciliation == true, "read-only boundary must survive queue persistence")
+    // Rejected paid output is retained for inspection, never presented as a
+    // pending upload that can be adopted by repeatedly pressing Retry.
+    let rejectedRoot = root.appendingPathComponent("rejected-result")
+    let rejectedBox = DeliveryOutbox(root: rejectedRoot.appendingPathComponent("execution-outbox"))
+    var rejectedRequests: [PendingSubmission] = []
+    var savedRejected: DeliveryRecord?
+    let rejectedStore = SessionStore(storageRoot: rejectedRoot, runOperation: { submission, context, _, _, _ in
+        rejectedRequests.append(submission)
+        if submission.readOnlyReconciliation != true {
+            let bytes = Data("paid answer rejected for this task".utf8)
+            let hash = SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
+            let record = DeliveryRecord(id: UUID().uuidString + "-1", apiURL: "https://fixture.invalid",
+                deviceID: "fixture", resultSHA256: hash, artifact: bytes, upload: Data(), submission: Data(),
+                step: Data(), source: nil, output: String(decoding: bytes, as: UTF8.self),
+                localRejection: "presentation_rejected")
+            var json = try JSONSerialization.jsonObject(with: JSONEncoder().encode(record)) as! [String: Any]
+            json["submissionID"] = submission.id.uuidString
+            let indexed = try JSONDecoder().decode(DeliveryRecord.self, from: JSONSerialization.data(withJSONObject: json))
+            savedRejected = indexed
+            try rejectedBox.save(indexed)
+            throw RunnerError.backend(BackendFailureNotice(provider: "codex", sessionID: nil,
+                blocker: .unclassified, dispatchStage: .dispatched, permissionProfile: "read_only", deliveryID: indexed.id))
+        }
+        try check(context.contains("paid answer rejected for this task"), "rejected answer missing from review context")
+        return AppRunSummary(status: "complete", steps: [AppRunStep(sequence: 1, provider: "codex",
+            action: "test", model: "fixture", effort: "low", revasDisposition: "adopted", sessionID: UUID().uuidString,
+            permissionProfile: "read_only", exitCode: 0, output: "reviewed saved result without replay", stderr: "",
+            durationMS: 1, nativeRecord: nil)])
+    })
+    rejectedStore.composer = "REJECTED ORIGINAL"; rejectedStore.send()
+    while !rejectedStore.activeRuns.isEmpty { try await Task.sleep(for: .milliseconds(20)) }
+    let rejectedSubmission = rejectedRequests[0]
+    try check(rejectedStore.selectedSession!.lastFailure?.deliveryID == nil &&
+              rejectedStore.selectedSession!.lastFailure?.rejectedResultID == savedRejected?.id,
+              "rejected result must not be queued for delivery")
+    try check(rejectedStore.selectedSession!.messages.contains(where: { $0.text.contains("로컬 검증에서 거절됨") }) &&
+              !rejectedStore.selectedSession!.messages.contains(where: { $0.text.contains("서버 검증·전달 대기") }),
+              "rejected result preview must state its actual disposition")
+    for requestedID in [String?.none, savedRejected?.id] {
+        do {
+            _ = try retainedResultDeliveryID(savedRejected, requestedID: requestedID, provider: .codex)
+            throw RunnerError.message("rejected result reached runner delivery")
+        } catch RunnerError.backend(let notice) {
+            try check(notice.deliveryID == savedRejected?.id, "runner must preserve rejection custody")
+        }
+    }
+    rejectedStore.retrySelectedFailure()
+    while !rejectedStore.activeRuns.isEmpty { try await Task.sleep(for: .milliseconds(20)) }
+    try check(rejectedRequests.count == 2 && rejectedRequests[1].readOnlyReconciliation == true &&
+              rejectedRequests[1].id != rejectedSubmission.id && rejectedRequests[1].deliveryID == nil,
+              "rejected result review needs a fresh read-only submission, not delivery or original replay")
+    try check(rejectedRequests.filter { $0.request == "REJECTED ORIGINAL" }.count == 1,
+              "rejected original was replayed")
+    // Reproduce recovery from a crash after outbox custody but before the GUI
+    // received a final failure; the saved rejection must survive that path.
+    rejectedStore.flushPendingState()
+    var interruptedSessions = rejectedStore.sessions
+    interruptedSessions[0].messages = interruptedSessions[0].messages.filter { $0.id == rejectedSubmission.userMessageID }
+    interruptedSessions[0].lastFailure = nil
+    interruptedSessions[0].lastBackendFailure = nil
+    try JSONEncoder().encode(SessionEnvelope(schema: 4, sessions: interruptedSessions, queued: [],
+        inFlight: [rejectedSubmission])).write(to: rejectedRoot.appendingPathComponent("sessions.json"), options: .atomic)
+    let rejectedRestart = SessionStore(storageRoot: rejectedRoot)
+    try check(rejectedRestart.selectedSession!.lastFailure?.rejectedResultID == savedRejected?.id &&
+              rejectedRestart.selectedSession!.lastFailure?.deliveryID == nil && rejectedRestart.activeRuns.isEmpty,
+              "restart must keep rejected work available for review without delivery or automatic replay")
+    try check(rejectedRestart.selectedSession!.messages.contains(where: { $0.text == savedRejected?.output }) &&
+              rejectedRestart.selectedSession!.messages.contains(where: { $0.text.contains("로컬 검증에서 거절됨") }),
+              "restart must restore the rejected preview before read-only review")
     print("Parallel sessions: \(checks) checks passed; real child-process overlap, per-session FIFO/context/status, explicit retry, four-session limit, paused restart/cancellation")
 }
 
@@ -2040,6 +2109,7 @@ private struct PendingSubmission: Identifiable, Codable, Equatable, Sendable {
     let claudeCapacity: Int
     let readOnlyReconciliation: Bool?
     var deliveryID: String? = nil
+    var rejectedResultID: String? = nil
 
     init(
         id: UUID = UUID(),
@@ -2062,6 +2132,20 @@ private struct PendingSubmission: Identifiable, Codable, Equatable, Sendable {
         self.claudeCapacity = claudeCapacity
         self.readOnlyReconciliation = readOnlyReconciliation
     }
+}
+
+private func retainedResultDeliveryID(_ record: DeliveryRecord?, requestedID: String?,
+                                      provider: ProviderChoice) throws -> String? {
+    if let record, record.localRejection != nil {
+        // Fail before starting either delivery or a new provider execution.
+        let step = try? JSONDecoder().decode(AppRunStep.self, from: record.step)
+        let owningProvider = step.flatMap { ["codex", "claude"].contains($0.provider) ? $0.provider : nil }
+            ?? (provider == .claude ? "claude" : "codex")
+        throw RunnerError.backend(BackendFailureNotice(provider: owningProvider,
+            sessionID: step?.sessionID, blocker: .unclassified, dispatchStage: .dispatched,
+            source: record.source, permissionProfile: step?.permissionProfile, deliveryID: record.id))
+    }
+    return requestedID ?? record?.id
 }
 
 private struct AppNativeRecord: Decodable, Sendable {
@@ -2383,8 +2467,11 @@ private enum OS1Runner {
             // without delivering URLs that can activate the external app.
             "--desktop-reveal", "background",
         ]
-        let savedResult = submissionID.flatMap { DeliveryOutbox().forSubmission($0.uuidString) }
-        if let storedID = deliveryID ?? savedResult?.id { arguments = ["resume-delivery", storedID] }
+        let savedResult = try deliveryID.map { try DeliveryOutbox().read($0) }
+            ?? submissionID.flatMap { DeliveryOutbox().forSubmission($0.uuidString) }
+        if let storedID = try retainedResultDeliveryID(savedResult, requestedID: deliveryID, provider: provider) {
+            arguments = ["resume-delivery", storedID]
+        }
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: try executable())
@@ -3110,14 +3197,17 @@ private final class SessionStore: ObservableObject {
                     if let failure = error as? RunnerError, case .backend(let notice) = failure {
                         sessions[target].lastBackendFailure = notice
                         if let deliveryID = notice.deliveryID,
-                           let result = try? DeliveryOutbox().read(deliveryID), !result.output.isEmpty {
-                            sessions[target].lastFailure?.deliveryID = deliveryID
+                           let result = try? deliveryOutbox.read(deliveryID), !result.output.isEmpty {
+                            let rejected = result.localRejection != nil
+                            sessions[target].lastFailure?.deliveryID = rejected ? nil : deliveryID
+                            sessions[target].lastFailure?.rejectedResultID = rejected ? deliveryID : nil
                             let previewID = UUID(uuidString:String(deliveryID.prefix(36)))!
                             if !sessions[target].messages.contains(where: { $0.id == previewID }) {
                                 sessions[target].messages.append(ChatMessage(id:previewID, role: .assistant, text: result.output,
                                     provider: notice.provider, permissionProfile: notice.permissionProfile, nativeRecordVerified: false))
                                 sessions[target].messages.append(ChatMessage(role: .receipt,
-                                    text: "답변 로컬 저장됨 · 서버 검증·전달 대기 · 아직 완료 판정 아님", nativeRecordVerified: false))
+                                    text: rejected ? "답변 로컬 저장됨 · 로컬 검증에서 거절됨 · 전달·채택 대상 아님" :
+                                        "답변 로컬 저장됨 · 서버 검증·전달 대기 · 아직 완료 판정 아님", nativeRecordVerified: false))
                             }
                         }
                         if let source = notice.source,
@@ -3209,6 +3299,7 @@ private final class SessionStore: ObservableObject {
     func retrySelectedFailure() {
         guard !isRunning, let failed = selectedSession?.lastFailure,
               activeRuns.count < Self.maximumConcurrentSessions else { return }
+        if failed.rejectedResultID != nil { reconcileSelectedFailure(); return }
         if failed.deliveryID != nil { start(failed); return }
         guard selectedSession?.lastBackendFailure?.requiresReadback != true else {
             reconcileSelectedFailure(); return
@@ -3219,7 +3310,7 @@ private final class SessionStore: ObservableObject {
     }
     func reconcileSelectedFailure() {
         guard !isRunning, let failed = selectedSession?.lastFailure,
-              selectedSession?.lastBackendFailure?.requiresReadback == true,
+              failed.rejectedResultID != nil || selectedSession?.lastBackendFailure?.requiresReadback == true,
               activeRuns.count < Self.maximumConcurrentSessions else { return }
         let request = BackendRecovery.readbackPrompt(objective: failed.request)
         let message = ChatMessage(role: .user, text: request)
@@ -3256,6 +3347,11 @@ private final class SessionStore: ObservableObject {
             .appendingPathComponent("sessions.json", isDirectory: false)
     }
 
+    private var deliveryOutbox: DeliveryOutbox {
+        customStorageRoot.map { DeliveryOutbox(root: $0.appendingPathComponent("execution-outbox")) }
+            ?? DeliveryOutbox()
+    }
+
     private func load() {
         guard let data = try? Data(contentsOf: storageURL),
               let envelope = try? JSONDecoder().decode(SessionEnvelope.self, from: data),
@@ -3273,10 +3369,21 @@ private final class SessionStore: ObservableObject {
         for pending in envelope.inFlight ?? [] {
             guard let index = sessions.firstIndex(where: { $0.id == pending.sessionID }) else { continue }
             var recovered = pending
-            if let result = DeliveryOutbox().forSubmission(pending.id.uuidString) {
-                recovered.deliveryID = result.id
+            if let result = deliveryOutbox.forSubmission(pending.id.uuidString) {
+                let rejected = result.localRejection != nil
+                recovered.deliveryID = rejected ? nil : result.id
+                recovered.rejectedResultID = rejected ? result.id : nil
                 sessions[index].lastBackendFailure = BackendFailureNotice(provider:sessions[index].lastProvider ?? "codex",
-                    sessionID:nil,blocker:.deliveryPending,dispatchStage:.dispatched,source:result.source,deliveryID:result.id)
+                    sessionID:nil,blocker:rejected ? .unclassified : .deliveryPending,
+                    dispatchStage:.dispatched,source:result.source,deliveryID:result.id)
+                if rejected, !result.output.isEmpty, let previewID = UUID(uuidString: String(result.id.prefix(36))),
+                   !sessions[index].messages.contains(where: { $0.id == previewID }) {
+                    let step = try? JSONDecoder().decode(AppRunStep.self, from: result.step)
+                    sessions[index].messages.append(ChatMessage(id: previewID, role: .assistant, text: result.output,
+                        provider: step?.provider, permissionProfile: step?.permissionProfile, nativeRecordVerified: false))
+                    sessions[index].messages.append(ChatMessage(role: .receipt,
+                        text: "답변 로컬 저장됨 · 로컬 검증에서 거절됨 · 전달·채택 대상 아님", nativeRecordVerified: false))
+                }
             } else {
                 sessions[index].lastBackendFailure = BackendFailureNotice(provider:sessions[index].lastProvider ?? "codex",
                     sessionID:nil,blocker:.effectsUncertain,dispatchStage:.dispatched)
@@ -5420,11 +5527,13 @@ private struct ComposerView: View {
             }
             if !store.isSessionRunning(session.id), session.lastFailure != nil {
                 if let failure = session.lastBackendFailure {
-                    Text(failure.blocker.message)
+                    Text(session.lastFailure?.rejectedResultID != nil ?
+                        "저장된 답변은 로컬 검증에서 거절됐습니다. 원문을 보존했으며 현재 결과와 상태를 읽기 전용으로 확인할 수 있습니다." : failure.blocker.message)
                         .font(.system(size: 12)).foregroundStyle(Theme.muted)
                         .textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
                 }
-                Button(session.lastFailure?.deliveryID != nil ? "저장된 결과 전달 · 모델 재실행 없음" : session.lastBackendFailure?.requiresReadback == true
+                Button(session.lastFailure?.rejectedResultID != nil ? "거절된 결과·현재 상태 확인 · 읽기 전용" :
+                    session.lastFailure?.deliveryID != nil ? "저장된 결과 전달 · 모델 재실행 없음" : session.lastBackendFailure?.requiresReadback == true
                     ? "현재 상태 확인 · 재실행하지 않음" : "OS-1에서 다시 확인하고 시도") { store.retrySelectedFailure() }
                     .font(.system(size: 12, weight: .medium))
                     .disabled(store.activeRuns.count >= SessionStore.maximumConcurrentSessions)
