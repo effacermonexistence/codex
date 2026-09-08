@@ -1282,6 +1282,118 @@ private func steeringInteractionSelfTest() async throws {
 }
 
 @MainActor
+private func replacementInteractionSelfTest() async throws {
+    var checks = 0
+    func check(_ value: Bool, _ reason: String) throws {
+        guard value else { throw RunnerError.message("Replacement: " + reason) }; checks += 1
+    }
+    func eventually(_ value: () -> Bool) async throws {
+        let deadline = Date().addingTimeInterval(6)
+        while !value(), Date() < deadline { try await Task.sleep(for: .milliseconds(10)) }
+        try check(value(), "scheduler deadline")
+    }
+    let replacement = "아 그거 하지 말고 R2에 있는 QMGR 통합하는거 가져와봐"
+    try check(ExecutionSteering.isTaskReplacement(replacement.decomposedStringWithCanonicalMapping), "NFD task replacement")
+    try check(ExecutionSteering.isIndependentRead(replacement), "read-only retrieval admission")
+    for write in [replacement + " 그리고 배포해", "R2 자료 가져와서 파일을 수정해", "fetch source and deploy it"] {
+        try check(!ExecutionSteering.isIndependentRead(write), "mixed mutation admitted as read")
+    }
+    for quote in ["> " + replacement, "```\n" + replacement + "\n```", "문서에 ‘그거 하지 말고’라고 써 있어"] {
+        try check(!ExecutionSteering.isTaskReplacement(quote), "quoted replacement was executed")
+    }
+    for scenario in ["claude", "terminal-failure", "recovery"] {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("os1-replacement-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        var starts: [PendingSubmission] = []
+        var gates: [UUID: CheckedContinuation<Void, Never>] = [:]
+        let store = SessionStore(storageRoot: root, runOperation: { submission, _, _, _, _ in
+            starts.append(submission)
+            await withCheckedContinuation { gates[submission.id] = $0 }
+            if scenario == "claude" && submission.request == "기존 Instagram 작업" {
+                throw RunnerError.backend(BackendFailureNotice(provider: "claude", sessionID: nil,
+                    blocker: .effectsUncertain, dispatchStage: .dispatched, permissionProfile: "workspace_write"))
+            }
+            return AppRunSummary(status: "complete", steps: [AppRunStep(sequence: 1, provider: "codex",
+                action: "fixture", model: "fixture", effort: "none", revasDisposition: "adopted",
+                sessionID: UUID().uuidString, permissionProfile: "read_only", exitCode: 0,
+                output: "새 목표 자료 fixture", stderr: "", durationMS: 0, nativeRecord: nil)])
+        })
+        let id = store.selectedSessionID!
+        let original = PendingSubmission(sessionID: id, userMessageID: UUID(), request: "기존 Instagram 작업",
+            provider: .auto, workspace: root.path, codexCapacity: 30, claudeCapacity: 100)
+        store.sessions[0].workspace = root.path
+        if scenario == "claude" {
+            store.composer = original.request; store.send()
+            try await eventually { !gates.isEmpty }
+            store.activeRuns[id]?.provider = .claude
+        } else {
+            store.sessions[0].lastFailure = original
+            store.sessions[0].lastBackendFailure = BackendFailureNotice(provider: "codex", sessionID: nil,
+                blocker: .effectsUncertain, dispatchStage: .dispatched, permissionProfile: "workspace_write")
+            if scenario == "recovery" {
+                store.reconcileSelectedFailure()
+                try await eventually { !gates.isEmpty }
+            }
+        }
+        let oldActive = store.activeRuns[id]?.submissionID
+        let oldStarts = starts.count
+        if oldActive != nil { store.composer = "OLD FOLLOWUP"; store.send() }
+        store.sessions[0].codexSessionID = UUID().uuidString
+        if scenario == "terminal-failure" {
+            // Reproduce build95's persisted ordinary queue entry, including an
+            // edit hold. The new action must work without rewriting its bytes.
+            store.composer = "R2에 있는 QMGR 통합하는거 가져와봐"; store.send()
+            let item = store.queuedSubmissions[0]
+            try check(store.beginQueueEdit(item.id) && !store.canAdvanceQueued(item), "editing hold")
+            try check(store.updateQueued(item.id, request: replacement), "legacy queue edit")
+            store.endQueueEdit(item.id); store.advanceQueued(item.id)
+        } else {
+            store.composer = replacement; store.send()
+        }
+        if let oldActive {
+            try check(starts.count == oldStarts && store.activeRuns[id]?.cancellationRequested == true,
+                "new execution before old run ended: " + scenario)
+            let queued = store.queuedSubmissions.first { $0.request == replacement }!
+            store.advanceQueued(queued.id)
+            try check(store.queuedSubmissions.count == 2 && starts.count == oldStarts, "double action duplicated task")
+            store.flushPendingState()
+            let restarted = SessionStore(storageRoot: root)
+            try check(!restarted.isRunning && restarted.queuedSubmissions.contains { $0.id == queued.id && $0.startNextRequested == true },
+                "restart lost explicit intent or replayed an active run")
+            gates.removeValue(forKey: oldActive)!.resume()
+        }
+        try await eventually { starts.count == oldStarts + 1 && gates[starts.last!.id] != nil }
+        let newRequest = starts.last!
+        try check(newRequest.request == replacement && newRequest.amendedRequest == nil && !newRequest.executionRequest.contains(original.request),
+            "abandoned objective leaked into replacement")
+        try check(store.sessions[0].lastFailure == nil && store.sessions[0].preservedTasks?.count == 1,
+            "old failure not durably preserved")
+        try check(store.sessions[0].taskContext?.objective.requestText == replacement && store.sessions[0].codexSessionID == nil,
+            "old objective/backend retained")
+        try check(store.sessions[0].messages.filter { $0.id == newRequest.userMessageID }.count == 1, "duplicate user bubble")
+        store.flushPendingState()
+        let envelope = try JSONDecoder().decode(SessionEnvelope.self, from: Data(contentsOf: root.appendingPathComponent("sessions.json")))
+        try check(envelope.sessions[0].preservedTasks?.count == 1, "restart lost prior failure")
+        gates.removeValue(forKey: newRequest.id)!.resume()
+        try await eventually { !store.isRunning }
+        if oldActive != nil {
+            try check(!starts.contains { $0.request == "OLD FOLLOWUP" } && store.queuedSubmissions.count == 1,
+                "abandoned objective follow-up was executed under new context")
+            store.removeQueued(store.queuedSubmissions[0].id)
+        }
+        // Explicit queue action cannot bypass unknown-effect safeguards for a
+        // write, even if the text says "instead".
+        store.sessions[0].lastFailure = original
+        store.sessions[0].lastBackendFailure = BackendFailureNotice(provider: "codex", sessionID: nil,
+            blocker: .effectsUncertain, dispatchStage: .dispatched)
+        store.composer = "아 그거 하지 말고 프로덕션을 지금 배포해"; store.send()
+        try check(!store.isRunning && store.queuedSubmissions.count == 1 && !store.canAdvanceQueued(store.queuedSubmissions[0]),
+            "unknown previous mutation bypassed")
+    }
+    print("Task replacement: \(checks) checks PASS; terminal/Claude/recovery/NFD/provenance/duplicate/edit/permission; model calls 0")
+}
+
+@MainActor
 private func composerInteractionSelfTest() async throws {
     var checks = 0
     func check(_ condition: @autoclosure () -> Bool, _ message: String) throws {
@@ -2556,6 +2668,7 @@ private struct ConversationSession: Codable, Identifiable, Sendable {
     var draft: String?
     var lastFailure: PendingSubmission?
     var lastBackendFailure: BackendFailureNotice?
+    var preservedTasks: [PreservedTask]? = nil
     /// OS-1 owned shared task state (objective, decisions, project baseline,
     /// bound sources, backend bindings, executions). Migrated on load.
     var taskContext: TaskContext?
@@ -2596,6 +2709,16 @@ private struct ConversationSession: Codable, Identifiable, Sendable {
     var effectiveCodexCapacity: Int { codexCapacity ?? 30 }
     var effectiveClaudeCapacity: Int { claudeCapacity ?? 100 }
     var visibleMessages: [ChatMessage] { messages.filter { $0.nativeManagedTurnID == nil } }
+}
+
+/// A user may leave an unfinished objective, but its evidence is never erased
+/// or upgraded to completion to let another request run.
+private struct PreservedTask: Codable, Sendable {
+    let request: PendingSubmission?
+    let failure: BackendFailureNotice?
+    let context: TaskContext?
+    let source: SourceReference?
+    let timestamp: Date
 }
 
 private struct ConversationForkOrigin: Codable, Sendable {
@@ -2706,6 +2829,9 @@ private struct PendingSubmission: Identifiable, Codable, Equatable, Sendable {
     var correctionIDs: [UUID]? = nil
     var liveCorrections: [String]? = nil
     var amendedRequest: String? = nil
+    var startNextRequested: Bool? = nil
+    var replacesSubmissionID: UUID? = nil
+    var replacesObjective: Bool? = nil
     var executionRequest: String {
         (liveCorrections ?? []).reduce(amendedRequest.map {
             ExecutionSteering.continuation(original: $0, correction: request)
@@ -3404,6 +3530,9 @@ private final class SessionStore: ObservableObject {
 
     func queueReason(_ sessionID: UUID) -> String {
         guard let session = sessions.first(where: { $0.id == sessionID }) else { return "대화 없음" }
+        if queuedSubmissions.contains(where: { $0.sessionID == sessionID && $0.startNextRequested == true }), isSessionRunning(sessionID) {
+            return "현재 실행 종료 확인 중 · 확인 후 선택한 요청을 시작합니다"
+        }
         if session.queuePaused == true { return "대기열 일시정지 · 실행 중 작업은 계속됩니다" }
         if session.lastBackendFailure?.requiresReadback == true { return "이전 작업의 변경 결과 확인 후 계속할 수 있습니다" }
         if session.taskContext?.sourcePreparation != nil { return "검증 원본 확보 대기 · 뒤의 요청은 보존됩니다" }
@@ -3434,9 +3563,19 @@ private final class SessionStore: ObservableObject {
     private func queueEligible(_ next: PendingSubmission) -> Bool {
         guard let session = sessions.first(where: { $0.id == next.sessionID }) else { return false }
         return !isSessionRunning(next.sessionID) && session.queuePaused != true &&
-            session.lastFailure == nil && session.lastBackendFailure == nil &&
-            session.taskContext?.sourcePreparation == nil &&
+            ((session.lastFailure == nil && session.lastBackendFailure == nil && session.taskContext?.sourcePreparation == nil) ||
+             (next.startNextRequested == true && mayAdvancePastFailure(next, session: session))) &&
             !pausedQueueIDs.contains(next.id) && !editingQueueIDs.contains(next.id)
+    }
+
+    private func mayAdvancePastFailure(_ next: PendingSubmission, session: ConversationSession) -> Bool {
+        if let failed = session.lastFailure, next.replacesSubmissionID != failed.id { return false }
+        // A new read is independent of an uncertain previous write. A dependent
+        // write must still reconcile; an action button never expands permission.
+        if session.lastBackendFailure?.requiresReadback == true || session.lastFailure?.savedResultNeedsReview == true {
+            return ExecutionSteering.isIndependentRead(next.request)
+        }
+        return true
     }
 
     private var orderedSessions: [ConversationSession] {
@@ -3853,7 +3992,7 @@ private final class SessionStore: ObservableObject {
         }
         let request = composer.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !request.isEmpty, let index = selectedIndex else { return }
-        if ExecutionSteering.isDirectCorrection(request), canSteerSelectedRun {
+        if !ExecutionSteering.isTaskReplacement(request), ExecutionSteering.isDirectCorrection(request), canSteerSelectedRun {
             sendCorrectionToCurrentRun()
             return
         }
@@ -3898,6 +4037,11 @@ private final class SessionStore: ObservableObject {
             claudeCapacity: sessions[index].effectiveClaudeCapacity
         )
         submission.configuredProvider = configuredProvider
+        if ExecutionSteering.isTaskReplacement(request) {
+            queuedSubmissions.append(submission)
+            advanceQueued(submission.id)
+            return
+        }
         if ExecutionSteering.isDirectCorrection(request), let active = inFlightSubmissions[submission.sessionID] {
             // If the native turn is not accepting input yet/already finishing,
             // keep this as an amendment of that task, not a standalone query.
@@ -3907,6 +4051,7 @@ private final class SessionStore: ObservableObject {
             submission.amendedRequest = objective
         }
         if isSessionRunning(submission.sessionID) || activeRuns.count >= Self.maximumConcurrentSessions ||
+            sessions[index].lastFailure != nil || sessions[index].lastBackendFailure != nil ||
             sessions[index].queuePaused == true ||
             queuedSubmissions.contains(where: { $0.sessionID == submission.sessionID }) {
             queuedSubmissions.append(submission)
@@ -3923,7 +4068,8 @@ private final class SessionStore: ObservableObject {
 
     var primaryAction: ComposerPrimaryAction {
         let normal = ComposerPrimaryAction.resolve(draft: composer, running: isRunning, stopping: isStopping, voice: voiceDictation.phase)
-        return normal == .queue && canSteerSelectedRun && ExecutionSteering.isDirectCorrection(composer) ? .steer : normal
+        return normal == .queue && canSteerSelectedRun &&
+            !ExecutionSteering.isTaskReplacement(composer) && ExecutionSteering.isDirectCorrection(composer) ? .steer : normal
     }
 
     private var steeringMailbox: ExecutionSteering {
@@ -3943,17 +4089,74 @@ private final class SessionStore: ObservableObject {
     }
     func sendCorrectionToCurrentRun() {
         let text = composer.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let id = selectedSessionID else { return }
-        if deliverCorrection(text, conversationID: id) { composer = ""; save() }
+        guard !text.isEmpty, let session = selectedSession else { return }
+        if !ExecutionSteering.isTaskReplacement(text), deliverCorrection(text, conversationID: session.id) {
+            composer = ""; save(); return
+        }
+        var item = PendingSubmission(sessionID: session.id, userMessageID: UUID(), request: text,
+            provider: session.provider == .auto ? (explicitlyRequestedProvider(in: text) ?? .auto) : session.provider,
+            workspace: session.workspace, codexCapacity: session.effectiveCodexCapacity, claudeCapacity: session.effectiveClaudeCapacity)
+        item.configuredProvider = session.provider
+        if !ExecutionSteering.isTaskReplacement(text), let active = inFlightSubmissions[session.id], active.recoveryParentID == nil {
+            item.amendedRequest = active.executionRequest
+        }
+        queuedSubmissions.append(item); composer = ""; save()
+        advanceQueued(item.id)
     }
     func canSteerQueued(_ item: PendingSubmission) -> Bool {
-        canSteer(item.sessionID) && !editingQueueIDs.contains(item.id) &&
+        !ExecutionSteering.isTaskReplacement(item.request) && canSteer(item.sessionID) && !editingQueueIDs.contains(item.id) &&
             queuedSubmissions.contains(where: { $0.id == item.id }) &&
             (item.provider == .auto || item.provider == .codex)
     }
     func steerQueued(_ id: UUID) {
         guard let item = queuedSubmissions.first(where: { $0.id == id }), canSteerQueued(item) else { return }
         _ = deliverCorrection(item.request, conversationID: item.sessionID, inputID: item.userMessageID)
+    }
+    func canAdvanceQueued(_ item: PendingSubmission) -> Bool {
+        guard !editingQueueIDs.contains(item.id),
+              queuedSubmissions.contains(where: { $0.id == item.id }),
+              let session = sessions.first(where: { $0.id == item.sessionID }) else { return false }
+        if activeRuns[item.sessionID]?.cancellationRequested == true { return false }
+        var candidate = item
+        candidate.replacesSubmissionID = session.lastFailure?.id ?? activeRuns[item.sessionID]?.submissionID
+        return mayAdvancePastFailure(candidate, session: session)
+    }
+
+    func queueActionLabel(_ item: PendingSubmission) -> String {
+        if canSteerQueued(item) { return "현재 작업에 반영" }
+        if activeRuns[item.sessionID]?.cancellationRequested == true { return "현재 실행 종료 확인 중" }
+        if !canAdvanceQueued(item) { return "이전 변경 상태 확인 필요" }
+        return isSessionRunning(item.sessionID) ? "현재 작업을 중지하고 이 요청부터 시작" : "이 요청부터 시작"
+    }
+
+    /// Explicit queue action; native steering where possible, otherwise a
+    /// durable next-run intent. Cancellation is acknowledged by run termination,
+    /// not by writing its marker. The existing admission remains held until then.
+    func advanceQueued(_ id: UUID) {
+        guard let item = queuedSubmissions.first(where: { $0.id == id }) else { return }
+        if canSteerQueued(item) { steerQueued(id); return }
+        guard canAdvanceQueued(item), let index = queuedSubmissions.firstIndex(where: { $0.id == id }),
+              let sessionIndex = sessions.firstIndex(where: { $0.id == item.sessionID }) else {
+            sessionStatuses[item.sessionID] = "이전 변경 확인 필요 · 새 요청은 대기열에 보존했습니다"
+            save(); return
+        }
+        queuedSubmissions[index].startNextRequested = true
+        queuedSubmissions[index].replacesSubmissionID = sessions[sessionIndex].lastFailure?.id ?? activeRuns[item.sessionID]?.submissionID
+        queuedSubmissions[index].replacesObjective = ExecutionSteering.isTaskReplacement(item.request)
+        if queuedSubmissions[index].replacesObjective == true {
+            // Pending follow-ups belonged to the abandoned objective. Preserve
+            // them for explicit review instead of running them under new context.
+            pausedQueueIDs.formUnion(queuedSubmissions.filter { $0.sessionID == item.sessionID && $0.id != id }.map(\.id))
+        }
+        // An explicit action releases this item's hold, not another task's.
+        pausedQueueIDs.remove(id)
+        sessions[sessionIndex].queuePaused = false
+        let next = queuedSubmissions.remove(at: index)
+        let first = queuedSubmissions.firstIndex(where: { $0.sessionID == item.sessionID }) ?? queuedSubmissions.endIndex
+        queuedSubmissions.insert(next, at: first)
+        save()
+        if activeRuns[item.sessionID] != nil { cancelRun(item.sessionID) }
+        runNextQueuedSubmissionIfNeeded()
     }
     @discardableResult
     private func deliverCorrection(_ text: String, conversationID: UUID, inputID: UUID = UUID()) -> Bool {
@@ -4023,6 +4226,24 @@ private final class SessionStore: ObservableObject {
         guard !isSessionRunning(submission.sessionID), activeRuns.count < Self.maximumConcurrentSessions,
               let index = sessions.firstIndex(where: { $0.id == submission.sessionID }) else {
             return
+        }
+        if submission.startNextRequested == true {
+            guard mayAdvancePastFailure(submission, session: sessions[index]) else { return }
+            sessions[index].preservedTasks = (sessions[index].preservedTasks ?? []) + [PreservedTask(
+                request: sessions[index].lastFailure, failure: sessions[index].lastBackendFailure,
+                context: sessions[index].taskContext, source: sessions[index].sourceContext, timestamp: Date())]
+            sessions[index].lastFailure = nil; sessions[index].lastBackendFailure = nil
+            sessions[index].taskContext?.sourcePreparation = nil
+            if submission.replacesObjective == true {
+                sessions[index].sourceContext = nil; sessions[index].sourceContextVersion = 2
+                sessions[index].codexSessionID = nil; sessions[index].claudeSessionID = nil
+                sessions[index].taskContext = TaskContext.migrated(conversationID: submission.sessionID,
+                    request: submission.request, workspace: submission.workspace,
+                    sourceContext: nil, codexSessionID: nil, claudeSessionID: nil)
+            }
+            sessions[index].taskContext?.decideSemantic("The user selected a new request. Previous unfinished work is preserved, not completed. Do not replay previous actions; inspect actual state before any further mutation.")
+            appendTaskEvent(conversationID: submission.sessionID, kind: "task_replaced", summary: submission.request)
+            save()
         }
         // Only an admitted attempt owns this exact cancellation marker.
         try? FileManager.default.removeItem(at: ExecutionCancellation.url(submissionID: submission.id))
@@ -4328,6 +4549,7 @@ private final class SessionStore: ObservableObject {
             if selectedSessionID == submission.sessionID { statusText = sessionStatuses[submission.sessionID] ?? "Ready" }
             save()
             if let target = sessions.firstIndex(where: { $0.id == submission.sessionID }),
+               !queuedSubmissions.contains(where: { $0.sessionID == submission.sessionID && $0.startNextRequested == true }),
                UnifiedExecution.automaticallyReconcile(sessions[target].lastBackendFailure,
                     alreadyAttempted: sessions[target].lastFailure?.recoveryAttempted == true,
                     internalReview: submission.recoveryParentID != nil,
@@ -4776,12 +4998,16 @@ private final class SessionStore: ObservableObject {
     }
 
     func cancelSelectedRun() {
-        guard let id = selectedSessionID, let active = activeRuns[id], !active.cancellationRequested else { return }
+        guard let id = selectedSessionID else { return }
+        cancelRun(id)
+    }
+    private func cancelRun(_ id: UUID) {
+        guard let active = activeRuns[id], !active.cancellationRequested else { return }
         do {
             try ExecutionCancellation.request(submissionID: active.submissionID)
             activeRuns[id]?.cancellationRequested = true
             sessionStatuses[id] = "작업 중지 중 · 실행된 변경은 보존합니다"
-            statusText = sessionStatuses[id]!
+            if selectedSessionID == id { statusText = sessionStatuses[id]! }
         } catch { alertMessage = "작업 중지 요청을 저장하지 못했습니다." }
     }
     func reconcileSelectedFailure() {
@@ -5335,7 +5561,7 @@ private struct OS1DesktopApp: App {
         }
         if CommandLine.arguments.contains("--self-test-steering") {
             Task { @MainActor in
-                do { try await steeringInteractionSelfTest(); exit(EXIT_SUCCESS) }
+                do { try await steeringInteractionSelfTest(); try await replacementInteractionSelfTest(); exit(EXIT_SUCCESS) }
                 catch { fputs("\(error.localizedDescription)\n", stderr); exit(EXIT_FAILURE) }
             }
             NSApplication.shared.run()
@@ -7568,50 +7794,58 @@ private struct ConversationQueueView: View {
     @State private var editLease: UUID?
     private var items: [PendingSubmission] { store.queuedSubmissions.filter { $0.sessionID == session.id } }
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 4) {
             HStack {
-                Label("다음 요청 · \(items.count)", systemImage: "text.line.last.and.arrowtriangle.forward")
-                    .font(.system(size: 12, weight: .semibold))
+                Text(session.queuePaused == true ? "대기열 멈춤 · \(items.count)" : "대기 중 · \(items.count)")
+                    .font(.system(size: 11, weight: .medium)).foregroundStyle(Theme.muted)
                 Spacer()
-                if store.canResumeQueue(session.id) {
-                    Button("계속 실행") { store.resumeQueue(session.id) }
-                        .accessibilityLabel("이 대화의 대기열 계속 실행")
-                } else if session.queuePaused != true {
-                    Button("일시정지") { store.pauseQueue(session.id) }
-                        .accessibilityLabel("이 대화의 대기열 일시정지")
-                }
+                Menu {
+                    if store.canResumeQueue(session.id) {
+                        Button("대기열 계속 실행") { store.resumeQueue(session.id) }
+                    } else if session.queuePaused != true {
+                        Button("대기열 일시정지") { store.pauseQueue(session.id) }
+                    }
+                    Text(store.queueReason(session.id))
+                } label: { Image(systemName: "ellipsis").frame(width: 26, height: 22) }
+                    .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+                    .help(store.queueReason(session.id)).accessibilityLabel("대기열 옵션")
             }
-            Text(store.queueReason(session.id)).font(.system(size: 11)).foregroundStyle(Theme.muted)
-                .fixedSize(horizontal: false, vertical: true)
+            if store.activeRuns[session.id]?.cancellationRequested == true || session.lastFailure != nil {
+                Text(store.activeRuns[session.id]?.cancellationRequested == true
+                    ? "실행이 끝나는 대로 선택한 요청을 시작합니다"
+                    : "이전 작업은 보존됐습니다. 새 요청은 오른쪽 화살표로 시작하세요.")
+                    .font(.system(size: 11)).foregroundStyle(Theme.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             ScrollView {
-                VStack(spacing: 6) {
+                VStack(spacing: 2) {
                     ForEach(Array(items.enumerated()), id: \.element.id) { rank, item in
-                        HStack(alignment: .top, spacing: 8) {
-                            Text("\(rank + 1)").monospacedDigit().foregroundStyle(Theme.pink)
-                                .frame(width: 18)
+                        HStack(alignment: .center, spacing: 6) {
                             Text(item.request).lineLimit(2).frame(maxWidth: .infinity, alignment: .leading)
                                 .help(item.request)
-                            Button("지금 전달") { store.steerQueued(item.id) }
-                                .disabled(!store.canSteerQueued(item))
-                                .help("이 요청을 현재 작업에 전달 · 새 실행을 시작하지 않음. 상태 확인·검증 중에는 대기 요청을 보존합니다.")
-                                .accessibilityLabel("대기 요청 \(rank + 1) 현재 작업에 지금 전달")
+                            Button { store.advanceQueued(item.id) } label: {
+                                Image(systemName: "arrow.up").frame(width: 26, height: 26)
+                            }.buttonStyle(.plain)
+                                .disabled(!store.canSteerQueued(item) && !store.canAdvanceQueued(item))
+                                .help(store.queueActionLabel(item))
+                                .accessibilityLabel("대기 요청 \(rank + 1) · \(store.queueActionLabel(item))")
                                 .accessibilityIdentifier("os1.queue.steer.\(item.id)")
                             Button {
                                 if store.beginQueueEdit(item.id) { editLease = item.id; editing = item }
-                            } label: { Image(systemName: "pencil") }.help("대기 요청 편집 · 순서 유지")
+                            } label: { Image(systemName: "pencil").frame(width: 26, height: 26) }
+                                .buttonStyle(.plain).help("대기 요청 편집 · 순서 유지")
                                 .accessibilityLabel("대기 요청 \(rank + 1) 편집")
-                            Menu {
+                            Button { store.removeQueued(item.id) } label: { Image(systemName: "xmark").frame(width: 26, height: 26) }
+                                .buttonStyle(.plain).help("이 대기 요청만 취소").accessibilityLabel("대기 요청 \(rank + 1) 취소")
+                        }.font(.system(size: 12)).padding(.horizontal, 6).padding(.vertical, 4)
+                            .contentShape(Rectangle())
+                            .contextMenu {
                                 Button("위로 이동") { store.shiftQueued(item.id, down: false) }.disabled(rank == 0)
                                 Button("아래로 이동") { store.shiftQueued(item.id, down: true) }.disabled(rank == items.count - 1)
                                 Button("다음 차례로 이동") { store.prioritizeQueued(item.id) }.disabled(rank == 0)
                                 Button("입력창으로 가져오기") { store.editQueued(item.id) }
                                     .disabled(!store.composer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                            } label: { Image(systemName: "ellipsis") }.menuStyle(.borderlessButton).fixedSize()
-                                .help("대기 순서 변경 · 현재 작업은 중단하지 않음")
-                            Button { store.removeQueued(item.id) } label: { Image(systemName: "xmark") }
-                                .help("이 대기 요청만 취소").accessibilityLabel("대기 요청 \(rank + 1) 취소")
-                        }.font(.system(size: 12)).padding(8)
-                            .background(Theme.panelRaised, in: RoundedRectangle(cornerRadius: 9))
+                            }
                             .onDrag { NSItemProvider(object: "os1-queue:\(item.id.uuidString)" as NSString) }
                             .onDrop(of: [UTType.plainText], isTargeted: nil) { providers in
                                 acceptSidebarDrop(providers, prefix: "os1-queue") { value in
@@ -7620,10 +7854,9 @@ private struct ConversationQueueView: View {
                             }
                     }
                 }
-            }.frame(height: min(150, CGFloat(items.count) * 52))
-        }.padding(12).foregroundStyle(Theme.text)
+            }.frame(height: min(132, CGFloat(items.count) * 42))
+        }.padding(.horizontal, 10).padding(.vertical, 6).foregroundStyle(Theme.text)
             .background(Theme.panel, in: RoundedRectangle(cornerRadius: 12))
-            .overlay(RoundedRectangle(cornerRadius: 12).stroke(Theme.border))
             .sheet(item: $editing, onDismiss: {
                 if let id = editLease { store.endQueueEdit(id) }; editLease = nil
             }) { item in QueueEditSheet(store: store, submission: item) }
@@ -7698,7 +7931,7 @@ private struct ComposerView: View {
                     .padding(.vertical, 8)
                     .overlay(alignment: .topLeading) {
                         if store.composer.isEmpty {
-                            Text(store.isRunning ? "추가 요청 · Enter로 대기열에, ‘지금 전달’로 현재 작업에" : "OS-1에 작업을 요청하세요…")
+                            Text(store.isRunning ? "추가 지시를 입력하세요…" : "OS-1에 작업을 요청하세요…")
                                 .font(.system(size: 14, weight: .medium))
                                 .foregroundStyle(Color.white.opacity(0.3))
                                 .padding(.horizontal, 13)
@@ -7714,10 +7947,19 @@ private struct ComposerView: View {
                     cancel: { _ = store.cancelVoiceDictation() }
                 )
 
+                if store.isRunning, !store.composer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    Button { store.sendCorrectionToCurrentRun() } label: {
+                        Image(systemName: "arrow.turn.up.right").font(.system(size: 14)).frame(width: 30, height: 36)
+                    }.buttonStyle(.plain).disabled(store.isStopping)
+                        .help(store.canSteerSelectedRun ? "현재 작업에 반영" : "현재 작업을 중지하고 추가 지시로 이어가기")
+                        .accessibilityLabel(store.canSteerSelectedRun ? "현재 작업에 반영" : "중지 후 추가 지시로 이어가기")
+                        .accessibilityIdentifier("os1.composer.steer")
+                }
+
                 ComposerPrimaryButton(action: store.primaryAction) { store.performPrimaryAction() }
                     .contextMenu {
-                        Button("현재 작업에 지금 전달") { store.sendCorrectionToCurrentRun() }
-                            .disabled(!store.canSteerSelectedRun || store.composer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        Button(store.canSteerSelectedRun ? "현재 작업에 반영" : "중지 후 추가 지시로 이어가기") { store.sendCorrectionToCurrentRun() }
+                            .disabled(!store.isRunning || store.isStopping || store.composer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                         Button("현재 작업 중지 · ⌘.") { store.cancelSelectedRun() }
                             .disabled(!store.isRunning || store.isStopping)
                     }
@@ -7730,17 +7972,6 @@ private struct ComposerView: View {
             )
             .clipShape(RoundedRectangle(cornerRadius: Theme.radiusComposer, style: .continuous))
             .shadow(color: Color.black.opacity(0.32), radius: 16, y: 8)
-
-            if store.isRunning {
-                HStack {
-                    Button("현재 작업에 지금 전달") { store.sendCorrectionToCurrentRun() }
-                        .font(.system(size: 12))
-                        .disabled(!store.canSteerSelectedRun || store.composer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                        .accessibilityIdentifier("os1.composer.steer")
-                    Text(store.canSteerSelectedRun ? "현재 작업에 추가 지시 가능 · Enter는 대기열" : "현재 단계는 추가 지시 대기 · 입력은 대기열에 보존")
-                        .font(.system(size: 11)).foregroundStyle(Theme.muted)
-                }
-            }
 
             HStack {
                 Label(URL(fileURLWithPath: session.workspace).lastPathComponent, systemImage: "folder")

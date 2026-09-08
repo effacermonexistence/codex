@@ -96,6 +96,28 @@ public struct ExecutionSteering: Sendable {
         return ["그 말이 아니라", "그게 아니라", "아니 그게 아니라", "아니, 그게 아니라", "정정할게", "정정:",
             "수정 방향은", "잠깐,", "잠깐만,", "actually,", "correction:", "instead,"].contains { value.hasPrefix($0) }
     }
+    /// An explicit change of task is not an amendment of the abandoned goal.
+    /// This bounded command recognizer does not interpret quoted/doc content.
+    public static func isTaskReplacement(_ text: String) -> Bool {
+        let value = text.precomposedStringWithCanonicalMapping.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !value.hasPrefix(">"), !value.contains("```"), !value.contains("◉") else { return false }
+        return ["아 그거 하지 말고", "그거 하지 말고", "아 그거 말고", "그 작업 말고", "그건 그만하고",
+                "지금 작업 그만하고", "지금 작업은 그만하고", "stop that and ", "cancel that and ",
+                "never mind, instead "].contains { value.hasPrefix($0) }
+    }
+
+    /// Conservative admission after an unfinished write. This is not a grant
+    /// of tool authority: normal capability/scope checks still apply at run time.
+    public static func isIndependentRead(_ text: String) -> Bool {
+        let value = text.precomposedStringWithCanonicalMapping.lowercased()
+        guard ScopeResolution.resolve(value).scope == .readOnly,
+              !["배포", "삭제", "업로드", "커밋", "푸시", "병합", "설치", "리셋", "초기화", "복원",
+                "deploy", "delete", "upload", "commit", "push", "merge", "install", "reset", "restore", "execute"]
+                .contains(where: value.contains) else { return false }
+        if PreparationIntent.detect(value).map({ !$0.modifies && $0.kind == .prepare }) == true { return true }
+        return ["자료", "문서", "r2", "github", "file", "document", "source"].contains(where: value.contains) &&
+            ["가져와", "가져 와", "찾아", "읽어", "조회", "fetch", "retrieve", "read ", "find "].contains(where: value.contains)
+    }
     public static func continuation(original: String, correction: String) -> String {
         """
 Continue the user's existing task with the latest correction below. This is an amendment, not a new standalone explanation request. Retain the original authorized scope and prohibitions; do not repeat already executed changes. Inspect actual state before further changes, and do not treat an older source snapshot as proof of the current deployed release.

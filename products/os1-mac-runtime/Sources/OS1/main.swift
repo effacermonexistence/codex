@@ -3959,7 +3959,7 @@ final class CodexAppServerClient: @unchecked Sendable {
         _ = try request(
             "initialize",
             params: [
-                "clientInfo": ["name": "OS-1 CLODEX", "version": "0.9.44"],
+                "clientInfo": ["name": "OS-1 CLODEX", "version": "0.9.45"],
                 "capabilities": ["experimentalApi": true],
             ],
             deadline: deadline
@@ -7896,7 +7896,7 @@ struct OS1Main {
             guard let command = arguments.first else { usage(); return }
             if try await fleetCommand(arguments) { return }
             switch command {
-            case "version", "--version", "-V": print("OS-1 Runtime 0.9.44 (account-model-availability-build95)")
+            case "version", "--version", "-V": print("OS-1 Runtime 0.9.45 (steering-queue-recovery-build96)")
             case "doctor": try doctor()
             case "sidebar-pin":
                 guard (4...5).contains(arguments.count), arguments[1] == "codex",
