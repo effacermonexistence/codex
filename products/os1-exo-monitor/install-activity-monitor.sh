@@ -34,6 +34,9 @@ TASK_OVERLAY_EXISTED=0
 TASK_BOOTSTRAP_EXISTED=0
 TASK_OVERLAY_STAGED=""
 TASK_BOOTSTRAP_STAGED=""
+TASK_GUARD_PAUSED=0
+TASK_LEGACY_DISABLED=0
+TASK_LEGACY_LOADED=0
 
 cleanup() {
   for task_staged in "$TASK_OVERLAY_STAGED" "$TASK_BOOTSTRAP_STAGED"; do
@@ -91,6 +94,15 @@ finish() {
     fi
     [[ "$task_exit_code" -ne 0 ]] || task_exit_code=1
   fi
+  if [[ "$TASK_COMMITTED" -ne 1 && "$TASK_LEGACY_DISABLED" -eq 1 ]]; then
+    launchctl enable "gui/$TASK_USER_UID/com.os1.exo-pro" || true
+    if [[ "$TASK_LEGACY_LOADED" -eq 1 ]]; then
+      launchctl bootstrap "gui/$TASK_USER_UID" "$TASK_USER_HOME/Library/LaunchAgents/com.os1.exo-pro.plist" || true
+    fi
+  fi
+  if [[ "$TASK_COMMITTED" -ne 1 && "$TASK_GUARD_PAUSED" -eq 1 ]]; then
+    launchctl bootstrap "gui/$TASK_USER_UID" "$TASK_USER_HOME/Library/LaunchAgents/com.os1.exo-roaming.plist" || true
+  fi
   cleanup
   exit "$task_exit_code"
 }
@@ -122,7 +134,10 @@ if [[ "$TASK_ROLE" == "air" && "$(basename "$TASK_BASE_EXECUTABLE")" != "run-air
   exit 1
 fi
 TASK_OLD_NODE_ID="$(curl -fsS --max-time 5 http://127.0.0.1:52415/node_id 2>/dev/null | tr -d '"' || true)"
-TASK_RELEASE_ID="fb174031-roaming-v3"
+TASK_PREFLIGHT_PYTHON="$(command -v python3 || true)"
+[[ -x "$TASK_PREFLIGHT_PYTHON" ]]
+"$TASK_PREFLIGHT_PYTHON" "$TASK_PRODUCT_ROOT/roaming_guard.py" --check-idle "$TASK_ROLE"
+TASK_RELEASE_ID="fb174031-realtime-v4"
 TASK_RUNTIME="$TASK_USER_HOME/.os1/exo-1.0.71-activity-monitor-$TASK_RELEASE_ID"
 if [[ -e "$TASK_RUNTIME" ]]; then
   TASK_RUNTIME="$TASK_RUNTIME-$(date -u +%Y%m%dT%H%M%SZ)"
@@ -181,6 +196,8 @@ else
   git clone --filter=blob:none --no-checkout https://github.com/effacermonexistence/exo.git "$TASK_SOURCE"
   git -C "$TASK_SOURCE" checkout --detach "$TASK_EXO_COMMIT"
   [[ "$(git -C "$TASK_SOURCE" rev-parse HEAD)" == "$TASK_EXO_COMMIT" ]]
+  git -C "$TASK_SOURCE" apply --check "$TASK_PRODUCT_ROOT/patches/0008-realtime-activity.patch"
+  git -C "$TASK_SOURCE" apply "$TASK_PRODUCT_ROOT/patches/0008-realtime-activity.patch"
 
   TASK_UV="$(command -v uv || true)"
   [[ -n "$TASK_UV" ]] || TASK_UV="$TASK_USER_HOME/.local/bin/uv"
@@ -192,17 +209,8 @@ else
   codesign --remove-signature "$TASK_RUNTIME/pyi-bootloader-arm64"
   mkdir -p "$TASK_RUNTIME/bin"
   TASK_PACKAGE_BASE="$TASK_BASE_EXECUTABLE"
-  if [[ "$TASK_PACKAGE_BASE" == *activity-monitor* ]]; then
-    for task_candidate in \
-      "$TASK_USER_HOME/.os1/exo-1.0.71-persistent-runtime-r6/bin/exo" \
-      "/Applications/EXO.app/Contents/Resources/exo/exo"
-    do
-      if [[ -x "$task_candidate" ]]; then
-        TASK_PACKAGE_BASE="$task_candidate"
-        break
-      fi
-    done
-  fi
+  # Preserve every other installed PYZ module, including persistent peer identity.
+  # Replacing only exo.api.main does not require falling back to an older base.
   "$TASK_TEMP_ROOT/pyi/bin/python" "$TASK_SOURCE/scripts/build_activity_runtime.py" \
     --base-executable "$TASK_PACKAGE_BASE" \
     --source-main "$TASK_SOURCE/src/exo/api/main.py" \
@@ -217,6 +225,10 @@ else
   codesign --verify --strict --verbose=2 "$TASK_RUNTIME/bin/exo"
   TASK_NEW_EXECUTABLE="$TASK_RUNTIME/bin/exo"
   TASK_MUTATED=1
+  if [[ -x "$TASK_INTERNAL/macmon" ]]; then
+    /usr/libexec/PlistBuddy -c "Set :EnvironmentVariables:EXO_MACMON_PATH $TASK_INTERNAL/macmon" "$TASK_PLIST" 2>/dev/null || \
+      /usr/libexec/PlistBuddy -c "Add :EnvironmentVariables:EXO_MACMON_PATH string $TASK_INTERNAL/macmon" "$TASK_PLIST"
+  fi
   /usr/libexec/PlistBuddy -c "Set :ProgramArguments:0 $TASK_NEW_EXECUTABLE" "$TASK_PLIST"
 fi
 
@@ -235,8 +247,26 @@ if [[ -f "$TASK_USER_HOME/.local/bin/config.json" ]]; then
   fi
 fi
 
+if launchctl print "gui/$TASK_USER_UID/com.os1.exo-roaming" >/dev/null 2>&1; then
+  TASK_GUARD_PAUSED=1
+  launchctl bootout "gui/$TASK_USER_UID/com.os1.exo-roaming"
+fi
+if [[ "$TASK_ROLE" == "pro" && -f "$TASK_USER_HOME/Library/LaunchAgents/com.os1.exo-pro.plist" ]]; then
+  TASK_LEGACY_PLIST="$TASK_USER_HOME/Library/LaunchAgents/com.os1.exo-pro.plist"
+  [[ "$(plutil -extract Label raw "$TASK_LEGACY_PLIST")" == "com.os1.exo-pro" ]]
+  [[ "$(plutil -extract ProgramArguments.0 raw "$TASK_LEGACY_PLIST")" == "/Applications/EXO.app/Contents/Resources/exo/exo" ]]
+  cp "$TASK_LEGACY_PLIST" "$TASK_RECOVERY/com.os1.exo-pro.plist.before"
+  if launchctl print "gui/$TASK_USER_UID/com.os1.exo-pro" >/dev/null 2>&1; then TASK_LEGACY_LOADED=1; fi
+  if ! launchctl print-disabled "gui/$TASK_USER_UID" | awk '/"com.os1.exo-pro" => (true|disabled)/ { found=1 } END { exit !found }'; then
+    TASK_LEGACY_DISABLED=1
+    launchctl disable "gui/$TASK_USER_UID/com.os1.exo-pro"
+  fi
+  if [[ "$TASK_LEGACY_LOADED" -eq 1 ]]; then launchctl bootout "gui/$TASK_USER_UID/com.os1.exo-pro"; fi
+fi
 TASK_SWITCHED=1
 launchctl bootout "gui/$TASK_USER_UID" "$TASK_PLIST" >/dev/null 2>&1 || true
+# Let launchd finish process teardown and the peer observe the disconnect.
+sleep 15
 launchctl bootstrap "gui/$TASK_USER_UID" "$TASK_PLIST"
 
 for task_attempt in $(seq 1 90)
@@ -260,7 +290,7 @@ do
 done
 [[ "$TASK_TOPOLOGY_NODES" -eq 2 ]]
 
-TASK_GUARD_PYTHON="${TASK_PYTHON:-}"
+TASK_GUARD_PYTHON="${TASK_PYTHON:-$TASK_TEMP_ROOT/pyi/bin/python}"
 for task_candidate in "$TASK_GUARD_PYTHON" "$TASK_USER_HOME/.local/bin/python3.13" "/opt/homebrew/bin/python3" "/usr/bin/python3"
 do
   if [[ -x "$task_candidate" ]] && "$task_candidate" -c 'import sys; assert sys.version_info >= (3,10)' 2>/dev/null; then

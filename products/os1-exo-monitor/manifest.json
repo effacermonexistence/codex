@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "release_id": "exo171-roaming-v3",
+  "release_id": "exo171-realtime-v4",
   "product": "os1-exo-cluster-activity-monitor",
   "exo_version": "1.0.71",
   "upstream_repository": "exo-explore/exo",
@@ -17,12 +17,13 @@
     "dc46aab52c705b5789775490be7ba1a73bc3052bf43a67eaf5e3f7bab0ff6157",
     "399d10390d4c91604f73b2644cb3ff7fc167c34ed1b6887e41f95435aec44bcb"
   ],
-  "dashboard_index_sha256": "afab7f3830078bda3aed4e987f9411f812bceb69a0a3b0209412de69a68b6f18",
-  "source_overlay_sha256": "218087c2d66742e11e067edcfe03dea414c5f8a50ece18902791d6c56997d6a5",
+  "incremental_patch": "patches/0008-realtime-activity.patch",
+  "incremental_patch_sha256": "33a67dafc0af6a1bc3dc8f57973552c3c7f7ff0cc8727f31f5edac29f2668ae6",
+  "dashboard_index_sha256": "6f21289793ae874978cf6718fe0b3836c057f7eafa7c09684002d14320dabd23",
+  "source_overlay_sha256": "433b7761918ba523f120e82161fb3ae51cb85322d07fbf244dead4ae8fad8e93",
   "source_bootstrap_sha256": "0dad3105a70eb0d43dc3460076e4c3615542898378d3b4012ac654f1340f1cf9",
-  "roaming_guard_sha256": "137b333d959e9658868f0606ab1588d96ea7ea69967c697251db9d50959fb633",
-  "pro_verified_runtime_sha256": "c07e17313f9a31f809187489cd9df766f5fd0a0ab3d902151b9ca9cda94c03f2",
-  "pro_verified_pyz_sha256": "80bd24c5679d4274de493f65a77253dad1eb86404ecac2933452e53ea0e5cac8",
+  "roaming_guard_sha256": "af168dc8f6a1a878c7336726b02d1b35816c334beb9abfd2fd34024e4ee34b46",
+  "packaged_runtime_policy": "Rebuild only exo.api.main from each device's installed base; preserve every other module. Executable hashes are per-install receipts, not portable package identities.",
   "objective_version": "os1-fleet-objective-v1",
   "dashboard_path": "/#/activity"
 }

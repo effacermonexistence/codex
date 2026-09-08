@@ -157,6 +157,16 @@ def decide(local: dict | None, peer: dict | None, config: dict, memory: dict,
     if local and fresh_cluster(local, expected, now) and fresh_cluster(peer, expected, now):
         memory.pop('bad_since', None)
         return 'connected', False
+    # Replaying a large retained event log makes lastSeen temporarily historic.
+    # Progress is not a frozen connection: never kill a healthy replay midway.
+    event_index = local.get('lastEventAppliedIdx') if local else None
+    if isinstance(event_index, int) and not isinstance(event_index, bool) and event_index >= 0:
+        if event_index != memory.get('replay_index'):
+            memory['replay_index'] = event_index
+            memory['replay_progress_at'] = now
+        if now - memory.get('replay_progress_at', 0) < 120:
+            memory.pop('bad_since', None)
+            return 'synchronizing', False
     if fingerprint in {'offline', 'unknown'}:
         memory.pop('bad_since', None)
         return 'waiting_for_network', False
@@ -296,9 +306,15 @@ def main() -> None:
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument('--install', choices=('pro', 'air'))
     group.add_argument('--check-peers', choices=('pro', 'air'), help='Read-only fresh two-node check')
+    group.add_argument('--check-idle', choices=('pro', 'air'), help='Read-only no-active-work check before an EXO update')
     group.add_argument('--run', action='store_true')
     group.add_argument('--once', action='store_true', help='Read-only live sample; no restart')
     args = parser.parse_args()
+    if args.check_idle:
+        if not idle(fetch_state('127.0.0.1')) or not idle(fetch_state(PEERS[args.check_idle][1])):
+            raise ValueError('EXO update deferred: active or unknown work on either Mac')
+        print(json.dumps({'idle': True}))
+        return
     if args.check_peers:
         print(json.dumps({'nodes': enrolled_nodes(args.check_peers)}))
         return

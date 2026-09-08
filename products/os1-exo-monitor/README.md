@@ -16,7 +16,8 @@ macOS processes share one transparent memory or GPU address space.
 - Upstream commit: `fd707de30b42db4211d15da96b9052e1dc280ed1`
 - Omar fork branch: `effacermonexistence/exo:os1/exo-wifi-roaming-monitor`
 - Overlay commit: `fb174031378cd6ab1c1bf842a2958e4f250b84e2`
-- Portable mail patches: `patches/0001-*` through `patches/0007-*`
+- Portable mail patches: `patches/0001-*` through `patches/0007-*`; additive
+  `patches/0008-realtime-activity.patch` applies to the pinned overlay commit.
 - Prebuilt dashboard: `dashboard-build/` (no Node/npm needed on the target Mac)
 
 On a packaged Pro runtime, the builder replaces only `exo.api.main` in a new
@@ -75,9 +76,27 @@ An existing healthy Pro can install only the guard with its managed Python:
 `python3.13 products/os1-exo-monitor/roaming_guard.py --install pro`.
 The regular R2 installer includes the guard for Air and Pro.
 
-Use release `exo171-roaming-v3` or later on Air. This incorporates its editable
-source layout and wrapper-owned dashboard setting; v2 is superseded for Air
-installation. Pro's already-verified v2 backend/guard bytes are unchanged.
+Use release `exo171-realtime-v4` or later on either Mac. This preserves Air's
+existing timestamped macmon sensor repair, adds bounded shared CPU/I/O samples,
+and uses the current packaged Pro runtime as the rebuild base. Installation
+temporarily pauses the roaming guard, and the guard never interrupts advancing
+event-log replay. The duplicate original Pro LaunchAgent is disabled (not deleted).
+
+## Live refresh
+
+Default refresh is one second, selectable as 1/2/5 seconds with pause/resume.
+Local and paired-device requests run independently with a 2.5-second timeout;
+topology discovery cannot hold up telemetry. Fleet-enrolled peer addresses remain
+available during EXO election/replay. Each card shows actual sample age, response
+latency, and LIVE/RETRYING/STALE/PAUSED, with rolling CPU, memory, GPU, power,
+disk and network charts. Missing/stale values remain unavailable, never zero.
+Backend CPU/I/O snapshots are shared for 0.8 seconds so multiple tabs do not
+reset each other's counter windows. The existing macmon process supplies GPU,
+temperature, P/E utilization and watts; no second permanent sampler is started.
+Energy integrates consecutive valid sensor samples only, excluding gaps.
+
+This is Activity Monitor-style live cluster telemetry, not Apple's exact per-process
+Energy Impact formula or a replacement for its privileged process inspector.
 
 Hotel captive portals still require that hotel's sign-in. Connectivity cannot
 be guaranteed where Internet or all usable ZeroTier transport is blocked.
@@ -93,5 +112,6 @@ The visible balance score is deterministic:
 
 `100 - spread(0.35 CPU + 0.35 memory + 0.20 GPU + 0.10 queue pressure)`
 
-It is shown only when both node samples are newer than 15 seconds. It is an
+It is shown only when exactly two node samples are newer than 15 seconds and
+all required CPU, memory, GPU, power and fresh Fleet queue values are valid. It is an
 observed load-balance indicator, not a probability or optimality guarantee.
