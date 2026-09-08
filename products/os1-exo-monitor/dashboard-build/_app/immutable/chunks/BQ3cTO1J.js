@@ -1,0 +1,1 @@
+import{j as o,k as u,H as _,l as t,m as g,C as m,o as a,v as i,w as d,x as p}from"./BoiRpTRq.js";function E(n,r){let s=null,f=t;var l;if(t){s=p;for(var e=g(document.head);e!==null&&(e.nodeType!==m||e.data!==n);)e=a(e);if(e===null)i(!1);else{var y=a(e);e.remove(),d(y)}}t||(l=document.head.appendChild(o()));try{u(()=>r(l),_)}finally{f&&(i(!0),d(s))}}export{E as h};

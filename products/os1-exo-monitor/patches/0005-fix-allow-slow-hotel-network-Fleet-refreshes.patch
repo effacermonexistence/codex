@@ -1,0 +1,33 @@
+From 0c5ce61b9fa3300cbb62a0bdd9e975f046a1d3ca Mon Sep 17 00:00:00 2001
+From: LUA <lua@LUAs-MBP.localdomain>
+Date: Mon, 7 Sep 2026 15:17:54 -0700
+Subject: [PATCH 5/6] fix: allow slow hotel-network Fleet refreshes
+
+---
+ src/exo/api/main.py | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/src/exo/api/main.py b/src/exo/api/main.py
+index ebcc9fe7..d2c0f8f6 100644
+--- a/src/exo/api/main.py
++++ b/src/exo/api/main.py
+@@ -205,6 +205,7 @@ from exo.utils.task_group import TaskGroup
+ _API_EVENT_LOG_DIR = EXO_EVENT_LOG_DIR / "api"
+ ONBOARDING_COMPLETE_FILE = EXO_CACHE_HOME / "onboarding_complete"
+ OS1_FLEET_CACHE_SECONDS = 10.0
++OS1_FLEET_TIMEOUT_SECONDS = 30.0
+ OS1_FLEET_RESULT_LIMIT = 20
+ 
+ 
+@@ -503,7 +504,7 @@ class API:
+             os1_binary = Path(resolved)
+ 
+         try:
+-            with anyio.fail_after(5):
++            with anyio.fail_after(OS1_FLEET_TIMEOUT_SECONDS):
+                 process = await anyio.run_process(
+                     [str(os1_binary), "fleet-snapshot"],
+                     check=False,
+-- 
+2.50.1 (Apple Git-155)
+

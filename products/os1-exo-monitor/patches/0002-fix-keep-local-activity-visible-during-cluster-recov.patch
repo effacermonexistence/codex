@@ -1,0 +1,60 @@
+From bb3c0e6fd9bbae2f9675a760b96a065d994e94ef Mon Sep 17 00:00:00 2001
+From: LUA <lua@LUAs-MBP.localdomain>
+Date: Mon, 7 Sep 2026 14:27:06 -0700
+Subject: [PATCH 2/6] fix: keep local activity visible during cluster recovery
+
+---
+ dashboard/src/routes/activity/+page.svelte | 18 +++++++++++++++---
+ 1 file changed, 15 insertions(+), 3 deletions(-)
+
+diff --git a/dashboard/src/routes/activity/+page.svelte b/dashboard/src/routes/activity/+page.svelte
+index 997860a9..608c0ed4 100644
+--- a/dashboard/src/routes/activity/+page.svelte
++++ b/dashboard/src/routes/activity/+page.svelte
+@@ -68,6 +68,7 @@
+   }
+ 
+   interface LocalActivity {
++    api_origin?: string;
+     node_id: string;
+     sampled_at: string;
+     sample_interval_seconds: number;
+@@ -228,13 +229,20 @@
+ 
+   function nodeRows(): NodeRow[] {
+     const now = Date.now();
+-    return (clusterState?.topology?.nodes ?? []).map((nodeId) => {
++    const nodeIds = new Set([
++      ...(clusterState?.topology?.nodes ?? []),
++      ...Object.keys(activities),
++    ]);
++    return [...nodeIds].map((nodeId) => {
+       const identity = clusterState?.nodeIdentities?.[nodeId];
+       const memory = clusterState?.nodeMemory?.[nodeId];
+       const system = clusterState?.nodeSystem?.[nodeId];
+       const disk = clusterState?.nodeDisk?.[nodeId];
+-      const ip = nodeIp(nodeId);
+       const activity = activities[nodeId] ?? null;
++      const activityIp = activity?.api_origin
++        ? new URL(activity.api_origin).hostname
++        : "";
++      const ip = nodeIp(nodeId) || activityIp;
+       const fleet =
+         fleetNodes().find((item) => item.zerotier_ip === ip) ?? null;
+       const memoryTotal =
+@@ -390,7 +398,11 @@
+ 
+       const results = await Promise.allSettled(
+         [...origins].map(async (origin) => {
+-          return (await fetchJson(`${origin}/activity/local`)) as LocalActivity;
++          const activity = (await fetchJson(
++            `${origin}/activity/local`,
++          )) as LocalActivity;
++          activity.api_origin = origin;
++          return activity;
+         }),
+       );
+       const nextActivities = { ...activities };
+-- 
+2.50.1 (Apple Git-155)
+

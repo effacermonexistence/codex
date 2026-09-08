@@ -1,0 +1,141 @@
+From c3c0b2bea196ceed8d9feda9036c58e4d7a424fd Mon Sep 17 00:00:00 2001
+From: LUA <lua@LUAs-MBP.localdomain>
+Date: Mon, 7 Sep 2026 14:32:20 -0700
+Subject: [PATCH 3/6] feat: expose local host identity in activity telemetry
+
+---
+ dashboard/src/routes/activity/+page.svelte | 32 +++++++++++++++++++---
+ src/exo/api/main.py                        | 23 ++++++++++++++++
+ src/exo/api/tests/test_activity_monitor.py |  5 ++++
+ 3 files changed, 56 insertions(+), 4 deletions(-)
+
+diff --git a/dashboard/src/routes/activity/+page.svelte b/dashboard/src/routes/activity/+page.svelte
+index 608c0ed4..4364d823 100644
+--- a/dashboard/src/routes/activity/+page.svelte
++++ b/dashboard/src/routes/activity/+page.svelte
+@@ -72,6 +72,12 @@
+     node_id: string;
+     sampled_at: string;
+     sample_interval_seconds: number;
++    host?: {
++      hostname?: string;
++      device_id?: string;
++      role?: string;
++      zerotier_ip?: string;
++    };
+     cpu: {
+       system_percent: number;
+       per_core_percent: number[];
+@@ -239,12 +245,17 @@
+       const system = clusterState?.nodeSystem?.[nodeId];
+       const disk = clusterState?.nodeDisk?.[nodeId];
+       const activity = activities[nodeId] ?? null;
+-      const activityIp = activity?.api_origin
++      const originIp = activity?.api_origin
+         ? new URL(activity.api_origin).hostname
+         : "";
++      const activityIp = activity?.host?.zerotier_ip ?? originIp;
+       const ip = nodeIp(nodeId) || activityIp;
+       const fleet =
+-        fleetNodes().find((item) => item.zerotier_ip === ip) ?? null;
++        fleetNodes().find(
++          (item) =>
++            item.zerotier_ip === ip ||
++            item.device_id === activity?.host?.device_id,
++        ) ?? null;
+       const memoryTotal =
+         activity?.memory.total_bytes ?? memory?.ramTotal?.inBytes ?? 0;
+       const memoryUsed =
+@@ -257,8 +268,21 @@
+ 
+       return {
+         nodeId,
+-        name: identity?.friendlyName ?? fleet?.role ?? nodeId.slice(0, 12),
+-        model: identity?.modelId ?? identity?.chipId ?? "Unknown Mac",
++        name:
++          identity?.friendlyName ??
++          (fleet?.role === "pro"
++            ? "MacBook Pro"
++            : fleet?.role === "air"
++              ? "MacBook Air"
++              : activity?.host?.hostname ?? nodeId.slice(0, 12)),
++        model:
++          identity?.modelId ??
++          identity?.chipId ??
++          (fleet?.role === "pro"
++            ? "Apple M4 Max"
++            : fleet?.role === "air"
++              ? "Apple M5"
++              : "Unknown Mac"),
+         ip,
+         activity,
+         fleet,
+diff --git a/src/exo/api/main.py b/src/exo/api/main.py
+index b282ad65..edcf9e2f 100644
+--- a/src/exo/api/main.py
++++ b/src/exo/api/main.py
+@@ -4,6 +4,7 @@ import hashlib
+ import json
+ import random
+ import shutil
++import socket
+ import time
+ from collections.abc import AsyncGenerator, Awaitable, Callable, Iterable
+ from datetime import datetime, timezone
+@@ -549,6 +550,22 @@ class API:
+ 
+             await self._refresh_fleet_snapshot(now)
+             fleet_results = Path.home() / ".os1" / "fleet" / "results"
++            local_addresses = {
++                address.address
++                for addresses in psutil.net_if_addrs().values()
++                for address in addresses
++            }
++            local_fleet_node = next(
++                (
++                    node
++                    for node in cast(
++                        list[dict[str, object]],
++                        self._activity_fleet_cache.get("nodes", []),
++                    )
++                    if node.get("zerotier_ip") in local_addresses
++                ),
++                {},
++            )
+ 
+             disk_payload: dict[str, object] = {
+                 "read_bytes_per_second": 0.0,
+@@ -595,6 +612,12 @@ class API:
+                 "node_id": str(self.node_id),
+                 "sampled_at": datetime.now(timezone.utc).isoformat(),
+                 "sample_interval_seconds": elapsed,
++                "host": {
++                    "hostname": local_fleet_node.get("hostname", socket.gethostname()),
++                    "device_id": local_fleet_node.get("device_id"),
++                    "role": local_fleet_node.get("role"),
++                    "zerotier_ip": local_fleet_node.get("zerotier_ip"),
++                },
+                 "cpu": {
+                     "system_percent": cpu_percent,
+                     "per_core_percent": cpu_per_core,
+diff --git a/src/exo/api/tests/test_activity_monitor.py b/src/exo/api/tests/test_activity_monitor.py
+index 0706a427..7faaab43 100644
+--- a/src/exo/api/tests/test_activity_monitor.py
++++ b/src/exo/api/tests/test_activity_monitor.py
+@@ -1,4 +1,5 @@
+ import json
++import socket
+ from pathlib import Path
+ 
+ from exo.api.main import (
+@@ -61,3 +62,7 @@ def test_recent_fleet_jobs_exposes_metadata_only(tmp_path: Path) -> None:
+     assert "updated_at_ms" in jobs[0]
+     assert "result" not in jobs[0]
+     assert "result_hash" not in jobs[0]
++
++
++def test_hostname_is_available_for_activity_fallback() -> None:
++    assert socket.gethostname()
+-- 
+2.50.1 (Apple Git-155)
+
