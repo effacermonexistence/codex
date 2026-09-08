@@ -1,0 +1,109 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "schema_version": "scv-structured-state-schema-2026-08-25-v2-rejected-date-authority",
+  "hash_algorithm": "sha256(canonical_json_without_declared_sha256)",
+  "declared_sha256": "3385af6c6e830ce99a98da781403eb9aee2a3708af2d3afe5320302580abf7ac",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "structured_state_schema_version",
+    "structured_state_schema_sha256",
+    "thread_id",
+    "contact_id",
+    "booking_stage_hint",
+    "next_action"
+  ],
+  "properties": {
+    "structured_state_schema_version": {
+      "const": "scv-structured-state-schema-2026-08-25-v2-rejected-date-authority"
+    },
+    "structured_state_schema_sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "thread_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "contact_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "booking_stage_hint": {
+      "enum": [
+        "open_conversation",
+        "design_intake",
+        "awaiting_form_permission_answer",
+        "awaiting_form_submission",
+        "awaiting_form_submission_for_accepted_slot",
+        "awaiting_design_direction",
+        "awaiting_date",
+        "awaiting_time",
+        "awaiting_form_identity_match",
+        "awaiting_name_used_on_form",
+        "awaiting_phone_used_on_form",
+        "ready_for_double_check",
+        "awaiting_double_check_confirmation",
+        "deposit_pending",
+        "deposit_requested"
+      ]
+    },
+    "next_action": {
+      "type": "string",
+      "minLength": 1
+    },
+    "tattoo_intent_active": {
+      "type": "boolean"
+    },
+    "form_offer_asked": {
+      "type": "boolean"
+    },
+    "form_link_sent": {
+      "type": "boolean"
+    },
+    "form_submitted": {
+      "type": "boolean"
+    },
+    "deposit_requested": {
+      "type": "boolean"
+    },
+    "double_check_sent": {
+      "type": "boolean"
+    },
+    "known_name_used_on_form": {
+      "type": "string"
+    },
+    "known_phone_used_on_form": {
+      "type": "string"
+    },
+    "known_requested_date": {
+      "type": "string"
+    },
+    "known_requested_time": {
+      "type": "string"
+    },
+    "last_rejected_client_date": {
+      "type": "string"
+    },
+    "last_rejected_client_date_message_id": {
+      "type": "string"
+    },
+    "known_design_context": {
+      "type": "string"
+    },
+    "known_placement_context": {
+      "type": "string"
+    },
+    "known_size_context": {
+      "type": "string"
+    },
+    "control_revision": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "ingress_revision": {
+      "type": "integer",
+      "minimum": 0
+    }
+  }
+}

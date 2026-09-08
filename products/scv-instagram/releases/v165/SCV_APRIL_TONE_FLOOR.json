@@ -1,0 +1,88 @@
+{
+  "schema_version": "scv-april-tone-floor-2026-07-26-v1-source-honest",
+  "hash_algorithm": "sha256(canonical_json_without_declared_sha256)",
+  "declared_sha256": "81ee1fe068c958c12b188b34ecfb947a388d627b395a4e2f014ac76b91233bd5",
+  "source_boundary": {
+    "source_kind": "april_prompt_and_regression_fixture_not_live_transcript",
+    "origin_snapshot": "origin-snapshots-20260420/20260420_152810",
+    "origin_snapshot_aggregate_sha256": "6fa6e83b3c9cdc57c5a6c7b2d65310e9ac9e6bda6c55497f24cba9a11e3d8c61",
+    "prompt_source": {
+      "file": "files/lua-dm-master-prompt-v17.txt",
+      "sha256": "a1772bc4cca92d9d74b8875fa98da7c858ad3765ac3bc30cbc60e69a9b017bed",
+      "relevant_lines": [
+        "86-145",
+        "233-240",
+        "479-481",
+        "693-726"
+      ]
+    },
+    "regression_source": {
+      "file": "files/scv-dm-regression.js",
+      "sha256": "90d25df7bdc6805e2b0259c6344c9638191af02eb8a068df345b4257aa94e2d6",
+      "relevant_lines": [
+        "143"
+      ]
+    },
+    "limitations": [
+      "The retained April snapshot does not contain a complete live Instagram transcript corpus.",
+      "This floor binds explicit April prompt rules and source-visible regression fixtures only.",
+      "It is a measurable lower bound for release gating, not a claim that stochastic model wording is byte-identical to April."
+    ]
+  },
+  "required_active_prompt_anchors": [
+    "Write like a real person in Instagram DMs",
+    "Typed-human texture is preferred over polished assistant-clean phrasing",
+    "target frequency is very low around 5 percent of assistant messages and generally under 10 percent",
+    "These are examples of direction not templates",
+    "Rephrase naturally every time.",
+    "do not sound templated",
+    "do not sound overexplained",
+    "do not sound like a rushed booking machine"
+  ],
+  "thresholds": {
+    "maximum_mean_characters_per_message": 95,
+    "maximum_p95_characters_per_message": 190,
+    "maximum_single_message_characters": 260,
+    "maximum_emoji_message_ratio": 0.1,
+    "maximum_greeting_opener_ratio": 0.2,
+    "maximum_exclamation_message_ratio": 0.25,
+    "maximum_normalized_duplicate_ratio": 0.1,
+    "maximum_generic_ai_phrase_ratio": 0,
+    "maximum_em_dash_message_ratio": 0,
+    "maximum_consecutive_emoji_pairs": 0
+  },
+  "generic_ai_phrases": [
+    "how can i assist",
+    "i would be happy to",
+    "i'd be happy to",
+    "feel free to",
+    "i am here to help",
+    "i'm here to help",
+    "great question",
+    "that sounds like a solid choice",
+    "what's got you curious about that today",
+    "i understand your concern",
+    "let's explore"
+  ],
+  "source_visible_fixture_corpus": [
+    "hii yeah ofc\nwhat kind of piece or vibe were you wanting?",
+    "lmaooo",
+    "fair",
+    "waittt really",
+    "that’s kinda wild",
+    "yeah i get what you mean",
+    "no literally",
+    "perfecttt",
+    "okkie",
+    "deffo",
+    "tysm",
+    "lmk once it’s in",
+    "lmk once you’ve done",
+    "i’ll double check it on my side",
+    "i’ll secure your spot on my calendar",
+    "okkie lmk once it’s sent",
+    "once you send it just lmk and i’ll double check everything on my side",
+    "once it’s in i’ll secure your spot on my calendar",
+    "if zelle doesn’t work lmk and i can give paypal"
+  ]
+}

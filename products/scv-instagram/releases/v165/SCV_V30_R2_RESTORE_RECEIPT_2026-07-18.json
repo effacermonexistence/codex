@@ -1,0 +1,47 @@
+{
+  "artifact_id": "scv-v30-r2-restore-receipt-2026-07-18-v1",
+  "created_at_utc": "2026-07-18T09:09:19Z",
+  "source_tag": "scv-closed-contract-20260712-v30",
+  "tag_commit": "365df730ac2868ded4c94f3c3ef25807854bdfdb",
+  "runtime_source_commit": "9662c5becd87837e2e72d4ce88aa65a60b38893c",
+  "source_r2_uri": "omar-r2:omar-active-vault/artifacts/scv-instagram/2026-07-18/scv-closed-contract-20260712-v30/",
+  "proof_r2_uri": "omar-r2:omar-active-vault/artifacts/scv-instagram/2026-07-18/scv-closed-contract-20260712-v30-adversarial-live-acceptance/",
+  "archive": {
+    "name": "scv-closed-contract-20260712-v30-source.tar.gz",
+    "sha256": "b7a395bcb93934045565b543d4e6107cdee9b2c91bfc5aa224e9368b31e0d277",
+    "bytes": 490418,
+    "tracked_file_count": 122,
+    "root": "scv-closed-contract-20260712-v30/files",
+    "secrets_included": false,
+    "runtime_state_included": false
+  },
+  "upload_verification": {
+    "rclone_source_check": "0 differences; 4 matching files before receipt upload",
+    "rclone_proof_check": "0 differences; 3 matching files before receipt upload",
+    "source_manifest_present": true,
+    "sha256_sidecar_present": true,
+    "live_acceptance_artifact_present": true
+  },
+  "clean_r2_restore": {
+    "download_sha256_match": true,
+    "extracted_file_count": 122,
+    "golden_manifest_sha256_match": true,
+    "immutable_seal_sha256_match": true,
+    "npm_ci_exit": 0,
+    "npm_test_exit": 0,
+    "contract_lock_version": "scv-contract-harness-lock-2026-07-18-v71-punctuation-independent-liveness",
+    "hard_harness_lock_version": "scv-hard-harness-lock-2026-07-18-v72-punctuation-independent-liveness",
+    "closed_transition_assertions": 9757,
+    "golden_guard_checks": 266,
+    "immutable_firewall_checks": 120,
+    "snapshot_isolation_checks": 49
+  },
+  "live_acceptance": "20/20 PASS",
+  "final_omar_backend_reset": {
+    "remaining_count": 0,
+    "purge_flag_restored_to_zero": true,
+    "final_runtime_deployment_id": "9722cac2-8ef9-4a14-a13a-25fc7a8a77da",
+    "non_test_accounts_paused": true
+  },
+  "claim_boundary": "R2 source and proof artifacts restored and passed their deterministic suite. STABLE_READY is not claimed because unrelated stale backlog/quarantine alerts remain and external ManyChat/API continuity is outside the internal anti-drift seal."
+}

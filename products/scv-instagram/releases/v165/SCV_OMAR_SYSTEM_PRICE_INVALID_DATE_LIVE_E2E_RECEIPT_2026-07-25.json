@@ -1,0 +1,170 @@
+{
+  "receipt_version": "scv-live-e2e-receipt-v1",
+  "created_at_utc": "2026-07-25T16:29:06Z",
+  "result": "PASS_EXACT_LIVE_E2E_TO_DEPOSIT_HANDOFF",
+  "proof_mode": "live_production_e2e_visible_instagram_plus_manychat_http_receipt",
+  "target": {
+    "instagram_username": "omar.system",
+    "contact_id": "1537753982",
+    "thread_id": "1537753982",
+    "debug_account_only": true,
+    "reset_watermark_utc": "2026-07-25T16:02:32.142Z"
+  },
+  "source": {
+    "git_commit": "33b9be8f9dcd5852d3f894e95f10b95231cfc53f",
+    "git_branch": "codex/scv-closed-contract-20260712",
+    "railway_project": "scv-dm-cloud-survival",
+    "railway_service": "scv-dm-cloud-survival",
+    "railway_deployment_id": "36596358-2579-4144-b089-2355df3ed0fc",
+    "railway_deployment_status": "SUCCESS",
+    "health_url": "https://scv-dm-cloud-survival-production.up.railway.app/health",
+    "immutable_seal_sha256": "c0d3d1a133980dc38d6ecabf18acc32563b3330d3c032dd5eb5bbd9c9db92cd8",
+    "golden_manifest_sha256": "470645cb7b35b8d34e052809a33cf40fca272fa3c2429880e268da9646f17703"
+  },
+  "requested_stressors": {
+    "price_question_exact": "by the way, is it free?",
+    "price_question_message_id": "1784995685469",
+    "deliberately_unavailable_slot": "July 27 at 2pm",
+    "unavailable_slot_message_ids": [
+      "1784995987202",
+      "manychat-orphan-1537753982-04a660b920508fe3"
+    ],
+    "expected_legal_counterproposal": "August 1 at 2pm"
+  },
+  "actual_form_submission": {
+    "submitted": true,
+    "browser_success_observed": "Thank you!",
+    "name": "Omar System E2E Invalid Date",
+    "phone": "4155550171",
+    "availability": "Weekends, August 8 or later, around 2pm",
+    "instagram": "omar.system",
+    "idea": "Black and gray abstract rose on my forearm, around 5 inches.",
+    "verbal_submission_message_id": "1784995962773",
+    "form_submission_match": {
+      "mode": "verbal",
+      "score": 140
+    }
+  },
+  "executed_sequence": [
+    {
+      "checkpoint": "FORM_CONSENT_PLUS_PRICE",
+      "input_message_ids": [
+        "1784995684021",
+        "1784995685469"
+      ],
+      "observed_reply": [
+        "yep it’s 150 an hour",
+        "that black and gray abstract rose you mentioned is perfect for my style",
+        "i’ll send the form now https://www.effacermonexistence.com/apply",
+        "just toss me a couple dates you’re thinking about and we’ll get it going"
+      ],
+      "visible_instagram": true,
+      "result": "PASS"
+    },
+    {
+      "checkpoint": "FORM_SUBMITTED_TO_DATE",
+      "input_message_id": "1784995962773",
+      "observed_reply": [
+        "perfecttt which day were you thinking for your appointment?"
+      ],
+      "visible_instagram": true,
+      "result": "PASS"
+    },
+    {
+      "checkpoint": "UNAVAILABLE_DATE_RENEGOTIATION",
+      "observed_reply": [
+        "i can’t do july 27 since it’s a bit too soon for me",
+        "the earliest i can offer is august 1 at 2pm does that work for you?"
+      ],
+      "client_acceptance_message_id": "1784996012548",
+      "client_acceptance": "August 1 at 2pm works for me",
+      "result": "PASS"
+    },
+    {
+      "checkpoint": "IDENTITY_TO_CANONICAL_DOUBLE_CHECK",
+      "input_message_id": "1784996033337",
+      "route_lock": "ready_booking_identity_fixed_double_check",
+      "candidate_executor": "deterministic_fixed_booking_checkpoint",
+      "observed_reply": "Name : Omar System E2E Invalid Date\nPhone Number : 4155550171\nAppointment date : 1st of August\nTime : 2pm\n\ncan you double check this just to make sure",
+      "manychat_http_status": 200,
+      "visible_instagram": true,
+      "result": "PASS"
+    },
+    {
+      "checkpoint": "DOUBLE_CHECK_CONFIRMATION_TO_DEPOSIT",
+      "input_message_id": "1784996824938",
+      "input": "yes, that's perfect",
+      "route_lock": "double_check_confirmed_fixed_deposit_handoff",
+      "observed_reply": [
+        "To confirm your appointment the deposit would be 100.",
+        "This is my zelle!",
+        "DESTINATION_PRESENT_SHA256_ONLY",
+        "Once you send it just let me know so I can double check everything on my side and confirm your appointment on my calendar! I will be waiting:3"
+      ],
+      "destination_sha256": "3fb01e35e79b26bbd028d65d7f60243bcba629469e82bce6d7d0bb8c1a9b86c7",
+      "manychat_http_status_each_bubble": [
+        200,
+        200,
+        200,
+        200
+      ],
+      "visible_instagram": true,
+      "actual_payment_sent": false,
+      "result": "PASS"
+    }
+  ],
+  "failure_and_repair": {
+    "failed_message_id": "1784996033337",
+    "pre_repair_rejection": "post_filter_adoption_rejected_ready_booking_identity_requires_double_check",
+    "root_cause": "The strict four-field parser treated bare field words inside a legitimate field value as additional labels. The synthetic name contained the word Date, so the valid canonical packet was rejected and retried without a visible reply.",
+    "general_fix": "After stripping the current field prefix, reject only an embedded explicit field label followed by a colon (Name:, Phone Number:, Appointment date:, Time:). Bare words inside legitimate values are allowed; one-line multi-field packets remain rejected.",
+    "regressions_added": [
+      "ready_booking_identity_allows_field_words_inside_name_value",
+      "deterministic_double_check_field_word_name_packet_present",
+      "deterministic_double_check_field_word_name_exact_text"
+    ]
+  },
+  "verification": {
+    "full_npm_test": "PASS",
+    "contract_harness": {
+      "checked": 208,
+      "ok": true
+    },
+    "runner_semantic_repair": {
+      "checked": 185,
+      "ok": true
+    },
+    "closed_transition": {
+      "checked": 9922,
+      "ok": true
+    },
+    "single_control": {
+      "checked": 96,
+      "ok": true
+    },
+    "hard_harness": {
+      "checked": 87,
+      "ok": true
+    },
+    "immutable_drift_firewall": {
+      "checked": 178,
+      "ok": true
+    },
+    "golden_snapshot_guard": {
+      "checked": 363,
+      "ok": true
+    },
+    "snapshot_isolation": {
+      "checked": 123,
+      "ok": true
+    },
+    "production_health_immutable_firewall": "PASS",
+    "safari_visible_final_handoff": "PASS"
+  },
+  "scope_boundary": {
+    "claim": "This exact production branch passed from form consent and price interruption through unavailable-date renegotiation, four-field double-check, confirmation, and deposit handoff.",
+    "universal_future_guarantee": false,
+    "global_stable_ready_claimed": false,
+    "global_drift_monitor_note": "The production drift monitor remains red from pre-existing unrelated stale inbox/reactbox and human-hold backlog. This receipt does not relabel or clear that backlog and does not use it to weaken the completed Omar.system thread-local E2E result."
+  }
+}
