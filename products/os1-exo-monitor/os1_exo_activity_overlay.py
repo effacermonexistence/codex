@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import shutil
 import socket
 import time
@@ -388,7 +389,18 @@ async def _get_local_activity(api: Any) -> dict[str, object]:
         }
 
 
+def _configure_activity_dashboard() -> None:
+    """Apply the monitor directory after the Air wrapper sets its defaults."""
+    configured = os.environ.get("OS1_EXO_ACTIVITY_DASHBOARD_DIR")
+    if configured:
+        directory = Path(configured)
+        if directory.is_dir() and (directory / "index.html").is_file():
+            os.environ["EXO_DASHBOARD_DIR"] = str(directory)
+
+
 def install() -> None:
+    # EXO reads its dashboard environment during import, so do this first.
+    _configure_activity_dashboard()
     from exo.api.main import API
 
     if getattr(API, _PATCH_MARKER, False):

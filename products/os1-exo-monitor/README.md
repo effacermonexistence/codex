@@ -75,6 +75,10 @@ An existing healthy Pro can install only the guard with its managed Python:
 `python3.13 products/os1-exo-monitor/roaming_guard.py --install pro`.
 The regular R2 installer includes the guard for Air and Pro.
 
+Use release `exo171-roaming-v3` or later on Air. This incorporates its editable
+source layout and wrapper-owned dashboard setting; v2 is superseded for Air
+installation. Pro's already-verified v2 backend/guard bytes are unchanged.
+
 Hotel captive portals still require that hotel's sign-in. Connectivity cannot
 be guaranteed where Internet or all usable ZeroTier transport is blocked.
 An inference running at the moment of disconnection may fail and need retry;

@@ -21,6 +21,8 @@ TASK_USER_HOME="$(dscl . -read "/Users/$TASK_USER_NAME" NFSHomeDirectory | awk '
 TASK_USER_UID="$(id -u)"
 TASK_TEMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/os1-exo-activity.XXXXXX")"
 TASK_SWITCHED=0
+TASK_MUTATED=0
+TASK_COMMITTED=0
 TASK_PLIST=""
 TASK_PLIST_BACKUP=""
 TASK_SOURCE_MODE=0
@@ -30,43 +32,72 @@ TASK_OVERLAY_BACKUP=""
 TASK_BOOTSTRAP_BACKUP=""
 TASK_OVERLAY_EXISTED=0
 TASK_BOOTSTRAP_EXISTED=0
+TASK_OVERLAY_STAGED=""
+TASK_BOOTSTRAP_STAGED=""
 
 cleanup() {
+  for task_staged in "$TASK_OVERLAY_STAGED" "$TASK_BOOTSTRAP_STAGED"; do
+    if [[ -n "$task_staged" && -f "$task_staged" ]]; then
+      unlink "$task_staged"
+    fi
+  done
   if [[ -d "$TASK_TEMP_ROOT" && "$TASK_TEMP_ROOT" == *os1-exo-activity.* ]]; then
     rm -rf "$TASK_TEMP_ROOT"
   fi
 }
 
 restore_source_overlay() {
+  local task_restore_failed=0
   if [[ "$TASK_SOURCE_MODE" -ne 1 ]]; then
     return
   fi
   if [[ "$TASK_OVERLAY_EXISTED" -eq 1 && -f "$TASK_OVERLAY_BACKUP" ]]; then
-    cp "$TASK_OVERLAY_BACKUP" "$TASK_OVERLAY_DEST"
+    cp "$TASK_OVERLAY_BACKUP" "$TASK_OVERLAY_DEST" || task_restore_failed=1
   elif [[ -n "$TASK_OVERLAY_DEST" && -f "$TASK_OVERLAY_DEST" ]]; then
-    unlink "$TASK_OVERLAY_DEST"
+    unlink "$TASK_OVERLAY_DEST" || task_restore_failed=1
   fi
   if [[ "$TASK_BOOTSTRAP_EXISTED" -eq 1 && -f "$TASK_BOOTSTRAP_BACKUP" ]]; then
-    cp "$TASK_BOOTSTRAP_BACKUP" "$TASK_BOOTSTRAP_DEST"
+    cp "$TASK_BOOTSTRAP_BACKUP" "$TASK_BOOTSTRAP_DEST" || task_restore_failed=1
   elif [[ -n "$TASK_BOOTSTRAP_DEST" && -f "$TASK_BOOTSTRAP_DEST" ]]; then
-    unlink "$TASK_BOOTSTRAP_DEST"
+    unlink "$TASK_BOOTSTRAP_DEST" || task_restore_failed=1
   fi
+  return "$task_restore_failed"
 }
 
-rollback() {
+finish() {
   local task_exit_code=$?
-  if [[ "$TASK_SWITCHED" -eq 1 && -f "$TASK_PLIST_BACKUP" && -n "$TASK_PLIST" ]]; then
-    launchctl bootout "gui/$TASK_USER_UID" "$TASK_PLIST" >/dev/null 2>&1 || true
-    restore_source_overlay
-    cp "$TASK_PLIST_BACKUP" "$TASK_PLIST"
-    launchctl bootstrap "gui/$TASK_USER_UID" "$TASK_PLIST" >/dev/null 2>&1 || true
-    echo "EXO activity monitor install failed; prior service restored." >&2
+  local task_restore_failed=0
+  trap - EXIT HUP INT TERM
+  if [[ "$TASK_COMMITTED" -ne 1 && "$TASK_MUTATED" -eq 1 ]]; then
+    # Track file custody before the first write, independently of launchd.
+    # EXIT also covers explicit validation failures and termination signals.
+    if [[ "$TASK_SWITCHED" -eq 1 ]]; then
+      launchctl bootout "gui/$TASK_USER_UID" "$TASK_PLIST" >/dev/null 2>&1 || true
+    fi
+    restore_source_overlay || task_restore_failed=1
+    cp "$TASK_PLIST_BACKUP" "$TASK_PLIST" || task_restore_failed=1
+    if [[ "$TASK_SWITCHED" -eq 1 ]]; then
+      if [[ "$task_restore_failed" -eq 0 ]]; then
+        launchctl bootstrap "gui/$TASK_USER_UID" "$TASK_PLIST" >/dev/null 2>&1 || task_restore_failed=1
+      fi
+      if [[ "$task_restore_failed" -eq 0 ]]; then
+        echo "EXO activity monitor install failed; prior service restored." >&2
+      fi
+    elif [[ "$task_restore_failed" -eq 0 ]]; then
+      echo "EXO activity monitor install failed; prior files restored; service was not restarted." >&2
+    fi
+    if [[ "$task_restore_failed" -ne 0 ]]; then
+      echo "EXO activity monitor rollback incomplete; inspect recovery files at $TASK_RECOVERY and service $TASK_LABEL." >&2
+    fi
+    [[ "$task_exit_code" -ne 0 ]] || task_exit_code=1
   fi
   cleanup
   exit "$task_exit_code"
 }
-trap rollback ERR
-trap cleanup EXIT
+trap finish EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 if [[ "$TASK_ROLE" == "pro" ]]; then
   TASK_PLIST="$TASK_USER_HOME/Library/LaunchAgents/com.os1.exo-pro-stable.plist"
@@ -86,8 +117,12 @@ fi
 TASK_LABEL="$(plutil -extract Label raw "$TASK_PLIST")"
 TASK_BASE_EXECUTABLE="$(plutil -extract ProgramArguments.0 raw "$TASK_PLIST")"
 [[ -x "$TASK_BASE_EXECUTABLE" ]] || { echo "configured EXO executable is missing" >&2; exit 1; }
+if [[ "$TASK_ROLE" == "air" && "$(basename "$TASK_BASE_EXECUTABLE")" != "run-air.sh" ]]; then
+  echo "Air installation requires the existing source runtime run-air.sh; packaged runtime reconstruction was not started." >&2
+  exit 1
+fi
 TASK_OLD_NODE_ID="$(curl -fsS --max-time 5 http://127.0.0.1:52415/node_id 2>/dev/null | tr -d '"' || true)"
-TASK_RELEASE_ID="fb174031-roaming-v2"
+TASK_RELEASE_ID="fb174031-roaming-v3"
 TASK_RUNTIME="$TASK_USER_HOME/.os1/exo-1.0.71-activity-monitor-$TASK_RELEASE_ID"
 if [[ -e "$TASK_RUNTIME" ]]; then
   TASK_RUNTIME="$TASK_RUNTIME-$(date -u +%Y%m%dT%H%M%SZ)"
@@ -115,7 +150,9 @@ if [[ "$(basename "$TASK_BASE_EXECUTABLE")" == "run-air.sh" ]]; then
   done
   [[ -n "$TASK_PYTHON" ]] || { echo "Air EXO runtime Python was not found" >&2; exit 1; }
   TASK_SITE_PACKAGES="$("$TASK_PYTHON" -c 'import site; print(site.getsitepackages()[0])')"
-  [[ -d "$TASK_SITE_PACKAGES/exo/api" ]] || { echo "Air EXO source package was not found" >&2; exit 1; }
+  [[ -d "$TASK_SITE_PACKAGES/exo/api" || -d "$TASK_SOURCE_ROOT/source/src/exo/api" ]] || {
+    echo "Air EXO source package was not found" >&2; exit 1;
+  }
 
   TASK_OVERLAY_DEST="$TASK_SITE_PACKAGES/os1_exo_activity_overlay.py"
   TASK_BOOTSTRAP_DEST="$TASK_SITE_PACKAGES/os1_exo_activity_bootstrap.pth"
@@ -129,11 +166,14 @@ if [[ "$(basename "$TASK_BASE_EXECUTABLE")" == "run-air.sh" ]]; then
     TASK_BOOTSTRAP_EXISTED=1
     cp "$TASK_BOOTSTRAP_DEST" "$TASK_BOOTSTRAP_BACKUP"
   fi
-  TASK_SWITCHED=1
-  cp "$TASK_OVERLAY_SOURCE" "$TASK_OVERLAY_DEST.new"
-  mv "$TASK_OVERLAY_DEST.new" "$TASK_OVERLAY_DEST"
-  cp "$TASK_BOOTSTRAP_SOURCE" "$TASK_BOOTSTRAP_DEST.new"
-  mv "$TASK_BOOTSTRAP_DEST.new" "$TASK_BOOTSTRAP_DEST"
+  # Stage both inputs before touching Python startup. Keep recovery backups.
+  TASK_OVERLAY_STAGED="$(mktemp "$TASK_SITE_PACKAGES/.os1-exo-activity-overlay.XXXXXX")"
+  TASK_BOOTSTRAP_STAGED="$(mktemp "$TASK_SITE_PACKAGES/.os1-exo-activity-bootstrap.XXXXXX")"
+  cp "$TASK_OVERLAY_SOURCE" "$TASK_OVERLAY_STAGED"
+  cp "$TASK_BOOTSTRAP_SOURCE" "$TASK_BOOTSTRAP_STAGED"
+  TASK_MUTATED=1
+  mv "$TASK_OVERLAY_STAGED" "$TASK_OVERLAY_DEST"
+  mv "$TASK_BOOTSTRAP_STAGED" "$TASK_BOOTSTRAP_DEST"
   TASK_NEW_EXECUTABLE="$TASK_BASE_EXECUTABLE"
 else
   TASK_EXO_COMMIT="fb174031378cd6ab1c1bf842a2958e4f250b84e2"
@@ -176,12 +216,18 @@ else
   codesign --force --sign - "$TASK_RUNTIME/bin/exo"
   codesign --verify --strict --verbose=2 "$TASK_RUNTIME/bin/exo"
   TASK_NEW_EXECUTABLE="$TASK_RUNTIME/bin/exo"
-  TASK_SWITCHED=1
+  TASK_MUTATED=1
   /usr/libexec/PlistBuddy -c "Set :ProgramArguments:0 $TASK_NEW_EXECUTABLE" "$TASK_PLIST"
 fi
 
-if ! /usr/libexec/PlistBuddy -c "Set :EnvironmentVariables:EXO_DASHBOARD_DIR $TASK_RUNTIME/dashboard" "$TASK_PLIST"; then
-  /usr/libexec/PlistBuddy -c "Add :EnvironmentVariables:EXO_DASHBOARD_DIR string $TASK_RUNTIME/dashboard" "$TASK_PLIST"
+TASK_DASHBOARD_VARIABLE=EXO_DASHBOARD_DIR
+if [[ "$TASK_SOURCE_MODE" -eq 1 ]]; then
+  # The existing Air wrapper owns EXO_DASHBOARD_DIR. Apply the dedicated
+  # setting in the overlay before importing EXO; preserve the wrapper itself.
+  TASK_DASHBOARD_VARIABLE=OS1_EXO_ACTIVITY_DASHBOARD_DIR
+fi
+if ! /usr/libexec/PlistBuddy -c "Set :EnvironmentVariables:$TASK_DASHBOARD_VARIABLE $TASK_RUNTIME/dashboard" "$TASK_PLIST"; then
+  /usr/libexec/PlistBuddy -c "Add :EnvironmentVariables:$TASK_DASHBOARD_VARIABLE string $TASK_RUNTIME/dashboard" "$TASK_PLIST"
 fi
 if [[ -f "$TASK_USER_HOME/.local/bin/config.json" ]]; then
   if ! /usr/libexec/PlistBuddy -c "Set :EnvironmentVariables:OS1_CONFIG $TASK_USER_HOME/.local/bin/config.json" "$TASK_PLIST"; then
@@ -233,8 +279,7 @@ do
 done
 "$TASK_GUARD_PYTHON" "$TASK_PRODUCT_ROOT/roaming_guard.py" --install "$TASK_ROLE"
 
-TASK_SWITCHED=0
-trap - ERR
+TASK_COMMITTED=1
 echo "OS1_EXO_ACTIVITY_READY"
 echo "role=$TASK_ROLE"
 echo "service=$TASK_LABEL"
