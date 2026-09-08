@@ -14,6 +14,21 @@ public enum AutomaticFleetHookPolicy {
     public static let cpuWeight = 50
     public static let internalProviderEnvironmentKey = "OS1_INTERNAL_PROVIDER_EXECUTION"
 
+    public static func shouldBypassNotificationPrompt(_ prompt: String) -> Bool {
+        // Claude can deliver a background tool result through UserPromptSubmit.
+        // That event name alone is not evidence of a new user request. Only the
+        // observed, standalone engine envelope is recognized here: mentioning,
+        // quoting, or fencing it inside a user's request must not disable Fleet.
+        let candidate = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard candidate.hasPrefix("<task-notification>") else { return false }
+        guard let closing = candidate.range(of: "</task-notification>", options: .backwards) else {
+            // A truncated engine envelope has uncertain origin. Continue the
+            // foreground locally, without any Fleet or EXO side effect.
+            return true
+        }
+        return candidate[closing.upperBound...].trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
     public static func shouldBypass(
         cwd: String,
         homeDirectory: String,

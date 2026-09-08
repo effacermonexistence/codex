@@ -30,7 +30,7 @@ private struct PromptHookInput {
     let turnID: String?
 }
 
-private func promptHookInput() throws -> PromptHookInput {
+private func promptHookInput() throws -> PromptHookInput? {
     let input = FileHandle.standardInput.readDataToEndOfFile()
     guard input.count <= 256_000,
           let value = try JSONSerialization.jsonObject(with: input) as? [String: Any],
@@ -44,6 +44,9 @@ private func promptHookInput() throws -> PromptHookInput {
           !sessionID.isEmpty else {
         throw OS1Error.message("Invalid agent prompt hook input")
     }
+    // Engine task notifications can reuse UserPromptSubmit. Ignore them before
+    // transcript lookup, configuration, caches, or any model/Fleet request.
+    guard !AutomaticFleetHookPolicy.shouldBypassNotificationPrompt(prompt) else { return nil }
     var eventID = value["turn_id"] as? String
     // Claude provides the transcript position rather than a turn UUID. Bind
     // replays to that position; never deduplicate every equal prompt forever.
@@ -129,6 +132,8 @@ private func automaticFleetSubmission(
     profile: String,
     stateDirectory: URL
 ) async throws -> String? {
+    // Defense in depth for future callers that bypass promptHookInput.
+    guard !AutomaticFleetHookPolicy.shouldBypassNotificationPrompt(input.prompt) else { return nil }
     let fileManager = FileManager.default
     let home = fileManager.homeDirectoryForCurrentUser.path
     if AutomaticFleetHookPolicy.shouldBypass(
@@ -185,9 +190,10 @@ private func runEXOPromptHook(consumerName: String, fleetProfile: String) async 
             promptHookResponse()
             return
         }
-        let config = try RuntimeConfig.load()
-        let input = try promptHookInput()
-        let stateDirectory = try promptHookStateDirectory()
+        guard let input = try promptHookInput() else {
+            promptHookResponse()
+            return
+        }
 
         if AutomaticFleetHookPolicy.shouldBypass(
             cwd: input.cwd,
@@ -197,6 +203,9 @@ private func runEXOPromptHook(consumerName: String, fleetProfile: String) async 
             promptHookResponse()
             return
         }
+
+        let config = try RuntimeConfig.load()
+        let stateDirectory = try promptHookStateDirectory()
 
         do {
             if let context = try await automaticFleetSubmission(input: input, profile: fleetProfile, stateDirectory: stateDirectory) {

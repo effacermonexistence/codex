@@ -1,6 +1,16 @@
 # Air native-execution health repair
 
-Local repair identity: `0.9.22/73.2-air-native-health-repair-20260907`.
+Local repair identity: `0.9.22/73.3-air-native-health-repair-20260907`.
+
+Build 73.3 excludes standalone Claude engine task-notification envelopes from
+new Fleet submissions before transcript access, configuration, cache, or EXO.
+Captured and truncated envelopes return an empty successful hook response;
+ordinary, prefixed, quoted, fenced, and instruction-suffixed user requests keep
+their existing routing. Bare pasted engine-shaped content is ambiguous and
+stays local. Existing executor recursion and turn-specific deduplication remain
+unchanged. Real hook subprocess tests run with network and file writes denied.
+This fixes an observed extra notification job; it does not override remote
+verification failures of the original jobs or make their receipts successful.
 
 Build 73.2 also synchronizes the heartbeat self-test instead of requiring a
 detached task to start within a fixed 200 ms CI scheduling window. Production

@@ -93,6 +93,52 @@ func testAutomaticFleetExecutorBypass() throws {
     try expect(AutomaticFleetHookPolicy.cpuWeight == 50, "automatic fleet CPU weight drifted")
 }
 
+func testAutomaticFleetNotificationBypass() throws {
+    // Captured from Claude Code 2.1.263's generated Fleet assignment after one
+    // genuine prompt. IDs and paths are sanitized; the envelope is unchanged.
+    // Attachment metadata was present in the transcript, not captured hook
+    // stdin, so the guard deliberately does not depend on those fields.
+    let notification = """
+    <task-notification>
+    <task-id>REDACTED_TASK_ID</task-id>
+    <tool-use-id>REDACTED_TOOL_USE_ID</tool-use-id>
+    <output-file>/private/tmp/claude-501/REDACTED_WORKSPACE/REDACTED_SESSION/tasks/REDACTED_TASK_ID.output</output-file>
+    <status>failed</status>
+    <summary>Background command "Read mirrored fleet job result" failed with exit code 1</summary>
+    </task-notification>
+    """
+    let notifications = [
+        notification,
+        " \n\t" + notification + "\n\t ",
+        notification.replacingOccurrences(of: "<status>failed</status>", with: "<status>completed</status>"),
+        notification.replacingOccurrences(of: "<status>failed</status>", with: "<status>killed</status>"),
+        notification.replacingOccurrences(of: "\n", with: "\r\n"),
+        notification + "\n" + notification,
+        "<task-notification>\n<task-id>truncated",
+        "<task-notification>"
+    ]
+    for (index, prompt) in notifications.enumerated() {
+        try expect(AutomaticFleetHookPolicy.shouldBypassNotificationPrompt(prompt),
+                   "engine notification \(index) could dispatch a new task")
+    }
+    let userPrompts = [
+        "Read-only verification. Do not modify any file or perform external writes. Reply with exactly: AIR_CLAUDE_FINAL_FLEET_OK",
+        "Build and test the task notification handler.",
+        "Explain this background result:\n" + notification,
+        "```xml\n" + notification + "\n```",
+        notification.split(separator: "\n").map { "> " + $0 }.joined(separator: "\n"),
+        "\"" + notification + "\"",
+        notification + "\nExplain why this failed.",
+        "Please emit the literal tag <task-notification>.",
+        "Update <task-notification> rendering without modifying its contents.",
+        "The command output says Background command failed with exit code 1. Diagnose it."
+    ]
+    for (index, prompt) in userPrompts.enumerated() {
+        try expect(!AutomaticFleetHookPolicy.shouldBypassNotificationPrompt(prompt),
+                   "genuine user prompt \(index) was mistaken for an engine notification")
+    }
+}
+
 func testSettingsPreservation() throws {
     let other: [String: Any] = ["type": "command", "command": "unrelated-audit-hook"]
     let document: [String: Any] = ["preferences": ["retained": true], "hooks": [
@@ -139,9 +185,10 @@ do {
     try testCircuitBreaker()
     try testTimeoutHeadroom()
     try testAutomaticFleetExecutorBypass()
+    try testAutomaticFleetNotificationBypass()
     try testSettingsPreservation()
     try testFirstPromptIdentity()
-    print("OS1HookSupportTests: PASS (6 test groups)")
+    print("OS1HookSupportTests: PASS (7 test groups)")
 } catch {
     fputs("OS1HookSupportTests: FAIL: \(error)\n", stderr)
     exit(1)
