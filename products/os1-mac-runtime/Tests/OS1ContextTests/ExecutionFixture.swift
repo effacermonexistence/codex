@@ -85,8 +85,25 @@ func runExecutionFixtures() throws {
     check(!SavedResultEvidence.codexRecordVerified(try saved("tampered answer")))
     var wrongSession = step; wrongSession["session_id"] = UUID().uuidString
     check(!SavedResultEvidence.codexRecordVerified(try saved(answer, wrongSession)))
+    let ledger = ManagedNativeTurns(root: root.appendingPathComponent("ownership"))
+    let submissionID = UUID()
+    try ledger.record(submissionID: submissionID, threadID: session, turnID: turn)
+    check(ledger.ownedTurns(threadID: session) == [turn])
+    check(ledger.ownedTurns(threadID: UUID().uuidString).isEmpty)
+    check(ManagedNativeTurns(root: ledger.root).ownedTurns(threadID: session) == [turn])
+    // Legacy ownership is recovered from exact persisted evidence, even when
+    // the result was rejected, not from its natural-language answer.
+    var legacyObject = try JSONSerialization.jsonObject(with: JSONEncoder().encode(saved())) as! [String: Any]
+    legacyObject["submissionID"] = submissionID.uuidString
+    let legacy = try JSONDecoder().decode(DeliveryRecord.self, from: JSONSerialization.data(withJSONObject: legacyObject))
+    try DeliveryOutbox(root: root).save(legacy)
+    let migratedLedger = ManagedNativeTurns(root: root.appendingPathComponent("legacy-ownership"))
+    check(migratedLedger.recoverLegacy(threadID: session, outbox: DeliveryOutbox(root: root)) == [turn])
+    check(migratedLedger.recoverLegacy(threadID: UUID().uuidString, outbox: DeliveryOutbox(root: root)).isEmpty)
     try Data("{}".utf8).write(to: nativeURL)
     check(!SavedResultEvidence.codexRecordVerified(try saved()))
+    check(ManagedNativeTurns(root: root.appendingPathComponent("tampered-ownership")).recoverLegacy(threadID: session,
+        outbox: DeliveryOutbox(root: root)).isEmpty)
     try FileManager.default.removeItem(at: nativeURL)
     check(!SavedResultEvidence.codexRecordVerified(try saved()))
     print("Execution stream, privacy, quota and durable outbox: \(checks) checks passed")
