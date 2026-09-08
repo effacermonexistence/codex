@@ -27,6 +27,37 @@ Only an explicit owner request to promote a new Gold, followed by a separate
 verified snapshot, may create another dated record and advance `LATEST_GOLD.json`.
 Never overwrite dated Gold records or repurpose April Gold / behavioral GOLD-3.
 
+## Several dated Golds, kept completely separate (2026-09-08)
+
+The owner approved a second Gold on 2026-09-08 (the running v167, red-teamed by the
+owner after the deploy). Golds are **dated records that coexist**; nothing about an
+earlier Gold changes when a later one is added:
+
+- Every Gold has its own record under `recovery/gold/<promotion-timestamp>-vNNN.json`
+  and its own timestamped R2 keys (`recovery-gold/<promotion-timestamp>/…`,
+  `recovery-points/<snapshot-timestamp>/…`). A record's point timestamp must equal the
+  timestamp in its point-manifest key; the resolver rejects any record that mixes dates.
+- The v151 record (`gold/20260905T054647Z-v151.json`, snapshot 2026-09-04 22:25:49 UTC,
+  promotion 2026-09-05 05:46:47 UTC) and every R2 object it names stay byte-identical
+  forever. The resolver keeps its original hard pin on exactly the v151 point and its
+  three manifests.
+- `LATEST_GOLD.json` names the **latest** owner-approved Gold. "최신 Gold로 돌아가" /
+  "restore latest Gold" means that one. An earlier Gold is restored by its exact id:
+
+```sh
+node products/scv-instagram/scripts/recover-gold.mjs --list
+node products/scv-instagram/scripts/recover-gold.mjs --resolve --gold scv-instagram-recovery-gold-20260905T054647Z-v151
+node products/scv-instagram/scripts/recover-gold.mjs --gold scv-instagram-recovery-gold-20260905T054647Z-v151 \
+  --target /absolute/private/existing-parent/new-v151-gold-restore
+```
+
+- The acquisition receipt records which Gold was selected (`selected_by`,
+  `is_latest_approved_gold`) so an old-Gold restore can never be mistaken for the
+  latest one. Each Gold's guide (`RECOVER-V151.md`, `RECOVER-V167.md`) stays with it.
+- Adding a Gold = a new dated record + a new pointer commit after its own verified
+  snapshot, point manifest, R2 readback and owner approval. Ordinary edits, deploys,
+  backups and Omar.system resets never add or move a Gold.
+
 ## New Mac / original Mac unavailable
 
 Obtain a fresh trusted main checkout via the durable bootstrap or verified
