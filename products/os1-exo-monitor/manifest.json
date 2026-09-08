@@ -13,10 +13,14 @@
     "20b999ce65ef809d69fd738397e0f58f93c28dc594081ffa1dd060c7943e238c",
     "6940ebef0c2e4109512ccbac6a5b4b4c1548351e315b40eaffc3a60d51685e6e",
     "c241b3d5afb58f3cce41445de635a67d360f9120d33cab52303190d5f19a1c3d",
-    "dc46aab52c705b5789775490be7ba1a73bc3052bf43a67eaf5e3f7bab0ff6157"
+    "dc46aab52c705b5789775490be7ba1a73bc3052bf43a67eaf5e3f7bab0ff6157",
+    "bc0e6a342fb924d6aad1b956524a2d0ed8c16294444e8268e2b8ddf8668b0b76"
   ],
-  "dashboard_index_sha256": "2ea267a0a0ff374d524a7a622fd1aa6a2c27446d583ac0c6942cd1cc678c3c4d",
-  "source_overlay_sha256": "39e7f03349dda49b1eba46506e6bd62f4f31edf2f1aeeae371dc8248ac587861",
+  "dashboard_index_sha256": "50ee3e34724f3bf51ee68889a8c56516aab1b688a9650bfc6c8ef6f6e2f313f2",
+  "source_overlay_sha256": "c4ff9af6f57350edc04906826c5104bb0db4b66bf75c8dd8eb4dc647c3451b8a",
+  "air_sensor_repair": "existing-macmon-discovery-and-nullable-freshness-20260908",
+  "dashboard_additional_patch": "0007-fix-require-valid-activity-sensors.patch",
+  "pro_sensor_repair_verified": false,
   "air_compatibility_repair": "source-layout-dashboard-and-transactional-rollback-20260907",
   "pro_verified_runtime_sha256": "b7fbb483ca7b563f70ce63f6e6571b529a82537d07070fff687ee16206073f04",
   "pro_verified_pyz_sha256": "91b7664c10fa5ba6004bafc4d05e0a19226243494ea68221d81d458e4bada7c4",

@@ -4,7 +4,7 @@ This product overlay adds a single Activity Monitor-style page to EXO 1.0.71.
 The page is available at `http://127.0.0.1:52415/#/activity` from either Mac
 and merges the two EXO nodes with OS1 Fleet assignment metadata.
 
-It reports measured CPU, memory, GPU, temperature, system power/session energy,
+It reports measured CPU, memory, and, when available, GPU, temperature, sampled energy,
 disk throughput/free space, network throughput, EXO topology/work counts, OS1
 executor readiness, queues, heartbeats, and recent sanitized placement receipts.
 It does not expose prompts or model output and does not claim that arbitrary
@@ -16,7 +16,7 @@ macOS processes share one transparent memory or GPU address space.
 - Upstream commit: `fd707de30b42db4211d15da96b9052e1dc280ed1`
 - Omar fork branch: `effacermonexistence/exo:os1/exo-cluster-activity-monitor`
 - Overlay commit: `0f340ce530d0df5fcb646bbad02e7eac7f01830c`
-- Portable mail patches: `patches/0001-*` through `patches/0006-*`
+- Portable mail patches: `patches/0001-*` through `patches/0006-*`, followed by the dashboard-only `0007` patch
 - Prebuilt dashboard: `dashboard-build/` (no Node/npm needed on the target Mac)
 
 On a packaged Pro runtime, the builder replaces only `exo.api.main` in a new
@@ -80,9 +80,20 @@ credential transfer between Macs is required.
 
 ## Convergence definition
 
+The Air source-runtime overlay selects the existing macmon executable from the
+wrapper's EXO resources path before startup and observes the existing sampler;
+it does not start a second sampler. GPU/power/temperature without valid recent
+native measurements are `null` with an explicit sensor status. Energy covers
+only consecutive measured intervals, with gaps excluded. Genuine measured zero
+is distinct from unavailable data. Older Pro endpoints lacking sensor status
+remain unavailable in the dashboard; this Air repair does not claim to repair
+the packaged Pro sampler. See `DASHBOARD-TELEMETRY-VERIFICATION.md` for frontend
+tests, the unchanged upstream typecheck diagnostics, and reproduction.
+
 The visible balance score is deterministic:
 
 `100 - spread(0.35 CPU + 0.35 memory + 0.20 GPU + 0.10 queue pressure)`
 
-It is shown only when both node samples are newer than 15 seconds. It is an
+It is shown only when both node samples, sensor measurements and queue data are
+valid and newer than 15 seconds. It is an
 observed load-balance indicator, not a probability or optimality guarantee.
