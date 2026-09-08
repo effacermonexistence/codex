@@ -26,6 +26,7 @@ enum OS1Error: Error, CustomStringConvertible {
     var isTerminalPermissionFailure: Bool {
         if case .toolPermissionDenied = self { return true }
         if case .backendBlocked(.policyDenied) = self { return true }
+        if case .backendBlocked(.safetyBlocked) = self { return true }
         return false
     }
 
@@ -661,7 +662,7 @@ func executorInstructions(contract: ExecutorContract, ticket: Ticket) -> String 
     - backend: \(ticket.provider)
     - action: \(ticket.action)
     - permission profile: \(ticket.permissionProfile)
-    - OS-1 owns permission orchestration. Do not ask the user to approve provider-native tools.
+    - \(UnifiedExecution.permissionInstructions)
     - Do not invoke, shell out to, or delegate work to the other provider's CLI. OS-1 alone dispatches Codex and Claude backends.
     - Execute only actions allowed by the assigned permission profile. If an action is denied, stop and report the blocker truthfully.
     - When the user asks for a schema, architecture, sketch, plan, outline, proposal, draft, or other concrete deliverable, produce a useful best-effort deliverable immediately under explicit reasonable assumptions. Do not answer only with clarifying questions; ask for missing details after the draft when useful.
@@ -696,7 +697,7 @@ func claudeExecutorInstructions(
     - backend: \(ticket.provider)
     - action: \(ticket.action)
     - permission profile: \(ticket.permissionProfile)
-    - OS-1 owns permission orchestration. Do not ask the user to approve provider-native tools.
+    - \(UnifiedExecution.permissionInstructions)
     - Do not invoke, shell out to, or delegate work to the other provider's CLI. OS-1 alone dispatches Codex and Claude backends.
     - Execute only actions allowed by the assigned permission profile. If an action is denied, stop and report the blocker truthfully.\(recovery)
     - When the user asks for a schema, architecture, sketch, plan, outline, proposal, draft, or other concrete deliverable, produce a useful best-effort deliverable immediately under explicit reasonable assumptions. Do not answer only with clarifying questions; ask for missing details after the draft when useful.
@@ -1237,14 +1238,26 @@ func codexTurnBlocker(_ turn: [String: Any], approvalRejected: Bool) -> BackendB
             ($0["status"] as? String) == "declined"
     }) { return .policyDenied }
     guard turn["status"] as? String != "completed", let error = turn["error"] as? [String: Any] else { return nil }
+    if let blocker = BackendBlocker.reported(in: error["message"] as? String ?? "") { return blocker }
     let kind = (error["codexErrorInfo"] as? String ?? "").lowercased().replacingOccurrences(of: "_", with: "")
     if kind == "usagelimitexceeded" {
         return items.contains { ["commandExecution", "fileChange", "mcpToolCall"].contains($0["type"] as? String ?? "") }
             ? .effectsUncertain : .quotaExhausted
     }
-    if let blocker = BackendBlocker.reported(in: error["message"] as? String ?? "") { return blocker }
     if (error["codexErrorInfo"] as? String)?.lowercased() == "unauthorized" { return .authenticationRequired }
     return nil
+}
+
+/// A terminal enforcement notification must not become a timeout if the peer
+/// never sends turn/completed. Ignore other turns and successful quoted text.
+func codexEnforcementNotification(_ message: [String: Any], threadID: String, turnID: String) -> BackendBlocker? {
+    guard message["method"] as? String == "error", message["id"] == nil,
+          let params = message["params"] as? [String: Any],
+          params["threadId"] as? String == threadID, params["turnId"] as? String == turnID,
+          let error = params["error"] as? [String: Any],
+          let blocker = BackendBlocker.reported(in: error["message"] as? String ?? ""),
+          [.safetyBlocked, .policyDenied].contains(blocker) else { return nil }
+    return blocker
 }
 
 func tomlStringLiteral(_ value: String) throws -> String {
@@ -3977,7 +3990,7 @@ final class CodexAppServerClient: @unchecked Sendable {
         _ = try request(
             "initialize",
             params: [
-                "clientInfo": ["name": "OS-1 CLODEX", "version": "0.9.34"],
+                "clientInfo": ["name": "OS-1 CLODEX", "version": "0.9.35"],
                 "capabilities": ["experimentalApi": true],
             ],
             deadline: deadline
@@ -4299,6 +4312,9 @@ final class CodexAppServerClient: @unchecked Sendable {
                 try rejectServerRequest(message, method: method)
                 continue
             }
+            if let blocker = codexEnforcementNotification(message, threadID: threadID, turnID: turnID) {
+                throw OS1Error.backendBlocked(blocker)
+            }
             stream.ingestCodex(message, threadID: threadID, turnID: turnID)
             if stream.eventCount != revision {
                 revision = stream.eventCount
@@ -4341,6 +4357,9 @@ final class CodexAppServerClient: @unchecked Sendable {
                 continue
             }
             if let error = message["error"] {
+                if let blocker = BackendBlocker.reported(in: (error as? [String: Any])?["message"] as? String ?? "") {
+                    throw OS1Error.backendBlocked(blocker)
+                }
                 let detail = ((error as? [String: Any])?["message"] as? String)
                     .map { ": " + String($0.prefix(300)) } ?? ""
                 throw OS1Error.message("Codex desktop protocol rejected \(method)\(detail)")
@@ -5478,8 +5497,8 @@ func sourceOnlyFailoverProvider(requested: String, failed: String, permission: S
 func backendBlocker(_ error: Error) -> BackendBlocker? {
     if let rejected = error as? RejectedProviderExecution { return backendBlocker(rejected.cause) }
     if let failure = error as? OS1Error {
-        if failure.isTerminalPermissionFailure { return .policyDenied }
         if case .backendBlocked(let blocker) = failure { return blocker }
+        if failure.isTerminalPermissionFailure { return .policyDenied }
     }
     let reason = String(describing: error)
     if reason.contains("Local provider execution timed out") { return .timeout }
@@ -5550,7 +5569,7 @@ func completionLocallyAdoptable(failure: String?, exitCode: Int32, output: Strin
 func completionFailureOutcome(_ reason: String?) -> CompletionOutcome {
     let value = (reason ?? "").lowercased()
     if [BackendBlocker.cancelled.message.lowercased(), BackendBlocker.effectsUncertain.message.lowercased(),
-        BackendBlocker.budgetExhausted.message.lowercased()].contains(value) {
+        BackendBlocker.budgetExhausted.message.lowercased(), BackendBlocker.safetyBlocked.message.lowercased()].contains(value) {
         return .verificationUnavailable
     }
     if value == BackendBlocker.quotaExhausted.message.lowercased() { return .quotaExhausted }
@@ -6141,7 +6160,8 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
         try DeliveryOutbox().save(delivery)
         lastFailureNotice = BackendFailureNotice(provider: ticket.provider, sessionID: execution.sessionID,
             blocker: lastFailureNotice?.blocker ?? (ticket.permissionProfile == "workspace_write" && dispatchStage == .dispatched ? .effectsUncertain : .unclassified),
-            dispatchStage: dispatchStage, source: sourceContext, permissionProfile: ticket.permissionProfile, deliveryID: delivery.id)
+            dispatchStage: dispatchStage, source: sourceContext, permissionProfile: ticket.permissionProfile,
+            deliveryID: delivery.id, publicProgress: lastFailureNotice?.publicProgress)
         do {
             let uploaded: [String: String] = try await client.deliver("/v1/artifacts", body: upload, as: [String: String].self)
             guard uploaded["artifact_ref"] == artifactRef else { throw OS1Error.message("Artifact upload binding failed") }
@@ -6153,9 +6173,22 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
             // Retain its measured usage, but do not label it a model-quality
             // failure or feed that unknown disposition back into model ranking.
             lastFailureNotice = BackendFailureNotice(provider: ticket.provider, sessionID: execution.sessionID,
-                blocker: .deliveryPending, dispatchStage: dispatchStage, source: sourceContext,
-                permissionProfile: ticket.permissionProfile, deliveryID: delivery.id)
+                blocker: terminalPermissionFailure.flatMap { backendBlocker($0) } ?? .deliveryPending,
+                dispatchStage: dispatchStage, source: sourceContext,
+                permissionProfile: ticket.permissionProfile, deliveryID: delivery.id,
+                publicProgress: lastFailureNotice?.publicProgress)
             throw terminalPermissionFailure ?? OS1Error.backendBlocked(.deliveryPending)
+        }
+        if let failure = terminalPermissionFailure {
+            // Reporting a failed artifact must not change a terminal denial
+            // into a completion, generic write-uncertainty or steering retry.
+            recordCompletionAttempt(store: feedbackStore, scope: feedbackScope, ticket: ticket,
+                model: model, effort: effort, outcome: completionFailureOutcome(attemptFailure),
+                usage: attemptUsage, startedAt: attemptStartedAt, source: sourceContext)
+            attemptRecorded = true
+            recordExecutionFailure(ticket: ticket, model: model, effort: effort,
+                reason: "terminal_backend_blocker_no_model_retry", source: sourceContext)
+            throw failure
         }
         let locallyAdoptable = completionLocallyAdoptable(failure: attemptFailure,
             exitCode: artifact.exitCode, output: artifact.output, persistence: execution.nativeRecord.persistence)
@@ -6184,13 +6217,6 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
             // A rejected answer does not prove the deployment/write failed.
             // Keep its actual result available; never execute a second writer.
             throw OS1Error.backendBlocked(.effectsUncertain)
-        }
-        if let failure = terminalPermissionFailure {
-            // The failed, content-free artifact was reported, but do not run
-            // any retry/upgrade ticket for policy/auth or unknown write effects.
-            recordExecutionFailure(ticket: ticket, model: model, effort: effort,
-                reason: "terminal_backend_blocker_no_model_retry", source: sourceContext)
-            throw failure
         }
         if let recovery = sourceRecoveryProvider, step < attemptLimit {
             RuntimeActivity.emit(.recovering, provider: recovery)
@@ -7131,6 +7157,7 @@ func selfTest() throws {
     for (text, expected) in [
         ("Failed to upload code with status code 401 Unauthorized", BackendBlocker.authenticationRequired),
         ("Permission denied by Claude Code auto mode classifier. Blocked by classifier.", .policyDenied),
+        ("This request was blocked by our safety systems. Reason: Potentially unintended activity.", .safetyBlocked),
         ("You've hit your session limit · resets 7pm (America/Los_Angeles)", .quotaExhausted),
     ] {
         for status: Int32 in [0, 1] {
@@ -7154,6 +7181,28 @@ func selfTest() throws {
         throw OS1Error.message("Rejected Codex approval must stop its exact turn")
     }
     protocolRecoveryChecks += 1
+    let safetyError = "This request was blocked by our safety systems. Reason: Potentially unintended activity."
+    for tag in ["Other", "UsageLimitExceeded"] {
+        let denied: [String: Any] = ["status": "failed", "error": ["codexErrorInfo": tag, "message": safetyError]]
+        guard codexTurnBlocker(denied, approvalRejected: false) == .safetyBlocked,
+              backendBlocker(OS1Error.backendBlocked(.safetyBlocked)) == .safetyBlocked,
+              OS1Error.backendBlocked(.safetyBlocked).isTerminalBackendFailure else {
+            throw OS1Error.message("Safety denial lost its terminal cause")
+        }
+        protocolRecoveryChecks += 1
+    }
+    let quotedSafety: [String: Any] = ["status": "completed", "items": [["type": "agentMessage", "text": safetyError]]]
+    guard codexTurnBlocker(quotedSafety, approvalRejected: false) == nil else {
+        throw OS1Error.message("Successful quoted safety explanation must not become enforcement")
+    }
+    protocolRecoveryChecks += 1
+    for (thread, turn, expected) in [("owned", "active", true), ("foreign", "active", false), ("owned", "old", false)] {
+        let notification: [String: Any] = ["method": "error", "params": ["threadId": thread, "turnId": turn, "error": ["message": safetyError]]]
+        guard (codexEnforcementNotification(notification, threadID: "owned", turnID: "active") == .safetyBlocked) == expected else {
+            throw OS1Error.message("Enforcement notification must bind the exact active turn")
+        }
+        protocolRecoveryChecks += 1
+    }
     for tag in ["Unauthorized", "unauthorized"] {
         guard codexTurnBlocker(["status": "failed", "error": ["codexErrorInfo": tag]], approvalRejected: false) == .authenticationRequired else {
             throw OS1Error.message("Codex authentication failure must not retry another model")
@@ -7248,10 +7297,43 @@ func selfTest() throws {
     let wireParams = wireRequest["params"] as! [String: Any]
     guard (wireParams["input"] as? [[String: Any]])?.first?["text"] as? String == sourcePrompt,
           wireParams["threadId"] as? String == recoveredSession,
+          wireParams["approvalPolicy"] as? String == "never",
+          wireParams["approvalsReviewer"] as? String == "auto_review",
           (wireParams["sandboxPolicy"] as? [String: Any])?["type"] as? String == "readOnly" else {
         throw OS1Error.message("Recovery changed the objective, source, session or permission on the wire")
     }
     protocolRecoveryChecks += 1
+    // Failure-only fake peers replay the observed enforcement string. They do
+    // not execute the denied Instagram action or call a model. Exercise both
+    // response errors and a bound notification without turn/completed.
+    for mode in ["rpc", "notification"] {
+        let safetyPeer = approvalFixture.appendingPathComponent("safety-\(mode).sh")
+        let message: [String: Any] = mode == "rpc"
+            ? ["jsonrpc": "2.0", "id": 1, "error": ["code": -32000, "message": safetyError]]
+            : ["jsonrpc": "2.0", "method": "error", "params": ["threadId": recoveredSession, "turnId": recoveredTurn, "error": ["message": safetyError]]]
+        let encoded = String(decoding: try JSONSerialization.data(withJSONObject: message), as: UTF8.self)
+        let started = mode == "rpc" ? "" : "printf '%s\\n' '{\"id\":1,\"result\":{\"turn\":{\"id\":\"\(recoveredTurn)\"}}}'"
+        try Data("""
+        #!/bin/sh
+        IFS= read -r request
+        \(started)
+        printf '%s\\n' '\(encoded)'
+        while IFS= read -r ignored; do :; done
+        """.utf8).write(to: safetyPeer)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: safetyPeer.path)
+        let server = try CodexAppServerClient(executable: safetyPeer.path, workspace: approvalFixture.path)
+        let began = Date()
+        var result: BackendBlocker?
+        do {
+            _ = try server.runTurn(threadID: recoveredSession, prompt: "isolated fixture", workspace: approvalFixture.path,
+                model: nil, effort: "low", permissionProfile: "workspace_write", deadline: Date().addingTimeInterval(8))
+        } catch { result = backendBlocker(error) }
+        server.close()
+        guard result == .safetyBlocked, Date().timeIntervalSince(began) < 7 else {
+            throw OS1Error.message("Safety enforcement became a timeout or approval request: \(mode)")
+        }
+        protocolRecoveryChecks += 1
+    }
     print("OS1 backend protocol recovery: \(protocolRecoveryChecks) checks OK")
     do {
         let marker = approvalFixture.appendingPathComponent("cancel-request")
@@ -7368,6 +7450,11 @@ func selfTest() throws {
         ]
     )
     let claudeInstructions = claudeExecutorInstructions(contract: claudeContract, ticket: claudeTicket)
+    guard claudeInstructions.contains(UnifiedExecution.permissionInstructions),
+          executorInstructions(contract: claudeContract, ticket: claudeTicket).contains(UnifiedExecution.permissionInstructions),
+          completionFailureOutcome(BackendBlocker.safetyBlocked.message) == .verificationUnavailable else {
+        throw OS1Error.message("Permission continuity instructions or safety outcome accounting failed")
+    }
     let unavailableClaude = unavailableProviderExecution(
         ticket: claudeTicket,
         model: "fable",
@@ -7753,7 +7840,7 @@ struct OS1Main {
             guard let command = arguments.first else { usage(); return }
             if try await fleetCommand(arguments) { return }
             switch command {
-            case "version", "--version", "-V": print("OS-1 Runtime 0.9.34 (live-corrections-build85)")
+            case "version", "--version", "-V": print("OS-1 Runtime 0.9.35 (approval-boundaries-build86)")
             case "doctor": try doctor()
             case "sidebar-pin":
                 guard (4...5).contains(arguments.count), arguments[1] == "codex",

@@ -3,6 +3,7 @@ import Foundation
 /// Public execution failure categories, never model rankings or permissions.
 public enum BackendBlocker: String, Codable, Sendable {
     case policyDenied = "policy_denied"
+    case safetyBlocked = "safety_blocked"
     case authenticationRequired = "authentication_required"
     case capabilityUnavailable = "capability_unavailable"
     case timeout
@@ -27,7 +28,9 @@ public enum BackendBlocker: String, Codable, Sendable {
         case .quotaExhausted:
             return "백엔드 사용량 한도가 소진됐습니다. 답변 품질 실패로 계산하지 않고 실행 가능한 경로를 다시 확인합니다."
         case .policyDenied:
-            return "실제 실행 권한이 거부됐습니다. OS1에 요청과 작업 기록을 보존했습니다. 허용 범위를 바꾸는 승인이 필요하며, 다른 모델로 같은 거부를 우회하지 않았습니다."
+            return "실행 권한 정책에 의해 작업이 차단됐습니다. 승인 대기와는 다르며, 같은 승인을 반복 요청하지 않습니다. OS1에 작업을 보존했고 다른 모델로 같은 거부를 우회하지 않았습니다."
+        case .safetyBlocked:
+            return "백엔드의 안전 시스템이 실행을 차단했습니다. 사용자 승인 대기가 아니므로 OS1이 자동 승인으로 해제할 수 없습니다. 같은 승인을 다시 묻거나 다른 모델로 우회하지 않고, 요청과 받은 작업 기록을 OS1에 보존했습니다."
         case .authenticationRequired:
             return "연결 서비스의 인증 또는 접근 권한을 확인해야 합니다. 모델 변경으로 해결되는 오류가 아니므로 추가 모델 호출은 중단했습니다. OS1에 요청과 기존 작업을 보존했습니다."
         case .capabilityUnavailable:
@@ -42,13 +45,16 @@ public enum BackendBlocker: String, Codable, Sendable {
     }
 
     public var requiresReconciliation: Bool {
-        self == .policyDenied || self == .authenticationRequired || self == .effectsUncertain
+        self == .policyDenied || self == .safetyBlocked || self == .authenticationRequired || self == .effectsUncertain
     }
 
     /// A reported blocker is not independent proof of an account's permissions.
     /// It prevents false completion / expensive retries; it never grants access.
     public static func reported(in text: String) -> BackendBlocker? {
         let text = text.precomposedStringWithCanonicalMapping.lowercased()
+        // Observed provider enforcement, not a pending user approval. Callers
+        // must establish an actual failure before classifying quoted text.
+        if text.contains("blocked by our safety systems") { return .safetyBlocked }
         if ["denied by the claude code auto mode classifier", "denied by claude code auto mode classifier", "blocked by classifier",
             "permission denied", "권한 분류기가 차단", "권한 분류기가 거부",
             "권한 정책에 의해 차단", "권한 분류기가 차단했습니다"].contains(where: text.contains) {

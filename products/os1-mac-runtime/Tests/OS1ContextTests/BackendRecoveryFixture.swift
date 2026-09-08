@@ -13,8 +13,14 @@ func runBackendRecoveryFixtures() throws {
         ("The token has expired", .authenticationRequired),
         ("Not logged in", .authenticationRequired),
         ("403 Forbidden", .authenticationRequired),
+        ("This request was blocked by our safety systems. Reason: Potentially unintended activity.", .safetyBlocked),
+        ("BLOCKED BY OUR SAFETY SYSTEMS; 401 Unauthorized; permission denied", .safetyBlocked),
     ] { check(BackendBlocker.reported(in: text) == expected, text) }
     check(BackendBlocker.reported(in: "Completed the requested task") == nil, "normal result")
+    check(BackendBlocker.reported(in: "Please approve this command") == nil, "approval request is not evidence of denial")
+    check(BackendBlocker.reported(in: "Potentially unintended activity") == nil, "isolated reason is not sufficient enforcement evidence")
+    check(!BackendBlocker.policyDenied.message.contains("승인이 필요"), "denial must not assert a user approval can remove it")
+    check(BackendBlocker.safetyBlocked.message.contains("사용자 승인 대기가 아니므로"), "accurate non-actionable boundary")
     for failed in ["claude", "codex"] {
         let other = failed == "claude" ? "codex" : "claude"
         for blocker in [BackendBlocker.capabilityUnavailable, .timeout] {
@@ -22,7 +28,7 @@ func runBackendRecoveryFixtures() throws {
                 blocker: blocker, codexAvailable: true, claudeAvailable: true,
                 alreadySwitched: false, remainingAttempts: 1) == other, "eligible alternate")
         }
-        for blocker in [BackendBlocker.policyDenied, .authenticationRequired, .effectsUncertain, .unclassified] {
+        for blocker in [BackendBlocker.policyDenied, .safetyBlocked, .authenticationRequired, .effectsUncertain, .unclassified] {
             check(BackendRecovery.alternate(requested: "auto", failed: failed, permission: "read_only",
                 blocker: blocker, codexAvailable: true, claudeAvailable: true,
                 alreadySwitched: false, remainingAttempts: 3) == nil, "no authority bypass or fabricated capability")
@@ -72,7 +78,7 @@ func runBackendRecoveryFixtures() throws {
             check(blocker == (permission == "workspace_write" && stage == .dispatched ? .effectsUncertain : .capabilityUnavailable), "dispatch boundary")
             check(BackendRecovery.classifiedBlocker(.timeout, permission: permission,
                 stage: stage, workspaceChanged: true) == .effectsUncertain, "workspace mutation must always reconcile")
-            for denial in [BackendBlocker.policyDenied, .authenticationRequired] {
+            for denial in [BackendBlocker.policyDenied, .safetyBlocked, .authenticationRequired] {
                 check(BackendRecovery.classifiedBlocker(denial, permission: permission,
                     stage: stage, workspaceChanged: true) == denial, "authority failures retain cause")
             }
@@ -97,7 +103,7 @@ func runBackendRecoveryFixtures() throws {
     let noticeData = try JSONEncoder().encode(notice)
     check(try JSONDecoder().decode(BackendFailureNotice.self, from: noticeData) == notice, "failure transport round trip")
     check(notice.sessionID == nativeID.lowercased() && notice.requiresReadback, "preserve interrupted session without success claim")
-    for blocker in [BackendBlocker.policyDenied, .authenticationRequired] {
+    for blocker in [BackendBlocker.policyDenied, .safetyBlocked, .authenticationRequired] {
         check(BackendFailureNotice(provider: "claude", sessionID: nativeID, blocker: blocker,
             dispatchStage: .dispatched, permissionProfile: "workspace_write").requiresReadback,
             "a later denied operation does not undo earlier writes")
@@ -105,6 +111,13 @@ func runBackendRecoveryFixtures() throws {
             dispatchStage: .notDispatched, permissionProfile: "workspace_write").requiresReadback,
             "before dispatch must not fabricate prior writes")
     }
+    let safetyNotice = BackendFailureNotice(provider: "codex", sessionID: nativeID, blocker: .safetyBlocked,
+        dispatchStage: .dispatched, permissionProfile: "workspace_write", publicProgress: "Previously received progress")
+    let savedSafety = try JSONDecoder().decode(BackendFailureNotice.self, from: JSONEncoder().encode(safetyNotice))
+    check(savedSafety == safetyNotice, "safety denial and progress survive failure transport")
+    check(UnifiedExecution.permissionInstructions.contains("without asking for the same consent again") &&
+        UnifiedExecution.permissionInstructions.contains("not blanket approval") &&
+        UnifiedExecution.permissionInstructions.contains("must not be bypassed"), "bounded non-redundant consent instruction")
     check(BackendFailureNotice(provider: "claude", sessionID: "../escape", blocker: .timeout, dispatchStage: .dispatched).sessionID == nil, "reject invalid native IDs")
     check(BackendRecovery.readbackPrompt(objective: "deploy v152").contains("deploy v152") &&
         BackendRecovery.readbackPrompt(objective: "deploy v152").contains("지금 실행할 명령이 아닙니다"), "readback retains objective but not replay authority")
