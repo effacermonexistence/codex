@@ -244,6 +244,30 @@ func testFleetMaintenanceIsolation() async throws {
     try expect(later.0 == stopped.0 && later.1 == stopped.1, "maintenance outlived its owner cancellation")
 }
 
+func testShellCapabilityIntent() throws {
+    for prompt in [
+        "Read the existing private temporary test evidence. Do not execute the diagnostic again.",
+        "Read the build results and report test markers. Never run commands.",
+        "Describe the install log and the previous run output.",
+        "Read the saved test artifacts. Do not run commands or modify files.",
+    ] {
+        try expect(!ShellCapabilityIntent.hasEnglishImperative(ShellCapabilityIntent.classificationText(prompt)),
+                   "artifact noun/prohibition mistaken for shell imperative: \(prompt)")
+    }
+    for prompt in ["Run the tests.", "Test the application.", "Please build the project.",
+                   "Read manifest.json and then run tests.", "Could you execute the script?",
+                   "Do not deploy, but run tests.", "Do not install tools. Build the application.",
+                   "Never change settings; run the tests.", "I need you to install the dependency.",
+                   "Never mind, run the tests.", "Do not forget to run tests."] {
+        try expect(ShellCapabilityIntent.hasEnglishImperative(ShellCapabilityIntent.classificationText(prompt)),
+                   "positive execution clause was removed: \(prompt)")
+    }
+    let source = "Read manifest.json. Do not run Bash or shell commands."
+    let classified = ShellCapabilityIntent.classificationText(source)
+    try expect(!classified.contains("bash") && !classified.contains("shell"), "prohibited tool names retained")
+    try expect(source.contains("Do not run Bash"), "classification mutated source")
+}
+
 do {
     try testExclusiveLease()
     try testCircuitBreaker()
@@ -254,7 +278,8 @@ do {
     try testPromptIntentPolicy()
     try testEXODraftPolicy()
     try await testFleetMaintenanceIsolation()
-    print("OS1HookSupportTests: PASS (9 test groups)")
+    try testShellCapabilityIntent()
+    print("OS1HookSupportTests: PASS (10 test groups)")
 } catch {
     fputs("OS1HookSupportTests: FAIL: \(error)\n", stderr)
     exit(1)
