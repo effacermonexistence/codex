@@ -9,12 +9,12 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 export const PIN = Object.freeze({
-  tag: 'os1-v0.9.21-beta.4', version: '0.9.21', build: '70',
-  commit: '5c4bffc11e7a17d9db17b5e5e0d79690ac1c0f3f',
-  zip: 'OS-1-0.9.21-macOS-beta.zip',
-  zipSHA: '908d3f2a32f0ce86b35f406f8ef5708598a247d007f997612ba4f0b55a20fdc3',
-  pkgSHA: '61dc53d36cdc387e25c208829e4aca25f2ab3741c3444b41b308362550854d30',
-  pkgSize: 12802508,
+  tag: 'os1-v0.9.44-beta.1', version: '0.9.44', build: '95',
+  commit: 'b7d04dd0310e08aa820efff72db85712f382b4cb',
+  zip: 'OS-1-0.9.44-macOS-beta.zip',
+  zipSHA: '939e9de67a6e85970255f415ffcf229224c8abb2e3ee4ae3c2fa90648db3291b',
+  pkgSHA: '853a63c60d59e0dd91c100660b36638e8e1f9074e98b08e5e1eadd0b1a21ea4a',
+  pkgSize: 17063521,
 });
 const repository = 'effacermonexistence/codex';
 const api = 'https://api.github.com/repos/' + repository;
@@ -22,11 +22,13 @@ export const assetURL = `https://github.com/${repository}/releases/download/${PI
 const gateway = 'https://os1-route-gateway.omar-git-r2-backup.workers.dev';
 const installer = fileURLToPath(new URL('../products/os1-mac-runtime/scripts/install-os1.sh', import.meta.url));
 
-export function stableSupportsFleet(manifest) {
+export function stableSupportsCurrentRuntime(manifest) {
   assert(manifest && /^\d+\.\d+\.\d+$/.test(manifest.version), 'Invalid stable release version');
-  const v=manifest.version.split('.').map(Number), min=[0,9,21];
+  const v=manifest.version.split('.').map(Number), min=[0,9,44];
   for(let i=0;i<3;i++) { if(v[i]!==min[i]) return v[i]>min[i]; }
-  return /^\d+$/.test(String(manifest.build??'')) && Number(manifest.build)>=70;
+  // Release versions are immutable. 0.9.44 is the first account-aware build.
+  // If a producer supplies a build, reject a contradictory older build.
+  return manifest.build === undefined || (/^\d+$/.test(String(manifest.build)) && Number(manifest.build)>=95);
 }
 export function verifyRelease(release, reference) {
   assert.equal(release.tag_name,PIN.tag);assert.equal(release.draft,false);assert.equal(release.prerelease,true);
@@ -84,12 +86,12 @@ async function main() {
   assert(process.argv.slice(2).every(a=>a==='--verify-only'),'Unknown bootstrap release argument');
   const verifyOnly=process.argv.includes('--verify-only');
   const stable=await json(gateway+'/v1/releases/latest');
-  if(stableSupportsFleet(stable)) {
+  if(stableSupportsCurrentRuntime(stable)) {
     console.log('OS1 bootstrap: compatible stable release '+stable.version);
-    run('/bin/bash',[installer],{stdio:'inherit',timeout:0,env:{...process.env,OS1_REQUIRE_FLEET_RELEASE:'1',...(verifyOnly?{OS1_VERIFY_ONLY:'1',OS1_SKIP_PREREQUISITES:'1',OS1_SKIP_LOGIN:'1'}:{})}});
+    run('/bin/bash',[installer],{stdio:'inherit',timeout:0,env:{...process.env,OS1_REQUIRE_FLEET_RELEASE:'1',OS1_REQUIRE_ACCOUNT_MODELS_RELEASE:'1',...(verifyOnly?{OS1_VERIFY_ONLY:'1',OS1_SKIP_PREREQUISITES:'1',OS1_SKIP_LOGIN:'1'}:{})}});
     return;
   }
-  console.error(`OS1 bootstrap: stable ${stable.version} does not include the required Fleet runtime. Using explicitly pinned ${PIN.tag}, build ${PIN.build}. WARNING: this beta is not Apple-notarized. No Gatekeeper/TCC settings are changed.`);
+  console.error(`OS1 bootstrap: stable ${stable.version} lacks the required account-aware runtime. Using explicitly pinned ${PIN.tag}, build ${PIN.build}. WARNING: this beta is not Apple-notarized. No Gatekeeper/TCC settings are changed.`);
   const directory=fs.mkdtempSync(path.join(os.tmpdir(),'os1-bootstrap-beta-'));fs.chmodSync(directory,0o700);
   try {
     const prepared=await preparePinnedBeta(directory);
