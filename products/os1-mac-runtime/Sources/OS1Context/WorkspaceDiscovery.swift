@@ -1,6 +1,24 @@
 import Foundation
 
 public enum WorkspaceDiscovery {
+    /// Legacy OS1 appended these hints after the current-user boundary. This
+    /// is only a candidate for deduplication: callers MUST independently match
+    /// its prefix against a request already held by OS1, never hide arbitrary
+    /// user text solely because it contains this heading.
+    public static func legacyRequestBeforeHints(_ text: String) -> String? {
+        let heading = "\nVerified local directory candidates from the existing project registry (not a write grant or an active-release claim):\n"
+        let footer = "\nInspect relevant exact paths first. Do not run recursive Glob/Grep over HOME. Preserve the user's selected workspace and verify which project/release is actually active before changes."
+        guard let begin = text.range(of: heading, options: .backwards),
+              let end = text.range(of: footer, range: begin.upperBound..<text.endIndex) else { return nil }
+        let paths = text[begin.upperBound..<end.lowerBound].split(separator: "\n")
+        guard !paths.isEmpty, paths.allSatisfy({ $0.hasPrefix("- /") }) else { return nil }
+        let rest = text[end.upperBound...].trimmingCharacters(in: .whitespacesAndNewlines)
+        // Unknown trailing text could be an actual new user instruction. Keep
+        // it verbatim rather than infer that it belongs to the legacy wrapper.
+        guard rest.isEmpty else { return nil }
+        return text[..<begin.lowerBound].trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     /// Exact preinstalled runtime hints, never a PATH rewrite or installation.
     public static func nodeContext(version: String, home: URL = FileManager.default.homeDirectoryForCurrentUser) -> String {
         guard version.range(of: #"^[0-9]+\.[0-9]+\.[0-9]+$"#, options: .regularExpression) != nil else { return "" }

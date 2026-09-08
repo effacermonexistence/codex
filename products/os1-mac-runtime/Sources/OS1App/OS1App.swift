@@ -1230,6 +1230,15 @@ private func composerInteractionSelfTest() async throws {
     store.performPrimaryAction(now: instant.addingTimeInterval(2))
     try check(store.queuedSubmissions.map(\.request) == ["FOLLOW UP", "saved draft"] && store.primaryAction == .stopping,
         "stopping lost follow-up input or allowed duplicate stop")
+    store.select(other)
+    let otherMarker = ExecutionCancellation.url(submissionID: otherSubmission)
+    defer { try? FileManager.default.removeItem(at: otherMarker) }
+    try check(store.primaryAction == .stop, "independent running session should offer Stop")
+    store.performPrimaryAction(now: instant.addingTimeInterval(3 + NSEvent.doubleClickInterval))
+    try check(store.isStopping && FileManager.default.fileExists(atPath: otherMarker.path), "normal primary Stop did not execute")
+    store.performPrimaryAction(now: instant.addingTimeInterval(4 + NSEvent.doubleClickInterval))
+    try check(store.primaryAction == .stopping && store.queuedSubmissions.count == 2, "repeated primary Stop changed queue")
+    store.select(parent)
     let deadline = Date().addingTimeInterval(8)
     while gate == nil && Date() < deadline { try await Task.sleep(for: .milliseconds(10)) }
     try check(gate != nil && starts == 1, "unexpected provider dispatch count")

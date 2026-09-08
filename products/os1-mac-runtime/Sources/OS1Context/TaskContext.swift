@@ -760,6 +760,8 @@ public enum NativeIngestion {
             // Anything OS1 already holds verbatim (its own prompts, adopted
             // outputs) is not ingested a second time, whatever the role.
             if digests.contains(digestOf(record.text)) { continue }
+            if record.role == "user", let original = WorkspaceDiscovery.legacyRequestBeforeHints(record.text),
+               digests.contains(digestOf(original)) { continue }
             out.append(record)
         }
         return (out, last >= 0 ? String(last) : cursor)
