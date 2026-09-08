@@ -4,6 +4,7 @@ import CryptoKit
 import Darwin
 import Foundation
 import OS1Context
+import OS1HookSupport
 import Security
 
 enum OS1Error: Error, CustomStringConvertible {
