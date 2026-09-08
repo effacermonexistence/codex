@@ -89,6 +89,7 @@ try {
     ['parallel', path.join(app, 'Contents/MacOS/OS1App'), ['--self-test-parallel']], ['fleet', cli, ['fleet-self-test']],
     ['queue-fork', path.join(app, 'Contents/MacOS/OS1App'), ['--self-test-queue-fork']],
     ['composer', path.join(app, 'Contents/MacOS/OS1App'), ['--self-test-composer']],
+    ['steering', path.join(app, 'Contents/MacOS/OS1App'), ['--self-test-steering']],
   ]) {
     fs.writeFileSync(path.join(recovery, `${label}-test.log`), run(exe, args), { mode: 0o600 });
     receipt.checks.push(`${label}: PASS`);
