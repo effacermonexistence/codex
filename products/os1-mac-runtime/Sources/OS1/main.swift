@@ -3978,7 +3978,7 @@ final class CodexAppServerClient: @unchecked Sendable {
         _ = try request(
             "initialize",
             params: [
-                "clientInfo": ["name": "OS-1 CLODEX", "version": "0.9.41"],
+                "clientInfo": ["name": "OS-1 CLODEX", "version": "0.9.42"],
                 "capabilities": ["experimentalApi": true],
             ],
             deadline: deadline
@@ -4188,7 +4188,11 @@ final class CodexAppServerClient: @unchecked Sendable {
             activeTurn = nil
             if let id = steeringSubmission { steering.close(id) }
         }
-        if let id = steeringSubmission { try steering.open(submissionID: id, threadID: threadID, turnID: turnID) }
+        if let id = steeringSubmission {
+            try ManagedNativeTurns(root: steering.root.deletingLastPathComponent().appendingPathComponent("managed-native-turns"))
+                .record(submissionID: id, threadID: threadID, turnID: turnID)
+            try steering.open(submissionID: id, threadID: threadID, turnID: turnID)
+        }
         let output = try waitForTurn(threadID: threadID, turnID: turnID, deadline: deadline)
         return CodexTurnOutput(turnID: turnID, output: output)
     }
@@ -6435,6 +6439,8 @@ func steeringProtocolSelfTest() throws {
             model: nil, effort: "low", permissionProfile: "read_only", deadline: Date().addingTimeInterval(6)) }
         catch { if mode != "closed" { throw error } }
         client.close()
+        try check(ManagedNativeTurns(root: root.appendingPathComponent("managed-native-turns")).ownedTurns(threadID: thread) == [turn],
+            "owned turn lost on rejected or disconnected execution")
         let request = try JSONSerialization.jsonObject(with: Data(contentsOf: wire)) as! [String: Any]
         let params = request["params"] as! [String: Any]
         try check(request["method"] as? String == "turn/steer" && params["threadId"] as? String == thread &&
@@ -7889,7 +7895,7 @@ struct OS1Main {
             guard let command = arguments.first else { usage(); return }
             if try await fleetCommand(arguments) { return }
             switch command {
-            case "version", "--version", "-V": print("OS-1 Runtime 0.9.41 (qmgr-retrieval-build92)")
+            case "version", "--version", "-V": print("OS-1 Runtime 0.9.42 (steering-provenance-build93)")
             case "doctor": try doctor()
             case "sidebar-pin":
                 guard (4...5).contains(arguments.count), arguments[1] == "codex",

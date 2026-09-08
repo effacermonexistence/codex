@@ -104,7 +104,18 @@ try {
     for (const key of ['workspace', 'title', 'draft', 'pinnedAt', 'sidebarPosition', 'archived', 'codexSessionID', 'claudeSessionID']) {
       assert.deepEqual(current[key], previous[key], `session field changed: ${key}`);
     }
-    for (const message of previous.messages) assert.deepEqual(current.messages.find(m => m.id === message.id), message, 'existing message changed');
+    for (const message of previous.messages) {
+      const found = current.messages.find(m => m.id === message.id); assert(found, 'existing message lost');
+      const copy = { ...found };
+      if (copy.nativeManagedTurnID !== message.nativeManagedTurnID) {
+        assert(typeof copy.nativeManagedTurnID === 'string' &&
+          (message.nativeIngestedID || (message.role === 'receipt' && message.text.includes('OS-1 외부 작업, 채택 판정 아님'))),
+          'only proven managed imports may acquire a provenance marker');
+        if (message.nativeManagedTurnID === undefined) delete copy.nativeManagedTurnID;
+        else copy.nativeManagedTurnID = message.nativeManagedTurnID;
+      }
+      assert.deepEqual(copy, message, 'existing message bytes/role/ID/time changed');
+    }
   }
   receipt.sessionCountBefore = original.sessions.length; receipt.sessionCountAfter = after.sessions.length;
   receipt.checks.push('existing conversations/messages/pins/drafts/native bindings: PASS');

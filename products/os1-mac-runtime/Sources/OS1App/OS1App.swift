@@ -1216,12 +1216,23 @@ private func steeringInteractionSelfTest() async throws {
     try check(mailbox.inputs(active.submissionID).count == 2 && starts.count == 1 && !store.isStopping, "explicit action restarted task")
     store.composer = "일반 후속 질문"; store.send()
     try check(store.queuedSubmissions.map(\.request) == ["일반 후속 질문"], "ordinary input not FIFO")
+    let queued = store.queuedSubmissions[0]
+    try check(store.canSteerQueued(queued), "queue steering unavailable on live turn")
+    try check(store.beginQueueEdit(queued.id) && !store.canSteerQueued(queued), "editing input may be delivered")
+    store.endQueueEdit(queued.id)
+    store.steerQueued(queued.id); store.steerQueued(queued.id)
+    try check(store.queuedSubmissions.isEmpty && mailbox.inputs(active.submissionID).count == 3 && starts.count == 1,
+        "queue steering duplicated delivery or started another turn")
+    try check(store.selectedSession!.messages.filter { $0.id == queued.userMessageID }.count == 1,
+        "queue-to-steer duplicated user bubble")
+    try check(ExecutionSteering.isDirectCorrection(correction.decomposedStringWithCanonicalMapping), "NFD correction not recognized")
+    store.composer = "순서를 기다릴 후속 질문"; store.send()
     store.flushPendingState()
     let disk = try JSONDecoder().decode(SessionEnvelope.self, from: Data(contentsOf: root.appendingPathComponent("sessions.json")))
-    try check(disk.inFlight?.first?.liveCorrections?.count == 2, "on-disk amendments absent: \(String(describing: store.alertMessage))")
+    try check(disk.inFlight?.first?.liveCorrections?.count == 3, "on-disk amendments absent: \(String(describing: store.alertMessage))")
     let reloaded = SessionStore(storageRoot: root)
     try check(reloaded.activeRuns.isEmpty, "restart replayed work")
-    try check(reloaded.sessions.first { $0.id == parent }?.lastFailure?.liveCorrections?.count == 2,
+    try check(reloaded.sessions.first { $0.id == parent }?.lastFailure?.liveCorrections?.count == 3,
         "restart lost corrections: \(String(describing: reloaded.sessions.first { $0.id == parent }?.lastFailure?.liveCorrections))")
     try check(reloaded.sessions.first { $0.id == parent }?.lastFailure?.executionRequest.contains(original) == true,
         "restart lost original")
@@ -1235,7 +1246,7 @@ private func steeringInteractionSelfTest() async throws {
     }
     gates.removeValue(forKey: parent)!.resume()
     try await eventually { !store.isSessionRunning(parent) }
-    try check(store.selectedSession!.lastFailure == nil && store.selectedSession!.messages.contains { $0.text.contains("정정 2건") } && starts.count == 2,
+    try check(store.selectedSession!.lastFailure == nil && store.selectedSession!.messages.contains { $0.text.contains("정정 3건") } && starts.count == 2,
         "verified current-turn correction rejected or extra turn started")
     store.composer = "그 말이 아니라, 조건을 바꿔"; store.send()
     try check(store.queuedSubmissions.last!.amendedRequest?.contains(original) == true, "late correction became standalone")
@@ -1253,6 +1264,20 @@ private func steeringInteractionSelfTest() async throws {
     try check(store.selectedSession!.lastFailure?.liveCorrections == [correction] && starts.count == 2 &&
         store.selectedSession!.messages.contains { $0.role == .assistant && $0.nativeRecordVerified == false },
         "unconfirmed correction adopted or replayed")
+    store.sessions[store.selectedIndex!].lastBackendFailure = BackendFailureNotice(provider: "codex", sessionID: nil,
+        blocker: .effectsUncertain, dispatchStage: .dispatched)
+    store.reconcileSelectedFailure()
+    try await eventually { gates[other] != nil }
+    let recovery = store.activeRuns[other]!.submissionID
+    store.activeRuns[other]?.provider = .codex
+    store.activeRuns[other]?.activity = RuntimeActivity(.executing, provider: "codex")
+    try mailbox.open(submissionID: recovery, threadID: "recovery", turnID: "read-only-turn")
+    store.composer = "이 요청으로 지금 파일을 고쳐"; store.send()
+    try check(!store.canSteerSelectedRun && !store.canSteerQueued(store.queuedSubmissions.last!) && mailbox.inputs(recovery).isEmpty,
+        "read-only reconciliation was redirected into a mutation")
+    store.pauseQueue(other)
+    gates.removeValue(forKey: other)!.resume()
+    try await eventually { !store.isSessionRunning(other) }
     print("Live corrections: \(checks) checks passed; model calls 0; same-task/ACK/persistence/FIFO/isolation/restart/stale-result")
 }
 
@@ -2487,6 +2512,9 @@ private struct ChatMessage: Codable, Identifiable, Equatable, Sendable {
     /// Set when the message was read back from a bound native session rather
     /// than sent or adopted through OS-1 (provider:recordID).
     let nativeIngestedID: String?
+    /// A corrected import, retained byte-for-byte for audit but not authored by
+    /// the user. Never render or hand this managed transport row to a model.
+    var nativeManagedTurnID: String? = nil
 
     init(
         id: UUID = UUID(),
@@ -2567,6 +2595,7 @@ private struct ConversationSession: Codable, Identifiable, Sendable {
 
     var effectiveCodexCapacity: Int { codexCapacity ?? 30 }
     var effectiveClaudeCapacity: Int { claudeCapacity ?? 100 }
+    var visibleMessages: [ChatMessage] { messages.filter { $0.nativeManagedTurnID == nil } }
 }
 
 private struct ConversationForkOrigin: Codable, Sendable {
@@ -2608,14 +2637,14 @@ private struct LenientSessionEnvelope: Decodable {
 
 private func migratedTaskContext(_ session: ConversationSession, sourceContext: SourceReference?) -> TaskContext {
     session.taskContext ?? TaskContext.migrated(conversationID: session.id,
-        request: session.messages.last(where: { $0.role == .user })?.text ?? "", workspace: session.workspace,
+        request: session.visibleMessages.last(where: { $0.role == .user })?.text ?? "", workspace: session.workspace,
         sourceContext: sourceContext, codexSessionID: session.codexSessionID, claudeSessionID: session.claudeSessionID,
         now: session.updatedAt)
 }
 
 private func migratedSourceReference(_ session: ConversationSession, store: SourceContextStore = SourceContextStore()) -> SourceReference? {
     if session.sourceContextVersion == 2 { return session.sourceContext }
-    let messages = session.messages
+    let messages = session.visibleMessages
     for index in messages.indices.reversed() {
         let message = messages[index]
         if message.role == .user, detachesConversationSource(message.text) { return nil }
@@ -2635,7 +2664,7 @@ private func sessionHandoff(_ session: ConversationSession, before userMessageID
     } else { bounded = session.messages[...] }
     // Retain all available turns up to the transport's UTF-8 byte budget,
     // instead of discarding a decision solely because it is 17 messages old.
-    let text = bounded.filter { $0.role == .user || $0.role == .assistant }.map { message in
+    let text = bounded.filter { $0.nativeManagedTurnID == nil && ($0.role == .user || $0.role == .assistant) }.map { message in
         var speaker = message.role == .user ? "USER" : providerDisplayName(message.provider)
         if message.nativeIngestedID != nil { speaker += " [native session, outside OS-1]" }
         var content = message.text
@@ -2910,7 +2939,7 @@ private func savedResultReceipt(_ result: DeliveryRecord, id: UUID = UUID(), tim
 /// Refresh only the visible receipt for a saved failed attempt. Original chat
 /// bytes, user messages, answer and unfinished objective remain untouched.
 private func presentedMessages(_ session: ConversationSession) -> [ChatMessage] {
-    var messages = session.messages
+    var messages = session.visibleMessages
     guard let deliveryID = session.lastFailure?.deliveryID,
           let previewID = UUID(uuidString: String(deliveryID.prefix(36))),
           let index = messages.firstIndex(where: { $0.id == previewID && $0.role == .assistant }),
@@ -2938,6 +2967,79 @@ private struct NativeIngestionOutcome: Sendable {
     let binding: TaskContext.BackendBinding
     let records: [NativeRecord]
     let cursor: String?
+    var managedRecords: [NativeRecord] = []
+}
+
+/// Repair only exact native IDs AND bytes from independently owned turns.
+/// Preserve original messages; one projection serves UI, copy and handoff.
+@discardableResult
+private func repairManagedImports(_ session: inout ConversationSession, records: [NativeRecord]) -> Bool {
+    let managed = Dictionary(records.compactMap { r -> (String, NativeRecord)? in
+        r.turnID == nil ? nil : (r.id, r)
+    }, uniquingKeysWith: { first, _ in first })
+    var changed = false
+    var batch: [Int] = []
+    for i in session.messages.indices {
+        let message = session.messages[i]
+        if let nativeID = message.nativeIngestedID {
+            batch.append(i)
+            if let record = managed[nativeID], record.text == message.text,
+               record.role == message.role.rawValue, message.nativeManagedTurnID != record.turnID {
+                session.messages[i].nativeManagedTurnID = record.turnID
+                changed = true
+            }
+        } else {
+            if message.role == .receipt, message.text.contains("OS-1 외부 작업, 채택 판정 아님"),
+               !batch.isEmpty, batch.allSatisfy({ session.messages[$0].nativeManagedTurnID != nil }),
+               message.nativeManagedTurnID == nil {
+                session.messages[i].nativeManagedTurnID = session.messages[batch[0]].nativeManagedTurnID
+                changed = true
+            }
+            batch = []
+        }
+    }
+    return changed
+}
+
+private func nativeProvenanceSelfTest() throws {
+    func check(_ value: Bool, _ name: String) throws {
+        guard value else { throw RunnerError.message("Native provenance: " + name) }
+    }
+    let objective = "인스타그램 세팅을 좀 해봐. 수정 준비해"
+    let internalText = BackendRecovery.readbackPrompt(objective: objective)
+    var session = ConversationSession(workspace: "/tmp/fixture")
+    let genuine = ChatMessage(role: .user, text: objective)
+    let final = ChatMessage(role: .assistant, text: "상태 확인 결과", provider: "codex")
+    let rows = [NativeRecord(id: "codex:readback", ordinal: 1, role: "user", text: internalText, complete: true, turnID: "managed-retry"),
+                NativeRecord(id: "codex:progress", ordinal: 2, role: "assistant", text: "상태 확인 중", complete: true, turnID: "managed-retry")]
+    session.messages = [genuine, final] + rows.map {
+        ChatMessage(role: $0.role == "user" ? .user : .assistant, text: $0.text, provider: "codex", nativeIngestedID: $0.id)
+    } + [ChatMessage(role: .receipt, text: "CODEX 기록 2건 · OS-1 외부 작업, 채택 판정 아님")]
+    let outside = ChatMessage(role: .user, text: internalText, provider: "codex", nativeIngestedID: "codex:genuine-quote")
+    session.messages.append(outside)
+    let originals = session.messages
+    try check(repairManagedImports(&session, records: rows), "incident not repaired")
+    try check(session.visibleMessages.map(\.id) == [genuine.id, final.id, outside.id], "external quote or adopted final lost")
+    try check(!repairManagedImports(&session, records: rows), "migration not idempotent")
+    for (old, new) in zip(originals, session.messages) {
+        var restored = new; restored.nativeManagedTurnID = nil
+        try check(restored == old, "original bytes/ID/role/time altered")
+    }
+    session.messages.removeLast() // the legitimate user quote is intentionally absent in this context assertion
+    let handoff = try sessionHandoff(session)
+    try check(!handoff.contains("중단된 작업의 현재 상태만"), "internal instructions leaked into provider context")
+    try check(presentedMessages(session).map(\.id) == [genuine.id, final.id], "UI/copy projection differs")
+    let outsideRecord = NativeRecord(id: "codex:later-user-quote", ordinal: 20, role: "user", text: internalText,
+        complete: true, turnID: "external-turn")
+    let held = Set(session.visibleMessages.map { NativeIngestion.digestOf($0.text) })
+    try check(NativeIngestion.newRecords([outsideRecord], after: nil, sentByOS1: held, seen: []).records == [outsideRecord],
+        "archived internal text suppressed a later genuine user quote")
+    let roundtrip = try JSONDecoder().decode(ConversationSession.self, from: JSONEncoder().encode(session))
+    try check(roundtrip.visibleMessages == session.visibleMessages, "restart lost provenance")
+    var altered = ConversationSession(workspace: "/tmp/fixture")
+    altered.messages = [ChatMessage(role: .user, text: internalText + " THIS IS MY QUOTE", nativeIngestedID: rows[0].id)]
+    try check(!repairManagedImports(&altered, records: rows), "matched ID with different bytes hidden")
+    print("Native provenance: exact managed rows hidden from UI/copy/context; originals, external quote, restart and idempotency PASS; model calls 0")
 }
 
 private enum RunnerError: LocalizedError {
@@ -3194,6 +3296,7 @@ private final class SessionStore: ObservableObject {
         var forkCheckpoint: ConversationForkCheckpoint? = nil
         var cancellationRequested = false
         var correctionRevision: Int? = nil
+        var steeringReady = false
     }
     typealias RunOperation = @MainActor (PendingSubmission, String, String?, String?,
         @escaping @Sendable (RuntimeActivity) -> Void) async throws -> AppRunSummary
@@ -3831,6 +3934,7 @@ private final class SessionStore: ObservableObject {
     }
     private func canSteer(_ id: UUID) -> Bool {
         guard let active = activeRuns[id], !active.cancellationRequested,
+              inFlightSubmissions[id]?.readOnlyReconciliation != true,
               active.provider == .codex, steeringMailbox.active(active.submissionID) != nil,
               active.activity.phase == .executing,
               let context = sessions.first(where: { $0.id == id })?.taskContext else { return false }
@@ -3841,6 +3945,15 @@ private final class SessionStore: ObservableObject {
         let text = composer.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let id = selectedSessionID else { return }
         if deliverCorrection(text, conversationID: id) { composer = ""; save() }
+    }
+    func canSteerQueued(_ item: PendingSubmission) -> Bool {
+        canSteer(item.sessionID) && !editingQueueIDs.contains(item.id) &&
+            queuedSubmissions.contains(where: { $0.id == item.id }) &&
+            (item.provider == .auto || item.provider == .codex)
+    }
+    func steerQueued(_ id: UUID) {
+        guard let item = queuedSubmissions.first(where: { $0.id == id }), canSteerQueued(item) else { return }
+        _ = deliverCorrection(item.request, conversationID: item.sessionID, inputID: item.userMessageID)
     }
     @discardableResult
     private func deliverCorrection(_ text: String, conversationID: UUID, inputID: UUID = UUID()) -> Bool {
@@ -3972,6 +4085,10 @@ private final class SessionStore: ObservableObject {
 
         Task { @MainActor [weak self] in
             while let self, self.activeRuns[submission.sessionID]?.submissionID == submission.id {
+                let ready = self.canSteer(submission.sessionID)
+                if self.activeRuns[submission.sessionID]?.steeringReady != ready {
+                    self.activeRuns[submission.sessionID]?.steeringReady = ready
+                }
                 if self.queuedSubmissions.contains(where: { $0.sessionID == submission.sessionID && $0.amendedRequest != nil }) {
                     self.promoteQueuedCorrections(submission.sessionID)
                 }
@@ -3986,7 +4103,7 @@ private final class SessionStore: ObservableObject {
                 // forming this attempt's handoff; never dispatch stale context.
                 guard let currentIndex = sessions.firstIndex(where: { $0.id == submission.sessionID }) else { return }
                 let bindings = sessions[currentIndex].taskContext?.bindings ?? []
-                let held = Set(sessions[currentIndex].messages.filter { $0.role == .user || $0.role == .assistant }.map { NativeIngestion.digestOf($0.text) })
+                let held = Set(sessions[currentIndex].visibleMessages.filter { $0.role == .user || $0.role == .assistant }.map { NativeIngestion.digestOf($0.text) })
                 let seen = Set(sessions[currentIndex].messages.compactMap(\.nativeIngestedID))
                 let owned = Set(sessions[currentIndex].ownedCodexTurnIDs ?? [])
                 if customStorageRoot == nil, !bindings.isEmpty {
@@ -4246,7 +4363,7 @@ private final class SessionStore: ObservableObject {
               let index = sessions.firstIndex(where: { $0.id == conversationID }),
               let context = sessions[index].taskContext, !context.bindings.isEmpty else { return }
         let bindings = context.bindings
-        let held = Set(sessions[index].messages.filter { $0.role == .user || $0.role == .assistant }.map { NativeIngestion.digestOf($0.text) })
+        let held = Set(sessions[index].visibleMessages.filter { $0.role == .user || $0.role == .assistant }.map { NativeIngestion.digestOf($0.text) })
         let seen = Set(sessions[index].messages.compactMap(\.nativeIngestedID))
         let owned = Set(sessions[index].ownedCodexTurnIDs ?? [])
         Task.detached(priority: .utility) { [bindings, held, seen, owned] in
@@ -4255,7 +4372,7 @@ private final class SessionStore: ObservableObject {
         }
     }
 
-    nonisolated private static func readBoundNativeRecords(_ bindings: [TaskContext.BackendBinding], held: Set<String>, seen: Set<String>, ownedCodexTurns: Set<String>) -> [NativeIngestionOutcome] {
+    nonisolated fileprivate static func readBoundNativeRecords(_ bindings: [TaskContext.BackendBinding], held: Set<String>, seen: Set<String>, ownedCodexTurns: Set<String>) -> [NativeIngestionOutcome] {
             var outcome: [NativeIngestionOutcome] = []
             for binding in bindings {
                 guard let provider = ProviderChoice(rawValue: binding.provider), provider != .auto,
@@ -4271,9 +4388,12 @@ private final class SessionStore: ObservableObject {
                 // Store the complete native history locally; the provider
                 // handoff has its own byte budget. Do not silently lose the
                 // original objective on the first synchronization.
+                let owned = binding.provider == "codex" ? ownedCodexTurns.union(
+                    ManagedNativeTurns().recoverLegacy(threadID: binding.nativeSessionID)) : []
                 let fresh = NativeIngestion.newRecords(all, after: binding.lastIngestedCursor, sentByOS1: held, seen: seen,
-                    ownedTurnIDs: binding.provider == "codex" ? ownedCodexTurns : [])
-                outcome.append(NativeIngestionOutcome(binding: binding, records: fresh.records, cursor: fresh.nextCursor))
+                    ownedTurnIDs: owned)
+                outcome.append(NativeIngestionOutcome(binding: binding, records: fresh.records, cursor: fresh.nextCursor,
+                    managedRecords: all.filter { $0.turnID.map(owned.contains) == true }))
             }
             return outcome
     }
@@ -4289,6 +4409,7 @@ private final class SessionStore: ObservableObject {
             guard let bindingIndex = sessions[index].taskContext?.bindings.firstIndex(where: {
                 $0.provider == item.binding.provider && $0.nativeSessionID == item.binding.nativeSessionID
             }) else { continue }
+            if repairManagedImports(&sessions[index], records: item.managedRecords) { changed = true }
             let known = Set(sessions[index].messages.compactMap(\.nativeIngestedID))
             let previousCount = ingestedCount
             for record in item.records where !known.contains(record.id) {
@@ -4766,7 +4887,7 @@ private final class SessionStore: ObservableObject {
             codexCapacity: parent.effectiveCodexCapacity, claudeCapacity: parent.effectiveClaudeCapacity)
         child.sourceContext = checkpoint.source
         var context = checkpoint.context ?? TaskContext.migrated(conversationID: child.id,
-            request: messages.last(where: { $0.role == .user })?.text ?? "", workspace: parent.workspace,
+            request: messages.last(where: { $0.role == .user && $0.nativeManagedTurnID == nil })?.text ?? "", workspace: parent.workspace,
             sourceContext: checkpoint.source, codexSessionID: nil, claudeSessionID: nil)
         context.conversationID = child.id; context.objectiveID = UUID()
         context.contextRevision = 1; context.createdAt = Date(); context.updatedAt = Date()
@@ -4811,13 +4932,23 @@ private final class SessionStore: ObservableObject {
             alertMessage = "대화 \(lenient.sessions.count - readable.count)개를 읽지 못했습니다. 원본 파일을 \(preserved.lastPathComponent)으로 보존했고 나머지 대화는 그대로 불러왔습니다."
         } else { return }
         guard [1, 2, 3, 4].contains(envelope.schema) else { return }
+        var provenanceRepaired = false
         sessions = envelope.sessions
             .sorted { $0.updatedAt > $1.updatedAt }
             .map { session in
                 var bounded = session
-                bounded.sourceContext = migratedSourceReference(session)
+                if customStorageRoot == nil, session.messages.contains(where: { $0.nativeIngestedID != nil && $0.nativeManagedTurnID == nil }) {
+                    let outcomes = Self.readBoundNativeRecords(session.taskContext?.bindings ?? [],
+                        held: Set(session.visibleMessages.map { NativeIngestion.digestOf($0.text) }),
+                        seen: Set(session.messages.compactMap(\.nativeIngestedID)),
+                        ownedCodexTurns: Set(session.ownedCodexTurnIDs ?? []))
+                    for outcome in outcomes {
+                        if repairManagedImports(&bounded, records: outcome.managedRecords) { provenanceRepaired = true }
+                    }
+                }
+                bounded.sourceContext = migratedSourceReference(bounded)
                 bounded.sourceContextVersion = 2
-                bounded.taskContext = migratedTaskContext(session, sourceContext: bounded.sourceContext)
+                bounded.taskContext = migratedTaskContext(bounded, sourceContext: bounded.sourceContext)
                 return bounded
             }
         sidebarIntents = envelope.sidebarIntents ?? [:]
@@ -4862,6 +4993,7 @@ private final class SessionStore: ObservableObject {
             }
             sessions[index].lastFailure = recovered
         }
+        if provenanceRepaired { save() }
     }
 
     private func save() {
@@ -5069,8 +5201,13 @@ private func renderQueuePreview(to output: URL) throws {
     }, nativeSessionOpener: { _ in false })
     let id = store.selectedSessionID!
     store.sessions[0].title = "큐·포크 인터페이스 검증 — 실제 고객 작업 아님"
+    store.sessions[0].taskContext = TaskContext(conversationID: id,
+        objective: TaskContext.Objective(requestText: "격리된 스티어링 미리보기", kind: .other))
     store.activeRuns[id] = .init(submissionID: UUID(), started: Date().addingTimeInterval(-16),
-        activity: RuntimeActivity(.executing, provider: "codex"), provider: .codex)
+        activity: RuntimeActivity(.executing, provider: "codex"), provider: .codex,
+        handedRevision: store.sessions[0].taskContext!.contextRevision)
+    try ExecutionSteering(root: root.appendingPathComponent("run-steering")).open(submissionID: store.activeRuns[id]!.submissionID,
+        threadID: "preview-thread", turnID: "preview-turn")
     for text in ["첫 번째 결과를 바탕으로 문제 원인을 설명해 줘.", "그 다음 수정안을 검증하고 결과를 같은 대화에 정리해 줘.",
                  "마지막으로 남은 작업과 변경된 파일을 알려 줘. 먼저 보낸 요청의 결과를 기다려야 합니다."] {
         store.composer = text; store.send()
@@ -5434,6 +5571,26 @@ private struct OS1DesktopApp: App {
                 print(output.path); exit(EXIT_SUCCESS)
             } catch { fputs("\(error.localizedDescription)\n", stderr); exit(EXIT_FAILURE) }
         }
+        if let flag = CommandLine.arguments.firstIndex(of: "--audit-native-provenance") {
+            do {
+                guard CommandLine.arguments.count == flag + 2, let id = UUID(uuidString: CommandLine.arguments[flag + 1]) else { throw SourceContextError.invalid }
+                let url = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/OS-1/sessions.json")
+                let envelope = try JSONDecoder().decode(SessionEnvelope.self, from: Data(contentsOf: url))
+                guard var session = envelope.sessions.first(where: { $0.id == id }) else { throw SourceContextError.invalid }
+                let before = session.visibleMessages.count
+                let outcomes = SessionStore.readBoundNativeRecords(session.taskContext?.bindings ?? [],
+                    held: Set(session.visibleMessages.map { NativeIngestion.digestOf($0.text) }),
+                    seen: Set(session.messages.compactMap(\.nativeIngestedID)), ownedCodexTurns: Set(session.ownedCodexTurnIDs ?? []))
+                for outcome in outcomes { repairManagedImports(&session, records: outcome.managedRecords) }
+                let report: [String: Any] = ["conversationID": id.uuidString, "storedMessages": session.messages.count,
+                    "visibleBefore": before, "visibleAfter": session.visibleMessages.count,
+                    "managedNativeRows": outcomes.flatMap(\.managedRecords).count,
+                    "archivedImports": session.messages.filter { $0.nativeManagedTurnID != nil }.map { ["id": $0.id.uuidString, "role": $0.role.rawValue, "turn": $0.nativeManagedTurnID!] },
+                    "sessionFileWritten": false, "modelCalls": 0]
+                print(String(decoding: try JSONSerialization.data(withJSONObject: report, options: [.sortedKeys]), as: UTF8.self))
+                exit(EXIT_SUCCESS)
+            } catch { fputs("\(error.localizedDescription)\n", stderr); exit(EXIT_FAILURE) }
+        }
         if let flag = CommandLine.arguments.firstIndex(of: "--export-session-context") {
             do {
                 let args = CommandLine.arguments
@@ -5452,6 +5609,7 @@ private struct OS1DesktopApp: App {
         }
         if CommandLine.arguments.contains("--self-test") {
             do {
+                try nativeProvenanceSelfTest()
                 try providerIntentSelfTest()
                 try taskContextSelfTest()
                 try interactionSelfTest()
@@ -7433,6 +7591,11 @@ private struct ConversationQueueView: View {
                                 .frame(width: 18)
                             Text(item.request).lineLimit(2).frame(maxWidth: .infinity, alignment: .leading)
                                 .help(item.request)
+                            Button("지금 전달") { store.steerQueued(item.id) }
+                                .disabled(!store.canSteerQueued(item))
+                                .help("이 요청을 현재 작업에 전달 · 새 실행을 시작하지 않음. 상태 확인·검증 중에는 대기 요청을 보존합니다.")
+                                .accessibilityLabel("대기 요청 \(rank + 1) 현재 작업에 지금 전달")
+                                .accessibilityIdentifier("os1.queue.steer.\(item.id)")
                             Button {
                                 if store.beginQueueEdit(item.id) { editLease = item.id; editing = item }
                             } label: { Image(systemName: "pencil") }.help("대기 요청 편집 · 순서 유지")
@@ -7535,7 +7698,7 @@ private struct ComposerView: View {
                     .padding(.vertical, 8)
                     .overlay(alignment: .topLeading) {
                         if store.composer.isEmpty {
-                            Text(store.isRunning ? "추가 요청을 입력하세요 · 현재 작업 후 순서대로 실행" : "OS-1에 작업을 요청하세요…")
+                            Text(store.isRunning ? "추가 요청 · Enter로 대기열에, ‘지금 전달’로 현재 작업에" : "OS-1에 작업을 요청하세요…")
                                 .font(.system(size: 14, weight: .medium))
                                 .foregroundStyle(Color.white.opacity(0.3))
                                 .padding(.horizontal, 13)
@@ -7568,10 +7731,15 @@ private struct ComposerView: View {
             .clipShape(RoundedRectangle(cornerRadius: Theme.radiusComposer, style: .continuous))
             .shadow(color: Color.black.opacity(0.32), radius: 16, y: 8)
 
-            if store.isRunning && !store.composer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                Button("현재 작업에 지금 전달") { store.sendCorrectionToCurrentRun() }
-                    .font(.system(size: 12)).disabled(!store.canSteerSelectedRun)
-                    .help("Codex가 현재 턴의 입력을 받을 때 전달합니다. 일반 Enter는 대기열, ‘그 말이 아니라’ 같은 직접 정정은 현재 턴 전달입니다.")
+            if store.isRunning {
+                HStack {
+                    Button("현재 작업에 지금 전달") { store.sendCorrectionToCurrentRun() }
+                        .font(.system(size: 12))
+                        .disabled(!store.canSteerSelectedRun || store.composer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        .accessibilityIdentifier("os1.composer.steer")
+                    Text(store.canSteerSelectedRun ? "현재 작업에 추가 지시 가능 · Enter는 대기열" : "현재 단계는 추가 지시 대기 · 입력은 대기열에 보존")
+                        .font(.system(size: 11)).foregroundStyle(Theme.muted)
+                }
             }
 
             HStack {

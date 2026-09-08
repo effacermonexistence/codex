@@ -561,7 +561,7 @@ public struct PreparationIntent: Equatable, Sendable {
     static let prepareMarkers = ["손보자", "손 보자", "손좀 보자", "손 좀 보자", "손보려고", "손볼 건데", "손볼건데",
                                  "준비해", "준비하자", "준비 좀", "준비할", "준비 해", "수정 좀 하자", "수정하자", "수정 하자", "고치자", "고쳐보자",
                                  "작업하자", "작업 시작", "시작하자", "prepare", "let's fix", "let's modify", "let's work on", "let's start",
-                                 "get ready", "set up for", "이제 고치자", "이제 수정"]
+                                 "get ready", "set up for", "이제 고치자", "이제 수정", "세팅", "셋업"]
     static let continueMarkers = ["이어서", "계속하자", "계속 하자", "지난번 하던", "하던 거", "하던거", "아까 하던", "아까 결정한", "아까 결정",
                                   "그 프로젝트", "그 작업", "resume", "continue where", "pick up where", "carry on with",
                                   "아까 자료 기준", "그 자료 기준", "그 코드 기준", "이전 결정대로", "결정한 방식으로", "as decided"]
@@ -604,10 +604,10 @@ public struct PreparationIntent: Equatable, Sendable {
         // themselves make the request a backend modification.
         var remaining = value
         for marker in (prepareMarkers + continueMarkers).sorted(by: { $0.count > $1.count }) { remaining = remaining.replacingOccurrences(of: marker, with: " ") }
-        if kind == .prepare, ["준비", "get ready", "prepare"].contains(where: value.contains) {
+        if kind == .prepare, ["준비", "세팅", "셋업", "get ready", "prepare"].contains(where: value.contains) {
             // A future reason for preparation is not an instruction to edit
             // now. Concrete imperatives (e.g. 준비하고 가격 로직 수정해) survive.
-            remaining = remaining.replacingOccurrences(of: #"(?:수정|변경|고치|손보)(?:해야\s*(?:되|하)(?:니까|니|므로)|할\s*(?:건데|거니까)|하려(?:고|니까))"#,
+            remaining = remaining.replacingOccurrences(of: #"(?:수정|변경|고치|손보)\s*(?:봐야\s*(?:되|하)(?:니까|니|므로)|해야\s*(?:되|하)(?:니까|니|므로)|할\s*(?:건데|거니까)|하려(?:고|니까))"#,
                 with: " ", options: .regularExpression)
         }
         let wantsChange = ["손봐", "손 봐", "수정", "고치", "고쳐", "바꾸", "구현", "fix", "modify", "edit", "change", "implement"].contains(where: remaining.contains)

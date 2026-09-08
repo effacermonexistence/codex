@@ -14,6 +14,15 @@ func runTaskContextFixtures(root: URL) throws {
 
     // A. Preparation / continuation intent is project-independent and honors negation.
     let caseB = "야 인스타그램 수정 좀 하자 준비해"
+    let setupIncident = "인스타그램 세팅을 좀 해봐.인스타그램 오토메이션 그거 수정 봐야되니까 세팅해라고 개새끼야"
+    for text in [setupIncident, setupIncident.decomposedStringWithCanonicalMapping, "OS1 수정 해야되니까 셋업해"] {
+        try check(PreparationIntent.detect(text)?.kind == .prepare && PreparationIntent.detect(text)?.modifies == false,
+            "setup for future edit must acquire materials before model dispatch")
+    }
+    try check(PreparationIntent.detect("인스타그램 세팅하고 가격이 반복되는 버그 수정해")?.modifies == true,
+        "concrete edit after setup must survive preparation parsing")
+    try check(PreparationIntent.detect("인스타그램 세팅은 하지 말고 가격 안내 문구 수정해")?.modifies == true,
+        "setup text must not suppress a concrete authorized edit")
     for text in ["인스타그램 오토메이션 좀 손보자", "인스타 자동화 손 좀 보자", "인스타그램 손볼 건데",
                  "인스타그램 오토메이션 좀 손보자".decomposedStringWithCanonicalMapping, "OS1 손보자"] {
         try check(PreparationIntent.detect(text)?.kind == .prepare && PreparationIntent.detect(text)?.modifies == false,

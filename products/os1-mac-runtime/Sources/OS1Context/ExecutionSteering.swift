@@ -91,7 +91,7 @@ public struct ExecutionSteering: Sendable {
         inputs(id).filter { receipt($0)?.state == .persisted }.map(\.id)
     }
     public static func isDirectCorrection(_ text: String) -> Bool {
-        let value = text.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let value = text.precomposedStringWithCanonicalMapping.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard !value.hasPrefix(">"), !value.contains("```"), !value.contains("◉") else { return false }
         return ["그 말이 아니라", "그게 아니라", "아니 그게 아니라", "아니, 그게 아니라", "정정할게", "정정:",
             "수정 방향은", "잠깐,", "잠깐만,", "actually,", "correction:", "instead,"].contains { value.hasPrefix($0) }
