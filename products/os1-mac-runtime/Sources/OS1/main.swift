@@ -1871,7 +1871,7 @@ private func existingR2Connection() throws -> String {
     throw ConnectionFailure.unavailable
 }
 
-private enum R2MaterialKind: Equatable {
+private enum R2MaterialKind: String, Equatable {
     case generic
     case qmGR
     case scvProject
@@ -2201,19 +2201,7 @@ func protectedRouteMaterialInEvidence(_ text: String) -> Bool {
 }
 
 private func qmGRMaterialRequested(_ prompt: String) -> Bool {
-    let value = prompt.precomposedStringWithCanonicalMapping.lowercased()
-    if value.range(of: #"(?<![a-z0-9])q(?:o)?m\s*[-–—]?\s*gr(?![a-z0-9])"#, options: .regularExpression) != nil {
-        return true
-    }
-    // Bounded dictation aliases are accepted only alongside GR. QoM alone,
-    // 'program', and identifiers containing QMGR are not research selections.
-    let mentionsQM = value.range(of: #"(?<![a-z0-9])q\s*\.?\s*(?:o\s*\.?\s*)?m(?![a-z0-9])"#, options: .regularExpression) != nil ||
-        value.contains("양자역학") || value.contains("quantum mechanics") ||
-        value.range(of: #"\bqaam\b"#, options: .regularExpression) != nil
-    let mentionsGR = value.range(of: #"(?<![a-z0-9])g\s*\.?\s*r(?![a-z0-9])"#, options: .regularExpression) != nil ||
-        value.contains("일반상대") || value.contains("general relativity") ||
-        ["주암", "주아", "지알", "쥐알"].contains(where: value.contains)
-    return mentionsQM && mentionsGR || value.contains("orthogonal projection") || value.contains("orthogonal-projection-term")
+    ResearchMaterialIntent.qmGR(prompt)
 }
 
 private func r2RetrievalTerms(_ prompt: String) -> [String] {
@@ -3223,6 +3211,7 @@ private func r2RetrievalEvidence(_ prompt: String, context: String? = nil, objec
     guard !protectedRouteMaterialRequested(prompt, context: context) else {
         throw OS1Error.message("OS-1 protected route material cannot enter a model evidence channel")
     }
+    recordRetrievalSelection(prompt: prompt, objective: objective)
     _ = try verifyR2Connection()
     if objective.materialKind == .qmGR {
         return try optResearchEvidence()
@@ -3989,7 +3978,7 @@ final class CodexAppServerClient: @unchecked Sendable {
         _ = try request(
             "initialize",
             params: [
-                "clientInfo": ["name": "OS-1 CLODEX", "version": "0.9.40"],
+                "clientInfo": ["name": "OS-1 CLODEX", "version": "0.9.41"],
                 "capabilities": ["experimentalApi": true],
             ],
             deadline: deadline
@@ -5535,6 +5524,25 @@ private func recordExecutionFailure(ticket: Ticket, model: String?, effort: Stri
     } catch { /* Logging cannot replace the original failure or publish data. */ }
 }
 
+private func recordRetrievalSelection(prompt: String, objective: R2RetrievalObjective) {
+    // Fingerprints and classification only; no prompts, source text, credentials,
+    // or claim that acquisition has succeeded at this selection boundary.
+    let root = FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent("Library/Application Support/OS-1/diagnostics", isDirectory: true)
+    let entry: [String: Any] = ["time": ISO8601DateFormatter().string(from: Date()),
+        "stage": "source_selection", "material_kind": objective.materialKind.rawValue,
+        "request_sha256": objective.requestSHA256, "context_sha256": objective.contextSHA256 ?? "none",
+        "inherited_source": objective.inheritedSource, "requires_transformation": objective.requiresTransformation,
+        "paired_gr_dictation_alias": ResearchMaterialIntent.usesPairedGRDictationAlias(prompt),
+        "generic_term_count": objective.materialKind == .generic ? r2RetrievalTerms(prompt).count : 0]
+    do {
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        let path = root.appendingPathComponent("retrieval-selection-\(UUID().uuidString.lowercased()).json")
+        try JSONSerialization.data(withJSONObject: entry, options: [.sortedKeys]).write(to: path, options: .atomic)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path.path)
+    } catch { /* Diagnostics must not change retrieval or claim custody. */ }
+}
+
 private func recordRoutingInput(_ request: StartExecutionRequest, ticket: Ticket?, source: SourceReference?) {
     guard let input = request.executionContext, let ticket else { return }
     let root = FileManager.default.homeDirectoryForCurrentUser
@@ -6711,6 +6719,21 @@ func selfTest() throws {
     for negative in ["QoM 품질 지표 자료", "qom program metrics", "someqmgridentifier", "RCC 우주론 자료"] {
         guard !qmGRMaterialRequested(negative) else { throw OS1Error.message("QMGR alias boundary regression") }
     }
+    let garContext = "USER:\n야 R2 연결시켜\n\nOS-1:\nR2 연결됨 — omar-private-archive 접근 확인"
+    let garRequest = "거기서 QM이랑 GAR 자료 가져와봐"
+    for request in [garRequest, garRequest.decomposedStringWithCanonicalMapping] {
+        guard let selection = resolveR2RetrievalObjective(prompt: request, context: garContext),
+              selection.materialKind == .qmGR, selection.inheritedSource, !selection.requiresTransformation,
+              selection.requestSHA256 == sha256Hex(Data(request.utf8)),
+              resolveR2RetrievalObjective(prompt: request, context: nil) == nil,
+              resolveR2RetrievalObjective(prompt: request, context: garContext + "\n\nUSER:\n이제 S3에서 자료 찾아") == nil else {
+            throw OS1Error.message("QM/GAR inherited-source selection regression")
+        }
+    }
+    guard resolveR2RetrievalObjective(prompt: "R2에서 QM이랑 GAR 자료 가져오지 마") == nil,
+          resolveR2RetrievalObjective(prompt: "R2에서 GAR 자료 가져와")?.materialKind == .generic else {
+        throw OS1Error.message("QM/GAR source permission or standalone alias regression")
+    }
     let qomFollowup = "설명 좀 해봐 어디까지 진행되는데"
     let afterFailedAnswer = qomContext + "\n\nUSER:\n\(qomFollowup)\n\nCLAUDE:\n자료가 없는 것으로 보입니다."
     guard repairsMismatchedResearchSource(qomFollowup, context: qomContext, evidence: genericEvidence),
@@ -7866,7 +7889,7 @@ struct OS1Main {
             guard let command = arguments.first else { usage(); return }
             if try await fleetCommand(arguments) { return }
             switch command {
-            case "version", "--version", "-V": print("OS-1 Runtime 0.9.40 (capability-intent-build91)")
+            case "version", "--version", "-V": print("OS-1 Runtime 0.9.41 (qmgr-retrieval-build92)")
             case "doctor": try doctor()
             case "sidebar-pin":
                 guard (4...5).contains(arguments.count), arguments[1] == "codex",

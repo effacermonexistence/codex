@@ -7,6 +7,41 @@ struct RetrievalRelevanceFixture {
     }
 
     static func main() {
+        let pairedAliases = [
+            "거기서 QM이랑 GAR 자료 가져와봐", "R2에서 GAR와 QM 자료 가져와",
+            "R2에서 QoM과 GAR 통합 자료 가져와", "QAAM / GAR research",
+            "Q.o.M. / G.A.R. research", "Q M and G A R research",
+            "quantum mechanics and GAR", "양자역학하고 GAR 자료",
+        ]
+        for request in pairedAliases {
+            for spelling in [request, request.decomposedStringWithCanonicalMapping] {
+                check(ResearchMaterialIntent.usesPairedGRDictationAlias(spelling), "paired alias missed: \(request)")
+                check(ResearchMaterialIntent.qmGR(spelling), "paired alias lost its research identity")
+            }
+        }
+        let unrelated = [
+            "R2에서 GAR 자료 가져와", "R2에서 garbage 자료 가져와", "QM program migration",
+            "QM and cigar research", "QM and GARBAGE", "aqm and GAR",
+            "QM metrics and separately GAR registry", "GAR registry and QM metrics",
+        ]
+        for request in unrelated {
+            check(!ResearchMaterialIntent.qmGR(request), "unrelated request became QMGR: \(request)")
+        }
+        for request in ["QMGR", "QM과 GR", "QoM이랑 GR", "Q.M.–G.R.",
+                        "양자역학과 일반상대성", "orthogonal-projection-term"] {
+            check(ResearchMaterialIntent.qmGR(request), "existing research identity regressed: \(request)")
+        }
+        check(RetrievalRelevance.terms(prompt: "거기서 QM이랑 GAR 자료 가져와봐") == ["qm", "gar"],
+              "source pronoun became a required research topic")
+        let unknownTerms = RetrievalRelevance.terms(prompt: "거기에서 ZXQJ와 GR 자료 가져와")
+        check(unknownTerms == ["zxqj", "gr"], "source pronoun removal dropped a real topic: \(unknownTerms)")
+        let invalidClaim = "최종 승인조건: 내부 게이트를 모두 통과하면 통합 이론입니다."
+        check(HumanOutputContract.issues(in: invalidClaim, request: "QM과 GR 통합 스키마 짜줘") ==
+              HumanOutputContract.issues(in: invalidClaim, request: "QM이랑 GAR 통합 스키마 짜줘"),
+              "dictation alias bypassed the scientific output boundary")
+        check(!HumanOutputContract.issues(in: invalidClaim, request: "QM이랑 GAR 통합 스키마 짜줘").isEmpty,
+              "scientific output boundary was not exercised")
+
         let incident = RetrievalRelevance.terms(prompt: "R2에서 QoM과 GR 통합하는 자료들 가져와")
         check(incident == ["qom", "gr"], "incident grammar leaked into query terms: \(incident)")
 
