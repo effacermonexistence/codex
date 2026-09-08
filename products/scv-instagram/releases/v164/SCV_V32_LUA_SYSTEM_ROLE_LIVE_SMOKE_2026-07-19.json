@@ -1,0 +1,102 @@
+{
+  "artifact_id": "scv-v32-lua-system-role-live-smoke-2026-07-19",
+  "created_at_utc": "2026-07-20T04:00:49.956Z",
+  "objective": "Verify that the living Lua identity is applied as the first real OpenAI system message and that generic booking/meta language cannot create false design-ready or form-offer state.",
+  "proof_mode": "internal_live_smoke",
+  "source": {
+    "repository": "effacermonexistence/omar-benchmark-replay-live-source",
+    "branch": "codex/scv-closed-contract-20260712",
+    "commit": "d688bfa",
+    "commit_subject": "fix(scv): lock Lua identity as system authority"
+  },
+  "runtime": {
+    "project": "scv-dm-cloud-survival",
+    "environment": "production",
+    "smoke_deployment_id": "77be36e0-2955-4268-90c7-afdc510929ef",
+    "post_smoke_clean_deployment_id": "e4d4b185-0514-45b2-8bb3-3ae1edd6267d",
+    "target_contact_id": "1537753982",
+    "target_username": "omar.system",
+    "non_test_accounts_paused": true,
+    "pause_all_after_reset": false,
+    "purge_on_startup_after_reset": false
+  },
+  "input": {
+    "message_id": "scv-v32-system-role-1784520041",
+    "text": "Hey, can I get more info about booking a tattoo?"
+  },
+  "executed_path": [
+    "public Railway /manychat/inbound",
+    "transport-only normalization",
+    "single control plane",
+    "OpenAI chat completions",
+    "closed-transition verifier",
+    "adoption gate",
+    "outbox scheduling",
+    "ManyChat sendContent HTTP 200"
+  ],
+  "authority_receipt": {
+    "model": "gpt-4.1-mini",
+    "executor": "openai_chat_completions",
+    "identity_prompt_role": "system",
+    "identity_prompt_sha256": "4d3bb67f480c4774a8073539133e6aec1fc407b21756bc36904289126abd79ee",
+    "prompt_sha256": "755c8a01c827923114cf9693a10d23a5e51f943630ad665f50fb5d11ff0c0ce6",
+    "semantic_contract_violations": [],
+    "post_filter_reauthor_passes": 0
+  },
+  "route_receipt": {
+    "action": "design_intake",
+    "reason": "tattoo_lane_missing_design_direction",
+    "form_offer_emitted": false,
+    "form_link_emitted": false,
+    "false_design_state_created": false,
+    "control_route_frozen": true,
+    "control_receipt_sha256": "d1bf8b09329f599badcf83518a41d263778c4277b33538cc580e1beb157ceec1"
+  },
+  "visible_candidate_bubbles": [
+    "yeah for sure you can check out my profile and the untitled highlight for some inspo",
+    "those are just references though so custom ideas are totally cool too",
+    "what kind of vibe or idea have you been thinking about? throw it my way whenever"
+  ],
+  "surface_assertions": {
+    "duplicate_hey_present": false,
+    "habitual_leading_hey_present": false,
+    "generic_booking_language_misclassified_as_design": false,
+    "premature_form_offer_present": false,
+    "answerable_next_motion_present": true
+  },
+  "delivery_receipt": {
+    "bubble_count": 3,
+    "manychat_http_statuses": [
+      200,
+      200,
+      200
+    ],
+    "delivery_accepted": true,
+    "delivery_confirmed": false,
+    "delivery_method": "manychat_api_success_unverified"
+  },
+  "locked_versions": {
+    "contract_harness": "scv-contract-harness-lock-2026-07-19-v79-booking-meta-language-quarantine",
+    "hard_harness": "scv-hard-harness-lock-2026-07-19-v92-visible-identity-adversarial",
+    "closed_transition_contract": "scv-closed-transition-contract-2026-07-19-v34-booking-meta-language-quarantine",
+    "closed_transition_harness": "scv-closed-transition-harness-2026-07-19-v37-booking-meta-language-quarantine",
+    "immutable_seal_sha256": "b03e00f2120df9a5ea46d0825ef9d1c012490dee70fd463bf76cb73495e0464b",
+    "golden_manifest_sha256": "c76d69008856ec29245437335c42b63eec800b82dce50b686d95f570c8628f60"
+  },
+  "verification": {
+    "visible_identity_adversarial": "396/396 PASS",
+    "closed_transition": "9834/9834 PASS",
+    "repeat_matrix": "20/20 PASS",
+    "full_npm_test_runs": "3/3 PASS",
+    "post_smoke_omar_system_remaining_count": 0
+  },
+  "claim_boundary": {
+    "system_role_execution_proven": true,
+    "generic_booking_meta_quarantine_proven_for_this_live_row": true,
+    "manychat_acceptance_proven": true,
+    "visible_instagram_receipt_proven": false,
+    "three_consecutive_real_full_funnel_passes_proven": false,
+    "stable_ready_claimed": false,
+    "stable_ready_blocker": "83 pre-existing unrelated non-test backlog/quarantine alerts remain paused and outside this Omar.system smoke object."
+  }
+}

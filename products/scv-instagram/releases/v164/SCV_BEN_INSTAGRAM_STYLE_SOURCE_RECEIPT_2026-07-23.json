@@ -1,0 +1,96 @@
+{
+  "receipt_version": "scv-ben-instagram-style-source-receipt-2026-08-24-v3-archive-first-info-reply",
+  "verified_at_utc": "2026-08-24T22:27:00Z",
+  "source_boundary": "local_icloud_archive_verified_read_only_then_aggregate_behavior_compiled",
+  "source_root": "/Users/effacermonexistencecodex/Library/Mobile Documents/com~apple~CloudDocs/BEN_CRITICAL_FAST_BACKUP_20260422_232300/Codex/2026-04-19-you-are-taking-over-a-local",
+  "sources": [
+    {
+      "file": "instagram_ben_sent_messages.jsonl",
+      "sha256": "9c16de2f979eaf0d698f027903f32151bdb0db13577f64a3574f73b88b30ad68",
+      "bytes": 15923489,
+      "rows": 66391,
+      "timestamp_field": "timestamp_ms",
+      "first_timestamp_utc": "2024-06-01T07:02:04.895Z",
+      "last_timestamp_utc": "2025-03-31T03:31:19.908Z"
+    },
+    {
+      "file": "instagram_ben_style_summary.md",
+      "sha256": "c06490dba67ab243fb63e93e78db32ac9b823a5816dbfa237923eb9c7ad2ad94",
+      "bytes": 7415
+    },
+    {
+      "file": "instagram_ben_pattern_report.json",
+      "sha256": "76e3e70e9a10e71667185ca4c688392fb2a7365f8fc853e3a7e9c7776db4d7b9",
+      "bytes": 9732,
+      "total_sent_content_messages": 66391,
+      "unique_threads": 5221,
+      "character_average": 36.13,
+      "character_median": 24
+    },
+    {
+      "file": "instagram_high_conversion_threads.json",
+      "sha256": "2f2e8809b62616a26d275d954ccd627af45b3f801fef097ef8bc993d75bb4b96",
+      "bytes": 2587971,
+      "selected_threads": 150
+    }
+  ],
+  "adoption_boundary": {
+    "allowed": [
+      "aggregate rhythm and brevity evidence",
+      "aggregate multi-bubble turn structure",
+      "functional conversation progression evidence",
+      "human variation and anti-template evaluation",
+      "relationship-first routing outside explicit tattoo intent",
+      "one-grounded-next-movement authoring law for open turns",
+      "historical evidence that a chosen design reference can move through a brief feasibility acknowledgement into a form offer",
+      "aggregate first-reply evidence for a short warm acknowledgement before the substantive tattoo information answer"
+    ],
+    "forbidden": [
+      "copying private messages into the runtime prompt",
+      "fixed visible scripts",
+      "exposing friend or client content",
+      "retrieving exact historical phrases for client replies",
+      "imitating a private third party",
+      "treating aggregate style evidence as transactional authority",
+      "treating heuristic high-conversion candidates as causal proof",
+      "using this archive to bypass the live route verifier consent or adoption gates"
+    ],
+    "runtime_injection": "derived_behavioral_authority_v2_visible_reply_only",
+    "prompt_use": "aggregate_behavioral_law_only",
+    "raw_private_corpus_committed": false,
+    "exact_historical_message_retrieval_at_runtime": false
+  },
+  "source_origin_receipt": {
+    "declared_original_export_root": "/Users/l/Downloads/your_instagram_activity/messages",
+    "declared_subfolders": [
+      "inbox",
+      "message_requests"
+    ],
+    "original_raw_export_currently_available": false,
+    "prepared_corpus_is_authoritative_available_source": true
+  },
+  "derived_behavioral_evidence": {
+    "exact_normalized_unique_message_rate": 0.649455,
+    "messages_in_repeated_surfaces_rate": 0.390339,
+    "top_10_exact_surface_share": 0.098447,
+    "top_100_exact_surface_share": 0.228706,
+    "median_words_per_outbound_bubble": 4,
+    "one_word_message_rate": 0.090298,
+    "two_word_message_rate": 0.115452,
+    "no_common_punctuation_rate": 0.49103,
+    "candidate_conversion_turns": 5418,
+    "candidate_conversion_median_bubbles_per_ben_turn": 2,
+    "candidate_conversion_one_to_three_bubble_turn_rate": 0.7831,
+    "candidate_conversion_question_or_task_turn_rate": 0.5042,
+    "evidence_label": "aggregate_historical_behavioral_prior_not_causal_conversion_proof"
+  },
+  "derived_runtime_artifact": {
+    "file": "lua-dm-ben-instagram-behavioral-style-lock-v2.txt",
+    "sha256": "ee64a7bbbfc26999a8f4f089ca2e7288f35755ae4aa1b607b320f500b9465273",
+    "bytes": 5562,
+    "content_boundary": "aggregate_metrics_and_behavioral_laws_only_no_raw_private_messages",
+    "runtime_scope": "visible_reply_system_authority_only",
+    "runtime_order": "after_dm_master_and_relationship_lock_before_visible_output_contract",
+    "fail_closed_if_missing": true
+  }
+}

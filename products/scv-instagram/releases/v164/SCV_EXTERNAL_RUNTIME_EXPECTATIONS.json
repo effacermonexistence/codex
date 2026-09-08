@@ -1,0 +1,55 @@
+{
+  "schema": "scv-instagram-external-runtime-expectations-2026-08-29-v1",
+  "scope": "instagram_dm_single_release_only",
+  "manychat": {
+    "account_ref": "fb4655383",
+    "flow_id": "content20260401044411_075671",
+    "flow_status": "live_saved",
+    "request_method": "POST",
+    "ingress_url": "https://scv-dm-cloud-survival-production.up.railway.app/manychat/inbound",
+    "evidence_class": "authenticated_manychat_workspace_operator_visual",
+    "provider_cryptographic_proof_available": false
+  },
+  "railway": {
+    "production_health_url": "https://scv-dm-cloud-survival-production.up.railway.app/readyz",
+    "staging_health_url": "https://scv-stg-ab25da488a5a-golden-stg-ab25da488a5a.up.railway.app/readyz",
+    "required_deployment_status": "SUCCESS"
+  },
+  "mutable_state": {
+    "persist_root": "/data",
+    "namespace_parent": "scv-runtime-namespaces",
+    "consistent_snapshot_required": true,
+    "independent_restore_verification_required": true,
+    "required_directories": [
+      "accepted-unverified-boundary-pending",
+      "accepted-unverified-delivery-publications",
+      "control-decisions",
+      "control-events",
+      "control-locks",
+      "form-submissions",
+      "inbox",
+      "inbox_quarantine_corrupt",
+      "inbox_quarantine_deadletter",
+      "inbox_quarantine_superseded",
+      "logs",
+      "outbox",
+      "outbox-idempotency",
+      "outbox_human_agent_required",
+      "outbox_quarantine_contract_harness",
+      "outbox_quarantine_corrupt_adoption",
+      "outbox_quarantine_failed",
+      "outbox_quarantine_non_authoritative",
+      "outbox_quarantine_pre_single_control",
+      "outbox_quarantine_stale",
+      "reactbox",
+      "reactbox_done",
+      "reactbox_failed",
+      "thread-history",
+      "thread-history_quarantine_contaminated",
+      "thread-state",
+      "thread-state_pre_migration",
+      "thread-state_quarantine_contaminated"
+    ]
+  },
+  "evidence_max_age_ms": 1800000
+}
