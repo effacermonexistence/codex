@@ -1167,6 +1167,96 @@ private func queueForkInteractionSelfTest() async throws {
 }
 
 @MainActor
+private func steeringInteractionSelfTest() async throws {
+    var checks = 0
+    func check(_ condition: Bool, _ message: String) throws {
+        guard condition else { throw RunnerError.message("Steering: " + message) }; checks += 1
+    }
+    func eventually(_ condition: () -> Bool) async throws {
+        let end = Date().addingTimeInterval(8)
+        while !condition(), Date() < end { try await Task.sleep(for: .milliseconds(10)) }
+        try check(condition(), "scheduler deadline")
+    }
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("os1-steering-ui-" + UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let mailbox = ExecutionSteering(root: root.appendingPathComponent("run-steering"))
+    var starts: [PendingSubmission] = []
+    var gates: [UUID: CheckedContinuation<Void, Never>] = [:]
+    let store = SessionStore(storageRoot: root, runOperation: { submission, _, _, _, _ in
+        starts.append(submission)
+        await withCheckedContinuation { gates[submission.sessionID] = $0 }
+        return AppRunSummary(status: "complete", steps: [AppRunStep(sequence: 1, provider: "codex",
+            action: "fixture", model: "fixture", effort: "none", revasDisposition: "adopted",
+            sessionID: UUID().uuidString, permissionProfile: "workspace_write", exitCode: 0,
+            output: "정정을 적용한 fixture 답변", stderr: "", durationMS: 0, nativeRecord: nil)],
+            persistedCorrectionIDs: mailbox.persistedIDs(submission.id))
+    })
+    let original = "테스트 파일을 수정해. 운영 배포 금지."
+    let correction = "그 말이 아니라, 다시 물어보지 말고 문맥상 명백한 오타를 처리해."
+    let parent = store.selectedSessionID!
+    store.composer = original; store.send()
+    try await eventually { gates[parent] != nil }
+    let active = store.activeRuns[parent]!, objective = store.selectedSession!.taskContext!.objectiveID
+    let scope = store.selectedSession!.taskContext!.objective.scope
+    store.composer = correction; store.send()
+    try check(store.queuedSubmissions.count == 1 && store.queuedSubmissions[0].executionRequest.contains(original), "cold amendment lost original task")
+    store.activeRuns[parent]?.provider = .codex
+    store.activeRuns[parent]?.activity = RuntimeActivity(.executing, provider: "codex")
+    try mailbox.open(submissionID: active.submissionID, threadID: "fixture-thread", turnID: "fixture-turn")
+    try await eventually { store.queuedSubmissions.isEmpty && mailbox.inputs(active.submissionID).count == 1 }
+    try check(store.selectedSession!.messages.filter { $0.text == correction }.count == 1 &&
+        store.selectedSession!.taskContext!.objectiveID == objective && store.selectedSession!.taskContext!.objective.scope == scope,
+        "promotion duplicated input or replaced authorized objective")
+    try check(store.correctionDeliveryLabel!.contains("확인 중"), "premature accepted label")
+    let first = mailbox.inputs(active.submissionID)[0]
+    try mailbox.record(first, state: .sending, threadID: "fixture-thread", turnID: "fixture-turn")
+    try mailbox.record(first, state: .accepted, threadID: "fixture-thread", turnID: "fixture-turn")
+    try check(store.correctionDeliveryLabel!.contains("전달됨"), "ack not visible")
+    store.composer = "추가 정정 두 번째"; store.sendCorrectionToCurrentRun()
+    try check(mailbox.inputs(active.submissionID).count == 2 && starts.count == 1 && !store.isStopping, "explicit action restarted task")
+    store.composer = "일반 후속 질문"; store.send()
+    try check(store.queuedSubmissions.map(\.request) == ["일반 후속 질문"], "ordinary input not FIFO")
+    store.flushPendingState()
+    let disk = try JSONDecoder().decode(SessionEnvelope.self, from: Data(contentsOf: root.appendingPathComponent("sessions.json")))
+    try check(disk.inFlight?.first?.liveCorrections?.count == 2, "on-disk amendments absent: \(String(describing: store.alertMessage))")
+    let reloaded = SessionStore(storageRoot: root)
+    try check(reloaded.activeRuns.isEmpty, "restart replayed work")
+    try check(reloaded.sessions.first { $0.id == parent }?.lastFailure?.liveCorrections?.count == 2,
+        "restart lost corrections: \(String(describing: reloaded.sessions.first { $0.id == parent }?.lastFailure?.liveCorrections))")
+    try check(reloaded.sessions.first { $0.id == parent }?.lastFailure?.executionRequest.contains(original) == true,
+        "restart lost original")
+    store.createSession(); let other = store.selectedSessionID!
+    store.composer = "두 번째 독립 작업"; store.send()
+    try await eventually { gates[other] != nil }
+    try check(!store.canSteerSelectedRun && mailbox.inputs(store.activeRuns[other]!.submissionID).isEmpty, "cross-session delivery")
+    store.select(parent); store.pauseQueue(parent)
+    for input in mailbox.inputs(active.submissionID) {
+        try mailbox.record(input, state: .persisted, threadID: "fixture-thread", turnID: "fixture-turn")
+    }
+    gates.removeValue(forKey: parent)!.resume()
+    try await eventually { !store.isSessionRunning(parent) }
+    try check(store.selectedSession!.lastFailure == nil && store.selectedSession!.messages.contains { $0.text.contains("정정 2건") } && starts.count == 2,
+        "verified current-turn correction rejected or extra turn started")
+    store.composer = "그 말이 아니라, 조건을 바꿔"; store.send()
+    try check(store.queuedSubmissions.last!.amendedRequest?.contains(original) == true, "late correction became standalone")
+    store.select(other)
+    let second = store.activeRuns[other]!.submissionID
+    store.activeRuns[other]?.provider = .codex
+    store.activeRuns[other]?.activity = RuntimeActivity(.executing, provider: "codex")
+    try mailbox.open(submissionID: second, threadID: "other", turnID: "other-turn")
+    store.composer = correction; store.send()
+    let denied = mailbox.inputs(second)[0]
+    try mailbox.record(denied, state: .rejected, threadID: "other", turnID: "other-turn")
+    try check(store.correctionDeliveryLabel!.contains("거절"), "denial not visible")
+    gates.removeValue(forKey: other)!.resume()
+    try await eventually { !store.isSessionRunning(other) }
+    try check(store.selectedSession!.lastFailure?.liveCorrections == [correction] && starts.count == 2 &&
+        store.selectedSession!.messages.contains { $0.role == .assistant && $0.nativeRecordVerified == false },
+        "unconfirmed correction adopted or replayed")
+    print("Live corrections: \(checks) checks passed; model calls 0; same-task/ACK/persistence/FIFO/isolation/restart/stale-result")
+}
+
+@MainActor
 private func composerInteractionSelfTest() async throws {
     var checks = 0
     func check(_ condition: @autoclosure () -> Bool, _ message: String) throws {
@@ -1276,7 +1366,7 @@ private enum VoiceDictationPhase: Equatable {
 }
 
 private enum ComposerPrimaryAction: String, CaseIterable {
-    case disabledSend, send, queue, stop, stopping, finalizing
+    case disabledSend, send, queue, steer, stop, stopping, finalizing
 
     static func resolve(draft: String, running: Bool, stopping: Bool, voice: VoiceDictationPhase) -> Self {
         if [.authorizing, .finalizing, .transcribing].contains(voice) { return .finalizing }
@@ -1285,19 +1375,20 @@ private enum ComposerPrimaryAction: String, CaseIterable {
         }
         return running ? (stopping ? .stopping : .stop) : .disabledSend
     }
-    var enabled: Bool { [.send, .queue, .stop].contains(self) }
+    var enabled: Bool { [.send, .queue, .steer, .stop].contains(self) }
     var icon: String {
         switch self {
         case .stop, .stopping: return "stop.fill"
         case .queue: return "text.line.last.and.arrowtriangle.forward"
         case .finalizing: return "ellipsis"
-        case .send, .disabledSend: return "arrow.up"
+        case .send, .disabledSend, .steer: return "arrow.up"
         }
     }
     var label: String {
         switch self {
         case .send, .disabledSend: return "작업 보내기"
         case .queue: return "대기열에 추가"
+        case .steer: return "현재 작업에 정정 전달"
         case .stop: return "작업 중지"
         case .stopping: return "작업 중지 확인 중"
         case .finalizing: return "음성 입력 처리 중"
@@ -1307,6 +1398,7 @@ private enum ComposerPrimaryAction: String, CaseIterable {
         switch self {
         case .send, .disabledSend: return "Send task"
         case .queue: return "Add this task to the queue"
+        case .steer: return "현재 턴에 정정 전달 · 같은 목표와 권한 유지"
         case .stop: return "현재 대화의 작업 중지 · ⌘."
         case .stopping: return "중지 확인을 기다립니다 · 입력과 대기열은 보존됩니다"
         case .finalizing: return "음성 입력을 마무리하고 있습니다"
@@ -1956,6 +2048,7 @@ private struct NativeSessionMessage: Identifiable, Sendable {
     let timestamp: Date?
     var ordinal: Int? = nil
     var complete: Bool = true
+    var turnID: String? = nil
 }
 
 private func sidebarNativeLess(_ lhs: NativeSessionSummary, _ rhs: NativeSessionSummary) -> Bool {
@@ -2126,9 +2219,9 @@ private enum NativeSessionReader {
         }
         defer { sqlite3_close(database) }
         let query = """
-        SELECT item_type, item_json, created_at_ms, rollout_ordinal, turn_status
+        SELECT item_type, item_json, created_at_ms, rollout_ordinal, turn_status, turn_id
         FROM (
-          SELECT i.rollout_ordinal, i.item_type, i.item_json, i.created_at_ms, t.status AS turn_status
+          SELECT i.rollout_ordinal, i.item_type, i.item_json, i.created_at_ms, t.status AS turn_status, i.turn_id
           FROM thread_items i LEFT JOIN thread_turns t ON i.thread_id = t.thread_id AND i.turn_id = t.turn_id
           WHERE i.thread_id = ? AND i.item_type IN ('userMessage', 'agentMessage')
           ORDER BY i.rollout_ordinal DESC
@@ -2168,7 +2261,8 @@ private enum NativeSessionReader {
                 text: trimmed,
                 timestamp: Date(timeIntervalSince1970: Double(sqlite3_column_int64(statement, 2)) / 1_000),
                 ordinal: Int(sqlite3_column_int64(statement, 3)),
-                complete: role == .user || columnText(statement, 4) == "completed"
+                complete: role == .user || columnText(statement, 4) == "completed",
+                turnID: columnText(statement, 5)
             ))
         }
         return result
@@ -2440,6 +2534,7 @@ private struct ConversationSession: Codable, Identifiable, Sendable {
     var queuePaused: Bool?
     var forkedFrom: ConversationForkOrigin?
     var completedForkCheckpoint: ConversationForkCheckpoint?
+    var ownedCodexTurnIDs: [String]? = nil
     var updatedAt: Date
 
     init(
@@ -2579,6 +2674,14 @@ private struct PendingSubmission: Identifiable, Codable, Equatable, Sendable {
     /// Routing preference before an explicit provider name in the queued text.
     /// Absent in legacy stores; retain that item's original provider on edit.
     var configuredProvider: ProviderChoice? = nil
+    var correctionIDs: [UUID]? = nil
+    var liveCorrections: [String]? = nil
+    var amendedRequest: String? = nil
+    var executionRequest: String {
+        (liveCorrections ?? []).reduce(amendedRequest.map {
+            ExecutionSteering.continuation(original: $0, correction: request)
+        } ?? request) { ExecutionSteering.continuation(original: $0, correction: $1) }
+    }
 
     init(
         id: UUID = UUID(),
@@ -2828,6 +2931,7 @@ private struct AppRunSummary: Decodable, Sendable {
     let steps: [AppRunStep]
     var sourceContext: SourceReference? = nil
     var taskContext: TaskContext? = nil
+    var persistedCorrectionIDs: [UUID]? = nil
 }
 
 private struct NativeIngestionOutcome: Sendable {
@@ -3089,6 +3193,7 @@ private final class SessionStore: ObservableObject {
         var handedRevision: Int? = nil
         var forkCheckpoint: ConversationForkCheckpoint? = nil
         var cancellationRequested = false
+        var correctionRevision: Int? = nil
     }
     typealias RunOperation = @MainActor (PendingSubmission, String, String?, String?,
         @escaping @Sendable (RuntimeActivity) -> Void) async throws -> AppRunSummary
@@ -3160,7 +3265,7 @@ private final class SessionStore: ObservableObject {
         self.nativeSessionOpener = nativeSessionOpener
         self.nativePinOperation = nativePinOperation
         self.runOperation = runOperation ?? { submission, context, codexID, claudeID, onActivity in
-            try await OS1Runner.run(workspace: submission.workspace, prompt: submission.request,
+            try await OS1Runner.run(workspace: submission.workspace, prompt: submission.executionRequest,
                 provider: submission.provider, context: context, codexSessionID: codexID, claudeSessionID: claudeID,
                 codexCapacity: submission.codexCapacity, claudeCapacity: submission.claudeCapacity,
                 requireReadOnly: submission.readOnlyReconciliation == true, deliveryID: submission.deliveryID,
@@ -3645,6 +3750,10 @@ private final class SessionStore: ObservableObject {
         }
         let request = composer.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !request.isEmpty, let index = selectedIndex else { return }
+        if ExecutionSteering.isDirectCorrection(request), canSteerSelectedRun {
+            sendCorrectionToCurrentRun()
+            return
+        }
         if !isRunning, ["자료 연결 해제", "detach source"].contains(request.precomposedStringWithCanonicalMapping.lowercased()) {
             sessions[index].sourceContext = nil
             sessions[index].sourceContextVersion = 2
@@ -3686,11 +3795,21 @@ private final class SessionStore: ObservableObject {
             claudeCapacity: sessions[index].effectiveClaudeCapacity
         )
         submission.configuredProvider = configuredProvider
+        if ExecutionSteering.isDirectCorrection(request), let active = inFlightSubmissions[submission.sessionID] {
+            // If the native turn is not accepting input yet/already finishing,
+            // keep this as an amendment of that task, not a standalone query.
+            submission.amendedRequest = active.executionRequest
+        } else if ExecutionSteering.isDirectCorrection(request),
+                  let objective = sessions[index].taskContext?.objective.requestText, !objective.isEmpty {
+            submission.amendedRequest = objective
+        }
         if isSessionRunning(submission.sessionID) || activeRuns.count >= Self.maximumConcurrentSessions ||
             sessions[index].queuePaused == true ||
             queuedSubmissions.contains(where: { $0.sessionID == submission.sessionID }) {
             queuedSubmissions.append(submission)
-            statusText = "대기열에 추가됨 · 이 대화 \(selectedSessionQueueCount)개 대기"
+            statusText = submission.amendedRequest == nil
+                ? "대기열에 추가됨 · 이 대화 \(selectedSessionQueueCount)개 대기"
+                : "정정 보존됨 · 현재 턴이 입력을 받으면 전달하며, 불가능하면 같은 목표의 후속 작업으로 이어갑니다"
             save()
             runNextQueuedSubmissionIfNeeded()
             return
@@ -3700,13 +3819,80 @@ private final class SessionStore: ObservableObject {
     }
 
     var primaryAction: ComposerPrimaryAction {
-        .resolve(draft: composer, running: isRunning, stopping: isStopping, voice: voiceDictation.phase)
+        let normal = ComposerPrimaryAction.resolve(draft: composer, running: isRunning, stopping: isStopping, voice: voiceDictation.phase)
+        return normal == .queue && canSteerSelectedRun && ExecutionSteering.isDirectCorrection(composer) ? .steer : normal
+    }
+
+    private var steeringMailbox: ExecutionSteering {
+        ExecutionSteering(root: customStorageRoot?.appendingPathComponent("run-steering"))
+    }
+    var canSteerSelectedRun: Bool {
+        selectedSessionID.map(canSteer) ?? false
+    }
+    private func canSteer(_ id: UUID) -> Bool {
+        guard let active = activeRuns[id], !active.cancellationRequested,
+              active.provider == .codex, steeringMailbox.active(active.submissionID) != nil,
+              active.activity.phase == .executing,
+              let context = sessions.first(where: { $0.id == id })?.taskContext else { return false }
+        if let revision = active.correctionRevision { return revision == context.latestSemanticRevision }
+        return active.handedRevision.map { context.acceptsLateResult(fromRevision: $0) } ?? false
+    }
+    func sendCorrectionToCurrentRun() {
+        let text = composer.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let id = selectedSessionID else { return }
+        if deliverCorrection(text, conversationID: id) { composer = ""; save() }
+    }
+    @discardableResult
+    private func deliverCorrection(_ text: String, conversationID: UUID, inputID: UUID = UUID()) -> Bool {
+        guard !text.isEmpty, canSteer(conversationID), let index = sessions.firstIndex(where: { $0.id == conversationID }),
+              let active = activeRuns[conversationID] else { return false }
+        let input = SteeringInput(id: inputID, submissionID: active.submissionID, text: text)
+        do {
+            try steeringMailbox.enqueue(input)
+            let id = sessions[index].id
+            if var pending = inFlightSubmissions[id] {
+                pending.correctionIDs = (pending.correctionIDs ?? []) + [input.id]
+                pending.liveCorrections = (pending.liveCorrections ?? []) + [text]
+                inFlightSubmissions[id] = pending
+            }
+            sessions[index].messages.append(ChatMessage(id: input.id, role: .user, text: text))
+            sessions[index].taskContext?.decideSemantic("User correction to current task: " + text)
+            activeRuns[id]?.correctionRevision = sessions[index].taskContext?.latestSemanticRevision
+            sessions[index].updatedAt = Date()
+            // Commit queue removal and its replacement user message together.
+            queuedSubmissions.removeAll { $0.sessionID == id && $0.userMessageID == input.id }
+            sessionStatuses[id] = "정정 전달 확인 중 · 현재 작업에 연결했습니다"
+            if selectedSessionID == id { statusText = sessionStatuses[id]! }
+            appendTaskEvent(conversationID: id, kind: "correction_requested", summary: input.id.uuidString + " " + text)
+            save()
+            return true
+        } catch { alertMessage = error.localizedDescription; return false }
+    }
+    private func promoteQueuedCorrections(_ id: UUID) {
+        guard canSteer(id) else { return }
+        for correction in queuedSubmissions.filter({ $0.sessionID == id && $0.amendedRequest != nil }) {
+            guard !editingQueueIDs.contains(correction.id), !pausedQueueIDs.contains(correction.id),
+                  sessions.first(where: { $0.id == id })?.queuePaused != true else { continue }
+            _ = deliverCorrection(correction.request, conversationID: id, inputID: correction.userMessageID)
+        }
+    }
+
+    var correctionDeliveryLabel: String? {
+        guard let id = selectedSessionID, let active = activeRuns[id],
+              let ids = inFlightSubmissions[id]?.correctionIDs, !ids.isEmpty else { return nil }
+        let inputs = steeringMailbox.inputs(active.submissionID).filter { ids.contains($0.id) }
+        let states = inputs.map { steeringMailbox.receipt($0)?.state }
+        if states.contains(where: { $0 == .rejected }) { return "정정 전달 거절됨 · 원문 보존 · 완료로 처리하지 않습니다" }
+        if states.count == ids.count && states.allSatisfy({ $0 == .accepted || $0 == .persisted }) {
+            return "현재 작업에 정정 전달됨 · 이미 실행된 변경은 되돌리지 않습니다"
+        }
+        return "정정 전달 확인 중 · 현재 작업에 연결했습니다"
     }
 
     func performPrimaryAction(now: Date = Date()) {
         guard let id = selectedSessionID else { return }
         switch primaryAction {
-        case .send, .queue:
+        case .send, .queue, .steer:
             primarySubmissionTimes[id] = now
             // Dictation completion must call send(), never re-evaluate Stop.
             send()
@@ -3738,12 +3924,13 @@ private final class SessionStore: ObservableObject {
         var taskContext = migratedTaskContext(sessions[index], sourceContext: sessions[index].sourceContext)
         if submission.recoveryParentID == nil && !(submission.sourceRetryIdentity != nil && existingUserMessage &&
             taskContext.objective.requestText == submission.request) {
-        for decision in TaskContext.explicitDecisions(in: submission.request) { taskContext.decideSemantic(decision) }
-        let resolution = ScopeResolution.resolve(submission.request)
-        taskContext.setObjective(TaskContext.Objective(requestText: submission.request,
-            kind: TaskContext.ObjectiveKind.classify(submission.request),
-            scope: submission.readOnlyReconciliation == true || PreparationIntent.detect(submission.request)?.modifies == false ? .readOnly : resolution.scope,
-            prohibitions: resolution.prohibitions))
+        for decision in TaskContext.explicitDecisions(in: submission.executionRequest) { taskContext.decideSemantic(decision) }
+        let resolution = ScopeResolution.resolve(submission.executionRequest)
+        taskContext.setObjective(TaskContext.Objective(requestText: submission.executionRequest,
+            kind: TaskContext.ObjectiveKind.classify(submission.executionRequest),
+            scope: submission.amendedRequest != nil ? taskContext.objective.scope :
+                (submission.readOnlyReconciliation == true || PreparationIntent.detect(submission.executionRequest)?.modifies == false ? .readOnly : resolution.scope),
+            prohibitions: Array(Set(resolution.prohibitions + (submission.amendedRequest != nil ? taskContext.objective.prohibitions : []))).sorted()))
         sessions[index].taskContext = taskContext
         appendTaskEvent(conversationID: sessions[index].id, kind: "objective", summary: submission.request)
         }
@@ -3783,6 +3970,15 @@ private final class SessionStore: ObservableObject {
         if selectedSessionID == submission.sessionID { statusText = startingStatus }
         save()
 
+        Task { @MainActor [weak self] in
+            while let self, self.activeRuns[submission.sessionID]?.submissionID == submission.id {
+                if self.queuedSubmissions.contains(where: { $0.sessionID == submission.sessionID && $0.amendedRequest != nil }) {
+                    self.promoteQueuedCorrections(submission.sessionID)
+                }
+                try? await Task.sleep(for: .milliseconds(250))
+            }
+        }
+
         Task {
             do {
                 // Selection-triggered ingestion may still be reading when the
@@ -3792,9 +3988,10 @@ private final class SessionStore: ObservableObject {
                 let bindings = sessions[currentIndex].taskContext?.bindings ?? []
                 let held = Set(sessions[currentIndex].messages.filter { $0.role == .user || $0.role == .assistant }.map { NativeIngestion.digestOf($0.text) })
                 let seen = Set(sessions[currentIndex].messages.compactMap(\.nativeIngestedID))
+                let owned = Set(sessions[currentIndex].ownedCodexTurnIDs ?? [])
                 if customStorageRoot == nil, !bindings.isEmpty {
                     let records = await Task.detached(priority: .utility) {
-                        Self.readBoundNativeRecords(bindings, held: held, seen: seen)
+                        Self.readBoundNativeRecords(bindings, held: held, seen: seen, ownedCodexTurns: owned)
                     }.value
                     guard activeRuns[submission.sessionID]?.submissionID == submission.id else { return }
                     applyIngestedRecords(records, conversationID: submission.sessionID, preparingSubmission: submission.id)
@@ -3808,6 +4005,7 @@ private final class SessionStore: ObservableObject {
                             guard let self, self.activeRuns[submission.sessionID]?.submissionID == submission.id else { return }
                             self.activeRuns[submission.sessionID]?.activity = activity
                             self.activeRuns[submission.sessionID]?.provider = activity.provider.flatMap(ProviderChoice.init(rawValue:))
+                            self.promoteQueuedCorrections(submission.sessionID)
                             if let nativeID = activity.nativeSessionID,
                                let provider = activity.provider.flatMap(ProviderChoice.init(rawValue:)) {
                                 self.recordNativeSession(provider, id: nativeID, conversationID: submission.sessionID)
@@ -3828,7 +4026,12 @@ private final class SessionStore: ObservableObject {
                 }
                 let handedRevision = activeRuns[submission.sessionID]?.handedRevision
                 let currentSubmission = activeRuns[submission.sessionID]?.submissionID == submission.id
-                let semanticallyCurrent = handedRevision.map { sessions[target].taskContext?.acceptsLateResult(fromRevision: $0) ?? true } ?? true
+                let corrections = inFlightSubmissions[submission.sessionID]?.correctionIDs ?? []
+                let correctionsVerified = !corrections.isEmpty && Set(corrections) == Set(summary.persistedCorrectionIDs ?? []) &&
+                    activeRuns[submission.sessionID]?.correctionRevision == sessions[target].taskContext?.latestSemanticRevision
+                let semanticallyCurrent = corrections.isEmpty
+                    ? (handedRevision.map { sessions[target].taskContext?.acceptsLateResult(fromRevision: $0) ?? true } ?? true)
+                    : correctionsVerified
                 if !currentSubmission || !semanticallyCurrent {
                     // A result arriving after a newer request or decision is
                     // preserved verbatim and never adopted as the current answer.
@@ -3845,6 +4048,11 @@ private final class SessionStore: ObservableObject {
                     appendTaskEvent(conversationID: submission.sessionID, kind: "late_result_preserved",
                         summary: "submission \(submission.id.uuidString.lowercased()) handed revision \(handedRevision ?? -1)")
                     if currentSubmission { sessionStatuses[submission.sessionID] = "늦은 결과 보존 · 채택 안 함" }
+                    if !corrections.isEmpty {
+                        sessions[target].lastFailure = inFlightSubmissions[submission.sessionID]
+                        sessions[target].messages.append(ChatMessage(role: .system,
+                            text: "정정이 현재 작업에 전달됐는지 확인하지 못했습니다. 기존 결과와 정정을 보존했고 변경을 재실행하지 않았습니다."))
+                    }
                 } else {
                 if summary.status == "source_pending", let result = summary.taskContext,
                    result.conversationID == submission.sessionID, result.sourcePreparation?.canLookForRegistration == true,
@@ -3893,6 +4101,10 @@ private final class SessionStore: ObservableObject {
                         summary: visibleSteps.map { "\($0.provider) \($0.action)" }.joined(separator: ", "))
                 }
                 for step in visibleSteps {
+                    if step.provider == "codex", let record = step.nativeRecord, record.isVerified,
+                       let turn = record.turnID, UUID(uuidString: turn) != nil {
+                        sessions[target].ownedCodexTurnIDs = Array(Set((sessions[target].ownedCodexTurnIDs ?? []) + [turn])).sorted()
+                    }
                     if let provider = ProviderChoice(rawValue: step.provider) {
                         recordNativeSession(provider, id: step.sessionID, conversationID: submission.sessionID)
                     }
@@ -3924,6 +4136,10 @@ private final class SessionStore: ObservableObject {
                     ))
                 }
                 sessions[target].updatedAt = Date()
+                if correctionsVerified {
+                    sessions[target].messages.append(ChatMessage(role: .system,
+                        text: "정정 \(corrections.count)건의 현재 턴 전달과 백엔드 기록을 확인했습니다."))
+                }
                 let allVerified = !visibleSteps.isEmpty && visibleSteps.allSatisfy(stepRecordIsVerified)
                 sessionStatuses[submission.sessionID] = allVerified
                     ? "답변 수신 · 실행 기록 확인됨"
@@ -3940,7 +4156,7 @@ private final class SessionStore: ObservableObject {
                 }
             } catch {
                 if let target = sessions.firstIndex(where: { $0.id == submission.sessionID }) {
-                    if submission.recoveryParentID == nil { sessions[target].lastFailure = submission }
+                    if submission.recoveryParentID == nil { sessions[target].lastFailure = inFlightSubmissions[submission.sessionID] ?? submission }
                     if submission.recoveryParentID == nil, let failure = error as? RunnerError, case .backend(let notice) = failure {
                         sessions[target].lastBackendFailure = notice
                         if notice.deliveryID == nil, let progress = notice.publicProgress, !progress.isEmpty {
@@ -4032,13 +4248,14 @@ private final class SessionStore: ObservableObject {
         let bindings = context.bindings
         let held = Set(sessions[index].messages.filter { $0.role == .user || $0.role == .assistant }.map { NativeIngestion.digestOf($0.text) })
         let seen = Set(sessions[index].messages.compactMap(\.nativeIngestedID))
-        Task.detached(priority: .utility) { [bindings, held, seen] in
-            let finished = Self.readBoundNativeRecords(bindings, held: held, seen: seen)
+        let owned = Set(sessions[index].ownedCodexTurnIDs ?? [])
+        Task.detached(priority: .utility) { [bindings, held, seen, owned] in
+            let finished = Self.readBoundNativeRecords(bindings, held: held, seen: seen, ownedCodexTurns: owned)
             await MainActor.run { self.applyIngestedRecords(finished, conversationID: conversationID) }
         }
     }
 
-    nonisolated private static func readBoundNativeRecords(_ bindings: [TaskContext.BackendBinding], held: Set<String>, seen: Set<String>) -> [NativeIngestionOutcome] {
+    nonisolated private static func readBoundNativeRecords(_ bindings: [TaskContext.BackendBinding], held: Set<String>, seen: Set<String>, ownedCodexTurns: Set<String>) -> [NativeIngestionOutcome] {
             var outcome: [NativeIngestionOutcome] = []
             for binding in bindings {
                 guard let provider = ProviderChoice(rawValue: binding.provider), provider != .auto,
@@ -4048,12 +4265,14 @@ private final class SessionStore: ObservableObject {
                 let all = transcript.enumerated().compactMap { item -> NativeRecord? in
                     guard item.element.role == .user || item.element.role == .assistant else { return nil }
                     return NativeRecord(id: "\(binding.provider):\(item.element.id)", ordinal: item.element.ordinal ?? item.offset,
-                                        role: item.element.role.rawValue, text: item.element.text, complete: item.element.complete)
+                                        role: item.element.role.rawValue, text: item.element.text, complete: item.element.complete,
+                                        turnID: item.element.turnID)
                 }
                 // Store the complete native history locally; the provider
                 // handoff has its own byte budget. Do not silently lose the
                 // original objective on the first synchronization.
-                let fresh = NativeIngestion.newRecords(all, after: binding.lastIngestedCursor, sentByOS1: held, seen: seen)
+                let fresh = NativeIngestion.newRecords(all, after: binding.lastIngestedCursor, sentByOS1: held, seen: seen,
+                    ownedTurnIDs: binding.provider == "codex" ? ownedCodexTurns : [])
                 outcome.append(NativeIngestionOutcome(binding: binding, records: fresh.records, cursor: fresh.nextCursor))
             }
             return outcome
@@ -4071,7 +4290,10 @@ private final class SessionStore: ObservableObject {
                 $0.provider == item.binding.provider && $0.nativeSessionID == item.binding.nativeSessionID
             }) else { continue }
             let known = Set(sessions[index].messages.compactMap(\.nativeIngestedID))
+            let previousCount = ingestedCount
             for record in item.records where !known.contains(record.id) {
+                if item.binding.provider == "codex", let turn = record.turnID,
+                   sessions[index].ownedCodexTurnIDs?.contains(turn) == true { continue }
                 sessions[index].messages.insert(ChatMessage(role: record.role == "user" ? .user : .assistant, text: record.text,
                     provider: item.binding.provider, nativeRecordVerified: record.role == "user" ? nil : false,
                     nativeIngestedID: record.id), at: insertionIndex)
@@ -4079,9 +4301,10 @@ private final class SessionStore: ObservableObject {
                 ingestedCount += 1
                 changed = true
             }
-            if !item.records.isEmpty {
+            let addedCount = ingestedCount - previousCount
+            if addedCount > 0 {
                 sessions[index].messages.insert(ChatMessage(role: .receipt,
-                    text: "\(providerDisplayName(item.binding.provider)) 앱에서 직접 진행한 기록 \(item.records.count)건을 이 대화에 흡수했습니다 · OS-1 외부 작업, 채택 판정 아님",
+                    text: "\(providerDisplayName(item.binding.provider)) 앱에서 직접 진행한 기록 \(addedCount)건을 이 대화에 흡수했습니다 · OS-1 외부 작업, 채택 판정 아님",
                     provider: item.binding.provider), at: insertionIndex)
                 insertionIndex += 1
             }
@@ -4614,6 +4837,16 @@ private final class SessionStore: ObservableObject {
                 continue // retain original objective/blocker; never replay interrupted recovery on launch
             }
             var recovered = pending
+            // Repair mailbox-before-UI crash window, without dispatch or replay.
+            let corrections = steeringMailbox.inputs(pending.id)
+            if !corrections.isEmpty {
+                recovered.correctionIDs = corrections.map(\.id)
+                recovered.liveCorrections = corrections.map(\.text)
+                for correction in corrections where !sessions[index].messages.contains(where: { $0.id == correction.id }) {
+                    sessions[index].messages.append(ChatMessage(id: correction.id, role: .user, text: correction.text))
+                }
+                queuedSubmissions.removeAll { $0.sessionID == pending.sessionID && corrections.map(\.id).contains($0.userMessageID) }
+            }
             if let result = DeliveryOutbox().forSubmission(pending.id.uuidString) {
                 recovered.deliveryID = result.id
                 let verdict = result.response.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }?["status"] as? String
@@ -4958,6 +5191,14 @@ private struct OS1DesktopApp: App {
         if CommandLine.arguments.contains("--self-test-composer") {
             Task { @MainActor in
                 do { try await composerInteractionSelfTest(); exit(EXIT_SUCCESS) }
+                catch { fputs("\(error.localizedDescription)\n", stderr); exit(EXIT_FAILURE) }
+            }
+            NSApplication.shared.run()
+            exit(EXIT_FAILURE)
+        }
+        if CommandLine.arguments.contains("--self-test-steering") {
+            Task { @MainActor in
+                do { try await steeringInteractionSelfTest(); exit(EXIT_SUCCESS) }
                 catch { fputs("\(error.localizedDescription)\n", stderr); exit(EXIT_FAILURE) }
             }
             NSApplication.shared.run()
@@ -6606,7 +6847,8 @@ private func timelineAttributedDocument(
                     NSFont.systemFont(ofSize: 13, weight: .medium),
                     TimelinePalette.text.withAlphaComponent(0.72)
                 ),
-                ("\u{2028}QUEUED", NSFont.systemFont(ofSize: 9, weight: .bold), TimelinePalette.pink),
+                (submission.amendedRequest == nil ? "\u{2028}QUEUED" : "\u{2028}정정 보존 · 현재 턴 전달 대기 / 불가 시 같은 목표로 이어가기",
+                 NSFont.systemFont(ofSize: 9, weight: .bold), TimelinePalette.pink),
             ]
         )
     }
@@ -7274,6 +7516,14 @@ private struct ComposerView: View {
             if store.selectedSessionQueueCount > 0 || session.queuePaused == true {
                 ConversationQueueView(store: store, session: session)
             }
+            if store.isRunning {
+                TimelineView(.periodic(from: .now, by: 0.5)) { _ in
+                    if let label = store.correctionDeliveryLabel {
+                        Text(label).font(.system(size: 12)).foregroundStyle(Theme.muted)
+                            .frame(maxWidth: .infinity, alignment: .leading).textSelection(.enabled)
+                    }
+                }
+            }
             HStack(alignment: .bottom, spacing: 12) {
                 ClodexComposerEditor(
                     text: $store.composer,
@@ -7303,6 +7553,8 @@ private struct ComposerView: View {
 
                 ComposerPrimaryButton(action: store.primaryAction) { store.performPrimaryAction() }
                     .contextMenu {
+                        Button("현재 작업에 지금 전달") { store.sendCorrectionToCurrentRun() }
+                            .disabled(!store.canSteerSelectedRun || store.composer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                         Button("현재 작업 중지 · ⌘.") { store.cancelSelectedRun() }
                             .disabled(!store.isRunning || store.isStopping)
                     }
@@ -7315,6 +7567,12 @@ private struct ComposerView: View {
             )
             .clipShape(RoundedRectangle(cornerRadius: Theme.radiusComposer, style: .continuous))
             .shadow(color: Color.black.opacity(0.32), radius: 16, y: 8)
+
+            if store.isRunning && !store.composer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                Button("현재 작업에 지금 전달") { store.sendCorrectionToCurrentRun() }
+                    .font(.system(size: 12)).disabled(!store.canSteerSelectedRun)
+                    .help("Codex가 현재 턴의 입력을 받을 때 전달합니다. 일반 Enter는 대기열, ‘그 말이 아니라’ 같은 직접 정정은 현재 턴 전달입니다.")
+            }
 
             HStack {
                 Label(URL(fileURLWithPath: session.workspace).lastPathComponent, systemImage: "folder")

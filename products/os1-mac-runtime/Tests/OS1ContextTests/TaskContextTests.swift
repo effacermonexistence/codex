@@ -281,6 +281,22 @@ func runTaskContextFixtures(root: URL) throws {
         try check(ScopeResolution.resolve("코드 구조 설명해줘. 파일 수정은 하지 마.").prohibitions == ["do not modify files"], "'수정은 하지 마' yields the file prohibition")
     }
 
+    do {
+        let stream = [
+            NativeRecord(id: "old-output", ordinal: 1, role: "assistant", text: "superseded answer", complete: true, turnID: "owned"),
+            NativeRecord(id: "amended-output", ordinal: 2, role: "assistant", text: "latest answer", complete: true, turnID: "owned"),
+            NativeRecord(id: "outside-user", ordinal: 3, role: "user", text: "real external work", complete: true, turnID: "outside"),
+            NativeRecord(id: "outside-answer", ordinal: 4, role: "assistant", text: "in progress", complete: false, turnID: "outside")
+        ]
+        let fresh = NativeIngestion.newRecords(stream, after: nil, sentByOS1: [], seen: [], ownedTurnIDs: ["owned"])
+        try check(fresh.records.map(\.id) == ["outside-user"] && fresh.nextCursor == "3", "owned intermediate answers reimported or external work dropped")
+        let complete = NativeRecord(id: "outside-answer", ordinal: 4, role: "assistant", text: "done", complete: true, turnID: "outside")
+        try check(NativeIngestion.newRecords([complete], after: fresh.nextCursor, sentByOS1: [], seen: [], ownedTurnIDs: ["owned"]).records == [complete],
+            "owned-turn filtering lost later external completion")
+        try check(NativeIngestion.newRecords(Array(stream.prefix(2)), after: nil, sentByOS1: [], seen: [], ownedTurnIDs: []).records.count == 2,
+            "unknown turns were hidden without ownership evidence")
+    }
+
     // MARK: N. Common preparation structure: a second registered project uses the same path
     do {
         let second = PreparationIntent.detect("OS1 앱 수정 좀 하자 준비해")

@@ -70,6 +70,11 @@ check('Parallel conversation execution regression', () => {
   const result = run(binary, ['--self-test-parallel']);
   assert(Number(result.match(/Parallel sessions: (\d+) checks passed/)?.[1]) >= 35);
 });
+check('Live corrections and ordinary queue separation', () => {
+  const result = run(binary, ['--self-test-steering']);
+  assert(Number(result.match(/Live corrections: (\d+) checks passed/)?.[1]) >= 20);
+  assert(result.includes('model calls 0'));
+});
 for (const provider of ['claude', 'codex']) {
   const id = sessions.find(session => session[provider + 'SessionID'])?.[provider + 'SessionID'];
   check(`Actual ${provider} record uses the stored conversation ID`, () => {

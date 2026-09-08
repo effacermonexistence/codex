@@ -738,8 +738,10 @@ public struct NativeRecord: Equatable, Sendable {
     public let role: String
     public let text: String
     public let complete: Bool
-    public init(id: String, ordinal: Int, role: String, text: String, complete: Bool) {
+    public let turnID: String?
+    public init(id: String, ordinal: Int, role: String, text: String, complete: Bool, turnID: String? = nil) {
         self.id = id; self.ordinal = ordinal; self.role = role; self.text = text; self.complete = complete
+        self.turnID = turnID
     }
 }
 
@@ -747,7 +749,7 @@ public struct NativeRecord: Equatable, Sendable {
 /// and never promotes partial or cancelled output to a completed statement.
 public enum NativeIngestion {
     public static func newRecords(_ all: [NativeRecord], after cursor: String?, sentByOS1 digests: Set<String>,
-                                  seen: Set<String>) -> (records: [NativeRecord], nextCursor: String?) {
+                                  seen: Set<String>, ownedTurnIDs: Set<String> = []) -> (records: [NativeRecord], nextCursor: String?) {
         let start = cursor.flatMap(Int.init) ?? -1
         var out: [NativeRecord] = []
         var last = start
@@ -756,6 +758,9 @@ public enum NativeIngestion {
             // complete. Otherwise the next poll permanently loses its answer.
             guard record.complete else { break }
             last = max(last, record.ordinal)
+            // Intermediate answers of our own completed turn remain in the
+            // native record/journal, not a new external task after its final.
+            if let turn = record.turnID, ownedTurnIDs.contains(turn) { continue }
             guard !seen.contains(record.id) else { continue }
             // Anything OS1 already holds verbatim (its own prompts, adopted
             // outputs) is not ingested a second time, whatever the role.

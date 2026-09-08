@@ -554,6 +554,7 @@ struct RunSummary: Codable {
     /// delivery resumes and legacy callers; the app never overwrites a
     /// stored context with nil.
     var taskContext: TaskContext? = nil
+    var persistedCorrectionIDs: [UUID]? = nil
 }
 
 struct ProviderExecution {
@@ -3929,8 +3930,14 @@ final class CodexAppServerClient: @unchecked Sendable {
     private var nextRequestID = 1
     private var closed = false
     private var activeTurn: (thread: String, turn: String)?
+    private var steeringRequests: [Int: SteeringInput] = [:]
+    private let steering: ExecutionSteering
+    private let steeringSubmission: UUID?
 
-    init(executable: String, workspace: String, onLaunch: (() -> Void)? = nil) throws {
+    init(executable: String, workspace: String, onLaunch: (() -> Void)? = nil,
+         steering: ExecutionSteering = ExecutionSteering(), submissionID: UUID? = nil) throws {
+        self.steering = steering
+        self.steeringSubmission = submissionID
         let temporary = FileManager.default.temporaryDirectory
             .appendingPathComponent("os1-codex-app-server-\(UUID().uuidString).stderr")
         FileManager.default.createFile(atPath: temporary.path, contents: nil)
@@ -3970,7 +3977,7 @@ final class CodexAppServerClient: @unchecked Sendable {
         _ = try request(
             "initialize",
             params: [
-                "clientInfo": ["name": "OS-1 CLODEX", "version": "0.9.33"],
+                "clientInfo": ["name": "OS-1 CLODEX", "version": "0.9.34"],
                 "capabilities": ["experimentalApi": true],
             ],
             deadline: deadline
@@ -4176,7 +4183,11 @@ final class CodexAppServerClient: @unchecked Sendable {
             throw OS1Error.message("Codex did not start a persistent desktop turn")
         }
         activeTurn = (threadID, turnID)
-        defer { activeTurn = nil }
+        defer {
+            activeTurn = nil
+            if let id = steeringSubmission { steering.close(id) }
+        }
+        if let id = steeringSubmission { try steering.open(submissionID: id, threadID: threadID, turnID: turnID) }
         let output = try waitForTurn(threadID: threadID, turnID: turnID, deadline: deadline)
         return CodexTurnOutput(turnID: turnID, output: output)
     }
@@ -4189,7 +4200,8 @@ final class CodexAppServerClient: @unchecked Sendable {
         threadID: String,
         turnID: String,
         finalAnswer: String,
-        deadline: Date
+        deadline: Date,
+        correctionTexts: [String] = []
     ) throws -> String {
         let read = try request(
             "thread/read",
@@ -4214,7 +4226,7 @@ final class CodexAppServerClient: @unchecked Sendable {
                 params: ["threadId": threadID, "limit": 20, "itemsView": "full", "sortDirection": "desc"],
                 deadline: deadline
             )
-            if codexTurnIsPersisted(listed["data"], turnID: turnID, finalAnswer: finalAnswer) { break }
+            if codexTurnIsPersisted(listed["data"], turnID: turnID, finalAnswer: finalAnswer, correctionTexts: correctionTexts) { break }
             attempts += 1
             guard attempts < 12, Date() < deadline else {
                 throw OS1Error.message("Codex turn is missing from the persisted turn list")
@@ -4391,10 +4403,36 @@ final class CodexAppServerClient: @unchecked Sendable {
                 }
                 throw OS1Error.backendBlocked(.cancelled)
             }
+            // This same response consumer owns turn/start, steering replies and
+            // notifications. Never introduce a second reader or a second turn.
+            if let activeTurn, let submission = steeringSubmission {
+                for correction in steering.inputs(submission) where steering.receipt(correction) == nil {
+                    if protectedRouteMaterialInEvidence(correction.text) {
+                        try steering.record(correction, state: .rejected, threadID: activeTurn.thread, turnID: activeTurn.turn)
+                        continue
+                    }
+                    let id = nextRequestID; nextRequestID += 1
+                    // Persist before transport. Unknown delivery is not retried.
+                    try steering.record(correction, state: .sending, threadID: activeTurn.thread, turnID: activeTurn.turn)
+                    steeringRequests[id] = correction
+                    try send(["jsonrpc": "2.0", "id": id, "method": "turn/steer", "params": [
+                        "threadId": activeTurn.thread, "expectedTurnId": activeTurn.turn,
+                        "input": [["type": "text", "text": correction.text]],
+                    ]])
+                }
+            }
             lock.lock()
             if !messages.isEmpty {
                 let message = messages.removeFirst()
                 lock.unlock()
+                if let id = (message["id"] as? NSNumber)?.intValue,
+                   let correction = steeringRequests.removeValue(forKey: id), let activeTurn {
+                    let accepted = message["error"] == nil &&
+                        (message["result"] as? [String: Any])?["turnId"] as? String == activeTurn.turn
+                    try steering.record(correction, state: accepted ? .accepted : .rejected,
+                        threadID: activeTurn.thread, turnID: activeTurn.turn)
+                    continue
+                }
                 return message
             }
             lock.unlock()
@@ -4438,13 +4476,20 @@ func codexThreadNeedsDesktopMigration(source: Any?) -> Bool {
 
 /// True when a `thread/turns/list` payload contains the completed turn whose
 /// agent message carries the answer OS-1 is about to report.
-func codexTurnIsPersisted(_ turns: Any?, turnID: String, finalAnswer: String) -> Bool {
+func codexTurnIsPersisted(_ turns: Any?, turnID: String, finalAnswer: String, correctionTexts: [String] = []) -> Bool {
     guard let turns = turns as? [[String: Any]] else { return false }
     let wanted = finalAnswer.trimmingCharacters(in: .whitespacesAndNewlines)
     return turns.contains { turn in
         guard turn["id"] as? String == turnID,
               turn["status"] as? String == "completed",
               let items = turn["items"] as? [[String: Any]] else { return false }
+        var userTexts = items.filter { $0["type"] as? String == "userMessage" }.flatMap { item in
+            (item["content"] as? [[String: Any]] ?? []).compactMap { $0["text"] as? String }
+        }
+        for text in correctionTexts {
+            guard let index = userTexts.firstIndex(of: text) else { return false }
+            userTexts.remove(at: index)
+        }
         return items.contains { item in
             item["type"] as? String == "agentMessage" &&
                 (item["text"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) == wanted
@@ -4743,7 +4788,7 @@ private func execute(
         // first turn. Once the process starts, absent local diffs cannot prove
         // that replaying a write-profile objective would be safe.
         let appServer = try CodexAppServerClient(executable: codex, workspace: workspace,
-            onLaunch: { onDispatch?(expectedSessionID) })
+            onLaunch: { onDispatch?(expectedSessionID) }, submissionID: ExecutionSteering.currentSubmission)
         defer { appServer.close() }
         try appServer.initialize(deadline: deadline)
         let actualSessionID = try appServer.startOrResumeThread(
@@ -4785,7 +4830,21 @@ private func execute(
             try reader.initialize(deadline: readDeadline)
             recordPath = try reader.verifyPersistedTurn(
                 threadID: actualSessionID, turnID: turn.turnID,
-                finalAnswer: String(decoding: turn.output, as: UTF8.self), deadline: readDeadline)
+                finalAnswer: String(decoding: turn.output, as: UTF8.self), deadline: readDeadline,
+                correctionTexts: ExecutionSteering.currentSubmission.map { id in
+                    let mailbox = ExecutionSteering()
+                    return mailbox.inputs(id).filter {
+                        let receipt = mailbox.receipt($0)
+                        return receipt?.state == .accepted && receipt?.turnID == turn.turnID
+                    }.map(\.text)
+                } ?? [])
+            if let submission = ExecutionSteering.currentSubmission {
+                let mailbox = ExecutionSteering()
+                for correction in mailbox.inputs(submission) where mailbox.receipt(correction)?.state == .accepted &&
+                    mailbox.receipt(correction)?.turnID == turn.turnID {
+                    try mailbox.record(correction, state: .persisted, threadID: actualSessionID, turnID: turn.turnID)
+                }
+            }
             if let recordPath,
                let size = try? FileManager.default.attributesOfItem(atPath: recordPath)[.size] as? NSNumber,
                size.intValue <= 64_000_000,
@@ -4795,24 +4854,29 @@ private func execute(
         } catch {
             persistence = "unverified: \(error)"
         }
+        let correctedObjective = ExecutionSteering.currentSubmission.map { id in
+            let mailbox = ExecutionSteering()
+            return mailbox.inputs(id).filter { mailbox.receipt($0)?.state == .persisted }
+                .reduce(lockedObjective) { ExecutionSteering.continuation(original: $0, correction: $1.text) }
+        } ?? lockedObjective
         validateCandidate = {
-        if UnifiedExecution.requestsManualBackendHandoff(String(decoding: turn.output, as: UTF8.self), request: lockedObjective) {
+        if UnifiedExecution.requestsManualBackendHandoff(String(decoding: turn.output, as: UTF8.self), request: correctedObjective) {
             throw OS1Error.backendBlocked(BackendBlocker.reported(in: String(decoding: turn.output, as: UTF8.self)) ?? .incomplete)
         }
-        guard !providerOutputDeclaresCapabilityFailure(turn.output, prompt: lockedObjective) else {
+        guard !providerOutputDeclaresCapabilityFailure(turn.output, prompt: correctedObjective) else {
             throw OS1Error.backendBlocked(BackendBlocker.reported(in: String(decoding: turn.output, as: UTF8.self)) ?? .capabilityUnavailable)
         }
-        let presentationIssues = outputContractIssues(turn.output, prompt: lockedObjective, snapshotOnly: hasPreloadedR2Evidence)
+        let presentationIssues = outputContractIssues(turn.output, prompt: correctedObjective, snapshotOnly: hasPreloadedR2Evidence)
         guard presentationIssues.isEmpty else {
             throw OS1Error.message("Codex answer failed presentation/structure checks: " + presentationIssues.joined(separator: " ") + " This candidate was not adopted.")
         }
-        guard !providerOutputReplacedTaskWithControlChatter(turn.output, prompt: lockedObjective) else {
+        guard !providerOutputReplacedTaskWithControlChatter(turn.output, prompt: correctedObjective) else {
             throw OS1Error.message("Codex replaced the locked objective with control-channel commentary. This candidate was not adopted.")
         }
         if sourceUseRequired, let preloadedR2Evidence,
            !outputSatisfiesPreloadedR2Evidence(
                turn.output,
-               prompt: objectivePrompt ?? prompt,
+               prompt: correctedObjective,
                requiredMarkers: preloadedR2Evidence.requiredOutputMarkers,
                contentAnchors: preloadedR2Evidence.contentAnchors,
                sourcePaths: preloadedR2Evidence.sources.compactMap { $0["source_path"] },
@@ -5505,7 +5569,9 @@ private func recordCompletionAttempt(store: CompletionFeedbackStore, scope: Comp
     do {
         try store.record(scope: scope, observation: CompletionFeedbackObservation(
             executionID: ticket.executionID, sequence: ticket.sequence, provider: ticket.provider,
-            model: model, effort: effort, outcome: outcome, usage: usage,
+            model: model, effort: effort,
+            outcome: ExecutionSteering.currentSubmission.map { !ExecutionSteering().inputs($0).isEmpty } == true
+                ? .verificationUnavailable : outcome, usage: usage,
             durationMS: min(3_600_000, max(0, Int(Date().timeIntervalSince(startedAt) * 1_000)))))
     } catch {
         // A corrupt/unwritable telemetry file must not destroy the objective
@@ -5719,7 +5785,8 @@ func runTask(
             provider: adopted.last?.provider ?? "local", stage: "adopted", startedAt: objectiveStartedAt, endedAt: Date(),
             sideEffects: adopted.allSatisfy({ $0.permissionProfile == "read_only" }) ? .none : .unknown,
             adoption: .adopted, contextRevision: taskContext.latestSemanticRevision))
-        return RunSummary(status: "complete", steps: adopted, sourceContext: sourceContext, taskContext: finished)
+        return RunSummary(status: "complete", steps: adopted, sourceContext: sourceContext, taskContext: finished,
+            persistedCorrectionIDs: ExecutionSteering.currentSubmission.map { ExecutionSteering().persistedIDs($0) })
     }
     let key = try SigningKey.loadOrCreate()
     let id = try deviceID()
@@ -6107,6 +6174,10 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
             outcome: revasDisposition == "adopted" ? .adopted : completionFailureOutcome(attemptFailure),
             usage: attemptUsage, startedAt: attemptStartedAt, source: sourceContext)
         attemptRecorded = true
+        if revasDisposition != "adopted",
+           ExecutionSteering.currentSubmission.map({ !ExecutionSteering().inputs($0).isEmpty }) == true {
+            throw OS1Error.message("정정이 포함된 현재 턴의 결과 검증이 끝나지 않았습니다. 입력과 결과를 보존했으며 원래 요청을 자동 재실행하지 않았습니다.")
+        }
         if revasDisposition != "adopted" { failedCandidates.insert(candidateKey) }
         if revasDisposition != "adopted",
            !BackendRecovery.permitsAutomaticReplay(permission: ticket.permissionProfile, stage: dispatchStage) {
@@ -6295,7 +6366,81 @@ func doctor() throws {
     print("GitHub, Codex, Claude: available")
 }
 
+func steeringProtocolSelfTest() throws {
+    var checks = 0
+    func check(_ ok: Bool, _ message: String) throws {
+        guard ok else { throw OS1Error.message("Steering protocol: " + message) }; checks += 1
+    }
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("os1-steering-wire-" + UUID().uuidString)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+    defer { try? FileManager.default.removeItem(at: root) }
+    let mailbox = ExecutionSteering(root: root.appendingPathComponent("mailbox"))
+    for mode in ["accepted", "rejected", "wrong-turn", "closed"] {
+        let submission = UUID(), thread = UUID().uuidString, turn = UUID().uuidString
+        let input = SteeringInput(submissionID: submission, text: "그 말이 아니라, 현재 작업의 답변을 바꿔.")
+        try mailbox.enqueue(input)
+        let unrelated = SteeringInput(submissionID: UUID(), text: "another task")
+        try mailbox.enqueue(unrelated)
+        let wire = root.appendingPathComponent(mode + ".json")
+        let peer = root.appendingPathComponent(mode + ".sh")
+        let reply = mode == "rejected" ? #"{"id":2,"error":{"code":-32602,"message":"turn ended"}}"# :
+            "{\"id\":2,\"result\":{\"turnId\":\"\(mode == "wrong-turn" ? "other" : turn)\"}}"
+        try Data("""
+        #!/bin/sh
+        IFS= read -r request
+        printf '%s\\n' '{"id":1,"result":{"turn":{"id":"\(turn)"}}}'
+        IFS= read -r request
+        printf '%s' "$request" > '\(wire.path)'
+        \(mode == "closed" ? "exit 0" : "printf '%s\\n' '\(reply)'")
+        printf '%s\\n' '{"method":"turn/completed","params":{"threadId":"\(thread)","turn":{"id":"\(turn)","status":"completed","items":[{"type":"agentMessage","phase":"final_answer","text":"updated answer"}]}}}'
+        while IFS= read -r ignored; do :; done
+        """.utf8).write(to: peer)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: peer.path)
+        let client = try CodexAppServerClient(executable: peer.path, workspace: root.path, steering: mailbox, submissionID: submission)
+        var output: CodexTurnOutput?
+        do { output = try client.runTurn(threadID: thread, prompt: "original", workspace: root.path,
+            model: nil, effort: "low", permissionProfile: "read_only", deadline: Date().addingTimeInterval(6)) }
+        catch { if mode != "closed" { throw error } }
+        client.close()
+        let request = try JSONSerialization.jsonObject(with: Data(contentsOf: wire)) as! [String: Any]
+        let params = request["params"] as! [String: Any]
+        try check(request["method"] as? String == "turn/steer" && params["threadId"] as? String == thread &&
+            params["expectedTurnId"] as? String == turn && Set(params.keys) == Set(["threadId", "expectedTurnId", "input"]), "wrong turn/authority mutation")
+        try check((params["input"] as? [[String: String]])?.first?["text"] == input.text && mailbox.receipt(unrelated) == nil, "cross-task input")
+        let expected: SteeringReceipt.State = mode == "accepted" ? .accepted : (mode == "closed" ? .sending : .rejected)
+        try check(mailbox.receipt(input)?.state == expected && mailbox.persistedIDs(submission).isEmpty && mailbox.active(submission) == nil,
+            "ACK/persistence/lease distinction")
+        try check((mode == "closed") == (output == nil), "closed pipe fabricated completion")
+        do {
+            try mailbox.record(input, state: .sending, threadID: thread, turnID: turn)
+            throw OS1Error.message("Steering receipt overwritten")
+        } catch { try check(mailbox.receipt(input)?.state == expected, "ambiguous transport was retried") }
+        do { try mailbox.enqueue(input); throw OS1Error.message("duplicate input accepted") }
+        catch { try check(mailbox.inputs(submission).count == 1, "duplicate request mutation") }
+    }
+    let text = "latest correction"
+    let items: [[String: Any]] = [["type": "userMessage", "content": [["type": "text", "text": text]]],
+        ["type": "agentMessage", "text": "answer"]]
+    try check(codexTurnIsPersisted([["id": "turn", "status": "completed", "items": items]],
+        turnID: "turn", finalAnswer: "answer", correctionTexts: [text]), "persisted amendment not recognized")
+    try check(!codexTurnIsPersisted([["id": "turn", "status": "completed", "items": [["type": "agentMessage", "text": text]]]],
+        turnID: "turn", finalAnswer: text, correctionTexts: [text]), "assistant quote minted correction evidence")
+    for value in ["그 말이 아니라, 수정해", "Actually, change this", "정정: 새 조건"] {
+        try check(ExecutionSteering.isDirectCorrection(value), "correction detector missed direct input")
+    }
+    for value in ["일반 후속 질문", "> 그 말이 아니라", "그게 아니라 ```quoted```", "그 말이 아니라 ◉ CLAUDE"] {
+        try check(!ExecutionSteering.isDirectCorrection(value), "quoted/ordinary input interrupted task")
+    }
+    let oversized = SteeringInput(submissionID: UUID(), text: String(repeating: "x", count: 16_001))
+    do { try mailbox.enqueue(oversized) } catch { /* Expected bounded input. */ }
+    try check(mailbox.inputs(oversized.submissionID).isEmpty, "oversize input accepted")
+    let recovered = ExecutionSteering.continuation(original: "Modify fixture; no deployment", correction: "Use context, don't ask again")
+    try check(recovered.contains("Modify fixture; no deployment") && recovered.contains("not a new standalone"), "fallback lost original scope")
+    print("Steering protocol: \(checks) checks passed; native stdio ACK/reject/wrong-turn/EOF/persistence/dedup; model calls 0")
+}
+
 func selfTest() throws {
+    try steeringProtocolSelfTest()
     for request in ["인스타그램 가격 버그 손봐줘", "파일을 수정해. 서버를 변경하지 마."] {
         guard sourceAwareRoutingTask(request, evidence: nil).hasPrefix("Modify workspace files") else {
             throw OS1Error.message("Concrete repair routing scope regression")
@@ -7608,7 +7753,7 @@ struct OS1Main {
             guard let command = arguments.first else { usage(); return }
             if try await fleetCommand(arguments) { return }
             switch command {
-            case "version", "--version", "-V": print("OS-1 Runtime 0.9.33 (queue-context-boundary-build84)")
+            case "version", "--version", "-V": print("OS-1 Runtime 0.9.34 (live-corrections-build85)")
             case "doctor": try doctor()
             case "sidebar-pin":
                 guard (4...5).contains(arguments.count), arguments[1] == "codex",
