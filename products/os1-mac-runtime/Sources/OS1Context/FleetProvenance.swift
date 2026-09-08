@@ -1,7 +1,7 @@
 import Foundation
 
 public enum OS1RuntimeBuild {
-    public static let identity = "0.9.22/73.1-air-native-health-repair-20260907"
+    public static let identity = "0.9.22/73.2-air-native-health-repair-20260907"
 }
 
 public struct FleetRunProvenance: Codable, Sendable {

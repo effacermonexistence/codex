@@ -792,7 +792,13 @@ func promptRequiresShellCapability(_ prompt: String) -> Bool {
     // A complete prohibition is not a request for a shell. Only remove
     // bounded negative clauses; mixed or unrecognized clauses remain
     // conservative, and any following positive action is still inspected.
-    let prohibitedExecution = #"\b(?:do\s+not|don't|never)\s+(?:run|execute)\s+(?:any\s+)?(?:tools?|commands?|shell\s+commands?)(?:\s*,\s*(?:change|modify|edit)\s+(?:any\s+)?files?)?(?:\s*,?\s*(?:or|and)\s+(?:run|execute)\s+(?:any\s+)?(?:tools?|commands?|shell\s+commands?))*\s*(?=[.!?;]|$)"#
+    // Every item must belong to the same narrow negative list. A positive
+    // continuation ("but", "then", an unknown item, etc.) prevents stripping
+    // the clause; a later sentence/semicolon is inspected independently.
+    let prohibitedAction = #"(?:(?:run|execute)\s+(?:any\s+)?(?:(?:write|shell)\s+)?(?:tools?|commands?)|(?:change|modify|edit)\s+(?:any\s+)?files?|(?:alter|change|modify)\s+(?:any\s+)?settings|perform\s+(?:any\s+)?(?:other\s+)?work)"#
+    let prohibitedListSeparator = #"(?:\s*,\s*(?:(?:or|and)\s+)?|\s+(?:or|and)\s+)"#
+    let prohibitedExecution = #"\b(?:do\s+not|don't|don’t|never)\s+"# + prohibitedAction
+        + "(?:" + prohibitedListSeparator + prohibitedAction + #")*\s*(?=[.!?;]|$)"#
     value = value.replacingOccurrences(of: prohibitedExecution, with: "", options: .regularExpression)
     let explicitShell = [
         "bash", "terminal", "shell", "command line", " cli", "cli ", "wrangler", "gh cli",
@@ -6369,7 +6375,19 @@ func selfTest() throws {
         ("exact output with prohibited tools is not a shell demand", !promptRequiresShellCapability("Read-only verification. Do not run tools, change files, or execute commands. Reply with exactly this one line and nothing else: AIR_CLAUDE_FLEET_OK")),
         ("negative command instruction is not a shell demand", !promptRequiresShellCapability("Don't execute any commands. Reply OK.")),
         ("negative shell instruction is not a shell demand", !promptRequiresShellCapability("Never run shell commands; explain the answer.")),
+        ("original negative write-list probe is not a shell demand", !promptRequiresShellCapability("Read-only verification only. Do not change files, run write commands, alter settings, or perform other work. Reply with exactly this one line and nothing else: AIR_CLAUDE_FLEET_OK")),
+        ("negative list supports modified files and conjunction", !promptRequiresShellCapability("Do not modify any files or execute any write commands. Reply OK.")),
+        ("negative list supports comma without final conjunction", !promptRequiresShellCapability("Never alter settings, edit files, run commands. Reply OK.")),
+        ("negative list supports curly apostrophe", !promptRequiresShellCapability("Don’t change files, run shell commands, or perform any other work. Reply OK.")),
+        ("pure requested answer is not a shell demand", !promptRequiresShellCapability("Reply with exactly this one line and nothing else: AIR_CLAUDE_FLEET_OK")),
         ("positive command after prohibition retains demand", promptRequiresShellCapability("Do not execute commands. Run npm test.")),
+        ("positive command after negative list semicolon retains demand", promptRequiresShellCapability("Do not change files, run write commands, or alter settings; run bash verification.")),
+        ("positive command after negative list sentence retains demand", promptRequiresShellCapability("Do not change files, run write commands, alter settings, or perform other work. Then execute npm test.")),
+        ("mixed negative list with but remains constrained", promptRequiresShellCapability("Do not change files, run write commands, or alter settings, but run bash verification.")),
+        ("mixed negative list with then remains constrained", promptRequiresShellCapability("Do not change files, run write commands, then execute commands.")),
+        ("unknown negative list item is not removed", promptRequiresShellCapability("Do not change files, run write commands, or inspect external systems.")),
+        ("conditional negative list is not removed", promptRequiresShellCapability("Do not change files or run commands unless the verification needs them.")),
+        ("same actions without negative prefix retain demand", promptRequiresShellCapability("Change files, run write commands, alter settings, or perform other work.")),
         ("mixed clause remains conservative", promptRequiresShellCapability("Do not run tools, but execute npm test.")),
         ("explicit terminal demand remains constrained", promptRequiresShellCapability("Use the terminal to inspect this repository.")),
         ("incident capability refusal rejected", providerOutputDeclaresCapabilityFailure(

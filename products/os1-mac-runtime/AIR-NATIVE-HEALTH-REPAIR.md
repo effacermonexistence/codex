@@ -1,6 +1,15 @@
 # Air native-execution health repair
 
-Local repair identity: `0.9.22/73.1-air-native-health-repair-20260907`.
+Local repair identity: `0.9.22/73.2-air-native-health-repair-20260907`.
+
+Build 73.2 also synchronizes the heartbeat self-test instead of requiring a
+detached task to start within a fixed 200 ms CI scheduling window. Production
+heartbeat timing is unchanged. The original native-health and rejected-result
+custody fixes remain in force; readiness is not permission to adopt a result.
+The capability preflight also recognizes bounded lists of prohibited actions
+(such as "Do not change files, run write commands, or alter settings") as
+prohibitions. Mixed/conditional clauses and subsequent positive shell requests
+remain constrained, and native read-only permissions are not widened.
 This is an Air-specific continuation of build 73, not the newer Pro release.
 
 ## Boundary

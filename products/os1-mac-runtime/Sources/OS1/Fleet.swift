@@ -719,25 +719,100 @@ private func runFleetHeartbeatPublisher(interval: Duration,
 
 private actor FleetHeartbeatTestCounter {
     var count = 0
+    var publisherStopped = false
+    var slowWorkCompleted = false
     func tick() { count += 1 }
+    func finishPublisher() { publisherStopped = true }
+    func finishSlowWork() { slowWorkCompleted = true }
+}
+
+private actor FleetHeartbeatTestGate {
+    private var opened = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func wait() async {
+        guard !opened else { return }
+        await withCheckedContinuation { waiters.append($0) }
+    }
+
+    func open() {
+        opened = true
+        for waiter in waiters { waiter.resume() }
+        waiters.removeAll()
+    }
+}
+
+private func waitForFleetHeartbeatTest(
+    timeout: Duration,
+    condition: @Sendable () async -> Bool
+) async throws -> Bool {
+    let clock = ContinuousClock()
+    let deadline = clock.now.advanced(by: timeout)
+    while clock.now < deadline {
+        if await condition() { return true }
+        try await Task.sleep(for: .milliseconds(20))
+    }
+    return await condition()
 }
 
 func fleetHeartbeatSelfTest() async throws {
     let counter = FleetHeartbeatTestCounter()
+    let startGate = FleetHeartbeatTestGate()
+    let slowWorkGate = FleetHeartbeatTestGate()
+    let slowWork = Task.detached {
+        await slowWorkGate.wait()
+        await counter.finishSlowWork()
+    }
     let publisher = Task.detached {
+        await startGate.wait()
         await runFleetHeartbeatPublisher(interval: .milliseconds(20)) { await counter.tick() }
+        await counter.finishPublisher()
     }
-    // Represents a slow claim/result/checkout path. It must not own the clock.
-    try await Task.sleep(for: .milliseconds(200))
-    let duringSlowWork = await counter.count
-    publisher.cancel()
-    _ = await publisher.result
-    let stopped = await counter.count
-    try await Task.sleep(for: .milliseconds(60))
-    guard duringSlowWork >= 3, await counter.count == stopped else {
-        throw OS1Error.message("Fleet heartbeat publisher stalled behind work or ignored cancellation")
+    defer { publisher.cancel(); slowWork.cancel() }
+    do {
+        // Deterministically reproduce the old false failure: a healthy task can
+        // start after the parent's 200 ms window. Startup latency is not a stall.
+        try await Task.sleep(for: .milliseconds(200))
+        guard await counter.count == 0 else {
+            throw OS1Error.message("Fleet heartbeat test start gate did not hold the publisher")
+        }
+        await startGate.open()
+        guard try await waitForFleetHeartbeatTest(timeout: .seconds(5), condition: {
+            await counter.count >= 1
+        }) else {
+            throw OS1Error.message("Fleet heartbeat publisher did not start within the test deadline")
+        }
+
+        // Synchronize on actual progress, then prove more publications occur
+        // while a separate claim/result/checkout path remains explicitly held.
+        let firstPublicationCount = await counter.count
+        guard try await waitForFleetHeartbeatTest(timeout: .seconds(5), condition: {
+            await counter.count >= firstPublicationCount + 2
+        }), await counter.slowWorkCompleted == false else {
+            throw OS1Error.message("Fleet heartbeat publisher did not progress independently of held work")
+        }
+
+        publisher.cancel()
+        guard try await waitForFleetHeartbeatTest(timeout: .seconds(3), condition: {
+            await counter.publisherStopped
+        }) else {
+            throw OS1Error.message("Fleet heartbeat publisher ignored cancellation within the test deadline")
+        }
+        _ = await publisher.result
+        let stopped = await counter.count
+        await slowWorkGate.open()
+        _ = await slowWork.result
+        guard await counter.count == stopped else {
+            throw OS1Error.message("Fleet heartbeat publisher published after cancellation completed")
+        }
+    } catch {
+        publisher.cancel()
+        await startGate.open()
+        await slowWorkGate.open()
+        _ = await slowWork.result
+        throw error
     }
-    print("OS1 Fleet heartbeat: 2 checks PASS; slow work does not block publisher, cancellation stops it")
+    print("OS1 Fleet heartbeat: 4 checks PASS; delayed start, independent progress, bounded cancellation, no post-stop publish")
 }
 
 private func fleetWorkspaceIdentity(_ workspace: String) throws -> (String, String, String) {
