@@ -8,7 +8,7 @@
   "preview_urls": false,
   "services": [
     { "binding": "RESULT_EVALUATOR", "service": "os1-result-evaluator" },
-    { "binding": "RCC_V26", "service": "os1-rcc-v26-private-v27" }
+    { "binding": "RCC_V26", "service": "os1-rcc-v26-private-v28" }
   ],
   "r2_buckets": [
     { "binding": "POLICY_BUNDLES", "bucket_name": "omar-active-vault" }
@@ -24,8 +24,8 @@
     { "tag": "v2", "new_sqlite_classes": ["RoutingBudgetState"] }
   ],
   "vars": {
-    "POLICY_BUNDLE_KEY": "os1/policies/38c8349d60ab19f545588802a2657c5d0f56817f171ef2176f0af04cf7e5cdd1.json",
-    "POLICY_BUNDLE_SHA256": "38c8349d60ab19f545588802a2657c5d0f56817f171ef2176f0af04cf7e5cdd1",
+    "POLICY_BUNDLE_KEY": "os1/policies/2b8da0e7cb9f3290bbb97cab07b78673d9e292d9149a0f169c7c4850433ddc2c.json",
+    "POLICY_BUNDLE_SHA256": "2b8da0e7cb9f3290bbb97cab07b78673d9e292d9149a0f169c7c4850433ddc2c",
     "MAX_POLICY_BUNDLE_BYTES": "65536",
     "MAX_ROUTE_STARTS_PER_HOUR": "1200",
     "ROUTING_BUDGET_EPOCH": "rcc-v5"
