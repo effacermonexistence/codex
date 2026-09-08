@@ -1166,6 +1166,83 @@ private func queueForkInteractionSelfTest() async throws {
     print("Queue/fork interactions: \(checks) checks passed; model calls 0; native opens \(opens); real SessionStore FIFO/edit/reorder/pause/recovery/fork/context/restart")
 }
 
+@MainActor
+private func composerInteractionSelfTest() async throws {
+    var checks = 0
+    func check(_ condition: @autoclosure () -> Bool, _ message: String) throws {
+        guard condition() else { throw RunnerError.message("Composer: " + message) }; checks += 1
+    }
+    let fixtures: [(String, Bool, Bool, VoiceDictationPhase, ComposerPrimaryAction)] = [
+        ("", false, false, .idle, .disabledSend), (" \n", false, false, .idle, .disabledSend),
+        ("draft", false, false, .idle, .send), ("", true, false, .idle, .stop),
+        ("draft", true, false, .idle, .queue), ("", true, true, .idle, .stopping),
+        ("draft", true, true, .idle, .queue), ("", false, false, .listening, .send),
+        ("", true, false, .listening, .queue), ("draft", true, true, .listening, .queue),
+        ("draft", true, false, .authorizing, .finalizing),
+        ("draft", true, false, .finalizing, .finalizing),
+        ("", true, false, .transcribing, .finalizing)
+    ]
+    for (draft, running, stopping, voice, expected) in fixtures {
+        try check(ComposerPrimaryAction.resolve(draft: draft, running: running, stopping: stopping, voice: voice) == expected,
+            "state mismatch: \(expected.rawValue)")
+    }
+    try check(!ComposerPrimaryAction.disabledSend.enabled && !ComposerPrimaryAction.stopping.enabled &&
+        !ComposerPrimaryAction.finalizing.enabled, "pending controls must be disabled")
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("os1-composer-" + UUID().uuidString)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    var starts = 0
+    var gate: CheckedContinuation<Void, Never>?
+    let store = SessionStore(storageRoot: root, runOperation: { _, _, _, _, _ in
+        starts += 1
+        await withCheckedContinuation { gate = $0 }
+        throw RunnerError.message("controlled cancellation fixture")
+    })
+    let parent = store.selectedSessionID!, instant = Date()
+    store.composer = "FIRST"; store.performPrimaryAction(now: instant)
+    let submission = store.activeRuns[parent]!.submissionID
+    let marker = ExecutionCancellation.url(submissionID: submission)
+    defer { try? FileManager.default.removeItem(at: marker) }
+    try check(store.primaryAction == .stop && store.composer.isEmpty, "send did not become stop")
+    store.performPrimaryAction(now: instant.addingTimeInterval(0.02))
+    try check(!store.isStopping && !FileManager.default.fileExists(atPath: marker.path), "double click cancelled new run")
+    store.send(); store.send()
+    try check(!store.isStopping && store.queuedSubmissions.isEmpty, "empty Return cancelled or duplicated input")
+    store.composer = "FOLLOW UP"; store.performPrimaryAction(now: instant.addingTimeInterval(1))
+    try check(store.queuedSubmissions.map(\.request) == ["FOLLOW UP"] && store.activeRuns[parent]?.submissionID == submission,
+        "follow-up restarted or replaced active task")
+    store.performPrimaryAction(now: instant.addingTimeInterval(1.02))
+    try check(!store.isStopping, "double queue click cancelled active run")
+    store.createSession(); let other = store.selectedSessionID!
+    let otherSubmission = UUID()
+    store.activeRuns[other] = .init(submissionID: otherSubmission, started: instant,
+        activity: RuntimeActivity(.executing, provider: "claude"), provider: .claude)
+    store.select(parent); store.composer = "saved draft"
+    store.cancelSelectedRun() // Explicit stop remains available even with a draft.
+    let before = try FileManager.default.attributesOfItem(atPath: marker.path)[.modificationDate] as? Date
+    store.cancelSelectedRun()
+    let after = try FileManager.default.attributesOfItem(atPath: marker.path)[.modificationDate] as? Date
+    try check(store.isStopping && before == after, "repeated stop rewrote cancellation")
+    try check(store.composer == "saved draft" && store.queuedSubmissions.map(\.request) == ["FOLLOW UP"] &&
+        store.activeRuns[other]?.cancellationRequested == false &&
+        !FileManager.default.fileExists(atPath: ExecutionCancellation.url(submissionID: otherSubmission).path),
+        "stop damaged draft, queue or another session")
+    store.performPrimaryAction(now: instant.addingTimeInterval(2))
+    try check(store.queuedSubmissions.map(\.request) == ["FOLLOW UP", "saved draft"] && store.primaryAction == .stopping,
+        "stopping lost follow-up input or allowed duplicate stop")
+    let deadline = Date().addingTimeInterval(8)
+    while gate == nil && Date() < deadline { try await Task.sleep(for: .milliseconds(10)) }
+    try check(gate != nil && starts == 1, "unexpected provider dispatch count")
+    gate?.resume(); gate = nil
+    while store.isSessionRunning(parent) && Date() < deadline { try await Task.sleep(for: .milliseconds(10)) }
+    try check(!store.isSessionRunning(parent) && starts == 1 && store.queuedSubmissions.count == 2,
+        "cancel/failure did not hold dependents")
+    store.activeRuns.removeValue(forKey: other)
+    try check(composerReturnAction(shiftPressed: false) == .send && composerReturnAction(shiftPressed: true) == .newline,
+        "Return/Shift Return changed")
+    print("Unified composer: \(checks) checks passed; model calls 0; state/voice/double-click/FIFO/targeted-stop/draft/holds")
+}
+
 private func composerReturnAction(shiftPressed: Bool) -> ComposerReturnAction {
     shiftPressed ? .newline : .send
 }
@@ -1187,6 +1264,45 @@ private enum VoiceDictationPhase: Equatable {
     case listening
     case finalizing
     case transcribing
+}
+
+private enum ComposerPrimaryAction: String, CaseIterable {
+    case disabledSend, send, queue, stop, stopping, finalizing
+
+    static func resolve(draft: String, running: Bool, stopping: Bool, voice: VoiceDictationPhase) -> Self {
+        if [.authorizing, .finalizing, .transcribing].contains(voice) { return .finalizing }
+        if voice == .listening || !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return running ? .queue : .send
+        }
+        return running ? (stopping ? .stopping : .stop) : .disabledSend
+    }
+    var enabled: Bool { [.send, .queue, .stop].contains(self) }
+    var icon: String {
+        switch self {
+        case .stop, .stopping: return "stop.fill"
+        case .queue: return "text.line.last.and.arrowtriangle.forward"
+        case .finalizing: return "ellipsis"
+        case .send, .disabledSend: return "arrow.up"
+        }
+    }
+    var label: String {
+        switch self {
+        case .send, .disabledSend: return "작업 보내기"
+        case .queue: return "대기열에 추가"
+        case .stop: return "작업 중지"
+        case .stopping: return "작업 중지 확인 중"
+        case .finalizing: return "음성 입력 처리 중"
+        }
+    }
+    var help: String {
+        switch self {
+        case .send, .disabledSend: return "Send task"
+        case .queue: return "Add this task to the queue"
+        case .stop: return "현재 대화의 작업 중지 · ⌘."
+        case .stopping: return "중지 확인을 기다립니다 · 입력과 대기열은 보존됩니다"
+        case .finalizing: return "음성 입력을 마무리하고 있습니다"
+        }
+    }
 }
 
 private struct LocalWhisperConfiguration: Sendable {
@@ -2963,6 +3079,7 @@ private final class SessionStore: ObservableObject {
         /// if no objective/decision change happened after it.
         var handedRevision: Int? = nil
         var forkCheckpoint: ConversationForkCheckpoint? = nil
+        var cancellationRequested = false
     }
     typealias RunOperation = @MainActor (PendingSubmission, String, String?, String?,
         @escaping @Sendable (RuntimeActivity) -> Void) async throws -> AppRunSummary
@@ -2971,6 +3088,7 @@ private final class SessionStore: ObservableObject {
     // Admission is global; ownership, sequencing, context and display are not.
     static let maximumConcurrentSessions = 4
     @Published var activeRuns: [UUID: ActiveRun] = [:]
+    private var primarySubmissionTimes: [UUID: Date] = [:]
     private var inFlightSubmissions: [UUID: PendingSubmission] = [:]
     private var sessionStatuses: [UUID: String] = [:]
     private let runOperation: RunOperation
@@ -2995,6 +3113,7 @@ private final class SessionStore: ObservableObject {
     @Published var nativeMessages: [NativeSessionMessage] = []
     @Published var isLoadingNativeSessions = false
     var isRunning: Bool { selectedSessionID.map(isSessionRunning) ?? false }
+    var isStopping: Bool { selectedSessionID.flatMap { activeRuns[$0]?.cancellationRequested } ?? false }
     var activeSessionID: UUID? { isRunning ? selectedSessionID : nil }
     var pendingProvider: ProviderChoice? { selectedSessionID.flatMap { activeRuns[$0]?.provider } }
     @Published private(set) var queuedSubmissions: [PendingSubmission] = []
@@ -3508,6 +3627,9 @@ private final class SessionStore: ObservableObject {
     }
 
     func send() {
+        // Match the disabled primary button while permission/transcription is
+        // pending. Recording's existing finish callback invokes send once idle.
+        guard ![VoiceDictationPhase.authorizing, .finalizing, .transcribing].contains(voiceDictation.phase) else { return }
         if voiceDictation.isActive {
             voiceDictation.finish { [weak self] in self?.send() }
             return
@@ -3566,6 +3688,27 @@ private final class SessionStore: ObservableObject {
         }
         sessions[index].messages.append(userMessage)
         start(submission)
+    }
+
+    var primaryAction: ComposerPrimaryAction {
+        .resolve(draft: composer, running: isRunning, stopping: isStopping, voice: voiceDictation.phase)
+    }
+
+    func performPrimaryAction(now: Date = Date()) {
+        guard let id = selectedSessionID else { return }
+        switch primaryAction {
+        case .send, .queue:
+            primarySubmissionTimes[id] = now
+            // Dictation completion must call send(), never re-evaluate Stop.
+            send()
+        case .stop:
+            // Send immediately becomes Stop. The second half of a double click
+            // still belongs to Send, not to cancellation of the newly started run.
+            if let submitted = primarySubmissionTimes[id],
+               now.timeIntervalSince(submitted) < NSEvent.doubleClickInterval + 0.1 { return }
+            cancelSelectedRun()
+        case .disabledSend, .stopping, .finalizing: break
+        }
     }
 
     private func start(_ submission: PendingSubmission) {
@@ -3665,7 +3808,9 @@ private final class SessionStore: ObservableObject {
                                 self.inFlightSubmissions[submission.sessionID]?.preflightOnly = false
                                 self.save()
                             }
-                            if self.selectedSessionID == submission.sessionID { self.statusText = activity.label }
+                            if self.selectedSessionID == submission.sessionID {
+                                self.statusText = self.isStopping ? "작업 중지 확인 중 · 입력과 대기열은 보존됩니다" : activity.label
+                            }
                         }
                     }
                 )
@@ -4278,9 +4423,10 @@ private final class SessionStore: ObservableObject {
     }
 
     func cancelSelectedRun() {
-        guard let id = selectedSessionID, let active = activeRuns[id] else { return }
+        guard let id = selectedSessionID, let active = activeRuns[id], !active.cancellationRequested else { return }
         do {
             try ExecutionCancellation.request(submissionID: active.submissionID)
+            activeRuns[id]?.cancellationRequested = true
             sessionStatuses[id] = "작업 중지 중 · 실행된 변경은 보존합니다"
             statusText = sessionStatuses[id]!
         } catch { alertMessage = "작업 중지 요청을 저장하지 못했습니다." }
@@ -4704,6 +4850,46 @@ private func renderQueuePreview(to output: URL) throws {
     print("Queue previews: running/paused compact; isolated fixture; model calls 0; live state unchanged")
 }
 
+@MainActor
+private func renderComposerPreview(to output: URL) throws {
+    try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+    let fixtures: [(String, String, Bool, Bool, VoiceDictationPhase)] = [
+        ("idle-empty", "", false, false, .idle), ("idle-draft", "요청을 보내 주세요", false, false, .idle),
+        ("running-empty", "", true, false, .idle), ("running-draft", "이어서 결과를 설명해 줘", true, false, .idle),
+        ("stopping-empty", "", true, true, .idle), ("stopping-draft", "이 입력은 보존됩니다", true, true, .idle),
+        ("dictation-finalizing", "음성 입력 마무리 중", true, false, .finalizing)
+    ]
+    var report: [[String: Any]] = []
+    for (name, draft, running, stopping, voice) in fixtures {
+        let action = ComposerPrimaryAction.resolve(draft: draft, running: running, stopping: stopping, voice: voice)
+        let content = VStack(alignment: .leading, spacing: 12) {
+            Text(name).font(.system(size: 12)).foregroundStyle(Theme.muted)
+            HStack(alignment: .bottom, spacing: 12) {
+                Text(draft.isEmpty ? "OS-1에 작업을 요청하세요…" : draft)
+                    .foregroundStyle(draft.isEmpty ? Theme.muted : Theme.text)
+                    .frame(maxWidth: .infinity, minHeight: 70, alignment: .topLeading)
+                Image(systemName: "mic").frame(width: 44, height: 44).foregroundStyle(Theme.text)
+                ComposerPrimaryButton(action: action, activate: {})
+            }.padding(12).background(Color.black.opacity(0.5))
+                .overlay(RoundedRectangle(cornerRadius: Theme.radiusComposer).stroke(Theme.borderStrong))
+            Text(action.label).font(.system(size: 12)).foregroundStyle(Theme.muted)
+        }.padding(20).frame(width: 660, height: 190).background(Theme.background).environment(\.colorScheme, .dark)
+        let view = NSHostingView(rootView: content)
+        view.frame = NSRect(x: 0, y: 0, width: 660, height: 190)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+        view.layoutSubtreeIfNeeded(); view.displayIfNeeded()
+        guard let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { throw SourceContextError.invalid }
+        view.cacheDisplay(in: view.bounds, to: bitmap)
+        guard let data = bitmap.representation(using: .png, properties: [:]) else { throw SourceContextError.invalid }
+        try data.write(to: output.appendingPathComponent(name + ".png"), options: .atomic)
+        report.append(["fixture": name, "action": action.rawValue, "label": action.label, "enabled": action.enabled,
+                       "primaryControlCount": 1, "controlSize": 44])
+    }
+    try JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys])
+        .write(to: output.appendingPathComponent("states.json"), options: .atomic)
+    print("Composer previews: 7 state fixtures; shared primary component; model calls 0")
+}
+
 @main
 private struct OS1DesktopApp: App {
     @StateObject private var store: SessionStore
@@ -4759,6 +4945,21 @@ private struct OS1DesktopApp: App {
             }
             NSApplication.shared.run()
             exit(EXIT_FAILURE)
+        }
+        if CommandLine.arguments.contains("--self-test-composer") {
+            Task { @MainActor in
+                do { try await composerInteractionSelfTest(); exit(EXIT_SUCCESS) }
+                catch { fputs("\(error.localizedDescription)\n", stderr); exit(EXIT_FAILURE) }
+            }
+            NSApplication.shared.run()
+            exit(EXIT_FAILURE)
+        }
+        if let flag = CommandLine.arguments.firstIndex(of: "--render-composer-preview") {
+            do {
+                guard CommandLine.arguments.count == flag + 2 else { throw SourceContextError.invalid }
+                try renderComposerPreview(to: URL(fileURLWithPath: CommandLine.arguments[flag + 1], isDirectory: true))
+                exit(EXIT_SUCCESS)
+            } catch { fputs("\(error.localizedDescription)\n", stderr); exit(EXIT_FAILURE) }
         }
         if CommandLine.arguments.contains("--self-test-queue-fork") {
             Task { @MainActor in
@@ -5045,6 +5246,9 @@ private struct OS1DesktopApp: App {
                     .disabled(store.selectedSessionQueueCount == 0)
                 Button("현재 대기열 계속 실행") { store.resumeQueue() }
                     .disabled(store.selectedSessionID.map { !store.canResumeQueue($0) } ?? true)
+                Button("현재 작업 중지") { store.cancelSelectedRun() }
+                    .keyboardShortcut(".", modifiers: [.command])
+                    .disabled(!store.isRunning || store.isStopping)
             }
             CommandMenu("권한") {
                 Button("검증된 R2 복구본 폴더 연결…") { store.importArchiveMirror() }
@@ -6884,6 +7088,7 @@ private struct RunActivityBanner: View {
     let activity: RuntimeActivity
     let started: Date
     var previewTime: Date? = nil
+    var stopping = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     var body: some View {
         TimelineView(.periodic(from: .now, by: reduceMotion ? 1 : 0.12)) { context in
@@ -6899,7 +7104,7 @@ private struct RunActivityBanner: View {
                 }.frame(width: 24, height: 20).accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: 3) {
                     HStack {
-                        Text(activity.label).font(.system(size: 12, weight: .semibold))
+                        Text(stopping ? "작업 중지 확인 중" : activity.label).font(.system(size: 12, weight: .semibold))
                         if let model = activity.model { Text(model).font(.system(size: 10)).foregroundStyle(Theme.muted) }
                         if let effort = activity.effort { Text(effort).font(.system(size: 10)).foregroundStyle(Theme.muted) }
                         if let tool = activity.tool { Text(tool).font(.system(size: 10)).foregroundStyle(Theme.muted) }
@@ -7012,14 +7217,39 @@ private struct ConversationQueueView: View {
     }
 }
 
+private struct ComposerPrimaryButton: View {
+    let action: ComposerPrimaryAction
+    let activate: () -> Void
+    var body: some View {
+        Button(action: activate) {
+            Image(systemName: action.icon)
+                .font(.system(size: 14, weight: .bold))
+                .foregroundStyle(Color.black.opacity(0.86))
+                .frame(width: 44, height: 44)
+                .background(Theme.pink.opacity(action.enabled ? 1 : 0.45))
+                .clipShape(Circle())
+        }
+        .buttonStyle(.plain).disabled(!action.enabled)
+        .help(action.help).accessibilityLabel(action.label)
+        .accessibilityIdentifier("os1.composer.primary")
+    }
+}
+
 private struct ComposerView: View {
     @ObservedObject var store: SessionStore
+    @ObservedObject private var dictation: VoiceDictationController
     let session: ConversationSession
+
+    init(store: SessionStore, session: ConversationSession) {
+        self.store = store
+        self.dictation = store.voiceDictation
+        self.session = session
+    }
 
     var body: some View {
         VStack(spacing: 10) {
             if store.isSessionRunning(session.id), let started = store.runStartedAt {
-                RunActivityBanner(activity: store.activeActivity, started: started)
+                RunActivityBanner(activity: store.activeActivity, started: started, stopping: store.isStopping)
             }
             if !store.isSessionRunning(session.id), session.lastFailure != nil {
                 if let failure = session.lastBackendFailure {
@@ -7062,25 +7292,11 @@ private struct ComposerView: View {
                     cancel: { _ = store.cancelVoiceDictation() }
                 )
 
-                if store.isRunning {
-                    Button { store.cancelSelectedRun() } label: {
-                        Image(systemName: "stop.fill").frame(width: 36, height: 36)
-                    }.buttonStyle(.plain).help("현재 대화의 작업 중지")
-                    .accessibilityLabel("작업 중지")
-                }
-
-                Button { store.send() } label: {
-                    Image(systemName: store.isRunning ? "text.line.last.and.arrowtriangle.forward" : "arrow.up")
-                        .font(.system(size: 14, weight: .bold))
-                        .foregroundStyle(Color.black.opacity(0.86))
-                        .frame(width: 44, height: 44)
-                        .background(Theme.pink)
-                        .clipShape(Circle())
-                }
-                .buttonStyle(.plain)
-                .disabled(store.composer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                .help(store.isRunning ? "Add this task to the queue" : "Send task")
-                .accessibilityLabel(store.isRunning ? "대기열에 추가" : "작업 보내기")
+                ComposerPrimaryButton(action: store.primaryAction) { store.performPrimaryAction() }
+                    .contextMenu {
+                        Button("현재 작업 중지 · ⌘.") { store.cancelSelectedRun() }
+                            .disabled(!store.isRunning || store.isStopping)
+                    }
             }
             .padding(12)
             .background(Color.black.opacity(0.5))
