@@ -1078,6 +1078,10 @@ private func queueForkInteractionSelfTest() async throws {
     store.sessions[0].claudeSessionID = UUID().uuidString
     store.sessions[0].taskContext = migratedTaskContext(store.sessions[0], sourceContext: source)
     store.sessions[0].taskContext?.decideSemantic("keep the verified source")
+    // A completed native ingestion or source/decision edit can be newer than
+    // the last OS1 execution checkpoint. Fork must capture that current state.
+    store.sessions[0].completedForkCheckpoint = ConversationForkCheckpoint(
+        throughMessageID: nil, source: nil, context: nil)
     let parentSeed = store.sessions[0].messages
     store.composer = "A"; store.send()
     let revision = store.selectedSession!.taskContext!.contextRevision
@@ -3572,10 +3576,10 @@ private final class SessionStore: ObservableObject {
         // Only an admitted attempt owns this exact cancellation marker.
         try? FileManager.default.removeItem(at: ExecutionCancellation.url(submissionID: submission.id))
         let existingUserMessage = sessions[index].messages.contains { $0.id == submission.userMessageID }
-        let checkpoint = sessions[index].completedForkCheckpoint ?? (
-            sessions[index].lastFailure == nil ? ConversationForkCheckpoint(
+        let checkpoint = sessions[index].lastFailure == nil ? ConversationForkCheckpoint(
                 throughMessageID: sessions[index].messages.prefix(while: { $0.id != submission.userMessageID }).last?.id,
-                source: sessions[index].sourceContext, context: sessions[index].taskContext) : nil)
+                source: sessions[index].sourceContext, context: sessions[index].taskContext)
+            : sessions[index].completedForkCheckpoint
         if let checkpoint { sessions[index].completedForkCheckpoint = checkpoint }
         // The task context changes only when a run actually begins, so a
         // queued turn never invalidates the in-flight one.
