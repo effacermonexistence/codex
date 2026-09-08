@@ -257,7 +257,7 @@ if [[ "$TASK_ROLE" == "pro" && -f "$TASK_USER_HOME/Library/LaunchAgents/com.os1.
   [[ "$(plutil -extract ProgramArguments.0 raw "$TASK_LEGACY_PLIST")" == "/Applications/EXO.app/Contents/Resources/exo/exo" ]]
   cp "$TASK_LEGACY_PLIST" "$TASK_RECOVERY/com.os1.exo-pro.plist.before"
   if launchctl print "gui/$TASK_USER_UID/com.os1.exo-pro" >/dev/null 2>&1; then TASK_LEGACY_LOADED=1; fi
-  if ! launchctl print-disabled "gui/$TASK_USER_UID" | awk '/"com.os1.exo-pro" => true/ { found=1 } END { exit !found }'; then
+  if ! launchctl print-disabled "gui/$TASK_USER_UID" | awk '/"com.os1.exo-pro" => (true|disabled)/ { found=1 } END { exit !found }'; then
     TASK_LEGACY_DISABLED=1
     launchctl disable "gui/$TASK_USER_UID/com.os1.exo-pro"
   fi
@@ -290,7 +290,7 @@ do
 done
 [[ "$TASK_TOPOLOGY_NODES" -eq 2 ]]
 
-TASK_GUARD_PYTHON="${TASK_PYTHON:-}"
+TASK_GUARD_PYTHON="${TASK_PYTHON:-$TASK_TEMP_ROOT/pyi/bin/python}"
 for task_candidate in "$TASK_GUARD_PYTHON" "$TASK_USER_HOME/.local/bin/python3.13" "/opt/homebrew/bin/python3" "/usr/bin/python3"
 do
   if [[ -x "$task_candidate" ]] && "$task_candidate" -c 'import sys; assert sys.version_info >= (3,10)' 2>/dev/null; then

@@ -1621,10 +1621,10 @@ index 00000000..ba96dae6
 +});
 diff --git a/dashboard/tests/activity-dashboard-browser.test.mjs b/dashboard/tests/activity-dashboard-browser.test.mjs
 new file mode 100644
-index 00000000..93a8712e
+index 00000000..4dfa3d47
 --- /dev/null
 +++ b/dashboard/tests/activity-dashboard-browser.test.mjs
-@@ -0,0 +1,215 @@
+@@ -0,0 +1,216 @@
 +// Run against a built dashboard with OS1_TEST_PLAYWRIGHT_MODULE pointing at an
 +// existing Playwright installation. The browser gets synthetic read-only data;
 +// it cannot reach either production EXO endpoint.
@@ -1813,7 +1813,8 @@ index 00000000..93a8712e
 +      peerOffline = true;
 +      const independentStart = localSamples;
 +      await page.waitForTimeout(16500);
-+      assert.ok(localSamples >= independentStart + 12, "local samples continue through topology + peer failures");
++      process.stdout.write(JSON.stringify({ test: "independent refresh", localSamples: localSamples - independentStart, peerSamples }) + "\n");
++      assert.ok(localSamples >= independentStart + 12, `local samples continue through topology + peer failures: ${localSamples - independentStart} samples`);
 +      assert.match(await pro.innerText(), /STALE/);
 +      assert.match(await pro.innerText(), /Read Unavailable/);
 +      assert.match(await page.locator("article").filter({ has: page.getByRole("heading", { name: "MacBook Air", exact: true }) }).innerText(), /LIVE/);

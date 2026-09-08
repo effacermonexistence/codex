@@ -343,6 +343,14 @@ else:
 
 
 class ActivityInstallerTests(unittest.TestCase):
+    def test_existing_disabled_original_service_is_preserved_on_modern_macos(self):
+        source = (PRODUCT / "install-activity-monitor.sh").read_text()
+        line = next(line for line in source.splitlines() if "print-disabled" in line)
+        program = line.split("awk '", 1)[1].split("'", 1)[0]
+        for value, expected in [("disabled", 0), ("true", 0), ("enabled", 1), ("false", 1)]:
+            result = subprocess.run(["/usr/bin/awk", program], input=f'"com.os1.exo-pro" => {value}\n', text=True)
+            self.assertEqual(result.returncode, expected)
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="os1-activity-installer-test-")
         self.addCleanup(self.temp.cleanup)

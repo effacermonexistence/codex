@@ -18,7 +18,7 @@
     "399d10390d4c91604f73b2644cb3ff7fc167c34ed1b6887e41f95435aec44bcb"
   ],
   "incremental_patch": "patches/0008-realtime-activity.patch",
-  "incremental_patch_sha256": "71a456506385423ab5fabaae26c40bf657bad49b02f88fe8ee22f56431e92ed6",
+  "incremental_patch_sha256": "33a67dafc0af6a1bc3dc8f57973552c3c7f7ff0cc8727f31f5edac29f2668ae6",
   "dashboard_index_sha256": "6f21289793ae874978cf6718fe0b3836c057f7eafa7c09684002d14320dabd23",
   "source_overlay_sha256": "433b7761918ba523f120e82161fb3ae51cb85322d07fbf244dead4ae8fad8e93",
   "source_bootstrap_sha256": "0dad3105a70eb0d43dc3460076e4c3615542898378d3b4012ac654f1340f1cf9",
