@@ -16,7 +16,7 @@ test('CI metadata authentication is never forwarded to assets or other hosts',()
 
 test('bootstrap requires account-aware model discovery, not merely Fleet support',()=>{
   for(const m of [{version:'0.9.1'},{version:'0.9.21',build:'70'},{version:'0.9.43'},{version:'0.9.44',build:'94'}])assert.equal(stableSupportsCurrentRuntime(m),false);
-  for(const m of [{version:'0.9.44'},{version:'0.9.44',build:'95'},{version:'0.9.45'},{version:'0.10.0'},{version:'1.0.0'}])assert.equal(stableSupportsCurrentRuntime(m),true);
+  for(const m of [{version:'0.9.44'},{version:'0.9.44',build:'95'},{version:'0.9.45'},{version:'0.9.46',build:'97'},{version:'0.10.0'},{version:'1.0.0'}])assert.equal(stableSupportsCurrentRuntime(m),true);
   for(const m of [null,{}, {version:'latest'}, {version:'0.9.44-beta.1'}])assert.throws(()=>stableSupportsCurrentRuntime(m));
 });
 test('release identity is pinned independently of a mutable download URL',()=>{
@@ -39,6 +39,36 @@ test('tampered download bytes and inner manifest are rejected before installer c
 
 test('landing-page patch refuses an unreviewed source without producing a replacement',()=>{
   assert.throws(()=>updateDownloadPage('<html>changed website</html>'), /Landing page changed/);
+});
+
+test('new-Mac Claude install merges full-access defaults without deleting existing settings',()=>{
+  const directory=fs.mkdtempSync(path.join(os.tmpdir(),'os1-claude-settings-test-'));
+  const templatePath=path.join(directory,'template.json');
+  const destinationPath=path.join(directory,'settings.json');
+  const installer=fileURLToPath(new URL('./install-claude-remote-backup-hook.mjs',import.meta.url));
+  try {
+    fs.writeFileSync(templatePath,JSON.stringify({
+      permissions:{defaultMode:'bypassPermissions'},
+      sandbox:{enabled:true,allowUnsandboxedCommands:true},
+      skipDangerousModePermissionPrompt:true,
+      hooks:{SessionStart:[{hooks:[{type:'command',command:'node "$HOME/.claude/hooks/remote-backup-guard.mjs"'}]}],
+        Stop:[{hooks:[{type:'command',command:'node "$HOME/.claude/hooks/remote-backup-guard.mjs"'}]}],
+        SessionEnd:[{hooks:[{type:'command',command:'node "$HOME/.claude/hooks/remote-backup-guard.mjs"'}]}]},
+    }));
+    fs.writeFileSync(destinationPath,JSON.stringify({theme:'dark',permissions:{allow:['Bash(git status)']},
+      sandbox:{filesystem:{allowWrite:['/tmp/build']}},hooks:{UserPromptSubmit:[{hooks:[{type:'command',command:'existing-hook'}]}]}}));
+    const result=spawnSync(process.execPath,[installer,templatePath,destinationPath],{encoding:'utf8',timeout:10000});
+    assert.equal(result.status,0,result.stderr);
+    const installed=JSON.parse(fs.readFileSync(destinationPath,'utf8'));
+    assert.equal(installed.theme,'dark');
+    assert.deepEqual(installed.permissions.allow,['Bash(git status)']);
+    assert.equal(installed.permissions.defaultMode,'bypassPermissions');
+    assert.deepEqual(installed.sandbox.filesystem,{allowWrite:['/tmp/build']});
+    assert.equal(installed.sandbox.enabled,true);
+    assert.equal(installed.sandbox.allowUnsandboxedCommands,true);
+    assert.equal(installed.skipDangerousModePermissionPrompt,true);
+    assert.equal(installed.hooks.UserPromptSubmit[0].hooks[0].command,'existing-hook');
+  } finally { fs.rmSync(directory,{recursive:true,force:true}); }
 });
 
 test('installer independently rejects a downgraded stable pointer before package execution',
