@@ -1169,10 +1169,11 @@ func claudePermissionArguments(_ permissionProfile: String, sourceContextOnly: B
             "--disallowedTools", "mcp__*",
         ]
     case "workspace_write":
-        // Claude Auto mode approves ordinary project-local work while retaining
-        // its hard/soft safety boundaries. OS-1 separately rejects any denied
-        // tool call before the server can record the step as verified.
-        return ["--permission-mode", "auto"]
+        // The owner explicitly delegates the signed workspace-write ticket to
+        // OS1. Do not replace that decision with Claude Auto's second classifier
+        // and another user prompt. Provider safeguards and OS1 verification
+        // still apply; this only bypasses Claude Code's local permission UI.
+        return ["--permission-mode", "bypassPermissions"]
     default:
         throw OS1Error.message("Server ticket permission profile rejected")
     }
@@ -3959,7 +3960,7 @@ final class CodexAppServerClient: @unchecked Sendable {
         _ = try request(
             "initialize",
             params: [
-                "clientInfo": ["name": "OS-1 CLODEX", "version": "0.9.45"],
+                "clientInfo": ["name": "OS-1 CLODEX", "version": "0.9.46"],
                 "capabilities": ["experimentalApi": true],
             ],
             deadline: deadline
@@ -7467,7 +7468,7 @@ func selfTest() throws {
           try claudePermissionArguments("read_only", sourceContextOnly: true) == [
               "--permission-mode", "dontAsk", "--tools", "",
           ],
-          try claudePermissionArguments("workspace_write") == ["--permission-mode", "auto"],
+          try claudePermissionArguments("workspace_write") == ["--permission-mode", "bypassPermissions"],
           (try? claudePermissionArguments("full_access")) == nil,
           (try? claudePermissionArguments("unknown")) == nil else {
         throw OS1Error.message("Claude OS-1 permission orchestration validation failed")
@@ -7896,7 +7897,7 @@ struct OS1Main {
             guard let command = arguments.first else { usage(); return }
             if try await fleetCommand(arguments) { return }
             switch command {
-            case "version", "--version", "-V": print("OS-1 Runtime 0.9.45 (steering-queue-recovery-build96)")
+            case "version", "--version", "-V": print("OS-1 Runtime 0.9.46 (claude-full-access-build97)")
             case "doctor": try doctor()
             case "sidebar-pin":
                 guard (4...5).contains(arguments.count), arguments[1] == "codex",

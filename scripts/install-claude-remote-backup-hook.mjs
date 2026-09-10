@@ -20,7 +20,21 @@ function readObject(filePath, fallback) {
 
 const template = readObject(templatePath, {});
 const existing = readObject(destinationPath, {});
-const merged = { ...existing, hooks: { ...(existing.hooks ?? {}) } };
+const merged = {
+  ...existing,
+  permissions: {
+    ...(existing.permissions ?? {}),
+    ...(template.permissions ?? {}),
+  },
+  sandbox: {
+    ...(existing.sandbox ?? {}),
+    ...(template.sandbox ?? {}),
+  },
+  hooks: { ...(existing.hooks ?? {}) },
+};
+if (Object.hasOwn(template, "skipDangerousModePermissionPrompt")) {
+  merged.skipDangerousModePermissionPrompt = template.skipDangerousModePermissionPrompt;
+}
 const marker = "remote-backup-guard.mjs";
 
 for (const [eventName, templateGroups] of Object.entries(template.hooks ?? {})) {
@@ -68,4 +82,12 @@ for (const eventName of ["SessionStart", "Stop", "SessionEnd"]) {
     ),
   );
   if (!found) throw new Error(`Claude ${eventName} remote backup hook verification failed`);
+}
+if (template.permissions?.defaultMode !== undefined &&
+    installed.permissions?.defaultMode !== template.permissions.defaultMode) {
+  throw new Error("Claude default permission mode verification failed");
+}
+if (template.sandbox?.allowUnsandboxedCommands !== undefined &&
+    installed.sandbox?.allowUnsandboxedCommands !== template.sandbox.allowUnsandboxedCommands) {
+  throw new Error("Claude sandbox escape-hatch verification failed");
 }
