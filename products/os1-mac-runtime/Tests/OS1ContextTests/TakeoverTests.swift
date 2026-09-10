@@ -8,6 +8,8 @@ func runTakeoverFixtures() throws {
         precondition(value, label); checks += 1
     }
     check(ConnectionFailure.classify("token has expired") == .authentication, "expired login")
+    check(ConnectionFailure.classify("In a non-interactive environment, it's necessary to set a CLOUDFLARE_API_TOKEN environment variable for wrangler to work.") == .authentication,
+          "Wrangler non-interactive OAuth diagnostic")
     check(ConnectionFailure.classify("HTTP 403 Forbidden") == .permission, "permission is not authentication")
     for error in ["fetch failed", "DNS resolve host", "connection timed out", "HTTP 503"] {
         check(ConnectionFailure.classify(error) == .transport, "transport never logs in")

@@ -10,7 +10,9 @@ public enum ConnectionFailure: String, Codable, Sendable, Error, LocalizedError,
     public static func classify(_ text: String) -> Self {
         let s = text.lowercased()
         if ["not logged in", "not logged into", "token has expired", "token expired", "invalid access token",
-            "bad credentials", "http 401", "authentication error", "authenticate wrangler"].contains(where: s.contains) { return .authentication }
+            "bad credentials", "http 401", "authentication error", "authenticate wrangler",
+            "non-interactive environment, it's necessary to set a cloudflare_api_token",
+            "cloudflare_api_token environment variable for wrangler to work"].contains(where: s.contains) { return .authentication }
         if ["403", "forbidden", "permission", "access denied", "unauthorized to access"].contains(where: s.contains) { return .permission }
         if ["timed out", "timeout", "network", "fetch failed", "connection", "dns", "resolve host", "certificate", "econn", "502", "503", "504"].contains(where: s.contains) { return .transport }
         return .unavailable
