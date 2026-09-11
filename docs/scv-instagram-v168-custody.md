@@ -19,7 +19,7 @@ non-debug route is closed. No customer-facing wording changed against v167.
 | base | `scv-instagram-single-20260908-v167` |
 | latest recovery Gold | `scv-instagram-recovery-gold-20260908T231500Z-v167` (unchanged; v168 is not a recovery Gold) |
 | previous recovery Gold | `scv-instagram-recovery-gold-20260905T054647Z-v151` (byte-identical and independently restorable) |
-| staging deployment | none — emergency containment deployed directly to production |
+| staging deployment | `1f2201a7-8c82-4a47-8e25-8d20eec54adc` (the same sealed v168, deployed for sentinel parity on 2026-09-11 17:57Z) |
 | production deployment | `2a3929e3-7e44-4843-9218-96853517980b` |
 | runtime archive (R2) | `scv-instagram-automation/release-ready/20260911T174414Z/v168/scv-instagram-single-20260911-v168-omar-only-emergency-r2.tar.gz` sha256 `88e1e5b548082865c849b15df22537c6e2b140f99fd21d3cd8a313c7cecc2300` (1494693 bytes, readback byte-identical) |
 
@@ -52,8 +52,8 @@ non-debug route is closed. No customer-facing wording changed against v167.
 
 ## Drift sentinel
 
-Sentinel v30 pins the exact v168 running release while retaining the v167
-recovery point, the v167 approved Gold record and closure extension, and v151 as
-the previous point. Its deployed Worker version and first passing scheduled run
-are recorded in `products/scv-instagram-drift-sentinel/deployments/` once the
-scheduled attestation has been read back from R2.
+Sentinel v30 (Worker version `f5edb45e-27ea-49bd-94f3-1bc9f4632e36`) pins the exact v168
+running release while retaining the v167 recovery point, the v167 approved Gold record and
+closure extension, and v151 as the previous point. Its first passing scheduled run against both
+production and staging on v168 completed at `2026-09-11T18:00:23.000Z` with zero consecutive failures. The immutable
+R2 attestation is `scv-instagram-automation/drift-attestations/2026-09-11/20260911T180023000Z.json` (sha256 `7228edb085566d6af72966464a1f42bea2bc0f28f5e17e91bd59202a50e5238f`), verified by independent readback.
