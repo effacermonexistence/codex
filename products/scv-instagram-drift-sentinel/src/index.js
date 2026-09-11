@@ -1,4 +1,4 @@
-const SENTINEL_SCHEMA = 'scv-instagram-drift-sentinel-2026-09-08-v29-v167-running-release-v167-recovery-gold'
+const SENTINEL_SCHEMA = 'scv-instagram-drift-sentinel-2026-09-11-v30-v168-running-release-v167-recovery-gold'
 // GOLD-3 (2026-09-03): v148 (owner-verified v145 plus the owner-ordered polish, live red-team verified) frozen as the reference; the pointer and manifest below are pinned by hash.
 const GOLD_LATEST_KEY = 'scv-instagram-automation/gold/LATEST.json'
 const GOLD_MANIFEST_KEY = 'scv-instagram-automation/gold/SCV_GOLD_MANIFEST_v148.json'
@@ -9,10 +9,13 @@ const GOLD_MANIFEST_SHA256 = '31ea4507381e6ec2c3ce4458d70af4a311f331a4a26651f5d9
 const GOLD_RELEASE_ID = 'scv-instagram-single-20260902-v148'
 const GOLD_CONTENT_FINGERPRINT = '3a9a18631443f4738d13dd803f080979ff4d21ab0d9de1f5054b2f26e2ea3609'
 // v29 (2026-09-08): the running release and latest approved recovery Gold are both v167.
+// v30 (2026-09-11): running release is v168 (omar.system-only containment, Codex emergency deploy);
+// runtime published to R2 at scv-instagram-automation/release-ready/20260911T174414Z/v168/scv-instagram-single-20260911-v168-omar-only-emergency-r2.tar.gz (sha 88e1e5b54808…).
+// The recovery point and both recovery Golds remain v167 / v151 — v168 is not a recovery Gold.
 // v151 remains a separately pinned previous recovery point and GOLD-3 v148 remains unchanged.
-const RELEASE_ID = 'scv-instagram-single-20260908-v167'
-const CONTENT_FINGERPRINT = '6b85a63a25c23e9815491413eeb895e6b78ed8faa523f18aefea6b88f392faa7'
-const RELEASE_MANIFEST = '2f12a00d12114bbbb05080438dda88a6278a82ae65a9fc9aaaff70a2a25ad4b6'
+const RELEASE_ID = 'scv-instagram-single-20260911-v168'
+const CONTENT_FINGERPRINT = 'b8fe57d29bc953f63841df793566ffaedb85d32ffd6b6a60edbb96d963cc12a9'
+const RELEASE_MANIFEST = 'ff8210a07688022481e5c12b4562e24e53a5531633fe3b0248ce56072cf556ec'
 const RECOVERY_POINT_RELEASE_ID = 'scv-instagram-single-20260908-v167'
 const RECOVERY_POINT_CONTENT_FINGERPRINT = '6b85a63a25c23e9815491413eeb895e6b78ed8faa523f18aefea6b88f392faa7'
 const RECOVERY_POINT_RELEASE_MANIFEST = '2f12a00d12114bbbb05080438dda88a6278a82ae65a9fc9aaaff70a2a25ad4b6'
