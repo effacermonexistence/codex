@@ -36,6 +36,22 @@ bucket paths and customer-state keys remain rejected.
 
 ## Objective and scope
 
+### Coordinated prohibition closure (build 103)
+
+The exact installed follow-up “도구 호출, 파일 변경, 배포, 고객 데이터 접근은 하지 마”
+still produced a write ticket. The old bounded list grammar required a file
+edit first and could not consume customer-data access last; the correct signed
+read-only guard stopped execution. Extend the shared action-list grammar to
+tool calls, commands and data access in any order, including a shared “없이”.
+Classify each forbidden action separately. Only a forbidden file/code edit
+implies a global no-file-write fence; a deployment-only list must not revoke an
+otherwise authorized local edit. Normalize only the routing projection, keep
+the original request and all prohibitions in backend context, and keep ticket
+enforcement unchanged. Regress the exact sentence, decomposed Korean, alternate
+order, non-negated lists, affirmative edits with separate side-action bans and
+contradictory file authorization. Recheck the exact installed UI follow-up.
+Rollback is the prior signed bundle, without replacing newer conversation data.
+
 ### Installed UI closure findings (build 102)
 
 The real UI (unlike a pinned-provider CLI smoke test) exposed an intermittent

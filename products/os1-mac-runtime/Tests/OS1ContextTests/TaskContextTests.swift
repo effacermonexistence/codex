@@ -72,6 +72,23 @@ func runTaskContextFixtures(root: URL) throws {
         try check(ScopeResolution.resolve(request.decomposedStringWithCanonicalMapping) == resolved, "grouped prohibition survives Korean normalization")
     }
     try check(editNoTests.scope == .workspaceWrite && editNoTests.prohibitions == ["do not run tests"], "edit but no tests")
+    let coordinatedIncident = "방금 가져온 자료만 기준으로 현재 운영 릴리스 ID와 Dockerfile의 Node 버전을 두 줄로 알려줘. 도구 호출, 파일 변경, 배포, 고객 데이터 접근은 하지 마."
+    for request in [coordinatedIncident, coordinatedIncident.decomposedStringWithCanonicalMapping,
+                    "배포·고객 데이터 접근·파일 변경·도구 호출은 하지 마세요. 자료를 설명해줘",
+                    "코덱스로 답해. 도구 호출이나 파일 변경 없이 2 곱하기 3을 LaTeX 수식 한 줄로만 답해."] {
+        let resolved = ScopeResolution.resolve(request)
+        try check(resolved.scope == .readOnly && resolved.prohibitions.contains("do not modify files"), "coordinated file prohibition cannot authorize writes")
+        try check(resolved.prohibitions.contains("do not call tools"), "coordinated tool prohibition retained")
+    }
+    try check(ScopeResolution.resolve(coordinatedIncident).prohibitions.contains("do not access customer data"), "customer access prohibition retained")
+    let sideList = ScopeResolution.resolve("파일을 수정해. 배포, 리셋, 고객 데이터 접근은 하지 마.")
+    try check(sideList.scope == .workspaceWrite && sideList.prohibitions.contains("do not deploy") &&
+        sideList.prohibitions.contains("do not reset") && sideList.prohibitions.contains("do not access customer data") &&
+        !sideList.prohibitions.contains("do not modify files"), "side-action list preserves authorized local edits")
+    try check(ScopeResolution.resolve("파일을 수정해. 파일 변경, 배포는 하지 마.").scope == .readOnly,
+        "contradictory file edit does not broaden authority")
+    try check(ScopeResolution.resolve("도구 호출, 파일 변경, 배포를 검토하고 파일을 수정해.").scope == .workspaceWrite,
+        "non-negated action list must not be consumed")
     let contradictory = ScopeResolution.resolve("파일은 수정해. 수정하지 마")
     try check(contradictory.scope == .readOnly, "contradictory request takes the safer reading")
     try check(ScopeResolution.resolve("복구할 수 있어?").scope == .readOnly, "capability question is not a change")
