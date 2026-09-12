@@ -651,7 +651,10 @@ public struct ScopeResolution: Equatable, Sendable {
 
     // A shared trailing negation applies to the entire bounded action list,
     // not just its final item (e.g. "파일 수정, 테스트 실행, 배포는 하지 마").
-    public static let enumeratedProhibitionPattern = #"(?:파일|코드)\s*(?:수정|변경|편집)(?:\s*(?:[,·/]|및)\s*(?:(?:테스트|빌드)\s*(?:실행)?|설치|배포|복원|복구|삭제|업로드|리셋|초기화)){1,8}\s*(?:은|는|을|를)?\s*하지\s*마(?:세요|십시오)?"#
+    private static let prohibitedListAction = #"(?:(?:파일|코드)\s*(?:수정|변경|편집|작성|삭제)|(?:도구|툴)\s*(?:호출|사용)|(?:명령|테스트|빌드)\s*(?:실행|수행)?|(?:고객|인증)\s*(?:데이터|정보)\s*(?:접근|조회|변경|삭제)|설치|배포|복원|복구|삭제|업로드|리셋|초기화)"#
+    public static let enumeratedProhibitionPattern = prohibitedListAction +
+        #"(?:\s*(?:[,·/]|및|또는|이나|나|과|와)\s*"# + prohibitedListAction +
+        #"){1,8}\s*(?:(?:은|는|을|를)?\s*하지\s*마(?:세요|십시오)?|없이)[.!]?"#
 
     // Relative scope fences constrain a separately authorized edit. Consume
     // only complete bounded clauses, not "... but change ..." or filenames.
@@ -707,10 +710,22 @@ public struct ScopeResolution: Equatable, Sendable {
             let range = NSRange(remaining.startIndex..<remaining.endIndex, in: remaining)
             let matches = pattern.matches(in: remaining, range: range)
             if !matches.isEmpty {
-                prohibitions.append("do not modify files")
+                var fileWritesForbidden = false
                 for match in matches {
                     guard let captured = Range(match.range, in: remaining) else { continue }
                     let clause = String(remaining[captured])
+                    if clause.range(of: #"(?:파일|코드)\s*(?:수정|변경|편집|작성|삭제)"#, options: .regularExpression) != nil {
+                        fileWritesForbidden = true
+                        if !prohibitions.contains("do not modify files") { prohibitions.append("do not modify files") }
+                    }
+                    for (pattern, prohibition) in [
+                        (#"(?:도구|툴)\s*(?:호출|사용)"#, "do not call tools"),
+                        (#"명령\s*(?:실행|수행)?"#, "do not run commands"),
+                        (#"고객\s*(?:데이터|정보)\s*(?:접근|조회|변경|삭제)"#, "do not access customer data"),
+                        (#"인증\s*(?:데이터|정보)\s*(?:접근|조회|변경|삭제)"#, "do not access authentication data"),
+                    ] where clause.range(of: pattern, options: .regularExpression) != nil {
+                        if !prohibitions.contains(prohibition) { prohibitions.append(prohibition) }
+                    }
                     for (word, prohibition) in [("테스트", "do not run tests"), ("빌드", "do not build"),
                         ("설치", "do not install"), ("배포", "do not deploy"), ("복원", "do not restore"),
                         ("복구", "do not restore"), ("삭제", "do not delete"), ("업로드", "do not upload"),
@@ -718,7 +733,8 @@ public struct ScopeResolution: Equatable, Sendable {
                         if !prohibitions.contains(prohibition) { prohibitions.append(prohibition) }
                     }
                 }
-                remaining = pattern.stringByReplacingMatches(in: remaining, range: range, withTemplate: "read-only")
+                remaining = pattern.stringByReplacingMatches(in: remaining, range: range,
+                    withTemplate: fileWritesForbidden ? "read-only" : " ")
             }
         }
         // Longest patterns first so a compound prohibition is recognized as a

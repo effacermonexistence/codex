@@ -167,6 +167,7 @@ lipo -archs "$stage_dir/Applications/OS-1 CLODEX.app/Contents/MacOS/OS1App" | gr
 "$stage_dir/Applications/OS-1 CLODEX.app/Contents/MacOS/OS1App" --self-test-composer
 "$stage_dir/Applications/OS-1 CLODEX.app/Contents/MacOS/OS1App" --self-test-steering
 "$arm64_build_dir/arm64-apple-macosx/release/OS1ContextTests"
+"$arm64_build_dir/arm64-apple-macosx/release/FrontierMonitorTests"
 "$arm64_build_dir/arm64-apple-macosx/release/OS1HookSupportTests"
 "$arm64_build_dir/arm64-apple-macosx/release/RetrievalRelevanceTests"
 OS1_CONFIG="$stage_dir/Library/Application Support/OS-1/config.json" "$stage_dir/usr/local/bin/os1" fleet-self-test

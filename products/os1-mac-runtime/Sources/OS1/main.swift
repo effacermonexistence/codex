@@ -1693,7 +1693,10 @@ func activeCodexCatalog(
 }
 
 func githubToken() throws -> String {
-    try withConnectionRecovery(service: "github", probe: existingGitHubToken)
+    try withConnectionRecovery(service: "github") {
+        try ConnectionProbe.readOnly(probe: existingGitHubToken,
+            wait: { Thread.sleep(forTimeInterval: 1) }, cancelled: { ExecutionCancellation.isCancelled })
+    }
 }
 
 /// Tokens stay in memory and in a child's environment, never in argv, logs or
@@ -2262,6 +2265,8 @@ private func repairsMismatchedResearchSource(_ prompt: String, context: String?,
 
 /// Public source lineage, not a local model selector or private policy. A
 /// short follow-up must not erase the subject of the attached research.
+let readOnlyStatusRoutingTask = "Read-only status inspection. Report observed completed, pending and uncertain steps for the interrupted objective in context, using read-only local and remote checks."
+
 private func sourceAwareRoutingTask(_ prompt: String, evidence: R2EvidenceBundle?) -> String {
     let normalized = sourceRoutingTask(prompt, hasSource: evidence != nil)
     let task: String
@@ -2911,8 +2916,9 @@ private func scvProjectEvidence(live observed: SCVLiveRelease? = nil) throws -> 
     for path in selectedPaths {
         guard inventory.contains(path) else { throw ProjectMaterialError.invalidArtifact }
         let member = try commandOutput("/usr/bin/tar", ["-xOf", archiveURL.path, path], timeout: 15)
-        guard member.0 == 0, !member.1.isEmpty, member.1.count <= 80_000,
-              let text = String(data: member.1, encoding: .utf8), !protectedRouteMaterialInEvidence(text) else {
+        guard member.0 == 0 else { throw ProjectMaterialError.invalidArtifact }
+        let text = try SCVProjectMaterials.contextMember(member.1)
+        guard !protectedRouteMaterialInEvidence(text) else {
             throw OS1Error.message("Instagram 기술 자료의 안전한 원문 전달을 검증하지 못했습니다: \(path)")
         }
         originals.append((path, text))
@@ -5848,7 +5854,7 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
     // Keep this new review's task identity distinct while retaining all source
     // and full-input accounting and hard-enforcing its signed read-only scope.
     let routingTask = requireReadOnly
-        ? "Read-only execution-state review. Inspect current local files and remote service status using CLI read-only checks. Distinguish verified completed steps, pending steps and uncertain outcomes for the interrupted objective in context. Do not modify files or any local/remote state."
+        ? readOnlyStatusRoutingTask
         : sourceAwareRoutingTask(prompt, evidence: r2Evidence)
     let feedbackStore = CompletionFeedbackStore()
     let feedbackScope = CompletionFeedbackScope(
@@ -6545,6 +6551,10 @@ func selfTest() throws {
           compactResultText.count < completeResultText.count else {
         throw OS1Error.message("Complete source JSON projection must preserve the final result gate")
     }
+    guard ScopeResolution.resolve(readOnlyStatusRoutingTask).scope == .readOnly,
+          !["modify", "write", "deploy", "reset"].contains(where: readOnlyStatusRoutingTask.lowercased().contains) else {
+        throw OS1Error.message("Status review must route affirmative read-only intent without negated mutation triggers")
+    }
     guard sourceRoutingTask("원본을 검토해 줘. 파일 수정은 하지 마.", hasSource: true) == "원본을 검토해 줘. read-only",
           sourceRoutingTask("자료의 Node 버전만 답해. 파일·서버를 변경하거나 테스트를 실행하지 마.", hasSource: true) == "자료의 Node 버전만 답해. read-only",
           sourceRoutingTask("파일을 수정해. 서버를 변경하지 마.", hasSource: true) == "파일을 수정해. prohibited side action",
@@ -6579,6 +6589,23 @@ func selfTest() throws {
         throw OS1Error.message("Preparation intent / scope resolution regression failed")
     }
     let explanationOnly = "연결된 Instagram 자동화 자료를 설명해. 파일 변경·명령 실행·배포 없이 제공된 자료만 읽고 답해."
+    let coordinatedFollowup = "방금 가져온 자료만 기준으로 현재 운영 릴리스 ID와 Dockerfile의 Node 버전을 두 줄로 알려줘. 도구 호출, 파일 변경, 배포, 고객 데이터 접근은 하지 마."
+    for request in [coordinatedFollowup, coordinatedFollowup.decomposedStringWithCanonicalMapping,
+                    "코덱스로 답해. 도구 호출이나 파일 변경 없이 2 곱하기 3을 LaTeX 수식 한 줄로만 답해."] {
+        for hasSource in [true, false] {
+            let projected = sourceRoutingTask(request, hasSource: hasSource)
+            guard requiresReadOnlyExecution(request), projected.contains("read-only"),
+                  !["파일 변경", "배포", "고객 데이터 접근", "도구 호출"].contains(where: projected.contains) else {
+                throw OS1Error.message("Coordinated prohibition leaked mutation verbs into routing")
+            }
+        }
+    }
+    guard sourceRoutingTask("파일을 수정해. 배포, 리셋, 고객 데이터 접근은 하지 마.", hasSource: true) ==
+            "파일을 수정해. prohibited side action",
+          sourceRoutingTask("도구 호출, 파일 변경, 배포를 검토하고 파일을 수정해.", hasSource: true) ==
+            "도구 호출, 파일 변경, 배포를 검토하고 파일을 수정해." else {
+        throw OS1Error.message("Prohibition projection erased an affirmative edit")
+    }
     guard requiresReadOnlyExecution(explanationOnly),
           sourceRoutingTask(explanationOnly, hasSource: true).contains("read-only"),
           !sourceRoutingTask(explanationOnly, hasSource: true).contains("파일 변경"),
@@ -7897,7 +7924,7 @@ struct OS1Main {
             guard let command = arguments.first else { usage(); return }
             if try await fleetCommand(arguments) { return }
             switch command {
-            case "version", "--version", "-V": print("OS-1 Runtime 0.9.47 (r2-oauth-recovery-build98)")
+            case "version", "--version", "-V": print("OS-1 Runtime 0.9.47 (frontier-source-readiness-build103)")
             case "doctor": try doctor()
             case "sidebar-pin":
                 guard (4...5).contains(arguments.count), arguments[1] == "codex",

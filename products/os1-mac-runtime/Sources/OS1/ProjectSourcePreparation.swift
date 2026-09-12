@@ -10,8 +10,9 @@ func registeredSCVProjectEvidence(live: SCVLiveRelease) throws -> R2EvidenceBund
     let verified = stored.verified
     var originals: [(path: String, text: String)] = []
     for path in RegisteredProjectSource.selectedPaths {
-        guard let bytes = verified.files[path], bytes.count <= 80_000,
-              let text = String(data: bytes, encoding: .utf8), !protectedRouteMaterialInEvidence(text) else {
+        guard let bytes = verified.files[path] else { throw ProjectMaterialError.invalidArtifact }
+        let text = try SCVProjectMaterials.contextMember(bytes)
+        guard !protectedRouteMaterialInEvidence(text) else {
             throw ProjectMaterialError.invalidArtifact
         }
         originals.append((path, text))
@@ -79,7 +80,8 @@ func sourcePreparationPending(live: SCVLiveRelease, error: Error, state: TaskCon
     context.projectID = "scv-instagram"
     // Preserve the old source and baseline as old evidence. They must not be
     // relabelled as the new live source while acquisition remains pending.
-    let reason = (error as? LocalizedError)?.errorDescription ?? "운영 버전과 일치하는 소스를 확보하지 못했습니다."
+    let reason = (error as? OS1Error)?.description ?? (error as? LocalizedError)?.errorDescription ??
+        "운영 버전과 일치하는 소스를 확보하지 못했습니다."
     context.sourcePreparation = SourcePreparationState(live: live, reason: reason)
     context.blockers.removeAll { $0.hasPrefix("source_preparation:") }
     context.blockers.append("source_preparation: " + live.id + " — " + reason)

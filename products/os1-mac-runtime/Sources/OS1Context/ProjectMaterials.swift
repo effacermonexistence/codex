@@ -71,6 +71,19 @@ public struct SCVProjectMaterials: Sendable {
     public static let repository = "effacermonexistence/codex"
     public static let pointerPath = "products/scv-instagram/recovery/LATEST.json"
     public static let verificationMode = "live-r2-project-source-package-v1"
+    // v171's verified design document is 86,174 bytes. A historical 80KB
+    // presentation limit must not label valid source bytes missing.
+    public static let maximumContextMemberBytes = 128_000
+    public static func contextMember(_ data: Data) throws -> String {
+        guard !data.isEmpty, data.count <= maximumContextMemberBytes,
+              let text = String(data: data, encoding: .utf8) else { throw ProjectMaterialError.invalidArtifact }
+        return text
+    }
+    public static func validRuntimeSourceKey(_ key: String, sha256: String) -> Bool {
+        guard ProjectMaterialObject.validKey(key), ProjectMaterialObject.validSHA(sha256), key.hasSuffix(".tar.gz") else { return false }
+        return key.hasPrefix("scv-instagram-automation/release-ready/") ||
+            key == "scv-instagram-automation/source-custody/\(sha256)/source.tar.gz"
+    }
     public static func isVerificationMode(_ mode: String?) -> Bool {
         mode == verificationMode || mode == RegisteredProjectSource.verificationMode
     }
@@ -134,9 +147,8 @@ public struct SCVProjectMaterials: Sendable {
     /// operating record cannot silently fall back to a different source.
     public func preparationArchive(operating: TaskContext.BaselineRecord?) throws -> ProjectMaterialObject {
         guard let operating else { return runtime }
-        guard let key = operating.key, ProjectMaterialObject.validKey(key),
-              key.hasPrefix("scv-instagram-automation/release-ready/"), key.hasSuffix(".tar.gz"),
-              let digest = operating.sha256, ProjectMaterialObject.validSHA(digest),
+        guard let key = operating.key, let digest = operating.sha256,
+              Self.validRuntimeSourceKey(key, sha256: digest),
               let bytes = operating.bytes, bytes > 0, bytes <= 20_000_000 else {
             throw ProjectMaterialError.invalidManifest
         }
@@ -149,8 +161,7 @@ public struct SCVProjectMaterials: Sendable {
             ProjectMaterialObject.validSHA(source["retrieved_content_sha256"] ?? "") &&
             ProjectMaterialObject.validSHA(source["bundle_sha256"] ?? "") &&
             (Int(source["object_size"] ?? "") ?? 0) > 0 &&
-            (source["object_key"] ?? "").hasPrefix("scv-instagram-automation/release-ready/") &&
-            ProjectMaterialObject.validKey(source["object_key"] ?? "") &&
+            Self.validRuntimeSourceKey(source["object_key"] ?? "", sha256: source["bundle_sha256"] ?? "") &&
             ProjectMaterialObject.validKey(source["source_path"] ?? "")
     }
 }

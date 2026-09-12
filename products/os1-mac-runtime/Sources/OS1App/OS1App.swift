@@ -3480,6 +3480,16 @@ private final class SessionStore: ObservableObject {
     private var sidebarPollRunning = false
     private var sidebarMutationTask: Task<Void, Never>?
 
+    /// Public, first-party provider signals are kept outside conversation
+    /// state. They never enter a task handoff or influence provider routing.
+    @Published private(set) var frontierItems: [FrontierNewsItem] = []
+    @Published private(set) var frontierSourceStatuses: [FrontierSourceStatus] = []
+    @Published private(set) var frontierMonitorLastUpdated: Date?
+    @Published private(set) var frontierMonitorIsChecking = false
+    @Published private(set) var frontierNotice: FrontierNewsItem?
+    private var frontierMonitorTask: Task<Void, Never>?
+    private var frontierMonitor: FrontierNewsMonitor?
+
     let voiceDictation = VoiceDictationController()
 
     private let fileManager = FileManager.default
@@ -3500,6 +3510,18 @@ private final class SessionStore: ObservableObject {
                 requireReadOnly: submission.readOnlyReconciliation == true, deliveryID: submission.deliveryID,
                 submissionID: submission.id, onActivity: onActivity)
         }
+        if storageRoot == nil {
+            let monitor = FrontierNewsMonitor()
+            frontierMonitor = monitor
+            frontierMonitorTask = Task { [weak self] in
+                await self?.refreshFrontierSignals()
+                while !Task.isCancelled {
+                    try? await Task.sleep(for: .seconds(FrontierNewsMonitor.defaultPollInterval))
+                    guard !Task.isCancelled, self != nil else { return }
+                    await self?.refreshFrontierSignals()
+                }
+            }
+        }
         load()
         pausedQueueIDs = Set(queuedSubmissions.map(\.id))
         if sessions.isEmpty {
@@ -3508,6 +3530,28 @@ private final class SessionStore: ObservableObject {
             selectedSessionID = sessions.first(where: { $0.archived != true })?.id ?? sessions.first?.id
             composer = selectedSession?.draft ?? ""
         }
+    }
+
+    /// Refreshes the monitor without changing the selected task. A source
+    /// failure remains visible as an unavailable status; stale items are not
+    /// presented as fresh data.
+    func refreshFrontierSignals() async {
+        guard let frontierMonitor, !frontierMonitorIsChecking else { return }
+        frontierMonitorIsChecking = true
+        let result = await frontierMonitor.poll()
+        frontierItems = result.items
+        frontierSourceStatuses = result.sourceStatuses
+        frontierMonitorLastUpdated = result.completedAt
+        if let notice = result.newItems.first(where: { $0.kind == .tokenReset || $0.kind == .usageLimit }) {
+            frontierNotice = notice
+        }
+        frontierMonitorIsChecking = false
+    }
+
+    func acknowledgeFrontierNotice() { frontierNotice = nil }
+
+    var frontierLatestActionableItem: FrontierNewsItem? {
+        frontierItems.first { $0.kind == .tokenReset || $0.kind == .usageLimit }
     }
 
     var selectedIndex: Int? {
@@ -5500,6 +5544,22 @@ private struct OS1DesktopApp: App {
     @StateObject private var store: SessionStore
 
     init() {
+        if let flag = CommandLine.arguments.firstIndex(of: "--audit-frontier") {
+            guard CommandLine.arguments.count == flag + 2 else { exit(EXIT_FAILURE) }
+            let root = URL(fileURLWithPath: CommandLine.arguments[flag + 1], isDirectory: true)
+            Task { @MainActor in
+                let monitor = FrontierNewsMonitor(storageRoot: root)
+                let result = await monitor.poll()
+                do {
+                    let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+                    encoder.dateEncodingStrategy = .iso8601
+                    print(String(decoding: try encoder.encode(result), as: UTF8.self))
+                    exit(result.sourceStatuses.allSatisfy(\.available) ? EXIT_SUCCESS : EXIT_FAILURE)
+                } catch { fputs("Frontier audit serialization failed\n", stderr); exit(EXIT_FAILURE) }
+            }
+            NSApplication.shared.run()
+            exit(EXIT_FAILURE)
+        }
         if CommandLine.arguments.contains("--audit-sidebar") {
             do {
                 var report: [String: Any] = [:]
@@ -6689,6 +6749,8 @@ private struct SessionSidebar: View {
                 .padding(.horizontal, 20)
             }
 
+            FrontierMonitorView(store: store)
+
             Spacer(minLength: 0)
             if let notice = store.sidebarSyncNotice {
                 Text(notice).font(.system(size: 10)).foregroundStyle(Theme.pink).padding(12)
@@ -6697,6 +6759,148 @@ private struct SessionSidebar: View {
         .frame(width: 315)
         .background(Color.black.opacity(0.72))
         .onReceive(NotificationCenter.default.publisher(for: Notification.Name("os1.focusSearch"))) { _ in searching = true }
+    }
+}
+
+/// Compact, non-conversational surface for public provider signals. Keeping
+/// this out of the transcript prevents a news poll from changing task context
+/// or causing an unexpected backend route.
+private struct FrontierMonitorView: View {
+    @ObservedObject var store: SessionStore
+    @State private var expanded = false
+
+    private var latest: FrontierNewsItem? { store.frontierNotice ?? store.frontierLatestActionableItem ?? store.frontierItems.first }
+    private var availableCount: Int { store.frontierSourceStatuses.filter(\.available).count }
+    private var checkedLabel: String {
+        guard let date = store.frontierMonitorLastUpdated else { return "첫 확인 대기" }
+        return date.formatted(date: .omitted, time: .shortened)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(spacing: 6) {
+                Circle()
+                    .fill(store.frontierMonitorIsChecking ? Theme.pink : (availableCount > 0 ? Theme.green : Theme.muted))
+                    .frame(width: 6, height: 6)
+                Text("FRONTIER MONITOR")
+                    .font(.system(size: 9, weight: .bold, design: .rounded))
+                    .tracking(1.1)
+                    .foregroundStyle(Theme.muted)
+                Spacer()
+                Button { expanded.toggle(); store.acknowledgeFrontierNotice() } label: {
+                    Image(systemName: store.frontierNotice == nil ? "list.bullet" : "bell.badge.fill")
+                        .foregroundStyle(store.frontierNotice == nil ? Theme.muted : Theme.pink)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("프론티어 뉴스 전체 보기")
+                .help("전체 뉴스·리셋 공지·출처 상태")
+                Button { Task { await store.refreshFrontierSignals() } } label: {
+                    Image(systemName: store.frontierMonitorIsChecking ? "clock" : "arrow.clockwise")
+                        .font(.system(size: 10, weight: .semibold))
+                }
+                .buttonStyle(.plain)
+                .disabled(store.frontierMonitorIsChecking)
+                .help("공식 프론티어 상태 다시 확인")
+                .accessibilityLabel("프론티어 상태 다시 확인")
+            }
+
+            if let latest {
+                Button {
+                    NSWorkspace.shared.open(latest.sourceURL)
+                } label: {
+                    VStack(alignment: .leading, spacing: 3) {
+                        HStack(spacing: 5) {
+                            Text(latest.provider.displayName)
+                            Text("·")
+                            Text(latest.kind.label).foregroundStyle(latest.kind == .tokenReset ? Theme.pink : Theme.muted)
+                        }
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(Theme.text)
+                        Text(latest.title)
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundStyle(Theme.muted)
+                            .lineLimit(2)
+                        if let resetAt = latest.resetAt, resetAt > Date() {
+                            Text("원문에 명시된 리셋 시각 · \(resetAt.formatted(date: .abbreviated, time: .shortened))")
+                                .font(.system(size: 8, weight: .medium, design: .rounded))
+                                .foregroundStyle(Theme.pink)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .buttonStyle(.plain)
+                .help("공식 원문 열기")
+                .accessibilityLabel("최신 \(latest.provider.displayName) \(latest.kind.label) 공지: \(latest.title)")
+            } else {
+                Text(store.frontierMonitorIsChecking ? "공식 원본 확인 중…" : "새 공식 사용량·상태 공지 없음")
+                    .font(.system(size: 10))
+                    .foregroundStyle(Theme.muted)
+            }
+
+            HStack(spacing: 5) {
+                Text("공식 원본 \(availableCount)/\(FrontierMonitorSource.firstParty.count)")
+                Text("·")
+                Text("최근 \(checkedLabel)")
+            }
+            .font(.system(size: 8, weight: .medium, design: .rounded))
+            .foregroundStyle(Theme.muted.opacity(0.8))
+            Text("OS1 실행 중 5분마다 · 개인 계정 잔량과 별개")
+                .font(.system(size: 8)).foregroundStyle(Theme.muted)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 9)
+        .background(Theme.panel, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(Theme.border))
+        .padding(.horizontal, 20)
+        .padding(.top, 10)
+        .popover(isPresented: $expanded, arrowEdge: .trailing) {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack {
+                    Text("프론티어 뉴스 · 리셋 알림").font(.headline)
+                    Spacer()
+                    Button { expanded = false } label: { Image(systemName: "xmark") }.buttonStyle(.plain)
+                }
+                Text("공식 공지입니다. 내 계정 적용 여부와 사용 기한은 원문에서 확인하세요. 시각이 불명확하면 기한을 추정하지 않습니다.")
+                    .font(.caption).foregroundStyle(Theme.muted)
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 14) {
+                        ForEach(store.frontierItems) { item in
+                            VStack(alignment: .leading, spacing: 5) {
+                                HStack {
+                                    Text(item.provider.displayName + " · " + item.kind.label).font(.caption).foregroundStyle(Theme.pink)
+                                    Spacer()
+                                    Text(item.publishedAt.formatted(date: .abbreviated, time: .omitted)).font(.caption2).foregroundStyle(Theme.muted)
+                                }
+                                Link(destination: item.sourceURL) { Text(item.title).font(.system(size: 13, weight: .semibold)) }
+                                if !item.summary.isEmpty { Text(item.summary).font(.system(size: 12)).foregroundStyle(Theme.muted).lineLimit(5) }
+                                if let reset = item.resetAt {
+                                    Text("원문 리셋 시각: \(reset.formatted(date: .abbreviated, time: .shortened))\(reset < Date() ? " · 지난 시각" : "")")
+                                        .font(.caption).foregroundStyle(Theme.pink)
+                                }
+                                Text(item.sourceURL.host ?? "").font(.caption2).foregroundStyle(Theme.muted)
+                            }
+                            .textSelection(.enabled)
+                            Divider()
+                        }
+                        if store.frontierItems.isEmpty { Text("조회된 뉴스가 없습니다. 아래 출처 상태를 확인하세요.") }
+                        Text("출처 상태").font(.headline)
+                        ForEach(store.frontierSourceStatuses, id: \.sourceID) { status in
+                            HStack(alignment: .top) {
+                                Image(systemName: status.available ? "checkmark.circle" : "exclamationmark.triangle")
+                                    .foregroundStyle(status.available ? Theme.green : Theme.pink)
+                                VStack(alignment: .leading) {
+                                    Text(status.sourceID).font(.caption)
+                                    Text(status.message + (status.available ? "" : " · 기존 자료는 과거 조회 결과입니다"))
+                                        .font(.caption2).foregroundStyle(Theme.muted)
+                                }
+                            }
+                        }
+                    }.frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+            .padding(18).frame(width: 460, height: 540)
+            .background(Theme.background)
+        }
     }
 }
 
