@@ -11,6 +11,13 @@ func runTakeoverFixtures() throws {
     check(ConnectionFailure.classify("In a non-interactive environment, it's necessary to set a CLOUDFLARE_API_TOKEN environment variable for wrangler to work.") == .authentication,
           "Wrangler non-interactive OAuth diagnostic")
     check(ConnectionFailure.classify("HTTP 403 Forbidden") == .permission, "permission is not authentication")
+    check(ConnectionFailure.classify("HTTP 403 Forbidden: API rate limit exceeded for user ID 224881116") == .rateLimited,
+          "incident quota is not permission denial")
+    check(ConnectionFailure.classify("HTTP 403: You have exceeded a secondary rate limit") == .rateLimited, "secondary throttle")
+    check(ConnectionFailure.classify("HTTP 429") == .rateLimited, "explicit throttle")
+    let authThrottle = Data(#"{"error":"identity_verification_unavailable","retry_after_ms":360000}"#.utf8)
+    check(BackendRecovery.serviceFailure(status: 429, body: authThrottle) == BackendRecovery.identityVerificationUnavailable, "typed auth quota")
+    check(BackendRecovery.serviceFailure(status: 401, body: authThrottle) != BackendRecovery.identityVerificationUnavailable, "denial cannot become retry")
     for error in ["fetch failed", "DNS resolve host", "connection timed out", "HTTP 503"] {
         check(ConnectionFailure.classify(error) == .transport, "transport never logs in")
     }

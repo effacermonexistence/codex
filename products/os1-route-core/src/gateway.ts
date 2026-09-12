@@ -53,6 +53,8 @@ export async function authenticate(request: Request, env: Env): Promise<AuthIden
     { device_id: deviceId },
     positiveInteger(env.SERVICE_RESPONSE_BYTES),
     authorization,
+    false,
+    true,
   );
   return parseAuthIdentity(value);
 }
