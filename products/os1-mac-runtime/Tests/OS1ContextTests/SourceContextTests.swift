@@ -30,6 +30,7 @@ final class SourceContextTests {
         suite.testExplicitDetachAndOrdinaryFollowup()
         try suite.testReceiptMigrationBindsTheOutput()
         suite.testHumanOutputContract()
+        try suite.testBoundedConnectionProbe()
         suite.testRetrievedAnswerPresentation()
         try runCompletionFeedbackFixtures()
         try runBackendRecoveryFixtures()
@@ -102,6 +103,15 @@ final class SourceContextTests {
         XCTAssertTrue(other.technical.contains("other-digest"))
     }
     func testHumanOutputContract() {
+        let arithmeticRequest = "도구 호출이나 파일 변경 없이 2 곱하기 3을 한 줄로 답해"
+        for answer in [#"\(2 \times 3 = 6\)"#, #"\[\frac{1}{2}=0.5\]"#, #"$$\sqrt{4}=2$$"#, "$6$", "6"] {
+            XCTAssertTrue(HumanOutputContract.issues(in: answer, request: arithmeticRequest).isEmpty)
+        }
+        for answer in [#"\(\text{The answer is 6}\)"#, #"\(\timesEnglish 6\)"#, #"\(\unknown{6}\)"#,
+                       #"The answer is \(6\)."#, "The answer is six."] {
+            XCTAssertFalse(HumanOutputContract.issues(in: answer, request: arithmeticRequest).isEmpty)
+        }
+        print("Numeric math presentation: 10 language-boundary checks PASS")
         let literal = "Verification marker: orchard-lantern-29\nService state: staging verified; production not deployed\nUnfinished gate: independent read-only production fingerprint check"
         for request in ["이전 대화의 원문 값 그대로 세 줄로 적어줘", "원문 문구 그대로 보여줘",
                         "원래 값을 말하지 말고 원문 값 그대로 써줘", "원래 텍스트 그대로 적어줘"] {
@@ -148,6 +158,29 @@ final class SourceContextTests {
         let claim = "모든 실행 게이트 통과 — 이게 QMGR 통합의 최종 승인조건입니다."
         XCTAssertTrue(HumanOutputContract.issues(in: claim, request: "QMGR 통합 스키마 짜봐").contains { $0.contains("sufficient approval") })
         XCTAssertTrue(HumanOutputContract.issues(in: claim + " 다만 내부 승인만으로 충분하지 않습니다. 관측 검증이 별도로 필요합니다.", request: "QMGR 통합 스키마 짜봐").isEmpty)
+    }
+    func testBoundedConnectionProbe() throws {
+        var attempts = 0, waits = 0
+        let result = try ConnectionProbe.readOnly(probe: { () throws -> String in
+            attempts += 1
+            if attempts == 1 { throw ConnectionFailure.transport }
+            return "verified"
+        }, wait: { waits += 1 })
+        XCTAssertEqual(result, "verified"); XCTAssertEqual(attempts, 2); XCTAssertEqual(waits, 1)
+        for failure in [ConnectionFailure.authentication, .permission, .unavailable, .cancelled, .transport] {
+            attempts = 0; waits = 0
+            XCTAssertThrowsError(try ConnectionProbe.readOnly(probe: { () throws -> String in
+                attempts += 1; throw failure
+            }, wait: { waits += 1 }))
+            XCTAssertEqual(attempts, failure == .transport ? 2 : 1)
+            XCTAssertEqual(waits, failure == .transport ? 1 : 0)
+        }
+        attempts = 0; waits = 0
+        XCTAssertThrowsError(try ConnectionProbe.readOnly(probe: { () throws -> String in
+            attempts += 1; throw ConnectionFailure.transport
+        }, wait: { waits += 1 }, cancelled: { true }))
+        XCTAssertEqual(attempts, 1); XCTAssertEqual(waits, 0)
+        print("Connection probe: bounded transport retry, no auth/permission retry, cancellation PASS")
     }
     func withStore(_ body: (SourceContextStore) throws -> Void) throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("os1-context-test-" + UUID().uuidString)

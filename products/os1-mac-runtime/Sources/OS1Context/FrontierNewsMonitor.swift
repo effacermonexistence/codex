@@ -617,7 +617,10 @@ public actor FrontierNewsMonitor {
     }
 }
 
-private final class FrontierRedirectGuard: NSObject, URLSessionTaskDelegate, Sendable {
+// Module-internal: a file-private NSObject's runtime name contains a compiler
+// hash that trips the release entropy scan on macOS 15. Keep a stable type name
+// instead of weakening the scanner or allow-listing an opaque compiler token.
+final class FrontierRedirectGuard: NSObject, URLSessionTaskDelegate, Sendable {
     let host: String?
     init(host: String?) { self.host = host?.lowercased() }
     func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,

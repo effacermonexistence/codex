@@ -28,6 +28,21 @@ public enum ConnectionFailure: String, Codable, Sendable, Error, LocalizedError,
     }
 }
 
+/// One retry of a read-only connectivity probe, never of a provider execution
+/// or an OAuth/write request. Injected wait keeps regression tests deterministic.
+public enum ConnectionProbe {
+    public static func readOnly<T>(probe: () throws -> T, wait: () -> Void,
+                                   cancelled: () -> Bool = { false }) throws -> T {
+        do { return try probe() }
+        catch ConnectionFailure.transport {
+            guard !cancelled() else { throw ConnectionFailure.cancelled }
+            wait()
+            guard !cancelled() else { throw ConnectionFailure.cancelled }
+            return try probe()
+        }
+    }
+}
+
 /// Cross-process single flight. Credential storage remains owned by gh/Wrangler.
 public final class ConnectionLease {
     private let descriptor: Int32

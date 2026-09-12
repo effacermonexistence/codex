@@ -68,7 +68,7 @@ public enum HumanOutputContract {
         let text = answer.precomposedStringWithCanonicalMapping
         let blocks = fencedJSON(text)
         if !wantsMachineFormat(request) {
-            let neutral = text.range(of: #"^[\p{N}\s\p{P}\p{S}]+$"#, options: .regularExpression) != nil || Double(text.trimmingCharacters(in: .whitespacesAndNewlines)) != nil
+            let neutral = text.range(of: #"^[\p{N}\s\p{P}\p{S}]+$"#, options: .regularExpression) != nil || Double(text.trimmingCharacters(in: .whitespacesAndNewlines)) != nil || numericMathOnly(text)
             if wantsKorean(request), !preservesOriginalValues(request), !neutral, !text.unicodeScalars.contains(where: { (0xAC00...0xD7A3).contains($0.value) }) {
                 issues.append("Answer the user's Korean request in Korean, not English-only prose.")
             }
@@ -176,6 +176,20 @@ public enum HumanOutputContract {
             if seen < idSet.count { issues.append("Stage dependencies contain a cycle.") }
         }
         return Array(Set(issues)).sorted()
+    }
+
+    /// A numeric formula has no prose language. Do not strip arbitrary LaTeX
+    /// commands: text/unknown commands and English outside math still fail.
+    private static func numericMathOnly(_ answer: String) -> Bool {
+        var value = answer.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard value.utf8.count <= 8_192 else { return false }
+        let delimiters = [(#"\("#, #"\)"#), (#"\["#, #"\]"#), ("$$", "$$"), ("$", "$")]
+        guard let pair = delimiters.first(where: { value.hasPrefix($0.0) && value.hasSuffix($0.1) && value.count > $0.0.count + $0.1.count }) else { return false }
+        value = String(value.dropFirst(pair.0.count).dropLast(pair.1.count))
+        value = value.replacingOccurrences(of: #"\\(?:times|cdot|div|frac|dfrac|tfrac|sqrt|left|right|pm|mp|leq|geq|approx)(?![A-Za-z])"#,
+            with: "", options: .regularExpression)
+        guard !value.contains("\\"), value.range(of: #"[0-9]"#, options: .regularExpression) != nil else { return false }
+        return value.range(of: #"^[\p{N}\s\p{P}\p{S}]+$"#, options: .regularExpression) != nil
     }
 
     private static func fencedJSON(_ answer: String) -> [String] {

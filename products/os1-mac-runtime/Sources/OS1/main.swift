@@ -1693,7 +1693,10 @@ func activeCodexCatalog(
 }
 
 func githubToken() throws -> String {
-    try withConnectionRecovery(service: "github", probe: existingGitHubToken)
+    try withConnectionRecovery(service: "github") {
+        try ConnectionProbe.readOnly(probe: existingGitHubToken,
+            wait: { Thread.sleep(forTimeInterval: 1) }, cancelled: { ExecutionCancellation.isCancelled })
+    }
 }
 
 /// Tokens stay in memory and in a child's environment, never in argv, logs or
@@ -2262,6 +2265,8 @@ private func repairsMismatchedResearchSource(_ prompt: String, context: String?,
 
 /// Public source lineage, not a local model selector or private policy. A
 /// short follow-up must not erase the subject of the attached research.
+let readOnlyStatusRoutingTask = "Read-only status inspection. Report observed completed, pending and uncertain steps for the interrupted objective in context, using read-only local and remote checks."
+
 private func sourceAwareRoutingTask(_ prompt: String, evidence: R2EvidenceBundle?) -> String {
     let normalized = sourceRoutingTask(prompt, hasSource: evidence != nil)
     let task: String
@@ -5849,7 +5854,7 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
     // Keep this new review's task identity distinct while retaining all source
     // and full-input accounting and hard-enforcing its signed read-only scope.
     let routingTask = requireReadOnly
-        ? "Read-only execution-state review. Inspect current local files and remote service status using CLI read-only checks. Distinguish verified completed steps, pending steps and uncertain outcomes for the interrupted objective in context. Do not modify files or any local/remote state."
+        ? readOnlyStatusRoutingTask
         : sourceAwareRoutingTask(prompt, evidence: r2Evidence)
     let feedbackStore = CompletionFeedbackStore()
     let feedbackScope = CompletionFeedbackScope(
@@ -6545,6 +6550,10 @@ func selfTest() throws {
           compactResult["full_qm_gr_claim_allowed"] as? Bool == false,
           compactResultText.count < completeResultText.count else {
         throw OS1Error.message("Complete source JSON projection must preserve the final result gate")
+    }
+    guard ScopeResolution.resolve(readOnlyStatusRoutingTask).scope == .readOnly,
+          !["modify", "write", "deploy", "reset"].contains(where: readOnlyStatusRoutingTask.lowercased().contains) else {
+        throw OS1Error.message("Status review must route affirmative read-only intent without negated mutation triggers")
     }
     guard sourceRoutingTask("원본을 검토해 줘. 파일 수정은 하지 마.", hasSource: true) == "원본을 검토해 줘. read-only",
           sourceRoutingTask("자료의 Node 버전만 답해. 파일·서버를 변경하거나 테스트를 실행하지 마.", hasSource: true) == "자료의 Node 버전만 답해. read-only",
@@ -7898,7 +7907,7 @@ struct OS1Main {
             guard let command = arguments.first else { usage(); return }
             if try await fleetCommand(arguments) { return }
             switch command {
-            case "version", "--version", "-V": print("OS-1 Runtime 0.9.47 (frontier-source-readiness-build101)")
+            case "version", "--version", "-V": print("OS-1 Runtime 0.9.47 (frontier-source-readiness-build102)")
             case "doctor": try doctor()
             case "sidebar-pin":
                 guard (4...5).contains(arguments.count), arguments[1] == "codex",

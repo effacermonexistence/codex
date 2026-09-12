@@ -36,6 +36,29 @@ bucket paths and customer-state keys remain rejected.
 
 ## Objective and scope
 
+### Installed UI closure findings (build 102)
+
+The real UI (unlike a pinned-provider CLI smoke test) exposed an intermittent
+read-only GitHub preflight transport failure. Its status-review retry also sent
+negative mutation verbs as the routing objective, attracting a write ticket
+that the client correctly refused. Keep that hard guard: normalize the status
+review objective to affirmative read-only inspection, retaining the original
+request/prohibitions in the execution context. Retry only a read-only transport
+probe once with a delay; authentication, permission and rate-limit failures must
+not trigger identity changes or model calls. Cancellation remains terminal.
+
+A separate native arithmetic check returned `\\(2 \\times 3 = 6\\)` and was
+incorrectly rejected as English. Extend only the language-neutral presentation
+check to bounded numeric LaTeX with allow-listed math commands; do not waive
+language checks for text commands, prose or unknown commands. Regress the exact
+answer plus adversarial text-in-math, and rerun automatic routing on the installed
+build. This does not certify mathematical correctness or replace result checks.
+
+The macOS 15 CI entropy scanner identified a generated private Objective-C/Swift
+type name, demangled to OS1Context.FrontierRedirectGuard, not a credential.
+Use a module-internal stable type name; the entropy scanner and policy remain
+unchanged. Local and CI package scans must both pass before upstream adoption.
+
 OS1 should surface fresh, actionable changes from frontier providers—especially
 OpenAI and Anthropic—without routing the notice through Codex or Claude, adding
 the notice to a user's task context, or inventing a quota/reset deadline. The
