@@ -1692,9 +1692,26 @@ func activeCodexCatalog(
     throw OS1Error.message("Codex model metadata is unavailable; static profiles are not account availability")
 }
 
-func githubToken() throws -> String {
+func storedGitHubCredential(read: ([String]) throws -> (Int32, Data, Data)) throws -> String {
+    let stored = try read(["auth", "token", "--hostname", "github.com"])
+    guard stored.0 == 0, let token = String(data: stored.1, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
+          token.count >= 20, token.count <= 8192, !token.contains(where: { $0.isWhitespace }) else {
+        throw ConnectionFailure.authentication
+    }
+    return token
+}
+
+func githubToken(requireRepositoryWrite: Bool = false) throws -> String {
     try withConnectionRecovery(service: "github") {
-        try ConnectionProbe.readOnly(probe: existingGitHubToken,
+        // gh owns credential storage. Routine execution needs the server's
+        // identity check, not redundant /user + repository calls on every poll.
+        // Do not cycle identities on rate limits or cache credentials in OS1.
+        if !requireRepositoryWrite {
+            return try storedGitHubCredential { arguments in
+                try commandOutput(findExecutable("gh"), arguments, timeout: 15)
+            }
+        }
+        return try ConnectionProbe.readOnly(probe: existingGitHubToken,
             wait: { Thread.sleep(forTimeInterval: 1) }, cancelled: { ExecutionCancellation.isCancelled })
     }
 }
@@ -1717,14 +1734,14 @@ private func existingGitHubToken() throws -> String {
         let user = try commandOutput(gh, ["api", "user"], timeout: 15, environmentOverrides: env)
         guard user.0 == 0, decodedJSONObject(user.1)?["login"] is String else {
             let failure = ConnectionFailure.classify(String(decoding: user.2, as: UTF8.self))
-            if failure == .transport { throw failure }
+            if failure == .transport || failure == .rateLimited { throw failure }
             continue
         }
         let repo = try commandOutput(gh, ["api", "repos/effacermonexistence/codex"], timeout: 15, environmentOverrides: env)
         if repo.0 == 0, let permissions = decodedJSONObject(repo.1)?["permissions"] as? [String: Any],
            permissions["push"] as? Bool == true || permissions["admin"] as? Bool == true { return token }
         let failure = ConnectionFailure.classify(String(decoding: repo.2, as: UTF8.self))
-        if failure == .transport { throw failure }
+        if failure == .transport || failure == .rateLimited { throw failure }
         lastFailure = .permission
     }
     throw lastFailure
@@ -1803,7 +1820,7 @@ private func decodedJSONObject(_ data: Data) -> [String: Any]? {
 }
 
 private func verifyGitHubConnection() throws -> String {
-    _ = try githubToken()
+    _ = try githubToken(requireRepositoryWrite: true)
     return "GitHub 연결됨 — effacermonexistence/codex 쓰기 권한 확인"
 }
 
@@ -3682,6 +3699,29 @@ struct APIClient {
     }
 
     func post<Request: Encodable, Response: Decodable>(_ path: String, body: Request, as: Response.Type) async throws -> Response {
+        do { return try await postOnce(path, body: body, as: Response.self) }
+        catch OS1Error.service(let status, let message, let retry) {
+            // This code is emitted only when the identity service refused
+            // admission BEFORE any route, nonce claim or provider side effect.
+            // Honor the full server delay once; never replay other failures.
+            guard (status == 429 || status == 503), message == BackendRecovery.identityVerificationUnavailable,
+                  let retry, retry > 0, retry <= 55_000 else {
+                throw OS1Error.service(status: status, message: message, retryAfterMS: retry)
+            }
+            RuntimeActivity.emit(.authorizing, publicText: "GitHub 인증 조회가 잠시 제한되어 \((retry + 999) / 1000)초 후 같은 요청을 이어갑니다. 추가 모델 호출은 하지 않습니다.", tool: "github")
+            var remaining = retry
+            while remaining > 0 {
+                if ExecutionCancellation.isCancelled { throw OS1Error.backendBlocked(.cancelled) }
+                let slice = min(1_000, remaining)
+                try await Task.sleep(for: .milliseconds(slice))
+                remaining -= slice
+            }
+            if ExecutionCancellation.isCancelled { throw OS1Error.backendBlocked(.cancelled) }
+            return try await postOnce(path, body: body, as: Response.self)
+        }
+    }
+
+    private func postOnce<Request: Encodable, Response: Decodable>(_ path: String, body: Request, as: Response.Type) async throws -> Response {
         guard let base = URL(string: config.apiURL), let url = URL(string: path, relativeTo: base) else {
             throw OS1Error.message("Invalid OS-1 API URL")
         }
@@ -3696,8 +3736,15 @@ struct APIClient {
         guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
             let status = (response as? HTTPURLResponse)?.statusCode ?? 0
             let reply = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-            let retry = status == 409 && reply?["error"] as? String == "verification_pending"
-                ? min(60_000, max(1_000, (reply?["retry_after_ms"] as? Int) ?? 60_000)) : nil
+            let retry: Int?
+            if (status == 429 || status == 503), reply?["error"] as? String == "identity_verification_unavailable" {
+                // Never shorten the server's reset/cooldown. Long delays stay
+                // pending instead of retrying early or borrowing another token.
+                retry = (reply?["retry_after_ms"] as? Int).flatMap { $0 > 0 ? $0 : nil }
+            } else {
+                retry = status == 409 && reply?["error"] as? String == "verification_pending"
+                    ? min(60_000, max(1_000, (reply?["retry_after_ms"] as? Int) ?? 60_000)) : nil
+            }
             throw OS1Error.service(status: status, message: BackendRecovery.serviceFailure(status: status, body: data), retryAfterMS: retry)
         }
         return try JSONDecoder().decode(Response.self, from: data)
@@ -3713,7 +3760,7 @@ struct APIClient {
                 if case OS1Error.service(let status, _, let retry) = error {
                     delay = retry ?? (status >= 500 ? (attempt + 1) * 1000 : nil)
                 }
-                guard attempt < 2, let delay else { throw error }
+                guard attempt < 2, let delay, delay <= 60_000 else { throw error }
                 try await Task.sleep(for: .milliseconds(delay))
             }
         }
@@ -6486,6 +6533,20 @@ func steeringProtocolSelfTest() throws {
 }
 
 func selfTest() throws {
+    var credentialCommands: [[String]] = []
+    let fixtureCredential = "fixture-not-a-real-credential"
+    guard try storedGitHubCredential(read: { args in
+        credentialCommands.append(args); return (0, Data((fixtureCredential + "\n").utf8), Data())
+    }) == fixtureCredential, credentialCommands == [["auth", "token", "--hostname", "github.com"]] else {
+        throw OS1Error.message("Routine authentication unexpectedly performed a network/account probe")
+    }
+    for invalid in ["", "short", "invalid credential with embedded spaces"] {
+        do {
+            _ = try storedGitHubCredential { _ in (0, Data(invalid.utf8), Data()) }
+            throw OS1Error.message("Malformed stored credential accepted")
+        } catch ConnectionFailure.authentication { }
+    }
+    print("GitHub credential path: local read only, network probes 0, account switches 0, malformed credentials rejected")
     try steeringProtocolSelfTest()
     for request in ["인스타그램 가격 버그 손봐줘", "파일을 수정해. 서버를 변경하지 마.",
                     "Create auto-review-probe.txt and verify its exact bytes",
@@ -7924,7 +7985,7 @@ struct OS1Main {
             guard let command = arguments.first else { usage(); return }
             if try await fleetCommand(arguments) { return }
             switch command {
-            case "version", "--version", "-V": print("OS-1 Runtime 0.9.47 (frontier-source-readiness-build103)")
+            case "version", "--version", "-V": print("OS-1 Runtime 0.9.47 (github-auth-throttle-build104)")
             case "doctor": try doctor()
             case "sidebar-pin":
                 guard (4...5).contains(arguments.count), arguments[1] == "codex",

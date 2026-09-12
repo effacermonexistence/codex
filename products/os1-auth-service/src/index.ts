@@ -1,4 +1,7 @@
+import { GitHubVerifier } from './github-verifier';
+
 const DEVICE_ID = /^[A-Za-z0-9._:-]{8,128}$/;
+const identities = new GitHubVerifier();
 
 function denied(): Response {
   return Response.json({ error: "denied" }, { status: 401 });
@@ -34,27 +37,12 @@ async function verify(request: Request): Promise<Response> {
   const deviceId = await readDeviceId(request);
   if (!token || !deviceId) return denied();
 
-  const response = await fetch("https://api.github.com/user", {
-    headers: {
-      accept: "application/vnd.github+json",
-      authorization: `Bearer ${token}`,
-      "user-agent": "OS-1-route-gateway",
-      "x-github-api-version": "2022-11-28",
-    },
-    signal: AbortSignal.timeout(5_000),
+  const identity = await identities.verify(token);
+  if (identity.status === 401) return denied();
+  if (identity.status !== 200) return Response.json({ error: 'identity_verification_unavailable' }, {
+    status: identity.status, headers: { 'cache-control': 'no-store', 'retry-after': String(identity.retryAfter) }
   });
-  if (!response.ok) return denied();
-  const body = await response.json<unknown>();
-  if (
-    typeof body !== "object" ||
-    body === null ||
-    Array.isArray(body) ||
-    !Number.isSafeInteger((body as Record<string, unknown>).id)
-  ) {
-    return denied();
-  }
-  const id = (body as Record<string, unknown>).id as number;
-  return Response.json({ subject: `github:${id}`, device_id: deviceId });
+  return Response.json({ subject: identity.subject, device_id: deviceId }, { headers: { 'cache-control': 'no-store' } });
 }
 
 export default {

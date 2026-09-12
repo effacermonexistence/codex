@@ -167,7 +167,7 @@ final class SourceContextTests {
             return "verified"
         }, wait: { waits += 1 })
         XCTAssertEqual(result, "verified"); XCTAssertEqual(attempts, 2); XCTAssertEqual(waits, 1)
-        for failure in [ConnectionFailure.authentication, .permission, .unavailable, .cancelled, .transport] {
+        for failure in [ConnectionFailure.authentication, .permission, .rateLimited, .unavailable, .cancelled, .transport] {
             attempts = 0; waits = 0
             XCTAssertThrowsError(try ConnectionProbe.readOnly(probe: { () throws -> String in
                 attempts += 1; throw failure

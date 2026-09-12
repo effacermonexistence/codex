@@ -111,6 +111,7 @@ public struct BackendFailureNotice: Codable, Equatable, Sendable {
 }
 
 public enum BackendRecovery {
+    public static let identityVerificationUnavailable = "GitHub 인증 조회가 일시적으로 제한됐습니다. 접근 권한 거부가 아닙니다. 요청과 자료를 보존했으며 모델을 바꾸거나 계정을 바꿔 재실행하지 않았습니다."
     /// Protocol error data only: quoted quota text in a successful answer is
     /// not evidence that the account is exhausted. Denials take precedence.
     public static func claudeQuotaFailure(status: Int32, object: [String: Any]) -> Bool {
@@ -134,6 +135,11 @@ public enum BackendRecovery {
         permission == "read_only" || stage == .notDispatched
     }
     public static func serviceFailure(status: Int, body: Data) -> String {
+        if (status == 429 || status == 503), body.count <= 4096,
+           let value = try? JSONSerialization.jsonObject(with: body) as? [String: Any],
+           value["error"] as? String == "identity_verification_unavailable" {
+            return identityVerificationUnavailable
+        }
         let text = String(decoding: body.prefix(256), as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
         if status == 429 && text == "error code: 1027" {
             return "OS1 라우팅 서버가 Cloudflare 한도 오류(429/1027)로 응답하지 못했습니다. 백엔드 모델을 바꿔 해결할 수 있는 오류가 아닙니다. 기존 요청과 작업은 유지됩니다."

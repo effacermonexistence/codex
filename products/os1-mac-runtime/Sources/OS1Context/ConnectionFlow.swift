@@ -6,9 +6,10 @@ import OS1System
 /// justify replacing an identity or opening another login window.
 public enum ConnectionFailure: String, Codable, Sendable, Error, LocalizedError, CustomStringConvertible {
     public var description: String { errorDescription ?? rawValue }
-    case authentication, permission, transport, unavailable, cancelled
+    case authentication, permission, rateLimited, transport, unavailable, cancelled
     public static func classify(_ text: String) -> Self {
         let s = text.lowercased()
+        if ["api rate limit exceeded", "secondary rate limit", "rate limit exceeded", "http 429"].contains(where: s.contains) { return .rateLimited }
         if ["not logged in", "not logged into", "token has expired", "token expired", "invalid access token",
             "bad credentials", "http 401", "authentication error", "authenticate wrangler",
             "non-interactive environment, it's necessary to set a cloudflare_api_token",
@@ -21,6 +22,7 @@ public enum ConnectionFailure: String, Codable, Sendable, Error, LocalizedError,
         switch self {
         case .authentication: return "서비스 로그인이 필요합니다. OS1에 원래 요청을 보존했습니다."
         case .permission: return "로그인한 계정에 대상 자료 접근 권한이 없습니다. 다른 모델로 재실행하지 않았습니다."
+        case .rateLimited: return "GitHub 조회 한도에 도달했습니다. 권한 오류가 아닙니다. 요청과 자료를 보존했으며 계정 변경이나 반복 모델 호출은 하지 않았습니다."
         case .transport: return "서비스와 통신하지 못했습니다. 인증을 바꾸지 않고 요청을 보존했습니다."
         case .unavailable: return "대상 서비스의 응답을 확인하지 못했습니다. 요청과 기존 자료는 유지됩니다."
         case .cancelled: return "승인을 취소했습니다. 원래 요청은 OS1에 보존했습니다."

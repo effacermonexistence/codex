@@ -1,4 +1,4 @@
-import { reject, ResultServiceUnavailable } from "./errors";
+import { reject, ResultServiceUnavailable, IdentityServiceUnavailable } from "./errors";
 
 export async function readBoundedJson(
   requestOrResponse: Request | Response,
@@ -46,6 +46,7 @@ export async function bindingJson(
   maximumResponseBytes: number,
   authorization?: string,
   resultDelivery = false,
+  identityVerification = false,
 ): Promise<unknown> {
   const headers = new Headers({ "content-type": "application/json" });
   if (authorization) headers.set("authorization", authorization);
@@ -56,8 +57,14 @@ export async function bindingJson(
     body: JSON.stringify(body),
     signal: AbortSignal.timeout(5_000),
   }); } catch (error) {
+    if (identityVerification) throw new IdentityServiceUnavailable(503, 5);
     if (resultDelivery) throw new ResultServiceUnavailable();
     throw error;
+  }
+  if (identityVerification && (response.status === 429 || response.status >= 500)) {
+    const raw = response.headers.get('retry-after') ?? '5';
+    const retry = /^\d+$/.test(raw) && Number.isSafeInteger(Number(raw)) ? Number(raw) : 60;
+    throw new IdentityServiceUnavailable(response.status === 429 ? 429 : 503, Math.max(1, retry));
   }
   if (resultDelivery && response.status >= 500) throw new ResultServiceUnavailable();
   if (!response.ok) reject();

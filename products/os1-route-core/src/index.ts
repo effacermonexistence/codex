@@ -1,5 +1,5 @@
 import { opaqueError } from "./egress";
-import { RequestRejected, ResultServiceUnavailable } from "./errors";
+import { RequestRejected, ResultServiceUnavailable, IdentityServiceUnavailable } from "./errors";
 import { ExecutionState } from "./execution-state";
 import { FleetState } from "./fleet-state";
 import {
@@ -52,6 +52,9 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
     if (url.pathname === "/v1/fleet/snapshot") return await fleetSnapshot(request, env);
     throw new RequestRejected();
   } catch (error) {
+    if (error instanceof IdentityServiceUnavailable) {
+      return error.response();
+    }
     if (error instanceof ResultServiceUnavailable) {
       return Response.json({ error: "result_delivery_pending", retry_after_ms: 1000 },
         { status: 503, headers: { "cache-control": "no-store", "retry-after": "1" } });
