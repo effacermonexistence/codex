@@ -42,7 +42,7 @@ public enum CompletionFeedbackError: LocalizedError {
 public struct CompletionFeedbackScope: Codable, Equatable, Sendable {
     /// Calibration is valid only under the validator/accounting that produced it.
     /// Changing these contracts starts new feedback, without deleting old ledgers.
-    public static let validationRevision = "human-output-5/native-usage-2/execution-lease-1/quota-1"
+    public static let validationRevision = "human-output-5/native-usage-2/execution-lease-1/quota-1/drift-policy-1"
 
     public static func inputDigest(assembledInput: String, codexSessionID: String?,
                                    claudeSessionID: String?,

@@ -20,6 +20,10 @@ private func XCTAssertThrowsError<T>(_ value: @autoclosure () throws -> T) {
 final class SourceContextTests {
     static func main() throws {
         voiceProcessChildIfRequested()
+        if CommandLine.arguments.contains("--drift-only") { try runDriftPolicyFixtures(); return }
+        if CommandLine.arguments.count == 4, CommandLine.arguments[1] == "--seed-drift-native-fixture" {
+            try seedDriftNativeFixture(workspace: CommandLine.arguments[2], contract: CommandLine.arguments[3]); return
+        }
         let suite = SourceContextTests()
         try suite.testSnapshotRoundTripAndRestart()
         try suite.testCorruptionAndMissingFileFailClosed()
@@ -33,6 +37,7 @@ final class SourceContextTests {
         try suite.testBoundedConnectionProbe()
         suite.testRetrievedAnswerPresentation()
         try runCompletionFeedbackFixtures()
+        try runDriftPolicyFixtures()
         try runBackendRecoveryFixtures()
         try runExecutionFixtures()
         try runFrontierMonitorFixtures()

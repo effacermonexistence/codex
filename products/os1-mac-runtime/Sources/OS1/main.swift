@@ -476,7 +476,8 @@ private func executionInputContext(prompt: String, assembled: String, history: S
     let total = assembled.utf8.count + directiveBytes +
         sourceExecutionDirective(evidence, required: true).utf8.count + 1 +
         HumanOutputContract.instructions(for: prompt).utf8.count +
-        publicWebLookupInstructions(prompt: prompt, hasPreloadedSource: evidence != nil).utf8.count
+        publicWebLookupInstructions(prompt: prompt, hasPreloadedSource: evidence != nil).utf8.count +
+        DriftPolicyStore.maximumInstructionBytes
     guard total > 0, total <= 4_000_000, sourceBytes + historyBytes <= total else {
         throw OS1Error.message("Execution context exceeds the bounded routing input contract")
     }
@@ -565,6 +566,7 @@ struct ProviderExecution {
     let artifact: Artifact
     let sessionID: String
     let nativeRecord: NativeRecordEvidence
+    var driftApplication: DriftApplication? = nil
 }
 
 struct RejectedProviderExecution: Error, CustomStringConvertible {
@@ -4013,7 +4015,7 @@ final class CodexAppServerClient: @unchecked Sendable {
         _ = try request(
             "initialize",
             params: [
-                "clientInfo": ["name": "OS-1 CLODEX", "version": "0.9.47"],
+                "clientInfo": ["name": "OS-1 CLODEX", "version": "0.9.48"],
                 "capabilities": ["experimentalApi": true],
             ],
             deadline: deadline
@@ -4802,6 +4804,29 @@ private func interruptedExecution(ticket: Ticket, model: String?, effort: String
     return RejectedProviderExecution(execution: ProviderExecution(artifact: artifact, sessionID: sessionID, nativeRecord: record), cause: cause)
 }
 
+private func driftScope(prompt: String, workspace: String, evidence: R2EvidenceBundle?, contract: ExecutorContract) -> DriftScope {
+    let workload: DriftScope.Workload = promptRequestsImmediateDeliverable(prompt) ? .deliverable :
+        (evidence != nil ? .sourceAnswer : (promptRequiresShellCapability(prompt) ? .workspaceOperation : .general))
+    return DriftScope(workspace: workspace, sourceSHA256: evidence.map { DriftScope.digest($0.modelPayload) },
+        contractSHA256: contract.sha256, workload: workload)
+}
+
+private var driftAttemptWasSteered: Bool {
+    ExecutionSteering.currentSubmission.map { !ExecutionSteering().inputs($0).isEmpty } ?? false
+}
+
+private func recordDriftAdoption(_ execution: ProviderExecution, ticket: Ticket, localPassed: Bool, adopted: Bool) {
+    guard let application = execution.driftApplication else { return }
+    do {
+        try DriftPolicyStore().adopted(application, outputSHA256: DriftScope.digest(execution.artifact.output),
+            localPassed: localPassed, nativeVerified: execution.nativeRecord.persistence == "verified",
+            serverAdopted: adopted, steered: driftAttemptWasSteered)
+    } catch {
+        recordExecutionFailure(ticket: ticket, model: execution.artifact.model, effort: execution.artifact.effort,
+            reason: "drift_policy_adoption_not_persisted_base_contract_retained", source: nil)
+    }
+}
+
 private func execute(
     ticket: Ticket,
     prompt: String,
@@ -4817,7 +4842,8 @@ private func execute(
     preloadedR2Evidence: R2EvidenceBundle? = nil,
     sourceUseRequired: Bool = true,
     onUsage: ((CompletionMeasuredUsage?) -> Void)? = nil,
-    onDispatch: ((String?) -> Void)? = nil
+    onDispatch: ((String?) -> Void)? = nil,
+    onInstructions: ((String) -> Void)? = nil
 ) throws -> ProviderExecution {
     let started = Date()
     let lockedObjective = objectivePrompt ?? prompt
@@ -4841,7 +4867,19 @@ private func execute(
     """ : ""
     let presentationDirective = "\n" + UnifiedExecution.instructions + "\n" + HumanOutputContract.instructions(for: lockedObjective) + readinessDirective +
         publicWebLookupInstructions(prompt: lockedObjective, hasPreloadedSource: hasPreloadedR2Evidence)
-    let instructions = executorInstructions(contract: executorContract, ticket: ticket) + evidenceDirective + presentationDirective
+    let driftApplication: DriftApplication?
+    do {
+        driftApplication = try DriftPolicyStore().application(
+            scope: driftScope(prompt: lockedObjective, workspace: workspace, evidence: preloadedR2Evidence, contract: executorContract),
+            objective: DriftScope.digest(lockedObjective), attemptID: "\(ticket.executionID):\(ticket.sequence)")
+    } catch {
+        driftApplication = nil
+        recordExecutionFailure(ticket: ticket, model: model, effort: effort,
+            reason: "drift_policy_unavailable_base_contract_retained", source: nil)
+    }
+    let correctionDirective = driftApplication?.instructions ?? ""
+    onInstructions?(correctionDirective)
+    let instructions = executorInstructions(contract: executorContract, ticket: ticket) + evidenceDirective + presentationDirective + correctionDirective
     if ticket.provider == "codex" {
         guard let codex = try? findExecutable("codex") else {
             throw OS1Error.backendBlocked(.capabilityUnavailable)
@@ -4935,10 +4973,10 @@ private func execute(
         }
         let presentationIssues = outputContractIssues(turn.output, prompt: correctedObjective, snapshotOnly: hasPreloadedR2Evidence)
         guard presentationIssues.isEmpty else {
-            throw OS1Error.message("Codex answer failed presentation/structure checks: " + presentationIssues.joined(separator: " ") + " This candidate was not adopted.")
+            throw DriftDetected(.presentation, diagnostic: "Codex answer failed presentation/structure checks: " + presentationIssues.joined(separator: " ") + " This candidate was not adopted.")
         }
         guard !providerOutputReplacedTaskWithControlChatter(turn.output, prompt: correctedObjective) else {
-            throw OS1Error.message("Codex replaced the locked objective with control-channel commentary. This candidate was not adopted.")
+            throw DriftDetected(.objective, diagnostic: "Codex replaced the locked objective with control-channel commentary. This candidate was not adopted.")
         }
         if sourceUseRequired, let preloadedR2Evidence,
            !outputSatisfiesPreloadedR2Evidence(
@@ -4949,7 +4987,7 @@ private func execute(
                sourcePaths: preloadedR2Evidence.sources.compactMap { $0["source_path"] },
                sourceRepositories: preloadedR2Evidence.sources.compactMap { $0["repository"] }
            ) {
-            throw OS1Error.message("Codex did not satisfy the verified R2 retrieval contract. This step was not verified.")
+            throw DriftDetected(.sourceContract, diagnostic: "Codex did not satisfy the verified R2 retrieval contract. This step was not verified.")
         }
         }
         result = (0, turn.output, writerStderr)
@@ -4991,7 +5029,7 @@ private func execute(
         var arguments = try claudeArguments(
             model: nativeModel.invocation,
             effort: effort,
-            instructions: claudeExecutorInstructions(contract: executorContract, ticket: ticket) + evidenceDirective + presentationDirective,
+            instructions: claudeExecutorInstructions(contract: executorContract, ticket: ticket) + evidenceDirective + presentationDirective + correctionDirective,
             sessionID: activeSessionID,
             startNewSession: startsNewSession,
             title: claudeSessionTitle(from: lockedObjective),
@@ -5060,7 +5098,7 @@ private func execute(
             throw OS1Error.backendBlocked(BackendBlocker.reported(in: String(decoding: parsed.output, as: UTF8.self)) ?? .capabilityUnavailable)
         }
         if rejectedControlChatter {
-            throw OS1Error.message("Claude did not execute the locked objective with the required capabilities. This candidate was not adopted.")
+            throw DriftDetected(.objective, diagnostic: "Claude did not execute the locked objective with the required capabilities. This candidate was not adopted.")
         }
         if rejectedConfiguration || rejectedClarification || rejectedEvidence || !outputIssues.isEmpty {
             // Keep each billed candidate visible to REVAS and the usage ledger.
@@ -5068,7 +5106,9 @@ private func execute(
             let reason = rejectedEvidence ? "verified source contract" :
                 (rejectedClarification ? "requested deliverable" :
                     (rejectedConfiguration ? "executor configuration" : "presentation/structure checks"))
-            throw OS1Error.message("Claude answer failed \(reason). \(outputIssues.joined(separator: " ")) A different governed route is required; this candidate was not adopted.")
+            let kind: DriftKind = rejectedEvidence ? .sourceContract :
+                (rejectedClarification ? .deliverable : (rejectedConfiguration ? .configuration : .presentation))
+            throw DriftDetected(kind, diagnostic: "Claude answer failed \(reason). \(outputIssues.joined(separator: " ")) A different governed route is required; this candidate was not adopted.")
         }
         }
         sessionID = parsed.sessionID
@@ -5103,10 +5143,23 @@ private func execute(
             nativeRecord: nativeRecord
         ),
         sessionID: sessionID,
-        nativeRecord: nativeRecord
+        nativeRecord: nativeRecord,
+        driftApplication: driftApplication
     )
     do { try validateCandidate?() }
-    catch { throw RejectedProviderExecution(execution: candidate, cause: error) }
+    catch {
+        if let drift = error as? DriftDetected, let driftApplication,
+           result.0 == 0, nativeRecord.persistence == "verified", !driftAttemptWasSteered {
+            do {
+                try DriftPolicyStore().detected(drift.kind, application: driftApplication,
+                    outputSHA256: DriftScope.digest(candidate.artifact.output))
+            } catch {
+                recordExecutionFailure(ticket: ticket, model: model, effort: effort,
+                    reason: "drift_policy_failure_not_persisted_base_contract_retained", source: nil)
+            }
+        }
+        throw RejectedProviderExecution(execution: candidate, cause: error)
+    }
     return candidate
 }
 
@@ -5493,6 +5546,8 @@ func runLocalTask(
             throw OS1Error.message("OS-1 local REVAS receipt contract rejected")
         }
         let disposition = verification.outcome == "pass" ? "adopted" : verification.outcome
+        recordDriftAdoption(execution, ticket: ticket, localPassed: artifact.exitCode == 0,
+            adopted: disposition == "adopted")
         let adoptedRecord = verification.outcome == "pass"
             ? publishAdoptedNativeRecord(
                 execution.nativeRecord,
@@ -5904,11 +5959,18 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
         ? readOnlyStatusRoutingTask
         : sourceAwareRoutingTask(prompt, evidence: r2Evidence)
     let feedbackStore = CompletionFeedbackStore()
-    let feedbackScope = CompletionFeedbackScope(
-        objectiveSHA256: sha256Hex(Data(routingTask.utf8)), sourceSHA256: sourceContext?.sha256,
-        executorContractSHA256: config.executorContract.sha256,
-        assembledInputSHA256: CompletionFeedbackScope.inputDigest(assembledInput: localPrompt,
-            codexSessionID: codexSessionID, claudeSessionID: claudeSessionID, workspace: canonicalWorkspace))
+    func instructionFeedbackScope(_ instructions: String, input: String, codexID: String?, claudeID: String?) -> CompletionFeedbackScope {
+        CompletionFeedbackScope(objectiveSHA256: sha256Hex(Data(routingTask.utf8)), sourceSHA256: sourceContext?.sha256,
+            executorContractSHA256: config.executorContract.sha256,
+            assembledInputSHA256: CompletionFeedbackScope.inputDigest(assembledInput: input,
+                codexSessionID: codexID, claudeSessionID: claudeID, workspace: canonicalWorkspace,
+                revision: CompletionFeedbackScope.validationRevision + "/" + DriftScope.digest(instructions)))
+    }
+    let initialCorrections = try? DriftPolicyStore().preview(
+        scope: driftScope(prompt: prompt, workspace: canonicalWorkspace, evidence: r2Evidence, contract: config.executorContract),
+        objective: DriftScope.digest(prompt))
+    var feedbackScope = instructionFeedbackScope(initialCorrections?.instructions ?? "", input: localPrompt,
+        codexID: codexSessionID, claudeID: claudeSessionID)
     let feedbackSupported = await client.supportsCompletionFeedback(requireModelAvailability: true)
     guard feedbackSupported else {
         throw OS1Error.message("사용자별 모델 확인을 지원하는 라우팅 서버에 연결하지 못했습니다. 모델을 임의 선택하지 않았으며 유료 호출은 하지 않았습니다.")
@@ -6090,6 +6152,12 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
                             blocker: ticket.permissionProfile == "workspace_write" ? .effectsUncertain : .unclassified,
                             dispatchStage: .dispatched, source: sourceContext, permissionProfile: ticket.permissionProfile)
                         lastFailureNotice?.emit()
+                    },
+                    onInstructions: { instructions in
+                        // Bind actual applied policy and input, not the earlier
+                        // preview, so concurrent feedback cannot mix revisions.
+                        feedbackScope = instructionFeedbackScope(instructions, input: attemptPrompt,
+                            codexID: nativeSessions["codex"] ?? nil, claudeID: nativeSessions["claude"] ?? nil)
                     }
                 )
             } catch {
@@ -6219,7 +6287,8 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
         var delivery = DeliveryRecord(id: "\(ticket.executionID)-\(ticket.sequence)", apiURL: config.apiURL, deviceID: id,
             resultSHA256: resultHash, artifact: artifactData, upload: try JSONEncoder().encode(upload),
             submission: try JSONEncoder().encode(submission), step: try JSONEncoder().encode(pendingStep),
-            source: sourceContext, output: artifact.output, localRejection: attemptFailure)
+            source: sourceContext, output: artifact.output, localRejection: attemptFailure,
+            driftApplication: execution.driftApplication, driftSteered: driftAttemptWasSteered)
         // Custody must succeed before the first network write. Never discard a
         // finished paid result in a temporary process-output directory.
         try DeliveryOutbox().save(delivery)
@@ -6267,6 +6336,8 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
             throw OS1Error.message("서버의 완료 판정과 실제 실행 증거가 일치하지 않아 결과를 채택하지 않았습니다. 요청과 원본은 보존했습니다.")
         }
         let revasDisposition = route.status == "complete" && locallyAdoptable ? "adopted" : (route.ticket == nil ? "rejected" : "retry")
+        recordDriftAdoption(execution, ticket: ticket, localPassed: locallyAdoptable,
+            adopted: revasDisposition == "adopted")
         recordCompletionAttempt(store: feedbackStore, scope: feedbackScope, ticket: ticket,
             model: model, effort: effort,
             outcome: revasDisposition == "adopted" ? .adopted : completionFailureOutcome(attemptFailure),
@@ -6409,6 +6480,23 @@ func resumeDelivery(_ identifier: String) async throws -> RunSummary {
     guard route.status == "complete", step.exitCode == 0, !step.output.isEmpty,
           step.nativeRecord?.persistence == "verified" else {
         throw OS1Error.message("저장된 답변이 검증에서 채택되지 않았습니다. 새 모델 실행은 하지 않았고 원본을 보존했습니다.")
+    }
+    if let application = record.driftApplication,
+       application.eventID == DriftScope.digest("apply:\(submission.ticket.executionID):\(submission.ticket.sequence)"),
+       application.scope.contractSHA256 == artifact.executorContractSHA256 {
+        let laterSteering = record.submissionID.flatMap(UUID.init(uuidString:)).map {
+            !ExecutionSteering().inputs($0).isEmpty
+        } ?? false
+        // Delivery recovery can finish learning without another model call.
+        // Old records lacking steering/policy custody remain non-learning.
+        do {
+            try DriftPolicyStore().adopted(application, outputSHA256: DriftScope.digest(artifact.output),
+                localPassed: true, nativeVerified: true, serverAdopted: true,
+                steered: record.driftSteered != false || laterSteering)
+        } catch {
+            recordExecutionFailure(ticket: submission.ticket, model: step.model, effort: step.effort,
+                reason: "drift_policy_delivery_adoption_not_persisted_base_contract_retained", source: nil)
+        }
     }
     let native = step.nativeRecord.map { publishAdoptedNativeRecord($0, provider: step.provider, sessionID: step.sessionID, mode: .background) }
     BackendFailureNotice.clear()
@@ -7585,6 +7673,50 @@ func selfTest() throws {
         ]
     )
     let claudeInstructions = claudeExecutorInstructions(contract: claudeContract, ticket: claudeTicket)
+    let driftRoot = transcriptRoot.appendingPathComponent("drift-wire")
+    let driftStore = DriftPolicyStore(root: driftRoot)
+    let driftPrompt = "한국어 두 문장으로 캐시가 무엇인지 설명해 주세요."
+    let driftSubject = driftScope(prompt: driftPrompt, workspace: transcriptRoot.path, evidence: nil, contract: claudeContract)
+    guard driftSubject.workload == .general else { throw OS1Error.message("Drift smoke workload changed") }
+    let pristine = try driftStore.application(scope: driftSubject, objective: DriftScope.digest(driftPrompt), attemptID: "clean")
+    try driftStore.detected(.presentation, application: pristine, outputSHA256: DriftScope.digest("synthetic rejected fixture"))
+    let correction = try driftStore.application(scope: driftSubject, objective: DriftScope.digest(driftPrompt), attemptID: "trial")
+    let correctedInstructions = claudeInstructions + correction.instructions
+    let correctedArgs = try claudeArguments(model: "sonnet", effort: "medium", instructions: correctedInstructions,
+        sessionID: claudeSessionID, startNewSession: true, title: "drift-wire", permissionProfile: "read_only", prompt: driftPrompt)
+    guard let appendIndex = correctedArgs.firstIndex(of: "--append-system-prompt"),
+          correctedArgs[appendIndex + 1] == correctedInstructions, correctedArgs.last == driftPrompt,
+          correctedArgs.contains("--system-prompt-snapshot"), correction.rules == [.presentation] else {
+        throw OS1Error.message("Drift correction entered the wrong Claude channel")
+    }
+    let driftWire = transcriptRoot.appendingPathComponent("drift-wire-request.json")
+    let driftPeer = transcriptRoot.appendingPathComponent("drift-peer.sh")
+    let driftThread = UUID().uuidString
+    try Data("""
+    #!/bin/sh
+    IFS= read -r request
+    printf '%s' "$request" > '\(driftWire.path)'
+    printf '%s\\n' '{"id":1,"result":{"thread":{"id":"\(driftThread)","name":"drift fixture","source":"os1"}}}'
+    IFS= read -r request
+    printf '%s\\n' '{"id":2,"result":{"data":[{"id":"fixture-section","name":"OS-1 Backend"}]}}'
+    IFS= read -r request
+    printf '%s\\n' '{"id":3,"result":{}}'
+    while IFS= read -r request; do :; done
+    """.utf8).write(to: driftPeer)
+    try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: driftPeer.path)
+    let driftClient = try CodexAppServerClient(executable: driftPeer.path, workspace: transcriptRoot.path)
+    do {
+        _ = try driftClient.startOrResumeThread(existingSessionID: nil, workspace: transcriptRoot.path, model: "fixture",
+            instructions: correctedInstructions, permissionProfile: "read_only", title: "fixture", deadline: Date().addingTimeInterval(5))
+        driftClient.close()
+    } catch { driftClient.close(); throw error }
+    let sent = try JSONSerialization.jsonObject(with: Data(contentsOf: driftWire)) as? [String: Any]
+    let sentParams = sent?["params"] as? [String: Any]
+    guard sent?["method"] as? String == "thread/start", sentParams?["developerInstructions"] as? String == correctedInstructions,
+          sentParams?["sandbox"] as? String == "read-only", sentParams?["approvalPolicy"] as? String == UnifiedExecution.codexApprovalPolicy else {
+        throw OS1Error.message("Drift correction changed Codex instructions or authority incorrectly")
+    }
+    print("Drift native protocol: Codex developer channel, Claude append-system channel, exact user text and unchanged authority PASS; model calls 0")
     guard claudeInstructions.contains(UnifiedExecution.permissionInstructions),
           executorInstructions(contract: claudeContract, ticket: claudeTicket).contains(UnifiedExecution.permissionInstructions),
           completionFailureOutcome(BackendBlocker.safetyBlocked.message) == .verificationUnavailable else {
@@ -7985,7 +8117,7 @@ struct OS1Main {
             guard let command = arguments.first else { usage(); return }
             if try await fleetCommand(arguments) { return }
             switch command {
-            case "version", "--version", "-V": print("OS-1 Runtime 0.9.47 (github-auth-throttle-build104)")
+            case "version", "--version", "-V": print("OS-1 Runtime 0.9.48 (drift-policy-feedback-build105)")
             case "doctor": try doctor()
             case "sidebar-pin":
                 guard (4...5).contains(arguments.count), arguments[1] == "codex",
@@ -8027,6 +8159,22 @@ struct OS1Main {
                     "source_archive_path": saved.url.path, "r2_downloaded": false, "production_changed": false,
                 ], options: [.sortedKeys]), as: UTF8.self))
             case "self-test": try selfTest()
+            case "drift-policy-status":
+                guard arguments.count == 1 else { throw OS1Error.message("Expected: os1 drift-policy-status") }
+                let ledgers = try DriftPolicyStore().ledgers()
+                print("OS1 scoped correction memory · \(ledgers.count) scopes · reviewed rule IDs only")
+                for ledger in ledgers {
+                    print("\(ledger.scope.key) · \(ledger.enabled ? "enabled" : "disabled") · \(ledger.scope.workload.rawValue)")
+                    for rule in ledger.rules {
+                        print("  \(rule.kind.rawValue): \(rule.state.rawValue), detected \(rule.failures), accepted recoveries \(rule.recoveries), applied failures \(rule.appliedFailures)")
+                    }
+                }
+            case "drift-policy-enable", "drift-policy-disable":
+                guard arguments.count == 2, let ledger = try DriftPolicyStore().ledgers().first(where: { $0.scope.key == arguments[1] }) else {
+                    throw OS1Error.message("Expected an existing exact scope ID from os1 drift-policy-status")
+                }
+                try DriftPolicyStore().setEnabled(command == "drift-policy-enable", scope: ledger.scope)
+                print("Scoped corrections \(command == "drift-policy-enable" ? "enabled" : "disabled"); suspended rules remain suspended.")
             case "model-inventory":
                 let config = try RuntimeConfig.load()
                 let workspace = FileManager.default.currentDirectoryPath
