@@ -10,8 +10,9 @@ func registeredSCVProjectEvidence(live: SCVLiveRelease) throws -> R2EvidenceBund
     let verified = stored.verified
     var originals: [(path: String, text: String)] = []
     for path in RegisteredProjectSource.selectedPaths {
-        guard let bytes = verified.files[path], bytes.count <= 80_000,
-              let text = String(data: bytes, encoding: .utf8), !protectedRouteMaterialInEvidence(text) else {
+        guard let bytes = verified.files[path] else { throw ProjectMaterialError.invalidArtifact }
+        let text = try SCVProjectMaterials.contextMember(bytes)
+        guard !protectedRouteMaterialInEvidence(text) else {
             throw ProjectMaterialError.invalidArtifact
         }
         originals.append((path, text))

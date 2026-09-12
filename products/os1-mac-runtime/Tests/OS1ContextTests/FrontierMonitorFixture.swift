@@ -34,13 +34,13 @@ func runFrontierMonitorFixtures() throws {
     let now = Date(timeIntervalSince1970: 1_789_170_000)
     let items = FrontierNewsMonitor.parseStatusPage(data: data, source: source, detectedAt: now)
     precondition(items.count == 2, "blank status incidents must be ignored")
-    let reset = items.first { $0.id == "openai:incident-1" }
+    let reset = items.first { $0.id == "openai-status:incident-1" }
     precondition(reset?.kind == .tokenReset, "reset language must be classified")
     precondition(reset?.resetAt != nil, "explicit ISO reset date must be retained")
     precondition(reset?.sourceURL.absoluteString == "https://status.openai.com/incidents/incident-1")
-    precondition(items.first(where: { $0.id == "openai:incident-2" })?.kind == .incident)
+    precondition(items.first(where: { $0.id == "openai-status:incident-2" })?.kind == .incident)
     precondition(FrontierNewsMonitor.classify(title: "", summary: "토큰 한도 변경") == .usageLimit)
-    precondition(FrontierNewsMonitor.classify(title: "", summary: "리셋 일정 변경") == .tokenReset)
+    precondition(FrontierNewsMonitor.classify(title: "", summary: "사용량 리셋 일정 변경") == .tokenReset)
     precondition(FrontierNewsMonitor.classify(title: "서비스 장애", summary: "복구 중", status: "investigating") == .incident)
     let feedSource = FrontierMonitorSource(
         id: "openai-news", provider: .openAI,

@@ -1,5 +1,39 @@
 # OS1 frontier usage/news monitor design
 
+## Installation closure audit (2026-09-12, builds 99–101)
+
+Observed divergences: build 98 is installed, the monitor is only compiled in a
+worktree; malformed HTTP 200 can be labelled verified; incident edits are ignored;
+the UI has no history or actionable notice; Anthropic has status but no news.
+Fix these boundaries before replacing the idle installed bundle. Preserve the
+existing signing requirement, CLI, sessions, pins, queues and rollback copy.
+
+Acceptance (hard gates, not a confidence score): strict successful parsing before
+caching; isolated public HTTPS transport; incident revision upsert and restart
+dedupe; no invented reset deadline; unavailable/stale status visible; OpenAI and
+Anthropic news and status plus Google/DeepMind/Cohere sources; in-app actionable
+notice and browsable history; live source poll; installed binary self-tests and
+session-preserving upgrade; OS1 Instagram preparation matching the current
+production manifest followed by bounded backend/context/result-return checks.
+The Instagram check must not deploy an unspecified change or contact customers.
+Production readiness is reported separately from delivery visibility.
+
+Official OpenAI documentation consulted: https://learn.chatgpt.com/docs/pricing
+(fetched 2026-09-12). Public announcements are not authenticated account usage.
+No model request, quota redemption or automatic token-spending action is added.
+
+Live Instagram reproduction after registration found a second boundary: v171's
+hash-verified SCV_DESIGN_INTENT_LOCK.md is 86,174 bytes, exceeding the old 80,000
+byte context-member limit in BOTH local and R2 paths. Build 100 shares a bounded
+128,000-byte UTF-8 member reader. Hash validation, protected-material guards and
+the overall snapshot limit remain intact. Tests cover the actual size and
+rejection of oversized/invalid UTF-8 input. Publish only the exact source package
+and non-secret custody record; preserve production, customers and Gold.
+The new immutable R2 custody namespace also needs an explicit acceptance rule:
+`source-custody/<archive SHA-256>/source.tar.gz`. Build 101 permits only that
+digest-matching key in addition to legacy release-ready keys; arbitrary private
+bucket paths and customer-state keys remain rejected.
+
 ## Objective and scope
 
 OS1 should surface fresh, actionable changes from frontier providers—especially
@@ -17,14 +51,16 @@ persists only bounded metadata and links.
 * Context/provenance: monitor items live in a separate state file and SwiftUI
   panel; they are not `ChatMessage`s and are never included in `sessionHandoff`.
 * Runtime/capabilities: the service uses `URLSession` with a short timeout and
-  official HTTPS JSON endpoints only. No provider token, CLI credential, or
+  official HTTPS JSON/RSS/newsroom endpoints only. No provider token, CLI credential, or
   dashboard cookie is read.
 * Output/verification: each item has a stable provider ID when supplied by the
   source, otherwise a SHA-256 fingerprint of provider/title/time/body. ETag and
   Last-Modified are retained; a 304 is a successful no-change poll.
 * Tokens/cost/latency: polling performs no model call and sends no prompt. It
   is capped at one request per source per interval (default five minutes), with
-  a bounded response body and a seven-day display window.
+  a bounded response body and a thirty-day display window (at most 100 items).
+  Concurrent refreshes share the same poll; requests use isolated ephemeral
+  sessions, reject cross-host redirects and stop reading at the byte bound.
 * Security/privacy/UX: only public source text is retained, HTML is not
   rendered as executable content, URLs are allow-listed by source, and new
   high-value notices are visually distinct from provider execution status.
@@ -46,21 +82,24 @@ compensate for another source's failed verification.
 
 ## Source policy
 
-The initial sources are OpenAI's official newsroom RSS feed plus the public
-Statuspage v2 incident feeds for OpenAI, Anthropic/Claude, Google Cloud, and
-Cohere (filtered to AI-related incident titles). They are operational/news signals,
+The eight sources are OpenAI news/status, Anthropic visible newsroom cards and
+Claude status, Google AI RSS, DeepMind RSS, Google Cloud's AI-filtered incident
+array, and Cohere status. They are operational/news signals,
 not proof of account-specific quota state. A provider's account quota remains
 unknown unless OS1 receives a separately authenticated, user-authorized usage
 response. The classifier therefore labels `reset` only when the source text
 explicitly contains reset/quota/usage-limit language and leaves `resetAt` nil
-unless an ISO timestamp is present in that same source item. Anthropic's
-newsroom does not expose a stable public RSS endpoint at implementation time,
-so only its verified status feed is enabled; the source list is extensible
-without changing the execution path.
+unless a single timezone-qualified ISO timestamp is attached to an explicit
+usage-reset clause. Unrelated or contradictory dates remain unknown. Initial
+history older than 24 hours does not trigger an alert storm. Incident revisions
+replace the previous item and can notify again; identical polls/restarts cannot.
+Malformed HTTP 200 responses never update successful cache validators. First-load
+304 responses without verified prior state are rejected. Notifications are in-app
+and polling runs while OS1 is open, not a server or background-machine service.
 
 ## Rollback
 
-Deleting the monitor state file disables history but does not touch sessions,
-provider links, credentials, or task data. Removing the monitor task from the
-root view returns the pre-feature behavior. The parser and store are isolated
-in `OS1Context`, so the existing execution path can be rebuilt independently.
+The installer retains the previous signed app and CLI in a new private recovery
+directory and refuses an upgrade during active/queued work. Binary rollback must
+not replace a newer sessions.json. Monitor history is separate from user tasks;
+removing its state would reset deduplication, not disable the periodic monitor.

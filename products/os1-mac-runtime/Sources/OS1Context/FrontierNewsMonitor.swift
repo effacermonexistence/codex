@@ -75,7 +75,7 @@ public struct FrontierNewsItem: Codable, Equatable, Identifiable, Sendable {
 }
 
 public struct FrontierMonitorSource: Codable, Equatable, Identifiable, Sendable {
-    public enum Format: String, Codable, Sendable { case statuspageJSON, rss }
+    public enum Format: String, Codable, Sendable { case statuspageJSON, rss, anthropicNews }
 
     public let id: String
     public let provider: FrontierProvider
@@ -102,6 +102,10 @@ public struct FrontierMonitorSource: Codable, Equatable, Identifiable, Sendable 
             endpoint: URL(string: "https://status.openai.com/api/v2/incidents.json")!
         ),
         FrontierMonitorSource(
+            id: "anthropic-news", provider: .anthropic,
+            endpoint: URL(string: "https://www.anthropic.com/news")!, format: .anthropicNews
+        ),
+        FrontierMonitorSource(
             id: "anthropic-status",
             provider: .anthropic,
             endpoint: URL(string: "https://status.claude.com/api/v2/incidents.json")!
@@ -110,6 +114,14 @@ public struct FrontierMonitorSource: Codable, Equatable, Identifiable, Sendable 
             id: "google-cloud-status",
             provider: .google,
             endpoint: URL(string: "https://status.cloud.google.com/incidents.json")!
+        ),
+        FrontierMonitorSource(
+            id: "google-ai-news", provider: .google,
+            endpoint: URL(string: "https://blog.google/technology/ai/rss/")!, format: .rss
+        ),
+        FrontierMonitorSource(
+            id: "deepmind-news", provider: .google,
+            endpoint: URL(string: "https://deepmind.google/blog/rss.xml")!, format: .rss
         ),
         FrontierMonitorSource(
             id: "cohere-status",
@@ -140,7 +152,7 @@ public struct FrontierSourceStatus: Codable, Equatable, Sendable {
     }
 }
 
-public struct FrontierMonitorPollResult: Sendable {
+public struct FrontierMonitorPollResult: Codable, Sendable {
     public let completedAt: Date
     public let newItems: [FrontierNewsItem]
     public let items: [FrontierNewsItem]
@@ -161,7 +173,8 @@ public struct FrontierMonitorPollResult: Sendable {
 /// language model, alter routing, or put provider notices into task context.
 public actor FrontierNewsMonitor {
     public static let defaultPollInterval: TimeInterval = 300
-    public static let displayWindow: TimeInterval = 7 * 24 * 60 * 60
+    public static let displayWindow: TimeInterval = 30 * 24 * 60 * 60
+    public typealias Transport = @Sendable (URLRequest) async throws -> (Data, HTTPURLResponse)
 
     private struct SourceCursor: Codable, Sendable {
         var etag: String?
@@ -214,13 +227,14 @@ public actor FrontierNewsMonitor {
 
     private let sources: [FrontierMonitorSource]
     private let stateURL: URL
-    private let session: URLSession
+    private let transport: Transport
     private var state: PersistedState
+    private var activePoll: Task<FrontierMonitorPollResult, Never>?
 
     public init(storageRoot: URL? = nil, sources: [FrontierMonitorSource] = FrontierMonitorSource.firstParty,
-                session: URLSession = .shared) {
+                transport: Transport? = nil) {
         self.sources = sources
-        self.session = session
+        self.transport = transport ?? Self.publicTransport
         let root = storageRoot ?? FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Application Support/OS-1", isDirectory: true)
         self.stateURL = root.appendingPathComponent("frontier-news-monitor.json")
@@ -244,53 +258,77 @@ public actor FrontierNewsMonitor {
     }
 
     public func poll(now: Date = Date()) async -> FrontierMonitorPollResult {
+        if let activePoll { return await activePoll.value }
+        let task = Task { await self.performPoll(now: now) }
+        activePoll = task
+        let result = await task.value
+        activePoll = nil
+        return result
+    }
+
+    private func performPoll(now: Date) async -> FrontierMonitorPollResult {
         var fresh: [FrontierNewsItem] = []
         var statuses: [FrontierSourceStatus] = []
-        var changed = false
-
+        let previous = state.items
+        let cutoff = now.addingTimeInterval(-Self.displayWindow)
+        var indexed = Dictionary(state.items.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+        let cursors = state.cursors
+        let transport = self.transport
+        let checks = await withTaskGroup(of: (String, FetchResult).self) { group in
+            for source in sources {
+                group.addTask {
+                    (source.id, await Self.fetch(source: source, cursor: cursors[source.id], now: now, transport: transport))
+                }
+            }
+            var results: [String: FetchResult] = [:]
+            for await (id, value) in group { results[id] = value }
+            return results
+        }
         for source in sources {
-            let checked = await fetch(source: source, now: now)
+            guard let checked = checks[source.id] else { continue }
             statuses.append(checked.status)
             guard checked.status.available else { continue }
+            if let cursor = checked.cursor { state.cursors[source.id] = cursor }
             if checked.notModified { continue }
-            if !checked.items.isEmpty {
-                for item in checked.items {
-                    if state.seen[item.id] == nil {
-                        state.seen[item.id] = now
+            for item in checked.items where item.publishedAt >= cutoff && item.publishedAt <= now.addingTimeInterval(300) {
+                let revision = Self.revision(of: item)
+                if state.seen[revision] == nil {
+                    // Baseline history is shown without an alert storm. Newly
+                    // changed incidents can still notify even if created earlier.
+                    if item.publishedAt >= now.addingTimeInterval(-86400) || indexed[item.id] != nil {
                         fresh.append(item)
-                        changed = true
                     }
+                    state.seen[revision] = now
                 }
-                let known = Set(state.items.map(\.id))
-                state.items.append(contentsOf: checked.items.filter { !known.contains($0.id) })
-                changed = true
+                if indexed[item.id].map(Self.revision) != revision { indexed[item.id] = item }
             }
         }
-
-        let cutoff = now.addingTimeInterval(-Self.displayWindow)
-        let beforeCount = state.items.count
-        state.items = state.items
+        state.items = indexed.values
             .filter { $0.publishedAt >= cutoff }
-            .sorted { $0.publishedAt > $1.publishedAt }
+            .sorted { $0.publishedAt == $1.publishedAt ? $0.id < $1.id : $0.publishedAt > $1.publishedAt }
             .prefix(100)
             .map { $0 }
         state.seen = state.seen.filter { $0.value >= cutoff }
-        changed = changed || beforeCount != state.items.count || state.statuses != statuses
         state.statuses = statuses
         state.lastPollAt = now
-        try? persist()
+        do { try persist() } catch {
+            statuses.append(FrontierSourceStatus(sourceID: "local-history", provider: .openAI, checkedAt: now,
+                available: false, message: "로컬 기록 저장 실패 · 재시작 후 중복 알림 가능"))
+        }
 
         return FrontierMonitorPollResult(completedAt: now, newItems: fresh.sorted { $0.publishedAt > $1.publishedAt },
-                                         items: state.items, sourceStatuses: statuses, didChange: changed)
+                                         items: state.items, sourceStatuses: statuses, didChange: previous != state.items)
     }
 
     private struct FetchResult: Sendable {
         let status: FrontierSourceStatus
         let items: [FrontierNewsItem]
         let notModified: Bool
+        var cursor: SourceCursor? = nil
     }
 
-    private func fetch(source: FrontierMonitorSource, now: Date) async -> FetchResult {
+    private static func fetch(source: FrontierMonitorSource, cursor: SourceCursor?, now: Date,
+                              transport: Transport) async -> FetchResult {
         let sourceStatusBase = { (available: Bool, message: String, code: Int?) in
             FrontierSourceStatus(sourceID: source.id, provider: source.provider, checkedAt: now,
                                  available: available, message: message, httpStatus: code)
@@ -304,23 +342,21 @@ public actor FrontierNewsMonitor {
         var request = URLRequest(url: source.endpoint)
         request.httpMethod = "GET"
         request.timeoutInterval = 12
-        request.setValue(source.format == .rss ? "application/rss+xml, application/xml, text/xml" : "application/json",
+        request.setValue(source.format == .rss ? "application/rss+xml, application/xml, text/xml" :
+                            (source.format == .anthropicNews ? "text/html" : "application/json"),
                          forHTTPHeaderField: "Accept")
-        if let cursor = state.cursors[source.id] {
+        if let cursor {
             if let etag = cursor.etag { request.setValue(etag, forHTTPHeaderField: "If-None-Match") }
             if let lastModified = cursor.lastModified { request.setValue(lastModified, forHTTPHeaderField: "If-Modified-Since") }
         }
 
         do {
-            let (data, response) = try await session.data(for: request)
-            guard let http = response as? HTTPURLResponse else {
-                return FetchResult(status: sourceStatusBase(false, "HTTP 응답을 확인하지 못함", nil), items: [], notModified: false)
+            let (data, http) = try await transport(request)
+            guard http.url?.scheme == "https", http.url?.host?.lowercased() == source.allowedHost else {
+                throw URLError(.redirectToNonExistentLocation)
             }
-            state.cursors[source.id] = SourceCursor(
-                etag: http.value(forHTTPHeaderField: "ETag") ?? state.cursors[source.id]?.etag,
-                lastModified: http.value(forHTTPHeaderField: "Last-Modified") ?? state.cursors[source.id]?.lastModified
-            )
             if http.statusCode == 304 {
+                guard cursor != nil else { throw URLError(.badServerResponse) }
                 return FetchResult(status: sourceStatusBase(true, "변경 없음 · 조건부 요청 확인", http.statusCode), items: [], notModified: true)
             }
             guard (200..<300).contains(http.statusCode) else {
@@ -330,14 +366,61 @@ public actor FrontierNewsMonitor {
                 return FetchResult(status: sourceStatusBase(false, "응답 크기 제한 초과", http.statusCode), items: [], notModified: false)
             }
             let items: [FrontierNewsItem]
-            if source.format == .rss {
+            try Self.validate(data: data, source: source)
+            if source.format == .anthropicNews {
+                items = Self.parseNewsroom(data: data, source: source, detectedAt: now)
+            } else if source.format == .rss {
                 items = Self.parseFeed(data: data, source: source, detectedAt: now)
             } else {
                 items = Self.parseStatusPage(data: data, source: source, detectedAt: now)
             }
-            return FetchResult(status: sourceStatusBase(true, "공식 원본 확인 · \(items.count)개 항목", http.statusCode), items: items, notModified: false)
+            return FetchResult(status: sourceStatusBase(true, "공식 원본 확인 · \(items.count)개 항목", http.statusCode),
+                items: items, notModified: false, cursor: SourceCursor(etag: http.value(forHTTPHeaderField: "ETag"),
+                    lastModified: http.value(forHTTPHeaderField: "Last-Modified")))
         } catch {
             return FetchResult(status: sourceStatusBase(false, "공식 원본을 확인하지 못함", nil), items: [], notModified: false)
+        }
+    }
+
+    public static func revision(of item: FrontierNewsItem) -> String {
+        let value = "\(item.id)|\(item.title)|\(item.summary)|\(item.sourceStatus ?? "")|\(item.sourceURL)|\(item.publishedAt.timeIntervalSince1970)"
+        return item.id + ":" + SHA256.hash(data: Data(value.utf8)).map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// No browser cookies, credentials or authenticated session are reused.
+    private static func publicTransport(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
+        let config = URLSessionConfiguration.ephemeral
+        config.httpShouldSetCookies = false
+        config.httpCookieStorage = nil
+        config.urlCredentialStorage = nil
+        config.urlCache = nil
+        config.timeoutIntervalForResource = 15
+        let session = URLSession(configuration: config, delegate: FrontierRedirectGuard(host: request.url?.host), delegateQueue: nil)
+        defer { session.invalidateAndCancel() }
+        let (bytes, response) = try await session.bytes(for: request)
+        guard let http = response as? HTTPURLResponse else { throw URLError(.badServerResponse) }
+        guard response.expectedContentLength <= 2_000_000 else { throw URLError(.dataLengthExceedsMaximum) }
+        var data = Data()
+        for try await byte in bytes {
+            guard data.count < 2_000_000 else { throw URLError(.dataLengthExceedsMaximum) }
+            data.append(byte)
+        }
+        return (data, http)
+    }
+
+    public static func validate(data: Data, source: FrontierMonitorSource) throws {
+        switch source.format {
+        case .rss:
+            guard RSSParser(data: data).parse() else { throw URLError(.cannotParseResponse) }
+        case .anthropicNews:
+            guard !parseNewsroom(data: data, source: source).isEmpty else { throw URLError(.cannotParseResponse) }
+        case .statuspageJSON:
+            if (try? JSONDecoder().decode(StatusPageEnvelope.self, from: data)) != nil { return }
+            guard source.provider == .google,
+                  let rows = try JSONSerialization.jsonObject(with: data) as? [[String: Any]],
+                  rows.allSatisfy({ $0["external_desc"] is String && $0["begin"] is String }) else {
+                throw URLError(.cannotParseResponse)
+            }
         }
     }
 
@@ -363,15 +446,15 @@ public actor FrontierNewsMonitor {
                         (date($1.displayAt ?? $1.createdAt) ?? .distantPast)
                 }.first
                 let body = bounded(latest?.body?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "", limit: 2_000)
-                let published = date(incident.createdAt ?? incident.updatedAt) ?? detectedAt
+                guard let published = date(incident.createdAt ?? incident.updatedAt) else { return nil }
                 let sourceURL = safeURL(incident.shortlink, fallback: source.endpoint)
                 let combined = "\(title)\n\(body)"
                 let kind = classify(title: title, summary: body, status: incident.status)
-                let reset = explicitISODate(in: combined)
+                let reset = resetDate(in: combined)
                 let providerID = incident.id?.trimmingCharacters(in: .whitespacesAndNewlines)
                 let identity = providerID?.isEmpty == false ? providerID! : fingerprint(provider: source.provider,
                     title: title, summary: body, publishedAt: published)
-                return FrontierNewsItem(id: "\(source.provider.rawValue):\(identity)", provider: source.provider,
+                return FrontierNewsItem(id: "\(source.id):\(identity)", provider: source.provider,
                                         title: title, summary: body, sourceURL: sourceURL, publishedAt: published,
                                         detectedAt: detectedAt, kind: kind, resetAt: reset,
                                         sourceStatus: incident.status)
@@ -392,19 +475,19 @@ public actor FrontierNewsMonitor {
             }.first
             let body = bounded((latest?["text"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines), limit: 2_000)
             let combined = "\(title)\n\(body)"
-            let aiWords = ["ai", "gemini", "vertex", "machine learning", "generative", "model"]
-            guard !title.isEmpty, aiWords.contains(where: combined.lowercased().contains) else { return nil }
-            let published = date(object["begin"] as? String ?? object["created"] as? String ?? object["modified"] as? String) ?? detectedAt
+            guard !title.isEmpty, combined.range(of: #"(?i)\b(ai|gemini|vertex|machine learning|generative|models?)\b"#,
+                options: .regularExpression) != nil else { return nil }
+            guard let published = date(object["begin"] as? String ?? object["created"] as? String ?? object["modified"] as? String) else { return nil }
             let identity: String
             if let objectID = (object["id"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines), !objectID.isEmpty {
                 identity = objectID
             } else {
                 identity = fingerprint(provider: source.provider, title: title, summary: body, publishedAt: published)
             }
-            return FrontierNewsItem(id: "\(source.provider.rawValue):\(identity)", provider: source.provider,
+            return FrontierNewsItem(id: "\(source.id):\(identity)", provider: source.provider,
                                     title: title, summary: body, sourceURL: source.endpoint, publishedAt: published,
-                                    detectedAt: detectedAt, kind: classify(title: title, summary: body),
-                                    resetAt: explicitISODate(in: combined))
+                                    detectedAt: detectedAt, kind: classify(title: title, summary: body, status: "incident"),
+                                    resetAt: resetDate(in: combined))
         }
     }
 
@@ -418,8 +501,8 @@ public actor FrontierNewsMonitor {
         return parser.entries.compactMap { (entry) -> FrontierNewsItem? in
             let title = bounded(entry.title.trimmingCharacters(in: .whitespacesAndNewlines), limit: 240)
             guard !title.isEmpty else { return nil }
-            let body = bounded(entry.summary.trimmingCharacters(in: .whitespacesAndNewlines), limit: 2_000)
-            let published = date(entry.published) ?? detectedAt
+            let body = bounded(plainText(entry.summary), limit: 2_000)
+            guard let published = date(entry.published) else { return nil }
             let identity: String
             if let guid = entry.guid?.trimmingCharacters(in: .whitespacesAndNewlines), !guid.isEmpty {
                 identity = guid
@@ -427,24 +510,24 @@ public actor FrontierNewsMonitor {
                 identity = fingerprint(provider: source.provider, title: title, summary: body, publishedAt: published)
             }
             let url = safeURL(entry.link, fallback: source.endpoint)
-            return FrontierNewsItem(id: "\(source.provider.rawValue):\(identity)", provider: source.provider,
+            return FrontierNewsItem(id: "\(source.id):\(identity)", provider: source.provider,
                                     title: title, summary: body, sourceURL: url, publishedAt: published,
                                     detectedAt: detectedAt, kind: classify(title: title, summary: body),
-                                    resetAt: explicitISODate(in: "\(title)\n\(body)"))
+                                    resetAt: resetDate(in: "\(title)\n\(body)"))
         }
     }
 
     public static func classify(title: String, summary: String, status: String? = nil) -> FrontierSignalKind {
         let value = "\(title) \(summary)".folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
             .lowercased()
-        let resetWords = ["reset", "resets", "quota", "usage limit", "rate limit", "rate-limit", "credits", "token limit", "five-hour", "5-hour", "context window", "사용량", "한도", "리셋", "토큰"]
+        let resetWords = ["quota", "usage", "rate limit", "rate-limit", "credits", "token", "five-hour", "5-hour", "context window", "사용량", "한도", "토큰"]
         if resetWords.contains(where: value.contains) {
             return value.contains("reset") || value.contains("리셋") ? .tokenReset : .usageLimit
         }
         if status.map({ ["resolved", "postmortem"].contains($0.lowercased()) }) == true {
             return .incident
         }
-        return .incident
+        return status == nil ? .announcement : .incident
     }
 
     private static func fingerprint(provider: FrontierProvider, title: String, summary: String, publishedAt: Date) -> String {
@@ -461,10 +544,17 @@ public actor FrontierNewsMonitor {
         return host == fallbackHost || host.hasSuffix("." + fallbackHost) ? url : fallback
     }
 
-    private static func explicitISODate(in text: String) -> Date? {
-        let pattern = #"\b\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z\b"#
-        guard let range = text.range(of: pattern, options: .regularExpression) else { return nil }
-        return date(String(text[range]))
+    public static func resetDate(in text: String) -> Date? {
+        // Extract only a timestamp immediately attached to an explicit usage
+        // reset clause, never a publication/incident time elsewhere in the text.
+        let pattern = #"(?i)(?:quota|usage|token|rate[ -]?limit|usage[ -]?limit|credits?|한도|사용량|토큰)[^.!?\n]{0,60}?(?:reset(?:s|ting)?|리셋|초기화)\s*(?:at|on|:|시각|시간)?\s*(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2}))"#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return nil }
+        let matches = regex.matches(in: text, range: NSRange(text.startIndex..., in: text))
+        let dates = Set(matches.compactMap { match -> Date? in
+            guard let r = Range(match.range(at: 1), in: text) else { return nil }
+            return date(String(text[r]))
+        })
+        return dates.count == 1 ? dates.first : nil
     }
 
     private static func date(_ value: String?) -> Date? {
@@ -479,6 +569,8 @@ public actor FrontierNewsMonitor {
         rfc822.locale = Locale(identifier: "en_US_POSIX")
         rfc822.timeZone = TimeZone(secondsFromGMT: 0)
         rfc822.dateFormat = "EEE, dd MMM yyyy HH:mm:ss zzz"
+        if let parsed = rfc822.date(from: value) { return parsed }
+        rfc822.dateFormat = "MMM d, yyyy"
         return rfc822.date(from: value)
     }
 
@@ -487,8 +579,50 @@ public actor FrontierNewsMonitor {
         return String(value.prefix(limit)) + "…"
     }
 
-private func parseStatusPage(data: Data, source: FrontierMonitorSource, detectedAt: Date) -> [FrontierNewsItem] {
-        Self.parseStatusPage(data: data, source: source, detectedAt: detectedAt)
+    private static func plainText(_ html: String) -> String {
+        html.replacingOccurrences(of: #"<[^>]*>"#, with: " ", options: .regularExpression)
+            .replacingOccurrences(of: "&amp;", with: "&").replacingOccurrences(of: "&quot;", with: "\"")
+            .replacingOccurrences(of: "&#39;", with: "'").replacingOccurrences(of: "&nbsp;", with: " ")
+            .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Strictly reads visible newsroom cards; script/Next data is never run.
+    public static func parseNewsroom(data: Data, source: FrontierMonitorSource,
+                                    detectedAt: Date = Date()) -> [FrontierNewsItem] {
+        guard source.provider == .anthropic, let html = String(data: data, encoding: .utf8),
+              let links = try? NSRegularExpression(pattern: #"<a\b[^>]*href="(/news/[^"?#]+)"[^>]*>([\s\S]*?)</a>"#) else { return [] }
+        func capture(_ pattern: String, in text: String) -> String? {
+            guard let r = try? NSRegularExpression(pattern: pattern),
+                  let m = r.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
+                  let range = Range(m.range(at: 1), in: text) else { return nil }
+            return String(text[range])
+        }
+        var seen = Set<String>()
+        return links.matches(in: html, range: NSRange(html.startIndex..., in: html)).prefix(150).compactMap { match in
+            guard let pathRange = Range(match.range(at: 1), in: html), let bodyRange = Range(match.range(at: 2), in: html) else { return nil }
+            let path = String(html[pathRange]), body = String(html[bodyRange])
+            guard let rawDate = capture(#"<time\b[^>]*>([\s\S]*?)</time>"#, in: body),
+                  let published = date(plainText(rawDate)),
+                  let titleHTML = capture(#"<h[1-6]\b[^>]*>([\s\S]*?)</h[1-6]>"#, in: body)
+                    ?? capture(#"<span\b[^>]*class="[^"]*__title[^"]*"[^>]*>([\s\S]*?)</span>"#, in: body),
+                  seen.insert(path).inserted else { return nil }
+            let title = bounded(plainText(titleHTML), limit: 240)
+            let summary = bounded(plainText(capture(#"<p\b[^>]*>([\s\S]*?)</p>"#, in: body) ?? ""), limit: 2000)
+            let url = safeURL(URL(string: path, relativeTo: source.endpoint)?.absoluteURL.absoluteString, fallback: source.endpoint)
+            return FrontierNewsItem(id: source.id + ":" + path, provider: source.provider, title: title, summary: summary,
+                sourceURL: url, publishedAt: published, detectedAt: detectedAt, kind: classify(title: title, summary: summary),
+                resetAt: resetDate(in: title + "\n" + summary))
+        }
+    }
+}
+
+private final class FrontierRedirectGuard: NSObject, URLSessionTaskDelegate, Sendable {
+    let host: String?
+    init(host: String?) { self.host = host?.lowercased() }
+    func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
+                    newRequest request: URLRequest, completionHandler: @escaping @Sendable (URLRequest?) -> Void) {
+        completionHandler(request.url?.scheme == "https" && request.url?.host?.lowercased() == host ? request : nil)
     }
 }
 
@@ -506,6 +640,9 @@ private final class RSSParser: NSObject, XMLParserDelegate, @unchecked Sendable 
     private var current = Entry()
     private var insideEntry = false
     private var parsedEntries: [Entry] = []
+    private var recognizedRoot = false
+    private var rootSeen = false
+    private var stack: [(name: String, text: String)] = []
     var entries: [Entry] { parsedEntries }
 
     init(data: Data) { self.data = data }
@@ -513,13 +650,16 @@ private final class RSSParser: NSObject, XMLParserDelegate, @unchecked Sendable 
     func parse() -> Bool {
         let parser = XMLParser(data: data)
         parser.delegate = self
-        return parser.parse()
+        parser.shouldResolveExternalEntities = false
+        return parser.parse() && recognizedRoot
     }
 
     func parser(_ parser: XMLParser, didStartElement elementName: String,
                 namespaceURI: String?, qualifiedName qName: String?,
                 attributes attributeDict: [String: String] = [:]) {
         let name = (qName ?? elementName).lowercased()
+        if !rootSeen { rootSeen = true; recognizedRoot = name == "rss" || name == "feed" }
+        stack.append((name, ""))
         if name == "item" || name == "entry" {
             insideEntry = true
             current = Entry()
@@ -530,21 +670,22 @@ private final class RSSParser: NSObject, XMLParserDelegate, @unchecked Sendable 
 
     func parser(_ parser: XMLParser, foundCharacters string: String) {
         guard insideEntry else { return }
-        text.append(string)
-        if text.count > 4_096 { text = String(text.prefix(4_096)) }
+        guard !stack.isEmpty else { return }
+        stack[stack.count - 1].text = String((stack[stack.count - 1].text + string).prefix(4096))
     }
 
     func parser(_ parser: XMLParser, foundCDATA CDATABlock: Data) {
         guard insideEntry else { return }
-        text.append(String(decoding: CDATABlock.prefix(4_096), as: UTF8.self))
-        if text.count > 4_096 { text = String(text.prefix(4_096)) }
+        self.parser(parser, foundCharacters: String(decoding: CDATABlock.prefix(4096), as: UTF8.self))
     }
 
     func parser(_ parser: XMLParser, didEndElement elementName: String,
                 namespaceURI: String?, qualifiedName qName: String?) {
         let name = (qName ?? elementName).lowercased()
+        let ended = stack.popLast()?.text ?? ""
+        if !stack.isEmpty { stack[stack.count - 1].text = String((stack[stack.count - 1].text + ended).prefix(4096)) }
         guard insideEntry else { return }
-        let value = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let value = ended.trimmingCharacters(in: .whitespacesAndNewlines)
         switch name {
         case "title": current.title = value
         case "description", "summary", "content": current.summary = value

@@ -2911,8 +2911,9 @@ private func scvProjectEvidence(live observed: SCVLiveRelease? = nil) throws -> 
     for path in selectedPaths {
         guard inventory.contains(path) else { throw ProjectMaterialError.invalidArtifact }
         let member = try commandOutput("/usr/bin/tar", ["-xOf", archiveURL.path, path], timeout: 15)
-        guard member.0 == 0, !member.1.isEmpty, member.1.count <= 80_000,
-              let text = String(data: member.1, encoding: .utf8), !protectedRouteMaterialInEvidence(text) else {
+        guard member.0 == 0 else { throw ProjectMaterialError.invalidArtifact }
+        let text = try SCVProjectMaterials.contextMember(member.1)
+        guard !protectedRouteMaterialInEvidence(text) else {
             throw OS1Error.message("Instagram 기술 자료의 안전한 원문 전달을 검증하지 못했습니다: \(path)")
         }
         originals.append((path, text))
@@ -7897,7 +7898,7 @@ struct OS1Main {
             guard let command = arguments.first else { usage(); return }
             if try await fleetCommand(arguments) { return }
             switch command {
-            case "version", "--version", "-V": print("OS-1 Runtime 0.9.47 (r2-oauth-recovery-build98)")
+            case "version", "--version", "-V": print("OS-1 Runtime 0.9.47 (frontier-source-readiness-build101)")
             case "doctor": try doctor()
             case "sidebar-pin":
                 guard (4...5).contains(arguments.count), arguments[1] == "codex",
