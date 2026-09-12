@@ -3480,6 +3480,15 @@ private final class SessionStore: ObservableObject {
     private var sidebarPollRunning = false
     private var sidebarMutationTask: Task<Void, Never>?
 
+    /// Public, first-party provider signals are kept outside conversation
+    /// state. They never enter a task handoff or influence provider routing.
+    @Published private(set) var frontierItems: [FrontierNewsItem] = []
+    @Published private(set) var frontierSourceStatuses: [FrontierSourceStatus] = []
+    @Published private(set) var frontierMonitorLastUpdated: Date?
+    @Published private(set) var frontierMonitorIsChecking = false
+    private var frontierMonitorTask: Task<Void, Never>?
+    private var frontierMonitor: FrontierNewsMonitor?
+
     let voiceDictation = VoiceDictationController()
 
     private let fileManager = FileManager.default
@@ -3500,6 +3509,19 @@ private final class SessionStore: ObservableObject {
                 requireReadOnly: submission.readOnlyReconciliation == true, deliveryID: submission.deliveryID,
                 submissionID: submission.id, onActivity: onActivity)
         }
+        if storageRoot == nil {
+            let monitor = FrontierNewsMonitor()
+            frontierMonitor = monitor
+            frontierMonitorTask = Task { [weak self] in
+                guard let self else { return }
+                await self.refreshFrontierSignals()
+                while !Task.isCancelled {
+                    try? await Task.sleep(for: .seconds(FrontierNewsMonitor.defaultPollInterval))
+                    guard !Task.isCancelled else { return }
+                    await self.refreshFrontierSignals()
+                }
+            }
+        }
         load()
         pausedQueueIDs = Set(queuedSubmissions.map(\.id))
         if sessions.isEmpty {
@@ -3508,6 +3530,23 @@ private final class SessionStore: ObservableObject {
             selectedSessionID = sessions.first(where: { $0.archived != true })?.id ?? sessions.first?.id
             composer = selectedSession?.draft ?? ""
         }
+    }
+
+    /// Refreshes the monitor without changing the selected task. A source
+    /// failure remains visible as an unavailable status; stale items are not
+    /// presented as fresh data.
+    func refreshFrontierSignals() async {
+        guard let frontierMonitor else { return }
+        frontierMonitorIsChecking = true
+        let result = await frontierMonitor.poll()
+        frontierItems = result.items
+        frontierSourceStatuses = result.sourceStatuses
+        frontierMonitorLastUpdated = result.completedAt
+        frontierMonitorIsChecking = false
+    }
+
+    var frontierLatestActionableItem: FrontierNewsItem? {
+        frontierItems.first { $0.kind == .tokenReset || $0.kind == .usageLimit }
     }
 
     var selectedIndex: Int? {
@@ -6689,6 +6728,8 @@ private struct SessionSidebar: View {
                 .padding(.horizontal, 20)
             }
 
+            FrontierMonitorView(store: store)
+
             Spacer(minLength: 0)
             if let notice = store.sidebarSyncNotice {
                 Text(notice).font(.system(size: 10)).foregroundStyle(Theme.pink).padding(12)
@@ -6697,6 +6738,90 @@ private struct SessionSidebar: View {
         .frame(width: 315)
         .background(Color.black.opacity(0.72))
         .onReceive(NotificationCenter.default.publisher(for: Notification.Name("os1.focusSearch"))) { _ in searching = true }
+    }
+}
+
+/// Compact, non-conversational surface for public provider signals. Keeping
+/// this out of the transcript prevents a news poll from changing task context
+/// or causing an unexpected backend route.
+private struct FrontierMonitorView: View {
+    @ObservedObject var store: SessionStore
+
+    private var latest: FrontierNewsItem? { store.frontierItems.first }
+    private var availableCount: Int { store.frontierSourceStatuses.filter(\.available).count }
+    private var checkedLabel: String {
+        guard let date = store.frontierMonitorLastUpdated else { return "첫 확인 대기" }
+        return date.formatted(date: .omitted, time: .shortened)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(spacing: 6) {
+                Circle()
+                    .fill(store.frontierMonitorIsChecking ? Theme.pink : (availableCount > 0 ? Theme.green : Theme.muted))
+                    .frame(width: 6, height: 6)
+                Text("FRONTIER MONITOR")
+                    .font(.system(size: 9, weight: .bold, design: .rounded))
+                    .tracking(1.1)
+                    .foregroundStyle(Theme.muted)
+                Spacer()
+                Button { Task { await store.refreshFrontierSignals() } } label: {
+                    Image(systemName: store.frontierMonitorIsChecking ? "clock" : "arrow.clockwise")
+                        .font(.system(size: 10, weight: .semibold))
+                }
+                .buttonStyle(.plain)
+                .disabled(store.frontierMonitorIsChecking)
+                .help("공식 프론티어 상태 다시 확인")
+                .accessibilityLabel("프론티어 상태 다시 확인")
+            }
+
+            if let latest {
+                Button {
+                    NSWorkspace.shared.open(latest.sourceURL)
+                } label: {
+                    VStack(alignment: .leading, spacing: 3) {
+                        HStack(spacing: 5) {
+                            Text(latest.provider.displayName)
+                            Text("·")
+                            Text(latest.kind.label).foregroundStyle(latest.kind == .tokenReset ? Theme.pink : Theme.muted)
+                        }
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(Theme.text)
+                        Text(latest.title)
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundStyle(Theme.muted)
+                            .lineLimit(2)
+                        if let resetAt = latest.resetAt {
+                            Text("원문에 명시된 리셋 시각 · \(resetAt.formatted(date: .abbreviated, time: .shortened))")
+                                .font(.system(size: 8, weight: .medium, design: .rounded))
+                                .foregroundStyle(Theme.pink)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .buttonStyle(.plain)
+                .help("공식 원문 열기")
+                .accessibilityLabel("최신 \(latest.provider.displayName) \(latest.kind.label) 공지: \(latest.title)")
+            } else {
+                Text(store.frontierMonitorIsChecking ? "공식 원본 확인 중…" : "새 공식 사용량·상태 공지 없음")
+                    .font(.system(size: 10))
+                    .foregroundStyle(Theme.muted)
+            }
+
+            HStack(spacing: 5) {
+                Text("공식 원본 \(availableCount)/\(FrontierMonitorSource.firstParty.count)")
+                Text("·")
+                Text("최근 \(checkedLabel)")
+            }
+            .font(.system(size: 8, weight: .medium, design: .rounded))
+            .foregroundStyle(Theme.muted.opacity(0.8))
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 9)
+        .background(Theme.panel, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(Theme.border))
+        .padding(.horizontal, 20)
+        .padding(.top, 10)
     }
 }
 

@@ -34,6 +34,7 @@ final class SourceContextTests {
         try runCompletionFeedbackFixtures()
         try runBackendRecoveryFixtures()
         try runExecutionFixtures()
+        try runFrontierMonitorFixtures()
         try runResearchBundleFixtures()
         try runVoiceProcessFixtures()
         try runTakeoverFixtures()
