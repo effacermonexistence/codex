@@ -5,21 +5,18 @@ import fs from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { PIN, assetURL } from './bootstrap-os1-release.mjs';
 
-export const beforeSHA = '1cd947bf108715a529c9da415c9ba65255935283399439d55e25938f7ff70b31';
+export const beforeSHA = '7a7184e4e9dbe5c15c1313aa037865210a92dbb858aea564ee6b2b6e31f99417';
 export function updateDownloadPage(original) {
   assert.equal(createHash('sha256').update(original).digest('hex'), beforeSHA,
     'Landing page changed; review the fresh source instead of overwriting it');
-  const oldURL = 'https://os1-route-gateway.omar-git-r2-backup.workers.dev/v1/releases/download';
+  const oldURL = 'https://github.com/effacermonexistence/codex/releases/download/os1-v0.9.44-beta.1/OS-1-0.9.44-macOS-beta.zip';
   assert.equal(original.split(oldURL).length - 1, 2);
   let output = original.replaceAll(oldURL, assetURL);
   for (const [oldText, newText] of [
-    ['DOWNLOAD FOR MAC', `DOWNLOAD MAC BETA · ${PIN.build}`],
-    ['>Download for Mac<', `>Download Mac beta · build ${PIN.build}<`],
-    ['The Mac app and web app share one OS-1 Claudex session surface.',
+    ['DOWNLOAD MAC BETA · 95', `DOWNLOAD MAC BETA · ${PIN.build}`],
+    ['>Download Mac beta · build 95<', `>Download Mac beta · build ${PIN.build}<`],
+    ['OS-1 CLODEX 0.9.44 · build 95 · macOS 13+ · Apple Silicon + Intel',
       `OS-1 CLODEX ${PIN.version} · build ${PIN.build} · macOS 13+ · Apple Silicon + Intel`],
-    ['Install the Mac app once to connect your local Codex and Claude Code accounts. After connection, this same page becomes the full web workspace with synchronized sessions, RCC routing, model selection, effort control, and evidence receipts.',
-      'Work in the local OS-1 app with your own Codex and Claude Code accounts. OS-1 checks the models and reasoning levels available to your account before routing. This download is an unnotarized beta, not an Apple-notarized release. Open the ZIP and follow README.txt; the installer verifies the package before requesting your Mac administrator password. Per-device account logins and native permission approvals remain required.'],
-    ['<span>Install once, continue on web</span>', '<span>Install the beta · work in the OS-1 app</span>'],
   ]) {
     assert.equal(output.split(oldText).length - 1, 1, `Expected exact text: ${oldText}`);
     output = output.replace(oldText, newText);
