@@ -13,6 +13,26 @@ readonly skip_prerequisites="${OS1_SKIP_PREREQUISITES:-0}"
 readonly skip_login="${OS1_SKIP_LOGIN:-0}"
 readonly verify_only="${OS1_VERIFY_ONLY:-0}"
 readonly enable_fleet="${OS1_ENABLE_FLEET:-1}"
+readonly minimum_release_version="${OS1_MINIMUM_RELEASE_VERSION:-}"
+readonly minimum_release_build="${OS1_MINIMUM_RELEASE_BUILD:-}"
+
+check_minimum_release() {
+  local candidate_version="$1" candidate_build="$2"
+  [[ -z "$minimum_release_version" && -z "$minimum_release_build" ]] && return 0
+  [[ "$minimum_release_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ &&
+     "$minimum_release_build" =~ ^[0-9]+$ ]] || {
+    echo 'Invalid OS1 minimum release requirement.' >&2; return 1;
+  }
+  local ca cb cc ma mb mc
+  IFS=. read -r ca cb cc <<< "$candidate_version"
+  IFS=. read -r ma mb mc <<< "$minimum_release_version"
+  if (( 10#$ca > 10#$ma || (10#$ca == 10#$ma && 10#$cb > 10#$mb) ||
+        (10#$ca == 10#$ma && 10#$cb == 10#$mb && 10#$cc > 10#$mc) )); then return 0; fi
+  if [[ "$candidate_version" == "$minimum_release_version" && "$candidate_build" =~ ^[0-9]+$ ]] &&
+     (( 10#$candidate_build >= 10#$minimum_release_build )); then return 0; fi
+  echo 'OS1 release is older than the selected runtime; retry the verified download.' >&2
+  return 1
+}
 
 for os1_flag in "$allow_unnotarized_beta" "$skip_prerequisites" "$skip_login" "$verify_only" "$enable_fleet"; do
   case "$os1_flag" in 0|1) ;; *) echo "OS-1 installer flags must be 0 or 1." >&2; exit 1 ;; esac
@@ -178,6 +198,8 @@ verify_unnotarized_beta_package() {
     return 1
   }
   codesign --verify --strict "$cli_path" || return 1
+  check_minimum_release "$manifest_version" \
+    "$(plutil -extract CFBundleVersion raw -o - "$app_path/Contents/Info.plist")" || return 1
   codesign --verify --strict "$bundled_cli_path" || return 1
   codesign --verify --deep --strict "$app_path" || return 1
   cli_signature_details="$(codesign -d --verbose=4 "$cli_path" 2>&1)"
@@ -250,6 +272,10 @@ fi
 if [[ "$(stat -f '%z' "$os1_tmp/OS-1.pkg")" != "$os1_size" ]]; then
   echo "OS-1 refused a package whose size disagrees with the manifest." >&2
   exit 1
+fi
+if [[ -n "$minimum_release_version" || -n "$minimum_release_build" ]]; then
+  check_minimum_release "$os1_version" \
+    "$(plutil -extract build raw -o - "$os1_tmp/latest.json" 2>/dev/null || true)" || exit 1
 fi
 if [[ "${OS1_REQUIRE_ACCOUNT_MODELS_RELEASE:-0}" == "1" ]]; then
   IFS=. read -r os1_major_version os1_minor_version os1_patch_version <<< "$os1_version"

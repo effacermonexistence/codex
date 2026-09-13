@@ -24,11 +24,10 @@ const installer = fileURLToPath(new URL('../products/os1-mac-runtime/scripts/ins
 
 export function stableSupportsCurrentRuntime(manifest) {
   assert(manifest && /^\d+\.\d+\.\d+$/.test(manifest.version), 'Invalid stable release version');
-  const v=manifest.version.split('.').map(Number), min=[0,9,44];
+  const v=manifest.version.split('.').map(Number), min=PIN.version.split('.').map(Number);
   for(let i=0;i<3;i++) { if(v[i]!==min[i]) return v[i]>min[i]; }
-  // Release versions are immutable. 0.9.44 is the first account-aware build.
-  // If a producer supplies a build, reject a contradictory older build.
-  return manifest.build === undefined || (/^\d+$/.test(String(manifest.build)) && Number(manifest.build)>=95);
+  // Require the same verified build at the floor; an absent build is unknown.
+  return /^\d+$/.test(String(manifest.build)) && Number(manifest.build)>=Number(PIN.build);
 }
 export function verifyRelease(release, reference) {
   assert.equal(release.tag_name,PIN.tag);assert.equal(release.draft,false);assert.equal(release.prerelease,true);
@@ -88,10 +87,10 @@ async function main() {
   const stable=await json(gateway+'/v1/releases/latest');
   if(stableSupportsCurrentRuntime(stable)) {
     console.log('OS1 bootstrap: compatible stable release '+stable.version);
-    run('/bin/bash',[installer],{stdio:'inherit',timeout:0,env:{...process.env,OS1_REQUIRE_FLEET_RELEASE:'1',OS1_REQUIRE_ACCOUNT_MODELS_RELEASE:'1',...(verifyOnly?{OS1_VERIFY_ONLY:'1',OS1_SKIP_PREREQUISITES:'1',OS1_SKIP_LOGIN:'1'}:{})}});
+    run('/bin/bash',[installer],{stdio:'inherit',timeout:0,env:{...process.env,OS1_REQUIRE_FLEET_RELEASE:'1',OS1_REQUIRE_ACCOUNT_MODELS_RELEASE:'1',OS1_MINIMUM_RELEASE_VERSION:PIN.version,OS1_MINIMUM_RELEASE_BUILD:PIN.build,...(verifyOnly?{OS1_VERIFY_ONLY:'1',OS1_SKIP_PREREQUISITES:'1',OS1_SKIP_LOGIN:'1'}:{})}});
     return;
   }
-  console.error(`OS1 bootstrap: stable ${stable.version} lacks the required account-aware runtime. Using explicitly pinned ${PIN.tag}, build ${PIN.build}. WARNING: this beta is not Apple-notarized. No Gatekeeper/TCC settings are changed.`);
+  console.error(`OS1 bootstrap: stable ${stable.version} is older than the required runtime. Using explicitly pinned ${PIN.tag}, build ${PIN.build}. WARNING: this beta is not Apple-notarized. No Gatekeeper/TCC settings are changed.`);
   const directory=fs.mkdtempSync(path.join(os.tmpdir(),'os1-bootstrap-beta-'));fs.chmodSync(directory,0o700);
   try {
     const prepared=await preparePinnedBeta(directory);

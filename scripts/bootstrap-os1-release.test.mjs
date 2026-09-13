@@ -14,11 +14,34 @@ test('CI metadata authentication is never forwarded to assets or other hosts',()
   for(const url of [assetURL,'https://example.com','https://api.github.com.evil.test/repos/effacermonexistence/codex/releases', 'https://api.github.com/repos/other/repository/releases'])assert.equal(requestHeaders(url,'fixture').authorization,undefined);
 });
 
-test('bootstrap requires account-aware model discovery, not merely Fleet support',()=>{
-  for(const m of [{version:'0.9.1'},{version:'0.9.21',build:'70'},{version:'0.9.43'},{version:'0.9.44',build:'94'}])assert.equal(stableSupportsCurrentRuntime(m),false);
-  for(const m of [{version:'0.9.44'},{version:'0.9.44',build:'95'},{version:'0.9.45'},{version:'0.9.46',build:'97'},{version:'0.10.0'},{version:'1.0.0'}])assert.equal(stableSupportsCurrentRuntime(m),true);
+test('bootstrap requires the pinned runtime and known matching build, not merely Fleet support',()=>{
+  for(const m of [{version:'0.9.1'},{version:'0.9.21',build:'70'},{version:'0.9.43'},
+    {version:PIN.version},{version:PIN.version,build:String(Number(PIN.build)-1)},{version:PIN.version,build:'invalid'}])assert.equal(stableSupportsCurrentRuntime(m),false);
+  for(const m of [{version:PIN.version,build:PIN.build},{version:'0.10.0'},{version:'1.0.0'}])assert.equal(stableSupportsCurrentRuntime(m),true);
   for(const m of [null,{}, {version:'latest'}, {version:'0.9.44-beta.1'}])assert.throws(()=>stableSupportsCurrentRuntime(m));
 });
+
+test('installer rechecks selected minimum runtime before any package execution',
+  {skip:process.platform!=='darwin'},()=>{
+    const directory=fs.mkdtempSync(path.join(os.tmpdir(),'os1-selected-floor-test-'));
+    const packagePath=path.join(directory,'fixture.pkg'),manifestPath=path.join(directory,'manifest.json');
+    const installer=fileURLToPath(new URL('../products/os1-mac-runtime/scripts/install-os1.sh',import.meta.url));
+    fs.writeFileSync(packagePath,'x');
+    try {
+      for(const candidate of [{version:'0.9.44',build:'95'},{version:'0.9.47',build:'104'},
+        {version:'0.9.48'},{version:'0.9.48',build:'104'},{version:'0.9.48',build:'invalid'}]) {
+        fs.writeFileSync(manifestPath,JSON.stringify({...candidate,size:1,sha256:'0'.repeat(64),
+          minimum_macos:'13.0',object_key:`os1/releases/${candidate.version}/OS-1-${candidate.version}.pkg`}));
+        const result=spawnSync('/bin/bash',[installer],{encoding:'utf8',timeout:10000,
+          env:{...process.env,OS1_ALLOW_UNNOTARIZED_BETA:'1',OS1_BETA_PACKAGE_PATH:packagePath,
+            OS1_BETA_MANIFEST_PATH:manifestPath,OS1_MINIMUM_RELEASE_VERSION:'0.9.48',OS1_MINIMUM_RELEASE_BUILD:'105',
+            OS1_VERIFY_ONLY:'1',OS1_SKIP_LOGIN:'1',OS1_SKIP_PREREQUISITES:'1'}});
+        assert.equal(result.status,1,JSON.stringify(candidate));
+        assert.match(result.stderr,/older than the selected runtime/);
+        assert.doesNotMatch(result.stdout,/Verified OS-1 beta|installation was not performed/);
+      }
+    } finally {fs.rmSync(directory,{recursive:true,force:true});}
+  });
 test('release identity is pinned independently of a mutable download URL',()=>{
   const release={tag_name:PIN.tag,draft:false,prerelease:true,target_commitish:PIN.commit,
     assets:[{name:PIN.zip,browser_download_url:assetURL,digest:'sha256:'+PIN.zipSHA}]};
