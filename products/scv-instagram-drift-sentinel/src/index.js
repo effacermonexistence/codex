@@ -1,4 +1,4 @@
-const SENTINEL_SCHEMA = 'scv-instagram-drift-sentinel-2026-09-12-v34-v173-running-release-v167-recovery-gold'
+const SENTINEL_SCHEMA = 'scv-instagram-drift-sentinel-2026-09-13-v35-v174-running-release-v167-recovery-gold'
 // GOLD-3 (2026-09-03): v148 (owner-verified v145 plus the owner-ordered polish, live red-team verified) frozen as the reference; the pointer and manifest below are pinned by hash.
 const GOLD_LATEST_KEY = 'scv-instagram-automation/gold/LATEST.json'
 const GOLD_MANIFEST_KEY = 'scv-instagram-automation/gold/SCV_GOLD_MANIFEST_v148.json'
@@ -8,13 +8,13 @@ const GOLD_MANIFEST_SHA256 = '31ea4507381e6ec2c3ce4458d70af4a311f331a4a26651f5d9
 // Comparing the gold manifest against the running release id made the check fail by construction.
 const GOLD_RELEASE_ID = 'scv-instagram-single-20260902-v148'
 const GOLD_CONTENT_FINGERPRINT = '3a9a18631443f4738d13dd803f080979ff4d21ab0d9de1f5054b2f26e2ea3609'
-// v34 (2026-09-12): v173 blocks unsolicited helper offers and prevents rejected voice
-// candidates from liveness re-adoption; short direct social replies may end naturally.
+// v35 (2026-09-13): v174 keeps artist-work questions outside client booking intake
+// and permits grounded reference clarification without stale form-offer recovery.
 // The latest approved recovery Gold stays v167. Previous v151, GOLD-3 v148, April Golden,
 // and all recovery/reset evidence pins remain unchanged. A deployed release is not a Gold.
-const RELEASE_ID = 'scv-instagram-single-20260912-v173'
-const CONTENT_FINGERPRINT = '0c85fd62640593df35048cbb40247df5a5b7001e442b72f12d27537646470582'
-const RELEASE_MANIFEST = 'f982f01c3e3400b704b89b23e1e93b086b6c5222a06884fa9e62ee21d24b81e8'
+const RELEASE_ID = 'scv-instagram-single-20260912-v174'
+const CONTENT_FINGERPRINT = '48fdd2e6716600f16001618fd822c7f1f2cbba893ea7f08aca014c292a068f5d'
+const RELEASE_MANIFEST = '54eb9a744a6b9bd2babcbd0e2870cc2913af6ae5b3d4552c8c42acd4ab2cd331'
 const RECOVERY_POINT_RELEASE_ID = 'scv-instagram-single-20260908-v167'
 const RECOVERY_POINT_CONTENT_FINGERPRINT = '6b85a63a25c23e9815491413eeb895e6b78ed8faa523f18aefea6b88f392faa7'
 const RECOVERY_POINT_RELEASE_MANIFEST = '2f12a00d12114bbbb05080438dda88a6278a82ae65a9fc9aaaff70a2a25ad4b6'
