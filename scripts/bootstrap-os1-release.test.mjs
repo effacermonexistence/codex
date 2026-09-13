@@ -6,12 +6,17 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { PIN, assetURL, requestHeaders, stableSupportsCurrentRuntime, verifyRelease, verifyBytes, verifyInnerManifest } from './bootstrap-os1-release.mjs';
+import { PIN, assetURL, requestHeaders, downloadTimeout, stableSupportsCurrentRuntime, verifyRelease, verifyBytes, verifyInnerManifest } from './bootstrap-os1-release.mjs';
 import { updateDownloadPage } from './update-os1-download-page.mjs';
 
 test('CI metadata authentication is never forwarded to assets or other hosts',()=>{
   assert.equal(requestHeaders('https://api.github.com/repos/effacermonexistence/codex/releases/tags/'+PIN.tag,'fixture').authorization,'Bearer fixture');
   for(const url of [assetURL,'https://example.com','https://api.github.com.evil.test/repos/effacermonexistence/codex/releases', 'https://api.github.com/repos/other/repository/releases'])assert.equal(requestHeaders(url,'fixture').authorization,undefined);
+});
+
+test('binary transfers have a bounded slow-link budget without relaxing metadata deadlines',()=>{
+  assert.equal(downloadTimeout(2_000_000),60000);
+  assert.equal(downloadTimeout(25_000_000),300000);
 });
 
 test('bootstrap requires the pinned runtime and known matching build, not merely Fleet support',()=>{

@@ -51,8 +51,9 @@ export function requestHeaders(url,token) {
   return {'user-agent':'OS1-verified-bootstrap/1','accept':metadata?'application/vnd.github+json':'*/*',
     ...(metadata&&token?{authorization:'Bearer '+token}:{})};
 }
+export const downloadTimeout = maxBytes => maxBytes > 2_000_000 ? 300000 : 60000;
 async function download(url,maxBytes) {
-  const response=await fetch(url,{signal:AbortSignal.timeout(60000),headers:requestHeaders(url,process.env.GH_TOKEN??process.env.GITHUB_TOKEN)});
+  const response=await fetch(url,{signal:AbortSignal.timeout(downloadTimeout(maxBytes)),headers:requestHeaders(url,process.env.GH_TOKEN??process.env.GITHUB_TOKEN)});
   assert(response.ok,`Download failed: HTTP ${response.status} from ${new URL(url).hostname}`);
   const chunks=[];let size=0;
   for await(const chunk of response.body){size+=chunk.length;assert(size<=maxBytes,'Download too large');chunks.push(chunk);}
