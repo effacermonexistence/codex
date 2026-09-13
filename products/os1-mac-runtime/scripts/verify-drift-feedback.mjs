@@ -30,7 +30,7 @@ const run = (args, overrides = {}) => new Promise((resolve, reject) => {
 const results = [];
 let newlySubmittedObjectives = 0;
 try {
-  assert(execFileSync(runtime, ['version'], { encoding: 'utf8' }).includes('build105'));
+  assert(execFileSync(runtime, ['version'], { encoding: 'utf8' }).includes('build107'));
   for (const provider of ['codex', 'claude']) {
     const seedFile = path.join(output, provider + '-synthetic-seed.json');
     const savedSeed = mode === '--resume-verification' && fs.existsSync(seedFile) ? JSON.parse(fs.readFileSync(seedFile)) : null;

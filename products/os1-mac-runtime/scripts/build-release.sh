@@ -4,7 +4,7 @@ set -euo pipefail
 readonly script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly runtime_root="$(cd "$script_dir/.." && pwd)"
 readonly repository_root="$(cd "$runtime_root/../.." && pwd)"
-readonly version="${OS1_VERSION:-0.9.48}"
+readonly version="${OS1_VERSION:-0.9.49}"
 readonly release_mode="${OS1_RELEASE_MODE:-development}"
 readonly output_dir="${OS1_RELEASE_OUTPUT_DIR:-$runtime_root/release}"
 readonly stage_dir="$output_dir/stage"
@@ -16,10 +16,28 @@ readonly arm64_build_dir="${OS1_ARM64_BUILD_DIR:-$runtime_root/.build-release-ar
 readonly x86_64_build_dir="${OS1_X86_64_BUILD_DIR:-$runtime_root/.build-release-x86_64}"
 readonly skip_build="${OS1_SKIP_BUILD:-0}"
 local_identity='-'
-identity_file="$HOME/Library/Application Support/OS-1/build-signing/identity-sha1"
+signing_state_dir="$HOME/Library/Application Support/OS-1/build-signing"
+identity_file="$signing_state_dir/identity-sha1"
+keychain_path_file="$signing_state_dir/keychain-path"
+keychain_password_file="$signing_state_dir/keychain-password"
+codesign_keychain_options=()
 if [[ "$release_mode" == development && -f "$identity_file" ]]; then
   local_identity=$(tr -d '\n' < "$identity_file")
   [[ "$local_identity" =~ ^[A-Fa-f0-9]{40}$ ]] || { echo 'Invalid saved local signer.' >&2; exit 1; }
+  if [[ -f "$keychain_path_file" || -f "$keychain_password_file" ]]; then
+    [[ -f "$keychain_path_file" && -f "$keychain_password_file" ]] || {
+      echo 'Incomplete saved local signer keychain state.' >&2; exit 1;
+    }
+    signing_keychain=$(tr -d '\n' < "$keychain_path_file")
+    case "$signing_keychain" in
+      "$HOME"/Library/Keychains/*.keychain-db) ;;
+      *) echo 'Refusing unexpected local signer keychain path.' >&2; exit 1 ;;
+    esac
+    [[ -f "$signing_keychain" ]] || { echo 'Saved local signer keychain is unavailable.' >&2; exit 1; }
+    signing_keychain_password=$(cat "$keychain_password_file")
+    security unlock-keychain -p "$signing_keychain_password" "$signing_keychain"
+    codesign_keychain_options=(--keychain "$signing_keychain")
+  fi
 fi
 readonly codesign_identity="${OS1_CODESIGN_IDENTITY:-$local_identity}"
 readonly installer_identity="${OS1_INSTALLER_IDENTITY:-}"
@@ -141,7 +159,7 @@ if find "$stage_dir" -print | grep -Eiq 'private-core|os1_local_core|darwin_rout
 fi
 
 xattr -cr "$stage_dir"
-codesign_options=(--force --sign "$codesign_identity" --options runtime)
+codesign_options=(--force --sign "$codesign_identity" "${codesign_keychain_options[@]}" --options runtime)
 if [[ "$release_mode" == "distribution" ]]; then
   codesign_options+=(--timestamp)
 else

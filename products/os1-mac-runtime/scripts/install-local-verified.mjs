@@ -7,9 +7,12 @@ import os from 'node:os';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 
-const [sourceArg, recoveryArg, expectedBuild, queueMode] = process.argv.slice(2);
+const [sourceArg, recoveryArg, expectedBuild, ...options] = process.argv.slice(2);
 assert(sourceArg && recoveryArg && /^\d+$/.test(expectedBuild), 'staged-app new-private-recovery-dir expected-build');
-assert(queueMode === undefined || queueMode === '--preserve-queue', 'unknown install option');
+assert.equal(new Set(options).size, options.length, 'duplicate install option');
+assert(options.every(option => ['--preserve-queue', '--allow-local-signer-rotation'].includes(option)), 'unknown install option');
+const preserveQueue = options.includes('--preserve-queue');
+const allowLocalSignerRotation = options.includes('--allow-local-signer-rotation');
 const source = fs.realpathSync(sourceArg), home = os.homedir();
 const recovery = path.resolve(recoveryArg), app = path.join(home, 'Applications/OS-1 CLODEX.app');
 const cli = path.join(home, '.local/bin/os1'), resource = path.join(source, 'Contents/Resources/os1');
@@ -40,14 +43,17 @@ const requirement = file => {
 const idle = () => {
   const state = JSON.parse(fs.readFileSync(store));
   assert.equal((state.inFlight ?? []).length, 0, 'active user task; leave the installation unchanged');
-  if (queueMode === '--preserve-queue') assert.deepEqual(state.queued ?? [], originalQueue, 'queue changed during installation');
+  if (preserveQueue) assert.deepEqual(state.queued ?? [], originalQueue, 'queue changed during installation');
   else assert.equal((state.queued ?? []).length, 0, 'queued user task; leave the installation unchanged');
   for (const name of ['main-agent-active.json', 'main-agent-claim.json']) {
     assert(!fs.existsSync(path.join(fleetRoot, name)), 'Fleet work/claim unresolved; do not interrupt it');
   }
 };
 const oldRequirement = requirement(app);
-assert.equal(requirement(source), oldRequirement, 'signer continuity required');
+const sourceRequirement = requirement(source);
+const signerRotation = sourceRequirement !== oldRequirement;
+assert(!signerRotation || allowLocalSignerRotation,
+  'signer continuity required; a verified new-device local signer rotation must be explicit');
 assert.equal(run('/usr/bin/plutil', ['-extract', 'CFBundleVersion', 'raw', '-o', '-', path.join(source, 'Contents/Info.plist')]).trim(), expectedBuild);
 run('/usr/bin/codesign', ['--verify', '--deep', '--strict', source]);
 run('/usr/bin/codesign', ['--verify', '--strict', resource]);
@@ -64,7 +70,8 @@ let paused = false, appMoved = false, cliMoved = false, activated = false;
 const receipt = { startedAt: new Date().toISOString(), build: expectedBuild, app, recovery,
   previousAppHash: hash(path.join(app, 'Contents/MacOS/OS1App')), previousCLIHash: hash(cli),
   stagedAppHash: hash(path.join(source, 'Contents/MacOS/OS1App')), stagedCLIHash: hash(resource),
-  previousRequirement: oldRequirement, checks: [] };
+  previousRequirement: oldRequirement, sourceRequirement, signerRotation,
+  signerRotationAuthorized: allowLocalSignerRotation, checks: [] };
 try {
   run('/usr/bin/ditto', [source, stageApp]);
   fs.copyFileSync(resource, stageCLI, fs.constants.COPYFILE_EXCL); fs.chmodSync(stageCLI, 0o755);
@@ -86,7 +93,7 @@ try {
   fs.renameSync(cli, backupCLI); cliMoved = true;
   fs.renameSync(stageCLI, cli);
   run('/usr/bin/codesign', ['--verify', '--deep', '--strict', app]);
-  assert.equal(requirement(app), oldRequirement);
+  assert.equal(requirement(app), sourceRequirement);
   assert.equal(hash(cli), receipt.stagedCLIHash);
   for (const [label, exe, args] of [
     ['runtime', cli, ['self-test']], ['app', path.join(app, 'Contents/MacOS/OS1App'), ['--self-test']],
