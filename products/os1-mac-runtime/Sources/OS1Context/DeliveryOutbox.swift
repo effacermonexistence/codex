@@ -15,14 +15,17 @@ public struct DeliveryRecord: Codable, Sendable {
     public let output: String
     public let submissionID: String?
     public let localRejection: String?
+    public let driftApplication: DriftApplication?
+    public let driftSteered: Bool?
     public var response: Data?
     public init(id: String, apiURL: String, deviceID: String, resultSHA256: String,
                 artifact: Data, upload: Data, submission: Data, step: Data, source: SourceReference?, output: String,
-                localRejection: String? = nil) {
+                localRejection: String? = nil, driftApplication: DriftApplication? = nil, driftSteered: Bool? = nil) {
         self.id = id; self.apiURL = apiURL; self.deviceID = deviceID; self.resultSHA256 = resultSHA256
         self.artifact = artifact; self.upload = upload; self.submission = submission
         self.step = step; self.source = source; self.output = output
         self.localRejection = localRejection
+        self.driftApplication = driftApplication; self.driftSteered = driftSteered
         submissionID = ProcessInfo.processInfo.environment["OS1_SUBMISSION_ID"].flatMap { UUID(uuidString:$0)?.uuidString }
     }
 }

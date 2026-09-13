@@ -9,12 +9,12 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 export const PIN = Object.freeze({
-  tag: 'os1-v0.9.44-beta.1', version: '0.9.44', build: '95',
-  commit: 'b7d04dd0310e08aa820efff72db85712f382b4cb',
-  zip: 'OS-1-0.9.44-macOS-beta.zip',
-  zipSHA: '939e9de67a6e85970255f415ffcf229224c8abb2e3ee4ae3c2fa90648db3291b',
-  pkgSHA: '853a63c60d59e0dd91c100660b36638e8e1f9074e98b08e5e1eadd0b1a21ea4a',
-  pkgSize: 17063521,
+  tag: 'os1-v0.9.48-beta.1', version: '0.9.48', build: '105',
+  commit: '4828aa1f07ed16a5c4f3a2935b897753276a3815',
+  zip: 'OS-1-0.9.48-macOS-beta.zip',
+  zipSHA: 'a9b798a10543314d56579a8810ac6561809f7080bcf170089287ac84e3d72fc5',
+  pkgSHA: 'a714576257c64f937e0fe2030817d614e2515b0cc7ee6d4c9e72948e8b94341e',
+  pkgSize: 18628409,
 });
 const repository = 'effacermonexistence/codex';
 const api = 'https://api.github.com/repos/' + repository;
@@ -24,11 +24,10 @@ const installer = fileURLToPath(new URL('../products/os1-mac-runtime/scripts/ins
 
 export function stableSupportsCurrentRuntime(manifest) {
   assert(manifest && /^\d+\.\d+\.\d+$/.test(manifest.version), 'Invalid stable release version');
-  const v=manifest.version.split('.').map(Number), min=[0,9,44];
+  const v=manifest.version.split('.').map(Number), min=PIN.version.split('.').map(Number);
   for(let i=0;i<3;i++) { if(v[i]!==min[i]) return v[i]>min[i]; }
-  // Release versions are immutable. 0.9.44 is the first account-aware build.
-  // If a producer supplies a build, reject a contradictory older build.
-  return manifest.build === undefined || (/^\d+$/.test(String(manifest.build)) && Number(manifest.build)>=95);
+  // Require the same verified build at the floor; an absent build is unknown.
+  return /^\d+$/.test(String(manifest.build)) && Number(manifest.build)>=Number(PIN.build);
 }
 export function verifyRelease(release, reference) {
   assert.equal(release.tag_name,PIN.tag);assert.equal(release.draft,false);assert.equal(release.prerelease,true);
@@ -52,8 +51,9 @@ export function requestHeaders(url,token) {
   return {'user-agent':'OS1-verified-bootstrap/1','accept':metadata?'application/vnd.github+json':'*/*',
     ...(metadata&&token?{authorization:'Bearer '+token}:{})};
 }
+export const downloadTimeout = maxBytes => maxBytes > 2_000_000 ? 300000 : 60000;
 async function download(url,maxBytes) {
-  const response=await fetch(url,{signal:AbortSignal.timeout(60000),headers:requestHeaders(url,process.env.GH_TOKEN??process.env.GITHUB_TOKEN)});
+  const response=await fetch(url,{signal:AbortSignal.timeout(downloadTimeout(maxBytes)),headers:requestHeaders(url,process.env.GH_TOKEN??process.env.GITHUB_TOKEN)});
   assert(response.ok,`Download failed: HTTP ${response.status} from ${new URL(url).hostname}`);
   const chunks=[];let size=0;
   for await(const chunk of response.body){size+=chunk.length;assert(size<=maxBytes,'Download too large');chunks.push(chunk);}
@@ -88,10 +88,10 @@ async function main() {
   const stable=await json(gateway+'/v1/releases/latest');
   if(stableSupportsCurrentRuntime(stable)) {
     console.log('OS1 bootstrap: compatible stable release '+stable.version);
-    run('/bin/bash',[installer],{stdio:'inherit',timeout:0,env:{...process.env,OS1_REQUIRE_FLEET_RELEASE:'1',OS1_REQUIRE_ACCOUNT_MODELS_RELEASE:'1',...(verifyOnly?{OS1_VERIFY_ONLY:'1',OS1_SKIP_PREREQUISITES:'1',OS1_SKIP_LOGIN:'1'}:{})}});
+    run('/bin/bash',[installer],{stdio:'inherit',timeout:0,env:{...process.env,OS1_REQUIRE_FLEET_RELEASE:'1',OS1_REQUIRE_ACCOUNT_MODELS_RELEASE:'1',OS1_MINIMUM_RELEASE_VERSION:PIN.version,OS1_MINIMUM_RELEASE_BUILD:PIN.build,...(verifyOnly?{OS1_VERIFY_ONLY:'1',OS1_SKIP_PREREQUISITES:'1',OS1_SKIP_LOGIN:'1'}:{})}});
     return;
   }
-  console.error(`OS1 bootstrap: stable ${stable.version} lacks the required account-aware runtime. Using explicitly pinned ${PIN.tag}, build ${PIN.build}. WARNING: this beta is not Apple-notarized. No Gatekeeper/TCC settings are changed.`);
+  console.error(`OS1 bootstrap: stable ${stable.version} is older than the required runtime. Using explicitly pinned ${PIN.tag}, build ${PIN.build}. WARNING: this beta is not Apple-notarized. No Gatekeeper/TCC settings are changed.`);
   const directory=fs.mkdtempSync(path.join(os.tmpdir(),'os1-bootstrap-beta-'));fs.chmodSync(directory,0o700);
   try {
     const prepared=await preparePinnedBeta(directory);

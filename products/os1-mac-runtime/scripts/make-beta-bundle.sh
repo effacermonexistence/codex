@@ -45,7 +45,7 @@ printf '%s\n' \
   '' \
   'This bundle is intentionally not Apple-notarized.' \
   'It verifies the package SHA-256, identifier, version, exact payload allowlist,' \
-  'ad-hoc code integrity, and universal arm64/x86_64 binaries before installation.' \
+  'code integrity, and universal arm64/x86_64 binaries before installation.' \
   '' \
   'Install:' \
   '1. Open Terminal.' \
