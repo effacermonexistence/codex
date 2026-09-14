@@ -677,7 +677,8 @@ public struct ScopeResolution: Equatable, Sendable {
     // only complete bounded clauses, not "... but change ..." or filenames.
     static let relativeTargetFencePattern = #"(?i)(?:^|(?<=[.!?;\n]))\s*(?:do not|don't|never)\s+(?:modify|edit|change|delete|remove|write(?: to)?)\s+(?:any\s+)?other\s+(?:files?|folders?|directories|services?|settings)(?:\s*(?:,\s*(?:(?:and|or)\s+)?|(?:and|or)\s+)(?:other\s+)?(?:files?|folders?|directories|services?|settings)){0,8}\s*(?=[.!?;\n]|$)"#
 
-    static let positiveEdit = ["손봐", "손 봐", "수정해", "수정하고", "수정 해", "고쳐", "고치고", "바꿔", "바꾸고", "구현해", "추가해", "삭제해", "리팩터", "만들어",
+    static let positiveEdit = ["손봐", "손 봐", "수정해", "수정하고", "수정 해", "고쳐", "고치고", "고치지", "고치자", "바꿔", "바꾸고", "구현해", "추가해", "삭제해", "리팩터", "만들어",
+                               "일치시켜", "일치시키", "통일해", "통일하", "맞춰", "때려넣", "넣어줘", "넣어 줘",
                                "fix ", "modify ", "edit ", "implement ", "add ", "remove ", "rename ", "change the code", "update the code"]
     // English imperatives often identify the target by filename instead of
     // saying "file" (for example, "create result.txt"). Keep this narrower

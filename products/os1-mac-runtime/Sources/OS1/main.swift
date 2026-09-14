@@ -173,16 +173,24 @@ func executableProviderPreference(requested: String, prompt: String, codexAvaila
     // objective is not shell-bound and either backend may execute it.
     let shellBound = !evidenceSupplied && scope != .workspaceWrite
     let constrained = shellBound ? capabilityConstrainedProviderPreference(requested: requested, prompt: prompt) : requested
+    let reason = codexUnavailableReason.map { " (\($0))" } ?? ""
+    // Owner's rule: a dead backend never ends a request that another backend
+    // can execute. The switch is announced; only "no backend at all" stops.
     if constrained == "codex" {
-        guard codexAvailable else {
-            let reason = codexUnavailableReason.map { " (\($0))" } ?? ""
-            throw OS1Error.message("이 작업에 필요한 Codex 실행 환경이 없습니다\(reason). 모델 호출 없이 사전 검사에서 중단했으며 요청은 보존했습니다.")
+        if codexAvailable { return "codex" }
+        guard claudeAvailable else {
+            throw OS1Error.message("이 작업에 필요한 Codex 실행 환경이 없고\(reason) Claude 실행 환경도 없습니다. 모델 호출 없이 사전 검사에서 중단했으며 요청은 보존했습니다.")
         }
-        return constrained
+        RuntimeActivity.emit(.routing, publicText: "Codex를 사용할 수 없어\(reason) 이 작업을 Claude로 수행합니다.")
+        return "claude"
     }
     if constrained == "claude" {
-        guard claudeAvailable else { throw OS1Error.message("선택한 Claude 실행 환경이 없습니다. 모델 호출 없이 사전 검사에서 중단했으며 요청은 보존했습니다.") }
-        return constrained
+        if claudeAvailable { return "claude" }
+        guard codexAvailable else {
+            throw OS1Error.message("선택한 Claude 실행 환경이 없고 Codex 실행 환경도 없습니다. 모델 호출 없이 사전 검사에서 중단했으며 요청은 보존했습니다.")
+        }
+        RuntimeActivity.emit(.routing, publicText: "Claude를 사용할 수 없어 이 작업을 Codex로 수행합니다.")
+        return "codex"
     }
     if !codexAvailable && !claudeAvailable && localAvailable { return "auto" }
     guard codexAvailable || claudeAvailable else {
@@ -890,7 +898,8 @@ private func promptRequestsCapabilityExplanation(_ prompt: String) -> Bool {
 /// A provider's honest description of its missing tools is still a failed
 /// candidate when the user asked OS-1 to perform an action. It must become a
 /// nonzero unavailable artifact, never an adopted chat answer.
-func providerOutputDeclaresCapabilityFailure(_ data: Data, prompt: String, evidenceSupplied: Bool = false) -> Bool {
+func providerOutputDeclaresCapabilityFailure(_ data: Data, prompt: String, evidenceSupplied: Bool = false,
+                                             boundedShell: Bool = false) -> Bool {
     let request = prompt.precomposedStringWithCanonicalMapping.lowercased()
     let repairRequested = ["고쳐", "수정해", "수정 해", "진행해", "실행해", "배포해", "fix it", "repair it", "deploy it"]
         .contains(where: request.contains)
@@ -898,9 +907,10 @@ func providerOutputDeclaresCapabilityFailure(_ data: Data, prompt: String, evide
         ["설명", "분석", "왜", "explain", "why", "diagnos"].contains(where: request.contains)
     // With OS-1's own verified evidence attached and no action requested, an
     // answer noting that it did not run or access anything is the read-only
-    // contract being honored, not a missing capability.
+    // contract being honored, not a missing capability. The same holds for the
+    // bounded read-only shell lane, which is told to name what it could not run.
     guard (!promptRequestsCapabilityExplanation(prompt) && !diagnosisOnly) || repairRequested,
-          !asksRecoveryReadiness(prompt), !(evidenceSupplied && !repairRequested) else { return false }
+          !asksRecoveryReadiness(prompt), !((evidenceSupplied || boundedShell) && !repairRequested) else { return false }
     let output = String(decoding: data, as: UTF8.self).precomposedStringWithCanonicalMapping.lowercased()
     let markers = [
         "툴이 배정 안", "도구가 배정 안", "도구가 없", "도구가 전혀 없", "툴이 없", "권한이 없", "권한이 없어", "권한이 필요",
@@ -1178,15 +1188,20 @@ func claudePermissionArguments(_ permissionProfile: String, sourceContextOnly: B
         // Claude's plan mode encourages AskUserQuestion/ExitPlanMode chatter
         // and writes unsolicited plan files. An explicit tool allowlist keeps
         // analysis read-only while letting ordinary answers execute directly.
+        // The lane also carries a bounded shell: read-only inspection commands
+        // (ClaudeReadOnlyShell) so status/verification objectives can run here
+        // when Codex is unavailable. Anything outside those prefixes is denied
+        // without a prompt under dontAsk.
         return [
             "--permission-mode", "dontAsk",
-            "--tools", "Read,Glob,Grep,WebSearch,WebFetch",
+            "--tools", "Read,Glob,Grep,WebSearch,WebFetch,Bash",
             // Tool availability is not approval: dontAsk otherwise rejects
             // WebSearch/WebFetch before they run. Explicit user/managed deny
             // and ask rules still take precedence over these allow rules.
-            "--allowedTools", "Read,Glob,Grep,WebSearch,WebFetch",
+            "--allowedTools", (["Read", "Glob", "Grep", "WebSearch", "WebFetch"] + ClaudeReadOnlyShell.allowRules).joined(separator: ","),
             // --tools only limits built-ins, not connected MCP write tools.
             "--disallowedTools", "mcp__*",
+            "--settings", ClaudeReadOnlyShell.sandboxSettings,
         ]
     case "workspace_write":
         // The owner explicitly delegates the signed workspace-write ticket to
@@ -1204,7 +1219,7 @@ struct ClaudePrintResult {
     let sessionID: String
 }
 
-func parseClaudePrintResult(_ data: Data, requestedSessionID: String) throws -> ClaudePrintResult {
+func parseClaudePrintResult(_ data: Data, requestedSessionID: String, boundedShell: Bool = false) throws -> ClaudePrintResult {
     guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
           let returnedSessionID = object["session_id"] as? String,
           let normalizedReturned = try normalizedSessionID(returnedSessionID),
@@ -1212,14 +1227,19 @@ func parseClaudePrintResult(_ data: Data, requestedSessionID: String) throws -> 
         throw OS1Error.message("Claude did not return the requested persistent session ID")
     }
 
-    let denials = object["permission_denials"] as? [[String: Any]] ?? []
+    // In the bounded read-only lane (dontAsk + prefix allow rules) a denial is
+    // the bound doing its job, not a policy verdict: the answer is judged on
+    // its content and must name what it could not run.
+    let denials = boundedShell ? [] : (object["permission_denials"] as? [[String: Any]] ?? [])
     if !denials.isEmpty {
         let tools = Array(Set(denials.map { $0["tool_name"] as? String ?? "unknown tool" })).sorted()
         // Classify before is_error. Neither a success-shaped final answer nor
         // changing denial counts may turn a policy denial into a model retry.
         throw OS1Error.toolPermissionDenied(provider: "Claude", tools: tools, count: denials.count)
     }
-    if let blocker = UnifiedExecution.claudeTerminalBlocker(status: 0, object: object) {
+    var classified = object
+    if boundedShell { classified["permission_denials"] = [] as [Any] }
+    if let blocker = UnifiedExecution.claudeTerminalBlocker(status: 0, object: classified) {
         throw OS1Error.backendBlocked(blocker)
     }
     guard let value = object["result"] as? String else {
@@ -1228,7 +1248,7 @@ func parseClaudePrintResult(_ data: Data, requestedSessionID: String) throws -> 
     return ClaudePrintResult(output: Data(value.utf8), sessionID: normalizedReturned)
 }
 
-func parseClaudeCommandResult(_ status: Int32, _ data: Data, requestedSessionID: String) throws -> ClaudePrintResult {
+func parseClaudeCommandResult(_ status: Int32, _ data: Data, requestedSessionID: String, boundedShell: Bool = false) throws -> ClaudePrintResult {
     // Bind even error variants to this invocation before trusting their cause.
     guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
           let returned = object["session_id"] as? String,
@@ -1237,19 +1257,19 @@ func parseClaudeCommandResult(_ status: Int32, _ data: Data, requestedSessionID:
     }
     if let blocker = UnifiedExecution.claudeTerminalBlocker(status: status, object: object) {
         if blocker == .policyDenied, !(object["permission_denials"] as? [Any] ?? []).isEmpty {
-            return try parseClaudePrintResult(data, requestedSessionID: requestedSessionID)
+            return try parseClaudePrintResult(data, requestedSessionID: requestedSessionID, boundedShell: boundedShell)
         }
         throw OS1Error.backendBlocked(blocker)
     }
     if status != 0 {
         // Some CLI versions return a non-zero exit alongside structured
         // permission denials. Preserve that terminal classification too.
-        do { _ = try parseClaudePrintResult(data, requestedSessionID: requestedSessionID) }
+        do { _ = try parseClaudePrintResult(data, requestedSessionID: requestedSessionID, boundedShell: boundedShell) }
         catch let failure as OS1Error where failure.isTerminalPermissionFailure { throw failure }
         catch { /* Other command failures retain bounded backend recovery. */ }
         throw OS1Error.message("Claude execution failed. OS-1 did not verify this step.")
     }
-    return try parseClaudePrintResult(data, requestedSessionID: requestedSessionID)
+    return try parseClaudePrintResult(data, requestedSessionID: requestedSessionID, boundedShell: boundedShell)
 }
 
 /// Inspect structured execution evidence before trusting a final answer.
@@ -4928,12 +4948,11 @@ private func execute(
     let executionWorkspace = try providerExecutionWorkspace(provider: ticket.provider,
         permission: ticket.permissionProfile, hasSource: preloadedR2Evidence != nil, workspace: workspace)
     let lockedObjective = objectivePrompt ?? prompt
-    if ticket.provider == "claude",
-       ticket.permissionProfile == "read_only",
-       preloadedR2Evidence == nil,
-       promptRequiresShellCapability(lockedObjective) {
-        throw OS1Error.backendBlocked(.capabilityUnavailable)
-    }
+    // Claude's read-only lane carries a bounded shell (ClaudeReadOnlyShell):
+    // a shell-bound objective is not refused here; the backend is told the
+    // bound so it verifies what it can and names what it could not run.
+    let boundedShellDirective = ticket.provider == "claude" && ticket.permissionProfile == "read_only" &&
+        preloadedR2Evidence == nil && promptRequiresShellCapability(lockedObjective) ? ClaudeReadOnlyShell.directive : ""
     let result: (Int32, Data, Data)
     let sessionID: String
     let nativeRecord: NativeRecordEvidence
@@ -4960,7 +4979,7 @@ private func execute(
     }
     let correctionDirective = driftApplication?.instructions ?? ""
     onInstructions?(correctionDirective)
-    let instructions = executorInstructions(contract: executorContract, ticket: ticket) + evidenceDirective + presentationDirective + correctionDirective
+    let instructions = executorInstructions(contract: executorContract, ticket: ticket) + evidenceDirective + presentationDirective + correctionDirective + boundedShellDirective
     if ticket.provider == "codex" {
         guard let codex = try? findExecutable("codex") else {
             throw OS1Error.backendBlocked(.capabilityUnavailable)
@@ -5147,7 +5166,8 @@ private func execute(
         let resultData = stream.result ?? raw.1
         onUsage?(CompletionUsageParser.parseClaudeResult(resultData))
         let parsed: ClaudePrintResult
-        do { parsed = try parseClaudeCommandResult(raw.0, resultData, requestedSessionID: activeSessionID) }
+        do { parsed = try parseClaudeCommandResult(raw.0, resultData, requestedSessionID: activeSessionID,
+                                                    boundedShell: ticket.permissionProfile == "read_only") }
         catch {
             let object = (try? JSONSerialization.jsonObject(with: resultData)) as? [String: Any]
             let progress = object?["session_id"] as? String == activeSessionID ? (object?["result"] as? String ?? stream.text) : stream.text
@@ -5158,7 +5178,8 @@ private func execute(
         let outputIssues = outputContractIssues(parsed.output, prompt: lockedObjective, snapshotOnly: hasPreloadedR2Evidence)
         let rejectedConfiguration = claudeOutputMisclassifiedRuntimeConfiguration(parsed.output)
         let rejectedClarification = claudeOutputDefersRequestedDeliverable(parsed.output, prompt: prompt)
-        let rejectedCapability = providerOutputDeclaresCapabilityFailure(parsed.output, prompt: lockedObjective, evidenceSupplied: hasPreloadedR2Evidence)
+        let rejectedCapability = providerOutputDeclaresCapabilityFailure(parsed.output, prompt: lockedObjective, evidenceSupplied: hasPreloadedR2Evidence,
+                                                                         boundedShell: ticket.permissionProfile == "read_only")
         let rejectedControlChatter = providerOutputReplacedTaskWithControlChatter(parsed.output, prompt: lockedObjective)
         let rejectedEvidence = sourceUseRequired && (preloadedR2Evidence.map {
             !outputSatisfiesPreloadedR2Evidence(
@@ -7602,6 +7623,10 @@ func selfTest() throws {
     } catch {
         rejectedClaudeDenial = (error as? OS1Error)?.isTerminalPermissionFailure == true
     }
+    // The bounded read-only lane denies out-of-bound commands by design; that
+    // denial keeps the answer instead of becoming a terminal policy verdict.
+    let boundedLaneKeepsAnswer = (try? parseClaudePrintResult(deniedClaudeResult, requestedSessionID: claudeSessionID, boundedShell: true))?
+        .output == Data("approval required".utf8)
     // Counts (2 -> 3 in the incident) and a success-shaped answer cannot
     // change a permission failure into a retryable model-quality failure.
     for (tools, isError) in [(["WebFetch", "WebSearch"], false),
@@ -7903,15 +7928,16 @@ func selfTest() throws {
     let nilNativeRecord = try JSONSerialization.jsonObject(with: nilNativeRecordData) as? [String: Any]
     guard String(decoding: parsedClaudeResult.output, as: UTF8.self) == "ok",
           parsedClaudeResult.sessionID == claudeSessionID,
-          rejectedClaudeDenial,
+          rejectedClaudeDenial, boundedLaneKeepsAnswer,
           Set(nilNativeRecord?.keys.map { $0 } ?? []) == Set(["turn_id", "record_path", "persistence", "desktop_visibility"]),
           nilNativeRecord?["turn_id"] is NSNull,
           nilNativeRecord?["record_path"] is NSNull,
           try claudePermissionArguments("read_only") == [
               "--permission-mode", "dontAsk",
-              "--tools", "Read,Glob,Grep,WebSearch,WebFetch",
-              "--allowedTools", "Read,Glob,Grep,WebSearch,WebFetch",
+              "--tools", "Read,Glob,Grep,WebSearch,WebFetch,Bash",
+              "--allowedTools", (["Read", "Glob", "Grep", "WebSearch", "WebFetch"] + ClaudeReadOnlyShell.allowRules).joined(separator: ","),
               "--disallowedTools", "mcp__*",
+              "--settings", ClaudeReadOnlyShell.sandboxSettings,
           ],
           try claudePermissionArguments("read_only", sourceContextOnly: true) == [
               "--permission-mode", "dontAsk", "--tools", "",
@@ -8329,7 +8355,15 @@ func selfTest() throws {
         ("catalog effort intersection", mapped.models.first?.supportedEfforts == ["high"] && mapped.models.first?.defaultEffort == "high"),
         ("missing Codex auto routes available Claude", try executableProviderPreference(requested: "auto", prompt: "Explain", codexAvailable: false, claudeAvailable: true) == "claude"),
         ("missing Claude auto routes available Codex", try executableProviderPreference(requested: "auto", prompt: "Explain", codexAvailable: true, claudeAvailable: false) == "codex"),
-        ("explicit missing pin is preserved", rejectedPreflight("codex", codex: false, claude: true)),
+        ("explicit missing pin falls back to the available backend",
+         (try? executableProviderPreference(requested: "codex", prompt: "Explain this source", codexAvailable: false, claudeAvailable: true)) == "claude" &&
+         (try? executableProviderPreference(requested: "claude", prompt: "Explain this source", codexAvailable: true, claudeAvailable: false)) == "codex"),
+        ("informal fix wording is a write scope",
+         ScopeResolution.resolve("아니 drag & drop 로 되긴 하는데 그거 좀 제대로 고치지 코덱스랑 일치시키면 돼").scope == .workspaceWrite),
+        ("bounded read-only shell is prefix rules only",
+         !ClaudeReadOnlyShell.allowRules.isEmpty && ClaudeReadOnlyShell.allowRules.allSatisfy { $0.hasPrefix("Bash(") && $0.hasSuffix(")") && !$0.hasPrefix("Bash(*") && !$0.contains("Bash(cat") && !$0.contains("Bash(curl") }),
+        ("bounded-shell limitation statement is not a refusal",
+         !providerOutputDeclaresCapabilityFailure(Data("gh api는 이 레인에서 실행할 수 없어 gh run list로만 확인했습니다".utf8), prompt: "GitHub 최신 상태 확인해", boundedShell: true)),
         ("no executor no paid call", rejectedPreflight("auto", codex: false, claude: false)),
         ("local arithmetic remains available", try executableProviderPreference(requested: "auto", prompt: "1+1", codexAvailable: false, claudeAvailable: false, localAvailable: true) == "auto"),
         ("old wire unchanged", oldWire?.count == 3 && oldWire?["completion_feedback"] == nil),
@@ -8376,8 +8410,10 @@ func selfTest() throws {
          (try? executableProviderPreference(requested: "auto", prompt: "GitHub 최신 상태 확인해", codexAvailable: false, claudeAvailable: true, evidenceSupplied: true)) == "claude"),
         ("write-scope shell wording may run on Claude",
          (try? executableProviderPreference(requested: "auto", prompt: "R2에서 자료 가져와서 스키마 짜", codexAvailable: false, claudeAvailable: true, scope: .workspaceWrite)) == "claude"),
-        ("read-only shell wording without Codex still stops before any model",
-         (try? executableProviderPreference(requested: "auto", prompt: "GitHub 최신 상태 확인해", codexAvailable: false, claudeAvailable: true)) == nil),
+        ("read-only shell wording without Codex runs on Claude's bounded shell",
+         (try? executableProviderPreference(requested: "auto", prompt: "GitHub 최신 상태 확인해", codexAvailable: false, claudeAvailable: true)) == "claude"),
+        ("read-only shell wording with no backend at all still stops",
+         (try? executableProviderPreference(requested: "auto", prompt: "GitHub 최신 상태 확인해", codexAvailable: false, claudeAvailable: false)) == nil),
         ("snapshot-only explanation that notes no execution is not a capability failure",
          !providerOutputDeclaresCapabilityFailure(Data("이번 작업은 읽기 전용이라 실행할 수 없어 첨부된 자료만 정리했습니다.".utf8),
                                                   prompt: "QM이랑 GR자료 R2에서 다 가져와 설명만 해", evidenceSupplied: true)),
@@ -8440,7 +8476,7 @@ struct OS1Main {
             guard let command = arguments.first else { usage(); return }
             if try await fleetCommand(arguments) { return }
             switch command {
-            case "version", "--version", "-V": print("OS-1 Runtime 0.9.56 (evidence-lane-routing-build120)")
+            case "version", "--version", "-V": print("OS-1 Runtime 0.9.56 (always-execute-routing-build121)")
             case "doctor": try doctor()
             case "sidebar-pin":
                 guard (4...5).contains(arguments.count), arguments[1] == "codex",
