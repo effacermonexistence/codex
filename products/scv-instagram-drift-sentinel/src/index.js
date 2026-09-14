@@ -1,4 +1,4 @@
-const SENTINEL_SCHEMA = 'scv-instagram-drift-sentinel-2026-09-14-v45-v184-running-release-v167-recovery-gold'
+const SENTINEL_SCHEMA = 'scv-instagram-drift-sentinel-2026-09-14-v47-v185-running-release-v167-recovery-gold'
 // GOLD-3 (2026-09-03): v148 (owner-verified v145 plus the owner-ordered polish, live red-team verified) frozen as the reference; the pointer and manifest below are pinned by hash.
 const GOLD_LATEST_KEY = 'scv-instagram-automation/gold/LATEST.json'
 const GOLD_MANIFEST_KEY = 'scv-instagram-automation/gold/SCV_GOLD_MANIFEST_v148.json'
@@ -8,14 +8,14 @@ const GOLD_MANIFEST_SHA256 = '31ea4507381e6ec2c3ce4458d70af4a311f331a4a26651f5d9
 // Comparing the gold manifest against the running release id made the check fail by construction.
 const GOLD_RELEASE_ID = 'scv-instagram-single-20260902-v148'
 const GOLD_CONTENT_FINGERPRINT = '3a9a18631443f4738d13dd803f080979ff4d21ab0d9de1f5054b2f26e2ea3609'
-// v45 (2026-09-14): v184 adds the Masound surface bias, one low-weight tie-break line in the Responses
-// author prompt (a soft m syllable only between equally accurate and natural wordings, measured OFF vs ON);
-// the v180-v183 laws, identity, literals, booking/delivery state and routing stay.
+// v47 (2026-09-14): v185 (on the rolled-back v183 bytes, no Masound line) stops reading a predicative
+// "like that" as a missing attachment, canonicalises the Korean so-so idiom as a statement and rejects the
+// stock how-was-your-day question; the v180-v183 laws, identity, booking/delivery state and routing stay.
 // The latest approved recovery Gold stays v167. Previous v151, GOLD-3 v148, April Golden,
 // and all recovery/reset evidence pins remain unchanged. A deployed release is not a Gold.
-const RELEASE_ID = 'scv-instagram-single-20260914-v184'
-const CONTENT_FINGERPRINT = '95207f7160a0d95274668c4069969c80077942e2e8846fa5dd803ad6df7c47a2'
-const RELEASE_MANIFEST = 'b9f8bbff84b0b8e2afd72629929bfcfd9d67fb56d1387d6f7778906ef257800a'
+const RELEASE_ID = 'scv-instagram-single-20260914-v185'
+const CONTENT_FINGERPRINT = 'c67ba7da0987f4e34001d6886f449fe9641eeda1bfaa877bc6dd45cb7b6fb897'
+const RELEASE_MANIFEST = 'eb095dfedccc1168388f397ee35f63fd68abee6b756f077f20faf3973b0b2615'
 const RECOVERY_POINT_RELEASE_ID = 'scv-instagram-single-20260908-v167'
 const RECOVERY_POINT_CONTENT_FINGERPRINT = '6b85a63a25c23e9815491413eeb895e6b78ed8faa523f18aefea6b88f392faa7'
 const RECOVERY_POINT_RELEASE_MANIFEST = '2f12a00d12114bbbb05080438dda88a6278a82ae65a9fc9aaaff70a2a25ad4b6'
