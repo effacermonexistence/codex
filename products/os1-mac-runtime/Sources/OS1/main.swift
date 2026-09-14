@@ -165,10 +165,19 @@ func executableCodexCatalog(_ catalog: ActiveCodexCatalog, config: RuntimeConfig
 }
 
 func executableProviderPreference(requested: String, prompt: String, codexAvailable: Bool,
-                                  claudeAvailable: Bool, localAvailable: Bool = false) throws -> String {
-    let constrained = capabilityConstrainedProviderPreference(requested: requested, prompt: prompt)
+                                  claudeAvailable: Bool, localAvailable: Bool = false,
+                                  evidenceSupplied: Bool = false, scope: TaskContext.Scope? = nil,
+                                  codexUnavailableReason: String? = nil) throws -> String {
+    // Only the read-only Claude lane lacks a shell. When OS-1 itself supplies
+    // the verified evidence, or the ticket carries a write profile, the
+    // objective is not shell-bound and either backend may execute it.
+    let shellBound = !evidenceSupplied && scope != .workspaceWrite
+    let constrained = shellBound ? capabilityConstrainedProviderPreference(requested: requested, prompt: prompt) : requested
     if constrained == "codex" {
-        guard codexAvailable else { throw OS1Error.message("이 작업에 필요한 Codex 실행 환경이 없습니다. 모델 호출 없이 사전 검사에서 중단했으며 요청은 보존했습니다.") }
+        guard codexAvailable else {
+            let reason = codexUnavailableReason.map { " (\($0))" } ?? ""
+            throw OS1Error.message("이 작업에 필요한 Codex 실행 환경이 없습니다\(reason). 모델 호출 없이 사전 검사에서 중단했으며 요청은 보존했습니다.")
+        }
         return constrained
     }
     if constrained == "claude" {
@@ -856,7 +865,9 @@ func sourceRoutingTask(_ prompt: String, hasSource: Bool) -> String {
 /// production. Preserve the original request for the executor; only normalize
 /// the public routing objective. Explicit action clauses retain their intent.
 private func asksRecoveryReadiness(_ prompt: String) -> Bool {
-    let text = prompt.precomposedStringWithCanonicalMapping.lowercased()
+    // Quoted OS-1 output ("복구 기준점(Gold 포인터): 기록 없음") is not the
+    // user's question; classify only the user's own lines.
+    let text = OS1SelfOutput.stripQuoted(prompt).precomposedStringWithCanonicalMapping.lowercased()
     guard ["복원", "복구", "백업", "backup", "recover", "restore"].contains(where: text.contains),
           ["할 수 있", "가능하", "가능해", "가능하게", "can you", "can this", "is it possible"].contains(where: text.contains)
     else { return false }
@@ -879,14 +890,17 @@ private func promptRequestsCapabilityExplanation(_ prompt: String) -> Bool {
 /// A provider's honest description of its missing tools is still a failed
 /// candidate when the user asked OS-1 to perform an action. It must become a
 /// nonzero unavailable artifact, never an adopted chat answer.
-func providerOutputDeclaresCapabilityFailure(_ data: Data, prompt: String) -> Bool {
+func providerOutputDeclaresCapabilityFailure(_ data: Data, prompt: String, evidenceSupplied: Bool = false) -> Bool {
     let request = prompt.precomposedStringWithCanonicalMapping.lowercased()
     let repairRequested = ["고쳐", "수정해", "수정 해", "진행해", "실행해", "배포해", "fix it", "repair it", "deploy it"]
         .contains(where: request.contains)
     let diagnosisOnly = ["원인", "로그", "실패", "error", "log", "diagnos"].contains(where: request.contains) &&
         ["설명", "분석", "왜", "explain", "why", "diagnos"].contains(where: request.contains)
+    // With OS-1's own verified evidence attached and no action requested, an
+    // answer noting that it did not run or access anything is the read-only
+    // contract being honored, not a missing capability.
     guard (!promptRequestsCapabilityExplanation(prompt) && !diagnosisOnly) || repairRequested,
-          !asksRecoveryReadiness(prompt) else { return false }
+          !asksRecoveryReadiness(prompt), !(evidenceSupplied && !repairRequested) else { return false }
     let output = String(decoding: data, as: UTF8.self).precomposedStringWithCanonicalMapping.lowercased()
     let markers = [
         "툴이 배정 안", "도구가 배정 안", "도구가 없", "도구가 전혀 없", "툴이 없", "권한이 없", "권한이 없어", "권한이 필요",
@@ -5035,7 +5049,7 @@ private func execute(
         if UnifiedExecution.requestsManualBackendHandoff(String(decoding: turn.output, as: UTF8.self), request: correctedObjective) {
             throw OS1Error.backendBlocked(BackendBlocker.reported(in: String(decoding: turn.output, as: UTF8.self)) ?? .incomplete)
         }
-        guard !providerOutputDeclaresCapabilityFailure(turn.output, prompt: correctedObjective) else {
+        guard !providerOutputDeclaresCapabilityFailure(turn.output, prompt: correctedObjective, evidenceSupplied: hasPreloadedR2Evidence) else {
             throw OS1Error.backendBlocked(BackendBlocker.reported(in: String(decoding: turn.output, as: UTF8.self)) ?? .capabilityUnavailable)
         }
         let presentationIssues = outputContractIssues(turn.output, prompt: correctedObjective, snapshotOnly: hasPreloadedR2Evidence)
@@ -5144,7 +5158,7 @@ private func execute(
         let outputIssues = outputContractIssues(parsed.output, prompt: lockedObjective, snapshotOnly: hasPreloadedR2Evidence)
         let rejectedConfiguration = claudeOutputMisclassifiedRuntimeConfiguration(parsed.output)
         let rejectedClarification = claudeOutputDefersRequestedDeliverable(parsed.output, prompt: prompt)
-        let rejectedCapability = providerOutputDeclaresCapabilityFailure(parsed.output, prompt: lockedObjective)
+        let rejectedCapability = providerOutputDeclaresCapabilityFailure(parsed.output, prompt: lockedObjective, evidenceSupplied: hasPreloadedR2Evidence)
         let rejectedControlChatter = providerOutputReplacedTaskWithControlChatter(parsed.output, prompt: lockedObjective)
         let rejectedEvidence = sourceUseRequired && (preloadedR2Evidence.map {
             !outputSatisfiesPreloadedR2Evidence(
@@ -6093,7 +6107,9 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
         task: routingTask,
         providerPreference: try executableProviderPreference(requested: providerPreference,
             prompt: requireReadOnly ? routingTask : prompt, codexAvailable: !codexCatalog.models.isEmpty,
-            claudeAvailable: hasClaudeExecutable, localAvailable: publicDeterministicExpression(prompt) != nil),
+            claudeAvailable: hasClaudeExecutable, localAvailable: publicDeterministicExpression(prompt) != nil,
+            evidenceSupplied: r2Evidence != nil, scope: resolvedScope,
+            codexUnavailableReason: codexCatalog.models.isEmpty ? codexCatalog.source : nil),
         capacityPlan: CapacityPlan(codex: codexCapacity, claude: claudeCapacity),
         executorContractVersion: config.executorContract.version,
         executorContractSHA256: config.executorContract.sha256,
@@ -6489,6 +6505,42 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
         }
         let locallyAdoptable = completionLocallyAdoptable(failure: attemptFailure,
             exitCode: artifact.exitCode, output: artifact.output, persistence: execution.nativeRecord.persistence)
+        if route.status == "complete", !locallyAdoptable, sourceRecoveryProvider == nil, terminalPermissionFailure == nil,
+           step < attemptLimit, ticket.permissionProfile == "read_only", let diagnostic = attemptFailure,
+           !artifact.output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            // The route service accepted the artifact but the answer failed a
+            // local contract (source use, claim ceiling, structure). Read-only
+            // work replays nothing, so the same objective gets one bounded
+            // retry that carries the rejected answer and the exact diagnostic.
+            recordExecutionFailure(ticket: ticket, model: model, effort: effort,
+                reason: "locally_rejected_candidate_retry_with_diagnostic", source: sourceContext)
+            recordCompletionAttempt(store: feedbackStore, scope: feedbackScope, ticket: ticket,
+                model: model, effort: effort, outcome: completionFailureOutcome(attemptFailure),
+                usage: attemptUsage, startedAt: attemptStartedAt, source: sourceContext, monitorTaskID: executionID, monitorScope: monitorScope)
+            attemptRecorded = true
+            continuation = BackendContinuation(provider: ticket.provider, nativeSessionID: execution.sessionID,
+                blocker: .incomplete, publicProgress: artifact.output, diagnostic: diagnostic)
+            var freshContext = request.executionContext
+            if let existing = freshContext, let continuation {
+                freshContext = ExecutionInputContext(inputUTF8Bytes: existing.inputUTF8Bytes + (try continuation.handoffBlock()).utf8.count,
+                    sourceUTF8Bytes: existing.sourceUTF8Bytes, historyUTF8Bytes: existing.historyUTF8Bytes,
+                    completionFeedback: existing.completionFeedback, availableClaudeModels: existing.availableClaudeModels)
+            }
+            if feedbackSupported {
+                freshContext?.completionFeedback = try feedbackStore.load(scope: feedbackScope)?.publicFeedback()
+            }
+            let next = StartExecutionRequest(task: request.task, providerPreference: request.providerPreference,
+                capacityPlan: request.capacityPlan, executorContractVersion: request.executorContractVersion,
+                executorContractSHA256: request.executorContractSHA256, availableCodexModels: codexCatalog.models,
+                executionContext: freshContext)
+            RuntimeActivity.emit(.recovering)
+            route = try await client.post("/v1/executions", body: next, as: RouteResponse.self)
+            guard route.ticket?.permissionProfile == ticket.permissionProfile else {
+                throw OS1Error.message("서버의 완료 판정과 실제 실행 증거가 일치하지 않아 결과를 채택하지 않았습니다. 요청과 원본은 보존했습니다.")
+            }
+            lastFailureNotice = nil
+            continue
+        }
         guard route.status != "complete" || locallyAdoptable || sourceRecoveryProvider != nil else {
             recordExecutionFailure(ticket: ticket, model: model, effort: effort,
                 reason: "verifier_completed_locally_rejected_candidate", source: sourceContext)
@@ -8320,6 +8372,23 @@ func selfTest() throws {
         ("write-scope request without a listed verb still modifies",
          PreparationIntent.detect("OS1 앱 저장소의 README.md 맨 끝에 한 줄만 추가해. 다른 파일은 건드리지 마.")?.modifies == true),
         ("bare preparation stays non-modifying", PreparationIntent.detect("OS1 앱 수정 좀 하자 준비해")?.modifies == false),
+        ("evidence-backed shell wording may run on Claude",
+         (try? executableProviderPreference(requested: "auto", prompt: "GitHub 최신 상태 확인해", codexAvailable: false, claudeAvailable: true, evidenceSupplied: true)) == "claude"),
+        ("write-scope shell wording may run on Claude",
+         (try? executableProviderPreference(requested: "auto", prompt: "R2에서 자료 가져와서 스키마 짜", codexAvailable: false, claudeAvailable: true, scope: .workspaceWrite)) == "claude"),
+        ("read-only shell wording without Codex still stops before any model",
+         (try? executableProviderPreference(requested: "auto", prompt: "GitHub 최신 상태 확인해", codexAvailable: false, claudeAvailable: true)) == nil),
+        ("snapshot-only explanation that notes no execution is not a capability failure",
+         !providerOutputDeclaresCapabilityFailure(Data("이번 작업은 읽기 전용이라 실행할 수 없어 첨부된 자료만 정리했습니다.".utf8),
+                                                  prompt: "QM이랑 GR자료 R2에서 다 가져와 설명만 해", evidenceSupplied: true)),
+        ("repair request keeps the capability-refusal rule even with evidence",
+         providerOutputDeclaresCapabilityFailure(Data("권한이 없어 실행할 수 없습니다".utf8), prompt: "배포 진행해", evidenceSupplied: true)),
+        ("continuation carries the rejection diagnostic",
+         (try? BackendContinuation(provider: "claude", nativeSessionID: nil, blocker: .incomplete, publicProgress: "x",
+                                   diagnostic: "source contract failed").handoffBlock())?.contains("source contract failed") == true),
+        ("quoted OS-1 output is not the user's recovery question",
+         !OS1SelfOutput.stripQuoted("이거 가능하냐?\nOS-1\n\n준비된 자료\n• 복구 기준점(Gold 포인터): 기록 없음\n고쳐").contains("복구") &&
+         OS1SelfOutput.stripQuoted("이거 가능하냐?\nOS-1\n• 복구 기준점(Gold 포인터): 기록 없음\n고쳐").contains("고쳐")),
         ("local project root is not guessed outside the tree",
          LocalProjectWorkspace.root(containing: "/nonexistent/os1-fixture", projectID: "os1-clodex") == nil &&
          LocalProjectWorkspace.root(containing: "/nonexistent", projectID: "unregistered") == nil),
@@ -8371,7 +8440,7 @@ struct OS1Main {
             guard let command = arguments.first else { usage(); return }
             if try await fleetCommand(arguments) { return }
             switch command {
-            case "version", "--version", "-V": print("OS-1 Runtime 0.9.56 (local-project-workspace-build118)")
+            case "version", "--version", "-V": print("OS-1 Runtime 0.9.56 (evidence-lane-routing-build120)")
             case "doctor": try doctor()
             case "sidebar-pin":
                 guard (4...5).contains(arguments.count), arguments[1] == "codex",

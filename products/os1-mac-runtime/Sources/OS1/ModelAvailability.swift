@@ -135,11 +135,15 @@ enum ModelAvailability {
         try probe.initialize(deadline: deadline)
         var catalog = executableCodexCatalog(ActiveCodexCatalog(models: try probe.models(deadline: deadline),
             source: "native account model/list"), config: config)
+        // Exclusion reasons travel with the catalog so a later preflight can
+        // say why no Codex model is available instead of a bare refusal.
+        var notes: [String] = []
         if let limits = try? probe.rateLimits(deadline: deadline) {
             let excluded = CodexQuota.excludedModels(limits, models: catalog.models.map(\.slug))
             if !excluded.isEmpty {
-                let reset = CodexQuota.exhaustedGeneralResetDescription(limits).map { " (리셋 \($0))" } ?? ""
+                let reset = CodexQuota.exhaustedGeneralResetDescription(limits).map { ", 리셋 \($0)" } ?? ""
                 let remaining = catalog.models.map(\.slug).filter { !excluded.contains($0) }
+                notes.append("Codex 사용량 한도 도달로 \(excluded.count)개 모델 제외\(reset)")
                 RuntimeActivity.emit(.routing, publicText: "Codex 사용량 한도 도달로 \(excluded.count)개 모델을 제외했습니다\(reset). 남은 Codex 모델: \(remaining.isEmpty ? "없음" : remaining.joined(separator: ", "))")
             }
             catalog = ActiveCodexCatalog(models: catalog.models.filter { !excluded.contains($0.slug) }, source: catalog.source)
@@ -150,10 +154,12 @@ enum ModelAvailability {
             let windows = CodexContextBudget.cachedContextWindows()
             let oversized = CodexContextBudget.excluded(models: catalog.models.map { ($0.slug, windows[$0.slug]) }, baseInstructionBytes: bytes)
             if !oversized.isEmpty {
+                notes.append("계정 기본 지시문(\(bytes / 1024)KB)을 담지 못하는 모델 제외: \(oversized.sorted().joined(separator: ", "))")
                 RuntimeActivity.emit(.routing, publicText: "Codex 모델 \(oversized.sorted().joined(separator: ", "))은(는) 계정 기본 지시문(\(bytes / 1024)KB, 약 \(CodexContextBudget.requiredTokens(baseInstructionBytes: bytes) / 1000)K 토큰 필요)을 담기에 컨텍스트 창이 작아 제외했습니다.")
                 catalog = ActiveCodexCatalog(models: catalog.models.filter { !oversized.contains($0.slug) }, source: catalog.source)
             }
         }
-        return catalog
+        let source = notes.isEmpty ? catalog.source : catalog.source + " · " + notes.joined(separator: "; ")
+        return ActiveCodexCatalog(models: catalog.models, source: source)
     }
 }
