@@ -4051,6 +4051,34 @@ private final class SessionStore: ObservableObject {
         }
     }
 
+    /// Accepts files/folders dragged onto the composer (Codex-style drag-and-drop).
+    /// Mirrors `chooseContextFiles`: paths are inserted as text, nothing is auto-sent.
+    func handleComposerDrop(_ providers: [NSItemProvider]) -> Bool {
+        let candidates = providers.filter { $0.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) }
+        guard !candidates.isEmpty else { return false }
+        Task { @MainActor [weak self] in
+            var paths: [String] = []
+            for provider in candidates {
+                let url: URL? = await withCheckedContinuation { continuation in
+                    provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, _ in
+                        if let data = item as? Data {
+                            continuation.resume(returning: URL(dataRepresentation: data, relativeTo: nil))
+                        } else if let url = item as? URL {
+                            continuation.resume(returning: url)
+                        } else {
+                            continuation.resume(returning: nil)
+                        }
+                    }
+                }
+                if let url { paths.append(url.standardizedFileURL.path) }
+            }
+            guard let self, !paths.isEmpty else { return }
+            self.composer = appendingFileReferences(paths, to: self.composer)
+            self.statusText = paths.count == 1 ? "파일 경로를 입력에 추가했습니다" : "파일 경로 \(paths.count)개를 입력에 추가했습니다"
+        }
+        return true
+    }
+
     func chooseWorkspace() {
         guard !isRunning, let index = selectedIndex else { return }
         let panel = NSOpenPanel()
@@ -8482,6 +8510,7 @@ private struct ComposerView: View {
     @ObservedObject var store: SessionStore
     let session: ConversationSession
     @State private var editorWidth: CGFloat = 560
+    @State private var isFileDropTargeted: Bool = false
 
     private var editorHeight: CGFloat {
         let text = store.composer + " "
@@ -8566,7 +8595,24 @@ private struct ComposerView: View {
             }
             .background(Theme.panel)
             .clipShape(RoundedRectangle(cornerRadius: 18))
-            .overlay(RoundedRectangle(cornerRadius: 18).stroke(Theme.borderStrong, lineWidth: 1))
+            .overlay(RoundedRectangle(cornerRadius: 18).stroke(isFileDropTargeted ? Theme.pink : Theme.borderStrong, lineWidth: isFileDropTargeted ? 2 : 1))
+            .overlay {
+                if isFileDropTargeted {
+                    RoundedRectangle(cornerRadius: 18)
+                        .fill(Theme.pink.opacity(0.08))
+                        .overlay(
+                            Label("여기에 파일을 놓으면 경로가 추가됩니다", systemImage: "tray.and.arrow.down")
+                                .font(.system(size: 12, weight: .medium))
+                                .foregroundStyle(Theme.text)
+                        )
+                        .allowsHitTesting(false)
+                        .transition(.opacity)
+                }
+            }
+            .animation(.easeInOut(duration: 0.12), value: isFileDropTargeted)
+            .onDrop(of: [UTType.fileURL], isTargeted: $isFileDropTargeted) { providers in
+                store.handleComposerDrop(providers)
+            }
             HStack(spacing: 6) {
                 Button { store.chooseWorkspace() } label: {
                     Label(URL(fileURLWithPath: session.workspace).lastPathComponent, systemImage: "folder")
