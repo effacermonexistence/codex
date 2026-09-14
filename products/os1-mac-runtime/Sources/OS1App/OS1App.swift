@@ -5931,6 +5931,18 @@ private struct OS1DesktopApp: App {
                 exit(EXIT_FAILURE)
             }
         }
+        if let flag = CommandLine.arguments.firstIndex(of: "--render-provider-rail-preview") {
+            do {
+                guard CommandLine.arguments.count > flag + 1 else { throw SourceContextError.invalid }
+                let output = URL(fileURLWithPath: CommandLine.arguments[flag + 1], isDirectory: true)
+                try renderProviderRailPreview(to: output)
+                print(output.path)
+                exit(EXIT_SUCCESS)
+            } catch {
+                fputs("\(error.localizedDescription)\n", stderr)
+                exit(EXIT_FAILURE)
+            }
+        }
         if let flag = CommandLine.arguments.firstIndex(of: "--render-governance-preview") {
             do {
                 guard CommandLine.arguments.count > flag + 1 else { throw SourceContextError.invalid }
@@ -6169,6 +6181,7 @@ private struct OS1DesktopApp: App {
                 try providerIntentSelfTest()
                 try taskContextSelfTest()
                 try interactionSelfTest()
+                try railSelectionSelfTest()
                 try sidebarSynchronizationSelfTest()
                 print("OS-1 app provider intent, source continuity, voice, math, selection, pin/archive/drafts/queue self-test: OK")
                 exit(EXIT_SUCCESS)
@@ -6449,6 +6462,69 @@ private struct RootView: View {
     }
 }
 
+/// The rail is a single-choice control over `store.surface`: Clodex home,
+/// Codex or Claude. Only the chosen surface may produce the highlighted
+/// treatment. Whether the conversation has a recorded backend session
+/// (`linked`) and which backend ran last (`active`) are independent facts with
+/// their own small indicators — deriving any part of the highlight from them
+/// made the permanently linked/last-used backend look selected forever, which
+/// is why Claude appeared chosen no matter what the user clicked.
+private struct RailItemAppearance: Equatable {
+    let fillOpacity: Double
+    let strokeOpacity: Double
+    let strokeWidth: CGFloat
+    let contentOpacity: Double
+    let showsSelectionMarker: Bool
+    /// Only a selected item is allowed to paint its provider accent; an
+    /// unselected item stays neutral so two items cannot claim the same color.
+    let usesAccent: Bool
+
+    static func resolve(selected: Bool, linked: Bool) -> RailItemAppearance {
+        guard selected else {
+            return RailItemAppearance(
+                fillOpacity: linked ? 0.045 : 0.022,
+                strokeOpacity: linked ? 0.20 : 0.11,
+                strokeWidth: 1,
+                contentOpacity: linked ? 0.58 : 0.38,
+                showsSelectionMarker: false,
+                usesAccent: false)
+        }
+        // Deliberately identical for linked and unlinked: pressing CODEX must
+        // look chosen even when this conversation has no Codex session yet.
+        return RailItemAppearance(
+            fillOpacity: 0.22,
+            strokeOpacity: 0.95,
+            strokeWidth: 1.8,
+            contentOpacity: 1,
+            showsSelectionMarker: true,
+            usesAccent: true)
+    }
+}
+
+private struct RailSelectionBackground: View {
+    let accent: Color
+    let appearance: RailItemAppearance
+
+    var body: some View {
+        let shape = RoundedRectangle(cornerRadius: Theme.radiusControl, style: .continuous)
+        ZStack {
+            shape.fill((appearance.usesAccent ? accent : Color.white).opacity(appearance.fillOpacity))
+            shape.stroke((appearance.usesAccent ? accent : Color.white).opacity(appearance.strokeOpacity),
+                lineWidth: appearance.strokeWidth)
+        }
+        .overlay(alignment: .leading) {
+            // Hue alone cannot separate Codex from Claude, so the chosen item
+            // also carries a structural marker on the rail's leading edge.
+            Capsule()
+                .fill(accent)
+                .frame(width: 3, height: 26)
+                .padding(.leading, 3)
+                .opacity(appearance.showsSelectionMarker ? 1 : 0)
+        }
+        .allowsHitTesting(false)
+    }
+}
+
 private struct ProviderRail: View {
     @ObservedObject var store: SessionStore
     @Binding var governanceOpen: Bool
@@ -6460,20 +6536,19 @@ private struct ProviderRail: View {
 
     var body: some View {
         VStack(spacing: 22) {
+            let homeAppearance = RailItemAppearance.resolve(selected: store.surface == .auto, linked: true)
             Button { store.showClodexHome() } label: {
-                OmarAGILogo(size: 48)
-                    .padding(6)
-                    .background(
-                        ProviderChoice.auto.tint.opacity(store.surface == .auto ? 0.13 : 0),
-                        in: RoundedRectangle(cornerRadius: Theme.radiusControl, style: .continuous)
-                    )
-                    .overlay(
-                        RoundedRectangle(cornerRadius: Theme.radiusControl, style: .continuous)
-                            .stroke(
-                                ProviderChoice.auto.tint.opacity(store.surface == .auto ? 0.75 : 0),
-                                lineWidth: store.surface == .auto ? 1.3 : 1
-                            )
-                    )
+                VStack(spacing: 6) {
+                    OmarAGILogo(size: 40)
+                        .opacity(homeAppearance.contentOpacity)
+                    Text("OS-1")
+                        .font(.system(size: 7, weight: .bold, design: .rounded))
+                        .tracking(1.1)
+                        .foregroundStyle(Color.white.opacity(homeAppearance.contentOpacity))
+                }
+                .frame(width: 58, height: 68)
+                .background(RailSelectionBackground(accent: ProviderChoice.auto.tint, appearance: homeAppearance))
+                .contentShape(RoundedRectangle(cornerRadius: Theme.radiusControl, style: .continuous))
             }
             .buttonStyle(.plain)
             .help("Clodex home")
@@ -6526,10 +6601,15 @@ private struct BackendStatus: View {
     let disabled: Bool
     let action: () -> Void
 
+    private var appearance: RailItemAppearance {
+        RailItemAppearance.resolve(selected: selected, linked: linked)
+    }
+
     var body: some View {
         Button(action: action) {
             VStack(spacing: 9) {
                 ProviderBrandIcon(provider: provider, size: 28)
+                    .opacity(appearance.contentOpacity)
                 Text(provider == .claude ? "CLAUDE" : "CODEX")
                     .font(.system(size: 7, weight: .bold, design: .rounded))
                     .tracking(1.1)
@@ -6543,22 +6623,20 @@ private struct BackendStatus: View {
                         .minimumScaleFactor(0.65)
                 }
             }
-            .foregroundStyle(linked ? (selected ? Theme.text : provider.tint) : Theme.muted)
+            .foregroundStyle(Color.white.opacity(appearance.contentOpacity))
             .frame(width: 58, height: 80)
-            .background(linked ? provider.tint.opacity(selected ? 0.13 : 0.025) : Color.black.opacity(0.25))
-            .overlay(
-                RoundedRectangle(cornerRadius: Theme.radiusControl, style: .continuous)
-                    .stroke(linked ? provider.tint.opacity(selected ? 0.75 : 0.25) : Theme.border, lineWidth: selected ? 1.3 : 1)
-            )
+            .background(RailSelectionBackground(accent: provider.tint, appearance: appearance))
             .overlay(alignment: .topTrailing) {
+                // "Last backend that ran", never a selection signal: a neutral
+                // dot so it cannot be read as this card being the chosen one.
                 if active && !selected {
                     Circle()
-                        .fill(provider.tint.opacity(0.55))
+                        .fill(Color.white.opacity(0.45))
                         .frame(width: 5, height: 5)
-                        .padding(4)
+                        .padding(5)
                 }
             }
-            .clipShape(RoundedRectangle(cornerRadius: Theme.radiusControl, style: .continuous))
+            .contentShape(RoundedRectangle(cornerRadius: Theme.radiusControl, style: .continuous))
         }
         .buttonStyle(.plain)
         .disabled(disabled)
@@ -6568,6 +6646,112 @@ private struct BackendStatus: View {
         .accessibilityLabel(provider == .claude ? "Claude Code backend" : "Codex backend")
         .accessibilityValue(selected ? "선택됨" : "선택 안 됨")
     }
+}
+
+/// Regression for the rail reading as "Claude is always chosen". The two
+/// invariants that failed before: selection had to survive an unlinked
+/// backend, and no unselected item may be painted louder than the selected
+/// one. Pure state only — no model calls and no backend writes.
+@MainActor
+private func railSelectionSelfTest() throws {
+    var checks = 0
+    func check(_ value: Bool, _ label: String) throws {
+        guard value else { throw RunnerError.message("Provider rail regression: " + label) }
+        checks += 1
+    }
+
+    for surface in ProviderChoice.allCases {
+        let highlighted = [surface == .auto, surface == .codex, surface == .claude].filter { $0 }
+        try check(highlighted.count == 1, "surface \(surface.rawValue) must highlight exactly one rail item")
+    }
+
+    try check(RailItemAppearance.resolve(selected: true, linked: true)
+        == RailItemAppearance.resolve(selected: true, linked: false),
+        "a chosen backend with no recorded session must look identically chosen")
+    try check(RailItemAppearance.resolve(selected: false, linked: true)
+        != RailItemAppearance.resolve(selected: true, linked: true),
+        "linked-but-unselected must be distinguishable from selected")
+
+    for linked in [true, false] {
+        let quiet = RailItemAppearance.resolve(selected: false, linked: linked)
+        let loud = RailItemAppearance.resolve(selected: true, linked: !linked)
+        try check(quiet.fillOpacity < loud.fillOpacity
+            && quiet.strokeOpacity < loud.strokeOpacity
+            && quiet.strokeWidth < loud.strokeWidth
+            && quiet.contentOpacity < loud.contentOpacity
+            && !quiet.showsSelectionMarker && loud.showsSelectionMarker
+            && !quiet.usesAccent && loud.usesAccent,
+            "unselected(linked=\(linked)) outranked the selected item")
+    }
+
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("os1-rail-selection-" + UUID().uuidString, isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let store = SessionStore(storageRoot: root, nativeSessionOpener: { _ in false })
+    guard let index = store.selectedIndex else { throw RunnerError.message("Provider rail regression: no fixture conversation") }
+    // Reproduces the reported state: Claude recorded and last active, Codex not.
+    store.sessions[index].claudeSessionID = "bae5987c-3fd1-4d08-a85c-6d9c18d41e86"
+    store.sessions[index].codexSessionID = nil
+    store.sessions[index].lastProvider = "claude"
+    try check(store.surface == .auto, "a new conversation opens on Clodex home")
+    store.surface = .codex
+    try check(store.surface == .codex && store.surface != .claude,
+        "choosing Codex must leave Claude unselected even though Claude is the linked/last backend")
+    store.showClodexHome()
+    try check(store.surface == .auto, "the OS-1 ring must return to the Clodex home surface")
+    store.inspectBackend(.auto)
+    try check(store.surface == .auto, "auto is not a browsable backend surface")
+
+    print("Provider rail selection: \(checks) checks passed; model calls 0; live backend writes 0")
+}
+
+/// Fixture-only rail renderings for the three selection states, using the
+/// production views and the reported linked/last-active combination.
+@MainActor
+private func renderProviderRailPreview(to output: URL) throws {
+    try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true,
+        attributes: [.posixPermissions: 0o700])
+    let fixtureRoot = FileManager.default.temporaryDirectory
+        .appendingPathComponent("os1-rail-preview-" + UUID().uuidString, isDirectory: true)
+    try FileManager.default.createDirectory(at: fixtureRoot, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: fixtureRoot) }
+
+    var written: [String] = []
+    for surface in ProviderChoice.allCases {
+        let store = SessionStore(storageRoot: fixtureRoot.appendingPathComponent(surface.rawValue, isDirectory: true),
+            nativeSessionOpener: { _ in false })
+        guard let index = store.selectedIndex else { throw SourceContextError.invalid }
+        store.sessions[index].title = "Rail fixture"
+        store.sessions[index].claudeSessionID = "bae5987c-3fd1-4d08-a85c-6d9c18d41e86"
+        store.sessions[index].codexSessionID = nil
+        store.sessions[index].lastProvider = "claude"
+        store.surface = surface
+        let content = ProviderRail(store: store)
+            .frame(width: 78, height: 420)
+            .background(Theme.background)
+            .environment(\.colorScheme, .dark)
+        let view = NSHostingView(rootView: content)
+        view.frame = NSRect(x: 0, y: 0, width: 78, height: 420)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        view.layoutSubtreeIfNeeded()
+        view.needsDisplay = true
+        view.displayIfNeeded()
+        guard let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { throw SourceContextError.invalid }
+        view.cacheDisplay(in: view.bounds, to: bitmap)
+        guard let data = bitmap.representation(using: .png, properties: [:]) else { throw SourceContextError.invalid }
+        let name = "rail-\(surface.rawValue)-selected.png"
+        try data.write(to: output.appendingPathComponent(name), options: .atomic)
+        written.append(name)
+    }
+    let manifest: [String: Any] = [
+        "fixtureOnly": true,
+        "linkedBackends": ["claude"],
+        "lastActiveBackend": "claude",
+        "states": written,
+    ]
+    try JSONSerialization.data(withJSONObject: manifest, options: [.prettyPrinted, .sortedKeys])
+        .write(to: output.appendingPathComponent("provider-rail-preview.json"), options: .atomic)
 }
 
 private struct NativeSessionBrowser: View {
