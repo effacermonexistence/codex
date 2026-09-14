@@ -6462,10 +6462,23 @@ private struct ProviderRail: View {
         VStack(spacing: 22) {
             Button { store.showClodexHome() } label: {
                 OmarAGILogo(size: 48)
+                    .padding(6)
+                    .background(
+                        ProviderChoice.auto.tint.opacity(store.surface == .auto ? 0.13 : 0),
+                        in: RoundedRectangle(cornerRadius: Theme.radiusControl, style: .continuous)
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: Theme.radiusControl, style: .continuous)
+                            .stroke(
+                                ProviderChoice.auto.tint.opacity(store.surface == .auto ? 0.75 : 0),
+                                lineWidth: store.surface == .auto ? 1.3 : 1
+                            )
+                    )
             }
             .buttonStyle(.plain)
             .help("Clodex home")
             .accessibilityLabel("Clodex home")
+            .accessibilityValue(store.surface == .auto ? "선택됨" : "선택 안 됨")
             .padding(.bottom, 8)
 
             ForEach([ProviderChoice.codex, ProviderChoice.claude]) { provider in
@@ -6532,11 +6545,19 @@ private struct BackendStatus: View {
             }
             .foregroundStyle(linked ? (selected ? Theme.text : provider.tint) : Theme.muted)
             .frame(width: 58, height: 80)
-            .background(linked ? provider.tint.opacity(selected ? 0.13 : (active ? 0.08 : 0.025)) : Color.black.opacity(0.25))
+            .background(linked ? provider.tint.opacity(selected ? 0.13 : 0.025) : Color.black.opacity(0.25))
             .overlay(
                 RoundedRectangle(cornerRadius: Theme.radiusControl, style: .continuous)
-                    .stroke(linked ? provider.tint.opacity(selected || active ? 0.75 : 0.25) : Theme.border, lineWidth: selected ? 1.3 : 1)
+                    .stroke(linked ? provider.tint.opacity(selected ? 0.75 : 0.25) : Theme.border, lineWidth: selected ? 1.3 : 1)
             )
+            .overlay(alignment: .topTrailing) {
+                if active && !selected {
+                    Circle()
+                        .fill(provider.tint.opacity(0.55))
+                        .frame(width: 5, height: 5)
+                        .padding(4)
+                }
+            }
             .clipShape(RoundedRectangle(cornerRadius: Theme.radiusControl, style: .continuous))
         }
         .buttonStyle(.plain)
@@ -6545,6 +6566,7 @@ private struct BackendStatus: View {
             ? "Show this conversation's recorded \(provider.title) session inside Clodex"
             : "No \(provider.title) session is recorded for this Clodex conversation")
         .accessibilityLabel(provider == .claude ? "Claude Code backend" : "Codex backend")
+        .accessibilityValue(selected ? "선택됨" : "선택 안 됨")
     }
 }
 
