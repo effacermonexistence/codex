@@ -6973,11 +6973,15 @@ private struct NativeSessionRow: View {
             .padding(.horizontal, 13)
             .padding(.vertical, 13)
             .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
             .background(selected ? Theme.panelRaised : Color.clear)
             .overlay(
                 RoundedRectangle(cornerRadius: 11)
                     .stroke(selected ? tint.opacity(0.42) : Color.clear, lineWidth: 1)
             )
+            .overlay(alignment: .bottom) {
+                Rectangle().fill(Theme.border.opacity(0.5)).frame(height: 1)
+            }
             .clipShape(RoundedRectangle(cornerRadius: 11))
         }
         .buttonStyle(.plain)
@@ -7478,11 +7482,15 @@ private struct SessionRow: View {
             .padding(.horizontal, 13)
             .padding(.vertical, 9)
             .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
             .background(selected ? Theme.panelRaised : Color.clear)
             .overlay(
                 RoundedRectangle(cornerRadius: 11)
                     .stroke(Color.clear)
             )
+            .overlay(alignment: .bottom) {
+                Rectangle().fill(Theme.border.opacity(0.5)).frame(height: 1)
+            }
             .clipShape(RoundedRectangle(cornerRadius: 11))
         }
         .buttonStyle(.plain)
