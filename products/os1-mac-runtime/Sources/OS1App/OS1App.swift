@@ -2262,86 +2262,46 @@ private enum NativeSessionReader {
     }
 
     private static func codexSessions() throws -> [NativeSessionSummary] {
-        let home = FileManager.default.homeDirectoryForCurrentUser.path
-        let path = "\(home)/.codex/state_5.sqlite"
-        var database: OpaquePointer?
-        guard sqlite3_open_v2(path, &database, SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX, nil) == SQLITE_OK,
-              let database else {
-            throw RunnerError.message("Codex session index could not be opened.")
+        // Codex Desktop writes this index continuously; CodexSessionIndex
+        // absorbs transient locks (busy timeout, retries, immutable snapshot)
+        // so a checkpoint never surfaces as "index could not be read".
+        let rows: [CodexSessionIndex.Row]
+        do {
+            rows = try CodexSessionIndex.rows(path: CodexSessionIndex.defaultPath())
+        } catch {
+            throw RunnerError.message("Codex session index could not be read. (\(error))")
         }
-        defer { sqlite3_close(database) }
-        let query = """
-        SELECT id,
-               COALESCE(NULLIF(name, ''), NULLIF(title, ''), NULLIF(first_user_message, ''), 'Untitled session'),
-               cwd,
-               COALESCE(NULLIF(recency_at_ms, 0), NULLIF(updated_at_ms, 0), updated_at * 1000)
-        FROM threads
-        WHERE archived = 0 AND preview <> ''
-        ORDER BY recency_at_ms DESC, updated_at_ms DESC
-        LIMIT 500
-        """
-        var statement: OpaquePointer?
-        guard sqlite3_prepare_v2(database, query, -1, &statement, nil) == SQLITE_OK,
-              let statement else {
-            throw RunnerError.message("Codex session index could not be read.")
-        }
-        defer { sqlite3_finalize(statement) }
-        var result: [NativeSessionSummary] = []
-        while sqlite3_step(statement) == SQLITE_ROW {
-            let id = columnText(statement, 0)
-            guard !id.isEmpty else { continue }
-            let rawTitle = columnText(statement, 1)
-            let title = visibleBackendUserRequest(rawTitle).map(firstLine) ?? "Codex session"
-            result.append(NativeSessionSummary(
-                id: id,
+        return rows.map { row in
+            NativeSessionSummary(
+                id: row.id,
                 provider: .codex,
-                title: title,
-                workspace: columnText(statement, 2),
+                title: visibleBackendUserRequest(row.title).map(firstLine) ?? "Codex session",
+                workspace: row.cwd,
                 workspaceLabel: nil,
-                updatedAt: Date(timeIntervalSince1970: Double(sqlite3_column_int64(statement, 3)) / 1_000),
+                updatedAt: Date(timeIntervalSince1970: Double(row.updatedAtMS) / 1_000),
                 sourcePath: nil,
                 linkedTitle: nil
-            ))
+            )
         }
-        return result
     }
 
     /// The browse list is intentionally bounded, but the OS-1-linked record
     /// must remain addressable even when it is older, archived, or previewless.
     private static func codexSession(sessionID: String) throws -> NativeSessionSummary? {
-        let path = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".codex/state_5.sqlite").path
-        var database: OpaquePointer?
-        guard sqlite3_open_v2(path, &database, SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX, nil) == SQLITE_OK,
-              let database else {
-            throw RunnerError.message("Codex session index could not be opened.")
+        let row: CodexSessionIndex.Row?
+        do {
+            row = try CodexSessionIndex.row(path: CodexSessionIndex.defaultPath(), id: sessionID)
+        } catch {
+            throw RunnerError.message("Recorded Codex session could not be read. (\(error))")
         }
-        defer { sqlite3_close(database) }
-        let query = """
-        SELECT id,
-               COALESCE(NULLIF(name, ''), NULLIF(title, ''), NULLIF(first_user_message, ''), 'Untitled session'),
-               cwd,
-               COALESCE(NULLIF(recency_at_ms, 0), NULLIF(updated_at_ms, 0), updated_at * 1000)
-        FROM threads
-        WHERE id = ?
-        LIMIT 1
-        """
-        var statement: OpaquePointer?
-        guard sqlite3_prepare_v2(database, query, -1, &statement, nil) == SQLITE_OK,
-              let statement else {
-            throw RunnerError.message("Recorded Codex session could not be read.")
-        }
-        defer { sqlite3_finalize(statement) }
-        sqlite3_bind_text(statement, 1, sessionID, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
-        guard sqlite3_step(statement) == SQLITE_ROW else { return nil }
-        let rawTitle = columnText(statement, 1)
+        guard let row else { return nil }
         return NativeSessionSummary(
-            id: columnText(statement, 0),
+            id: row.id,
             provider: .codex,
-            title: visibleBackendUserRequest(rawTitle).map(firstLine) ?? "Codex session",
-            workspace: columnText(statement, 2),
+            title: visibleBackendUserRequest(row.title).map(firstLine) ?? "Codex session",
+            workspace: row.cwd,
             workspaceLabel: nil,
-            updatedAt: Date(timeIntervalSince1970: Double(sqlite3_column_int64(statement, 3)) / 1_000),
+            updatedAt: Date(timeIntervalSince1970: Double(row.updatedAtMS) / 1_000),
             sourcePath: nil,
             linkedTitle: nil
         )
@@ -2356,6 +2316,9 @@ private enum NativeSessionReader {
             throw RunnerError.message("Codex transcript database could not be opened.")
         }
         defer { sqlite3_close(database) }
+        // Codex writes this history continuously; wait out a checkpoint
+        // instead of failing the transcript read on a transient lock.
+        sqlite3_busy_timeout(database, 1_500)
         let query = """
         SELECT item_type, item_json, created_at_ms, rollout_ordinal, turn_status, turn_id
         FROM (
