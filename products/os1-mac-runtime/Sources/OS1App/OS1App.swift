@@ -2,6 +2,7 @@ import AppKit
 @preconcurrency import AVFoundation
 import CryptoKit
 import Foundation
+import ImageIO
 import OS1Context
 import SQLite3
 @preconcurrency import Speech
@@ -4046,18 +4047,42 @@ private final class SessionStore: ObservableObject {
         panel.allowsMultipleSelection = true
         panel.beginSheetModal(for: window) { [weak self] result in
             guard result == .OK, let self else { return }
-            let references = panel.urls.map { $0.standardizedFileURL.path }
-            self.composer = appendingFileReferences(references, to: self.composer)
+            self.addAttachments(panel.urls)
         }
     }
 
-    /// Accepts files/folders dragged onto the composer (Codex-style drag-and-drop).
-    /// Mirrors `chooseContextFiles`: paths are inserted as text, nothing is auto-sent.
+    /// Attachments show as chips (image preview or file chip, like Codex) and
+    /// travel as quoted paths in the request; nothing is auto-sent.
+    @Published var composerAttachments: [ComposerAttachment] = []
+
+    func addAttachments(_ urls: [URL]) {
+        var added = 0
+        for url in urls {
+            let standardized = url.standardizedFileURL
+            guard composerAttachments.count < 24, !composerAttachments.contains(where: { $0.url == standardized }) else { continue }
+            composerAttachments.append(ComposerAttachment(url: standardized))
+            added += 1
+        }
+        guard added > 0 else { return }
+        statusText = added == 1 ? "파일 1개를 첨부했습니다 · 전송 전 확인" : "파일 \(added)개를 첨부했습니다 · 전송 전 확인"
+    }
+
+    func removeAttachment(_ id: UUID) { composerAttachments.removeAll { $0.id == id } }
+
+    /// The outgoing request: draft text plus attached paths in the quoted
+    /// "참조 파일 경로" form both backends already understand.
+    func composedRequest(from draft: String) -> String {
+        appendingFileReferences(composerAttachments.map(\.path), to: draft.trimmingCharacters(in: .whitespacesAndNewlines))
+    }
+
+    /// Accepts files/folders dropped anywhere in the window or on the composer
+    /// (Codex-style drag-and-drop). They become attachment chips; nothing is
+    /// auto-sent.
     func handleComposerDrop(_ providers: [NSItemProvider]) -> Bool {
         let candidates = providers.filter { $0.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) }
         guard !candidates.isEmpty else { return false }
         Task { @MainActor [weak self] in
-            var paths: [String] = []
+            var urls: [URL] = []
             for provider in candidates {
                 let url: URL? = await withCheckedContinuation { continuation in
                     provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, _ in
@@ -4070,11 +4095,10 @@ private final class SessionStore: ObservableObject {
                         }
                     }
                 }
-                if let url { paths.append(url.standardizedFileURL.path) }
+                if let url { urls.append(url) }
             }
-            guard let self, !paths.isEmpty else { return }
-            self.composer = appendingFileReferences(paths, to: self.composer)
-            self.statusText = paths.count == 1 ? "파일 경로를 입력에 추가했습니다" : "파일 경로 \(paths.count)개를 입력에 추가했습니다"
+            guard let self, !urls.isEmpty else { return }
+            self.addAttachments(urls)
         }
         return true
     }
@@ -4185,7 +4209,7 @@ private final class SessionStore: ObservableObject {
             voiceDictation.finish { [weak self] in self?.send() }
             return
         }
-        let request = composer.trimmingCharacters(in: .whitespacesAndNewlines)
+        let request = composedRequest(from: composer)
         guard !request.isEmpty, let index = selectedIndex else { return }
         if !ExecutionSteering.isTaskReplacement(request), ExecutionSteering.isDirectCorrection(request), canSteerSelectedRun {
             sendCorrectionToCurrentRun()
@@ -4221,6 +4245,7 @@ private final class SessionStore: ObservableObject {
         let userMessage = ChatMessage(role: .user, text: request)
         sessions[index].updatedAt = Date()
         composer = ""
+        composerAttachments = []
 
         var submission = PendingSubmission(
             sessionID: sessions[index].id,
@@ -4262,7 +4287,8 @@ private final class SessionStore: ObservableObject {
     }
 
     var primaryAction: ComposerPrimaryAction {
-        let normal = ComposerPrimaryAction.resolve(draft: composer, running: isRunning, stopping: isStopping, voice: voiceDictation.phase)
+        // Attachments alone are a sendable request (an image with no words).
+        let normal = ComposerPrimaryAction.resolve(draft: composedRequest(from: composer), running: isRunning, stopping: isStopping, voice: voiceDictation.phase)
         return normal == .queue && canSteerSelectedRun &&
             !ExecutionSteering.isTaskReplacement(composer) && ExecutionSteering.isDirectCorrection(composer) ? .steer : normal
     }
@@ -4283,10 +4309,10 @@ private final class SessionStore: ObservableObject {
         return active.handedRevision.map { context.acceptsLateResult(fromRevision: $0) } ?? false
     }
     func sendCorrectionToCurrentRun() {
-        let text = composer.trimmingCharacters(in: .whitespacesAndNewlines)
+        let text = composedRequest(from: composer)
         guard !text.isEmpty, let session = selectedSession else { return }
         if !ExecutionSteering.isTaskReplacement(text), deliverCorrection(text, conversationID: session.id) {
-            composer = ""; save(); return
+            composer = ""; composerAttachments = []; save(); return
         }
         var item = PendingSubmission(sessionID: session.id, userMessageID: UUID(), request: text,
             provider: session.provider == .auto ? (explicitlyRequestedProvider(in: text) ?? .auto) : session.provider,
@@ -4295,7 +4321,7 @@ private final class SessionStore: ObservableObject {
         if !ExecutionSteering.isTaskReplacement(text), let active = inFlightSubmissions[session.id], active.recoveryParentID == nil {
             item.amendedRequest = active.executionRequest
         }
-        queuedSubmissions.append(item); composer = ""; save()
+        queuedSubmissions.append(item); composer = ""; composerAttachments = []; save()
         advanceQueued(item.id)
     }
     func canSteerQueued(_ item: PendingSubmission) -> Bool {
@@ -5455,6 +5481,92 @@ private func appendingFileReferences(_ paths: [String], to draft: String) -> Str
     return draft + (draft.isEmpty ? "" : "\n\n") + "참조 파일 경로:\n" + quoted
 }
 
+/// A file attached to the composer. Images get a preview chip, everything
+/// else a file chip; both are sent as quoted paths (see `appendingFileReferences`).
+struct ComposerAttachment: Identifiable, Equatable {
+    let id = UUID()
+    let url: URL
+    var path: String { url.path }
+    var name: String { url.lastPathComponent }
+    var isImage: Bool { UTType(filenameExtension: url.pathExtension)?.conforms(to: .image) == true }
+    static func == (lhs: ComposerAttachment, rhs: ComposerAttachment) -> Bool { lhs.id == rhs.id }
+}
+
+/// Small preview decoded once per chip through ImageIO; the full image is never loaded.
+private func attachmentThumbnail(_ url: URL, maxPixels: Int = 224) -> NSImage? {
+    guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
+    let options: [CFString: Any] = [
+        kCGImageSourceCreateThumbnailFromImageAlways: true,
+        kCGImageSourceThumbnailMaxPixelSize: maxPixels,
+        kCGImageSourceCreateThumbnailWithTransform: true,
+    ]
+    guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else { return nil }
+    return NSImage(cgImage: image, size: NSSize(width: image.width, height: image.height))
+}
+
+private struct ComposerAttachmentStrip: View {
+    @ObservedObject var store: SessionStore
+
+    var body: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                ForEach(store.composerAttachments) { attachment in
+                    AttachmentChip(attachment: attachment) { store.removeAttachment(attachment.id) }
+                }
+            }
+        }
+        .frame(height: 64)
+        .accessibilityLabel("첨부 \(store.composerAttachments.count)개")
+    }
+}
+
+private struct AttachmentChip: View {
+    let attachment: ComposerAttachment
+    let remove: () -> Void
+    @State private var thumbnail: NSImage?
+
+    var body: some View {
+        Group {
+            if attachment.isImage {
+                ZStack(alignment: .topTrailing) {
+                    Group {
+                        if let thumbnail {
+                            Image(nsImage: thumbnail).resizable().aspectRatio(contentMode: .fill)
+                        } else {
+                            Image(systemName: "photo").font(.system(size: 20)).foregroundStyle(Theme.muted)
+                        }
+                    }
+                    .frame(width: 60, height: 60)
+                    .clipShape(RoundedRectangle(cornerRadius: 10))
+                    .overlay(RoundedRectangle(cornerRadius: 10).stroke(Theme.border, lineWidth: 1))
+                    removeButton.padding(3)
+                }
+                .help(attachment.path)
+                .task { thumbnail = attachmentThumbnail(attachment.url) }
+            } else {
+                HStack(spacing: 6) {
+                    Image(nsImage: NSWorkspace.shared.icon(forFile: attachment.path)).resizable().frame(width: 18, height: 18)
+                    Text(attachment.name).font(.system(size: 12, weight: .medium)).lineLimit(1).foregroundStyle(Theme.text)
+                    removeButton
+                }
+                .padding(.vertical, 6).padding(.leading, 8).padding(.trailing, 4)
+                .background(Theme.panelRaised, in: Capsule())
+                .overlay(Capsule().stroke(Theme.border, lineWidth: 1))
+                .help(attachment.path)
+            }
+        }
+        .accessibilityLabel(attachment.isImage ? "이미지 첨부 \(attachment.name)" : "파일 첨부 \(attachment.name)")
+    }
+
+    private var removeButton: some View {
+        Button(action: remove) {
+            Image(systemName: "xmark.circle.fill").font(.system(size: 14)).foregroundStyle(Theme.text)
+                .background(Circle().fill(Theme.background))
+        }
+        .buttonStyle(.plain).help("첨부 제거").accessibilityLabel("첨부 제거")
+    }
+}
+
 private enum Theme {
     static let background = Color(red: 0.008, green: 0.008, blue: 0.011)
     static let panel = Color(red: 0.015, green: 0.014, blue: 0.017)
@@ -6442,6 +6554,7 @@ private func sidebarSynchronizationSelfTest() throws {
 private struct RootView: View {
     @ObservedObject var store: SessionStore
     @State private var governanceOpen = false
+    @State private var windowDropTargeted = false
 
     var body: some View {
         HStack(spacing: 0) {
@@ -6471,6 +6584,25 @@ private struct RootView: View {
         }
         .frame(minWidth: 980, maxWidth: .infinity, minHeight: 680, maxHeight: .infinity)
         .background(Theme.background)
+        // Files dropped anywhere in the window attach to the current
+        // conversation's composer (Codex-style), not only on the input box.
+        .overlay {
+            if windowDropTargeted {
+                ZStack {
+                    Theme.pink.opacity(0.06)
+                    RoundedRectangle(cornerRadius: 22).stroke(Theme.pink, lineWidth: 2).padding(10)
+                    Label("여기에 놓으면 현재 대화에 첨부됩니다 · 이미지는 미리보기, 파일은 칩", systemImage: "tray.and.arrow.down.fill")
+                        .font(.system(size: 15, weight: .semibold)).foregroundStyle(Theme.text)
+                        .padding(14).background(Theme.panelRaised, in: RoundedRectangle(cornerRadius: 12))
+                }
+                .allowsHitTesting(false)
+                .transition(.opacity)
+            }
+        }
+        .animation(.easeInOut(duration: 0.12), value: windowDropTargeted)
+        .onDrop(of: [UTType.fileURL], isTargeted: $windowDropTargeted) { providers in
+            store.handleComposerDrop(providers)
+        }
         .ignoresSafeArea()
         .task {
             while !Task.isCancelled {
@@ -8558,6 +8690,10 @@ private struct ComposerView: View {
             }
 
             VStack(spacing: 4) {
+                if !store.composerAttachments.isEmpty {
+                    ComposerAttachmentStrip(store: store)
+                        .padding(.horizontal, 12).padding(.top, 10)
+                }
                 ClodexComposerEditor(text: $store.composer, onSubmit: store.send, onCancelVoice: store.cancelVoiceDictation)
                     .frame(height: editorHeight)
                     .background(GeometryReader { geometry in
@@ -8609,7 +8745,7 @@ private struct ComposerView: View {
                     RoundedRectangle(cornerRadius: 18)
                         .fill(Theme.pink.opacity(0.08))
                         .overlay(
-                            Label("여기에 파일을 놓으면 경로가 추가됩니다", systemImage: "tray.and.arrow.down")
+                            Label("여기에 놓으면 첨부됩니다 · 이미지는 미리보기, 파일은 칩", systemImage: "tray.and.arrow.down")
                                 .font(.system(size: 12, weight: .medium))
                                 .foregroundStyle(Theme.text)
                         )
