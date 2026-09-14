@@ -1815,9 +1815,12 @@ private func withConnectionRecovery<T>(service: String, probe: () throws -> T) t
     try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: cooldown.path)
     defer { try? FileManager.default.setAttributes([.modificationDate: Date()], ofItemAtPath: cooldown.path) }
     let result: (Int32, Data, Data)
-    if service == "github" {
+    switch service {
+    case "github":
         result = try commandOutput(findExecutable("gh"), ["auth", "login", "--hostname", "github.com", "--git-protocol", "https", "--web", "--clipboard"], input: Data([10]), timeout: 300)
-    } else {
+    case "claude":
+        result = try commandOutput(findExecutable("claude"), ["auth", "login", "--claudeai"], timeout: 300)
+    default:
         result = try commandOutput(findExecutable("wrangler"), ["login", "--browser", "--use-keyring"], timeout: 300,
             currentDirectory: FileManager.default.homeDirectoryForCurrentUser.path)
     }
@@ -1833,6 +1836,7 @@ private struct ConnectionControlTargets: OptionSet {
 
     static let github = ConnectionControlTargets(rawValue: 1 << 0)
     static let r2 = ConnectionControlTargets(rawValue: 1 << 1)
+    static let claude = ConnectionControlTargets(rawValue: 1 << 2)
 }
 
 /// Connection setup is an OS-1 control-plane operation, not an open-ended
@@ -1850,9 +1854,13 @@ private func connectionControlTargets(_ prompt: String) -> ConnectionControlTarg
     ].contains { value.contains($0) }
     let mentionsR2 = value.range(of: #"(?<![a-z0-9])r\s*2(?![a-z0-9])"#, options: .regularExpression) != nil ||
         value.contains("알투") || value.contains("알츠")
+    let mentionsClaude = [
+        "claude", "클로드", "클로드코드", "클로드 코드",
+    ].contains { value.contains($0) }
     var targets: ConnectionControlTargets = []
     if mentionsGitHub { targets.insert(.github) }
     if mentionsR2 { targets.insert(.r2) }
+    if mentionsClaude { targets.insert(.claude) }
     return targets.isEmpty ? nil : targets
 }
 
@@ -1867,6 +1875,23 @@ private func verifyGitHubConnection() throws -> String {
 
 private func verifyR2Connection() throws -> String {
     try withConnectionRecovery(service: "r2", probe: existingR2Connection)
+}
+
+private func verifyClaudeConnection() throws -> String {
+    try withConnectionRecovery(service: "claude", probe: existingClaudeConnection)
+}
+
+/// Read-only Claude Code OAuth status probe. Never mutates or issues a login
+/// on its own; `withConnectionRecovery` decides whether a fresh `claude auth
+/// login` is warranted after this throws `.authentication`.
+private func existingClaudeConnection() throws -> String {
+    let claude = try findExecutable("claude")
+    let result = try commandOutput(claude, ["auth", "status", "--json"], timeout: 15)
+    let text = String(decoding: result.1 + result.2, as: UTF8.self)
+    guard result.0 == 0, let status = decodedJSONObject(result.1), status["loggedIn"] as? Bool == true else {
+        throw ConnectionFailure.classify(text.isEmpty ? "not logged in" : text)
+    }
+    return "Claude 연결됨" + ((status["email"] as? String).map { " — \($0)" } ?? "")
 }
 
 // R2 authentication is intentionally device-local. The shared archive owner
@@ -3721,6 +3746,7 @@ private func runConnectionControl(_ targets: ConnectionControlTargets) throws ->
     var lines: [String] = []
     if targets.contains(.github) { lines.append(try verifyGitHubConnection()) }
     if targets.contains(.r2) { lines.append(try verifyR2Connection()) }
+    if targets.contains(.claude) { lines.append(try verifyClaudeConnection()) }
     let output = lines.joined(separator: "\n")
     let operationID = UUID().uuidString.lowercased()
     let receiptRoot = FileManager.default.homeDirectoryForCurrentUser
@@ -3734,6 +3760,7 @@ private func runConnectionControl(_ targets: ConnectionControlTargets) throws ->
         "checked_at": ISO8601DateFormatter().string(from: Date()),
         "github_verified": targets.contains(.github),
         "r2_verified": targets.contains(.r2),
+        "claude_verified": targets.contains(.claude),
         "result_sha256": sha256Hex(Data(output.utf8)),
     ]
     let receiptData = try JSONSerialization.data(withJSONObject: receipt, options: [.sortedKeys])

@@ -13,7 +13,9 @@ public enum ConnectionFailure: String, Codable, Sendable, Error, LocalizedError,
         if ["not logged in", "not logged into", "token has expired", "token expired", "invalid access token",
             "bad credentials", "http 401", "authentication error", "authenticate wrangler",
             "non-interactive environment, it's necessary to set a cloudflare_api_token",
-            "cloudflare_api_token environment variable for wrangler to work"].contains(where: s.contains) { return .authentication }
+            "cloudflare_api_token environment variable for wrangler to work",
+            "failed to authenticate", "oauth session expired", "\"loggedin\":false", "\"loggedin\": false"]
+            .contains(where: s.contains) { return .authentication }
         if ["403", "forbidden", "permission", "access denied", "unauthorized to access"].contains(where: s.contains) { return .permission }
         if ["timed out", "timeout", "network", "fetch failed", "connection", "dns", "resolve host", "certificate", "econn", "502", "503", "504"].contains(where: s.contains) { return .transport }
         return .unavailable
@@ -49,7 +51,7 @@ public enum ConnectionProbe {
 public final class ConnectionLease {
     private let descriptor: Int32
     public init(root: URL, service: String) throws {
-        guard ["github", "r2"].contains(service) else { throw ConnectionFailure.unavailable }
+        guard ["github", "r2", "claude"].contains(service) else { throw ConnectionFailure.unavailable }
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         descriptor = Darwin.open(root.appendingPathComponent(service + ".lock").path, O_CREAT | O_RDWR | O_NOFOLLOW, 0o600)
         guard descriptor >= 0 else { throw ConnectionFailure.unavailable }

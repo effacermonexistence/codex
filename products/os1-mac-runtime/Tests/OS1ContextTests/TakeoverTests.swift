@@ -22,6 +22,10 @@ func runTakeoverFixtures() throws {
         check(ConnectionFailure.classify(error) == .transport, "transport never logs in")
     }
     check(ConnectionFailure.classify("unknown reply") == .unavailable, "unknown remains unknown")
+    check(ConnectionFailure.classify("Failed to authenticate: OAuth session expired and could not be refreshed") == .authentication,
+          "Claude Code OAuth session expiry is a login failure, not unavailable")
+    check(ConnectionFailure.classify(#"{"loggedIn":false,"authMethod":null}"#) == .authentication,
+          "Claude auth status JSON reports logged-out state")
     let quota: [String: Any] = ["is_error": true, "errors": ["You've hit your session limit · resets 7pm (America/Los_Angeles)"], "permission_denials": []]
     check(BackendRecovery.claudeQuotaFailure(status: 1, object: quota), "actual Claude errors array")
     check(BackendRecovery.claudeQuotaFailure(status: 0, object: quota), "error envelope despite exit zero")
@@ -37,9 +41,11 @@ func runTakeoverFixtures() throws {
     var first: ConnectionLease? = try ConnectionLease(root: root, service: "r2")
     let second = try ConnectionLease(root: root, service: "r2")
     let other = try ConnectionLease(root: root, service: "github")
+    let claudeLease = try ConnectionLease(root: root, service: "claude")
     check(first!.tryAcquire(), "first auth lease")
     check(!second.tryAcquire(), "duplicate auth prevented")
     check(other.tryAcquire(), "independent service lease")
+    check(claudeLease.tryAcquire(), "claude auth lease is its own service")
     first = nil
     check(second.tryAcquire(), "auth resumes after lease release")
     do {
