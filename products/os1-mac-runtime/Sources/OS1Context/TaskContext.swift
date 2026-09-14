@@ -569,6 +569,17 @@ public struct PreparationIntent: Equatable, Sendable {
     static let modificationProhibitions = ["수정하지 마", "수정하지마", "수정 하지 마", "고치지 마", "바꾸지 마", "변경하지 마", "설명만", "do not modify",
                                            "don't modify", "do not change", "don't change", "explain only", "read only", "읽기만"]
     static let refusalMarkers = ["손보지 마", "손보지마", "손대지 마", "손대지마", "준비하지 마", "준비 하지 마", "이어서 하지 마", "계속하지 마", "don't prepare", "do not prepare", "don't continue"]
+    static let changeVerbs = ["손봐", "손 봐", "수정", "고치", "고쳐", "바꾸", "구현", "fix", "modify", "edit", "change", "implement"]
+    /// "…가능하냐?" asks whether something can be done. It binds the named
+    /// project so the answer is concrete, but it never authorizes a change.
+    public static let feasibilityMarkers = [
+        "가능하냐", "가능하니", "가능해", "가능한지", "가능할까", "가능합니까", "할 수 있냐", "할 수 있어", "할 수 있는지", "할 수 있니",
+        "되냐", "되겠냐", "되나요", "될까", "can you", "could you", "is it possible", "are you able", "would it be possible",
+    ]
+    public static func isFeasibilityQuestion(_ value: String) -> Bool {
+        let value = value.precomposedStringWithCanonicalMapping.lowercased()
+        return feasibilityMarkers.contains { value.contains($0) }
+    }
 
     private static func containsProjectAlias(_ alias: String, in value: String) -> Bool {
         // ASCII project names must be standalone tokens. Without this guard,
@@ -593,11 +604,16 @@ public struct PreparationIntent: Equatable, Sendable {
         let projectID = projectAliases.first { project in
             project.aliases.contains { containsProjectAlias($0, in: value) }
         }?.id
+        let feasibility = isFeasibilityQuestion(value)
+        // A write-scope sentence that names the project ("…에 한 줄 추가해") is
+        // a change even when it uses none of the listed change verbs.
+        let scopeWrite = projectID != nil && ScopeResolution.resolve(value).scope == .workspaceWrite
         let kind: Kind
         if explains && (continues || prohibited) && !prepare { kind = .explainFromContext }
         else if prepare { kind = .prepare }
         else if continues { kind = .continueWork }
-        else if projectID != nil && ScopeResolution.resolve(value).scope == .workspaceWrite { kind = .prepare }
+        else if projectID != nil && feasibility && changeVerbs.contains(where: value.contains) { kind = .prepare }
+        else if scopeWrite { kind = .prepare }
         else { return nil }
         // "수정 좀 하자 준비해" is an intent to prepare, not a described change:
         // only change verbs that survive removing the preparation phrases
@@ -610,8 +626,9 @@ public struct PreparationIntent: Equatable, Sendable {
             remaining = remaining.replacingOccurrences(of: #"(?:수정|변경|고치|손보)\s*(?:봐야\s*(?:되|하)(?:니까|니|므로)|해야\s*(?:되|하)(?:니까|니|므로)|할\s*(?:건데|거니까)|하려(?:고|니까))"#,
                 with: " ", options: .regularExpression)
         }
-        let wantsChange = ["손봐", "손 봐", "수정", "고치", "고쳐", "바꾸", "구현", "fix", "modify", "edit", "change", "implement"].contains(where: remaining.contains)
-        return PreparationIntent(kind: kind, projectID: projectID, modifies: kind != .explainFromContext && wantsChange && !prohibited)
+        let wantsChange = changeVerbs.contains(where: remaining.contains) || (scopeWrite && !prepare && !continues)
+        return PreparationIntent(kind: kind, projectID: projectID,
+                                 modifies: kind != .explainFromContext && wantsChange && !prohibited && !feasibility)
     }
 }
 

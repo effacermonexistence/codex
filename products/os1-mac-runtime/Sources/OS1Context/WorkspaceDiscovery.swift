@@ -39,6 +39,9 @@ public enum WorkspaceDiscovery {
               let text = String(data:bytes,encoding:.utf8) else { return "" }
         let lower = prompt.precomposedStringWithCanonicalMapping.lowercased()
         let instagram = lower.contains("instagram") || lower.contains("인스타") || lower.contains("scv")
+        // A request about OS-1 itself must surface the OS-1 source tree, not
+        // be crowded out of the bounded list by unrelated registered roots.
+        let os1 = ["os1", "os-1", "clodex", "클로덱스"].contains { lower.contains($0) }
         var candidates = Set<String>()
         let prefix = "[projects."
         for line in text.split(separator:"\n").prefix(3000) {
@@ -46,6 +49,7 @@ public enum WorkspaceDiscovery {
             let encoded = String(line.dropFirst(prefix.count).dropLast())
             guard let root = try? JSONDecoder().decode(String.self,from:Data(encoded.utf8)), root.hasPrefix(home.path + "/"),
                   !root.contains("/.os1/fleet/jobs/"), root != workspace else { continue }
+            if os1, !instagram, LocalProjectWorkspace.root(containing: root, projectID: "os1-clodex") != root { continue }
             let target = instagram ? URL(fileURLWithPath:root).appendingPathComponent("products/scv-instagram").path : root
             var directory: ObjCBool = false
             if FileManager.default.fileExists(atPath:target,isDirectory:&directory), directory.boolValue { candidates.insert(target) }

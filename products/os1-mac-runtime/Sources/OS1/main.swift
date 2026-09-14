@@ -780,11 +780,7 @@ func promptRequiresShellCapability(_ prompt: String) -> Bool {
 
     // A feasibility question asks whether something can be done; answering it
     // needs no shell. Explicit tool names above still select the shell lane.
-    let feasibilityQuestion = [
-        "가능하냐", "가능하니", "가능해", "가능한지", "가능할까", "가능합니까", "할 수 있냐", "할 수 있어", "할 수 있는지", "할 수 있니",
-        "되냐", "되겠냐", "되나요", "될까", "can you", "could you", "is it possible", "are you able", "would it be possible",
-    ].contains { value.contains($0) }
-    if feasibilityQuestion { return false }
+    if PreparationIntent.isFeasibilityQuestion(value) { return false }
 
     let executionActions = [
         "실행해", "실행 해", "실행시켜", "돌려", "설치해", "설치 해", "빌드해", "빌드 해",
@@ -5847,7 +5843,22 @@ func runTask(
             scope: resolvedScope, prohibitions: scopeResolution.prohibitions), now: objectiveStartedAt)
     }
     let config = try RuntimeConfig.load()
-    let canonicalWorkspace = URL(fileURLWithPath: workspace).standardizedFileURL.path
+    let requestedWorkspace = URL(fileURLWithPath: workspace).standardizedFileURL.path
+    // A registered local-workspace project is its own source tree. When the
+    // conversation lives elsewhere (usually HOME), work in the project's
+    // registered root; the bound project keeps that root for later turns.
+    let localProjectID = preparation?.projectID.flatMap { ProjectAdapterRegistry.kind(for: $0) == .localWorkspace ? $0 : nil }
+        ?? taskState.project.flatMap { ProjectAdapterRegistry.kind(for: $0.projectID) == .localWorkspace ? $0.projectID : nil }
+    var canonicalWorkspace = requestedWorkspace
+    if let localProjectID, LocalProjectWorkspace.root(containing: requestedWorkspace, projectID: localProjectID) == nil {
+        if let resolved = LocalProjectWorkspace.resolve(projectID: localProjectID, requested: requestedWorkspace) {
+            canonicalWorkspace = resolved.workspace
+            RuntimeActivity.emit(.preparing, publicText: "\(ProjectAdapterRegistry.label(for: localProjectID)) 소스 작업 폴더로 \(resolved.workspace)을(를) 사용합니다. 대화 폴더 \(requestedWorkspace)에는 해당 소스가 없습니다."
+                + (resolved.alternates.isEmpty ? "" : " 다른 등록 후보: \(resolved.alternates.joined(separator: ", "))"))
+        } else if preparation?.projectID == localProjectID {
+            throw OS1Error.message("\(ProjectAdapterRegistry.label(for: localProjectID)) 소스 폴더를 찾지 못했습니다. 대화 폴더 \(requestedWorkspace)에는 \(LocalProjectWorkspace.marker(for: localProjectID) ?? "프로젝트 표식")이(가) 없고 등록된 프로젝트 목록에도 해당 소스 트리가 없습니다. 소스 체크아웃 폴더를 이 대화의 작업 폴더로 선택한 뒤 다시 요청하세요.")
+        }
+    }
     var isDirectory: ObjCBool = false
     guard FileManager.default.fileExists(atPath: canonicalWorkspace, isDirectory: &isDirectory), isDirectory.boolValue else {
         throw OS1Error.message("Workspace directory does not exist")
@@ -8301,6 +8312,17 @@ func selfTest() throws {
          CodexContextBudget.excluded(models: [("small", 128_000), ("large", 272_000), ("unknown", nil)], baseInstructionBytes: 859_674) == ["small"]),
         ("context budget never guesses without sizes",
          CodexContextBudget.excluded(models: [("small", 128_000)], baseInstructionBytes: nil).isEmpty),
+        ("feasibility question about a registered project prepares without modifying",
+         PreparationIntent.detect("야 여기서 OS1 수정 가능하냐?").map { $0.kind == .prepare && $0.projectID == "os1-clodex" && !$0.modifies } == true),
+        ("feasibility question without a registered project stays a plain question",
+         PreparationIntent.detect("이거 수정 가능하냐?") == nil),
+        ("modification request keeps modifying", PreparationIntent.detect("OS1 앱 라우팅 버그 고쳐")?.modifies == true),
+        ("write-scope request without a listed verb still modifies",
+         PreparationIntent.detect("OS1 앱 저장소의 README.md 맨 끝에 한 줄만 추가해. 다른 파일은 건드리지 마.")?.modifies == true),
+        ("bare preparation stays non-modifying", PreparationIntent.detect("OS1 앱 수정 좀 하자 준비해")?.modifies == false),
+        ("local project root is not guessed outside the tree",
+         LocalProjectWorkspace.root(containing: "/nonexistent/os1-fixture", projectID: "os1-clodex") == nil &&
+         LocalProjectWorkspace.root(containing: "/nonexistent", projectID: "unregistered") == nil),
         ("exhausted quota reset is described only when actually exhausted",
          CodexQuota.exhaustedGeneralResetDescription(["rateLimitsByLimitId": ["codex": ["primary": ["usedPercent": 100, "resetsAt": 4_102_444_800]]]]) != nil &&
          CodexQuota.exhaustedGeneralResetDescription(["rateLimitsByLimitId": ["codex": ["primary": ["usedPercent": 12, "resetsAt": 4_102_444_800]]]]) == nil),
@@ -8349,7 +8371,7 @@ struct OS1Main {
             guard let command = arguments.first else { usage(); return }
             if try await fleetCommand(arguments) { return }
             switch command {
-            case "version", "--version", "-V": print("OS-1 Runtime 0.9.56 (context-overflow-recovery-build117)")
+            case "version", "--version", "-V": print("OS-1 Runtime 0.9.56 (local-project-workspace-build118)")
             case "doctor": try doctor()
             case "sidebar-pin":
                 guard (4...5).contains(arguments.count), arguments[1] == "codex",
