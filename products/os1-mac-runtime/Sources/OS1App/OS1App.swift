@@ -495,7 +495,7 @@ private func providerIntentSelfTest() throws {
     let selectableTranscript = selectableDocument.string
     let selectionTokens = [
         "drag-question",
-        "CODEX · read only",
+        "CODEX",
         "drag-answer",
         "실행 기록 확인됨",
         "route-receipt",
@@ -3047,11 +3047,113 @@ private func nativeRecordReceipt(_ step: AppRunStep) -> String {
     return parts.joined(separator: " · ")
 }
 
-private func savedResultReceipt(_ result: DeliveryRecord, id: UUID = UUID(), timestamp: Date = Date()) -> ChatMessage {
+/// Repair the persisted-failure/outbox UI gap without invoking a model, replaying
+/// a request, clearing a blocker, or advancing its dependent queue.
+@discardableResult
+private func restoreSavedFailurePreview(_ session: inout ConversationSession, result: DeliveryRecord) -> Bool {
+    guard var failed = session.lastFailure, failed.sessionID == session.id,
+          failed.deliveryID == nil || failed.deliveryID == result.id,
+          SavedResultEvidence.previewMatches(result, submissionID: failed.id),
+          let step = try? JSONDecoder().decode(AppRunStep.self, from: result.step),
+          let previewID = UUID(uuidString: String(result.id.prefix(36))) else { return false }
+    let alreadyVisible = session.messages.contains { $0.id == previewID }
+    if alreadyVisible && failed.deliveryID == result.id { return false }
+    failed.deliveryID = result.id
+    // A recovered failed attempt is review-only even if a remote envelope says
+    // complete. Its original local failure has not been independently resolved.
+    failed.savedResultNeedsReview = true
+    session.lastFailure = failed
+    let old = session.lastBackendFailure
+    session.lastBackendFailure = BackendFailureNotice(provider: old?.provider ?? step.provider,
+        sessionID: old?.sessionID ?? step.sessionID, blocker: old?.blocker ?? .effectsUncertain,
+        dispatchStage: old?.dispatchStage ?? .dispatched, source: old?.source ?? result.source,
+        permissionProfile: old?.permissionProfile ?? step.permissionProfile,
+        deliveryID: result.id, publicProgress: old?.publicProgress)
+    if !alreadyVisible {
+        session.messages.append(ChatMessage(id: previewID, role: .assistant, text: result.output,
+            provider: step.provider, permissionProfile: step.permissionProfile, nativeRecordVerified: false))
+        session.messages.append(savedResultReceipt(result, reviewRequired: true))
+    }
+    return true
+}
+
+@MainActor
+private func savedFailurePreviewSelfTest() throws {
+    var checks = 0
+    func check(_ value: Bool, _ label: String) throws {
+        guard value else { throw RunnerError.message("Saved failure preview: " + label) }
+        checks += 1
+    }
+    var original = ConversationSession(workspace: "/tmp/fixture", provider: .claude,
+        messages: [ChatMessage(role: .user, text: "schema first"), ChatMessage(role: .system, text: "old failure")])
+    let submissionID = UUID()
+    original.lastFailure = PendingSubmission(id: submissionID, sessionID: original.id,
+        userMessageID: original.messages[0].id, request: "schema first", provider: .claude,
+        workspace: original.workspace, codexCapacity: 0, claudeCapacity: 100, readOnlyReconciliation: false)
+    original.lastFailure?.preflightOnly = false
+    original.lastBackendFailure = BackendFailureNotice(provider: "claude", sessionID: nil,
+        blocker: .effectsUncertain, dispatchStage: .dispatched, permissionProfile: "workspace_write")
+    let recordID = UUID().uuidString.lowercased() + "-1"
+    var artifact: [String: Any] = ["provider": "claude", "permission_profile": "workspace_write", "output": "cached schema", "exit_code": 0]
+    var step = artifact
+    step.merge(["sequence": 1, "action": "fixture", "effort": "low", "model": "fixture",
+        "session_id": UUID().uuidString, "revas_disposition": "rejected", "stderr": "", "duration_ms": 1]) { _, new in new }
+    func record(output: String = "cached schema", owner: UUID? = nil, badHash: Bool = false) throws -> DeliveryRecord {
+        let bytes = try JSONSerialization.data(withJSONObject: artifact, options: .sortedKeys)
+        let value = DeliveryRecord(id: recordID, apiURL: "https://fixture.invalid", deviceID: "fixture",
+            resultSHA256: badHash ? "bad" : SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined(),
+            artifact: bytes, upload: Data(), submission: Data(), step: try JSONSerialization.data(withJSONObject: step),
+            source: nil, output: output, localRejection: "format gate")
+        var json = try JSONSerialization.jsonObject(with: JSONEncoder().encode(value)) as! [String: Any]
+        json["submissionID"] = (owner ?? submissionID).uuidString
+        return try JSONDecoder().decode(DeliveryRecord.self, from: JSONSerialization.data(withJSONObject: json))
+    }
+    let valid = try record()
+    var recovered = original
+    try check(restoreSavedFailurePreview(&recovered, result: valid), "restore")
+    try check(recovered.messages.prefix(2).map(\.text) == original.messages.map(\.text), "original bytes preserved")
+    try check(recovered.messages[2].text == valid.output && recovered.messages[2].nativeRecordVerified == false, "candidate not certified")
+    try check(recovered.lastFailure?.request == "schema first" && recovered.lastFailure?.savedResultNeedsReview == true, "objective/review hold")
+    try check(recovered.lastBackendFailure?.requiresReadback == true && recovered.lastBackendFailure?.blocker == .effectsUncertain, "write hold preserved")
+    try check(!restoreSavedFailurePreview(&recovered, result: valid) && recovered.messages.count == 4, "idempotent")
+    var missingNotice = original; missingNotice.lastBackendFailure = nil
+    try check(restoreSavedFailurePreview(&missingNotice, result: valid) && missingNotice.lastBackendFailure?.requiresReadback == true, "missing notice stays conservative")
+    for bad in [try record(owner: UUID()), try record(output: "tampered"), try record(badHash: true)] {
+        var unchanged = original
+        try check(!restoreSavedFailurePreview(&unchanged, result: bad) && unchanged.messages.count == 2, "identity/hash/output rejection")
+    }
+    step["output"] = "wrong step"
+    try check(!SavedResultEvidence.previewMatches(try record(), submissionID: submissionID), "step output mismatch")
+    step["output"] = "cached schema"; step["provider"] = "codex"
+    try check(!SavedResultEvidence.previewMatches(try record(), submissionID: submissionID), "provider mismatch")
+    step["provider"] = "claude"; step["permission_profile"] = "read_only"
+    try check(!SavedResultEvidence.previewMatches(try record(), submissionID: submissionID), "permission mismatch")
+    step["permission_profile"] = "workspace_write"; artifact["exit_code"] = 1
+    try check(!SavedResultEvidence.previewMatches(try record(), submissionID: submissionID), "failed process")
+
+    // Exercise actual startup loading: this failure is not in inFlight. No
+    // executor is injected or called, and the dependent queue stays held.
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("os1-saved-preview-" + UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    try DeliveryOutbox(root: root.appendingPathComponent("execution-outbox")).save(valid)
+    let queued = PendingSubmission(id: UUID(), sessionID: original.id, userMessageID: UUID(), request: "integrate later",
+        provider: .claude, workspace: original.workspace, codexCapacity: 0, claudeCapacity: 100, readOnlyReconciliation: false)
+    let envelope = SessionEnvelope(schema: 3, sessions: [original], queued: [queued], inFlight: [])
+    try JSONEncoder().encode(envelope).write(to: root.appendingPathComponent("sessions.json"))
+    let store = SessionStore(storageRoot: root)
+    try check(store.sessions.first(where: { $0.id == original.id })?.messages.contains(where: { $0.text == "cached schema" }) == true, "startup hydration")
+    try check(store.queuedSubmissions == [queued] && store.activeRuns.isEmpty, "no dispatch / queue unchanged")
+    let restarted = SessionStore(storageRoot: root)
+    try check(restarted.sessions.first(where: { $0.id == original.id })?.messages.filter { $0.text == "cached schema" }.count == 1, "restart no duplicate")
+    print("OS-1 saved failure preview: \(checks) checks PASS; model calls 0")
+}
+
+private func savedResultReceipt(_ result: DeliveryRecord, id: UUID = UUID(), timestamp: Date = Date(), reviewRequired: Bool = false) -> ChatMessage {
     let step = try? JSONDecoder().decode(AppRunStep.self, from: result.step)
     let verified = SavedResultEvidence.codexRecordVerified(result)
     let verdict = result.response.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }?["status"] as? String
-    let review = result.localRejection != nil || (verdict != nil && verdict != "complete")
+    let review = reviewRequired || result.localRejection != nil || (verdict != nil && verdict != "complete")
     let disposition = review ? "결과 검토 필요 · 과제 완료 판정 아님" : "서버 검증·전달 대기 · 과제 완료 판정 아님"
     var parts = [verified ? "백엔드 실행 기록·답변 원본 확인됨" : "답변 원본 보존됨 · 백엔드 실행 기록 미확인", disposition]
     if let step {
@@ -3071,7 +3173,8 @@ private func presentedMessages(_ session: ConversationSession) -> [ChatMessage] 
           let index = messages.firstIndex(where: { $0.id == previewID && $0.role == .assistant }),
           index + 1 < messages.count, messages[index + 1].role == .receipt,
           let result = try? DeliveryOutbox().read(deliveryID), result.output == messages[index].text else { return messages }
-    messages[index + 1] = savedResultReceipt(result, id: messages[index + 1].id, timestamp: messages[index + 1].timestamp)
+    messages[index + 1] = savedResultReceipt(result, id: messages[index + 1].id, timestamp: messages[index + 1].timestamp,
+        reviewRequired: session.lastFailure?.savedResultNeedsReview == true)
     if messages[index + 1].nativeRecordVerified == true, index + 2 < messages.count,
        messages[index + 2].role == .system, messages[index + 2].text == BackendBlocker.unclassified.message {
         let old = messages[index + 2]
@@ -3926,6 +4029,26 @@ private final class SessionStore: ObservableObject {
         sessions[index].updatedAt = Date()
         statusText = "RCC capacity mix updated"
         save()
+    }
+
+    func chooseContextFiles() {
+        // Keep the picker attached to this conversation. A standalone runModal
+        // panel can land behind the shell when invoked from a background window.
+        guard let window = NSApp.mainWindow ?? NSApp.windows.first(where: {
+            $0.isVisible && !($0 is NSPanel) && $0.canBecomeMain
+        }), window.attachedSheet == nil else { return }
+        let panel = NSOpenPanel()
+        panel.title = "작업에 사용할 파일 선택"
+        panel.prompt = "경로 추가"
+        panel.message = "파일은 자동 전송하지 않습니다. 선택한 경로를 입력창에서 확인한 후 보내세요."
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.allowsMultipleSelection = true
+        panel.beginSheetModal(for: window) { [weak self] result in
+            guard result == .OK, let self else { return }
+            let references = panel.urls.map { $0.standardizedFileURL.path }
+            self.composer = appendingFileReferences(references, to: self.composer)
+        }
     }
 
     func chooseWorkspace() {
@@ -5263,6 +5386,15 @@ private final class SessionStore: ObservableObject {
             }
             sessions[index].lastFailure = recovered
         }
+        // Failures already persisted before exit are not in envelope.inFlight.
+        // Hydrate their paid results too; a restart must not hide the answer or
+        // offer blind generation as the only recovery. Fixtures stay isolated.
+        let outbox = DeliveryOutbox(root: customStorageRoot?.appendingPathComponent("execution-outbox"))
+        for index in sessions.indices {
+            guard let failed = sessions[index].lastFailure,
+                  let result = outbox.forSubmission(failed.id.uuidString) else { continue }
+            if restoreSavedFailurePreview(&sessions[index], result: result) { provenanceRepaired = true }
+        }
         if provenanceRepaired { save() }
     }
 
@@ -5286,6 +5418,15 @@ private final class SessionStore: ObservableObject {
     }
 }
 
+private func appendingFileReferences(_ paths: [String], to draft: String) -> String {
+    guard !paths.isEmpty else { return draft }
+    let quoted = paths.map { path -> String in
+        let bytes = try! JSONEncoder().encode(path)
+        return String(decoding: bytes, as: UTF8.self)
+    }.joined(separator: "\n")
+    return draft + (draft.isEmpty ? "" : "\n\n") + "참조 파일 경로:\n" + quoted
+}
+
 private enum Theme {
     static let background = Color(red: 0.008, green: 0.008, blue: 0.011)
     static let panel = Color(red: 0.015, green: 0.014, blue: 0.017)
@@ -5297,6 +5438,8 @@ private enum Theme {
     static let pink = Color(red: 0.93, green: 0.70, blue: 0.80)
     static let pinkDeep = Color(red: 0.22, green: 0.10, blue: 0.16)
     static let green = Color(red: 0.28, green: 0.93, blue: 0.55)
+    static let sidebarWidth: CGFloat = 256
+    static let conversationWidth: CGFloat = 760
     static let radiusShell: CGFloat = 22
     static let radiusPanel: CGFloat = 18
     static let radiusControl: CGFloat = 13
@@ -5511,20 +5654,25 @@ private func renderComposerPreview(to output: URL) throws {
     var report: [[String: Any]] = []
     for (name, draft, running, stopping, voice) in fixtures {
         let action = ComposerPrimaryAction.resolve(draft: draft, running: running, stopping: stopping, voice: voice)
-        let content = VStack(alignment: .leading, spacing: 12) {
-            Text(name).font(.system(size: 12)).foregroundStyle(Theme.muted)
-            HStack(alignment: .bottom, spacing: 12) {
-                Text(draft.isEmpty ? "OS-1에 작업을 요청하세요…" : draft)
-                    .foregroundStyle(draft.isEmpty ? Theme.muted : Theme.text)
-                    .frame(maxWidth: .infinity, minHeight: 70, alignment: .topLeading)
-                Image(systemName: "mic").frame(width: 44, height: 44).foregroundStyle(Theme.text)
-                ComposerPrimaryButton(action: action, activate: {})
-            }.padding(12).background(Color.black.opacity(0.5))
-                .overlay(RoundedRectangle(cornerRadius: Theme.radiusComposer).stroke(Theme.borderStrong))
-            Text(action.label).font(.system(size: 12)).foregroundStyle(Theme.muted)
-        }.padding(20).frame(width: 660, height: 190).background(Theme.background).environment(\.colorScheme, .dark)
+        // Paint the production composer, not an approximation of its old layout.
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("os1-composer-preview-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = SessionStore(storageRoot: root, runOperation: { _, _, _, _, _ in
+            throw RunnerError.message("Preview cannot execute a backend")
+        }, nativeSessionOpener: { _ in false })
+        store.composer = draft
+        if running {
+            let id = store.selectedSessionID!
+            store.activeRuns[id] = .init(submissionID: UUID(), started: Date().addingTimeInterval(-16),
+                activity: RuntimeActivity(.executing, provider: "codex"), provider: .codex, handedRevision: 0)
+            store.activeRuns[id]?.cancellationRequested = stopping
+        }
+        // The finalizing microphone requires a live audio session; its primary
+        // button resolution is tested separately, never open a microphone here.
+        let content = ComposerView(store: store, session: store.selectedSession!)
+            .frame(width: 660, height: 250).background(Theme.background).environment(\.colorScheme, .dark)
         let view = NSHostingView(rootView: content)
-        view.frame = NSRect(x: 0, y: 0, width: 660, height: 190)
+        view.frame = NSRect(x: 0, y: 0, width: 660, height: 250)
         RunLoop.main.run(until: Date().addingTimeInterval(0.1))
         view.layoutSubtreeIfNeeded(); view.displayIfNeeded()
         guard let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { throw SourceContextError.invalid }
@@ -5532,11 +5680,107 @@ private func renderComposerPreview(to output: URL) throws {
         guard let data = bitmap.representation(using: .png, properties: [:]) else { throw SourceContextError.invalid }
         try data.write(to: output.appendingPathComponent(name + ".png"), options: .atomic)
         report.append(["fixture": name, "action": action.rawValue, "label": action.label, "enabled": action.enabled,
-                       "primaryControlCount": 1, "controlSize": 44])
+                       "primaryControlCount": 1, "controlSize": 32,
+                       "audioPhasePainted": voice == .idle ? "idle" : "not activated; action resolver tested only"])
     }
     try JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys])
         .write(to: output.appendingPathComponent("states.json"), options: .atomic)
     print("Composer previews: 7 state fixtures; shared primary component; model calls 0")
+}
+
+@MainActor
+private func codexShellSelfTest() throws {
+    var checks = 0
+    func check(_ condition: Bool, _ name: String) throws {
+        guard condition else { throw RunnerError.message("Shell regression: " + name) }
+        checks += 1
+    }
+    let id = UUID()
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("os1-shell-test-" + UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let store = SessionStore(storageRoot: root, runOperation: { _, _, _, _, _ in
+        throw RunnerError.message("Shell test cannot execute a backend")
+    }, nativeSessionOpener: { _ in false })
+    let selected = store.selectedSessionID!
+    store.activeRuns[selected] = .init(submissionID: id, started: Date(),
+        activity: RuntimeActivity(.executing, provider: "codex"), provider: .codex, handedRevision: 0)
+    for request in ["QUEUED_ONLY_FIRST_SENTINEL", "QUEUED_ONLY_SECOND_SENTINEL"] {
+        store.composer = request; store.send()
+    }
+    let queueBefore = store.queuedSubmissions
+    let messages = [ChatMessage(role: .user, text: "SENT_USER_SENTINEL"),
+                    ChatMessage(role: .assistant, text: "ANSWER_SENTINEL", provider: "codex")]
+    for running in [false, true] {
+        let text = timelineAttributedDocument(messages: messages, queuedSubmissions: store.queuedSubmissions,
+            isRunning: running, workspace: "/tmp", sourceStore: SourceContextStore(root: root),
+            publicProgress: running ? "PROGRESS_SENTINEL" : nil).string
+        try check(!text.contains("QUEUED_ONLY"), "pending requests excluded from sent transcript")
+        try check(text.contains("SENT_USER_SENTINEL") && text.contains("ANSWER_SENTINEL"), "actual messages retained")
+        try check(!text.contains("작업 진행 중") && !text.contains("queued"), "no duplicate activity summary")
+        try check(text.contains("PROGRESS_SENTINEL") == running, "progress preserved only while running")
+    }
+    try check(store.queuedSubmissions == queueBefore, "presentation never mutates queue")
+    try check(store.queuedSubmissions.map(\.request) == ["QUEUED_ONLY_FIRST_SENTINEL", "QUEUED_ONLY_SECOND_SENTINEL"], "FIFO payload intact")
+    let paths = ["/tmp/a b.txt", "/tmp/한글\"file\n.txt"]
+    let appended = appendingFileReferences(paths, to: "기존 초안")
+    try check(appended.hasPrefix("기존 초안\n\n"), "existing draft preserved")
+    let decoded = try appended.split(separator: "\n").suffix(2).map { try JSONDecoder().decode(String.self, from: Data($0.utf8)) }
+    try check(decoded == paths, "file-reference quoting round-trips Unicode, quote and newline")
+    try check(appendingFileReferences([], to: "그대로") == "그대로", "cancel/no files leaves draft unchanged")
+    try check(Theme.conversationWidth == 760 && Theme.sidebarWidth == 256, "shared layout dimensions")
+    print("Codex-oriented shell: \(checks) checks passed; model calls 0; live state writes 0")
+}
+
+@MainActor
+private func renderShellPreview(to output: URL) throws {
+    try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("os1-shell-preview-" + UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let store = SessionStore(storageRoot: root, runOperation: { _, _, _, _, _ in
+        throw RunnerError.message("Preview cannot execute a backend")
+    }, nativeSessionOpener: { _ in false })
+    let id = store.selectedSessionID!
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    store.sessions[0].workspace = root.path
+    store.sessions[0].title = "대화 화면과 대기 메시지 정리"
+    store.sessions[0].messages = [
+        ChatMessage(role: .user, text: "큐에 보낸 메시지는 입력창 위에 한 번만 보여 줘."),
+        ChatMessage(role: .assistant, text: "대기 메시지는 **입력창 위**에서 관리합니다.\n\n- 순서를 바꾸거나 내용을 편집할 수 있습니다.\n- 현재 작업에 반영하거나 대기를 취소할 수 있습니다.\n- 실행하기 전에는 보낸 대화에 중복 표시하지 않습니다.\n\n```text\n현재 작업 → 대기 메시지 → 다음 작업\n```", provider: "codex")
+    ]
+    store.activeRuns[id] = .init(submissionID: UUID(), started: Date().addingTimeInterval(-16),
+        activity: RuntimeActivity(.executing, provider: "codex"), provider: .codex, handedRevision: 0)
+    for request in ["그다음 수정안을 확인해 줘.", "확인한 결과와 변경 파일을 정리해 줘."] {
+        store.composer = request; store.send()
+    }
+    store.composer = ""
+    let queueBefore = store.queuedSubmissions
+    guard queueBefore.count == 2 else { throw SourceContextError.invalid }
+    for (name, width, height, empty) in [("shell-compact.png", 1_100.0, 780.0, false),
+                                       ("shell-wide.png", 1_440.0, 920.0, false),
+                                       ("shell-empty.png", 1_100.0, 780.0, true)] {
+        if empty {
+            for item in store.queuedSubmissions { store.removeQueued(item.id) }
+            store.sessions[0].messages = []; store.activeRuns = [:]
+        }
+        // Same components as RootView without its native-sidebar polling task.
+        let content = HStack(spacing: 0) {
+            ProviderRail(store: store)
+            Rectangle().fill(Theme.border).frame(width: 1)
+            SessionSidebar(store: store)
+            Rectangle().fill(Theme.border).frame(width: 1)
+            ConversationView(store: store)
+        }.frame(width: width, height: height).background(Theme.background).environment(\.colorScheme, .dark)
+        let view = NSHostingView(rootView: content)
+        view.frame = NSRect(x: 0, y: 0, width: width, height: height)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.15))
+        view.layoutSubtreeIfNeeded(); view.displayIfNeeded()
+        guard let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { throw SourceContextError.invalid }
+        view.cacheDisplay(in: view.bounds, to: bitmap)
+        guard let data = bitmap.representation(using: .png, properties: [:]) else { throw SourceContextError.invalid }
+        try data.write(to: output.appendingPathComponent(name), options: .atomic)
+        if !empty, store.queuedSubmissions != queueBefore { throw SourceContextError.invalid }
+    }
+    print("Shell previews: compact/wide/empty; production views; isolated fixture; model calls 0")
 }
 
 @main
@@ -5619,6 +5863,17 @@ private struct OS1DesktopApp: App {
             NSApplication.shared.run()
             exit(EXIT_FAILURE)
         }
+        if CommandLine.arguments.contains("--self-test-shell") {
+            do { try codexShellSelfTest(); exit(EXIT_SUCCESS) }
+            catch { fputs("\(error.localizedDescription)\n", stderr); exit(EXIT_FAILURE) }
+        }
+        if let flag = CommandLine.arguments.firstIndex(of: "--render-shell-preview") {
+            do {
+                guard CommandLine.arguments.count == flag + 2 else { throw SourceContextError.invalid }
+                try renderShellPreview(to: URL(fileURLWithPath: CommandLine.arguments[flag + 1], isDirectory: true))
+                exit(EXIT_SUCCESS)
+            } catch { fputs("\(error.localizedDescription)\n", stderr); exit(EXIT_FAILURE) }
+        }
         if CommandLine.arguments.contains("--self-test-steering") {
             Task { @MainActor in
                 do { try await steeringInteractionSelfTest(); try await replacementInteractionSelfTest(); exit(EXIT_SUCCESS) }
@@ -5675,6 +5930,20 @@ private struct OS1DesktopApp: App {
                 fputs("\(error.localizedDescription)\n", stderr)
                 exit(EXIT_FAILURE)
             }
+        }
+        if let flag = CommandLine.arguments.firstIndex(of: "--render-governance-preview") {
+            do {
+                guard CommandLine.arguments.count > flag + 1 else { throw SourceContextError.invalid }
+                let output = URL(fileURLWithPath: CommandLine.arguments[flag + 1])
+                let content = GovernanceMonitorView(preview: true, snapshot: GovernanceActivityStore().snapshot())
+                    .frame(width: 1080, height: 1250).environment(\.colorScheme, .dark)
+                let view = NSHostingView(rootView: content)
+                view.frame = NSRect(x: 0, y: 0, width: 1080, height: 1250); view.layoutSubtreeIfNeeded()
+                guard let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { throw SourceContextError.invalid }
+                view.cacheDisplay(in: view.bounds, to: bitmap)
+                guard let png = bitmap.representation(using: .png, properties: [:]) else { throw SourceContextError.invalid }
+                try png.write(to: output); print(output.path); exit(EXIT_SUCCESS)
+            } catch { fputs("\(error.localizedDescription)\n", stderr); exit(EXIT_FAILURE) }
         }
         if let flag = CommandLine.arguments.firstIndex(of: "--render-activity-preview") {
             do {
@@ -5896,6 +6165,7 @@ private struct OS1DesktopApp: App {
         if CommandLine.arguments.contains("--self-test") {
             do {
                 try nativeProvenanceSelfTest()
+                try savedFailurePreviewSelfTest()
                 try providerIntentSelfTest()
                 try taskContextSelfTest()
                 try interactionSelfTest()
@@ -6130,20 +6400,35 @@ private func sidebarSynchronizationSelfTest() throws {
 
 private struct RootView: View {
     @ObservedObject var store: SessionStore
+    @State private var governanceOpen = false
 
     var body: some View {
         HStack(spacing: 0) {
-            ProviderRail(store: store)
+            ProviderRail(store: store, governanceOpen: $governanceOpen)
             Rectangle().fill(Theme.border).frame(width: 1)
-            if store.surface == .auto {
-                SessionSidebar(store: store)
-                Rectangle().fill(Theme.border).frame(width: 1)
-                ConversationView(store: store)
-            } else {
-                NativeSessionBrowser(store: store, provider: store.surface)
+            ZStack {
+                // Keep the conversation mounted: toggling must not reset draft, scroll, queue or run.
+                HStack(spacing: 0) {
+                    if store.surface == .auto {
+                        SessionSidebar(store: store)
+                        Rectangle().fill(Theme.border).frame(width: 1)
+                        ConversationView(store: store)
+                    } else {
+                        NativeSessionBrowser(store: store, provider: store.surface)
+                    }
+                }
+                .opacity(governanceOpen ? 0 : 1)
+                .allowsHitTesting(!governanceOpen)
+                .accessibilityHidden(governanceOpen)
+                if governanceOpen {
+                    GovernanceMonitorView(active: store.activeRuns.values.map { run in
+                        [run.activity.provider ?? "routing", run.activity.model ?? "pending", run.activity.effort ?? "pending"].joined(separator: " · ")
+                    }.sorted(), queued: store.queuedSubmissions.count, onClose: { governanceOpen = false })
+                    .onExitCommand { governanceOpen = false }
+                }
             }
         }
-        .frame(minWidth: 1_100, maxWidth: .infinity, minHeight: 680, maxHeight: .infinity)
+        .frame(minWidth: 980, maxWidth: .infinity, minHeight: 680, maxHeight: .infinity)
         .background(Theme.background)
         .ignoresSafeArea()
         .task {
@@ -6166,6 +6451,12 @@ private struct RootView: View {
 
 private struct ProviderRail: View {
     @ObservedObject var store: SessionStore
+    @Binding var governanceOpen: Bool
+
+    init(store: SessionStore, governanceOpen: Binding<Bool> = .constant(false)) {
+        self.store = store
+        self._governanceOpen = governanceOpen
+    }
 
     var body: some View {
         VStack(spacing: 22) {
@@ -6191,7 +6482,8 @@ private struct ProviderRail: View {
 
             Spacer()
 
-            VStack(spacing: 6) {
+            Button { governanceOpen.toggle() } label: {
+              VStack(spacing: 6) {
                 Circle().fill(Theme.green).frame(width: 9, height: 9)
                     .shadow(color: Theme.green.opacity(0.85), radius: 6)
                 Text("RCC\nGOVERNED")
@@ -6199,7 +6491,13 @@ private struct ProviderRail: View {
                     .tracking(0.7)
                     .multilineTextAlignment(.center)
                     .foregroundStyle(Theme.muted)
+              }.frame(width: 56, height: 52).contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
+            .help("RCC Governance · 토큰, 완수율, 효율 활동 모니터")
+            .accessibilityLabel("RCC Governance Activity Monitor")
+            .accessibilityValue(governanceOpen ? "열림" : "닫힘")
+            .background(governanceOpen ? Theme.green.opacity(0.10) : Color.clear, in: RoundedRectangle(cornerRadius: 10))
         }
         .padding(.vertical, 24)
         .frame(width: 78)
@@ -6270,11 +6568,11 @@ private struct NativeSessionBrowser: View {
                     Text("OS-1").foregroundStyle(Theme.pink)
                     Text("CLODEX").foregroundStyle(Theme.text)
                 }
-                .font(.system(size: 16, weight: .bold, design: .rounded))
-                .tracking(2.1)
+                .font(.system(size: 13, weight: .semibold))
+                .tracking(0.4)
                 .padding(.horizontal, 24)
-                .padding(.top, 34)
-                .padding(.bottom, 24)
+                .padding(.top, 22)
+                .padding(.bottom, 18)
 
                 VStack(alignment: .leading, spacing: 5) {
                     Text(provider == .claude ? "CLAUDE CODE SESSIONS" : "CODEX SESSIONS")
@@ -6308,11 +6606,11 @@ private struct NativeSessionBrowser: View {
                     .accessibilityLabel("Refresh backend sessions")
                 }
                 .padding(.horizontal, 16)
-                .frame(height: 48)
+                .frame(height: 34)
                 .background(Color.black.opacity(0.24))
                 .overlay(
                     RoundedRectangle(cornerRadius: Theme.radiusControl, style: .continuous)
-                        .stroke(Theme.borderStrong)
+                        .stroke(Color.clear)
                 )
                 .clipShape(RoundedRectangle(cornerRadius: Theme.radiusControl, style: .continuous))
                 .padding(.horizontal, 20)
@@ -6377,7 +6675,7 @@ private struct NativeSessionBrowser: View {
                         .font(.system(size: 10)).foregroundStyle(Theme.muted).padding(12)
                 }
             }
-            .frame(width: 315)
+            .frame(width: Theme.sidebarWidth)
             .background(Color.black.opacity(0.72))
 
             Rectangle().fill(Theme.border).frame(width: 1)
@@ -6493,7 +6791,7 @@ private struct NativeTranscriptView: View {
                     .foregroundStyle(Theme.muted)
             }
             .padding(.horizontal, 24)
-            .frame(height: 66)
+            .frame(height: 54)
             .background(Color.black.opacity(0.72))
 
             Rectangle().fill(Theme.border).frame(height: 1)
@@ -6644,6 +6942,7 @@ private func acceptSidebarDrop(_ items: [NSItemProvider], prefix: String, action
 private struct SessionSidebar: View {
     @ObservedObject var store: SessionStore
     @FocusState private var searching: Bool
+    @State private var showMonitor = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -6653,47 +6952,47 @@ private struct SessionSidebar: View {
                 Text("CLODEX")
                     .foregroundStyle(Theme.text)
             }
-            .font(.system(size: 16, weight: .bold, design: .rounded))
-            .tracking(2.1)
-            .padding(.horizontal, 24)
-            .padding(.top, 34)
-            .padding(.bottom, 24)
+            .font(.system(size: 13, weight: .semibold))
+            .tracking(0.4)
+            .padding(.horizontal, 16)
+            .padding(.top, 22)
+            .padding(.bottom, 18)
 
             Button { store.createSession() } label: {
-                Label("New governed task", systemImage: "pencil")
-                    .font(.system(size: 14, weight: .semibold))
+                Label("새 작업", systemImage: "square.and.pencil")
+                    .font(.system(size: 13))
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, 16)
-                    .frame(height: 54)
+                    .frame(height: 36)
                     .background(Color.black.opacity(0.24))
                     .overlay(
                         RoundedRectangle(cornerRadius: Theme.radiusControl, style: .continuous)
-                            .stroke(Theme.borderStrong)
+                            .stroke(Color.clear)
                     )
                     .clipShape(RoundedRectangle(cornerRadius: Theme.radiusControl, style: .continuous))
             }
             .buttonStyle(.plain)
-            .padding(.horizontal, 20)
+            .padding(.horizontal, 10)
 
             HStack(spacing: 8) {
                 Image(systemName: "magnifyingglass").foregroundStyle(Theme.muted)
-                TextField("Search sessions", text: $store.search)
+                TextField("작업 검색", text: $store.search)
                     .textFieldStyle(.plain)
                     .focused($searching)
             }
             .padding(.horizontal, 16)
-            .frame(height: 48)
+            .frame(height: 34)
             .background(Color.black.opacity(0.24))
             .overlay(
                 RoundedRectangle(cornerRadius: Theme.radiusControl, style: .continuous)
-                    .stroke(Theme.borderStrong)
+                    .stroke(Color.clear)
             )
             .clipShape(RoundedRectangle(cornerRadius: Theme.radiusControl, style: .continuous))
-            .padding(.horizontal, 20)
+            .padding(.horizontal, 10)
             .padding(.top, 12)
 
             HStack {
-                Text(store.showArchived ? "ARCHIVED" : "SESSIONS")
+                Text(store.showArchived ? "보관됨" : "작업")
                     .font(.system(size: 10, weight: .bold, design: .rounded))
                     .tracking(1.2)
                     .foregroundStyle(Theme.muted)
@@ -6705,15 +7004,15 @@ private struct SessionSidebar: View {
                     .font(.system(size: 10, weight: .semibold))
                     .foregroundStyle(Theme.muted)
             }
-            .padding(.horizontal, 25)
-            .padding(.top, 24)
+            .padding(.horizontal, 18)
+            .padding(.top, 20)
             .padding(.bottom, 12)
 
             ScrollView {
                 LazyVStack(spacing: 4) {
                     ForEach(store.filteredSessions) { session in
                         if session.id == store.filteredSessions.first?.id && session.pinnedAt != nil {
-                            Text("PINNED").font(.system(size: 9, weight: .bold)).foregroundStyle(Theme.muted)
+                            Text("고정됨").font(.system(size: 9, weight: .bold)).foregroundStyle(Theme.muted)
                                 .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 13)
                         }
                         SessionRow(
@@ -6746,21 +7045,30 @@ private struct SessionSidebar: View {
                         }
                     }
                 }
-                .padding(.horizontal, 20)
+                .padding(.horizontal, 10)
             }
 
-            FrontierMonitorView(store: store)
+            HStack {
+                Button { showMonitor.toggle() } label: {
+                    Label("제공자 상태", systemImage: "waveform.path.ecg")
+                        .font(.system(size: 11)).foregroundStyle(Theme.muted)
+                }.buttonStyle(.plain)
+                    .popover(isPresented: $showMonitor) { FrontierMonitorView(store: store).frame(width: 300).padding(8).preferredColorScheme(.dark) }
+                Spacer()
+            }.padding(16)
 
             Spacer(minLength: 0)
             if let notice = store.sidebarSyncNotice {
                 Text(notice).font(.system(size: 10)).foregroundStyle(Theme.pink).padding(12)
             }
         }
-        .frame(width: 315)
+        .frame(width: Theme.sidebarWidth)
         .background(Color.black.opacity(0.72))
         .onReceive(NotificationCenter.default.publisher(for: Notification.Name("os1.focusSearch"))) { _ in searching = true }
     }
 }
+
+
 
 /// Compact, non-conversational surface for public provider signals. Keeping
 /// this out of the transcript prevents a news poll from changing task context
@@ -6914,12 +7222,12 @@ private struct SessionRow: View {
 
     var body: some View {
         Button(action: action) {
-            VStack(alignment: .leading, spacing: 7) {
-                HStack(spacing: 7) {
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 4) {
                     if activity != nil { RunningSessionIndicator(previewTime: previewTime) }
                     if session.pinnedAt != nil { Image(systemName: "pin.fill").font(.system(size: 10)).foregroundStyle(Theme.pink) }
                     Text(session.title)
-                        .font(.system(size: 13, weight: .semibold))
+                        .font(.system(size: 13, weight: .regular))
                         .foregroundStyle(Theme.text)
                         .lineLimit(1)
                     Spacer(minLength: 0)
@@ -6934,18 +7242,20 @@ private struct SessionRow: View {
                 }
             }
             .padding(.horizontal, 13)
-            .padding(.vertical, 13)
+            .padding(.vertical, 9)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(selected ? Theme.panelRaised : Color.clear)
             .overlay(
                 RoundedRectangle(cornerRadius: 11)
-                    .stroke(selected ? Theme.border.opacity(0.45) : Color.clear)
+                    .stroke(Color.clear)
             )
             .clipShape(RoundedRectangle(cornerRadius: 11))
         }
         .buttonStyle(.plain)
     }
 }
+
+
 
 private struct RunningSessionIndicator: View {
     var previewTime: Date? = nil
@@ -7004,46 +7314,11 @@ private struct ConversationView: View {
     }
 }
 
-private struct ConversationHeader: View {
+private struct ExecutionMenu: View {
     @ObservedObject var store: SessionStore
-
-    private var providerLabel: String {
-        let value: String
-        if store.activeSessionID == store.selectedSessionID {
-            value = store.pendingProvider?.rawValue ?? store.selectedSession?.lastProvider ?? "RCC"
-        } else {
-            value = store.selectedSession?.lastProvider ?? "RCC"
-        }
-        return providerDisplayName(value)
-    }
-
+    let session: ConversationSession
     var body: some View {
-        HStack(spacing: 14) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("\(providerLabel) · \(store.selectedSession?.title ?? "OS-1 CLODEX")")
-                    .font(.system(size: 14, weight: .bold))
-                    .foregroundStyle(Theme.text)
-                    .lineLimit(1)
-                HStack(spacing: 6) {
-                    if let id = store.selectedSessionID, store.isSessionRunning(id) {
-                        ProgressView().controlSize(.mini)
-                    } else { Circle().fill(Theme.green).frame(width: 6, height: 6) }
-                    Text(store.statusText)
-                        .font(.system(size: 10, weight: .medium))
-                        .foregroundStyle(Theme.muted)
-                        .lineLimit(1)
-                }
-            }
-            Spacer()
-
-            if let session = store.selectedSession {
-                Circle().fill(Theme.green).frame(width: 8, height: 8)
-                    .shadow(color: Theme.green.opacity(0.75), radius: 5)
-                Text("RCC governed")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(Theme.muted)
-
-                Menu {
+        Menu {
                     Button("Auto routing") { store.chooseProvider(.auto) }
                     Divider()
                     Menu("Codex capacity · \(session.effectiveCodexCapacity)%") {
@@ -7068,28 +7343,30 @@ private struct ConversationHeader: View {
                         .disabled(session.claudeSessionID == nil)
                     Button("Open in Claude Desktop") { store.openInClaudeDesktop() }
                         .disabled(session.claudeSessionID == nil)
-                } label: {
-                    Label(
-                        session.provider == .auto
-                            ? "Auto mix · C\(session.effectiveCodexCapacity) A\(session.effectiveClaudeCapacity)"
-                            : "Override · \(session.provider.title)",
-                        systemImage: "slider.horizontal.3"
-                    )
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(Theme.green)
-                    .padding(.horizontal, 10)
-                    .frame(height: 35)
-                    .background(Color.black.opacity(0.3))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: Theme.radiusControl, style: .continuous)
-                            .stroke(Theme.border)
-                    )
-                    .clipShape(RoundedRectangle(cornerRadius: Theme.radiusControl, style: .continuous))
-                }
-                .menuStyle(.borderlessButton)
-                .fixedSize()
-                .disabled(store.isRunning)
 
+        } label: {
+            HStack(spacing: 5) {
+                Text(session.provider == .auto ? "자동" : session.provider.title)
+                Image(systemName: "chevron.down").font(.system(size: 8))
+            }.font(.system(size: 11)).foregroundStyle(Theme.muted)
+        }.menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+            .disabled(store.isRunning)
+            .help("RCC 모델·추론 자동 선택 · Codex \(session.effectiveCodexCapacity)% / Claude \(session.effectiveClaudeCapacity)%")
+            .accessibilityLabel("실행 모델 및 라우팅 설정")
+    }
+}
+
+private struct ConversationHeader: View {
+    @ObservedObject var store: SessionStore
+    var body: some View {
+        HStack(spacing: 10) {
+            if let session = store.selectedSession {
+                Image(systemName: "folder").foregroundStyle(Theme.muted)
+                Text(URL(fileURLWithPath: session.workspace).lastPathComponent)
+                    .foregroundStyle(Theme.muted).lineLimit(1)
+                Text("/").foregroundStyle(Theme.muted.opacity(0.5))
+                Text(session.title).fontWeight(.medium).lineLimit(1).foregroundStyle(Theme.text)
+                Spacer(minLength: 8)
                 Menu {
                     Button(session.pinnedAt == nil ? "상단에 고정" : "고정 해제") { store.togglePin(session.id) }
                     Button("이름 변경…") { store.promptRename(session.id) }
@@ -7107,107 +7384,39 @@ private struct ConversationHeader: View {
                 } label: { Image(systemName: "ellipsis").foregroundStyle(Theme.muted) }
                     .menuStyle(.borderlessButton).fixedSize().help("대화 관리")
 
-                Button { store.chooseWorkspace() } label: {
-                    HStack(spacing: 7) {
-                        Image(systemName: "folder")
-                        Text(URL(fileURLWithPath: session.workspace).lastPathComponent)
-                            .lineLimit(1)
-                    }
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(Theme.text)
-                    .padding(.horizontal, 11)
-                    .frame(height: 35)
-                    .background(Color.black.opacity(0.3))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: Theme.radiusControl, style: .continuous)
-                            .stroke(Theme.border)
-                    )
-                    .clipShape(RoundedRectangle(cornerRadius: Theme.radiusControl, style: .continuous))
-                }
-                .buttonStyle(.plain)
-                .disabled(store.isRunning)
-                .help(session.workspace)
+            } else {
+                Text("새 작업").foregroundStyle(Theme.text)
+                Spacer()
             }
-        }
-        .padding(.horizontal, 24)
-        .frame(height: 66)
-        .background(Color.black.opacity(0.72))
+        }.font(.system(size: 12))
+            .padding(.horizontal, 24).frame(height: 54)
+            .background(Theme.background)
     }
 }
 
 private struct WelcomeView: View {
     @ObservedObject var store: SessionStore
     let session: ConversationSession
-
     private let suggestions = [
-        "Inspect this project and explain the safest next step.",
-        "Find the current bug, fix it, and verify the result.",
-        "Review the repository and make the smallest production-ready improvement.",
+        ("프로젝트 살펴보기", "folder", "이 프로젝트를 살펴보고 구조와 다음 작업을 설명해 줘."),
+        ("문제 수정하기", "wrench", "현재 문제의 원인을 확인하고 수정한 다음 결과를 검증해 줘."),
+        ("변경사항 검토", "text.magnifyingglass", "현재 프로젝트의 변경사항을 검토하고 문제를 찾아 줘.")
     ]
-
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 24) {
-                Spacer(minLength: 34)
-                HStack(spacing: 12) {
-                    Image(systemName: "diamond")
-                        .font(.system(size: 9, weight: .bold))
-                        .foregroundStyle(Theme.pink)
-                        .frame(width: 34, height: 34)
-                        .background(Theme.pinkDeep)
-                        .clipShape(Circle())
-                    Text("Routing, model execution, token control, and receipts stay on one governed path.")
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(Theme.muted)
+        VStack(spacing: 24) {
+            Spacer()
+            Text("무엇을 만들어 볼까요?").font(.system(size: 26, weight: .medium)).foregroundStyle(Theme.text)
+            HStack(spacing: 12) {
+                ForEach(suggestions, id: \.0) { item in
+                    Button { store.useSuggestion(item.2) } label: {
+                        Label(item.0, systemImage: item.1).font(.system(size: 12))
+                            .padding(.horizontal, 14).padding(.vertical, 10)
+                            .background(Theme.panelRaised, in: RoundedRectangle(cornerRadius: 10))
+                    }.buttonStyle(.plain).foregroundStyle(Theme.muted)
                 }
-                Text("Start a governed task.")
-                    .font(.system(size: 30, weight: .semibold, design: .rounded))
-                    .foregroundStyle(Theme.text)
-                Text("Choose the project once. RCC routes each turn to Codex or Claude Code with the model tier, reasoning effort, token budget, and workspace authority kept on the same governed path.")
-                    .font(.system(size: 14))
-                    .foregroundStyle(Color.white.opacity(0.62))
-                    .fixedSize(horizontal: false, vertical: true)
-
-                HStack(spacing: 12) {
-                    WelcomeStep(number: "1", title: "Choose folder", detail: "The project OS-1 may inspect or edit")
-                    WelcomeStep(number: "2", title: "Set capacity", detail: "Default mix conserves scarce Codex usage")
-                    WelcomeStep(number: "3", title: "Use OS-1", detail: "RCC selects backend, model, and effort")
-                }
-
-                VStack(alignment: .leading, spacing: 9) {
-                    Text("TRY ONE")
-                        .font(.system(size: 10, weight: .bold, design: .rounded))
-                        .tracking(1.4)
-                        .foregroundStyle(Theme.muted)
-                    ForEach(suggestions, id: \.self) { suggestion in
-                        Button { store.useSuggestion(suggestion) } label: {
-                            HStack {
-                                Text(suggestion)
-                                    .font(.system(size: 12))
-                                    .foregroundStyle(Theme.text)
-                                Spacer()
-                                Image(systemName: "arrow.up.left")
-                                    .font(.system(size: 10))
-                                    .foregroundStyle(Theme.muted)
-                            }
-                            .padding(.horizontal, 14)
-                            .frame(height: 46)
-                            .background(Color.black.opacity(0.3))
-                            .overlay(
-                                RoundedRectangle(cornerRadius: Theme.radiusControl, style: .continuous)
-                                    .stroke(Theme.border)
-                            )
-                            .clipShape(RoundedRectangle(cornerRadius: Theme.radiusControl, style: .continuous))
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-                Spacer(minLength: 20)
             }
-            .padding(.horizontal, 52)
-            .frame(maxWidth: 850, alignment: .leading)
-            .frame(maxWidth: .infinity)
-        }
+            Spacer()
+        }.frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 
@@ -7381,16 +7590,13 @@ private func timelineAttributedDocument(
             )
         case .assistant:
             let provider = providerDisplayName(message.provider)
-            let permission = message.permissionProfile.map {
-                " · \($0.replacingOccurrences(of: "_", with: " "))"
-            } ?? ""
             let providerColor = message.provider == "local"
                 ? TimelinePalette.green
                 : (message.provider == "claude" ? TimelinePalette.claude : TimelinePalette.codex)
             appendBlock(
                 role: MessageRole.assistant.rawValue,
                 components: [
-                    ("◉  \(provider)\(permission)", NSFont.systemFont(ofSize: 10, weight: .bold), providerColor),
+                    ("\(provider)", NSFont.systemFont(ofSize: 10, weight: .medium), providerColor),
                     ("\n\n", NSFont.systemFont(ofSize: 6), TimelinePalette.muted),
                 ],
                 richContent: assistantDisplayText(messages: messages, index: index, expanded: expanded, expandAll: expandAll, sourceStore: sourceStore)
@@ -7424,37 +7630,15 @@ private func timelineAttributedDocument(
         }
     }
 
-    for submission in queuedSubmissions {
-        appendBlock(
-            role: "queued",
-            alignment: .right,
-            minimumHeadIndent: 100,
-            components: [
-                (
-                    timelineNormalizedText(submission.request),
-                    NSFont.systemFont(ofSize: 13, weight: .medium),
-                    TimelinePalette.text.withAlphaComponent(0.72)
-                ),
-                (submission.amendedRequest == nil ? "\u{2028}QUEUED" : "\u{2028}정정 보존 · 현재 턴 전달 대기 / 불가 시 같은 목표로 이어가기",
-                 NSFont.systemFont(ofSize: 9, weight: .bold), TimelinePalette.pink),
-            ]
-        )
-    }
+    // Pending requests belong to ConversationQueueView, not the sent transcript.
 
     if isRunning {
         if let publicProgress, !publicProgress.isEmpty {
             appendBlock(role: "assistant", components: [("진행 중 · 아직 검증되지 않은 출력\n\n", NSFont.systemFont(ofSize: 11), TimelinePalette.muted)],
                 richContent: TranscriptMarkdown.render(publicProgress, key: "live-progress"))
         }
-        let queued = queuedSubmissions.isEmpty ? "" : " · \(queuedSubmissions.count) queued"
-        appendBlock(
-            role: "running",
-            components: [(
-                "작업 진행 중 · \(timelineNormalizedText(workspace))\(queued)",
-                NSFont.systemFont(ofSize: 12),
-                TimelinePalette.muted
-            )]
-        )
+        // Activity and elapsed time have one owner: RunActivityBanner.
+
     }
 
     return document.copy() as! NSAttributedString
@@ -7491,7 +7675,7 @@ private final class ContinuousTranscriptTextView: NSTextView {
     }
     override func setFrameSize(_ newSize: NSSize) {
         super.setFrameSize(newSize)
-        let centeredInset = max(40, ((newSize.width - 1_020) / 2) + 40)
+        let centeredInset = max(32, (newSize.width - Theme.conversationWidth) / 2)
         if abs(textContainerInset.width - centeredInset) > 0.5 {
             textContainerInset = NSSize(width: centeredInset, height: 34)
         }
@@ -7574,9 +7758,9 @@ private final class ContinuousTranscriptTextView: NSTextView {
         for frame in timelineFrames() {
             switch frame.role {
             case MessageRole.user.rawValue:
-                drawRoundedBackground(frame.paint, fill: NSColor.black.withAlphaComponent(0.28), stroke: TimelinePalette.borderStrong, dirtyRect: dirtyRect)
+                drawRoundedBackground(frame.paint, fill: TimelinePalette.panelRaised, stroke: NSColor.clear, dirtyRect: dirtyRect)
             case MessageRole.receipt.rawValue:
-                drawRoundedBackground(frame.paint, fill: NSColor.black.withAlphaComponent(0.36), stroke: TimelinePalette.borderStrong, dirtyRect: dirtyRect)
+                drawRoundedBackground(frame.paint, fill: NSColor.clear, stroke: NSColor.clear, dirtyRect: dirtyRect)
             case "queued":
                 drawRoundedBackground(frame.paint, fill: TimelinePalette.panelRaised, stroke: TimelinePalette.pink.withAlphaComponent(0.24), dirtyRect: dirtyRect)
             default: break
@@ -7655,6 +7839,7 @@ private struct ContinuousTranscriptView: NSViewRepresentable {
         let scrollView = NSScrollView()
         scrollView.drawsBackground = false
         scrollView.contentView = TranscriptClipView()
+        scrollView.contentView.drawsBackground = false
         scrollView.hasVerticalScroller = true
         scrollView.hasHorizontalScroller = false
         scrollView.autohidesScrollers = true
@@ -7909,10 +8094,8 @@ private struct VoiceDictationControl: View {
                     Image(systemName: "mic.fill")
                         .font(.system(size: 13, weight: .semibold))
                         .foregroundStyle(Theme.text)
-                        .frame(width: 44, height: 44)
-                        .background(Theme.panelRaised)
-                        .clipShape(Circle())
-                        .overlay(Circle().stroke(Theme.borderStrong))
+                        .frame(width: 32, height: 32)
+                        .contentShape(Circle())
                 }
                 .buttonStyle(.plain)
                 .help("Dictate task (⌘⇧Space)")
@@ -7934,16 +8117,16 @@ private struct RunActivityBanner: View {
             let now = previewTime ?? context.date
             let seconds = max(0, Int(now.timeIntervalSince(started)))
             let quiet = max(0, Int(now.timeIntervalSince(activity.timestamp)))
-            HStack(spacing: 12) {
+            HStack(spacing: 8) {
                 HStack(alignment: .center, spacing: 3) {
                     ForEach(0..<4) { index in
                         Capsule().fill(Theme.pink)
-                            .frame(width: 3, height: reduceMotion ? 8 : 5 + 12 * (0.5 + 0.5 * sin(now.timeIntervalSinceReferenceDate * 5 - Double(index))))
+                            .frame(width: 3, height: reduceMotion ? 6 : 3 + 8 * (0.5 + 0.5 * sin(now.timeIntervalSinceReferenceDate * 5 - Double(index))))
                     }
-                }.frame(width: 24, height: 20).accessibilityHidden(true)
+                }.frame(width: 16, height: 16).accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: 3) {
                     HStack {
-                        Text(stopping ? "작업 중지 확인 중" : activity.label).font(.system(size: 12, weight: .semibold))
+                        Text(stopping ? "작업 중지 확인 중" : activity.label).font(.system(size: 11))
                         if let model = activity.model { Text(model).font(.system(size: 10)).foregroundStyle(Theme.muted) }
                         if let effort = activity.effort { Text(effort).font(.system(size: 10)).foregroundStyle(Theme.muted) }
                         if let tool = activity.tool { Text(tool).font(.system(size: 10)).foregroundStyle(Theme.muted) }
@@ -8000,7 +8183,7 @@ private struct ConversationQueueView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack {
-                Text(session.queuePaused == true ? "대기열 멈춤 · \(items.count)" : "대기 중 · \(items.count)")
+                Text(session.queuePaused == true ? "대기 메시지 \(items.count) · 일시정지" : "대기 메시지 \(items.count)")
                     .font(.system(size: 11, weight: .medium)).foregroundStyle(Theme.muted)
                 Spacer()
                 Menu {
@@ -8058,15 +8241,18 @@ private struct ConversationQueueView: View {
                             }
                     }
                 }
-            }.frame(height: min(132, CGFloat(items.count) * 42))
-        }.padding(.horizontal, 10).padding(.vertical, 6).foregroundStyle(Theme.text)
-            .background(Theme.panel, in: RoundedRectangle(cornerRadius: 12))
+            }.frame(height: min(126, CGFloat(items.count) * 42))
+        }.padding(.horizontal, 12).padding(.vertical, 8).foregroundStyle(Theme.text)
+            .background(Theme.panelRaised.opacity(0.7), in: RoundedRectangle(cornerRadius: 14))
+            .accessibilityIdentifier("os1.queue.pending")
             .sheet(item: $editing, onDismiss: {
                 if let id = editLease { store.endQueueEdit(id) }; editLease = nil
             }) { item in QueueEditSheet(store: store, submission: item) }
             .onDisappear { if let id = editLease { store.endQueueEdit(id) }; editLease = nil }
     }
 }
+
+
 
 private struct ComposerPrimaryButton: View {
     let action: ComposerPrimaryAction
@@ -8076,7 +8262,7 @@ private struct ComposerPrimaryButton: View {
             Image(systemName: action.icon)
                 .font(.system(size: 14, weight: .bold))
                 .foregroundStyle(Color.black.opacity(0.86))
-                .frame(width: 44, height: 44)
+                .frame(width: 32, height: 32)
                 .background(Theme.pink.opacity(action.enabled ? 1 : 0.45))
                 .clipShape(Circle())
         }
@@ -8088,18 +8274,21 @@ private struct ComposerPrimaryButton: View {
 
 private struct ComposerView: View {
     @ObservedObject var store: SessionStore
-    @ObservedObject private var dictation: VoiceDictationController
     let session: ConversationSession
+    @State private var editorWidth: CGFloat = 560
 
-    init(store: SessionStore, session: ConversationSession) {
-        self.store = store
-        self.dictation = store.voiceDictation
-        self.session = session
+    private var editorHeight: CGFloat {
+        let text = store.composer + " "
+        let bounds = (text as NSString).boundingRect(
+            with: NSSize(width: max(40, editorWidth - 16), height: .greatestFiniteMagnitude),
+            options: [.usesLineFragmentOrigin, .usesFontLeading],
+            attributes: [.font: NSFont.systemFont(ofSize: 14, weight: .medium)])
+        return min(160, max(48, ceil(bounds.height) + 24))
     }
 
     var body: some View {
-        VStack(spacing: 10) {
-            if store.isSessionRunning(session.id), let started = store.runStartedAt {
+        VStack(spacing: 8) {
+            if store.isRunning, let started = store.runStartedAt {
                 RunActivityBanner(activity: store.activeActivity, started: started, stopping: store.isStopping)
             }
             if !store.isSessionRunning(session.id), session.lastFailure != nil {
@@ -8124,97 +8313,66 @@ private struct ComposerView: View {
                     }
                 }
             }
-            HStack(alignment: .bottom, spacing: 12) {
-                ClodexComposerEditor(
-                    text: $store.composer,
-                    onSubmit: store.send,
-                    onCancelVoice: store.cancelVoiceDictation
-                )
-                    .frame(minHeight: 70, maxHeight: 130)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 8)
+
+            VStack(spacing: 4) {
+                ClodexComposerEditor(text: $store.composer, onSubmit: store.send, onCancelVoice: store.cancelVoiceDictation)
+                    .frame(height: editorHeight)
+                    .background(GeometryReader { geometry in
+                        Color.clear.onAppear { editorWidth = geometry.size.width }
+                            .onChange(of: geometry.size.width) { editorWidth = $0 }
+                    })
+                    .padding(.horizontal, 12).padding(.top, 10)
                     .overlay(alignment: .topLeading) {
                         if store.composer.isEmpty {
-                            Text(store.isRunning ? "추가 지시를 입력하세요…" : "OS-1에 작업을 요청하세요…")
-                                .font(.system(size: 14, weight: .medium))
-                                .foregroundStyle(Color.white.opacity(0.3))
-                                .padding(.horizontal, 13)
-                                .padding(.vertical, 14)
-                                .allowsHitTesting(false)
+                            Text(store.isRunning ? "다음 지시를 입력하세요…" : "작업을 요청하세요…")
+                                .font(.system(size: 14)).foregroundStyle(Theme.muted)
+                                .padding(.leading, 17).padding(.top, 17).allowsHitTesting(false)
                         }
                     }
-
-                VoiceDictationControl(
-                    controller: store.voiceDictation,
-                    start: store.toggleVoiceDictation,
-                    finish: store.finishVoiceDictation,
-                    cancel: { _ = store.cancelVoiceDictation() }
-                )
-
-                if store.isRunning, !store.composer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    Button { store.sendCorrectionToCurrentRun() } label: {
-                        Image(systemName: "arrow.turn.up.right").font(.system(size: 14)).frame(width: 30, height: 36)
-                    }.buttonStyle(.plain).disabled(store.isStopping)
-                        .help(store.canSteerSelectedRun ? "현재 작업에 반영" : "현재 작업을 중지하고 추가 지시로 이어가기")
-                        .accessibilityLabel(store.canSteerSelectedRun ? "현재 작업에 반영" : "중지 후 추가 지시로 이어가기")
-                        .accessibilityIdentifier("os1.composer.steer")
-                }
-
-                ComposerPrimaryButton(action: store.primaryAction) { store.performPrimaryAction() }
-                    .contextMenu {
-                        Button(store.canSteerSelectedRun ? "현재 작업에 반영" : "중지 후 추가 지시로 이어가기") { store.sendCorrectionToCurrentRun() }
-                            .disabled(!store.isRunning || store.isStopping || store.composer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                        Button("현재 작업 중지 · ⌘.") { store.cancelSelectedRun() }
-                            .disabled(!store.isRunning || store.isStopping)
+                HStack(spacing: 12) {
+                    Button { store.chooseContextFiles() } label: {
+                        Image(systemName: "plus").frame(width: 24, height: 28)
+                    }.buttonStyle(.plain).help("파일 경로를 입력에 추가 · 전송 전 확인")
+                        .accessibilityLabel("파일 경로 추가")
+                    ExecutionMenu(store: store, session: session)
+                    if session.sourceContext != nil {
+                        Image(systemName: "paperclip").foregroundStyle(Theme.pink)
+                            .help("검증 자료가 연결되어 있습니다. 원본과 해시는 실행 경로에서 유지됩니다.")
                     }
+                    Spacer(minLength: 4)
+                    VoiceDictationControl(controller: store.voiceDictation, start: store.toggleVoiceDictation,
+                        finish: store.finishVoiceDictation, cancel: { _ = store.cancelVoiceDictation() })
+                    if store.isRunning, !store.composer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        Button { store.sendCorrectionToCurrentRun() } label: {
+                            Image(systemName: "arrow.turn.up.right").frame(width: 28, height: 28)
+                        }.buttonStyle(.plain).disabled(store.isStopping)
+                            .help(store.canSteerSelectedRun ? "현재 작업에 반영" : "현재 작업을 중지하고 추가 지시로 이어가기")
+                            .accessibilityLabel(store.canSteerSelectedRun ? "현재 작업에 반영" : "중지 후 추가 지시로 이어가기")
+                            .accessibilityIdentifier("os1.composer.steer")
+                    }
+                    ComposerPrimaryButton(action: store.primaryAction) { store.performPrimaryAction() }
+                        .contextMenu {
+                            Button(store.canSteerSelectedRun ? "현재 작업에 반영" : "중지 후 추가 지시로 이어가기") { store.sendCorrectionToCurrentRun() }
+                                .disabled(!store.isRunning || store.isStopping || store.composer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                            Button("현재 작업 중지 · ⌘.") { store.cancelSelectedRun() }.disabled(!store.isRunning || store.isStopping)
+                        }
+                }.font(.system(size: 13)).foregroundStyle(Theme.muted).padding(.horizontal, 12).padding(.bottom, 10)
             }
-            .padding(12)
-            .background(Color.black.opacity(0.5))
-            .overlay(
-                RoundedRectangle(cornerRadius: Theme.radiusComposer, style: .continuous)
-                    .stroke(Theme.borderStrong)
-            )
-            .clipShape(RoundedRectangle(cornerRadius: Theme.radiusComposer, style: .continuous))
-            .shadow(color: Color.black.opacity(0.32), radius: 16, y: 8)
-
-            HStack {
-                Label(URL(fileURLWithPath: session.workspace).lastPathComponent, systemImage: "folder")
-                Text("·")
-                Text("OS-1 · RCC governed")
-                Text("·")
-                Text("capacity C\(session.effectiveCodexCapacity) / A\(session.effectiveClaudeCapacity)")
-                Text("·")
-                Text("Codex \(session.codexSessionID == nil ? "not linked" : "linked")")
-                Text("·")
-                Text("Claude \(session.claudeSessionID == nil ? "not linked" : "linked")")
-                if let source = session.sourceContext {
-                    Text("·")
-                    Label("Source attached", systemImage: "paperclip")
-                        .foregroundStyle(Theme.pink)
-                        .help("이 대화의 다음 요청에 같은 검증 자료를 전달합니다. 새 주제로 바꾸려면 ‘자료 연결 해제’라고 요청하세요. SHA-256: \(source.sha256)")
-                }
-                if store.selectedSessionQueueCount > 0 {
-                    Text("·")
-                    Label("\(store.selectedSessionQueueCount) queued", systemImage: "text.line.last.and.arrowtriangle.forward")
-                        .foregroundStyle(Theme.pink)
-                }
-                if store.voiceDictation.isActive {
-                    Text("·")
-                    Label(
-                        "\(store.voiceDictation.statusLabel) · \(store.voiceDictation.engineLabel) · \(store.voiceDictation.elapsedLabel)",
-                        systemImage: "waveform"
-                    )
-                        .foregroundStyle(Theme.pink)
-                }
-                Spacer()
-                Text(store.isRunning ? "↩ 대기열에 추가 · ⇧↩ 줄바꿈" : "⌘⇧Space 음성 · ↩ 보내기 · ⇧↩ 줄바꿈")
-            }
-            .font(.system(size: 9, weight: .medium, design: .rounded))
-            .foregroundStyle(Theme.muted)
+            .background(Theme.panel)
+            .clipShape(RoundedRectangle(cornerRadius: 18))
+            .overlay(RoundedRectangle(cornerRadius: 18).stroke(Theme.borderStrong, lineWidth: 1))
+            HStack(spacing: 6) {
+                Button { store.chooseWorkspace() } label: {
+                    Label(URL(fileURLWithPath: session.workspace).lastPathComponent, systemImage: "folder")
+                        .lineLimit(1).truncationMode(.middle)
+                }.buttonStyle(.plain).disabled(store.isRunning).help(session.workspace)
+                Spacer(minLength: 8)
+                Text(store.isRunning ? "↩ 대기열 · ⇧↩ 줄바꿈" : "↩ 보내기 · ⇧↩ 줄바꿈")
+            }.font(.system(size: 10)).foregroundStyle(Theme.muted).padding(.horizontal, 4)
         }
-        .padding(.horizontal, 38)
-        .padding(.top, 12)
-        .padding(.bottom, 18)
+        .padding(.horizontal, 24).padding(.top, 8).padding(.bottom, 14)
+        .frame(maxWidth: Theme.conversationWidth + 48)
+        .frame(maxWidth: .infinity)
         .background(Theme.background)
         .onDisappear { store.stopVoiceDictation() }
     }

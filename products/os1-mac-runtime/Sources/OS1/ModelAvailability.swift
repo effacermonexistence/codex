@@ -137,7 +137,22 @@ enum ModelAvailability {
             source: "native account model/list"), config: config)
         if let limits = try? probe.rateLimits(deadline: deadline) {
             let excluded = CodexQuota.excludedModels(limits, models: catalog.models.map(\.slug))
+            if !excluded.isEmpty {
+                let reset = CodexQuota.exhaustedGeneralResetDescription(limits).map { " (리셋 \($0))" } ?? ""
+                let remaining = catalog.models.map(\.slug).filter { !excluded.contains($0) }
+                RuntimeActivity.emit(.routing, publicText: "Codex 사용량 한도 도달로 \(excluded.count)개 모델을 제외했습니다\(reset). 남은 Codex 모델: \(remaining.isEmpty ? "없음" : remaining.joined(separator: ", "))")
+            }
             catalog = ActiveCodexCatalog(models: catalog.models.filter { !excluded.contains($0.slug) }, source: catalog.source)
+        }
+        // The account's base instructions are sent with every Codex thread; a
+        // model that cannot hold them rejects the turn before reading it.
+        if let bytes = CodexContextBudget.configuredBaseInstructionBytes() {
+            let windows = CodexContextBudget.cachedContextWindows()
+            let oversized = CodexContextBudget.excluded(models: catalog.models.map { ($0.slug, windows[$0.slug]) }, baseInstructionBytes: bytes)
+            if !oversized.isEmpty {
+                RuntimeActivity.emit(.routing, publicText: "Codex 모델 \(oversized.sorted().joined(separator: ", "))은(는) 계정 기본 지시문(\(bytes / 1024)KB, 약 \(CodexContextBudget.requiredTokens(baseInstructionBytes: bytes) / 1000)K 토큰 필요)을 담기에 컨텍스트 창이 작아 제외했습니다.")
+                catalog = ActiveCodexCatalog(models: catalog.models.filter { !oversized.contains($0.slug) }, source: catalog.source)
+            }
         }
         return catalog
     }

@@ -20,10 +20,19 @@ private func XCTAssertThrowsError<T>(_ value: @autoclosure () throws -> T) {
 final class SourceContextTests {
     static func main() throws {
         voiceProcessChildIfRequested()
+        if CommandLine.arguments.contains("--governance-only") { try runGovernanceActivityFixtures(); return }
         if CommandLine.arguments.contains("--drift-only") { try runDriftPolicyFixtures(); return }
         if CommandLine.arguments.count == 4, CommandLine.arguments[1] == "--seed-drift-native-fixture" {
             try seedDriftNativeFixture(workspace: CommandLine.arguments[2], contract: CommandLine.arguments[3]); return
         }
+        if CommandLine.arguments.count == 4, CommandLine.arguments[1] == "--check-output-contract" {
+            let request = try String(contentsOfFile: CommandLine.arguments[2], encoding: .utf8)
+            let answer = try String(contentsOfFile: CommandLine.arguments[3], encoding: .utf8)
+            let issues = HumanOutputContract.issues(in: answer, request: request)
+            print(String(data: try JSONEncoder().encode(issues), encoding: .utf8)!)
+            if !issues.isEmpty { exit(1) }; return
+        }
+        try runExecutionWorkspaceFixtures()
         let suite = SourceContextTests()
         try suite.testSnapshotRoundTripAndRestart()
         try suite.testCorruptionAndMissingFileFailClosed()
@@ -37,6 +46,7 @@ final class SourceContextTests {
         try suite.testBoundedConnectionProbe()
         suite.testRetrievedAnswerPresentation()
         try runCompletionFeedbackFixtures()
+        try runGovernanceActivityFixtures()
         try runDriftPolicyFixtures()
         try runBackendRecoveryFixtures()
         try runExecutionFixtures()
@@ -144,7 +154,10 @@ final class SourceContextTests {
         XCTAssertTrue(HumanOutputContract.issues(in: "```json\n\(valid)\n```", request: "JSON으로만 작성해").isEmpty)
         XCTAssertTrue(HumanOutputContract.issues(in: "제안\n```json\n\(valid)\n```", request: request).contains { $0.contains("readable design") })
         let wide = "| 단계 | 목표 | 의존 | 결과 |\n| --- | --- | --- | --- |\n" + (1...5).map { "| S\($0) | 제안 | 이전 단계 | 미검증 |" }.joined(separator: "\n")
-        XCTAssertTrue(HumanOutputContract.issues(in: wide, request: request).contains { $0.contains("wide architecture") })
+        XCTAssertFalse(HumanOutputContract.issues(in: wide, request: request).contains { $0.contains("wide architecture") })
+        let idDump = (1...8).map { "| V\($0)_GATE | SCHEMA_ID | SOURCE_ID | DEPENDS_ON | TEST_ID | PASS_STATE | CLAIM_ID |" }.joined(separator: "\n")
+        XCTAssertTrue(HumanOutputContract.issues(in: idDump, request: request).contains { $0.contains("wide architecture") })
+        XCTAssertFalse(HumanOutputContract.issues(in: String(repeating: "구성 요소의 역할과 검증 방법을 설명합니다. ", count: 100) + "\n" + idDump, request: request).contains { $0.contains("wide architecture") })
         XCTAssertTrue(HumanOutputContract.issues(in: wide, request: "원문 그대로 보여줘").isEmpty)
         let cycle = #"{"objective":{"required_stage_ids":["a"]},"stages":[{"stage_id":"a","depends_on":["b"]},{"stage_id":"b","depends_on":["a"]}]}"#
         XCTAssertEqual(HumanOutputContract.issues(in: "```json\n\(cycle)\n```", request: "JSON으로만 작성해").count, 2)

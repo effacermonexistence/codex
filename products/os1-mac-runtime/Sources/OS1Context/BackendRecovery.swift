@@ -14,6 +14,7 @@ public enum BackendBlocker: String, Codable, Sendable {
     case incomplete
     case budgetExhausted = "budget_exhausted"
     case cancelled
+    case contextOverflow = "context_overflow"
 
     public var message: String {
         switch self {
@@ -37,6 +38,8 @@ public enum BackendBlocker: String, Codable, Sendable {
             return "필요한 실행 기능을 현재 백엔드에서 사용할 수 없습니다. OS1에 요청과 기존 작업을 보존했습니다."
         case .timeout:
             return "백엔드 응답 시간이 초과됐습니다. OS1에 요청과 기존 작업을 보존했습니다."
+        case .contextOverflow:
+            return "선택한 모델의 컨텍스트 창을 초과해 백엔드가 요청을 읽지 못했습니다. 파일 변경 없이 중단됐고 같은 모델·노력 단계로 재시도하지 않습니다. OS1에 요청과 기존 작업을 보존했습니다."
         case .unclassified:
             return "실행 결과를 확인하지 못했습니다. OS1에 요청과 기존 작업을 보존했습니다."
         case .effectsUncertain:
@@ -62,8 +65,16 @@ public enum BackendBlocker: String, Codable, Sendable {
         }
         if ["401 unauthorized", "status code 401", "http 401", "token expired",
             "expired token", "token has expired", "토큰이 만료", "인증 토큰 만료",
-            "403 forbidden", "not logged in", "please log in again", "authentication failed"].contains(where: text.contains) {
+            "403 forbidden", "not logged in", "please log in again", "authentication failed",
+            "failed to authenticate", "oauth session expired"].contains(where: text.contains) {
             return .authenticationRequired
+        }
+        // The model never received the request: retrying the same model at a
+        // higher effort cannot succeed, and no tool ran, so nothing to reconcile.
+        if ["ran out of room in the model's context window", "context_window_exceeded", "context window exceeded",
+            "exceeds the context window", "exceeded the context window", "prompt is too long",
+            "maximum context length", "context length exceeded", "컨텍스트 창을 초과"].contains(where: text.contains) {
+            return .contextOverflow
         }
         return nil
     }
@@ -158,9 +169,12 @@ public enum BackendRecovery {
                                  remainingAttempts: Int,
                                  dispatchStage: BackendDispatchStage = .dispatched,
                                  unavailableProviders: Set<String> = []) -> String? {
+        // A context overflow is rejected before the model acts, so a write
+        // profile may still move to another backend without replaying writes.
         guard requested == "auto",
-              (permission == "read_only" || (permission == "workspace_write" && dispatchStage == .notDispatched)), !alreadySwitched,
-              remainingAttempts > 0, [.capabilityUnavailable, .timeout, .incomplete].contains(blocker) else { return nil }
+              (permission == "read_only" || (permission == "workspace_write" && (dispatchStage == .notDispatched || blocker == .contextOverflow))),
+              !alreadySwitched, remainingAttempts > 0,
+              [.capabilityUnavailable, .timeout, .incomplete, .contextOverflow].contains(blocker) else { return nil }
         switch failed {
         case "claude": return codexAvailable && !unavailableProviders.contains("codex") ? "codex" : nil
         case "codex": return claudeAvailable && !unavailableProviders.contains("claude") ? "claude" : nil
@@ -171,6 +185,7 @@ public enum BackendRecovery {
     public static func classifiedBlocker(_ blocker: BackendBlocker, permission: String,
                                          stage: BackendDispatchStage, workspaceChanged: Bool) -> BackendBlocker {
         if blocker.requiresReconciliation || [.cancelled, .budgetExhausted].contains(blocker) { return blocker }
+        if blocker == .contextOverflow && !workspaceChanged { return blocker }
         if workspaceChanged || (permission == "workspace_write" && stage == .dispatched) { return .effectsUncertain }
         return blocker
     }
@@ -212,19 +227,22 @@ public struct BackendRecoveryCheckpoint: Codable, Sendable {
     public let nextProvider: String?
     public let dispatchStage: BackendDispatchStage?
     public let nativeSessionID: String?
+    public let observedWorkspace: String?
     public let timestamp: Date
 
     public init(executionID: String, sequence: Int, provider: String, permissionProfile: String,
                 objectiveSHA256: String, sourceSHA256: String?, assembledInputSHA256: String,
                 workspaceBeforeSHA256: String, workspaceAfterSHA256: String,
                 blocker: BackendBlocker, nextProvider: String?,
-                dispatchStage: BackendDispatchStage = .dispatched, nativeSessionID: String? = nil) {
-        schema = 2
+                dispatchStage: BackendDispatchStage = .dispatched, nativeSessionID: String? = nil,
+                observedWorkspace: String? = nil) {
+        schema = 3
         self.executionID = executionID; self.sequence = sequence; self.provider = provider
         self.permissionProfile = permissionProfile; self.objectiveSHA256 = objectiveSHA256
         self.sourceSHA256 = sourceSHA256; self.assembledInputSHA256 = assembledInputSHA256
         self.workspaceBeforeSHA256 = workspaceBeforeSHA256; self.workspaceAfterSHA256 = workspaceAfterSHA256
         self.blocker = blocker; self.nextProvider = nextProvider; timestamp = Date()
+        self.observedWorkspace = observedWorkspace
         self.dispatchStage = dispatchStage
         self.nativeSessionID = nativeSessionID.flatMap { UUID(uuidString: $0)?.uuidString.lowercased() }
     }

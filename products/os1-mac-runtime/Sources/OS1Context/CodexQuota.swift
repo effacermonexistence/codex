@@ -22,4 +22,19 @@ public enum CodexQuota {
         }
         return excluded
     }
+
+    /// Reset time of the exhausted general bucket, for user notices only.
+    public static func exhaustedGeneralResetDescription(_ response: [String: Any], now: Date = Date()) -> String? {
+        guard let general = (response["rateLimitsByLimitId"] as? [String: [String: Any]])?["codex"] else { return nil }
+        for key in ["primary", "secondary"] {
+            guard let window = general[key] as? [String: Any], let used = window["usedPercent"] as? NSNumber,
+                  used.doubleValue >= 100, let reset = window["resetsAt"] as? NSNumber,
+                  reset.doubleValue > now.timeIntervalSince1970 else { continue }
+            let formatter = DateFormatter()
+            formatter.locale = Locale(identifier: "en_US_POSIX")
+            formatter.dateFormat = "yyyy-MM-dd HH:mm zzz"
+            return formatter.string(from: Date(timeIntervalSince1970: reset.doubleValue))
+        }
+        return nil
+    }
 }

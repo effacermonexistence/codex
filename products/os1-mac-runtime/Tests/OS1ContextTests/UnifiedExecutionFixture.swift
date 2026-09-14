@@ -19,6 +19,15 @@ func runUnifiedExecutionFixtures() throws {
     try check(UnifiedExecution.claudeTerminalBlocker(status: 1, object: ["subtype": "error_max_turns", "errors": ["HTTP 401"]]) == .authenticationRequired, "auth before incompletion")
     try check(UnifiedExecution.claudeTerminalBlocker(status: 1, object: ["subtype": "error_max_turns", "permission_denials": [["tool_name": "Bash"]], "errors": ["You've hit your session limit"]]) == .policyDenied, "denial before fallback")
     try check(UnifiedExecution.claudeTerminalBlocker(status: 0, object: ["subtype": "success", "result": "You've hit your session limit is an example"]) == nil, "quoted error not protocol failure")
+    // Air recovery captured Claude CLI 2.1.263 returning subtype=success but
+    // is_error=true, exit=1 and zero tokens when local OAuth refresh expired.
+    let expiredAuth = "Failed to authenticate: OAuth session expired and could not be refreshed"
+    for status: Int32 in [0, 1] {
+        try check(UnifiedExecution.claudeTerminalBlocker(status: status, object: ["subtype": "success", "is_error": true, "result": expiredAuth]) == .authenticationRequired, "OAuth refresh expiry is authentication, not answer quality")
+    }
+    try check(UnifiedExecution.claudeTerminalBlocker(status: 0, object: ["subtype": "success", "is_error": false, "result": expiredAuth]) == nil, "successful diagnostic may quote OAuth failure")
+    try check(UnifiedExecution.claudeTerminalBlocker(status: 1, object: ["is_error": true, "errors": [expiredAuth], "permission_denials": [["tool_name": "Bash"]]]) == .policyDenied, "policy denial still has priority")
+    try check(BackendRecovery.alternate(requested: "auto", failed: "claude", permission: "read_only", blocker: .authenticationRequired, codexAvailable: true, claudeAvailable: true, alreadySwitched: false, remainingAttempts: 2) == nil, "authentication cannot trigger a paid backend retry")
     let safetyError = "This request was blocked by our safety systems. Reason: Potentially unintended activity."
     try check(UnifiedExecution.claudeTerminalBlocker(status: 1, object: ["is_error": true, "errors": [safetyError]]) == .safetyBlocked, "provider safety enforcement distinct from approval")
     try check(UnifiedExecution.claudeTerminalBlocker(status: 0, object: ["subtype": "success", "result": safetyError]) == nil, "successful explanation may quote safety error")

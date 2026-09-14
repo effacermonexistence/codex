@@ -778,6 +778,14 @@ func promptRequiresShellCapability(_ prompt: String) -> Bool {
     ].contains { value.contains($0) }
     if explicitShell { return true }
 
+    // A feasibility question asks whether something can be done; answering it
+    // needs no shell. Explicit tool names above still select the shell lane.
+    let feasibilityQuestion = [
+        "가능하냐", "가능하니", "가능해", "가능한지", "가능할까", "가능합니까", "할 수 있냐", "할 수 있어", "할 수 있는지", "할 수 있니",
+        "되냐", "되겠냐", "되나요", "될까", "can you", "could you", "is it possible", "are you able", "would it be possible",
+    ].contains { value.contains($0) }
+    if feasibilityQuestion { return false }
+
     let executionActions = [
         "실행해", "실행 해", "실행시켜", "돌려", "설치해", "설치 해", "빌드해", "빌드 해",
         "테스트해", "테스트 해", "테스트 돌", "배포해", "배포 해", "업로드해", "업로드 해",
@@ -1244,6 +1252,7 @@ func codexTurnBlocker(_ turn: [String: Any], approvalRejected: Bool) -> BackendB
     guard turn["status"] as? String != "completed", let error = turn["error"] as? [String: Any] else { return nil }
     if let blocker = BackendBlocker.reported(in: error["message"] as? String ?? "") { return blocker }
     let kind = (error["codexErrorInfo"] as? String ?? "").lowercased().replacingOccurrences(of: "_", with: "")
+    if kind == "contextwindowexceeded" { return .contextOverflow }
     if kind == "usagelimitexceeded" {
         return items.contains { ["commandExecution", "fileChange", "mcpToolCall"].contains($0["type"] as? String ?? "") }
             ? .effectsUncertain : .quotaExhausted
@@ -2349,6 +2358,17 @@ private func sourceAnswerWorkspace() throws -> String {
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true,
                                           attributes: [.posixPermissions: 0o700])
     return root.path
+}
+
+/// Same resolver is used before dispatch, by the executor, and after return.
+private func providerExecutionWorkspace(provider: String, permission: String,
+                                        hasSource: Bool, workspace: String) throws -> String {
+    if ExecutionWorkspace.usesSourceIsolation(provider: provider, permission: permission,
+        hasSource: hasSource, workspace: workspace,
+        home: FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL.path) {
+        return try sourceAnswerWorkspace()
+    }
+    return workspace
 }
 
 /// Persist the actual provider data, not the truncated display text. Reuse of
@@ -4064,7 +4084,7 @@ final class CodexAppServerClient: @unchecked Sendable {
         _ = try request(
             "initialize",
             params: [
-                "clientInfo": ["name": "OS-1 CLODEX", "version": "0.9.49"],
+                "clientInfo": ["name": "OS-1 CLODEX", "version": "0.9.56"],
                 "capabilities": ["experimentalApi": true],
             ],
             deadline: deadline
@@ -4895,6 +4915,8 @@ private func execute(
     onInstructions: ((String) -> Void)? = nil
 ) throws -> ProviderExecution {
     let started = Date()
+    let executionWorkspace = try providerExecutionWorkspace(provider: ticket.provider,
+        permission: ticket.permissionProfile, hasSource: preloadedR2Evidence != nil, workspace: workspace)
     let lockedObjective = objectivePrompt ?? prompt
     if ticket.provider == "claude",
        ticket.permissionProfile == "read_only",
@@ -4967,7 +4989,7 @@ private func execute(
         ) } catch {
             throw interruptedExecution(ticket: ticket, model: model, effort: effort, contract: executorContract,
                 sessionID: actualSessionID, publicProgress: appServer.interruptedPublicProgress,
-                beforeHash: workspaceBeforeHash, workspace: workspace, started: started, cause: error)
+                beforeHash: workspaceBeforeHash, workspace: executionWorkspace, started: started, cause: error)
         }
         // Account for this exact native turn before any quality guard rejects
         // it. Never hide a second paid repair inside one signed route ticket.
@@ -5057,7 +5079,6 @@ private func execute(
         let sourceOnly = hasPreloadedR2Evidence && ticket.permissionProfile == "read_only"
         let projectlessRead = ticket.permissionProfile == "read_only" &&
             workspace == FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL.path
-        let executionWorkspace = try (sourceOnly || projectlessRead) ? sourceAnswerWorkspace() : workspace
         let previousSessionID = try normalizedSessionID(providerSessionID)
         // Once Desktop imports a CLI transcript it starts its own long-lived
         // Claude process for that session. Starting another `--resume` writer
@@ -5110,7 +5131,7 @@ private func execute(
             if let result = stream.result { onUsage?(CompletionUsageParser.parseClaudeResult(result)) }
             throw interruptedExecution(ticket: ticket, model: model, effort: effort, contract: executorContract,
                 sessionID: activeSessionID, publicProgress: stream.text, beforeHash: workspaceBeforeHash,
-                workspace: workspace, started: started, cause: error)
+                workspace: executionWorkspace, started: started, cause: error)
         }
         stream.finishClaude()
         let resultData = stream.result ?? raw.1
@@ -5122,7 +5143,7 @@ private func execute(
             let progress = object?["session_id"] as? String == activeSessionID ? (object?["result"] as? String ?? stream.text) : stream.text
             throw interruptedExecution(ticket: ticket, model: model, effort: effort, contract: executorContract,
                 sessionID: activeSessionID, publicProgress: progress, beforeHash: workspaceBeforeHash,
-                workspace: workspace, started: started, cause: error)
+                workspace: executionWorkspace, started: started, cause: error)
         }
         let outputIssues = outputContractIssues(parsed.output, prompt: lockedObjective, snapshotOnly: hasPreloadedR2Evidence)
         let rejectedConfiguration = claudeOutputMisclassifiedRuntimeConfiguration(parsed.output)
@@ -5188,7 +5209,7 @@ private func execute(
             stderr: boundedString(result.2, maximum: 180_000),
             durationMS: Int64(Date().timeIntervalSince(started) * 1_000),
             workspaceBeforeHash: workspaceBeforeHash,
-            workspaceAfterHash: workspaceHash(workspace),
+            workspaceAfterHash: workspaceHash(executionWorkspace),
             nativeRecord: nativeRecord
         ),
         sessionID: sessionID,
@@ -5501,7 +5522,9 @@ func runLocalTask(
         try validateLocalRoute(decision, codexModels: codexCatalog.models)
         let ticket = localTicket(decision, sequence: attempt)
         RuntimeActivity.emit(.executing, provider: decision.provider, model: decision.model, effort: decision.effort)
-        let beforeHash = workspaceHash(workspace)
+        let observedWorkspace = try providerExecutionWorkspace(provider: ticket.provider,
+            permission: ticket.permissionProfile, hasSource: r2Evidence != nil, workspace: workspace)
+        let beforeHash = workspaceHash(observedWorkspace)
         let executionPrompt: String
         if let retryReason {
             executionPrompt = localPrompt + "\n\nOS-1 verification did not adopt the prior candidate (\(retryReason)). Re-execute the original request using a changed verification or execution path, then provide concrete evidence."
@@ -5546,7 +5569,7 @@ func runLocalTask(
                     reason: failure.description, source: nil)
                 throw failure
             }
-            guard decision.permissionProfile == "read_only", workspaceHash(workspace) == beforeHash else {
+            guard decision.permissionProfile == "read_only", workspaceHash(observedWorkspace) == beforeHash else {
                 throw OS1Error.backendBlocked(.effectsUncertain)
             }
             guard !decision.providerPinned, attempt < config.maximumSteps else { throw error }
@@ -5566,7 +5589,7 @@ func runLocalTask(
             continue
         }
         let artifact = execution.artifact
-        let afterHash = workspaceHash(workspace)
+        let afterHash = workspaceHash(observedWorkspace)
         RuntimeActivity.emit(.verifying, provider: decision.provider, model: decision.model, effort: decision.effort)
         let verification: LocalVerification = try privateCoreCall(
             "verify",
@@ -5747,6 +5770,12 @@ func completionFailureOutcome(_ reason: String?) -> CompletionOutcome {
         return .verificationUnavailable
     }
     if value == BackendBlocker.quotaExhausted.message.lowercased() { return .quotaExhausted }
+    // The model never read the request; raising effort on it cannot help.
+    if value == BackendBlocker.contextOverflow.message.lowercased() ||
+        ["context window", "context_window", "ran out of room", "prompt is too long", "context length", "컨텍스트 창을 초과"]
+            .contains(where: value.contains) {
+        return .capabilityFailure
+    }
     if value.contains("timed out") || value.contains("timeout") || value.contains("time limit") { return .timeout }
     if ["capabilit", "권한", "permission", "executable", "authentication", "login", "not installed",
         "api key", "rate limit", "overloaded", "failed to launch", "spawn"].contains(where: value.contains) {
@@ -5758,14 +5787,18 @@ func completionFailureOutcome(_ reason: String?) -> CompletionOutcome {
 private func recordCompletionAttempt(store: CompletionFeedbackStore, scope: CompletionFeedbackScope,
                                      ticket: Ticket, model: String, effort: String,
                                      outcome: CompletionOutcome, usage: CompletionMeasuredUsage?,
-                                     startedAt: Date, source: SourceReference?) {
-    do {
-        try store.record(scope: scope, observation: CompletionFeedbackObservation(
+                                     startedAt: Date, source: SourceReference?, monitorTaskID: String, monitorScope: CompletionFeedbackScope) {
+    let observation = CompletionFeedbackObservation(
             executionID: ticket.executionID, sequence: ticket.sequence, provider: ticket.provider,
             model: model, effort: effort,
             outcome: ExecutionSteering.currentSubmission.map { !ExecutionSteering().inputs($0).isEmpty } == true
                 ? .verificationUnavailable : outcome, usage: usage,
-            durationMS: min(3_600_000, max(0, Int(Date().timeIntervalSince(startedAt) * 1_000)))))
+            durationMS: min(3_600_000, max(0, Int(Date().timeIntervalSince(startedAt) * 1_000))))
+    try? GovernanceActivityStore().attempt(id: monitorTaskID, executionID: ticket.executionID,
+        sequence: ticket.sequence, scope: monitorScope, provider: ticket.provider, model: model, effort: effort,
+        startedAt: startedAt, observation: observation)
+    do {
+        try store.record(scope: scope, observation: observation)
     } catch {
         // A corrupt/unwritable telemetry file must not destroy the objective
         // or be silently treated as zero-cost execution.
@@ -5794,6 +5827,10 @@ func runTask(
     let attachedSource = sourceDetached ? nil : handoff.source
     let objectiveStartedAt = Date()
     let executionID = UUID().uuidString.lowercased()
+    var monitorAdopted = false
+    try? GovernanceActivityStore().begin(id: executionID, now: objectiveStartedAt)
+    defer { try? GovernanceActivityStore().finish(id: executionID, adopted: monitorAdopted,
+        cancelled: ExecutionCancellation.isCancelled) }
     // OS-1 owns the task state. A v2 handoff (older app) is migrated from the
     // fields it already carries; nothing in the conversation is discarded.
     var taskState = handoff.taskContext ?? TaskContext.migrated(conversationID: UUID(), request: prompt, workspace: workspace,
@@ -5847,6 +5884,7 @@ func runTask(
         var summary = try runSourceStatusControl(config: config)
         summary.sourceContext = attachedSource
         summary.taskContext = taskState
+        monitorAdopted = summary.status == "complete"
         return summary
     }
     let requestsR2Retrieval = r2Objective != nil
@@ -5855,6 +5893,7 @@ func runTask(
         var summary = try runConnectionControl(targets)
         summary.sourceContext = attachedSource
         summary.taskContext = taskState
+        monitorAdopted = summary.status == "complete"
         return summary
     }
     if let preparation, preparationAdapter == .localWorkspace, let projectID = preparationProject, r2Objective == nil {
@@ -5868,7 +5907,8 @@ func runTask(
                 stage: "prepared", startedAt: objectiveStartedAt, endedAt: Date(), sideEffects: .none, adoption: .adopted,
                 contextRevision: taskState.latestSemanticRevision))
             summary.taskContext = taskState
-            return summary
+            monitorAdopted = summary.status == "complete"
+        return summary
         }
     }
     // Once attached, source delivery does not depend on spelling, pronouns,
@@ -5966,10 +6006,12 @@ func runTask(
             stage: scvPreparation ? "prepared" : "retrieved", startedAt: objectiveStartedAt, endedAt: Date(),
             sideEffects: .none, adoption: .adopted, contextRevision: taskState.latestSemanticRevision))
         summary.taskContext = taskState
+        monitorAdopted = summary.status == "complete"
         return summary
     }
     let taskContext = taskState
     func finishedRun(_ adopted: [RunStepSummary]) -> RunSummary {
+        monitorAdopted = true
         var finished = taskContext
         for step in adopted where step.provider != "local" && UUID(uuidString: step.sessionID) != nil {
             finished.bind(provider: step.provider, nativeSessionID: step.sessionID)
@@ -6130,12 +6172,20 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
         if progress {
             print("OS-1 step \(step): \(ticket.provider) / \(ticket.action) / \(effort) / \(ticket.permissionProfile)")
         }
-        let beforeHash = workspaceHash(canonicalWorkspace)
+        let observedWorkspace = try providerExecutionWorkspace(provider: ticket.provider,
+            permission: ticket.permissionProfile, hasSource: r2Evidence != nil, workspace: canonicalWorkspace)
+        let beforeHash = workspaceHash(observedWorkspace)
         let attemptPrompt = localPrompt + (try continuation?.handoffBlock() ?? "")
         let attemptInputSHA256 = CompletionFeedbackScope.inputDigest(assembledInput: attemptPrompt,
             codexSessionID: nativeSessions["codex"] ?? nil, claudeSessionID: nativeSessions["claude"] ?? nil,
             workspace: canonicalWorkspace)
         let attemptStartedAt = Date()
+        let monitorScope = CompletionFeedbackScope(objectiveSHA256: feedbackScope.objectiveSHA256,
+            sourceSHA256: feedbackScope.sourceSHA256, executorContractSHA256: feedbackScope.executorContractSHA256,
+            assembledInputSHA256: attemptInputSHA256)
+        try? GovernanceActivityStore().attempt(id: executionID, executionID: ticket.executionID,
+            sequence: ticket.sequence, scope: monitorScope, provider: ticket.provider, model: model,
+            effort: effort, startedAt: attemptStartedAt)
         var attemptUsage: CompletionMeasuredUsage?
         var attemptFailure: String?
         var attemptRecorded = false
@@ -6147,7 +6197,7 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
             if !attemptRecorded {
                 recordCompletionAttempt(store: feedbackStore, scope: feedbackScope, ticket: ticket,
                     model: model, effort: effort, outcome: .verificationUnavailable,
-                    usage: attemptUsage, startedAt: attemptStartedAt, source: sourceContext)
+                    usage: attemptUsage, startedAt: attemptStartedAt, source: sourceContext, monitorTaskID: executionID, monitorScope: monitorScope)
             }
         }
         let execution: ProviderExecution
@@ -6220,13 +6270,13 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
                 if backendBlocker(error) == .quotaExhausted {
                     lastFailureNotice = BackendFailureNotice(provider: ticket.provider, sessionID: interruptedSessionID,
                         blocker: BackendRecovery.classifiedBlocker(.quotaExhausted, permission: ticket.permissionProfile,
-                            stage: dispatchStage, workspaceChanged: workspaceHash(canonicalWorkspace) != beforeHash),
+                            stage: dispatchStage, workspaceChanged: workspaceHash(observedWorkspace) != beforeHash),
                         dispatchStage: dispatchStage, source: sourceContext, permissionProfile: ticket.permissionProfile,
                         publicProgress: (error as? RejectedProviderExecution)?.execution.artifact.output)
                     lastFailureNotice?.emit()
                     recordCompletionAttempt(store: feedbackStore, scope: feedbackScope, ticket: ticket,
                         model: model, effort: effort, outcome: .quotaExhausted, usage: attemptUsage,
-                        startedAt: attemptStartedAt, source: sourceContext)
+                        startedAt: attemptStartedAt, source: sourceContext, monitorTaskID: executionID, monitorScope: monitorScope)
                     attemptRecorded = true
                     failedCandidates.insert(candidateKey)
                     guard providerPreference == "auto", step < attemptLimit,
@@ -6260,10 +6310,62 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
                     lastFailureNotice = nil
                     continue
                 }
+                if backendBlocker(error) == .contextOverflow {
+                    recordExecutionFailure(ticket: ticket, model: model, effort: effort,
+                        reason: "context_overflow_observed provider=\(ticket.provider) preference=\(providerPreference) step=\(step)/\(attemptLimit) catalog=\(codexCatalog.models.map(\.slug).joined(separator: "|"))",
+                        source: sourceContext)
+                }
+                if backendBlocker(error) == .contextOverflow, ticket.provider == "codex",
+                   ["auto", "codex"].contains(providerPreference), step < attemptLimit {
+                    // The model never read the request, so a higher effort on the
+                    // same model cannot help and nothing was written. Ask the route
+                    // service for another Codex model with the overflowing slug
+                    // removed before leaving Codex for the other backend.
+                    let remaining = ActiveCodexCatalog(models: codexCatalog.models.filter { $0.slug != model }, source: codexCatalog.source)
+                    if !remaining.models.isEmpty {
+                        codexCatalog = remaining
+                        lastFailureNotice = BackendFailureNotice(provider: ticket.provider, sessionID: interruptedSessionID,
+                            blocker: .contextOverflow, dispatchStage: dispatchStage, source: sourceContext,
+                            permissionProfile: ticket.permissionProfile)
+                        lastFailureNotice?.emit()
+                        recordCompletionAttempt(store: feedbackStore, scope: feedbackScope, ticket: ticket,
+                            model: model, effort: effort, outcome: .capabilityFailure, usage: attemptUsage,
+                            startedAt: attemptStartedAt, source: sourceContext, monitorTaskID: executionID, monitorScope: monitorScope)
+                        attemptRecorded = true
+                        failedCandidates.insert(candidateKey)
+                        recordBackendCheckpoint(BackendRecoveryCheckpoint(executionID: ticket.executionID,
+                            sequence: ticket.sequence, provider: ticket.provider, permissionProfile: ticket.permissionProfile,
+                            objectiveSHA256: feedbackScope.objectiveSHA256, sourceSHA256: sourceContext?.sha256,
+                            assembledInputSHA256: attemptInputSHA256,
+                            workspaceBeforeSHA256: beforeHash, workspaceAfterSHA256: beforeHash,
+                            blocker: .contextOverflow, nextProvider: "codex",
+                            dispatchStage: dispatchStage, nativeSessionID: interruptedSessionID,
+                            observedWorkspace: observedWorkspace))
+                        var freshContext = request.executionContext
+                        if let existing = freshContext, let continuation {
+                            freshContext = ExecutionInputContext(inputUTF8Bytes: existing.inputUTF8Bytes + (try continuation.handoffBlock()).utf8.count,
+                                sourceUTF8Bytes: existing.sourceUTF8Bytes, historyUTF8Bytes: existing.historyUTF8Bytes,
+                                completionFeedback: existing.completionFeedback, availableClaudeModels: existing.availableClaudeModels)
+                        }
+                        if feedbackSupported {
+                            freshContext?.completionFeedback = try feedbackStore.load(scope: feedbackScope)?.publicFeedback()
+                        }
+                        let next = StartExecutionRequest(task: request.task, providerPreference: "codex",
+                            capacityPlan: request.capacityPlan, executorContractVersion: request.executorContractVersion,
+                            executorContractSHA256: request.executorContractSHA256, availableCodexModels: codexCatalog.models,
+                            executionContext: freshContext)
+                        RuntimeActivity.emit(.recovering)
+                        route = try await client.post("/v1/executions", body: next, as: RouteResponse.self)
+                        guard route.ticket?.permissionProfile == ticket.permissionProfile,
+                              route.ticket?.provider == "codex" else { throw error }
+                        lastFailureNotice = nil
+                        continue
+                    }
+                }
                 if let failure = ((error as? RejectedProviderExecution)?.cause ?? error) as? OS1Error, failure.isTerminalBackendFailure {
                     terminalPermissionFailure = failure
                 }
-                let afterHash = workspaceHash(canonicalWorkspace)
+                let afterHash = workspaceHash(observedWorkspace)
                 let blocker = backendBlocker(error) ?? .unclassified
                 // Local diffs cannot prove remote effects absent. Never replay a
                 // partially executed write operation after an unknown outcome.
@@ -6289,7 +6391,8 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
                     assembledInputSHA256: attemptInputSHA256,
                     workspaceBeforeSHA256: beforeHash, workspaceAfterSHA256: afterHash,
                     blocker: safeBlocker, nextProvider: sourceRecoveryProvider,
-                    dispatchStage: dispatchStage, nativeSessionID: interruptedSessionID))
+                    dispatchStage: dispatchStage, nativeSessionID: interruptedSessionID,
+                    observedWorkspace: observedWorkspace))
                 // Fail closed locally, but do not terminate the governed run.
                 // A non-zero, content-free artifact lets REVAS reject this
                 // attempt and choose the next route with a new signed ticket.
@@ -6299,7 +6402,7 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
                     effort: effort,
                     executorContract: config.executorContract,
                     workspaceBeforeHash: beforeHash,
-                    workspace: canonicalWorkspace
+                    workspace: observedWorkspace
                 )
             }
         }
@@ -6367,7 +6470,7 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
             // into a completion, generic write-uncertainty or steering retry.
             recordCompletionAttempt(store: feedbackStore, scope: feedbackScope, ticket: ticket,
                 model: model, effort: effort, outcome: completionFailureOutcome(attemptFailure),
-                usage: attemptUsage, startedAt: attemptStartedAt, source: sourceContext)
+                usage: attemptUsage, startedAt: attemptStartedAt, source: sourceContext, monitorTaskID: executionID, monitorScope: monitorScope)
             attemptRecorded = true
             recordExecutionFailure(ticket: ticket, model: model, effort: effort,
                 reason: "terminal_backend_blocker_no_model_retry", source: sourceContext)
@@ -6380,7 +6483,7 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
                 reason: "verifier_completed_locally_rejected_candidate", source: sourceContext)
             recordCompletionAttempt(store: feedbackStore, scope: feedbackScope, ticket: ticket,
                 model: model, effort: effort, outcome: completionFailureOutcome(attemptFailure),
-                usage: attemptUsage, startedAt: attemptStartedAt, source: sourceContext)
+                usage: attemptUsage, startedAt: attemptStartedAt, source: sourceContext, monitorTaskID: executionID, monitorScope: monitorScope)
             attemptRecorded = true
             throw OS1Error.message("서버의 완료 판정과 실제 실행 증거가 일치하지 않아 결과를 채택하지 않았습니다. 요청과 원본은 보존했습니다.")
         }
@@ -6390,7 +6493,7 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
         recordCompletionAttempt(store: feedbackStore, scope: feedbackScope, ticket: ticket,
             model: model, effort: effort,
             outcome: revasDisposition == "adopted" ? .adopted : completionFailureOutcome(attemptFailure),
-            usage: attemptUsage, startedAt: attemptStartedAt, source: sourceContext)
+            usage: attemptUsage, startedAt: attemptStartedAt, source: sourceContext, monitorTaskID: executionID, monitorScope: monitorScope)
         attemptRecorded = true
         if revasDisposition != "adopted",
            ExecutionSteering.currentSubmission.map({ !ExecutionSteering().inputs($0).isEmpty }) == true {
@@ -6548,6 +6651,7 @@ func resumeDelivery(_ identifier: String) async throws -> RunSummary {
         }
     }
     let native = step.nativeRecord.map { publishAdoptedNativeRecord($0, provider: step.provider, sessionID: step.sessionID, mode: .background) }
+    try? GovernanceActivityStore().deliveryAdopted(executionID: submission.ticket.executionID, sequence: submission.ticket.sequence)
     BackendFailureNotice.clear()
     return RunSummary(status: "complete", steps: [RunStepSummary(sequence: step.sequence, provider: step.provider,
         action: step.action, model: step.model, effort: step.effort, revasDisposition: "adopted", sessionID: step.sessionID,
@@ -6670,6 +6774,24 @@ func steeringProtocolSelfTest() throws {
 }
 
 func selfTest() throws {
+    // Regression: unrelated HOME activity is not activity by the isolated
+    // source reader. Test with the production fingerprint implementation.
+    let scopeFixture = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    let isolatedFixture = scopeFixture.appendingPathComponent("Library/reader")
+    try FileManager.default.createDirectory(at: isolatedFixture, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: scopeFixture) }
+    let observedBefore = workspaceHash(isolatedFixture.path)
+    let homeBefore = workspaceHash(scopeFixture.path)
+    try Data("unrelated concurrent work".utf8).write(to: scopeFixture.appendingPathComponent("other.txt"))
+    guard workspaceHash(scopeFixture.path) != homeBefore,
+          workspaceHash(isolatedFixture.path) == observedBefore else {
+        throw OS1Error.message("workspace observation scope regression")
+    }
+    try Data("real mutation".utf8).write(to: isolatedFixture.appendingPathComponent("changed.txt"))
+    guard workspaceHash(isolatedFixture.path) != observedBefore else {
+        throw OS1Error.message("real workspace mutation was missed")
+    }
+
     guard r2ReadOnlyProfileArguments == [
         ["--profile", "r2-owner"],
         [],
@@ -7956,6 +8078,9 @@ func selfTest() throws {
         ("test execution needs shell", promptRequiresShellCapability("현재 프로젝트에서 pnpm test 실행해")),
         ("R2 concept is informational", !promptRequiresShellCapability("R2가 무엇인지 개념만 설명해")),
         ("test strategy is informational", !promptRequiresShellCapability("테스트 전략이 뭔지 설명해")),
+        ("feasibility question is informational",
+         !promptRequiresShellCapability("한번 테스트 해보자 여기서 OS1 클로덱스 여기서 내가 보고 니가 오류나는 것 니가 다 고칠 거거든 가능하냐?")),
+        ("explicit shell tool stays shell even as a question", promptRequiresShellCapability("bash로 테스트 돌릴 수 있냐?")),
         ("test evidence is an artifact, not execution", !promptRequiresShellCapability(
             "Read the existing private temporary test evidence. Report acceptance.json and the test markers. Do not execute the diagnostic again and do not modify any file, service, setting or runtime.")),
         ("build results are not a build request", !promptRequiresShellCapability(
@@ -8159,6 +8284,26 @@ func selfTest() throws {
         ("timeout classified separately", completionFailureOutcome("Local provider execution timed out") == .timeout),
         ("auth unavailable is not quality", completionFailureOutcome("authentication login required") == .capabilityFailure),
         ("rejected answer is quality", completionFailureOutcome("verified source contract failed") == .qualityFailure),
+        ("context overflow is capability, not quality",
+         completionFailureOutcome("Codex ran out of room in the model's context window. Start a new thread or clear earlier history before retrying.") == .capabilityFailure),
+        ("context overflow blocker is capability, not quality", completionFailureOutcome(BackendBlocker.contextOverflow.message) == .capabilityFailure),
+        ("codex context overflow classified",
+         codexTurnBlocker(["status": "failed", "error": ["message": "Codex ran out of room in the model's context window.",
+                                                          "codexErrorInfo": "context_window_exceeded"]], approvalRejected: false) == .contextOverflow),
+        ("context overflow switches backend without replaying writes",
+         BackendRecovery.alternate(requested: "auto", failed: "codex", permission: "workspace_write", blocker: .contextOverflow,
+                                   codexAvailable: true, claudeAvailable: true, alreadySwitched: false, remainingAttempts: 1) == "claude"),
+        ("context overflow with untouched workspace is not effects-uncertain",
+         BackendRecovery.classifiedBlocker(.contextOverflow, permission: "workspace_write", stage: .dispatched, workspaceChanged: false) == .contextOverflow),
+        ("context overflow with changed workspace stays effects-uncertain",
+         BackendRecovery.classifiedBlocker(.contextOverflow, permission: "workspace_write", stage: .dispatched, workspaceChanged: true) == .effectsUncertain),
+        ("context budget excludes windows below the base instructions",
+         CodexContextBudget.excluded(models: [("small", 128_000), ("large", 272_000), ("unknown", nil)], baseInstructionBytes: 859_674) == ["small"]),
+        ("context budget never guesses without sizes",
+         CodexContextBudget.excluded(models: [("small", 128_000)], baseInstructionBytes: nil).isEmpty),
+        ("exhausted quota reset is described only when actually exhausted",
+         CodexQuota.exhaustedGeneralResetDescription(["rateLimitsByLimitId": ["codex": ["primary": ["usedPercent": 100, "resetsAt": 4_102_444_800]]]]) != nil &&
+         CodexQuota.exhaustedGeneralResetDescription(["rateLimitsByLimitId": ["codex": ["primary": ["usedPercent": 12, "resetsAt": 4_102_444_800]]]]) == nil),
     ]
     let failedCompletionChecks = completionChecks.filter { !$0.1 }.map(\.0)
     guard failedCompletionChecks.isEmpty else {
@@ -8204,7 +8349,7 @@ struct OS1Main {
             guard let command = arguments.first else { usage(); return }
             if try await fleetCommand(arguments) { return }
             switch command {
-            case "version", "--version", "-V": print("OS-1 Runtime 0.9.49 (qmgr-r2-readonly-transform-build107)")
+            case "version", "--version", "-V": print("OS-1 Runtime 0.9.56 (context-overflow-recovery-build117)")
             case "doctor": try doctor()
             case "sidebar-pin":
                 guard (4...5).contains(arguments.count), arguments[1] == "codex",

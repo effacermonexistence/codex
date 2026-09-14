@@ -15,6 +15,8 @@ func runBackendRecoveryFixtures() throws {
         ("403 Forbidden", .authenticationRequired),
         ("This request was blocked by our safety systems. Reason: Potentially unintended activity.", .safetyBlocked),
         ("BLOCKED BY OUR SAFETY SYSTEMS; 401 Unauthorized; permission denied", .safetyBlocked),
+        ("Codex ran out of room in the model's context window. Start a new thread or clear earlier history before retrying.", .contextOverflow),
+        ("Prompt is too long", .contextOverflow),
     ] { check(BackendBlocker.reported(in: text) == expected, text) }
     check(BackendBlocker.reported(in: "Completed the requested task") == nil, "normal result")
     check(BackendBlocker.reported(in: "Please approve this command") == nil, "approval request is not evidence of denial")
@@ -23,7 +25,7 @@ func runBackendRecoveryFixtures() throws {
     check(BackendBlocker.safetyBlocked.message.contains("사용자 승인 대기가 아니므로"), "accurate non-actionable boundary")
     for failed in ["claude", "codex"] {
         let other = failed == "claude" ? "codex" : "claude"
-        for blocker in [BackendBlocker.capabilityUnavailable, .timeout] {
+        for blocker in [BackendBlocker.capabilityUnavailable, .timeout, .contextOverflow] {
             check(BackendRecovery.alternate(requested: "auto", failed: failed, permission: "read_only",
                 blocker: blocker, codexAvailable: true, claudeAvailable: true,
                 alreadySwitched: false, remainingAttempts: 1) == other, "eligible alternate")
@@ -39,6 +41,13 @@ func runBackendRecoveryFixtures() throws {
         check(BackendRecovery.alternate(requested: "auto", failed: failed, permission: "workspace_write",
             blocker: .timeout, codexAvailable: true, claudeAvailable: true,
             alreadySwitched: false, remainingAttempts: 3) == nil, "no blind write replay")
+        check(BackendRecovery.alternate(requested: "auto", failed: failed, permission: "workspace_write",
+            blocker: .contextOverflow, codexAvailable: true, claudeAvailable: true,
+            alreadySwitched: false, remainingAttempts: 3) == other, "context overflow ran nothing; a write may move backend")
+        check(BackendRecovery.classifiedBlocker(.contextOverflow, permission: "workspace_write",
+            stage: .dispatched, workspaceChanged: false) == .contextOverflow, "untouched workspace keeps the overflow cause")
+        check(BackendRecovery.classifiedBlocker(.contextOverflow, permission: "workspace_write",
+            stage: .dispatched, workspaceChanged: true) == .effectsUncertain, "mutated workspace still reconciles")
         check(BackendRecovery.alternate(requested: "auto", failed: failed, permission: "read_only",
             blocker: .timeout, codexAvailable: true, claudeAvailable: true,
             alreadySwitched: true, remainingAttempts: 3) == nil, "no ping-pong")
@@ -48,7 +57,7 @@ func runBackendRecoveryFixtures() throws {
         check(BackendRecovery.alternate(requested: "auto", failed: failed, permission: "read_only",
             blocker: .timeout, codexAvailable: failed == "codex", claudeAvailable: failed == "claude",
             alreadySwitched: false, remainingAttempts: 3) == nil, "missing alternate")
-        for blocker in [BackendBlocker.capabilityUnavailable, .timeout] {
+        for blocker in [BackendBlocker.capabilityUnavailable, .timeout, .contextOverflow] {
             check(BackendRecovery.alternate(requested: "auto", failed: failed, permission: "read_only",
                 blocker: blocker, codexAvailable: true, claudeAvailable: true,
                 alreadySwitched: false, remainingAttempts: 3, unavailableProviders: [other]) == nil,

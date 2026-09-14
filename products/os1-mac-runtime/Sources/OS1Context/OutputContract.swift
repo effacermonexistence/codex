@@ -23,6 +23,24 @@ public enum HumanOutputContract {
         return issues
     }
 
+    static func identifierMatrixDominates(_ text: String) -> Bool {
+        let rows = text.components(separatedBy: "\n").filter {
+            $0.trimmingCharacters(in: .whitespaces).hasPrefix("|")
+        }.map { $0.split(separator: "|", omittingEmptySubsequences: true)
+            .map { $0.trimmingCharacters(in: .whitespaces) } }
+        let data = rows.filter { $0.count >= 7 && !$0.allSatisfy {
+            !$0.isEmpty && $0.allSatisfy { "-: ".contains($0) }
+        } }
+        guard data.count >= 5 else { return false }
+        let cells = data.flatMap { $0 }
+        let identifiers = cells.filter {
+            $0.range(of: #"^(?:[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+|[VS]\d+)(?:[, /]+(?:[A-Z][A-Z0-9_]*|[VS]\d+))*$"#,
+                     options: .regularExpression) != nil
+        }.count
+        let tableBytes = data.flatMap { $0 }.joined().utf8.count
+        return identifiers * 5 >= cells.count * 3 && tableBytes * 2 >= text.utf8.count
+    }
+
     public static func preservesOriginalValues(_ request: String) -> Bool {
         let value = request.precomposedStringWithCanonicalMapping.lowercased()
         let korean = #"(?:원문|원래)(?:\s*(?:값|내용|문구|텍스트))?\s*그대로"#
@@ -90,10 +108,10 @@ public enum HumanOutputContract {
                     issues.append("The prose stage range ends at V\(end), but the architecture declares V\(last). Make the summary and declared stages consistent; do not omit a required stage.")
                 }
             }
-            let tableLines = text.components(separatedBy: "\n").filter { $0.trimmingCharacters(in: .whitespaces).hasPrefix("|") }
-            let schemaRequest = ["스키마", "설계", "schema", "architecture"].contains(where: intent.contains)
-            if tableLines.count >= 5, tableLines.filter({ $0.filter { $0 == "|" }.count >= 5 }).count >= 5,
-               (stagePattern.numberOfMatches(in: text, range: NSRange(location: 0, length: ns.length)) >= 8 || schemaRequest) {
+            // A compact, named schema table is valid communication, not a
+            // provider execution failure. Reject only a genuinely wide ID dump
+            // dominating the answer. Width alone must never spend another turn.
+            if identifierMatrixDominates(text) {
                 issues.append("Replace the identifier-dominated wide architecture matrix with concise named components, their purpose and dependencies in readable steps. Preserve technical details but do not use an ID dump as the main answer.")
             }
             if ResearchMaterialIntent.qmGR(request),

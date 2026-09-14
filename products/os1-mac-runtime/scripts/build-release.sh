@@ -4,7 +4,7 @@ set -euo pipefail
 readonly script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly runtime_root="$(cd "$script_dir/.." && pwd)"
 readonly repository_root="$(cd "$runtime_root/../.." && pwd)"
-readonly version="${OS1_VERSION:-0.9.49}"
+readonly version="${OS1_VERSION:-0.9.56}"
 readonly release_mode="${OS1_RELEASE_MODE:-development}"
 readonly output_dir="${OS1_RELEASE_OUTPUT_DIR:-$runtime_root/release}"
 readonly stage_dir="$output_dir/stage"
@@ -178,6 +178,12 @@ codesign --verify --deep --strict --verbose=2 "$stage_dir/Applications/OS-1 CLOD
 lipo -archs "$stage_dir/usr/local/bin/os1" | grep -Eq '(^| )(x86_64 arm64|arm64 x86_64)($| )'
 lipo -archs "$stage_dir/Applications/OS-1 CLODEX.app/Contents/MacOS/OS1App" | grep -Eq '(^| )(x86_64 arm64|arm64 x86_64)($| )'
 [[ "$(plutil -extract CFBundleShortVersionString raw -o - "$stage_dir/Applications/OS-1 CLODEX.app/Contents/Info.plist")" == "$version" ]]
+runtime_version="$("$stage_dir/usr/local/bin/os1" version)"
+bundle_build="$(plutil -extract CFBundleVersion raw -o - "$stage_dir/Applications/OS-1 CLODEX.app/Contents/Info.plist")"
+[[ "$runtime_version" == "OS-1 Runtime $version ("*"build$bundle_build)" ]] || {
+  echo "Runtime and application release identities differ; refuse packaging." >&2; exit 1;
+}
+[[ "$("$stage_dir/Applications/OS-1 CLODEX.app/Contents/Resources/os1" version)" == "$runtime_version" ]]
 "$stage_dir/usr/local/bin/os1" self-test
 "$stage_dir/Applications/OS-1 CLODEX.app/Contents/MacOS/OS1App" --self-test
 "$stage_dir/Applications/OS-1 CLODEX.app/Contents/MacOS/OS1App" --self-test-sidebar-queue

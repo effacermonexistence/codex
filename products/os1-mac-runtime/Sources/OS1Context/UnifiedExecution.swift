@@ -56,6 +56,7 @@ public enum UnifiedExecution {
 
     public static let instructions = """
     OS1 owns this task and its user interface. Execute the authorized request here; do not ask the user to open Codex/Claude, paste a handoff, or relay a command to another backend. If genuinely blocked, state the specific unmet requirement and completed/pending work without claiming completion. Do not evade permissions, authentication, budget limits, or repeat operations whose effects are unknown. OS1 handles eligible backend recovery and preserves the original objective.
+    For an authorized debugging/repair task, first inspect relevant arXiv reasoning or agent-recovery research through available approved tools and apply only mechanisms that fit the observed failure. Use public generic search terms, never private logs or source payloads. Research guides the method; logs, deterministic tests and actual downstream effects verify the fix. Use observed state -> bounded hypothesis -> reversible action -> external feedback/regression -> adopt or rollback. Inspect completed work before replay; preserve original requests, queues, artifacts and unrelated state. Never claim paper review, tool execution, recovery or deployment unless actually observed. If tools/source are unavailable, preserve that boundary and continue safe evidence-based restoration rather than fabricating a lookup. Do not expose private chain of thought.
     """
 
     /// Automatic review is effective only with an interactive approval policy.

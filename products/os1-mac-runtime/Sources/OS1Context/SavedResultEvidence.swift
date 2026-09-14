@@ -4,6 +4,25 @@ import CryptoKit
 /// Custody is independent of objective adoption. Read back the exact completed
 /// Codex turn; neither exit zero nor the word "verified" in prose is evidence.
 public enum SavedResultEvidence {
+    /// Bind a cached public answer to the exact failed submission before showing
+    /// it. Custody is not scientific/task adoption and does not clear write holds.
+    public static func previewMatches(_ delivery: DeliveryRecord, submissionID: UUID) -> Bool {
+        let digest = SHA256.hash(data: delivery.artifact).map { String(format: "%02x", $0) }.joined()
+        guard delivery.submissionID.flatMap(UUID.init(uuidString:)) == submissionID,
+              UUID(uuidString: String(delivery.id.prefix(36))) != nil,
+              delivery.id.range(of: "^[0-9a-fA-F-]{36}-[0-9]{1,3}$", options: .regularExpression) != nil,
+              digest == delivery.resultSHA256, !delivery.output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              let artifact = try? JSONSerialization.jsonObject(with: delivery.artifact) as? [String: Any],
+              let step = try? JSONSerialization.jsonObject(with: delivery.step) as? [String: Any],
+              artifact["output"] as? String == delivery.output, step["output"] as? String == delivery.output,
+              let provider = artifact["provider"] as? String, ["codex", "claude"].contains(provider),
+              step["provider"] as? String == provider,
+              let permission = artifact["permission_profile"] as? String,
+              ["read_only", "workspace_write"].contains(permission), step["permission_profile"] as? String == permission,
+              artifact["exit_code"] as? Int == 0, step["exit_code"] as? Int == 0 else { return false }
+        return true
+    }
+
     public static func codexRecordVerified(_ delivery: DeliveryRecord) -> Bool {
         let digest = SHA256.hash(data: delivery.artifact).map { String(format: "%02x", $0) }.joined()
         guard digest == delivery.resultSHA256,
