@@ -8,3 +8,4 @@ dist/
 products/os1-mac-runtime/.build*/
 products/os1-mac-runtime/release/
 products/os1-mac-runtime/.private-core/
+products/os1-mac-runtime/artifacts/
