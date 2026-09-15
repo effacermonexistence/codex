@@ -38,7 +38,7 @@ private enum ProviderChoice: String, CaseIterable, Codable, Identifiable, Sendab
     }
     var tint: Color {
         switch self {
-        case .auto: return Color(red: 0.38, green: 0.86, blue: 0.58)
+        case .auto: return Color(red: 0.96, green: 0.58, blue: 0.74)
         case .codex: return Color(red: 0.95, green: 0.64, blue: 0.80)
         case .claude: return Color(red: 0.98, green: 0.53, blue: 0.68)
         }
@@ -6861,7 +6861,8 @@ private struct ProviderRail: View {
             .accessibilityValue(governanceOpen ? "열림" : "닫힘")
             .background(governanceOpen ? Theme.green.opacity(0.10) : Color.clear, in: RoundedRectangle(cornerRadius: 10))
         }
-        .padding(.vertical, 24)
+        .padding(.top, 38)
+        .padding(.bottom, 24)
         .frame(width: 78)
         .background(Color.black.opacity(0.74))
     }
