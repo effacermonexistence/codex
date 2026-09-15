@@ -7149,12 +7149,15 @@ private struct RailItemAppearance: Equatable {
         }
         // Deliberately identical for linked and unlinked: pressing CODEX must
         // look chosen even when this conversation has no Codex session yet.
+        // The owner asked for the leading marker and the loud outline to go:
+        // a filled accent tile plus full-strength content is enough to show
+        // which surface is chosen, with nothing sticking out on the left.
         return RailItemAppearance(
-            fillOpacity: 0.22,
-            strokeOpacity: 0.95,
-            strokeWidth: 1.8,
+            fillOpacity: 0.26,
+            strokeOpacity: 0,
+            strokeWidth: 0,
             contentOpacity: 1,
-            showsSelectionMarker: true,
+            showsSelectionMarker: false,
             usesAccent: true)
     }
 }
@@ -7169,15 +7172,6 @@ private struct RailSelectionBackground: View {
             shape.fill((appearance.usesAccent ? accent : Color.white).opacity(appearance.fillOpacity))
             shape.stroke((appearance.usesAccent ? accent : Color.white).opacity(appearance.strokeOpacity),
                 lineWidth: appearance.strokeWidth)
-        }
-        .overlay(alignment: .leading) {
-            // Hue alone cannot separate Codex from Claude, so the chosen item
-            // also carries a structural marker on the rail's leading edge.
-            Capsule()
-                .fill(accent)
-                .frame(width: 3, height: 26)
-                .padding(.leading, 3)
-                .opacity(appearance.showsSelectionMarker ? 1 : 0)
         }
         .allowsHitTesting(false)
     }
@@ -7338,13 +7332,15 @@ private func railSelectionSelfTest() throws {
     for linked in [true, false] {
         let quiet = RailItemAppearance.resolve(selected: false, linked: linked)
         let loud = RailItemAppearance.resolve(selected: true, linked: !linked)
+        // The owner removed the leading marker and the outline, so selection
+        // now reads from fill and content strength alone — which must still
+        // beat any unselected item, linked or not.
         try check(quiet.fillOpacity < loud.fillOpacity
-            && quiet.strokeOpacity < loud.strokeOpacity
-            && quiet.strokeWidth < loud.strokeWidth
             && quiet.contentOpacity < loud.contentOpacity
-            && !quiet.showsSelectionMarker && loud.showsSelectionMarker
             && !quiet.usesAccent && loud.usesAccent,
             "unselected(linked=\(linked)) outranked the selected item")
+        try check(!loud.showsSelectionMarker && loud.strokeOpacity == 0 && loud.strokeWidth == 0,
+            "the selected rail item must not paint a leading marker or outline")
     }
 
     let root = FileManager.default.temporaryDirectory
@@ -8565,6 +8561,13 @@ private final class TranscriptSnapshotSurface: NSView {
 }
 
 private final class ContinuousTranscriptTextView: NSTextView {
+    /// Never accept a dragged file: the window-wide handler attaches it to the
+    /// conversation instead. Returning an empty operation lets the drag fall
+    /// through to the SwiftUI container behind this view.
+    override func draggingEntered(_ sender: any NSDraggingInfo) -> NSDragOperation { [] }
+    override func draggingUpdated(_ sender: any NSDraggingInfo) -> NSDragOperation { [] }
+    override func performDragOperation(_ sender: any NSDraggingInfo) -> Bool { false }
+
     var completeTranscript = ""
 
     override func menu(for event: NSEvent) -> NSMenu? {
@@ -8760,6 +8763,11 @@ private struct ContinuousTranscriptView: NSViewRepresentable {
         textView.isSelectable = true
         textView.isRichText = true
         textView.importsGraphics = false
+        // A file dropped on the conversation must reach the window-wide
+        // attachment handler. NSTextView registers its own dragged types and
+        // consumes the drop first, which is why dropping anywhere except the
+        // input box did nothing.
+        textView.unregisterDraggedTypes()
         textView.allowsUndo = false
         textView.usesFindPanel = true
         textView.usesFindBar = true
