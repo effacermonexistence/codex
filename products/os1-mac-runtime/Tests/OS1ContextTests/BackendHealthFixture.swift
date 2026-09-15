@@ -25,6 +25,10 @@ func runBackendHealthFixtures() throws {
           "unexplained empty catalog is a failed probe, not a guess")
     check(BackendHealth.codexBackend(modelCount: 1, source: "Codex 사용량 한도 도달로 2개 모델 제외", resetsAt: reset, executablePresent: true).usable,
           "a surviving model keeps Codex usable despite partial exclusion")
+    let off = BackendHealth.codexBackend(modelCount: 0, source: BackendHealth.disabledCatalogSource, resetsAt: nil, executablePresent: true)
+    check(off.state == .disabled && !off.usable, "settings-disabled Codex is its own state, not a failure")
+    check(BackendHealth(claude: BackendHealth.Backend(state: .usable), codex: off, checkedAt: now).repairSteps.isEmpty,
+          "a disabled backend produces no repair step")
 
     // Repair order and public wording.
     let dead = BackendHealth(claude: BackendHealth.Backend(state: .loggedOut, detail: "OAuth 세션 만료"),

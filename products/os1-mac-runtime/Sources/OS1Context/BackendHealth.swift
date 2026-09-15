@@ -12,6 +12,8 @@ public struct BackendHealth: Codable, Equatable, Sendable {
         case contextBudget = "context_budget"
         case missing
         case probeFailed = "probe_failed"
+        /// Turned off by the user in Settings — not a failure, nothing to repair.
+        case disabled
     }
 
     public struct Backend: Codable, Equatable, Sendable {
@@ -57,7 +59,12 @@ public struct BackendHealth: Codable, Equatable, Sendable {
 
     /// The Codex catalog carries its exclusion reasons in `source`; an empty
     /// catalog is classified from them, never guessed from the binary alone.
+    /// Catalog `source` used whenever the user switched Codex off; the single
+    /// spelling both the runtime and the health classifier agree on.
+    public static let disabledCatalogSource = "Codex 백엔드가 설정에서 꺼져 있습니다"
+
     public static func codexBackend(modelCount: Int, source: String, resetsAt: Date?, executablePresent: Bool) -> Backend {
+        if source == disabledCatalogSource { return Backend(state: .disabled, detail: source) }
         if modelCount > 0 { return Backend(state: .usable) }
         if !executablePresent { return Backend(state: .missing, detail: "codex 실행 파일 없음") }
         if source.contains("사용량 한도") { return Backend(state: .quotaExhausted, detail: source, recoversAt: resetsAt) }
@@ -112,6 +119,7 @@ public struct BackendHealth: Codable, Equatable, Sendable {
         case .contextBudget: return "\(name): 남은 모델이 계정 기본 지시문을 담지 못해 제외됨"
         case .missing: return "\(name): 실행 파일 없음"
         case .probeFailed: return "\(name): 상태 확인 실패" + (backend.detail.map { "(\($0))" } ?? "")
+        case .disabled: return os1Tr("\(name): 설정에서 꺼짐", "\(name): turned off in Settings")
         }
     }
 

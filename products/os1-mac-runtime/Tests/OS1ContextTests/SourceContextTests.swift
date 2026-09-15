@@ -20,6 +20,10 @@ private func XCTAssertThrowsError<T>(_ value: @autoclosure () throws -> T) {
 final class SourceContextTests {
     static func main() throws {
         voiceProcessChildIfRequested()
+        // Fixtures assert exact Korean runtime wording; pin the language so a
+        // user's interface-language setting cannot flip the expectations.
+        setenv("OS1_INTERFACE_LANGUAGE", "ko", 1)
+        OS1Localization.invalidate()
         if CommandLine.arguments.contains("--governance-only") { try runGovernanceActivityFixtures(); return }
         if CommandLine.arguments.contains("--drift-only") { try runDriftPolicyFixtures(); return }
         if CommandLine.arguments.count == 4, CommandLine.arguments[1] == "--seed-drift-native-fixture" {
@@ -65,6 +69,8 @@ final class SourceContextTests {
         try runTakeoverFixtures()
         try runCodexSessionIndexFixtures()
         try runBackendHealthFixtures()
+        try runSelfUpdateFixtures()
+        try runLocalizationFixtures()
         try runProjectMaterialFixtures()
         try runRegisteredSourceFixtures()
         let taskRoot = FileManager.default.temporaryDirectory.appendingPathComponent("os1-task-context-\(UUID().uuidString)")

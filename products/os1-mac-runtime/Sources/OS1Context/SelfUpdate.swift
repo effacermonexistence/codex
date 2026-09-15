@@ -1,0 +1,204 @@
+import Foundation
+
+/// OS-1 repairing OS-1, end to end. A write-scope task edits the source
+/// checkout and runs `os1 self-update stage`, which builds the signed release,
+/// verifies it and leaves an intent next to the staged app. The running app
+/// installs that build by itself as soon as no task is in flight, restarts
+/// into it with every conversation and queue preserved, and posts the install
+/// receipt into the conversation that asked for the change. Public state only;
+/// the installer's own signature, self-test and idle checks still apply.
+public enum SelfUpdate {
+    public static let runtimeRelativePath = "products/os1-mac-runtime"
+    public static let intentRelativePath = "products/os1-mac-runtime/release/self-update-intent.json"
+    public static let stagedAppRelativePath = "products/os1-mac-runtime/release/stage/Applications/OS-1 CLODEX.app"
+    public static let installerRelativePath = "products/os1-mac-runtime/scripts/install-local-verified.mjs"
+    public static let intentMaxAge: TimeInterval = 24 * 3600
+    public static let applyingStaleAfter: TimeInterval = 15 * 60
+    public static let maximumApplyAttempts = 3
+
+    public struct Intent: Codable, Equatable, Sendable {
+        public var schema = 1
+        public let build: Int
+        public let version: String
+        public let sourceRoot: String
+        public let sourceCommit: String?
+        public let stagedAppSHA256: String
+        public let stagedCLISHA256: String
+        public let stagedAt: Date
+        public let conversationID: String?
+        public let submissionID: String?
+        public let checks: [String]
+        public var state = "pending"
+        public var applyAttempts = 0
+        public var lastAttemptAt: Date? = nil
+        public var lastError: String? = nil
+
+        public init(build: Int, version: String, sourceRoot: String, sourceCommit: String?, stagedAppSHA256: String,
+                    stagedCLISHA256: String, stagedAt: Date = Date(), conversationID: String?, submissionID: String?,
+                    checks: [String]) {
+            self.build = build; self.version = version; self.sourceRoot = sourceRoot; self.sourceCommit = sourceCommit
+            self.stagedAppSHA256 = stagedAppSHA256; self.stagedCLISHA256 = stagedCLISHA256; self.stagedAt = stagedAt
+            self.conversationID = conversationID.flatMap { UUID(uuidString: $0)?.uuidString }
+            self.submissionID = submissionID.flatMap { UUID(uuidString: $0)?.uuidString }
+            self.checks = checks
+        }
+    }
+
+    public struct Outcome: Codable, Equatable, Sendable {
+        public let id: String
+        public let intent: Intent
+        public let success: Bool
+        public let receiptPath: String?
+        public let error: String?
+        public let summary: String
+        public let completedAt: Date
+        public var reported = false
+
+        public init(id: String = UUID().uuidString.lowercased(), intent: Intent, success: Bool, receiptPath: String?,
+                    error: String?, summary: String, completedAt: Date = Date()) {
+            self.id = id; self.intent = intent; self.success = success; self.receiptPath = receiptPath
+            self.error = error.map { String($0.suffix(2_000)) }; self.summary = summary; self.completedAt = completedAt
+        }
+    }
+
+    public enum ApplyDecision: Equatable, Sendable {
+        case apply
+        case waitBusy
+        case applying
+        case notNewer
+        case stale
+        case exhausted
+    }
+
+    // MARK: paths
+
+    public static func intentURL(root: String) -> URL {
+        URL(fileURLWithPath: root).appendingPathComponent(intentRelativePath)
+    }
+
+    public static func stagedAppURL(root: String) -> URL {
+        URL(fileURLWithPath: root).appendingPathComponent(stagedAppRelativePath)
+    }
+
+    public static func outcomesDirectory(home: URL = FileManager.default.homeDirectoryForCurrentUser) -> URL {
+        home.appendingPathComponent(".os1/self-update/outcomes", isDirectory: true)
+    }
+
+    private static var encoder: JSONEncoder {
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        encoder.outputFormatting = [.sortedKeys, .prettyPrinted]
+        return encoder
+    }
+
+    private static var decoder: JSONDecoder {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return decoder
+    }
+
+    // MARK: intents
+
+    public static func loadIntent(root: String) -> Intent? {
+        let url = intentURL(root: root)
+        guard let data = try? Data(contentsOf: url), data.count <= 32_768,
+              let intent = try? decoder.decode(Intent.self, from: data), intent.schema == 1, intent.build > 0 else { return nil }
+        return intent
+    }
+
+    public static func save(_ intent: Intent, root: String) throws {
+        let url = intentURL(root: root)
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try encoder.encode(intent).write(to: url, options: .atomic)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+    }
+
+    public static func removeIntent(root: String) {
+        try? FileManager.default.removeItem(at: intentURL(root: root))
+    }
+
+    /// Newest build first; a root without an intent is skipped.
+    public static func pendingIntents(roots: [String]) -> [(root: String, intent: Intent)] {
+        roots.compactMap { root in loadIntent(root: root).map { (root, $0) } }
+            .sorted { $0.intent.build > $1.intent.build }
+    }
+
+    /// The app's decision. Only a newer, fresh, not-yet-exhausted intent is
+    /// applied, and only while no task is in flight; an "applying" mark that
+    /// never produced an outcome is retried after `applyingStaleAfter`.
+    public static func decision(intent: Intent, installedBuild: Int, busy: Bool, now: Date = Date()) -> ApplyDecision {
+        if intent.build <= installedBuild { return .notNewer }
+        if now.timeIntervalSince(intent.stagedAt) > intentMaxAge { return .stale }
+        if intent.applyAttempts >= maximumApplyAttempts { return .exhausted }
+        if intent.state == "applying", let at = intent.lastAttemptAt, now.timeIntervalSince(at) < applyingStaleAfter { return .applying }
+        if busy { return .waitBusy }
+        return .apply
+    }
+
+    // MARK: outcomes
+
+    public static func saveOutcome(_ outcome: Outcome, home: URL = FileManager.default.homeDirectoryForCurrentUser) throws {
+        let directory = outcomesDirectory(home: home)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        let url = directory.appendingPathComponent(outcome.id + ".json")
+        try encoder.encode(outcome).write(to: url, options: .atomic)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+    }
+
+    public static func outcomes(home: URL = FileManager.default.homeDirectoryForCurrentUser) -> [Outcome] {
+        let directory = outcomesDirectory(home: home)
+        guard let names = try? FileManager.default.contentsOfDirectory(atPath: directory.path) else { return [] }
+        return names.filter { $0.hasSuffix(".json") }.compactMap { name -> Outcome? in
+            guard let data = try? Data(contentsOf: directory.appendingPathComponent(name)), data.count <= 65_536 else { return nil }
+            return try? decoder.decode(Outcome.self, from: data)
+        }.sorted { $0.completedAt < $1.completedAt }
+    }
+
+    public static func unreportedOutcomes(home: URL = FileManager.default.homeDirectoryForCurrentUser) -> [Outcome] {
+        outcomes(home: home).filter { !$0.reported }
+    }
+
+    public static func markReported(_ outcome: Outcome, home: URL = FileManager.default.homeDirectoryForCurrentUser) throws {
+        var reported = outcome
+        reported.reported = true
+        try saveOutcome(reported, home: home)
+    }
+
+    // MARK: wording
+
+    /// Contract handed to the backend whenever the task's workspace is OS-1's
+    /// own source tree. It tells a write task how to finish (stage, never
+    /// install by hand) and lets a read-only task answer capability questions
+    /// truthfully.
+    public static func capabilityCard(root: String, installedVersion: String, installedBuild: Int, sourceCommit: String?,
+                                      scope: String, os1Executable: String) -> String {
+        let head = sourceCommit.map { String($0.prefix(12)) } ?? "unknown"
+        let lines = [
+            "--- OS-1 SELF-REPAIR CONTRACT ---",
+            "This conversation targets OS-1's own source tree: \(root)",
+            "Installed runtime: \(installedVersion) (build \(installedBuild)). Source HEAD: \(head). Task scope: \(scope).",
+            "OS-1 repairs itself end to end: diagnose -> edit -> build -> test -> stage -> self-install -> receipt. The only steps that need the owner are browser logins (OAuth) and GitHub pull-request merges.",
+            "In a write-scope task you MUST finish with these steps, in order:",
+            "1. Change the source under \(root)/\(runtimeRelativePath).",
+            "2. Build and verify: `swift build` (all products) in that directory, then run `.build/debug/OS1ContextTests`, `OS1_CONFIG=\"$HOME/Applications/OS-1 CLODEX.app/Contents/Resources/config.json\" .build/debug/os1 self-test`, `.build/debug/os1 fleet-self-test` and `.build/debug/OS1App --self-test`; fix failures before continuing.",
+            "3. Bump the build: Resources/Info.plist CFBundleVersion must be greater than \(installedBuild) (raise CFBundleShortVersionString too) and `os1RuntimeVersionString` in Sources/OS1/SelfUpdateCommands.swift must read exactly \"OS-1 Runtime <CFBundleShortVersionString> (<slug>build<CFBundleVersion>)\" — the release script refuses to package when the runtime and bundle identities differ.",
+            "4. Run `'\(os1Executable)' self-update stage --source '\(root)'`. It builds the signed release, runs the release self-tests and writes \(intentRelativePath). Do not run scripts/install-local-verified.mjs, do not kill, relaunch or reinstall OS-1, and do not claim the build is installed: OS-1 installs the staged build by itself as soon as this task ends, restarts into it with every conversation and queue preserved, and posts the install receipt into this conversation.",
+            "5. Commit and push per the repository's remote-completion contract, then report: what changed, the staged build number, and that OS-1 will self-install it.",
+            "In a read-only task, answer capability questions from this contract and never say OS-1 can only be partially self-repaired; describe the pipeline above and what a write-scope request would do.",
+            "--- END OS-1 SELF-REPAIR CONTRACT ---",
+        ]
+        return lines.joined(separator: "\n")
+    }
+
+    public static func summary(success: Bool, intent: Intent, checks: [String], sessionsBefore: Int?, sessionsAfter: Int?,
+                               receiptPath: String?, error: String?) -> String {
+        let commit = intent.sourceCommit.map { " · 소스 커밋 \(String($0.prefix(7)))" } ?? ""
+        if success {
+            let sessions = (sessionsBefore != nil && sessionsAfter != nil) ? " · 세션 \(sessionsBefore!)→\(sessionsAfter!)" : ""
+            return "OS-1이 자기 자신을 build \(intent.build) (\(intent.version))로 교체했습니다 · 설치기 검사 \(checks.count)개 PASS\(sessions)\(commit)"
+                + (receiptPath.map { " · 영수증 \($0)" } ?? "")
+        }
+        return "OS-1 자체 업데이트 build \(intent.build) (\(intent.version)) 설치 실패 · 이전 빌드를 유지합니다\(commit)"
+            + (error.map { " · 원인: \(String($0.suffix(300)))" } ?? "")
+    }
+}

@@ -20,14 +20,15 @@ public struct RuntimeActivity: Codable, Equatable, Sendable {
     }
     public var label: String {
         switch phase {
-        case .preparing: return "작업 준비 중"
-        case .source: return "연결·자료 확인 중"
-        case .authorizing: return "공식 로그인 승인 대기 중 · 승인 후 같은 작업을 이어갑니다"
-        case .routing: return "실행 모델 선택 중"
-        case .executing: return "OS1 작업 중"
-        case .verifying: return "결과 검증 중"
-        case .syncing: return "대화 기록 동기화 중"
-        case .recovering: return "OS1이 작업 이어가는 중"
+        case .preparing: return os1Tr("작업 준비 중", "Preparing the task")
+        case .source: return os1Tr("연결·자료 확인 중", "Checking connections and sources")
+        case .authorizing: return os1Tr("공식 로그인 승인 대기 중 · 승인 후 같은 작업을 이어갑니다",
+                                        "Waiting for the official sign-in · the same task continues after approval")
+        case .routing: return os1Tr("실행 모델 선택 중", "Selecting the execution model")
+        case .executing: return os1Tr("OS1 작업 중", "OS1 working")
+        case .verifying: return os1Tr("결과 검증 중", "Verifying the result")
+        case .syncing: return os1Tr("대화 기록 동기화 중", "Syncing conversation history")
+        case .recovering: return os1Tr("OS1이 작업 이어가는 중", "OS1 is continuing the task")
         }
     }
     public static func emit(_ phase: Phase, provider: String? = nil, model: String? = nil, effort: String? = nil, publicText: String? = nil, tool: String? = nil, nativeSessionID: String? = nil) {

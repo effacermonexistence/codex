@@ -3116,6 +3116,76 @@ private func backendRecoverySelfTest() throws {
     print("Backend self-repair: \(checks) checks passed; hold waits on dead health, replays once per recovery, never a dispatched failure")
 }
 
+/// A self-update outcome is reported once, into the conversation that staged
+/// it, with the receipt wording; a fixture store never spawns the installer.
+@MainActor
+private func selfUpdateReportSelfTest() throws {
+    var checks = 0
+    func check(_ value: Bool, _ label: String) throws {
+        guard value else { throw RunnerError.message("Self-update report: " + label) }
+        checks += 1
+    }
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("os1-self-update-report-" + UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    let home = root.appendingPathComponent("home", isDirectory: true)
+    let asked = ConversationSession(workspace: "/tmp/fixture", provider: .claude,
+        messages: [ChatMessage(role: .user, text: "OS1 고쳐"), ChatMessage(role: .assistant, text: "build 126 staged")])
+    let other = ConversationSession(workspace: "/tmp/fixture", provider: .codex, messages: [ChatMessage(role: .user, text: "다른 대화")])
+    let envelope = SessionEnvelope(schema: 3, sessions: [other, asked], queued: [], inFlight: [])
+    try JSONEncoder().encode(envelope).write(to: root.appendingPathComponent("sessions.json"))
+    let store = SessionStore(storageRoot: root, runOperation: { _, _, _, _, _ in throw RunnerError.message("fixture executor must not run") })
+    store.select(other.id)
+    let intent = SelfUpdate.Intent(build: 126, version: "0.9.60", sourceRoot: "/tmp/os1", sourceCommit: String(repeating: "d", count: 40),
+        stagedAppSHA256: "a", stagedCLISHA256: "b", conversationID: asked.id.uuidString, submissionID: nil, checks: [])
+    let summary = SelfUpdate.summary(success: true, intent: intent, checks: Array(repeating: "x: PASS", count: 9), sessionsBefore: 2, sessionsAfter: 2, receiptPath: "/tmp/receipt.json", error: nil)
+    try SelfUpdate.saveOutcome(SelfUpdate.Outcome(id: "fixture-outcome", intent: intent, success: true, receiptPath: "/tmp/receipt.json", error: nil, summary: summary), home: home)
+    store.reportSelfUpdateOutcomes(home: home)
+    let target = store.sessions.first { $0.id == asked.id }!
+    try check(target.messages.last?.role == .system && target.messages.last?.text == summary, "receipt not posted into the staging conversation")
+    try check(store.sessions.first { $0.id == other.id }!.messages.count == 1, "receipt leaked into another conversation")
+    try check(store.statusText == "Ready" || !store.statusText.contains("자체 업데이트 완료"), "unrelated selected session took the status")
+    try check(SelfUpdate.unreportedOutcomes(home: home).isEmpty, "outcome not marked reported")
+    store.reportSelfUpdateOutcomes(home: home)
+    try check(store.sessions.first { $0.id == asked.id }!.messages.count == 3, "outcome reported twice")
+    // A failure outcome without a known conversation lands in the selected one.
+    let orphan = SelfUpdate.Intent(build: 127, version: "0.9.61", sourceRoot: "/tmp/os1", sourceCommit: nil,
+        stagedAppSHA256: "a", stagedCLISHA256: "b", conversationID: nil, submissionID: nil, checks: [])
+    let failureSummary = SelfUpdate.summary(success: false, intent: orphan, checks: [], sessionsBefore: nil, sessionsAfter: nil, receiptPath: nil, error: "installer failed: app did not quit")
+    try SelfUpdate.saveOutcome(SelfUpdate.Outcome(id: "fixture-failure", intent: orphan, success: false, receiptPath: nil, error: "x", summary: failureSummary), home: home)
+    store.reportSelfUpdateOutcomes(home: home)
+    try check(store.sessions.first { $0.id == other.id }!.messages.last?.text == failureSummary && store.statusText.contains("실패"), "orphan failure not reported to the selected conversation")
+    try check(store.activeRuns.isEmpty, "reporting must not start a run")
+    // The maintenance tick owns recovery and self-update; it must run even
+    // while the native sidebar poll is stalled, and must stay side-effect free
+    // for a fixture store.
+    // The live store owns its maintenance loop, so a windowless background
+    // relaunch still applies recoveries and staged self-updates. A fixture
+    // store must never start that loop or act on the real machine's state.
+    try check(store.maintenanceLoopRunning == false, "fixture store started the live maintenance loop")
+    let before = store.sessions.map(\.messages.count)
+    store.runMaintenanceTick()
+    try check(store.sessions.map(\.messages.count) == before && store.activeRuns.isEmpty,
+        "maintenance tick changed a fixture store")
+    // Durability: the receipt must be on disk before it is consumed, and a
+    // store reloaded from the same root must show it. This is the guard that
+    // was missing when build127's receipt was marked reported yet never
+    // appeared in any conversation.
+    let saved = String(data: try Data(contentsOf: root.appendingPathComponent("sessions.json")), encoding: .utf8) ?? ""
+    try check(saved.contains("build 126"), "receipt was not persisted before being consumed")
+    let reloaded = SessionStore(storageRoot: root, runOperation: { _, _, _, _, _ in throw RunnerError.message("unused") })
+    try check(reloaded.sessions.contains { $0.messages.contains { $0.text == summary } }, "receipt did not survive a reload")
+    // A receipt already visible in the store is consumed without duplicating.
+    let replayHome = root.appendingPathComponent("replay-home", isDirectory: true)
+    try SelfUpdate.saveOutcome(SelfUpdate.Outcome(id: "fixture-replay", intent: intent, success: true,
+        receiptPath: "/tmp/receipt.json", error: nil, summary: summary), home: replayHome)
+    let beforeReplay = reloaded.sessions.map(\.messages.count)
+    reloaded.reportSelfUpdateOutcomes(home: replayHome)
+    try check(reloaded.sessions.map(\.messages.count) == beforeReplay && SelfUpdate.unreportedOutcomes(home: replayHome).isEmpty,
+        "an already-visible receipt was posted twice")
+    print("Self-update report: \(checks) checks passed; receipt posted once into the staging conversation, orphan to the selected one, no run started")
+}
+
 @MainActor
 private func savedFailurePreviewSelfTest() throws {
     var checks = 0
@@ -3384,6 +3454,28 @@ private enum OS1Runner {
         while process.isRunning && Date() < deadline { try? await Task.sleep(for: .milliseconds(200)) }
         if process.isRunning { process.terminate() }
     }
+    /// Installs a staged OS-1 build through the verified installer. Launched
+    /// detached (`sh -c 'nohup … &'`) so the install survives the app quitting
+    /// and relaunching into the new build; output goes to a private log.
+    static func launchDetachedSelfUpdate(root: String) {
+        guard let path = try? executable() else { return }
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        let logDirectory = home.appendingPathComponent(".os1/self-update", isDirectory: true)
+        try? FileManager.default.createDirectory(at: logDirectory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        func quoted(_ value: String) -> String { "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'" }
+        let command = "nohup \(quoted(path)) self-update apply --root \(quoted(root)) >> \(quoted(logDirectory.appendingPathComponent("apply.log").path)) 2>&1 &"
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = ["-c", command]
+        process.currentDirectoryURL = home
+        var environment = ProcessInfo.processInfo.environment
+        environment["PATH"] = ["\(home.path)/.local/bin", "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin",
+                               environment["PATH"] ?? ""].joined(separator: ":")
+        process.environment = environment
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        try? process.run()
+    }
     static func observeActivity(_ process: Process, at url: URL, onActivity: (RuntimeActivity) -> Void) {
         var lastActivity: RuntimeActivity?
         func readLatest() {
@@ -3407,6 +3499,7 @@ private enum OS1Runner {
         requireReadOnly: Bool = false,
         deliveryID: String? = nil,
         submissionID: UUID? = nil,
+        conversationID: UUID? = nil,
         onActivity: @escaping @Sendable (RuntimeActivity) -> Void = { _ in }
     ) async throws -> AppRunSummary {
         try await Task.detached(priority: .userInitiated) {
@@ -3422,6 +3515,7 @@ private enum OS1Runner {
                 requireReadOnly: requireReadOnly,
                 deliveryID: deliveryID,
                 submissionID: submissionID,
+                conversationID: conversationID,
                 onActivity: onActivity
             )
         }.value
@@ -3453,6 +3547,7 @@ private enum OS1Runner {
         requireReadOnly: Bool,
         deliveryID: String?,
         submissionID: UUID?,
+        conversationID: UUID? = nil,
         onActivity: @escaping @Sendable (RuntimeActivity) -> Void
     ) throws -> AppRunSummary {
         let fileManager = FileManager.default
@@ -3531,6 +3626,9 @@ private enum OS1Runner {
         let failureURL = temporary.appendingPathComponent("backend-failure.json")
         environment["OS1_FAILURE_FILE"] = failureURL.path
         if let submissionID { environment["OS1_SUBMISSION_ID"] = submissionID.uuidString }
+        // A self-update staged by this task reports its install receipt back
+        // into this conversation.
+        if let conversationID { environment["OS1_CONVERSATION_ID"] = conversationID.uuidString }
         let journalRoot = fileManager.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/OS-1/run-journals")
         try fileManager.createDirectory(at:journalRoot,withIntermediateDirectories:true,attributes:[.posixPermissions:0o700])
         let journal = journalRoot.appendingPathComponent((submissionID?.uuidString ?? UUID().uuidString) + ".jsonl")
@@ -3601,6 +3699,9 @@ private final class SessionStore: ObservableObject {
     @Published var sessions: [ConversationSession] = []
     @Published var selectedSessionID: UUID?
     @Published var surface: ProviderChoice = .auto
+    /// Codex-style user settings (language, backends). The file is the source
+    /// of truth for every OS-1 process; this copy drives the UI.
+    @Published var appSettings = OS1Settings.load()
     @Published var composer = "" {
         didSet {
             if let index = selectedIndex { sessions[index].draft = composer }
@@ -3671,7 +3772,7 @@ private final class SessionStore: ObservableObject {
                 provider: submission.provider, context: context, codexSessionID: codexID, claudeSessionID: claudeID,
                 codexCapacity: submission.codexCapacity, claudeCapacity: submission.claudeCapacity,
                 requireReadOnly: submission.readOnlyReconciliation == true, deliveryID: submission.deliveryID,
-                submissionID: submission.id, onActivity: onActivity)
+                submissionID: submission.id, conversationID: submission.sessionID, onActivity: onActivity)
         }
         if storageRoot == nil {
             let monitor = FrontierNewsMonitor()
@@ -3687,6 +3788,20 @@ private final class SessionStore: ObservableObject {
         }
         load()
         pausedQueueIDs = Set(queuedSubmissions.map(\.id))
+        if storageRoot == nil {
+            // Owned by the store, not by a view: an app relaunched in the
+            // background has no window, so a RootView `.task` never starts and
+            // every periodic duty (queued recovery, staged self-update, its
+            // receipt) silently stops. Observed live: after a background
+            // relaunch the app ran with zero windows and applied nothing.
+            maintenanceTask = Task { [weak self] in
+                while !Task.isCancelled {
+                    self?.runMaintenanceTick()
+                    try? await Task.sleep(for: .seconds(3))
+                    if self == nil { return }
+                }
+            }
+        }
         if sessions.isEmpty {
             createSession(provider: .auto)
         } else {
@@ -4579,7 +4694,9 @@ private final class SessionStore: ObservableObject {
         activeRuns[submission.sessionID] = ActiveRun(submissionID: submission.id, started: Date(),
             activity: RuntimeActivity(.preparing), provider: submission.provider == .auto ? nil : submission.provider,
             handedRevision: sessions[index].taskContext?.contextRevision, forkCheckpoint: checkpoint)
-        let startingStatus = submission.recoveryParentID != nil ? "OS1이 중단된 작업 상태 확인 중" : "OS1 작업 준비 중"
+        let startingStatus = submission.recoveryParentID != nil
+            ? os1Tr("OS1이 중단된 작업 상태 확인 중", "OS1 checking the interrupted task's state")
+            : os1Tr("OS1 작업 준비 중", "OS1 preparing the task")
         sessionStatuses[submission.sessionID] = startingStatus
         if selectedSessionID == submission.sessionID { statusText = startingStatus }
         save()
@@ -4760,8 +4877,8 @@ private final class SessionStore: ObservableObject {
                 }
                 let allVerified = !visibleSteps.isEmpty && visibleSteps.allSatisfy(stepRecordIsVerified)
                 sessionStatuses[submission.sessionID] = allVerified
-                    ? "답변 수신 · 실행 기록 확인됨"
-                    : "답변 수신 · 실행 기록 미확인"
+                    ? os1Tr("답변 수신 · 실행 기록 확인됨", "Answer received · execution record verified")
+                    : os1Tr("답변 수신 · 실행 기록 미확인", "Answer received · execution record unverified")
                 if submission.recoveryParentID != nil {
                     sessionStatuses[submission.sessionID] = "상태 확인됨 · 원래 작업은 아직 미완료"
                     appendTaskEvent(conversationID: submission.sessionID, kind: "reconciled",
@@ -5154,7 +5271,6 @@ private final class SessionStore: ObservableObject {
     func refreshSidebarMetadata() async {
         guard customStorageRoot == nil, !sidebarPollRunning else { return }
         resumeRegisteredSourcePreparations()
-        resumeBackendRecoveries()
         sidebarPollRunning = true
         defer { sidebarPollRunning = false }
         for provider in [ProviderChoice.codex, .claude] {
@@ -5282,6 +5398,7 @@ private final class SessionStore: ObservableObject {
     /// hold exists the read-only probe (`os1 backend-health --refresh`) runs
     /// at most once a minute; no model call happens until health says usable.
     private var backendHealthProbeStartedAt: Date?
+    private var maintenanceTask: Task<Void, Never>?
     func resumeBackendRecoveries(healthURL: URL = BackendHealth.defaultURL, now: Date = Date()) {
         let waiting = sessions.filter {
             $0.lastBackendFailure?.blocker == .backendUnavailable && $0.lastFailure?.preflightOnly == true &&
@@ -5317,6 +5434,77 @@ private final class SessionStore: ObservableObject {
                 summary: "Backend usable again (\(usable)); replaying the preserved request without a new user turn")
             start(retry)
         }
+    }
+    /// OS-1 repairing OS-1: a build staged by a task (`os1 self-update stage`)
+    /// is installed by the app itself as soon as nothing is in flight. The
+    /// installer restarts the app into the new build; the relaunched app
+    /// reports the outcome into the conversation that asked for the change.
+    private var selfUpdateRoots: [String] = []
+    private var selfUpdateRootsCachedAt: Date?
+    private var selfUpdateLaunchedAt: Date?
+    var installedBuildNumber: Int { Int(Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "") ?? 0 }
+    func applyPendingSelfUpdate(now: Date = Date()) {
+        guard customStorageRoot == nil else { return }
+        if selfUpdateRootsCachedAt.map({ now.timeIntervalSince($0) > 60 }) ?? true {
+            selfUpdateRoots = LocalProjectWorkspace.candidates(projectID: "os1-clodex")
+            selfUpdateRootsCachedAt = now
+        }
+        guard let pending = SelfUpdate.pendingIntents(roots: selfUpdateRoots).first else { return }
+        let busy = !activeRuns.isEmpty || !inFlightSubmissions.isEmpty || isStopping
+        switch SelfUpdate.decision(intent: pending.intent, installedBuild: installedBuildNumber, busy: busy, now: now) {
+        case .apply:
+            guard selfUpdateLaunchedAt.map({ now.timeIntervalSince($0) > 120 }) ?? true else { return }
+            var marked = pending.intent
+            marked.state = "applying"; marked.lastAttemptAt = now
+            try? SelfUpdate.save(marked, root: pending.root)
+            selfUpdateLaunchedAt = now
+            let status = "OS-1 자체 업데이트 설치 중 · build \(pending.intent.build) · 잠시 후 새 빌드로 재시작합니다"
+            if let id = pending.intent.conversationID.flatMap(UUID.init(uuidString:)), sessions.contains(where: { $0.id == id }) {
+                sessionStatuses[id] = status
+                appendTaskEvent(conversationID: id, kind: "self_update",
+                    summary: "Staged build \(pending.intent.build) accepted; OS-1 installs it now and restarts into it")
+            }
+            statusText = status
+            flushPendingState() // the installer reads the store's in-flight/queue state
+            OS1Runner.launchDetachedSelfUpdate(root: pending.root)
+        case .notNewer:
+            SelfUpdate.removeIntent(root: pending.root)
+        case .waitBusy, .applying, .stale, .exhausted:
+            break
+        }
+    }
+    func reportSelfUpdateOutcomes(home: URL = FileManager.default.homeDirectoryForCurrentUser) {
+        for outcome in SelfUpdate.unreportedOutcomes(home: home) {
+            // The receipt is the owner's proof that OS-1 replaced itself, so
+            // it is consumed only once it is durably on disk. Already there
+            // (posted before a restart)? Just consume it. Not there after the
+            // save — another writer clobbered the store — leave it pending and
+            // post it again on the next tick.
+            if storedSummaryExists(outcome.summary) {
+                try? SelfUpdate.markReported(outcome, home: home)
+                continue
+            }
+            guard let target = outcome.intent.conversationID.flatMap({ id in sessions.firstIndex { $0.id.uuidString == id } })
+                ?? selectedIndex ?? sessions.indices.first else { continue }
+            sessions[target].messages.append(ChatMessage(role: .system, text: outcome.summary))
+            sessions[target].updatedAt = Date()
+            let status = outcome.success
+                ? os1Tr("OS-1 자체 업데이트 완료 · build \(outcome.intent.build)", "OS-1 self-update complete · build \(outcome.intent.build)")
+                : os1Tr("OS-1 자체 업데이트 실패 · 이전 빌드 유지", "OS-1 self-update failed · previous build kept")
+            sessionStatuses[sessions[target].id] = status
+            if selectedSessionID == sessions[target].id { statusText = status }
+            appendTaskEvent(conversationID: sessions[target].id, kind: "self_update", summary: outcome.summary)
+            save()
+            guard storedSummaryExists(outcome.summary) else { continue }
+            try? SelfUpdate.markReported(outcome, home: home)
+        }
+    }
+    /// Is this receipt actually in the saved session store? Guards against a
+    /// concurrent writer replacing the file between the append and the mark.
+    private func storedSummaryExists(_ summary: String) -> Bool {
+        guard let data = try? Data(contentsOf: storageURL),
+              let text = String(data: data, encoding: .utf8) else { return false }
+        return text.contains(summary.replacingOccurrences(of: "/", with: "\\/")) || text.contains(summary)
     }
     func retrySelectedFailure() {
         guard !isRunning, let failed = selectedSession?.lastFailure,
@@ -5365,7 +5553,30 @@ private final class SessionStore: ObservableObject {
         save() // persist the one-review budget before dispatch, including a crash
         start(readback)
     }
+    /// Recovery and self-update must never depend on the native sidebar poll:
+    /// that poll reads the backends' own apps and can stall for a whole cycle
+    /// (a slow Codex read, a disabled backend), which used to starve every
+    /// maintenance step behind it. This tick owns them and only touches
+    /// main-actor state, so it cannot block.
+    var maintenanceLoopRunning: Bool { maintenanceTask != nil }
+    func runMaintenanceTick() {
+        // Live store only: a fixture store must never adopt the real machine's
+        // recovery state or self-update receipts.
+        guard customStorageRoot == nil else { return }
+        resumeRegisteredSourcePreparations()
+        resumeBackendRecoveries()
+        reportSelfUpdateOutcomes()
+        applyPendingSelfUpdate()
+    }
     func flushPendingState() { draftSaveTask?.cancel(); save() }
+    func updateSettings(_ mutate: (inout OS1Settings) -> Void) {
+        var value = appSettings
+        mutate(&value)
+        guard value != appSettings else { return }
+        appSettings = value
+        do { try value.save() } catch { alertMessage = error.localizedDescription }
+        if !value.showCodex, surface == .codex { surface = .auto }
+    }
     func removeQueued(_ id: UUID) {
         queuedSubmissions.removeAll { $0.id == id }
         pausedQueueIDs.remove(id); editingQueueIDs.remove(id)
@@ -6428,6 +6639,10 @@ private struct OS1DesktopApp: App {
             }
         }
         if CommandLine.arguments.contains("--self-test") {
+            // Self-test assertions use the Korean wording; pin the language
+            // so a user's English-interface setting cannot flip them.
+            setenv("OS1_INTERFACE_LANGUAGE", "ko", 1)
+            OS1Localization.invalidate()
             do {
                 try nativeProvenanceSelfTest()
                 try savedFailurePreviewSelfTest()
@@ -6437,7 +6652,8 @@ private struct OS1DesktopApp: App {
                 try railSelectionSelfTest()
                 try sidebarSynchronizationSelfTest()
                 try backendRecoverySelfTest()
-                print("OS-1 app provider intent, source continuity, voice, math, selection, pin/archive/drafts/queue, backend self-repair self-test: OK")
+                try selfUpdateReportSelfTest()
+                print("OS-1 app provider intent, source continuity, voice, math, selection, pin/archive/drafts/queue, backend self-repair, self-update self-test: OK")
                 exit(EXIT_SUCCESS)
             } catch {
                 fputs("\(error.localizedDescription)\n", stderr)
@@ -6462,35 +6678,35 @@ private struct OS1DesktopApp: App {
         .defaultSize(width: 1360, height: 760)
         .commands {
             CommandGroup(replacing: .newItem) {
-                Button("New session pair") { store.createSession() }
+                Button(os1Tr("새 세션 페어", "New session pair")) { store.createSession() }
                     .keyboardShortcut("n", modifiers: [.command])
-                Button("대화 검색") { NotificationCenter.default.post(name: Notification.Name("os1.focusSearch"), object: nil) }
+                Button(os1Tr("대화 검색", "Search conversations")) { NotificationCenter.default.post(name: Notification.Name("os1.focusSearch"), object: nil) }
                     .keyboardShortcut("k", modifiers: [.command])
-                Button("현재 대화 고정/해제") { if let id = store.selectedSessionID { store.togglePin(id) } }
+                Button(os1Tr("현재 대화 고정/해제", "Pin/unpin current conversation")) { if let id = store.selectedSessionID { store.togglePin(id) } }
                     .keyboardShortcut("p", modifiers: [.command, .shift])
-                Button("현재 대화 전체 복사") { if let id = store.selectedSessionID { store.copyConversation(id) } }
+                Button(os1Tr("현재 대화 전체 복사", "Copy entire conversation")) { if let id = store.selectedSessionID { store.copyConversation(id) } }
                     .keyboardShortcut("c", modifiers: [.command, .shift])
-                Button("완료된 대화에서 포크") { if let id = store.selectedSessionID { store.forkSession(id) } }
+                Button(os1Tr("완료된 대화에서 포크", "Fork from completed conversation")) { if let id = store.selectedSessionID { store.forkSession(id) } }
                     .keyboardShortcut("f", modifiers: [.command, .shift])
                     .disabled(store.selectedSessionID.map { !store.canForkSession($0) } ?? true)
-                Button("현재 대기열 일시정지") { if let id = store.selectedSessionID { store.pauseQueue(id) } }
+                Button(os1Tr("현재 대기열 일시정지", "Pause current queue")) { if let id = store.selectedSessionID { store.pauseQueue(id) } }
                     .disabled(store.selectedSessionQueueCount == 0)
-                Button("현재 대기열 계속 실행") { store.resumeQueue() }
+                Button(os1Tr("현재 대기열 계속 실행", "Resume current queue")) { store.resumeQueue() }
                     .disabled(store.selectedSessionID.map { !store.canResumeQueue($0) } ?? true)
-                Button("현재 작업 중지") { store.cancelSelectedRun() }
+                Button(os1Tr("현재 작업 중지", "Stop current task")) { store.cancelSelectedRun() }
                     .keyboardShortcut(".", modifiers: [.command])
                     .disabled(!store.isRunning || store.isStopping)
             }
-            CommandMenu("권한") {
-                Button("검증된 R2 복구본 폴더 연결…") { store.importArchiveMirror() }
+            CommandMenu(os1Tr("권한", "Permissions")) {
+                Button(os1Tr("검증된 R2 복구본 폴더 연결…", "Attach verified R2 recovery folder…")) { store.importArchiveMirror() }
                 Divider()
-                Button("파일·폴더 접근 설정…") {
+                Button(os1Tr("파일·폴더 접근 설정…", "Files & Folders access settings…")) {
                     if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_FilesAndFolders") { NSWorkspace.shared.open(url) }
                 }
-                Button("전체 디스크 접근 설정…") {
+                Button(os1Tr("전체 디스크 접근 설정…", "Full Disk Access settings…")) {
                     if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles") { NSWorkspace.shared.open(url) }
                 }
-                Button("설치된 OS-1 앱 표시") { NSWorkspace.shared.activateFileViewerSelecting([Bundle.main.bundleURL]) }
+                Button(os1Tr("설치된 OS-1 앱 표시", "Reveal installed OS-1 app")) { NSWorkspace.shared.activateFileViewerSelecting([Bundle.main.bundleURL]) }
             }
             CommandMenu("Voice") {
                 Button(store.voiceDictation.isActive ? "Finish Dictation" : "Start Dictation") {
@@ -6505,6 +6721,58 @@ private struct OS1DesktopApp: App {
                 .disabled(!store.voiceDictation.isActive)
             }
         }
+        // Cmd+, — the same place Codex and Claude Code keep their settings.
+        Settings {
+            OS1SettingsView(store: store)
+                .preferredColorScheme(.dark)
+        }
+    }
+}
+
+/// User settings, configured like Codex: language and backends in one pane,
+/// persisted to OS-1's settings.json which every OS-1 process reads.
+private struct OS1SettingsView: View {
+    @ObservedObject var store: SessionStore
+
+    private func binding<Value>(_ keyPath: WritableKeyPath<OS1Settings, Value>) -> Binding<Value> {
+        Binding(get: { store.appSettings[keyPath: keyPath] },
+                set: { value in store.updateSettings { $0[keyPath: keyPath] = value } })
+    }
+
+    var body: some View {
+        Form {
+            Section(os1Tr("언어", "Language")) {
+                Picker(os1Tr("인터페이스 언어", "Interface language"), selection: binding(\.interfaceLanguage)) {
+                    Text("English").tag("en")
+                    Text("한국어").tag("ko")
+                    Text(os1Tr("시스템 설정 따름", "Follow system setting")).tag("system")
+                }
+                Picker(os1Tr("응답 언어", "Response language"), selection: binding(\.outputLanguage)) {
+                    Text(os1Tr("자동 · 내 메시지 언어를 따름", "Auto · match my message")).tag("auto")
+                    Text("English").tag("en")
+                    Text("한국어").tag("ko")
+                    Text("日本語").tag("ja")
+                    Text("中文").tag("zh")
+                    Text("Español").tag("es")
+                }
+                Text(os1Tr("인터페이스 언어는 메뉴·상태 표시에 적용됩니다. 응답 언어 ‘자동’은 입력한 언어 그대로 답합니다 — 키보드가 영어라도 한국어로 쓰면 한국어로 답합니다.",
+                           "Interface language applies to menus and status text. Response ‘Auto’ answers in whatever language you type — an English keyboard with a Korean message still gets a Korean answer."))
+                    .font(.footnote).foregroundStyle(.secondary)
+            }
+            Section(os1Tr("백엔드", "Backends")) {
+                Toggle(os1Tr("Codex 백엔드 사용", "Use the Codex backend"), isOn: binding(\.showCodex))
+                Text(os1Tr("끄면 레일에서 사라지고 어떤 작업도 Codex로 라우팅되지 않습니다. Claude와 OS-1 로컬 실행만 사용합니다.",
+                           "Turning this off removes Codex from the rail and no task routes to it. Only Claude and OS-1 local execution are used."))
+                    .font(.footnote).foregroundStyle(.secondary)
+            }
+            Section(os1Tr("정보", "About")) {
+                LabeledContent(os1Tr("런타임", "Runtime"),
+                    value: "\(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?") (build \(Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "?"))")
+                LabeledContent(os1Tr("설정 파일", "Settings file"), value: "~/Library/Application Support/OS-1/settings.json")
+            }
+        }
+        .formStyle(.grouped)
+        .frame(width: 560, height: 420)
     }
 }
 
@@ -6724,6 +6992,14 @@ private struct RootView: View {
                 try? await Task.sleep(for: .seconds(3))
             }
         }
+        .task {
+            // Independent of the sidebar poll above, so a stalled backend read
+            // can never delay a queued recovery or a staged self-update.
+            while !Task.isCancelled {
+                store.runMaintenanceTick()
+                try? await Task.sleep(for: .seconds(3))
+            }
+        }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in store.flushPendingState() }
         .alert("OS-1 CLODEX", isPresented: Binding(
             get: { store.alertMessage != nil },
@@ -6830,7 +7106,11 @@ private struct ProviderRail: View {
             .accessibilityValue(store.surface == .auto ? "선택됨" : "선택 안 됨")
             .padding(.bottom, 8)
 
-            ForEach([ProviderChoice.codex, ProviderChoice.claude]) { provider in
+            // Codex disappears entirely when switched off in Settings — the
+            // runtime refuses to route to it too, so the rail stays truthful.
+            ForEach([ProviderChoice.codex, ProviderChoice.claude].filter {
+                $0 != .codex || store.appSettings.showCodex
+            }) { provider in
                 BackendStatus(
                     provider: provider,
                     selected: store.surface == provider,
@@ -7874,7 +8154,7 @@ private struct ConversationHeader: View {
                     .menuStyle(.borderlessButton).fixedSize().help("대화 관리")
 
             } else {
-                Text("새 작업").foregroundStyle(Theme.text)
+                Text(os1Tr("새 작업", "New task")).foregroundStyle(Theme.text)
                 Spacer()
             }
         }.font(.system(size: 12))
@@ -7894,7 +8174,7 @@ private struct WelcomeView: View {
     var body: some View {
         VStack(spacing: 24) {
             Spacer()
-            Text("무엇을 만들어 볼까요?").font(.system(size: 26, weight: .medium)).foregroundStyle(Theme.text)
+            Text(os1Tr("무엇을 만들어 볼까요?", "What should we build?")).font(.system(size: 26, weight: .medium)).foregroundStyle(Theme.text)
             HStack(spacing: 12) {
                 ForEach(suggestions, id: \.0) { item in
                     Button { store.useSuggestion(item.2) } label: {

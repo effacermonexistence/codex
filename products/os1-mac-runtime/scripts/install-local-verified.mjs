@@ -106,7 +106,11 @@ try {
     fs.writeFileSync(path.join(recovery, `${label}-test.log`), run(exe, args), { mode: 0o600 });
     receipt.checks.push(`${label}: PASS`);
   }
-  assert(fs.readFileSync(store).equals(before), 'verification changed the real session store');
+  // Content equality, not byte equality: a relaunched app (the user reopening
+  // OS-1 mid-install) re-encodes the store with different key order. Any real
+  // change — a session, message, queue or flag — still fails here, and the
+  // per-session preservation checks below re-verify every message.
+  assert.deepEqual(JSON.parse(fs.readFileSync(store)), original, 'verification changed the real session store');
   if (paused) { run('/bin/launchctl', ['bootstrap', `gui/${process.getuid()}`, plist]); paused = false; }
   if (wasRunning.length) run('/usr/bin/open', ['-g', app]);
   await wait(3000);

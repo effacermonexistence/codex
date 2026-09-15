@@ -22,12 +22,18 @@ public enum ConnectionFailure: String, Codable, Sendable, Error, LocalizedError,
     }
     public var errorDescription: String? {
         switch self {
-        case .authentication: return "서비스 로그인이 필요합니다. OS1에 원래 요청을 보존했습니다."
-        case .permission: return "로그인한 계정에 대상 자료 접근 권한이 없습니다. 다른 모델로 재실행하지 않았습니다."
-        case .rateLimited: return "GitHub 조회 한도에 도달했습니다. 권한 오류가 아닙니다. 요청과 자료를 보존했으며 계정 변경이나 반복 모델 호출은 하지 않았습니다."
-        case .transport: return "서비스와 통신하지 못했습니다. 인증을 바꾸지 않고 요청을 보존했습니다."
-        case .unavailable: return "대상 서비스의 응답을 확인하지 못했습니다. 요청과 기존 자료는 유지됩니다."
-        case .cancelled: return "승인을 취소했습니다. 원래 요청은 OS1에 보존했습니다."
+        case .authentication: return os1Tr("서비스 로그인이 필요합니다. OS1에 원래 요청을 보존했습니다.",
+            "The service needs a sign-in. OS1 preserved the original request.")
+        case .permission: return os1Tr("로그인한 계정에 대상 자료 접근 권한이 없습니다. 다른 모델로 재실행하지 않았습니다.",
+            "The signed-in account lacks access to the target material. The task was not re-run on another model.")
+        case .rateLimited: return os1Tr("GitHub 조회 한도에 도달했습니다. 권한 오류가 아닙니다. 요청과 자료를 보존했으며 계정 변경이나 반복 모델 호출은 하지 않았습니다.",
+            "The GitHub rate limit was reached. This is not a permission error. The request and sources are preserved; no account switch or repeated model calls.")
+        case .transport: return os1Tr("서비스와 통신하지 못했습니다. 인증을 바꾸지 않고 요청을 보존했습니다.",
+            "Could not reach the service. The request is preserved without changing authentication.")
+        case .unavailable: return os1Tr("대상 서비스의 응답을 확인하지 못했습니다. 요청과 기존 자료는 유지됩니다.",
+            "The target service's response could not be confirmed. The request and existing sources are kept.")
+        case .cancelled: return os1Tr("승인을 취소했습니다. 원래 요청은 OS1에 보존했습니다.",
+            "The approval was cancelled. The original request is preserved in OS1.")
         }
     }
 }

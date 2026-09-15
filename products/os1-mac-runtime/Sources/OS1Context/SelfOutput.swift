@@ -10,6 +10,8 @@ public enum OS1SelfOutput {
         "복구 기준점(gold 포인터)", "기록된 운영 릴리스", "운영 서버 실제 상태", "확정된 결정:", "다음 단계:", "하지 않은 것:",
         "os-1 error:", "실행 기록 확인됨", "실행 기록 미확인", "세부 정보 보기", "세부 정보 접기",
         "native record", "revas adopted", "백엔드 실행 기록의 확인 여부입니다",
+        // Connection-control receipts and provenance notes OS-1 itself prints.
+        "claude 연결됨", "github 연결됨", "r2 연결됨", "os-1 외부 작업", "이 대화에 흡수했습니다",
     ]
     static let labelLines: Set<String> = ["os-1", "os1", "claude", "codex", "◇"]
 

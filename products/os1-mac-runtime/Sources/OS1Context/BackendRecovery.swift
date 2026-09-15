@@ -22,33 +22,47 @@ public enum BackendBlocker: String, Codable, Sendable {
     public var message: String {
         switch self {
         case .backendUnavailable:
-            return "사용 가능한 백엔드 실행 환경이 없어 모델 호출 없이 사전 검사에서 중단했습니다. OS1이 자가 복구(공식 로그인 재연결, 한도 복구 대기)를 진행하며, 백엔드가 돌아오면 보존한 요청을 자동으로 이어서 실행합니다."
+            return os1Tr("사용 가능한 백엔드 실행 환경이 없어 모델 호출 없이 사전 검사에서 중단했습니다. OS1이 자가 복구(공식 로그인 재연결, 한도 복구 대기)를 진행하며, 백엔드가 돌아오면 보존한 요청을 자동으로 이어서 실행합니다.",
+                "No backend execution environment is usable, so preflight stopped without calling a model. OS1 runs its self-repair (official re-login, quota-recovery wait) and replays the preserved request by itself once a backend returns.")
         case .incomplete:
-            return "백엔드가 요청을 끝내지 못했습니다. OS1이 같은 목표와 자료를 유지하며 실행 가능한 복구 경로를 확인합니다."
+            return os1Tr("백엔드가 요청을 끝내지 못했습니다. OS1이 같은 목표와 자료를 유지하며 실행 가능한 복구 경로를 확인합니다.",
+                "The backend did not finish the request. OS1 keeps the same objective and sources and checks for an executable recovery path.")
         case .budgetExhausted:
-            return "설정된 실행 예산에 도달했습니다. OS1에 작업을 보존했으며 다른 백엔드로 예산 제한을 우회하지 않았습니다."
+            return os1Tr("설정된 실행 예산에 도달했습니다. OS1에 작업을 보존했으며 다른 백엔드로 예산 제한을 우회하지 않았습니다.",
+                "The configured execution budget was reached. OS1 preserved the task and did not bypass the budget through another backend.")
         case .cancelled:
-            return "작업을 중지했습니다. 요청과 이미 받은 결과는 OS1에 보존했습니다. 실행된 변경은 자동으로 되돌리거나 다시 실행하지 않습니다."
+            return os1Tr("작업을 중지했습니다. 요청과 이미 받은 결과는 OS1에 보존했습니다. 실행된 변경은 자동으로 되돌리거나 다시 실행하지 않습니다.",
+                "The task was stopped. The request and any results already received are preserved in OS1. Executed changes are not automatically reverted or re-run.")
         case .deliveryPending:
-            return "백엔드 답변을 OS1에 저장했습니다. 서버 검증·전달은 아직 끝나지 않았습니다. ‘저장된 결과 전달’을 누르면 모델을 다시 실행하지 않고 저장된 답변만 재접수합니다."
+            return os1Tr("백엔드 답변을 OS1에 저장했습니다. 서버 검증·전달은 아직 끝나지 않았습니다. ‘저장된 결과 전달’을 누르면 모델을 다시 실행하지 않고 저장된 답변만 재접수합니다.",
+                "The backend answer is saved in OS1, but server verification and delivery have not finished. 'Deliver saved result' re-submits only the saved answer without running a model again.")
         case .quotaExhausted:
-            return "백엔드 사용량 한도가 소진됐습니다. 답변 품질 실패로 계산하지 않고 실행 가능한 경로를 다시 확인합니다."
+            return os1Tr("백엔드 사용량 한도가 소진됐습니다. 답변 품질 실패로 계산하지 않고 실행 가능한 경로를 다시 확인합니다.",
+                "The backend usage quota is exhausted. This is not counted as an answer-quality failure; OS1 re-checks for an executable path.")
         case .policyDenied:
-            return "실행 권한 정책에 의해 작업이 차단됐습니다. 승인 대기와는 다르며, 같은 승인을 반복 요청하지 않습니다. OS1에 작업을 보존했고 다른 모델로 같은 거부를 우회하지 않았습니다."
+            return os1Tr("실행 권한 정책에 의해 작업이 차단됐습니다. 승인 대기와는 다르며, 같은 승인을 반복 요청하지 않습니다. OS1에 작업을 보존했고 다른 모델로 같은 거부를 우회하지 않았습니다.",
+                "The task was blocked by the execution-permission policy. This is not a pending approval, and the same approval is not requested repeatedly. OS1 preserved the task and did not bypass the denial through another model.")
         case .safetyBlocked:
-            return "백엔드의 안전 시스템이 실행을 차단했습니다. 사용자 승인 대기가 아니므로 OS1이 자동 승인으로 해제할 수 없습니다. 같은 승인을 다시 묻거나 다른 모델로 우회하지 않고, 요청과 받은 작업 기록을 OS1에 보존했습니다."
+            return os1Tr("백엔드의 안전 시스템이 실행을 차단했습니다. 사용자 승인 대기가 아니므로 OS1이 자동 승인으로 해제할 수 없습니다. 같은 승인을 다시 묻거나 다른 모델로 우회하지 않고, 요청과 받은 작업 기록을 OS1에 보존했습니다.",
+                "The backend's safety system blocked the run. This is not a pending user approval, so OS1 cannot clear it by auto-approving. OS1 preserved the request and the work received so far without re-asking or switching models to bypass it.")
         case .authenticationRequired:
-            return "연결 서비스의 인증 또는 접근 권한을 확인해야 합니다. 모델 변경으로 해결되는 오류가 아니므로 추가 모델 호출은 중단했습니다. OS1에 요청과 기존 작업을 보존했습니다."
+            return os1Tr("연결 서비스의 인증 또는 접근 권한을 확인해야 합니다. 모델 변경으로 해결되는 오류가 아니므로 추가 모델 호출은 중단했습니다. OS1에 요청과 기존 작업을 보존했습니다.",
+                "A connected service needs its sign-in or access permissions checked. Switching models cannot fix this, so further model calls stopped. OS1 preserved the request and existing work.")
         case .capabilityUnavailable:
-            return "필요한 실행 기능을 현재 백엔드에서 사용할 수 없습니다. OS1에 요청과 기존 작업을 보존했습니다."
+            return os1Tr("필요한 실행 기능을 현재 백엔드에서 사용할 수 없습니다. OS1에 요청과 기존 작업을 보존했습니다.",
+                "A required execution capability is unavailable on the current backend. OS1 preserved the request and existing work.")
         case .timeout:
-            return "백엔드 응답 시간이 초과됐습니다. OS1에 요청과 기존 작업을 보존했습니다."
+            return os1Tr("백엔드 응답 시간이 초과됐습니다. OS1에 요청과 기존 작업을 보존했습니다.",
+                "The backend timed out. OS1 preserved the request and existing work.")
         case .contextOverflow:
-            return "선택한 모델의 컨텍스트 창을 초과해 백엔드가 요청을 읽지 못했습니다. 파일 변경 없이 중단됐고 같은 모델·노력 단계로 재시도하지 않습니다. OS1에 요청과 기존 작업을 보존했습니다."
+            return os1Tr("선택한 모델의 컨텍스트 창을 초과해 백엔드가 요청을 읽지 못했습니다. 파일 변경 없이 중단됐고 같은 모델·노력 단계로 재시도하지 않습니다. OS1에 요청과 기존 작업을 보존했습니다.",
+                "The request exceeded the selected model's context window, so the backend never read it. Nothing was changed, and the same model and effort are not retried. OS1 preserved the request and existing work.")
         case .unclassified:
-            return "실행 결과를 확인하지 못했습니다. OS1에 요청과 기존 작업을 보존했습니다."
+            return os1Tr("실행 결과를 확인하지 못했습니다. OS1에 요청과 기존 작업을 보존했습니다.",
+                "The execution result could not be confirmed. OS1 preserved the request and existing work.")
         case .effectsUncertain:
-            return "작업이 중단됐지만 이미 반영된 변경이 있는지 확인되지 않았습니다. 중복 배포·수정을 막기 위해 자동 재실행을 멈췄습니다. OS1에 요청과 기존 작업을 보존했습니다."
+            return os1Tr("작업이 중단됐지만 이미 반영된 변경이 있는지 확인되지 않았습니다. 중복 배포·수정을 막기 위해 자동 재실행을 멈췄습니다. OS1에 요청과 기존 작업을 보존했습니다.",
+                "The task stopped, but whether changes already took effect is unverified. Automatic re-runs are held to prevent duplicate deployments or edits. OS1 preserved the request and existing work.")
         }
     }
 
