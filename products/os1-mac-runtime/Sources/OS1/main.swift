@@ -207,7 +207,8 @@ func selfRepairBackends(health: BackendHealth, codexCatalog: ActiveCodexCatalog,
                 continue
             }
             RuntimeActivity.emit(.authorizing,
-                publicText: "Claude 로그인이 만료됐고 다른 백엔드가 없어 터미널 창에 공식 Claude 로그인을 엽니다. 브라우저 승인 후 표시된 코드를 그 터미널에 붙여넣으면 같은 요청을 이어서 실행합니다.",
+                publicText: os1Tr("Claude 로그인이 만료됐고 다른 백엔드가 없어 공식 Claude 로그인을 엽니다. 브라우저 승인 후 표시된 코드를 팝업에 붙여넣으면 같은 요청을 이어서 실행합니다.",
+                                  "Claude's sign-in expired and no other backend is available, so the official Claude sign-in is opening. Approve in the browser, paste the code into the dialog, and this request continues."),
                 tool: "claude")
             do {
                 let verified = try reconnect()
@@ -1913,11 +1914,11 @@ private func withConnectionRecovery<T>(service: String, probe: () throws -> T) t
 }
 
 /// `claude auth login` is a code-paste flow even under a pseudo-terminal
-/// (verified 2026-09-15: redirect_uri platform.claude.com/oauth/code/callback,
-/// "Paste code here if prompted"), so a headless child can never finish it.
-/// OS-1 opens the official flow in the owner's own Terminal window and waits
-/// for `claude auth status` to turn logged-in. The browser code is pasted
-/// into that terminal by the owner; it never passes through OS-1.
+/// (verified 2026-09-15 on 2.1.263 and 2.1.270: redirect_uri
+/// platform.claude.com/oauth/code/callback, "Paste code here if prompted"),
+/// so a headless child can never finish it. OS-1 starts the official flow,
+/// lets the CLI open the browser, and collects the code in a native dialog
+/// that feeds the waiting process directly; OS-1 never sees the code.
 private func claudeLoginAlreadyRunning() -> Bool {
     guard let result = try? commandOutput("/usr/bin/pgrep", ["-f", "claude auth login"], timeout: 10) else { return false }
     return result.0 == 0 && !result.1.isEmpty
@@ -1945,21 +1946,53 @@ private func runClaudeLoginInTerminal(deadlineSeconds: Int = 300) throws -> (Int
     }
     let root = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/OS-1/auth-flows")
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-    let script = root.appendingPathComponent("claude-login.command")
+    // The owner's only step is pasting the browser's code. A native dialog
+    // comes to the front and feeds it straight into the login process through
+    // a private FIFO: the code is never printed, logged, or read by OS-1.
+    let script = root.appendingPathComponent("claude-login-dialog.sh")
+    let title = os1Tr("OS-1 · Claude 로그인", "OS-1 · Claude sign-in")
+    let message = os1Tr("브라우저에서 승인한 뒤 화면에 표시된 코드를 여기에 붙여넣으세요.\n(코드는 로그인 프로세스로 바로 전달되며 어디에도 기록되지 않습니다.)",
+                        "Approve in the browser, then paste the code it shows here.\n(The code goes straight to the login process and is never recorded.)")
+    let cancel = os1Tr("취소", "Cancel"), confirm = os1Tr("로그인", "Sign in")
     let body = """
     #!/bin/zsh
-    clear
-    echo "OS-1: 공식 Claude 로그인입니다. 브라우저에서 승인한 뒤 표시된 코드를 여기에 붙여넣으세요."
-    echo "완료되면 OS-1이 보존한 작업을 자동으로 이어갑니다. (이 창은 닫아도 됩니다)"
-    echo
-    exec '\(claude)' auth login --claudeai
+    set -u
+    claude_bin="$1"
+    run_dir="$(mktemp -d "${TMPDIR:-/tmp}/os1-claude-login.XXXXXX")"
+    chmod 700 "$run_dir"
+    fifo="$run_dir/stdin"
+    mkfifo -m 600 "$fifo"
+    cleanup() { [[ -n "${login_pid:-}" ]] && kill "$login_pid" 2>/dev/null; rm -rf "$run_dir"; }
+    trap cleanup EXIT INT TERM
+    "$claude_bin" auth login --claudeai < "$fifo" > /dev/null 2>&1 &
+    login_pid=$!
+    exec 3> "$fifo"
+    sleep 3
+    osascript > "$run_dir/answer" 2>/dev/null <<'APPLESCRIPT'
+    tell me to activate
+    set reply to display dialog "\(message)" default answer "" with hidden answer with title "\(title)" buttons {"\(cancel)", "\(confirm)"} default button "\(confirm)" with icon note
+    if button returned of reply is "\(cancel)" then error number -128
+    return text returned of reply
+    APPLESCRIPT
+    if [[ ! -s "$run_dir/answer" ]]; then exec 3>&-; exit 1; fi
+    cat "$run_dir/answer" >&3
+    : > "$run_dir/answer"
+    exec 3>&-
+    for _ in {1..40}; do
+      "$claude_bin" auth status --json 2>/dev/null | grep -q '"loggedIn": *true' && exit 0
+      kill -0 "$login_pid" 2>/dev/null || break
+      sleep 3
+    done
+    "$claude_bin" auth status --json 2>/dev/null | grep -q '"loggedIn": *true'
     """
     try Data(body.utf8).write(to: script, options: .atomic)
     try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: script.path)
-    let opened = try commandOutput("/usr/bin/open", ["-a", "Terminal", script.path], timeout: 20)
-    guard opened.0 == 0 else { throw ConnectionFailure.unavailable }
+    func quoted(_ value: String) -> String { "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'" }
+    let launched = try commandOutput("/bin/sh", ["-c", "nohup \(quoted(script.path)) \(quoted(claude)) > /dev/null 2>&1 &"], timeout: 20)
+    guard launched.0 == 0 else { throw ConnectionFailure.unavailable }
     RuntimeActivity.emit(.authorizing,
-        publicText: "터미널 창에 공식 Claude 로그인을 열었습니다. 브라우저에서 승인한 뒤 표시된 코드를 그 터미널에 붙여넣으면 OS1이 같은 작업을 이어갑니다.",
+        publicText: os1Tr("공식 Claude 로그인을 열었습니다. 브라우저에서 승인한 뒤 표시된 코드를 앞에 뜬 팝업에 붙여넣으면 OS1이 같은 작업을 이어갑니다.",
+                          "The official Claude sign-in is open. Approve in the browser, paste the code into the dialog in front of you, and OS1 continues this task."),
         tool: "claude")
     let deadline = Date().addingTimeInterval(TimeInterval(deadlineSeconds))
     while Date() < deadline {
