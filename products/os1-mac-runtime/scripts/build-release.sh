@@ -159,7 +159,9 @@ if find "$stage_dir" -print | grep -Eiq 'private-core|os1_local_core|darwin_rout
 fi
 
 xattr -cr "$stage_dir"
-codesign_options=(--force --sign "$codesign_identity" "${codesign_keychain_options[@]}" --options runtime)
+# Under `set -u` an empty array expands to an unbound-variable error on the
+# CI runner (no signing keychain), so guard the expansion.
+codesign_options=(--force --sign "$codesign_identity" ${codesign_keychain_options[@]+"${codesign_keychain_options[@]}"} --options runtime)
 if [[ "$release_mode" == "distribution" ]]; then
   codesign_options+=(--timestamp)
 else
