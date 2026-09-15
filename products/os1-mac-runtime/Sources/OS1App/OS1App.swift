@@ -2802,6 +2802,10 @@ private struct PendingSubmission: Identifiable, Codable, Equatable, Sendable {
     /// Set when a clean readback (OS1_EFFECTS: none) already resumed this
     /// objective once, so one verified-no-effects verdict buys one resume.
     var readbackResumed: Bool? = nil
+    /// Set once a readback under the OS1_EFFECTS verdict contract ran for
+    /// this failure; failures reconciled before that contract existed get
+    /// exactly one more readback under it.
+    var verdictReconciled: Bool? = nil
     var executionRequest: String {
         (liveCorrections ?? []).reduce(amendedRequest.map {
             ExecutionSteering.continuation(original: $0, correction: request)
@@ -4487,7 +4491,8 @@ private final class SessionStore: ObservableObject {
     private func canSteer(_ id: UUID) -> Bool {
         guard let active = activeRuns[id], !active.cancellationRequested,
               inFlightSubmissions[id]?.readOnlyReconciliation != true,
-              active.provider == .codex, steeringMailbox.active(active.submissionID) != nil,
+              active.provider == .codex || active.provider == .claude,
+              steeringMailbox.active(active.submissionID) != nil,
               active.activity.phase == .executing,
               let context = sessions.first(where: { $0.id == id })?.taskContext else { return false }
         if let revision = active.correctionRevision { return revision == context.latestSemanticRevision }
@@ -4512,7 +4517,7 @@ private final class SessionStore: ObservableObject {
     func canSteerQueued(_ item: PendingSubmission) -> Bool {
         !ExecutionSteering.isTaskReplacement(item.request) && canSteer(item.sessionID) && !editingQueueIDs.contains(item.id) &&
             queuedSubmissions.contains(where: { $0.id == item.id }) &&
-            (item.provider == .auto || item.provider == .codex)
+            (item.provider == .auto || item.provider == .codex || item.provider == .claude)
     }
     func steerQueued(_ id: UUID) {
         guard let item = queuedSubmissions.first(where: { $0.id == id }), canSteerQueued(item) else { return }
@@ -5432,6 +5437,7 @@ private final class SessionStore: ObservableObject {
     /// at most once a minute; no model call happens until health says usable.
     private var backendHealthProbeStartedAt: Date?
     private var maintenanceTask: Task<Void, Never>?
+    private let storeLaunchedAt = Date()
     func resumeBackendRecoveries(healthURL: URL = BackendHealth.defaultURL, now: Date = Date()) {
         let waiting = sessions.filter {
             $0.lastBackendFailure?.blocker == .backendUnavailable && $0.lastFailure?.preflightOnly == true &&
@@ -5483,7 +5489,12 @@ private final class SessionStore: ObservableObject {
             selfUpdateRootsCachedAt = now
         }
         guard let pending = SelfUpdate.pendingIntents(roots: selfUpdateRoots).first else { return }
-        let busy = !activeRuns.isEmpty || !inFlightSubmissions.isEmpty || isStopping
+        // A running fleet job counts as busy: the installer would refuse
+        // mid-job anyway, and refusals must not burn the apply budget.
+        let fleetRoot = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".os1/fleet")
+        let fleetBusy = FileManager.default.fileExists(atPath: fleetRoot.appendingPathComponent("main-agent-active.json").path) ||
+            FileManager.default.fileExists(atPath: fleetRoot.appendingPathComponent("main-agent-claim.json").path)
+        let busy = !activeRuns.isEmpty || !inFlightSubmissions.isEmpty || isStopping || fleetBusy
         switch SelfUpdate.decision(intent: pending.intent, installedBuild: installedBuildNumber, busy: busy, now: now) {
         case .apply:
             guard selfUpdateLaunchedAt.map({ now.timeIntervalSince($0) > 120 }) ?? true else { return }
@@ -5582,6 +5593,7 @@ private final class SessionStore: ObservableObject {
             readOnlyReconciliation: true)
         readback.recoveryParentID = failed.id
         sessions[index].lastFailure?.recoveryAttempted = true
+        sessions[index].lastFailure?.verdictReconciled = true
         appendTaskEvent(conversationID: conversationID, kind: "reconciling", summary: "OS1 owns bounded read-only recovery of the original request")
         save() // persist the one-review budget before dispatch, including a crash
         start(readback)
@@ -5608,6 +5620,45 @@ private final class SessionStore: ObservableObject {
         resumeBackendRecoveries()
         reportSelfUpdateOutcomes()
         applyPendingSelfUpdate()
+        releaseRestartHolds()
+        resumeStaleReconciliations()
+    }
+    /// The restart hold exists so a relaunch (installer verification included)
+    /// never fires saved queue entries by itself. It is not meant to freeze
+    /// the queue forever: once the app has been up for a minute, entries whose
+    /// conversation has no unresolved failure or preparation hold resume on
+    /// their own. Failure holds keep their own gates.
+    func releaseRestartHolds(now: Date = Date()) {
+        guard now.timeIntervalSince(storeLaunchedAt) > 60, !pausedQueueIDs.isEmpty else { return }
+        var released = false
+        for item in queuedSubmissions where pausedQueueIDs.contains(item.id) && !editingQueueIDs.contains(item.id) {
+            guard let session = sessions.first(where: { $0.id == item.sessionID }),
+                  session.lastFailure == nil, session.lastBackendFailure == nil,
+                  session.taskContext?.sourcePreparation == nil, session.queuePaused != true else { continue }
+            pausedQueueIDs.remove(item.id)
+            released = true
+        }
+        if released {
+            appendTaskEvent(conversationID: selectedSessionID ?? UUID(), kind: "queue_resumed",
+                summary: "Restart hold released after verified idle startup; preserved queue continues")
+            runNextQueuedSubmissionIfNeeded()
+        }
+    }
+    /// A conversation stuck behind an uncertain-effect failure gets its
+    /// read-only readback even when the failure predates this build (or the
+    /// verdict contract): one readback per contract generation, and the
+    /// OS1_EFFECTS verdict decides whether the objective resumes.
+    private func resumeStaleReconciliations() {
+        for session in sessions {
+            guard activeRuns.count < Self.maximumConcurrentSessions, !isSessionRunning(session.id),
+                  session.lastBackendFailure?.requiresReadback == true,
+                  let failed = session.lastFailure, failed.recoveryParentID == nil,
+                  failed.recoveryAttempted != true || failed.verdictReconciled != true,
+                  !FileManager.default.fileExists(atPath: ExecutionCancellation.url(submissionID: failed.id).path) else { continue }
+            appendTaskEvent(conversationID: session.id, kind: "stale_reconcile",
+                summary: "Held failure predates the verdict contract; running its read-only readback now")
+            beginReconciliation(conversationID: session.id)
+        }
     }
     func flushPendingState() { draftSaveTask?.cancel(); save() }
     func updateSettings(_ mutate: (inout OS1Settings) -> Void) {

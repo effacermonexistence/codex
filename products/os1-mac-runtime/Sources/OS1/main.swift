@@ -1229,7 +1229,8 @@ func claudeArguments(
     title: String,
     permissionProfile: String,
     prompt: String,
-    sourceContextOnly: Bool = false
+    sourceContextOnly: Bool = false,
+    streamInput: Bool = false
 ) throws -> [String] {
     var arguments = ["-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages"]
     if sourceContextOnly && permissionProfile == "read_only" {
@@ -1255,7 +1256,14 @@ func claudeArguments(
     } else {
         arguments += ["--resume", sessionID]
     }
-    arguments.append(prompt)
+    if streamInput {
+        // Steerable run: the prompt and any live corrections arrive as
+        // stream-json user messages on stdin; a positional prompt would end
+        // the input stream immediately.
+        arguments += ["--input-format", "stream-json"]
+    } else {
+        arguments.append(prompt)
+    }
     return arguments
 }
 
@@ -1640,7 +1648,8 @@ func commandOutput(
     isProvider: Bool = false,
     environmentOverrides: [String: String] = [:],
     onLaunch: (() -> Void)? = nil,
-    onOutput: ((Data) -> Void)? = nil
+    onOutput: ((Data) -> Void)? = nil,
+    interactiveStdin: ((FileHandle) -> Void)? = nil
 ) throws -> (Int32, Data, Data) {
     let temporary = FileManager.default.temporaryDirectory.appendingPathComponent("os1-process-\(UUID().uuidString)")
     try FileManager.default.createDirectory(at: temporary, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
@@ -1678,6 +1687,14 @@ func commandOutput(
         onLaunch?()
         try pipe.fileHandleForWriting.write(contentsOf: input)
         try pipe.fileHandleForWriting.close()
+    } else if let interactiveStdin {
+        // The caller owns the write end for the process's whole life (live
+        // steering): it writes messages as they arrive and closes to end.
+        let pipe = Pipe()
+        process.standardInput = pipe
+        try process.run()
+        onLaunch?()
+        interactiveStdin(pipe.fileHandleForWriting)
     } else {
         process.standardInput = FileHandle.nullDevice
         try process.run()
@@ -5325,6 +5342,15 @@ private func execute(
         guard let nativeModel = try ModelAvailability.claudeModels(workspace: executionWorkspace).first(where: {
             $0.model == model && $0.efforts.contains(effort)
         }) else { throw OS1Error.backendBlocked(.capabilityUnavailable) }
+        // Live steering: with an owning OS-1 submission, the run reads
+        // stream-json user messages from stdin so the owner's corrections
+        // join this same session mid-run — Codex parity. Source-only answers
+        // stay one-shot.
+        let steeringSubmission = sourceOnly ? nil : ExecutionSteering.currentSubmission
+        let steerDriver = steeringSubmission.map {
+            ClaudeSteerDriver(submissionID: $0, sessionID: activeSessionID, prompt: prompt)
+        }
+        defer { steerDriver?.processDidEnd() }
         var arguments = try claudeArguments(
             model: nativeModel.invocation,
             effort: effort,
@@ -5334,7 +5360,8 @@ private func execute(
             title: claudeSessionTitle(from: lockedObjective),
             permissionProfile: ticket.permissionProfile,
             prompt: prompt,
-            sourceContextOnly: hasPreloadedR2Evidence
+            sourceContextOnly: hasPreloadedR2Evidence,
+            streamInput: steerDriver != nil
         )
         if projectlessRead && !sourceOnly { arguments.insert("--safe-mode", at: 1) }
         let stream = ExecutionStream()
@@ -5349,12 +5376,14 @@ private func execute(
             onLaunch: { onDispatch?(activeSessionID) },
             onOutput: { bytes in
                 stream.ingestClaude(bytes)
+                steerDriver?.observe(resultCount: stream.resultCount, turnOpen: stream.turnOpen)
                 if stream.eventCount != revision {
                     revision = stream.eventCount
                     RuntimeActivity.emit(.executing, provider: "claude", model: model, effort: effort,
                         publicText: stream.text, tool: stream.tool)
                 }
-            }
+            },
+            interactiveStdin: steerDriver.map { driver in { handle in driver.attach(handle) } }
         ) } catch {
             stream.finishClaude()
             if let result = stream.result { onUsage?(CompletionUsageParser.parseClaudeResult(result)) }
@@ -5391,8 +5420,15 @@ private func execute(
                 sourceRepositories: $0.sources.compactMap { $0["repository"] }
             )
         } ?? false)
+        // Corrections the run verifiably carried become part of the objective
+        // the answer is judged against — Codex parity.
+        let correctedObjective = steeringSubmission.map { id in
+            let mailbox = ExecutionSteering()
+            return mailbox.inputs(id).filter { mailbox.receipt($0)?.state == .persisted }
+                .reduce(lockedObjective) { ExecutionSteering.continuation(original: $0, correction: $1.text) }
+        } ?? lockedObjective
         validateCandidate = {
-        if UnifiedExecution.requestsManualBackendHandoff(String(decoding: parsed.output, as: UTF8.self), request: lockedObjective) {
+        if UnifiedExecution.requestsManualBackendHandoff(String(decoding: parsed.output, as: UTF8.self), request: correctedObjective) {
             throw OS1Error.backendBlocked(BackendBlocker.reported(in: String(decoding: parsed.output, as: UTF8.self)) ?? .incomplete)
         }
         if rejectedCapability {
@@ -8711,6 +8747,24 @@ func selfTest() throws {
                 permitted.catalogs?.claude.count == 1 && permitted.catalogs?.codex.models.isEmpty == true && permitted.note == "Claude 연결됨" &&
                 declined.catalogs == nil && (declined.note ?? "").contains("완료되지 않았습니다") && (declined.note ?? "").contains("복구됩니다") &&
                 reconnects == 2
+        }()),
+        ("steerable Claude arguments stream input instead of a positional prompt", {
+            let steered = (try? claudeArguments(model: "sonnet", effort: "medium", instructions: "x", sessionID: UUID().uuidString.lowercased(),
+                startNewSession: true, title: "t", permissionProfile: "workspace_write", prompt: "고쳐", streamInput: true)) ?? []
+            let oneShot = (try? claudeArguments(model: "sonnet", effort: "medium", instructions: "x", sessionID: UUID().uuidString.lowercased(),
+                startNewSession: true, title: "t", permissionProfile: "workspace_write", prompt: "고쳐")) ?? []
+            let pair = steered.firstIndex(of: "--input-format").map { steered.indices.contains($0 + 1) && steered[$0 + 1] == "stream-json" } ?? false
+            return pair && !steered.contains("고쳐") && oneShot.last == "고쳐" && !oneShot.contains("--input-format")
+        }()),
+        ("execution stream counts turns for steering persistence", {
+            let stream = ExecutionStream()
+            func line(_ object: [String: Any]) -> Data { (try? JSONSerialization.data(withJSONObject: object)).map { $0 + Data([10]) } ?? Data() }
+            stream.ingestClaude(line(["type": "assistant", "message": ["id": "m1", "content": [["type": "text", "text": "작업 중"]]]]))
+            let midTurn = stream.turnOpen && stream.resultCount == 0
+            stream.ingestClaude(line(["type": "result", "result": "one", "session_id": "s"]))
+            let afterFirst = !stream.turnOpen && stream.resultCount == 1
+            stream.ingestClaude(line(["type": "result", "result": "two", "session_id": "s"]))
+            return midTurn && afterFirst && stream.resultCount == 2
         }()),
         ("output language directive rides its own section and keeps the request terminal", {
             let pinned = (try? providerPrompt(current: "안녕", context: nil, languageDirective: "Write the answer in English.")) ?? ""

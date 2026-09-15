@@ -28,7 +28,7 @@ func selfUpdateCommand(_ arguments: [String]) async throws -> Bool {
     return true
 }
 
-let os1RuntimeVersionString = "OS-1 Runtime 0.9.68 (owner-voice-guard-build134)"
+let os1RuntimeVersionString = "OS-1 Runtime 0.9.70 (claude-steering-build136)"
 
 /// One writer at a time in OS-1's own checkout: the same RCC discipline the
 /// runtime enforces elsewhere, applied to itself. Waits briefly for the other
@@ -224,11 +224,15 @@ private func applySelfUpdate(root requested: String?) throws {
     }
     let transient = ["leave the installation unchanged", "Fleet work/claim unresolved", "queue changed during installation"]
         .contains(where: text.contains)
-    if transient, intent.applyAttempts < SelfUpdate.maximumApplyAttempts {
+    if transient {
+        // Busy is not failure: an active user task or a running fleet job
+        // must never consume the install budget. The intent simply stays
+        // pending (its 24-hour freshness cap still applies).
         intent.state = "pending"
+        intent.applyAttempts = max(0, intent.applyAttempts - 1)
         intent.lastError = String(text.suffix(600))
         try SelfUpdate.save(intent, root: root)
-        print("self-update apply: OS-1 was busy; the staged build stays pending (attempt \(intent.applyAttempts))")
+        print("self-update apply: OS-1 was busy; the staged build stays pending")
         return
     }
     try fail("installer failed: " + String(text.suffix(1_200)))
