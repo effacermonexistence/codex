@@ -1,4 +1,4 @@
-const SENTINEL_SCHEMA = 'scv-instagram-drift-sentinel-2026-09-15-v50-v188-running-release-v167-recovery-gold'
+const SENTINEL_SCHEMA = 'scv-instagram-drift-sentinel-2026-09-15-v51-v189-running-release-v167-recovery-gold'
 // GOLD-3 (2026-09-03): v148 (owner-verified v145 plus the owner-ordered polish, live red-team verified) frozen as the reference; the pointer and manifest below are pinned by hash.
 const GOLD_LATEST_KEY = 'scv-instagram-automation/gold/LATEST.json'
 const GOLD_MANIFEST_KEY = 'scv-instagram-automation/gold/SCV_GOLD_MANIFEST_v148.json'
@@ -8,14 +8,14 @@ const GOLD_MANIFEST_SHA256 = '31ea4507381e6ec2c3ce4458d70af4a311f331a4a26651f5d9
 // Comparing the gold manifest against the running release id made the check fail by construction.
 const GOLD_RELEASE_ID = 'scv-instagram-single-20260902-v148'
 const GOLD_CONTENT_FINGERPRINT = '3a9a18631443f4738d13dd803f080979ff4d21ab0d9de1f5054b2f26e2ea3609'
-// v50 (2026-09-15): v188 never ships a deterministic template on a social turn while a model line that
-// passed every hard gate exists (voice-only rejections are adopted after exhaustion, the final pass asks
-// for a plain line); models, routes, literals, identity, booking/delivery state and the v180-v187 laws stay.
+// v51 (2026-09-15): v189 makes the social voice follow the owner's archive convergence (a question in about
+// one of five turns, never three of four, passive streaks up to the archive p75), detects Korean alternative
+// and indirect questions, rejects unsolicited advice and restated motifs; models, routes, literals stay.
 // The latest approved recovery Gold stays v167. Previous v151, GOLD-3 v148, April Golden,
 // and all recovery/reset evidence pins remain unchanged. A deployed release is not a Gold.
-const RELEASE_ID = 'scv-instagram-single-20260914-v188'
-const CONTENT_FINGERPRINT = '02e10736092d6cf78d79b0a1992ecd73277b480fb819939b04f798b315b6a2a6'
-const RELEASE_MANIFEST = '5296a24b3a50b386ed6fa84dd880e9f3f01930316403c6069947264486566d4a'
+const RELEASE_ID = 'scv-instagram-single-20260914-v189'
+const CONTENT_FINGERPRINT = '6348e0488bacd50148191a7b0bc31cda0fef5610cd04c2a14e5a2bb4d423fe85'
+const RELEASE_MANIFEST = 'de2850214f8241d440bcd5dd5498c48ac9c531f5c89cd7a851f1481cde78f457'
 const RECOVERY_POINT_RELEASE_ID = 'scv-instagram-single-20260908-v167'
 const RECOVERY_POINT_CONTENT_FINGERPRINT = '6b85a63a25c23e9815491413eeb895e6b78ed8faa523f18aefea6b88f392faa7'
 const RECOVERY_POINT_RELEASE_MANIFEST = '2f12a00d12114bbbb05080438dda88a6278a82ae65a9fc9aaaff70a2a25ad4b6'
