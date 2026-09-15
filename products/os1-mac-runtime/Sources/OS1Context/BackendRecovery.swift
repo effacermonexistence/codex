@@ -129,8 +129,12 @@ public struct BackendFailureNotice: Codable, Equatable, Sendable {
         self.publicProgress = publicProgress.map { String($0.suffix(24_000)) }
         self.diagnosis = diagnosis.map { String($0.prefix(4_000)) }
     }
+    /// A lane OS-1 signed as read-only had no mutation authority, so its
+    /// effects cannot be uncertain: there is nothing to read back. An unknown
+    /// profile stays conservative and still reconciles.
     public var requiresReadback: Bool {
-        blocker == .effectsUncertain || (dispatchStage == .dispatched && permissionProfile == "workspace_write")
+        guard permissionProfile != "read_only" else { return false }
+        return blocker == .effectsUncertain || (dispatchStage == .dispatched && permissionProfile == "workspace_write")
     }
     public func emit() {
         guard let path = ProcessInfo.processInfo.environment["OS1_FAILURE_FILE"],

@@ -2802,6 +2802,10 @@ private struct PendingSubmission: Identifiable, Codable, Equatable, Sendable {
     /// Set when a clean readback (OS1_EFFECTS: none) already resumed this
     /// objective once, so one verified-no-effects verdict buys one resume.
     var readbackResumed: Bool? = nil
+    /// The OS-1 build under which that resume happened. A build that replaced
+    /// itself to fix the cause earns one fresh resume; the same build never
+    /// retries in a loop.
+    var resumedUnderBuild: Int? = nil
     /// Set once a readback under the OS1_EFFECTS verdict contract ran for
     /// this failure; failures reconciled before that contract existed get
     /// exactly one more readback under it.
@@ -4913,9 +4917,10 @@ private final class SessionStore: ObservableObject {
                     if let verdictText = visibleSteps.last?.output,
                        BackendRecovery.effectsVerdict(in: verdictText) == .nothingApplied,
                        var original = sessions[target].lastFailure, original.recoveryParentID == nil,
-                       original.readbackResumed != true,
+                       original.readbackResumed != true || (original.resumedUnderBuild ?? 0) < installedBuildNumber,
                        !FileManager.default.fileExists(atPath: ExecutionCancellation.url(submissionID: original.id).path) {
                         original.readbackResumed = true
+                        original.resumedUnderBuild = installedBuildNumber
                         sessions[target].lastFailure = original
                         sessions[target].messages.append(ChatMessage(role: .system,
                             text: os1Tr("재확인 결과 이전 시도의 변경이 전혀 반영되지 않았음이 확인됐습니다. 보존한 원래 작업을 이어서 실행합니다.",
