@@ -56,7 +56,14 @@ public enum SelfUpdate {
         /// How many times posting this receipt has been attempted. A receipt
         /// that cannot be confirmed on disk is consumed after a small number
         /// of tries instead of being re-posted forever.
-        public var postAttempts = 0
+        ///
+        /// Optional on purpose: synthesized decoding does NOT fall back to a
+        /// property's default value, so a non-optional field added later makes
+        /// every previously written record undecodable — which silently hid
+        /// all 15 existing receipts the moment this field was introduced.
+        /// Every field added to a persisted record from now on must be
+        /// optional for the same reason.
+        public var postAttempts: Int? = nil
 
         public init(id: String = UUID().uuidString.lowercased(), intent: Intent, success: Bool, receiptPath: String?,
                     error: String?, summary: String, completedAt: Date = Date()) {
@@ -175,8 +182,8 @@ public enum SelfUpdate {
     public static let maximumPostAttempts = 3
     public static func recordPostAttempt(_ outcome: Outcome, home: URL = FileManager.default.homeDirectoryForCurrentUser) throws {
         var value = outcome
-        value.postAttempts += 1
-        if value.postAttempts >= maximumPostAttempts { value.reported = true }
+        value.postAttempts = (value.postAttempts ?? 0) + 1
+        if (value.postAttempts ?? 0) >= maximumPostAttempts { value.reported = true }
         try saveOutcome(value, home: home)
     }
 

@@ -3199,6 +3199,15 @@ private func selfUpdateReportSelfTest() throws {
         attempts = SelfUpdate.outcomes(home: home).first { $0.id == "fixture-unconfirmable" } ?? attempts
     }
     try check(attempts.reported, "an unconfirmable receipt never stopped retrying")
+    // A record written by an older build (no postAttempts key) must still
+    // decode — a non-optional new field made every existing receipt invisible.
+    let legacyDir = SelfUpdate.outcomesDirectory(home: home)
+    let legacy = """
+    {"completedAt":"2026-09-15T21:00:00Z","error":null,"id":"fixture-legacy","intent":{"applyAttempts":0,"build":99,    "checks":[],"conversationID":null,"schema":1,"sourceCommit":null,"sourceRoot":"/tmp/os1","stagedAppSHA256":"a",    "stagedAt":"2026-09-15T20:00:00Z","stagedCLISHA256":"b","state":"pending","submissionID":null,"version":"0.9.x"},    "receiptPath":null,"reported":false,"success":true,"summary":"구 스키마 영수증"}
+    """
+    try Data(legacy.utf8).write(to: legacyDir.appendingPathComponent("fixture-legacy.json"))
+    try check(SelfUpdate.outcomes(home: home).contains { $0.id == "fixture-legacy" },
+        "a receipt written before postAttempts existed became undecodable")
     // A failure outcome without a known conversation lands in the selected one.
     let orphan = SelfUpdate.Intent(build: 127, version: "0.9.61", sourceRoot: "/tmp/os1", sourceCommit: nil,
         stagedAppSHA256: "a", stagedCLISHA256: "b", conversationID: nil, submissionID: nil, checks: [])
