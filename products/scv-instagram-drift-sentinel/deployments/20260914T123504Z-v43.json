@@ -1,0 +1,23 @@
+{
+  "schema": "scv-instagram-drift-sentinel-deployment-2026-09-08-v1",
+  "worker": "scv-instagram-drift-sentinel",
+  "sentinel_schema": "scv-instagram-drift-sentinel-2026-09-14-v43-v182-running-release-v167-recovery-gold",
+  "deployed_version_id": "1a0236d5-7fcd-4a50-947a-199d9dada843",
+  "schedule": "*/5 * * * *",
+  "first_passing_scheduled_run_utc": "2026-09-14T12:35:04.000Z",
+  "expected_release": {
+    "release_id": "scv-instagram-single-20260914-v182",
+    "content_fingerprint_sha256": "05f9e84745f93b0bcb86835702e391b4183671bed4b57c23b6e615227ffcfac2",
+    "release_manifest_sha256": "17da72563c358ca48947d0f845e654b6226f3fde80960b828255516a840b7fd6",
+    "visible_model": "gpt-5.4-mini-2026-03-17"
+  },
+  "attestation": {
+    "key": "scv-instagram-automation/drift-attestations/2026-09-14/20260914T123504000Z.json",
+    "sha256": "df4e098b8a65e3a50a52d0072e187f62fd16d11f77c5136c0693b2b7edf51bd9",
+    "r2_readback_hash_matched": true
+  },
+  "production_check": null,
+  "pointer_ok_overall": false,
+  "aggregate_boundary": "staging v168 unchanged; release pins intentionally differ; aggregate ok stays false by design",
+  "recorded_at_utc": "2026-09-14T12:35:54.940326+00:00"
+}
