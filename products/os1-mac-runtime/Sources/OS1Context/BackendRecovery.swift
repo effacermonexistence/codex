@@ -228,7 +228,36 @@ public enum BackendRecovery {
         --- 이전 작업 목표 ---
         \(objective)
         --- 이전 작업 목표 끝 ---
+
+        답변의 마지막 줄은 반드시 다음 네 가지 중 하나만, 다른 텍스트 없이 정확히 쓰세요:
+        OS1_EFFECTS: none — 이전 시도의 변경이 전혀 반영되지 않았음을 실제 상태로 직접 확인한 경우에만
+        OS1_EFFECTS: applied — 이전 시도의 변경이 이미 반영되어 있음
+        OS1_EFFECTS: partial — 일부만 반영됨
+        OS1_EFFECTS: unknown — 확인할 수 없음
         """
+    }
+
+    /// The machine-checkable last line of a readback answer. `none` means the
+    /// backend verified from real state that nothing from the interrupted
+    /// attempt landed — the one case where OS-1 may safely resume the
+    /// preserved objective by itself.
+    public enum EffectsVerdict: String, Codable, Sendable {
+        /// Named to avoid the Optional.none pitfall in `verdict == .none`.
+        case nothingApplied = "none"
+        case applied, partial, unknown
+    }
+
+    public static func effectsVerdict(in text: String) -> EffectsVerdict? {
+        for line in text.split(separator: "\n").reversed() {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            guard trimmed.lowercased().hasPrefix("os1_effects:") else { continue }
+            let value = trimmed.dropFirst("os1_effects:".count)
+                .trimmingCharacters(in: .whitespaces).lowercased()
+            // Anything appended after the verdict voids it: the contract is
+            // "that word alone", so a quoted or explained line cannot count.
+            return EffectsVerdict(rawValue: value)
+        }
+        return nil
     }
 
 }

@@ -2799,6 +2799,9 @@ private struct PendingSubmission: Identifiable, Codable, Equatable, Sendable {
     var startNextRequested: Bool? = nil
     var replacesSubmissionID: UUID? = nil
     var replacesObjective: Bool? = nil
+    /// Set when a clean readback (OS1_EFFECTS: none) already resumed this
+    /// objective once, so one verified-no-effects verdict buys one resume.
+    var readbackResumed: Bool? = nil
     var executionRequest: String {
         (liveCorrections ?? []).reduce(amendedRequest.map {
             ExecutionSteering.continuation(original: $0, correction: request)
@@ -3367,11 +3370,19 @@ private func nativeProvenanceSelfTest() throws {
     let handoff = try sessionHandoff(session)
     try check(!handoff.contains("중단된 작업의 현재 상태만"), "internal instructions leaked into provider context")
     try check(presentedMessages(session).map(\.id) == [genuine.id, final.id], "UI/copy projection differs")
+    // Verbatim OS-1 control text arriving as a native "user" turn was authored
+    // by OS-1, not typed by the owner — replaying it put words in the owner's
+    // mouth (live incident 2026-09-15). A turn where the owner leads with
+    // their own words and merely quotes the internal text stays theirs.
     let outsideRecord = NativeRecord(id: "codex:later-user-quote", ordinal: 20, role: "user", text: internalText,
         complete: true, turnID: "external-turn")
     let held = Set(session.visibleMessages.map { NativeIngestion.digestOf($0.text) })
-    try check(NativeIngestion.newRecords([outsideRecord], after: nil, sentByOS1: held, seen: []).records == [outsideRecord],
-        "archived internal text suppressed a later genuine user quote")
+    try check(NativeIngestion.newRecords([outsideRecord], after: nil, sentByOS1: held, seen: []).records.isEmpty,
+        "OS-1-authored control text was re-ingested as the owner's message")
+    let ownerQuote = NativeRecord(id: "codex:owner-quote", ordinal: 21, role: "user",
+        text: "이거 무슨 뜻이야?\n" + internalText, complete: true, turnID: "external-turn-2")
+    try check(NativeIngestion.newRecords([ownerQuote], after: nil, sentByOS1: held, seen: []).records == [ownerQuote],
+        "a genuine user message quoting internal text was suppressed")
     let roundtrip = try JSONDecoder().decode(ConversationSession.self, from: JSONEncoder().encode(session))
     try check(roundtrip.visibleMessages == session.visibleMessages, "restart lost provenance")
     var altered = ConversationSession(workspace: "/tmp/fixture")
@@ -4880,9 +4891,31 @@ private final class SessionStore: ObservableObject {
                     ? os1Tr("답변 수신 · 실행 기록 확인됨", "Answer received · execution record verified")
                     : os1Tr("답변 수신 · 실행 기록 미확인", "Answer received · execution record unverified")
                 if submission.recoveryParentID != nil {
-                    sessionStatuses[submission.sessionID] = "상태 확인됨 · 원래 작업은 아직 미완료"
+                    sessionStatuses[submission.sessionID] = os1Tr("상태 확인됨 · 원래 작업은 아직 미완료",
+                                                                  "State verified · original task still incomplete")
                     appendTaskEvent(conversationID: submission.sessionID, kind: "reconciled",
                         summary: "Read-only findings preserved; original objective and uncertain-effect boundary remain pending")
+                    // The readback ends with a machine-checkable verdict. Only
+                    // "none" — the backend verified from real state that the
+                    // interrupted attempt changed nothing — releases the
+                    // uncertain-effect hold, and it buys exactly one resume of
+                    // the preserved objective. applied/partial/unknown keep
+                    // the hold and the owner's explicit retry button.
+                    if let verdictText = visibleSteps.last?.output,
+                       BackendRecovery.effectsVerdict(in: verdictText) == .nothingApplied,
+                       var original = sessions[target].lastFailure, original.recoveryParentID == nil,
+                       original.readbackResumed != true,
+                       !FileManager.default.fileExists(atPath: ExecutionCancellation.url(submissionID: original.id).path) {
+                        original.readbackResumed = true
+                        sessions[target].lastFailure = original
+                        sessions[target].messages.append(ChatMessage(role: .system,
+                            text: os1Tr("재확인 결과 이전 시도의 변경이 전혀 반영되지 않았음이 확인됐습니다. 보존한 원래 작업을 이어서 실행합니다.",
+                                        "The readback verified that nothing from the interrupted attempt was applied. Resuming the preserved objective.")))
+                        appendTaskEvent(conversationID: submission.sessionID, kind: "readback_resume",
+                            summary: "OS1_EFFECTS: none — uncertain-effect hold released; resuming the preserved objective once")
+                        save()
+                        start(original)
+                    }
                 } else {
                     sessions[target].completedForkCheckpoint = ConversationForkCheckpoint(
                         throughMessageID: sessions[target].messages.last?.id,
@@ -5563,6 +5596,14 @@ private final class SessionStore: ObservableObject {
         // Live store only: a fixture store must never adopt the real machine's
         // recovery state or self-update receipts.
         guard customStorageRoot == nil else { return }
+        // settings.json is the source of truth for every OS-1 process; a
+        // change made outside this app (CLI, another session) must reach the
+        // rail without a restart.
+        let disk = OS1Settings.load()
+        if disk != appSettings {
+            appSettings = disk
+            if !disk.showCodex, surface == .codex { surface = .auto }
+        }
         resumeRegisteredSourcePreparations()
         resumeBackendRecoveries()
         reportSelfUpdateOutcomes()
@@ -6311,6 +6352,15 @@ private struct OS1DesktopApp: App {
                 exit(EXIT_FAILURE)
             }
         }
+        // Every self-test suite asserts the Korean wording; pin the language
+        // for all of them so the user's interface-language setting (English
+        // by default) cannot flip the expectations. Build133's install failed
+        // exactly here: only --self-test pinned it, --self-test-parallel ran
+        // in English and its "미완료" status assertion threw.
+        if CommandLine.arguments.contains(where: { $0.hasPrefix("--self-test") }) {
+            setenv("OS1_INTERFACE_LANGUAGE", "ko", 1)
+            OS1Localization.invalidate()
+        }
         if CommandLine.arguments.contains("--self-test-parallel") {
             Task { @MainActor in
                 do { try await parallelInteractionSelfTest(); exit(EXIT_SUCCESS) }
@@ -6639,10 +6689,6 @@ private struct OS1DesktopApp: App {
             }
         }
         if CommandLine.arguments.contains("--self-test") {
-            // Self-test assertions use the Korean wording; pin the language
-            // so a user's English-interface setting cannot flip them.
-            setenv("OS1_INTERFACE_LANGUAGE", "ko", 1)
-            OS1Localization.invalidate()
             do {
                 try nativeProvenanceSelfTest()
                 try savedFailurePreviewSelfTest()

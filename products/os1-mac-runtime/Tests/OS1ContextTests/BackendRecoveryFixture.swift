@@ -134,6 +134,23 @@ func runBackendRecoveryFixtures() throws {
     check(BackendFailureNotice(provider: "claude", sessionID: "../escape", blocker: .timeout, dispatchStage: .dispatched).sessionID == nil, "reject invalid native IDs")
     check(BackendRecovery.readbackPrompt(objective: "deploy v152").contains("deploy v152") &&
         BackendRecovery.readbackPrompt(objective: "deploy v152").contains("지금 실행할 명령이 아닙니다"), "readback retains objective but not replay authority")
+    // The readback verdict: exactly one word on its own line; the last such
+    // line wins; anything appended voids it; a quoted example inside prose
+    // does not count as a verdict line once real verdicts follow.
+    check(BackendRecovery.readbackPrompt(objective: "x").contains("OS1_EFFECTS: none"), "readback demands the machine-checkable verdict")
+    check(BackendRecovery.effectsVerdict(in: "확인 결과...\nOS1_EFFECTS: none") == .nothingApplied, "verdict none parses")
+    check(BackendRecovery.effectsVerdict(in: "a\nos1_effects:  Applied \n") == .applied, "verdict is case/space tolerant")
+    check(BackendRecovery.effectsVerdict(in: "OS1_EFFECTS: none\n추가 확인 후\nOS1_EFFECTS: partial") == .partial, "the last verdict line wins")
+    check(BackendRecovery.effectsVerdict(in: "OS1_EFFECTS: none 그런데 일부는 모름") == nil, "an explained verdict is void")
+    check(BackendRecovery.effectsVerdict(in: "이 작업은 변경이 없었습니다") == nil, "prose without the marker is no verdict")
+    // OS-1-authored prompts must never be re-ingested as the owner's message.
+    check(NativeIngestion.isOS1ControlPrompt(BackendRecovery.readbackPrompt(objective: "코덱스 고쳐")), "readback prompt is recognized as OS-1's own")
+    check(!NativeIngestion.isOS1ControlPrompt("야 왼쪽에 있는 코덱스가 왜 사라져버렸어 고쳐"), "the owner's words are not flagged")
+    let phantom = NativeRecord(id: "n1", ordinal: 1, role: "user",
+        text: BackendRecovery.readbackPrompt(objective: "코덱스 고쳐"), complete: true)
+    let owner = NativeRecord(id: "n2", ordinal: 2, role: "user", text: "코덱스 살려", complete: true)
+    let filtered = NativeIngestion.newRecords([phantom, owner], after: nil, sentByOS1: [], seen: []).records
+    check(filtered.map(\.id) == ["n2"], "ingestion drops OS-1's own prompt but keeps the owner's turn")
     check(BackendRecovery.serviceFailure(status: 429, body: Data("error code: 1027\n".utf8)).contains("429/1027"), "exact platform cause")
     check(!BackendRecovery.serviceFailure(status: 429, body: Data("upstream-secret: 1027".utf8)).contains("1027"), "not every 429 is Cloudflare daily quota")
     for status in [401, 403, 500] {

@@ -2015,24 +2015,21 @@ private struct ConnectionControlTargets: OptionSet {
 /// coding task. Keep its recognizer public and narrow so ordinary repository
 /// or R2 work still goes through RCC.
 private func connectionControlTargets(_ prompt: String) -> ConnectionControlTargets? {
-    let value = prompt.precomposedStringWithCanonicalMapping.lowercased()
-    let requestsConnection = [
-        "연결", "접속", "로그인", "세팅", "설정해", "connect", "connection", "sign in", "setup", "configure",
-    ].contains { value.contains($0) }
-    guard requestsConnection else { return nil }
-
-    let mentionsGitHub = [
-        "github", "git hub", "깃허브", "깃헙", "기터브", "기타브", "기탑", "기타보", "기터보", "기터부",
-    ].contains { value.contains($0) }
-    let mentionsR2 = value.range(of: #"(?<![a-z0-9])r\s*2(?![a-z0-9])"#, options: .regularExpression) != nil ||
-        value.contains("알투") || value.contains("알츠")
-    let mentionsClaude = [
-        "claude", "클로드", "클로드코드", "클로드 코드",
-    ].contains { value.contains($0) }
+    // Per line: a pasted transcript can mention "연결" in one paragraph and a
+    // service name pages away; only a line that carries both a connection verb
+    // and a service is the owner asking for a connection action.
+    let verbs = ["연결", "접속", "로그인", "세팅", "설정해", "connect", "connection", "sign in", "setup", "configure"]
+    let githubNames = ["github", "git hub", "깃허브", "깃헙", "기터브", "기타브", "기탑", "기타보", "기터보", "기터부"]
+    let claudeNames = ["claude", "클로드", "클로드코드", "클로드 코드"]
     var targets: ConnectionControlTargets = []
-    if mentionsGitHub { targets.insert(.github) }
-    if mentionsR2 { targets.insert(.r2) }
-    if mentionsClaude { targets.insert(.claude) }
+    for rawLine in prompt.precomposedStringWithCanonicalMapping.lowercased().split(separator: "\n") {
+        let line = String(rawLine)
+        guard verbs.contains(where: line.contains) else { continue }
+        if githubNames.contains(where: line.contains) { targets.insert(.github) }
+        if line.range(of: #"(?<![a-z0-9])r\s*2(?![a-z0-9])"#, options: .regularExpression) != nil ||
+            line.contains("알투") || line.contains("알츠") { targets.insert(.r2) }
+        if claudeNames.contains(where: line.contains) { targets.insert(.claude) }
+    }
     return targets.isEmpty ? nil : targets
 }
 
@@ -7616,6 +7613,10 @@ func selfTest() throws {
           connectionControlTargets("알투 접속 확인해") == [.r2],
           connectionControlTargets("R2 자료를 찾아봐") == nil,
           connectionControlTargets("QM과 GR 통합 스키마") == nil,
+          connectionControlTargets("클로드 연결시켜") == [.claude],
+          // A pasted transcript: the verb and the service live on different
+          // lines, so no line is the owner asking for a connection action.
+          connectionControlTargets("야 이거 고쳐 로그 다 까봐\n지원되는 백엔드는 Claude입니다\n설정을 켜도 Codex 백엔드가 정상 연결되는지는 확인 필요") == nil,
           r2RetrievalRequested("R2에 있는 QMGR 자료 가져와봐"),
           r2RetrievalRequested("알투에서 문서 찾아봐"),
           r2RetrievalRequested("R2에 QM·GR 통합 자료가 있는지 확인해"),

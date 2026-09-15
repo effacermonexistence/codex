@@ -844,6 +844,10 @@ public enum NativeIngestion {
             // Anything OS1 already holds verbatim (its own prompts, adopted
             // outputs) is not ingested a second time, whatever the role.
             if digests.contains(digestOf(record.text)) { continue }
+            // A native user turn carrying OS-1's own dispatch or control
+            // wrappers was authored by OS-1, never typed by the owner. It must
+            // not be replayed into the conversation as the owner's message.
+            if record.role == "user", isOS1ControlPrompt(record.text) { continue }
             if record.role == "user", let original = WorkspaceDiscovery.legacyRequestBeforeHints(record.text),
                digests.contains(digestOf(original)) { continue }
             out.append(record)
@@ -853,6 +857,20 @@ public enum NativeIngestion {
 
     public static func digestOf(_ text: String) -> String {
         SourceContextStore.digest(Data(text.trimmingCharacters(in: .whitespacesAndNewlines).utf8))
+    }
+
+    /// A native user turn that OS-1 itself authored: every OS-1 dispatch
+    /// opens with one of these exact sentences (the reconciliation readback,
+    /// or the assembled multi-section prompt). Anchored to the start on
+    /// purpose — an owner genuinely quoting internal text puts their own
+    /// words first, and those words keep the turn theirs.
+    public static func isOS1ControlPrompt(_ text: String) -> Bool {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let openers = [
+            "중단된 작업의 현재 상태만 읽기 전용으로 확인하세요",
+            "Continue the same user-selected work session.",
+        ]
+        return openers.contains { trimmed.hasPrefix($0) }
     }
 }
 
