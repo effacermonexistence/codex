@@ -184,14 +184,26 @@ public struct GovernanceSnapshot: Sendable {
                 let a = select(baseline), b = select(route)
                 guard !a.isEmpty, !b.isEmpty else { continue }
                 count += 1; baselineN += a.count; candidateN += b.count
-                adoptionDeltas.append(Double(b.filter { $0.outcome == .adopted }.count) / Double(b.count) - Double(a.filter { $0.outcome == .adopted }.count) / Double(a.count))
+                // Written as small sub-expressions on purpose: as one line the
+                // adoption delta mixed Int/Double conversions, filters and
+                // division, and the CI toolchain gave up type-checking it.
+                let aAdopted: Int = a.filter { $0.outcome == .adopted }.count
+                let bAdopted: Int = b.filter { $0.outcome == .adopted }.count
+                let aRate: Double = Double(aAdopted) / Double(a.count)
+                let bRate: Double = Double(bAdopted) / Double(b.count)
+                adoptionDeltas.append(bRate - aRate)
                 let at = a.compactMap(Self.tokens), bt = b.compactMap(Self.tokens)
                 if at.count == a.count, bt.count == b.count {
-                    let am = Double(at.reduce(0,+)) / Double(at.count), bm = Double(bt.reduce(0,+)) / Double(bt.count)
+                    let atSum: Int = at.reduce(0, +)
+                    let btSum: Int = bt.reduce(0, +)
+                    let am: Double = Double(atSum) / Double(at.count)
+                    let bm: Double = Double(btSum) / Double(bt.count)
                     tokenA.append(am); tokenB.append(bm)
                 }
-                let ams = Double(a.map(\.durationMS).reduce(0,+)) / Double(a.count)
-                let bms = Double(b.map(\.durationMS).reduce(0,+)) / Double(b.count)
+                let aDurationSum: Int = a.map(\.durationMS).reduce(0, +)
+                let bDurationSum: Int = b.map(\.durationMS).reduce(0, +)
+                let ams: Double = Double(aDurationSum) / Double(a.count)
+                let bms: Double = Double(bDurationSum) / Double(b.count)
                 timeA.append(ams); timeB.append(bms)
             }
             guard count > 0 else { return nil }
