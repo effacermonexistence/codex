@@ -53,6 +53,10 @@ public enum SelfUpdate {
         public let summary: String
         public let completedAt: Date
         public var reported = false
+        /// How many times posting this receipt has been attempted. A receipt
+        /// that cannot be confirmed on disk is consumed after a small number
+        /// of tries instead of being re-posted forever.
+        public var postAttempts = 0
 
         public init(id: String = UUID().uuidString.lowercased(), intent: Intent, success: Bool, receiptPath: String?,
                     error: String?, summary: String, completedAt: Date = Date()) {
@@ -162,6 +166,18 @@ public enum SelfUpdate {
         var reported = outcome
         reported.reported = true
         try saveOutcome(reported, home: home)
+    }
+
+    /// Posting was attempted but could not be confirmed. After
+    /// `maximumPostAttempts` the receipt is consumed anyway: an unconfirmable
+    /// receipt must never re-post on every tick (it filled the owner's
+    /// conversations with thousands of duplicates on 2026-09-15).
+    public static let maximumPostAttempts = 3
+    public static func recordPostAttempt(_ outcome: Outcome, home: URL = FileManager.default.homeDirectoryForCurrentUser) throws {
+        var value = outcome
+        value.postAttempts += 1
+        if value.postAttempts >= maximumPostAttempts { value.reported = true }
+        try saveOutcome(value, home: home)
     }
 
     // MARK: wording

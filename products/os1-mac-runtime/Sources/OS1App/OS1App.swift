@@ -3177,6 +3177,28 @@ private func selfUpdateReportSelfTest() throws {
     try check(SelfUpdate.unreportedOutcomes(home: home).isEmpty, "outcome not marked reported")
     store.reportSelfUpdateOutcomes(home: home)
     try check(store.sessions.first { $0.id == asked.id }!.messages.count == 3, "outcome reported twice")
+    // A multi-line receipt (every failure receipt) must be confirmable on
+    // disk. The old substring check compared unescaped text against JSON
+    // bytes, never matched, and re-posted the same receipt on every tick —
+    // 5,985 duplicates in the owner's conversations before it was caught.
+    let multiline = SelfUpdate.Outcome(id: "fixture-multiline", intent: intent, success: false, receiptPath: nil,
+        error: "installer failed", summary: "OS-1 자체 업데이트 설치 실패\n원인: Error: Command failed\n  at ModuleJob.run (node:internal/modules/esm/module_job:439:25)")
+    try SelfUpdate.saveOutcome(multiline, home: home)
+    store.reportSelfUpdateOutcomes(home: home)
+    try check(SelfUpdate.unreportedOutcomes(home: home).isEmpty, "a multi-line receipt was not confirmed and would re-post forever")
+    let postedOnce = store.sessions.reduce(0) { $0 + $1.messages.filter { $0.text == multiline.summary }.count }
+    store.reportSelfUpdateOutcomes(home: home)
+    let postedTwice = store.sessions.reduce(0) { $0 + $1.messages.filter { $0.text == multiline.summary }.count }
+    try check(postedOnce == 1 && postedTwice == 1, "multi-line receipt duplicated: \(postedOnce) then \(postedTwice)")
+    // And even an unconfirmable receipt is consumed after a bounded number of
+    // attempts rather than looping.
+    var attempts = SelfUpdate.Outcome(id: "fixture-unconfirmable", intent: intent, success: true, receiptPath: nil,
+        error: nil, summary: "확인 불가 영수증")
+    for _ in 0..<SelfUpdate.maximumPostAttempts {
+        try SelfUpdate.recordPostAttempt(attempts, home: home)
+        attempts = SelfUpdate.outcomes(home: home).first { $0.id == "fixture-unconfirmable" } ?? attempts
+    }
+    try check(attempts.reported, "an unconfirmable receipt never stopped retrying")
     // A failure outcome without a known conversation lands in the selected one.
     let orphan = SelfUpdate.Intent(build: 127, version: "0.9.61", sourceRoot: "/tmp/os1", sourceCommit: nil,
         stagedAppSHA256: "a", stagedCLISHA256: "b", conversationID: nil, submissionID: nil, checks: [])
@@ -5567,16 +5589,24 @@ private final class SessionStore: ObservableObject {
             if selectedSessionID == sessions[target].id { statusText = status }
             appendTaskEvent(conversationID: sessions[target].id, kind: "self_update", summary: outcome.summary)
             save()
-            guard storedSummaryExists(outcome.summary) else { continue }
+            guard storedSummaryExists(outcome.summary) else {
+                // Could not confirm it landed. Count the attempt so an
+                // unconfirmable receipt is consumed after a few tries instead
+                // of being re-posted on every tick forever.
+                try? SelfUpdate.recordPostAttempt(outcome, home: home)
+                continue
+            }
             try? SelfUpdate.markReported(outcome, home: home)
         }
     }
-    /// Is this receipt actually in the saved session store? Guards against a
-    /// concurrent writer replacing the file between the append and the mark.
+    /// Is this receipt actually in the saved session store? Decodes the store
+    /// and compares message text exactly — a substring match against the raw
+    /// file compares unescaped text with JSON-escaped bytes, so any multi-line
+    /// receipt (every failure receipt) never matched and re-posted forever.
     private func storedSummaryExists(_ summary: String) -> Bool {
         guard let data = try? Data(contentsOf: storageURL),
-              let text = String(data: data, encoding: .utf8) else { return false }
-        return text.contains(summary.replacingOccurrences(of: "/", with: "\\/")) || text.contains(summary)
+              let envelope = try? JSONDecoder().decode(SessionEnvelope.self, from: data) else { return false }
+        return envelope.sessions.contains { $0.messages.contains { $0.text == summary } }
     }
     func retrySelectedFailure() {
         guard !isRunning, let failed = selectedSession?.lastFailure,
