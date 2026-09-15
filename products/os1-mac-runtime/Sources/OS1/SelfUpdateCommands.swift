@@ -28,7 +28,7 @@ func selfUpdateCommand(_ arguments: [String]) async throws -> Bool {
     return true
 }
 
-let os1RuntimeVersionString = "OS-1 Runtime 0.9.70 (claude-steering-build136)"
+let os1RuntimeVersionString = "OS-1 Runtime 0.9.71 (image-input-build137)"
 
 /// One writer at a time in OS-1's own checkout: the same RCC discipline the
 /// runtime enforces elsewhere, applied to itself. Waits briefly for the other

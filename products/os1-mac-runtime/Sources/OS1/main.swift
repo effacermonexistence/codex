@@ -6,6 +6,7 @@ import Foundation
 import OS1Context
 import OS1HookSupport
 import Security
+import UniformTypeIdentifiers
 
 enum OS1Error: Error, CustomStringConvertible {
     case message(String)
@@ -4535,9 +4536,15 @@ final class CodexAppServerClient: @unchecked Sendable {
         default:
             throw OS1Error.message("Server ticket permission profile rejected")
         }
+        // Attached images travel as real image inputs, not as path strings the
+        // sandboxed turn cannot open.
+        var turnInput: [[String: Any]] = [["type": "text", "text": prompt]]
+        for path in PromptAttachments.imagePaths(in: prompt).prefix(8) where FileManager.default.isReadableFile(atPath: path) {
+            turnInput.append(["type": "localImage", "path": path])
+        }
         var params: [String: Any] = [
             "threadId": threadID,
-            "input": [["type": "text", "text": prompt]],
+            "input": turnInput,
             "cwd": workspace,
             "effort": effort,
             "approvalPolicy": UnifiedExecution.codexApprovalPolicy,
@@ -5347,8 +5354,15 @@ private func execute(
         // join this same session mid-run — Codex parity. Source-only answers
         // stay one-shot.
         let steeringSubmission = sourceOnly ? nil : ExecutionSteering.currentSubmission
-        let steerDriver = steeringSubmission.map {
-            ClaudeSteerDriver(submissionID: $0, sessionID: activeSessionID, prompt: prompt)
+        // Attached images ride the same stream as real image blocks — a path
+        // string is useless to a read-only lane that cannot open Desktop.
+        let attachedImages = sourceOnly ? [] : ImageInput.encodeAll(in: prompt)
+        let steerDriver: ClaudeSteerDriver? = (steeringSubmission != nil || !attachedImages.isEmpty)
+            ? ClaudeSteerDriver(submissionID: steeringSubmission, sessionID: activeSessionID, prompt: prompt, images: attachedImages)
+            : nil
+        if !attachedImages.isEmpty {
+            RuntimeActivity.emit(.preparing, publicText: os1Tr("첨부 이미지 \(attachedImages.count)장을 모델 입력으로 전달합니다.",
+                "Passing \(attachedImages.count) attached image(s) to the model as image input."))
         }
         defer { steerDriver?.processDidEnd() }
         var arguments = try claudeArguments(
@@ -8747,6 +8761,30 @@ func selfTest() throws {
                 permitted.catalogs?.claude.count == 1 && permitted.catalogs?.codex.models.isEmpty == true && permitted.note == "Claude 연결됨" &&
                 declined.catalogs == nil && (declined.note ?? "").contains("완료되지 않았습니다") && (declined.note ?? "").contains("복구됩니다") &&
                 reconnects == 2
+        }()),
+        ("attached images are encoded as bounded JPEG inputs and unreadable paths are skipped", {
+            let directory = FileManager.default.temporaryDirectory.appendingPathComponent("os1-image-input-\(UUID().uuidString)")
+            try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: directory) }
+            let path = directory.appendingPathComponent("shot.png").path
+            // A 3000x2000 solid image: larger than the bounded edge on both axes.
+            guard let space = CGColorSpace(name: CGColorSpace.sRGB),
+                  let context = CGContext(data: nil, width: 3000, height: 2000, bitsPerComponent: 8, bytesPerRow: 0,
+                                          space: space, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue),
+                  let image = { context.setFillColor(CGColor(red: 0.2, green: 0.4, blue: 0.9, alpha: 1)); context.fill(CGRect(x: 0, y: 0, width: 3000, height: 2000)); return context.makeImage() }(),
+                  let destination = CGImageDestinationCreateWithURL(URL(fileURLWithPath: path) as CFURL, UTType.png.identifier as CFString, 1, nil)
+            else { return false }
+            CGImageDestinationAddImage(destination, image, nil)
+            guard CGImageDestinationFinalize(destination) else { return false }
+            let prompt = "이거 봐\n\n참조 파일 경로:\n" + String(decoding: (try? JSONEncoder().encode(path)) ?? Data(), as: UTF8.self)
+                + "\n\"" + directory.appendingPathComponent("missing.png").path + "\""
+            let encoded = ImageInput.encodeAll(in: prompt)
+            guard encoded.count == 1, encoded[0].mediaType == "image/jpeg", let bytes = Data(base64Encoded: encoded[0].base64),
+                  let source = CGImageSourceCreateWithData(bytes as CFData, nil),
+                  let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+                  let width = properties[kCGImagePropertyPixelWidth] as? Int, let height = properties[kCGImagePropertyPixelHeight] as? Int
+            else { return false }
+            return width <= ImageInput.maximumEdge && height <= ImageInput.maximumEdge && width > height && bytes.count <= ImageInput.maximumBytes
         }()),
         ("steerable Claude arguments stream input instead of a positional prompt", {
             let steered = (try? claudeArguments(model: "sonnet", effort: "medium", instructions: "x", sessionID: UUID().uuidString.lowercased(),

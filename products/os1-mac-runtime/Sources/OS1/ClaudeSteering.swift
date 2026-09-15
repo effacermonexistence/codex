@@ -10,9 +10,12 @@ import OS1Context
 final class ClaudeSteerDriver: @unchecked Sendable {
     private let lock = NSLock()
     private let mailbox = ExecutionSteering()
-    private let submissionID: UUID
+    /// nil when the run has no owning OS-1 submission (no mailbox), e.g. a
+    /// CLI run that still needs stream input to carry image attachments.
+    private let submissionID: UUID?
     private let sessionID: String
     private let initialPrompt: String
+    private let images: [ImageInput.Encoded]
     private var handle: FileHandle?
     private var stdinClosed = false
     private var processEnded = false
@@ -22,10 +25,11 @@ final class ClaudeSteerDriver: @unchecked Sendable {
     private let finished = DispatchSemaphore(value: 0)
     private var started = false
 
-    init(submissionID: UUID, sessionID: String, prompt: String) {
+    init(submissionID: UUID?, sessionID: String, prompt: String, images: [ImageInput.Encoded] = []) {
         self.submissionID = submissionID
         self.sessionID = sessionID
         self.initialPrompt = prompt
+        self.images = images
     }
 
     /// Mirror the parser thread's view of the stream. Called from onOutput.
@@ -44,9 +48,11 @@ final class ClaudeSteerDriver: @unchecked Sendable {
         handle = writeHandle
         started = true
         lock.unlock()
-        try? mailbox.open(submissionID: submissionID, threadID: sessionID, turnID: "stream")
-        lock.lock(); mailboxOpened = true; lock.unlock()
-        _ = writeUserMessage(initialPrompt)
+        if let submissionID {
+            try? mailbox.open(submissionID: submissionID, threadID: sessionID, turnID: "stream")
+            lock.lock(); mailboxOpened = true; lock.unlock()
+        }
+        _ = writeUserMessage(initialPrompt, images: images)
         Thread.detachNewThread { [weak self] in self?.loop() }
     }
 
@@ -60,7 +66,7 @@ final class ClaudeSteerDriver: @unchecked Sendable {
         if ranLoop {
             _ = finished.wait(timeout: .now() + 3)
         }
-        mailbox.close(submissionID)
+        if let submissionID { mailbox.close(submissionID) }
     }
 
     private func snapshot() -> (results: Int, open: Bool, ended: Bool) {
@@ -77,6 +83,12 @@ final class ClaudeSteerDriver: @unchecked Sendable {
             let state = snapshot()
             if state.ended { return }
             if ExecutionCancellation.isCancelled { closeStdin(); return }
+            guard let submissionID else {
+                // No mailbox: a single turn, then let the CLI exit.
+                if state.results >= 1 { closeStdin(); return }
+                Thread.sleep(forTimeInterval: 0.25)
+                continue
+            }
             for input in mailbox.inputs(submissionID) where mailbox.receipt(input) == nil {
                 try? mailbox.record(input, state: .sending, threadID: sessionID, turnID: "stream")
                 if writeUserMessage(input.text) {
@@ -107,9 +119,12 @@ final class ClaudeSteerDriver: @unchecked Sendable {
         }
     }
 
-    private func writeUserMessage(_ text: String) -> Bool {
-        let object: [String: Any] = ["type": "user",
-            "message": ["role": "user", "content": [["type": "text", "text": text]]]]
+    private func writeUserMessage(_ text: String, images: [ImageInput.Encoded] = []) -> Bool {
+        var content: [[String: Any]] = images.map { image in
+            ["type": "image", "source": ["type": "base64", "media_type": image.mediaType, "data": image.base64]]
+        }
+        content.append(["type": "text", "text": text])
+        let object: [String: Any] = ["type": "user", "message": ["role": "user", "content": content]]
         guard let data = try? JSONSerialization.data(withJSONObject: object) else { return false }
         lock.lock(); defer { lock.unlock() }
         guard !stdinClosed, let handle else { return false }

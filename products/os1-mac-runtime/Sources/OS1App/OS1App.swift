@@ -2806,6 +2806,10 @@ private struct PendingSubmission: Identifiable, Codable, Equatable, Sendable {
     /// this failure; failures reconciled before that contract existed get
     /// exactly one more readback under it.
     var verdictReconciled: Bool? = nil
+    /// The OS-1 build whose runtime last examined this failure. When OS-1
+    /// replaces itself, a held failure gets one fresh readback under the new
+    /// build — the runtime that failed it no longer exists.
+    var reconciledUnderBuild: Int? = nil
     var executionRequest: String {
         (liveCorrections ?? []).reduce(amendedRequest.map {
             ExecutionSteering.continuation(original: $0, correction: request)
@@ -5594,6 +5598,7 @@ private final class SessionStore: ObservableObject {
         readback.recoveryParentID = failed.id
         sessions[index].lastFailure?.recoveryAttempted = true
         sessions[index].lastFailure?.verdictReconciled = true
+        sessions[index].lastFailure?.reconciledUnderBuild = installedBuildNumber
         appendTaskEvent(conversationID: conversationID, kind: "reconciling", summary: "OS1 owns bounded read-only recovery of the original request")
         save() // persist the one-review budget before dispatch, including a crash
         start(readback)
@@ -5653,7 +5658,8 @@ private final class SessionStore: ObservableObject {
             guard activeRuns.count < Self.maximumConcurrentSessions, !isSessionRunning(session.id),
                   session.lastBackendFailure?.requiresReadback == true,
                   let failed = session.lastFailure, failed.recoveryParentID == nil,
-                  failed.recoveryAttempted != true || failed.verdictReconciled != true,
+                  failed.recoveryAttempted != true || failed.verdictReconciled != true
+                      || (failed.reconciledUnderBuild ?? 0) < installedBuildNumber,
                   !FileManager.default.fileExists(atPath: ExecutionCancellation.url(submissionID: failed.id).path) else { continue }
             appendTaskEvent(conversationID: session.id, kind: "stale_reconcile",
                 summary: "Held failure predates the verdict contract; running its read-only readback now")
@@ -8319,6 +8325,31 @@ private extension NSAttributedString.Key {
     static let os1TimelineRole = NSAttributedString.Key("com.omaragi.os1.timeline-role")
 }
 
+/// Inline previews for the owner's attached images: bounded thumbnails as
+/// text attachments, right-aligned with the message. Nil when no attached
+/// path is a readable image, so the plain path block stays visible.
+private func timelineImagePreviews(paths: [String], maxEdge: CGFloat = 360) -> NSAttributedString? {
+    let result = NSMutableAttributedString()
+    for path in paths.prefix(6) {
+        guard let source = CGImageSourceCreateWithURL(URL(fileURLWithPath: path) as CFURL, nil),
+              let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, [
+                  kCGImageSourceCreateThumbnailFromImageAlways: true,
+                  kCGImageSourceCreateThumbnailWithTransform: true,
+                  kCGImageSourceThumbnailMaxPixelSize: Int(maxEdge * 2),
+              ] as CFDictionary) else { continue }
+        let image = NSImage(cgImage: cgImage, size: .zero)
+        let scale = min(1, maxEdge / max(CGFloat(cgImage.width), CGFloat(cgImage.height)))
+        let attachment = NSTextAttachment()
+        attachment.image = image
+        attachment.bounds = CGRect(x: 0, y: 0, width: CGFloat(cgImage.width) * scale / 2, height: CGFloat(cgImage.height) * scale / 2)
+        result.append(NSAttributedString(string: "\n"))
+        result.append(NSAttributedString(attachment: attachment))
+        result.append(NSAttributedString(string: "  " + URL(fileURLWithPath: path).lastPathComponent,
+            attributes: [.font: NSFont.systemFont(ofSize: 10), .foregroundColor: TimelinePalette.muted]))
+    }
+    return result.length == 0 ? nil : result
+}
+
 private enum TimelinePalette {
     static let text = NSColor.white.withAlphaComponent(0.95)
     static let muted = NSColor.white.withAlphaComponent(0.47)
@@ -8444,15 +8475,20 @@ private func timelineAttributedDocument(
     for (index, message) in messages.enumerated() {
         switch message.role {
         case .user:
+            // Attached images render inline like Codex does, in place of the
+            // quoted path block (which stays in the stored message and copy).
+            let previews = timelineImagePreviews(paths: PromptAttachments.imagePaths(in: message.text))
+            let shown = previews == nil ? message.text : PromptAttachments.textWithoutReferences(message.text)
             appendBlock(
                 role: MessageRole.user.rawValue,
                 alignment: .right,
                 minimumHeadIndent: 100,
                 components: [(
-                    timelineNormalizedText(message.text),
+                    timelineNormalizedText(shown),
                     NSFont.systemFont(ofSize: 14, weight: .medium),
                     TimelinePalette.text
-                )]
+                )],
+                richContent: previews
             )
         case .assistant:
             let provider = providerDisplayName(message.provider)
