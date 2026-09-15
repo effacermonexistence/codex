@@ -1215,25 +1215,39 @@ private func steeringInteractionSelfTest() async throws {
     try check(store.correctionDeliveryLabel!.contains("전달됨"), "ack not visible")
     store.composer = "추가 정정 두 번째"; store.sendCorrectionToCurrentRun()
     try check(mailbox.inputs(active.submissionID).count == 2 && starts.count == 1 && !store.isStopping, "explicit action restarted task")
+    // Ordinary phrasing must interject immediately whenever the turn can
+    // genuinely accept a live correction — the owner should never have to
+    // learn a fixed set of lead-in phrases to avoid the FIFO queue.
     store.composer = "일반 후속 질문"; store.send()
-    try check(store.queuedSubmissions.map(\.request) == ["일반 후속 질문"], "ordinary input not FIFO")
+    try check(store.queuedSubmissions.isEmpty && mailbox.inputs(active.submissionID).count == 3 &&
+        store.selectedSession!.messages.contains { $0.text == "일반 후속 질문" },
+        "available steering did not interject ordinary input")
+    // While the mailbox is genuinely unavailable (e.g. between turns), input
+    // still queues, and the queue's own steer action promotes it once the
+    // mailbox reopens.
+    mailbox.close(active.submissionID)
+    store.composer = "대기열에 남을 후속 질문"; store.send()
+    try check(store.queuedSubmissions.map(\.request) == ["대기열에 남을 후속 질문"], "closed mailbox did not fall back to FIFO")
     let queued = store.queuedSubmissions[0]
+    try check(!store.canSteerQueued(queued), "closed mailbox falsely reported steerable")
+    try mailbox.open(submissionID: active.submissionID, threadID: "fixture-thread", turnID: "fixture-turn")
     try check(store.canSteerQueued(queued), "queue steering unavailable on live turn")
     try check(store.beginQueueEdit(queued.id) && !store.canSteerQueued(queued), "editing input may be delivered")
     store.endQueueEdit(queued.id)
     store.steerQueued(queued.id); store.steerQueued(queued.id)
-    try check(store.queuedSubmissions.isEmpty && mailbox.inputs(active.submissionID).count == 3 && starts.count == 1,
+    try check(store.queuedSubmissions.isEmpty && mailbox.inputs(active.submissionID).count == 4 && starts.count == 1,
         "queue steering duplicated delivery or started another turn")
     try check(store.selectedSession!.messages.filter { $0.id == queued.userMessageID }.count == 1,
         "queue-to-steer duplicated user bubble")
     try check(ExecutionSteering.isDirectCorrection(correction.decomposedStringWithCanonicalMapping), "NFD correction not recognized")
-    store.composer = "순서를 기다릴 후속 질문"; store.send()
+    store.composer = "다섯 번째 후속 질문"; store.send()
+    try check(mailbox.inputs(active.submissionID).count == 5, "available steering did not interject fifth input")
     store.flushPendingState()
     let disk = try JSONDecoder().decode(SessionEnvelope.self, from: Data(contentsOf: root.appendingPathComponent("sessions.json")))
-    try check(disk.inFlight?.first?.liveCorrections?.count == 3, "on-disk amendments absent: \(String(describing: store.alertMessage))")
+    try check(disk.inFlight?.first?.liveCorrections?.count == 5, "on-disk amendments absent: \(String(describing: store.alertMessage))")
     let reloaded = SessionStore(storageRoot: root)
     try check(reloaded.activeRuns.isEmpty, "restart replayed work")
-    try check(reloaded.sessions.first { $0.id == parent }?.lastFailure?.liveCorrections?.count == 3,
+    try check(reloaded.sessions.first { $0.id == parent }?.lastFailure?.liveCorrections?.count == 5,
         "restart lost corrections: \(String(describing: reloaded.sessions.first { $0.id == parent }?.lastFailure?.liveCorrections))")
     try check(reloaded.sessions.first { $0.id == parent }?.lastFailure?.executionRequest.contains(original) == true,
         "restart lost original")
@@ -1247,7 +1261,7 @@ private func steeringInteractionSelfTest() async throws {
     }
     gates.removeValue(forKey: parent)!.resume()
     try await eventually { !store.isSessionRunning(parent) }
-    try check(store.selectedSession!.lastFailure == nil && store.selectedSession!.messages.contains { $0.text.contains("정정 3건") } && starts.count == 2,
+    try check(store.selectedSession!.lastFailure == nil && store.selectedSession!.messages.contains { $0.text.contains("정정 5건") } && starts.count == 2,
         "verified current-turn correction rejected or extra turn started")
     store.composer = "그 말이 아니라, 조건을 바꿔"; store.send()
     try check(store.queuedSubmissions.last!.amendedRequest?.contains(original) == true, "late correction became standalone")
@@ -4396,7 +4410,12 @@ private final class SessionStore: ObservableObject {
         }
         let request = composedRequest(from: composer)
         guard !request.isEmpty, let index = selectedIndex else { return }
-        if !ExecutionSteering.isTaskReplacement(request), ExecutionSteering.isDirectCorrection(request), canSteerSelectedRun {
+        // Steering must not require the owner to phrase a plain follow-up as
+        // one of a fixed set of "actually,"/"잠깐," lead-ins. Whenever the
+        // active turn can genuinely accept a live correction, any non-
+        // replacement input interjects immediately instead of silently
+        // piling up in the queue.
+        if !ExecutionSteering.isTaskReplacement(request), canSteerSelectedRun {
             sendCorrectionToCurrentRun()
             return
         }
@@ -4475,7 +4494,7 @@ private final class SessionStore: ObservableObject {
         // Attachments alone are a sendable request (an image with no words).
         let normal = ComposerPrimaryAction.resolve(draft: composedRequest(from: composer), running: isRunning, stopping: isStopping, voice: voiceDictation.phase)
         return normal == .queue && canSteerSelectedRun &&
-            !ExecutionSteering.isTaskReplacement(composer) && ExecutionSteering.isDirectCorrection(composer) ? .steer : normal
+            !ExecutionSteering.isTaskReplacement(composer) ? .steer : normal
     }
 
     private var steeringMailbox: ExecutionSteering {
