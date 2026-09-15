@@ -1918,8 +1918,31 @@ private func withConnectionRecovery<T>(service: String, probe: () throws -> T) t
 /// OS-1 opens the official flow in the owner's own Terminal window and waits
 /// for `claude auth status` to turn logged-in. The browser code is pasted
 /// into that terminal by the owner; it never passes through OS-1.
+private func claudeLoginAlreadyRunning() -> Bool {
+    guard let result = try? commandOutput("/usr/bin/pgrep", ["-f", "claude auth login"], timeout: 10) else { return false }
+    return result.0 == 0 && !result.1.isEmpty
+}
+
 private func runClaudeLoginInTerminal(deadlineSeconds: Int = 300) throws -> (Int32, Data, Data) {
     let claude = try findExecutable("claude")
+    // Starting `claude auth login` clears the stored session immediately, so a
+    // flow the owner never finishes turns "expired" into "no credential at
+    // all". Never stack a second window on top of a pending one: wait for the
+    // open flow instead, and let the owner finish it once.
+    if claudeLoginAlreadyRunning() {
+        RuntimeActivity.emit(.authorizing,
+            publicText: os1Tr("이미 열려 있는 공식 Claude 로그인 창이 있습니다. 브라우저 승인 후 그 터미널에 코드를 붙여넣으면 이 작업을 이어갑니다. 새 로그인 창을 열지 않았습니다(여는 순간 기존 세션이 지워집니다).",
+                "An official Claude login window is already open. Approve in the browser and paste the code into that terminal to continue this task. No second window was opened, because starting one clears the stored session."),
+            tool: "claude")
+        let deadline = Date().addingTimeInterval(TimeInterval(deadlineSeconds))
+        while Date() < deadline {
+            if ExecutionCancellation.isCancelled { throw OS1Error.backendBlocked(.cancelled) }
+            Thread.sleep(forTimeInterval: 3)
+            if (try? existingClaudeConnection()) != nil { return (0, Data(), Data()) }
+            if !claudeLoginAlreadyRunning() { break }
+        }
+        throw ConnectionFailure.authentication
+    }
     let root = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/OS-1/auth-flows")
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
     let script = root.appendingPathComponent("claude-login.command")

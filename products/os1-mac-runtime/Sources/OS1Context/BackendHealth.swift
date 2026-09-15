@@ -112,7 +112,8 @@ public struct BackendHealth: Codable, Equatable, Sendable {
     private static func line(_ name: String, _ backend: Backend) -> String {
         switch backend.state {
         case .usable: return "\(name): 사용 가능"
-        case .loggedOut: return "\(name): 로그인 만료(OAuth) — 공식 로그인 승인이 필요합니다"
+        case .loggedOut: return os1Tr("\(name): 로그인 만료(OAuth) — 공식 로그인 승인이 필요합니다. 로그인 창을 여는 순간 기존 세션이 지워지므로, 연 창은 끝까지 완료해야 합니다.",
+            "\(name): sign-in expired (OAuth) — the official login must be approved. Opening the login clears the stored session, so a window that was opened has to be finished.")
         case .quotaExhausted:
             let reset = backend.recoversAt.map { " — \(describe($0))에 복구" } ?? " — 복구 시각 미확인"
             return "\(name): 사용량 한도 소진\(reset)"
