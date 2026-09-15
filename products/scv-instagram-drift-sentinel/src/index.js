@@ -1,4 +1,4 @@
-const SENTINEL_SCHEMA = 'scv-instagram-drift-sentinel-2026-09-14-v47-v185-running-release-v167-recovery-gold'
+const SENTINEL_SCHEMA = 'scv-instagram-drift-sentinel-2026-09-14-v48-v186-running-release-v167-recovery-gold'
 // GOLD-3 (2026-09-03): v148 (owner-verified v145 plus the owner-ordered polish, live red-team verified) frozen as the reference; the pointer and manifest below are pinned by hash.
 const GOLD_LATEST_KEY = 'scv-instagram-automation/gold/LATEST.json'
 const GOLD_MANIFEST_KEY = 'scv-instagram-automation/gold/SCV_GOLD_MANIFEST_v148.json'
@@ -8,18 +8,18 @@ const GOLD_MANIFEST_SHA256 = '31ea4507381e6ec2c3ce4458d70af4a311f331a4a26651f5d9
 // Comparing the gold manifest against the running release id made the check fail by construction.
 const GOLD_RELEASE_ID = 'scv-instagram-single-20260902-v148'
 const GOLD_CONTENT_FINGERPRINT = '3a9a18631443f4738d13dd803f080979ff4d21ab0d9de1f5054b2f26e2ea3609'
-// v47 (2026-09-14): v185 (on the rolled-back v183 bytes, no Masound line) stops reading a predicative
-// "like that" as a missing attachment, canonicalises the Korean so-so idiom as a statement and rejects the
-// stock how-was-your-day question; the v180-v183 laws, identity, booking/delivery state and routing stay.
+// v48 (2026-09-14): v186 moves every model lane to the cheapest snapshot the production key can see
+// (gpt-5.4-nano text lanes, gpt-4.1-nano vision); prompts, routes, verifiers, literals, identity,
+// booking/delivery state and the v180-v185 laws stay unchanged.
 // The latest approved recovery Gold stays v167. Previous v151, GOLD-3 v148, April Golden,
 // and all recovery/reset evidence pins remain unchanged. A deployed release is not a Gold.
-const RELEASE_ID = 'scv-instagram-single-20260914-v185'
-const CONTENT_FINGERPRINT = 'c67ba7da0987f4e34001d6886f449fe9641eeda1bfaa877bc6dd45cb7b6fb897'
-const RELEASE_MANIFEST = 'eb095dfedccc1168388f397ee35f63fd68abee6b756f077f20faf3973b0b2615'
+const RELEASE_ID = 'scv-instagram-single-20260914-v186'
+const CONTENT_FINGERPRINT = '500c18404cc6c0a3fb665f4332ba664e844dc9f3dfd1458ae25125e2d25680df'
+const RELEASE_MANIFEST = 'b8d41b7aeded7e68089574a4209a87a90347be444e4b4d162b684a77145d8b01'
 const RECOVERY_POINT_RELEASE_ID = 'scv-instagram-single-20260908-v167'
 const RECOVERY_POINT_CONTENT_FINGERPRINT = '6b85a63a25c23e9815491413eeb895e6b78ed8faa523f18aefea6b88f392faa7'
 const RECOVERY_POINT_RELEASE_MANIFEST = '2f12a00d12114bbbb05080438dda88a6278a82ae65a9fc9aaaff70a2a25ad4b6'
-const VISIBLE_MODEL = 'gpt-5.4-mini-2026-03-17'
+const VISIBLE_MODEL = 'gpt-5.4-nano-2026-03-17'
 const RECOVERY_LATEST_KEY = 'scv-instagram-automation/recovery-points/LATEST.json'
 const RECOVERY_CATALOG_KEY = 'scv-instagram-automation/recovery-points/catalogs/20260908T231800Z/RECOVERY_POINT_CATALOG.json'
 const RECOVERY_CATALOG_SHA256 = '1ba20b317f8b821e2ba48fe8e74b4e2983020c76c755cb612cd8b33c5bfaa9cb'
