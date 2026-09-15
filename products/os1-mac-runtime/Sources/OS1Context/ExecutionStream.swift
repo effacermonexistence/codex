@@ -9,6 +9,11 @@ public final class ExecutionStream {
     public private(set) var result: Data?
     public private(set) var eventCount = 0
     public private(set) var tool: String?
+    /// Completed Claude turns in this run (a steered run has several).
+    public private(set) var resultCount = 0
+    /// True while an assistant turn is streaming; a correction sent now is
+    /// queued by the CLI for the turn after the current one.
+    public private(set) var turnOpen = false
     public var text: String { String(items.map(\.1).joined(separator: "\n\n").suffix(24_000)) }
     public init() {}
     private func update(_ id: String, text: String, append: Bool) {
@@ -35,8 +40,14 @@ public final class ExecutionStream {
     private func ingestClaudeObject(_ o: [String: Any]) {
         guard o["parent_tool_use_id"] == nil || o["parent_tool_use_id"] is NSNull else { return }
         let type = o["type"] as? String ?? ""
-        if type == "result" { result = try? JSONSerialization.data(withJSONObject: o); return }
+        if type == "result" {
+            result = try? JSONSerialization.data(withJSONObject: o)
+            resultCount += 1
+            turnOpen = false
+            return
+        }
         if type == "assistant", let m = o["message"] as? [String: Any], let id = m["id"] as? String {
+            turnOpen = true
             let content = m["content"] as? [[String: Any]] ?? []
             let text = content.filter { $0["type"] as? String == "text" }.compactMap { $0["text"] as? String }.joined(separator: "\n")
             update(id, text: text, append: false)
@@ -44,7 +55,9 @@ public final class ExecutionStream {
         }
         guard type == "stream_event", let e = o["event"] as? [String: Any] else { return }
         switch e["type"] as? String {
-        case "message_start": activeMessage = (e["message"] as? [String: Any])?["id"] as? String ?? ""
+        case "message_start":
+            activeMessage = (e["message"] as? [String: Any])?["id"] as? String ?? ""
+            turnOpen = true
         case "content_block_delta":
             if let d = e["delta"] as? [String: Any], d["type"] as? String == "text_delta", let t = d["text"] as? String {
                 update(activeMessage, text: t, append: true)

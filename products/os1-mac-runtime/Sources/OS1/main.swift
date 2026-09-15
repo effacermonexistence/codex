@@ -6,6 +6,7 @@ import Foundation
 import OS1Context
 import OS1HookSupport
 import Security
+import UniformTypeIdentifiers
 
 enum OS1Error: Error, CustomStringConvertible {
     case message(String)
@@ -1229,7 +1230,8 @@ func claudeArguments(
     title: String,
     permissionProfile: String,
     prompt: String,
-    sourceContextOnly: Bool = false
+    sourceContextOnly: Bool = false,
+    streamInput: Bool = false
 ) throws -> [String] {
     var arguments = ["-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages"]
     if sourceContextOnly && permissionProfile == "read_only" {
@@ -1255,7 +1257,14 @@ func claudeArguments(
     } else {
         arguments += ["--resume", sessionID]
     }
-    arguments.append(prompt)
+    if streamInput {
+        // Steerable run: the prompt and any live corrections arrive as
+        // stream-json user messages on stdin; a positional prompt would end
+        // the input stream immediately.
+        arguments += ["--input-format", "stream-json"]
+    } else {
+        arguments.append(prompt)
+    }
     return arguments
 }
 
@@ -1640,7 +1649,8 @@ func commandOutput(
     isProvider: Bool = false,
     environmentOverrides: [String: String] = [:],
     onLaunch: (() -> Void)? = nil,
-    onOutput: ((Data) -> Void)? = nil
+    onOutput: ((Data) -> Void)? = nil,
+    interactiveStdin: ((FileHandle) -> Void)? = nil
 ) throws -> (Int32, Data, Data) {
     let temporary = FileManager.default.temporaryDirectory.appendingPathComponent("os1-process-\(UUID().uuidString)")
     try FileManager.default.createDirectory(at: temporary, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
@@ -1678,6 +1688,14 @@ func commandOutput(
         onLaunch?()
         try pipe.fileHandleForWriting.write(contentsOf: input)
         try pipe.fileHandleForWriting.close()
+    } else if let interactiveStdin {
+        // The caller owns the write end for the process's whole life (live
+        // steering): it writes messages as they arrive and closes to end.
+        let pipe = Pipe()
+        process.standardInput = pipe
+        try process.run()
+        onLaunch?()
+        interactiveStdin(pipe.fileHandleForWriting)
     } else {
         process.standardInput = FileHandle.nullDevice
         try process.run()
@@ -4518,9 +4536,15 @@ final class CodexAppServerClient: @unchecked Sendable {
         default:
             throw OS1Error.message("Server ticket permission profile rejected")
         }
+        // Attached images travel as real image inputs, not as path strings the
+        // sandboxed turn cannot open.
+        var turnInput: [[String: Any]] = [["type": "text", "text": prompt]]
+        for path in PromptAttachments.imagePaths(in: prompt).prefix(8) where FileManager.default.isReadableFile(atPath: path) {
+            turnInput.append(["type": "localImage", "path": path])
+        }
         var params: [String: Any] = [
             "threadId": threadID,
-            "input": [["type": "text", "text": prompt]],
+            "input": turnInput,
             "cwd": workspace,
             "effort": effort,
             "approvalPolicy": UnifiedExecution.codexApprovalPolicy,
@@ -5325,6 +5349,22 @@ private func execute(
         guard let nativeModel = try ModelAvailability.claudeModels(workspace: executionWorkspace).first(where: {
             $0.model == model && $0.efforts.contains(effort)
         }) else { throw OS1Error.backendBlocked(.capabilityUnavailable) }
+        // Live steering: with an owning OS-1 submission, the run reads
+        // stream-json user messages from stdin so the owner's corrections
+        // join this same session mid-run — Codex parity. Source-only answers
+        // stay one-shot.
+        let steeringSubmission = sourceOnly ? nil : ExecutionSteering.currentSubmission
+        // Attached images ride the same stream as real image blocks — a path
+        // string is useless to a read-only lane that cannot open Desktop.
+        let attachedImages = sourceOnly ? [] : ImageInput.encodeAll(in: prompt)
+        let steerDriver: ClaudeSteerDriver? = (steeringSubmission != nil || !attachedImages.isEmpty)
+            ? ClaudeSteerDriver(submissionID: steeringSubmission, sessionID: activeSessionID, prompt: prompt, images: attachedImages)
+            : nil
+        if !attachedImages.isEmpty {
+            RuntimeActivity.emit(.preparing, publicText: os1Tr("첨부 이미지 \(attachedImages.count)장을 모델 입력으로 전달합니다.",
+                "Passing \(attachedImages.count) attached image(s) to the model as image input."))
+        }
+        defer { steerDriver?.processDidEnd() }
         var arguments = try claudeArguments(
             model: nativeModel.invocation,
             effort: effort,
@@ -5334,7 +5374,8 @@ private func execute(
             title: claudeSessionTitle(from: lockedObjective),
             permissionProfile: ticket.permissionProfile,
             prompt: prompt,
-            sourceContextOnly: hasPreloadedR2Evidence
+            sourceContextOnly: hasPreloadedR2Evidence,
+            streamInput: steerDriver != nil
         )
         if projectlessRead && !sourceOnly { arguments.insert("--safe-mode", at: 1) }
         let stream = ExecutionStream()
@@ -5349,12 +5390,14 @@ private func execute(
             onLaunch: { onDispatch?(activeSessionID) },
             onOutput: { bytes in
                 stream.ingestClaude(bytes)
+                steerDriver?.observe(resultCount: stream.resultCount, turnOpen: stream.turnOpen)
                 if stream.eventCount != revision {
                     revision = stream.eventCount
                     RuntimeActivity.emit(.executing, provider: "claude", model: model, effort: effort,
                         publicText: stream.text, tool: stream.tool)
                 }
-            }
+            },
+            interactiveStdin: steerDriver.map { driver in { handle in driver.attach(handle) } }
         ) } catch {
             stream.finishClaude()
             if let result = stream.result { onUsage?(CompletionUsageParser.parseClaudeResult(result)) }
@@ -5391,8 +5434,15 @@ private func execute(
                 sourceRepositories: $0.sources.compactMap { $0["repository"] }
             )
         } ?? false)
+        // Corrections the run verifiably carried become part of the objective
+        // the answer is judged against — Codex parity.
+        let correctedObjective = steeringSubmission.map { id in
+            let mailbox = ExecutionSteering()
+            return mailbox.inputs(id).filter { mailbox.receipt($0)?.state == .persisted }
+                .reduce(lockedObjective) { ExecutionSteering.continuation(original: $0, correction: $1.text) }
+        } ?? lockedObjective
         validateCandidate = {
-        if UnifiedExecution.requestsManualBackendHandoff(String(decoding: parsed.output, as: UTF8.self), request: lockedObjective) {
+        if UnifiedExecution.requestsManualBackendHandoff(String(decoding: parsed.output, as: UTF8.self), request: correctedObjective) {
             throw OS1Error.backendBlocked(BackendBlocker.reported(in: String(decoding: parsed.output, as: UTF8.self)) ?? .incomplete)
         }
         if rejectedCapability {
@@ -8711,6 +8761,48 @@ func selfTest() throws {
                 permitted.catalogs?.claude.count == 1 && permitted.catalogs?.codex.models.isEmpty == true && permitted.note == "Claude 연결됨" &&
                 declined.catalogs == nil && (declined.note ?? "").contains("완료되지 않았습니다") && (declined.note ?? "").contains("복구됩니다") &&
                 reconnects == 2
+        }()),
+        ("attached images are encoded as bounded JPEG inputs and unreadable paths are skipped", {
+            let directory = FileManager.default.temporaryDirectory.appendingPathComponent("os1-image-input-\(UUID().uuidString)")
+            try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: directory) }
+            let path = directory.appendingPathComponent("shot.png").path
+            // A 3000x2000 solid image: larger than the bounded edge on both axes.
+            guard let space = CGColorSpace(name: CGColorSpace.sRGB),
+                  let context = CGContext(data: nil, width: 3000, height: 2000, bitsPerComponent: 8, bytesPerRow: 0,
+                                          space: space, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue),
+                  let image = { context.setFillColor(CGColor(red: 0.2, green: 0.4, blue: 0.9, alpha: 1)); context.fill(CGRect(x: 0, y: 0, width: 3000, height: 2000)); return context.makeImage() }(),
+                  let destination = CGImageDestinationCreateWithURL(URL(fileURLWithPath: path) as CFURL, UTType.png.identifier as CFString, 1, nil)
+            else { return false }
+            CGImageDestinationAddImage(destination, image, nil)
+            guard CGImageDestinationFinalize(destination) else { return false }
+            let prompt = "이거 봐\n\n참조 파일 경로:\n" + String(decoding: (try? JSONEncoder().encode(path)) ?? Data(), as: UTF8.self)
+                + "\n\"" + directory.appendingPathComponent("missing.png").path + "\""
+            let encoded = ImageInput.encodeAll(in: prompt)
+            guard encoded.count == 1, encoded[0].mediaType == "image/jpeg", let bytes = Data(base64Encoded: encoded[0].base64),
+                  let source = CGImageSourceCreateWithData(bytes as CFData, nil),
+                  let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+                  let width = properties[kCGImagePropertyPixelWidth] as? Int, let height = properties[kCGImagePropertyPixelHeight] as? Int
+            else { return false }
+            return width <= ImageInput.maximumEdge && height <= ImageInput.maximumEdge && width > height && bytes.count <= ImageInput.maximumBytes
+        }()),
+        ("steerable Claude arguments stream input instead of a positional prompt", {
+            let steered = (try? claudeArguments(model: "sonnet", effort: "medium", instructions: "x", sessionID: UUID().uuidString.lowercased(),
+                startNewSession: true, title: "t", permissionProfile: "workspace_write", prompt: "고쳐", streamInput: true)) ?? []
+            let oneShot = (try? claudeArguments(model: "sonnet", effort: "medium", instructions: "x", sessionID: UUID().uuidString.lowercased(),
+                startNewSession: true, title: "t", permissionProfile: "workspace_write", prompt: "고쳐")) ?? []
+            let pair = steered.firstIndex(of: "--input-format").map { steered.indices.contains($0 + 1) && steered[$0 + 1] == "stream-json" } ?? false
+            return pair && !steered.contains("고쳐") && oneShot.last == "고쳐" && !oneShot.contains("--input-format")
+        }()),
+        ("execution stream counts turns for steering persistence", {
+            let stream = ExecutionStream()
+            func line(_ object: [String: Any]) -> Data { (try? JSONSerialization.data(withJSONObject: object)).map { $0 + Data([10]) } ?? Data() }
+            stream.ingestClaude(line(["type": "assistant", "message": ["id": "m1", "content": [["type": "text", "text": "작업 중"]]]]))
+            let midTurn = stream.turnOpen && stream.resultCount == 0
+            stream.ingestClaude(line(["type": "result", "result": "one", "session_id": "s"]))
+            let afterFirst = !stream.turnOpen && stream.resultCount == 1
+            stream.ingestClaude(line(["type": "result", "result": "two", "session_id": "s"]))
+            return midTurn && afterFirst && stream.resultCount == 2
         }()),
         ("output language directive rides its own section and keeps the request terminal", {
             let pinned = (try? providerPrompt(current: "안녕", context: nil, languageDirective: "Write the answer in English.")) ?? ""

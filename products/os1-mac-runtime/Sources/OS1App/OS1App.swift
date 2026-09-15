@@ -2816,6 +2816,18 @@ private struct PendingSubmission: Identifiable, Codable, Equatable, Sendable {
     /// Set when a clean readback (OS1_EFFECTS: none) already resumed this
     /// objective once, so one verified-no-effects verdict buys one resume.
     var readbackResumed: Bool? = nil
+    /// The OS-1 build under which that resume happened. A build that replaced
+    /// itself to fix the cause earns one fresh resume; the same build never
+    /// retries in a loop.
+    var resumedUnderBuild: Int? = nil
+    /// Set once a readback under the OS1_EFFECTS verdict contract ran for
+    /// this failure; failures reconciled before that contract existed get
+    /// exactly one more readback under it.
+    var verdictReconciled: Bool? = nil
+    /// The OS-1 build whose runtime last examined this failure. When OS-1
+    /// replaces itself, a held failure gets one fresh readback under the new
+    /// build — the runtime that failed it no longer exists.
+    var reconciledUnderBuild: Int? = nil
     var executionRequest: String {
         (liveCorrections ?? []).reduce(amendedRequest.map {
             ExecutionSteering.continuation(original: $0, correction: request)
@@ -3165,6 +3177,37 @@ private func selfUpdateReportSelfTest() throws {
     try check(SelfUpdate.unreportedOutcomes(home: home).isEmpty, "outcome not marked reported")
     store.reportSelfUpdateOutcomes(home: home)
     try check(store.sessions.first { $0.id == asked.id }!.messages.count == 3, "outcome reported twice")
+    // A multi-line receipt (every failure receipt) must be confirmable on
+    // disk. The old substring check compared unescaped text against JSON
+    // bytes, never matched, and re-posted the same receipt on every tick —
+    // 5,985 duplicates in the owner's conversations before it was caught.
+    let multiline = SelfUpdate.Outcome(id: "fixture-multiline", intent: intent, success: false, receiptPath: nil,
+        error: "installer failed", summary: "OS-1 자체 업데이트 설치 실패\n원인: Error: Command failed\n  at ModuleJob.run (node:internal/modules/esm/module_job:439:25)")
+    try SelfUpdate.saveOutcome(multiline, home: home)
+    store.reportSelfUpdateOutcomes(home: home)
+    try check(SelfUpdate.unreportedOutcomes(home: home).isEmpty, "a multi-line receipt was not confirmed and would re-post forever")
+    let postedOnce = store.sessions.reduce(0) { $0 + $1.messages.filter { $0.text == multiline.summary }.count }
+    store.reportSelfUpdateOutcomes(home: home)
+    let postedTwice = store.sessions.reduce(0) { $0 + $1.messages.filter { $0.text == multiline.summary }.count }
+    try check(postedOnce == 1 && postedTwice == 1, "multi-line receipt duplicated: \(postedOnce) then \(postedTwice)")
+    // And even an unconfirmable receipt is consumed after a bounded number of
+    // attempts rather than looping.
+    var attempts = SelfUpdate.Outcome(id: "fixture-unconfirmable", intent: intent, success: true, receiptPath: nil,
+        error: nil, summary: "확인 불가 영수증")
+    for _ in 0..<SelfUpdate.maximumPostAttempts {
+        try SelfUpdate.recordPostAttempt(attempts, home: home)
+        attempts = SelfUpdate.outcomes(home: home).first { $0.id == "fixture-unconfirmable" } ?? attempts
+    }
+    try check(attempts.reported, "an unconfirmable receipt never stopped retrying")
+    // A record written by an older build (no postAttempts key) must still
+    // decode — a non-optional new field made every existing receipt invisible.
+    let legacyDir = SelfUpdate.outcomesDirectory(home: home)
+    let legacy = """
+    {"completedAt":"2026-09-15T21:00:00Z","error":null,"id":"fixture-legacy","intent":{"applyAttempts":0,"build":99,    "checks":[],"conversationID":null,"schema":1,"sourceCommit":null,"sourceRoot":"/tmp/os1","stagedAppSHA256":"a",    "stagedAt":"2026-09-15T20:00:00Z","stagedCLISHA256":"b","state":"pending","submissionID":null,"version":"0.9.x"},    "receiptPath":null,"reported":false,"success":true,"summary":"구 스키마 영수증"}
+    """
+    try Data(legacy.utf8).write(to: legacyDir.appendingPathComponent("fixture-legacy.json"))
+    try check(SelfUpdate.outcomes(home: home).contains { $0.id == "fixture-legacy" },
+        "a receipt written before postAttempts existed became undecodable")
     // A failure outcome without a known conversation lands in the selected one.
     let orphan = SelfUpdate.Intent(build: 127, version: "0.9.61", sourceRoot: "/tmp/os1", sourceCommit: nil,
         stagedAppSHA256: "a", stagedCLISHA256: "b", conversationID: nil, submissionID: nil, checks: [])
@@ -4506,7 +4549,8 @@ private final class SessionStore: ObservableObject {
     private func canSteer(_ id: UUID) -> Bool {
         guard let active = activeRuns[id], !active.cancellationRequested,
               inFlightSubmissions[id]?.readOnlyReconciliation != true,
-              active.provider == .codex, steeringMailbox.active(active.submissionID) != nil,
+              active.provider == .codex || active.provider == .claude,
+              steeringMailbox.active(active.submissionID) != nil,
               active.activity.phase == .executing,
               let context = sessions.first(where: { $0.id == id })?.taskContext else { return false }
         if let revision = active.correctionRevision { return revision == context.latestSemanticRevision }
@@ -4531,7 +4575,7 @@ private final class SessionStore: ObservableObject {
     func canSteerQueued(_ item: PendingSubmission) -> Bool {
         !ExecutionSteering.isTaskReplacement(item.request) && canSteer(item.sessionID) && !editingQueueIDs.contains(item.id) &&
             queuedSubmissions.contains(where: { $0.id == item.id }) &&
-            (item.provider == .auto || item.provider == .codex)
+            (item.provider == .auto || item.provider == .codex || item.provider == .claude)
     }
     func steerQueued(_ id: UUID) {
         guard let item = queuedSubmissions.first(where: { $0.id == id }), canSteerQueued(item) else { return }
@@ -4923,9 +4967,10 @@ private final class SessionStore: ObservableObject {
                     if let verdictText = visibleSteps.last?.output,
                        BackendRecovery.effectsVerdict(in: verdictText) == .nothingApplied,
                        var original = sessions[target].lastFailure, original.recoveryParentID == nil,
-                       original.readbackResumed != true,
+                       original.readbackResumed != true || (original.resumedUnderBuild ?? 0) < installedBuildNumber,
                        !FileManager.default.fileExists(atPath: ExecutionCancellation.url(submissionID: original.id).path) {
                         original.readbackResumed = true
+                        original.resumedUnderBuild = installedBuildNumber
                         sessions[target].lastFailure = original
                         sessions[target].messages.append(ChatMessage(role: .system,
                             text: os1Tr("재확인 결과 이전 시도의 변경이 전혀 반영되지 않았음이 확인됐습니다. 보존한 원래 작업을 이어서 실행합니다.",
@@ -5451,6 +5496,7 @@ private final class SessionStore: ObservableObject {
     /// at most once a minute; no model call happens until health says usable.
     private var backendHealthProbeStartedAt: Date?
     private var maintenanceTask: Task<Void, Never>?
+    private let storeLaunchedAt = Date()
     func resumeBackendRecoveries(healthURL: URL = BackendHealth.defaultURL, now: Date = Date()) {
         let waiting = sessions.filter {
             $0.lastBackendFailure?.blocker == .backendUnavailable && $0.lastFailure?.preflightOnly == true &&
@@ -5502,7 +5548,12 @@ private final class SessionStore: ObservableObject {
             selfUpdateRootsCachedAt = now
         }
         guard let pending = SelfUpdate.pendingIntents(roots: selfUpdateRoots).first else { return }
-        let busy = !activeRuns.isEmpty || !inFlightSubmissions.isEmpty || isStopping
+        // A running fleet job counts as busy: the installer would refuse
+        // mid-job anyway, and refusals must not burn the apply budget.
+        let fleetRoot = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".os1/fleet")
+        let fleetBusy = FileManager.default.fileExists(atPath: fleetRoot.appendingPathComponent("main-agent-active.json").path) ||
+            FileManager.default.fileExists(atPath: fleetRoot.appendingPathComponent("main-agent-claim.json").path)
+        let busy = !activeRuns.isEmpty || !inFlightSubmissions.isEmpty || isStopping || fleetBusy
         switch SelfUpdate.decision(intent: pending.intent, installedBuild: installedBuildNumber, busy: busy, now: now) {
         case .apply:
             guard selfUpdateLaunchedAt.map({ now.timeIntervalSince($0) > 120 }) ?? true else { return }
@@ -5547,16 +5598,24 @@ private final class SessionStore: ObservableObject {
             if selectedSessionID == sessions[target].id { statusText = status }
             appendTaskEvent(conversationID: sessions[target].id, kind: "self_update", summary: outcome.summary)
             save()
-            guard storedSummaryExists(outcome.summary) else { continue }
+            guard storedSummaryExists(outcome.summary) else {
+                // Could not confirm it landed. Count the attempt so an
+                // unconfirmable receipt is consumed after a few tries instead
+                // of being re-posted on every tick forever.
+                try? SelfUpdate.recordPostAttempt(outcome, home: home)
+                continue
+            }
             try? SelfUpdate.markReported(outcome, home: home)
         }
     }
-    /// Is this receipt actually in the saved session store? Guards against a
-    /// concurrent writer replacing the file between the append and the mark.
+    /// Is this receipt actually in the saved session store? Decodes the store
+    /// and compares message text exactly — a substring match against the raw
+    /// file compares unescaped text with JSON-escaped bytes, so any multi-line
+    /// receipt (every failure receipt) never matched and re-posted forever.
     private func storedSummaryExists(_ summary: String) -> Bool {
         guard let data = try? Data(contentsOf: storageURL),
-              let text = String(data: data, encoding: .utf8) else { return false }
-        return text.contains(summary.replacingOccurrences(of: "/", with: "\\/")) || text.contains(summary)
+              let envelope = try? JSONDecoder().decode(SessionEnvelope.self, from: data) else { return false }
+        return envelope.sessions.contains { $0.messages.contains { $0.text == summary } }
     }
     func retrySelectedFailure() {
         guard !isRunning, let failed = selectedSession?.lastFailure,
@@ -5601,6 +5660,8 @@ private final class SessionStore: ObservableObject {
             readOnlyReconciliation: true)
         readback.recoveryParentID = failed.id
         sessions[index].lastFailure?.recoveryAttempted = true
+        sessions[index].lastFailure?.verdictReconciled = true
+        sessions[index].lastFailure?.reconciledUnderBuild = installedBuildNumber
         appendTaskEvent(conversationID: conversationID, kind: "reconciling", summary: "OS1 owns bounded read-only recovery of the original request")
         save() // persist the one-review budget before dispatch, including a crash
         start(readback)
@@ -5627,6 +5688,46 @@ private final class SessionStore: ObservableObject {
         resumeBackendRecoveries()
         reportSelfUpdateOutcomes()
         applyPendingSelfUpdate()
+        releaseRestartHolds()
+        resumeStaleReconciliations()
+    }
+    /// The restart hold exists so a relaunch (installer verification included)
+    /// never fires saved queue entries by itself. It is not meant to freeze
+    /// the queue forever: once the app has been up for a minute, entries whose
+    /// conversation has no unresolved failure or preparation hold resume on
+    /// their own. Failure holds keep their own gates.
+    func releaseRestartHolds(now: Date = Date()) {
+        guard now.timeIntervalSince(storeLaunchedAt) > 60, !pausedQueueIDs.isEmpty else { return }
+        var released = false
+        for item in queuedSubmissions where pausedQueueIDs.contains(item.id) && !editingQueueIDs.contains(item.id) {
+            guard let session = sessions.first(where: { $0.id == item.sessionID }),
+                  session.lastFailure == nil, session.lastBackendFailure == nil,
+                  session.taskContext?.sourcePreparation == nil, session.queuePaused != true else { continue }
+            pausedQueueIDs.remove(item.id)
+            released = true
+        }
+        if released {
+            appendTaskEvent(conversationID: selectedSessionID ?? UUID(), kind: "queue_resumed",
+                summary: "Restart hold released after verified idle startup; preserved queue continues")
+            runNextQueuedSubmissionIfNeeded()
+        }
+    }
+    /// A conversation stuck behind an uncertain-effect failure gets its
+    /// read-only readback even when the failure predates this build (or the
+    /// verdict contract): one readback per contract generation, and the
+    /// OS1_EFFECTS verdict decides whether the objective resumes.
+    private func resumeStaleReconciliations() {
+        for session in sessions {
+            guard activeRuns.count < Self.maximumConcurrentSessions, !isSessionRunning(session.id),
+                  session.lastBackendFailure?.requiresReadback == true,
+                  let failed = session.lastFailure, failed.recoveryParentID == nil,
+                  failed.recoveryAttempted != true || failed.verdictReconciled != true
+                      || (failed.reconciledUnderBuild ?? 0) < installedBuildNumber,
+                  !FileManager.default.fileExists(atPath: ExecutionCancellation.url(submissionID: failed.id).path) else { continue }
+            appendTaskEvent(conversationID: session.id, kind: "stale_reconcile",
+                summary: "Held failure predates the verdict contract; running its read-only readback now")
+            beginReconciliation(conversationID: session.id)
+        }
     }
     func flushPendingState() { draftSaveTask?.cancel(); save() }
     func updateSettings(_ mutate: (inout OS1Settings) -> Void) {
@@ -7106,12 +7207,15 @@ private struct RailItemAppearance: Equatable {
         }
         // Deliberately identical for linked and unlinked: pressing CODEX must
         // look chosen even when this conversation has no Codex session yet.
+        // The owner asked for the leading marker and the loud outline to go:
+        // a filled accent tile plus full-strength content is enough to show
+        // which surface is chosen, with nothing sticking out on the left.
         return RailItemAppearance(
-            fillOpacity: 0.22,
-            strokeOpacity: 0.95,
-            strokeWidth: 1.8,
+            fillOpacity: 0.26,
+            strokeOpacity: 0,
+            strokeWidth: 0,
             contentOpacity: 1,
-            showsSelectionMarker: true,
+            showsSelectionMarker: false,
             usesAccent: true)
     }
 }
@@ -7126,15 +7230,6 @@ private struct RailSelectionBackground: View {
             shape.fill((appearance.usesAccent ? accent : Color.white).opacity(appearance.fillOpacity))
             shape.stroke((appearance.usesAccent ? accent : Color.white).opacity(appearance.strokeOpacity),
                 lineWidth: appearance.strokeWidth)
-        }
-        .overlay(alignment: .leading) {
-            // Hue alone cannot separate Codex from Claude, so the chosen item
-            // also carries a structural marker on the rail's leading edge.
-            Capsule()
-                .fill(accent)
-                .frame(width: 3, height: 26)
-                .padding(.leading, 3)
-                .opacity(appearance.showsSelectionMarker ? 1 : 0)
         }
         .allowsHitTesting(false)
     }
@@ -7295,13 +7390,15 @@ private func railSelectionSelfTest() throws {
     for linked in [true, false] {
         let quiet = RailItemAppearance.resolve(selected: false, linked: linked)
         let loud = RailItemAppearance.resolve(selected: true, linked: !linked)
+        // The owner removed the leading marker and the outline, so selection
+        // now reads from fill and content strength alone — which must still
+        // beat any unselected item, linked or not.
         try check(quiet.fillOpacity < loud.fillOpacity
-            && quiet.strokeOpacity < loud.strokeOpacity
-            && quiet.strokeWidth < loud.strokeWidth
             && quiet.contentOpacity < loud.contentOpacity
-            && !quiet.showsSelectionMarker && loud.showsSelectionMarker
             && !quiet.usesAccent && loud.usesAccent,
             "unselected(linked=\(linked)) outranked the selected item")
+        try check(!loud.showsSelectionMarker && loud.strokeOpacity == 0 && loud.strokeWidth == 0,
+            "the selected rail item must not paint a leading marker or outline")
     }
 
     let root = FileManager.default.temporaryDirectory
@@ -8287,6 +8384,31 @@ private extension NSAttributedString.Key {
     static let os1TimelineRole = NSAttributedString.Key("com.omaragi.os1.timeline-role")
 }
 
+/// Inline previews for the owner's attached images: bounded thumbnails as
+/// text attachments, right-aligned with the message. Nil when no attached
+/// path is a readable image, so the plain path block stays visible.
+private func timelineImagePreviews(paths: [String], maxEdge: CGFloat = 360) -> NSAttributedString? {
+    let result = NSMutableAttributedString()
+    for path in paths.prefix(6) {
+        guard let source = CGImageSourceCreateWithURL(URL(fileURLWithPath: path) as CFURL, nil),
+              let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, [
+                  kCGImageSourceCreateThumbnailFromImageAlways: true,
+                  kCGImageSourceCreateThumbnailWithTransform: true,
+                  kCGImageSourceThumbnailMaxPixelSize: Int(maxEdge * 2),
+              ] as CFDictionary) else { continue }
+        let image = NSImage(cgImage: cgImage, size: .zero)
+        let scale = min(1, maxEdge / max(CGFloat(cgImage.width), CGFloat(cgImage.height)))
+        let attachment = NSTextAttachment()
+        attachment.image = image
+        attachment.bounds = CGRect(x: 0, y: 0, width: CGFloat(cgImage.width) * scale / 2, height: CGFloat(cgImage.height) * scale / 2)
+        result.append(NSAttributedString(string: "\n"))
+        result.append(NSAttributedString(attachment: attachment))
+        result.append(NSAttributedString(string: "  " + URL(fileURLWithPath: path).lastPathComponent,
+            attributes: [.font: NSFont.systemFont(ofSize: 10), .foregroundColor: TimelinePalette.muted]))
+    }
+    return result.length == 0 ? nil : result
+}
+
 private enum TimelinePalette {
     static let text = NSColor.white.withAlphaComponent(0.95)
     static let muted = NSColor.white.withAlphaComponent(0.47)
@@ -8412,15 +8534,20 @@ private func timelineAttributedDocument(
     for (index, message) in messages.enumerated() {
         switch message.role {
         case .user:
+            // Attached images render inline like Codex does, in place of the
+            // quoted path block (which stays in the stored message and copy).
+            let previews = timelineImagePreviews(paths: PromptAttachments.imagePaths(in: message.text))
+            let shown = previews == nil ? message.text : PromptAttachments.textWithoutReferences(message.text)
             appendBlock(
                 role: MessageRole.user.rawValue,
                 alignment: .right,
                 minimumHeadIndent: 100,
                 components: [(
-                    timelineNormalizedText(message.text),
+                    timelineNormalizedText(shown),
                     NSFont.systemFont(ofSize: 14, weight: .medium),
                     TimelinePalette.text
-                )]
+                )],
+                richContent: previews
             )
         case .assistant:
             let provider = providerDisplayName(message.provider)
@@ -8492,6 +8619,13 @@ private final class TranscriptSnapshotSurface: NSView {
 }
 
 private final class ContinuousTranscriptTextView: NSTextView {
+    /// Never accept a dragged file: the window-wide handler attaches it to the
+    /// conversation instead. Returning an empty operation lets the drag fall
+    /// through to the SwiftUI container behind this view.
+    override func draggingEntered(_ sender: any NSDraggingInfo) -> NSDragOperation { [] }
+    override func draggingUpdated(_ sender: any NSDraggingInfo) -> NSDragOperation { [] }
+    override func performDragOperation(_ sender: any NSDraggingInfo) -> Bool { false }
+
     var completeTranscript = ""
 
     override func menu(for event: NSEvent) -> NSMenu? {
@@ -8687,6 +8821,11 @@ private struct ContinuousTranscriptView: NSViewRepresentable {
         textView.isSelectable = true
         textView.isRichText = true
         textView.importsGraphics = false
+        // A file dropped on the conversation must reach the window-wide
+        // attachment handler. NSTextView registers its own dragged types and
+        // consumes the drop first, which is why dropping anywhere except the
+        // input box did nothing.
+        textView.unregisterDraggedTypes()
         textView.allowsUndo = false
         textView.usesFindPanel = true
         textView.usesFindBar = true

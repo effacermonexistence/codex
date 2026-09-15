@@ -71,6 +71,7 @@ final class SourceContextTests {
         try runBackendHealthFixtures()
         try runSelfUpdateFixtures()
         try runLocalizationFixtures()
+        try runAttachmentFixtures()
         try runProjectMaterialFixtures()
         try runRegisteredSourceFixtures()
         let taskRoot = FileManager.default.temporaryDirectory.appendingPathComponent("os1-task-context-\(UUID().uuidString)")

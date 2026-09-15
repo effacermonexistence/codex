@@ -132,6 +132,17 @@ func runBackendRecoveryFixtures() throws {
     check(UnifiedExecution.codexApprovalPolicy == "on-request" &&
         UnifiedExecution.codexApprovalsReviewer == "auto_review", "automatic reviewer must have an interactive approval policy")
     check(BackendFailureNotice(provider: "claude", sessionID: "../escape", blocker: .timeout, dispatchStage: .dispatched).sessionID == nil, "reject invalid native IDs")
+    // A lane OS-1 signed read-only had no mutation authority: there is nothing
+    // to read back, so it must not sit under an uncertain-effect hold.
+    check(!BackendFailureNotice(provider: "claude", sessionID: nil, blocker: .effectsUncertain,
+        dispatchStage: .dispatched, permissionProfile: "read_only").requiresReadback,
+        "a read-only lane cannot have uncertain write effects")
+    check(BackendFailureNotice(provider: "claude", sessionID: nil, blocker: .effectsUncertain,
+        dispatchStage: .dispatched, permissionProfile: "workspace_write").requiresReadback,
+        "an uncertain write still reconciles")
+    check(BackendFailureNotice(provider: "claude", sessionID: nil, blocker: .effectsUncertain,
+        dispatchStage: .dispatched).requiresReadback,
+        "an unknown permission profile stays conservative")
     check(BackendRecovery.readbackPrompt(objective: "deploy v152").contains("deploy v152") &&
         BackendRecovery.readbackPrompt(objective: "deploy v152").contains("지금 실행할 명령이 아닙니다"), "readback retains objective but not replay authority")
     // The readback verdict: exactly one word on its own line; the last such
