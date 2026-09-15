@@ -23,18 +23,25 @@ public enum CodexQuota {
         return excluded
     }
 
-    /// Reset time of the exhausted general bucket, for user notices only.
-    public static func exhaustedGeneralResetDescription(_ response: [String: Any], now: Date = Date()) -> String? {
+    /// Reset time of the exhausted general bucket; nil unless a window is
+    /// actually at 100 % with a reset still ahead.
+    public static func exhaustedGeneralResetDate(_ response: [String: Any], now: Date = Date()) -> Date? {
         guard let general = (response["rateLimitsByLimitId"] as? [String: [String: Any]])?["codex"] else { return nil }
         for key in ["primary", "secondary"] {
             guard let window = general[key] as? [String: Any], let used = window["usedPercent"] as? NSNumber,
                   used.doubleValue >= 100, let reset = window["resetsAt"] as? NSNumber,
                   reset.doubleValue > now.timeIntervalSince1970 else { continue }
-            let formatter = DateFormatter()
-            formatter.locale = Locale(identifier: "en_US_POSIX")
-            formatter.dateFormat = "yyyy-MM-dd HH:mm zzz"
-            return formatter.string(from: Date(timeIntervalSince1970: reset.doubleValue))
+            return Date(timeIntervalSince1970: reset.doubleValue)
         }
         return nil
+    }
+
+    /// Reset time of the exhausted general bucket, for user notices only.
+    public static func exhaustedGeneralResetDescription(_ response: [String: Any], now: Date = Date()) -> String? {
+        guard let reset = exhaustedGeneralResetDate(response, now: now) else { return nil }
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd HH:mm zzz"
+        return formatter.string(from: reset)
     }
 }

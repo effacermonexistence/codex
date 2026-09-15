@@ -147,6 +147,83 @@ private struct CachedCodexCatalog: Decodable {
 struct ActiveCodexCatalog {
     let models: [CodexModelCapability]
     let source: String
+    /// Reset of the exhausted general quota bucket when that exclusion applied.
+    var quotaResetsAt: Date? = nil
+}
+
+/// Health of the local backends as this preflight observed them. The Claude
+/// login probe runs only when the catalog came back empty; a populated
+/// catalog is proof of a usable backend on its own.
+func observedBackendHealth(claudeCatalog: [ClaudeModelCapability], codexCatalog: ActiveCodexCatalog,
+                           workspace: String, now: Date = Date()) -> BackendHealth {
+    let claude: BackendHealth.Backend
+    if !claudeCatalog.isEmpty {
+        claude = BackendHealth.Backend(state: .usable)
+    } else {
+        switch ModelAvailability.claudeAuthProbe(workspace: workspace) {
+        case .loggedIn: claude = BackendHealth.Backend(state: .probeFailed, detail: "로그인은 유효하지만 사용 가능한 모델 목록을 받지 못함")
+        case .loggedOut: claude = BackendHealth.Backend(state: .loggedOut, detail: "OAuth 세션 만료 또는 로그아웃")
+        case .missing: claude = BackendHealth.Backend(state: .missing, detail: "claude 실행 파일 없음")
+        case .failed(let detail): claude = BackendHealth.Backend(state: .probeFailed, detail: detail)
+        }
+    }
+    let codex = BackendHealth.codexBackend(modelCount: codexCatalog.models.count, source: codexCatalog.source,
+        resetsAt: codexCatalog.quotaResetsAt, executablePresent: (try? findExecutable("codex")) != nil)
+    return BackendHealth(claude: claude, codex: codex, checkedAt: now)
+}
+
+/// Full read-only probe of both backends (native metadata only, no inference).
+/// Saves the record for the fleet heartbeat and the app's recovery monitor.
+@discardableResult
+func probeBackendHealth(workspace: String, config: RuntimeConfig) -> BackendHealth {
+    let codex = (try? ModelAvailability.codexCatalog(workspace: workspace, config: config))
+        ?? ActiveCodexCatalog(models: [], source: "native account metadata unavailable")
+    let claude = (try? ModelAvailability.claudeCatalog(workspace: workspace, config: config)) ?? []
+    let health = observedBackendHealth(claudeCatalog: claude, codexCatalog: codex, workspace: workspace)
+    try? health.save()
+    return health
+}
+
+/// Bounded self-repair for a preflight with no usable backend. The only
+/// active step is the official Claude login the owner approves in the
+/// browser, behind the same lease/cooldown gate as "클로드 연결시켜"; OS-1
+/// never reads or stores the credentials. Returns refreshed catalogs when a
+/// backend became usable, otherwise a public note for the held request.
+func selfRepairBackends(health: BackendHealth, codexCatalog: ActiveCodexCatalog, workspace: String, config: RuntimeConfig,
+                        environment: [String: String] = ProcessInfo.processInfo.environment,
+                        reconnect: () throws -> String = verifyClaudeConnection,
+                        claudeCatalog: () -> [ClaudeModelCapability]? = { nil })
+    -> (catalogs: (claude: [ClaudeModelCapability], codex: ActiveCodexCatalog)?, note: String?) {
+    var notes: [String] = []
+    for step in health.repairSteps {
+        switch step {
+        case .reconnectClaude:
+            guard environment["OS1_ALLOW_AUTHENTICATION"] == "1" else {
+                notes.append("이 실행 환경에서는 공식 로그인 창을 열 수 없습니다. OS-1 앱에서 같은 요청을 보내거나 터미널에서 `claude auth login`을 실행하세요.")
+                continue
+            }
+            RuntimeActivity.emit(.authorizing,
+                publicText: "Claude 로그인이 만료됐고 다른 백엔드가 없어 터미널 창에 공식 Claude 로그인을 엽니다. 브라우저 승인 후 표시된 코드를 그 터미널에 붙여넣으면 같은 요청을 이어서 실행합니다.",
+                tool: "claude")
+            do {
+                let verified = try reconnect()
+                let claude = claudeCatalog() ?? ((try? ModelAvailability.claudeCatalog(workspace: workspace, config: config)) ?? [])
+                guard !claude.isEmpty else {
+                    notes.append("\(verified) — 하지만 실행 가능한 Claude 모델 목록을 받지 못했습니다.")
+                    continue
+                }
+                RuntimeActivity.emit(.recovering, publicText: "\(verified) · 보존한 요청을 이어서 실행합니다.")
+                return ((claude, codexCatalog), verified)
+            } catch {
+                notes.append("공식 Claude 로그인이 완료되지 않았습니다(\(error)). 다음 요청에서 다시 열 수 있습니다(60초 간격).")
+            }
+        case .waitCodexQuota:
+            notes.append("Codex 한도는 " + (health.codex.recoversAt.map { BackendHealth.describe($0) } ?? "미확인 시각") + "에 복구됩니다.")
+        case .waitClaudeQuota:
+            notes.append("Claude 한도 복구를 기다립니다.")
+        }
+    }
+    return (nil, notes.isEmpty ? nil : notes.joined(separator: " "))
 }
 
 /// Execution availability, not private model ranking. Only advertise tuples
@@ -1819,7 +1896,7 @@ private func withConnectionRecovery<T>(service: String, probe: () throws -> T) t
     case "github":
         result = try commandOutput(findExecutable("gh"), ["auth", "login", "--hostname", "github.com", "--git-protocol", "https", "--web", "--clipboard"], input: Data([10]), timeout: 300)
     case "claude":
-        result = try commandOutput(findExecutable("claude"), ["auth", "login", "--claudeai"], timeout: 300)
+        result = try runClaudeLoginInTerminal()
     default:
         result = try commandOutput(findExecutable("wrangler"), ["login", "--browser", "--use-keyring"], timeout: 300,
             currentDirectory: FileManager.default.homeDirectoryForCurrentUser.path)
@@ -1829,6 +1906,41 @@ private func withConnectionRecovery<T>(service: String, probe: () throws -> T) t
     let verified = try probe()
     RuntimeActivity.emit(.source)
     return verified
+}
+
+/// `claude auth login` is a code-paste flow even under a pseudo-terminal
+/// (verified 2026-09-15: redirect_uri platform.claude.com/oauth/code/callback,
+/// "Paste code here if prompted"), so a headless child can never finish it.
+/// OS-1 opens the official flow in the owner's own Terminal window and waits
+/// for `claude auth status` to turn logged-in. The browser code is pasted
+/// into that terminal by the owner; it never passes through OS-1.
+private func runClaudeLoginInTerminal(deadlineSeconds: Int = 300) throws -> (Int32, Data, Data) {
+    let claude = try findExecutable("claude")
+    let root = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/OS-1/auth-flows")
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+    let script = root.appendingPathComponent("claude-login.command")
+    let body = """
+    #!/bin/zsh
+    clear
+    echo "OS-1: 공식 Claude 로그인입니다. 브라우저에서 승인한 뒤 표시된 코드를 여기에 붙여넣으세요."
+    echo "완료되면 OS-1이 보존한 작업을 자동으로 이어갑니다. (이 창은 닫아도 됩니다)"
+    echo
+    exec '\(claude)' auth login --claudeai
+    """
+    try Data(body.utf8).write(to: script, options: .atomic)
+    try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: script.path)
+    let opened = try commandOutput("/usr/bin/open", ["-a", "Terminal", script.path], timeout: 20)
+    guard opened.0 == 0 else { throw ConnectionFailure.unavailable }
+    RuntimeActivity.emit(.authorizing,
+        publicText: "터미널 창에 공식 Claude 로그인을 열었습니다. 브라우저에서 승인한 뒤 표시된 코드를 그 터미널에 붙여넣으면 OS1이 같은 작업을 이어갑니다.",
+        tool: "claude")
+    let deadline = Date().addingTimeInterval(TimeInterval(deadlineSeconds))
+    while Date() < deadline {
+        if ExecutionCancellation.isCancelled { throw OS1Error.backendBlocked(.cancelled) }
+        Thread.sleep(forTimeInterval: 3)
+        if (try? existingClaudeConnection()) != nil { return (0, Data(), Data()) }
+    }
+    throw ConnectionFailure.authentication
 }
 
 private struct ConnectionControlTargets: OptionSet {
@@ -6102,7 +6214,30 @@ func runTask(
     try await register(client: client, key: key)
     var codexCatalog = (try? ModelAvailability.codexCatalog(workspace: canonicalWorkspace, config: config)) ??
         ActiveCodexCatalog(models: [], source: "native account metadata unavailable")
-    let claudeCatalog = (try? ModelAvailability.claudeCatalog(workspace: canonicalWorkspace, config: config)) ?? []
+    var observedClaudeCatalog = (try? ModelAvailability.claudeCatalog(workspace: canonicalWorkspace, config: config)) ?? []
+    // Owner's rule: a dead-backend preflight is a repair trigger, not a dead
+    // end. Diagnose, run the repair OS-1 may do itself, and continue in place;
+    // otherwise hold the request with the diagnosis so the app can replay it
+    // by itself once a backend is back.
+    if codexCatalog.models.isEmpty, observedClaudeCatalog.isEmpty, publicDeterministicExpression(prompt) == nil {
+        let health = observedBackendHealth(claudeCatalog: observedClaudeCatalog, codexCatalog: codexCatalog, workspace: canonicalWorkspace)
+        try? health.save()
+        RuntimeActivity.emit(.recovering, publicText: health.publicSummary)
+        let repair = selfRepairBackends(health: health, codexCatalog: codexCatalog, workspace: canonicalWorkspace, config: config)
+        if let repaired = repair.catalogs {
+            observedClaudeCatalog = repaired.claude
+            codexCatalog = repaired.codex
+            try? observedBackendHealth(claudeCatalog: observedClaudeCatalog, codexCatalog: codexCatalog, workspace: canonicalWorkspace).save()
+        } else {
+            let diagnosis = health.holdMessage(repairNote: repair.note)
+            BackendFailureNotice(provider: "local", sessionID: nil, blocker: .backendUnavailable,
+                                 dispatchStage: .notDispatched, diagnosis: diagnosis).emit()
+            throw OS1Error.message(diagnosis)
+        }
+    } else {
+        try? observedBackendHealth(claudeCatalog: observedClaudeCatalog, codexCatalog: codexCatalog, workspace: canonicalWorkspace).save()
+    }
+    let claudeCatalog = observedClaudeCatalog
     let hasClaudeExecutable = !claudeCatalog.isEmpty
     let repairedContext = repairedSource ? (context ?? "") + """
 
@@ -8458,6 +8593,35 @@ func selfTest() throws {
         ("exhausted quota reset is described only when actually exhausted",
          CodexQuota.exhaustedGeneralResetDescription(["rateLimitsByLimitId": ["codex": ["primary": ["usedPercent": 100, "resetsAt": 4_102_444_800]]]]) != nil &&
          CodexQuota.exhaustedGeneralResetDescription(["rateLimitsByLimitId": ["codex": ["primary": ["usedPercent": 12, "resetsAt": 4_102_444_800]]]]) == nil),
+        ("exhausted quota reset date is exposed for self-repair",
+         CodexQuota.exhaustedGeneralResetDate(["rateLimitsByLimitId": ["codex": ["primary": ["usedPercent": 100, "resetsAt": 4_102_444_800]]]])
+            == Date(timeIntervalSince1970: 4_102_444_800)),
+        ("self-repair reconnects Claude only inside a login-permitted run", {
+            let health = BackendHealth(claude: BackendHealth.Backend(state: .loggedOut),
+                codex: BackendHealth.Backend(state: .quotaExhausted, recoversAt: Date(timeIntervalSince1970: 4_102_444_800)))
+            let empty = ActiveCodexCatalog(models: [], source: "Codex 사용량 한도 도달로 3개 모델 제외")
+            var reconnects = 0
+            let headless = selfRepairBackends(health: health, codexCatalog: empty, workspace: "/tmp", config: config,
+                environment: [:], reconnect: { reconnects += 1; return "Claude 연결됨" })
+            let permitted = selfRepairBackends(health: health, codexCatalog: empty, workspace: "/tmp", config: config,
+                environment: ["OS1_ALLOW_AUTHENTICATION": "1"], reconnect: { reconnects += 1; return "Claude 연결됨" },
+                claudeCatalog: { [ClaudeModelCapability(model: "sonnet", supportedEfforts: ["medium"])] })
+            let declined = selfRepairBackends(health: health, codexCatalog: empty, workspace: "/tmp", config: config,
+                environment: ["OS1_ALLOW_AUTHENTICATION": "1"], reconnect: { reconnects += 1; throw ConnectionFailure.authentication })
+            return headless.catalogs == nil && (headless.note ?? "").contains("공식 로그인 창을 열 수 없습니다") &&
+                permitted.catalogs?.claude.count == 1 && permitted.catalogs?.codex.models.isEmpty == true && permitted.note == "Claude 연결됨" &&
+                declined.catalogs == nil && (declined.note ?? "").contains("완료되지 않았습니다") && (declined.note ?? "").contains("복구됩니다") &&
+                reconnects == 2
+        }()),
+        ("backend health classifies an empty Codex catalog from its exclusion notes", {
+            let quota = BackendHealth.codexBackend(modelCount: 0, source: "native account model/list · Codex 사용량 한도 도달로 3개 모델 제외, 리셋 2026-09-19 20:51 GMT; 계정 기본 지시문(839KB)을 담지 못하는 모델 제외: gpt-5.1-codex-mini",
+                resetsAt: Date(timeIntervalSince1970: 4_102_444_800), executablePresent: true)
+            let budget = BackendHealth.codexBackend(modelCount: 0, source: "native account model/list · 계정 기본 지시문(839KB)을 담지 못하는 모델 제외: gpt-5.1-codex-mini", resetsAt: nil, executablePresent: true)
+            let missing = BackendHealth.codexBackend(modelCount: 0, source: "native account metadata unavailable", resetsAt: nil, executablePresent: false)
+            let usable = BackendHealth.codexBackend(modelCount: 2, source: "native account model/list", resetsAt: nil, executablePresent: true)
+            return quota.state == .quotaExhausted && quota.recoversAt == Date(timeIntervalSince1970: 4_102_444_800) &&
+                budget.state == .contextBudget && missing.state == .missing && usable.state == .usable
+        }()),
     ]
     let failedCompletionChecks = completionChecks.filter { !$0.1 }.map(\.0)
     guard failedCompletionChecks.isEmpty else {
@@ -8503,7 +8667,7 @@ struct OS1Main {
             guard let command = arguments.first else { usage(); return }
             if try await fleetCommand(arguments) { return }
             switch command {
-            case "version", "--version", "-V": print("OS-1 Runtime 0.9.56 (session-index-claude-reconnect-build122)")
+            case "version", "--version", "-V": print("OS-1 Runtime 0.9.58 (backend-self-repair-build124)")
             case "doctor": try doctor()
             case "sidebar-pin":
                 guard (4...5).contains(arguments.count), arguments[1] == "codex",
@@ -8568,6 +8732,21 @@ struct OS1Main {
                 let claude = (try? ModelAvailability.claudeCatalog(workspace: workspace, config: config)) ?? []
                 struct Inventory: Encodable { let codex: [CodexModelCapability]; let claude: [ClaudeModelCapability] }
                 print(String(decoding: try JSONEncoder().encode(Inventory(codex: codex, claude: claude)), as: UTF8.self))
+            case "backend-health":
+                // Read-only usability of both backends with reasons and the
+                // earliest recovery time; cached one minute unless --refresh.
+                guard arguments.dropFirst().allSatisfy({ $0 == "--refresh" }) else {
+                    throw OS1Error.message("backend-health accepts only --refresh")
+                }
+                let config = try RuntimeConfig.load()
+                let home = FileManager.default.homeDirectoryForCurrentUser.path
+                let health = arguments.contains("--refresh")
+                    ? probeBackendHealth(workspace: home, config: config)
+                    : (BackendHealth.load(maxAge: 60) ?? probeBackendHealth(workspace: home, config: config))
+                let encoder = JSONEncoder()
+                encoder.dateEncodingStrategy = .iso8601
+                encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+                print(String(decoding: try encoder.encode(health), as: UTF8.self))
             case "audit-codex-usage":
                 guard arguments.count == 3, UUID(uuidString: arguments[2]) != nil else {
                     throw OS1Error.message("Expected native JSONL path and exact turn UUID")

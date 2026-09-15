@@ -89,6 +89,28 @@ enum ModelAvailability {
         return result
     }
 
+    enum ClaudeAuthProbe: Equatable {
+        case loggedIn(String?)
+        case loggedOut
+        case missing
+        case failed(String)
+    }
+
+    /// Read-only login state of the local Claude Code CLI. Never issues a
+    /// login; used to explain an empty catalog and to decide self-repair.
+    static func claudeAuthProbe(workspace: String) -> ClaudeAuthProbe {
+        guard let executable = try? findExecutable("claude") else { return .missing }
+        guard let auth = try? commandOutput(executable, ["auth", "status", "--json"], timeout: 8, currentDirectory: workspace) else {
+            return .failed("auth status probe did not run")
+        }
+        guard let status = (try? JSONSerialization.jsonObject(with: auth.1)) as? [String: Any] else {
+            let text = String(decoding: (auth.1 + auth.2).prefix(200), as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+            return .failed(text.isEmpty ? "auth status exit \(auth.0)" : text)
+        }
+        if status["loggedIn"] as? Bool == true { return .loggedIn(status["email"] as? String) }
+        return .loggedOut
+    }
+
     static func claudeModels(workspace: String) throws -> [NativeClaudeModel] {
         let executable = try findExecutable("claude")
         let auth = try commandOutput(executable, ["auth", "status", "--json"], timeout: 8,
@@ -138,9 +160,11 @@ enum ModelAvailability {
         // Exclusion reasons travel with the catalog so a later preflight can
         // say why no Codex model is available instead of a bare refusal.
         var notes: [String] = []
+        var quotaResetsAt: Date?
         if let limits = try? probe.rateLimits(deadline: deadline) {
             let excluded = CodexQuota.excludedModels(limits, models: catalog.models.map(\.slug))
             if !excluded.isEmpty {
+                quotaResetsAt = CodexQuota.exhaustedGeneralResetDate(limits)
                 let reset = CodexQuota.exhaustedGeneralResetDescription(limits).map { ", 리셋 \($0)" } ?? ""
                 let remaining = catalog.models.map(\.slug).filter { !excluded.contains($0) }
                 notes.append("Codex 사용량 한도 도달로 \(excluded.count)개 모델 제외\(reset)")
@@ -160,6 +184,6 @@ enum ModelAvailability {
             }
         }
         let source = notes.isEmpty ? catalog.source : catalog.source + " · " + notes.joined(separator: "; ")
-        return ActiveCodexCatalog(models: catalog.models, source: source)
+        return ActiveCodexCatalog(models: catalog.models, source: source, quotaResetsAt: quotaResetsAt)
     }
 }

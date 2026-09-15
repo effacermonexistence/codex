@@ -15,9 +15,14 @@ public enum BackendBlocker: String, Codable, Sendable {
     case budgetExhausted = "budget_exhausted"
     case cancelled
     case contextOverflow = "context_overflow"
+    /// No backend could run at preflight; nothing was dispatched. OS-1 keeps
+    /// the request and replays it itself once a backend is usable again.
+    case backendUnavailable = "backend_unavailable"
 
     public var message: String {
         switch self {
+        case .backendUnavailable:
+            return "사용 가능한 백엔드 실행 환경이 없어 모델 호출 없이 사전 검사에서 중단했습니다. OS1이 자가 복구(공식 로그인 재연결, 한도 복구 대기)를 진행하며, 백엔드가 돌아오면 보존한 요청을 자동으로 이어서 실행합니다."
         case .incomplete:
             return "백엔드가 요청을 끝내지 못했습니다. OS1이 같은 목표와 자료를 유지하며 실행 가능한 복구 경로를 확인합니다."
         case .budgetExhausted:
@@ -95,9 +100,12 @@ public struct BackendFailureNotice: Codable, Equatable, Sendable {
     public let permissionProfile: String?
     public let deliveryID: String?
     public let publicProgress: String?
+    /// OS-1's own preflight diagnosis (why no backend ran, what repair it
+    /// attempted). Shown as a system line, never as backend output.
+    public let diagnosis: String?
     public init(provider: String, sessionID: String?, blocker: BackendBlocker, dispatchStage: BackendDispatchStage,
                 source: SourceReference? = nil, permissionProfile: String? = nil, deliveryID: String? = nil,
-                publicProgress: String? = nil) {
+                publicProgress: String? = nil, diagnosis: String? = nil) {
         self.provider = provider
         self.sessionID = sessionID.flatMap { UUID(uuidString: $0)?.uuidString.lowercased() }
         self.blocker = blocker; self.dispatchStage = dispatchStage
@@ -105,6 +113,7 @@ public struct BackendFailureNotice: Codable, Equatable, Sendable {
         self.permissionProfile = permissionProfile
         self.deliveryID = deliveryID
         self.publicProgress = publicProgress.map { String($0.suffix(24_000)) }
+        self.diagnosis = diagnosis.map { String($0.prefix(4_000)) }
     }
     public var requiresReadback: Bool {
         blocker == .effectsUncertain || (dispatchStage == .dispatched && permissionProfile == "workspace_write")

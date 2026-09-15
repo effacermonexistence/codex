@@ -2787,6 +2787,9 @@ private struct PendingSubmission: Identifiable, Codable, Equatable, Sendable {
     var recoveryParentID: UUID? = nil
     var recoveryAttempted: Bool? = nil
     var sourceRetryIdentity: String? = nil
+    /// Backend-health record (checkedAt) that already replayed this hold, so
+    /// one observed recovery triggers exactly one automatic replay.
+    var backendRecoveryIdentity: String? = nil
     /// Routing preference before an explicit provider name in the queued text.
     /// Absent in legacy stores; retain that item's original provider on edit.
     var configuredProvider: ProviderChoice? = nil
@@ -3041,6 +3044,78 @@ private func restoreSavedFailurePreview(_ session: inout ConversationSession, re
     return true
 }
 
+/// A dead-backend hold must replay itself exactly once per observed recovery
+/// and never while health still says nothing is usable. No executor runs
+/// until the health record flips; the fixture never spawns the probe.
+@MainActor
+private func backendRecoverySelfTest() throws {
+    var checks = 0
+    func check(_ value: Bool, _ label: String) throws {
+        guard value else { throw RunnerError.message("Backend self-repair: " + label) }
+        checks += 1
+    }
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("os1-backend-recovery-" + UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    var held = ConversationSession(workspace: "/tmp/fixture", provider: .auto,
+        messages: [ChatMessage(role: .user, text: "OS1 고쳐"), ChatMessage(role: .system, text: "사용 가능한 백엔드가 없어 …")])
+    let hold = PendingSubmission(id: UUID(), sessionID: held.id, userMessageID: held.messages[0].id, request: "OS1 고쳐",
+        provider: .auto, workspace: held.workspace, codexCapacity: 30, claudeCapacity: 100, readOnlyReconciliation: false)
+    held.lastFailure = hold
+    held.lastBackendFailure = BackendFailureNotice(provider: "local", sessionID: nil, blocker: .backendUnavailable,
+        dispatchStage: .notDispatched, diagnosis: "fixture")
+    var dispatched = ConversationSession(workspace: "/tmp/fixture", provider: .claude,
+        messages: [ChatMessage(role: .user, text: "파일 고쳐"), ChatMessage(role: .system, text: "중단됨")])
+    dispatched.lastFailure = PendingSubmission(id: UUID(), sessionID: dispatched.id, userMessageID: dispatched.messages[0].id,
+        request: "파일 고쳐", provider: .claude, workspace: dispatched.workspace, codexCapacity: 0, claudeCapacity: 100, readOnlyReconciliation: false)
+    dispatched.lastFailure?.preflightOnly = false
+    dispatched.lastBackendFailure = BackendFailureNotice(provider: "claude", sessionID: nil, blocker: .effectsUncertain, dispatchStage: .dispatched)
+    let envelope = SessionEnvelope(schema: 3, sessions: [held, dispatched], queued: [], inFlight: [])
+    try JSONEncoder().encode(envelope).write(to: root.appendingPathComponent("sessions.json"))
+    var starts: [UUID] = []
+    let store = SessionStore(storageRoot: root, runOperation: { submission, _, _, _, _ in
+        starts.append(submission.sessionID)
+        // The replay's own preflight finds the backend gone again: the
+        // session returns to the same hold without a new user turn.
+        throw RunnerError.backend(BackendFailureNotice(provider: "local", sessionID: nil, blocker: .backendUnavailable,
+            dispatchStage: .notDispatched, diagnosis: "fixture: still unavailable"))
+    })
+    let healthURL = root.appendingPathComponent("backend-health.json")
+    let now = Date()
+    func write(_ health: BackendHealth) throws { try health.save(to: healthURL) }
+
+    // No record: nothing replays and (with a custom root) no probe is spawned.
+    store.resumeBackendRecoveries(healthURL: healthURL, now: now)
+    try check(starts.isEmpty && store.activeRuns.isEmpty, "replayed without a health record")
+    // Dead backends: the hold waits with an explanatory status, no replay.
+    try write(BackendHealth(claude: BackendHealth.Backend(state: .loggedOut),
+        codex: BackendHealth.Backend(state: .quotaExhausted, recoversAt: now.addingTimeInterval(3_600)), checkedAt: now))
+    store.resumeBackendRecoveries(healthURL: healthURL, now: now)
+    try check(starts.isEmpty && store.activeRuns.isEmpty, "replayed while nothing is usable")
+    store.select(held.id)
+    store.resumeBackendRecoveries(healthURL: healthURL, now: now)
+    try check(store.statusText.contains("백엔드 복구 대기") && store.statusText.contains("Claude 로그인 승인"), "waiting status not shown: \(store.statusText)")
+    // Stale record: treated as unknown, no replay.
+    try write(BackendHealth(claude: BackendHealth.Backend(state: .usable), codex: BackendHealth.Backend(state: .usable), checkedAt: now.addingTimeInterval(-600)))
+    store.resumeBackendRecoveries(healthURL: healthURL, now: now)
+    try check(starts.isEmpty, "stale health record replayed")
+    // Recovery: exactly one replay of the preflight-only hold; the dispatched
+    // write-uncertain failure is never replayed automatically.
+    let recovered = BackendHealth(claude: BackendHealth.Backend(state: .usable), codex: BackendHealth.Backend(state: .quotaExhausted), checkedAt: now)
+    try write(recovered)
+    store.resumeBackendRecoveries(healthURL: healthURL, now: now)
+    try check(store.activeRuns.keys.contains(held.id) && !store.activeRuns.keys.contains(dispatched.id), "replay admitted wrong session")
+    try check(store.sessions.first(where: { $0.id == held.id })?.lastFailure == nil, "replay did not take the hold")
+    let deadline = Date().addingTimeInterval(6)
+    while store.isSessionRunning(held.id), Date() < deadline { RunLoop.main.run(until: Date().addingTimeInterval(0.02)) }
+    try check(starts == [held.id], "executor start count \(starts.count)")
+    // The same recovery record must not replay the (now re-failed) hold again;
+    // only a newer record may.
+    store.resumeBackendRecoveries(healthURL: healthURL, now: now)
+    try check(starts.count == 1, "same recovery replayed twice")
+    print("Backend self-repair: \(checks) checks passed; hold waits on dead health, replays once per recovery, never a dispatched failure")
+}
+
 @MainActor
 private func savedFailurePreviewSelfTest() throws {
     var checks = 0
@@ -3287,6 +3362,27 @@ private enum OS1Runner {
                 throw RunnerError.message("Codex 핀 변경을 확인하지 못했습니다. OS1에만 저장된 상태입니다.")
             }
         }.value
+    }
+    /// Read-only backend probe (`os1 backend-health --refresh`): native
+    /// metadata only, no inference, no login. It refreshes the shared health
+    /// record that the recovery monitor and the fleet heartbeat read.
+    static func refreshBackendHealth() async {
+        guard let path = try? executable() else { return }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: path)
+        process.arguments = ["backend-health", "--refresh"]
+        process.currentDirectoryURL = FileManager.default.homeDirectoryForCurrentUser
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        var environment = ProcessInfo.processInfo.environment
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        environment["PATH"] = ["\(home)/.local/bin", "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin",
+                               environment["PATH"] ?? ""].joined(separator: ":")
+        process.environment = environment
+        guard (try? process.run()) != nil else { return }
+        let deadline = Date().addingTimeInterval(90)
+        while process.isRunning && Date() < deadline { try? await Task.sleep(for: .milliseconds(200)) }
+        if process.isRunning { process.terminate() }
     }
     static func observeActivity(_ process: Process, at url: URL, onActivity: (RuntimeActivity) -> Void) {
         var lastActivity: RuntimeActivity?
@@ -4677,6 +4773,7 @@ private final class SessionStore: ObservableObject {
                 }
                 }
             } catch {
+                var holdStatus = "Needs attention"
                 if let target = sessions.firstIndex(where: { $0.id == submission.sessionID }) {
                     if submission.recoveryParentID == nil { sessions[target].lastFailure = inFlightSubmissions[submission.sessionID] ?? submission }
                     if submission.recoveryParentID == nil, let failure = error as? RunnerError, case .backend(let notice) = failure {
@@ -4717,14 +4814,24 @@ private final class SessionStore: ObservableObject {
                         // Successful recovery clears it; manual/restart holds
                         // remain independent and are never implicitly cleared.
                     }
-                    let description = error.localizedDescription.trimmingCharacters(in: .whitespacesAndNewlines)
+                    var description = error.localizedDescription.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if case .backend(let notice)? = error as? RunnerError, notice.blocker == .backendUnavailable {
+                        // OS-1's own preflight diagnosis (why each backend is
+                        // down, what repair ran, when it recovers) replaces the
+                        // generic line. The hold is replayed by the recovery
+                        // monitor once health reports a usable backend.
+                        if let diagnosis = notice.diagnosis?.trimmingCharacters(in: .whitespacesAndNewlines), !diagnosis.isEmpty {
+                            description = diagnosis
+                        }
+                        holdStatus = BackendHealth.load(maxAge: 900)?.waitingStatus ?? "백엔드 복구 대기 · 복구 시 자동 재실행"
+                    }
                     sessions[target].messages.append(ChatMessage(
                         role: .system,
                         text: description.isEmpty ? "OS-1 작업이 중단되었습니다. 다시 시도해 주세요." : description
                     ))
                     sessions[target].updatedAt = Date()
                 }
-                sessionStatuses[submission.sessionID] = "Needs attention"
+                sessionStatuses[submission.sessionID] = holdStatus
             }
             // A superseded attempt must not release the newer run's admission.
             guard activeRuns[submission.sessionID]?.submissionID == submission.id else { save(); return }
@@ -5047,6 +5154,7 @@ private final class SessionStore: ObservableObject {
     func refreshSidebarMetadata() async {
         guard customStorageRoot == nil, !sidebarPollRunning else { return }
         resumeRegisteredSourcePreparations()
+        resumeBackendRecoveries()
         sidebarPollRunning = true
         defer { sidebarPollRunning = false }
         for provider in [ProviderChoice.codex, .claude] {
@@ -5165,6 +5273,48 @@ private final class SessionStore: ObservableObject {
             save() // persist the budget before dispatch; survives app restart
             appendTaskEvent(conversationID: session.id, kind: "source_recovery",
                 summary: "Registered source arrived; revalidating the original preparation without a backend handoff")
+            start(retry)
+        }
+    }
+    /// A backend that comes back (official login approved, quota reset) is an
+    /// external-state change: replay a preflight-only hold once per observed
+    /// recovery, never a dispatched or write-uncertain failure. While such a
+    /// hold exists the read-only probe (`os1 backend-health --refresh`) runs
+    /// at most once a minute; no model call happens until health says usable.
+    private var backendHealthProbeStartedAt: Date?
+    func resumeBackendRecoveries(healthURL: URL = BackendHealth.defaultURL, now: Date = Date()) {
+        let waiting = sessions.filter {
+            $0.lastBackendFailure?.blocker == .backendUnavailable && $0.lastFailure?.preflightOnly == true &&
+            $0.lastFailure?.recoveryParentID == nil && !isSessionRunning($0.id)
+        }
+        guard !waiting.isEmpty else { return }
+        guard let health = BackendHealth.load(from: healthURL, maxAge: 90, now: now) else {
+            if customStorageRoot == nil, backendHealthProbeStartedAt.map({ now.timeIntervalSince($0) >= 60 }) ?? true {
+                backendHealthProbeStartedAt = now
+                Task.detached(priority: .utility) { await OS1Runner.refreshBackendHealth() }
+            }
+            return
+        }
+        guard health.anyUsable else {
+            for session in waiting where sessionStatuses[session.id] != health.waitingStatus {
+                sessionStatuses[session.id] = health.waitingStatus
+                if selectedSessionID == session.id { statusText = health.waitingStatus }
+            }
+            return
+        }
+        let identity = ISO8601DateFormatter().string(from: health.checkedAt)
+        for session in waiting {
+            guard activeRuns.count < Self.maximumConcurrentSessions,
+                  let failed = session.lastFailure, failed.backendRecoveryIdentity != identity,
+                  !FileManager.default.fileExists(atPath: ExecutionCancellation.url(submissionID: failed.id).path),
+                  let index = sessions.firstIndex(where: { $0.id == session.id }) else { continue }
+            var retry = failed
+            retry.backendRecoveryIdentity = identity
+            sessions[index].lastFailure = retry
+            save() // persist the replay budget before dispatch; survives app restart
+            let usable = [health.claude.usable ? "claude" : nil, health.codex.usable ? "codex" : nil].compactMap { $0 }.joined(separator: "+")
+            appendTaskEvent(conversationID: session.id, kind: "backend_recovery",
+                summary: "Backend usable again (\(usable)); replaying the preserved request without a new user turn")
             start(retry)
         }
     }
@@ -6286,7 +6436,8 @@ private struct OS1DesktopApp: App {
                 try interactionSelfTest()
                 try railSelectionSelfTest()
                 try sidebarSynchronizationSelfTest()
-                print("OS-1 app provider intent, source continuity, voice, math, selection, pin/archive/drafts/queue self-test: OK")
+                try backendRecoverySelfTest()
+                print("OS-1 app provider intent, source continuity, voice, math, selection, pin/archive/drafts/queue, backend self-repair self-test: OK")
                 exit(EXIT_SUCCESS)
             } catch {
                 fputs("\(error.localizedDescription)\n", stderr)

@@ -2,6 +2,7 @@ import CryptoKit
 import CoreFoundation
 import Darwin
 import Foundation
+import OS1Context
 import OS1HookSupport
 
 private let fleetProfiles = ["codex", "claude", "os1", "build", "test", "exo"]
@@ -404,9 +405,38 @@ private func fleetEXONodes(config: RuntimeConfig) async -> Int {
     } catch { return 0 }
 }
 
+/// Advertised capacity means "can run a job now", never "binary installed".
+/// A logged-out Claude or an exhausted Codex quota is not capacity, and an
+/// unknown state (no probe yet) is not capacity either — the gateway must not
+/// place work on a node that will fail it at preflight.
+func fleetAdvertisedCapabilities(health: BackendHealth?, codexExecutable: Bool, claudeExecutable: Bool) -> (codex: Bool, claude: Bool) {
+    guard let health else { return (false, false) }
+    return (codexExecutable && health.codex.usable, claudeExecutable && health.claude.usable)
+}
+
+/// Single in-process health refresh; the heartbeat never blocks on the probe.
+private actor FleetHealthRefresh {
+    private var running = false
+    func begin() -> Bool { if running { return false }; running = true; return true }
+    func end() { running = false }
+}
+private let fleetHealthRefresh = FleetHealthRefresh()
+
 private func fleetHeartbeatNode(role: String, config: RuntimeConfig) async throws -> FleetNodeHeartbeat {
     guard role == "pro" || role == "air" else { throw OS1Error.message("Fleet role must be pro or air") }
     let exoNodes = await fleetEXONodes(config: config)
+    let health = BackendHealth.load(maxAge: 120)
+    if health == nil, await fleetHealthRefresh.begin() {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        Task.detached(priority: .utility) {
+            probeBackendHealth(workspace: home, config: config)
+            await fleetHealthRefresh.end()
+        }
+    }
+    // While a refresh runs, a record up to 15 minutes old is still the best
+    // evidence; a node with no record at all advertises no backend capacity.
+    let capabilities = fleetAdvertisedCapabilities(health: health ?? BackendHealth.load(maxAge: 900),
+        codexExecutable: (try? findExecutable("codex")) != nil, claudeExecutable: (try? findExecutable("claude")) != nil)
     return FleetNodeHeartbeat(
         role: role,
         hostname: ProcessInfo.processInfo.hostName,
@@ -416,8 +446,8 @@ private func fleetHeartbeatNode(role: String, config: RuntimeConfig) async throw
         memoryTotalMiB: Int(ProcessInfo.processInfo.physicalMemory / 1_048_576),
         memoryAvailableMiB: fleetAvailableMemoryMiB(),
         queueDepth: 0,
-        hasCodex: (try? findExecutable("codex")) != nil,
-        hasClaude: (try? findExecutable("claude")) != nil,
+        hasCodex: capabilities.codex,
+        hasClaude: capabilities.claude,
         exoReady: exoNodes >= 2,
         exoNodes: exoNodes
     )
@@ -1221,5 +1251,13 @@ func fleetSelfTest() throws {
     try check((try? readFleetCachedResult(at: link, jobID: assignment.jobID)) == nil, "cache symlink accepted")
     try check(fleetMirrorOrder(["new", "old", "pending"], checkedAt: ["pending": Date()]) == ["new", "old", "pending"], "pending job starves unchecked results")
     try check(fleetMirrorOrder(["new", "old"], checkedAt: ["new": Date(), "old": .distantPast]) == ["old", "new"], "old result starves behind new jobs")
-    print("OS-1 Fleet self-test: \(checks) checks OK; config, EXO candidate, private read-only result validation and fair result polling")
+    let dead = BackendHealth(claude: BackendHealth.Backend(state: .loggedOut), codex: BackendHealth.Backend(state: .quotaExhausted))
+    let alive = BackendHealth(claude: BackendHealth.Backend(state: .usable), codex: BackendHealth.Backend(state: .usable))
+    let deadFlags = fleetAdvertisedCapabilities(health: dead, codexExecutable: true, claudeExecutable: true)
+    let aliveFlags = fleetAdvertisedCapabilities(health: alive, codexExecutable: true, claudeExecutable: false)
+    let unknownFlags = fleetAdvertisedCapabilities(health: nil, codexExecutable: true, claudeExecutable: true)
+    try check(!deadFlags.codex && !deadFlags.claude, "dead backends advertised as fleet capacity")
+    try check(aliveFlags.codex && !aliveFlags.claude, "usable backend not advertised, or missing binary advertised")
+    try check(!unknownFlags.codex && !unknownFlags.claude, "unprobed node advertised capacity")
+    print("OS-1 Fleet self-test: \(checks) checks OK; config, EXO candidate, private read-only result validation, fair result polling and truthful capacity flags")
 }
