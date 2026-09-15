@@ -1,0 +1,43 @@
+{
+  "schema": "scv-instagram-drift-sentinel-deployment-2026-09-08-v1",
+  "worker": "scv-instagram-drift-sentinel",
+  "sentinel_schema": "scv-instagram-drift-sentinel-2026-09-14-v44-v183-running-release-v167-recovery-gold",
+  "deployed_version_id": "76d8560d-edc4-40c0-81de-293c791a80fa",
+  "schedule": "*/5 * * * *",
+  "first_passing_scheduled_run_utc": "2026-09-14T13:35:04.000Z",
+  "expected_release": {
+    "release_id": "scv-instagram-single-20260914-v183",
+    "content_fingerprint_sha256": "6fe861b48bd12aedb02306b64f4a3d461dcc94722ecbfdf8211edf1ce92b5a4c",
+    "release_manifest_sha256": "0e93b11cbfc308e6c62dbe5c9965a4b51400cd30a5ac1ff1f8e441397562304f",
+    "visible_model": "gpt-5.4-mini-2026-03-17"
+  },
+  "attestation": {
+    "key": "scv-instagram-automation/drift-attestations/2026-09-14/20260914T133504000Z.json",
+    "sha256": "bbc4c4f4000de709cda7406b356aaafaa4ccd469deba840c841d541789894aa5",
+    "r2_readback_hash_matched": true
+  },
+  "production_check": {
+    "ok": true,
+    "name": "production",
+    "mode": "production",
+    "http_status": 200,
+    "release_id": "scv-instagram-single-20260914-v183",
+    "content_fingerprint_sha256": "6fe861b48bd12aedb02306b64f4a3d461dcc94722ecbfdf8211edf1ce92b5a4c",
+    "release_manifest_sha256": "0e93b11cbfc308e6c62dbe5c9965a4b51400cd30a5ac1ff1f8e441397562304f",
+    "critical_drift_ok": true,
+    "critical_alert_count": 0,
+    "operational_alert_count": 2,
+    "drift_age_ms": 44960,
+    "capability_canary_ok": true,
+    "voice_ok": true,
+    "vision_ok": true,
+    "visible_model_ok": true,
+    "provider_model": "gpt-5.4-mini-2026-03-17",
+    "capability_age_ms": 428103,
+    "fail_close_active": false,
+    "reasons": []
+  },
+  "pointer_ok_overall": false,
+  "aggregate_boundary": "staging v168 unchanged; release pins intentionally differ; aggregate ok stays false by design",
+  "recorded_at_utc": "2026-09-14T13:37:34.317693+00:00"
+}
