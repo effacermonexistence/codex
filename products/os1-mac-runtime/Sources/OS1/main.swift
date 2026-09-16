@@ -2150,9 +2150,24 @@ private struct R2RetrievalObjective {
 }
 
 private func mentionsR2Source(_ value: String) -> Bool {
-    let normalized = value.precomposedStringWithCanonicalMapping.lowercased()
+    let normalized = withoutR2BackupInfrastructureTalk(value.precomposedStringWithCanonicalMapping.lowercased())
     return normalized.range(of: #"(?<![a-z0-9])r\s*2(?![a-z0-9])"#, options: .regularExpression) != nil ||
         normalized.contains("알투") || normalized.contains("알츠") || normalized.contains("omar-private-archive")
+}
+
+/// "R2 백업 확인", "git-bundles/…", "Mirror Git repository to R2" and the
+/// like are talk about the backup pipeline — an OS-1 or Claude answer the
+/// owner pasted back — not a request to read material out of R2. Removing
+/// those phrases before the R2 test keeps a 16 KB pasted transcript from
+/// turning "이거 고쳐" into an archive retrieval that dies on a missing index.
+private func withoutR2BackupInfrastructureTalk(_ lowered: String) -> String {
+    var value = lowered
+    for phrase in ["r2 백업", "r2백업", "r2 backup", "r2-git-backup", "r2 git backup", "git-bundles/", "r2 key",
+                   "r2 워크플로", "r2 workflow", "mirror git repository to r2", "r2 미러", "r2 mirror", "r2 매니페스트",
+                   "omar-private-archive에 이 sha", "r2에 올라", "r2 검증", "r2 확인", "to r2", "r2는 아직", "r2 remains"] {
+        value = value.replacingOccurrences(of: phrase, with: " ")
+    }
+    return value
 }
 
 private func requestsSourceRead(_ value: String) -> Bool {
@@ -3547,7 +3562,20 @@ private func r2RetrievalEvidence(_ prompt: String, context: String? = nil, objec
     if objective.materialKind == .scvProject {
         return try scvProjectEvidence(live: scvLive)
     }
-    let mirror = try latestVerifiedR2Mirror()
+    let mirror: (root: URL, capturedAt: String)
+    do {
+        mirror = try latestVerifiedR2Mirror()
+    } catch {
+        // No verified R2 mirror on this Mac. Only a request that freshly asks
+        // to fetch material out of R2 is allowed to die on that; an inherited
+        // or incidental mention proceeds without archive evidence and says so,
+        // because a task the owner typed must not end at preflight over
+        // material they never asked for.
+        guard objective.inheritedSource || !requestsFreshSource(prompt) else { throw error }
+        RuntimeActivity.emit(.preparing, publicText: os1Tr("검증된 R2 복구본이 이 Mac에 없어 자료 없이 진행합니다. 자료가 필요하면 자료 설정에서 R2 복구본 폴더를 연결하세요.",
+            "No verified R2 mirror on this Mac; continuing without archive material. Connect the R2 recovery folder in Materials if you need it."))
+        return nil
+    }
     let terms = r2RetrievalTerms(prompt)
     guard !terms.isEmpty else {
         throw OS1Error.message("R2에서 찾을 자료 이름이나 주제를 함께 입력해 주세요.")
@@ -8869,6 +8897,24 @@ func selfTest() throws {
             let flags = fleetAdvertisedCapabilities(health: health, codexExecutable: true, claudeExecutable: true)
             return backend.state == .disabled && stale.state == .disabled && health.anyUsable
                 && health.repairSteps.isEmpty && !flags.codex && flags.claude
+        }()),
+        ("pasted backup-pipeline talk is not an R2 material request", {
+            let pasted = """
+            여기서 OS1 수정 가능하냐?
+            CLAUDE
+
+            모든 단계 끝났습니다.
+            R2 백업 확인
+            • Mirror Git repository to R2 워크플로 실행 #35144532751 성공
+            • 로그에 정확히 이번 커밋 SHA로 매니페스트 기록 확인: Uploaded 12185969 bytes to R2 key git-bundles/effacermonexistence/codex/8ccc908/35144532751-1.bundle
+            • omar-private-archive에 이 SHA용 백업이 실제로 올라간 것까지 확인됐습니다 (GitHub만 됐고 R2는 아직인 상태 아님).
+            실행 기록 미확인 · 세부 정보 접기
+            야 내가 직접 채팅창 칠 거 아니면은 백엔드에서 해야지 왜 내 채팅창에 보이는데 이거 고쳐
+            """
+            let stripped = OS1SelfOutput.stripQuoted(pasted)
+            return resolveR2RetrievalObjective(prompt: stripped, context: nil) == nil
+                && resolveR2RetrievalObjective(prompt: "R2에서 QMGR 통합 자료 가져와서 정리해줘", context: nil) != nil
+                && !mentionsR2Source("R2 백업 확인 · git-bundles/x") && mentionsR2Source("R2에 있는 자료")
         }()),
         ("self-repair bumps a stale tree and repairs the version identity line", {
             let root = FileManager.default.temporaryDirectory.appendingPathComponent("os1-self-repair-version-" + UUID().uuidString, isDirectory: true)

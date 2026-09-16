@@ -3444,6 +3444,22 @@ private func nativeProvenanceSelfTest() throws {
     let outsideRecord = NativeRecord(id: "codex:later-user-quote", ordinal: 20, role: "user", text: internalText,
         complete: true, turnID: "external-turn")
     let held = Set(session.visibleMessages.map { NativeIngestion.digestOf($0.text) })
+    // After an OS-1 run ends, its narration ("Build succeeds. Now running…",
+    // hook feedback, drafts) is consumed: the cursor moves past every complete
+    // record and a later poll ingests nothing of it — only what the owner adds
+    // afterwards in the native app.
+    let ownRun = [
+        NativeRecord(id: "claude:a", ordinal: 10, role: "assistant", text: "Build succeeds. Now running the required self-tests.", complete: true, turnID: nil),
+        NativeRecord(id: "claude:b", ordinal: 11, role: "user", text: "Stop hook feedback: [node remote-backup-guard.mjs] commit and push before stopping.", complete: true, turnID: nil),
+        NativeRecord(id: "claude:c", ordinal: 12, role: "assistant", text: "모든 단계 끝났습니다.", complete: true, turnID: nil),
+    ]
+    let consumed = NativeIngestion.consumedCursor(ownRun, after: "9")
+    try check(consumed == "12", "consumed cursor did not cover the run's own records: \(consumed ?? "nil")")
+    try check(NativeIngestion.newRecords(ownRun, after: consumed, sentByOS1: [], seen: []).records.isEmpty,
+        "a poll after consumption replayed the run's own narration")
+    let laterOwnerWork = NativeRecord(id: "claude:d", ordinal: 13, role: "user", text: "이어서 스크린샷도 정리해줘", complete: true, turnID: nil)
+    try check(NativeIngestion.newRecords(ownRun + [laterOwnerWork], after: consumed, sentByOS1: [], seen: []).records == [laterOwnerWork],
+        "work the owner added after the run was not ingested")
     try check(NativeIngestion.newRecords([outsideRecord], after: nil, sentByOS1: held, seen: []).records.isEmpty,
         "OS-1-authored control text was re-ingested as the owner's message")
     let ownerQuote = NativeRecord(id: "codex:owner-quote", ordinal: 21, role: "user",
@@ -5082,9 +5098,58 @@ private final class SessionStore: ObservableObject {
                     cancellationRequested: FileManager.default.fileExists(atPath: ExecutionCancellation.url(submissionID: submission.id).path)) {
                 beginReconciliation(conversationID: submission.sessionID)
             }
-            ingestNativeRecords(conversationID: submission.sessionID)
+            // The run OS-1 just dispatched wrote its own tool narration, hook
+            // feedback and drafts into the native session. Those are the
+            // run's work, already represented here by the adopted answer:
+            // consume them, never replay them into the owner's conversation.
+            consumeNativeRecords(conversationID: submission.sessionID)
             runNextQueuedSubmissionIfNeeded()
         }
+    }
+
+    /// Advances every binding's ingestion cursor past the records that exist
+    /// now, without inserting anything. Records the owner adds later in the
+    /// native app still arrive through `ingestNativeRecords`.
+    func consumeNativeRecords(conversationID: UUID) {
+        guard customStorageRoot == nil,
+              let index = sessions.firstIndex(where: { $0.id == conversationID }),
+              let context = sessions[index].taskContext, !context.bindings.isEmpty else { return }
+        let bindings = context.bindings
+        Task.detached(priority: .utility) { [bindings] in
+            var cursors: [(TaskContext.BackendBinding, String?)] = []
+            for binding in bindings {
+                guard let provider = ProviderChoice(rawValue: binding.provider), provider != .auto,
+                      let summary = (try? NativeSessionReader.sessions(for: provider, including: binding.nativeSessionID))?
+                        .first(where: { $0.id.lowercased() == binding.nativeSessionID.lowercased() }),
+                      let transcript = try? NativeSessionReader.transcript(for: summary, forIngestion: true) else { continue }
+                let all = transcript.enumerated().compactMap { item -> NativeRecord? in
+                    guard item.element.role == .user || item.element.role == .assistant else { return nil }
+                    return NativeRecord(id: "\(binding.provider):\(item.element.id)", ordinal: item.element.ordinal ?? item.offset,
+                                        role: item.element.role.rawValue, text: item.element.text, complete: item.element.complete,
+                                        turnID: item.element.turnID)
+                }
+                cursors.append((binding, NativeIngestion.consumedCursor(all, after: binding.lastIngestedCursor)))
+            }
+            await MainActor.run { self.applyConsumedCursors(cursors, conversationID: conversationID) }
+        }
+    }
+
+    private func applyConsumedCursors(_ cursors: [(TaskContext.BackendBinding, String?)], conversationID: UUID) {
+        guard let index = sessions.firstIndex(where: { $0.id == conversationID }) else { return }
+        var changed = false
+        var consumed = 0
+        for (binding, cursor) in cursors {
+            guard let cursor, let bindingIndex = sessions[index].taskContext?.bindings.firstIndex(where: {
+                $0.provider == binding.provider && $0.nativeSessionID == binding.nativeSessionID
+            }), sessions[index].taskContext?.bindings[bindingIndex].lastIngestedCursor != cursor else { continue }
+            consumed += (Int(cursor) ?? 0) - (binding.lastIngestedCursor.flatMap(Int.init) ?? -1)
+            sessions[index].taskContext?.bindings[bindingIndex].lastIngestedCursor = cursor
+            sessions[index].taskContext?.touch()
+            changed = true
+        }
+        guard changed else { return }
+        appendTaskEvent(conversationID: conversationID, kind: "native_consumed", summary: "\(max(consumed, 0)) records of OS-1's own run kept out of the conversation")
+        save()
     }
 
     // MARK: - Shared task context bookkeeping

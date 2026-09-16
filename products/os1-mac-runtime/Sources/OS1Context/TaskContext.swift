@@ -859,6 +859,21 @@ public enum NativeIngestion {
         SourceContextStore.digest(Data(text.trimmingCharacters(in: .whitespacesAndNewlines).utf8))
     }
 
+    /// The cursor to store when an OS-1-dispatched run on this native session
+    /// has just ended: everything complete so far is the run's own work (tool
+    /// narration, hook feedback, intermediate drafts) and is already
+    /// represented by the adopted answer, so none of it is ingested — only
+    /// records the owner adds afterwards, in the native app, are external.
+    public static func consumedCursor(_ all: [NativeRecord], after cursor: String?) -> String? {
+        let start = cursor.flatMap(Int.init) ?? -1
+        var last = start
+        for record in all.sorted(by: { $0.ordinal < $1.ordinal }) where record.ordinal > start {
+            guard record.complete else { break }
+            last = max(last, record.ordinal)
+        }
+        return last >= 0 ? String(last) : cursor
+    }
+
     /// A native user turn that OS-1 itself authored: every OS-1 dispatch
     /// opens with one of these exact sentences (the reconciliation readback,
     /// or the assembled multi-section prompt). Anchored to the start on
