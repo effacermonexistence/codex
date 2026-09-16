@@ -1215,33 +1215,43 @@ private func steeringInteractionSelfTest() async throws {
     try check(store.correctionDeliveryLabel!.contains("전달됨"), "ack not visible")
     store.composer = "추가 정정 두 번째"; store.sendCorrectionToCurrentRun()
     try check(mailbox.inputs(active.submissionID).count == 2 && starts.count == 1 && !store.isStopping, "explicit action restarted task")
-    // Ordinary phrasing must interject immediately whenever the turn can
-    // genuinely accept a live correction — the owner should never have to
-    // learn a fixed set of lead-in phrases to avoid the FIFO queue.
+    // A plain follow-up question is not a correction of the live turn, so it
+    // always queues like Codex's queue, whether or not the turn happens to
+    // be steerable right now. Only an explicit steer action (button, menu,
+    // or unambiguous correction phrasing) reaches the live turn immediately.
     store.composer = "일반 후속 질문"; store.send()
-    try check(store.queuedSubmissions.isEmpty && mailbox.inputs(active.submissionID).count == 3 &&
-        store.selectedSession!.messages.contains { $0.text == "일반 후속 질문" },
-        "available steering did not interject ordinary input")
+    try check(store.queuedSubmissions.count == 1 && store.queuedSubmissions[0].request == "일반 후속 질문" &&
+        mailbox.inputs(active.submissionID).count == 2 &&
+        !store.selectedSession!.messages.contains { $0.text == "일반 후속 질문" },
+        "ordinary follow-up interjected instead of queueing")
     // While the mailbox is genuinely unavailable (e.g. between turns), input
     // still queues, and the queue's own steer action promotes it once the
     // mailbox reopens.
     mailbox.close(active.submissionID)
     store.composer = "대기열에 남을 후속 질문"; store.send()
-    try check(store.queuedSubmissions.map(\.request) == ["대기열에 남을 후속 질문"], "closed mailbox did not fall back to FIFO")
+    try check(store.queuedSubmissions.map(\.request) == ["일반 후속 질문", "대기열에 남을 후속 질문"], "closed mailbox did not fall back to FIFO")
     let queued = store.queuedSubmissions[0]
     try check(!store.canSteerQueued(queued), "closed mailbox falsely reported steerable")
     try mailbox.open(submissionID: active.submissionID, threadID: "fixture-thread", turnID: "fixture-turn")
     try check(store.canSteerQueued(queued), "queue steering unavailable on live turn")
     try check(store.beginQueueEdit(queued.id) && !store.canSteerQueued(queued), "editing input may be delivered")
     store.endQueueEdit(queued.id)
+    let secondQueued = store.queuedSubmissions[1]
     store.steerQueued(queued.id); store.steerQueued(queued.id)
+    store.steerQueued(secondQueued.id)
     try check(store.queuedSubmissions.isEmpty && mailbox.inputs(active.submissionID).count == 4 && starts.count == 1,
         "queue steering duplicated delivery or started another turn")
     try check(store.selectedSession!.messages.filter { $0.id == queued.userMessageID }.count == 1,
         "queue-to-steer duplicated user bubble")
     try check(ExecutionSteering.isDirectCorrection(correction.decomposedStringWithCanonicalMapping), "NFD correction not recognized")
+    // A sixth ordinary follow-up still queues rather than interjecting; the
+    // owner explicitly steers it in to reach the same total of five live
+    // corrections the rest of this test's persistence checks expect.
     store.composer = "다섯 번째 후속 질문"; store.send()
-    try check(mailbox.inputs(active.submissionID).count == 5, "available steering did not interject fifth input")
+    try check(store.queuedSubmissions.count == 1 && mailbox.inputs(active.submissionID).count == 4,
+        "fifth ordinary follow-up interjected instead of queueing")
+    store.steerQueued(store.queuedSubmissions[0].id)
+    try check(mailbox.inputs(active.submissionID).count == 5, "explicit queue steering did not deliver fifth input")
     store.flushPendingState()
     let disk = try JSONDecoder().decode(SessionEnvelope.self, from: Data(contentsOf: root.appendingPathComponent("sessions.json")))
     try check(disk.inFlight?.first?.liveCorrections?.count == 5, "on-disk amendments absent: \(String(describing: store.alertMessage))")
@@ -3434,6 +3444,22 @@ private func nativeProvenanceSelfTest() throws {
     let outsideRecord = NativeRecord(id: "codex:later-user-quote", ordinal: 20, role: "user", text: internalText,
         complete: true, turnID: "external-turn")
     let held = Set(session.visibleMessages.map { NativeIngestion.digestOf($0.text) })
+    // After an OS-1 run ends, its narration ("Build succeeds. Now running…",
+    // hook feedback, drafts) is consumed: the cursor moves past every complete
+    // record and a later poll ingests nothing of it — only what the owner adds
+    // afterwards in the native app.
+    let ownRun = [
+        NativeRecord(id: "claude:a", ordinal: 10, role: "assistant", text: "Build succeeds. Now running the required self-tests.", complete: true, turnID: nil),
+        NativeRecord(id: "claude:b", ordinal: 11, role: "user", text: "Stop hook feedback: [node remote-backup-guard.mjs] commit and push before stopping.", complete: true, turnID: nil),
+        NativeRecord(id: "claude:c", ordinal: 12, role: "assistant", text: "모든 단계 끝났습니다.", complete: true, turnID: nil),
+    ]
+    let consumed = NativeIngestion.consumedCursor(ownRun, after: "9")
+    try check(consumed == "12", "consumed cursor did not cover the run's own records: \(consumed ?? "nil")")
+    try check(NativeIngestion.newRecords(ownRun, after: consumed, sentByOS1: [], seen: []).records.isEmpty,
+        "a poll after consumption replayed the run's own narration")
+    let laterOwnerWork = NativeRecord(id: "claude:d", ordinal: 13, role: "user", text: "이어서 스크린샷도 정리해줘", complete: true, turnID: nil)
+    try check(NativeIngestion.newRecords(ownRun + [laterOwnerWork], after: consumed, sentByOS1: [], seen: []).records == [laterOwnerWork],
+        "work the owner added after the run was not ingested")
     try check(NativeIngestion.newRecords([outsideRecord], after: nil, sentByOS1: held, seen: []).records.isEmpty,
         "OS-1-authored control text was re-ingested as the owner's message")
     let ownerQuote = NativeRecord(id: "codex:owner-quote", ordinal: 21, role: "user",
@@ -3970,6 +3996,11 @@ private final class SessionStore: ObservableObject {
 
     private var orderedSessions: [ConversationSession] {
         sessions.sorted {
+            // A session actively running floats above pinned ones: the owner
+            // wants to see the in-flight task without hunting past pins.
+            let lhsRunning = isSessionRunning($0.id)
+            let rhsRunning = isSessionRunning($1.id)
+            if lhsRunning != rhsRunning { return lhsRunning }
             if ($0.pinnedAt != nil) != ($1.pinnedAt != nil) { return $0.pinnedAt != nil }
             if let first = $0.pinnedAt, let second = $1.pinnedAt {
                 if $0.sidebarPosition != $1.sidebarPosition { return ($0.sidebarPosition ?? Int.max) < ($1.sidebarPosition ?? Int.max) }
@@ -4453,12 +4484,14 @@ private final class SessionStore: ObservableObject {
         }
         let request = composedRequest(from: composer)
         guard !request.isEmpty, let index = selectedIndex else { return }
-        // Steering must not require the owner to phrase a plain follow-up as
-        // one of a fixed set of "actually,"/"잠깐," lead-ins. Whenever the
-        // active turn can genuinely accept a live correction, any non-
-        // replacement input interjects immediately instead of silently
-        // piling up in the queue.
-        if !ExecutionSteering.isTaskReplacement(request), canSteerSelectedRun {
+        // Ordinary Send always queues while a turn is running, like Codex's
+        // queue: the owner steers a live turn only through an explicit
+        // action, either the dedicated steer control or phrasing that is
+        // unambiguously a correction of the live turn (e.g. "아니 그게
+        // 아니라..."). A plain follow-up question never interjects on a
+        // guess; it waits in the queue until the turn ends or the owner
+        // steers it in explicitly.
+        if ExecutionSteering.isDirectCorrection(request), canSteerSelectedRun {
             sendCorrectionToCurrentRun()
             return
         }
@@ -4535,9 +4568,12 @@ private final class SessionStore: ObservableObject {
 
     var primaryAction: ComposerPrimaryAction {
         // Attachments alone are a sendable request (an image with no words).
+        // Ordinary follow-up text always queues while running; the button
+        // only switches to Steer when the composer text itself reads as an
+        // explicit correction of the live turn, matching send()'s own check.
         let normal = ComposerPrimaryAction.resolve(draft: composedRequest(from: composer), running: isRunning, stopping: isStopping, voice: voiceDictation.phase)
         return normal == .queue && canSteerSelectedRun &&
-            !ExecutionSteering.isTaskReplacement(composer) ? .steer : normal
+            ExecutionSteering.isDirectCorrection(composer) ? .steer : normal
     }
 
     private var steeringMailbox: ExecutionSteering {
@@ -5062,9 +5098,58 @@ private final class SessionStore: ObservableObject {
                     cancellationRequested: FileManager.default.fileExists(atPath: ExecutionCancellation.url(submissionID: submission.id).path)) {
                 beginReconciliation(conversationID: submission.sessionID)
             }
-            ingestNativeRecords(conversationID: submission.sessionID)
+            // The run OS-1 just dispatched wrote its own tool narration, hook
+            // feedback and drafts into the native session. Those are the
+            // run's work, already represented here by the adopted answer:
+            // consume them, never replay them into the owner's conversation.
+            consumeNativeRecords(conversationID: submission.sessionID)
             runNextQueuedSubmissionIfNeeded()
         }
+    }
+
+    /// Advances every binding's ingestion cursor past the records that exist
+    /// now, without inserting anything. Records the owner adds later in the
+    /// native app still arrive through `ingestNativeRecords`.
+    func consumeNativeRecords(conversationID: UUID) {
+        guard customStorageRoot == nil,
+              let index = sessions.firstIndex(where: { $0.id == conversationID }),
+              let context = sessions[index].taskContext, !context.bindings.isEmpty else { return }
+        let bindings = context.bindings
+        Task.detached(priority: .utility) { [bindings] in
+            var cursors: [(TaskContext.BackendBinding, String?)] = []
+            for binding in bindings {
+                guard let provider = ProviderChoice(rawValue: binding.provider), provider != .auto,
+                      let summary = (try? NativeSessionReader.sessions(for: provider, including: binding.nativeSessionID))?
+                        .first(where: { $0.id.lowercased() == binding.nativeSessionID.lowercased() }),
+                      let transcript = try? NativeSessionReader.transcript(for: summary, forIngestion: true) else { continue }
+                let all = transcript.enumerated().compactMap { item -> NativeRecord? in
+                    guard item.element.role == .user || item.element.role == .assistant else { return nil }
+                    return NativeRecord(id: "\(binding.provider):\(item.element.id)", ordinal: item.element.ordinal ?? item.offset,
+                                        role: item.element.role.rawValue, text: item.element.text, complete: item.element.complete,
+                                        turnID: item.element.turnID)
+                }
+                cursors.append((binding, NativeIngestion.consumedCursor(all, after: binding.lastIngestedCursor)))
+            }
+            await MainActor.run { self.applyConsumedCursors(cursors, conversationID: conversationID) }
+        }
+    }
+
+    private func applyConsumedCursors(_ cursors: [(TaskContext.BackendBinding, String?)], conversationID: UUID) {
+        guard let index = sessions.firstIndex(where: { $0.id == conversationID }) else { return }
+        var changed = false
+        var consumed = 0
+        for (binding, cursor) in cursors {
+            guard let cursor, let bindingIndex = sessions[index].taskContext?.bindings.firstIndex(where: {
+                $0.provider == binding.provider && $0.nativeSessionID == binding.nativeSessionID
+            }), sessions[index].taskContext?.bindings[bindingIndex].lastIngestedCursor != cursor else { continue }
+            consumed += (Int(cursor) ?? 0) - (binding.lastIngestedCursor.flatMap(Int.init) ?? -1)
+            sessions[index].taskContext?.bindings[bindingIndex].lastIngestedCursor = cursor
+            sessions[index].taskContext?.touch()
+            changed = true
+        }
+        guard changed else { return }
+        appendTaskEvent(conversationID: conversationID, kind: "native_consumed", summary: "\(max(consumed, 0)) records of OS-1's own run kept out of the conversation")
+        save()
     }
 
     // MARK: - Shared task context bookkeeping
