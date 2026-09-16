@@ -9170,7 +9170,10 @@ private final class ComposerKeyMonitor: ObservableObject {
 /// into a pasted `file://` URL or bare path. The files are handed to the
 /// shared attachment state instead, so dropping into the text field behaves
 /// the same as dropping anywhere else in the OS-1 window.
-private final class ComposerDropTextView: NSTextView {
+// Internal, not private: a private NSObject subclass gets a per-file hash in
+// its Objective-C class name (_TtC6OS1AppP33_<hash>…), and the release
+// payload scanner rightly flags such 80-character high-entropy tokens.
+final class ComposerDropTextView: NSTextView {
     var onFocusChange: ((Bool) -> Void)?
 
     // Key handling (Return sends) is gated on the composer being focused.
@@ -9223,7 +9226,7 @@ private final class ComposerDropTextView: NSTextView {
 /// Native AppKit bridge retained for the composer so it keeps normal IME,
 /// focus, undo, and accessibility while preventing raw dropped paths from
 /// being inserted into the owner's draft.
-private struct NativeComposerEditor: NSViewRepresentable {
+struct NativeComposerEditor: NSViewRepresentable {
     @Binding var text: String
     let onFocusChange: (Bool) -> Void
     var onSubmit: (() -> Void)? = nil
