@@ -68,8 +68,9 @@ func runSelfUpdateFixtures() throws {
     // Contract wording.
     let card = SelfUpdate.capabilityCard(root: checkoutA, installedVersion: "OS-1 Runtime 0.9.59 (self-update-build125)", installedBuild: 125,
         sourceCommit: "0123456789abcdef", scope: "readOnly", os1Executable: "/Users/x/.local/bin/os1")
-    check(card.contains("'/Users/x/.local/bin/os1' self-update stage --source '\(checkoutA)'") && card.contains("greater than 125")
-          && card.contains("Do not run scripts/install-local-verified.mjs") && card.contains("0123456789ab") && card.contains("Task scope: readOnly")
-          && card.contains("never say OS-1 can only be partially self-repaired"), "contract carries the staging command, build floor, prohibitions and scope")
+    check(card.contains("OS-1 itself bumps the build past 125") && card.contains("do NOT run scripts/install-local-verified.mjs")
+          && card.contains("do NOT run `self-update stage`") && card.contains("commits the change on the current branch, pushes it")
+          && card.contains("0123456789ab") && card.contains("Task scope: readOnly")
+          && card.contains("never say OS-1 can only be partially self-repaired"), "contract keeps the mechanical tail with OS-1, forbids manual installs, names build floor and scope")
     print("Self-update: \(count) checks passed; intent/outcome custody, apply decision matrix, contract wording")
 }

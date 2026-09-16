@@ -667,7 +667,22 @@ struct ProviderExecution {
     let sessionID: String
     let nativeRecord: NativeRecordEvidence
     var driftApplication: DriftApplication? = nil
+
+    /// The same execution with OS-1's own completion note appended to the
+    /// answer, before the artifact is hashed and delivered.
+    func appendingOutput(_ note: String) -> ProviderExecution {
+        let a = artifact
+        let artifact = Artifact(provider: a.provider, action: a.action, permissionProfile: a.permissionProfile,
+            model: a.model, effort: a.effort, executorContractVersion: a.executorContractVersion,
+            executorContractSHA256: a.executorContractSHA256, exitCode: a.exitCode,
+            output: a.output.trimmingCharacters(in: .whitespacesAndNewlines) + "\n\n" + note, stderr: a.stderr,
+            durationMS: a.durationMS, workspaceBeforeHash: a.workspaceBeforeHash, workspaceAfterHash: a.workspaceAfterHash,
+            nativeRecord: a.nativeRecord)
+        return ProviderExecution(artifact: artifact, sessionID: sessionID, nativeRecord: nativeRecord, driftApplication: driftApplication)
+    }
 }
+
+let selfRepairFailurePrefix = selfRepairFailurePrefixText
 
 struct RejectedProviderExecution: Error, CustomStringConvertible {
     let execution: ProviderExecution
@@ -6154,9 +6169,11 @@ func runTask(
     // edits in the same checkout. Read-only work never waits.
     var os1SourceLease: ExclusiveHookLease?
     defer { withExtendedLifetime(os1SourceLease) {} }
+    var os1StartHead: String?
     if resolvedScope == .workspaceWrite,
        let os1Root = LocalProjectWorkspace.root(containing: canonicalWorkspace, projectID: "os1-clodex") {
         os1SourceLease = try acquireOS1SourceWriteLease(root: os1Root)
+        os1StartHead = gitHead(os1Root)
     }
     let pinnedEvidence = try (requireReadOnly || !requestsFreshSource(prompt)) ? attachedSource.map { try loadSource($0) } : nil
     let discussesPinnedProvenance = pinnedEvidence != nil && RegisteredProjectSource.discussesAttachedProvenance(prompt)
@@ -6551,7 +6568,7 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
                     usage: attemptUsage, startedAt: attemptStartedAt, source: sourceContext, monitorTaskID: executionID, monitorScope: monitorScope)
             }
         }
-        let execution: ProviderExecution
+        var execution: ProviderExecution
         var sourceRecoveryProvider: String?
         var terminalPermissionFailure: OS1Error?
         if ticket.provider == "local", r2Evidence != nil, !reuseSource {
@@ -6765,6 +6782,31 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
                 dispatchStage: dispatchStage, source: sourceContext, permissionProfile: ticket.permissionProfile,
                 publicProgress: execution.artifact.output)
         }
+        // OS-1 finishes its own repair. A backend's job ends when the source
+        // is changed and builds; the mechanical tail (version bump, signed
+        // release, self-tests, staging, commit, push) is OS-1's own, so a
+        // self-repair task can never end with the fix living only in the
+        // working tree — which is exactly how the rail fix of 2026-09-16 was
+        // "done" twice and never reached the owner's screen.
+        if attemptFailure == nil, dispatchStage == .dispatched, execution.artifact.exitCode == 0,
+           ticket.permissionProfile == "workspace_write",
+           let os1Root = LocalProjectWorkspace.root(containing: canonicalWorkspace, projectID: "os1-clodex") {
+            switch completeOS1SelfRepair(root: os1Root, objective: prompt, startedAt: attemptStartedAt, startHead: os1StartHead) {
+            case .notApplicable:
+                break
+            case .staged(_, let note):
+                execution = execution.appendingOutput(note)
+            case .failed(let diagnostic):
+                // Terminal: a tree that does not build or fails a self-test
+                // is not something another model should be rolled for; the
+                // owner gets the exact diagnostic, not a retry or a generic
+                // verdict-mismatch line.
+                let note = selfRepairFailurePrefix + diagnostic
+                execution = execution.appendingOutput(note)
+                attemptFailure = note
+                terminalPermissionFailure = OS1Error.message(note)
+            }
+        }
         let artifact = execution.artifact
         let artifactData = try JSONEncoder().encode(artifact)
         let resultHash = sha256Hex(artifactData)
@@ -6872,6 +6914,9 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
                 model: model, effort: effort, outcome: completionFailureOutcome(attemptFailure),
                 usage: attemptUsage, startedAt: attemptStartedAt, source: sourceContext, monitorTaskID: executionID, monitorScope: monitorScope)
             attemptRecorded = true
+            // A self-repair that did not pass staging is reported with its
+            // exact diagnostic, never as a generic verdict mismatch.
+            if let failure = attemptFailure, failure.hasPrefix(selfRepairFailurePrefix) { throw OS1Error.message(failure) }
             throw OS1Error.message("서버의 완료 판정과 실제 실행 증거가 일치하지 않아 결과를 채택하지 않았습니다. 요청과 원본은 보존했습니다.")
         }
         let revasDisposition = route.status == "complete" && locallyAdoptable ? "adopted" : (route.ticket == nil ? "rejected" : "retry")
@@ -8825,6 +8870,35 @@ func selfTest() throws {
             return backend.state == .disabled && stale.state == .disabled && health.anyUsable
                 && health.repairSteps.isEmpty && !flags.codex && flags.claude
         }()),
+        ("self-repair bumps a stale tree and repairs the version identity line", {
+            let root = FileManager.default.temporaryDirectory.appendingPathComponent("os1-self-repair-version-" + UUID().uuidString, isDirectory: true)
+            let runtime = root.appendingPathComponent("products/os1-mac-runtime", isDirectory: true)
+            defer { try? FileManager.default.removeItem(at: root) }
+            do {
+                try FileManager.default.createDirectory(at: runtime.appendingPathComponent("Resources"), withIntermediateDirectories: true)
+                try FileManager.default.createDirectory(at: runtime.appendingPathComponent("Sources/OS1"), withIntermediateDirectories: true)
+                let plist = runtime.appendingPathComponent("Resources/Info.plist")
+                try PropertyListSerialization.data(fromPropertyList: ["CFBundleVersion": "142", "CFBundleShortVersionString": "0.9.76"], format: .xml, options: 0).write(to: plist)
+                let commands = runtime.appendingPathComponent("Sources/OS1/SelfUpdateCommands.swift")
+                try "import Foundation\nlet os1RuntimeVersionString = \"OS-1 Runtime 0.9.76 (receipt-schema-build142)\"\n".write(to: commands, atomically: true, encoding: .utf8)
+                // Stale tree (same build as installed): bump to installed+1 and rewrite the identity line.
+                let bumped = try ensureSelfUpdateVersion(runtime: runtime.path, installed: 142, installedVersion: "0.9.76")
+                let rewritten = try String(contentsOf: commands, encoding: .utf8)
+                guard bumped.build == 143, bumped.version == "0.9.77",
+                      (try? PropertyListSerialization.propertyList(from: Data(contentsOf: plist), format: nil) as? [String: String])?["CFBundleVersion"] == "143",
+                      rewritten.contains("\"OS-1 Runtime 0.9.77 (self-repair-build143)\""), rewritten.hasPrefix("import Foundation") else { return false }
+                // Consistent tree: untouched.
+                let again = try ensureSelfUpdateVersion(runtime: runtime.path, installed: 142, installedVersion: "0.9.76")
+                guard again.build == 143, try String(contentsOf: commands, encoding: .utf8) == rewritten else { return false }
+                // Backend already moved the plist past the installed build but left the identity line stale: keep its numbers, repair the line.
+                try PropertyListSerialization.data(fromPropertyList: ["CFBundleVersion": "150", "CFBundleShortVersionString": "0.9.80"], format: .xml, options: 0).write(to: plist)
+                let repaired = try ensureSelfUpdateVersion(runtime: runtime.path, installed: 142, installedVersion: "0.9.76")
+                guard repaired.build == 150, repaired.version == "0.9.80",
+                      try String(contentsOf: commands, encoding: .utf8).contains("(self-repair-build150)") else { return false }
+                // The secret scan refuses a credential-looking change.
+                return selfRepairSecretHit(root: "/nonexistent-os1-root", git: "/usr/bin/true") == nil
+            } catch { return false }
+        }()),
         ("self-update applies only a newer, fresh, idle-time intent", {
             let now = Date()
             func intent(build: Int, stagedAt: Date = now, state: String = "pending", attempts: Int = 0, lastAttempt: Date? = nil) -> SelfUpdate.Intent {
@@ -8841,12 +8915,13 @@ func selfTest() throws {
                 SelfUpdate.decision(intent: intent(build: 126, state: "applying", lastAttempt: now.addingTimeInterval(-60)), installedBuild: 125, busy: false, now: now) == .applying &&
                 SelfUpdate.decision(intent: intent(build: 126, state: "applying", lastAttempt: now.addingTimeInterval(-20 * 60)), installedBuild: 125, busy: false, now: now) == .apply
         }()),
-        ("self-repair contract names the mandatory staging step and forbids manual installs", {
+        ("self-repair contract keeps the mechanical tail with OS-1 and forbids manual installs", {
             let card = SelfUpdate.capabilityCard(root: "/tmp/os1", installedVersion: os1RuntimeVersionString, installedBuild: 125,
                 sourceCommit: "abcdef1234567890", scope: "workspaceWrite", os1Executable: "/tmp/os1-bin")
-            return card.contains("self-update stage --source '/tmp/os1'") && card.contains("Do not run scripts/install-local-verified.mjs")
-                && card.contains("CFBundleVersion must be greater than 125") && card.contains("never say OS-1 can only be partially self-repaired")
-                && card.contains("abcdef123456")
+            return card.contains("Do NOT bump versions, do NOT run `self-update stage`, do NOT run scripts/install-local-verified.mjs")
+                && card.contains("OS-1 itself bumps the build past 125") && card.contains("commits the change on the current branch, pushes it")
+                && card.contains("makes this task FAIL with the diagnostic") && card.contains("never say OS-1 can only be partially self-repaired")
+                && card.contains("abcdef123456") && !card.contains("you MUST finish with these steps")
         }()),
         ("pasted OS-1 login notices do not open a connection flow",
          connectionControlTargets(OS1SelfOutput.stripQuoted("야 너 셀프로 OS1 고칠 수 있냐?\nCLAUDE\n\n결론부터 말하면 부분적으로 가능해요.\n실행 기록 확인됨 · 세부 정보 접기\nClaude 연결됨 — effacermonexistence@gmail.com\n야 100% 되게 해라니까 고쳐")) == nil
@@ -8904,6 +8979,7 @@ struct OS1Main {
             let arguments = Array(CommandLine.arguments.dropFirst())
             guard let command = arguments.first else { usage(); return }
             if try await selfUpdateCommand(arguments) { return }
+            if try await selfRepairCommand(arguments) { return }
             if try await fleetCommand(arguments) { return }
             switch command {
             case "version", "--version", "-V": print(os1RuntimeVersionString)

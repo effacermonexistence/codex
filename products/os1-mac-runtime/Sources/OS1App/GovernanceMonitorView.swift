@@ -122,7 +122,7 @@ struct GovernanceMonitorView: View {
     private func card(_ title: String, _ value: String, _ note: String, color: Color = .white) -> some View {
         VStack(alignment: .leading, spacing: 9) {
             Text(title).font(.system(size: 11)).foregroundStyle(muted)
-            Text(value).font(.system(size: 26, weight: .semibold, design: .rounded)).monospacedDigit().foregroundStyle(color)
+            Text(value).font(.system(size: 26, weight: .semibold)).monospacedDigit().foregroundStyle(color)
             Text(note).font(.system(size: 10)).foregroundStyle(muted).lineLimit(2).frame(minHeight: 25, alignment: .top)
         }.frame(maxWidth: .infinity, alignment: .leading).padding(15)
             .background(Color.white.opacity(0.045), in: RoundedRectangle(cornerRadius: 12))

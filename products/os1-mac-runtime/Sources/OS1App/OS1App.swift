@@ -5717,8 +5717,14 @@ private final class SessionStore: ObservableObject {
     /// verdict contract): one readback per contract generation, and the
     /// OS1_EFFECTS verdict decides whether the objective resumes.
     private func resumeStaleReconciliations() {
+        // One readback at a time, and only while nothing else runs. After
+        // build143 installed, every held failure was re-examined in the same
+        // tick: seven Claude processes at once, all hitting an expired
+        // session together. Paced, the first one repairs the backend and the
+        // rest follow on a live session.
+        guard activeRuns.isEmpty else { return }
         for session in sessions {
-            guard activeRuns.count < Self.maximumConcurrentSessions, !isSessionRunning(session.id),
+            guard !isSessionRunning(session.id),
                   session.lastBackendFailure?.requiresReadback == true,
                   let failed = session.lastFailure, failed.recoveryParentID == nil,
                   failed.recoveryAttempted != true || failed.verdictReconciled != true
@@ -5727,6 +5733,7 @@ private final class SessionStore: ObservableObject {
             appendTaskEvent(conversationID: session.id, kind: "stale_reconcile",
                 summary: "Held failure predates the verdict contract; running its read-only readback now")
             beginReconciliation(conversationID: session.id)
+            return
         }
     }
     func flushPendingState() { draftSaveTask?.cancel(); save() }
@@ -6270,14 +6277,15 @@ private func renderQueuePreview(to output: URL) throws {
 @MainActor
 private func renderComposerPreview(to output: URL) throws {
     try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
-    let fixtures: [(String, String, Bool, Bool, VoiceDictationPhase)] = [
-        ("idle-empty", "", false, false, .idle), ("idle-draft", "요청을 보내 주세요", false, false, .idle),
-        ("running-empty", "", true, false, .idle), ("running-draft", "이어서 결과를 설명해 줘", true, false, .idle),
-        ("stopping-empty", "", true, true, .idle), ("stopping-draft", "이 입력은 보존됩니다", true, true, .idle),
-        ("dictation-finalizing", "음성 입력 마무리 중", true, false, .finalizing)
+    let fixtures: [(String, String, Bool, Bool, VoiceDictationPhase, Bool)] = [
+        ("idle-empty", "", false, false, .idle, false), ("idle-draft", "요청을 보내 주세요", false, false, .idle, false),
+        ("idle-attachments", "첨부 미리보기를 확인해 줘", false, false, .idle, true),
+        ("running-empty", "", true, false, .idle, false), ("running-draft", "이어서 결과를 설명해 줘", true, false, .idle, false),
+        ("stopping-empty", "", true, true, .idle, false), ("stopping-draft", "이 입력은 보존됩니다", true, true, .idle, false),
+        ("dictation-finalizing", "음성 입력 마무리 중", true, false, .finalizing, false)
     ]
     var report: [[String: Any]] = []
-    for (name, draft, running, stopping, voice) in fixtures {
+    for (name, draft, running, stopping, voice, includesAttachments) in fixtures {
         let action = ComposerPrimaryAction.resolve(draft: draft, running: running, stopping: stopping, voice: voice)
         // Paint the production composer, not an approximation of its old layout.
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("os1-composer-preview-" + UUID().uuidString)
@@ -6286,6 +6294,23 @@ private func renderComposerPreview(to output: URL) throws {
             throw RunnerError.message("Preview cannot execute a backend")
         }, nativeSessionOpener: { _ in false })
         store.composer = draft
+        if includesAttachments {
+            let image = root.appendingPathComponent("미리보기 이미지.png")
+            let document = root.appendingPathComponent("검토 메모.txt")
+            let fixtureImage = NSImage(size: NSSize(width: 96, height: 72))
+            fixtureImage.lockFocus()
+            NSColor(calibratedRed: 0.93, green: 0.70, blue: 0.80, alpha: 1).setFill()
+            NSBezierPath(roundedRect: NSRect(x: 0, y: 0, width: 96, height: 72), xRadius: 14, yRadius: 14).fill()
+            NSColor.black.withAlphaComponent(0.65).setFill()
+            NSBezierPath(ovalIn: NSRect(x: 28, y: 16, width: 40, height: 40)).fill()
+            fixtureImage.unlockFocus()
+            guard let tiff = fixtureImage.tiffRepresentation,
+                  let bitmap = NSBitmapImageRep(data: tiff),
+                  let png = bitmap.representation(using: .png, properties: [:]) else { throw SourceContextError.invalid }
+            try png.write(to: image, options: .atomic)
+            try "OS-1 attachment preview fixture".write(to: document, atomically: true, encoding: .utf8)
+            store.addAttachments([image, document])
+        }
         if running {
             let id = store.selectedSessionID!
             store.activeRuns[id] = .init(submissionID: UUID(), started: Date().addingTimeInterval(-16),
@@ -6294,11 +6319,12 @@ private func renderComposerPreview(to output: URL) throws {
         }
         // The finalizing microphone requires a live audio session; its primary
         // button resolution is tested separately, never open a microphone here.
+        let height: CGFloat = includesAttachments ? 330 : 250
         let content = ComposerView(store: store, session: store.selectedSession!)
-            .frame(width: 660, height: 250).background(Theme.background).environment(\.colorScheme, .dark)
+            .frame(width: 660, height: height).background(Theme.background).environment(\.colorScheme, .dark)
         let view = NSHostingView(rootView: content)
-        view.frame = NSRect(x: 0, y: 0, width: 660, height: 250)
-        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+        view.frame = NSRect(x: 0, y: 0, width: 660, height: height)
+        RunLoop.main.run(until: Date().addingTimeInterval(includesAttachments ? 0.25 : 0.1))
         view.layoutSubtreeIfNeeded(); view.displayIfNeeded()
         guard let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { throw SourceContextError.invalid }
         view.cacheDisplay(in: view.bounds, to: bitmap)
@@ -6306,11 +6332,12 @@ private func renderComposerPreview(to output: URL) throws {
         try data.write(to: output.appendingPathComponent(name + ".png"), options: .atomic)
         report.append(["fixture": name, "action": action.rawValue, "label": action.label, "enabled": action.enabled,
                        "primaryControlCount": 1, "controlSize": 32,
+                       "attachmentPreview": includesAttachments,
                        "audioPhasePainted": voice == .idle ? "idle" : "not activated; action resolver tested only"])
     }
     try JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys])
         .write(to: output.appendingPathComponent("states.json"), options: .atomic)
-    print("Composer previews: 7 state fixtures; shared primary component; model calls 0")
+    print("Composer previews: 8 state fixtures including inline attachments; shared primary component; model calls 0")
 }
 
 @MainActor
@@ -6352,6 +6379,78 @@ private func codexShellSelfTest() throws {
     let decoded = try appended.split(separator: "\n").suffix(2).map { try JSONDecoder().decode(String.self, from: Data($0.utf8)) }
     try check(decoded == paths, "file-reference quoting round-trips Unicode, quote and newline")
     try check(appendingFileReferences([], to: "그대로") == "그대로", "cancel/no files leaves draft unchanged")
+    let visibleAttachmentPaths = ["/tmp/os1-inline-preview.png", "/tmp/os1-notes.pdf", "/tmp/os1-plan.txt"]
+    let attachedMessage = ChatMessage(role: .user, text: appendingFileReferences(visibleAttachmentPaths, to: "첨부를 확인해 줘"))
+    let attachmentDocument = timelineAttributedDocument(
+        messages: [attachedMessage], queuedSubmissions: [], isRunning: false, workspace: "/tmp",
+        sourceStore: SourceContextStore(root: root)
+    )
+    let attachmentText = attachmentDocument.string
+    try check(!attachmentText.contains(PromptAttachments.marker)
+        && !attachmentText.contains("/tmp/os1-inline-preview.png")
+        && !attachmentText.contains("/tmp/os1-notes.pdf"),
+        "attachment transport paths never leak into the visible transcript")
+    try check(attachmentText.contains("PNG · os1-inline-preview.png")
+        && attachmentText.contains("PDF · os1-notes.pdf")
+        && attachmentText.contains("TXT · os1-plan.txt"),
+        "image and document attachments render labeled visual cards")
+    store.addAttachments(visibleAttachmentPaths.map(URL.init(fileURLWithPath:)))
+    try check(PromptAttachments.paths(in: store.composedRequest(from: "")) == visibleAttachmentPaths,
+        "shared drop path becomes attachments instead of composer text")
+    // The composer's text view must not be a drag destination for files:
+    // AppKit would insert the path as text. Files fall through to the
+    // composer's own drop target and become attachments.
+    // The registration must survive the real code path — the editor hosted
+    // by SwiftUI in a visible window, laid out and drawn — because AppKit
+    // re-registers a text view's drag types lazily and a one-shot call
+    // before hosting proved worthless in build143.
+    // The trigger is a view joining a window that is ALREADY on screen —
+    // what SwiftUI does with a representable — so build the window first
+    // (off-screen, invisible), then add the production editor and let the
+    // run loop turn. This sequence takes a plain NSTextView from 1
+    // registered type to 20, file types included; the editor must stay at 1.
+    // Without a shared NSApplication the window never gets a display pass
+    // and the lazy registration never fires, which is why an earlier
+    // version of this check could not catch the bug it was written for.
+    _ = NSApplication.shared
+    let (composerScroll, hostedTextView) = NativeComposerEditor.makeConfiguredEditor(text: "첨부 확인")
+    composerScroll.frame = NSRect(x: 0, y: 0, width: 400, height: 80)
+    let composerWindow = NSWindow(contentRect: NSRect(x: -20_000, y: -20_000, width: 400, height: 80), styleMask: [], backing: .buffered, defer: false)
+    composerWindow.alphaValue = 0
+    composerWindow.orderFront(nil)
+    RunLoop.main.run(until: Date().addingTimeInterval(0.2))
+    composerWindow.contentView?.addSubview(composerScroll)
+    RunLoop.main.run(until: Date().addingTimeInterval(0.5))
+    composerWindow.contentView?.display(); hostedTextView.display()
+    composerWindow.makeFirstResponder(hostedTextView)
+    RunLoop.main.run(until: Date().addingTimeInterval(0.2))
+    // Sanity: the same sequence must move an unguarded NSTextView off [.string],
+    // or this check proves nothing.
+    let unguarded = NSTextView(frame: NSRect(x: 0, y: 0, width: 280, height: 60))
+    unguarded.unregisterDraggedTypes(); unguarded.registerForDraggedTypes([.string])
+    unguarded.isRichText = false
+    let unguardedScroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 280, height: 60)); unguardedScroll.documentView = unguarded
+    composerWindow.contentView?.addSubview(unguardedScroll)
+    RunLoop.main.run(until: Date().addingTimeInterval(0.5))
+    composerWindow.contentView?.display(); unguarded.display()
+    RunLoop.main.run(until: Date().addingTimeInterval(0.2))
+    try check(unguarded.registeredDraggedTypes.count > 1,
+        "the drag re-registration trigger did not fire in this process (unguarded view kept \(unguarded.registeredDraggedTypes.count) type); the composer check below proves nothing")
+    // Now the composer's own class through the identical sequence that just
+    // flipped the unguarded view: it must hold at [.string].
+    let bare = ComposerDropTextView(frame: NSRect(x: 0, y: 0, width: 280, height: 60))
+    bare.acceptTextDragsOnly()
+    bare.isRichText = false
+    let bareScroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 280, height: 60)); bareScroll.documentView = bare
+    composerWindow.contentView?.addSubview(bareScroll)
+    RunLoop.main.run(until: Date().addingTimeInterval(0.5))
+    composerWindow.contentView?.display(); bare.display()
+    RunLoop.main.run(until: Date().addingTimeInterval(0.2))
+    try check(bare.registeredDraggedTypes == [.string],
+        "composer text view class re-registered file drags on the trigger that flips a plain NSTextView: \(bare.registeredDraggedTypes.map(\.rawValue))")
+    try check(hostedTextView.registeredDraggedTypes == [.string],
+        "composer text view accepts file drags after joining a visible window: \(hostedTextView.registeredDraggedTypes.map(\.rawValue))")
+    composerWindow.orderOut(nil)
     try check(Theme.conversationWidth == 760 && Theme.sidebarWidth == 256, "shared layout dimensions")
     print("Codex-oriented shell: \(checks) checks passed; model calls 0; live state writes 0")
 }
@@ -7235,6 +7334,28 @@ private struct RailSelectionBackground: View {
     }
 }
 
+/// The OS-1 tile is optically centered against the native Codex and Claude
+/// cards. Its visual offset intentionally does not participate in `VStack`
+/// layout, so those two backend cards retain their measured positions.
+private enum ProviderRailLayout {
+    static let itemWidth: CGFloat = 58
+    static let homeHeight: CGFloat = 68
+    static let backendHeight: CGFloat = 80
+    static let stackSpacing: CGFloat = 22
+    static let railTopPadding: CGFloat = 38
+    // Measured on the owner's screenshot (2x): OS-1 bottom → Codex top was
+    // 59 px while Codex bottom → Claude top was 43 px — an 8 pt step, because
+    // the home button carried 8 pt of bottom padding on top of the stack
+    // spacing. That padding now sits ABOVE the button: Codex and Claude keep
+    // their exact coordinates and OS-1 moves down by 8 pt, so every gap on
+    // the rail is one stack spacing.
+    static let homeTopPadding: CGFloat = 8
+    /// Painted top of each tile, in rail coordinates.
+    static var homeTop: CGFloat { railTopPadding + homeTopPadding }
+    static var codexTop: CGFloat { homeTop + homeHeight + stackSpacing }
+    static var claudeTop: CGFloat { codexTop + backendHeight + stackSpacing }
+}
+
 private struct ProviderRail: View {
     @ObservedObject var store: SessionStore
     @Binding var governanceOpen: Bool
@@ -7245,18 +7366,18 @@ private struct ProviderRail: View {
     }
 
     var body: some View {
-        VStack(spacing: 22) {
+        VStack(spacing: ProviderRailLayout.stackSpacing) {
             let homeAppearance = RailItemAppearance.resolve(selected: store.surface == .auto, linked: true)
             Button { store.showClodexHome() } label: {
                 VStack(spacing: 6) {
                     OmarAGILogo(size: 40)
                         .opacity(homeAppearance.contentOpacity)
                     Text("OS-1")
-                        .font(.system(size: 7, weight: .bold, design: .rounded))
+                        .font(.system(size: 7, weight: .bold))
                         .tracking(1.1)
                         .foregroundStyle(Color.white.opacity(homeAppearance.contentOpacity))
                 }
-                .frame(width: 58, height: 68)
+                .frame(width: ProviderRailLayout.itemWidth, height: ProviderRailLayout.homeHeight)
                 .background(RailSelectionBackground(accent: ProviderChoice.auto.tint, appearance: homeAppearance))
                 .contentShape(RoundedRectangle(cornerRadius: Theme.radiusControl, style: .continuous))
             }
@@ -7264,7 +7385,8 @@ private struct ProviderRail: View {
             .help("Clodex home")
             .accessibilityLabel("Clodex home")
             .accessibilityValue(store.surface == .auto ? "선택됨" : "선택 안 됨")
-            .padding(.bottom, 8)
+            // Only OS-1 moves; Codex and Claude stay on the reference grid.
+            .padding(.top, ProviderRailLayout.homeTopPadding)
 
             // Codex disappears entirely when switched off in Settings — the
             // runtime refuses to route to it too, so the rail stays truthful.
@@ -7289,7 +7411,7 @@ private struct ProviderRail: View {
                 Circle().fill(Theme.green).frame(width: 9, height: 9)
                     .shadow(color: Theme.green.opacity(0.85), radius: 6)
                 Text("RCC\nGOVERNED")
-                    .font(.system(size: 7, weight: .bold, design: .rounded))
+                    .font(.system(size: 7, weight: .bold))
                     .tracking(0.7)
                     .multilineTextAlignment(.center)
                     .foregroundStyle(Theme.muted)
@@ -7301,7 +7423,7 @@ private struct ProviderRail: View {
             .accessibilityValue(governanceOpen ? "열림" : "닫힘")
             .background(governanceOpen ? Theme.green.opacity(0.10) : Color.clear, in: RoundedRectangle(cornerRadius: 10))
         }
-        .padding(.top, 38)
+        .padding(.top, ProviderRailLayout.railTopPadding)
         .padding(.bottom, 24)
         .frame(width: 78)
         .background(Color.black.opacity(0.74))
@@ -7326,20 +7448,20 @@ private struct BackendStatus: View {
                 ProviderBrandIcon(provider: provider, size: 28)
                     .opacity(appearance.contentOpacity)
                 Text(provider == .claude ? "CLAUDE" : "CODEX")
-                    .font(.system(size: 7, weight: .bold, design: .rounded))
+                    .font(.system(size: 7, weight: .bold))
                     .tracking(1.1)
                     .lineLimit(1)
                     .minimumScaleFactor(0.8)
                 HStack(spacing: 3) {
                     Circle().fill(linked ? Theme.green : Theme.muted).frame(width: 4, height: 4)
                     Text(linked ? "OPEN" : "NO SESSION")
-                        .font(.system(size: 5.5, weight: .bold, design: .rounded))
+                        .font(.system(size: 5.5, weight: .bold))
                         .lineLimit(1)
                         .minimumScaleFactor(0.65)
                 }
             }
             .foregroundStyle(Color.white.opacity(appearance.contentOpacity))
-            .frame(width: 58, height: 80)
+            .frame(width: ProviderRailLayout.itemWidth, height: ProviderRailLayout.backendHeight)
             .background(RailSelectionBackground(accent: provider.tint, appearance: appearance))
             .overlay(alignment: .topTrailing) {
                 // "Last backend that ran", never a selection signal: a neutral
@@ -7368,6 +7490,63 @@ private struct BackendStatus: View {
 /// backend, and no unselected item may be painted louder than the selected
 /// one. Pure state only — no model calls and no backend writes.
 @MainActor
+/// Renders the production rail and measures the painted tiles the way the
+/// owner did on his screenshot: down the centre column, OS-1's filled tile
+/// ends, Codex's outline begins, and so on. Both gaps must be the same.
+private func railPixelGapSelfTest() throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("os1-rail-pixels-" + UUID().uuidString, isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let store = SessionStore(storageRoot: root, nativeSessionOpener: { _ in false })
+    guard let index = store.selectedIndex else { throw RunnerError.message("Provider rail regression: no fixture conversation") }
+    // Both backends linked so their outlines are visible at 2x, as on the
+    // owner's rail; OS-1 selected as on his screenshot.
+    store.sessions[index].claudeSessionID = "bae5987c-3fd1-4d08-a85c-6d9c18d41e86"
+    store.sessions[index].codexSessionID = "01a0a960-601d-7511-8e3c-11e48e40395a"
+    store.surface = .auto
+    // Tall enough that the rail's Spacer absorbs the slack; a short frame
+    // centres the overflowing stack and shifts every absolute coordinate.
+    let content = ProviderRail(store: store).frame(width: 78, height: 640).background(Theme.background).environment(\.colorScheme, .dark)
+    let view = NSHostingView(rootView: content)
+    view.frame = NSRect(x: 0, y: 0, width: 78, height: 640)
+    RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+    view.layoutSubtreeIfNeeded()
+    guard let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { throw RunnerError.message("Provider rail regression: no bitmap") }
+    view.cacheDisplay(in: view.bounds, to: bitmap)
+    let scale = CGFloat(bitmap.pixelsWide) / view.bounds.width
+    let x = bitmap.pixelsWide / 2
+    func lit(_ y: Int) -> Bool {
+        guard y >= 0, y < bitmap.pixelsHigh, let c = bitmap.colorAt(x: x, y: y) else { return false }
+        return (c.redComponent + c.greenComponent + c.blueComponent) / 3 > 0.075
+    }
+    func check(_ value: Bool, _ label: String) throws {
+        guard value else { throw RunnerError.message("Provider rail pixels: " + label) }
+    }
+    // Lit runs down the centre column, exactly as measured on the owner's
+    // screenshot: [OS-1 fill] gap [Codex outline … outline] gap [Claude outline …].
+    var runs: [(Int, Int)] = [], start = 0, inRun = false
+    for y in 0..<bitmap.pixelsHigh {
+        let on = lit(y)
+        if on, !inRun { start = y; inRun = true }
+        if !on, inRun { runs.append((start, y)); inRun = false }
+    }
+    guard let home = runs.first(where: { $1 - $0 >= Int(60 * scale) }) else { throw RunnerError.message("Provider rail pixels: OS-1 tile not found") }
+    try check(abs(CGFloat(home.1 - home.0) - ProviderRailLayout.homeHeight * scale) <= 2, "OS-1 tile height \(home.1 - home.0)px")
+    guard let codexTop = runs.first(where: { $0.0 > home.1 })?.0 else { throw RunnerError.message("Provider rail pixels: Codex outline not found") }
+    let codexBottomExpected = codexTop + Int(ProviderRailLayout.backendHeight * scale)
+    guard let codexBottom = runs.first(where: { abs($0.1 - codexBottomExpected) <= 3 })?.1 else {
+        throw RunnerError.message("Provider rail pixels: Codex bottom outline not near \(codexBottomExpected)px")
+    }
+    guard let claudeTop = runs.first(where: { $0.0 > codexBottom + 2 })?.0 else { throw RunnerError.message("Provider rail pixels: Claude outline not found") }
+    let gap1 = codexTop - home.1, gap2 = claudeTop - codexBottom
+    try check(abs(gap1 - gap2) <= 1, "painted gaps differ: OS-1→Codex \(gap1)px, Codex→Claude \(gap2)px")
+    try check(abs(CGFloat(gap1) - ProviderRailLayout.stackSpacing * scale) <= 2, "OS-1→Codex gap \(gap1)px is not one stack spacing")
+    // Codex and Claude keep their pre-change coordinates relative to the rail top.
+    let expectedCodexTop = Int(ProviderRailLayout.codexTop * scale)
+    try check(abs(codexTop - expectedCodexTop) <= 2, "Codex outline at \(codexTop)px, expected \(expectedCodexTop)px")
+}
+
+@MainActor
 private func railSelectionSelfTest() throws {
     var checks = 0
     func check(_ value: Bool, _ label: String) throws {
@@ -7386,6 +7565,18 @@ private func railSelectionSelfTest() throws {
     try check(RailItemAppearance.resolve(selected: false, linked: true)
         != RailItemAppearance.resolve(selected: true, linked: true),
         "linked-but-unselected must be distinguishable from selected")
+    // Geometry by construction: every gap on the rail is one stack spacing,
+    // and Codex/Claude sit exactly where they did before OS-1 moved.
+    let os1ToCodexGap = ProviderRailLayout.codexTop - (ProviderRailLayout.homeTop + ProviderRailLayout.homeHeight)
+    let codexToClaudeGap = ProviderRailLayout.claudeTop - (ProviderRailLayout.codexTop + ProviderRailLayout.backendHeight)
+    try check(os1ToCodexGap == codexToClaudeGap && os1ToCodexGap == ProviderRailLayout.stackSpacing,
+        "OS-1 → Codex gap (\(os1ToCodexGap)) must equal Codex → Claude gap (\(codexToClaudeGap))")
+    try check(ProviderRailLayout.codexTop == 38 + 68 + 8 + 22 && ProviderRailLayout.claudeTop == ProviderRailLayout.codexTop + 80 + 22,
+        "Codex and Claude must keep their pre-change coordinates")
+    try check(ProviderRailLayout.itemWidth == 58 && ProviderRailLayout.homeHeight == 68
+        && ProviderRailLayout.backendHeight == 80,
+        "Codex and Claude reference-card geometry must remain unchanged")
+    try railPixelGapSelfTest()
 
     for linked in [true, false] {
         let quiet = RailItemAppearance.resolve(selected: false, linked: linked)
@@ -7499,7 +7690,7 @@ private struct NativeSessionBrowser: View {
 
                 VStack(alignment: .leading, spacing: 5) {
                     Text(provider == .claude ? "CLAUDE CODE SESSIONS" : "CODEX SESSIONS")
-                        .font(.system(size: 10, weight: .bold, design: .rounded))
+                        .font(.system(size: 10, weight: .bold))
                         .tracking(1.2)
                         .foregroundStyle(provider.tint)
                     HStack(spacing: 6) {
@@ -7507,11 +7698,11 @@ private struct NativeSessionBrowser: View {
                         Text(recordedSessionID == nil
                             ? "THIS CONVERSATION · NO SESSION"
                             : (recordedSessionIsAvailable ? "CURRENT RECORD · AVAILABLE" : "CURRENT RECORD · NOT FOUND"))
-                            .font(.system(size: 9, weight: .bold, design: .rounded))
+                            .font(.system(size: 9, weight: .bold))
                             .foregroundStyle(Theme.muted)
                     }
                     Text("LOCAL RECORDS · \(store.nativeSessions.count) · PIN MANAGEMENT")
-                        .font(.system(size: 8, weight: .medium, design: .rounded))
+                        .font(.system(size: 8, weight: .medium))
                         .foregroundStyle(Theme.muted)
                 }
                 .padding(.horizontal, 24)
@@ -7644,7 +7835,7 @@ private struct NativeSessionRow: View {
                     Spacer(minLength: 4)
                     if current || session.linkedTitle != nil {
                         Text(current ? "CURRENT" : "OS1")
-                            .font(.system(size: 7, weight: .bold, design: .rounded))
+                            .font(.system(size: 7, weight: .bold))
                             .foregroundStyle(current ? Theme.green : tint)
                     }
                 }
@@ -7770,7 +7961,7 @@ private struct NativeTranscriptView: View {
                 Text(provider == .claude ? "CLAUDE CODE" : "CODEX")
                     .foregroundStyle(provider.tint)
             }
-            .font(.system(size: 9, weight: .semibold, design: .rounded))
+            .font(.system(size: 9, weight: .semibold))
             .foregroundStyle(Theme.muted)
             .padding(.horizontal, 14)
             .frame(height: 38)
@@ -7806,7 +7997,7 @@ private struct NativeMessageCard: View {
                         Text(timestamp, style: .time)
                     }
                 }
-                .font(.system(size: 9, weight: .bold, design: .rounded))
+                .font(.system(size: 9, weight: .bold))
                 .foregroundStyle(message.role == .user ? Theme.muted : provider.tint)
                 Text(message.text)
                     .font(.system(size: 12, weight: .regular, design: .monospaced))
@@ -7837,7 +8028,7 @@ private struct RailButton: View {
             VStack(spacing: 7) {
                 ProviderBrandIcon(provider: provider, size: 24)
                 Text(provider.title.uppercased())
-                    .font(.system(size: 8, weight: .bold, design: .rounded))
+                    .font(.system(size: 8, weight: .bold))
             }
             .foregroundStyle(selected ? provider.tint : Theme.muted)
             .frame(width: 58, height: 58)
@@ -7920,7 +8111,7 @@ private struct SessionSidebar: View {
 
             HStack {
                 Text(store.showArchived ? "보관됨" : "작업")
-                    .font(.system(size: 10, weight: .bold, design: .rounded))
+                    .font(.system(size: 10, weight: .bold))
                     .tracking(1.2)
                     .foregroundStyle(Theme.muted)
                 Spacer()
@@ -8018,7 +8209,7 @@ private struct FrontierMonitorView: View {
                     .fill(store.frontierMonitorIsChecking ? Theme.pink : (availableCount > 0 ? Theme.green : Theme.muted))
                     .frame(width: 6, height: 6)
                 Text("FRONTIER MONITOR")
-                    .font(.system(size: 9, weight: .bold, design: .rounded))
+                    .font(.system(size: 9, weight: .bold))
                     .tracking(1.1)
                     .foregroundStyle(Theme.muted)
                 Spacer()
@@ -8057,7 +8248,7 @@ private struct FrontierMonitorView: View {
                             .lineLimit(2)
                         if let resetAt = latest.resetAt, resetAt > Date() {
                             Text("원문에 명시된 리셋 시각 · \(resetAt.formatted(date: .abbreviated, time: .shortened))")
-                                .font(.system(size: 8, weight: .medium, design: .rounded))
+                                .font(.system(size: 8, weight: .medium))
                                 .foregroundStyle(Theme.pink)
                         }
                     }
@@ -8077,7 +8268,7 @@ private struct FrontierMonitorView: View {
                 Text("·")
                 Text("최근 \(checkedLabel)")
             }
-            .font(.system(size: 8, weight: .medium, design: .rounded))
+            .font(.system(size: 8, weight: .medium))
             .foregroundStyle(Theme.muted.opacity(0.8))
             Text("OS1 실행 중 5분마다 · 개인 계정 잔량과 별개")
                 .font(.system(size: 8)).foregroundStyle(Theme.muted)
@@ -8211,7 +8402,7 @@ private struct NativeBadge: View {
 
     var body: some View {
         Text(label)
-            .font(.system(size: 8, weight: .bold, design: .rounded))
+            .font(.system(size: 8, weight: .bold))
             .foregroundStyle(linked ? tint : Theme.muted.opacity(0.55))
             .frame(width: 17, height: 15)
             .background(linked ? tint.opacity(0.13) : Color.white.opacity(0.025))
@@ -8384,27 +8575,48 @@ private extension NSAttributedString.Key {
     static let os1TimelineRole = NSAttributedString.Key("com.omaragi.os1.timeline-role")
 }
 
-/// Inline previews for the owner's attached images: bounded thumbnails as
-/// text attachments, right-aligned with the message. Nil when no attached
-/// path is a readable image, so the plain path block stays visible.
-private func timelineImagePreviews(paths: [String], maxEdge: CGFloat = 360) -> NSAttributedString? {
+/// Inline attachment cards for the owner's files. Images get bounded
+/// thumbnails; every other file gets its native document icon and name.
+/// The quoted transport path stays in stored message text but never becomes
+/// the visible transcript payload.
+private func timelineAttachmentPreviews(paths: [String], maxEdge: CGFloat = 360) -> NSAttributedString? {
     let result = NSMutableAttributedString()
-    for path in paths.prefix(6) {
-        guard let source = CGImageSourceCreateWithURL(URL(fileURLWithPath: path) as CFURL, nil),
-              let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, [
-                  kCGImageSourceCreateThumbnailFromImageAlways: true,
-                  kCGImageSourceCreateThumbnailWithTransform: true,
-                  kCGImageSourceThumbnailMaxPixelSize: Int(maxEdge * 2),
-              ] as CFDictionary) else { continue }
-        let image = NSImage(cgImage: cgImage, size: .zero)
-        let scale = min(1, maxEdge / max(CGFloat(cgImage.width), CGFloat(cgImage.height)))
+    // Every attachment the composer accepted (it caps at 24) gets a card; a
+    // silent cut at six lost files 7+ without a trace.
+    for path in paths {
+        let url = URL(fileURLWithPath: path)
         let attachment = NSTextAttachment()
-        attachment.image = image
-        attachment.bounds = CGRect(x: 0, y: 0, width: CGFloat(cgImage.width) * scale / 2, height: CGFloat(cgImage.height) * scale / 2)
+        var isImagePreview = false
+        if PromptAttachments.isImagePath(path),
+           let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+           let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, [
+                kCGImageSourceCreateThumbnailFromImageAlways: true,
+                kCGImageSourceCreateThumbnailWithTransform: true,
+                kCGImageSourceThumbnailMaxPixelSize: Int(maxEdge * 2),
+           ] as CFDictionary) {
+            attachment.image = NSImage(cgImage: cgImage, size: .zero)
+            let scale = min(1, maxEdge / max(CGFloat(cgImage.width), CGFloat(cgImage.height)))
+            attachment.bounds = CGRect(
+                x: 0,
+                y: 0,
+                width: CGFloat(cgImage.width) * scale / 2,
+                height: CGFloat(cgImage.height) * scale / 2
+            )
+            isImagePreview = true
+        } else {
+            attachment.image = NSWorkspace.shared.icon(forFile: path)
+            attachment.bounds = CGRect(x: 0, y: -3, width: 24, height: 24)
+        }
         result.append(NSAttributedString(string: "\n"))
         result.append(NSAttributedString(attachment: attachment))
-        result.append(NSAttributedString(string: "  " + URL(fileURLWithPath: path).lastPathComponent,
-            attributes: [.font: NSFont.systemFont(ofSize: 10), .foregroundColor: TimelinePalette.muted]))
+        let kind = isImagePreview ? "이미지" : (url.pathExtension.isEmpty ? "파일" : url.pathExtension.uppercased())
+        result.append(NSAttributedString(
+            string: "  \(kind) · \(url.lastPathComponent)",
+            attributes: [
+                .font: NSFont.systemFont(ofSize: isImagePreview ? 10 : 11, weight: .medium),
+                .foregroundColor: TimelinePalette.muted,
+            ]
+        ))
     }
     return result.length == 0 ? nil : result
 }
@@ -8534,10 +8746,12 @@ private func timelineAttributedDocument(
     for (index, message) in messages.enumerated() {
         switch message.role {
         case .user:
-            // Attached images render inline like Codex does, in place of the
-            // quoted path block (which stays in the stored message and copy).
-            let previews = timelineImagePreviews(paths: PromptAttachments.imagePaths(in: message.text))
-            let shown = previews == nil ? message.text : PromptAttachments.textWithoutReferences(message.text)
+            // Every attachment is visible as an inline card. The quoted path
+            // block remains transport-only: it is preserved in storage/copy
+            // but never leaks into the visible conversation as raw text.
+            let paths = PromptAttachments.paths(in: message.text)
+            let previews = timelineAttachmentPreviews(paths: paths)
+            let shown = paths.isEmpty ? message.text : PromptAttachments.textWithoutReferences(message.text)
             appendBlock(
                 role: MessageRole.user.rawValue,
                 alignment: .right,
@@ -8952,28 +9166,164 @@ private final class ComposerKeyMonitor: ObservableObject {
 
 }
 
+/// A composer text view that consumes file drags before AppKit can turn them
+/// into a pasted `file://` URL or bare path. The files are handed to the
+/// shared attachment state instead, so dropping into the text field behaves
+/// the same as dropping anywhere else in the OS-1 window.
+// Internal, not private: a private NSObject subclass gets a per-file hash in
+// its Objective-C class name (_TtC6OS1AppP33_<hash>…), and the release
+// payload scanner rightly flags such 80-character high-entropy tokens.
+final class ComposerDropTextView: NSTextView {
+    var onFocusChange: ((Bool) -> Void)?
+
+    // Key handling (Return sends) is gated on the composer being focused.
+    // "Focused" means first responder — not "the user has typed", which is
+    // what the delegate's textDidBeginEditing reports, so a pasted or
+    // dictated draft followed by Return must still send.
+    override func becomeFirstResponder() -> Bool {
+        let accepted = super.becomeFirstResponder()
+        if accepted { onFocusChange?(true) }
+        return accepted
+    }
+
+    override func resignFirstResponder() -> Bool {
+        let accepted = super.resignFirstResponder()
+        if accepted { onFocusChange?(false) }
+        return accepted
+    }
+
+    /// AppKit turns a dropped file into its path as text. This view is a
+    /// drag destination for text only; a file drag never reaches it and
+    /// falls through to the composer's own drop target, which attaches the
+    /// file exactly as a drop anywhere else in the window does.
+    func acceptTextDragsOnly() {
+        unregisterDraggedTypes()
+        registerForDraggedTypes([.string])
+    }
+
+    /// NSTextView re-registers its full drag-type set lazily — on the first
+    /// draw, after editability changes — which silently undid the one-shot
+    /// registration above in every real launch (caught by an adversarial
+    /// verifier reproducing the sequence with ctypes). Re-apply it whenever
+    /// AppKit refreshes the registration.
+    override func updateDragTypeRegistration() {
+        super.updateDragTypeRegistration()
+        acceptTextDragsOnly()
+    }
+
+    // Belt and braces, as on the transcript view: even if a file drag does
+    // reach this view, it is declined so the drag falls through to the
+    // composer's drop target instead of becoming inserted path text.
+    private func carriesFiles(_ info: NSDraggingInfo) -> Bool {
+        info.draggingPasteboard.canReadObject(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true])
+    }
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation { carriesFiles(sender) ? [] : super.draggingEntered(sender) }
+    override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation { carriesFiles(sender) ? [] : super.draggingUpdated(sender) }
+    override func prepareForDragOperation(_ sender: NSDraggingInfo) -> Bool { carriesFiles(sender) ? false : super.prepareForDragOperation(sender) }
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool { carriesFiles(sender) ? false : super.performDragOperation(sender) }
+}
+
+/// Native AppKit bridge retained for the composer so it keeps normal IME,
+/// focus, undo, and accessibility while preventing raw dropped paths from
+/// being inserted into the owner's draft.
+struct NativeComposerEditor: NSViewRepresentable {
+    @Binding var text: String
+    let onFocusChange: (Bool) -> Void
+    var onSubmit: (() -> Void)? = nil
+
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
+
+    func makeNSView(context: Context) -> NSScrollView {
+        let (scrollView, textView) = Self.makeConfiguredEditor(text: text)
+        textView.delegate = context.coordinator
+        textView.onFocusChange = onFocusChange
+        return scrollView
+    }
+
+    /// The production editor, exactly as hosted — shared with the self-test
+    /// so the test exercises the real configuration, not a lookalike.
+    static func makeConfiguredEditor(text: String) -> (NSScrollView, ComposerDropTextView) {
+        let textView = ComposerDropTextView()
+        textView.acceptTextDragsOnly()
+        textView.isRichText = false
+        textView.allowsUndo = true
+        textView.isAutomaticQuoteSubstitutionEnabled = false
+        textView.isAutomaticTextReplacementEnabled = false
+        textView.isContinuousSpellCheckingEnabled = true
+        textView.font = .systemFont(ofSize: 14, weight: .medium)
+        textView.textColor = .white.withAlphaComponent(0.95)
+        textView.backgroundColor = .clear
+        textView.drawsBackground = false
+        textView.textContainerInset = NSSize(width: 4, height: 6)
+        textView.isVerticallyResizable = true
+        textView.isHorizontallyResizable = false
+        textView.textContainer?.widthTracksTextView = true
+        textView.string = text
+
+        let scrollView = NSScrollView()
+        scrollView.documentView = textView
+        scrollView.drawsBackground = false
+        scrollView.hasVerticalScroller = true
+        scrollView.autohidesScrollers = true
+        scrollView.borderType = .noBorder
+        return (scrollView, textView)
+    }
+
+    func updateNSView(_ scrollView: NSScrollView, context: Context) {
+        context.coordinator.parent = self
+        guard let textView = scrollView.documentView as? ComposerDropTextView else { return }
+        textView.onFocusChange = onFocusChange
+        if textView.string != text { textView.string = text }
+        if !context.coordinator.requestedInitialFocus, scrollView.window != nil {
+            context.coordinator.requestedInitialFocus = true
+            DispatchQueue.main.async {
+                textView.window?.makeFirstResponder(textView)
+            }
+        }
+    }
+
+    final class Coordinator: NSObject, NSTextViewDelegate {
+        var parent: NativeComposerEditor
+        var requestedInitialFocus = false
+
+        init(_ parent: NativeComposerEditor) { self.parent = parent }
+
+        /// Return while a Korean syllable is still being composed: the key
+        /// monitor hands the event to AppKit so the input method can commit
+        /// the syllable, and AppKit then delivers `insertNewline:` here. That
+        /// is the send, unless Shift asked for a line break — the owner
+        /// types Korean, and a second Return to send was the old behaviour.
+        func textView(_ textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
+            guard commandSelector == #selector(NSResponder.insertNewline(_:)), let submit = parent.onSubmit else { return false }
+            let shift = NSApp.currentEvent?.modifierFlags.contains(.shift) ?? false
+            guard composerReturnAction(shiftPressed: shift) == .send else { return false }
+            submit()
+            return true
+        }
+
+        func textDidChange(_ notification: Notification) {
+            guard let textView = notification.object as? NSTextView, parent.text != textView.string else { return }
+            parent.text = textView.string
+        }
+    }
+}
+
 private struct ClodexComposerEditor: View {
     @Binding var text: String
     let onSubmit: () -> Void
     let onCancelVoice: () -> Bool
     @StateObject private var keyMonitor = ComposerKeyMonitor()
-    @FocusState private var isFocused: Bool
 
     var body: some View {
-        TextEditor(text: $text)
-            .font(.system(size: 14, weight: .medium))
-            .foregroundStyle(Theme.text)
-            .scrollContentBackground(.hidden)
-            .focused($isFocused)
+        NativeComposerEditor(
+            text: $text,
+            onFocusChange: { focused in keyMonitor.isFocused = focused },
+            onSubmit: onSubmit
+        )
             .onAppear {
                 keyMonitor.submit = onSubmit
                 keyMonitor.cancelVoice = onCancelVoice
-                isFocused = true
-                keyMonitor.isFocused = true
                 keyMonitor.start()
-            }
-            .onChange(of: isFocused) { focused in
-                keyMonitor.isFocused = focused
             }
             .onDisappear {
                 keyMonitor.isFocused = false
@@ -9035,7 +9385,7 @@ private struct VoiceDictationControl: View {
                             .font(.system(size: 10, weight: .semibold))
                             .foregroundStyle(Theme.text)
                         Text("\(controller.engineLabel) · \(controller.elapsedLabel)")
-                            .font(.system(size: 9, weight: .medium, design: .rounded))
+                            .font(.system(size: 9, weight: .medium))
                             .foregroundStyle(Theme.muted)
                             .fixedSize()
                     }
@@ -9293,7 +9643,11 @@ private struct ComposerView: View {
                     ComposerAttachmentStrip(store: store)
                         .padding(.horizontal, 12).padding(.top, 10)
                 }
-                ClodexComposerEditor(text: $store.composer, onSubmit: store.send, onCancelVoice: store.cancelVoiceDictation)
+                ClodexComposerEditor(
+                    text: $store.composer,
+                    onSubmit: store.send,
+                    onCancelVoice: store.cancelVoiceDictation
+                )
                     .frame(height: editorHeight)
                     .background(GeometryReader { geometry in
                         Color.clear.onAppear { editorWidth = geometry.size.width }
