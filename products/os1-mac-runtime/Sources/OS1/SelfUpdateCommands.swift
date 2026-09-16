@@ -34,7 +34,12 @@ func selfUpdateCommand(_ arguments: [String]) async throws -> Bool {
 /// every write task on its own source; here it is the operator's hand.
 func selfRepairCommand(_ arguments: [String]) async throws -> Bool {
     guard arguments.first == "self-repair" else { return false }
-    let subcommand = arguments.count > 1 ? arguments[1] : "complete"
+    // No implicit default: a bare `os1 self-repair` must never bump, build
+    // and commit the checkout it happens to be run from.
+    guard arguments.count > 1 else {
+        throw OS1Error.message("self-repair: usage: os1 self-repair complete --source <OS-1 checkout> [--objective <text>]")
+    }
+    let subcommand = arguments[1]
     var options: [String: String] = [:]
     var index = 2
     while index < arguments.count {
@@ -65,7 +70,7 @@ func selfRepairCommand(_ arguments: [String]) async throws -> Bool {
 /// Shared with the runtime hook in main.swift.
 let selfRepairFailurePrefixText = "OS-1 self-repair could not complete: "
 
-let os1RuntimeVersionString = "OS-1 Runtime 0.9.78 (self-repair-build144)"
+let os1RuntimeVersionString = "OS-1 Runtime 0.9.79 (self-repair-build145)"
 
 /// One writer at a time in OS-1's own checkout: the same RCC discipline the
 /// runtime enforces elsewhere, applied to itself. Waits briefly for the other

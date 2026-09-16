@@ -5717,8 +5717,14 @@ private final class SessionStore: ObservableObject {
     /// verdict contract): one readback per contract generation, and the
     /// OS1_EFFECTS verdict decides whether the objective resumes.
     private func resumeStaleReconciliations() {
+        // One readback at a time, and only while nothing else runs. After
+        // build143 installed, every held failure was re-examined in the same
+        // tick: seven Claude processes at once, all hitting an expired
+        // session together. Paced, the first one repairs the backend and the
+        // rest follow on a live session.
+        guard activeRuns.isEmpty else { return }
         for session in sessions {
-            guard activeRuns.count < Self.maximumConcurrentSessions, !isSessionRunning(session.id),
+            guard !isSessionRunning(session.id),
                   session.lastBackendFailure?.requiresReadback == true,
                   let failed = session.lastFailure, failed.recoveryParentID == nil,
                   failed.recoveryAttempted != true || failed.verdictReconciled != true
@@ -5727,6 +5733,7 @@ private final class SessionStore: ObservableObject {
             appendTaskEvent(conversationID: session.id, kind: "stale_reconcile",
                 summary: "Held failure predates the verdict contract; running its read-only readback now")
             beginReconciliation(conversationID: session.id)
+            return
         }
     }
     func flushPendingState() { draftSaveTask?.cancel(); save() }
