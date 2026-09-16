@@ -161,7 +161,11 @@ enum ModelAvailability {
         // say why no Codex model is available instead of a bare refusal.
         var notes: [String] = []
         var quotaResetsAt: Date?
+        var quotaWindow: CodexQuotaWindow?
         if let limits = try? probe.rateLimits(deadline: deadline) {
+            // The longest unreset window: what the burn policy and the health
+            // card show as "N% used, resets at".
+            quotaWindow = CodexQuota.generalWindow(limits)
             let excluded = CodexQuota.excludedModels(limits, models: catalog.models.map(\.slug))
             if !excluded.isEmpty {
                 quotaResetsAt = CodexQuota.exhaustedGeneralResetDate(limits)
@@ -184,6 +188,6 @@ enum ModelAvailability {
             }
         }
         let source = notes.isEmpty ? catalog.source : catalog.source + " · " + notes.joined(separator: "; ")
-        return ActiveCodexCatalog(models: catalog.models, source: source, quotaResetsAt: quotaResetsAt)
+        return ActiveCodexCatalog(models: catalog.models, source: source, quotaResetsAt: quotaResetsAt, quotaWindow: quotaWindow)
     }
 }

@@ -2664,6 +2664,10 @@ private struct ConversationSession: Codable, Identifiable, Sendable {
     var forkedFrom: ConversationForkOrigin?
     var completedForkCheckpoint: ConversationForkCheckpoint?
     var ownedCodexTurnIDs: [String]? = nil
+    /// The last run that completed here, so a retry the owner sends shortly
+    /// after can be charged to it: that run was not a completed task.
+    var lastCompletedMonitorTaskID: String? = nil
+    var lastCompletedAt: Date? = nil
     var updatedAt: Date
 
     init(
@@ -3369,6 +3373,8 @@ private struct AppRunSummary: Decodable, Sendable {
     var sourceContext: SourceReference? = nil
     var taskContext: TaskContext? = nil
     var persistedCorrectionIDs: [UUID]? = nil
+    /// Governance task id of this run, so an owner retry can be charged to it.
+    var monitorTaskID: String? = nil
 }
 
 private struct NativeIngestionOutcome: Sendable {
@@ -4527,6 +4533,7 @@ private final class SessionStore: ObservableObject {
         composer = ""
         composerAttachments = []
 
+        noteOwnerRetryIfNeeded(index: index, request: request)
         var submission = PendingSubmission(
             sessionID: sessions[index].id,
             userMessageID: userMessage.id,
@@ -4913,6 +4920,10 @@ private final class SessionStore: ObservableObject {
                 let visibleSteps = visibleAdoptedSteps(summary.steps)
                 guard !visibleSteps.isEmpty else {
                     throw RunnerError.message("OS-1 did not produce a verified result.")
+                }
+                if let monitorTaskID = summary.monitorTaskID {
+                    sessions[target].lastCompletedMonitorTaskID = monitorTaskID
+                    sessions[target].lastCompletedAt = Date()
                 }
                 guard submission.readOnlyReconciliation != true || visibleSteps.allSatisfy({ $0.permissionProfile == "read_only" }) else {
                     throw RunnerError.message("상태 확인 요청에 변경 권한이 사용되어 결과를 채택하지 않았습니다.")
@@ -5819,6 +5830,30 @@ private final class SessionStore: ObservableObject {
                 summary: "Held failure predates the verdict contract; running its read-only readback now")
             beginReconciliation(conversationID: session.id)
             return
+        }
+    }
+    /// "I asked once and it isn't done" is a failed task, however many
+    /// tokens it saved. A retry or correction within the owner-retry window
+    /// after a completion marks that completion as not first-pass in the
+    /// governance record and turns its adopted attempts into quality
+    /// failures in the per-objective route feedback, so a re-run of the same
+    /// objective steers away from the route that fell short.
+    func noteOwnerRetryIfNeeded(index: Int, request: String, now: Date = Date()) {
+        guard let taskID = sessions[index].lastCompletedMonitorTaskID, let completedAt = sessions[index].lastCompletedAt,
+              now.timeIntervalSince(completedAt) <= OwnerRetry.window, OwnerRetry.isRetry(request) else { return }
+        sessions[index].lastCompletedMonitorTaskID = nil
+        appendTaskEvent(conversationID: sessions[index].id, kind: "owner_retry",
+            summary: "owner had to ask again \(Int(now.timeIntervalSince(completedAt)))s after completion; task \(taskID) is not a completed task")
+        guard customStorageRoot == nil else { return }
+        Task.detached(priority: .utility) {
+            let governance = GovernanceActivityStore()
+            try? governance.markOwnerRetry(id: taskID, now: now)
+            guard let task = governance.snapshot(legacyRoot: nil).tasks.first(where: { $0.id == taskID }) else { return }
+            for attempt in task.attempts {
+                guard let observation = attempt.observation, observation.outcome == .adopted else { continue }
+                _ = try? CompletionFeedbackStore().markOwnerRetry(bindingSHA256: attempt.scope,
+                    executionID: observation.executionID, sequence: observation.sequence)
+            }
         }
     }
     func flushPendingState() { draftSaveTask?.cancel(); save() }
@@ -7113,6 +7148,12 @@ private struct OS1SettingsView: View {
                 Toggle(os1Tr("Codex 백엔드 사용", "Use the Codex backend"), isOn: binding(\.showCodex))
                 Text(os1Tr("끄면 레일에서 사라지고 어떤 작업도 Codex로 라우팅되지 않습니다. Claude와 OS-1 로컬 실행만 사용합니다.",
                            "Turning this off removes Codex from the rail and no task routes to it. Only Claude and OS-1 local execution are used."))
+                    .font(.footnote).foregroundStyle(.secondary)
+                Toggle(os1Tr("한도 창 마감 전 Codex 몰아 쓰기", "Use up Codex quota before its window resets"),
+                    isOn: Binding(get: { store.appSettings.burnCodexBeforeReset ?? true },
+                                  set: { value in store.updateSettings { $0.burnCodexBeforeReset = value } }))
+                Text(os1Tr("계정의 실제 한도 창이 \(store.appSettings.codexBurnLeadHours ?? 12)시간 안에 리셋되고 15% 이상 남아 있으면, ‘자동’으로 보낸 작업을 Codex로 돌려 리셋 전에 소진합니다. 뉴스가 아니라 계정 데이터 기준입니다.",
+                           "When the account's real quota window resets within \(store.appSettings.codexBurnLeadHours ?? 12) h with 15%+ left, work sent as ‘Auto’ routes to Codex so it is used before the reset. Account data, not news."))
                     .font(.footnote).foregroundStyle(.secondary)
             }
             Section(os1Tr("정보", "About")) {

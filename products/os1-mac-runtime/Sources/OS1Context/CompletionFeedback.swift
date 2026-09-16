@@ -180,11 +180,11 @@ public struct CompletionFeedbackObservation: Codable, Equatable, Sendable {
     public let model: String
     public let effort: String
     public let outcome: CompletionOutcome
-    public let inputTokens: Int?
-    public let outputTokens: Int?
-    public let cacheTokens: Int?
+    public var inputTokens: Int?
+    public var outputTokens: Int?
+    public var cacheTokens: Int?
     public let durationMS: Int
-    public let usageResource: CompletionUsageResourceMetadata?
+    public var usageResource: CompletionUsageResourceMetadata?
 
     enum CodingKeys: String, CodingKey {
         case executionID = "execution_id"
@@ -280,6 +280,25 @@ public struct CompletionFeedbackLedger: Codable, Equatable, Sendable {
         // window and discard the oldest observation only after a new unique
         // attempt has been validated and appended.
         if observations.count > 16 { observations.removeFirst(observations.count - 16) }
+        return true
+    }
+
+    /// The owner said a "completed" answer was not complete. The attempt's
+    /// outcome becomes a quality failure so a re-run of the same objective
+    /// steers away from that route. Returns false when the attempt is unknown.
+    public mutating func revise(executionID: String, sequence: Int, outcome: CompletionOutcome) throws -> Bool {
+        try validate()
+        guard let index = observations.firstIndex(where: {
+            $0.executionID.caseInsensitiveCompare(executionID) == .orderedSame && $0.sequence == sequence
+        }) else { return false }
+        let old = observations[index]
+        guard old.outcome != outcome else { return false }
+        var revised = CompletionFeedbackObservation(executionID: old.executionID, sequence: old.sequence, provider: old.provider,
+            model: old.model, effort: old.effort, outcome: outcome, usage: nil, durationMS: old.durationMS)
+        revised.inputTokens = old.inputTokens; revised.outputTokens = old.outputTokens
+        revised.cacheTokens = old.cacheTokens; revised.usageResource = old.usageResource
+        observations[index] = revised
+        try validate()
         return true
     }
 
@@ -398,6 +417,31 @@ public struct CompletionFeedbackStore: Sendable {
               ledger.scope == scope else { throw CompletionFeedbackError.invalid }
         try ledger.validate()
         return ledger
+    }
+
+    /// Marks an adopted attempt as a quality failure after the owner had to
+    /// ask again. Addressed by the ledger file's binding hash (what the
+    /// governance record keeps), so the caller need not rebuild the scope.
+    @discardableResult
+    public func markOwnerRetry(bindingSHA256: String, executionID: String, sequence: Int) throws -> Bool {
+        guard CompletionFeedbackScope.isDigest(bindingSHA256) else { throw CompletionFeedbackError.invalid }
+        let path = root.appendingPathComponent(bindingSHA256 + ".json")
+        guard path.resolvingSymlinksInPath() == path.standardizedFileURL,
+              let data = try? Data(contentsOf: path), data.count <= 512_000,
+              let ledger = try? JSONDecoder().decode(CompletionFeedbackLedger.self, from: data) else { return false }
+        try ledger.validate()
+        return try withScopeLock(scope: ledger.scope) {
+            var current = try load(scope: ledger.scope) ?? ledger
+            guard try current.revise(executionID: executionID, sequence: sequence, outcome: .qualityFailure) else { return false }
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+            let encoded = try encoder.encode(current)
+            guard encoded.count <= 512_000 else { throw CompletionFeedbackError.invalid }
+            try encoded.write(to: path, options: .atomic)
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path.path)
+            guard try load(scope: ledger.scope) == current else { throw CompletionFeedbackError.invalid }
+            return true
+        }
     }
 
     @discardableResult
