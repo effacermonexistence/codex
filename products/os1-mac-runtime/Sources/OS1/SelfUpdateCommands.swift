@@ -70,7 +70,7 @@ func selfRepairCommand(_ arguments: [String]) async throws -> Bool {
 /// Shared with the runtime hook in main.swift.
 let selfRepairFailurePrefixText = "OS-1 self-repair could not complete: "
 
-let os1RuntimeVersionString = "OS-1 Runtime 0.9.79 (self-repair-build145)"
+let os1RuntimeVersionString = "OS-1 Runtime 0.9.80 (self-repair-build146)"
 
 /// One writer at a time in OS-1's own checkout: the same RCC discipline the
 /// runtime enforces elsewhere, applied to itself. Waits briefly for the other
@@ -191,10 +191,20 @@ func stageSelfUpdateRelease(root: String) throws -> SelfUpdate.Intent {
     var overrides: [String: String] = [:]
     let config = installedAppURL.appendingPathComponent("Contents/Resources/config.json").path
     if FileManager.default.fileExists(atPath: config) { overrides["OS1_CONFIG"] = config }
+    // Every app suite that guards owner-facing behaviour runs on the staged
+    // binary itself. The shell suite was missing here (and from the manual
+    // routine) — which is how a composer that re-accepted file drops could
+    // have shipped with green checks.
     for (label, executable, args) in [
         ("runtime-self-test", cli, ["self-test"]),
         ("fleet-self-test", cli, ["fleet-self-test"]),
         ("app-self-test", app + "/Contents/MacOS/OS1App", ["--self-test"]),
+        ("app-self-test-shell", app + "/Contents/MacOS/OS1App", ["--self-test-shell"]),
+        ("app-self-test-composer", app + "/Contents/MacOS/OS1App", ["--self-test-composer"]),
+        ("app-self-test-steering", app + "/Contents/MacOS/OS1App", ["--self-test-steering"]),
+        ("app-self-test-sidebar-queue", app + "/Contents/MacOS/OS1App", ["--self-test-sidebar-queue"]),
+        ("app-self-test-queue-fork", app + "/Contents/MacOS/OS1App", ["--self-test-queue-fork"]),
+        ("app-self-test-parallel", app + "/Contents/MacOS/OS1App", ["--self-test-parallel"]),
     ] {
         RuntimeActivity.emit(.verifying, publicText: "OS-1 자체 업데이트 build \(build) 검증 중 · \(label)")
         let result = try commandOutput(executable, args, timeout: 600, currentDirectory: runtime, environmentOverrides: overrides)
@@ -282,11 +292,19 @@ private let secretPatterns = [
 
 /// A conservative scan of what would be committed. Returns a description of
 /// the first hit, or nil.
-func selfRepairSecretHit(root: String, git: String) -> String? {
+func selfRepairSecretHit(root: String, git: String, since startHead: String? = nil) -> String? {
     let runtime = SelfUpdate.runtimeRelativePath
     var corpus: [(String, String)] = []
-    if let diff = try? commandOutput(git, ["-C", root, "diff", "--", runtime], timeout: 60), diff.0 == 0 {
+    // Worktree AND index against HEAD: a file the backend already `git add`-ed
+    // must not slip past the scan into `git add -A`.
+    if let diff = try? commandOutput(git, ["-C", root, "diff", "HEAD", "--", runtime], timeout: 60), diff.0 == 0 {
         corpus.append(("tracked diff", String(decoding: diff.1, as: UTF8.self)))
+    }
+    // Commits the backend made during the task (a Claude backend commits and
+    // pushes under the owner's remote-completion contract).
+    if let startHead, let head = gitHead(root), head != startHead,
+       let committed = try? commandOutput(git, ["-C", root, "diff", startHead, head, "--", runtime], timeout: 60), committed.0 == 0 {
+        corpus.append(("commits since task start", String(decoding: committed.1, as: UTF8.self)))
     }
     if let untracked = try? commandOutput(git, ["-C", root, "ls-files", "--others", "--exclude-standard", "--", runtime], timeout: 60), untracked.0 == 0 {
         for file in String(decoding: untracked.1, as: UTF8.self).split(separator: "\n") {
@@ -310,7 +328,7 @@ func selfRepairSecretHit(root: String, git: String) -> String? {
 /// self-tests, staging, commit, push — is OS-1's own, so completion never
 /// depends on a backend following instructions. The caller holds the
 /// source-write lease. Never throws: the outcome is part of the task's result.
-func completeOS1SelfRepair(root: String, objective: String, startedAt: Date) -> SelfRepairCompletion {
+func completeOS1SelfRepair(root: String, objective: String, startedAt: Date, startHead: String? = nil) -> SelfRepairCompletion {
     let runtime = URL(fileURLWithPath: root).appendingPathComponent(SelfUpdate.runtimeRelativePath).path
     let installed = installedOS1Build()
     guard let git = try? findExecutable("git") else { return .failed("git is not available") }
@@ -319,9 +337,18 @@ func completeOS1SelfRepair(root: String, objective: String, startedAt: Date) -> 
     }
     guard let status = try? commandOutput(git, ["-C", root, "status", "--porcelain", "--", SelfUpdate.runtimeRelativePath], timeout: 60),
           status.0 == 0 else { return .failed("git status failed under \(root)") }
-    let changed = String(decoding: status.1, as: UTF8.self).split(separator: "\n").map { String($0.dropFirst(3)) }
+    var changed = String(decoding: status.1, as: UTF8.self).split(separator: "\n").map { String($0.dropFirst(3)) }
+    // A backend that commits its own work (Claude does, under the owner's
+    // remote-completion contract) leaves a clean tree; the change is then
+    // the commits made since the task started, not the dirt in the tree.
+    let head = gitHead(root)
+    if let startHead, let head, head != startHead,
+       let committed = try? commandOutput(git, ["-C", root, "diff", "--name-only", startHead, head, "--", SelfUpdate.runtimeRelativePath], timeout: 60),
+       committed.0 == 0 {
+        changed += String(decoding: committed.1, as: UTF8.self).split(separator: "\n").map(String.init)
+    }
     guard !changed.isEmpty else { return .notApplicable("no source change under \(SelfUpdate.runtimeRelativePath)") }
-    if let hit = selfRepairSecretHit(root: root, git: git) {
+    if let hit = selfRepairSecretHit(root: root, git: git, since: startHead) {
         return .failed("refusing to commit or stage: possible credential in the change (\(hit))")
     }
     RuntimeActivity.emit(.verifying, publicText: os1Tr("OS-1 자체 수리 마무리 · 변경 \(changed.count)개 파일 · 버전 올리고 빌드·검증·스테이징·커밋까지 OS-1이 직접 합니다",

@@ -6400,10 +6400,57 @@ private func codexShellSelfTest() throws {
     // The composer's text view must not be a drag destination for files:
     // AppKit would insert the path as text. Files fall through to the
     // composer's own drop target and become attachments.
-    let composerTextView = ComposerDropTextView()
-    composerTextView.acceptTextDragsOnly()
-    try check(composerTextView.registeredDraggedTypes == [.string],
-        "composer text view still accepts file drags: \(composerTextView.registeredDraggedTypes)")
+    // The registration must survive the real code path — the editor hosted
+    // by SwiftUI in a visible window, laid out and drawn — because AppKit
+    // re-registers a text view's drag types lazily and a one-shot call
+    // before hosting proved worthless in build143.
+    // The trigger is a view joining a window that is ALREADY on screen —
+    // what SwiftUI does with a representable — so build the window first
+    // (off-screen, invisible), then add the production editor and let the
+    // run loop turn. This sequence takes a plain NSTextView from 1
+    // registered type to 20, file types included; the editor must stay at 1.
+    // Without a shared NSApplication the window never gets a display pass
+    // and the lazy registration never fires, which is why an earlier
+    // version of this check could not catch the bug it was written for.
+    _ = NSApplication.shared
+    let (composerScroll, hostedTextView) = NativeComposerEditor.makeConfiguredEditor(text: "첨부 확인")
+    composerScroll.frame = NSRect(x: 0, y: 0, width: 400, height: 80)
+    let composerWindow = NSWindow(contentRect: NSRect(x: -20_000, y: -20_000, width: 400, height: 80), styleMask: [], backing: .buffered, defer: false)
+    composerWindow.alphaValue = 0
+    composerWindow.orderFront(nil)
+    RunLoop.main.run(until: Date().addingTimeInterval(0.2))
+    composerWindow.contentView?.addSubview(composerScroll)
+    RunLoop.main.run(until: Date().addingTimeInterval(0.5))
+    composerWindow.contentView?.display(); hostedTextView.display()
+    composerWindow.makeFirstResponder(hostedTextView)
+    RunLoop.main.run(until: Date().addingTimeInterval(0.2))
+    // Sanity: the same sequence must move an unguarded NSTextView off [.string],
+    // or this check proves nothing.
+    let unguarded = NSTextView(frame: NSRect(x: 0, y: 0, width: 280, height: 60))
+    unguarded.unregisterDraggedTypes(); unguarded.registerForDraggedTypes([.string])
+    unguarded.isRichText = false
+    let unguardedScroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 280, height: 60)); unguardedScroll.documentView = unguarded
+    composerWindow.contentView?.addSubview(unguardedScroll)
+    RunLoop.main.run(until: Date().addingTimeInterval(0.5))
+    composerWindow.contentView?.display(); unguarded.display()
+    RunLoop.main.run(until: Date().addingTimeInterval(0.2))
+    try check(unguarded.registeredDraggedTypes.count > 1,
+        "the drag re-registration trigger did not fire in this process (unguarded view kept \(unguarded.registeredDraggedTypes.count) type); the composer check below proves nothing")
+    // Now the composer's own class through the identical sequence that just
+    // flipped the unguarded view: it must hold at [.string].
+    let bare = ComposerDropTextView(frame: NSRect(x: 0, y: 0, width: 280, height: 60))
+    bare.acceptTextDragsOnly()
+    bare.isRichText = false
+    let bareScroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 280, height: 60)); bareScroll.documentView = bare
+    composerWindow.contentView?.addSubview(bareScroll)
+    RunLoop.main.run(until: Date().addingTimeInterval(0.5))
+    composerWindow.contentView?.display(); bare.display()
+    RunLoop.main.run(until: Date().addingTimeInterval(0.2))
+    try check(bare.registeredDraggedTypes == [.string],
+        "composer text view class re-registered file drags on the trigger that flips a plain NSTextView: \(bare.registeredDraggedTypes.map(\.rawValue))")
+    try check(hostedTextView.registeredDraggedTypes == [.string],
+        "composer text view accepts file drags after joining a visible window: \(hostedTextView.registeredDraggedTypes.map(\.rawValue))")
+    composerWindow.orderOut(nil)
     try check(Theme.conversationWidth == 760 && Theme.sidebarWidth == 256, "shared layout dimensions")
     print("Codex-oriented shell: \(checks) checks passed; model calls 0; live state writes 0")
 }
@@ -8534,7 +8581,9 @@ private extension NSAttributedString.Key {
 /// the visible transcript payload.
 private func timelineAttachmentPreviews(paths: [String], maxEdge: CGFloat = 360) -> NSAttributedString? {
     let result = NSMutableAttributedString()
-    for path in paths.prefix(6) {
+    // Every attachment the composer accepted (it caps at 24) gets a card; a
+    // silent cut at six lost files 7+ without a trace.
+    for path in paths {
         let url = URL(fileURLWithPath: path)
         let attachment = NSTextAttachment()
         var isImagePreview = false
@@ -9148,6 +9197,27 @@ private final class ComposerDropTextView: NSTextView {
         unregisterDraggedTypes()
         registerForDraggedTypes([.string])
     }
+
+    /// NSTextView re-registers its full drag-type set lazily — on the first
+    /// draw, after editability changes — which silently undid the one-shot
+    /// registration above in every real launch (caught by an adversarial
+    /// verifier reproducing the sequence with ctypes). Re-apply it whenever
+    /// AppKit refreshes the registration.
+    override func updateDragTypeRegistration() {
+        super.updateDragTypeRegistration()
+        acceptTextDragsOnly()
+    }
+
+    // Belt and braces, as on the transcript view: even if a file drag does
+    // reach this view, it is declined so the drag falls through to the
+    // composer's drop target instead of becoming inserted path text.
+    private func carriesFiles(_ info: NSDraggingInfo) -> Bool {
+        info.draggingPasteboard.canReadObject(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true])
+    }
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation { carriesFiles(sender) ? [] : super.draggingEntered(sender) }
+    override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation { carriesFiles(sender) ? [] : super.draggingUpdated(sender) }
+    override func prepareForDragOperation(_ sender: NSDraggingInfo) -> Bool { carriesFiles(sender) ? false : super.prepareForDragOperation(sender) }
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool { carriesFiles(sender) ? false : super.performDragOperation(sender) }
 }
 
 /// Native AppKit bridge retained for the composer so it keeps normal IME,
@@ -9156,13 +9226,21 @@ private final class ComposerDropTextView: NSTextView {
 private struct NativeComposerEditor: NSViewRepresentable {
     @Binding var text: String
     let onFocusChange: (Bool) -> Void
+    var onSubmit: (() -> Void)? = nil
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
     func makeNSView(context: Context) -> NSScrollView {
-        let textView = ComposerDropTextView()
+        let (scrollView, textView) = Self.makeConfiguredEditor(text: text)
         textView.delegate = context.coordinator
         textView.onFocusChange = onFocusChange
+        return scrollView
+    }
+
+    /// The production editor, exactly as hosted — shared with the self-test
+    /// so the test exercises the real configuration, not a lookalike.
+    static func makeConfiguredEditor(text: String) -> (NSScrollView, ComposerDropTextView) {
+        let textView = ComposerDropTextView()
         textView.acceptTextDragsOnly()
         textView.isRichText = false
         textView.allowsUndo = true
@@ -9185,7 +9263,7 @@ private struct NativeComposerEditor: NSViewRepresentable {
         scrollView.hasVerticalScroller = true
         scrollView.autohidesScrollers = true
         scrollView.borderType = .noBorder
-        return scrollView
+        return (scrollView, textView)
     }
 
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
@@ -9207,6 +9285,19 @@ private struct NativeComposerEditor: NSViewRepresentable {
 
         init(_ parent: NativeComposerEditor) { self.parent = parent }
 
+        /// Return while a Korean syllable is still being composed: the key
+        /// monitor hands the event to AppKit so the input method can commit
+        /// the syllable, and AppKit then delivers `insertNewline:` here. That
+        /// is the send, unless Shift asked for a line break — the owner
+        /// types Korean, and a second Return to send was the old behaviour.
+        func textView(_ textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
+            guard commandSelector == #selector(NSResponder.insertNewline(_:)), let submit = parent.onSubmit else { return false }
+            let shift = NSApp.currentEvent?.modifierFlags.contains(.shift) ?? false
+            guard composerReturnAction(shiftPressed: shift) == .send else { return false }
+            submit()
+            return true
+        }
+
         func textDidChange(_ notification: Notification) {
             guard let textView = notification.object as? NSTextView, parent.text != textView.string else { return }
             parent.text = textView.string
@@ -9223,7 +9314,8 @@ private struct ClodexComposerEditor: View {
     var body: some View {
         NativeComposerEditor(
             text: $text,
-            onFocusChange: { focused in keyMonitor.isFocused = focused }
+            onFocusChange: { focused in keyMonitor.isFocused = focused },
+            onSubmit: onSubmit
         )
             .onAppear {
                 keyMonitor.submit = onSubmit

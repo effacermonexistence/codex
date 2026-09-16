@@ -6169,9 +6169,11 @@ func runTask(
     // edits in the same checkout. Read-only work never waits.
     var os1SourceLease: ExclusiveHookLease?
     defer { withExtendedLifetime(os1SourceLease) {} }
+    var os1StartHead: String?
     if resolvedScope == .workspaceWrite,
        let os1Root = LocalProjectWorkspace.root(containing: canonicalWorkspace, projectID: "os1-clodex") {
         os1SourceLease = try acquireOS1SourceWriteLease(root: os1Root)
+        os1StartHead = gitHead(os1Root)
     }
     let pinnedEvidence = try (requireReadOnly || !requestsFreshSource(prompt)) ? attachedSource.map { try loadSource($0) } : nil
     let discussesPinnedProvenance = pinnedEvidence != nil && RegisteredProjectSource.discussesAttachedProvenance(prompt)
@@ -6789,15 +6791,20 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
         if attemptFailure == nil, dispatchStage == .dispatched, execution.artifact.exitCode == 0,
            ticket.permissionProfile == "workspace_write",
            let os1Root = LocalProjectWorkspace.root(containing: canonicalWorkspace, projectID: "os1-clodex") {
-            switch completeOS1SelfRepair(root: os1Root, objective: prompt, startedAt: attemptStartedAt) {
+            switch completeOS1SelfRepair(root: os1Root, objective: prompt, startedAt: attemptStartedAt, startHead: os1StartHead) {
             case .notApplicable:
                 break
             case .staged(_, let note):
                 execution = execution.appendingOutput(note)
             case .failed(let diagnostic):
+                // Terminal: a tree that does not build or fails a self-test
+                // is not something another model should be rolled for; the
+                // owner gets the exact diagnostic, not a retry or a generic
+                // verdict-mismatch line.
                 let note = selfRepairFailurePrefix + diagnostic
                 execution = execution.appendingOutput(note)
                 attemptFailure = note
+                terminalPermissionFailure = OS1Error.message(note)
             }
         }
         let artifact = execution.artifact
