@@ -682,7 +682,7 @@ struct ProviderExecution {
     }
 }
 
-let selfRepairFailurePrefix = "OS-1 self-repair could not complete: "
+let selfRepairFailurePrefix = selfRepairFailurePrefixText
 
 struct RejectedProviderExecution: Error, CustomStringConvertible {
     let execution: ProviderExecution
@@ -8972,6 +8972,7 @@ struct OS1Main {
             let arguments = Array(CommandLine.arguments.dropFirst())
             guard let command = arguments.first else { usage(); return }
             if try await selfUpdateCommand(arguments) { return }
+            if try await selfRepairCommand(arguments) { return }
             if try await fleetCommand(arguments) { return }
             switch command {
             case "version", "--version", "-V": print(os1RuntimeVersionString)

@@ -28,7 +28,44 @@ func selfUpdateCommand(_ arguments: [String]) async throws -> Bool {
     return true
 }
 
-let os1RuntimeVersionString = "OS-1 Runtime 0.9.77 (self-completion-build143)"
+/// `os1 self-repair complete --source <checkout>`: run OS-1's own completion
+/// pipeline on a tree a backend left half-done (bump, build, tests, stage,
+/// secret scan, commit, push). The same code the runtime runs at the end of
+/// every write task on its own source; here it is the operator's hand.
+func selfRepairCommand(_ arguments: [String]) async throws -> Bool {
+    guard arguments.first == "self-repair" else { return false }
+    let subcommand = arguments.count > 1 ? arguments[1] : "complete"
+    var options: [String: String] = [:]
+    var index = 2
+    while index < arguments.count {
+        let key = arguments[index]
+        guard key.hasPrefix("--"), index + 1 < arguments.count else { throw OS1Error.message("self-repair: unknown argument \(key)") }
+        options[String(key.dropFirst(2))] = arguments[index + 1]
+        index += 2
+    }
+    guard subcommand == "complete" else { throw OS1Error.message("self-repair: expected complete") }
+    let requested = options["source"] ?? FileManager.default.currentDirectoryPath
+    guard let root = LocalProjectWorkspace.root(containing: requested, projectID: "os1-clodex") else {
+        throw OS1Error.message("self-repair: \(requested) is not inside an OS-1 source tree")
+    }
+    let lease = try acquireOS1SourceWriteLease(root: root)
+    defer { withExtendedLifetime(lease) {} }
+    let objective = options["objective"] ?? "manual completion of a backend-left source change"
+    switch completeOS1SelfRepair(root: root, objective: objective, startedAt: .distantPast) {
+    case .notApplicable(let reason):
+        print("OS-1 self-repair: nothing to complete — \(reason)")
+    case .staged(_, let note):
+        print(note)
+    case .failed(let diagnostic):
+        throw OS1Error.message(selfRepairFailurePrefixText + diagnostic)
+    }
+    return true
+}
+
+/// Shared with the runtime hook in main.swift.
+let selfRepairFailurePrefixText = "OS-1 self-repair could not complete: "
+
+let os1RuntimeVersionString = "OS-1 Runtime 0.9.78 (self-repair-build144)"
 
 /// One writer at a time in OS-1's own checkout: the same RCC discipline the
 /// runtime enforces elsewhere, applied to itself. Waits briefly for the other
