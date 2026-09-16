@@ -2164,19 +2164,29 @@ private func mentionsR2Source(_ value: String) -> Bool {
         normalized.contains("알투") || normalized.contains("알츠") || normalized.contains("omar-private-archive")
 }
 
-/// "R2 백업 확인", "git-bundles/…", "Mirror Git repository to R2" and the
-/// like are talk about the backup pipeline — an OS-1 or Claude answer the
-/// owner pasted back — not a request to read material out of R2. Removing
-/// those phrases before the R2 test keeps a 16 KB pasted transcript from
-/// turning "이거 고쳐" into an archive retrieval that dies on a missing index.
+/// A pasted backup report mentions R2 and the archive bucket constantly —
+/// "번들 업로드 확인됨", "매니페스트 기록됨", "git-bundles/…" — and none of it
+/// asks for material. Enumerating phrases was too narrow (a bucket name in a
+/// report still tripped the detector and killed the task on a missing
+/// mirror), so this works a line at a time, like the connection-intent
+/// classifier: a line that names R2 *and* reads as pipeline reporting is
+/// dropped before the R2 test. A line that actually asks for material
+/// ("R2에서 QMGR 자료 가져와") carries no pipeline token and survives.
 private func withoutR2BackupInfrastructureTalk(_ lowered: String) -> String {
-    var value = lowered
-    for phrase in ["r2 백업", "r2백업", "r2 backup", "r2-git-backup", "r2 git backup", "git-bundles/", "r2 key",
-                   "r2 워크플로", "r2 workflow", "mirror git repository to r2", "r2 미러", "r2 mirror", "r2 매니페스트",
-                   "omar-private-archive에 이 sha", "r2에 올라", "r2 검증", "r2 확인", "to r2", "r2는 아직", "r2 remains"] {
-        value = value.replacingOccurrences(of: phrase, with: " ")
-    }
-    return value
+    let pipelineTokens = [
+        "백업", "backup", "번들", "bundle", "매니페스트", "manifest", "워크플로", "workflow", "미러", "mirror",
+        "업로드", "upload", "git-bundles", "object_key", "오브젝트 키", "커밋", "commit", "sha256", "sha-256",
+        "푸시", "push", "아카이브에 올라", "백업본", "실행 #", "run #", "bytes for", "to r2 key",
+    ]
+    let materialRequest = ["가져", "찾아", "읽어", "불러", "꺼내", "retrieve", "fetch", "load ", "가져와", "달라"]
+    return lowered.split(separator: "\n", omittingEmptySubsequences: false).filter { line in
+        let value = String(line)
+        guard value.range(of: #"(?<![a-z0-9])r\s*2(?![a-z0-9])"#, options: .regularExpression) != nil
+            || value.contains("알투") || value.contains("알츠") || value.contains("omar-private-archive") else { return true }
+        // The owner asking for material on the same line wins over the report.
+        if materialRequest.contains(where: value.contains) { return true }
+        return !pipelineTokens.contains(where: value.contains)
+    }.joined(separator: "\n")
 }
 
 private func requestsSourceRead(_ value: String) -> Bool {
@@ -6129,7 +6139,7 @@ private func recordCompletionAttempt(store: CompletionFeedbackStore, scope: Comp
             durationMS: min(3_600_000, max(0, Int(Date().timeIntervalSince(startedAt) * 1_000))))
     try? GovernanceActivityStore().attempt(id: monitorTaskID, executionID: ticket.executionID,
         sequence: ticket.sequence, scope: monitorScope, provider: ticket.provider, model: model, effort: effort,
-        startedAt: startedAt, observation: observation)
+        startedAt: startedAt, observation: observation, ledgerScope: scope)
     do {
         try store.record(scope: scope, observation: observation)
     } catch {
@@ -6487,10 +6497,11 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
     // Account data from the catalog probe, never news. An explicit provider
     // choice by the owner is never overridden.
     var routedPreference = providerPreference
+    var burnNotice: String?
     if providerPreference == "auto", !codexCatalog.models.isEmpty, codexCapacity > 0,
        let notice = QuotaWindowPolicy.notice(QuotaWindowPolicy.decision(window: codexCatalog.quotaWindow, settings: userSettings.burnPolicy)) {
         routedPreference = "codex"
-        RuntimeActivity.emit(.routing, provider: "codex", publicText: notice)
+        burnNotice = notice
     }
     let request = StartExecutionRequest(
         task: routingTask,
@@ -6505,7 +6516,11 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
         availableCodexModels: codexCatalog.models,
         executionContext: inputContext
     )
-    RuntimeActivity.emit(.routing)
+    // Carried by the routing emit itself: an earlier version emitted the
+    // notice first and the bare `.routing` emit below erased it before the
+    // app's 100 ms poll could read it, so the owner's "Auto" was redirected
+    // to Codex with nothing on screen.
+    RuntimeActivity.emit(.routing, provider: burnNotice == nil ? nil : "codex", publicText: burnNotice)
     var route: RouteResponse = try await client.post(
         "/v1/executions",
         body: request,
@@ -6601,7 +6616,7 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
             assembledInputSHA256: attemptInputSHA256)
         try? GovernanceActivityStore().attempt(id: executionID, executionID: ticket.executionID,
             sequence: ticket.sequence, scope: monitorScope, provider: ticket.provider, model: model,
-            effort: effort, startedAt: attemptStartedAt)
+            effort: effort, startedAt: attemptStartedAt, ledgerScope: feedbackScope)
         var attemptUsage: CompletionMeasuredUsage?
         var attemptFailure: String?
         var attemptRecorded = false
@@ -8939,6 +8954,28 @@ func selfTest() throws {
             return notice.contains("40%") && health.windowUsedPercent == 60 && health.windowResetsAt == window.resetsAt
                 && QuotaWindowPolicy.notice(.idle(reason: "x")) == nil && OS1Settings().burnPolicy.enabled && OS1Settings().burnPolicy.leadHours == 12
         }()),
+        ("burn notice survives the routing emit that follows it", {
+            let root = FileManager.default.temporaryDirectory.appendingPathComponent("os1-burn-notice-" + UUID().uuidString, isDirectory: true)
+            defer { try? FileManager.default.removeItem(at: root) }
+            do {
+                try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+                let activity = root.appendingPathComponent("activity.json")
+                FileManager.default.createFile(atPath: activity.path, contents: nil)
+                setenv("OS1_ACTIVITY_FILE", activity.path, 1)
+                defer { unsetenv("OS1_ACTIVITY_FILE") }
+                let window = CodexQuotaWindow(usedPercent: 60, resetsAt: Date().addingTimeInterval(4 * 3600), windowKey: "secondary")
+                guard let notice = QuotaWindowPolicy.notice(QuotaWindowPolicy.decision(window: window, settings: QuotaWindowPolicy.Settings())) else { return false }
+                // exactly what runTask does: the notice rides on the routing emit
+                RuntimeActivity.emit(.routing, provider: "codex", publicText: notice)
+                let written = try JSONDecoder().decode(RuntimeActivity.self, from: Data(contentsOf: activity))
+                guard written.publicText == notice, written.provider == "codex" else { return false }
+                // and a bare routing emit (the shape that erased it) still must
+                // not be how the notice reaches the owner
+                RuntimeActivity.emit(.routing)
+                let after = try JSONDecoder().decode(RuntimeActivity.self, from: Data(contentsOf: activity))
+                return after.publicText == nil
+            } catch { return false }
+        }()),
         ("owner retry: the re-ask signal", {
             OwnerRetry.isRetry("아직 안 고쳐졌는데?") && OwnerRetry.isRetry("그게 아니라 레일 말이야") && OwnerRetry.isRetry("still not fixed")
                 && !OwnerRetry.isRetry("이제 웹사이트 페이지도 만들어줘") && !OwnerRetry.isRetry("> 다시 인용된 문장")
@@ -8967,8 +9004,51 @@ func selfTest() throws {
                     try governance.finish(id: id, adopted: true, now: now.addingTimeInterval(5))
                     if retried { try governance.markOwnerRetry(id: id, now: now.addingTimeInterval(60)) }
                 }
+                // End to end, through the hashes the runtime actually uses:
+                // the ledger's input digest is taken under a drift revision,
+                // the monitor's is not. Addressing the ledger by the monitor
+                // hash is a silent no-op, which is what shipped in build150.
+                let ledgerScope = CompletionFeedbackScope(objectiveSHA256: scope.objectiveSHA256,
+                    sourceSHA256: scope.sourceSHA256, executorContractSHA256: scope.executorContractSHA256,
+                    assembledInputSHA256: CompletionFeedbackScope.inputDigest(assembledInput: "prompt",
+                        codexSessionID: nil, claudeSessionID: nil, workspace: "/tmp/os1",
+                        revision: CompletionFeedbackScope.validationRevision + "/drift"))
+                let monitorScope = CompletionFeedbackScope(objectiveSHA256: scope.objectiveSHA256,
+                    sourceSHA256: scope.sourceSHA256, executorContractSHA256: scope.executorContractSHA256,
+                    assembledInputSHA256: CompletionFeedbackScope.inputDigest(assembledInput: "prompt",
+                        codexSessionID: nil, claudeSessionID: nil, workspace: "/tmp/os1"))
+                guard ledgerScope.bindingSHA256 != monitorScope.bindingSHA256 else { return false }
+                let wiredID = UUID().uuidString.lowercased()
+                let wiredObservation = CompletionFeedbackObservation(executionID: wiredID, sequence: 1,
+                    provider: "codex", model: "gpt-5.6-terra", effort: "medium", outcome: .adopted, usage: nil, durationMS: 900)
+                try store.record(scope: ledgerScope, observation: wiredObservation)
+                let wiredTask = UUID().uuidString.lowercased()
+                try governance.begin(id: wiredTask, now: now)
+                try governance.attempt(id: wiredTask, executionID: wiredID, sequence: 1, scope: monitorScope,
+                    provider: "codex", model: "gpt-5.6-terra", effort: "medium", startedAt: now,
+                    observation: wiredObservation, ledgerScope: ledgerScope)
+                try governance.finish(id: wiredTask, adopted: true, now: now.addingTimeInterval(3))
+                guard let recorded = governance.snapshot(legacyRoot: nil).tasks.first(where: { $0.id == wiredTask }),
+                      let recordedAttempt = recorded.attempts.first,
+                      recordedAttempt.ledgerScope == ledgerScope.bindingSHA256,
+                      recordedAttempt.scope == monitorScope.bindingSHA256 else { return false }
+                // what the app does on an owner re-ask
+                try governance.markOwnerRetry(id: wiredTask, now: now.addingTimeInterval(60))
+                var rewritten = false
+                for hash in [recordedAttempt.ledgerScope, recordedAttempt.scope].compactMap({ $0 }) {
+                    if (try? store.markOwnerRetry(bindingSHA256: hash, executionID: wiredID, sequence: 1)) == true {
+                        rewritten = true; break
+                    }
+                }
+                guard rewritten,
+                      try store.load(scope: ledgerScope)?.publicFeedback().observations.first?.outcome == .qualityFailure,
+                      governance.snapshot(legacyRoot: nil).tasks.first(where: { $0.id == wiredTask })?.isFirstPass == false else {
+                    FileHandle.standardError.write(Data("owner-retry: the wired path did not rewrite the ledger\n".utf8))
+                    return false
+                }
                 let routes = governance.snapshot(legacyRoot: nil).routes(since: nil, includeHistorical: false)
                 guard let route = routes.first(where: { $0.id == "claude / fable / low" }), route.terminalTasks == 2,
+                      routes.first(where: { $0.id == "codex / gpt-5.6-terra / medium" })?.firstPassTasks == 0,
                       route.adoptedTasks == 2, route.firstPassTasks == 1, route.firstPassRate == 0.5 else {
                     FileHandle.standardError.write(Data("owner-retry: governance routes \(routes.map { "\($0.id) t=\($0.terminalTasks) a=\($0.adoptedTasks) f=\($0.firstPassTasks)" })\n".utf8)); return false }
                 var priced = route; priced.meteredTasks = 2; priced.taskTokens = 30_000
@@ -8989,8 +9069,19 @@ func selfTest() throws {
             야 내가 직접 채팅창 칠 거 아니면은 백엔드에서 해야지 왜 내 채팅창에 보이는데 이거 고쳐
             """
             let stripped = OS1SelfOutput.stripQuoted(pasted)
+            // The counterexample that shipped in build151: a pasted report whose
+            // only owner sentence is "야 이거 고쳐" still read as an archive
+            // request and died on the missing mirror.
+            let report = """
+            백업 파이프라인 결과입니다.
+            - 워크플로 실행 성공, 최신 커밋 SHA로 매니페스트 기록됨
+            - omar-private-archive 버킷에 번들 업로드 확인됨
+            야 이거 고쳐
+            """
             return resolveR2RetrievalObjective(prompt: stripped, context: nil) == nil
+                && resolveR2RetrievalObjective(prompt: report, context: nil) == nil
                 && resolveR2RetrievalObjective(prompt: "R2에서 QMGR 통합 자료 가져와서 정리해줘", context: nil) != nil
+                && resolveR2RetrievalObjective(prompt: "omar-private-archive에서 그 원문 가져와서 요약해줘", context: nil) != nil
                 && !mentionsR2Source("R2 백업 확인 · git-bundles/x") && mentionsR2Source("R2에 있는 자료")
         }()),
         ("self-repair bumps a stale tree and repairs the version identity line", {

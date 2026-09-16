@@ -121,12 +121,11 @@ public struct BackendHealth: Codable, Equatable, Sendable {
 
     private static func line(_ name: String, _ backend: Backend) -> String {
         switch backend.state {
-        case .usable:
-            if let used = backend.windowUsedPercent, let reset = backend.windowResetsAt {
-                return os1Tr("\(name): 사용 가능 · 한도 창 \(Int(used.rounded()))% 사용 · \(describe(reset)) 리셋",
-                             "\(name): usable · quota window \(Int(used.rounded()))% used · resets \(describe(reset))")
-            }
-            return "\(name): 사용 가능"
+        // A usable backend only appears in these lines when OS-1 is explaining
+        // why it cannot run at all, so a quota-window suffix here would be
+        // unreachable. The window reaches the owner through `os1
+        // backend-health` and through the burn notice on the run itself.
+        case .usable: return "\(name): 사용 가능"
         case .loggedOut: return os1Tr("\(name): 로그인 만료(OAuth) — 공식 로그인 승인이 필요합니다. 로그인 창을 여는 순간 기존 세션이 지워지므로, 연 창은 끝까지 완료해야 합니다.",
             "\(name): sign-in expired (OAuth) — the official login must be approved. Opening the login clears the stored session, so a window that was opened has to be finished.")
         case .quotaExhausted:

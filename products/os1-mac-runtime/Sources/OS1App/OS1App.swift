@@ -5851,8 +5851,15 @@ private final class SessionStore: ObservableObject {
             guard let task = governance.snapshot(legacyRoot: nil).tasks.first(where: { $0.id == taskID }) else { return }
             for attempt in task.attempts {
                 guard let observation = attempt.observation, observation.outcome == .adopted else { continue }
-                _ = try? CompletionFeedbackStore().markOwnerRetry(bindingSHA256: attempt.scope,
-                    executionID: observation.executionID, sequence: observation.sequence)
+                // The ledger file is keyed by the feedback scope, not the
+                // monitor's; addressing it by attempt.scope silently did
+                // nothing. Older records carry only the monitor hash, so try
+                // that too rather than skipping them.
+                let store = CompletionFeedbackStore()
+                for hash in [attempt.ledgerScope, attempt.scope].compactMap({ $0 }) {
+                    if (try? store.markOwnerRetry(bindingSHA256: hash,
+                        executionID: observation.executionID, sequence: observation.sequence)) == true { break }
+                }
             }
         }
     }

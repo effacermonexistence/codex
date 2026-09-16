@@ -6,7 +6,15 @@ import OS1System
 public struct GovernanceAttempt: Codable, Equatable, Sendable {
     public var id: String
     public var startedAt: Date
+    /// The monitor's own per-attempt identity.
     public var scope: String
+    /// Binding hash of the completion-feedback ledger this attempt was
+    /// recorded in. It differs from `scope`: the ledger's input digest is
+    /// taken under a drift-instruction revision, the monitor's is not. An
+    /// owner retry must address the ledger, so it needs this hash — without
+    /// it the revision opened a file that does not exist and did nothing.
+    /// Optional so records written before it still decode.
+    public var ledgerScope: String? = nil
     public var provider: String
     public var model: String
     public var effort: String
@@ -308,18 +316,26 @@ public struct GovernanceActivityStore: Sendable {
     }
     public func attempt(id: String, executionID: String, sequence: Int, scope: CompletionFeedbackScope,
                         provider: String, model: String, effort: String, startedAt: Date,
-                        observation: CompletionFeedbackObservation? = nil) throws {
+                        observation: CompletionFeedbackObservation? = nil,
+                        ledgerScope: CompletionFeedbackScope? = nil) throws {
         try scope.validate()
+        try ledgerScope?.validate()
         try withLock(id) {
         let path = try url(id)
         var task = try JSONDecoder().decode(GovernanceTask.self, from: Self.read(path))
         try Self.validate(task)
         let key = executionID.lowercased() + ":" + String(sequence)
-        let item = GovernanceAttempt(id: key, startedAt: startedAt, scope: scope.bindingSHA256,
+        var item = GovernanceAttempt(id: key, startedAt: startedAt, scope: scope.bindingSHA256,
             provider: provider, model: model, effort: effort, observation: observation)
+        item.ledgerScope = ledgerScope?.bindingSHA256
         if let index = task.attempts.firstIndex(where: { $0.id == key }) {
             // Repeated completion notification is idempotent; a start may never erase usage.
-            if observation != nil { task.attempts[index] = item }
+            if observation != nil {
+                item.ledgerScope = item.ledgerScope ?? task.attempts[index].ledgerScope
+                task.attempts[index] = item
+            } else if task.attempts[index].ledgerScope == nil {
+                task.attempts[index].ledgerScope = item.ledgerScope
+            }
         } else { task.attempts.append(item) }
         try save(task)
         }
