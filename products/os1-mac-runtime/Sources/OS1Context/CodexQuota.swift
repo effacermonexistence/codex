@@ -1,5 +1,15 @@
 import Foundation
 
+/// One rate-limit window of the Codex account: used share and reset time.
+public struct CodexQuotaWindow: Codable, Equatable, Sendable {
+    public let usedPercent: Double
+    public let resetsAt: Date
+    public let windowKey: String
+    public init(usedPercent: Double, resetsAt: Date, windowKey: String) {
+        self.usedPercent = usedPercent; self.resetsAt = resetsAt; self.windowKey = windowKey
+    }
+}
+
 public enum CodexQuota {
     /// Match public provider bucket names, never guess that catalog membership
     /// implies capacity. Unknown/missing limits are not interpreted as zero.
@@ -34,6 +44,22 @@ public enum CodexQuota {
             return Date(timeIntervalSince1970: reset.doubleValue)
         }
         return nil
+    }
+
+    /// The general bucket's longest window that has not reset yet: how much
+    /// of it is used and when it resets. Whatever is unused at that reset is
+    /// lost, which is the only thing the burn policy acts on.
+    public static func generalWindow(_ response: [String: Any], now: Date = Date()) -> CodexQuotaWindow? {
+        guard let general = (response["rateLimitsByLimitId"] as? [String: [String: Any]])?["codex"] else { return nil }
+        var best: CodexQuotaWindow?
+        for key in ["primary", "secondary"] {
+            guard let window = general[key] as? [String: Any], let used = window["usedPercent"] as? NSNumber,
+                  let reset = window["resetsAt"] as? NSNumber, reset.doubleValue > now.timeIntervalSince1970 else { continue }
+            let candidate = CodexQuotaWindow(usedPercent: min(100, max(0, used.doubleValue)),
+                                             resetsAt: Date(timeIntervalSince1970: reset.doubleValue), windowKey: key)
+            if best.map({ candidate.resetsAt > $0.resetsAt }) ?? true { best = candidate }
+        }
+        return best
     }
 
     /// Reset time of the exhausted general bucket, for user notices only.

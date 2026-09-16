@@ -20,6 +20,10 @@ public struct BackendHealth: Codable, Equatable, Sendable {
         public let state: State
         public let detail: String?
         public let recoversAt: Date?
+        /// The account's current quota window, when the backend reports one:
+        /// used share and reset time. Optional so older caches still decode.
+        public var windowUsedPercent: Double? = nil
+        public var windowResetsAt: Date? = nil
         public init(state: State, detail: String? = nil, recoversAt: Date? = nil) {
             self.state = state
             self.detail = detail.map { String($0.prefix(600)) }
@@ -63,9 +67,15 @@ public struct BackendHealth: Codable, Equatable, Sendable {
     /// spelling both the runtime and the health classifier agree on.
     public static let disabledCatalogSource = "Codex 백엔드가 설정에서 꺼져 있습니다"
 
-    public static func codexBackend(modelCount: Int, source: String, resetsAt: Date?, executablePresent: Bool) -> Backend {
+    public static func codexBackend(modelCount: Int, source: String, resetsAt: Date?, executablePresent: Bool,
+                                    window: CodexQuotaWindow? = nil) -> Backend {
         if source == disabledCatalogSource { return Backend(state: .disabled, detail: source) }
-        if modelCount > 0 { return Backend(state: .usable) }
+        if modelCount > 0 {
+            var usable = Backend(state: .usable)
+            usable.windowUsedPercent = window?.usedPercent
+            usable.windowResetsAt = window?.resetsAt
+            return usable
+        }
         if !executablePresent { return Backend(state: .missing, detail: "codex 실행 파일 없음") }
         if source.contains("사용량 한도") { return Backend(state: .quotaExhausted, detail: source, recoversAt: resetsAt) }
         if source.contains("기본 지시문") { return Backend(state: .contextBudget, detail: source) }
@@ -111,7 +121,12 @@ public struct BackendHealth: Codable, Equatable, Sendable {
 
     private static func line(_ name: String, _ backend: Backend) -> String {
         switch backend.state {
-        case .usable: return "\(name): 사용 가능"
+        case .usable:
+            if let used = backend.windowUsedPercent, let reset = backend.windowResetsAt {
+                return os1Tr("\(name): 사용 가능 · 한도 창 \(Int(used.rounded()))% 사용 · \(describe(reset)) 리셋",
+                             "\(name): usable · quota window \(Int(used.rounded()))% used · resets \(describe(reset))")
+            }
+            return "\(name): 사용 가능"
         case .loggedOut: return os1Tr("\(name): 로그인 만료(OAuth) — 공식 로그인 승인이 필요합니다. 로그인 창을 여는 순간 기존 세션이 지워지므로, 연 창은 끝까지 완료해야 합니다.",
             "\(name): sign-in expired (OAuth) — the official login must be approved. Opening the login clears the stored session, so a window that was opened has to be finished.")
         case .quotaExhausted:

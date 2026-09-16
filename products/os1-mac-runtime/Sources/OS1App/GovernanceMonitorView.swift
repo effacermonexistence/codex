@@ -35,6 +35,14 @@ struct GovernanceMonitorView: View {
     private var samples: [(String, CompletionFeedbackObservation)] { filtered.samples(since: since, includeHistorical: since == nil) }
     private var usage: [Int] { samples.compactMap { GovernanceSnapshot.tokens($0.1) } }
     private var completed: Int { terminal.filter(\.isAdopted).count }
+    /// Completed in one click: adopted and never re-asked. The objective function.
+    private var firstPass: Int { terminal.filter(\.isFirstPass).count }
+    private var retried: Int { terminal.filter { $0.ownerRetryAt != nil }.count }
+    private var tokensPerCompletedTask: Double? {
+        let tokens = meteredTasks.compactMap(\.tokens).reduce(0,+)
+        guard !terminal.isEmpty, terminal.count == meteredTasks.count, tokens > 0, firstPass > 0 else { return nil }
+        return Double(tokens) / Double(firstPass)
+    }
     private var comparisons: [GovernanceComparison] {
         filtered.comparisons(baseline: baseline, since: since, includeHistorical: since == nil)
     }
@@ -130,9 +138,11 @@ struct GovernanceMonitorView: View {
     private var metrics: some View {
         VStack(spacing: 10) {
             HStack(spacing: 10) {
-                card("측정 토큰 · 입력 + 출력", usage.isEmpty ? "—" : num(usage.reduce(0,+)), "계측 \(usage.count)/\(samples.count)회 · 재시도 포함", color: pink)
-                card("검증된 작업 완수율", percent(quality.rate), "목표 검증 미연결 \(quality.unknown)건 · 채택 ≠ 완수", color: green)
-                card("검증 완수 / 100만 토큰", decimal(quality.successesPerMillion), "전 작업 비용·목표 검증이 있을 때 계산", color: green)
+                card("한 방 완료율", percent(terminal.isEmpty ? nil : Double(firstPass)/Double(terminal.count)),
+                     "\(firstPass)/\(terminal.count)건 · 채택됐고 되묻지 않음 · 되물음 \(retried)건 · 이것이 완료의 정의", color: green)
+                card("완료 작업당 토큰", tokensPerCompletedTask.map { num(Int($0)) } ?? "—",
+                     "전 작업 토큰 ÷ 한 방 완료 건수 · 재시도·실패 비용 포함 · 낮을수록 좋음", color: green)
+                card("측정 토큰 · 입력 + 출력", usage.isEmpty ? "—" : num(usage.reduce(0,+)), "계측 \(usage.count)/\(samples.count)회 · 절약은 완료가 있을 때만 의미", color: pink)
             }
             HStack(spacing: 10) {
                 card("작업 결과 채택률", percent(terminal.isEmpty ? nil : Double(completed)/Double(terminal.count)), "\(completed)/\(terminal.count)건 · 실패·취소 포함")

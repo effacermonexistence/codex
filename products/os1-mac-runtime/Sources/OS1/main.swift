@@ -150,6 +150,9 @@ struct ActiveCodexCatalog {
     let source: String
     /// Reset of the exhausted general quota bucket when that exclusion applied.
     var quotaResetsAt: Date? = nil
+    /// The account's longest unreset quota window, for the burn policy and
+    /// the health card. Nil when the account probe did not report one.
+    var quotaWindow: CodexQuotaWindow? = nil
 }
 
 /// Health of the local backends as this preflight observed them. The Claude
@@ -169,7 +172,8 @@ func observedBackendHealth(claudeCatalog: [ClaudeModelCapability], codexCatalog:
         }
     }
     let codex = BackendHealth.codexBackend(modelCount: codexCatalog.models.count, source: codexCatalog.source,
-        resetsAt: codexCatalog.quotaResetsAt, executablePresent: (try? findExecutable("codex")) != nil)
+        resetsAt: codexCatalog.quotaResetsAt, executablePresent: (try? findExecutable("codex")) != nil,
+        window: codexCatalog.quotaWindow)
     return BackendHealth(claude: claude, codex: codex, checkedAt: now)
 }
 
@@ -244,7 +248,10 @@ func executableCodexCatalog(_ catalog: ActiveCodexCatalog, config: RuntimeConfig
             defaultEffort: efforts.contains(candidate.defaultEffort) ? candidate.defaultEffort : efforts[0],
             supportedEfforts: efforts, priority: candidate.priority)
     }
-    return ActiveCodexCatalog(models: models, source: catalog.source)
+    // Keep the account's quota facts: dropping them here hid the reset time
+    // from health and would hide the window from the burn policy.
+    return ActiveCodexCatalog(models: models, source: catalog.source, quotaResetsAt: catalog.quotaResetsAt,
+                              quotaWindow: catalog.quotaWindow)
 }
 
 func executableProviderPreference(requested: String, prompt: String, codexAvailable: Bool,
@@ -660,6 +667,8 @@ struct RunSummary: Codable {
     /// stored context with nil.
     var taskContext: TaskContext? = nil
     var persistedCorrectionIDs: [UUID]? = nil
+    /// Governance task id of this run; the app charges an owner retry to it.
+    var monitorTaskID: String? = nil
 }
 
 struct ProviderExecution {
@@ -6375,7 +6384,8 @@ func runTask(
             sideEffects: adopted.allSatisfy({ $0.permissionProfile == "read_only" }) ? .none : .unknown,
             adoption: .adopted, contextRevision: taskContext.latestSemanticRevision))
         return RunSummary(status: "complete", steps: adopted, sourceContext: sourceContext, taskContext: finished,
-            persistedCorrectionIDs: ExecutionSteering.currentSubmission.map { ExecutionSteering().persistedIDs($0) })
+            persistedCorrectionIDs: ExecutionSteering.currentSubmission.map { ExecutionSteering().persistedIDs($0) },
+            monitorTaskID: executionID)
     }
     let key = try SigningKey.loadOrCreate()
     let id = try deviceID()
@@ -6472,9 +6482,19 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
         inputContext.completionFeedback = try ((try? feedbackStore.load(scope: feedbackScope)) ??
             CompletionFeedbackLedger(scope: feedbackScope)).publicFeedback()
     }
+    // Burn it before it resets: quota left in a Codex window is lost at the
+    // reset, so when the window is closing, automatic work goes to Codex.
+    // Account data from the catalog probe, never news. An explicit provider
+    // choice by the owner is never overridden.
+    var routedPreference = providerPreference
+    if providerPreference == "auto", !codexCatalog.models.isEmpty, codexCapacity > 0,
+       let notice = QuotaWindowPolicy.notice(QuotaWindowPolicy.decision(window: codexCatalog.quotaWindow, settings: userSettings.burnPolicy)) {
+        routedPreference = "codex"
+        RuntimeActivity.emit(.routing, provider: "codex", publicText: notice)
+    }
     let request = StartExecutionRequest(
         task: routingTask,
-        providerPreference: try executableProviderPreference(requested: providerPreference,
+        providerPreference: try executableProviderPreference(requested: routedPreference,
             prompt: requireReadOnly ? routingTask : prompt, codexAvailable: !codexCatalog.models.isEmpty,
             claudeAvailable: hasClaudeExecutable, localAvailable: publicDeterministicExpression(prompt) != nil,
             evidenceSupplied: r2Evidence != nil, scope: resolvedScope,
@@ -8844,7 +8864,7 @@ func selfTest() throws {
             guard let space = CGColorSpace(name: CGColorSpace.sRGB),
                   let context = CGContext(data: nil, width: 3000, height: 2000, bitsPerComponent: 8, bytesPerRow: 0,
                                           space: space, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue),
-                  let image = { context.setFillColor(CGColor(red: 0.2, green: 0.4, blue: 0.9, alpha: 1)); context.fill(CGRect(x: 0, y: 0, width: 3000, height: 2000)); return context.makeImage() }(),
+                  let image = { () -> CGImage? in context.setFillColor(CGColor(red: 0.2, green: 0.4, blue: 0.9, alpha: 1)); context.fill(CGRect(x: 0, y: 0, width: 3000, height: 2000)); return context.makeImage() }(),
                   let destination = CGImageDestinationCreateWithURL(URL(fileURLWithPath: path) as CFURL, UTType.png.identifier as CFString, 1, nil)
             else { return false }
             CGImageDestinationAddImage(destination, image, nil)
@@ -8897,6 +8917,63 @@ func selfTest() throws {
             let flags = fleetAdvertisedCapabilities(health: health, codexExecutable: true, claudeExecutable: true)
             return backend.state == .disabled && stale.state == .disabled && health.anyUsable
                 && health.repairSteps.isEmpty && !flags.codex && flags.claude
+        }()),
+        ("quota window: longest unreset window, burn decision table, owner notice", {
+            let now = Date(timeIntervalSince1970: 1_800_000_000)
+            let response: [String: Any] = ["rateLimitsByLimitId": ["codex": [
+                "primary": ["usedPercent": 30, "resetsAt": now.timeIntervalSince1970 + 2 * 3600],
+                "secondary": ["usedPercent": 60, "resetsAt": now.timeIntervalSince1970 + 10 * 3600],
+            ]]]
+            guard let window = CodexQuota.generalWindow(response, now: now), window.windowKey == "secondary",
+                  window.usedPercent == 60 else { return false }
+            let defaults = QuotaWindowPolicy.Settings()
+            guard case .burn(let remaining, let hours) = QuotaWindowPolicy.decision(window: window, settings: defaults, now: now),
+                  remaining == 40, abs(hours - 10) < 0.01 else { return false }
+            guard case .idle = QuotaWindowPolicy.decision(window: window, settings: QuotaWindowPolicy.Settings(leadHours: 6), now: now),
+                  case .idle = QuotaWindowPolicy.decision(window: CodexQuotaWindow(usedPercent: 90, resetsAt: window.resetsAt, windowKey: "secondary"), settings: defaults, now: now),
+                  case .idle = QuotaWindowPolicy.decision(window: window, settings: QuotaWindowPolicy.Settings(enabled: false), now: now),
+                  case .idle = QuotaWindowPolicy.decision(window: nil, settings: defaults, now: now),
+                  CodexQuota.generalWindow(response, now: now.addingTimeInterval(11 * 3600)) == nil else { return false }
+            let notice = QuotaWindowPolicy.notice(QuotaWindowPolicy.decision(window: window, settings: defaults, now: now)) ?? ""
+            let health = BackendHealth.codexBackend(modelCount: 3, source: "native account model/list", resetsAt: nil, executablePresent: true, window: window)
+            return notice.contains("40%") && health.windowUsedPercent == 60 && health.windowResetsAt == window.resetsAt
+                && QuotaWindowPolicy.notice(.idle(reason: "x")) == nil && OS1Settings().burnPolicy.enabled && OS1Settings().burnPolicy.leadHours == 12
+        }()),
+        ("owner retry: the re-ask signal", {
+            OwnerRetry.isRetry("아직 안 고쳐졌는데?") && OwnerRetry.isRetry("그게 아니라 레일 말이야") && OwnerRetry.isRetry("still not fixed")
+                && !OwnerRetry.isRetry("이제 웹사이트 페이지도 만들어줘") && !OwnerRetry.isRetry("> 다시 인용된 문장")
+        }()),
+        ("owner retry: a re-ask after completion is a failed task, charged to the route", {
+            let root = FileManager.default.temporaryDirectory.appendingPathComponent("os1-owner-retry-" + UUID().uuidString, isDirectory: true)
+            defer { try? FileManager.default.removeItem(at: root) }
+            let scope = CompletionFeedbackScope(objectiveSHA256: String(repeating: "a", count: 64), sourceSHA256: nil, executorContractSHA256: String(repeating: "b", count: 64), assembledInputSHA256: String(repeating: "c", count: 64))
+            let store = CompletionFeedbackStore(root: root.appendingPathComponent("feedback"))
+            let executionID = UUID().uuidString.lowercased()
+            do {
+                try store.record(scope: scope, observation: CompletionFeedbackObservation(executionID: executionID, sequence: 1,
+                    provider: "claude", model: "fable", effort: "low", outcome: .adopted, usage: nil, durationMS: 1_000))
+                guard try store.markOwnerRetry(bindingSHA256: scope.bindingSHA256, executionID: executionID, sequence: 1) else {
+                    FileHandle.standardError.write(Data("owner-retry: ledger revision returned false\n".utf8)); return false }
+                guard try store.load(scope: scope)?.publicFeedback().observations.first?.outcome == .qualityFailure else {
+                    FileHandle.standardError.write(Data("owner-retry: public feedback not revised\n".utf8)); return false }
+                guard try store.markOwnerRetry(bindingSHA256: scope.bindingSHA256, executionID: executionID, sequence: 1) == false else {
+                    FileHandle.standardError.write(Data("owner-retry: second revision not idempotent\n".utf8)); return false }
+                let governance = GovernanceActivityStore(root: root.appendingPathComponent("governance"))
+                let now = Date()
+                for (id, retried) in [(UUID().uuidString.lowercased(), false), (UUID().uuidString.lowercased(), true)] {
+                    try governance.begin(id: id, now: now)
+                    try governance.attempt(id: id, executionID: UUID().uuidString.lowercased(), sequence: 1, scope: scope,
+                        provider: "claude", model: "fable", effort: "low", startedAt: now)
+                    try governance.finish(id: id, adopted: true, now: now.addingTimeInterval(5))
+                    if retried { try governance.markOwnerRetry(id: id, now: now.addingTimeInterval(60)) }
+                }
+                let routes = governance.snapshot(legacyRoot: nil).routes(since: nil, includeHistorical: false)
+                guard let route = routes.first(where: { $0.id == "claude / fable / low" }), route.terminalTasks == 2,
+                      route.adoptedTasks == 2, route.firstPassTasks == 1, route.firstPassRate == 0.5 else {
+                    FileHandle.standardError.write(Data("owner-retry: governance routes \(routes.map { "\($0.id) t=\($0.terminalTasks) a=\($0.adoptedTasks) f=\($0.firstPassTasks)" })\n".utf8)); return false }
+                var priced = route; priced.meteredTasks = 2; priced.taskTokens = 30_000
+                return priced.tokensPerCompletedTask == 30_000 && route.tokensPerCompletedTask == nil
+            } catch { FileHandle.standardError.write(Data("owner-retry: threw \(error)\n".utf8)); return false }
         }()),
         ("pasted backup-pipeline talk is not an R2 material request", {
             let pasted = """

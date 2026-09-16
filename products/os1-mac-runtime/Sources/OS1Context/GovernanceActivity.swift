@@ -26,8 +26,14 @@ public struct GovernanceTask: Codable, Equatable, Sendable {
     public var disposition: String // running, adopted, not_adopted, cancelled
     public var attempts: [GovernanceAttempt]
     public var revision = CompletionFeedbackScope.validationRevision
+    /// When the owner had to send a retry or correction after this task
+    /// "completed". Optional: records written before it existed still decode.
+    public var ownerRetryAt: Date? = nil
     public var isTerminal: Bool { endedAt != nil }
     public var isAdopted: Bool { isTerminal && disposition == "adopted" }
+    /// Done in one click: adopted, and the owner never had to ask again.
+    /// This — not adoption, not tokens — is what a completed task means.
+    public var isFirstPass: Bool { isAdopted && ownerRetryAt == nil }
     /// Existing receipts certify delivery/adoption, not the user's objective. Never infer that verdict.
     public var verifiedCompletion: Bool? { nil }
     public var route: String {
@@ -58,12 +64,21 @@ public struct GovernanceRoute: Identifiable, Sendable {
     public var durationMS = 0
     public var terminalTasks = 0
     public var adoptedTasks = 0
+    public var firstPassTasks = 0
     public var meteredTasks = 0
     public var meteredAdoptedTasks = 0
     public var taskTokens = 0
     public var taskDurationSeconds: Double = 0
     public var adoptionInterval95: ClosedRange<Double>? { GovernanceStatistics.wilson(success: adoptedAttempts, total: attempts) }
     public var completionRate: Double? { terminalTasks > 0 ? Double(adoptedTasks) / Double(terminalTasks) : nil }
+    /// Share of terminal tasks the owner never had to re-ask about.
+    public var firstPassRate: Double? { terminalTasks > 0 ? Double(firstPassTasks) / Double(terminalTasks) : nil }
+    /// Tokens spent on every task on this route, divided by the tasks that
+    /// were completed in one click. Retries and failures stay in the cost.
+    public var tokensPerCompletedTask: Double? {
+        guard terminalTasks > 0, meteredTasks == terminalTasks, taskTokens > 0, firstPassTasks > 0 else { return nil }
+        return Double(taskTokens) / Double(firstPassTasks)
+    }
     public var adoptionRate: Double? { attempts > 0 ? Double(adoptedAttempts) / Double(attempts) : nil }
     public var meanTokens: Double? { measuredAttempts > 0 ? Double(tokens) / Double(measuredAttempts) : nil }
     // Costs of failed/retried tasks stay in the denominator. Missing usage disables the ratio.
@@ -82,6 +97,9 @@ public struct GovernanceComparison: Identifiable, Sendable {
     public let tokenSavings: Double?
     public let adoptionDelta: Double
     public let latencySavings: Double?
+    /// Cost per one-click-completed task, candidate vs baseline (positive =
+    /// candidate cheaper per completion). Nil until both routes completed one.
+    public var completionCostSavings: Double? = nil
 }
 
 public struct GovernanceBucket: Identifiable, Sendable {
@@ -139,7 +157,7 @@ public struct GovernanceSnapshot: Sendable {
         }
         for t in selectedTasks(since: since) where t.isTerminal {
             var row = rows[t.route] ?? GovernanceRoute(id: t.route)
-            row.terminalTasks += 1; row.adoptedTasks += t.isAdopted ? 1 : 0
+            row.terminalTasks += 1; row.adoptedTasks += t.isAdopted ? 1 : 0; row.firstPassTasks += t.isFirstPass ? 1 : 0
             if let value = t.tokens { row.meteredTasks += 1; row.taskTokens += value; row.meteredAdoptedTasks += t.isAdopted ? 1 : 0 }
             row.taskDurationSeconds += t.endedAt!.timeIntervalSince(t.startedAt)
             rows[t.route] = row
@@ -207,11 +225,18 @@ public struct GovernanceSnapshot: Sendable {
                 timeA.append(ams); timeB.append(bms)
             }
             guard count > 0 else { return nil }
-            return GovernanceComparison(id: route, baseline: baseline, matchedScopes: count,
+            let rows = routes(since: since, includeHistorical: includeHistorical)
+            let baselineCost = rows.first { $0.id == baseline }?.tokensPerCompletedTask
+            let candidateCost = rows.first { $0.id == route }?.tokensPerCompletedTask
+            var comparison = GovernanceComparison(id: route, baseline: baseline, matchedScopes: count,
                 candidateAttempts: candidateN, baselineAttempts: baselineN,
                 tokenSavings: tokenA.count == count ? GovernanceStatistics.savings(baseline: tokenA.reduce(0,+), candidate: tokenB.reduce(0,+)) : nil,
                 adoptionDelta: adoptionDeltas.reduce(0,+) / Double(count),
                 latencySavings: timeA.count == count ? GovernanceStatistics.savings(baseline: timeA.reduce(0,+), candidate: timeB.reduce(0,+)) : nil)
+            if let baselineCost, let candidateCost {
+                comparison.completionCostSavings = GovernanceStatistics.savings(baseline: baselineCost, candidate: candidateCost)
+            }
+            return comparison
         }
     }
 
@@ -297,6 +322,16 @@ public struct GovernanceActivityStore: Sendable {
             if observation != nil { task.attempts[index] = item }
         } else { task.attempts.append(item) }
         try save(task)
+        }
+    }
+    /// The owner sent a retry or correction after this task completed.
+    public func markOwnerRetry(id: String, now: Date = Date()) throws {
+        try withLock(id) {
+            var task = try JSONDecoder().decode(GovernanceTask.self, from: Self.read(try url(id)))
+            try Self.validate(task)
+            guard task.isTerminal, task.ownerRetryAt == nil else { return }
+            task.ownerRetryAt = now
+            try save(task)
         }
     }
     public func finish(id: String, adopted: Bool, cancelled: Bool = false, now: Date = Date()) throws {

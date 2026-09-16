@@ -12,11 +12,20 @@ public struct OS1Settings: Codable, Equatable, Sendable {
     public var outputLanguage: String
     /// Show the Codex backend in the rail and allow routing to it.
     public var showCodex: Bool
+    /// Route automatic work to Codex when its quota window is about to reset
+    /// with quota left. Optional so older settings files still decode.
+    public var burnCodexBeforeReset: Bool? = nil
+    /// Hours before the window reset at which the burn starts (default 12).
+    public var codexBurnLeadHours: Int? = nil
 
     public init(interfaceLanguage: String = "en", outputLanguage: String = "auto", showCodex: Bool = true) {
         self.interfaceLanguage = interfaceLanguage
         self.outputLanguage = outputLanguage
         self.showCodex = showCodex
+    }
+
+    public var burnPolicy: QuotaWindowPolicy.Settings {
+        QuotaWindowPolicy.Settings(enabled: burnCodexBeforeReset ?? true, leadHours: Double(codexBurnLeadHours ?? 12))
     }
 
     public static var defaultURL: URL {
