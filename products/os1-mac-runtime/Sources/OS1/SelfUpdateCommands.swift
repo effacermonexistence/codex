@@ -70,7 +70,7 @@ func selfRepairCommand(_ arguments: [String]) async throws -> Bool {
 /// Shared with the runtime hook in main.swift.
 let selfRepairFailurePrefixText = "OS-1 self-repair could not complete: "
 
-let os1RuntimeVersionString = "OS-1 Runtime 0.9.81 (self-repair-build147)"
+let os1RuntimeVersionString = "OS-1 Runtime 0.9.82 (self-repair-build148)"
 
 /// One writer at a time in OS-1's own checkout: the same RCC discipline the
 /// runtime enforces elsewhere, applied to itself. Waits briefly for the other
