@@ -699,6 +699,49 @@ private func interactionSelfTest() throws {
     })
     let first = fixtures[0].id, second = fixtures[1].id
     try check(store.sessions.count == 35 && store.sessions.allSatisfy { $0.messages.count == 45 }, "old history truncated")
+
+    // A conversation this build cannot decode is still the owner's. One
+    // message written without a timestamp used to fail the whole entry, and
+    // the next save wrote the store without it — 65 messages deleted per
+    // launch, silently. It must survive a load/save round trip untouched.
+    do {
+        let undecodableRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("os1-undecodable-" + UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: undecodableRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: undecodableRoot) }
+        let store = undecodableRoot.appendingPathComponent("sessions.json")
+        var healthy = ConversationSession(title: "readable", workspace: "/tmp")
+        healthy.messages = [ChatMessage(role: .user, text: "keep me")]
+        let encoded = try JSONEncoder().encode(SessionEnvelope(schema: 4, sessions: [healthy]))
+        guard var object = try JSONSerialization.jsonObject(with: encoded) as? [String: Any],
+              var rows = object["sessions"] as? [[String: Any]], var poisoned = rows.first else {
+            throw RunnerError.message("Session store regression: fixture could not be built")
+        }
+        let poisonedID = UUID().uuidString
+        poisoned["id"] = poisonedID
+        poisoned["title"] = "undecodable"
+        // exactly the shape that broke: a message with no timestamp
+        poisoned["messages"] = [["id": UUID().uuidString, "role": "system", "text": "no timestamp here"]]
+        rows.append(poisoned)
+        object["sessions"] = rows
+        try JSONSerialization.data(withJSONObject: object).write(to: store)
+
+        let loaded = SessionStore(storageRoot: undecodableRoot, nativeSessionOpener: { _ in false })
+        try check(loaded.sessions.count == 1 && loaded.sessions[0].title == "readable",
+            "the readable conversation did not load beside an undecodable one")
+        loaded.sessions[0].title = "touched"
+        loaded.flushPendingState()
+        guard let after = try JSONSerialization.jsonObject(with: Data(contentsOf: store)) as? [String: Any],
+              let saved = after["sessions"] as? [[String: Any]] else {
+            throw RunnerError.message("Session store regression: store unreadable after save")
+        }
+        try check(saved.count == 2, "a save dropped the undecodable conversation: \(saved.count) of 2 remain")
+        guard let carried = saved.first(where: { ($0["id"] as? String) == poisonedID }) else {
+            throw RunnerError.message("Session store regression: the undecodable conversation was deleted")
+        }
+        try check((carried["messages"] as? [[String: Any]])?.count == 1 && (carried["title"] as? String) == "undecodable",
+            "the undecodable conversation was rewritten instead of preserved")
+    }
     store.select(first)
     let backendIndex = store.sessions.firstIndex(where: { $0.id == first })!
     store.sessions[backendIndex].provider = .claude
@@ -2741,6 +2784,15 @@ private struct LossyDecodable<Value: Decodable>: Decodable {
     init(from decoder: Decoder) throws { value = try? Value(from: decoder) }
 }
 
+/// A conversation OS-1 cannot decode is still the owner's conversation. The
+/// lenient path used to drop it, and the next save wrote the smaller store —
+/// so a single bad field deleted 65 messages, once per launch, quietly. The
+/// raw JSON of an undecodable entry is kept here and written back verbatim.
+private struct PreservedSession {
+    let id: String?
+    let raw: [String: Any]
+}
+
 private struct LenientSessionEnvelope: Decodable {
     let schema: Int
     let sessions: [LossyDecodable<ConversationSession>]
@@ -3791,6 +3843,9 @@ private final class SessionStore: ObservableObject {
     typealias NativePinOperation = @MainActor (String, Bool, String?) async throws -> Void
     // Admission is global; ownership, sequencing, context and display are not.
     static let maximumConcurrentSessions = 4
+    /// Raw JSON of conversations this build could not decode, carried through
+    /// every save so nothing is lost while the cause is fixed.
+    private var unreadableSessions: [PreservedSession] = []
     @Published var activeRuns: [UUID: ActiveRun] = [:]
     private var primarySubmissionTimes: [UUID: Date] = [:]
     private var inFlightSubmissions: [UUID: PendingSubmission] = [:]
@@ -5851,8 +5906,15 @@ private final class SessionStore: ObservableObject {
             guard let task = governance.snapshot(legacyRoot: nil).tasks.first(where: { $0.id == taskID }) else { return }
             for attempt in task.attempts {
                 guard let observation = attempt.observation, observation.outcome == .adopted else { continue }
-                _ = try? CompletionFeedbackStore().markOwnerRetry(bindingSHA256: attempt.scope,
-                    executionID: observation.executionID, sequence: observation.sequence)
+                // The ledger file is keyed by the feedback scope, not the
+                // monitor's; addressing it by attempt.scope silently did
+                // nothing. Older records carry only the monitor hash, so try
+                // that too rather than skipping them.
+                let store = CompletionFeedbackStore()
+                for hash in [attempt.ledgerScope, attempt.scope].compactMap({ $0 }) {
+                    if (try? store.markOwnerRetry(bindingSHA256: hash,
+                        executionID: observation.executionID, sequence: observation.sequence)) == true { break }
+                }
             }
         }
     }
@@ -5986,9 +6048,20 @@ private final class SessionStore: ObservableObject {
             let preserved = storageURL.deletingLastPathComponent().appendingPathComponent("sessions.unreadable-\(stamp).json")
             try? data.write(to: preserved, options: [.atomic])
             let readable = lenient.sessions.compactMap(\.value)
+            // Keep the raw entries OS-1 could not decode so save() writes them
+            // back untouched instead of deleting them.
+            let decodedIDs = Set(readable.map { $0.id.uuidString.lowercased() })
+            if let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let rows = object["sessions"] as? [[String: Any]] {
+                unreadableSessions = rows.filter { row in
+                    guard let id = row["id"] as? String else { return true }
+                    return !decodedIDs.contains(id.lowercased())
+                }.map { PreservedSession(id: $0["id"] as? String, raw: $0) }
+            }
             envelope = SessionEnvelope(schema: lenient.schema, sessions: readable, queued: lenient.queued,
                 inFlight: lenient.inFlight, sidebarIntents: lenient.sidebarIntents, nativePinnedOrders: lenient.nativePinnedOrders)
-            alertMessage = "대화 \(lenient.sessions.count - readable.count)개를 읽지 못했습니다. 원본 파일을 \(preserved.lastPathComponent)으로 보존했고 나머지 대화는 그대로 불러왔습니다."
+            let lost = lenient.sessions.count - readable.count
+            alertMessage = "대화 \(lost)개를 읽지 못했습니다. 원본을 \(preserved.lastPathComponent)으로 보존했고, 읽지 못한 대화도 그대로 유지합니다(삭제하지 않음)."
         } else { return }
         guard [1, 2, 3, 4].contains(envelope.schema) else { return }
         var provenanceRepaired = false
@@ -6073,9 +6146,26 @@ private final class SessionStore: ObservableObject {
                 attributes: [.posixPermissions: 0o700]
             )
             let bounded = sessions.sorted { $0.updatedAt > $1.updatedAt }
-            let data = try JSONEncoder().encode(SessionEnvelope(schema: 4, sessions: bounded, queued: queuedSubmissions,
+            var data = try JSONEncoder().encode(SessionEnvelope(schema: 4, sessions: bounded, queued: queuedSubmissions,
                 inFlight:Array(inFlightSubmissions.values), sidebarIntents: sidebarIntents,
                 nativePinnedOrders: nativePinnedOrders))
+            // Conversations OS-1 could not decode go back into the file exactly
+            // as they were found. Writing a store without them is how a single
+            // bad field silently deleted the owner's work on every launch.
+            if !unreadableSessions.isEmpty,
+               var object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                let kept = Set(bounded.map { $0.id.uuidString.lowercased() })
+                let carried = unreadableSessions.filter { preserved in
+                    guard let id = preserved.id?.lowercased() else { return true }
+                    return !kept.contains(id)
+                }
+                if !carried.isEmpty {
+                    object["sessions"] = ((object["sessions"] as? [[String: Any]]) ?? []) + carried.map(\.raw)
+                    if let merged = try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]) {
+                        data = merged
+                    }
+                }
+            }
             try data.write(to: storageURL, options: [.atomic, .completeFileProtectionUnlessOpen])
             try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: storageURL.path)
         } catch {

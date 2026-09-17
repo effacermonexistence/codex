@@ -60,6 +60,13 @@ func runTaskContextFixtures(root: URL) throws {
     // B. Mixed allow/deny sentences keep the write scope and the prohibition.
     let mixed = ScopeResolution.resolve("파일은 수정해. 서버는 변경하지 마")
     try check(mixed.scope == .workspaceWrite && mixed.prohibitions == ["do not change the server"], "mixed allow/deny keeps write + server prohibition")
+    // "업데이트 시켜" is an edit. It resolved read-only on 2026-09-16 and the
+    // website request died as a question back to the owner.
+    try check(ScopeResolution.resolve("오마일 aji 사이트가서 os1 클로덱스 누르면 뭐가 뜨거든 지금 로컬 페이지 기준으로 거기 업데이트 시켜. 디자인이 조금 다르거든").scope == .workspaceWrite,
+        "an update request is a write")
+    try check(ScopeResolution.resolve("README 반영해줘").scope == .workspaceWrite, "반영해 is a write")
+    try check(ScopeResolution.resolve("업데이트 내역만 알려줘").scope == .readOnly, "asking about updates is not a write")
+    try check(ScopeResolution.resolve("update me on the deployment status").scope == .readOnly, "a bare English 'update' does not grant workspace authority")
     let explain = ScopeResolution.resolve("수정하지 말고 설명만 해줘")
     try check(explain.scope == .readOnly && explain.prohibitions.contains("do not modify files"), "explain-only stays read-only")
     let compound = ScopeResolution.resolve("파일·서버를 변경하거나 테스트를 실행하지 마. Node 버전만 알려줘")
