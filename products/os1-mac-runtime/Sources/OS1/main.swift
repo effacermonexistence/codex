@@ -646,6 +646,7 @@ struct RunStepSummary: Codable {
     let stderr: String
     let durationMS: Int64
     let nativeRecord: NativeRecordEvidence?
+    var workflowStage: String? = nil
 
     enum CodingKeys: String, CodingKey {
         case sequence, provider, action, model, effort, output, stderr
@@ -655,6 +656,7 @@ struct RunStepSummary: Codable {
         case exitCode = "exit_code"
         case durationMS = "duration_ms"
         case nativeRecord = "native_record"
+        case workflowStage = "workflow_stage"
     }
 }
 
@@ -669,6 +671,7 @@ struct RunSummary: Codable {
     var persistedCorrectionIDs: [UUID]? = nil
     /// Governance task id of this run; the app charges an owner retry to it.
     var monitorTaskID: String? = nil
+    var workflowBlocker: String? = nil
 }
 
 struct ProviderExecution {
@@ -6150,6 +6153,114 @@ private func recordCompletionAttempt(store: CompletionFeedbackStore, scope: Comp
     }
 }
 
+/// Execute one owner objective through bounded, independently adopted stages.
+/// A failed stage is a held task, never permission to replay a write.
+func runWorkflowTask(
+    prompt: String,
+    workspace: String,
+    providerPreference: String,
+    context: String?,
+    codexSessionID: String?,
+    claudeSessionID: String?,
+    codexCapacity: Int,
+    claudeCapacity: Int,
+    progress: Bool,
+    desktopReveal: DesktopRevealMode
+) async throws -> RunSummary {
+    let handoff = try SessionHandoff.decode(context)
+    let detached = detachesConversationSource(prompt)
+    let originalObjective = TaskContext.Objective(
+        requestText: prompt, kind: .modify, scope: .workspaceWrite,
+        prohibitions: ScopeResolution.resolve(prompt).prohibitions)
+    var stageContext = detached ? nil : context
+    var taskState = detached ? nil : handoff.taskContext
+    var source = detached ? nil : handoff.source
+    var steps: [RunStepSummary] = []
+    var codexID = codexSessionID
+    var claudeID = claudeSessionID
+    var priorOutput: String?
+    var architectureOutput = ""
+    var stagePlan: [TaskWorkflow] = TaskWorkflow.allCases
+    var stageIndex = 0
+    // Governance measures the owner's whole task, not three apparently
+    // successful subtasks. Every stage attempt is charged to this one id.
+    let workflowMonitorID = UUID().uuidString.lowercased()
+    var workflowAdopted = false
+    try? GovernanceActivityStore().begin(id: workflowMonitorID)
+    defer { try? GovernanceActivityStore().finish(id: workflowMonitorID,
+        adopted: workflowAdopted, cancelled: ExecutionCancellation.isCancelled) }
+
+    func held(_ reason: String) -> RunSummary {
+        if taskState != nil { taskState!.setObjective(originalObjective) }
+        return RunSummary(status: "workflow_blocked", steps: steps,
+            sourceContext: source, taskContext: taskState,
+            monitorTaskID: workflowMonitorID, workflowBlocker: reason)
+    }
+
+    while stageIndex < stagePlan.count {
+        let stage = stagePlan[stageIndex]
+        let stagePrompt = stage == .implementation && stageIndex > 2
+            ? TaskWorkflow.repairPrompt(original: prompt, architecture: architectureOutput,
+                failedVerification: priorOutput ?? "")
+            : stage.prompt(original: prompt, prior: priorOutput)
+        let result: RunSummary
+        do {
+            result = try await runTask(prompt: stagePrompt,
+                workspace: workspace, providerPreference: providerPreference, context: stageContext,
+                // Independent verification starts a fresh native session. It sees
+                // the OS-1 custody handoff, not the implementer's own chat state.
+                codexSessionID: stage == .verification ? nil : codexID,
+                claudeSessionID: stage == .verification ? nil : claudeID,
+                codexCapacity: codexCapacity, claudeCapacity: claudeCapacity,
+                progress: progress, desktopReveal: desktopReveal,
+                phaseReadOnly: stage.readOnly,
+                routingTaskOverride: stage.routeTask + "\nOwner objective: " + String(prompt.prefix(2_000)),
+                workflowStage: stage, monitorTaskIDOverride: workflowMonitorID)
+        } catch {
+            // Before any stage succeeds, retain the normal nonzero preflight
+            // path so the app can repair a missing backend and resume itself.
+            // Once a write may have happened, hold instead of replaying it.
+            if steps.isEmpty { throw error }
+            return held("\(stage.rawValue): \(error)")
+        }
+        var tagged = result.steps
+        for index in tagged.indices { tagged[index].workflowStage = stage.rawValue }
+        steps.append(contentsOf: tagged)
+        if let updated = result.taskContext { taskState = updated }
+        if let updated = result.sourceContext { source = updated }
+        guard result.status == "complete",
+              let adopted = tagged.last(where: { $0.revasDisposition == "adopted" }),
+              ["codex", "claude"].contains(adopted.provider),
+              adopted.nativeRecord?.isVerified == true, adopted.exitCode == 0,
+              adopted.permissionProfile == (stage.readOnly ? "read_only" : "workspace_write") else {
+            return held("\(stage.rawValue): 검증된 native 실행·권한·REVAS 채택이 없어 다음 단계로 진행하지 않았습니다.")
+        }
+        if stage == .verification && TaskWorkflow.verdict(adopted.output) != true {
+            guard TaskWorkflow.permitsBoundedRepair(verdict: TaskWorkflow.verdict(adopted.output),
+                stageIndex: stageIndex) else {
+                return held("verification: 분리된 검증 단계가 PASS를 증명하지 못했습니다. 구현 결과와 검증 기록은 보존했습니다. 이전 쓰기 단계를 자동 재실행하지 말고 실패 근거를 확인한 뒤 수정 범위를 다시 지정해야 합니다.")
+            }
+            // Only an explicit, verified BLOCK opens one bounded repair pass.
+            // Missing/malformed verdicts and uncertain implementation writes
+            // cannot authorize replay.
+            stagePlan.append(contentsOf: [.implementation, .verification])
+        }
+        if stage != .verification {
+            if adopted.provider == "codex" { codexID = adopted.sessionID }
+            if adopted.provider == "claude" { claudeID = adopted.sessionID }
+        }
+        if stage == .architecture { architectureOutput = adopted.output }
+        priorOutput = adopted.output
+        stageContext = try SessionHandoff(transcript: handoff.transcript,
+            source: source, taskContext: taskState).encoded()
+        stageIndex += 1
+    }
+    if taskState != nil { taskState!.setObjective(originalObjective) }
+    workflowAdopted = true
+    return RunSummary(status: "complete", steps: steps, sourceContext: source,
+        taskContext: taskState, monitorTaskID: workflowMonitorID)
+}
+
 func runTask(
     prompt: String,
     workspace: String,
@@ -6161,7 +6272,11 @@ func runTask(
     claudeCapacity: Int,
     progress: Bool,
     desktopReveal: DesktopRevealMode = .never,
-    requireReadOnly: Bool = false
+    requireReadOnly: Bool = false,
+    phaseReadOnly: Bool = false,
+    routingTaskOverride: String? = nil,
+    workflowStage: TaskWorkflow? = nil,
+    monitorTaskIDOverride: String? = nil
 ) async throws -> RunSummary {
     RuntimeActivity.emit(.preparing)
     let handoff = try SessionHandoff.decode(context)
@@ -6170,21 +6285,26 @@ func runTask(
     let attachedSource = sourceDetached ? nil : handoff.source
     let objectiveStartedAt = Date()
     let executionID = UUID().uuidString.lowercased()
+    let monitorTaskID = monitorTaskIDOverride ?? executionID
     var monitorAdopted = false
-    try? GovernanceActivityStore().begin(id: executionID, now: objectiveStartedAt)
-    defer { try? GovernanceActivityStore().finish(id: executionID, adopted: monitorAdopted,
-        cancelled: ExecutionCancellation.isCancelled) }
+    if monitorTaskIDOverride == nil { try? GovernanceActivityStore().begin(id: monitorTaskID, now: objectiveStartedAt) }
+    defer {
+        if monitorTaskIDOverride == nil {
+            try? GovernanceActivityStore().finish(id: monitorTaskID, adopted: monitorAdopted,
+                cancelled: ExecutionCancellation.isCancelled)
+        }
+    }
     // OS-1 owns the task state. A v2 handoff (older app) is migrated from the
     // fields it already carries; nothing in the conversation is discarded.
     var taskState = handoff.taskContext ?? TaskContext.migrated(conversationID: UUID(), request: prompt, workspace: workspace,
         sourceContext: attachedSource, codexSessionID: codexSessionID, claudeSessionID: claudeSessionID, now: objectiveStartedAt)
     if sourceDetached { taskState.sources.removeAll(); taskState.touch(now: objectiveStartedAt) }
     let scopeResolution = ScopeResolution.resolve(prompt)
-    let preparation = requireReadOnly ? nil : PreparationIntent.detect(prompt)
+    let preparation = requireReadOnly || phaseReadOnly ? nil : PreparationIntent.detect(prompt)
     let kind: TaskContext.ObjectiveKind = preparation.map {
         $0.modifies ? .modify : ($0.kind == .explainFromContext ? .explain : .prepare)
     } ?? TaskContext.ObjectiveKind.classify(prompt)
-    let resolvedScope: TaskContext.Scope = requireReadOnly || preparation?.modifies == false ? .readOnly : scopeResolution.scope
+    let resolvedScope: TaskContext.Scope = requireReadOnly || phaseReadOnly || preparation?.modifies == false ? .readOnly : scopeResolution.scope
     if taskState.objective.requestText != prompt || taskState.objective.kind != kind || taskState.objective.scope != resolvedScope {
         taskState.setObjective(TaskContext.Objective(requestText: prompt, kind: kind,
             scope: resolvedScope, prohibitions: scopeResolution.prohibitions), now: objectiveStartedAt)
@@ -6222,11 +6342,11 @@ func runTask(
         os1SourceLease = try acquireOS1SourceWriteLease(root: os1Root)
         os1StartHead = gitHead(os1Root)
     }
-    let pinnedEvidence = try (requireReadOnly || !requestsFreshSource(prompt)) ? attachedSource.map { try loadSource($0) } : nil
+    let pinnedEvidence = try (requireReadOnly || phaseReadOnly || !requestsFreshSource(prompt)) ? attachedSource.map { try loadSource($0) } : nil
     let discussesPinnedProvenance = pinnedEvidence != nil && RegisteredProjectSource.discussesAttachedProvenance(prompt)
     let sourceSelectionContext = SCVProjectMaterials.isVerificationMode(pinnedEvidence?.verificationMode) &&
         !qmGRMaterialRequested(prompt) ? nil : context
-    var r2Objective = requireReadOnly || discussesPinnedProvenance ? nil : resolveR2RetrievalObjective(prompt: prompt, context: sourceSelectionContext)
+    var r2Objective = requireReadOnly || phaseReadOnly || discussesPinnedProvenance ? nil : resolveR2RetrievalObjective(prompt: prompt, context: sourceSelectionContext)
     // Work preparation is a task capability: an aliased project ("인스타",
     // "instagram") or the conversation's bound project selects the adapter.
     // A bare "준비해" without a project resolves to nothing and stays a normal
@@ -6261,7 +6381,7 @@ func runTask(
     RuntimeActivity.emit(.source)
     // Pasted OS-1 output ("Claude 연결됨", login notices) is context, not a
     // request to open a login; classify the user's own words only.
-    if !requireReadOnly, !discussesPinnedProvenance, !requestsR2Retrieval,
+    if !requireReadOnly, !phaseReadOnly, !discussesPinnedProvenance, !requestsR2Retrieval,
        let targets = connectionControlTargets(OS1SelfOutput.stripQuoted(prompt)) {
         var summary = try runConnectionControl(targets)
         summary.sourceContext = attachedSource
@@ -6395,7 +6515,7 @@ func runTask(
             adoption: .adopted, contextRevision: taskContext.latestSemanticRevision))
         return RunSummary(status: "complete", steps: adopted, sourceContext: sourceContext, taskContext: finished,
             persistedCorrectionIDs: ExecutionSteering.currentSubmission.map { ExecutionSteering().persistedIDs($0) },
-            monitorTaskID: executionID)
+            monitorTaskID: monitorTaskID)
     }
     let key = try SigningKey.loadOrCreate()
     let id = try deviceID()
@@ -6434,6 +6554,30 @@ func runTask(
     } else {
         try? observedBackendHealth(claudeCatalog: observedClaudeCatalog, codexCatalog: codexCatalog, workspace: canonicalWorkspace).save()
     }
+    // The signed router receives only stage-eligible native model/effort
+    // tuples. A stage directive in prose alone would not enforce this policy.
+    if let workflowStage {
+        let models = (providerPreference == "claude" || codexCapacity <= 0 ? [] : codexCatalog.models.map(\.slug)) +
+            (providerPreference == "codex" || claudeCapacity <= 0 ? [] : observedClaudeCatalog.map(\.model))
+        let selected = workflowStage.preferredModels(models)
+        codexCatalog = ActiveCodexCatalog(models: codexCatalog.models.compactMap { row in
+            guard selected.contains(row.slug) else { return nil }
+            let efforts = workflowStage.preferredEfforts(row.supportedEfforts)
+            guard !efforts.isEmpty else { return nil }
+            return CodexModelCapability(slug: row.slug,
+                defaultEffort: efforts.contains(row.defaultEffort) ? row.defaultEffort : efforts[0],
+                supportedEfforts: efforts, priority: row.priority)
+        }, source: codexCatalog.source, quotaResetsAt: codexCatalog.quotaResetsAt,
+            quotaWindow: codexCatalog.quotaWindow)
+        observedClaudeCatalog = observedClaudeCatalog.compactMap { row in
+            guard selected.contains(row.model) else { return nil }
+            let efforts = workflowStage.preferredEfforts(row.supportedEfforts)
+            return efforts.isEmpty ? nil : ClaudeModelCapability(model: row.model, supportedEfforts: efforts)
+        }
+        guard !codexCatalog.models.isEmpty || !observedClaudeCatalog.isEmpty else {
+            throw OS1Error.message("\(workflowStage.rawValue): 현재 계정·설정에서 실행 가능한 단계별 모델이 없어 호출하지 않았습니다.")
+        }
+    }
     let claudeCatalog = observedClaudeCatalog
     let hasClaudeExecutable = !claudeCatalog.isEmpty
     let repairedContext = repairedSource ? (context ?? "") + """
@@ -6460,9 +6604,9 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
     // The quoted original operation is context, not a second execute request.
     // Keep this new review's task identity distinct while retaining all source
     // and full-input accounting and hard-enforcing its signed read-only scope.
-    let routingTask = requireReadOnly
+    let routingTask = routingTaskOverride ?? (requireReadOnly
         ? readOnlyStatusRoutingTask
-        : sourceAwareRoutingTask(prompt, evidence: r2Evidence)
+        : sourceAwareRoutingTask(prompt, evidence: r2Evidence))
     let feedbackStore = CompletionFeedbackStore()
     func instructionFeedbackScope(_ instructions: String, input: String, codexID: String?, claudeID: String?) -> CompletionFeedbackScope {
         CompletionFeedbackScope(objectiveSHA256: sha256Hex(Data(routingTask.utf8)), sourceSHA256: sourceContext?.sha256,
@@ -6498,7 +6642,7 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
     // choice by the owner is never overridden.
     var routedPreference = providerPreference
     var burnNotice: String?
-    if providerPreference == "auto", !codexCatalog.models.isEmpty, codexCapacity > 0,
+    if workflowStage == nil, providerPreference == "auto", !codexCatalog.models.isEmpty, codexCapacity > 0,
        let notice = QuotaWindowPolicy.notice(QuotaWindowPolicy.decision(window: codexCatalog.quotaWindow, settings: userSettings.burnPolicy)) {
         routedPreference = "codex"
         burnNotice = notice
@@ -6506,7 +6650,7 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
     let request = StartExecutionRequest(
         task: routingTask,
         providerPreference: try executableProviderPreference(requested: routedPreference,
-            prompt: requireReadOnly ? routingTask : prompt, codexAvailable: !codexCatalog.models.isEmpty,
+            prompt: requireReadOnly || phaseReadOnly ? routingTask : prompt, codexAvailable: !codexCatalog.models.isEmpty,
             claudeAvailable: hasClaudeExecutable, localAvailable: publicDeterministicExpression(prompt) != nil,
             evidenceSupplied: r2Evidence != nil, scope: resolvedScope,
             codexUnavailableReason: codexCatalog.models.isEmpty ? codexCatalog.source : nil),
@@ -6545,7 +6689,11 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
     ]
     // An automatic readback is bounded separately: at most a probe plus one
     // eligible alternate. It never recursively starts another review.
-    let attemptLimit = requireReadOnly ? min(2, config.maximumSteps) : config.maximumSteps
+    // A workflow implementation is one native write attempt. The workflow
+    // verifier, not the model retry loop, decides whether a bounded repair is
+    // warranted; uncertain writes must never be replayed implicitly.
+    let attemptLimit = workflowStage == .implementation ? 1 :
+        (requireReadOnly || phaseReadOnly ? min(2, config.maximumSteps) : config.maximumSteps)
     for step in 1...attemptLimit {
         if ExecutionCancellation.isCancelled { throw OS1Error.backendBlocked(.cancelled) }
         if route.status == "complete" {
@@ -6562,10 +6710,10 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
         }
         guard let ticket = route.ticket else { throw OS1Error.message("Invalid OS-1 route response") }
         try verifyTicket(ticket, config: config)
-        guard requireReadOnly || scopeResolution.scope != .workspaceWrite || ticket.permissionProfile == "workspace_write" else {
+        guard requireReadOnly || phaseReadOnly || scopeResolution.scope != .workspaceWrite || ticket.permissionProfile == "workspace_write" else {
             throw OS1Error.message("수정 요청에 읽기 전용 실행이 배정되어 모델 호출 전에 멈췄습니다. 요청과 자료는 유지했으며 권한을 임의로 올리지 않았습니다.")
         }
-        guard !(requireReadOnly || requiresReadOnlyExecution(prompt)) || ticket.permissionProfile == "read_only" else {
+        guard !(requireReadOnly || phaseReadOnly || requiresReadOnlyExecution(prompt)) || ticket.permissionProfile == "read_only" else {
             throw OS1Error.message("상태 확인 요청에 변경 권한이 발급되어 실행하지 않았습니다. 기존 작업은 재실행하지 않았습니다.")
         }
         guard !(r2Evidence != nil && asksRecoveryReadiness(prompt) && ticket.permissionProfile != "read_only") else {
@@ -6614,7 +6762,7 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
         let monitorScope = CompletionFeedbackScope(objectiveSHA256: feedbackScope.objectiveSHA256,
             sourceSHA256: feedbackScope.sourceSHA256, executorContractSHA256: feedbackScope.executorContractSHA256,
             assembledInputSHA256: attemptInputSHA256)
-        try? GovernanceActivityStore().attempt(id: executionID, executionID: ticket.executionID,
+        try? GovernanceActivityStore().attempt(id: monitorTaskID, executionID: ticket.executionID,
             sequence: ticket.sequence, scope: monitorScope, provider: ticket.provider, model: model,
             effort: effort, startedAt: attemptStartedAt, ledgerScope: feedbackScope)
         var attemptUsage: CompletionMeasuredUsage?
@@ -6628,7 +6776,7 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
             if !attemptRecorded {
                 recordCompletionAttempt(store: feedbackStore, scope: feedbackScope, ticket: ticket,
                     model: model, effort: effort, outcome: .verificationUnavailable,
-                    usage: attemptUsage, startedAt: attemptStartedAt, source: sourceContext, monitorTaskID: executionID, monitorScope: monitorScope)
+                    usage: attemptUsage, startedAt: attemptStartedAt, source: sourceContext, monitorTaskID: monitorTaskID, monitorScope: monitorScope)
             }
         }
         var execution: ProviderExecution
@@ -6707,7 +6855,7 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
                     lastFailureNotice?.emit()
                     recordCompletionAttempt(store: feedbackStore, scope: feedbackScope, ticket: ticket,
                         model: model, effort: effort, outcome: .quotaExhausted, usage: attemptUsage,
-                        startedAt: attemptStartedAt, source: sourceContext, monitorTaskID: executionID, monitorScope: monitorScope)
+                        startedAt: attemptStartedAt, source: sourceContext, monitorTaskID: monitorTaskID, monitorScope: monitorScope)
                     attemptRecorded = true
                     failedCandidates.insert(candidateKey)
                     guard providerPreference == "auto", step < attemptLimit,
@@ -6761,7 +6909,7 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
                         lastFailureNotice?.emit()
                         recordCompletionAttempt(store: feedbackStore, scope: feedbackScope, ticket: ticket,
                             model: model, effort: effort, outcome: .capabilityFailure, usage: attemptUsage,
-                            startedAt: attemptStartedAt, source: sourceContext, monitorTaskID: executionID, monitorScope: monitorScope)
+                            startedAt: attemptStartedAt, source: sourceContext, monitorTaskID: monitorTaskID, monitorScope: monitorScope)
                         attemptRecorded = true
                         failedCandidates.insert(candidateKey)
                         recordBackendCheckpoint(BackendRecoveryCheckpoint(executionID: ticket.executionID,
@@ -6926,7 +7074,7 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
             // into a completion, generic write-uncertainty or steering retry.
             recordCompletionAttempt(store: feedbackStore, scope: feedbackScope, ticket: ticket,
                 model: model, effort: effort, outcome: completionFailureOutcome(attemptFailure),
-                usage: attemptUsage, startedAt: attemptStartedAt, source: sourceContext, monitorTaskID: executionID, monitorScope: monitorScope)
+                usage: attemptUsage, startedAt: attemptStartedAt, source: sourceContext, monitorTaskID: monitorTaskID, monitorScope: monitorScope)
             attemptRecorded = true
             recordExecutionFailure(ticket: ticket, model: model, effort: effort,
                 reason: "terminal_backend_blocker_no_model_retry", source: sourceContext)
@@ -6945,7 +7093,7 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
                 reason: "locally_rejected_candidate_retry_with_diagnostic", source: sourceContext)
             recordCompletionAttempt(store: feedbackStore, scope: feedbackScope, ticket: ticket,
                 model: model, effort: effort, outcome: completionFailureOutcome(attemptFailure),
-                usage: attemptUsage, startedAt: attemptStartedAt, source: sourceContext, monitorTaskID: executionID, monitorScope: monitorScope)
+                usage: attemptUsage, startedAt: attemptStartedAt, source: sourceContext, monitorTaskID: monitorTaskID, monitorScope: monitorScope)
             attemptRecorded = true
             continuation = BackendContinuation(provider: ticket.provider, nativeSessionID: execution.sessionID,
                 blocker: .incomplete, publicProgress: artifact.output, diagnostic: diagnostic)
@@ -6975,7 +7123,7 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
                 reason: "verifier_completed_locally_rejected_candidate", source: sourceContext)
             recordCompletionAttempt(store: feedbackStore, scope: feedbackScope, ticket: ticket,
                 model: model, effort: effort, outcome: completionFailureOutcome(attemptFailure),
-                usage: attemptUsage, startedAt: attemptStartedAt, source: sourceContext, monitorTaskID: executionID, monitorScope: monitorScope)
+                usage: attemptUsage, startedAt: attemptStartedAt, source: sourceContext, monitorTaskID: monitorTaskID, monitorScope: monitorScope)
             attemptRecorded = true
             // A self-repair that did not pass staging is reported with its
             // exact diagnostic, never as a generic verdict mismatch.
@@ -6988,7 +7136,7 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
         recordCompletionAttempt(store: feedbackStore, scope: feedbackScope, ticket: ticket,
             model: model, effort: effort,
             outcome: revasDisposition == "adopted" ? .adopted : completionFailureOutcome(attemptFailure),
-            usage: attemptUsage, startedAt: attemptStartedAt, source: sourceContext, monitorTaskID: executionID, monitorScope: monitorScope)
+            usage: attemptUsage, startedAt: attemptStartedAt, source: sourceContext, monitorTaskID: monitorTaskID, monitorScope: monitorScope)
         attemptRecorded = true
         if revasDisposition != "adopted",
            ExecutionSteering.currentSubmission.map({ !ExecutionSteering().inputs($0).isEmpty }) == true {
@@ -7173,7 +7321,11 @@ func printRunSummary(_ summary: RunSummary) {
             fputs("\(step.stderr)\n", stderr)
         }
     }
-    print("\nOS-1 completed with \(adopted.count) adopted result(s)")
+    if summary.status == "complete" {
+        print("\nOS-1 completed with \(adopted.count) adopted result(s)")
+    } else {
+        print("\nOS-1 held: \(summary.workflowBlocker ?? summary.status)")
+    }
 }
 
 func doctor() throws {
@@ -9374,11 +9526,21 @@ struct OS1Main {
                 guard codexCapacity + claudeCapacity > 0 else {
                     throw OS1Error.message("At least one backend capacity must be above zero")
                 }
-                let summary = try await runTask(
+                let sessionContext = try readSessionContext(contextPath)
+                let workflow = !requireReadOnly &&
+                    TaskWorkflow.shouldDecompose(prompt, scope: ScopeResolution.resolve(prompt).scope) &&
+                    PreparationIntent.detect(prompt)?.modifies != false
+                let summary = try await (workflow ? runWorkflowTask(
+                    prompt: prompt, workspace: workspace, providerPreference: providerPreference,
+                    context: sessionContext, codexSessionID: codexSessionID,
+                    claudeSessionID: claudeSessionID, codexCapacity: codexCapacity,
+                    claudeCapacity: claudeCapacity, progress: outputFormat == "text",
+                    desktopReveal: desktopReveal
+                ) : runTask(
                     prompt: prompt,
                     workspace: workspace,
                     providerPreference: providerPreference,
-                    context: try readSessionContext(contextPath),
+                    context: sessionContext,
                     codexSessionID: codexSessionID,
                     claudeSessionID: claudeSessionID,
                     codexCapacity: codexCapacity,
@@ -9386,7 +9548,7 @@ struct OS1Main {
                     progress: outputFormat == "text",
                     desktopReveal: desktopReveal,
                     requireReadOnly: requireReadOnly
-                )
+                ))
                 if outputFormat == "json" {
                     let encoder = JSONEncoder()
                     encoder.outputFormatting = [.withoutEscapingSlashes]

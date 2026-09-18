@@ -678,6 +678,7 @@ public struct ScopeResolution: Equatable, Sendable {
     static let relativeTargetFencePattern = #"(?i)(?:^|(?<=[.!?;\n]))\s*(?:do not|don't|never)\s+(?:modify|edit|change|delete|remove|write(?: to)?)\s+(?:any\s+)?other\s+(?:files?|folders?|directories|services?|settings)(?:\s*(?:,\s*(?:(?:and|or)\s+)?|(?:and|or)\s+)(?:other\s+)?(?:files?|folders?|directories|services?|settings)){0,8}\s*(?=[.!?;\n]|$)"#
 
     static let positiveEdit = ["손봐", "손 봐", "수정해", "수정하고", "수정 해", "고쳐", "고치고", "고치지", "고치자", "바꿔", "바꾸고", "구현해", "추가해", "삭제해", "리팩터", "만들어",
+                               "완료해", "완성해", "끝까지 해", "마저 해", "마저해",
                                "일치시켜", "일치시키", "통일해", "통일하", "맞춰", "때려넣", "넣어줘", "넣어 줘",
                                "fix ", "modify ", "edit ", "implement ", "add ", "remove ", "rename ", "change the code", "update the code",
                                "업데이트해", "업데이트 해", "업데이트시켜", "업데이트 시켜", "업데이트하고", "업데이트 하고", "갱신해", "갱신시켜", "반영해", "반영시켜", "반영 시켜", "반영하고", "적용해", "적용시켜", "적용 시켜", "교체해", "옮겨", "지워", "생성해", "apply the change"]
