@@ -6168,6 +6168,17 @@ func runWorkflowTask(
     desktopReveal: DesktopRevealMode
 ) async throws -> RunSummary {
     let handoff = try SessionHandoff.decode(context)
+    let workflowStartedAt = Date()
+    let projectID = PreparationIntent.detect(prompt)?.projectID ?? handoff.taskContext?.project?.projectID
+    let workflowWorkspace = projectID == "os1-clodex"
+        ? (LocalProjectWorkspace.resolve(projectID: "os1-clodex", requested: workspace)?.workspace ?? workspace)
+        : workspace
+    let repairRoot = LocalProjectWorkspace.root(containing: workflowWorkspace, projectID: "os1-clodex")
+    // Hold custody across architecture, implementation and independent verification.
+    // Child stages share this in-process lease; no staged build exists before PASS.
+    let workflowLease = try repairRoot.map { try acquireOS1SourceWriteLease(root: $0) }
+    defer { withExtendedLifetime(workflowLease) {} }
+    let workflowStartHead = repairRoot.flatMap { gitHead($0) }
     let detached = detachesConversationSource(prompt)
     let originalObjective = TaskContext.Objective(
         requestText: prompt, kind: .modify, scope: .workspaceWrite,
@@ -6199,14 +6210,28 @@ func runWorkflowTask(
 
     while stageIndex < stagePlan.count {
         let stage = stagePlan[stageIndex]
-        let stagePrompt = stage == .implementation && stageIndex > 2
+        var stagePrompt = stage == .implementation && stageIndex > 2
             ? TaskWorkflow.repairPrompt(original: prompt, architecture: architectureOutput,
                 failedVerification: priorOutput ?? "")
             : stage.prompt(original: prompt, prior: priorOutput)
+        if stage == .verification {
+            // Fresh verifier sessions need primary execution provenance, not just
+            // the implementation prose. Expose only records already checked by
+            // the native custody gate; do not invent a baseline or a receipt.
+            let records = steps.compactMap { step -> String? in
+                guard let record = step.nativeRecord, record.isVerified, let path = record.recordPath else { return nil }
+                return "stage=\(step.workflowStage ?? "unknown") provider=\(step.provider) model=\(step.model ?? "unknown") permission=\(step.permissionProfile ?? "unknown") exit=\(step.exitCode) record=\(path)"
+            }.joined(separator: "\n")
+            stagePrompt += "\nRUNTIME-VERIFIED EXECUTION RECORD LOCATORS (record persistence and permissions verified by OS-1, not blanket proof of model claims):\n" + records
+            stagePrompt += "\nRead these primary records when checking pre-change observations, tool results and historical scope. Architecture handoff for locating evidence (not itself proof):\n" + String(architectureOutput.prefix(8_000))
+        }
+        if repairRoot != nil {
+            stagePrompt += "\nSELF-REPAIR RELEASE BOUNDARY: This workflow verifies source readiness first. Do not install, stage a release, bump versions, or commit/push. OS-1 performs those mechanical steps only after the independent verification PASS. Check actual source, deterministic tests, and a local rendering when relevant. Do not require the old installed app to already contain this uninstalled patch; do not claim installation or live recovery. Installation has its own later receipt and rollback gate."
+        }
         let result: RunSummary
         do {
             result = try await runTask(prompt: stagePrompt,
-                workspace: workspace, providerPreference: providerPreference, context: stageContext,
+                workspace: workflowWorkspace, providerPreference: providerPreference, context: stageContext,
                 // Independent verification starts a fresh native session. It sees
                 // the OS-1 custody handoff, not the implementer's own chat state.
                 codexSessionID: stage == .verification ? nil : codexID,
@@ -6214,8 +6239,8 @@ func runWorkflowTask(
                 codexCapacity: codexCapacity, claudeCapacity: claudeCapacity,
                 progress: progress, desktopReveal: desktopReveal,
                 phaseReadOnly: stage.readOnly,
-                routingTaskOverride: stage.routeTask + "\nOwner objective: " + String(prompt.prefix(2_000)),
-                workflowStage: stage, monitorTaskIDOverride: workflowMonitorID)
+                routingTaskOverride: stage.routingTask,
+                workflowStage: stage, ownerPrompt: prompt, monitorTaskIDOverride: workflowMonitorID, heldOS1SourceRoot: repairRoot)
         } catch {
             // Before any stage succeeds, retain the normal nonzero preflight
             // path so the app can repair a missing backend and resume itself.
@@ -6255,6 +6280,16 @@ func runWorkflowTask(
             source: source, taskContext: taskState).encoded()
         stageIndex += 1
     }
+    if let repairRoot, TaskWorkflow.permitsSelfUpdate(stage: .verification, finalVerdict: TaskWorkflow.verdict(priorOutput ?? "")) {
+        switch completeOS1SelfRepair(root: repairRoot, objective: prompt,
+            startedAt: workflowStartedAt, startHead: workflowStartHead) {
+        case .notApplicable: break
+        case .staged(_, let note):
+            RuntimeActivity.emit(.verifying, publicText: note)
+        case .failed(let diagnostic):
+            return held("self-update: " + diagnostic)
+        }
+    }
     if taskState != nil { taskState!.setObjective(originalObjective) }
     workflowAdopted = true
     return RunSummary(status: "complete", steps: steps, sourceContext: source,
@@ -6276,7 +6311,9 @@ func runTask(
     phaseReadOnly: Bool = false,
     routingTaskOverride: String? = nil,
     workflowStage: TaskWorkflow? = nil,
-    monitorTaskIDOverride: String? = nil
+    ownerPrompt: String? = nil,
+    monitorTaskIDOverride: String? = nil,
+    heldOS1SourceRoot: String? = nil
 ) async throws -> RunSummary {
     RuntimeActivity.emit(.preparing)
     let handoff = try SessionHandoff.decode(context)
@@ -6299,8 +6336,8 @@ func runTask(
     var taskState = handoff.taskContext ?? TaskContext.migrated(conversationID: UUID(), request: prompt, workspace: workspace,
         sourceContext: attachedSource, codexSessionID: codexSessionID, claudeSessionID: claudeSessionID, now: objectiveStartedAt)
     if sourceDetached { taskState.sources.removeAll(); taskState.touch(now: objectiveStartedAt) }
-    let scopeResolution = ScopeResolution.resolve(prompt)
-    let preparation = requireReadOnly || phaseReadOnly ? nil : PreparationIntent.detect(prompt)
+    let scopeResolution = ScopeResolution.resolve(ownerPrompt ?? prompt)
+    let preparation = requireReadOnly || phaseReadOnly ? nil : PreparationIntent.detect(TaskWorkflow.preparationRequest(owner: ownerPrompt, stagePrompt: prompt))
     let kind: TaskContext.ObjectiveKind = preparation.map {
         $0.modifies ? .modify : ($0.kind == .explainFromContext ? .explain : .prepare)
     } ?? TaskContext.ObjectiveKind.classify(prompt)
@@ -6339,7 +6376,7 @@ func runTask(
     var os1StartHead: String?
     if resolvedScope == .workspaceWrite,
        let os1Root = LocalProjectWorkspace.root(containing: canonicalWorkspace, projectID: "os1-clodex") {
-        os1SourceLease = try acquireOS1SourceWriteLease(root: os1Root)
+        if heldOS1SourceRoot != os1Root { os1SourceLease = try acquireOS1SourceWriteLease(root: os1Root) }
         os1StartHead = gitHead(os1Root)
     }
     let pinnedEvidence = try (requireReadOnly || phaseReadOnly || !requestsFreshSource(prompt)) ? attachedSource.map { try loadSource($0) } : nil
@@ -6705,6 +6742,9 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
             return finishedRun(adopted)
         }
         if route.status == "failed" {
+            if steps.isEmpty {
+                throw OS1Error.message("현재 모델·reasoning·권한 조합을 충족하는 실행 경로가 없어 모델 호출 전에 중단했습니다. 요청과 자료는 보존했습니다.")
+            }
             throw OS1Error.message(lastLocalFailure.map { "실행 결과를 채택하지 못했습니다: \($0). 기존 자료와 대화는 유지했습니다." }
                 ?? "OS-1 verification rejected the result after governed retries")
         }
@@ -6713,10 +6753,10 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
         guard requireReadOnly || phaseReadOnly || scopeResolution.scope != .workspaceWrite || ticket.permissionProfile == "workspace_write" else {
             throw OS1Error.message("수정 요청에 읽기 전용 실행이 배정되어 모델 호출 전에 멈췄습니다. 요청과 자료는 유지했으며 권한을 임의로 올리지 않았습니다.")
         }
-        guard !(requireReadOnly || phaseReadOnly || requiresReadOnlyExecution(prompt)) || ticket.permissionProfile == "read_only" else {
+        guard !(requireReadOnly || phaseReadOnly || requiresReadOnlyExecution(ownerPrompt ?? prompt)) || ticket.permissionProfile == "read_only" else {
             throw OS1Error.message("상태 확인 요청에 변경 권한이 발급되어 실행하지 않았습니다. 기존 작업은 재실행하지 않았습니다.")
         }
-        guard !(r2Evidence != nil && asksRecoveryReadiness(prompt) && ticket.permissionProfile != "read_only") else {
+        guard !(r2Evidence != nil && asksRecoveryReadiness(ownerPrompt ?? prompt) && ticket.permissionProfile != "read_only") else {
             throw OS1Error.message("복원 가능 여부를 묻는 질문에는 변경 권한을 사용하지 않습니다. 원본 자료와 대화는 유지했습니다.")
         }
         let model = try configuredModel(provider: ticket.provider, action: ticket.action, config: config)
@@ -6999,7 +7039,7 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
         // self-repair task can never end with the fix living only in the
         // working tree — which is exactly how the rail fix of 2026-09-16 was
         // "done" twice and never reached the owner's screen.
-        if attemptFailure == nil, dispatchStage == .dispatched, execution.artifact.exitCode == 0,
+        if TaskWorkflow.permitsSelfUpdate(stage: workflowStage, finalVerdict: nil), attemptFailure == nil, dispatchStage == .dispatched, execution.artifact.exitCode == 0,
            ticket.permissionProfile == "workspace_write",
            let os1Root = LocalProjectWorkspace.root(containing: canonicalWorkspace, projectID: "os1-clodex") {
             switch completeOS1SelfRepair(root: os1Root, objective: prompt, startedAt: attemptStartedAt, startHead: os1StartHead) {
@@ -7217,6 +7257,9 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
             ))
         }
         if route.status == "failed" {
+            if steps.isEmpty {
+                throw OS1Error.message("현재 모델·reasoning·권한 조합을 충족하는 실행 경로가 없어 모델 호출 전에 중단했습니다. 요청과 자료는 보존했습니다.")
+            }
             throw OS1Error.message(lastLocalFailure.map { "실행 결과를 채택하지 못했습니다: \($0). 기존 자료와 대화는 유지했습니다." }
                 ?? "OS-1 verification rejected the result after governed retries")
         }

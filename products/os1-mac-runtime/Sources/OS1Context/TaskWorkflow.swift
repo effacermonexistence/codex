@@ -13,7 +13,7 @@ public enum TaskWorkflow: String, Codable, Sendable, CaseIterable {
         let text = request.precomposedStringWithCanonicalMapping.lowercased()
         let substantial = ["오토메이션", "automation", "아키텍처", "architecture",
                            "통합", "integration", "integrate", "워크플로", "workflow", "파이프라인", "pipeline",
-                           "복구", "restore", "self-repair", "셀프", "end-to-end", "e2e"].contains { text.contains($0) }
+                           "os1", "os-1", "clodex", "복구", "restore", "self-repair", "셀프", "end-to-end", "e2e"].contains { text.contains($0) }
         let delivery = ["구현", "완성", "완료", "끝까지", "고쳐", "수정", "만들", "추가", "설치", "배포",
                         "implement", "finish", "complete", "build", "fix", "repair", "ship", "deploy"].contains { text.contains($0) }
         let explicitMultiStage = ["설계", "검증", "테스트", "로그", "원인", "완수율", "아키텍처",
@@ -22,6 +22,24 @@ public enum TaskWorkflow: String, Codable, Sendable, CaseIterable {
     }
 
     public var readOnly: Bool { self != .implementation }
+
+    /// Permission classification sees only the current stage, not quoted future
+    /// write instructions. The complete owner objective stays in provider input.
+    public var routingTask: String {
+        readOnly ? "Read-only status inspection. Report observed completed, pending and uncertain steps for the interrupted objective in context, using read-only local and remote checks."
+            : "Implement the authorized source change: modify files in the authorized workspace according to the architecture contract, then run deterministic tests. Avoid unrelated work and external side effects."
+    }
+
+    /// Stage scaffolding (including the OS-1 name and quoted BLOCK) is not
+    /// an owner request to switch projects or permission scopes.
+    public static func preparationRequest(owner: String?, stagePrompt: String) -> String {
+        owner ?? stagePrompt
+    }
+
+    public static func permitsSelfUpdate(stage: TaskWorkflow?, finalVerdict: Bool?) -> Bool {
+        stage == nil || (stage == .verification && finalVerdict == true)
+    }
+
 
     /// Stage policy operates only on the native account's observed model
     /// inventory. These are routing tiers, not measured quality or price claims.
@@ -55,8 +73,10 @@ public enum TaskWorkflow: String, Codable, Sendable, CaseIterable {
             selected = efforts.filter { ["high", "xhigh", "max", "ultra"].contains($0) }
             return selected.isEmpty ? efforts.suffix(1).map { $0 } : selected
         case .implementation:
-            selected = efforts.filter { ["low", "medium"].contains($0) }
-            return selected.isEmpty ? efforts.prefix(1).map { $0 } : selected
+            // Keep the router's capability floor satisfiable. Prefer cheaper efforts
+            // by order, but never remove a required high-effort tuple.
+            return efforts.filter { ["low", "medium"].contains($0) } +
+                efforts.filter { !["low", "medium"].contains($0) }
         }
     }
 
