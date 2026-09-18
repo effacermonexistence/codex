@@ -8,6 +8,15 @@ import Foundation
 /// receipt into the conversation that asked for the change. Public state only;
 /// the installer's own signature, self-test and idle checks still apply.
 public enum SelfUpdate {
+    /// Match credential tokens, not an embedded suffix in `task-...` filenames.
+    public static func secretPatternHit(_ text: String) -> String? {
+        let patterns = [
+            #"(?<![A-Za-z0-9_])sk-[A-Za-z0-9_-]{20,}"#, #"ghp_[A-Za-z0-9]{30,}"#, #"github_pat_[A-Za-z0-9_]{30,}"#, #"AKIA[0-9A-Z]{16}"#,
+            #"-----BEGIN [A-Z ]*PRIVATE KEY-----"#, #"xox[abpr]-[A-Za-z0-9-]{10,}"#, #"AIza[0-9A-Za-z_-]{30,}"#,
+        ]
+        return patterns.first { text.range(of: $0, options: .regularExpression) != nil }
+    }
+
     public static let runtimeRelativePath = "products/os1-mac-runtime"
     public static let intentRelativePath = "products/os1-mac-runtime/release/self-update-intent.json"
     public static let stagedAppRelativePath = "products/os1-mac-runtime/release/stage/Applications/OS-1 CLODEX.app"
@@ -204,7 +213,7 @@ public enum SelfUpdate {
             "In a write-scope task your job ends when the source is changed and green:",
             "1. Change the source under \(root)/\(runtimeRelativePath). Make the exact change the owner asked for; when the request is visual, measure (render or pixel-check) instead of estimating.",
             "2. Build and verify: `swift build` (all products) in that directory, then run `.build/debug/OS1ContextTests`, `OS1_CONFIG=\"$HOME/Applications/OS-1 CLODEX.app/Contents/Resources/config.json\" .build/debug/os1 self-test`, `.build/debug/os1 fleet-self-test`, and `.build/debug/OS1App` with each of `--self-test`, `--self-test-shell`, `--self-test-composer`, `--self-test-steering`, `--self-test-sidebar-queue`, `--self-test-queue-fork`, `--self-test-parallel`; fix failures before finishing. A tree that does not build or fails a self-test makes this task FAIL with the diagnostic.",
-            "3. Do NOT bump versions, do NOT run `self-update stage`, do NOT run scripts/install-local-verified.mjs, and do not kill, relaunch or reinstall OS-1. The moment you finish, OS-1 itself bumps the build past \(installedBuild), builds the signed release, runs the release self-tests, stages it, commits the change on the current branch, pushes it, installs the build by itself as soon as no task is running, restarts with every conversation and queue preserved, and posts the install receipt into this conversation.",
+            "3. Do NOT bump versions, do NOT run `self-update stage`, do NOT run scripts/install-local-verified.mjs, and do not kill, relaunch or reinstall OS-1. After independent workflow verification passes (or a verified single-step task finishes), OS-1 itself bumps the build past \(installedBuild), builds the signed release, runs the release self-tests, stages it, commits the change on the current branch, pushes it, installs the build by itself as soon as no task is running, restarts with every conversation and queue preserved, and posts the install receipt into this conversation.",
             "4. Report what you changed and how you verified it. Never claim the build is installed: OS-1 reports that itself in the receipt.",
             "In a read-only task, answer capability questions from this contract and never say OS-1 can only be partially self-repaired; describe the pipeline above and what a write-scope request would do.",
             "--- END OS-1 SELF-REPAIR CONTRACT ---",

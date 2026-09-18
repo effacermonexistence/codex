@@ -1,0 +1,39 @@
+{
+  "scope": "isolated two-file correction; not production or universal reliability proof",
+  "captured_at": "2026-09-18T23:15:35.918424+00:00",
+  "status": "complete",
+  "raw_sha256": "bf87d79a1675910c1834da4fe991e51430de1d1246fbf5d09df1dae15d12db9d",
+  "stages": [
+    {
+      "workflow_stage": "architecture",
+      "model": "gpt-6-astra",
+      "effort": "high",
+      "permission_profile": "read_only",
+      "duration_ms": 33871,
+      "exit_code": 0,
+      "revas_disposition": "adopted"
+    },
+    {
+      "workflow_stage": "implementation",
+      "model": "gpt-5.6-terra",
+      "effort": "xhigh",
+      "permission_profile": "workspace_write",
+      "duration_ms": 75881,
+      "exit_code": 0,
+      "revas_disposition": "adopted"
+    },
+    {
+      "workflow_stage": "verification",
+      "model": "gpt-6-astra",
+      "effort": "high",
+      "permission_profile": "read_only",
+      "duration_ms": 71290,
+      "exit_code": 0,
+      "revas_disposition": "adopted"
+    }
+  ],
+  "independent_verifier_session": true,
+  "forbidden_scope_audit": "primary-record audit plus unchanged test hash; PASS",
+  "usage_savings": "not measured",
+  "prior_failed_attempts_preserved": true
+}

@@ -70,7 +70,7 @@ func selfRepairCommand(_ arguments: [String]) async throws -> Bool {
 /// Shared with the runtime hook in main.swift.
 let selfRepairFailurePrefixText = "OS-1 self-repair could not complete: "
 
-let os1RuntimeVersionString = "OS-1 Runtime 0.9.88 (workflow-build154)"
+let os1RuntimeVersionString = "OS-1 Runtime 0.9.89 (self-repair-build155)"
 
 /// One writer at a time in OS-1's own checkout: the same RCC discipline the
 /// runtime enforces elsewhere, applied to itself. Waits briefly for the other
@@ -285,10 +285,6 @@ enum SelfRepairCompletion: Equatable {
     case failed(String)
 }
 
-private let secretPatterns = [
-    #"sk-[A-Za-z0-9_-]{20,}"#, #"ghp_[A-Za-z0-9]{30,}"#, #"github_pat_[A-Za-z0-9_]{30,}"#, #"AKIA[0-9A-Z]{16}"#,
-    #"-----BEGIN [A-Z ]*PRIVATE KEY-----"#, #"xox[abpr]-[A-Za-z0-9-]{10,}"#, #"AIza[0-9A-Za-z_-]{30,}"#,
-]
 
 /// A conservative scan of what would be committed. Returns a description of
 /// the first hit, or nil.
@@ -316,7 +312,7 @@ func selfRepairSecretHit(root: String, git: String, since startHead: String? = n
         }
     }
     for (label, text) in corpus {
-        for pattern in secretPatterns where text.range(of: pattern, options: .regularExpression) != nil {
+        if let pattern = SelfUpdate.secretPatternHit(text) {
             return "\(label) matches \(pattern)"
         }
     }
