@@ -1,4 +1,4 @@
-const SENTINEL_SCHEMA = 'scv-instagram-drift-sentinel-2026-09-17-v62-v203-running-release-v167-recovery-gold'
+const SENTINEL_SCHEMA = 'scv-instagram-drift-sentinel-2026-09-18-v63-v204-running-release-v167-recovery-gold'
 // GOLD-3 (2026-09-03): v148 (owner-verified v145 plus the owner-ordered polish, live red-team verified) frozen as the reference; the pointer and manifest below are pinned by hash.
 const GOLD_LATEST_KEY = 'scv-instagram-automation/gold/LATEST.json'
 const GOLD_MANIFEST_KEY = 'scv-instagram-automation/gold/SCV_GOLD_MANIFEST_v148.json'
@@ -8,14 +8,14 @@ const GOLD_MANIFEST_SHA256 = '31ea4507381e6ec2c3ce4458d70af4a311f331a4a26651f5d9
 // Comparing the gold manifest against the running release id made the check fail by construction.
 const GOLD_RELEASE_ID = 'scv-instagram-single-20260902-v148'
 const GOLD_CONTENT_FINGERPRINT = '3a9a18631443f4738d13dd803f080979ff4d21ab0d9de1f5054b2f26e2ea3609'
-// v62 (2026-09-17): v203 puts the owner's RCC engine back into the author system prompt. It was
-// loaded and hash-verified but never injected, so the author ran with the identity source and none
-// of the reasoning law; it is now the byte-exact head, re-pinned to the owner's current text.
+// v63 (2026-09-18): v204 stops the owner answering an activity question with this chat. Injecting the
+// engine in v203 made the author call conversation work its job (measured 2/5); the engine stays and
+// the rule that was only prose is now enforced at the verifier that rejects and re-authors.
 // The latest approved recovery Gold stays v167. Previous v151, GOLD-3 v148, April Golden,
 // and all recovery/reset evidence pins remain unchanged. A deployed release is not a Gold.
-const RELEASE_ID = 'scv-instagram-single-20260914-v203'
-const CONTENT_FINGERPRINT = 'cf5f829aa62909fece911d9202881dec7ae19c7bfe873f8fefdf65b80b64f148'
-const RELEASE_MANIFEST = '5bba4ea3c047c0c6aa65e6cbb617f3e2b4e0d0b8db7c65e3e21c9b1de7cb3e59'
+const RELEASE_ID = 'scv-instagram-single-20260914-v204'
+const CONTENT_FINGERPRINT = 'c9a51c823d1b604af7474c570f27c976a190c3689d7ad5253141918d01e30a82'
+const RELEASE_MANIFEST = 'f79d7fe00404c76d131af67265e01f5de219ef7f2b4c43ae10ffc5ca947c3caa'
 const RECOVERY_POINT_RELEASE_ID = 'scv-instagram-single-20260908-v167'
 const RECOVERY_POINT_CONTENT_FINGERPRINT = '6b85a63a25c23e9815491413eeb895e6b78ed8faa523f18aefea6b88f392faa7'
 const RECOVERY_POINT_RELEASE_MANIFEST = '2f12a00d12114bbbb05080438dda88a6278a82ae65a9fc9aaaff70a2a25ad4b6'
