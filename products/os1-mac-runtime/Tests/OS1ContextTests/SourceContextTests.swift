@@ -78,8 +78,56 @@ final class SourceContextTests {
         try FileManager.default.createDirectory(at: taskRoot, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: taskRoot) }
         try runTaskContextFixtures(root: taskRoot)
+        suite.testTaskWorkflowRouting()
+        try suite.testTaskWorkflowGovernance()
         try suite.testHandoffV3CarriesTaskContext()
         print("OS-1 source context and output: 13 regression groups passed")
+    }
+    func testTaskWorkflowRouting() {
+        let request = "인스타그램 오토메이션 테스크 완료해"
+        XCTAssertEqual(ScopeResolution.resolve(request).scope, .workspaceWrite)
+        XCTAssertTrue(TaskWorkflow.shouldDecompose(request, scope: .workspaceWrite))
+        XCTAssertFalse(TaskWorkflow.shouldDecompose("인스타그램 오토메이션 상태 설명해", scope: .readOnly))
+        XCTAssertFalse(TaskWorkflow.shouldDecompose("README 수정해", scope: .workspaceWrite))
+        let models = ["gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "claude-opus-5", "claude-sonnet-5", "claude-fable-5-1"]
+        XCTAssertEqual(TaskWorkflow.architecture.preferredModels(models), Set(["gpt-6-astra"]))
+        XCTAssertEqual(TaskWorkflow.implementation.preferredModels(models), Set(["gpt-5.6-terra", "claude-sonnet-5"]))
+        XCTAssertEqual(TaskWorkflow.verification.preferredEfforts(["low", "medium", "high"]), ["high"])
+        XCTAssertEqual(TaskWorkflow.implementation.preferredEfforts(["low", "high"]), ["low"])
+        XCTAssertEqual(TaskWorkflow.verdict("checked\nOS1_WORKFLOW_VERDICT: PASS"), true)
+        XCTAssertNil(TaskWorkflow.verdict("OS1_WORKFLOW_VERDICT: PASS\nOS1_WORKFLOW_VERDICT: BLOCK"))
+        XCTAssertNil(TaskWorkflow.verdict("OS1_WORKFLOW_VERDICT: PASS\nUnverified follow-up"))
+        XCTAssertNil(TaskWorkflow.verdict("PASS"))
+        XCTAssertTrue(TaskWorkflow.permitsBoundedRepair(verdict: false, stageIndex: 2))
+        XCTAssertFalse(TaskWorkflow.permitsBoundedRepair(verdict: false, stageIndex: 4))
+        XCTAssertFalse(TaskWorkflow.permitsBoundedRepair(verdict: nil, stageIndex: 2))
+        XCTAssertFalse(TaskWorkflow.permitsBoundedRepair(verdict: true, stageIndex: 2))
+        XCTAssertTrue(TaskWorkflow.architecture.prompt(original: request).contains("READ ONLY"))
+        XCTAssertTrue(TaskWorkflow.verification.prompt(original: request).contains("Local tests alone do not prove production/live effect"))
+        XCTAssertTrue(TaskWorkflow.repairPrompt(original: request, architecture: "contract", failedVerification: "BLOCK")
+            .contains("MAXIMUM ONE"))
+        print("OS-1 task workflow: decomposition, stage routing, verdict and scope checks OK")
+    }
+    func testTaskWorkflowGovernance() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("os1-workflow-governance-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = GovernanceActivityStore(root: root)
+        let taskID = UUID().uuidString.lowercased()
+        let scope = CompletionFeedbackScope(objectiveSHA256: String(repeating: "a", count: 64),
+            sourceSHA256: nil, executorContractSHA256: String(repeating: "b", count: 64),
+            assembledInputSHA256: String(repeating: "c", count: 64))
+        try store.begin(id: taskID)
+        for (index, provider) in ["codex", "claude", "codex"].enumerated() {
+            try store.attempt(id: taskID, executionID: UUID().uuidString.lowercased(), sequence: index + 1,
+                scope: scope, provider: provider, model: provider == "codex" ? "gpt-5.6-sol" : "claude-sonnet-5",
+                effort: index == 1 ? "medium" : "high", startedAt: Date())
+        }
+        try store.finish(id: taskID, adopted: true)
+        let tasks = store.snapshot(legacyRoot: nil).tasks
+        XCTAssertEqual(tasks.count, 1)
+        XCTAssertEqual(tasks.first?.attempts.count, 3)
+        XCTAssertEqual(tasks.first?.isAdopted, true)
+        XCTAssertEqual(tasks.first?.tokens, nil) // no measured usage must not become a fake zero
     }
     func testRetrievedAnswerPresentation() {
         let raw = """

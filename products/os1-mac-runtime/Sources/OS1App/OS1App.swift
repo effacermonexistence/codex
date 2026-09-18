@@ -2953,6 +2953,7 @@ private struct AppRunStep: Decodable, Sendable {
     let stderr: String
     let durationMS: Int64
     let nativeRecord: AppNativeRecord?
+    var workflowStage: String? = nil
 
     enum CodingKeys: String, CodingKey {
         case sequence, provider, action, model, effort, output, stderr
@@ -2962,6 +2963,7 @@ private struct AppRunStep: Decodable, Sendable {
         case exitCode = "exit_code"
         case durationMS = "duration_ms"
         case nativeRecord = "native_record"
+        case workflowStage = "workflow_stage"
     }
 }
 
@@ -3427,6 +3429,7 @@ private struct AppRunSummary: Decodable, Sendable {
     var persistedCorrectionIDs: [UUID]? = nil
     /// Governance task id of this run, so an owner retry can be charged to it.
     var monitorTaskID: String? = nil
+    var workflowBlocker: String? = nil
 }
 
 private struct NativeIngestionOutcome: Sendable {
@@ -4970,6 +4973,29 @@ private final class SessionStore: ObservableObject {
                     throw RunnerError.message(summary.steps.first?.output ?? "운영 원본 확보 대기 중 · 준비 미완료")
                 }
                 if summary.status != "complete" {
+                    if summary.status == "workflow_blocked" {
+                        if let result = summary.taskContext, result.conversationID == submission.sessionID {
+                            sessions[target].taskContext = sessions[target].taskContext?.adopting(result,
+                                handedRevision: handedRevision) ?? result
+                        }
+                        if let source = summary.sourceContext { sessions[target].sourceContext = source }
+                        for step in visibleAdoptedSteps(summary.steps) where stepRecordIsVerified(step) {
+                            if let provider = ProviderChoice(rawValue: step.provider) {
+                                recordNativeSession(provider, id: step.sessionID, conversationID: submission.sessionID)
+                            }
+                            sessions[target].messages.append(ChatMessage(role: .assistant,
+                                text: step.output, provider: step.provider,
+                                permissionProfile: step.permissionProfile))
+                            sessions[target].messages.append(ChatMessage(role: .receipt,
+                                text: "workflow \(step.workflowStage ?? "stage") · \(step.provider) · \(nativeRecordReceipt(step)) · 중간 단계 보존, 원래 작업 미완료",
+                                provider: step.provider, permissionProfile: step.permissionProfile,
+                                nativeRecordVerified: true))
+                        }
+                        sessions[target].updatedAt = Date()
+                        appendTaskEvent(conversationID: submission.sessionID, kind: "workflow_blocked",
+                            summary: summary.workflowBlocker ?? "Stage verification failed")
+                        throw RunnerError.message(summary.workflowBlocker ?? "단계 검증 실패 · 이전 작업과 결과는 보존했습니다.")
+                    }
                     throw RunnerError.message("OS-1 did not return a completed governed run.")
                 }
                 let visibleSteps = visibleAdoptedSteps(summary.steps)
@@ -5037,7 +5063,7 @@ private final class SessionStore: ObservableObject {
                     ))
                     sessions[target].messages.append(ChatMessage(
                         role: .receipt,
-                        text: "\(backendTierLabel(action: step.action, provider: step.provider)) · \(step.model ?? "provider default") · \(step.effort) reasoning · \(step.revasDisposition == "control_verified" ? "OS-1 control verified" : "REVAS adopted") · \(nativeRecordReceipt(step)) · step \(step.sequence) · \(step.durationMS / 1_000)s · exit \(step.exitCode)" +
+                        text: "\(backendTierLabel(action: step.action, provider: step.provider)) · \(step.model ?? "provider default") · \(step.effort) reasoning · \(step.revasDisposition == "control_verified" ? "OS-1 control verified" : "REVAS adopted") · \(nativeRecordReceipt(step)) · \(step.workflowStage.map { "workflow \($0) · " } ?? "")step \(step.sequence) · \(step.durationMS / 1_000)s · exit \(step.exitCode)" +
                             (step.provider != "local" && summary.sourceContext != nil
                                 ? " · source snapshot delivered: \(summary.sourceContext!.sha256)" : ""),
                         provider: step.provider,
