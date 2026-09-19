@@ -486,7 +486,7 @@ public extension TaskContext.ObjectiveKind {
     /// Coarse classification used for the first revision; explicit adapters and
     /// the preparation intent refine it. Prohibitions win over positive verbs.
     static func classify(_ request: String) -> TaskContext.ObjectiveKind {
-        let value = request.precomposedStringWithCanonicalMapping.lowercased()
+        let value = OwnerIntentText.normalized(OwnerIntentText.authorityText(request))
         if ScopeResolution.resolve(value).scope == .readOnly,
            ["설명", "explain", "왜", "why", "뭐야", "what is", "어떻게 되", "알려줘"].contains(where: value.contains) { return .explain }
         if ScopeResolution.resolve(value).scope == .workspaceWrite { return .modify }
@@ -592,7 +592,7 @@ public struct PreparationIntent: Equatable, Sendable {
     }
 
     public static func detect(_ prompt: String) -> PreparationIntent? {
-        let value = OwnerIntentText.normalized(prompt)
+        let value = OwnerIntentText.normalized(OwnerIntentText.authorityText(prompt))
         guard !value.isEmpty else { return nil }
         if ["\"", "“", "`", "'"].contains(where: value.contains),
            ["번역", "translate", "비판", "critique", "프롬프트", "prompt", "인용", "quote"].contains(where: value.contains) { return nil }
@@ -665,6 +665,22 @@ public enum ProjectAdapterRegistry {
 /// Negating “explain only” is not prohibiting edits. Consume only the full
 /// negated clause; a separate file/server prohibition remains authoritative.
 public enum OwnerIntentText {
+    /// Permission projection only. Preserve the original prompt as evidence;
+    /// quoted examples and feasibility questions are not execution authority.
+    public static func authorityText(_ prompt: String) -> String {
+        var text = prompt.precomposedStringWithCanonicalMapping
+        for pattern in [
+            #"(?s)```.*?```"#,
+            #"(?m)^\s*>[^\n]*"#,
+            #"[\"“][^\"”\n]*(?:delete |remove |fix |modify |수정해|고쳐|삭제해|빼)[^\"”\n]*[\"”]"#,
+            #"(?im)\b(?:how\s+(?:do|can|should)\s+(?:i|we)|(?:can|could|should|may)\s+(?:i|we))\b[^.!?;\n]*[?]?"#,
+            #"[^.!?;\n]*(?:해도\s*(?:돼|되|될)|고쳐졌는지|수정됐는지|삭제됐는지|방법\s*(?:알려|설명))[^.!?;\n]*[?]?"#,
+        ] {
+            text = text.replacingOccurrences(of: pattern, with: " ", options: .regularExpression)
+        }
+        return text
+    }
+
     public static func normalized(_ prompt: String) -> String {
         prompt.precomposedStringWithCanonicalMapping.lowercased()
             .replacingOccurrences(of: #"(?:설명|말)만\s*하지\s*(?:말고|마(?:세요|십시오)?)(?:[.!?,]|\s|$)|(?:don't|do not)\s+just\s+explain\b"#,
@@ -675,6 +691,28 @@ public enum OwnerIntentText {
 public struct ScopeResolution: Equatable, Sendable {
     public let scope: TaskContext.Scope
     public let prohibitions: [String]
+
+    public static func permitsTicket(scope: TaskContext.Scope, permission: String) -> Bool {
+        switch scope {
+        case .readOnly: return permission == "read_only"
+        case .workspaceWrite: return permission == "workspace_write"
+        case .fullAccess: return false // Unsupported by the signed execution contract.
+        }
+    }
+
+    /// Public scope projection. Backend selection may choose model/effort, never
+    /// silently widen or shrink the already resolved owner execution scope.
+    public static func routingObjective(_ task: String, scope: TaskContext.Scope) -> String {
+        let authority = OwnerIntentText.authorityText(task)
+        switch scope {
+        case .readOnly:
+            return "Read-only inspection and explanation. Do not modify files. Owner request: " + authority
+        case .workspaceWrite:
+            return "Modify workspace files to fulfill the following authorized request. Preserve all owner prohibitions and unrelated state. Owner request: " + authority
+        case .fullAccess:
+            return "Read-only inspection. Unsupported execution scope; no mutation authorized."
+        }
+    }
 
     // A shared trailing negation applies to the entire bounded action list,
     // not just its final item (e.g. "파일 수정, 테스트 실행, 배포는 하지 마").
@@ -697,6 +735,8 @@ public struct ScopeResolution: Equatable, Sendable {
     // than a bare "write" so ordinary requests such as "write a summary" do
     // not gain workspace authority.
     static let positiveFileEditPatterns = [
+        #"(?i)\b(?:delete|create|write|save|rename|remove|edit|modify|update)\s+[\"“][^\"”\n]+\.[A-Za-z0-9]{1,16}[\"”]"#,
+        #"(?:수정|삭제|변경|편집|추가)\s*(?:해(?:줘|주세요|라)?|요청(?:합니다|해))"#,
         // Bounded Korean removal imperatives, not questions, quotations or negations.
         #"(?:^|\s)빼(?:줘|주세요|라|라고|버려|버려라)?(?=\s|[.!]|$)"#,
         #"(?i)\b(?:create|write|save|rename|delete|remove|edit|modify|update)\s+(?:(?:a|an|the)\s+)?(?:file|directory|folder)\b"#,
@@ -727,7 +767,7 @@ public struct ScopeResolution: Equatable, Sendable {
                                       "do not change", "don't change", "explain only", "no changes"]
 
     public static func resolve(_ prompt: String) -> ScopeResolution {
-        let value = OwnerIntentText.normalized(prompt)
+        let value = OwnerIntentText.normalized(OwnerIntentText.authorityText(prompt))
         var prohibitions: [String] = []
         var remaining = value
         if let pattern = try? NSRegularExpression(pattern: relativeTargetFencePattern) {

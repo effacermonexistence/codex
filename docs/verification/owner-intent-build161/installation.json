@@ -1,0 +1,27 @@
+{
+  "build": "161",
+  "startedAt": "2026-09-19T04:40:19.163Z",
+  "completedAt": "2026-09-19T04:40:48.709Z",
+  "checks": [
+    "runtime: PASS",
+    "app: PASS",
+    "queue: PASS",
+    "parallel: PASS",
+    "fleet: PASS",
+    "queue-fork: PASS",
+    "composer: PASS",
+    "steering: PASS",
+    "existing conversations/messages/pins/drafts/native bindings: PASS"
+  ],
+  "sessionCountBefore": 93,
+  "sessionCountAfter": 93,
+  "stagedAppHash": "5aaea07cda4d142f6a964620ebad11e49f971e6ba9c7054f65684761902153f8",
+  "stagedCLIHash": "1a2846b7d8256be2f3b430df9dfb5a391633acfdc10e0490a5f7c6e3e5674c80",
+  "source_files": {
+    "products/os1-mac-runtime/Sources/OS1/main.swift": "278942358f7f103866e8c73705c907173a0228178f3ed8d831e1083a3e1e3ca0",
+    "products/os1-mac-runtime/Sources/OS1Context/TaskContext.swift": "5c2d44a305688ddd790c3816de1b37b10bc9ad2b4af076134dedb682a6168fa8",
+    "products/os1-mac-runtime/Sources/OS1/SelfUpdateCommands.swift": "aefc36b32b3d92226aac0dfcc1bf79c495f74177ce44dc2831c3fd797daaf6bb",
+    "products/os1-mac-runtime/Resources/Info.plist": "5c93ac612ba2ab834d0ec503f2c3432e7776b475a44f835ec1b16de460b45d17",
+    "products/os1-mac-runtime/Tests/OS1ContextTests/TaskContextTests.swift": "3fecc62a1e1e479550bd6444939f8a48c273a37708a16b6917cf3fdbdf12eedb"
+  }
+}

@@ -1,0 +1,3 @@
+Mutation: read_only ticket matcher replaced by unconditional true in isolated copy.
+Expected rejection observed: exit 133; TaskContextTests "exact ticket scope".
+Production source remained unmutated.

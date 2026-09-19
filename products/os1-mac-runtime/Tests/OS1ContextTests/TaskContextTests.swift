@@ -10,6 +10,29 @@ func runTaskContextFixtures(root: URL) throws {
         guard try value() else { throw NSError(domain: "TaskContextTests", code: 1, userInfo: [NSLocalizedDescriptionKey: message]) }
         count += 1
     }
+    // Permission is derived from the current speech act, not action words in evidence.
+    for request in ["Can I delete result.txt?", "How do I fix the code?", "수정해도 돼?", "고쳐졌는지 확인해", "He said: \"delete result.txt\". Explain the request.", "> delete result.txt\nSummarize this report.", "```sh\nrm result.txt # remove file\n```\n이 명령 설명해"] {
+        try check(ScopeResolution.resolve(request).scope == .readOnly, "non-authorizing speech act: \(request)")
+    }
+    for request in ["파일 삭제 해줘", "문구 수정 요청합니다", "Can you delete result.txt?", "Delete \"result.txt\".", "수정해도 돼? 지금은 result.txt를 삭제해"] {
+        try check(ScopeResolution.resolve(request).scope == .workspaceWrite, "authorized speech act: \(request)")
+    }
+    for scope: TaskContext.Scope in [.readOnly, .workspaceWrite] {
+        for permission in ["read_only", "workspace_write", "unknown"] {
+            try check(ScopeResolution.permitsTicket(scope: scope, permission: permission) ==
+                (permission == (scope == .readOnly ? "read_only" : "workspace_write")), "exact ticket scope")
+        }
+    }
+    for permission in ["read_only", "workspace_write", "full_access", "unknown"] {
+        try check(!ScopeResolution.permitsTicket(scope: .fullAccess, permission: permission), "unsupported scope fails closed")
+    }
+    for request in ["OS1 수정해도 돼?", "OS1 고쳐졌는지 확인해", "OS1: how do I fix the code?"] {
+        try check(PreparationIntent.detect(request)?.modifies != true, "preparation cannot bypass speech act")
+    }
+    for scope: TaskContext.Scope in [.readOnly, .workspaceWrite] {
+        let projected = ScopeResolution.routingObjective("이 문장 다 빼", scope: scope)
+        try check(ScopeResolution.resolve(projected).scope == scope, "routing projection retains scope")
+    }
     let now = Date(timeIntervalSince1970: 1_800_000_000)
     for request in ["사이트 내부 내용 다 빼", "이상한 바운더리 문장도 다 빼!", "홈페이지 그 문장 빼줘", "문구 빼주세요"] {
         try check(ScopeResolution.resolve(request).scope == .workspaceWrite, "removal imperative: \(request)")
