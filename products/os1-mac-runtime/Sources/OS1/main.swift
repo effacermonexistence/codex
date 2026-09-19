@@ -4586,7 +4586,8 @@ final class CodexAppServerClient: @unchecked Sendable {
         effort: String,
         permissionProfile: String,
         deadline: Date,
-        onDispatch: (() -> Void)? = nil
+        onDispatch: (() -> Void)? = nil,
+        onStarted: (() -> Void)? = nil
     ) throws -> CodexTurnOutput {
         let sandboxPolicy: [String: Any]
         switch permissionProfile {
@@ -4630,6 +4631,10 @@ final class CodexAppServerClient: @unchecked Sendable {
             throw OS1Error.message("Codex did not start a persistent desktop turn")
         }
         activeTurn = (threadID, turnID)
+        onStarted?()
+        // Only the provider's turn/start acknowledgement establishes a running turn.
+        RuntimeActivity.emit(.executing, provider: "codex", model: model, effort: effort,
+            nativeSessionID: threadID)
         defer {
             activeTurn = nil
             if let id = steeringSubmission { steering.close(id) }
@@ -5873,7 +5878,7 @@ func runLocalTask(
         )
         try validateLocalRoute(decision, codexModels: codexCatalog.models)
         let ticket = localTicket(decision, sequence: attempt)
-        RuntimeActivity.emit(.executing, provider: decision.provider, model: decision.model, effort: decision.effort)
+        RuntimeActivity.emit(.preparing, provider: decision.provider, model: decision.model, effort: decision.effort)
         let observedWorkspace = try providerExecutionWorkspace(provider: ticket.provider,
             permission: ticket.permissionProfile, hasSource: r2Evidence != nil, workspace: workspace)
         let beforeHash = workspaceHash(observedWorkspace)
@@ -6385,7 +6390,7 @@ func runTask(
     var os1StartHead: String?
     if resolvedScope == .workspaceWrite,
        let os1Root = LocalProjectWorkspace.root(containing: canonicalWorkspace, projectID: "os1-clodex") {
-        if heldOS1SourceRoot != os1Root { os1SourceLease = try acquireOS1SourceWriteLease(root: os1Root) }
+        if heldOS1SourceRoot.map({ URL(fileURLWithPath: $0).resolvingSymlinksInPath().standardizedFileURL.path }) != URL(fileURLWithPath: os1Root).resolvingSymlinksInPath().standardizedFileURL.path { os1SourceLease = try acquireOS1SourceWriteLease(root: os1Root) }
         os1StartHead = gitHead(os1Root)
     }
     let pinnedEvidence = try (requireReadOnly || phaseReadOnly || !requestsFreshSource(prompt)) ? attachedSource.map { try loadSource($0) } : nil
@@ -6794,7 +6799,7 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
             throw OS1Error.message("실행 시작 확인이 일치하지 않아 백엔드를 호출하지 않았습니다.")
         }
         let attemptTimeout = min(config.executionTimeoutSeconds, max(1, Int(deadline.timeIntervalSinceNow) - 1))
-        RuntimeActivity.emit(.executing, provider: ticket.provider, model: model, effort: effort)
+        RuntimeActivity.emit(.preparing, provider: ticket.provider, model: model, effort: effort)
         if progress {
             print("OS-1 step \(step): \(ticket.provider) / \(ticket.action) / \(effort) / \(ticket.permissionProfile)")
         }
@@ -6869,7 +6874,7 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
                     onDispatch: { sessionID in
                         dispatchStage = .dispatched
                         interruptedSessionID = sessionID
-                        RuntimeActivity.emit(.executing, provider: ticket.provider, model: model,
+                        RuntimeActivity.emit(.preparing, provider: ticket.provider, model: model,
                             effort: effort, nativeSessionID: sessionID)
                         // Write custody before waiting for results so a killed
                         // runtime still cannot turn an uncertain write into Retry.
@@ -8433,13 +8438,35 @@ func selfTest() throws {
     try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: responsePeer.path)
     let respondingServer = try CodexAppServerClient(executable: responsePeer.path, workspace: approvalFixture.path)
     var wireDispatched = false
+    var wireStarted = false
     let recovered = try respondingServer.runTurn(threadID: recoveredSession, prompt: sourcePrompt,
         workspace: approvalFixture.path, model: nil, effort: "low", permissionProfile: "read_only",
-        deadline: Date().addingTimeInterval(8), onDispatch: { wireDispatched = true })
+        deadline: Date().addingTimeInterval(8), onDispatch: { wireDispatched = true }, onStarted: { wireStarted = true })
     respondingServer.close()
-    guard wireDispatched && recovered.turnID == recoveredTurn &&
+    guard wireDispatched && wireStarted && recovered.turnID == recoveredTurn &&
           String(decoding: recovered.output, as: UTF8.self) == "fixture readback complete" else {
         throw OS1Error.message("Recovery adapter failed real stdio dispatch/result binding")
+    }
+    protocolRecoveryChecks += 1
+    let noAckPeer = approvalFixture.appendingPathComponent("no-ack.sh")
+    try Data("""
+    #!/bin/sh
+    IFS= read -r request
+    printf '%s\\n' '{"jsonrpc":"2.0","id":1,"result":{}}'
+    while IFS= read -r ignored; do :; done
+    """.utf8).write(to: noAckPeer)
+    try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: noAckPeer.path)
+    let noAck = try CodexAppServerClient(executable: noAckPeer.path, workspace: approvalFixture.path)
+    var noAckDispatched = false
+    var noAckStarted = false
+    do {
+        _ = try noAck.runTurn(threadID: recoveredSession, prompt: sourcePrompt, workspace: approvalFixture.path,
+            model: nil, effort: "low", permissionProfile: "read_only", deadline: Date().addingTimeInterval(3),
+            onDispatch: { noAckDispatched = true }, onStarted: { noAckStarted = true })
+    } catch { /* dispatch without turn acknowledgement is not running */ }
+    noAck.close()
+    guard noAckDispatched && !noAckStarted else {
+        throw OS1Error.message("Dispatch without provider acknowledgement must not claim a running turn")
     }
     protocolRecoveryChecks += 1
     let wireRequest = try JSONSerialization.jsonObject(with: Data(contentsOf: capturedRequest)) as! [String: Any]

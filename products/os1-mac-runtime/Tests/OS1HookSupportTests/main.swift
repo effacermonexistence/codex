@@ -34,6 +34,27 @@ func testExclusiveLease() throws {
     try expect(try ExclusiveHookLease.tryAcquire(at: lockURL) != nil, "lease was not released")
 }
 
+func testWaitingLease() throws {
+    let dir = try temporaryDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let url = dir.appendingPathComponent("writer.lock")
+    var owner = try ExclusiveHookLease.tryAcquire(at: url)
+    var waits = 0
+    let next = try ExclusiveHookLease.acquireWaiting(at: url, pollInterval: 0, beforeAttempt: {}, onContention: {
+        waits += 1
+        try expect(owner != nil, "waiter lost owner's lock")
+        if waits == 4 { owner = nil }
+    })
+    try expect(waits == 4, "contention must wait rather than fail or overlap")
+    try expect(try ExclusiveHookLease.tryAcquire(at: url) == nil, "resumed writer must hold lock")
+    withExtendedLifetime(next) {}
+    enum Cancel: Error { case requested }
+    do {
+        _ = try ExclusiveHookLease.acquireWaiting(at: url, pollInterval: 0, beforeAttempt: { throw Cancel.requested })
+        throw TestFailure.assertion("cancelled waiter acquired a lease")
+    } catch Cancel.requested { }
+}
+
 func testCircuitBreaker() throws {
     let directory = try temporaryDirectory()
     defer { try? FileManager.default.removeItem(at: directory) }
@@ -270,6 +291,7 @@ func testShellCapabilityIntent() throws {
 
 do {
     try testExclusiveLease()
+    try testWaitingLease()
     try testCircuitBreaker()
     try testTimeoutHeadroom()
     try testAutomaticFleetExecutorBypass()
