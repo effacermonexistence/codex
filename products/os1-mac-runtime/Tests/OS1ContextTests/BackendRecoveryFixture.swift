@@ -7,6 +7,19 @@ func runBackendRecoveryFixtures() throws {
     func check(_ value: Bool, _ message: String) {
         precondition(value, "Backend recovery: " + message); count += 1
     }
+    check(BackendRecovery.rejectedAdoptionBlocker(exitCode: 0, output: "saved answer", persistence: "verified") == .verificationRejected, "verified response is not an unknown execution")
+    check(BackendRecovery.rejectedAdoptionBlocker(exitCode: 1, output: "partial", persistence: "verified") == .effectsUncertain, "failed execution remains uncertain")
+    check(BackendRecovery.rejectedAdoptionBlocker(exitCode: 0, output: " \n", persistence: "verified") == .effectsUncertain, "empty response cannot establish success")
+    check(BackendRecovery.rejectedAdoptionBlocker(exitCode: 0, output: "answer", persistence: "pending") == .effectsUncertain, "unverified persistence remains uncertain")
+    let rejected = BackendFailureNotice(provider: "codex", sessionID: "01a0ba68-59ac-7071-82f7-539d2c7f1694",
+        blocker: .verificationRejected, dispatchStage: .dispatched, source: nil,
+        permissionProfile: "workspace_write", deliveryID: "saved-artifact",
+        publicProgress: "Actual backend response", diagnosis: "adoption=retry")
+    let restoredRejection = try JSONDecoder().decode(BackendFailureNotice.self, from: JSONEncoder().encode(rejected))
+    check(restoredRejection.blocker == .verificationRejected, "verification rejection survives round trip")
+    check(restoredRejection.publicProgress == "Actual backend response", "rejected output remains inspectable")
+    check(restoredRejection.sessionID == "01a0ba68-59ac-7071-82f7-539d2c7f1694", "native execution identity preserved")
+    check(restoredRejection.requiresReadback, "rejection never authorizes replay of a dispatched writer")
     for (text, expected) in [
         ("Failed to upload code with status code 401 Unauthorized", BackendBlocker.authenticationRequired),
         ("Permission for this action was denied by the Claude Code auto mode classifier. Reason: Blocked by classifier.", .policyDenied),
