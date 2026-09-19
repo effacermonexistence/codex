@@ -6383,7 +6383,7 @@ func runTask(
     let discussesPinnedProvenance = pinnedEvidence != nil && RegisteredProjectSource.discussesAttachedProvenance(prompt)
     let sourceSelectionContext = SCVProjectMaterials.isVerificationMode(pinnedEvidence?.verificationMode) &&
         !qmGRMaterialRequested(prompt) ? nil : context
-    var r2Objective = requireReadOnly || phaseReadOnly || discussesPinnedProvenance ? nil : resolveR2RetrievalObjective(prompt: prompt, context: sourceSelectionContext)
+    var r2Objective = requireReadOnly || phaseReadOnly || discussesPinnedProvenance ? nil : resolveR2RetrievalObjective(prompt: TaskWorkflow.preparationRequest(owner: ownerPrompt, stagePrompt: prompt), context: sourceSelectionContext)
     // Work preparation is a task capability: an aliased project ("인스타",
     // "instagram") or the conversation's bound project selects the adapter.
     // A bare "준비해" without a project resolves to nothing and stays a normal
@@ -7702,6 +7702,12 @@ func selfTest() throws {
     let readiness = "그럼 너 이거 지금 현재 상태 100% 복원 가능하게 할 수 있냐?언제든지 이 맥북이 죽어도 아니면 새로운 수정사항을 만들어도"
     let instagramContext = "USER:\n나는 지금 인스타그램 오토매이션 작업해야 되거든 R2에 자료 있거든 가져와 봐\n\nOS-1:\n자료를 가져왔습니다."
     let readinessObjective = resolveR2RetrievalObjective(prompt: readiness, context: instagramContext)
+    let localOwner = "OS1 설명만 하지 말고 스티어링 고쳐"
+    let scaffold = "Implementation stage: inspect R2 recovery materials before implementation"
+    guard resolveR2RetrievalObjective(prompt: TaskWorkflow.preparationRequest(owner: localOwner, stagePrompt: scaffold), context: nil) == nil else {
+        throw OS1Error.message("Workflow scaffolding injected an R2 retrieval objective into local repair")
+    }
+
     let readinessLimits = Data("가져온 자료만으로 현재 시스템 전체의 복원을 보장할 수 없습니다. 실행 권한이 없어도 이 질문에는 자료의 범위와 필요한 검증 계획을 설명할 수 있습니다.".utf8)
     guard !providerOutputDeclaresCapabilityFailure(readinessLimits, prompt: readiness),
           outputContractIssues(readinessLimits, prompt: readiness).isEmpty,

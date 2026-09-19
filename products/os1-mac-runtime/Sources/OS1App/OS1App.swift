@@ -1481,6 +1481,20 @@ private func replacementInteractionSelfTest() async throws {
         try check(store.sessions[0].preservedTasks?.count == 2, "read-only failure history lost")
         gates.removeValue(forKey: starts.last!.id)!.resume()
         try await eventually { !store.isRunning }
+        // Completed explanation must not freeze future explicit repair permission.
+        store.sessions[0].lastFailure = nil
+        store.sessions[0].lastBackendFailure = nil
+        store.sessions[0].taskContext?.setObjective(TaskContext.Objective(requestText: "OS1 수정하지 말고 설명만 해", kind: .explain, scope: .readOnly))
+        let beforeCompletedEdit = starts.count
+        store.composer = "아니 고치라니까"; store.send()
+        try await eventually { starts.count == beforeCompletedEdit + 1 && gates[starts.last!.id] != nil }
+        try check(starts.last!.amendedRequest == nil && store.sessions[0].taskContext?.objective.scope == .workspaceWrite,
+            "completed explanation trapped fresh repair in old read-only objective")
+        try check(store.sessions[0].taskContext?.objective.requestText == "아니 고치라니까",
+            "old prohibition became current repair objective")
+        gates.removeValue(forKey: starts.last!.id)!.resume()
+        try await eventually { !store.isRunning }
+
 
     }
     print("Task replacement: \(checks) checks PASS; terminal/Claude/recovery/NFD/provenance/duplicate/edit/permission; model calls 0")
@@ -4077,11 +4091,11 @@ private final class SessionStore: ObservableObject {
     // A failed, runtime-enforced read cannot have performed the previous write.
     // Only a NEW explicit owner edit may leave that hold; never replay an old
     // action, infer safety from output prose, or promote an unknown permission.
-    private func isNewEditAfterReadOnlyFailure(_ next: PendingSubmission, session: ConversationSession) -> Bool {
-        session.lastFailure != nil &&
-        session.lastBackendFailure?.permissionProfile == "read_only" &&
+    private func isNewEditAfterReadOnlyTask(_ next: PendingSubmission, session: ConversationSession) -> Bool {
         session.taskContext?.objective.scope == .readOnly &&
-        ScopeResolution.resolve(next.request).scope == .workspaceWrite
+        ScopeResolution.resolve(next.request).scope == .workspaceWrite &&
+        ((session.lastFailure == nil && session.lastBackendFailure == nil) ||
+         (session.lastFailure != nil && session.lastBackendFailure?.permissionProfile == "read_only"))
     }
 
     private func mayAdvancePastFailure(_ next: PendingSubmission, session: ConversationSession) -> Bool {
@@ -4089,7 +4103,7 @@ private final class SessionStore: ObservableObject {
         // A new read is independent of an uncertain previous write. A dependent
         // write must still reconcile; an action button never expands permission.
         if session.lastBackendFailure?.requiresReadback == true || session.lastFailure?.savedResultNeedsReview == true {
-            return ExecutionSteering.isIndependentRead(next.request) || isNewEditAfterReadOnlyFailure(next, session: session)
+            return ExecutionSteering.isIndependentRead(next.request) || isNewEditAfterReadOnlyTask(next, session: session)
         }
         return true
     }
@@ -4666,7 +4680,7 @@ private final class SessionStore: ObservableObject {
         )
         submission.configuredProvider = configuredProvider
         if !isSessionRunning(submission.sessionID),
-           isNewEditAfterReadOnlyFailure(submission, session: sessions[index]) {
+           isNewEditAfterReadOnlyTask(submission, session: sessions[index]) {
             queuedSubmissions.append(submission)
             advanceQueued(submission.id)
             return
@@ -4795,7 +4809,7 @@ private final class SessionStore: ObservableObject {
         }
         queuedSubmissions[index].startNextRequested = true
         queuedSubmissions[index].replacesSubmissionID = sessions[sessionIndex].lastFailure?.id ?? activeRuns[item.sessionID]?.submissionID
-        let freshEdit = isNewEditAfterReadOnlyFailure(item, session: sessions[sessionIndex])
+        let freshEdit = isNewEditAfterReadOnlyTask(item, session: sessions[sessionIndex])
         queuedSubmissions[index].replacesObjective = ExecutionSteering.isTaskReplacement(item.request) || freshEdit
         if freshEdit { queuedSubmissions[index].amendedRequest = nil }
         if queuedSubmissions[index].replacesObjective == true {
@@ -4890,11 +4904,16 @@ private final class SessionStore: ObservableObject {
             sessions[index].lastFailure = nil; sessions[index].lastBackendFailure = nil
             sessions[index].taskContext?.sourcePreparation = nil
             if submission.replacesObjective == true {
+                let continuingProject = ExecutionSteering.isTaskReplacement(submission.request) ? nil : sessions[index].taskContext?.project
                 sessions[index].sourceContext = nil; sessions[index].sourceContextVersion = 2
                 sessions[index].codexSessionID = nil; sessions[index].claudeSessionID = nil
                 sessions[index].taskContext = TaskContext.migrated(conversationID: submission.sessionID,
                     request: submission.request, workspace: submission.workspace,
                     sourceContext: nil, codexSessionID: nil, claudeSessionID: nil)
+                if let continuingProject {
+                    sessions[index].taskContext?.project = continuingProject
+                    sessions[index].taskContext?.projectID = continuingProject.projectID
+                }
             }
             sessions[index].taskContext?.decideSemantic("The user selected a new request. Previous unfinished work is preserved, not completed. Do not replay previous actions; inspect actual state before any further mutation.")
             appendTaskEvent(conversationID: submission.sessionID, kind: "task_replaced", summary: submission.request)

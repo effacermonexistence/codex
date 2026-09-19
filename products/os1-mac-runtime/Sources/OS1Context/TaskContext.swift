@@ -592,7 +592,7 @@ public struct PreparationIntent: Equatable, Sendable {
     }
 
     public static func detect(_ prompt: String) -> PreparationIntent? {
-        let value = prompt.precomposedStringWithCanonicalMapping.lowercased()
+        let value = OwnerIntentText.normalized(prompt)
         guard !value.isEmpty else { return nil }
         if ["\"", "“", "`", "'"].contains(where: value.contains),
            ["번역", "translate", "비판", "critique", "프롬프트", "prompt", "인용", "quote"].contains(where: value.contains) { return nil }
@@ -662,6 +662,16 @@ public enum ProjectAdapterRegistry {
 /// prohibition; "수정하지 말고 설명만" must stay read-only. A string
 /// normalization equal to an expected string is not the meaning; this
 /// resolves the permission and keeps the prohibitions as binding constraints.
+/// Negating “explain only” is not prohibiting edits. Consume only the full
+/// negated clause; a separate file/server prohibition remains authoritative.
+public enum OwnerIntentText {
+    public static func normalized(_ prompt: String) -> String {
+        prompt.precomposedStringWithCanonicalMapping.lowercased()
+            .replacingOccurrences(of: #"(?:설명|말)만\s*하지\s*(?:말고|마(?:세요|십시오)?)(?:[.!?,]|\s|$)|(?:don't|do not)\s+just\s+explain\b"#,
+                                  with: " ", options: .regularExpression)
+    }
+}
+
 public struct ScopeResolution: Equatable, Sendable {
     public let scope: TaskContext.Scope
     public let prohibitions: [String]
@@ -677,7 +687,7 @@ public struct ScopeResolution: Equatable, Sendable {
     // only complete bounded clauses, not "... but change ..." or filenames.
     static let relativeTargetFencePattern = #"(?i)(?:^|(?<=[.!?;\n]))\s*(?:do not|don't|never)\s+(?:modify|edit|change|delete|remove|write(?: to)?)\s+(?:any\s+)?other\s+(?:files?|folders?|directories|services?|settings)(?:\s*(?:,\s*(?:(?:and|or)\s+)?|(?:and|or)\s+)(?:other\s+)?(?:files?|folders?|directories|services?|settings)){0,8}\s*(?=[.!?;\n]|$)"#
 
-    static let positiveEdit = ["손봐", "손 봐", "수정해", "수정하고", "수정 해", "고쳐", "고치고", "고치지", "고치자", "바꿔", "바꾸고", "구현해", "추가해", "삭제해", "리팩터", "만들어",
+    static let positiveEdit = ["손봐", "손 봐", "수정해", "수정하고", "수정 해", "고쳐", "고치고", "고치라니까", "고치라고", "구현하라고", "고치지", "고치자", "바꿔", "바꾸고", "구현해", "추가해", "삭제해", "리팩터", "만들어",
                                "완료해", "완성해", "끝까지 해", "마저 해", "마저해",
                                "일치시켜", "일치시키", "통일해", "통일하", "맞춰", "때려넣", "넣어줘", "넣어 줘",
                                "fix ", "modify ", "edit ", "implement ", "add ", "remove ", "rename ", "change the code", "update the code",
@@ -715,7 +725,7 @@ public struct ScopeResolution: Equatable, Sendable {
                                       "do not change", "don't change", "explain only", "no changes"]
 
     public static func resolve(_ prompt: String) -> ScopeResolution {
-        let value = prompt.precomposedStringWithCanonicalMapping.lowercased()
+        let value = OwnerIntentText.normalized(prompt)
         var prohibitions: [String] = []
         var remaining = value
         if let pattern = try? NSRegularExpression(pattern: relativeTargetFencePattern) {
