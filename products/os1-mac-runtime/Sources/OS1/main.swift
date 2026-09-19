@@ -6641,9 +6641,9 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
     // The quoted original operation is context, not a second execute request.
     // Keep this new review's task identity distinct while retaining all source
     // and full-input accounting and hard-enforcing its signed read-only scope.
-    let routingTask = routingTaskOverride ?? (requireReadOnly
-        ? readOnlyStatusRoutingTask
-        : sourceAwareRoutingTask(prompt, evidence: r2Evidence))
+    let routingTask = ScopeResolution.routingObjective(
+        routingTaskOverride ?? (requireReadOnly ? readOnlyStatusRoutingTask
+            : sourceAwareRoutingTask(prompt, evidence: r2Evidence)), scope: resolvedScope)
     let feedbackStore = CompletionFeedbackStore()
     func instructionFeedbackScope(_ instructions: String, input: String, codexID: String?, claudeID: String?) -> CompletionFeedbackScope {
         CompletionFeedbackScope(objectiveSHA256: sha256Hex(Data(routingTask.utf8)), sourceSHA256: sourceContext?.sha256,
@@ -6750,11 +6750,11 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
         }
         guard let ticket = route.ticket else { throw OS1Error.message("Invalid OS-1 route response") }
         try verifyTicket(ticket, config: config)
-        guard requireReadOnly || phaseReadOnly || scopeResolution.scope != .workspaceWrite || ticket.permissionProfile == "workspace_write" else {
-            throw OS1Error.message("수정 요청에 읽기 전용 실행이 배정되어 모델 호출 전에 멈췄습니다. 요청과 자료는 유지했으며 권한을 임의로 올리지 않았습니다.")
-        }
-        guard !(requireReadOnly || phaseReadOnly || requiresReadOnlyExecution(ownerPrompt ?? prompt)) || ticket.permissionProfile == "read_only" else {
-            throw OS1Error.message("상태 확인 요청에 변경 권한이 발급되어 실행하지 않았습니다. 기존 작업은 재실행하지 않았습니다.")
+        // The adopted task scope, including phase/preparation restrictions, is
+        // the authority floor. Every ticket is checked, including retries and
+        // read-only verify/other tasks; classification labels cannot widen it.
+        guard ScopeResolution.permitsTicket(scope: resolvedScope, permission: ticket.permissionProfile) else {
+            throw OS1Error.message("요청의 실행 범위와 서명된 라우팅 권한이 달라 모델 호출 전에 중단했습니다. 요청과 자료는 보존했고 권한을 임의 변경하지 않았습니다.")
         }
         guard !(r2Evidence != nil && asksRecoveryReadiness(ownerPrompt ?? prompt) && ticket.permissionProfile != "read_only") else {
             throw OS1Error.message("복원 가능 여부를 묻는 질문에는 변경 권한을 사용하지 않습니다. 원본 자료와 대화는 유지했습니다.")

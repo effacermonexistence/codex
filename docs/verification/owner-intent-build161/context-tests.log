@@ -1,0 +1,42 @@
+Building for debugging...
+[0/4] Write sources
+[1/4] Write swift-version--58304C5D6DBC2206.txt
+[3/6] Emitting module OS1Context
+[4/6] Compiling OS1Context TaskContext.swift
+[4/7] Write Objects.LinkFileList
+[5/7] Linking OS1ContextTests
+[6/7] Applying OS1ContextTests
+Build of product 'OS1ContextTests' complete! (5.61s)
+Execution workspace fixtures: 41 PASS
+Numeric math presentation: 10 language-boundary checks PASS
+Connection probe: bounded transport retry, no auth/permission retry, cancellation PASS
+Governance statistics: 50 checks PASS; arithmetic fixtures, not performance evidence
+Governance activity: 43 checks PASS; paid calls=0; fixtures isolated
+Drift fixture: no-state and first detection
+Drift fixture: gated adoption
+Drift fixture: TTL
+Drift fixture: bounds
+Drift fixture: concurrency and validated status
+Drift fixture: concurrency finished
+Drift fixture: reading status
+Drift fixture: corruption and symlinks
+Drift policy: candidate/trial/adoption/regression, isolation, TTL, bounds, concurrency, privacy and corruption fixtures passed
+OS1 backend recovery: 117 deterministic checks passed
+OS1 unified execution: 82 deterministic checks passed
+Execution stream, privacy, quota and durable outbox: 27 checks passed
+OS-1 frontier news monitor: 11 deterministic checks passed
+SCV context member: 3 boundary checks passed (v171-size, oversize, invalid UTF8)
+SCV source key: 3 boundary checks passed (content-addressed source, mismatched key, non-source)
+OS-1 research bundle identity: 16 fixtures passed
+OS-1 voice lifecycle: legacy pipe stall reproduced; 6 replacement fixtures passed
+OS1 takeover: 46 checks passed
+Codex session index: 10 checks passed; lockout answered via immutable snapshot
+Backend health: 22 checks passed; classification, repair order, wording, private cache and staleness
+Self-update: 19 checks passed; intent/outcome custody, apply decision matrix, contract wording
+Localization: 10 checks passed; defaults, private custody, tolerant load, env override, output directive
+Attachments: 7 checks passed; reference block parsing, image filter, owner text
+Project acquisition intent, artifact boundary, toolchain and readable output: 64 checks passed
+OS1 registered project source: 81 checks passed
+OS-1 task context fixtures: 220 checks passed
+OS-1 task workflow: decomposition, stage routing, verdict and scope checks OK
+OS-1 source context and output: 13 regression groups passed

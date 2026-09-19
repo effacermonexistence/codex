@@ -1,0 +1,33 @@
+{
+  "mode": "route-only; no backend/model execution",
+  "results": [
+    {
+      "expected": "read_only",
+      "actual": "read_only",
+      "http": 200,
+      "ms": 3079,
+      "pass": true
+    },
+    {
+      "expected": "workspace_write",
+      "actual": "workspace_write",
+      "http": 200,
+      "ms": 821,
+      "pass": true
+    },
+    {
+      "expected": "read_only",
+      "actual": "read_only",
+      "http": 200,
+      "ms": 743,
+      "pass": true
+    },
+    {
+      "expected": "workspace_write",
+      "actual": "workspace_write",
+      "http": 200,
+      "ms": 745,
+      "pass": true
+    }
+  ]
+}
