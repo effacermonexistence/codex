@@ -1454,9 +1454,34 @@ private func replacementInteractionSelfTest() async throws {
         store.sessions[0].lastFailure = original
         store.sessions[0].lastBackendFailure = BackendFailureNotice(provider: "codex", sessionID: nil,
             blocker: .effectsUncertain, dispatchStage: .dispatched)
-        store.composer = "아 그거 하지 말고 프로덕션을 지금 배포해"; store.send()
+        store.composer = "프로덕션을 지금 배포해"; store.send()
         try check(!store.isRunning && store.queuedSubmissions.count == 1 && !store.canAdvanceQueued(store.queuedSubmissions[0]),
             "unknown previous mutation bypassed")
+        try check(store.canReconcileQueued(store.queuedSubmissions[0]), "uncertain queue has no safe inspection action")
+        try check(store.queueActionLabel(store.queuedSubmissions[0]).contains("읽기 전용"), "inspection mislabeled as steering")
+        let held = store.queuedSubmissions[0]
+        let beforeReadback = starts.count
+        store.advanceQueued(held.id)
+        try await eventually { starts.count == beforeReadback + 1 && gates[starts.last!.id] != nil }
+        try check(starts.last!.readOnlyReconciliation == true && store.queuedSubmissions.contains { $0.id == held.id },
+            "queue recovery replayed uncertain write or consumed owner request")
+        gates.removeValue(forKey: starts.last!.id)!.resume()
+        try await eventually { !store.isRunning }
+        store.removeQueued(held.id)
+        store.sessions[0].lastFailure = original
+        store.sessions[0].lastBackendFailure = BackendFailureNotice(provider: "codex", sessionID: nil,
+            blocker: .effectsUncertain, dispatchStage: .dispatched, permissionProfile: "read_only")
+        store.sessions[0].taskContext?.setObjective(TaskContext.Objective(requestText: "OS1 준비 상태 확인", kind: .explain, scope: .readOnly))
+        let beforeEdit = starts.count
+        store.composer = "OS1 스티어링 고쳐"; store.send()
+        try await eventually { starts.count == beforeEdit + 1 && gates[starts.last!.id] != nil }
+        try check(starts.last!.request == "OS1 스티어링 고쳐" && starts.last!.amendedRequest == nil &&
+            store.sessions[0].taskContext?.objective.scope == .workspaceWrite,
+            "new explicit repair inherited read-only scope or replayed old objective")
+        try check(store.sessions[0].preservedTasks?.count == 2, "read-only failure history lost")
+        gates.removeValue(forKey: starts.last!.id)!.resume()
+        try await eventually { !store.isRunning }
+
     }
     print("Task replacement: \(checks) checks PASS; terminal/Claude/recovery/NFD/provenance/duplicate/edit/permission; model calls 0")
 }
@@ -3945,6 +3970,7 @@ private final class SessionStore: ObservableObject {
             }
         }
         load()
+        scheduleNativeProvenanceRepair()
         pausedQueueIDs = Set(queuedSubmissions.map(\.id))
         if storageRoot == nil {
             // Owned by the store, not by a view: an app relaunched in the
@@ -4048,12 +4074,22 @@ private final class SessionStore: ObservableObject {
             !pausedQueueIDs.contains(next.id) && !editingQueueIDs.contains(next.id)
     }
 
+    // A failed, runtime-enforced read cannot have performed the previous write.
+    // Only a NEW explicit owner edit may leave that hold; never replay an old
+    // action, infer safety from output prose, or promote an unknown permission.
+    private func isNewEditAfterReadOnlyFailure(_ next: PendingSubmission, session: ConversationSession) -> Bool {
+        session.lastFailure != nil &&
+        session.lastBackendFailure?.permissionProfile == "read_only" &&
+        session.taskContext?.objective.scope == .readOnly &&
+        ScopeResolution.resolve(next.request).scope == .workspaceWrite
+    }
+
     private func mayAdvancePastFailure(_ next: PendingSubmission, session: ConversationSession) -> Bool {
         if let failed = session.lastFailure, next.replacesSubmissionID != failed.id { return false }
         // A new read is independent of an uncertain previous write. A dependent
         // write must still reconcile; an action button never expands permission.
         if session.lastBackendFailure?.requiresReadback == true || session.lastFailure?.savedResultNeedsReview == true {
-            return ExecutionSteering.isIndependentRead(next.request)
+            return ExecutionSteering.isIndependentRead(next.request) || isNewEditAfterReadOnlyFailure(next, session: session)
         }
         return true
     }
@@ -4088,8 +4124,30 @@ private final class SessionStore: ObservableObject {
         orderedSessions.filter { $0.archived != true && $0.pinnedAt != nil }
     }
 
+    /// Returns native backend sessions that are actually running now. This is
+    /// presentation state only: it must not rewrite native pin metadata or the
+    /// persisted OS-1 sidebar order.
+    fileprivate func runningNativeSessionIDs(for provider: ProviderChoice) -> Set<String> {
+        guard provider != .auto else { return [] }
+        return Set(activeRuns.compactMap { conversationID, run in
+            guard let session = sessions.first(where: { $0.id == conversationID }) else { return nil }
+            let activityProvider = run.activity.provider.flatMap(ProviderChoice.init(rawValue:))
+            let effectiveProvider = [
+                run.provider.flatMap { $0 == .auto ? nil : $0 },
+                activityProvider.flatMap { $0 == .auto ? nil : $0 },
+                session.provider == .auto ? nil : session.provider,
+            ].compactMap { $0 }.first
+            guard effectiveProvider == provider else { return nil }
+            let nativeID = run.activity.nativeSessionID ?? (provider == .codex ? session.codexSessionID : session.claudeSessionID)
+            guard let nativeID, !nativeID.isEmpty else { return nil }
+            return nativeID
+        })
+    }
+
     private var orderedNativeSessions: [NativeSessionSummary] {
-        nativeSessions.map { value in
+        let provider = surface == .auto ? nativeSessions.first?.provider : surface
+        let runningIDs = provider.map(runningNativeSessionIDs(for:)) ?? []
+        return nativeSessions.map { value in
             var row = value
             if let intent = sidebarIntents[SidebarOrder.key(provider: value.provider.rawValue, id: value.id)] {
                 row.isPinned = intent.pinned; row.pinPosition = intent.position
@@ -4098,7 +4156,12 @@ private final class SessionStore: ObservableObject {
             }
             if row.isPinned, let rank = nativePinnedOrders[row.provider.rawValue]?.firstIndex(of: row.id) { row.pinPosition = rank }
             return row
-        }.sorted(by: sidebarNativeLess)
+        }.sorted { lhs, rhs in
+            let lhsRunning = runningIDs.contains(lhs.id)
+            let rhsRunning = runningIDs.contains(rhs.id)
+            if lhsRunning != rhsRunning { return lhsRunning }
+            return sidebarNativeLess(lhs, rhs)
+        }
     }
 
     var filteredNativeSessions: [NativeSessionSummary] {
@@ -4602,6 +4665,12 @@ private final class SessionStore: ObservableObject {
             claudeCapacity: sessions[index].effectiveClaudeCapacity
         )
         submission.configuredProvider = configuredProvider
+        if !isSessionRunning(submission.sessionID),
+           isNewEditAfterReadOnlyFailure(submission, session: sessions[index]) {
+            queuedSubmissions.append(submission)
+            advanceQueued(submission.id)
+            return
+        }
         if ExecutionSteering.isTaskReplacement(request) {
             queuedSubmissions.append(submission)
             advanceQueued(submission.id)
@@ -4692,10 +4761,20 @@ private final class SessionStore: ObservableObject {
         return mayAdvancePastFailure(candidate, session: session)
     }
 
+    // Preserve the write barrier while making an explicit recovery action usable.
+    func canReconcileQueued(_ item: PendingSubmission) -> Bool {
+        guard !editingQueueIDs.contains(item.id),
+              queuedSubmissions.contains(where: { $0.id == item.id }),
+              !isSessionRunning(item.sessionID),
+              activeRuns.count < Self.maximumConcurrentSessions,
+              let session = sessions.first(where: { $0.id == item.sessionID }),
+              session.lastFailure != nil else { return false }
+        return session.lastBackendFailure?.requiresReadback == true || session.lastFailure?.savedResultNeedsReview == true
+    }
     func queueActionLabel(_ item: PendingSubmission) -> String {
         if canSteerQueued(item) { return "현재 작업에 반영" }
         if activeRuns[item.sessionID]?.cancellationRequested == true { return "현재 실행 종료 확인 중" }
-        if !canAdvanceQueued(item) { return "이전 변경 상태 확인 필요" }
+        if !canAdvanceQueued(item) { return canReconcileQueued(item) ? "이전 변경을 읽기 전용으로 확인 · 대기 요청 보존" : "이전 변경 상태 확인 필요" }
         return isSessionRunning(item.sessionID) ? "현재 작업을 중지하고 이 요청부터 시작" : "이 요청부터 시작"
     }
 
@@ -4705,6 +4784,10 @@ private final class SessionStore: ObservableObject {
     func advanceQueued(_ id: UUID) {
         guard let item = queuedSubmissions.first(where: { $0.id == id }) else { return }
         if canSteerQueued(item) { steerQueued(id); return }
+        if !canAdvanceQueued(item), canReconcileQueued(item) {
+            beginReconciliation(conversationID: item.sessionID)
+            return
+        }
         guard canAdvanceQueued(item), let index = queuedSubmissions.firstIndex(where: { $0.id == id }),
               let sessionIndex = sessions.firstIndex(where: { $0.id == item.sessionID }) else {
             sessionStatuses[item.sessionID] = "이전 변경 확인 필요 · 새 요청은 대기열에 보존했습니다"
@@ -4712,7 +4795,9 @@ private final class SessionStore: ObservableObject {
         }
         queuedSubmissions[index].startNextRequested = true
         queuedSubmissions[index].replacesSubmissionID = sessions[sessionIndex].lastFailure?.id ?? activeRuns[item.sessionID]?.submissionID
-        queuedSubmissions[index].replacesObjective = ExecutionSteering.isTaskReplacement(item.request)
+        let freshEdit = isNewEditAfterReadOnlyFailure(item, session: sessions[sessionIndex])
+        queuedSubmissions[index].replacesObjective = ExecutionSteering.isTaskReplacement(item.request) || freshEdit
+        if freshEdit { queuedSubmissions[index].amendedRequest = nil }
         if queuedSubmissions[index].replacesObjective == true {
             // Pending follow-ups belonged to the abandoned objective. Preserve
             // them for explicit review instead of running them under new context.
@@ -5273,6 +5358,39 @@ private final class SessionStore: ObservableObject {
         Task.detached(priority: .utility) { [bindings, held, seen, owned] in
             let finished = Self.readBoundNativeRecords(bindings, held: held, seen: seen, ownedCodexTurns: owned)
             await MainActor.run { self.applyIngestedRecords(finished, conversationID: conversationID) }
+        }
+    }
+
+    /// Native archives can be gigabytes. Never scan them synchronously in
+    /// load()/init: doing so prevents the first window and recovery controls
+    /// from appearing. Read serially off-main; merge only verified provenance
+    /// into the current record, never replace a stale session snapshot.
+    private func scheduleNativeProvenanceRepair() {
+        guard customStorageRoot == nil else { return }
+        let candidates = sessions.filter {
+            $0.messages.contains { $0.nativeIngestedID != nil && $0.nativeManagedTurnID == nil }
+                && !($0.taskContext?.bindings.isEmpty ?? true)
+        }
+        Task.detached(priority: .background) { [weak self, candidates] in
+            for snapshot in candidates {
+                guard !Task.isCancelled, self != nil else { return }
+                let outcomes = Self.readBoundNativeRecords(snapshot.taskContext?.bindings ?? [],
+                    held: Set(snapshot.visibleMessages.map { NativeIngestion.digestOf($0.text) }),
+                    seen: Set(snapshot.messages.compactMap(\.nativeIngestedID)),
+                    ownedCodexTurns: Set(snapshot.ownedCodexTurnIDs ?? []))
+                await MainActor.run { [weak self] in
+                    guard let self, !self.isSessionRunning(snapshot.id),
+                          let index = self.sessions.firstIndex(where: { $0.id == snapshot.id }) else { return }
+                    var changed = false
+                    for outcome in outcomes {
+                        guard self.sessions[index].taskContext?.bindings.contains(where: {
+                            $0.provider == outcome.binding.provider && $0.nativeSessionID == outcome.binding.nativeSessionID
+                        }) == true else { continue }
+                        if repairManagedImports(&self.sessions[index], records: outcome.managedRecords) { changed = true }
+                    }
+                    if changed { self.save() }
+                }
+            }
         }
     }
 
@@ -5850,6 +5968,14 @@ private final class SessionStore: ObservableObject {
     /// main-actor state, so it cannot block.
     var maintenanceLoopRunning: Bool { maintenanceTask != nil }
     func runMaintenanceTick() {
+        // The installer verifies a quiescent store after relaunch. Its live PID
+        // lease suppresses automatic recovery only; a crashed installer cannot
+        // leave a permanent hold. User requests retain their normal gates.
+        let installLease = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".os1/self-update/install-maintenance.pid")
+        if let raw = try? String(contentsOf: installLease, encoding: .utf8),
+           let pid = Int32(raw.trimmingCharacters(in: .whitespacesAndNewlines)), pid > 1,
+           kill(pid, 0) == 0 { return }
         // Live store only: a fixture store must never adopt the real machine's
         // recovery state or self-update receipts.
         guard customStorageRoot == nil else { return }
@@ -6095,15 +6221,6 @@ private final class SessionStore: ObservableObject {
             .sorted { $0.updatedAt > $1.updatedAt }
             .map { session in
                 var bounded = session
-                if customStorageRoot == nil, session.messages.contains(where: { $0.nativeIngestedID != nil && $0.nativeManagedTurnID == nil }) {
-                    let outcomes = Self.readBoundNativeRecords(session.taskContext?.bindings ?? [],
-                        held: Set(session.visibleMessages.map { NativeIngestion.digestOf($0.text) }),
-                        seen: Set(session.messages.compactMap(\.nativeIngestedID)),
-                        ownedCodexTurns: Set(session.ownedCodexTurnIDs ?? []))
-                    for outcome in outcomes {
-                        if repairManagedImports(&bounded, records: outcome.managedRecords) { provenanceRepaired = true }
-                    }
-                }
                 bounded.sourceContext = migratedSourceReference(bounded)
                 bounded.sourceContextVersion = 2
                 bounded.taskContext = migratedTaskContext(bounded, sourceContext: bounded.sourceContext)
@@ -7366,6 +7483,41 @@ private func sidebarSynchronizationSelfTest() throws {
     reload.surface = .claude; reload.nativeSessions = rows(.claude, [claudeB, claudeA])
     try check(reload.filteredNativeSessions.map(\.id) == [claudeA, claudeB], "Claude local projection matches OS1 order")
     try check(reload.filteredNativeSessions.allSatisfy { $0.pinSyncNote?.contains("미반영") == true }, "unsupported Claude is not success")
+
+    // A live native backend session is a presentation-only exception: it
+    // floats above pinned rows, while the stored pin order remains intact.
+    let runningRoot = root.appendingPathComponent("running-native")
+    let runningStore = SessionStore(storageRoot: runningRoot)
+    let runningA = ConversationSession(title: "Pinned A", workspace: "/tmp", provider: .codex,
+        codexSessionID: "00000000-0000-4000-8000-000000000011")
+    let runningB = ConversationSession(title: "Pinned B", workspace: "/tmp", provider: .codex,
+        codexSessionID: "00000000-0000-4000-8000-000000000012")
+    let runningC = ConversationSession(title: "Running C", workspace: "/tmp", provider: .codex,
+        codexSessionID: "00000000-0000-4000-8000-000000000013")
+    runningStore.sessions = [runningA, runningB, runningC]
+    var nativeA = NativeSessionSummary(id: runningA.codexSessionID!, provider: .codex, title: "Pinned A",
+        workspace: "/tmp", workspaceLabel: nil, updatedAt: Date(timeIntervalSince1970: 10), sourcePath: nil)
+    nativeA.isPinned = true; nativeA.pinPosition = 0
+    var nativeB = NativeSessionSummary(id: runningB.codexSessionID!, provider: .codex, title: "Pinned B",
+        workspace: "/tmp", workspaceLabel: nil, updatedAt: Date(timeIntervalSince1970: 20), sourcePath: nil)
+    nativeB.isPinned = true; nativeB.pinPosition = 1
+    let nativeC = NativeSessionSummary(id: runningC.codexSessionID!, provider: .codex, title: "Running C",
+        workspace: "/tmp", workspaceLabel: nil, updatedAt: Date(timeIntervalSince1970: 30), sourcePath: nil)
+    runningStore.surface = .codex
+    runningStore.nativeSessions = [nativeB, nativeA, nativeC]
+    runningStore.activeRuns[runningC.id] = .init(
+        submissionID: UUID(), started: Date(),
+        activity: RuntimeActivity(.executing, provider: "codex", nativeSessionID: nativeC.id),
+        provider: .codex)
+    try check(runningStore.filteredNativeSessions.map(\.id) == [nativeC.id, nativeA.id, nativeB.id],
+        "running native session floats above pinned rows")
+    runningStore.activeRuns.removeValue(forKey: runningC.id)
+    try check(runningStore.filteredNativeSessions.map(\.id) == [nativeA.id, nativeB.id, nativeC.id],
+        "native pin order returns after run ends")
+    runningStore.selectedSessionID = runningC.id
+    try check(runningStore.filteredNativeSessions.map(\.id) == [nativeA.id, nativeB.id, nativeC.id],
+        "linked current marker alone does not reorder an inactive native session")
+
     reload.toggleNativePin(claudeA)
     try check(reload.sessions.first(where: { $0.id == a.id })?.pinnedAt == nil, "native unpin updates linked OS1")
     reload.surface = .codex; reload.nativeSessions = rows(.codex, [codexB, codexA])
@@ -7987,6 +8139,7 @@ private struct NativeSessionBrowser: View {
                         .frame(maxWidth: .infinity)
                     Spacer()
                 } else {
+                    ScrollViewReader { proxy in
                     ScrollView {
                         LazyVStack(spacing: 6) {
                             ForEach(store.filteredNativeSessions) { session in
@@ -8000,6 +8153,7 @@ private struct NativeSessionBrowser: View {
                                     current: store.linkedNativeSessionID(for: provider) == session.id,
                                     tint: provider.tint
                                 ) { store.selectNativeSession(session.id) }
+                                .id(session.id)
                                 .contextMenu {
                                     Button(session.isPinned ? "고정 해제" : "상단에 고정") { store.toggleNativePin(session.id) }
                                     if session.isPinned {
@@ -8021,6 +8175,13 @@ private struct NativeSessionBrowser: View {
                         }
                         .padding(.horizontal, 20)
                         .padding(.bottom, 12)
+                    }
+                    .onAppear {
+                        if let current = store.linkedNativeSessionID(for: provider),
+                           store.runningNativeSessionIDs(for: provider).contains(current) {
+                            proxy.scrollTo(current, anchor: .top)
+                        }
+                    }
                     }
                 }
                 if let notice = store.sidebarSyncNotice {
@@ -8188,7 +8349,7 @@ private struct NativeTranscriptView: View {
                         ChatMessage(id: transcriptStableID(message.id), role: message.role,
                             text: message.text, provider: provider.rawValue, timestamp: message.timestamp ?? .distantPast)
                     },
-                    queuedSubmissions: [], isRunning: false,
+                    queuedSubmissions: [], isRunning: store.isShowingLinkedNativeSession(provider) && store.isRunning,
                     workspace: store.selectedNativeSession?.workspace ?? ""
                 )
             }
@@ -9238,6 +9399,7 @@ private struct ContinuousTranscriptView: NSViewRepresentable {
     final class Coordinator: NSObject, NSTextViewDelegate {
         var renderedSessionID: UUID?
         var hasRendered = false
+        var hasRenderedMessages = false
         var expanded = Set<String>()
         var content: ContinuousTranscriptView?
         var lastInput: TranscriptRenderInput?
@@ -9332,7 +9494,8 @@ private struct ContinuousTranscriptView: NSViewRepresentable {
 
         let selection = textView.selectedRange()
         let distanceFromBottom = max(0, textView.bounds.height - scrollView.contentView.bounds.maxY)
-        let shouldFollowBottom = !context.coordinator.hasRendered || changingSession || distanceFromBottom < 80
+        let firstMessages = !messages.isEmpty && (!context.coordinator.hasRenderedMessages || changingSession)
+        let shouldFollowBottom = !context.coordinator.hasRendered || changingSession || firstMessages || distanceFromBottom < 80
         textView.textStorage?.setAttributedString(document)
         textView.needsDisplay = true
         if !changingSession, selection.location != NSNotFound {
@@ -9342,9 +9505,13 @@ private struct ContinuousTranscriptView: NSViewRepresentable {
         }
         context.coordinator.renderedSessionID = sessionID
         context.coordinator.hasRendered = true
-        if shouldFollowBottom, selection.length == 0 {
+        context.coordinator.hasRenderedMessages = !messages.isEmpty
+        if shouldFollowBottom, changingSession || selection.length == 0 {
             DispatchQueue.main.async {
+                if let container = textView.textContainer { textView.layoutManager?.ensureLayout(for: container) }
+                scrollView.layoutSubtreeIfNeeded()
                 textView.scrollToEndOfDocument(nil)
+                scrollView.reflectScrolledClipView(scrollView.contentView)
             }
         }
     }
@@ -9765,7 +9932,7 @@ private struct ConversationQueueView: View {
             if store.activeRuns[session.id]?.cancellationRequested == true || session.lastFailure != nil {
                 Text(store.activeRuns[session.id]?.cancellationRequested == true
                     ? "실행이 끝나는 대로 선택한 요청을 시작합니다"
-                    : "이전 작업은 보존됐습니다. 새 요청은 오른쪽 화살표로 시작하세요.")
+                    : "이전 작업과 대기 요청은 보존됩니다. 화살표로 실행하거나, 변경 상태가 불확실하면 먼저 읽기 전용 확인을 진행합니다.")
                     .font(.system(size: 11)).foregroundStyle(Theme.muted)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -9778,7 +9945,7 @@ private struct ConversationQueueView: View {
                             Button { store.advanceQueued(item.id) } label: {
                                 Image(systemName: "arrow.up").frame(width: 26, height: 26)
                             }.buttonStyle(.plain)
-                                .disabled(!store.canSteerQueued(item) && !store.canAdvanceQueued(item))
+                                .disabled(!store.canSteerQueued(item) && !store.canAdvanceQueued(item) && !store.canReconcileQueued(item))
                                 .help(store.queueActionLabel(item))
                                 .accessibilityLabel("대기 요청 \(rank + 1) · \(store.queueActionLabel(item))")
                                 .accessibilityIdentifier("os1.queue.steer.\(item.id)")

@@ -4,13 +4,19 @@ set -euo pipefail
 readonly script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly runtime_root="$(cd "$script_dir/.." && pwd)"
 readonly repository_root="$(cd "$runtime_root/../.." && pwd)"
+python3 "$script_dir/check-startup-isolation.py"
 # The bundle's own Info.plist is the single source of truth for the release
 # version. A hardcoded default silently diverged from it and the identity
 # check below then refused to package — every build since 0.9.57 produced no
 # pkg, and the CI job failed for the same reason.
 readonly version="${OS1_VERSION:-$(plutil -extract CFBundleShortVersionString raw -o - "$runtime_root/Resources/Info.plist")}"
 readonly release_mode="${OS1_RELEASE_MODE:-development}"
-readonly output_dir="${OS1_RELEASE_OUTPUT_DIR:-$runtime_root/release}"
+# File Provider can reattach FinderInfo after xattr -c, invalidating signing.
+# Keep generated release payloads outside synchronized Documents; retain the
+# checkout's established release/ entry point for self-update consumers.
+readonly release_entry="$runtime_root/release"
+readonly source_key="$(printf '%s' "$runtime_root" | shasum -a 256 | cut -c1-20)"
+readonly output_dir="${OS1_RELEASE_OUTPUT_DIR:-$HOME/Library/Caches/OS-1/releases/$source_key}"
 readonly stage_dir="$output_dir/stage"
 readonly audit_dir="$output_dir/audit"
 readonly component_pkg="$output_dir/OS-1-component.pkg"
@@ -60,9 +66,17 @@ case "$release_mode" in
 esac
 
 case "$output_dir" in
-  "$runtime_root"/release|/tmp/os1-release.*) ;;
+  "$runtime_root"/release|"$HOME/Library/Caches/OS-1/releases/$source_key"|/tmp/os1-release.*) ;;
   *) echo "Refusing unexpected release output: $output_dir" >&2; exit 1 ;;
 esac
+
+if [[ -z "${OS1_RELEASE_OUTPUT_DIR:-}" ]]; then
+  if [[ -e "$release_entry" || -L "$release_entry" ]]; then
+    rm -rf "$release_entry"
+  fi
+  mkdir -p "$(dirname "$output_dir")"
+  ln -s "$output_dir" "$release_entry"
+fi
 
 rm -rf "$output_dir"
 mkdir -p \

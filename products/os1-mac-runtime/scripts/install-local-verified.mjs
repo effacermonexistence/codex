@@ -22,6 +22,7 @@ const service = `gui/${process.getuid()}/com.os1.fleet-agent`;
 const plist = path.join(home, 'Library/LaunchAgents/com.os1.fleet-agent.plist');
 // Queue repair upgrades may preserve a stranded queue. They must never clear,
 // reorder or execute it: OS1 reloads every saved entry under a restart hold.
+const maintenanceLease = path.join(home, '.os1/self-update/install-maintenance.pid');
 const originalQueue = JSON.parse(fs.readFileSync(store)).queued ?? [];
 assert(recovery.startsWith(path.join(home, '.os1/recovery/') ) && !fs.existsSync(recovery));
 assert(!fs.lstatSync(app).isSymbolicLink() && !fs.lstatSync(cli).isSymbolicLink());
@@ -73,6 +74,15 @@ const receipt = { startedAt: new Date().toISOString(), build: expectedBuild, app
   previousRequirement: oldRequirement, sourceRequirement, signerRotation,
   signerRotationAuthorized: allowLocalSignerRotation, checks: [] };
 try {
+  fs.mkdirSync(path.dirname(maintenanceLease), { recursive: true, mode: 0o700 });
+  if (fs.existsSync(maintenanceLease)) {
+    const pid = Number(fs.readFileSync(maintenanceLease, 'utf8').trim());
+    let alive = false;
+    if (Number.isInteger(pid) && pid > 1) { try { process.kill(pid, 0); alive = true; } catch {} }
+    assert(!alive, 'another installer owns maintenance lease');
+    fs.unlinkSync(maintenanceLease);
+  }
+  fs.writeFileSync(maintenanceLease, String(process.pid), { mode: 0o600, flag: 'wx' });
   run('/usr/bin/ditto', [source, stageApp]);
   fs.copyFileSync(resource, stageCLI, fs.constants.COPYFILE_EXCL); fs.chmodSync(stageCLI, 0o755);
   run('/usr/bin/codesign', ['--verify', '--deep', '--strict', stageApp]);
@@ -156,6 +166,7 @@ try {
   }
   throw error;
 } finally {
+  if (fs.existsSync(maintenanceLease) && fs.readFileSync(maintenanceLease, 'utf8').trim() === String(process.pid)) fs.unlinkSync(maintenanceLease);
   // Recovery errors must not suppress the original failure receipt.
   try {
     if (paused) run('/bin/launchctl', ['bootstrap', `gui/${process.getuid()}`, plist]);
