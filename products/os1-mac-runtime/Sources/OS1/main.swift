@@ -7201,9 +7201,20 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
         if revasDisposition != "adopted" { failedCandidates.insert(candidateKey) }
         if revasDisposition != "adopted",
            !BackendRecovery.permitsAutomaticReplay(permission: ticket.permissionProfile, stage: dispatchStage) {
-            // A rejected answer does not prove the deployment/write failed.
-            // Keep its actual result available; never execute a second writer.
-            throw OS1Error.backendBlocked(.effectsUncertain)
+            // Execution evidence and answer adoption are independent. Preserve
+            // the actual response even when REVAS refuses it; never turn this
+            // into an empty "nothing ran" state or replay a possible writer.
+            let blocker = BackendRecovery.rejectedAdoptionBlocker(exitCode: Int(artifact.exitCode),
+                output: artifact.output, persistence: execution.nativeRecord.persistence)
+            lastFailureNotice = BackendFailureNotice(provider: ticket.provider,
+                sessionID: execution.sessionID, blocker: blocker,
+                dispatchStage: dispatchStage, source: sourceContext,
+                permissionProfile: ticket.permissionProfile, deliveryID: delivery.id,
+                publicProgress: artifact.output,
+                diagnosis: "backend_exit=\(artifact.exitCode); native_persistence=\(execution.nativeRecord.persistence); remote_status=\(route.status); adoption=\(revasDisposition)")
+            recordExecutionFailure(ticket: ticket, model: model, effort: effort,
+                reason: "remote_verification_not_adopted_no_write_replay", source: sourceContext)
+            throw OS1Error.backendBlocked(blocker)
         }
         if let recovery = sourceRecoveryProvider, step < attemptLimit {
             RuntimeActivity.emit(.recovering, provider: recovery)
