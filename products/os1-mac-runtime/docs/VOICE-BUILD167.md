@@ -29,3 +29,22 @@ runtime observation as distinct gates; generated self-explanation is not proof.
 No credentials, conversations, queues or model files are edited. Existing
 self-update installer preserves sessions and retains rollback receipts. No
 pending external task is deliberately replayed for this test.
+
+## Installed runtime adoption
+- Self-update build167 installed, installer 9 checks passed; sessions 98 → 98.
+- Receipt: `~/.os1/recovery/self-update-build167-2026-09-19T125412Z/install-receipt.json`.
+- Installed app's Voice action entered `Listening / Local Whisper`, with the
+  macOS microphone indicator visible. Finish returned transcription to the
+  composer. Nothing was submitted as a task.
+- Live acoustic test: speech synthesized through MacBook Air Speakers (device
+  72), captured by the default MacBook Air microphone. Composer received
+  `microphone test please continue the task microphone test please continue the task`.
+  The phrase was played twice; this verifies capture → local engine → composer,
+  not just standalone file transcription. Test-only draft was cleared afterward.
+- Initial acoustic attempt played through the default Apple Vision Pro output;
+  its unrelated transcript was rejected as verification evidence and removed.
+  Default input/output devices were not changed. Silence transcription accuracy
+  is not established by this test.
+- Context tests and all staged runtime/Fleet/app/composer/steering/sidebar/queue/
+  parallel checks passed. The tested source commit is
+  `f89af0c98d88572dbf8c065404b81a3f337231ae`; this receipt changes documentation only.
