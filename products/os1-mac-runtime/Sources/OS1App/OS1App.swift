@@ -3970,6 +3970,7 @@ private final class SessionStore: ObservableObject {
             }
         }
         load()
+        scheduleNativeProvenanceRepair()
         pausedQueueIDs = Set(queuedSubmissions.map(\.id))
         if storageRoot == nil {
             // Owned by the store, not by a view: an app relaunched in the
@@ -5360,6 +5361,39 @@ private final class SessionStore: ObservableObject {
         }
     }
 
+    /// Native archives can be gigabytes. Never scan them synchronously in
+    /// load()/init: doing so prevents the first window and recovery controls
+    /// from appearing. Read serially off-main; merge only verified provenance
+    /// into the current record, never replace a stale session snapshot.
+    private func scheduleNativeProvenanceRepair() {
+        guard customStorageRoot == nil else { return }
+        let candidates = sessions.filter {
+            $0.messages.contains { $0.nativeIngestedID != nil && $0.nativeManagedTurnID == nil }
+                && !($0.taskContext?.bindings.isEmpty ?? true)
+        }
+        Task.detached(priority: .background) { [weak self, candidates] in
+            for snapshot in candidates {
+                guard !Task.isCancelled, self != nil else { return }
+                let outcomes = Self.readBoundNativeRecords(snapshot.taskContext?.bindings ?? [],
+                    held: Set(snapshot.visibleMessages.map { NativeIngestion.digestOf($0.text) }),
+                    seen: Set(snapshot.messages.compactMap(\.nativeIngestedID)),
+                    ownedCodexTurns: Set(snapshot.ownedCodexTurnIDs ?? []))
+                await MainActor.run { [weak self] in
+                    guard let self, !self.isSessionRunning(snapshot.id),
+                          let index = self.sessions.firstIndex(where: { $0.id == snapshot.id }) else { return }
+                    var changed = false
+                    for outcome in outcomes {
+                        guard self.sessions[index].taskContext?.bindings.contains(where: {
+                            $0.provider == outcome.binding.provider && $0.nativeSessionID == outcome.binding.nativeSessionID
+                        }) == true else { continue }
+                        if repairManagedImports(&self.sessions[index], records: outcome.managedRecords) { changed = true }
+                    }
+                    if changed { self.save() }
+                }
+            }
+        }
+    }
+
     nonisolated fileprivate static func readBoundNativeRecords(_ bindings: [TaskContext.BackendBinding], held: Set<String>, seen: Set<String>, ownedCodexTurns: Set<String>) -> [NativeIngestionOutcome] {
             var outcome: [NativeIngestionOutcome] = []
             for binding in bindings {
@@ -6179,15 +6213,6 @@ private final class SessionStore: ObservableObject {
             .sorted { $0.updatedAt > $1.updatedAt }
             .map { session in
                 var bounded = session
-                if customStorageRoot == nil, session.messages.contains(where: { $0.nativeIngestedID != nil && $0.nativeManagedTurnID == nil }) {
-                    let outcomes = Self.readBoundNativeRecords(session.taskContext?.bindings ?? [],
-                        held: Set(session.visibleMessages.map { NativeIngestion.digestOf($0.text) }),
-                        seen: Set(session.messages.compactMap(\.nativeIngestedID)),
-                        ownedCodexTurns: Set(session.ownedCodexTurnIDs ?? []))
-                    for outcome in outcomes {
-                        if repairManagedImports(&bounded, records: outcome.managedRecords) { provenanceRepaired = true }
-                    }
-                }
                 bounded.sourceContext = migratedSourceReference(bounded)
                 bounded.sourceContextVersion = 2
                 bounded.taskContext = migratedTaskContext(bounded, sourceContext: bounded.sourceContext)
