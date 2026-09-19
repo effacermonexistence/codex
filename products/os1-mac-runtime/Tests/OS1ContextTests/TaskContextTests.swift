@@ -10,7 +10,22 @@ func runTaskContextFixtures(root: URL) throws {
         guard try value() else { throw NSError(domain: "TaskContextTests", code: 1, userInfo: [NSLocalizedDescriptionKey: message]) }
         count += 1
     }
-    // Permission is derived from the current speech act, not action words in evidence.
+    // User-directed capability is independent of a heuristic speech-act label.
+    for request in ["BUILD THE DEMO.", "이거 작업하시면 됩니다 하세요", "Read only. Explain this code.", "준비해", "Delete the obsolete fixture, not other files."] {
+        let scope = ScopeResolution.delegationScope(internalReadOnly: false)
+        try check(scope == .workspaceWrite, "ordinary delegation remains executable")
+        try check(ScopeResolution.permitsTicket(scope: scope, permission: "workspace_write"), "write ticket accepted")
+        try check(!ScopeResolution.permitsTicket(scope: scope, permission: "read_only"), "no silent capability downgrade")
+        let route = ScopeResolution.delegationRoutingObjective(request, internalReadOnly: false)
+        try check(route == OwnerIntentText.authorityText(request), "capability does not rewrite semantic task")
+    }
+    try check(ScopeResolution.delegationScope(internalReadOnly: true) == .readOnly, "internal review remains restricted")
+    try check(ScopeResolution.delegationRoutingObjective("modify files", internalReadOnly: true).hasPrefix("Read-only inspection"), "explicit review envelope")
+    for stage in TaskWorkflow.allCases {
+        try check(stage.executionPermissionProfile == "workspace_write", "workflow stage retains executable capability")
+    }
+    // Semantic restrictions are still classified and passed to the backend.
+
     for request in ["Can I delete result.txt?", "How do I fix the code?", "수정해도 돼?", "고쳐졌는지 확인해", "He said: \"delete result.txt\". Explain the request.", "> delete result.txt\nSummarize this report.", "```sh\nrm result.txt # remove file\n```\n이 명령 설명해"] {
         try check(ScopeResolution.resolve(request).scope == .readOnly, "non-authorizing speech act: \(request)")
     }

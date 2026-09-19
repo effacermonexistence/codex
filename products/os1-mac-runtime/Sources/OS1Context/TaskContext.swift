@@ -692,6 +692,19 @@ public struct ScopeResolution: Equatable, Sendable {
     public let scope: TaskContext.Scope
     public let prohibitions: [String]
 
+    /// Backend capability is not a natural-language intent classification.
+    /// Ordinary owner tasks receive the executable workspace envelope; their
+    /// original instructions still determine which actions may actually occur.
+    /// Only explicit internal review phases request a restricted executor.
+    public static func delegationScope(internalReadOnly: Bool) -> TaskContext.Scope {
+        internalReadOnly ? .readOnly : .workspaceWrite
+    }
+
+    public static func delegationRoutingObjective(_ task: String, internalReadOnly: Bool) -> String {
+        if internalReadOnly { return routingObjective(task, scope: .readOnly) }
+        return OwnerIntentText.authorityText(task)
+    }
+
     public static func permitsTicket(scope: TaskContext.Scope, permission: String) -> Bool {
         switch scope {
         case .readOnly: return permission == "read_only"

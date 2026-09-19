@@ -555,12 +555,14 @@ struct StartExecutionRequest: Codable {
 }
 
 struct ExecutionInputContext: Codable {
+    var executionPermissionProfile: String? = nil
     let inputUTF8Bytes: Int
     let sourceUTF8Bytes: Int
     let historyUTF8Bytes: Int
     var completionFeedback: PublicCompletionFeedback? = nil
     var availableClaudeModels: [ClaudeModelCapability]? = nil
     enum CodingKeys: String, CodingKey {
+        case executionPermissionProfile = "execution_permission_profile"
         case inputUTF8Bytes = "input_utf8_bytes"
         case sourceUTF8Bytes = "source_utf8_bytes"
         case historyUTF8Bytes = "history_utf8_bytes"
@@ -6257,7 +6259,7 @@ func runWorkflowTask(
               let adopted = tagged.last(where: { $0.revasDisposition == "adopted" }),
               ["codex", "claude"].contains(adopted.provider),
               adopted.nativeRecord?.isVerified == true, adopted.exitCode == 0,
-              adopted.permissionProfile == (stage.readOnly ? "read_only" : "workspace_write") else {
+              adopted.permissionProfile == stage.executionPermissionProfile else {
             return held("\(stage.rawValue): 검증된 native 실행·권한·REVAS 채택이 없어 다음 단계로 진행하지 않았습니다.")
         }
         if stage == .verification && TaskWorkflow.verdict(adopted.output) != true {
@@ -6341,7 +6343,10 @@ func runTask(
     let kind: TaskContext.ObjectiveKind = preparation.map {
         $0.modifies ? .modify : ($0.kind == .explainFromContext ? .explain : .prepare)
     } ?? TaskContext.ObjectiveKind.classify(prompt)
-    let resolvedScope: TaskContext.Scope = requireReadOnly || phaseReadOnly || preparation?.modifies == false ? .readOnly : scopeResolution.scope
+    // The dispatcher delegates execution capability, not guessed intent.
+    // Original task text/prohibitions remain binding for both backends.
+    let internalReadOnly = requireReadOnly
+    let resolvedScope = ScopeResolution.delegationScope(internalReadOnly: internalReadOnly)
     if taskState.objective.requestText != prompt || taskState.objective.kind != kind || taskState.objective.scope != resolvedScope {
         taskState.setObjective(TaskContext.Objective(requestText: prompt, kind: kind,
             scope: resolvedScope, prohibitions: scopeResolution.prohibitions), now: objectiveStartedAt)
@@ -6641,9 +6646,9 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
     // The quoted original operation is context, not a second execute request.
     // Keep this new review's task identity distinct while retaining all source
     // and full-input accounting and hard-enforcing its signed read-only scope.
-    let routingTask = ScopeResolution.routingObjective(
+    let routingTask = ScopeResolution.delegationRoutingObjective(
         routingTaskOverride ?? (requireReadOnly ? readOnlyStatusRoutingTask
-            : sourceAwareRoutingTask(prompt, evidence: r2Evidence)), scope: resolvedScope)
+            : sourceAwareRoutingTask(prompt, evidence: r2Evidence)), internalReadOnly: internalReadOnly)
     let feedbackStore = CompletionFeedbackStore()
     func instructionFeedbackScope(_ instructions: String, input: String, codexID: String?, claudeID: String?) -> CompletionFeedbackScope {
         CompletionFeedbackScope(objectiveSHA256: sha256Hex(Data(routingTask.utf8)), sourceSHA256: sourceContext?.sha256,
@@ -6668,6 +6673,7 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
     }
     var inputContext = try executionInputContext(prompt: prompt, assembled: localPrompt,
         history: context, evidence: r2Evidence, config: config)
+    inputContext.executionPermissionProfile = internalReadOnly ? "read_only" : "workspace_write"
     inputContext.availableClaudeModels = claudeCatalog
     if feedbackSupported {
         inputContext.completionFeedback = try ((try? feedbackStore.load(scope: feedbackScope)) ??
@@ -6750,14 +6756,11 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
         }
         guard let ticket = route.ticket else { throw OS1Error.message("Invalid OS-1 route response") }
         try verifyTicket(ticket, config: config)
-        // The adopted task scope, including phase/preparation restrictions, is
+        // The delegated capability envelope, including explicit internal review restrictions, is
         // the authority floor. Every ticket is checked, including retries and
         // read-only verify/other tasks; classification labels cannot widen it.
         guard ScopeResolution.permitsTicket(scope: resolvedScope, permission: ticket.permissionProfile) else {
             throw OS1Error.message("요청의 실행 범위와 서명된 라우팅 권한이 달라 모델 호출 전에 중단했습니다. 요청과 자료는 보존했고 권한을 임의 변경하지 않았습니다.")
-        }
-        guard !(r2Evidence != nil && asksRecoveryReadiness(ownerPrompt ?? prompt) && ticket.permissionProfile != "read_only") else {
-            throw OS1Error.message("복원 가능 여부를 묻는 질문에는 변경 권한을 사용하지 않습니다. 원본 자료와 대화는 유지했습니다.")
         }
         let model = try configuredModel(provider: ticket.provider, action: ticket.action, config: config)
         let effort = try configuredEffort(provider: ticket.provider, action: ticket.action, config: config)
@@ -6911,7 +6914,7 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
                         claudeAvailable: hasClaudeExecutable && !quotaUnavailableProviders.contains("claude")) else { throw error }
                     var freshContext = request.executionContext
                     if let existing = freshContext, let continuation {
-                        freshContext = ExecutionInputContext(inputUTF8Bytes: existing.inputUTF8Bytes + (try continuation.handoffBlock()).utf8.count,
+                        freshContext = ExecutionInputContext(executionPermissionProfile: existing.executionPermissionProfile, inputUTF8Bytes: existing.inputUTF8Bytes + (try continuation.handoffBlock()).utf8.count,
                             sourceUTF8Bytes: existing.sourceUTF8Bytes, historyUTF8Bytes: existing.historyUTF8Bytes,
                             completionFeedback: existing.completionFeedback, availableClaudeModels: existing.availableClaudeModels)
                     }
@@ -6962,7 +6965,7 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
                             observedWorkspace: observedWorkspace))
                         var freshContext = request.executionContext
                         if let existing = freshContext, let continuation {
-                            freshContext = ExecutionInputContext(inputUTF8Bytes: existing.inputUTF8Bytes + (try continuation.handoffBlock()).utf8.count,
+                            freshContext = ExecutionInputContext(executionPermissionProfile: existing.executionPermissionProfile, inputUTF8Bytes: existing.inputUTF8Bytes + (try continuation.handoffBlock()).utf8.count,
                                 sourceUTF8Bytes: existing.sourceUTF8Bytes, historyUTF8Bytes: existing.historyUTF8Bytes,
                                 completionFeedback: existing.completionFeedback, availableClaudeModels: existing.availableClaudeModels)
                         }
@@ -7139,7 +7142,7 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
                 blocker: .incomplete, publicProgress: artifact.output, diagnostic: diagnostic)
             var freshContext = request.executionContext
             if let existing = freshContext, let continuation {
-                freshContext = ExecutionInputContext(inputUTF8Bytes: existing.inputUTF8Bytes + (try continuation.handoffBlock()).utf8.count,
+                freshContext = ExecutionInputContext(executionPermissionProfile: existing.executionPermissionProfile, inputUTF8Bytes: existing.inputUTF8Bytes + (try continuation.handoffBlock()).utf8.count,
                     sourceUTF8Bytes: existing.sourceUTF8Bytes, historyUTF8Bytes: existing.historyUTF8Bytes,
                     completionFeedback: existing.completionFeedback, availableClaudeModels: existing.availableClaudeModels)
             }
@@ -7196,7 +7199,7 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
             // ticket or reuse a failed candidate. One switch, same total budget.
             var recoveryContext = request.executionContext
             if let existing = recoveryContext, let continuation {
-                recoveryContext = ExecutionInputContext(inputUTF8Bytes: existing.inputUTF8Bytes + (try continuation.handoffBlock()).utf8.count,
+                recoveryContext = ExecutionInputContext(executionPermissionProfile: existing.executionPermissionProfile, inputUTF8Bytes: existing.inputUTF8Bytes + (try continuation.handoffBlock()).utf8.count,
                     sourceUTF8Bytes: existing.sourceUTF8Bytes, historyUTF8Bytes: existing.historyUTF8Bytes,
                     completionFeedback: existing.completionFeedback, availableClaudeModels: existing.availableClaudeModels)
             }
