@@ -23,6 +23,9 @@ public enum TaskWorkflow: String, Codable, Sendable, CaseIterable {
 
     public var readOnly: Bool { self != .implementation }
 
+    /// Phase instructions constrain actions, not executor capabilities.
+    public var executionPermissionProfile: String { "workspace_write" }
+
     /// Permission classification sees only the current stage, not quoted future
     /// write instructions. The complete owner objective stays in provider input.
     public var routingTask: String {

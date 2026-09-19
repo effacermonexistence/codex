@@ -14,6 +14,7 @@ export type CompletionFeedback = {
   observations: CompletionObservation[];
 };
 export type ExecutionContext = {
+  execution_permission_profile?: "read_only" | "workspace_write";
   input_utf8_bytes: number;
   source_utf8_bytes: number;
   history_utf8_bytes: number;
@@ -68,11 +69,12 @@ export function validExecutionContext(value: unknown): value is ExecutionContext
   if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
   const v = value as Record<string, unknown>;
   const keys = ["history_utf8_bytes", "input_utf8_bytes", "source_utf8_bytes"];
-  const expected = [...keys, ...(v.completion_feedback !== undefined ? ["completion_feedback"] : []),
+  const expected = [...keys, ...(v.execution_permission_profile !== undefined ? ["execution_permission_profile"] : []), ...(v.completion_feedback !== undefined ? ["completion_feedback"] : []),
     ...(v.available_claude_models !== undefined ? ["available_claude_models"] : [])].sort();
   if (Object.keys(v).sort().join() !== expected.join() ||
       keys.some(key => !Number.isSafeInteger(v[key]) || (v[key] as number) < 0 || (v[key] as number) > 4_000_000)) return false;
-  return (v.input_utf8_bytes as number) > 0 &&
+  return (v.execution_permission_profile === undefined || v.execution_permission_profile === "read_only" || v.execution_permission_profile === "workspace_write") &&
+    (v.input_utf8_bytes as number) > 0 &&
     (v.source_utf8_bytes as number) + (v.history_utf8_bytes as number) <= (v.input_utf8_bytes as number) &&
     (v.completion_feedback === undefined || validCompletionFeedback(v.completion_feedback)) &&
     (v.available_claude_models === undefined || (validClaudeCatalog(v.available_claude_models) && validCompletionFeedback(v.completion_feedback)));

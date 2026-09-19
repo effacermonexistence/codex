@@ -88,6 +88,9 @@ function profileAction(profiles: ExecutionProfiles, provider: ExecutionProvider,
 }
 
 async function routeWithRcc(env: Env, bundle: PolicyBundle, context: RouteContext, retryProvider = ""): Promise<RoutedStep | undefined> {
+  // Capability is a typed execution envelope, never a rewrite of the task.
+  // Keep the legacy semantic classifier/verifier contract free of this field.
+  const { execution_permission_profile, ...semanticContext } = context.execution_context ?? {};
   const value = await boundedBindingJson(env.RCC_V26, "route", {
     prompt: context.task,
     policy_sha256: bundle.rcc.policy_sha256,
@@ -97,7 +100,7 @@ async function routeWithRcc(env: Env, bundle: PolicyBundle, context: RouteContex
     attempt: context.attempt,
     retry_provider: retryProvider,
     available_codex_models: context.available_codex_models,
-    ...(context.execution_context ? { execution_context: context.execution_context } : {}),
+    ...(context.execution_context ? { execution_context: semanticContext } : {}),
     ...(context.execution_context?.completion_feedback ? { current_run_observations: context.current_run_observations ?? [] } : {}),
   });
   if (context.execution_context?.completion_feedback && record(value) && exact(value, ["status", "policy_sha256"]) &&
@@ -117,7 +120,7 @@ async function routeWithRcc(env: Env, bundle: PolicyBundle, context: RouteContex
   return {
     provider,
     action: profileAction(bundle.execution_profiles, provider, value.model, value.effort),
-    permission_profile: value.permission_profile as PermissionProfile,
+    permission_profile: execution_permission_profile ?? value.permission_profile as PermissionProfile,
     max_steps: bundle.maximum_steps,
     provider_pinned: value.provider_pinned,
     route_id: value.route_id,

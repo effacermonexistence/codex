@@ -87,3 +87,54 @@ describe("private completion API", () => {
     } finally { error.mockRestore(); }
   });
 });
+
+
+describe("typed delegation capability", () => {
+  it.each(["workspace_write", "read_only", undefined])("preserves review semantics with envelope %s", async (capability) => {
+    let persisted: any;
+    const env = {
+      ROUTES: { getByName: () => ({
+        begin: async (value: any) => { persisted = value; return "created"; },
+        recordedDecision: async () => null,
+        snapshot: async () => ({ ...persisted, expected_model: "gpt-test", expected_effort: "medium" }),
+        advance: async (_sequence: number, _outcome: string, _hash: string, next: any, context: any) => {
+          expect(next.verification_profile).toBe("executed_review");
+          expect(next.permission_profile).toBe(capability ?? "read_only");
+          expect(context.execution_permission_profile).toBe(capability);
+          return { status: "step", ...next };
+        }
+      }) },
+      RESULT_EVALUATOR: { fetch: async (request: Request) => {
+        const body: any = await request.json();
+        expect(body.verification_profile).toBe("executed_review");
+        expect(body.expected_permission_profile).toBe(capability ?? "read_only");
+        return Response.json({ outcome: "retry", verified_artifact_hash: "f".repeat(64), next_provider: "codex" });
+      } },
+      ROUTING_BUDGET_EPOCH: "fixture", MAX_ROUTE_STARTS_PER_HOUR: "10",
+      ROUTING_BUDGETS: { getByName: () => ({ consumeStart: async () => true, record: async () => {} }) },
+      POLICY_BUNDLE_KEY: `os1/policies/${policy}.json`, POLICY_BUNDLE_SHA256: policy, MAX_POLICY_BUNDLE_BYTES: "65536",
+      POLICY_BUNDLES: { get: async () => ({ size: bytes.length, arrayBuffer: async () => bytes.buffer }) },
+      RCC_V26: { fetch: async (request: Request) => {
+        const body: any = await request.json();
+        expect(body.prompt).toBe(task);
+        expect(body.execution_context.execution_permission_profile).toBeUndefined();
+        return Response.json({ provider: "codex", provider_pinned: false, permission_profile: "read_only",
+          model: "gpt-test", effort: "medium", verification_profile: "executed_review",
+          route_id: "rcc-local-" + "0".repeat(32), policy_sha256: bundle.rcc.policy_sha256 });
+      } }
+    } as unknown as Env;
+    const input: any = await start(objective).json();
+    if (capability) input.task.execution_context.execution_permission_profile = capability;
+    const response = await service.fetch(new Request("https://private/decide", { method: "POST", body: JSON.stringify(input) }), env);
+    expect(response.status).toBe(200);
+    expect((await response.json() as any).permission_profile).toBe(capability ?? "read_only");
+    expect(persisted.verification_profile).toBe("executed_review");
+    expect(persisted.task).toBe(task);
+    expect(persisted.execution_context.execution_permission_profile).toBe(capability);
+    const retry = new Request("https://private/decide", { method: "POST", body: JSON.stringify({ version: 3,
+      execution_id: "00000000-0000-4000-8000-000000000001", previous: { sequence: 1,
+      artifact_ref: `r2://os1-private-results/00000000-0000-4000-8000-000000000001/1/${"f".repeat(64)}.json`,
+      expected_artifact_hash: "f".repeat(64) } }) });
+    expect((await service.fetch(retry, env)).status).toBe(200);
+  });
+});
