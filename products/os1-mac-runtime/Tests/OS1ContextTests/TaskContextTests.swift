@@ -29,6 +29,15 @@ func runTaskContextFixtures(root: URL) throws {
     try check(ScopeResolution.resolve("OS1 설명만 하지 말고 고쳐. 파일 수정하지 마").scope == .readOnly, "separate write prohibition preserved")
     try check(ScopeResolution.resolve("OS1 설명만 하지 말고 고쳐. 배포하지 마").prohibitions.contains("do not deploy"), "deployment fence preserved")
 
+    for request in ["OS1 설명만 하지 말고 고쳐", "OS1 말만 하지 말고 구현해", "OS1 don't just explain; fix the code", "OS1 고치라니까"] {
+        try check(ScopeResolution.resolve(request).scope == .workspaceWrite, "explicit owner edit: \(request)")
+        try check(PreparationIntent.detect(request)?.modifies == true, "preparation preserves owner edit: \(request)")
+        try check(ScopeResolution.resolve(request.decomposedStringWithCanonicalMapping).scope == .workspaceWrite, "NFD edit")
+    }
+    try check(ScopeResolution.resolve("OS1 수정하지 말고 설명만 해").scope == .readOnly, "real readonly preserved")
+    try check(ScopeResolution.resolve("OS1 설명만 하지 말고 고쳐. 파일 수정하지 마").scope == .readOnly, "separate write prohibition preserved")
+    try check(ScopeResolution.resolve("OS1 설명만 하지 말고 고쳐. 배포하지 마").prohibitions.contains("do not deploy"), "deployment fence preserved")
+
     // A. Preparation / continuation intent is project-independent and honors negation.
     let caseB = "야 인스타그램 수정 좀 하자 준비해"
     let setupIncident = "인스타그램 세팅을 좀 해봐.인스타그램 오토메이션 그거 수정 봐야되니까 세팅해라고 개새끼야"
