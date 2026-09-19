@@ -11,6 +11,14 @@ func runTaskContextFixtures(root: URL) throws {
         count += 1
     }
     let now = Date(timeIntervalSince1970: 1_800_000_000)
+    for request in ["사이트 내부 내용 다 빼", "이상한 바운더리 문장도 다 빼!", "홈페이지 그 문장 빼줘", "문구 빼주세요"] {
+        try check(ScopeResolution.resolve(request).scope == .workspaceWrite, "removal imperative: \(request)")
+        try check(ScopeResolution.resolve(request.decomposedStringWithCanonicalMapping).scope == .workspaceWrite, "removal NFD")
+    }
+    for request in ["문구 빼도 돼?", "문구 빼는 방법 알려줘", "문구 빼지 마", "문구 빼지마", "문구 빼지 말고 설명만 해", "빼빼로 설명"] {
+        try check(ScopeResolution.resolve(request).scope == .readOnly, "removal negative control: \(request)")
+    }
+
 
     for request in ["OS1 설명만 하지 말고 고쳐", "OS1 말만 하지 말고 구현해", "OS1 don't just explain; fix the code", "OS1 고치라니까"] {
         try check(ScopeResolution.resolve(request).scope == .workspaceWrite, "explicit owner edit: \(request)")
