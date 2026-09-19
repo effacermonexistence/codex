@@ -15,3 +15,8 @@ assert '$0.nativeSessionID == outcome.binding.nativeSessionID' in repair
 assert 'repairManagedImports(&self.sessions[index]' in repair
 assert 'self.sessions[index] = snapshot' not in repair
 print('Startup archive isolation: 8 checks PASS (structural; no model calls)')
+
+maintenance = s[s.index('    func runMaintenanceTick()'):s.index('    func releaseRestartHolds(')]
+assert maintenance.index('install-maintenance.pid') < maintenance.index('resumeBackendRecoveries()')
+assert 'kill(pid, 0) == 0 { return }' in maintenance
+print('Installer maintenance lease: 2 checks PASS')

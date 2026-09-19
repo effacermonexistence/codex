@@ -5968,6 +5968,14 @@ private final class SessionStore: ObservableObject {
     /// main-actor state, so it cannot block.
     var maintenanceLoopRunning: Bool { maintenanceTask != nil }
     func runMaintenanceTick() {
+        // The installer verifies a quiescent store after relaunch. Its live PID
+        // lease suppresses automatic recovery only; a crashed installer cannot
+        // leave a permanent hold. User requests retain their normal gates.
+        let installLease = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".os1/self-update/install-maintenance.pid")
+        if let raw = try? String(contentsOf: installLease, encoding: .utf8),
+           let pid = Int32(raw.trimmingCharacters(in: .whitespacesAndNewlines)), pid > 1,
+           kill(pid, 0) == 0 { return }
         // Live store only: a fixture store must never adopt the real machine's
         // recovery state or self-update receipts.
         guard customStorageRoot == nil else { return }
