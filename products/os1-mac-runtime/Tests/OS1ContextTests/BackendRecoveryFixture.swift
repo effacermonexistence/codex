@@ -2,6 +2,7 @@ import Foundation
 import OS1Context
 
 func runBackendRecoveryFixtures() throws {
+    try runQuotaRejectionFixtures()
     var count = 0
     func check(_ value: Bool, _ message: String) {
         precondition(value, "Backend recovery: " + message); count += 1

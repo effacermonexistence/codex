@@ -101,6 +101,8 @@ public enum BackendBlocker: String, Codable, Sendable {
 
 public enum BackendDispatchStage: String, Codable, Sendable {
     case notDispatched = "not_dispatched"
+    /// CLI launched, but a matched provider protocol proves model execution was rejected.
+    case rejectedBeforeExecution = "rejected_before_execution"
     case dispatched
 }
 
@@ -157,7 +159,8 @@ public enum BackendRecovery {
               (object["permission_denials"] as? [Any] ?? []).isEmpty else { return false }
         let errors = object["errors"] as? [String] ?? []
         let text = ([object["result"] as? String ?? ""] + errors).joined(separator: "\n").lowercased()
-        return ["you've hit your session limit", "you’ve hit your session limit", "usage limit reached",
+        return ["you've hit your session limit", "you’ve hit your session limit", "you've hit your weekly limit",
+                "you’ve hit your weekly limit", "usage limit reached",
                 "usage limit exceeded", "rate limit exceeded", "rate_limit_error", "insufficient_quota"]
             .contains(where: text.contains)
     }
@@ -170,7 +173,7 @@ public enum BackendRecovery {
         return nil
     }
     public static func permitsAutomaticReplay(permission: String, stage: BackendDispatchStage) -> Bool {
-        permission == "read_only" || stage == .notDispatched
+        permission == "read_only" || stage == .notDispatched || stage == .rejectedBeforeExecution
     }
     public static func serviceFailure(status: Int, body: Data) -> String {
         if (status == 429 || status == 503), body.count <= 4096,
