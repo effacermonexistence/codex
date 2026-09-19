@@ -697,6 +697,8 @@ public struct ScopeResolution: Equatable, Sendable {
     // than a bare "write" so ordinary requests such as "write a summary" do
     // not gain workspace authority.
     static let positiveFileEditPatterns = [
+        // Bounded Korean removal imperatives, not questions, quotations or negations.
+        #"(?:^|\s)빼(?:줘|주세요|라|라고|버려|버려라)?(?=\s|[.!]|$)"#,
         #"(?i)\b(?:create|write|save|rename|delete|remove|edit|modify|update)\s+(?:(?:a|an|the)\s+)?(?:file|directory|folder)\b"#,
         #"(?i)\b(?:create|write|save|rename|delete|remove|edit|modify|update)\s+(?:(?:a|an|the)\s+)?[A-Za-z0-9][A-Za-z0-9._-]*\.[A-Za-z0-9]{1,16}\b"#,
         #"(?i)\b(?:write|save)\s+(?:the\s+)?(?:result|content|output|changes?)\s+(?:in|into|to)\b"#,
@@ -719,7 +721,7 @@ public struct ScopeResolution: Equatable, Sendable {
         ("파일·서버를 변경하거나 테스트를 실행하지 마", "do not change files or servers or run tests"),
         ("업로드하지 마", "do not upload"), ("삭제하지 마", "do not delete"), ("리셋하지 마", "do not reset"), ("초기화하지 마", "do not reset"),
     ]
-    static let generalProhibitions = ["손보지 마", "손보지마", "손대지 마", "손대지마", "수정하지 마", "수정하지마", "수정 하지 마", "수정하지 말고", "고치지 마", "고치지 말고", "바꾸지 마", "바꾸지 말고",
+    static let generalProhibitions = ["빼지 마", "빼지마", "빼지 말고", "손보지 마", "손보지마", "손대지 마", "손대지마", "수정하지 마", "수정하지마", "수정 하지 마", "수정하지 말고", "고치지 마", "고치지 말고", "바꾸지 마", "바꾸지 말고",
                                       "변경하지 마", "변경하지 말고", "수정은 하지 마", "수정은 하지마", "변경은 하지 마", "편집은 하지 마",
                                       "편집하지 마", "설명만", "read only", "read-only", "do not modify", "don't modify",
                                       "do not change", "don't change", "explain only", "no changes"]

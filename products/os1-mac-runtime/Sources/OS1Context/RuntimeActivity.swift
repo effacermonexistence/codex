@@ -31,6 +31,16 @@ public struct RuntimeActivity: Codable, Equatable, Sendable {
         case .recovering: return os1Tr("OS1이 작업 이어가는 중", "OS1 is continuing the task")
         }
     }
+    /// Public tool category only; never expose commands, credentials or reasoning.
+    public var toolProgressLabel: String? {
+        guard let tool, !tool.isEmpty else { return nil }
+        switch tool {
+        case "commandExecution": return os1Tr("명령 실행·결과 확인 중", "Executing commands and checking results")
+        case "webSearch": return os1Tr("웹 자료 확인 중", "Checking web sources")
+        case "fileChange": return os1Tr("파일 변경 처리 중", "Processing file changes")
+        default: return os1Tr("도구 작업 진행 중", "Tool work in progress")
+        }
+    }
     public static func emit(_ phase: Phase, provider: String? = nil, model: String? = nil, effort: String? = nil, publicText: String? = nil, tool: String? = nil, nativeSessionID: String? = nil) {
         guard let path = ProcessInfo.processInfo.environment["OS1_ACTIVITY_FILE"] else { return }
         let previous = (try? Data(contentsOf:URL(fileURLWithPath:path))).flatMap { try? JSONDecoder().decode(Self.self,from:$0) }

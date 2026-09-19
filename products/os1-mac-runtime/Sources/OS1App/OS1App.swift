@@ -9880,7 +9880,11 @@ private struct RunActivityBanner: View {
                         Text(stopping ? "작업 중지 확인 중" : activity.label).font(.system(size: 11))
                         if let model = activity.model { Text(model).font(.system(size: 10)).foregroundStyle(Theme.muted) }
                         if let effort = activity.effort { Text(effort).font(.system(size: 10)).foregroundStyle(Theme.muted) }
-                        if let tool = activity.tool { Text(tool).font(.system(size: 10)).foregroundStyle(Theme.muted) }
+                        if let tool = activity.toolProgressLabel { Text(tool).font(.system(size: 10)).foregroundStyle(Theme.muted) }
+                    }
+                    if activity.toolProgressLabel != nil && quiet < 30 {
+                        Text("최근 실행 신호 \(quiet)초 전 · 결과 검증 전에는 완료로 표시하지 않습니다.")
+                            .font(.system(size: 10)).foregroundStyle(Theme.muted)
                     }
                     if quiet >= 30 {
                         Text("마지막 단계 업데이트 \(quiet)초 전 · 실행은 열려 있지만 새 진행 신호를 기다리고 있습니다.")
