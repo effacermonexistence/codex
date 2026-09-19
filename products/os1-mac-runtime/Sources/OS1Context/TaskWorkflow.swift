@@ -21,22 +21,39 @@ public enum TaskWorkflow: String, Codable, Sendable, CaseIterable {
         return delivery && (explicitMultiStage || substantial)
     }
 
-    public var readOnly: Bool { self != .implementation }
-
     /// Phase instructions constrain actions, not executor capabilities.
     public var executionPermissionProfile: String { "workspace_write" }
 
     /// Permission classification sees only the current stage, not quoted future
     /// write instructions. The complete owner objective stays in provider input.
     public var routingTask: String {
-        readOnly ? "Read-only status inspection. Report observed completed, pending and uncertain steps for the interrupted objective in context, using read-only local and remote checks."
-            : "Implement the authorized source change: modify files in the authorized workspace according to the architecture contract, then run deterministic tests. Avoid unrelated work and external side effects."
+        switch self {
+        case .architecture:
+            return "Execute architecture preparation for an authorized build. Inspect sources and requirements and return an implementation contract; the workflow automatically continues to implementation. This is not an interrupted-task status request."
+        case .implementation:
+            return "Implement the authorized source change: modify files in the authorized workspace according to the architecture contract, then run deterministic tests. Avoid unrelated work and external side effects."
+        case .verification:
+            return "Execute independent verification of the implemented artifact. Inspect actual files, tests and results against the owner objective; report PASS or BLOCK."
+        }
     }
 
     /// Stage scaffolding (including the OS-1 name and quoted BLOCK) is not
     /// an owner request to switch projects or permission scopes.
     public static func preparationRequest(owner: String?, stagePrompt: String) -> String {
         owner ?? stagePrompt
+    }
+
+    /// Stage scaffolding must never replace the user's durable objective.
+    public static func objectiveRequest(owner: String?, executionPrompt: String) -> String {
+        owner ?? executionPrompt
+    }
+
+    public var progressText: String {
+        switch self {
+        case .architecture: return "1/3 제작 준비 · 구현 계약을 정리한 뒤 자동으로 제작합니다."
+        case .implementation: return "2/3 제작 · 승인된 작업 공간의 파일을 만들고 수정합니다."
+        case .verification: return "3/3 검증 · 생성된 파일과 실행 결과를 확인합니다."
+        }
     }
 
     public static func permitsSelfUpdate(stage: TaskWorkflow?, finalVerdict: Bool?) -> Bool {
@@ -86,11 +103,11 @@ public enum TaskWorkflow: String, Codable, Sendable, CaseIterable {
     public var routeTask: String {
         switch self {
         case .architecture:
-            return "Complex software architecture and root-cause analysis. Route to the strongest available reasoning tier; inspect source and logs read-only; output a bounded implementation contract."
+            return "Complex software architecture and root-cause analysis. Route to the strongest available reasoning tier; inspect source and logs and execute necessary bounded preparation; output a bounded implementation contract."
         case .implementation:
             return "Bounded software implementation in the authorized workspace. Route to the lowest eligible observed coding tier, not an unverified price claim; apply the architecture contract, run deterministic tests, and avoid unrelated work."
         case .verification:
-            return "Independent complex software verification. Route to the strongest available reasoning tier; inspect actual diff, tests and downstream effect read-only; report PASS or BLOCK."
+            return "Independent complex software verification. Route to the strongest available reasoning tier; execute tests and inspect actual diff and downstream effect; report PASS or BLOCK."
         }
     }
 
@@ -99,11 +116,12 @@ public enum TaskWorkflow: String, Codable, Sendable, CaseIterable {
         switch self {
         case .architecture:
             return """
-            OS-1 WORKFLOW STAGE 1/3 — ARCHITECTURE (READ ONLY)
+            OS-1 WORKFLOW STAGE 1/3 — BUILD PREPARATION
             Owner objective (preserve verbatim):
             \(original)
 
-            Inspect the actual source, current runtime ownership, logs and last known-good state. Identify the highest broken layer, allowed/forbidden scope, smallest viable patch, deterministic tests, rollback, and completion evidence. Return a compact implementation contract with concrete file paths. Do not edit files, deploy, send messages, or claim the whole task complete.
+            This is the preparation stage of an authorized create/modify workflow, NOT a read-only owner request or an interrupted-task status check. OS-1 automatically runs implementation next, then independent verification; do not ask the owner to authorize the same build again. In progress text say that you are preparing the build and implementation follows, not that the requested task is read-only.
+            Inspect only the sources and requirements necessary for a compact implementation contract with concrete paths, allowed/forbidden scope, tests, rollback and completion evidence. For a new artifact, identify its target and acceptance criteria; do not invent a broken runtime or demand pre-existing files. For a repair, inspect relevant logs and the last known-good state. Keep this stage bounded and return the contract promptly. All stages use the executable workspace capability. Create bounded scaffolding or test fixtures when necessary for the contract. Preserve the owner's explicit prohibitions; do not perform unrelated changes or unauthorized external side effects. Do not claim the whole task complete.
             """
         case .implementation:
             return """
@@ -114,18 +132,18 @@ public enum TaskWorkflow: String, Codable, Sendable, CaseIterable {
             Architecture handoff (candidate; verify against source):
             \(boundedPrior)
 
-            Implement the smallest correct change in the authorized workspace. Run appropriate deterministic tests and preserve existing work. Record exact changed files, test commands/results, and unresolved limitations. Do not claim global completion: an independent verification stage follows. Do not perform external side effects outside the owner's original permission.
+            The original owner create/modify authorization remains active across all stages; do not inherit restrictions from stage names or old handoffs. Preserve explicit owner prohibitions. Implement the smallest correct change in the authorized workspace. Run appropriate deterministic tests and preserve existing work. Record exact changed files, test commands/results, and unresolved limitations. Do not claim global completion: an independent verification stage follows. Do not perform external side effects outside the owner's original permission.
             """
         case .verification:
             return """
-            OS-1 WORKFLOW STAGE 3/3 — INDEPENDENT VERIFICATION (READ ONLY)
+            OS-1 WORKFLOW STAGE 3/3 — INDEPENDENT VERIFICATION
             Owner objective (preserve verbatim):
             \(original)
 
             Implementation handoff (candidate, not proof):
             \(boundedPrior)
 
-            Inspect the executed artifact and current workspace, not the implementer's success statement. Verify actual diff, required tests, forbidden scope, and visible/runtime effect when applicable. Do not edit, deploy, send, or replay. End with exactly one machine-readable line: OS1_WORKFLOW_VERDICT: PASS or OS1_WORKFLOW_VERDICT: BLOCK. PASS means all in-scope completion conditions are independently verified; otherwise BLOCK and list exact remaining work. Local tests alone do not prove production/live effect.
+            Inspect the executed artifact and current workspace, not the implementer's success statement. Verify actual diff, required tests, forbidden scope, and visible/runtime effect when applicable. Execute the required verification, including necessary test artifacts. Do not alter acceptance criteria or production artifacts to manufacture a PASS; report defects for the repair stage. Preserve explicit owner prohibitions and inspect previous side effects before any replay. End with exactly one machine-readable line: OS1_WORKFLOW_VERDICT: PASS or OS1_WORKFLOW_VERDICT: BLOCK. PASS means all in-scope completion conditions are independently verified; otherwise BLOCK and list exact remaining work. Local tests alone do not prove production/live effect.
             """
         }
     }
@@ -144,7 +162,7 @@ public enum TaskWorkflow: String, Codable, Sendable, CaseIterable {
         Separately verified BLOCK (failure evidence; re-check the actual state):
         \(String(failedVerification.prefix(6_000)))
 
-        Repair only the concrete remaining defect in the authorized workspace. Do not repeat already-completed work, widen scope, send messages, deploy, or overwrite accepted state. Run the relevant deterministic regression and report exact files and results. A fresh read-only verification follows.
+        Repair only the concrete remaining defect in the authorized workspace. Do not repeat already-completed work, widen scope, send messages, deploy, or overwrite accepted state. Run the relevant deterministic regression and report exact files and results. A fresh independent verification execution follows.
         """
     }
 

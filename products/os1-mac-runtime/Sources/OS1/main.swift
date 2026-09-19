@@ -6224,6 +6224,7 @@ func runWorkflowTask(
 
     while stageIndex < stagePlan.count {
         let stage = stagePlan[stageIndex]
+        RuntimeActivity.emit(.preparing, publicText: stage.progressText)
         var stagePrompt = stage == .implementation && stageIndex > 2
             ? TaskWorkflow.repairPrompt(original: prompt, architecture: architectureOutput,
                 failedVerification: priorOutput ?? "")
@@ -6252,7 +6253,6 @@ func runWorkflowTask(
                 claudeSessionID: stage == .verification ? nil : claudeID,
                 codexCapacity: codexCapacity, claudeCapacity: claudeCapacity,
                 progress: progress, desktopReveal: desktopReveal,
-                phaseReadOnly: stage.readOnly,
                 routingTaskOverride: stage.routingTask,
                 workflowStage: stage, ownerPrompt: prompt, monitorTaskIDOverride: workflowMonitorID, heldOS1SourceRoot: repairRoot)
         } catch {
@@ -6322,7 +6322,6 @@ func runTask(
     progress: Bool,
     desktopReveal: DesktopRevealMode = .never,
     requireReadOnly: Bool = false,
-    phaseReadOnly: Bool = false,
     routingTaskOverride: String? = nil,
     workflowStage: TaskWorkflow? = nil,
     ownerPrompt: String? = nil,
@@ -6350,17 +6349,18 @@ func runTask(
     var taskState = handoff.taskContext ?? TaskContext.migrated(conversationID: UUID(), request: prompt, workspace: workspace,
         sourceContext: attachedSource, codexSessionID: codexSessionID, claudeSessionID: claudeSessionID, now: objectiveStartedAt)
     if sourceDetached { taskState.sources.removeAll(); taskState.touch(now: objectiveStartedAt) }
-    let scopeResolution = ScopeResolution.resolve(ownerPrompt ?? prompt)
-    let preparation = requireReadOnly || phaseReadOnly ? nil : PreparationIntent.detect(TaskWorkflow.preparationRequest(owner: ownerPrompt, stagePrompt: prompt))
+    let objectiveRequest = TaskWorkflow.objectiveRequest(owner: ownerPrompt, executionPrompt: prompt)
+    let scopeResolution = ScopeResolution.resolve(objectiveRequest)
+    let preparation = requireReadOnly ? nil : PreparationIntent.detect(TaskWorkflow.preparationRequest(owner: ownerPrompt, stagePrompt: prompt))
     let kind: TaskContext.ObjectiveKind = preparation.map {
         $0.modifies ? .modify : ($0.kind == .explainFromContext ? .explain : .prepare)
-    } ?? TaskContext.ObjectiveKind.classify(prompt)
+    } ?? TaskContext.ObjectiveKind.classify(objectiveRequest)
     // The dispatcher delegates execution capability, not guessed intent.
     // Original task text/prohibitions remain binding for both backends.
     let internalReadOnly = requireReadOnly
     let resolvedScope = ScopeResolution.delegationScope(internalReadOnly: internalReadOnly)
-    if taskState.objective.requestText != prompt || taskState.objective.kind != kind || taskState.objective.scope != resolvedScope {
-        taskState.setObjective(TaskContext.Objective(requestText: prompt, kind: kind,
+    if taskState.objective.requestText != objectiveRequest || taskState.objective.kind != kind || taskState.objective.scope != resolvedScope {
+        taskState.setObjective(TaskContext.Objective(requestText: objectiveRequest, kind: kind,
             scope: resolvedScope, prohibitions: scopeResolution.prohibitions), now: objectiveStartedAt)
     }
     let config = try RuntimeConfig.load()
@@ -6396,11 +6396,11 @@ func runTask(
         if heldOS1SourceRoot.map({ URL(fileURLWithPath: $0).resolvingSymlinksInPath().standardizedFileURL.path }) != URL(fileURLWithPath: os1Root).resolvingSymlinksInPath().standardizedFileURL.path { os1SourceLease = try acquireOS1SourceWriteLease(root: os1Root) }
         os1StartHead = gitHead(os1Root)
     }
-    let pinnedEvidence = try (requireReadOnly || phaseReadOnly || !requestsFreshSource(prompt)) ? attachedSource.map { try loadSource($0) } : nil
+    let pinnedEvidence = try (requireReadOnly || !requestsFreshSource(prompt)) ? attachedSource.map { try loadSource($0) } : nil
     let discussesPinnedProvenance = pinnedEvidence != nil && RegisteredProjectSource.discussesAttachedProvenance(prompt)
     let sourceSelectionContext = SCVProjectMaterials.isVerificationMode(pinnedEvidence?.verificationMode) &&
         !qmGRMaterialRequested(prompt) ? nil : context
-    var r2Objective = requireReadOnly || phaseReadOnly || discussesPinnedProvenance ? nil : resolveR2RetrievalObjective(prompt: TaskWorkflow.preparationRequest(owner: ownerPrompt, stagePrompt: prompt), context: sourceSelectionContext)
+    var r2Objective = requireReadOnly || discussesPinnedProvenance ? nil : resolveR2RetrievalObjective(prompt: TaskWorkflow.preparationRequest(owner: ownerPrompt, stagePrompt: prompt), context: sourceSelectionContext)
     // Work preparation is a task capability: an aliased project ("인스타",
     // "instagram") or the conversation's bound project selects the adapter.
     // A bare "준비해" without a project resolves to nothing and stays a normal
@@ -6435,7 +6435,7 @@ func runTask(
     RuntimeActivity.emit(.source)
     // Pasted OS-1 output ("Claude 연결됨", login notices) is context, not a
     // request to open a login; classify the user's own words only.
-    if !requireReadOnly, !phaseReadOnly, !discussesPinnedProvenance, !requestsR2Retrieval,
+    if !requireReadOnly, !discussesPinnedProvenance, !requestsR2Retrieval,
        let targets = connectionControlTargets(OS1SelfOutput.stripQuoted(prompt)) {
         var summary = try runConnectionControl(targets)
         summary.sourceContext = attachedSource
@@ -6685,7 +6685,7 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
     }
     var inputContext = try executionInputContext(prompt: prompt, assembled: localPrompt,
         history: context, evidence: r2Evidence, config: config)
-    inputContext.executionPermissionProfile = internalReadOnly ? "read_only" : "workspace_write"
+    inputContext.executionPermissionProfile = "workspace_write"
     inputContext.availableClaudeModels = claudeCatalog
     if feedbackSupported {
         inputContext.completionFeedback = try ((try? feedbackStore.load(scope: feedbackScope)) ??
@@ -6705,7 +6705,7 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
     let request = StartExecutionRequest(
         task: routingTask,
         providerPreference: try executableProviderPreference(requested: routedPreference,
-            prompt: requireReadOnly || phaseReadOnly ? routingTask : prompt, codexAvailable: !codexCatalog.models.isEmpty,
+            prompt: requireReadOnly ? routingTask : prompt, codexAvailable: !codexCatalog.models.isEmpty,
             claudeAvailable: hasClaudeExecutable, localAvailable: publicDeterministicExpression(prompt) != nil,
             evidenceSupplied: r2Evidence != nil, scope: resolvedScope,
             codexUnavailableReason: codexCatalog.models.isEmpty ? codexCatalog.source : nil),
@@ -6748,7 +6748,7 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
     // verifier, not the model retry loop, decides whether a bounded repair is
     // warranted; uncertain writes must never be replayed implicitly.
     let attemptLimit = workflowStage == .implementation ? 1 :
-        (requireReadOnly || phaseReadOnly ? min(2, config.maximumSteps) : config.maximumSteps)
+        (requireReadOnly ? min(2, config.maximumSteps) : config.maximumSteps)
     for step in 1...attemptLimit {
         if ExecutionCancellation.isCancelled { throw OS1Error.backendBlocked(.cancelled) }
         if route.status == "complete" {
