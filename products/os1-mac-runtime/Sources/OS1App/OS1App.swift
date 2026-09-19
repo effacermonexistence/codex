@@ -1763,7 +1763,7 @@ private final class VoiceDictationController: ObservableObject {
         onReadComposer = readComposer
         committedTranscript = ""
         currentTranscript = ""
-        localWhisper = localWhisperConfiguration()
+        localWhisper = nil
         localRecordingURL = nil
         self.onTranscript = onTranscript
         self.onFailure = onFailure
@@ -1871,7 +1871,11 @@ private final class VoiceDictationController: ObservableObject {
             return
         }
 
-        if let configuration = localWhisper ?? localWhisperConfiguration() {
+        let configuration = await Task.detached {
+            Self.localWhisperConfiguration()
+        }.value
+        guard phase == .authorizing, wantsRecording, recognitionGeneration == generation else { return }
+        if let configuration {
             do {
                 localWhisper = configuration
                 try startLocalWhisperCapture()
@@ -1907,7 +1911,7 @@ private final class VoiceDictationController: ObservableObject {
         }
     }
 
-    private func localWhisperConfiguration() -> LocalWhisperConfiguration? {
+    nonisolated private static func localWhisperConfiguration() -> LocalWhisperConfiguration? {
         let fileManager = FileManager.default
         let home = fileManager.homeDirectoryForCurrentUser
         let executableCandidates = [
@@ -1925,11 +1929,13 @@ private final class VoiceDictationController: ObservableObject {
               let settings = root["settings"] as? [String: Any],
               let modelID = settings["selected_model"] as? String,
               !modelID.isEmpty else { return nil }
-        let modelURL = support.appendingPathComponent("models").appendingPathComponent(
-            URL(fileURLWithPath: modelID).lastPathComponent
-        )
-        guard fileManager.fileExists(atPath: modelURL.path) else { return nil }
-        return LocalWhisperConfiguration(executableURL: executableURL, modelID: modelID)
+        // Model IDs are logical identifiers, NOT filenames (e.g. medium ->
+        // whisper-medium-q4_1.bin). Resolve using the installed engine's catalog.
+        guard let catalog = try? VoiceProcess.run(executable: executableURL,
+            arguments: ["--list-models", "--json"], cancellation: VoiceProcessCancellation(), timeout: 8),
+            let resolved = LocalVoiceModelCatalog.resolve(selectedID: modelID, data: catalog,
+                directory: support.appendingPathComponent("models")) else { return nil }
+        return LocalWhisperConfiguration(executableURL: executableURL, modelID: resolved)
     }
 
     private func startLocalWhisperCapture() throws {
