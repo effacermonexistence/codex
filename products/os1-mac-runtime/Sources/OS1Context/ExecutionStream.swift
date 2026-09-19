@@ -6,6 +6,29 @@ public final class ExecutionStream {
     private var buffer = Data()
     private var items: [(String, String)] = []
     private var activeMessage = ""
+    private var claudeExecutionObserved = false
+    private var claudeStreamDamaged = false
+    private var quotaRejectionSession: String?
+
+    /// Protocol attestation, not an inference from empty UI output or unchanged files.
+    public func claudeQuotaRejectedBeforeExecution(sessionID: String) -> Bool {
+        guard !claudeExecutionObserved, !claudeStreamDamaged, resultCount == 1,
+              quotaRejectionSession == sessionID, let result,
+              let o = try? JSONSerialization.jsonObject(with: result) as? [String: Any],
+              o["session_id"] as? String == sessionID,
+              o["terminal_reason"] as? String == "api_error",
+              o["api_error_status"] as? Int == 429,
+              o["num_turns"] as? Int == 1,
+              Self.zeroClaudeUsage(o["usage"]),
+              UnifiedExecution.claudeTerminalBlocker(status: 1, object: o) == .quotaExhausted else { return false }
+        return true
+    }
+    private static func zeroClaudeUsage(_ value: Any?) -> Bool {
+        guard let usage = value as? [String: Any] else { return false }
+        return ["input_tokens", "output_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"].allSatisfy {
+            (usage[$0] as? Int) == 0
+        }
+    }
     public private(set) var result: Data?
     public private(set) var eventCount = 0
     public private(set) var tool: String?
@@ -28,16 +51,31 @@ public final class ExecutionStream {
         buffer.append(bytes)
         while let end = buffer.firstIndex(of: 10) {
             let line = buffer[..<end]; buffer.removeSubrange(...end)
-            guard let object = try? JSONSerialization.jsonObject(with: line) as? [String: Any] else { continue }
+            guard let object = try? JSONSerialization.jsonObject(with: line) as? [String: Any] else { if !line.isEmpty { claudeStreamDamaged = true }; continue }
             ingestClaudeObject(object)
         }
-        if buffer.count > 2_000_000 { buffer.removeAll() }
+        if buffer.count > 2_000_000 { claudeStreamDamaged = true; buffer.removeAll() }
     }
     public func finishClaude() {
-        if !buffer.isEmpty, let object = try? JSONSerialization.jsonObject(with: buffer) as? [String: Any] { ingestClaudeObject(object) }
+        if !buffer.isEmpty {
+            if let object = try? JSONSerialization.jsonObject(with: buffer) as? [String: Any] { ingestClaudeObject(object) }
+            else { claudeStreamDamaged = true }
+        }
         buffer.removeAll()
     }
     private func ingestClaudeObject(_ o: [String: Any]) {
+        // Inspect all tool/subagent events before the UI privacy filter.
+        if let m = o["message"] as? [String: Any], o["type"] as? String == "assistant" {
+            if o["is_api_error_message"] as? Bool == true, o["error"] as? String == "rate_limit",
+               m["model"] as? String == "<synthetic>", Self.zeroClaudeUsage(m["usage"]) {
+                quotaRejectionSession = o["session_id"] as? String
+            } else { claudeExecutionObserved = true }
+        }
+        if o["type"] as? String == "stream_event" { claudeExecutionObserved = true }
+        if let content = (o["message"] as? [String: Any])?["content"] as? [[String: Any]],
+           content.contains(where: { ["tool_use", "tool_result", "server_tool_use"].contains($0["type"] as? String ?? "") }) {
+            claudeExecutionObserved = true
+        }
         guard o["parent_tool_use_id"] == nil || o["parent_tool_use_id"] is NSNull else { return }
         let type = o["type"] as? String ?? ""
         if type == "result" {

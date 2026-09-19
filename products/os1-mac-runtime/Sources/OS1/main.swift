@@ -701,6 +701,7 @@ let selfRepairFailurePrefix = selfRepairFailurePrefixText
 struct RejectedProviderExecution: Error, CustomStringConvertible {
     let execution: ProviderExecution
     let cause: Error
+    var quotaRejectedBeforeExecution: Bool = false
     var description: String { String(describing: cause) }
 }
 
@@ -5481,9 +5482,12 @@ private func execute(
         catch {
             let object = (try? JSONSerialization.jsonObject(with: resultData)) as? [String: Any]
             let progress = object?["session_id"] as? String == activeSessionID ? (object?["result"] as? String ?? stream.text) : stream.text
-            throw interruptedExecution(ticket: ticket, model: model, effort: effort, contract: executorContract,
+            var rejection = interruptedExecution(ticket: ticket, model: model, effort: effort, contract: executorContract,
                 sessionID: activeSessionID, publicProgress: progress, beforeHash: workspaceBeforeHash,
                 workspace: executionWorkspace, started: started, cause: error)
+            rejection.quotaRejectedBeforeExecution = backendBlocker(error) == .quotaExhausted &&
+                stream.claudeQuotaRejectedBeforeExecution(sessionID: activeSessionID)
+            throw rejection
         }
         let outputIssues = outputContractIssues(parsed.output, prompt: lockedObjective, snapshotOnly: hasPreloadedR2Evidence)
         let rejectedConfiguration = claudeOutputMisclassifiedRuntimeConfiguration(parsed.output)
@@ -6890,6 +6894,10 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
                     blocker: backendBlocker(error) ?? .unclassified,
                     publicProgress: (error as? RejectedProviderExecution)?.execution.artifact.output ?? "")
                 if backendBlocker(error) == .quotaExhausted {
+                    if (error as? RejectedProviderExecution)?.quotaRejectedBeforeExecution == true,
+                       workspaceHash(observedWorkspace) == beforeHash {
+                        dispatchStage = .rejectedBeforeExecution
+                    }
                     lastFailureNotice = BackendFailureNotice(provider: ticket.provider, sessionID: interruptedSessionID,
                         blocker: BackendRecovery.classifiedBlocker(.quotaExhausted, permission: ticket.permissionProfile,
                             stage: dispatchStage, workspaceChanged: workspaceHash(observedWorkspace) != beforeHash),
