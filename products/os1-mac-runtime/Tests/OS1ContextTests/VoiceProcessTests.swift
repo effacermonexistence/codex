@@ -18,6 +18,21 @@ func voiceProcessChildIfRequested() {
 }
 
 func runVoiceProcessFixtures() throws {
+    func check(_ value: Bool) { precondition(value) }
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    try Data([1]).write(to: root.appendingPathComponent("whisper-medium-q4_1.bin"))
+    func catalog(_ id: String = "medium", _ filename: String = "whisper-medium-q4_1.bin", _ downloaded: Bool = true) throws -> Data {
+        try JSONSerialization.data(withJSONObject: [["id": id, "filename": filename, "is_downloaded": downloaded]])
+    }
+    check(LocalVoiceModelCatalog.resolve(selectedID: "medium", data: try catalog(), directory: root) == "medium")
+    check(LocalVoiceModelCatalog.resolve(selectedID: "other", data: try catalog(), directory: root) == nil)
+    check(LocalVoiceModelCatalog.resolve(selectedID: "medium", data: try catalog("medium", "absent"), directory: root) == nil)
+    check(LocalVoiceModelCatalog.resolve(selectedID: "medium", data: try catalog("medium", "whisper-medium-q4_1.bin", false), directory: root) == nil)
+    check(LocalVoiceModelCatalog.resolve(selectedID: "medium", data: try catalog("medium", "../escape"), directory: root) == nil)
+    check(LocalVoiceModelCatalog.resolve(selectedID: "medium", data: Data("broken".utf8), directory: root) == nil)
+
     let binary = Bundle.main.executableURL!
     // Reproduce the old wait-before-drain ordering, bounded by the test harness.
     let old = Process(), stdout = Pipe(), stderr = Pipe()
