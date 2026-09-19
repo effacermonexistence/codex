@@ -70,33 +70,30 @@ func selfRepairCommand(_ arguments: [String]) async throws -> Bool {
 /// Shared with the runtime hook in main.swift.
 let selfRepairFailurePrefixText = "OS-1 self-repair could not complete: "
 
-let os1RuntimeVersionString = "OS-1 Runtime 0.9.101 (self-repair-build167)"
+let os1RuntimeVersionString = "OS-1 Runtime 0.9.102 (self-repair-build168)"
 
-/// One writer at a time in OS-1's own checkout: the same RCC discipline the
-/// runtime enforces elsewhere, applied to itself. Waits briefly for the other
-/// writer, then preserves the request instead of interleaving edits.
-func acquireOS1SourceWriteLease(root: String, timeoutSeconds: Int = 180) throws -> ExclusiveHookLease {
+/// Serialize source edits without dropping a queued request after three minutes.
+/// flock ownership, not a stale lock-file timestamp, determines availability.
+func acquireOS1SourceWriteLease(root: String, timeoutSeconds: Int? = nil) throws -> ExclusiveHookLease {
     let directory = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".os1/self-update", isDirectory: true)
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-    let lock = directory.appendingPathComponent("source-write-" + sha256Hex(Data(root.utf8)).prefix(16) + ".lock")
-    let deadline = Date().addingTimeInterval(TimeInterval(timeoutSeconds))
-    var announced = false
-    while true {
-        if let lease = try ExclusiveHookLease.tryAcquire(at: lock) { return lease }
+    let canonical = URL(fileURLWithPath: root).resolvingSymlinksInPath().standardizedFileURL.path
+    let lock = directory.appendingPathComponent("source-write-" + sha256Hex(Data(canonical.utf8)).prefix(16) + ".lock")
+    let deadline = timeoutSeconds.map { Date().addingTimeInterval(TimeInterval($0)) }
+    var lastNotice = Date.distantPast
+    return try ExclusiveHookLease.acquireWaiting(at: lock, beforeAttempt: {
         if ExecutionCancellation.isCancelled { throw OS1Error.backendBlocked(.cancelled) }
-        guard Date() < deadline else {
-            throw OS1Error.message(os1Tr(
-                "OS-1 소스 체크아웃(\(root))에 다른 쓰기 작업이 진행 중이라 이 요청을 보존했습니다. 진행 중인 작업이 끝나면 다시 보내세요. 같은 트리에 동시 편집은 허용하지 않습니다.",
-                "Another write task is running in the OS-1 source checkout (\(root)); this request is preserved. Send it again after that task finishes — concurrent edits in the same tree are not allowed."))
+        if let deadline, Date() >= deadline {
+            throw OS1Error.message("OS-1 source-write wait deadline reached; no source edits were dispatched.")
         }
-        if !announced {
-            announced = true
+    }, onContention: {
+        if Date().timeIntervalSince(lastNotice) >= 10 {
+            lastNotice = Date()
             RuntimeActivity.emit(.preparing, publicText: os1Tr(
-                "OS-1 소스에 다른 쓰기 작업이 진행 중입니다. 끝날 때까지 대기 후 이 요청을 이어갑니다.",
-                "Another write task holds the OS-1 source. Waiting for it to finish, then continuing this request."))
+                "OS-1 소스 쓰기 차례를 기다리는 중 · 백엔드는 아직 시작하지 않았습니다. 기존 작업이 끝나면 자동으로 이어갑니다.",
+                "Waiting for the OS-1 source writer · backend not started. This request continues automatically when the writer releases it."))
         }
-        Thread.sleep(forTimeInterval: 2)
-    }
+    })
 }
 
 private var installedAppURL: URL {

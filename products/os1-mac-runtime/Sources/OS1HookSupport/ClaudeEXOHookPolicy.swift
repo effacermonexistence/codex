@@ -137,6 +137,17 @@ public final class ExclusiveHookLease: @unchecked Sendable {
         return ExclusiveHookLease(descriptor: descriptor)
     }
 
+    /// Cancellable FIFO-independent contention wait; never steal another writer's lease.
+    public static func acquireWaiting(at url: URL, pollInterval: TimeInterval = 0.25,
+        beforeAttempt: () throws -> Void, onContention: () throws -> Void = {}) throws -> ExclusiveHookLease {
+        while true {
+            try beforeAttempt()
+            if let lease = try tryAcquire(at: url) { return lease }
+            try onContention()
+            Thread.sleep(forTimeInterval: max(0, pollInterval))
+        }
+    }
+
     deinit {
         _ = flock(descriptor, LOCK_UN)
         close(descriptor)
