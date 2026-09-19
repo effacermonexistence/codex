@@ -962,8 +962,11 @@ func sourceRoutingTask(_ prompt: String, hasSource: Bool) -> String {
     let prohibitions = [
         ScopeResolution.enumeratedProhibitionPattern,
         #"(?:파일|코드|저장소|계정|서버)(?:\s*(?:이나|나|또는|및|과|와|·|,)\s*(?:파일|코드|저장소|계정|서버))*\s*(?:은|는|을|를)?\s*(?:수정|변경|편집|작성|삭제)(?:은|는|을|를)?(?:하거나\s*(?:테스트|빌드)(?:를|는|도)?\s*(?:실행|수행))?\s*하지\s*마(?:세요|십시오)?[.!]?"#,
-        #"(?i)\b(?:do not|don't|never)\s+(?:modify|edit|change|write|create|delete)\s+(?:any\s+)?(?:files?|code|accounts?)(?:\s+files?)?[.!]?"#,
+        #"(?i)\b(?:do not|don't|never)\s+(?:modify|edit|change|write|create|delete)\s+(?:any\s+)?(?:files?|code|accounts?)(?:\s+files?)?(?=\s*(?:[.!?](?:\s|$)|$))[.!]?"#,
     ]
+    // Never consume only the prefix of an English prohibition: that would
+    // turn the remaining negative action list into affirmative routing intent.
+    // Unrecognized/compound clauses remain intact for the semantic router.
     var changed = false
     for pattern in prohibitions {
         let replaced = text.replacingOccurrences(of: pattern,
@@ -7621,6 +7624,22 @@ func selfTest() throws {
     guard ScopeResolution.resolve(readOnlyStatusRoutingTask).scope == .readOnly,
           !["modify", "write", "deploy", "reset"].contains(where: readOnlyStatusRoutingTask.lowercased().contains) else {
         throw OS1Error.message("Status review must route affirmative read-only intent without negated mutation triggers")
+    }
+    // Negation must survive source projection; commas and conjunctions do not
+    // authorize dropping the negative prefix or inventing positive actions.
+    for request in [
+        "Read-only runtime verification. Do not edit files, send messages, deploy, or invoke tools. In one short sentence, acknowledge that this verification request reached the backend.",
+        "Do not edit files or change accounts. Explain the result.",
+        "Do not edit files, but explain the schema.",
+        "Never delete files without my approval.",
+        "Do not edit files and then deploy.",
+        "Do not edit file.swift, then explain it.",
+    ] {
+        for hasSource in [false, true] {
+            guard sourceRoutingTask(request, hasSource: hasSource) == request else {
+                throw OS1Error.message("Source routing corrupted an English prohibition")
+            }
+        }
     }
     guard sourceRoutingTask("원본을 검토해 줘. 파일 수정은 하지 마.", hasSource: true) == "원본을 검토해 줘. read-only",
           sourceRoutingTask("자료의 Node 버전만 답해. 파일·서버를 변경하거나 테스트를 실행하지 마.", hasSource: true) == "자료의 Node 버전만 답해. read-only",
