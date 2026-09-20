@@ -59,7 +59,8 @@ assert.equal(run('/usr/bin/plutil', ['-extract', 'CFBundleVersion', 'raw', '-o',
 run('/usr/bin/codesign', ['--verify', '--deep', '--strict', source]);
 run('/usr/bin/codesign', ['--verify', '--strict', resource]);
 assert(run(resource, ['version']).includes(`build${expectedBuild}`));
-idle();
+// Acquire the maintenance lease before draining; repeated recovery must not
+// race an idle observation. The mandatory idle gate remains before quit/swap.
 const wasRunning = appPIDs();
 const fleetLoaded = spawnSync('/bin/launchctl', ['print', service], { stdio: 'ignore' }).status === 0;
 fs.mkdirSync(recovery, { mode: 0o700 });
@@ -87,6 +88,16 @@ try {
   fs.copyFileSync(resource, stageCLI, fs.constants.COPYFILE_EXCL); fs.chmodSync(stageCLI, 0o755);
   run('/usr/bin/codesign', ['--verify', '--deep', '--strict', stageApp]);
   assert.equal(hash(stageCLI), receipt.stagedCLIHash);
+  // A maintenance task may already be scheduled when the lease is acquired.
+  // Drain it naturally; never cancel user work or erase its persisted receipt.
+  let quietSince = Date.now();
+  const drainDeadline = Date.now() + 180000;
+  while (Date.now() - quietSince < 10000) {
+    const state = JSON.parse(fs.readFileSync(store));
+    if ((state.inFlight ?? []).length) quietSince = Date.now();
+    assert(Date.now() < drainDeadline, 'active task did not drain; leave installation unchanged');
+    await wait(250);
+  }
   idle();
   if (fleetLoaded) { run('/bin/launchctl', ['bootout', service]); paused = true; }
   idle(); // catches a claim racing with bootout, before any binary replacement
