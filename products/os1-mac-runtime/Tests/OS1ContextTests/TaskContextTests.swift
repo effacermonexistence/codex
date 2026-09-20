@@ -10,6 +10,48 @@ func runTaskContextFixtures(root: URL) throws {
         guard try value() else { throw NSError(domain: "TaskContextTests", code: 1, userInfo: [NSLocalizedDescriptionKey: message]) }
         count += 1
     }
+    for raw in ["https://example.com/", "http://127.0.0.1:4173/", "https://example.com/path?q=1"] {
+        try check(BrowserNavigation.url(raw) != nil, "browser supports real web URLs")
+    }
+    for raw in ["javascript:alert(1)", "file:///etc/passwd", "data:text/html,hi", "https://user:secret@example.com/", "not a URL", "https://"] {
+        try check(BrowserNavigation.url(raw) == nil, "browser blocks non-web and embedded credentials")
+    }
+    let deliveryID = "01234567-89ab-cdef-0123-456789abcdef"
+    let domains = Data(#"{"domains":[{"domain":"site.up.railway.app","syncStatus":"ACTIVE"}]}"#.utf8)
+    try check(WebsiteDelivery.assignedDomainMatches(domains, url: URL(string: "https://site.up.railway.app/")!), "exact active service domain matches")
+    try check(!WebsiteDelivery.assignedDomainMatches(domains, url: URL(string: "https://unrelated.example/")!), "unrelated proof host cannot validate Railway delivery")
+    try check(!WebsiteDelivery.assignedDomainMatches(domains, url: URL(string: "https://site.up.railway.app:444/")!), "unexpected proof port rejected")
+    try check(!WebsiteDelivery.assignedDomainMatches(Data(#"{"domains":[{"domain":"site.up.railway.app","syncStatus":"PENDING"}]}"#.utf8), url: URL(string: "https://site.up.railway.app/")!), "pending domain rejected")
+    try check(!WebsiteDelivery.assignedDomainMatches(Data("{}".utf8), url: URL(string: "https://site.up.railway.app/")!), "missing domain evidence fails closed")
+    let receiptObject: [String: String] = ["workspace": root.path, "projectID": deliveryID,
+        "serviceID": deliveryID, "environmentID": deliveryID, "deploymentID": deliveryID,
+        "url": "https://example.up.railway.app/", "proofPath": "/os1-delivery-proof.txt", "proofSHA256": String(repeating: "a", count: 64)]
+    func receiptValid(_ object: [String: String]) throws -> Bool {
+        try JSONDecoder().decode(WebsiteDelivery.Receipt.self, from: JSONSerialization.data(withJSONObject: object)).validate(workspace: root.path)
+    }
+    try check(receiptValid(receiptObject), "delivery identity valid")
+    var nestedReceipt = receiptObject; nestedReceipt["workspace"] = root.appendingPathComponent("new-demo").path
+    try check(receiptValid(nestedReceipt), "new isolated project within active workspace is valid")
+    nestedReceipt["workspace"] = root.path + "-sibling"
+    try check(!receiptValid(nestedReceipt), "prefix sibling is not within workspace")
+    nestedReceipt["workspace"] = root.appendingPathComponent("../outside").path
+    try check(!receiptValid(nestedReceipt), "normalized traversal cannot escape workspace")
+    let createProtected = "Implement a new isolated website. Do not change any existing project, other deployments, or other sessions. Verify the new website."
+    let protectedScope = ScopeResolution.resolve(createProtected)
+    try check(protectedScope.scope == .workspaceWrite, "preserving existing resources does not forbid new website")
+    try check(protectedScope.prohibitions.contains(where: { $0.contains("existing project") }), "preservation fence survives")
+    try check(ScopeResolution.resolve("Implement a website. Do not change any files.").scope == .readOnly, "blanket no-write is not a preservation fence")
+
+    for (key, value) in [("workspace", "/wrong"), ("deploymentID", "fake"), ("url", "http://example.com"),
+                          ("url", "https://user:secret@example.com"), ("proofPath", "//other.host/a"),
+                          ("proofPath", "/../secret"), ("proofSHA256", "abc")] {
+        var invalid = receiptObject; invalid[key] = value
+        try check(!receiptValid(invalid), "delivery rejects invalid \(key)")
+    }
+    try check(WebsiteDelivery.receiptPath(in: "Quoted prose mentioning OS1_RAILWAY_RECEIPT: /x") == nil, "no prose marker hijack")
+    try check(WebsiteDelivery.receiptPath(in: "Done\nOS1_RAILWAY_RECEIPT: /tmp/result.json") == "/tmp/result.json", "standalone receipt")
+    try check(WebsiteDelivery.capabilityCard.contains("not automatic permission"), "capability is not authorization")
+    try check(ScopeResolution.resolve("Implement a website. Do not modify existing files but do not change anything at all.").scope == .readOnly, "contrastive blanket prohibition must survive")
     // User-directed capability is independent of a heuristic speech-act label.
     for request in ["BUILD THE DEMO.", "이거 작업하시면 됩니다 하세요", "Read only. Explain this code.", "준비해", "Delete the obsolete fixture, not other files."] {
         let scope = ScopeResolution.delegationScope(internalReadOnly: false)

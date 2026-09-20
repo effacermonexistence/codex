@@ -738,6 +738,11 @@ public struct ScopeResolution: Equatable, Sendable {
     // only complete bounded clauses, not "... but change ..." or filenames.
     static let relativeTargetFencePattern = #"(?i)(?:^|(?<=[.!?;\n]))\s*(?:do not|don't|never)\s+(?:modify|edit|change|delete|remove|write(?: to)?)\s+(?:any\s+)?other\s+(?:files?|folders?|directories|services?|settings)(?:\s*(?:,\s*(?:(?:and|or)\s+)?|(?:and|or)\s+)(?:other\s+)?(?:files?|folders?|directories|services?|settings)){0,8}\s*(?=[.!?;\n]|$)"#
 
+    // An explicit preservation clause for existing resources is not a blanket
+    // prohibition on creating a new isolated resource. Keep the entire fence
+    // in the handoff; only remove it from the global-negation classifier.
+    static let existingResourceFencePattern = #"(?i)(?:^|(?<=[.!?;\n]))\s*(?:do not|don't|never)\s+(?:modify|edit|change|delete|remove)\s+(?:any\s+)?existing\s+(?:projects?|sites?|files?|directories|services?|deployments?|sessions?)\b(?![^.!?;\n]*\b(?:but|however|instead|unless|not|never)\b)[^.!?;\n]*(?=[.!?;\n]|$)"#
+
     static let positiveEdit = ["손봐", "손 봐", "수정해", "수정하고", "수정 해", "고쳐", "고치고", "고치라니까", "고치라고", "구현하라고", "고치지", "고치자", "바꿔", "바꾸고", "구현해", "추가해", "삭제해", "리팩터", "만들어",
                                "완료해", "완성해", "끝까지 해", "마저 해", "마저해",
                                "일치시켜", "일치시키", "통일해", "통일하", "맞춰", "때려넣", "넣어줘", "넣어 줘",
@@ -783,13 +788,15 @@ public struct ScopeResolution: Equatable, Sendable {
         let value = OwnerIntentText.normalized(OwnerIntentText.authorityText(prompt))
         var prohibitions: [String] = []
         var remaining = value
-        if let pattern = try? NSRegularExpression(pattern: relativeTargetFencePattern) {
+        for fence in [relativeTargetFencePattern, existingResourceFencePattern] {
+        if let pattern = try? NSRegularExpression(pattern: fence) {
             let range = NSRange(remaining.startIndex..<remaining.endIndex, in: remaining)
             for match in pattern.matches(in: remaining, range: range) {
                 guard let captured = Range(match.range, in: remaining) else { continue }
                 prohibitions.append(String(remaining[captured]).trimmingCharacters(in: .whitespacesAndNewlines))
             }
             remaining = pattern.stringByReplacingMatches(in: remaining, range: range, withTemplate: " ")
+        }
         }
         if let pattern = try? NSRegularExpression(pattern: enumeratedProhibitionPattern) {
             let range = NSRange(remaining.startIndex..<remaining.endIndex, in: remaining)

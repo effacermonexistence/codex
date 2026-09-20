@@ -6749,7 +6749,7 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
             os1Executable: currentOS1Executable())
     }
     let sourcePayload = try retainedSourcePayload(taskContext, primary: sourceContext, evidence: r2Evidence)
-    if resolvedScope == .workspaceWrite { workspaceContext += "\n" + ManagedPreview.capabilityCard }
+    if resolvedScope == .workspaceWrite { workspaceContext += "\n" + ManagedPreview.capabilityCard + "\n" + WebsiteDelivery.capabilityCard }
     let localPrompt = try providerPrompt(current: prompt, context: repairedContext,
         r2Evidence: sourcePayload, taskContext: taskContext.handoffBlock(), workspaceContext: workspaceContext,
         languageDirective: userSettings.outputLanguageDirective)
@@ -7186,6 +7186,12 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
                 execution = execution.appendingOutput("\nOS1_DELIVERY_BLOCK: " + failure)
                 terminalPermissionFailure = OS1Error.message(failure)
             }
+        }
+        if attemptFailure == nil, execution.artifact.exitCode == 0, workflowStage != .architecture,
+           let failure = await RailwayDelivery.failure(output: execution.artifact.output, workspace: canonicalWorkspace) {
+            attemptFailure = failure
+            execution = execution.appendingOutput("\nOS1_DELIVERY_BLOCK: " + failure)
+            terminalPermissionFailure = OS1Error.message(failure)
         }
         let artifact = execution.artifact
         let artifactData = try JSONEncoder().encode(artifact)

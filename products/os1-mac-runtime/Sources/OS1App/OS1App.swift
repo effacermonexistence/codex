@@ -7619,12 +7619,27 @@ private func sidebarSynchronizationSelfTest() throws {
 private struct RootView: View {
     @ObservedObject var store: SessionStore
     @State private var governanceOpen = false
+    @StateObject private var browser = OS1BrowserWorkspace()
+    private var browserKey: String { store.selectedSessionID?.uuidString ?? "native-\(store.surface.rawValue)" }
     @State private var windowDropTargeted = false
 
     var body: some View {
         HStack(spacing: 0) {
             ProviderRail(store: store, governanceOpen: $governanceOpen)
             Rectangle().fill(Theme.border).frame(width: 1)
+            VStack(spacing: 0) {
+                HStack {
+                    Spacer()
+                    Button { browser.visible.toggle() } label: {
+                        Label("브라우저", systemImage: "sidebar.right")
+                    }.buttonStyle(.plain).foregroundStyle(Theme.pink)
+                        .accessibilityLabel("오른쪽 브라우저 전환")
+                        .help("오른쪽 브라우저 열기/닫기")
+                }.padding(.horizontal, 14).frame(height: 30)
+                    // The root extends under the transparent titlebar. Keep this
+                    // control below its drag region so it is visible and clickable.
+                    .padding(.top, 28)
+            HSplitView {
             ZStack {
                 // Keep the conversation mounted: toggling must not reset draft, scroll, queue or run.
                 HStack(spacing: 0) {
@@ -7646,7 +7661,19 @@ private struct RootView: View {
                     .onExitCommand { governanceOpen = false }
                 }
             }
+            .frame(minWidth: 540, maxWidth: .infinity, maxHeight: .infinity)
+            if browser.visible {
+                OS1BrowserPanel(page: browser.page(browserKey), close: { browser.visible = false })
+                    .id(browserKey)
+            }
+            }
+            }
         }
+        .environment(\.openURL, OpenURLAction { url in
+            guard BrowserNavigation.url(url.absoluteString) != nil else { return .systemAction }
+            browser.open(url, key: browserKey)
+            return .handled
+        })
         .frame(minWidth: 980, maxWidth: .infinity, minHeight: 680, maxHeight: .infinity)
         .background(Theme.background)
         // Files dropped anywhere in the window attach to the current
