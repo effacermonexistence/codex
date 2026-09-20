@@ -246,11 +246,13 @@ public enum BackendRecovery {
         \(objective)
         --- 이전 작업 목표 끝 ---
 
-        답변의 마지막 줄은 반드시 다음 네 가지 중 하나만, 다른 텍스트 없이 정확히 쓰세요:
-        OS1_EFFECTS: none — 이전 시도의 변경이 전혀 반영되지 않았음을 실제 상태로 직접 확인한 경우에만
-        OS1_EFFECTS: applied — 이전 시도의 변경이 이미 반영되어 있음
-        OS1_EFFECTS: partial — 일부만 반영됨
-        OS1_EFFECTS: unknown — 확인할 수 없음
+        판정 대상은 지금의 대조 작업이 아니라 중단된 이전 시도입니다. 이번 대조에서 수정하지 않았다는 사실만으로 이전 시도에 none을 부여하지 마세요.
+        판정 의미: none은 이전 시도의 변경이 전혀 반영되지 않았음을 실제 상태로 확인함, applied는 이미 반영됨, partial은 일부 반영됨, unknown은 확인 불가능함입니다.
+        근거와 설명은 판정 줄보다 먼저 적으세요. 마지막 줄에는 아래 네 줄 중 정확히 하나만 쓰세요. 설명·대시·코드펜스·문장부호를 덧붙이지 마세요:
+        OS1_EFFECTS: none
+        OS1_EFFECTS: applied
+        OS1_EFFECTS: partial
+        OS1_EFFECTS: unknown
         """
     }
 

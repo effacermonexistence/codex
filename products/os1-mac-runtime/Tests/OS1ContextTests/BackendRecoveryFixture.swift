@@ -165,6 +165,13 @@ func runBackendRecoveryFixtures() throws {
     check(!BackendRecovery.readbackPrompt(objective: "x").contains("read-only") &&
         !BackendRecovery.readbackPrompt(objective: "x").contains("읽기 전용"), "reconciliation does not impose read-only executor capability")
     check(BackendRecovery.readbackPrompt(objective: "x").contains("OS1_EFFECTS: none"), "readback demands the machine-checkable verdict")
+    let recoveryPrompt = BackendRecovery.readbackPrompt(objective: "inspect existing delivery; do not redeploy")
+    let advertisedVerdicts = recoveryPrompt.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }
+        .filter { $0.hasPrefix("OS1_EFFECTS:") }
+    check(advertisedVerdicts.count == 4 && advertisedVerdicts.allSatisfy { BackendRecovery.effectsVerdict(in: $0) != nil },
+          "every advertised readback wire format passes the real parser")
+    check(recoveryPrompt.contains("이번 대조에서 수정하지 않았다는 사실만으로"),
+          "no-op readback must not imply interrupted attempt had no effects")
     check(BackendRecovery.effectsVerdict(in: "확인 결과...\nOS1_EFFECTS: none") == .nothingApplied, "verdict none parses")
     check(BackendRecovery.effectsVerdict(in: "a\nos1_effects:  Applied \n") == .applied, "verdict is case/space tolerant")
     check(BackendRecovery.effectsVerdict(in: "OS1_EFFECTS: none\n추가 확인 후\nOS1_EFFECTS: partial") == .partial, "the last verdict line wins")
