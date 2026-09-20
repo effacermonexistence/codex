@@ -72,6 +72,18 @@ verify_unnotarized_beta_package() {
   local bundled_cli_signature_details
   local app_signature_details
   local expanded_paths
+  local release_major release_minor release_patch
+  local expected_payload_files=18 expected_component_files=21
+  local policy_helper="$app_path/Contents/Resources/sync-owner-policy.py"
+  [[ "$manifest_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || return 1
+  IFS=. read -r release_major release_minor release_patch <<< "$manifest_version"
+  # Preserve verification of pinned recovery releases predating the helper.
+  # New releases require the signed helper; absence is not a legacy fallback.
+  if (( 10#$release_major > 0 || 10#$release_minor > 9 ||
+        (10#$release_minor == 9 && 10#$release_patch >= 107) )); then
+    expected_payload_files=19
+    expected_component_files=22
+  fi
 
   pkgutil --expand-full "$package_path" "$expanded_root" || {
     echo "OS-1 beta verification could not expand the package." >&2
@@ -89,11 +101,11 @@ verify_unnotarized_beta_package() {
     echo "OS-1 beta verification found missing component metadata." >&2
     return 1
   }
-  [[ "$(find "$component_root" -type f -print | wc -l | tr -d ' ')" == "22" ]] || {
+  [[ "$(find "$component_root" -type f -print | wc -l | tr -d ' ')" == "$expected_component_files" ]] || {
     echo "OS-1 beta verification found an unexpected component file count." >&2
     return 1
   }
-  [[ "$(find "$payload_root" -type f -print | wc -l | tr -d ' ')" == "19" ]] || {
+  [[ "$(find "$payload_root" -type f -print | wc -l | tr -d ' ')" == "$expected_payload_files" ]] || {
     echo "OS-1 beta verification found an unexpected payload file count." >&2
     return 1
   }
@@ -102,6 +114,14 @@ verify_unnotarized_beta_package() {
     return 1
   fi
 
+  if [[ "$expected_payload_files" == "19" ]]; then
+    [[ -f "$policy_helper" && ! -L "$policy_helper" ]] || {
+      echo "OS-1 beta verification requires the owner-policy helper." >&2; return 1;
+    }
+  elif [[ -e "$policy_helper" || -L "$policy_helper" ]]; then
+    echo "OS-1 beta verification refused a policy helper in a legacy release." >&2
+    return 1
+  fi
   [[ "$(/usr/bin/xmllint --xpath 'string(/pkg-info/@identifier)' "$package_info")" == "com.omaragi.os1" &&
      "$(/usr/bin/xmllint --xpath 'string(/pkg-info/@version)' "$package_info")" == "$manifest_version" &&
      "$(/usr/bin/xmllint --xpath 'string(/pkg-info/@install-location)' "$package_info")" == "/" &&

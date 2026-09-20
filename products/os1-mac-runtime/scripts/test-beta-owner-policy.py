@@ -42,5 +42,5 @@ for mutation in ('rename', 'content'):
         changed_meta = root / 'changed.json'
         changed_meta.write_text(json.dumps(meta))
         verify(changed, changed_meta, False,
-               'unexpected payload file' if mutation == 'rename' else 'refused the unnotarized beta package')
+               'requires the owner-policy helper' if mutation == 'rename' else 'refused the unnotarized beta package')
 print('PASS: legitimate helper accepted; same-count rename and signed-resource mutation rejected')

@@ -78,6 +78,12 @@ The first CI build exposed the beta installer's stale 18-file payload allowlist.
 The helper makes the payload 19 files (22 including component metadata). The exact
 helper path is now allowed without relaxing unknown-file or signature rejection.
 `test-beta-owner-policy.py` runs the actual verification-only installer: the signed
-build173 package passes, a same-file-count helper rename fails the allowlist, and
+build173 package passes, a same-file-count helper rename fails the required-helper gate, and
 helper content mutation fails signed-resource integrity, even with updated outer
 package checksums. The same regression is wired into Mac release CI.
+
+The payload contract is version-bound: releases before 0.9.107 retain the exact
+18/21-file legacy contract; 0.9.107 onward require the signed helper and exact
+19/22-file contract. Package and app versions must match the manifest. Removing
+the new helper cannot select the legacy contract. The actual pinned 0.9.48
+build105 bootstrap verification passed locally, alongside all 9 bootstrap tests.
