@@ -36,6 +36,8 @@ final class SourceContextTests {
             print(String(data: try JSONEncoder().encode(issues), encoding: .utf8)!)
             if !issues.isEmpty { exit(1) }; return
         }
+        try runOwnerPolicyFixtures()
+        if CommandLine.arguments.contains("--owner-policy-only") { return }
         try runExecutionWorkspaceFixtures()
         let suite = SourceContextTests()
         try suite.testSnapshotRoundTripAndRestart()
@@ -103,10 +105,28 @@ final class SourceContextTests {
         XCTAssertFalse(TaskWorkflow.permitsSelfUpdate(stage: .verification, finalVerdict: false))
         XCTAssertTrue(TaskWorkflow.permitsSelfUpdate(stage: .verification, finalVerdict: true))
         XCTAssertTrue(TaskWorkflow.permitsSelfUpdate(stage: nil, finalVerdict: nil))
-        XCTAssertEqual(ScopeResolution.resolve(TaskWorkflow.architecture.routingTask).scope, .readOnly)
-        XCTAssertEqual(ScopeResolution.resolve(TaskWorkflow.verification.routingTask).scope, .readOnly)
+        XCTAssertFalse(TaskWorkflow.architecture.routingTask.contains("Read-only"))
+        XCTAssertFalse(TaskWorkflow.verification.routingTask.contains("Read-only"))
         XCTAssertFalse(TaskWorkflow.architecture.routingTask.contains(request))
         XCTAssertEqual(ScopeResolution.resolve(TaskWorkflow.implementation.routingTask).scope, .workspaceWrite)
+        let createRequest = "웹사이트 만들어. 배포는 하지 마."
+        for stage in TaskWorkflow.allCases {
+            let stagePrompt = stage.prompt(original: createRequest, prior: "Preparation did not edit files.")
+            XCTAssertEqual(TaskWorkflow.objectiveRequest(owner: createRequest, executionPrompt: stagePrompt), createRequest)
+            XCTAssertTrue(stagePrompt.contains(createRequest))
+            XCTAssertEqual(stage.executionPermissionProfile, "workspace_write")
+            XCTAssertFalse(stage.routingTask.contains("for the interrupted objective"))
+            XCTAssertFalse(stage.progressText.isEmpty)
+            XCTAssertFalse(stagePrompt.contains("(READ ONLY)"))
+            XCTAssertFalse(stagePrompt.contains("must not edit files"))
+            XCTAssertFalse(stage.routingTask.lowercased().contains("read-only"))
+            XCTAssertFalse(stage.routeTask.lowercased().contains("read-only"))
+            XCTAssertTrue(stagePrompt.contains("배포는 하지 마"))
+        }
+        XCTAssertEqual(TaskWorkflow.objectiveRequest(owner: nil, executionPrompt: "상태만 설명해"), "상태만 설명해")
+        XCTAssertTrue(TaskWorkflow.architecture.prompt(original: createRequest).contains("automatically runs implementation next"))
+        XCTAssertTrue(TaskWorkflow.architecture.prompt(original: createRequest).contains("For a new artifact"))
+        XCTAssertTrue(TaskWorkflow.implementation.prompt(original: createRequest).contains("authorization remains active across all stages"))
         let scratchRequest = "Fix calc.py and test it"
         let wrapped = TaskWorkflow.implementation.prompt(original: scratchRequest, prior: "OS-1 contract")
         XCTAssertEqual(TaskWorkflow.preparationRequest(owner: scratchRequest, stagePrompt: wrapped), scratchRequest)
@@ -125,7 +145,7 @@ final class SourceContextTests {
         XCTAssertFalse(TaskWorkflow.permitsBoundedRepair(verdict: false, stageIndex: 4))
         XCTAssertFalse(TaskWorkflow.permitsBoundedRepair(verdict: nil, stageIndex: 2))
         XCTAssertFalse(TaskWorkflow.permitsBoundedRepair(verdict: true, stageIndex: 2))
-        XCTAssertTrue(TaskWorkflow.architecture.prompt(original: request).contains("READ ONLY"))
+        XCTAssertTrue(TaskWorkflow.architecture.prompt(original: request).contains("All stages use the executable workspace capability"))
         XCTAssertTrue(TaskWorkflow.verification.prompt(original: request).contains("Local tests alone do not prove production/live effect"))
         XCTAssertTrue(TaskWorkflow.repairPrompt(original: request, architecture: "contract", failedVerification: "BLOCK")
             .contains("MAXIMUM ONE"))

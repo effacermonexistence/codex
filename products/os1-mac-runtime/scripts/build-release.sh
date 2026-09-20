@@ -5,6 +5,7 @@ readonly script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 readonly runtime_root="$(cd "$script_dir/.." && pwd -P)"
 readonly repository_root="$(cd "$runtime_root/../.." && pwd -P)"
 python3 "$script_dir/check-startup-isolation.py"
+python3 "$script_dir/test-owner-policy-sync.py"
 # The bundle's own Info.plist is the single source of truth for the release
 # version. A hardcoded default silently diverged from it and the identity
 # check below then refused to package — every build since 0.9.57 produced no
@@ -116,6 +117,8 @@ lipo -create \
   -output "$stage_dir/usr/local/bin/os1"
 install -m 0755 "$stage_dir/usr/local/bin/os1" \
   "$stage_dir/Applications/OS-1 CLODEX.app/Contents/Resources/os1"
+install -m 0755 "$script_dir/sync-owner-policy.py" \
+  "$stage_dir/Applications/OS-1 CLODEX.app/Contents/Resources/sync-owner-policy.py"
 lipo -create \
   "$arm64_build_dir/arm64-apple-macosx/release/OS1App" \
   "$x86_64_build_dir/x86_64-apple-macosx/release/OS1App" \
@@ -148,6 +151,7 @@ while IFS= read -r payload_file; do
   case "$relative_path" in
     "Applications/OS-1 CLODEX.app/Contents/MacOS/OS1App"|\
     "Applications/OS-1 CLODEX.app/Contents/Resources/os1"|\
+    "Applications/OS-1 CLODEX.app/Contents/Resources/sync-owner-policy.py"|\
     "Applications/OS-1 CLODEX.app/Contents/Resources/OmarAGI.png"|\
     "Applications/OS-1 CLODEX.app/Contents/Resources/Codex.png"|\
     "Applications/OS-1 CLODEX.app/Contents/Resources/ClaudeCode.png"|\
@@ -256,6 +260,7 @@ while IFS= read -r payload_file; do
   case "$relative_path" in
     "Applications/OS-1 CLODEX.app/Contents/MacOS/OS1App"|\
     "Applications/OS-1 CLODEX.app/Contents/Resources/os1"|\
+    "Applications/OS-1 CLODEX.app/Contents/Resources/sync-owner-policy.py"|\
     "Applications/OS-1 CLODEX.app/Contents/Resources/OmarAGI.png"|\
     "Applications/OS-1 CLODEX.app/Contents/Resources/Codex.png"|\
     "Applications/OS-1 CLODEX.app/Contents/Resources/ClaudeCode.png"|\
@@ -286,6 +291,11 @@ readonly package_size="$(stat -f '%z' "$final_pkg")"
 printf '{"version":"%s","object_key":"os1/releases/%s/OS-1-%s.pkg","sha256":"%s","size":%s,"minimum_macos":"13.0"}\n' \
   "$version" "$version" "$version" "$package_sha256" "$package_size" \
   > "$output_dir/latest.json"
+
+# Exercise the exact beta installer before publishing a development artifact.
+if [[ "$release_mode" == "development" ]]; then
+  python3 "$runtime_root/scripts/test-beta-owner-policy.py" "$final_pkg" "$output_dir/latest.json"
+fi
 
 echo "Release package: $final_pkg"
 echo "Release manifest: $output_dir/latest.json"

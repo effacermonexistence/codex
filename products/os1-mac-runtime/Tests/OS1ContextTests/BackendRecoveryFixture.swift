@@ -162,6 +162,8 @@ func runBackendRecoveryFixtures() throws {
     // The readback verdict: exactly one word on its own line; the last such
     // line wins; anything appended voids it; a quoted example inside prose
     // does not count as a verdict line once real verdicts follow.
+    check(!BackendRecovery.readbackPrompt(objective: "x").contains("read-only") &&
+        !BackendRecovery.readbackPrompt(objective: "x").contains("읽기 전용"), "reconciliation does not impose read-only executor capability")
     check(BackendRecovery.readbackPrompt(objective: "x").contains("OS1_EFFECTS: none"), "readback demands the machine-checkable verdict")
     check(BackendRecovery.effectsVerdict(in: "확인 결과...\nOS1_EFFECTS: none") == .nothingApplied, "verdict none parses")
     check(BackendRecovery.effectsVerdict(in: "a\nos1_effects:  Applied \n") == .applied, "verdict is case/space tolerant")

@@ -649,6 +649,8 @@ struct RunStepSummary: Codable {
     let durationMS: Int64
     let nativeRecord: NativeRecordEvidence?
     var workflowStage: String? = nil
+    var ownerPolicySourceSHA256: String? = OwnerPolicyContext.snapshot?.sourceSHA256
+    var ownerPolicyProjectionSHA256: String? = OwnerPolicyContext.snapshot?.projectionSHA256
 
     enum CodingKeys: String, CodingKey {
         case sequence, provider, action, model, effort, output, stderr
@@ -659,6 +661,8 @@ struct RunStepSummary: Codable {
         case durationMS = "duration_ms"
         case nativeRecord = "native_record"
         case workflowStage = "workflow_stage"
+        case ownerPolicySourceSHA256 = "owner_policy_source_sha256"
+        case ownerPolicyProjectionSHA256 = "owner_policy_projection_sha256"
     }
 }
 
@@ -792,6 +796,7 @@ func executorInstructions(contract: ExecutorContract, ticket: Ticket) -> String 
     return """
     OS-1 executor contract \(contract.version)
     \(directives)
+    \(OwnerPolicyContext.instructions)
 
     Assigned execution constraints:
     - backend: \(ticket.provider)
@@ -819,7 +824,7 @@ func claudeExecutorInstructions(
         ? "\nA prior candidate was discarded by OS-1. Process the current user task again from scratch under this configuration."
         : ""
     if recoveringClarificationOnlyCandidate {
-        recovery += "\nThe discarded candidate refused or asked for clarification instead of producing the requested deliverable. Produce the complete best-effort draft now, state reasonable assumptions, and do not ask a question before the draft. If the user's terms have a standard meaning, use that meaning. An open or unsettled problem is not a reason to refuse a requested conceptual schema; label speculative elements accurately. Never mention AskUserQuestion or tool availability."
+        recovery += "\nThe discarded candidate refused or asked for clarification instead of producing the requested deliverable. Produce the complete best-effort draft now, state reasonable assumptions, and do not ask a question before the draft. Preserve the locally established meaning of the user's terms; do not substitute a textbook meaning. An open or unsettled problem is not a reason to refuse a requested conceptual schema; label speculative elements accurately. Never mention AskUserQuestion or tool availability."
     }
     return """
     Execution requirements for the current task.
@@ -827,6 +832,7 @@ func claudeExecutorInstructions(
 
     Execution directives:
     \(directives)
+    \(OwnerPolicyContext.instructions)
 
     Assigned execution constraints:
     - backend: \(ticket.provider)
@@ -2592,7 +2598,7 @@ private func repairsMismatchedResearchSource(_ prompt: String, context: String?,
 
 /// Public source lineage, not a local model selector or private policy. A
 /// short follow-up must not erase the subject of the attached research.
-let readOnlyStatusRoutingTask = "Read-only status inspection. Report observed completed, pending and uncertain steps for the interrupted objective in context, using read-only local and remote checks."
+let statusReconciliationRoutingTask = "Reconcile the interrupted objective against actual local and remote state. Report completed, pending and uncertain steps. Verify prior effects before replaying any interrupted action."
 
 /// Once OS-1 has completed and verified an R2 readback, route only the remaining
 /// transformation. Repeating the original connect/fetch verbs in the router
@@ -6104,6 +6110,9 @@ private func recordRoutingInput(_ request: StartExecutionRequest, ticket: Ticket
         "caller_visible_input_tokens_estimate": (input.inputUTF8Bytes + 2) / 3,
         "basis": "caller_visible_utf8_estimate", "provider_hidden_tokens": NSNull(),
         "cache_tokens": NSNull(), "billed_cost": NSNull(), "source_sha256": source?.sha256 ?? "none",
+        "owner_policy_source_sha256": OwnerPolicyContext.snapshot?.sourceSHA256 ?? "none",
+        "owner_policy_projection_sha256": OwnerPolicyContext.snapshot?.projectionSHA256 ?? "none",
+        "owner_policy_scope": "local preflight, backend instructions, local postflight; remote RCC engine separately pinned",
         "completion_feedback_enabled": input.completionFeedback != nil,
         "completion_feedback_observations": input.completionFeedback?.observations.count ?? 0]
     do {
@@ -6181,6 +6190,34 @@ func runWorkflowTask(
     progress: Bool,
     desktopReveal: DesktopRevealMode
 ) async throws -> RunSummary {
+    let policy = try loadCurrentOwnerPolicy()
+    return try await OwnerPolicyContext.$snapshot.withValue(policy) {
+        try await runWorkflowTaskWithOwnerPolicy(
+                prompt: prompt,
+                workspace: workspace,
+                providerPreference: providerPreference,
+                context: context,
+                codexSessionID: codexSessionID,
+                claudeSessionID: claudeSessionID,
+                codexCapacity: codexCapacity,
+                claudeCapacity: claudeCapacity,
+                progress: progress,
+                desktopReveal: desktopReveal)
+    }
+}
+
+func runWorkflowTaskWithOwnerPolicy(
+    prompt: String,
+    workspace: String,
+    providerPreference: String,
+    context: String?,
+    codexSessionID: String?,
+    claudeSessionID: String?,
+    codexCapacity: Int,
+    claudeCapacity: Int,
+    progress: Bool,
+    desktopReveal: DesktopRevealMode
+) async throws -> RunSummary {
     let handoff = try SessionHandoff.decode(context)
     let workflowStartedAt = Date()
     let projectID = PreparationIntent.detect(prompt)?.projectID ?? handoff.taskContext?.project?.projectID
@@ -6224,6 +6261,7 @@ func runWorkflowTask(
 
     while stageIndex < stagePlan.count {
         let stage = stagePlan[stageIndex]
+        RuntimeActivity.emit(.preparing, publicText: stage.progressText)
         var stagePrompt = stage == .implementation && stageIndex > 2
             ? TaskWorkflow.repairPrompt(original: prompt, architecture: architectureOutput,
                 failedVerification: priorOutput ?? "")
@@ -6252,7 +6290,6 @@ func runWorkflowTask(
                 claudeSessionID: stage == .verification ? nil : claudeID,
                 codexCapacity: codexCapacity, claudeCapacity: claudeCapacity,
                 progress: progress, desktopReveal: desktopReveal,
-                phaseReadOnly: stage.readOnly,
                 routingTaskOverride: stage.routingTask,
                 workflowStage: stage, ownerPrompt: prompt, monitorTaskIDOverride: workflowMonitorID, heldOS1SourceRoot: repairRoot)
         } catch {
@@ -6310,6 +6347,25 @@ func runWorkflowTask(
         taskContext: taskState, monitorTaskID: workflowMonitorID)
 }
 
+// Refresh the device owner policy before dispatch; absence is never a silent
+// bypass. A workflow pins one verified version through every stage.
+func loadCurrentOwnerPolicy() throws -> OwnerPolicySnapshot? {
+    if let pinned = OwnerPolicyContext.snapshot { try pinned.verifyOriginal(); return pinned }
+    let root = OwnerPolicySnapshot.defaultRoot
+    let resource = URL(fileURLWithPath: CommandLine.arguments[0]).resolvingSymlinksInPath()
+        .deletingLastPathComponent().appendingPathComponent("sync-owner-policy.py")
+    let helper = FileManager.default.fileExists(atPath: resource.path) ? resource
+        : FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Applications/OS-1 CLODEX.app/Contents/Resources/sync-owner-policy.py")
+    guard FileManager.default.fileExists(atPath: helper.path) else {
+        throw OS1Error.message("거버넌스 정책 동기화 도구가 설치되지 않아 호출하지 않았습니다. 기존 작업은 보존됩니다.")
+    }
+    let (status, _, _) = try commandOutput("/usr/bin/python3", [helper.path], timeout: 50)
+    guard status == 0, let policy = try OwnerPolicySnapshot.load(root: root) else {
+        throw OS1Error.message("최신 거버넌스 원문 확인 또는 무결성 검증에 실패해 모델 호출 전에 보존했습니다.")
+    }
+    return policy
+}
+
 func runTask(
     prompt: String,
     workspace: String,
@@ -6322,7 +6378,46 @@ func runTask(
     progress: Bool,
     desktopReveal: DesktopRevealMode = .never,
     requireReadOnly: Bool = false,
-    phaseReadOnly: Bool = false,
+    routingTaskOverride: String? = nil,
+    workflowStage: TaskWorkflow? = nil,
+    ownerPrompt: String? = nil,
+    monitorTaskIDOverride: String? = nil,
+    heldOS1SourceRoot: String? = nil
+) async throws -> RunSummary {
+    let policy = try loadCurrentOwnerPolicy()
+    return try await OwnerPolicyContext.$snapshot.withValue(policy) {
+        try await runTaskWithOwnerPolicy(
+                prompt: prompt,
+                workspace: workspace,
+                providerPreference: providerPreference,
+                context: context,
+                codexSessionID: codexSessionID,
+                claudeSessionID: claudeSessionID,
+                codexCapacity: codexCapacity,
+                claudeCapacity: claudeCapacity,
+                progress: progress,
+                desktopReveal: desktopReveal,
+                requireReadOnly: requireReadOnly,
+                routingTaskOverride: routingTaskOverride,
+                workflowStage: workflowStage,
+                ownerPrompt: ownerPrompt,
+                monitorTaskIDOverride: monitorTaskIDOverride,
+                heldOS1SourceRoot: heldOS1SourceRoot)
+    }
+}
+
+func runTaskWithOwnerPolicy(
+    prompt: String,
+    workspace: String,
+    providerPreference: String,
+    context: String?,
+    codexSessionID: String?,
+    claudeSessionID: String?,
+    codexCapacity: Int,
+    claudeCapacity: Int,
+    progress: Bool,
+    desktopReveal: DesktopRevealMode = .never,
+    requireReadOnly: Bool = false,
     routingTaskOverride: String? = nil,
     workflowStage: TaskWorkflow? = nil,
     ownerPrompt: String? = nil,
@@ -6350,17 +6445,18 @@ func runTask(
     var taskState = handoff.taskContext ?? TaskContext.migrated(conversationID: UUID(), request: prompt, workspace: workspace,
         sourceContext: attachedSource, codexSessionID: codexSessionID, claudeSessionID: claudeSessionID, now: objectiveStartedAt)
     if sourceDetached { taskState.sources.removeAll(); taskState.touch(now: objectiveStartedAt) }
-    let scopeResolution = ScopeResolution.resolve(ownerPrompt ?? prompt)
-    let preparation = requireReadOnly || phaseReadOnly ? nil : PreparationIntent.detect(TaskWorkflow.preparationRequest(owner: ownerPrompt, stagePrompt: prompt))
+    let objectiveRequest = TaskWorkflow.objectiveRequest(owner: ownerPrompt, executionPrompt: prompt)
+    let scopeResolution = ScopeResolution.resolve(objectiveRequest)
+    let preparation = requireReadOnly ? nil : PreparationIntent.detect(TaskWorkflow.preparationRequest(owner: ownerPrompt, stagePrompt: prompt))
     let kind: TaskContext.ObjectiveKind = preparation.map {
         $0.modifies ? .modify : ($0.kind == .explainFromContext ? .explain : .prepare)
-    } ?? TaskContext.ObjectiveKind.classify(prompt)
+    } ?? TaskContext.ObjectiveKind.classify(objectiveRequest)
     // The dispatcher delegates execution capability, not guessed intent.
     // Original task text/prohibitions remain binding for both backends.
     let internalReadOnly = requireReadOnly
     let resolvedScope = ScopeResolution.delegationScope(internalReadOnly: internalReadOnly)
-    if taskState.objective.requestText != prompt || taskState.objective.kind != kind || taskState.objective.scope != resolvedScope {
-        taskState.setObjective(TaskContext.Objective(requestText: prompt, kind: kind,
+    if taskState.objective.requestText != objectiveRequest || taskState.objective.kind != kind || taskState.objective.scope != resolvedScope {
+        taskState.setObjective(TaskContext.Objective(requestText: objectiveRequest, kind: kind,
             scope: resolvedScope, prohibitions: scopeResolution.prohibitions), now: objectiveStartedAt)
     }
     let config = try RuntimeConfig.load()
@@ -6396,11 +6492,11 @@ func runTask(
         if heldOS1SourceRoot.map({ URL(fileURLWithPath: $0).resolvingSymlinksInPath().standardizedFileURL.path }) != URL(fileURLWithPath: os1Root).resolvingSymlinksInPath().standardizedFileURL.path { os1SourceLease = try acquireOS1SourceWriteLease(root: os1Root) }
         os1StartHead = gitHead(os1Root)
     }
-    let pinnedEvidence = try (requireReadOnly || phaseReadOnly || !requestsFreshSource(prompt)) ? attachedSource.map { try loadSource($0) } : nil
+    let pinnedEvidence = try (requireReadOnly || !requestsFreshSource(prompt)) ? attachedSource.map { try loadSource($0) } : nil
     let discussesPinnedProvenance = pinnedEvidence != nil && RegisteredProjectSource.discussesAttachedProvenance(prompt)
     let sourceSelectionContext = SCVProjectMaterials.isVerificationMode(pinnedEvidence?.verificationMode) &&
         !qmGRMaterialRequested(prompt) ? nil : context
-    var r2Objective = requireReadOnly || phaseReadOnly || discussesPinnedProvenance ? nil : resolveR2RetrievalObjective(prompt: TaskWorkflow.preparationRequest(owner: ownerPrompt, stagePrompt: prompt), context: sourceSelectionContext)
+    var r2Objective = requireReadOnly || discussesPinnedProvenance ? nil : resolveR2RetrievalObjective(prompt: TaskWorkflow.preparationRequest(owner: ownerPrompt, stagePrompt: prompt), context: sourceSelectionContext)
     // Work preparation is a task capability: an aliased project ("인스타",
     // "instagram") or the conversation's bound project selects the adapter.
     // A bare "준비해" without a project resolves to nothing and stays a normal
@@ -6435,7 +6531,7 @@ func runTask(
     RuntimeActivity.emit(.source)
     // Pasted OS-1 output ("Claude 연결됨", login notices) is context, not a
     // request to open a login; classify the user's own words only.
-    if !requireReadOnly, !phaseReadOnly, !discussesPinnedProvenance, !requestsR2Retrieval,
+    if !requireReadOnly, !discussesPinnedProvenance, !requestsR2Retrieval,
        let targets = connectionControlTargets(OS1SelfOutput.stripQuoted(prompt)) {
         var summary = try runConnectionControl(targets)
         summary.sourceContext = attachedSource
@@ -6657,9 +6753,9 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
         languageDirective: userSettings.outputLanguageDirective)
     // The quoted original operation is context, not a second execute request.
     // Keep this new review's task identity distinct while retaining all source
-    // and full-input accounting and hard-enforcing its signed read-only scope.
+    // and full-input accounting without downgrading backend capability.
     let routingTask = ScopeResolution.delegationRoutingObjective(
-        routingTaskOverride ?? (requireReadOnly ? readOnlyStatusRoutingTask
+        routingTaskOverride ?? (requireReadOnly ? statusReconciliationRoutingTask
             : sourceAwareRoutingTask(prompt, evidence: r2Evidence)), internalReadOnly: internalReadOnly)
     let feedbackStore = CompletionFeedbackStore()
     func instructionFeedbackScope(_ instructions: String, input: String, codexID: String?, claudeID: String?) -> CompletionFeedbackScope {
@@ -6667,7 +6763,7 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
             executorContractSHA256: config.executorContract.sha256,
             assembledInputSHA256: CompletionFeedbackScope.inputDigest(assembledInput: input,
                 codexSessionID: codexID, claudeSessionID: claudeID, workspace: canonicalWorkspace,
-                revision: CompletionFeedbackScope.validationRevision + "/" + DriftScope.digest(instructions)))
+                revision: CompletionFeedbackScope.validationRevision + "/" + DriftScope.digest(instructions) + "/" + (OwnerPolicyContext.snapshot?.projectionSHA256 ?? "no-owner-policy")))
     }
     let initialCorrections = try? DriftPolicyStore().preview(
         scope: driftScope(prompt: prompt, workspace: canonicalWorkspace, evidence: r2Evidence, contract: config.executorContract),
@@ -6685,7 +6781,7 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
     }
     var inputContext = try executionInputContext(prompt: prompt, assembled: localPrompt,
         history: context, evidence: r2Evidence, config: config)
-    inputContext.executionPermissionProfile = internalReadOnly ? "read_only" : "workspace_write"
+    inputContext.executionPermissionProfile = "workspace_write"
     inputContext.availableClaudeModels = claudeCatalog
     if feedbackSupported {
         inputContext.completionFeedback = try ((try? feedbackStore.load(scope: feedbackScope)) ??
@@ -6705,7 +6801,7 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
     let request = StartExecutionRequest(
         task: routingTask,
         providerPreference: try executableProviderPreference(requested: routedPreference,
-            prompt: requireReadOnly || phaseReadOnly ? routingTask : prompt, codexAvailable: !codexCatalog.models.isEmpty,
+            prompt: requireReadOnly ? routingTask : prompt, codexAvailable: !codexCatalog.models.isEmpty,
             claudeAvailable: hasClaudeExecutable, localAvailable: publicDeterministicExpression(prompt) != nil,
             evidenceSupplied: r2Evidence != nil, scope: resolvedScope,
             codexUnavailableReason: codexCatalog.models.isEmpty ? codexCatalog.source : nil),
@@ -6748,7 +6844,7 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
     // verifier, not the model retry loop, decides whether a bounded repair is
     // warranted; uncertain writes must never be replayed implicitly.
     let attemptLimit = workflowStage == .implementation ? 1 :
-        (requireReadOnly || phaseReadOnly ? min(2, config.maximumSteps) : config.maximumSteps)
+        (requireReadOnly ? min(2, config.maximumSteps) : config.maximumSteps)
     for step in 1...attemptLimit {
         if ExecutionCancellation.isCancelled { throw OS1Error.backendBlocked(.cancelled) }
         if route.status == "complete" {
@@ -6767,6 +6863,7 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
                 ?? "OS-1 verification rejected the result after governed retries")
         }
         guard let ticket = route.ticket else { throw OS1Error.message("Invalid OS-1 route response") }
+        try OwnerPolicyContext.snapshot?.verifyOriginal()
         try verifyTicket(ticket, config: config)
         // The delegated capability envelope, including explicit internal review restrictions, is
         // the authority floor. Every ticket is checked, including retries and
@@ -7189,6 +7286,7 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
             if let failure = attemptFailure, failure.hasPrefix(selfRepairFailurePrefix) { throw OS1Error.message(failure) }
             throw OS1Error.message("서버의 완료 판정과 실제 실행 증거가 일치하지 않아 결과를 채택하지 않았습니다. 요청과 원본은 보존했습니다.")
         }
+        try OwnerPolicyContext.snapshot?.verifyOriginal()
         let revasDisposition = route.status == "complete" && locallyAdoptable ? "adopted" : (route.ticket == nil ? "rejected" : "retry")
         recordDriftAdoption(execution, ticket: ticket, localPassed: locallyAdoptable,
             adopted: revasDisposition == "adopted")
@@ -7621,9 +7719,9 @@ func selfTest() throws {
           compactResultText.count < completeResultText.count else {
         throw OS1Error.message("Complete source JSON projection must preserve the final result gate")
     }
-    guard ScopeResolution.resolve(readOnlyStatusRoutingTask).scope == .readOnly,
-          !["modify", "write", "deploy", "reset"].contains(where: readOnlyStatusRoutingTask.lowercased().contains) else {
-        throw OS1Error.message("Status review must route affirmative read-only intent without negated mutation triggers")
+    guard ScopeResolution.delegationScope(internalReadOnly: true) == .workspaceWrite,
+          !statusReconciliationRoutingTask.lowercased().contains("read-only") else {
+        throw OS1Error.message("Reconciliation must retain executable delegation without imposing read-only capability")
     }
     // Negation must survive source projection; commas and conjunctions do not
     // authorize dropping the negative prefix or inventing positive actions.

@@ -19,8 +19,8 @@ func runTaskContextFixtures(root: URL) throws {
         let route = ScopeResolution.delegationRoutingObjective(request, internalReadOnly: false)
         try check(route == OwnerIntentText.authorityText(request), "capability does not rewrite semantic task")
     }
-    try check(ScopeResolution.delegationScope(internalReadOnly: true) == .readOnly, "internal review remains restricted")
-    try check(ScopeResolution.delegationRoutingObjective("modify files", internalReadOnly: true).hasPrefix("Read-only inspection"), "explicit review envelope")
+    try check(ScopeResolution.delegationScope(internalReadOnly: true) == .workspaceWrite, "review receives execution capability")
+    try check(ScopeResolution.delegationRoutingObjective("modify files", internalReadOnly: true) == "modify files", "review does not inject read-only envelope")
     for stage in TaskWorkflow.allCases {
         try check(stage.executionPermissionProfile == "workspace_write", "workflow stage retains executable capability")
     }
