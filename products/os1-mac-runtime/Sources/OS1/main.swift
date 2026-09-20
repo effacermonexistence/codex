@@ -3582,9 +3582,10 @@ private func preparedStateBundle(_ evidence: R2EvidenceBundle, context: TaskCont
         contentAnchors: evidence.contentAnchors, projectBaseline: evidence.projectBaseline ?? context.project)
 }
 
-private func r2RetrievalEvidence(_ prompt: String, context: String? = nil, objective decided: R2RetrievalObjective? = nil,
+private func r2RetrievalEvidence(_ prompt: String, context: String? = nil, objective decided: R2RetrievalObjective?,
                                  scvLive: SCVLiveRelease? = nil) throws -> R2EvidenceBundle? {
-    guard let objective = decided ?? resolveR2RetrievalObjective(prompt: prompt, context: context) else { return nil }
+    // A nil owner decision is authoritative, not a request to classify generated handoff text.
+    guard let objective = decided else { return nil }
     guard !protectedRouteMaterialRequested(prompt, context: context) else {
         throw OS1Error.message("OS-1 protected route material cannot enter a model evidence channel")
     }
@@ -5852,7 +5853,7 @@ func runLocalTask(
     if sourceStatusRequested(prompt, context: context) {
         return try runSourceStatusControl(config: config)
     }
-    let r2Evidence = try r2RetrievalEvidence(prompt, context: context)
+    let r2Evidence = try r2RetrievalEvidence(prompt, context: context, objective: r2Objective)
     if let r2Objective, !r2Objective.requiresTransformation, let r2Evidence {
         var summary = try runR2RetrievalControl(r2Evidence, objective: r2Objective, startedAt: objectiveStartedAt)
         summary.sourceContext = try persistSource(r2Evidence)
@@ -6426,7 +6427,8 @@ func runTaskWithOwnerPolicy(
 ) async throws -> RunSummary {
     RuntimeActivity.emit(.preparing)
     let handoff = try SessionHandoff.decode(context)
-    let sourceDetached = detachesConversationSource(prompt)
+    let objectiveRequest = TaskWorkflow.objectiveRequest(owner: ownerPrompt, executionPrompt: prompt)
+    let sourceDetached = detachesConversationSource(objectiveRequest)
     let context: String? = sourceDetached || handoff.transcript.isEmpty ? nil : handoff.transcript
     let attachedSource = sourceDetached ? nil : handoff.source
     let objectiveStartedAt = Date()
@@ -6445,7 +6447,6 @@ func runTaskWithOwnerPolicy(
     var taskState = handoff.taskContext ?? TaskContext.migrated(conversationID: UUID(), request: prompt, workspace: workspace,
         sourceContext: attachedSource, codexSessionID: codexSessionID, claudeSessionID: claudeSessionID, now: objectiveStartedAt)
     if sourceDetached { taskState.sources.removeAll(); taskState.touch(now: objectiveStartedAt) }
-    let objectiveRequest = TaskWorkflow.objectiveRequest(owner: ownerPrompt, executionPrompt: prompt)
     let scopeResolution = ScopeResolution.resolve(objectiveRequest)
     let preparation = requireReadOnly ? nil : PreparationIntent.detect(TaskWorkflow.preparationRequest(owner: ownerPrompt, stagePrompt: prompt))
     let kind: TaskContext.ObjectiveKind = preparation.map {
@@ -6492,10 +6493,10 @@ func runTaskWithOwnerPolicy(
         if heldOS1SourceRoot.map({ URL(fileURLWithPath: $0).resolvingSymlinksInPath().standardizedFileURL.path }) != URL(fileURLWithPath: os1Root).resolvingSymlinksInPath().standardizedFileURL.path { os1SourceLease = try acquireOS1SourceWriteLease(root: os1Root) }
         os1StartHead = gitHead(os1Root)
     }
-    let pinnedEvidence = try (requireReadOnly || !requestsFreshSource(prompt)) ? attachedSource.map { try loadSource($0) } : nil
-    let discussesPinnedProvenance = pinnedEvidence != nil && RegisteredProjectSource.discussesAttachedProvenance(prompt)
+    let pinnedEvidence = try (requireReadOnly || !requestsFreshSource(objectiveRequest)) ? attachedSource.map { try loadSource($0) } : nil
+    let discussesPinnedProvenance = pinnedEvidence != nil && RegisteredProjectSource.discussesAttachedProvenance(objectiveRequest)
     let sourceSelectionContext = SCVProjectMaterials.isVerificationMode(pinnedEvidence?.verificationMode) &&
-        !qmGRMaterialRequested(prompt) ? nil : context
+        !qmGRMaterialRequested(objectiveRequest) ? nil : context
     var r2Objective = requireReadOnly || discussesPinnedProvenance ? nil : resolveR2RetrievalObjective(prompt: TaskWorkflow.preparationRequest(owner: ownerPrompt, stagePrompt: prompt), context: sourceSelectionContext)
     // Work preparation is a task capability: an aliased project ("인스타",
     // "instagram") or the conversation's bound project selects the adapter.
@@ -6517,10 +6518,10 @@ func runTaskWithOwnerPolicy(
             requiresTransformation: preparation.modifies || preparation.kind == .explainFromContext,
             materialKind: .scvProject, requestSHA256: sha256Hex(Data(prompt.utf8)), contextSHA256: nil)
     }
-    if protectedRouteMaterialRequested(prompt, context: context) || protectedRouteMaterialInEvidence(prompt) {
+    if protectedRouteMaterialRequested(objectiveRequest, context: context) || protectedRouteMaterialInEvidence(objectiveRequest) {
         return try runProtectedRouteMaterialControl()
     }
-    if sourceStatusRequested(prompt, context: context) {
+    if sourceStatusRequested(objectiveRequest, context: context) {
         var summary = try runSourceStatusControl(config: config)
         summary.sourceContext = attachedSource
         summary.taskContext = taskState
@@ -6532,7 +6533,7 @@ func runTaskWithOwnerPolicy(
     // Pasted OS-1 output ("Claude 연결됨", login notices) is context, not a
     // request to open a login; classify the user's own words only.
     if !requireReadOnly, !discussesPinnedProvenance, !requestsR2Retrieval,
-       let targets = connectionControlTargets(OS1SelfOutput.stripQuoted(prompt)) {
+       let targets = connectionControlTargets(OS1SelfOutput.stripQuoted(objectiveRequest)) {
         var summary = try runConnectionControl(targets)
         summary.sourceContext = attachedSource
         summary.taskContext = taskState
@@ -6557,14 +6558,14 @@ func runTaskWithOwnerPolicy(
     // Once attached, source delivery does not depend on spelling, pronouns,
     // immediately preceding USER text, backend identity, or transcript limits.
     // Explicit/new retrieval still executes a real R2 read and replaces it.
-    let explicitRemoteSource = !discussesPinnedProvenance && !RegisteredProjectSource.mayUseForPreparation(prompt)
+    let explicitRemoteSource = !discussesPinnedProvenance && !RegisteredProjectSource.mayUseForPreparation(objectiveRequest)
     let localAttachedForRemote = explicitRemoteSource && pinnedEvidence?.verificationMode == RegisteredProjectSource.verificationMode
-    let preparedAlready = scvPreparation && scvAttached && !requestsFreshSource(prompt) && !localAttachedForRemote
-    let mayContinueSource = r2Objective == nil || preparedAlready || (r2Objective!.requiresTransformation && !requestsFreshSource(prompt))
+    let preparedAlready = scvPreparation && scvAttached && !requestsFreshSource(objectiveRequest) && !localAttachedForRemote
+    let mayContinueSource = r2Objective == nil || preparedAlready || (r2Objective!.requiresTransformation && !requestsFreshSource(objectiveRequest))
     let attachedEvidence = mayContinueSource && !(scvPreparation && !scvAttached) ? pinnedEvidence : nil
-    let repairedSource = !requireReadOnly && repairsMismatchedResearchSource(prompt, context: context, evidence: attachedEvidence)
+    let repairedSource = !requireReadOnly && repairsMismatchedResearchSource(objectiveRequest, context: context, evidence: attachedEvidence)
     let reuseSource = requireReadOnly || discussesPinnedProvenance || preparedAlready ||
-        (!localAttachedForRemote && !repairedSource && reusesAttachedEvidence(prompt, objective: r2Objective, evidence: attachedEvidence))
+        (!localAttachedForRemote && !repairedSource && reusesAttachedEvidence(objectiveRequest, objective: r2Objective, evidence: attachedEvidence))
     let r2Evidence: R2EvidenceBundle?
     if repairedSource {
         _ = try verifyR2Connection()
@@ -6583,7 +6584,7 @@ func runTaskWithOwnerPolicy(
                         RuntimeActivity.emit(.source, publicText: "등록 원본 검증을 통과하지 못해 GitHub·R2의 동일 운영 원본을 확인합니다.")
                     }
                 }
-                r2Evidence = try registered ?? r2RetrievalEvidence(prompt, context: sourceSelectionContext, objective: r2Objective, scvLive: scvLive)
+                r2Evidence = try registered ?? r2RetrievalEvidence(objectiveRequest, context: sourceSelectionContext, objective: r2Objective, scvLive: scvLive)
             }
         } catch {
             guard scvPreparation, let scvLive else { throw error }
@@ -6748,6 +6749,7 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
             os1Executable: currentOS1Executable())
     }
     let sourcePayload = try retainedSourcePayload(taskContext, primary: sourceContext, evidence: r2Evidence)
+    if resolvedScope == .workspaceWrite { workspaceContext += "\n" + ManagedPreview.capabilityCard }
     let localPrompt = try providerPrompt(current: prompt, context: repairedContext,
         r2Evidence: sourcePayload, taskContext: taskContext.handoffBlock(), workspaceContext: workspaceContext,
         languageDirective: userSettings.outputLanguageDirective)
@@ -7174,6 +7176,17 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
                 terminalPermissionFailure = OS1Error.message(note)
             }
         }
+        // Observe delivered loopback URLs outside the provider process. Never
+        // adopt a dead preview just because files or the model response exist.
+        if attemptFailure == nil, execution.artifact.exitCode == 0,
+           ManagedPreview.shouldCheckDelivery(objective: objectiveRequest, output: execution.artifact.output,
+               workspaceWrite: resolvedScope == .workspaceWrite, architecture: workflowStage == .architecture) {
+            if let failure = await ManagedPreview.deliveryFailure(output: execution.artifact.output) {
+                attemptFailure = failure
+                execution = execution.appendingOutput("\nOS1_DELIVERY_BLOCK: " + failure)
+                terminalPermissionFailure = OS1Error.message(failure)
+            }
+        }
         let artifact = execution.artifact
         let artifactData = try JSONEncoder().encode(artifact)
         let resultHash = sha256Hex(artifactData)
@@ -7592,6 +7605,18 @@ func steeringProtocolSelfTest() throws {
 }
 
 func selfTest() throws {
+    try ManagedPreview.selfTest()
+    let poisonedStage = "R2 원본을 새로 가져와 로그인해. QMGR 자료를 검색해."
+    guard try r2RetrievalEvidence(poisonedStage, objective: nil) == nil else {
+        throw OS1Error.message("nil owner retrieval decision reclassified stage handoff")
+    }
+    let ownerWebsite = "U-SUNG 웹사이트를 만들어"
+    guard TaskWorkflow.objectiveRequest(owner: ownerWebsite, executionPrompt: poisonedStage) == ownerWebsite,
+          resolveR2RetrievalObjective(prompt: ownerWebsite, context: nil) == nil,
+          resolveR2RetrievalObjective(prompt: "R2에서 QMGR 자료 가져와", context: nil) != nil else {
+        throw OS1Error.message("owner source authority regression")
+    }
+
     // Fixtures assert exact Korean runtime wording; pin the language so the
     // user's own interface-language setting cannot flip the expectations.
     setenv("OS1_INTERFACE_LANGUAGE", "ko", 1)
@@ -9562,6 +9587,7 @@ struct OS1Main {
             if try await selfUpdateCommand(arguments) { return }
             if try await selfRepairCommand(arguments) { return }
             if try await fleetCommand(arguments) { return }
+            if try await ManagedPreview.command(arguments) { return }
             switch command {
             case "version", "--version", "-V": print(os1RuntimeVersionString)
             case "doctor": try doctor()
