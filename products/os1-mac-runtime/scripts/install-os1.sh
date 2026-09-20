@@ -89,11 +89,11 @@ verify_unnotarized_beta_package() {
     echo "OS-1 beta verification found missing component metadata." >&2
     return 1
   }
-  [[ "$(find "$component_root" -type f -print | wc -l | tr -d ' ')" == "21" ]] || {
+  [[ "$(find "$component_root" -type f -print | wc -l | tr -d ' ')" == "22" ]] || {
     echo "OS-1 beta verification found an unexpected component file count." >&2
     return 1
   }
-  [[ "$(find "$payload_root" -type f -print | wc -l | tr -d ' ')" == "18" ]] || {
+  [[ "$(find "$payload_root" -type f -print | wc -l | tr -d ' ')" == "19" ]] || {
     echo "OS-1 beta verification found an unexpected payload file count." >&2
     return 1
   }
@@ -127,6 +127,7 @@ verify_unnotarized_beta_package() {
     case "$relative_path" in
       "Applications/OS-1 CLODEX.app/Contents/MacOS/OS1App"|\
       "Applications/OS-1 CLODEX.app/Contents/Resources/os1"|\
+      "Applications/OS-1 CLODEX.app/Contents/Resources/sync-owner-policy.py"|\
       "Applications/OS-1 CLODEX.app/Contents/Resources/OmarAGI.png"|\
       "Applications/OS-1 CLODEX.app/Contents/Resources/Codex.png"|\
       "Applications/OS-1 CLODEX.app/Contents/Resources/ClaudeCode.png"|\

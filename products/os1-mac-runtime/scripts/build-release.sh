@@ -292,6 +292,11 @@ printf '{"version":"%s","object_key":"os1/releases/%s/OS-1-%s.pkg","sha256":"%s"
   "$version" "$version" "$version" "$package_sha256" "$package_size" \
   > "$output_dir/latest.json"
 
+# Exercise the exact beta installer before publishing a development artifact.
+if [[ "$release_mode" == "development" ]]; then
+  python3 "$runtime_root/scripts/test-beta-owner-policy.py" "$final_pkg" "$output_dir/latest.json"
+fi
+
 echo "Release package: $final_pkg"
 echo "Release manifest: $output_dir/latest.json"
 echo "Release mode: $release_mode"

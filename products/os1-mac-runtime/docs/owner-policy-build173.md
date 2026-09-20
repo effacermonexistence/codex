@@ -71,3 +71,13 @@ build → installer preservation gates → installed artifact equality and nativ
 receipt. ReAct (https://arxiv.org/abs/2210.03629) and intrinsic self-correction limits
 (https://arxiv.org/abs/2310.01798) informed the observation/verification discipline;
 those papers are not execution evidence or a guarantee of reliability.
+
+## Release-verifier repair
+
+The first CI build exposed the beta installer's stale 18-file payload allowlist.
+The helper makes the payload 19 files (22 including component metadata). The exact
+helper path is now allowed without relaxing unknown-file or signature rejection.
+`test-beta-owner-policy.py` runs the actual verification-only installer: the signed
+build173 package passes, a same-file-count helper rename fails the allowlist, and
+helper content mutation fails signed-resource integrity, even with updated outer
+package checksums. The same regression is wired into Mac release CI.
