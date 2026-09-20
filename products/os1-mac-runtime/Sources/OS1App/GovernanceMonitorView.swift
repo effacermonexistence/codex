@@ -32,6 +32,9 @@ struct GovernanceMonitorView: View {
     private var tasks: [GovernanceTask] { filtered.selectedTasks(since: since) }
     private var terminal: [GovernanceTask] { tasks.filter(\.isTerminal) }
     private var rows: [GovernanceRoute] { filtered.routes(since: since, includeHistorical: since == nil) }
+    private var measuredRows: [GovernanceRoute] { rows.filter { $0.measuredAttempts > 0 }.prefix(8).map { $0 } }
+    private var baselineRow: GovernanceRoute? { rows.first { $0.id == baseline } }
+    private var maxMeanTokens: Double { max(1, measuredRows.compactMap(\.meanTokens).max() ?? 1) }
     private var samples: [(String, CompletionFeedbackObservation)] { filtered.samples(since: since, includeHistorical: since == nil) }
     private var usage: [Int] { samples.compactMap { GovernanceSnapshot.tokens($0.1) } }
     private var completed: Int { terminal.filter(\.isAdopted).count }
@@ -74,6 +77,7 @@ struct GovernanceMonitorView: View {
                     controls
                     metrics
                     liveRow
+                    tokenActivityPanel
                     HStack(alignment: .top, spacing: 14) {
                         tokenChart.frame(maxWidth: .infinity)
                         completionChart.frame(maxWidth: .infinity)
@@ -164,6 +168,63 @@ struct GovernanceMonitorView: View {
                 Text("종료 영수증 대기 \(tasks.filter { !$0.isTerminal }.count)건 · 중단·미확정 기록은 완수로 계산하지 않습니다.").font(.system(size: 10)).foregroundStyle(muted)
             }
         }.padding(13).background(green.opacity(0.045), in: RoundedRectangle(cornerRadius: 10))
+    }
+    private var tokenActivityPanel: some View {
+        panel("Token Activity · 실시간", subtitle: "Activity Monitor처럼 2초마다 갱신 · 입력+출력 실측 토큰 · 기준 경로: \(baseline.isEmpty ? "미선택" : short(baseline))") {
+            if measuredRows.isEmpty {
+                HStack(spacing: 10) {
+                    Image(systemName: "chart.bar.xaxis").foregroundStyle(pink)
+                    Text("실측 토큰이 들어오면 모델별 막대와 완료율이 여기에 표시됩니다. 추정 토큰은 넣지 않습니다.")
+                        .font(.system(size: 11)).foregroundStyle(muted)
+                }.padding(.vertical, 8)
+            } else {
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack(spacing: 10) {
+                        metricPill("측정 호출", num(measuredRows.reduce(0) { $0 + $1.measuredAttempts }), green)
+                        metricPill("총 실측 토큰", num(measuredRows.reduce(0) { $0 + $1.tokens }), pink)
+                        metricPill("기준 완료율", percent(baselineRow?.completionRate), .white)
+                        Spacer()
+                        Text("paired 절감은 동일 요청 묶음이 있을 때만 표시")
+                            .font(.system(size: 10)).foregroundStyle(muted)
+                    }
+                    ForEach(measuredRows) { row in
+                        tokenActivityRow(row)
+                    }
+                }
+            }
+        }
+    }
+    private func metricPill(_ title: String, _ value: String, _ color: Color) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(title).font(.system(size: 9)).foregroundStyle(muted)
+            Text(value).font(.system(size: 13, weight: .semibold, design: .monospaced)).foregroundStyle(color)
+        }.padding(.horizontal, 10).padding(.vertical, 7)
+            .background(Color.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 8))
+    }
+    private func tokenActivityRow(_ row: GovernanceRoute) -> some View {
+        let mean = row.meanTokens ?? 0
+        let comparison = comparisons.first { $0.id == row.id }
+        let bar = min(1, max(0.02, mean / maxMeanTokens))
+        let isBaseline = row.id == baseline
+        return VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 10) {
+                Circle().fill(isBaseline ? .white : (row.id.hasPrefix("claude") ? pink : green)).frame(width: 7, height: 7)
+                Text(short(row.id)).font(.system(size: 11, weight: .medium)).lineLimit(1)
+                if isBaseline { Text("BASELINE").font(.system(size: 8, weight: .bold, design: .monospaced)).foregroundStyle(.white.opacity(0.7)) }
+                Spacer()
+                Text("평균 \(num(Int(mean))) tok").font(.system(size: 11, design: .monospaced)).monospacedDigit()
+                Text("완료 \(percent(row.completionRate))").font(.system(size: 10, design: .monospaced)).foregroundStyle(muted)
+                Text(comparison.map { "절감 \(delta($0.tokenSavings))" } ?? "paired —")
+                    .font(.system(size: 10, design: .monospaced)).foregroundStyle(comparison?.tokenSavings.map { $0 >= 0 ? green : pink } ?? muted)
+            }
+            GeometryReader { proxy in
+                ZStack(alignment: .leading) {
+                    Capsule().fill(Color.white.opacity(0.07))
+                    Capsule().fill(isBaseline ? Color.white.opacity(0.55) : (row.id.hasPrefix("claude") ? pink : green))
+                        .frame(width: max(8, proxy.size.width * bar))
+                }
+            }.frame(height: 7)
+        }.padding(.vertical, 2)
     }
     private func panel<Content: View>(_ title: String, subtitle: String, @ViewBuilder content: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: 12) {
