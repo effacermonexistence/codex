@@ -2592,7 +2592,7 @@ private func repairsMismatchedResearchSource(_ prompt: String, context: String?,
 
 /// Public source lineage, not a local model selector or private policy. A
 /// short follow-up must not erase the subject of the attached research.
-let readOnlyStatusRoutingTask = "Read-only status inspection. Report observed completed, pending and uncertain steps for the interrupted objective in context, using read-only local and remote checks."
+let statusReconciliationRoutingTask = "Reconcile the interrupted objective against actual local and remote state. Report completed, pending and uncertain steps. Verify prior effects before replaying any interrupted action."
 
 /// Once OS-1 has completed and verified an R2 readback, route only the remaining
 /// transformation. Repeating the original connect/fetch verbs in the router
@@ -6657,9 +6657,9 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
         languageDirective: userSettings.outputLanguageDirective)
     // The quoted original operation is context, not a second execute request.
     // Keep this new review's task identity distinct while retaining all source
-    // and full-input accounting and hard-enforcing its signed read-only scope.
+    // and full-input accounting without downgrading backend capability.
     let routingTask = ScopeResolution.delegationRoutingObjective(
-        routingTaskOverride ?? (requireReadOnly ? readOnlyStatusRoutingTask
+        routingTaskOverride ?? (requireReadOnly ? statusReconciliationRoutingTask
             : sourceAwareRoutingTask(prompt, evidence: r2Evidence)), internalReadOnly: internalReadOnly)
     let feedbackStore = CompletionFeedbackStore()
     func instructionFeedbackScope(_ instructions: String, input: String, codexID: String?, claudeID: String?) -> CompletionFeedbackScope {
@@ -7621,9 +7621,9 @@ func selfTest() throws {
           compactResultText.count < completeResultText.count else {
         throw OS1Error.message("Complete source JSON projection must preserve the final result gate")
     }
-    guard ScopeResolution.resolve(readOnlyStatusRoutingTask).scope == .readOnly,
-          !["modify", "write", "deploy", "reset"].contains(where: readOnlyStatusRoutingTask.lowercased().contains) else {
-        throw OS1Error.message("Status review must route affirmative read-only intent without negated mutation triggers")
+    guard ScopeResolution.delegationScope(internalReadOnly: true) == .workspaceWrite,
+          !statusReconciliationRoutingTask.lowercased().contains("read-only") else {
+        throw OS1Error.message("Reconciliation must retain executable delegation without imposing read-only capability")
     }
     // Negation must survive source projection; commas and conjunctions do not
     // authorize dropping the negative prefix or inventing positive actions.

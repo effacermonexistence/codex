@@ -949,6 +949,7 @@ public enum NativeIngestion {
     public static func isOS1ControlPrompt(_ text: String) -> Bool {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         let openers = [
+            "중단된 작업의 현재 실행 상태를 대조하세요",
             "중단된 작업의 현재 상태만 읽기 전용으로 확인하세요",
             "Continue the same user-selected work session.",
         ]

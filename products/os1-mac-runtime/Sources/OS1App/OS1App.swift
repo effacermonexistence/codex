@@ -951,7 +951,7 @@ private func parallelInteractionSelfTest() async throws {
         }
         return AppRunSummary(status: "complete", steps: [AppRunStep(sequence: 1, provider: "codex",
             action: "test", model: "fixture", effort: "low", revasDisposition: "adopted", sessionID: UUID().uuidString,
-            permissionProfile: "read_only", exitCode: 0, output: "verified readback only", stderr: "", durationMS: 120, nativeRecord: nil)],
+            permissionProfile: "workspace_write", exitCode: 0, output: "verified readback only", stderr: "", durationMS: 120, nativeRecord: nil)],
             taskContext: returnedContext)
     })
     let recoveryID = recoveryStore.selectedSessionID!
@@ -1458,7 +1458,7 @@ private func replacementInteractionSelfTest() async throws {
         try check(!store.isRunning && store.queuedSubmissions.count == 1 && !store.canAdvanceQueued(store.queuedSubmissions[0]),
             "unknown previous mutation bypassed")
         try check(store.canReconcileQueued(store.queuedSubmissions[0]), "uncertain queue has no safe inspection action")
-        try check(store.queueActionLabel(store.queuedSubmissions[0]).contains("읽기 전용"), "inspection mislabeled as steering")
+        try check(store.queueActionLabel(store.queuedSubmissions[0]).contains("상태 확인"), "inspection mislabeled as steering")
         let held = store.queuedSubmissions[0]
         let beforeReadback = starts.count
         store.advanceQueued(held.id)
@@ -4794,7 +4794,7 @@ private final class SessionStore: ObservableObject {
     func queueActionLabel(_ item: PendingSubmission) -> String {
         if canSteerQueued(item) { return "현재 작업에 반영" }
         if activeRuns[item.sessionID]?.cancellationRequested == true { return "현재 실행 종료 확인 중" }
-        if !canAdvanceQueued(item) { return canReconcileQueued(item) ? "이전 변경을 읽기 전용으로 확인 · 대기 요청 보존" : "이전 변경 상태 확인 필요" }
+        if !canAdvanceQueued(item) { return canReconcileQueued(item) ? "이전 변경 상태 확인 · 대기 요청 보존" : "이전 변경 상태 확인 필요" }
         return isSessionRunning(item.sessionID) ? "현재 작업을 중지하고 이 요청부터 시작" : "이 요청부터 시작"
     }
 
@@ -5116,9 +5116,8 @@ private final class SessionStore: ObservableObject {
                     sessions[target].lastCompletedMonitorTaskID = monitorTaskID
                     sessions[target].lastCompletedAt = Date()
                 }
-                guard submission.readOnlyReconciliation != true || visibleSteps.allSatisfy({ $0.permissionProfile == "read_only" }) else {
-                    throw RunnerError.message("상태 확인 요청에 변경 권한이 사용되어 결과를 채택하지 않았습니다.")
-                }
+                // Reconciliation constrains the requested action, not backend capability.
+                // Native permissions remain authoritative; write capability is not a write effect.
                 if submission.provider != .auto,
                    visibleSteps.contains(where: {
                        $0.provider != submission.provider.rawValue &&
@@ -9961,7 +9960,7 @@ private struct ConversationQueueView: View {
             if store.activeRuns[session.id]?.cancellationRequested == true || session.lastFailure != nil {
                 Text(store.activeRuns[session.id]?.cancellationRequested == true
                     ? "실행이 끝나는 대로 선택한 요청을 시작합니다"
-                    : "이전 작업과 대기 요청은 보존됩니다. 화살표로 실행하거나, 변경 상태가 불확실하면 먼저 읽기 전용 확인을 진행합니다.")
+                    : "이전 작업과 대기 요청은 보존됩니다. 화살표로 실행하거나, 변경 상태가 불확실하면 먼저 실제 변경 상태를 확인합니다.")
                     .font(.system(size: 11)).foregroundStyle(Theme.muted)
                     .fixedSize(horizontal: false, vertical: true)
             }
