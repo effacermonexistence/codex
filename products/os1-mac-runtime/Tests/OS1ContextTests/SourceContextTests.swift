@@ -36,6 +36,8 @@ final class SourceContextTests {
             print(String(data: try JSONEncoder().encode(issues), encoding: .utf8)!)
             if !issues.isEmpty { exit(1) }; return
         }
+        try runOwnerPolicyFixtures()
+        if CommandLine.arguments.contains("--owner-policy-only") { return }
         try runExecutionWorkspaceFixtures()
         let suite = SourceContextTests()
         try suite.testSnapshotRoundTripAndRestart()

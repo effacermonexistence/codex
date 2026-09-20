@@ -649,6 +649,8 @@ struct RunStepSummary: Codable {
     let durationMS: Int64
     let nativeRecord: NativeRecordEvidence?
     var workflowStage: String? = nil
+    var ownerPolicySourceSHA256: String? = OwnerPolicyContext.snapshot?.sourceSHA256
+    var ownerPolicyProjectionSHA256: String? = OwnerPolicyContext.snapshot?.projectionSHA256
 
     enum CodingKeys: String, CodingKey {
         case sequence, provider, action, model, effort, output, stderr
@@ -659,6 +661,8 @@ struct RunStepSummary: Codable {
         case durationMS = "duration_ms"
         case nativeRecord = "native_record"
         case workflowStage = "workflow_stage"
+        case ownerPolicySourceSHA256 = "owner_policy_source_sha256"
+        case ownerPolicyProjectionSHA256 = "owner_policy_projection_sha256"
     }
 }
 
@@ -792,6 +796,7 @@ func executorInstructions(contract: ExecutorContract, ticket: Ticket) -> String 
     return """
     OS-1 executor contract \(contract.version)
     \(directives)
+    \(OwnerPolicyContext.instructions)
 
     Assigned execution constraints:
     - backend: \(ticket.provider)
@@ -819,7 +824,7 @@ func claudeExecutorInstructions(
         ? "\nA prior candidate was discarded by OS-1. Process the current user task again from scratch under this configuration."
         : ""
     if recoveringClarificationOnlyCandidate {
-        recovery += "\nThe discarded candidate refused or asked for clarification instead of producing the requested deliverable. Produce the complete best-effort draft now, state reasonable assumptions, and do not ask a question before the draft. If the user's terms have a standard meaning, use that meaning. An open or unsettled problem is not a reason to refuse a requested conceptual schema; label speculative elements accurately. Never mention AskUserQuestion or tool availability."
+        recovery += "\nThe discarded candidate refused or asked for clarification instead of producing the requested deliverable. Produce the complete best-effort draft now, state reasonable assumptions, and do not ask a question before the draft. Preserve the locally established meaning of the user's terms; do not substitute a textbook meaning. An open or unsettled problem is not a reason to refuse a requested conceptual schema; label speculative elements accurately. Never mention AskUserQuestion or tool availability."
     }
     return """
     Execution requirements for the current task.
@@ -827,6 +832,7 @@ func claudeExecutorInstructions(
 
     Execution directives:
     \(directives)
+    \(OwnerPolicyContext.instructions)
 
     Assigned execution constraints:
     - backend: \(ticket.provider)
@@ -6104,6 +6110,9 @@ private func recordRoutingInput(_ request: StartExecutionRequest, ticket: Ticket
         "caller_visible_input_tokens_estimate": (input.inputUTF8Bytes + 2) / 3,
         "basis": "caller_visible_utf8_estimate", "provider_hidden_tokens": NSNull(),
         "cache_tokens": NSNull(), "billed_cost": NSNull(), "source_sha256": source?.sha256 ?? "none",
+        "owner_policy_source_sha256": OwnerPolicyContext.snapshot?.sourceSHA256 ?? "none",
+        "owner_policy_projection_sha256": OwnerPolicyContext.snapshot?.projectionSHA256 ?? "none",
+        "owner_policy_scope": "local preflight, backend instructions, local postflight; remote RCC engine separately pinned",
         "completion_feedback_enabled": input.completionFeedback != nil,
         "completion_feedback_observations": input.completionFeedback?.observations.count ?? 0]
     do {
@@ -6170,6 +6179,34 @@ private func recordCompletionAttempt(store: CompletionFeedbackStore, scope: Comp
 /// Execute one owner objective through bounded, independently adopted stages.
 /// A failed stage is a held task, never permission to replay a write.
 func runWorkflowTask(
+    prompt: String,
+    workspace: String,
+    providerPreference: String,
+    context: String?,
+    codexSessionID: String?,
+    claudeSessionID: String?,
+    codexCapacity: Int,
+    claudeCapacity: Int,
+    progress: Bool,
+    desktopReveal: DesktopRevealMode
+) async throws -> RunSummary {
+    let policy = try loadCurrentOwnerPolicy()
+    return try await OwnerPolicyContext.$snapshot.withValue(policy) {
+        try await runWorkflowTaskWithOwnerPolicy(
+                prompt: prompt,
+                workspace: workspace,
+                providerPreference: providerPreference,
+                context: context,
+                codexSessionID: codexSessionID,
+                claudeSessionID: claudeSessionID,
+                codexCapacity: codexCapacity,
+                claudeCapacity: claudeCapacity,
+                progress: progress,
+                desktopReveal: desktopReveal)
+    }
+}
+
+func runWorkflowTaskWithOwnerPolicy(
     prompt: String,
     workspace: String,
     providerPreference: String,
@@ -6310,7 +6347,66 @@ func runWorkflowTask(
         taskContext: taskState, monitorTaskID: workflowMonitorID)
 }
 
+// Refresh the device owner policy before dispatch; absence is never a silent
+// bypass. A workflow pins one verified version through every stage.
+func loadCurrentOwnerPolicy() throws -> OwnerPolicySnapshot? {
+    if let pinned = OwnerPolicyContext.snapshot { try pinned.verifyOriginal(); return pinned }
+    let root = OwnerPolicySnapshot.defaultRoot
+    let resource = URL(fileURLWithPath: CommandLine.arguments[0]).resolvingSymlinksInPath()
+        .deletingLastPathComponent().appendingPathComponent("sync-owner-policy.py")
+    let helper = FileManager.default.fileExists(atPath: resource.path) ? resource
+        : FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Applications/OS-1 CLODEX.app/Contents/Resources/sync-owner-policy.py")
+    guard FileManager.default.fileExists(atPath: helper.path) else {
+        throw OS1Error.message("거버넌스 정책 동기화 도구가 설치되지 않아 호출하지 않았습니다. 기존 작업은 보존됩니다.")
+    }
+    let (status, _, _) = try commandOutput("/usr/bin/python3", [helper.path], timeout: 50)
+    guard status == 0, let policy = try OwnerPolicySnapshot.load(root: root) else {
+        throw OS1Error.message("최신 거버넌스 원문 확인 또는 무결성 검증에 실패해 모델 호출 전에 보존했습니다.")
+    }
+    return policy
+}
+
 func runTask(
+    prompt: String,
+    workspace: String,
+    providerPreference: String,
+    context: String?,
+    codexSessionID: String?,
+    claudeSessionID: String?,
+    codexCapacity: Int,
+    claudeCapacity: Int,
+    progress: Bool,
+    desktopReveal: DesktopRevealMode = .never,
+    requireReadOnly: Bool = false,
+    routingTaskOverride: String? = nil,
+    workflowStage: TaskWorkflow? = nil,
+    ownerPrompt: String? = nil,
+    monitorTaskIDOverride: String? = nil,
+    heldOS1SourceRoot: String? = nil
+) async throws -> RunSummary {
+    let policy = try loadCurrentOwnerPolicy()
+    return try await OwnerPolicyContext.$snapshot.withValue(policy) {
+        try await runTaskWithOwnerPolicy(
+                prompt: prompt,
+                workspace: workspace,
+                providerPreference: providerPreference,
+                context: context,
+                codexSessionID: codexSessionID,
+                claudeSessionID: claudeSessionID,
+                codexCapacity: codexCapacity,
+                claudeCapacity: claudeCapacity,
+                progress: progress,
+                desktopReveal: desktopReveal,
+                requireReadOnly: requireReadOnly,
+                routingTaskOverride: routingTaskOverride,
+                workflowStage: workflowStage,
+                ownerPrompt: ownerPrompt,
+                monitorTaskIDOverride: monitorTaskIDOverride,
+                heldOS1SourceRoot: heldOS1SourceRoot)
+    }
+}
+
+func runTaskWithOwnerPolicy(
     prompt: String,
     workspace: String,
     providerPreference: String,
@@ -6667,7 +6763,7 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
             executorContractSHA256: config.executorContract.sha256,
             assembledInputSHA256: CompletionFeedbackScope.inputDigest(assembledInput: input,
                 codexSessionID: codexID, claudeSessionID: claudeID, workspace: canonicalWorkspace,
-                revision: CompletionFeedbackScope.validationRevision + "/" + DriftScope.digest(instructions)))
+                revision: CompletionFeedbackScope.validationRevision + "/" + DriftScope.digest(instructions) + "/" + (OwnerPolicyContext.snapshot?.projectionSHA256 ?? "no-owner-policy")))
     }
     let initialCorrections = try? DriftPolicyStore().preview(
         scope: driftScope(prompt: prompt, workspace: canonicalWorkspace, evidence: r2Evidence, contract: config.executorContract),
@@ -6767,6 +6863,7 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
                 ?? "OS-1 verification rejected the result after governed retries")
         }
         guard let ticket = route.ticket else { throw OS1Error.message("Invalid OS-1 route response") }
+        try OwnerPolicyContext.snapshot?.verifyOriginal()
         try verifyTicket(ticket, config: config)
         // The delegated capability envelope, including explicit internal review restrictions, is
         // the authority floor. Every ticket is checked, including retries and
@@ -7189,6 +7286,7 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
             if let failure = attemptFailure, failure.hasPrefix(selfRepairFailurePrefix) { throw OS1Error.message(failure) }
             throw OS1Error.message("서버의 완료 판정과 실제 실행 증거가 일치하지 않아 결과를 채택하지 않았습니다. 요청과 원본은 보존했습니다.")
         }
+        try OwnerPolicyContext.snapshot?.verifyOriginal()
         let revasDisposition = route.status == "complete" && locallyAdoptable ? "adopted" : (route.ticket == nil ? "rejected" : "retry")
         recordDriftAdoption(execution, ticket: ticket, localPassed: locallyAdoptable,
             adopted: revasDisposition == "adopted")
