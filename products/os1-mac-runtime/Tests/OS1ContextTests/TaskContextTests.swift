@@ -479,6 +479,19 @@ func runTaskContextFixtures(root: URL) throws {
             "unknown turns were hidden without ownership evidence")
     }
 
+    // Backend writable roots must denote the real target, not a path alias.
+    do {
+        let temp = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: temp) }
+        let physical = temp.appendingPathComponent("real workspace")
+        let alias = temp.appendingPathComponent("alias")
+        try FileManager.default.createDirectory(at: physical, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: physical)
+        let expected = physical.resolvingSymlinksInPath().path
+        try check(LocalProjectWorkspace.executionPath(alias.path) == expected, "backend root must resolve symlink without changing target")
+        try check(LocalProjectWorkspace.executionPath(expected) == expected, "physical backend root stays unchanged")
+    }
+
     // MARK: N. Common preparation structure: a second registered project uses the same path
     do {
         let second = PreparationIntent.detect("OS1 앱 수정 좀 하자 준비해")

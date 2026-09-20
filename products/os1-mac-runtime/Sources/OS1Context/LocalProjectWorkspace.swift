@@ -6,6 +6,12 @@ import Foundation
 /// Roots come from the existing Codex project table; nothing is searched
 /// recursively and nothing is created or written.
 public enum LocalProjectWorkspace {
+    /// Resolve aliases before giving a backend a writable root. Codex rejects
+    /// symlinked writable roots; keep the same target and permission, not a wider sandbox.
+    public static func executionPath(_ workspace: String) -> String {
+        URL(fileURLWithPath: workspace).standardizedFileURL.resolvingSymlinksInPath().path
+    }
+
     public static let markers: [String: String] = ["os1-clodex": "products/os1-mac-runtime/Package.swift"]
 
     public static func marker(for projectID: String) -> String? { markers[projectID] }

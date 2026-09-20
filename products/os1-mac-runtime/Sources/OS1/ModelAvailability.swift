@@ -107,8 +107,14 @@ enum ModelAvailability {
             let text = String(decoding: (auth.1 + auth.2).prefix(200), as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
             return .failed(text.isEmpty ? "auth status exit \(auth.0)" : text)
         }
-        if status["loggedIn"] as? Bool == true { return .loggedIn(status["email"] as? String) }
-        return .loggedOut
+        return parsedClaudeAuth(status)
+    }
+
+    static func parsedClaudeAuth(_ status: [String: Any]) -> ClaudeAuthProbe {
+        guard let loggedIn = status["loggedIn"] as? Bool else {
+            return .failed("auth status did not include a valid loggedIn field")
+        }
+        return loggedIn ? .loggedIn(status["email"] as? String) : .loggedOut
     }
 
     static func claudeModels(workspace: String) throws -> [NativeClaudeModel] {
@@ -140,6 +146,7 @@ enum ModelAvailability {
     }
 
     static func claudeCatalog(workspace: String, config: RuntimeConfig) throws -> [ClaudeModelCapability] {
+        guard ClaudeQuotaBackoff.active() == nil else { return [] }
         let native = try claudeModels(workspace: workspace)
         let profiles = config.executionProfiles ?? [:]
         return Set(profiles.values.filter { $0.provider == "claude" }.map(\.model)).sorted().compactMap { model in

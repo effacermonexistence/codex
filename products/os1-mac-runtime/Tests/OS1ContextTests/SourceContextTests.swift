@@ -20,6 +20,15 @@ private func XCTAssertThrowsError<T>(_ value: @autoclosure () throws -> T) {
 final class SourceContextTests {
     static func main() throws {
         voiceProcessChildIfRequested()
+        let bounded = "관련 회귀 테스트를 실행하고 실제 결과를 products/os1-mac-runtime/QUOTA-FALLBACK-VERIFICATION.md에 기록하세요. 새로운 기능이나 다른 제품 수정은 하지 마세요."
+        XCTAssertEqual(ScopeResolution.resolve(bounded).scope, .workspaceWrite)
+        XCTAssertFalse(ScopeResolution.resolve(bounded).prohibitions.contains("do not modify files"))
+        XCTAssertTrue(ScopeResolution.resolve(bounded).prohibitions.contains { $0.contains("다른 제품") })
+        XCTAssertEqual(ScopeResolution.resolve("result.md에 저장하세요. 다른 파일 수정은 하지 마세요.").scope, .workspaceWrite)
+        XCTAssertEqual(ScopeResolution.resolve("result.md에 작성하세요. 파일 수정은 하지 마세요.").scope, .readOnly)
+        XCTAssertEqual(ScopeResolution.resolve("다른 제품 수정은 하지 마세요.").scope, .readOnly)
+        XCTAssertEqual(ScopeResolution.resolve("코드 수정해. 수정하지 마.").scope, .readOnly)
+
         // Fixtures assert exact Korean runtime wording; pin the language so a
         // user's interface-language setting cannot flip the expectations.
         setenv("OS1_INTERFACE_LANGUAGE", "ko", 1)
@@ -109,6 +118,12 @@ final class SourceContextTests {
         XCTAssertFalse(TaskWorkflow.verification.routingTask.contains("Read-only"))
         XCTAssertFalse(TaskWorkflow.architecture.routingTask.contains(request))
         XCTAssertEqual(ScopeResolution.resolve(TaskWorkflow.implementation.routingTask).scope, .workspaceWrite)
+        // Evidence-only phases must not ask the route classifier for future edits.
+        for stage in [TaskWorkflow.architecture, TaskWorkflow.verification] {
+            XCTAssertFalse(stage.routingTask.lowercased().contains("implement"))
+            XCTAssertFalse(stage.routingTask.lowercased().contains("build"))
+            XCTAssertEqual(stage.executionPermissionProfile, "workspace_write")
+        }
         let createRequest = "웹사이트 만들어. 배포는 하지 마."
         for stage in TaskWorkflow.allCases {
             let stagePrompt = stage.prompt(original: createRequest, prior: "Preparation did not edit files.")
@@ -227,6 +242,21 @@ final class SourceContextTests {
             XCTAssertFalse(HumanOutputContract.issues(in: answer, request: arithmeticRequest).isEmpty)
         }
         print("Numeric math presentation: 10 language-boundary checks PASS")
+        let versionRequest = "CFBundleVersion과 CFBundleShortVersionString 값을 한 줄로 알려줘"
+        for answer in ["CFBundleVersion: 188", "Ben.\nLuaIsHere :3\n\nCFBundleVersion: 188",
+                       "CFBundleShortVersionString: 0.9.122", "CFBundleVersion: 188\nCFBundleShortVersionString: 0.9.122",
+                       "Ben.  \nLuaIsHere :3\n\nCFBundleVersion: **189**",
+                       "`CFBundleVersion`: `189`", "**CFBundleVersion: 189**",
+                       "**CFBundleVersion**: **189**", "CFBundleVersion: _189_"] {
+            XCTAssertTrue(HumanOutputContract.issues(in: answer, request: versionRequest).isEmpty)
+        }
+        for answer in ["OtherVersion: 188", "CFBundleVersion: everything succeeded", "Version: 188",
+                       "CFBundleVersion: 188\nAll work is complete.", "CFBundleVersion: **everything succeeded**",
+                       "CFBundleVersion: **189", "OtherVersion: **189**", "CFBundleVersion: 189 succeeded"] {
+            XCTAssertFalse(HumanOutputContract.issues(in: answer, request: versionRequest).isEmpty)
+        }
+        print("Requested numeric fields: 17 language-boundary checks PASS")
+
         let literal = "Verification marker: orchard-lantern-29\nService state: staging verified; production not deployed\nUnfinished gate: independent read-only production fingerprint check"
         for request in ["이전 대화의 원문 값 그대로 세 줄로 적어줘", "원문 문구 그대로 보여줘",
                         "원래 값을 말하지 말고 원문 값 그대로 써줘", "원래 텍스트 그대로 적어줘"] {

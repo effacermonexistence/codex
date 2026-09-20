@@ -77,6 +77,37 @@ public enum HumanOutputContract {
         """
     }
 
+    /// A requested technical key with a numeric value is data, not English prose.
+    /// This only relaxes presentation; execution/source verification stays separate.
+    static func requestedNumericFieldsOnly(_ answer: String, request: String) -> Bool {
+        var body = answer.trimmingCharacters(in: .whitespacesAndNewlines)
+        body = body.replacingOccurrences(of: #"\ABen\.\s*LuaIsHere :3\s*"#, with: "", options: .regularExpression)
+        // Accept equivalent inline Markdown without changing the captured answer.
+        // Only balanced whole-field wrappers are removed, never arbitrary prose.
+        func field(_ raw: String) -> String {
+            var text = raw.trimmingCharacters(in: .whitespaces)
+            for _ in 0..<3 {
+                guard let marker = ["**", "__", "`", "*", "_"].first(where: {
+                    text.count > $0.count * 2 && text.hasPrefix($0) && text.hasSuffix($0)
+                }) else { break }
+                text = String(text.dropFirst(marker.count).dropLast(marker.count))
+            }
+            return text
+        }
+        let rows = body.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+        guard !rows.isEmpty, rows.count <= 8 else { return false }
+        func validRow(_ row: String) -> Bool {
+            guard let colon = row.firstIndex(of: ":") else { return false }
+            let key = field(String(row[..<colon]))
+            let value = field(String(row[row.index(after: colon)...]))
+            guard key.range(of: #"^[A-Za-z_][A-Za-z0-9_.-]*$"#, options: .regularExpression) != nil,
+                  value.range(of: #"^[+-]?[0-9]+(?:\.[0-9]+)*$"#, options: .regularExpression) != nil else { return false }
+            return request.range(of: #"(?<![A-Za-z0-9_])"# + NSRegularExpression.escapedPattern(for: key) + #"(?![A-Za-z0-9_])"#,
+                                 options: .regularExpression) != nil
+        }
+        return rows.allSatisfy { validRow($0) || validRow(field($0)) }
+    }
+
     public static func issues(in answer: String, request: String) -> [String] {
         // Reproducing a source/log is not an assertion that its syntax or
         // stage design is valid. Never "repair" quoted original material.
@@ -86,7 +117,7 @@ public enum HumanOutputContract {
         let text = answer.precomposedStringWithCanonicalMapping
         let blocks = fencedJSON(text)
         if !wantsMachineFormat(request) {
-            let neutral = text.range(of: #"^[\p{N}\s\p{P}\p{S}]+$"#, options: .regularExpression) != nil || Double(text.trimmingCharacters(in: .whitespacesAndNewlines)) != nil || numericMathOnly(text)
+            let neutral = text.range(of: #"^[\p{N}\s\p{P}\p{S}]+$"#, options: .regularExpression) != nil || Double(text.trimmingCharacters(in: .whitespacesAndNewlines)) != nil || numericMathOnly(text) || requestedNumericFieldsOnly(text, request: request)
             if wantsKorean(request), !preservesOriginalValues(request), !neutral, !text.unicodeScalars.contains(where: { (0xAC00...0xD7A3).contains($0.value) }) {
                 issues.append("Answer the user's Korean request in Korean, not English-only prose.")
             }

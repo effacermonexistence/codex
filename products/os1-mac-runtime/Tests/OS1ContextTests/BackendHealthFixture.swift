@@ -37,7 +37,7 @@ func runBackendHealthFixtures() throws {
     check(dead.earliestRecovery == reset, "earliest recovery is the Codex reset")
     // The reset renders in the machine's zone: 2026-09-19 20:51Z is the 19th
     // west of UTC+3 and the 20th from UTC+4 eastwards.
-    check(dead.diagnosisLines.count == 2 && dead.diagnosisLines[0].contains("로그인 만료") && dead.diagnosisLines[1].contains("한도 소진")
+    check(dead.diagnosisLines.count == 2 && dead.diagnosisLines[0].contains("CLI 로그인 미확인") && dead.diagnosisLines[1].contains("한도 소진")
           && (dead.diagnosisLines[1].contains("9월 19일") || dead.diagnosisLines[1].contains("9월 20일")) && dead.diagnosisLines[1].contains("에 복구"),
           "diagnosis names both causes and the reset day: \(dead.diagnosisLines)")
     check(dead.publicSummary.hasPrefix("사용 가능한 백엔드가 없습니다.") && dead.publicSummary.contains("공식 Claude 로그인")
@@ -51,6 +51,11 @@ func runBackendHealthFixtures() throws {
     check(alive.anyUsable && alive.repairSteps.isEmpty && alive.repairPlanText.contains("없습니다"), "usable backends need no repair")
     let onlyCodex = BackendHealth(claude: BackendHealth.Backend(state: .missing), codex: BackendHealth.Backend(state: .usable), checkedAt: now)
     check(onlyCodex.anyUsable && onlyCodex.repairSteps.isEmpty, "a missing Claude binary is not a repairable login")
+
+    let codexFallback = BackendHealth(claude: BackendHealth.Backend(state: .loggedOut), codex: BackendHealth.Backend(state: .usable), checkedAt: now)
+    check(codexFallback.repairSteps.isEmpty, "usable Codex must never start a destructive Claude login")
+    let quotaFallback = BackendHealth(claude: BackendHealth.Backend(state: .quotaExhausted), codex: BackendHealth.Backend(state: .usable), checkedAt: now)
+    check(quotaFallback.repairSteps.isEmpty, "quota is not an authentication repair")
 
     // Cache: round trip, staleness, future timestamps, oversize and garbage.
     let root = FileManager.default.temporaryDirectory.appendingPathComponent("os1-backend-health-\(UUID().uuidString)")
@@ -69,5 +74,16 @@ func runBackendHealthFixtures() throws {
     check(BackendHealth.load(from: url, maxAge: 120, now: now) == nil, "garbage reads as unknown")
     try Data(repeating: 32, count: 20_000).write(to: url)
     check(BackendHealth.load(from: url, maxAge: 120, now: now) == nil, "oversize record reads as unknown")
+    let backoffURL = root.appendingPathComponent("quota.json")
+    check(ClaudeQuotaBackoff.active(at: backoffURL, now: now) == nil, "no invented cooldown")
+    try ClaudeQuotaBackoff.record(at: backoffURL, now: now)
+    check(ClaudeQuotaBackoff.active(at: backoffURL, now: now.addingTimeInterval(299)) != nil, "real rejection suppresses metadata-only availability")
+    check(ClaudeQuotaBackoff.active(at: backoffURL, now: now.addingTimeInterval(300)) == nil, "bounded cooldown expires")
+    check(ClaudeQuotaBackoff.active(at: backoffURL, now: now.addingTimeInterval(-1)) == nil, "future rejection rejected")
+    check((try FileManager.default.attributesOfItem(atPath: backoffURL.path)[.posixPermissions] as? NSNumber)?.intValue == 0o600, "quota receipt private")
+    try ClaudeQuotaBackoff.record(at: backoffURL, now: now.addingTimeInterval(250))
+    check(ClaudeQuotaBackoff.active(at: backoffURL, now: now.addingTimeInterval(400)) != nil, "new rejection renews cooldown")
+    try Data("not-json".utf8).write(to: backoffURL)
+    check(ClaudeQuotaBackoff.active(at: backoffURL, now: now) == nil, "corrupt receipt not adopted")
     print("Backend health: \(count) checks passed; classification, repair order, wording, private cache and staleness")
 }

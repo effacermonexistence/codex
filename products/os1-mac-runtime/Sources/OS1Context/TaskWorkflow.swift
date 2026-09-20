@@ -29,11 +29,11 @@ public enum TaskWorkflow: String, Codable, Sendable, CaseIterable {
     public var routingTask: String {
         switch self {
         case .architecture:
-            return "Execute architecture preparation for an authorized build. Inspect sources and requirements and return an implementation contract; the workflow automatically continues to implementation. This is not an interrupted-task status request."
+            return "Review current repository sources, requirements and logs for software architecture. Return an evidence-grounded architecture contract with concrete paths, acceptance tests and rollback boundaries. This phase delivers analysis, not overall task completion."
         case .implementation:
             return "Implement the authorized source change: modify files in the authorized workspace according to the architecture contract, then run deterministic tests. Avoid unrelated work and external side effects."
         case .verification:
-            return "Execute independent verification of the implemented artifact. Inspect actual files, tests and results against the owner objective; report PASS or BLOCK."
+            return "Review actual repository artifacts, tests and execution records against the owner objective. Return an independent PASS or BLOCK verdict with evidence."
         }
     }
 

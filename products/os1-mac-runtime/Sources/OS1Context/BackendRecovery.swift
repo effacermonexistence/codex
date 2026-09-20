@@ -169,7 +169,11 @@ public enum BackendRecovery {
               (object["permission_denials"] as? [Any] ?? []).isEmpty else { return false }
         let errors = object["errors"] as? [String] ?? []
         let text = ([object["result"] as? String ?? ""] + errors).joined(separator: "\n").lowercased()
-        return ["you've hit your session limit", "you’ve hit your session limit", "you've hit your weekly limit",
+        // Model-specific quota messages are emitted by the same CLI error protocol.
+        // Match an anchored sentence, not an arbitrary mention of a limit.
+        let modelLimit = text.range(of: #"(?m)^you[’']ve reached your [a-z0-9 ._-]{1,64} limit(?:[. ·]|$)"#,
+                                    options: .regularExpression) != nil
+        return modelLimit || ["you've hit your session limit", "you’ve hit your session limit", "you've hit your weekly limit",
                 "you’ve hit your weekly limit", "usage limit reached",
                 "usage limit exceeded", "rate limit exceeded", "rate_limit_error", "insufficient_quota"]
             .contains(where: text.contains)
@@ -181,6 +185,15 @@ public enum BackendRecovery {
         if failed == "claude" { return codexAvailable ? "codex" : nil }
         if failed == "codex" { return codexAvailable ? "codex" : (claudeAvailable ? "claude" : nil) }
         return nil
+    }
+    /// A native quota rejection with verified zero execution consumes a dispatch,
+    /// not the workflow's single write attempt. Grant exactly one alternate slot.
+    /// Uncertain/started writes and explicitly pinned providers never qualify.
+    public static func quotaAttemptLimit(requested: String, stage: BackendDispatchStage,
+                                         step: Int, limit: Int, alreadyExtended: Bool) -> Int {
+        guard requested == "auto", stage == .rejectedBeforeExecution,
+              !alreadyExtended, step == limit, limit > 0, limit < Int.max else { return limit }
+        return limit + 1
     }
     public static func permitsAutomaticReplay(permission: String, stage: BackendDispatchStage) -> Bool {
         permission == "read_only" || stage == .notDispatched || stage == .rejectedBeforeExecution

@@ -40,5 +40,53 @@ func runQuotaRejectionFixtures() throws {
     precondition(BackendRecovery.classifiedBlocker(.quotaExhausted, permission: "workspace_write", stage: .rejectedBeforeExecution, workspaceChanged: true) == .effectsUncertain)
     precondition(BackendRecovery.quotaRecoveryPreference(requested: "auto", failed: "claude", codexAvailable: true, claudeAvailable: true) == "codex")
     precondition(BackendRecovery.quotaRecoveryPreference(requested: "auto", failed: "claude", codexAvailable: false, claudeAvailable: true) == nil)
-    print("Quota pre-execution rejection: 17 checks passed")
+    var added = 0
+    for (requested, stage, step, limit, used, expected) in [
+        ("auto", BackendDispatchStage.rejectedBeforeExecution, 1, 1, false, 2),
+        ("auto", .dispatched, 1, 1, false, 1),
+        ("auto", .rejectedBeforeExecution, 2, 2, true, 2),
+        ("claude", .rejectedBeforeExecution, 1, 1, false, 1),
+        ("auto", .rejectedBeforeExecution, 1, 3, false, 3),
+        ("auto", .notDispatched, 1, 1, false, 1)
+    ] {
+        precondition(BackendRecovery.quotaAttemptLimit(requested: requested, stage: stage,
+            step: step, limit: limit, alreadyExtended: used) == expected); added += 1
+    }
+    // Drive the same bounded loop: rejected Claude dispatch then exactly one
+    // Codex write attempt. A second rejection cannot grow the budget again.
+    var limit = 1, step = 0, extended = false
+    var routed: [String] = []
+    var provider = "claude"
+    while step < limit {
+        step += 1; routed.append(provider)
+        let nextLimit = BackendRecovery.quotaAttemptLimit(requested: "auto", stage: .rejectedBeforeExecution,
+            step: step, limit: limit, alreadyExtended: extended)
+        extended = extended || nextLimit > limit; limit = nextLimit
+        if step < limit {
+            provider = BackendRecovery.quotaRecoveryPreference(requested: "auto", failed: provider,
+                codexAvailable: true, claudeAvailable: false)!
+        }
+    }
+    precondition(routed == ["claude", "codex"] && step == 2 && limit == 2); added += 1
+    for text in ["You've reached your Fable limit. Switch to another model, or manage usage credits at claude.ai/settings/usage?from=cc_cli_limit_message, to continue.",
+                 "You've reached your Fable 5 limit. Run /usage-credits to continue or switch models with /model.",
+                 "You’ve reached your Opus limit · resets tomorrow"] {
+        var r = result; r["result"] = text
+        var a = assistant
+        var message = a["message"] as! [String: Any]
+        message["content"] = [["type": "text", "text": text]]; a["message"] = message
+        precondition(UnifiedExecution.claudeTerminalBlocker(status: 0, object: r) == .quotaExhausted); added += 1
+        let parsed = try stream([a, r])
+        precondition(parsed.claudeQuotaRejectedBeforeExecution(sessionID: "test")); added += 1
+        r["is_error"] = false
+        precondition(!BackendRecovery.claudeQuotaFailure(status: 0, object: r)); added += 1
+        r["is_error"] = true; r["permission_denials"] = ["denied"]
+        precondition(!BackendRecovery.claudeQuotaFailure(status: 1, object: r)); added += 1
+    }
+    for text in ["The file says: You've reached your Fable limit.", "Your business limit is 10", "OAuth authentication failed"] {
+        var r = result; r["result"] = text
+        precondition(!BackendRecovery.claudeQuotaFailure(status: 1, object: r)); added += 1
+    }
+    precondition(BackendRecovery.quotaRecoveryPreference(requested: "claude", failed: "claude", codexAvailable: true, claudeAvailable: true) == nil); added += 1
+    print("Quota pre-execution rejection: \(17 + added) checks passed")
 }

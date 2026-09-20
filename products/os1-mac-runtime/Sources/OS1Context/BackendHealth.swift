@@ -52,6 +52,7 @@ public struct BackendHealth: Codable, Equatable, Sendable {
     public var earliestRecovery: Date? { [claude.recoversAt, codex.recoversAt].compactMap { $0 }.min() }
 
     public var repairSteps: [RepairStep] {
+        guard !anyUsable else { return [] }
         var steps: [RepairStep] = []
         if claude.state == .loggedOut { steps.append(.reconnectClaude) }
         if codex.state == .quotaExhausted { steps.append(.waitCodexQuota) }
@@ -126,8 +127,8 @@ public struct BackendHealth: Codable, Equatable, Sendable {
         // unreachable. The window reaches the owner through `os1
         // backend-health` and through the burn notice on the run itself.
         case .usable: return "\(name): 사용 가능"
-        case .loggedOut: return os1Tr("\(name): 로그인 만료(OAuth) — 공식 로그인 승인이 필요합니다. 로그인 창을 여는 순간 기존 세션이 지워지므로, 연 창은 끝까지 완료해야 합니다.",
-            "\(name): sign-in expired (OAuth) — the official login must be approved. Opening the login clears the stored session, so a window that was opened has to be finished.")
+        case .loggedOut: return os1Tr("\(name): CLI 로그인 미확인 — 공식 로그인 승인이 필요합니다. 로그인 창을 여는 순간 기존 세션이 지워지므로, 연 창은 끝까지 완료해야 합니다.",
+            "\(name): CLI reports no active sign-in — official login approval is required. Opening the login clears the stored session, so a window that was opened has to be finished.")
         case .quotaExhausted:
             let reset = backend.recoversAt.map { " — \(describe($0))에 복구" } ?? " — 복구 시각 미확인"
             return "\(name): 사용량 한도 소진\(reset)"

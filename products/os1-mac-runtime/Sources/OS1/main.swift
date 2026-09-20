@@ -161,12 +161,15 @@ struct ActiveCodexCatalog {
 func observedBackendHealth(claudeCatalog: [ClaudeModelCapability], codexCatalog: ActiveCodexCatalog,
                            workspace: String, now: Date = Date()) -> BackendHealth {
     let claude: BackendHealth.Backend
-    if !claudeCatalog.isEmpty {
+    if ClaudeQuotaBackoff.active(now: now) != nil {
+        claude = BackendHealth.Backend(state: .quotaExhausted,
+            detail: "최근 실행에서 한도 거절됨 · 5분 재시도 간격 적용, 실제 한도 복구 시각은 미확인")
+    } else if !claudeCatalog.isEmpty {
         claude = BackendHealth.Backend(state: .usable)
     } else {
         switch ModelAvailability.claudeAuthProbe(workspace: workspace) {
         case .loggedIn: claude = BackendHealth.Backend(state: .probeFailed, detail: "로그인은 유효하지만 사용 가능한 모델 목록을 받지 못함")
-        case .loggedOut: claude = BackendHealth.Backend(state: .loggedOut, detail: "OAuth 세션 만료 또는 로그아웃")
+        case .loggedOut: claude = BackendHealth.Backend(state: .loggedOut, detail: "현재 Claude CLI가 loggedIn=false를 반환함; 원인과 만료 여부는 미확인")
         case .missing: claude = BackendHealth.Backend(state: .missing, detail: "claude 실행 파일 없음")
         case .failed(let detail): claude = BackendHealth.Backend(state: .probeFailed, detail: detail)
         }
@@ -203,6 +206,7 @@ func selfRepairBackends(health: BackendHealth, codexCatalog: ActiveCodexCatalog,
                         reconnect: () throws -> String = verifyClaudeConnection,
                         claudeCatalog: () -> [ClaudeModelCapability]? = { nil })
     -> (catalogs: (claude: [ClaudeModelCapability], codex: ActiveCodexCatalog)?, note: String?) {
+    guard !health.anyUsable else { return (nil, nil) }
     var notes: [String] = []
     for step in health.repairSteps {
         switch step {
@@ -212,8 +216,8 @@ func selfRepairBackends(health: BackendHealth, codexCatalog: ActiveCodexCatalog,
                 continue
             }
             RuntimeActivity.emit(.authorizing,
-                publicText: os1Tr("Claude 로그인이 만료됐고 다른 백엔드가 없어 공식 Claude 로그인을 엽니다. 브라우저 승인 후 표시된 코드를 팝업에 붙여넣으면 같은 요청을 이어서 실행합니다.",
-                                  "Claude's sign-in expired and no other backend is available, so the official Claude sign-in is opening. Approve in the browser, paste the code into the dialog, and this request continues."),
+                publicText: os1Tr("Claude CLI에 활성 로그인이 확인되지 않고 다른 백엔드가 없어 공식 Claude 로그인을 엽니다. 브라우저 승인 후 표시된 코드를 팝업에 붙여넣으면 같은 요청을 이어서 실행합니다.",
+                                  "Claude CLI reports no active sign-in and no other backend is available, so the official Claude sign-in is opening. Approve in the browser, paste the code into the dialog, and this request continues."),
                 tool: "claude")
             do {
                 let verified = try reconnect()
@@ -2074,19 +2078,27 @@ private struct ConnectionControlTargets: OptionSet {
 /// coding task. Keep its recognizer public and narrow so ordinary repository
 /// or R2 work still goes through RCC.
 private func connectionControlTargets(_ prompt: String) -> ConnectionControlTargets? {
-    // Per line: a pasted transcript can mention "연결" in one paragraph and a
-    // service name pages away; only a line that carries both a connection verb
-    // and a service is the owner asking for a connection action.
-    let verbs = ["연결", "접속", "로그인", "세팅", "설정해", "connect", "connection", "sign in", "setup", "configure"]
+    // Only a complete, explicit connection directive may bypass the normal
+    // task router. Mentioning login/auth inside a code-repair or test request
+    // does not authorize login (which can invalidate an existing CLI session).
     let githubNames = ["github", "git hub", "깃허브", "깃헙", "기터브", "기타브", "기탑", "기타보", "기터보", "기터부"]
-    let claudeNames = ["claude", "클로드", "클로드코드", "클로드 코드"]
+    let claudeNames = ["claude code", "claude", "클로드코드", "클로드 코드", "클로드"]
+    let r2Names = ["r2", "r 2", "알투", "알츠"]
+    let service = (githubNames + claudeNames + r2Names)
+        .map(NSRegularExpression.escapedPattern(for:)).joined(separator: "|")
+    let prefix = #"(?:야\s*|너\s*|지금\s*|다시\s*|일단\s*|please\s+)*"#
+    let names = "(?:" + service + ")"
+    let targetList = names + "(?:\\s*(?:랑|와|과|하고|,|&|and)\\s*" + names + ")*"
+    let action = #"(?:연결|접속|로그인|세팅)(?:을|좀)?\s*(?:확인)?(?:해(?:봐|줘|주세요|라)?|시켜(?:줘|주세요)?|하세요|하자)"#
+    let korean = "^" + prefix + targetList + "(?:에|을|를)?\\s*(?:좀\\s*)?" + action + "[.!? ]*$"
+    let english = "^(?:please\\s+)?(?:connect|configure|setup|sign in to|log in to)\\s+" + targetList + "[.!? ]*$"
     var targets: ConnectionControlTargets = []
     for rawLine in prompt.precomposedStringWithCanonicalMapping.lowercased().split(separator: "\n") {
-        let line = String(rawLine)
-        guard verbs.contains(where: line.contains) else { continue }
+        let line = rawLine.trimmingCharacters(in: .whitespaces)
+        guard line.range(of: korean, options: .regularExpression) != nil ||
+              line.range(of: english, options: .regularExpression) != nil else { continue }
         if githubNames.contains(where: line.contains) { targets.insert(.github) }
-        if line.range(of: #"(?<![a-z0-9])r\s*2(?![a-z0-9])"#, options: .regularExpression) != nil ||
-            line.contains("알투") || line.contains("알츠") { targets.insert(.r2) }
+        if r2Names.contains(where: line.contains) { targets.insert(.r2) }
         if claudeNames.contains(where: line.contains) { targets.insert(.claude) }
     }
     return targets.isEmpty ? nil : targets
@@ -6492,6 +6504,7 @@ func runTaskWithOwnerPolicy(
             workspace: target.workspace), now: objectiveStartedAt)
         RuntimeActivity.emit(.preparing, publicText: "요청한 로컬 미리보기의 실제 소스 폴더를 확인했습니다: \(target.workspace)")
     }
+    canonicalWorkspace = LocalProjectWorkspace.executionPath(canonicalWorkspace)
     var isDirectory: ObjCBool = false
     guard FileManager.default.fileExists(atPath: canonicalWorkspace, isDirectory: &isDirectory), isDirectory.boolValue else {
         throw OS1Error.message("Workspace directory does not exist")
@@ -6861,9 +6874,12 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
     // A workflow implementation is one native write attempt. The workflow
     // verifier, not the model retry loop, decides whether a bounded repair is
     // warranted; uncertain writes must never be replayed implicitly.
-    let attemptLimit = workflowStage == .implementation ? 1 :
+    var attemptLimit = workflowStage == .implementation ? 1 :
         (requireReadOnly ? min(2, config.maximumSteps) : config.maximumSteps)
-    for step in 1...attemptLimit {
+    var quotaBudgetExtended = false
+    var step = 0
+    while step < attemptLimit {
+        step += 1
         if ExecutionCancellation.isCancelled { throw OS1Error.backendBlocked(.cancelled) }
         if route.status == "complete" {
             let adopted = steps.filter { $0.revasDisposition == "adopted" }
@@ -7017,6 +7033,7 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
                     blocker: backendBlocker(error) ?? .unclassified,
                     publicProgress: (error as? RejectedProviderExecution)?.execution.artifact.output ?? "")
                 if backendBlocker(error) == .quotaExhausted {
+                    if ticket.provider == "claude" { try? ClaudeQuotaBackoff.record() }
                     if (error as? RejectedProviderExecution)?.quotaRejectedBeforeExecution == true,
                        workspaceHash(observedWorkspace) == beforeHash {
                         dispatchStage = .rejectedBeforeExecution
@@ -7032,6 +7049,12 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
                         startedAt: attemptStartedAt, source: sourceContext, monitorTaskID: monitorTaskID, monitorScope: monitorScope)
                     attemptRecorded = true
                     failedCandidates.insert(candidateKey)
+                    let quotaLimit = BackendRecovery.quotaAttemptLimit(requested: providerPreference,
+                        stage: dispatchStage, step: step, limit: attemptLimit, alreadyExtended: quotaBudgetExtended)
+                    if quotaLimit > attemptLimit {
+                        quotaBudgetExtended = true
+                        attemptLimit = quotaLimit
+                    }
                     guard providerPreference == "auto", step < attemptLimit,
                           BackendRecovery.permitsAutomaticReplay(permission: ticket.permissionProfile, stage: dispatchStage) else { throw error }
                     if ticket.provider == "codex" {
@@ -7056,7 +7079,8 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
                         capacityPlan: request.capacityPlan, executorContractVersion: request.executorContractVersion,
                         executorContractSHA256: request.executorContractSHA256, availableCodexModels: codexCatalog.models,
                         executionContext: freshContext)
-                    RuntimeActivity.emit(.recovering)
+                    RuntimeActivity.emit(.recovering,
+                        publicText: "\(ticket.provider) 사용량 한도에 도달했습니다. 같은 요청을 \(nextPreference)로 이어갑니다. 로그인은 변경하지 않습니다.")
                     route = try await client.post("/v1/executions", body: next, as: RouteResponse.self)
                     guard route.ticket?.permissionProfile == ticket.permissionProfile,
                           route.ticket?.provider == nextPreference else { throw error }
@@ -7630,6 +7654,17 @@ func steeringProtocolSelfTest() throws {
 }
 
 func selfTest() throws {
+    // A self-test can run inside a real OS1 task. Fixture telemetry must never
+    // overwrite its parent's activity or append fake auth/quota events.
+    let telemetryKeys = ["OS1_ACTIVITY_FILE", "OS1_EVENT_JOURNAL"]
+    let parentTelemetry = ProcessInfo.processInfo.environment
+    for key in telemetryKeys { unsetenv(key) }
+    defer {
+        for key in telemetryKeys {
+            if let value = parentTelemetry[key] { setenv(key, value, 1) }
+            else { unsetenv(key) }
+        }
+    }
     try ManagedPreview.selfTest()
     let poisonedStage = "R2 원본을 새로 가져와 로그인해. QMGR 자료를 검색해."
     guard try r2RetrievalEvidence(poisonedStage, objective: nil) == nil else {
@@ -8167,6 +8202,14 @@ func selfTest() throws {
           connectionControlTargets("R2 자료를 찾아봐") == nil,
           connectionControlTargets("QM과 GR 통합 스키마") == nil,
           connectionControlTargets("클로드 연결시켜") == [.claude],
+          connectionControlTargets("Claude 로그인 상태 검증과 quota fallback 코드를 고쳐서 테스트해") == nil,
+          connectionControlTargets("Claude quota fallback 수정은 보존하세요. 실제 로그인/한도 상태 검증을 구분해서 문서를 작성하세요.") == nil,
+          connectionControlTargets("클로드 로그인하지 말고 Codex로 라우팅해") == nil,
+          connectionControlTargets("Claude 로그인돼 있는데 토큰을 다 썼으니 라우터 고쳐") == nil,
+          connectionControlTargets("Claude 연결됨") == nil,
+          connectionControlTargets("Claude 로그인 버튼을 구현해") == nil,
+          connectionControlTargets("클로드 로그인해") == [.claude],
+          connectionControlTargets("please connect Claude") == [.claude],
           // A pasted transcript: the verb and the service live on different
           // lines, so no line is the owner asking for a connection action.
           connectionControlTargets("야 이거 고쳐 로그 다 까봐\n지원되는 백엔드는 Claude입니다\n설정을 켜도 Codex 백엔드가 정상 연결되는지는 확인 필요") == nil,
@@ -8461,6 +8504,12 @@ func selfTest() throws {
     }
     guard !OS1Error.message("Local provider execution timed out").isTerminalPermissionFailure else {
         throw OS1Error.message("Transient failures must retain their bounded recovery path")
+    }
+    guard ModelAvailability.parsedClaudeAuth(["loggedIn": true]) == .loggedIn(nil),
+          ModelAvailability.parsedClaudeAuth(["loggedIn": false]) == .loggedOut,
+          ModelAvailability.parsedClaudeAuth([:]) == .failed("auth status did not include a valid loggedIn field"),
+          ModelAvailability.parsedClaudeAuth(["loggedIn": "false"]) == .failed("auth status did not include a valid loggedIn field") else {
+        throw OS1Error.message("Claude auth metadata must not turn unknown into logged out")
     }
     var protocolRecoveryChecks = 0
     for (subtype, expected) in [("error_max_turns", BackendBlocker.incomplete),
