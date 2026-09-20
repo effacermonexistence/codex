@@ -50,6 +50,32 @@ func runTaskContextFixtures(root: URL) throws {
     }
     try check(WebsiteDelivery.receiptPath(in: "Quoted prose mentioning OS1_RAILWAY_RECEIPT: /x") == nil, "no prose marker hijack")
     try check(WebsiteDelivery.receiptPath(in: "Done\nOS1_RAILWAY_RECEIPT: /tmp/result.json") == "/tmp/result.json", "standalone receipt")
+    try check(WebsiteDelivery.receiptPath(in: "OS1_RAILWAY_RECEIPT: `/tmp/MacBook Air (2)/receipt.json`") == "/tmp/MacBook Air (2)/receipt.json", "Markdown receipt preserves spaces and exact path")
+    try check(WebsiteDelivery.receiptPath(in: "OS1_RAILWAY_RECEIPT: `relative.json`") == nil, "relative receipt rejected")
+    try check(WebsiteDelivery.receiptPath(in: "OS1_RAILWAY_RECEIPT: `/tmp/x.json` extra") == nil, "trailing prose rejected")
+    try check(WebsiteDelivery.receiptPath(in: "OS1_RAILWAY_RECEIPT: `/tmp/x.json") == nil, "unbalanced Markdown rejected")
+    for input in ["http://127.0.0.1:4173/야 이거 레일리웨이 올려", "Deploy http://localhost:4173/ to Railway", "http://[::1]:4173/path"] {
+        try check(PreviewTargetBinding.endpoints(in: input).map(\.absoluteString) == ["http://127.0.0.1:4173/"], "explicit endpoint identity, including Korean suffix")
+    }
+    try check(PreviewTargetBinding.endpoints(in: "https://remote.example:4173/").isEmpty, "remote URL does not select local workspace")
+    try check(PreviewTargetBinding.endpoints(in: "http://localhost:99999/").isEmpty, "invalid port rejected")
+    try check(PreviewTargetBinding.endpoints(in: "http://localhost:4173/ http://127.0.0.1:4173/").count == 1, "same endpoint deduplicated")
+    try check(PreviewTargetBinding.endpoints(in: "http://localhost:4173/ http://localhost:4327/").count == 2, "distinct targets remain ambiguous")
+    try check(!PreviewTargetBinding.sameWorkspace(root.path, root.path + "-other"), "another project cannot substitute")
+    try check(!PreviewTargetBinding.sameWorkspace(root.path, root.path + "/child"), "bound target requires exact root, not any descendant")
+    try check(PreviewTargetBinding.sameWorkspace(root.path, root.path + "/."), "canonical alias allowed")
+    try check(PreviewTargetBinding.isRailwayRequest("이거 레일리웨이 올려"), "owner's deployment request recognized")
+    try check(PreviewTargetBinding.shouldBindNewDeployment(request: "http://127.0.0.1:4173/ Railway deploy", readOnly: false), "new deployment receives request identity")
+    try check(!PreviewTargetBinding.shouldBindNewDeployment(request: "http://127.0.0.1:4173/ Railway deploy", readOnly: true), "recovery readback must not replace historical deployment identity")
+    try check(!PreviewTargetBinding.shouldBindNewDeployment(request: "read this receipt", readOnly: false), "unrelated request does not create deployment contract")
+    let currentProof = Data(#"{"requestID":"current","previewHTMLSHA256":"site-a"}"#.utf8)
+    try check(PreviewTargetBinding.matchesDelivery(proof: currentProof, requestID: "current", htmlSHA256: "site-a", servedHTMLSHA256: "site-a"), "exact requested site and current receipt accepted")
+    try check(!PreviewTargetBinding.matchesDelivery(proof: currentProof, requestID: "new-request", htmlSHA256: "site-a", servedHTMLSHA256: "site-a"), "old receipt from same site rejected")
+    try check(!PreviewTargetBinding.matchesDelivery(proof: currentProof, requestID: "current", htmlSHA256: "site-a", servedHTMLSHA256: "luma"), "correct proof with wrong actual page rejected")
+    try check(!PreviewTargetBinding.matchesDelivery(proof: currentProof, requestID: "current", htmlSHA256: "site-b", servedHTMLSHA256: "site-b"), "other site's proof rejected")
+    try check(!PreviewTargetBinding.matchesDelivery(proof: Data("current site-a".utf8), requestID: "current", htmlSHA256: "site-a", servedHTMLSHA256: "site-a"), "word matching is not proof schema")
+    try check(!PreviewTargetBinding.matchesDelivery(proof: Data(#"{"requestID":"current","comment":"site-a"}"#.utf8), requestID: "current", htmlSHA256: "site-a", servedHTMLSHA256: "site-a"), "missing fingerprint not repaired from adjacent text")
+    try check(PreviewTargetBinding.endpoints(in: "https://localhost:4173/").first?.scheme == "https", "TLS endpoint is not silently downgraded")
     try check(WebsiteDelivery.capabilityCard.contains("not automatic permission"), "capability is not authorization")
     try check(ScopeResolution.resolve("Implement a website. Do not modify existing files but do not change anything at all.").scope == .readOnly, "contrastive blanket prohibition must survive")
     // User-directed capability is independent of a heuristic speech-act label.
@@ -491,5 +517,24 @@ func runTaskContextFixtures(root: URL) throws {
         try check(OS1ReceiptText.stripped("한 줄 요청") == "한 줄 요청", "no receipt, no change")
     }
 
+
+    let recoveryReceipt = VerifiedPreviewDelivery(previewURL: "http://127.0.0.1:4173/", deploymentID: deliveryID, verifiedAt: 1000)
+    let control: [String: Any] = ["operation": "preview_delivery_readback", "model_invoked": false, "deployment_invoked": false, "railway_identity_verified": true, "public_content_verified": true, "preview_url": recoveryReceipt.previewURL, "deployment_id": deliveryID, "verified_at": 1000.0]
+    try check(recoveryReceipt.matchesControlReceipt(control), "fresh independent delivery control receipt accepted")
+    for key in control.keys {
+        var missing = control; missing.removeValue(forKey: key)
+        try check(!recoveryReceipt.matchesControlReceipt(missing), "missing control evidence rejected: \(key)")
+    }
+    for (key, value) in [("model_invoked", true as Any), ("deployment_invoked", true as Any), ("railway_identity_verified", false as Any), ("public_content_verified", false as Any), ("preview_url", "http://127.0.0.1:4174/" as Any), ("deployment_id", UUID().uuidString as Any), ("verified_at", 999.0 as Any)] {
+        var changed = control; changed[key] = value
+        try check(!recoveryReceipt.matchesControlReceipt(changed), "mismatched control evidence rejected: \(key)")
+    }
+    try check(recoveryReceipt.completes(originalRequest: "http://127.0.0.1:4173/야 Railway 올려", effectsApplied: true, nativeAdopted: true, now: 1001), "verified recovery closes exact deploy without replay")
+    for request in ["http://127.0.0.1:4174/ Railway 올려", "웹사이트 만들어", "http://127.0.0.1:4173/ 고쳐", "http://127.0.0.1:4173/ http://127.0.0.1:4174/ Railway"] {
+        try check(!recoveryReceipt.completes(originalRequest: request, effectsApplied: true, nativeAdopted: true, now: 1001), "different or ambiguous objective keeps hold")
+    }
+    for (applied, adopted, now) in [(false,true,1001.0),(true,false,1001.0),(true,true,1400.0),(true,true,999.0)] {
+        try check(!recoveryReceipt.completes(originalRequest: "http://127.0.0.1:4173/ Railway", effectsApplied: applied, nativeAdopted: adopted, now: now), "partial, unverified, stale and future evidence cannot clear hold")
+    }
     print("OS-1 task context fixtures: \(count) checks passed")
 }

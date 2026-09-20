@@ -38,7 +38,14 @@ public enum WebsiteDelivery {
         output.components(separatedBy: .newlines).compactMap { line -> String? in
             let text = line.trimmingCharacters(in: .whitespaces)
             guard text.hasPrefix("OS1_RAILWAY_RECEIPT:") else { return nil }
-            return String(text.dropFirst("OS1_RAILWAY_RECEIPT:".count)).trimmingCharacters(in: .whitespaces)
+            var path = String(text.dropFirst("OS1_RAILWAY_RECEIPT:".count)).trimmingCharacters(in: .whitespaces)
+            // Markdown code spans are presentation only; containment is still checked
+            // against the canonical filesystem path by RailwayDelivery.
+            if path.hasPrefix("`"), path.hasSuffix("`"), path.count > 2 {
+                path = String(path.dropFirst().dropLast())
+            }
+            guard path.hasPrefix("/"), !path.contains("`"), !path.contains("\n") else { return nil }
+            return path
         }.last
     }
     public static func assignedDomainMatches(_ data: Data, url: URL) -> Bool {

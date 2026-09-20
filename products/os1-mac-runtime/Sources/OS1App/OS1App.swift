@@ -2999,6 +2999,7 @@ private struct AppRunStep: Decodable, Sendable {
     let durationMS: Int64
     let nativeRecord: AppNativeRecord?
     var workflowStage: String? = nil
+    var verifiedPreviewDelivery: VerifiedPreviewDelivery? = nil
 
     enum CodingKeys: String, CodingKey {
         case sequence, provider, action, model, effort, output, stderr
@@ -3008,6 +3009,7 @@ private struct AppRunStep: Decodable, Sendable {
         case exitCode = "exit_code"
         case durationMS = "duration_ms"
         case nativeRecord = "native_record"
+        case verifiedPreviewDelivery = "verified_preview_delivery"
         case workflowStage = "workflow_stage"
     }
 }
@@ -3028,6 +3030,8 @@ private func stepRecordIsVerified(_ step: AppRunStep) -> Bool {
           let attributes = try? FileManager.default.attributesOfItem(atPath: path),
           (attributes[.posixPermissions] as? NSNumber)?.intValue == 0o600 else { return false }
     switch step.action {
+    case "preview_delivery_readback":
+        return step.verifiedPreviewDelivery?.matchesControlReceipt(receipt) == true
     case "registered_source_retrieval":
         guard receipt["operation"] as? String == "registered_source_retrieval",
               receipt["verification_mode"] as? String == RegisteredProjectSource.verificationMode,
@@ -3797,7 +3801,7 @@ private enum OS1Runner {
             "--desktop-reveal", "background",
         ]
         let savedResult = submissionID.flatMap { DeliveryOutbox().forSubmission($0.uuidString) }
-        if let storedID = deliveryID ?? savedResult?.id { arguments = ["resume-delivery", storedID] }
+        if !requireReadOnly, let storedID = deliveryID ?? savedResult?.id { arguments = ["resume-delivery", storedID] }
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: try executable())
@@ -5199,9 +5203,24 @@ private final class SessionStore: ObservableObject {
                     // "none" — the backend verified from real state that the
                     // interrupted attempt changed nothing — releases the
                     // uncertain-effect hold, and it buys exactly one resume of
-                    // the preserved objective. applied/partial/unknown keep
-                    // the hold and the owner's explicit retry button.
-                    if let verdictText = visibleSteps.last?.output,
+                    // the preserved objective. Applied clears only with independent
+                    // exact-preview delivery evidence; partial/unknown keep the hold.
+                    if let original = sessions[target].lastFailure,
+                       let final = visibleSteps.last,
+                       final.verifiedPreviewDelivery?.completes(originalRequest: original.request,
+                           effectsApplied: BackendRecovery.effectsVerdict(in: final.output) == .applied,
+                           nativeAdopted: allVerified && ["adopted", "control_verified"].contains(final.revasDisposition) && final.exitCode == 0) == true {
+                        // Exact current preview, public bytes, service, domain and deployment
+                        // independently verified. Clear only this objective; never replay it.
+                        sessions[target].lastFailure = nil
+                        sessions[target].lastBackendFailure = nil
+                        sessions[target].completedForkCheckpoint = ConversationForkCheckpoint(
+                            throughMessageID: sessions[target].messages.last?.id,
+                            source: sessions[target].sourceContext, context: sessions[target].taskContext)
+                        sessionStatuses[submission.sessionID] = os1Tr("배포 확인됨 · 재배포 없음", "Deployment verified · no redeployment")
+                        appendTaskEvent(conversationID: submission.sessionID, kind: "recovery_completed",
+                            summary: "Independent Railway and current preview verification completed the original deployment; no replay")
+                    } else if let verdictText = visibleSteps.last?.output,
                        BackendRecovery.effectsVerdict(in: verdictText) == .nothingApplied,
                        var original = sessions[target].lastFailure, original.recoveryParentID == nil,
                        original.readbackResumed != true || (original.resumedUnderBuild ?? 0) < installedBuildNumber,

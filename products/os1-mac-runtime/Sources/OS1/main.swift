@@ -649,6 +649,7 @@ struct RunStepSummary: Codable {
     let durationMS: Int64
     let nativeRecord: NativeRecordEvidence?
     var workflowStage: String? = nil
+    var verifiedPreviewDelivery: VerifiedPreviewDelivery? = nil
     var ownerPolicySourceSHA256: String? = OwnerPolicyContext.snapshot?.sourceSHA256
     var ownerPolicyProjectionSHA256: String? = OwnerPolicyContext.snapshot?.projectionSHA256
 
@@ -660,6 +661,7 @@ struct RunStepSummary: Codable {
         case exitCode = "exit_code"
         case durationMS = "duration_ms"
         case nativeRecord = "native_record"
+        case verifiedPreviewDelivery = "verified_preview_delivery"
         case workflowStage = "workflow_stage"
         case ownerPolicySourceSHA256 = "owner_policy_source_sha256"
         case ownerPolicyProjectionSHA256 = "owner_policy_projection_sha256"
@@ -6426,6 +6428,9 @@ func runTaskWithOwnerPolicy(
     heldOS1SourceRoot: String? = nil
 ) async throws -> RunSummary {
     RuntimeActivity.emit(.preparing)
+    if requireReadOnly, let verified = try await RailwayDelivery.recoverySummary(request: prompt) {
+        return verified
+    }
     let handoff = try SessionHandoff.decode(context)
     let objectiveRequest = TaskWorkflow.objectiveRequest(owner: ownerPrompt, executionPrompt: prompt)
     let sourceDetached = detachesConversationSource(objectiveRequest)
@@ -6476,6 +6481,16 @@ func runTaskWithOwnerPolicy(
         } else if preparation?.projectID == localProjectID {
             throw OS1Error.message("\(ProjectAdapterRegistry.label(for: localProjectID)) 소스 폴더를 찾지 못했습니다. 대화 폴더 \(requestedWorkspace)에는 \(LocalProjectWorkspace.marker(for: localProjectID) ?? "프로젝트 표식")이(가) 없고 등록된 프로젝트 목록에도 해당 소스 트리가 없습니다. 소스 체크아웃 폴더를 이 대화의 작업 폴더로 선택한 뒤 다시 요청하세요.")
         }
+    }
+    // A readback observes the previous operation; it must never mint a new
+    // deployment identity or ask the backend to redeploy just to match it.
+    let previewDeploymentTarget = PreviewTargetBinding.shouldBindNewDeployment(request: objectiveRequest, readOnly: requireReadOnly)
+        ? try await PreviewDeploymentTarget.resolve(request: objectiveRequest, requestID: executionID) : nil
+    if let target = previewDeploymentTarget {
+        canonicalWorkspace = target.workspace
+        taskState.setProject(TaskContext.ProjectBaseline(projectID: "workspace:" + URL(fileURLWithPath: target.workspace).lastPathComponent,
+            workspace: target.workspace), now: objectiveStartedAt)
+        RuntimeActivity.emit(.preparing, publicText: "요청한 로컬 미리보기의 실제 소스 폴더를 확인했습니다: \(target.workspace)")
     }
     var isDirectory: ObjCBool = false
     guard FileManager.default.fileExists(atPath: canonicalWorkspace, isDirectory: &isDirectory), isDirectory.boolValue else {
@@ -6739,17 +6754,18 @@ The newly supplied verified research map replaces that mismatched snapshot, not 
 Answer the current question using this map. Briefly acknowledge the earlier retrieval mismatch, then explain
 the actual completed work and remaining limits. Do not repeat the prior answer's archive-wide absence claim.
 """ : context
-    var workspaceContext = r2Evidence == nil ? WorkspaceDiscovery.context(workspace: canonicalWorkspace, prompt: prompt) : ""
+    var workspaceContext = r2Evidence == nil && previewDeploymentTarget == nil ? WorkspaceDiscovery.context(workspace: canonicalWorkspace, prompt: prompt) : ""
     // OS-1 working on OS-1: the backend gets the self-repair contract (how a
     // write task must finish: stage, never install by hand) and a read-only
     // task can answer capability questions truthfully.
-    if let os1Root = LocalProjectWorkspace.root(containing: canonicalWorkspace, projectID: "os1-clodex") {
+    if previewDeploymentTarget == nil, let os1Root = LocalProjectWorkspace.root(containing: canonicalWorkspace, projectID: "os1-clodex") {
         workspaceContext += "\n" + SelfUpdate.capabilityCard(root: os1Root, installedVersion: os1RuntimeVersionString,
             installedBuild: installedOS1Build(), sourceCommit: gitHead(os1Root), scope: "\(resolvedScope)",
             os1Executable: currentOS1Executable())
     }
     let sourcePayload = try retainedSourcePayload(taskContext, primary: sourceContext, evidence: r2Evidence)
     if resolvedScope == .workspaceWrite { workspaceContext += "\n" + ManagedPreview.capabilityCard + "\n" + WebsiteDelivery.capabilityCard }
+    if let target = previewDeploymentTarget { workspaceContext += "\n" + target.contract }
     let localPrompt = try providerPrompt(current: prompt, context: repairedContext,
         r2Evidence: sourcePayload, taskContext: taskContext.handoffBlock(), workspaceContext: workspaceContext,
         languageDirective: userSettings.outputLanguageDirective)
@@ -6837,8 +6853,8 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
         else { lastFailureNotice?.emit() }
     }
     var nativeSessions = [
-        "codex": try normalizedSessionID(repairedSource ? nil : codexSessionID),
-        "claude": try normalizedSessionID(repairedSource ? nil : claudeSessionID),
+        "codex": try normalizedSessionID(repairedSource || previewDeploymentTarget != nil ? nil : codexSessionID),
+        "claude": try normalizedSessionID(repairedSource || previewDeploymentTarget != nil ? nil : claudeSessionID),
     ]
     // An automatic readback is bounded separately: at most a probe plus one
     // eligible alternate. It never recursively starts another review.
@@ -7157,7 +7173,7 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
         // self-repair task can never end with the fix living only in the
         // working tree — which is exactly how the rail fix of 2026-09-16 was
         // "done" twice and never reached the owner's screen.
-        if TaskWorkflow.permitsSelfUpdate(stage: workflowStage, finalVerdict: nil), attemptFailure == nil, dispatchStage == .dispatched, execution.artifact.exitCode == 0,
+        if previewDeploymentTarget == nil, TaskWorkflow.permitsSelfUpdate(stage: workflowStage, finalVerdict: nil), attemptFailure == nil, dispatchStage == .dispatched, execution.artifact.exitCode == 0,
            ticket.permissionProfile == "workspace_write",
            let os1Root = LocalProjectWorkspace.root(containing: canonicalWorkspace, projectID: "os1-clodex") {
             switch completeOS1SelfRepair(root: os1Root, objective: prompt, startedAt: attemptStartedAt, startHead: os1StartHead) {
@@ -7188,11 +7204,13 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
             }
         }
         if attemptFailure == nil, execution.artifact.exitCode == 0, workflowStage != .architecture,
-           let failure = await RailwayDelivery.failure(output: execution.artifact.output, workspace: canonicalWorkspace) {
+           let failure = await RailwayDelivery.failure(output: execution.artifact.output, workspace: canonicalWorkspace, target: previewDeploymentTarget) {
             attemptFailure = failure
             execution = execution.appendingOutput("\nOS1_DELIVERY_BLOCK: " + failure)
             terminalPermissionFailure = OS1Error.message(failure)
         }
+        let verifiedPreviewDelivery = attemptFailure == nil && execution.artifact.exitCode == 0 && requireReadOnly
+            ? await RailwayDelivery.recoveredPreview(output: execution.artifact.output, workspace: canonicalWorkspace, request: prompt) : nil
         let artifact = execution.artifact
         let artifactData = try JSONEncoder().encode(artifact)
         let resultHash = sha256Hex(artifactData)
@@ -7214,7 +7232,7 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
         let pendingStep = RunStepSummary(sequence: ticket.sequence, provider: ticket.provider, action: ticket.action,
             model: model, effort: effort, revasDisposition: "verification_pending", sessionID: execution.sessionID,
             permissionProfile: ticket.permissionProfile, exitCode: artifact.exitCode, output: artifact.output,
-            stderr: artifact.stderr, durationMS: artifact.durationMS, nativeRecord: execution.nativeRecord)
+            stderr: artifact.stderr, durationMS: artifact.durationMS, nativeRecord: execution.nativeRecord, verifiedPreviewDelivery: verifiedPreviewDelivery)
         var delivery = DeliveryRecord(id: "\(ticket.executionID)-\(ticket.sequence)", apiURL: config.apiURL, deviceID: id,
             resultSHA256: resultHash, artifact: artifactData, upload: try JSONEncoder().encode(upload),
             submission: try JSONEncoder().encode(submission), step: try JSONEncoder().encode(pendingStep),
@@ -7400,7 +7418,8 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
                 output: artifact.output,
                 stderr: artifact.stderr,
                 durationMS: artifact.durationMS,
-                nativeRecord: adoptedRecord
+                nativeRecord: adoptedRecord,
+                verifiedPreviewDelivery: verifiedPreviewDelivery
             ))
         }
         if route.status == "failed" {
