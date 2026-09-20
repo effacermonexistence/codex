@@ -100,7 +100,7 @@ struct GovernanceMonitorView: View {
                 let value = await Task.detached(priority: .utility) { GovernanceActivityStore().snapshot() }.value
                 guard !Task.isCancelled else { return }
                 snapshot = value; refreshed = value.loadedAt; setBaseline()
-                try? await Task.sleep(for: .seconds(2))
+                try? await Task.sleep(for: .seconds(1))
             }
         }
         .onChange(of: provider) { _ in setBaseline() }
@@ -118,7 +118,7 @@ struct GovernanceMonitorView: View {
             }
             Spacer()
             Circle().fill(green).frame(width: 6, height: 6)
-            Text(preview ? "읽기 전용 미리보기" : "LIVE · 2초 갱신").font(.system(size: 11)).foregroundStyle(green)
+            Text(preview ? "읽기 전용 미리보기" : "LIVE · 1초 갱신").font(.system(size: 11)).foregroundStyle(green)
             Button { if let onClose { onClose() } else { dismiss() } } label: { Image(systemName: "xmark").frame(width: 26, height: 26) }
                 .buttonStyle(.plain).accessibilityLabel("Close governance monitor")
         }.padding(24)
@@ -170,7 +170,7 @@ struct GovernanceMonitorView: View {
         }.padding(13).background(green.opacity(0.045), in: RoundedRectangle(cornerRadius: 10))
     }
     private var tokenActivityPanel: some View {
-        panel("Token Activity · 실시간", subtitle: "Activity Monitor처럼 2초마다 갱신 · 입력+출력 실측 토큰 · 기준 경로: \(baseline.isEmpty ? "미선택" : short(baseline))") {
+        panel("Token Activity · 실시간", subtitle: "Activity Monitor처럼 1초마다 갱신 · 입력+출력 실측 토큰 · 기준 경로: \(baseline.isEmpty ? "미선택" : short(baseline))") {
             if measuredRows.isEmpty {
                 HStack(spacing: 10) {
                     Image(systemName: "chart.bar.xaxis").foregroundStyle(pink)
