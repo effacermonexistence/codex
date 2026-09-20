@@ -9108,6 +9108,8 @@ private enum TimelinePalette {
     static let green = NSColor(calibratedRed: 0.28, green: 0.93, blue: 0.55, alpha: 1)
     static let codex = NSColor(calibratedRed: 0.95, green: 0.64, blue: 0.80, alpha: 1)
     static let claude = NSColor(calibratedRed: 0.98, green: 0.53, blue: 0.68, alpha: 1)
+    // User bubbles share the app's pink family while staying readable against the dark transcript.
+    static let userBubble = NSColor(calibratedRed: 0.62, green: 0.24, blue: 0.43, alpha: 1)
 }
 
 private func timelineNormalizedText(_ value: String) -> String {
@@ -9413,7 +9415,7 @@ private final class ContinuousTranscriptTextView: NSTextView {
         for frame in timelineFrames() {
             switch frame.role {
             case MessageRole.user.rawValue:
-                drawRoundedBackground(frame.paint, fill: TimelinePalette.panelRaised, stroke: NSColor.clear, dirtyRect: dirtyRect)
+                drawRoundedBackground(frame.paint, fill: TimelinePalette.userBubble, stroke: NSColor.clear, dirtyRect: dirtyRect)
             case MessageRole.receipt.rawValue:
                 drawRoundedBackground(frame.paint, fill: NSColor.clear, stroke: NSColor.clear, dirtyRect: dirtyRect)
             case "queued":
