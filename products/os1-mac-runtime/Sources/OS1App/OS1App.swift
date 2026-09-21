@@ -1437,31 +1437,66 @@ private func steeringVisibilitySelfTest() async throws {
     try check(store.queuedSubmissions.count == 1 && rows(stuck).count == 1 && state(stuck) == .waiting,
         "a blocked steer left the owner's sentence invisible in the queue")
 
+    // The queue's own arrow is an explicit acceptance too. An ordinary queued
+    // follow-up stays in the queue panel only until the owner presses it, and
+    // becomes a visible bubble the moment they do — even when the run is
+    // cancelling and can neither take it nor start it.
+    let arrow = "그 다음에 이 요청도 이어서 처리해."
+    store.composer = arrow; store.send()
+    let pressed = store.queuedSubmissions.first { $0.request == arrow }!
+    try check(rows(arrow).isEmpty, "an unpressed ordinary queue request was written into the transcript")
+    try check(!store.canSteerQueued(pressed) && !store.canAdvanceQueued(pressed),
+        "the cancelling run could take or start the queued request")
+    store.advanceQueued(pressed.id, ownerRequested: true)
+    try check(rows(arrow).count == 1 && state(arrow) == .waiting,
+        "the queue arrow left the owner's pressed request invisible")
+    try check(store.queuedSubmissions.contains { $0.id == pressed.id } && starts.count == beforeStuck,
+        "the queue arrow consumed the preserved request or started a turn")
+
+    // A correction that arrived while the turn could not take it is visible
+    // from arrival. Pressing the arrow once the turn can take it hands over
+    // that same row instead of writing a second copy.
+    let steered = "그 말이 아니라, 대기열 화살표로 지금 반영해."
+    store.composer = steered; store.send()
+    let queuedSteer = store.queuedSubmissions.first { $0.request == steered }!
+    try check(rows(steered).count == 1 && state(steered) == .waiting, "a live-turn amendment was not shown on arrival")
+    store.activeRuns[id]?.cancellationRequested = false
+    store.advanceQueued(queuedSteer.id, ownerRequested: true)
+    try check(rows(steered).count == 1 && state(steered) == .pending,
+        "the queue arrow duplicated the sentence or did not hand it over")
+    try check(mailbox.inputs(active.submissionID).count == 3, "the queue arrow did not reach the run")
+
     // Restart: every sentence survives exactly once, confirmed delivery stays
     // confirmed, and nothing keeps claiming a hand-off that cannot happen.
     store.flushPendingState()
     let reloaded = SessionStore(storageRoot: root)
     let restored = reloaded.sessions.first { $0.id == id }!.messages.filter { $0.role == .user }
-    for text in [cold, live, stuck] {
+    for text in [cold, live, stuck, arrow, steered] {
         try check(restored.filter { $0.text == text }.count == 1, "restart lost or duplicated a steered input")
     }
     try check(restored.first { $0.text == cold }?.steeringDelivery == .delivered, "restart lost a confirmed delivery")
-    try check(restored.first { $0.text == live }?.steeringDelivery == .undelivered,
-        "restart kept claiming an unconfirmed hand-off was still in flight")
-    try check(reloaded.queuedSubmissions.count == 1 &&
-        restored.first { $0.text == stuck }?.steeringDelivery == .waiting,
+    for text in [live, steered] {
+        try check(restored.first { $0.text == text }?.steeringDelivery == .undelivered,
+            "restart kept claiming an unconfirmed hand-off was still in flight")
+    }
+    try check(reloaded.queuedSubmissions.map(\.request) == [stuck, arrow] &&
+        [stuck, arrow].allSatisfy { text in
+            restored.first { row in row.text == text }?.steeringDelivery == .waiting
+        },
         "a request still waiting in the queue lost its preserved request or its state")
 
-    // Cancelling the queued request retires the row it created, and never
+    // Cancelling a queued request retires the row it created, and never
     // touches a sentence the run already received.
-    store.removeQueued(store.queuedSubmissions[0].id)
-    try check(rows(stuck).isEmpty && rows(cold).count == 1 && rows(live).count == 1,
-        "cancelling a queued request left a phantom bubble or removed a delivered one")
+    for item in store.queuedSubmissions { store.removeQueued(item.id) }
+    try check(rows(stuck).isEmpty && rows(arrow).isEmpty,
+        "cancelling a queued request left a phantom bubble")
+    try check(rows(cold).count == 1 && rows(live).count == 1 && rows(steered).count == 1,
+        "cancelling a queued request removed a delivered sentence")
 
     gates.removeValue(forKey: id)!.resume()
     try await eventually { !store.isSessionRunning(id) }
     try check(starts.count == 1, "the visible steering path started an extra turn")
-    try check(state(cold) == .delivered && state(live) == .undelivered,
+    try check(state(cold) == .delivered && state(live) == .undelivered && state(steered) == .undelivered,
         "run completion did not settle the visible delivery states")
     print("Steering visibility: \(checks) checks passed; model calls 0; immediate bubble/pending-vs-delivered/no-duplicate/restart")
 }
@@ -5021,8 +5056,13 @@ private final class SessionStore: ObservableObject {
     /// Explicit queue action; native steering where possible, otherwise a
     /// durable next-run intent. Cancellation is acknowledged by run termination,
     /// not by writing its marker. The existing admission remains held until then.
-    func advanceQueued(_ id: UUID) {
+    func advanceQueued(_ id: UUID, ownerRequested: Bool = false) {
         guard let item = queuedSubmissions.first(where: { $0.id == id }) else { return }
+        // The owner pressed this request's own action, so it is accepted now.
+        // It belongs in the transcript immediately whether it reaches the live
+        // turn, waits behind a state check, or starts as the next turn. A
+        // request nobody pressed stays in the queue panel only.
+        if ownerRequested { showAcceptedSteeringInput(item) }
         if canSteerQueued(item) { steerQueued(id); return }
         if !canAdvanceQueued(item), canReconcileQueued(item) {
             beginReconciliation(conversationID: item.sessionID)
@@ -9545,8 +9585,8 @@ private func steeringDeliveryCaption(_ state: SteeringDeliveryState?) -> [(Strin
     guard let state else { return [] }
     let (text, color): (String, NSColor)
     switch state {
-    case .waiting: (text, color) = ("전달 대기 · 현재 작업에 전달을 준비 중입니다", TimelinePalette.muted)
-    case .pending: (text, color) = ("전달 대기 · 현재 작업의 수신 확인 중입니다", TimelinePalette.muted)
+    case .waiting: (text, color) = ("전달 대기 · 아직 백엔드에 전달되지 않았습니다", TimelinePalette.muted)
+    case .pending: (text, color) = ("전달 대기 · 현재 작업에 전달했고 수신 확인 중입니다", TimelinePalette.muted)
     case .delivered: (text, color) = ("전달 완료 · 현재 작업이 입력을 받았습니다", TimelinePalette.green)
     case .rejected: (text, color) = ("전달 거절됨 · 입력은 보존했습니다", TimelinePalette.pink)
     case .undelivered: (text, color) = ("전달되지 않음 · 입력은 보존했습니다", TimelinePalette.muted)
@@ -10460,7 +10500,7 @@ private struct ConversationQueueView: View {
                         HStack(alignment: .center, spacing: 6) {
                             Text(item.request).lineLimit(2).frame(maxWidth: .infinity, alignment: .leading)
                                 .help(item.request)
-                            Button { store.advanceQueued(item.id) } label: {
+                            Button { store.advanceQueued(item.id, ownerRequested: true) } label: {
                                 Image(systemName: "arrow.up").frame(width: 26, height: 26)
                             }.buttonStyle(.plain)
                                 .disabled(!store.canSteerQueued(item) && !store.canAdvanceQueued(item) && !store.canReconcileQueued(item))
