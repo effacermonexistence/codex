@@ -6914,6 +6914,9 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
     let sourcePayload = try retainedSourcePayload(taskContext, primary: sourceContext, evidence: r2Evidence)
     if resolvedScope == .workspaceWrite { workspaceContext += "\n" + ManagedPreview.capabilityCard + "\n" + WebsiteDelivery.capabilityCard }
     if let target = previewDeploymentTarget { workspaceContext += "\n" + target.contract }
+    if let validation = TaskWorkflow.validationContract(ownerRequest: objectiveRequest, scope: resolvedScope) {
+        workspaceContext += "\n" + validation
+    }
     let localPrompt = try providerPrompt(current: prompt, context: repairedContext,
         r2Evidence: sourcePayload, taskContext: taskContext.handoffBlock(), workspaceContext: workspaceContext,
         languageDirective: userSettings.outputLanguageDirective)

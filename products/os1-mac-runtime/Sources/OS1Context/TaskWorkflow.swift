@@ -8,8 +8,40 @@ public enum TaskWorkflow: String, Codable, Sendable, CaseIterable {
     case implementation
     case verification
 
+    /// A narrow owner-request fast path. Product names alone do not make a
+    /// spacing edit an architecture task. Mixed/structural requests fail closed.
+    public static func isBoundedAppearanceEdit(_ request: String) -> Bool {
+        let text = request.precomposedStringWithCanonicalMapping.lowercased()
+        guard text.count <= 1200 else { return false }
+        let surface = ["ui", "interface", "인터페이스", "사이드바", "sidebar", "화면", "버튼", "button", "헤더", "header"]
+        let cosmetic = ["여백", "공백", "간격", "padding", "spacing", "margin", "폰트", "글자체", "font", "색상", "색깔", "color", "corner radius"]
+        let edit = ["수정", "고쳐", "바꿔", "줄여", "올려", "없애", "fix", "change", "reduce", "remove", "adjust"]
+        let structural = ["라우팅", "routing", "router", "아키텍", "architecture", "backend", "백엔드", "백핸드", "quota", "쿼터", "인증", "로그인", "auth", "권한", "permission", "schema", "스키마", "migration", "마이그레이션", "telemetry", "실시간", "stream", "스티어링", "steering", "queue", "대기열", "복구", "restore", "데이터", "database", "저장", "persistence", "deadlock", "교착", "원인", "root cause", "멈", "freeze", "hanging", "hung", "crash", "충돌", "api", "보안", "security", "접근성", "accessibility", "키보드", "keyboard", "동작", "behavior", "전체 테스트", "모든 테스트", "전체 검증", "전수", "full test", "all test", "full suite", "end-to-end", "e2e"]
+        return surface.contains(where: text.contains)
+            && cosmetic.contains(where: text.contains)
+            && edit.contains(where: text.contains)
+            && !structural.contains(where: text.contains)
+    }
+
+    public static func validationContract(ownerRequest: String, scope: TaskContext.Scope) -> String? {
+        guard scope == .workspaceWrite, isBoundedAppearanceEdit(ownerRequest) else { return nil }
+        return """
+        OS1 VALIDATION PROFILE: BOUNDED_APPEARANCE_EDIT
+        This owner request is a bounded visual change, not a new architecture.
+        Inspect the target view and preserve existing work. Implement the smallest change.
+        Validate with the affected layout regression, one build, and one actual render/UI observation.
+        Do not expand this task into a full runtime/fleet test battery or another model review unless
+        the diff changes behavior/shared runtime logic or the owner explicitly requests that coverage.
+        A failed renderer is a verification limitation, not a reason to repeat the same render/build loop.
+        Use a different available UI observation once; if unavailable, report that exact limitation.
+        Report source, build, installed state and visible effect separately. Existing self-update,
+        permission, rollback and installation gates remain authoritative; do not bypass them.
+        """
+    }
+
     public static func shouldDecompose(_ request: String, scope: TaskContext.Scope) -> Bool {
         guard scope == .workspaceWrite else { return false }
+        if isBoundedAppearanceEdit(request) { return false }
         let text = request.precomposedStringWithCanonicalMapping.lowercased()
         let substantial = ["오토메이션", "automation", "아키텍처", "architecture",
                            "통합", "integration", "integrate", "워크플로", "workflow", "파이프라인", "pipeline",

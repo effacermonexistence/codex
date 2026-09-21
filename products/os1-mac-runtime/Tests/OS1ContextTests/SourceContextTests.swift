@@ -96,6 +96,17 @@ final class SourceContextTests {
         print("OS-1 source context and output: 13 regression groups passed")
     }
     func testTaskWorkflowRouting() {
+        // Cosmetic work stays a single implementation; mixed runtime changes do not.
+        for request in ["OS1 사이드바 위쪽 공백 줄여", "Fix OS-1 sidebar top padding and verify the layout.", "OS1 화면 버튼 색상 바꿔", "Change OS1 sidebar spacing"] {
+            XCTAssertTrue(TaskWorkflow.isBoundedAppearanceEdit(request))
+            XCTAssertFalse(TaskWorkflow.shouldDecompose(request, scope: .workspaceWrite))
+            XCTAssertNotNil(TaskWorkflow.validationContract(ownerRequest: request, scope: .workspaceWrite))
+            XCTAssertNil(TaskWorkflow.validationContract(ownerRequest: request, scope: .readOnly))
+        }
+        for request in ["OS1 사이드바 여백 수정하고 라우팅 고쳐", "Fix OS1 sidebar spacing and backend quota", "OS1 화면 간격 수정하고 전체 테스트 해", "Fix OS1 sidebar spacing and hanging tasks", "Fix OS1 sidebar spacing and accessibility", "Explain OS1 sidebar spacing", "OS1 고쳐"] {
+            XCTAssertFalse(TaskWorkflow.isBoundedAppearanceEdit(request))
+            XCTAssertNil(TaskWorkflow.validationContract(ownerRequest: request, scope: .workspaceWrite))
+        }
         precondition(SelfUpdate.secretPatternHit("task-workflow-build155-live-receipt.json") == nil)
         let syntheticToken = "sk-" + String(repeating: "a", count: 32)
         precondition(SelfUpdate.secretPatternHit("key=\"" + syntheticToken + "\"") != nil)

@@ -70,7 +70,7 @@ func selfRepairCommand(_ arguments: [String]) async throws -> Bool {
 /// Shared with the runtime hook in main.swift.
 let selfRepairFailurePrefixText = "OS-1 self-repair could not complete: "
 
-let os1RuntimeVersionString = "OS-1 Runtime 0.9.145 (self-repair-build211)"
+let os1RuntimeVersionString = "OS-1 Runtime 0.9.147 (self-repair-build213)"
 
 /// Serialize source edits without dropping a queued request after three minutes.
 /// flock ownership, not a stale lock-file timestamp, determines availability.
