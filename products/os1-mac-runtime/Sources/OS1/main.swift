@@ -4523,7 +4523,7 @@ final class CodexAppServerClient: @unchecked Sendable {
         if let model { params["model"] = model }
 
         let result: [String: Any]
-        var forkedFromDesktopOwnedThread = false
+        let forkedFromDesktopOwnedThread = false
         if let existingSessionID {
             params["threadId"] = existingSessionID
             params["excludeTurns"] = true
@@ -4532,15 +4532,13 @@ final class CodexAppServerClient: @unchecked Sendable {
             } catch {
                 guard codexWriterConflictMessage(error, threadID: existingSessionID) != nil else { throw error }
 
-                // Opening an OS-1 thread in Codex Desktop deliberately gives
-                // Desktop the single writer lock. Preserve continuity without
-                // asking the user to quit Desktop: fork the complete persisted
-                // history into a new first-class thread and execute there.
-                var forkParams = params
-                forkParams["ephemeral"] = false
-                forkParams["threadSource"] = "os1"
-                result = try request("thread/fork", params: forkParams, deadline: deadline)
-                forkedFromDesktopOwnedThread = true
+                // Desktop owns this exact thread. Do not fork it or steal its
+                // writer lock. The Desktop transport will resume it in-place.
+                let read = try request("thread/read", params: ["threadId": existingSessionID, "includeTurns": false], deadline: deadline)
+                guard let thread = read["thread"] as? [String: Any], thread["id"] as? String == existingSessionID else {
+                    throw OS1Error.message("Desktop-owned thread identity mismatch")
+                }
+                return existingSessionID
             }
         } else {
             params["ephemeral"] = false
@@ -4600,6 +4598,20 @@ final class CodexAppServerClient: @unchecked Sendable {
         }
         try makeVisible(threadID: threadID, deadline: deadline)
         return threadID
+    }
+
+    /// Prepare only. A real developer message persists a new empty thread;
+    /// no assistant output or completed turn is invented for Desktop discovery.
+    func persistDesktopHandoff(threadID: String, instructions: String, deadline: Date) throws {
+        _ = try request("thread/inject_items", params: ["threadId": threadID, "items": [[
+            "type": "message", "role": "developer", "content": [["type": "input_text", "text": instructions]]
+        ]]], deadline: deadline)
+    }
+
+    func observeDesktopTurn(threadID: String, turnID: String, deadline: Date) throws -> [String: Any]? {
+        let result = try request("thread/turns/list", params: ["threadId": threadID, "limit": 20,
+            "itemsView": "full", "sortDirection": "desc"], deadline: deadline)
+        return (result["data"] as? [[String: Any]])?.first { $0["id"] as? String == turnID }
     }
 
     func runTurn(
@@ -4939,6 +4951,101 @@ final class CodexAppServerClient: @unchecked Sendable {
     }
 }
 
+/// Desktop executes and supplies live owner snapshots. No second writer
+/// and no CLI fallback after a possibly delivered start request.
+func runCodexDesktopTurn(executable: String, threadID: String, prompt: String, workspace: String,
+                         model: String?, effort: String, permissionProfile: String, instructions: String, deadline: Date,
+                         onDispatch: () -> Void) throws -> CodexTurnOutput {
+    try CodexDesktopTransport.ensureRunning(threadID: threadID)
+    var connection: CodexDesktopTransport?
+    let discoveryDeadline = min(deadline, Date().addingTimeInterval(20))
+    while Date() < discoveryDeadline {
+        if ExecutionCancellation.isCancelled { throw OS1Error.backendBlocked(.cancelled) }
+        do {
+            let candidate = try CodexDesktopTransport()
+            try candidate.discover(threadID: threadID)
+            connection = candidate; break
+        } catch { Thread.sleep(forTimeInterval: 0.5) }
+    }
+    guard let desktop = connection else { throw OS1Error.message("Codex Desktop did not acknowledge ownership; no task was started") }
+    let sandbox: [String: Any]
+    switch permissionProfile {
+    case "read_only": sandbox = ["type": "readOnly", "networkAccess": true]
+    case "workspace_write": sandbox = ["type": "workspaceWrite", "writableRoots": [workspace], "networkAccess": true]
+    default: throw OS1Error.message("Server ticket permission profile rejected")
+    }
+    var input: [[String: Any]] = [CodexDesktopTransport.textInput(prompt)]
+    for path in PromptAttachments.imagePaths(in: prompt).prefix(8) where FileManager.default.isReadableFile(atPath: path) {
+        input.append(["type": "localImage", "path": path])
+    }
+    var request: [String: Any] = ["threadId": threadID, "input": input, "cwd": workspace,
+        "effort": effort, "approvalPolicy": UnifiedExecution.codexApprovalPolicy,
+        "approvalsReviewer": UnifiedExecution.codexApprovalsReviewer, "sandboxPolicy": sandbox,
+        "runtimeWorkspaceRoots": [workspace], "turnTrigger": "os1"]
+    if let model { request["model"] = model }
+    onDispatch()
+    let turnID = try desktop.startTurn(threadID: threadID, request: request,
+        context: ["inheritThreadSettings": false,
+            "responseItems": [["type": "message", "role": "developer",
+                "content": [["type": "input_text", "text": instructions]]]]], deadline: deadline)
+    RuntimeActivity.emit(.executing, provider: "codex", model: model, effort: effort, nativeSessionID: threadID)
+    let mailbox = ExecutionSteering()
+    if let submission = ExecutionSteering.currentSubmission {
+        try ManagedNativeTurns(root: mailbox.root.deletingLastPathComponent().appendingPathComponent("managed-native-turns"))
+            .record(submissionID: submission, threadID: threadID, turnID: turnID)
+        try mailbox.open(submissionID: submission, threadID: threadID, turnID: turnID)
+    }
+    defer { if let submission = ExecutionSteering.currentSubmission { mailbox.close(submission) } }
+    defer { try? desktop.follow(threadID: threadID, following: false) }
+    var previous = ""
+    while Date() < deadline {
+        if ExecutionCancellation.isCancelled {
+            _ = try? desktop.request("thread-follower-interrupt-turn", version: 4, params: [
+                "conversationId": threadID, "expectedTurnId": turnID, "mode": "user-stop"])
+            throw OS1Error.backendBlocked(.cancelled)
+        }
+        if let submission = ExecutionSteering.currentSubmission {
+            for correction in mailbox.inputs(submission) where mailbox.receipt(correction) == nil {
+                if protectedRouteMaterialInEvidence(correction.text) {
+                    try mailbox.record(correction, state: .rejected, threadID: threadID, turnID: turnID); continue
+                }
+                guard let active = try desktop.observeTurn(threadID: threadID, turnID: turnID, deadline: deadline),
+                      active["status"] as? String == "inProgress" else {
+                    try mailbox.record(correction, state: .rejected, threadID: threadID, turnID: turnID); continue
+                }
+                try mailbox.record(correction, state: .sending, threadID: threadID, turnID: turnID)
+                let acknowledgement = try desktop.request("thread-follower-steer-turn", version: 1, params: [
+                    "conversationId": threadID, "input": [CodexDesktopTransport.textInput(correction.text)]])
+                let result = acknowledgement["result"] as? [String: Any]
+                let accepted = (result?["turnId"] as? String) == turnID
+                try mailbox.record(correction, state: accepted ? .accepted : .rejected, threadID: threadID, turnID: turnID)
+            }
+        }
+        if let current = try desktop.observeTurn(threadID: threadID, turnID: turnID, deadline: deadline) {
+            let items = current["items"] as? [[String: Any]] ?? []
+            let agents = items.filter { $0["type"] as? String == "agentMessage" }
+            let progress = agents.compactMap { $0["text"] as? String }.joined(separator: "\n\n")
+            if progress != previous {
+                previous = progress
+                RuntimeActivity.emit(.executing, provider: "codex", publicText: progress)
+            }
+            if let blocker = codexTurnBlocker(current, approvalRejected: false) { throw OS1Error.backendBlocked(blocker) }
+            let status = current["status"] as? String
+            if status == "completed" {
+                guard let final = (agents.last(where: { $0["phase"] as? String == "final_answer" }) ?? agents.last)?["text"] as? String else {
+                    throw OS1Error.message("Desktop completed without a final answer")
+                }
+                return CodexTurnOutput(turnID: turnID, output: Data(final.utf8))
+            }
+            if status == "failed" || status == "interrupted" { throw OS1Error.message("Desktop turn ended without completion") }
+        }
+        Thread.sleep(forTimeInterval: 0.5)
+    }
+    _ = try? desktop.request("thread-follower-interrupt-turn", version: 4, params: [
+        "conversationId": threadID, "expectedTurnId": turnID, "mode": "system"])
+    throw OS1Error.message("Desktop turn timed out; preserved for inspection, not replayed")
+}
+
 struct CodexTurnOutput {
     let turnID: String
     let output: Data
@@ -4986,13 +5093,12 @@ func codexTurnIsPersisted(_ turns: Any?, turnID: String, finalAnswer: String, co
 let codexDesktopBundleID = "com.openai.codex"
 
 /// Codex threads have a single writer: whichever app-server process opens a
-/// thread takes `~/.codex/thread-writer-locks/<id>.lock` and Codex Desktop
-/// keeps every thread it has opened locked until it quits. OS-1 therefore
-/// forks the persisted history on the next turn when Desktop owns the prior
-/// thread, instead of failing or pretending that the session is synchronized.
+/// thread takes `~/.codex/thread-writer-locks/<id>.lock`. Execution now goes
+/// through the Desktop owner; persisted-record reveal remains a separate
+/// compatibility path and is not proof that a turn is currently running.
 enum DesktopRevealMode: String {
-    // `background` is retained for existing callers, but is record-only. A URL
-    // recipient may activate itself even when `open -g` requested background.
+    // `background` is retained for existing callers, but is record-only.
+    // Automatic backend startup never sends a thread URL to the desktop.
     case never, background, always
 }
 
@@ -5117,6 +5223,8 @@ func publishAdoptedNativeRecord(
     guard record.persistence == "verified" else { return record }
     let visibility: String
     switch provider {
+    case "codex" where record.desktopVisibility == "desktop_owned":
+        visibility = "desktop_owned"
     case "codex":
         visibility = codexDesktopVisibility(
             mode: mode,
@@ -5311,7 +5419,7 @@ private func execute(
         // first turn. Once the process starts, absent local diffs cannot prove
         // that replaying a write-profile objective would be safe.
         let appServer = try CodexAppServerClient(executable: codex, workspace: workspace,
-            onLaunch: { onDispatch?(expectedSessionID) }, submissionID: ExecutionSteering.currentSubmission)
+            submissionID: nil)
         defer { appServer.close() }
         try appServer.initialize(deadline: deadline)
         guard let model, try appServer.models(deadline: min(deadline, Date().addingTimeInterval(12))).contains(where: {
@@ -5326,20 +5434,23 @@ private func execute(
             title: codexSessionTitle(from: lockedObjective),
             deadline: deadline
         )
+        // Release the preparation writer before Desktop opens the same thread.
+        // Existing Desktop-owned history already carries its developer context;
+        // fresh threads receive the full governed instructions before handoff.
+        if expectedSessionID == nil {
+            try appServer.persistDesktopHandoff(threadID: actualSessionID, instructions: instructions, deadline: deadline)
+        }
+        appServer.close()
         let turn: CodexTurnOutput
-        do { turn = try appServer.runTurn(
-            threadID: actualSessionID,
-            prompt: prompt,
-            workspace: workspace,
-            model: model,
-            effort: effort,
-            permissionProfile: ticket.permissionProfile,
-            deadline: deadline,
-            onDispatch: { onDispatch?(actualSessionID) }
-        ) } catch {
+        do {
+            turn = try runCodexDesktopTurn(executable: codex, threadID: actualSessionID,
+                prompt: prompt, workspace: workspace, model: model, effort: effort,
+                permissionProfile: ticket.permissionProfile, instructions: instructions, deadline: deadline,
+                onDispatch: { onDispatch?(actualSessionID) })
+        } catch {
             throw interruptedExecution(ticket: ticket, model: model, effort: effort, contract: executorContract,
-                sessionID: actualSessionID, publicProgress: appServer.interruptedPublicProgress,
-                beforeHash: workspaceBeforeHash, workspace: executionWorkspace, started: started, cause: error)
+                sessionID: actualSessionID, publicProgress: "", beforeHash: workspaceBeforeHash,
+                workspace: executionWorkspace, started: started, cause: error)
         }
         // Account for this exact native turn before any quality guard rejects
         // it. Never hide a second paid repair inside one signed route ticket.
@@ -5419,7 +5530,7 @@ private func execute(
             turnID: turn.turnID,
             recordPath: recordPath,
             persistence: persistence,
-            desktopVisibility: "pending_adoption"
+            desktopVisibility: "desktop_owned"
         )
         sessionID = actualSessionID
     } else {

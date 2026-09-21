@@ -105,6 +105,11 @@ public struct GovernanceComparison: Identifiable, Sendable {
     public let tokenSavings: Double?
     public let adoptionDelta: Double
     public let latencySavings: Double?
+    /// Equal-weight matched-scope observations. Nil unless every attempt in
+    /// every matched scope has supported usage; these are descriptive, not a
+    /// causal estimate of model or governance uplift.
+    public var baselineMeanTokens: Double? = nil
+    public var candidateMeanTokens: Double? = nil
     /// Cost per one-click-completed task, candidate vs baseline (positive =
     /// candidate cheaper per completion). Nil until both routes completed one.
     public var completionCostSavings: Double? = nil
@@ -113,6 +118,10 @@ public struct GovernanceComparison: Identifiable, Sendable {
 public struct GovernanceBucket: Identifiable, Sendable {
     public var id: Date
     public var completions = 0
+    /// Adopted tasks for which no owner retry/correction was recorded.
+    public var firstPassCompletions = 0
+    /// Adopted tasks for which an owner retry/correction was recorded.
+    public var ownerAssistedCompletions = 0
     public var nonAdopted = 0
     public var tokens = 0
     public var measured = 0
@@ -233,14 +242,19 @@ public struct GovernanceSnapshot: Sendable {
                 timeA.append(ams); timeB.append(bms)
             }
             guard count > 0 else { return nil }
+            let completeMatchedUsage = tokenA.count == count && tokenB.count == count
+            let baselineMeanTokens: Double? = completeMatchedUsage ? tokenA.reduce(0, +) / Double(count) : nil
+            let candidateMeanTokens: Double? = completeMatchedUsage ? tokenB.reduce(0, +) / Double(count) : nil
             let rows = routes(since: since, includeHistorical: includeHistorical)
             let baselineCost = rows.first { $0.id == baseline }?.tokensPerCompletedTask
             let candidateCost = rows.first { $0.id == route }?.tokensPerCompletedTask
             var comparison = GovernanceComparison(id: route, baseline: baseline, matchedScopes: count,
                 candidateAttempts: candidateN, baselineAttempts: baselineN,
-                tokenSavings: tokenA.count == count ? GovernanceStatistics.savings(baseline: tokenA.reduce(0,+), candidate: tokenB.reduce(0,+)) : nil,
+                tokenSavings: completeMatchedUsage ? GovernanceStatistics.savings(baseline: tokenA.reduce(0,+), candidate: tokenB.reduce(0,+)) : nil,
                 adoptionDelta: adoptionDeltas.reduce(0,+) / Double(count),
                 latencySavings: timeA.count == count ? GovernanceStatistics.savings(baseline: timeA.reduce(0,+), candidate: timeB.reduce(0,+)) : nil)
+            comparison.baselineMeanTokens = baselineMeanTokens
+            comparison.candidateMeanTokens = candidateMeanTokens
             if let baselineCost, let candidateCost {
                 comparison.completionCostSavings = GovernanceStatistics.savings(baseline: baselineCost, candidate: candidateCost)
             }
@@ -255,7 +269,12 @@ public struct GovernanceSnapshot: Sendable {
         for task in tasks {
             if let end = task.endedAt, end >= since, end <= until {
                 let k = key(end); var b = buckets[k] ?? GovernanceBucket(id: k)
-                if task.isAdopted { b.completions += 1 } else { b.nonAdopted += 1 }; buckets[k] = b
+                if task.isAdopted {
+                    b.completions += 1
+                    if task.isFirstPass { b.firstPassCompletions += 1 }
+                    if task.ownerRetryAt != nil { b.ownerAssistedCompletions += 1 }
+                } else { b.nonAdopted += 1 }
+                buckets[k] = b
             }
             for attempt in task.attempts {
                 guard let o = attempt.observation else { continue }

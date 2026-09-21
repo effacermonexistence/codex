@@ -3146,6 +3146,7 @@ private func nativeRecordReceipt(_ step: AppRunStep) -> String {
     switch record.desktopVisibility {
     case "local_only": parts.append("local exact receipt persisted")
     case "control_only": parts.append("local control receipt persisted")
+    case "desktop_owned": parts.append("Codex Desktop: same thread executed in app")
     case "revealed": parts.append("Codex Desktop: synced and opened")
     case "claude_revealed": parts.append("Claude Desktop: synced and opened")
     case "registered_in_background": parts.append("Codex Desktop: synced in background")
@@ -7076,7 +7077,8 @@ private struct OS1DesktopApp: App {
             do {
                 guard CommandLine.arguments.count > flag + 1 else { throw SourceContextError.invalid }
                 let output = URL(fileURLWithPath: CommandLine.arguments[flag + 1])
-                let content = GovernanceMonitorView(preview: true, snapshot: GovernanceActivityStore().snapshot())
+                let initialSection = CommandLine.arguments.count > flag + 2 ? CommandLine.arguments[flag + 2] : "실시간"
+                let content = GovernanceMonitorView(preview: true, snapshot: GovernanceActivityStore().snapshot(), previewSection: initialSection)
                     .frame(width: 1080, height: 1250).environment(\.colorScheme, .dark)
                 let view = NSHostingView(rootView: content)
                 view.frame = NSRect(x: 0, y: 0, width: 1080, height: 1250); view.layoutSubtreeIfNeeded()
@@ -8831,6 +8833,17 @@ private struct SessionRow: View {
                     Spacer(minLength: 0)
                     if queuedCount > 0 { Text("대기 \(queuedCount)").font(.system(size: 10)).foregroundStyle(Theme.pink) }
                 }
+                if let activity {
+                    HStack(spacing: 5) {
+                        Text(providerDisplayName(activity.provider))
+                        if let model = activity.model, !model.isEmpty { Text(model) }
+                        Text("· 수렴 단계 \(activity.convergenceLabel)")
+                        Spacer(minLength: 0)
+                    }
+                    .font(.system(size: 9, weight: .medium))
+                    .foregroundStyle(Theme.pink.opacity(0.9))
+                    .lineLimit(1)
+                }
             }
             .padding(.horizontal, 13)
             .padding(.vertical, 9)
@@ -8847,6 +8860,78 @@ private struct SessionRow: View {
             .clipShape(RoundedRectangle(cornerRadius: 11))
         }
         .buttonStyle(.plain)
+    }
+}
+
+private extension RuntimeActivity {
+    /// Public execution convergence is a phase/signal indicator only. The
+    /// model's private convergence value is not exposed by the runtime.
+    var convergenceLabel: String {
+        switch phase {
+        case .preparing: return "준비"
+        case .source: return "자료"
+        case .authorizing: return "승인"
+        case .routing: return "라우팅"
+        case .executing: return "실행"
+        case .verifying: return "검증"
+        case .syncing: return "동기화"
+        case .recovering: return "복구"
+        }
+    }
+}
+
+private struct SessionExecutionBadge: View {
+    let session: ConversationSession
+    let activity: RuntimeActivity
+    let compact: Bool
+
+    private var sessionID: String? {
+        activity.nativeSessionID
+            ?? (activity.provider == ProviderChoice.codex.rawValue ? session.codexSessionID : nil)
+            ?? (activity.provider == ProviderChoice.claude.rawValue ? session.claudeSessionID : nil)
+    }
+
+    private var providerTitle: String {
+        providerDisplayName(activity.provider)
+    }
+
+    var body: some View {
+        HStack(spacing: compact ? 5 : 7) {
+            Circle().fill(Theme.green).frame(width: compact ? 5 : 6, height: compact ? 5 : 6)
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 5) {
+                    Text("실행 세션")
+                        .font(.system(size: compact ? 9 : 10, weight: .bold))
+                    Text(providerTitle)
+                        .font(.system(size: compact ? 9 : 10, weight: .semibold))
+                    if let model = activity.model, !model.isEmpty {
+                        Text(model).font(.system(size: compact ? 9 : 10)).foregroundStyle(Theme.muted)
+                    }
+                    if let effort = activity.effort, !effort.isEmpty {
+                        Text(effort).font(.system(size: compact ? 9 : 10)).foregroundStyle(Theme.muted)
+                    }
+                }
+                HStack(spacing: 5) {
+                    Text("수렴 단계 · \(activity.convergenceLabel)")
+                    if let sessionID {
+                        Text("· \(String(sessionID.prefix(8)))…")
+                    } else {
+                        Text("· 백엔드 세션 연결 중")
+                    }
+                }
+                .font(.system(size: compact ? 8 : 9, weight: .medium))
+                .foregroundStyle(Theme.muted)
+            }
+            .lineLimit(1)
+        }
+        .foregroundStyle(Theme.text)
+        .padding(.horizontal, compact ? 7 : 9)
+        .padding(.vertical, compact ? 4 : 6)
+        .background(Theme.green.opacity(0.08), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous).stroke(Theme.green.opacity(0.24)))
+        .help("실행 중인 백엔드 세션과 OS-1 공개 수렴 단계를 표시합니다. 모델 내부 수렴값은 노출되지 않습니다.")
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("실행 세션 \(providerTitle), 수렴 단계 \(activity.convergenceLabel)")
     }
 }
 
@@ -8962,6 +9047,9 @@ private struct ConversationHeader: View {
                 Text("/").foregroundStyle(Theme.muted.opacity(0.5))
                 Text(session.title).fontWeight(.medium).lineLimit(1).foregroundStyle(Theme.text)
                 Spacer(minLength: 8)
+                if let activity = store.activeRuns[session.id]?.activity {
+                    SessionExecutionBadge(session: session, activity: activity, compact: true)
+                }
                 Menu {
                     Button(session.pinnedAt == nil ? "상단에 고정" : "고정 해제") { store.togglePin(session.id) }
                     Button("이름 변경…") { store.promptRename(session.id) }
