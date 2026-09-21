@@ -416,6 +416,10 @@ public struct GovernanceActivityStore: Sendable {
                 } catch { result.rejectedRecords += 1 }
             }
         }
+        // `loadedAt` is the observation timestamp, not a Codable record field.
+        // Keep it fresh on every read so live consumers can build a real-time
+        // series without confusing the last task receipt with the last poll.
+        result.loadedAt = Date()
         return result
     }
 }

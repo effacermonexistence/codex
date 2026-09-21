@@ -4,6 +4,14 @@ import OS1Context
 
 /// Read-only projection; opening this panel never starts a provider, replay, or benchmark.
 struct GovernanceMonitorView: View {
+    private struct LiveActivitySample: Identifiable {
+        let id: Date
+        let date: Date
+        let active: Int
+        let queued: Int
+        let receipts: Int
+    }
+
     var active: [String] = []
     var queued: Int = 0
     var onClose: (() -> Void)? = nil
@@ -13,6 +21,7 @@ struct GovernanceMonitorView: View {
     @State private var provider = "전체"
     @State private var baseline = ""
     @State private var refreshed = Date()
+    @State private var liveSamples: [LiveActivitySample] = []
     @Environment(\.dismiss) private var dismiss
     private let green = Color(red: 0.23, green: 0.9, blue: 0.56)
     private let pink = Color(red: 0.99, green: 0.61, blue: 0.77)
@@ -75,7 +84,10 @@ struct GovernanceMonitorView: View {
                     metrics
                     liveRow
                     HStack(alignment: .top, spacing: 14) {
+                        liveActivityChart.frame(maxWidth: .infinity)
                         tokenChart.frame(maxWidth: .infinity)
+                    }
+                    HStack(alignment: .top, spacing: 14) {
                         completionChart.frame(maxWidth: .infinity)
                     }
                     routeTable
@@ -96,7 +108,8 @@ struct GovernanceMonitorView: View {
                 let value = await Task.detached(priority: .utility) { GovernanceActivityStore().snapshot() }.value
                 guard !Task.isCancelled else { return }
                 snapshot = value; refreshed = value.loadedAt; setBaseline()
-                try? await Task.sleep(for: .seconds(2))
+                recordLiveSample(value)
+                try? await Task.sleep(for: .seconds(1))
             }
         }
         .onChange(of: provider) { _ in setBaseline() }
@@ -104,6 +117,22 @@ struct GovernanceMonitorView: View {
     }
     private func setBaseline() {
         if !rows.contains(where: { $0.id == baseline }) { baseline = rows.first(where: { $0.attempts > 0 })?.id ?? "" }
+    }
+    private func recordLiveSample(_ value: GovernanceSnapshot) {
+        let observedActive = value.tasks.filter { !$0.isTerminal }.count
+        let activeCount = max(active.count, observedActive)
+        let sample = LiveActivitySample(
+            id: value.loadedAt,
+            date: value.loadedAt,
+            active: activeCount,
+            queued: queued,
+            receipts: value.tasks.reduce(into: 0) { total, task in
+                total += task.attempts.filter { $0.observation == nil }.count
+            }
+        )
+        liveSamples.append(sample)
+        let cutoff = value.loadedAt.addingTimeInterval(-60)
+        liveSamples = liveSamples.filter { $0.date >= cutoff }
     }
     private var header: some View {
         HStack(spacing: 12) {
@@ -114,7 +143,7 @@ struct GovernanceMonitorView: View {
             }
             Spacer()
             Circle().fill(green).frame(width: 6, height: 6)
-            Text(preview ? "읽기 전용 미리보기" : "LIVE · 2초 갱신").font(.system(size: 11)).foregroundStyle(green)
+            Text(preview ? "읽기 전용 미리보기" : "LIVE · 1초 갱신").font(.system(size: 11)).foregroundStyle(green)
             Button { if let onClose { onClose() } else { dismiss() } } label: { Image(systemName: "xmark").frame(width: 26, height: 26) }
                 .buttonStyle(.plain).accessibilityLabel("Close governance monitor")
         }.padding(24)
@@ -179,6 +208,29 @@ struct GovernanceMonitorView: View {
                     BarMark(x: .value("토큰", row.tokens), y: .value("모델", short(row.id))).foregroundStyle(row.id.hasPrefix("claude") ? pink : green)
                 }.chartXAxis { AxisMarks(position: .bottom) }.frame(height: 205)
             } else { empty("아직 토큰 계측 기록이 없습니다.") }
+        }
+    }
+    private var liveActivityChart: some View {
+        panel("실시간 활동 · 최근 60초", subtitle: "1초 샘플 · 진행 중 / 대기 / 영수증 대기 · 종료 토큰 영수증과 분리") {
+            if liveSamples.isEmpty {
+                empty("첫 실시간 샘플을 기다리는 중입니다.")
+            } else {
+                Chart {
+                    ForEach(liveSamples) { sample in
+                        AreaMark(x: .value("시간", sample.date), y: .value("진행 중", sample.active))
+                            .foregroundStyle(green.opacity(0.16))
+                        LineMark(x: .value("시간", sample.date), y: .value("진행 중", sample.active))
+                            .foregroundStyle(green).lineStyle(StrokeStyle(lineWidth: 2))
+                        LineMark(x: .value("시간", sample.date), y: .value("대기", sample.queued))
+                            .foregroundStyle(pink).lineStyle(StrokeStyle(lineWidth: 1.5, dash: [4, 3]))
+                        LineMark(x: .value("시간", sample.date), y: .value("영수증 대기", sample.receipts))
+                            .foregroundStyle(Color.yellow).lineStyle(StrokeStyle(lineWidth: 1.5, dash: [2, 3]))
+                    }
+                }
+                .chartXAxis { AxisMarks(values: .stride(by: .second, count: 15)) }
+                .chartYAxis { AxisMarks(position: .leading) }
+                .frame(height: 205)
+            }
         }
     }
     private var completionChart: some View {
