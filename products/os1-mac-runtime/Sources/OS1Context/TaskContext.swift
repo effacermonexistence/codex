@@ -556,7 +556,7 @@ public struct PreparationIntent: Equatable, Sendable {
     /// never triggers a local control answer.
     public static let projectAliases: [(id: String, aliases: [String])] = [
         ("scv-instagram", ["인스타", "instagram", "scv"]),
-        ("os1-clodex", ["os1", "os-1", "clodex", "클로덱스"]),
+        ("os1-clodex", ["os1", "os-1", "clodex", "클로덱스", "rcc governance", "rcc 거버넌스", "rcc 가버넌스", "rcc 가보면서"]),
     ]
     static let prepareMarkers = ["손보자", "손 보자", "손좀 보자", "손 좀 보자", "손보려고", "손볼 건데", "손볼건데",
                                  "준비해", "준비하자", "준비 좀", "준비할", "준비 해", "수정 좀 하자", "수정하자", "수정 하자", "고치자", "고쳐보자",
@@ -591,8 +591,43 @@ public struct PreparationIntent: Equatable, Sendable {
                            options: .regularExpression) != nil
     }
 
+    // Select the requested project, never a project mentioned only as an exclusion.
+    // This is a selection projection; the original prompt and its constraints
+    // remain intact for execution. Registry order must not decide ambiguous targets.
+    private static func requestedProject(in value: String) -> String? {
+        let clauses = value.replacingOccurrences(of: #"(?:[.!?]\s+|[;\n])"#,
+            with: "\n", options: .regularExpression).components(separatedBy: "\n")
+        var positive = Set<String>()
+        for clause in clauses {
+            let excludes = clause.range(of: #"(?:하지\s*마|하지\s*말|손대지|건드리지|제외|do not|don't|leave .* alone|preserve|보존)"#,
+                                        options: .regularExpression) != nil
+            // A contrast may keep the named project while prohibiting only setup:
+            // 'Instagram 세팅은 하지 말고 가격 문구 수정해'.
+            let contrastEdit = clause.components(separatedBy: "말고").dropFirst()
+                .contains { tail in changeVerbs.contains(where: tail.contains) }
+            guard !excludes || contrastEdit else { continue }
+            for project in projectAliases where project.aliases.contains(where: { containsProjectAlias($0, in: clause) }) {
+                positive.insert(project.id)
+            }
+        }
+        return positive.count == 1 ? positive.first : nil
+    }
+
     public static func detect(_ prompt: String) -> PreparationIntent? {
-        let value = OwnerIntentText.normalized(OwnerIntentText.authorityText(prompt))
+        let original = OwnerIntentText.normalized(OwnerIntentText.authorityText(prompt))
+        let projectID = requestedProject(in: original)
+        // A prohibition scoped to a different named project must not prohibit
+        // the selected project. Unscoped/global prohibitions remain in force.
+        let value = original.replacingOccurrences(of: #"(?:[.!?]\s+|[;\n])"#,
+            with: "\n", options: .regularExpression).components(separatedBy: "\n").filter { clause in
+            guard let projectID else { return true }
+            let named = projectAliases.filter { project in
+                project.aliases.contains { containsProjectAlias($0, in: clause) }
+            }.map(\.id)
+            let excluded = clause.range(of: #"(?:하지\s*마|하지\s*말|손대지|건드리지|제외|do not|don't|preserve|보존)"#,
+                                        options: .regularExpression) != nil
+            return !excluded || named.isEmpty || named.contains(projectID)
+        }.joined(separator: "\n")
         guard !value.isEmpty else { return nil }
         if ["\"", "“", "`", "'"].contains(where: value.contains),
            ["번역", "translate", "비판", "critique", "프롬프트", "prompt", "인용", "quote"].contains(where: value.contains) { return nil }
@@ -601,9 +636,6 @@ public struct PreparationIntent: Equatable, Sendable {
         let prepare = prepareMarkers.contains(where: value.contains)
         let continues = continueMarkers.contains(where: value.contains)
         let explains = explainMarkers.contains(where: value.contains)
-        let projectID = projectAliases.first { project in
-            project.aliases.contains { containsProjectAlias($0, in: value) }
-        }?.id
         let feasibility = isFeasibilityQuestion(value)
         // A write-scope sentence that names the project ("…에 한 줄 추가해") is
         // a change even when it uses none of the listed change verbs.

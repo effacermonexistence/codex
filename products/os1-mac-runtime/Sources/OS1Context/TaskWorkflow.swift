@@ -94,6 +94,16 @@ public enum TaskWorkflow: String, Codable, Sendable, CaseIterable {
         }
     }
 
+    /// Cost preference is not an availability boundary. Retain stronger models
+    /// so the signed router can satisfy a task-specific capability floor.
+    public func eligibleModelsByProvider(_ inventories: [[String]]) -> Set<String> {
+        guard self == .implementation else { return preferredModelsByProvider(inventories) }
+        return inventories.reduce(into: Set<String>()) { result, models in
+            let floor = preferredModels(models).map { Self.modelTier($0) }.min() ?? 0
+            result.formUnion(models.filter { Self.modelTier($0) >= floor })
+        }
+    }
+
     public func preferredEfforts(_ efforts: [String]) -> [String] {
         let selected: [String]
         switch self {

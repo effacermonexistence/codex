@@ -38,6 +38,10 @@ with tempfile.TemporaryDirectory(prefix='os1-owner-') as d:
      c.settimeout(3)
      r=read(c);send(c,dict(type='response',requestId=r['requestId'],result=dict(clientId='test')))
      r=read(c);assert r['method']=='thread-owner-discovery'
+     send(c,dict(type='client-discovery-request',requestId='probe',method='thread-owner-discovery',version=1,params=dict(conversationId='other',hostId='local')))
+     reply=read(c)
+     assert reply['type']=='client-discovery-response' and reply['requestId']=='probe'
+     assert reply.get('response')=={'canHandle':False} and 'canHandle' not in reply
      send(c,dict(type='response',requestId=r['requestId'],handledByClientId='owner',result=dict(supportsUntrustedAppInput=True)))
      assert read(c)['params']['following']
      if case=='disconnect':return

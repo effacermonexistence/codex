@@ -149,6 +149,9 @@ final class SourceContextTests {
         XCTAssertNil(PreparationIntent.detect(TaskWorkflow.preparationRequest(owner: scratchRequest, stagePrompt: wrapped))?.projectID)
         XCTAssertEqual(PreparationIntent.detect(TaskWorkflow.preparationRequest(owner: "OS1 고쳐", stagePrompt: wrapped))?.projectID, "os1-clodex")
         let models = ["gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "claude-opus-5", "claude-sonnet-5", "claude-fable-5-1"]
+        XCTAssertEqual(TaskWorkflow.implementation.eligibleModelsByProvider([["fable", "opus"]]), Set(["fable", "opus"]))
+        XCTAssertEqual(TaskWorkflow.implementation.eligibleModelsByProvider([["gpt-5.6-luna", "gpt-5.6-terra", "gpt-6-astra"], ["fable", "opus"]]), Set(["gpt-5.6-terra", "gpt-6-astra", "fable", "opus"]))
+        XCTAssertEqual(TaskWorkflow.architecture.eligibleModelsByProvider([["fable", "opus"]]), Set(["opus"]))
         XCTAssertEqual(TaskWorkflow.architecture.preferredModels(models), Set(["gpt-6-astra"]))
         XCTAssertEqual(TaskWorkflow.implementation.preferredModels(models), Set(["gpt-5.6-terra", "claude-sonnet-5"]))
         let codex = ["gpt-6-astra", "gpt-5.6-terra"]

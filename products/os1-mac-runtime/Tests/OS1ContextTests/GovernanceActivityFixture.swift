@@ -3,6 +3,7 @@ import OS1Context
 
 func runGovernanceActivityFixtures() throws {
     runGovernanceStatisticsFixtures()
+    try runGovernanceRuntimeFixtures()
     let fm = FileManager.default
     let root = fm.temporaryDirectory.resolvingSymlinksInPath().appendingPathComponent("governance-fixture-\(UUID())")
     try fm.createDirectory(at: root, withIntermediateDirectories: true)

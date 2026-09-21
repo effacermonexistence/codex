@@ -231,6 +231,7 @@ public enum SelfUpdate {
         let lines = [
             "--- OS-1 SELF-REPAIR CONTRACT ---",
             "This conversation targets OS-1's own source tree: \(root)",
+            "Native UI target map: RCC Governance / RCC 거버넌스 is the OS-1 macOS app panel opened by the lower-left green governance button, NOT a website, R2 document, or static benchmark page. UI: \(root)/\(runtimeRelativePath)/Sources/OS1App/GovernanceMonitorView.swift; telemetry: \(root)/\(runtimeRelativePath)/Sources/OS1Context/GovernanceActivity.swift and GovernanceRuntime.swift; navigation: Sources/OS1App/OS1App.swift. Inspect these existing files before searching elsewhere. Preserve the user's actual target; bare RCC benchmark requests are separate objects.",
             "Installed runtime: \(installedVersion) (build \(installedBuild)). Source HEAD: \(head). Task scope: \(scope).",
             "OS-1 repairs itself end to end: diagnose -> edit -> build -> test -> [OS-1: version bump -> signed release -> self-tests -> stage -> commit -> push -> self-install -> receipt]. The only steps that need the owner are browser logins (OAuth) and GitHub pull-request merges.",
             "In a write-scope task your job ends when the source is changed and green:",

@@ -27,6 +27,7 @@ struct GovernanceMonitorView: View {
     var onClose: (() -> Void)? = nil
     var preview: Bool = false
     @State var snapshot = GovernanceSnapshot()
+    @State private var runtimeSamples: [GovernanceRuntimeSample] = []
     @State private var window = "전체"
     @State private var provider = "전체"
     @State private var baseline = ""
@@ -186,10 +187,29 @@ struct GovernanceMonitorView: View {
         .task {
             guard !preview else { setBaseline(); return }
             while !Task.isCancelled {
-                let value = await Task.detached(priority: .utility) { GovernanceActivityStore().snapshot() }.value
+                let tick = ContinuousClock.now
+                let value = await Task.detached(priority: .utility) {
+                    GovernanceActivityStore().snapshot()
+                }.value
                 guard !Task.isCancelled else { return }
-                snapshot = value; refreshed = value.loadedAt; setBaseline()
-                try? await Task.sleep(for: .seconds(1))
+                snapshot = value; setBaseline()
+                try? await Task.sleep(until: tick.advanced(by: .seconds(1)), clock: .continuous)
+            }
+        }
+        .task {
+            guard !preview else { return }
+            while !Task.isCancelled {
+                let tick = ContinuousClock.now
+                var roots = Set(snapshot.tasks.filter { !$0.isTerminal }.map(\.pid))
+                roots.insert(ProcessInfo.processInfo.processIdentifier)
+                let sample = await Task.detached(priority: .utility) {
+                    GovernanceRuntime.sample(roots: roots)
+                }.value
+                guard !Task.isCancelled else { return }
+                refreshed = sample.id
+                runtimeSamples.append(sample)
+                if runtimeSamples.count > 120 { runtimeSamples.removeFirst(runtimeSamples.count - 120) }
+                try? await Task.sleep(until: tick.advanced(by: .seconds(1)), clock: .continuous)
             }
         }
         .onChange(of: provider) { _ in setBaseline() }
@@ -240,6 +260,7 @@ struct GovernanceMonitorView: View {
         switch section {
         case .live:
             compactMetrics
+            runtimeActivityPanel
             activityMonitorPanel
             liveRow
             taskMonitorTable
@@ -318,6 +339,31 @@ struct GovernanceMonitorView: View {
                         "처음 응답 후 다시 요청")
             compactCard("채택 처리량", decimal(observedHours >= 1 ? Double(completed) / observedHours : nil),
                         "채택 건/관측 시간 · 1시간부터")
+        }
+    }
+    private var runtimeActivityPanel: some View {
+        panel("LIVE · OS1 프로세스", subtitle: "1초 샘플 · 로컬 OS1 및 실행 자식 프로세스 · 원격 모델 사용률과 토큰 추정 아님") {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Text(runtimeSamples.last?.cpuPercent.map { String(format: "CPU %.1f%%", $0) } ?? "CPU —")
+                    Text(runtimeSamples.last?.residentBytes.map { String(format: "메모리 %.1f MB", Double($0) / 1_048_576) } ?? "메모리 —")
+                    Spacer()
+                    Text(runtimeSamples.last?.processes.map { "프로세스 \($0)개" } ?? "관측 대기")
+                    Text((runtimeSamples.last?.id ?? refreshed).formatted(.dateTime.hour().minute().second()))
+                }.font(.system(size: 11, design: .monospaced))
+                Chart(runtimeSamples) { point in
+                    if let cpu = point.cpuPercent {
+                        LineMark(x: .value("시간", point.id), y: .value("프로세스 평균 CPU %", cpu))
+                            .foregroundStyle(pink)
+                        PointMark(x: .value("시간", point.id), y: .value("프로세스 평균 CPU %", cpu)).symbolSize(8).foregroundStyle(pink)
+                    }
+                }
+                .chartXScale(domain: refreshed.addingTimeInterval(-120)...refreshed)
+                .chartYScale(domain: 0...max(1, (runtimeSamples.compactMap(\.cpuPercent).max() ?? 0) * 1.1))
+                .frame(height: 135)
+                Text("CPU: macOS ps 프로세스 평균 합계 · 여러 코어 사용 시 100% 초과 가능 · 관측 실패는 0으로 채우지 않음")
+                    .font(.system(size: 10)).foregroundStyle(muted)
+            }
         }
     }
     private var activityMonitorPanel: some View {

@@ -4376,6 +4376,7 @@ final class CodexAppServerClient: @unchecked Sendable {
     private var rejectedApprovalTurns = Set<String>()
     private var nextRequestID = 1
     private var closed = false
+    private(set) var ownsThreadWriter = false
     private var activeTurn: (thread: String, turn: String)?
     private var steeringRequests: [Int: SteeringInput] = [:]
     private let steering: ExecutionSteering
@@ -4505,6 +4506,7 @@ final class CodexAppServerClient: @unchecked Sendable {
         title: String,
         deadline: Date
     ) throws -> String {
+        ownsThreadWriter = false
         let sandbox: String
         switch permissionProfile {
         case "read_only": sandbox = "read-only"
@@ -4597,6 +4599,7 @@ final class CodexAppServerClient: @unchecked Sendable {
             )
         }
         try makeVisible(threadID: threadID, deadline: deadline)
+        ownsThreadWriter = true
         return threadID
     }
 
@@ -5265,7 +5268,7 @@ func publishAdoptedNativeRecord(
 }
 
 /// Identifies the app-server's single-writer conflict. The runtime uses this
-/// signal to fork the persisted history and continue in a visible new thread.
+/// signal to hand off to the existing Desktop owner without changing thread identity.
 func codexWriterConflictMessage(_ error: Error, threadID: String) -> String? {
     guard "\(error)".contains("already has an active writer") else { return nil }
     return "Codex Desktop currently owns Codex session \(threadID)"
@@ -5434,7 +5437,7 @@ private func execute(
         // first turn. Once the process starts, absent local diffs cannot prove
         // that replaying a write-profile objective would be safe.
         let appServer = try CodexAppServerClient(executable: codex, workspace: workspace,
-            submissionID: nil)
+            submissionID: ExecutionSteering.currentSubmission)
         defer { appServer.close() }
         try appServer.initialize(deadline: deadline)
         guard let model, try appServer.models(deadline: min(deadline, Date().addingTimeInterval(12))).contains(where: {
@@ -5449,22 +5452,27 @@ private func execute(
             title: codexSessionTitle(from: lockedObjective),
             deadline: deadline
         )
-        // Release the preparation writer before Desktop opens the same thread.
-        // Existing Desktop-owned history already carries its developer context;
-        // fresh threads receive the full governed instructions before handoff.
-        if expectedSessionID == nil {
-            try appServer.persistDesktopHandoff(threadID: actualSessionID, instructions: instructions, deadline: deadline)
-        }
-        appServer.close()
+        // A newly created thread has no Desktop renderer owner. Its current
+        // app-server writer must execute it; waiting for a nonexistent UI owner
+        // deadlocks dispatch. Only an actual writer conflict uses Desktop IPC.
         let turn: CodexTurnOutput
         do {
-            turn = try runCodexDesktopTurn(executable: codex, threadID: actualSessionID,
-                prompt: prompt, workspace: workspace, model: model, effort: effort,
-                permissionProfile: ticket.permissionProfile, instructions: instructions, deadline: deadline,
-                onDispatch: { onDispatch?(actualSessionID) })
+            if appServer.ownsThreadWriter {
+                turn = try appServer.runTurn(threadID: actualSessionID, prompt: prompt,
+                    workspace: workspace, model: model, effort: effort,
+                    permissionProfile: ticket.permissionProfile, deadline: deadline,
+                    onDispatch: { onDispatch?(actualSessionID) })
+            } else {
+                appServer.close()
+                turn = try runCodexDesktopTurn(executable: codex, threadID: actualSessionID,
+                    prompt: prompt, workspace: workspace, model: model, effort: effort,
+                    permissionProfile: ticket.permissionProfile, instructions: instructions, deadline: deadline,
+                    onDispatch: { onDispatch?(actualSessionID) })
+            }
         } catch {
+            // No alternate turn is dispatched after an ambiguous failure.
             throw interruptedExecution(ticket: ticket, model: model, effort: effort, contract: executorContract,
-                sessionID: actualSessionID, publicProgress: "", beforeHash: workspaceBeforeHash,
+                sessionID: actualSessionID, publicProgress: appServer.interruptedPublicProgress, beforeHash: workspaceBeforeHash,
                 workspace: executionWorkspace, started: started, cause: error)
         }
         // Account for this exact native turn before any quality guard rejects
@@ -6862,7 +6870,7 @@ func runTaskWithOwnerPolicy(
     // The signed router receives only stage-eligible native model/effort
     // tuples. A stage directive in prose alone would not enforce this policy.
     if let workflowStage {
-        let selected = workflowStage.preferredModelsByProvider([
+        let selected = workflowStage.eligibleModelsByProvider([
             providerPreference == "claude" || codexCapacity <= 0 ? [] : codexCatalog.models.map(\.slug),
             providerPreference == "codex" || claudeCapacity <= 0 ? [] : observedClaudeCatalog.map(\.model)
         ])
@@ -8805,6 +8813,38 @@ func selfTest() throws {
         throw OS1Error.message("Already-dispatched providers must not recursively enqueue Fleet work")
     }
     protocolRecoveryChecks += 1
+    // A new writer must run its own turn: no Desktop renderer exists yet.
+    // An existing writer conflict must retain the same thread and use IPC.
+    for desktopOwned in [false, true] {
+        let ownerID = UUID().uuidString.lowercased()
+        let ownerPeer = approvalFixture.appendingPathComponent("owner-\(desktopOwned).py")
+        try Data("""
+        #!/usr/bin/python3
+        import sys, json
+        for line in sys.stdin:
+            r=json.loads(line)
+            if 'id' not in r: continue
+            m=r.get('method')
+            if m=='thread/resume' and \(desktopOwned ? "True" : "False"):
+                out={'error': {'code': -32000, 'message': 'thread already has an active writer'}}
+            elif m in ('thread/start','thread/resume','thread/read'):
+                out={'result': {'thread': {'id':'\(ownerID)', 'name':'fixture', 'source':'os1'}}}
+            elif m=='threadSection/list':
+                out={'result': {'data':[{'id':'fixture-section','name':'OS-1 Backend'}]}}
+            else: out={'result': {}}
+            print(json.dumps(dict({'jsonrpc':'2.0','id':r['id']}, **out)),flush=True)
+        """.utf8).write(to: ownerPeer)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: ownerPeer.path)
+        let ownerServer = try CodexAppServerClient(executable: ownerPeer.path, workspace: approvalFixture.path)
+        defer { ownerServer.close() }
+        let selectedID = try ownerServer.startOrResumeThread(existingSessionID: desktopOwned ? ownerID : nil,
+            workspace: approvalFixture.path, model: nil, instructions: "fixture", permissionProfile: "workspace_write",
+            title: "fixture", deadline: Date().addingTimeInterval(8))
+        guard selectedID == ownerID, ownerServer.ownsThreadWriter == !desktopOwned else {
+            throw OS1Error.message("Codex writer ownership must determine direct versus Desktop dispatch")
+        }
+        protocolRecoveryChecks += 1
+    }
     let capturedRequest = approvalFixture.appendingPathComponent("request.json")
     let recoveredSession = UUID().uuidString.lowercased()
     let recoveredTurn = UUID().uuidString.lowercased()

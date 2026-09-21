@@ -161,6 +161,18 @@ func runTaskContextFixtures(root: URL) throws {
                   "bare work intent prepares without inventing a change: \(text)")
         try check(TaskContext.ObjectiveKind.classify(text) == .prepare, "work request is not other")
     }
+    for (text, expected) in [
+        ("OS1 자가수리를 실행해. 대상은 /workspace/products/os1-mac-runtime 이다. 창 문제 고쳐. 공개 사이트 배포, Instagram, 외부 발송은 하지 마.", "os1-clodex"),
+        ("Instagram 버그 수정해. OS1은 건드리지 마.", "scv-instagram"),
+        ("Do not modify Instagram; fix OS1 window focus", "os1-clodex"),
+        ("Fix Instagram delivery; preserve OS1", "scv-instagram"),
+        ("OS1 고쳐. Instagram은 보존해.", "os1-clodex")
+    ] {
+        try check(PreparationIntent.detect(text)?.projectID == expected,
+                  "excluded project must not hijack source acquisition: \(text)")
+    }
+    try check(PreparationIntent.detect("OS1과 Instagram 모두 수정해")?.projectID == nil,
+              "multiple positive projects must not resolve through registry order")
     try check(PreparationIntent.detect("인스타그램 가격이 두 번 나가는 버그 손봐줘")?.modifies == true, "specific repair retains edit intent")
     try check(ScopeResolution.resolve("가격 안내 파일 손봐줘. 배포하지 마").scope == .workspaceWrite, "specific edit scope with no deployment")
     try check(PreparationIntent.detect("인스타그램 손보지 마") == nil, "no acquisition for refusal")

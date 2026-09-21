@@ -23,7 +23,7 @@ final class CodexDesktopTransport {
         guard size > 0, size <= 32 * 1024 * 1024 else { throw failure("invalid frame") }
         guard let message = try JSONSerialization.jsonObject(with: exact(Int(size), deadline: deadline)) as? [String: Any] else { throw failure("invalid response") }
         if message["type"] as? String == "client-discovery-request", let requestID = message["requestId"] {
-            try send(["type": "client-discovery-response", "requestId": requestID, "sourceClientId": clientID, "canHandle": false])
+            try send(["type": "client-discovery-response", "requestId": requestID, "sourceClientId": clientID, "response": ["canHandle": false]])
         }
         // This is the Desktop writer's state, not a second app-server's stale view.
         if message["type"] as? String == "broadcast",

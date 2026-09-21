@@ -57,7 +57,7 @@ with tempfile.TemporaryDirectory(prefix='os1-ipc-') as temp:
                         import time;time.sleep(1.3);return
                     if case=='error': send(c,dict(type='response',requestId=r['requestId'],error='owner unavailable'));return
                     send(c,dict(type='client-discovery-request',requestId='discovery'))
-                    assert read(c)['canHandle'] is False
+                    reply=read(c); assert reply['response']=={'canHandle':False} and 'canHandle' not in reply
                     send(c,dict(type='response',requestId='unrelated',result=dict(ok=False)))
                     send(c,dict(type='response',requestId=r['requestId'],result=dict(ok=True)))
             except BaseException as e: errors.append(repr(e))
@@ -68,3 +68,10 @@ with tempfile.TemporaryDirectory(prefix='os1-ipc-') as temp:
         assert result.stdout.strip()==('PASS' if case=='success' else 'REJECTED'),(case,result.stdout)
     for case in ['success','disconnect','oversized','error','timeout']: run(case)
 print('PASS: 5 Desktop transport cases (fragmentation, discovery, correlation, disconnect, size, error, deadline)')
+
+# Fresh managed threads cannot require an already-open Desktop renderer.
+branch=main[main.index('if appServer.ownsThreadWriter {'):main.index('if appServer.ownsThreadWriter {')+1800]
+assert 'appServer.runTurn(' in branch
+assert 'runCodexDesktopTurn(' in branch
+assert 'submissionID: ExecutionSteering.currentSubmission' in main
+assert 'ownerServer.ownsThreadWriter == !desktopOwned' in main
