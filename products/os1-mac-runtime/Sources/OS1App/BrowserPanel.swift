@@ -93,7 +93,10 @@ struct OS1BrowserPanel: View {
                     label: { Image(systemName: "arrow.up.right.square") }
                     .help("기본 브라우저에서 열기")
                 Button(action: close) { Image(systemName: "xmark") }.accessibilityLabel("브라우저 닫기")
-            }.buttonStyle(.plain).padding(10)
+            }
+            .buttonStyle(.plain)
+            .padding(10)
+            .padding(.top, RootChromeLayout.titlebarBand)
             if page.loading { ProgressView().controlSize(.small).padding(4) }
             if let error = page.error { Text(error).font(.caption).foregroundStyle(.red).padding(8) }
             if page.address.isEmpty {

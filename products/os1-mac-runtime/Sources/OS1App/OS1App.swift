@@ -6791,11 +6791,30 @@ private enum Theme {
     static let green = Color(red: 0.28, green: 0.93, blue: 0.55)
     static let sidebarWidth: CGFloat = 256
     static let conversationWidth: CGFloat = 760
+    /// Codex converges image attachments on a readable card instead of
+    /// shrinking them into the user's text bubble.
+    static let attachmentPreviewMaxEdge: CGFloat = 360
     static let radiusShell: CGFloat = 22
     static let radiusPanel: CGFloat = 18
     static let radiusControl: CGFloat = 13
     static let radiusMessage: CGFloat = 16
     static let radiusComposer: CGFloat = 22
+}
+
+/// Window chrome shared by the conversation/browser columns. The sidebar is
+/// intentionally allowed under the transparent titlebar; its first button is
+/// still kept below this band by `SidebarHeaderLayout`.
+enum RootChromeLayout {
+    static let titlebarBand: CGFloat = 28
+    static let browserToggleHeight: CGFloat = 30
+}
+
+private enum SidebarHeaderLayout {
+    static let titleTop: CGFloat = 14
+    static let titleBottomGap: CGFloat = 16
+    /// The first painted row of the centred 13 pt label sits 12 pt below the
+    /// 36 pt button's frame edge in the production render.
+    static let buttonLabelPaintInset: CGFloat = 12
 }
 
 private struct OmarAGILogo: View {
@@ -7104,7 +7123,19 @@ private func codexShellSelfTest() throws {
     let decoded = try appended.split(separator: "\n").suffix(2).map { try JSONDecoder().decode(String.self, from: Data($0.utf8)) }
     try check(decoded == paths, "file-reference quoting round-trips Unicode, quote and newline")
     try check(appendingFileReferences([], to: "그대로") == "그대로", "cancel/no files leaves draft unchanged")
-    let visibleAttachmentPaths = ["/tmp/os1-inline-preview.png", "/tmp/os1-notes.pdf", "/tmp/os1-plan.txt"]
+    let previewURL = root.appendingPathComponent("os1-inline-preview.png")
+    let previewImage = NSImage(size: NSSize(width: 1600, height: 900))
+    previewImage.lockFocus()
+    NSColor.black.setFill()
+    NSRect(x: 0, y: 0, width: 1600, height: 900).fill()
+    previewImage.unlockFocus()
+    guard let previewTIFF = previewImage.tiffRepresentation,
+          let previewRep = NSBitmapImageRep(data: previewTIFF),
+          let previewPNG = previewRep.representation(using: .png, properties: [:]) else {
+        throw RunnerError.message("Shell regression: image fixture could not be encoded")
+    }
+    try previewPNG.write(to: previewURL)
+    let visibleAttachmentPaths = [previewURL.path, "/tmp/os1-notes.pdf", "/tmp/os1-plan.txt"]
     let attachedMessage = ChatMessage(role: .user, text: appendingFileReferences(visibleAttachmentPaths, to: "첨부를 확인해 줘"))
     let attachmentDocument = timelineAttributedDocument(
         messages: [attachedMessage], queuedSubmissions: [], isRunning: false, workspace: "/tmp",
@@ -7112,13 +7143,32 @@ private func codexShellSelfTest() throws {
     )
     let attachmentText = attachmentDocument.string
     try check(!attachmentText.contains(PromptAttachments.marker)
-        && !attachmentText.contains("/tmp/os1-inline-preview.png")
+        && !attachmentText.contains(previewURL.path)
         && !attachmentText.contains("/tmp/os1-notes.pdf"),
         "attachment transport paths never leak into the visible transcript")
-    try check(attachmentText.contains("PNG · os1-inline-preview.png")
+    try check(!attachmentText.contains("os1-inline-preview.png")
         && attachmentText.contains("PDF · os1-notes.pdf")
         && attachmentText.contains("TXT · os1-plan.txt"),
-        "image and document attachments render labeled visual cards")
+        "image cards hide redundant filenames while document cards keep labels")
+    var renderedAttachments: [(NSTextAttachment, Int)] = []
+    attachmentDocument.enumerateAttribute(
+        .attachment,
+        in: NSRange(location: 0, length: attachmentDocument.length)
+    ) { value, range, _ in
+        if let attachment = value as? NSTextAttachment {
+            renderedAttachments.append((attachment, range.location))
+        }
+    }
+    try check(renderedAttachments.count == 3, "every accepted attachment remains visible")
+    let imageBounds = renderedAttachments[0].0.bounds
+    try check(abs(max(imageBounds.width, imageBounds.height) - Theme.attachmentPreviewMaxEdge) < 0.5,
+        "image card uses the 360-point Codex convergence edge")
+    let imageRole = attachmentDocument.attribute(
+        .os1TimelineRole,
+        at: renderedAttachments[0].1,
+        effectiveRange: nil
+    ) as? NSString
+    try check(imageRole == "userAttachment", "image card renders outside the pink user bubble")
     store.addAttachments(visibleAttachmentPaths.map(URL.init(fileURLWithPath:)))
     try check(PromptAttachments.paths(in: store.composedRequest(from: "")) == visibleAttachmentPaths,
         "shared drop path becomes attachments instead of composer text")
@@ -7405,6 +7455,20 @@ private struct OS1DesktopApp: App {
                 guard CommandLine.arguments.count > flag + 1 else { throw SourceContextError.invalid }
                 let output = URL(fileURLWithPath: CommandLine.arguments[flag + 1], isDirectory: true)
                 try renderProviderRailPreview(to: output)
+                print(output.path)
+                exit(EXIT_SUCCESS)
+            } catch {
+                fputs("\(error.localizedDescription)\n", stderr)
+                exit(EXIT_FAILURE)
+            }
+        }
+        if let flag = CommandLine.arguments.firstIndex(of: "--render-sidebar-header-preview") {
+            do {
+                guard CommandLine.arguments.count > flag + 1 else { throw SourceContextError.invalid }
+                setenv("OS1_INTERFACE_LANGUAGE", "ko", 1)
+                OS1Localization.invalidate()
+                let output = URL(fileURLWithPath: CommandLine.arguments[flag + 1], isDirectory: true)
+                _ = try renderSidebarHeaderPreview(to: output)
                 print(output.path)
                 exit(EXIT_SUCCESS)
             } catch {
@@ -7992,6 +8056,30 @@ private func sidebarSynchronizationSelfTest() throws {
     print("Sidebar synchronization: \(checks) checks passed; model calls 0; live backend writes 0")
 }
 
+private struct BrowserToggleBar: View {
+    let visible: Bool
+    let toggle: () -> Void
+
+    var body: some View {
+        HStack {
+            Spacer()
+            Button(action: toggle) {
+                Label("브라우저", systemImage: "sidebar.right")
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(Theme.pink)
+            .accessibilityLabel("오른쪽 브라우저 전환")
+            .accessibilityValue(visible ? "열림" : "닫힘")
+            .help("오른쪽 브라우저 열기/닫기")
+        }
+        .padding(.horizontal, 14)
+        .frame(height: RootChromeLayout.browserToggleHeight)
+        // Only clickable right-side chrome stays below the transparent
+        // titlebar. The non-interactive sidebar title can occupy that band.
+        .padding(.top, RootChromeLayout.titlebarBand)
+    }
+}
+
 private struct RootView: View {
     @ObservedObject var store: SessionStore
     @State private var governanceOpen = false
@@ -8003,18 +8091,6 @@ private struct RootView: View {
         HStack(spacing: 0) {
             ProviderRail(store: store, governanceOpen: $governanceOpen)
             Rectangle().fill(Theme.border).frame(width: 1)
-            VStack(spacing: 0) {
-                HStack {
-                    Spacer()
-                    Button { browser.visible.toggle() } label: {
-                        Label("브라우저", systemImage: "sidebar.right")
-                    }.buttonStyle(.plain).foregroundStyle(Theme.pink)
-                        .accessibilityLabel("오른쪽 브라우저 전환")
-                        .help("오른쪽 브라우저 열기/닫기")
-                }.padding(.horizontal, 14).frame(height: 30)
-                    // The root extends under the transparent titlebar. Keep this
-                    // control below its drag region so it is visible and clickable.
-                    .padding(.top, 28)
             HSplitView {
             ZStack {
                 // Keep the conversation mounted: toggling must not reset draft, scroll, queue or run.
@@ -8022,9 +8098,13 @@ private struct RootView: View {
                     if store.surface == .auto {
                         SessionSidebar(store: store)
                         Rectangle().fill(Theme.border).frame(width: 1)
-                        ConversationView(store: store)
+                        VStack(spacing: 0) {
+                            BrowserToggleBar(visible: browser.visible) { browser.visible.toggle() }
+                            ConversationView(store: store)
+                        }
                     } else {
-                        NativeSessionBrowser(store: store, provider: store.surface)
+                        NativeSessionBrowser(store: store, provider: store.surface,
+                            browserVisible: browser.visible, toggleBrowser: { browser.visible.toggle() })
                     }
                 }
                 .opacity(governanceOpen ? 0 : 1)
@@ -8041,7 +8121,6 @@ private struct RootView: View {
             if browser.visible {
                 OS1BrowserPanel(page: browser.page(browserKey), close: { browser.visible = false })
                     .id(browserKey)
-            }
             }
             }
         }
@@ -8398,6 +8477,7 @@ private func railSelectionSelfTest() throws {
         && ProviderRailLayout.backendHeight == 80,
         "Codex and Claude reference-card geometry must remain unchanged")
     try railPixelGapSelfTest()
+    try sidebarHeaderPixelSelfTest()
 
     for linked in [true, false] {
         let quiet = RailItemAppearance.resolve(selected: false, linked: linked)
@@ -8483,9 +8563,163 @@ private func renderProviderRailPreview(to output: URL) throws {
         .write(to: output.appendingPathComponent("provider-rail-preview.json"), options: .atomic)
 }
 
+/// Composed production-shell rendering used to prove the sidebar header's
+/// actual painted position rather than inferring it from padding constants.
+private struct SidebarHeaderPixelMetrics {
+    let titleTopPoints: CGFloat
+    let newTaskLabelTopPoints: CGFloat
+    let newTaskButtonTopPoints: CGFloat
+}
+
+private let sidebarTitleTopMaximum: CGFloat = 20
+private let sidebarNewTaskButtonTopMinimum: CGFloat = 32
+private let sidebarNewTaskButtonTopMaximum: CGFloat = 60
+
+private func measureSidebarHeaderPixels(_ bitmap: NSBitmapImageRep, viewWidth: CGFloat) throws -> SidebarHeaderPixelMetrics {
+    let scale = CGFloat(bitmap.pixelsWide) / viewWidth
+    // The 78 pt provider rail and one-pixel divider end at x=79. Scan only
+    // the left portion of the 256 pt session sidebar so conversation chrome
+    // and split-view dividers cannot influence the measurement.
+    let xStart = max(0, Int((79 + 9) * scale))
+    let xEnd = min(bitmap.pixelsWide, Int(240 * scale))
+    let yEnd = min(bitmap.pixelsHigh, Int(180 * scale))
+    let minimumPaintedPixels = max(4, Int(ceil(4 * scale)))
+
+    func rowIsPainted(_ y: Int) -> Bool {
+        var painted = 0
+        for x in xStart..<xEnd {
+            guard let color = bitmap.colorAt(x: x, y: y) else { continue }
+            let brightest = max(color.redComponent, max(color.greenComponent, color.blueComponent))
+            if color.alphaComponent > 0.1, brightest > 0.17 {
+                painted += 1
+                if painted >= minimumPaintedPixels { return true }
+            }
+        }
+        return false
+    }
+
+    var runs: [(start: Int, end: Int)] = []
+    var runStart: Int?
+    for y in 0..<yEnd {
+        if rowIsPainted(y) {
+            if runStart == nil { runStart = y }
+        } else if let start = runStart {
+            runs.append((start, y))
+            runStart = nil
+        }
+    }
+    if let start = runStart { runs.append((start, yEnd)) }
+
+    let minimumRunHeight = max(3, Int(ceil(3 * scale)))
+    let substantiveRuns = runs.filter { $0.end - $0.start >= minimumRunHeight }
+    guard let title = substantiveRuns.first else {
+        throw RunnerError.message("Sidebar header pixels: title not found")
+    }
+    let minimumGap = Int(ceil(8 * scale))
+    guard let newTaskLabel = substantiveRuns.first(where: { $0.start >= title.end + minimumGap }) else {
+        throw RunnerError.message("Sidebar header pixels: new-task label not found")
+    }
+
+    let titleTop = CGFloat(title.start) / scale
+    let labelTop = CGFloat(newTaskLabel.start) / scale
+    return SidebarHeaderPixelMetrics(
+        titleTopPoints: titleTop,
+        newTaskLabelTopPoints: labelTop,
+        newTaskButtonTopPoints: labelTop - SidebarHeaderLayout.buttonLabelPaintInset
+    )
+}
+
+@MainActor
+@discardableResult
+private func renderSidebarHeaderPreview(to output: URL) throws -> SidebarHeaderPixelMetrics {
+    try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true,
+        attributes: [.posixPermissions: 0o700])
+    let fixtureRoot = FileManager.default.temporaryDirectory
+        .appendingPathComponent("os1-sidebar-header-preview-" + UUID().uuidString, isDirectory: true)
+    try FileManager.default.createDirectory(at: fixtureRoot, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: fixtureRoot) }
+
+    let store = SessionStore(storageRoot: fixtureRoot, nativeSessionOpener: { _ in false })
+    let content = RootView(store: store)
+        .frame(width: 1_360, height: 760)
+        .background(Theme.background)
+        .environment(\.colorScheme, .dark)
+    let view = NSHostingView(rootView: content)
+    view.frame = NSRect(x: 0, y: 0, width: 1_360, height: 760)
+    RunLoop.main.run(until: Date().addingTimeInterval(0.12))
+    view.layoutSubtreeIfNeeded()
+    view.needsDisplay = true
+    view.displayIfNeeded()
+    guard let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else {
+        throw RunnerError.message("Sidebar header preview: no bitmap")
+    }
+    view.cacheDisplay(in: view.bounds, to: bitmap)
+    guard let data = bitmap.representation(using: .png, properties: [:]) else {
+        throw RunnerError.message("Sidebar header preview: no PNG")
+    }
+    try data.write(to: output.appendingPathComponent("sidebar-header.png"), options: .atomic)
+    let metrics = try measureSidebarHeaderPixels(bitmap, viewWidth: view.bounds.width)
+    let manifest: [String: Any] = [
+        "composedRootView": true,
+        "widthPoints": 1_360,
+        "heightPoints": 760,
+        "pixelWidth": bitmap.pixelsWide,
+        "pixelHeight": bitmap.pixelsHigh,
+        "scale": CGFloat(bitmap.pixelsWide) / view.bounds.width,
+        "titleTopPoints": metrics.titleTopPoints,
+        "titleTopMaximumPoints": sidebarTitleTopMaximum,
+        "newTaskLabelTopPoints": metrics.newTaskLabelTopPoints,
+        "newTaskButtonTopPoints": metrics.newTaskButtonTopPoints,
+        "newTaskButtonTopMinimumPoints": sidebarNewTaskButtonTopMinimum,
+        "newTaskButtonTopMaximumPoints": sidebarNewTaskButtonTopMaximum,
+    ]
+    try JSONSerialization.data(withJSONObject: manifest, options: [.prettyPrinted, .sortedKeys])
+        .write(to: output.appendingPathComponent("sidebar-header-preview.json"), options: .atomic)
+    return metrics
+}
+
+@MainActor
+private func sidebarHeaderPixelSelfTest() throws {
+    let output = FileManager.default.temporaryDirectory
+        .appendingPathComponent("os1-sidebar-header-test-" + UUID().uuidString, isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: output) }
+    let metrics = try renderSidebarHeaderPreview(to: output)
+    guard metrics.titleTopPoints <= sidebarTitleTopMaximum else {
+        throw RunnerError.message(
+            "Sidebar header pixels: title top \(metrics.titleTopPoints)pt exceeds \(sidebarTitleTopMaximum)pt"
+        )
+    }
+    guard metrics.newTaskButtonTopPoints >= sidebarNewTaskButtonTopMinimum,
+          metrics.newTaskButtonTopPoints <= sidebarNewTaskButtonTopMaximum else {
+        throw RunnerError.message(
+            "Sidebar header pixels: new-task button top \(metrics.newTaskButtonTopPoints)pt outside "
+                + "\(sidebarNewTaskButtonTopMinimum)...\(sidebarNewTaskButtonTopMaximum)pt"
+        )
+    }
+    print(
+        "Sidebar header pixels: title top \(metrics.titleTopPoints)pt; "
+            + "new-task label top \(metrics.newTaskLabelTopPoints)pt; "
+            + "inferred button top \(metrics.newTaskButtonTopPoints)pt"
+    )
+}
+
 private struct NativeSessionBrowser: View {
     @ObservedObject var store: SessionStore
     let provider: ProviderChoice
+    let browserVisible: Bool
+    let toggleBrowser: () -> Void
+
+    init(
+        store: SessionStore,
+        provider: ProviderChoice,
+        browserVisible: Bool = false,
+        toggleBrowser: @escaping () -> Void = {}
+    ) {
+        self.store = store
+        self.provider = provider
+        self.browserVisible = browserVisible
+        self.toggleBrowser = toggleBrowser
+    }
 
     private var recordedSessionID: String? {
         store.linkedNativeSessionID(for: provider)
@@ -8506,8 +8740,8 @@ private struct NativeSessionBrowser: View {
                 .font(.system(size: 13, weight: .semibold))
                 .tracking(0.4)
                 .padding(.horizontal, 24)
-                .padding(.top, 22)
-                .padding(.bottom, 18)
+                .padding(.top, SidebarHeaderLayout.titleTop)
+                .padding(.bottom, SidebarHeaderLayout.titleBottomGap)
 
                 VStack(alignment: .leading, spacing: 5) {
                     Text(provider == .claude ? "CLAUDE CODE SESSIONS" : "CODEX SESSIONS")
@@ -8624,7 +8858,10 @@ private struct NativeSessionBrowser: View {
 
             Rectangle().fill(Theme.border).frame(width: 1)
 
-            NativeTranscriptView(store: store, provider: provider)
+            VStack(spacing: 0) {
+                BrowserToggleBar(visible: browserVisible, toggle: toggleBrowser)
+                NativeTranscriptView(store: store, provider: provider)
+            }
         }
         .onChange(of: store.linkedNativeSessionID(for: provider)) { _ in
             if store.surface == provider { store.inspectBackend(provider) }
@@ -8903,8 +9140,8 @@ private struct SessionSidebar: View {
             .font(.system(size: 13, weight: .semibold))
             .tracking(0.4)
             .padding(.horizontal, 16)
-            .padding(.top, 22)
-            .padding(.bottom, 18)
+            .padding(.top, SidebarHeaderLayout.titleTop)
+            .padding(.bottom, SidebarHeaderLayout.titleBottomGap)
 
             Button { store.createSession() } label: {
                 Label("새 작업", systemImage: "square.and.pencil")
@@ -9518,11 +9755,14 @@ private extension NSAttributedString.Key {
 /// thumbnails; every other file gets its native document icon and name.
 /// The quoted transport path stays in stored message text but never becomes
 /// the visible transcript payload.
-private func timelineAttachmentPreviews(paths: [String], maxEdge: CGFloat = 360) -> NSAttributedString? {
+private func timelineAttachmentPreviews(
+    paths: [String],
+    maxEdge: CGFloat = Theme.attachmentPreviewMaxEdge
+) -> NSAttributedString? {
     let result = NSMutableAttributedString()
     // Every attachment the composer accepted (it caps at 24) gets a card; a
     // silent cut at six lost files 7+ without a trace.
-    for path in paths {
+    for (index, path) in paths.enumerated() {
         let url = URL(fileURLWithPath: path)
         let attachment = NSTextAttachment()
         var isImagePreview = false
@@ -9538,24 +9778,28 @@ private func timelineAttachmentPreviews(paths: [String], maxEdge: CGFloat = 360)
             attachment.bounds = CGRect(
                 x: 0,
                 y: 0,
-                width: CGFloat(cgImage.width) * scale / 2,
-                height: CGFloat(cgImage.height) * scale / 2
+                width: CGFloat(cgImage.width) * scale,
+                height: CGFloat(cgImage.height) * scale
             )
             isImagePreview = true
         } else {
             attachment.image = NSWorkspace.shared.icon(forFile: path)
             attachment.bounds = CGRect(x: 0, y: -3, width: 24, height: 24)
         }
-        result.append(NSAttributedString(string: "\n"))
+        if index > 0 { result.append(NSAttributedString(string: "\n")) }
         result.append(NSAttributedString(attachment: attachment))
-        let kind = isImagePreview ? "이미지" : (url.pathExtension.isEmpty ? "파일" : url.pathExtension.uppercased())
-        result.append(NSAttributedString(
-            string: "  \(kind) · \(url.lastPathComponent)",
-            attributes: [
-                .font: NSFont.systemFont(ofSize: isImagePreview ? 10 : 11, weight: .medium),
-                .foregroundColor: TimelinePalette.muted,
-            ]
-        ))
+        // The image is the card. Repeating its filename beside the preview
+        // adds clutter; document attachments still need a visible label.
+        if !isImagePreview {
+            let kind = url.pathExtension.isEmpty ? "파일" : url.pathExtension.uppercased()
+            result.append(NSAttributedString(
+                string: "  \(kind) · \(url.lastPathComponent)",
+                attributes: [
+                    .font: NSFont.systemFont(ofSize: 11, weight: .medium),
+                    .foregroundColor: TimelinePalette.muted,
+                ]
+            ))
+        }
     }
     return result.length == 0 ? nil : result
 }
@@ -9661,7 +9905,8 @@ private func timelineAttributedDocument(
         alignment: NSTextAlignment = .left,
         minimumHeadIndent: CGFloat = 0,
         components: [(String, NSFont, NSColor)],
-        richContent: NSAttributedString? = nil
+        richContent: NSAttributedString? = nil,
+        trailingSpacing: CGFloat = 40
     ) {
         let paragraph = NSMutableParagraphStyle()
         paragraph.alignment = alignment
@@ -9696,16 +9941,16 @@ private func timelineAttributedDocument(
         ]))
         let lastParagraph = (document.string as NSString).paragraphRange(for: NSRange(location: document.length - 1, length: 1))
         let finalStyle = endingStyle.mutableCopy() as! NSMutableParagraphStyle
-        finalStyle.paragraphSpacing = 40
+        finalStyle.paragraphSpacing = trailingSpacing
         document.addAttribute(.paragraphStyle, value: finalStyle, range: lastParagraph)
     }
 
     for (index, message) in messages.enumerated() {
         switch message.role {
         case .user:
-            // Every attachment is visible as an inline card. The quoted path
-            // block remains transport-only: it is preserved in storage/copy
-            // but never leaks into the visible conversation as raw text.
+            // Codex-style convergence: text owns the user bubble while image
+            // cards stay outside it. The transport path remains stored/copyable
+            // but never becomes visible transcript text.
             let paths = PromptAttachments.paths(in: message.text)
             let previews = timelineAttachmentPreviews(paths: paths)
             let shown = paths.isEmpty ? message.text : PromptAttachments.textWithoutReferences(message.text)
@@ -9718,8 +9963,17 @@ private func timelineAttributedDocument(
                     NSFont.systemFont(ofSize: 14, weight: .medium),
                     TimelinePalette.text
                 )] + steeringDeliveryCaption(message.steeringDelivery),
-                richContent: previews
+                trailingSpacing: previews == nil ? 40 : 20
             )
+            if let previews {
+                appendBlock(
+                    role: "userAttachment",
+                    alignment: .right,
+                    minimumHeadIndent: 100,
+                    components: [],
+                    richContent: previews
+                )
+            }
         case .assistant:
             let provider = providerDisplayName(message.provider)
             let providerColor = message.provider == "local"

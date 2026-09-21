@@ -9714,7 +9714,7 @@ func selfTest() throws {
                       route.adoptedTasks == 2, route.firstPassTasks == 1, route.firstPassRate == 0.5 else {
                     FileHandle.standardError.write(Data("owner-retry: governance routes \(routes.map { "\($0.id) t=\($0.terminalTasks) a=\($0.adoptedTasks) f=\($0.firstPassTasks)" })\n".utf8)); return false }
                 var priced = route; priced.meteredTasks = 2; priced.taskTokens = 30_000
-                return priced.tokensPerCompletedTask == 30_000 && route.tokensPerCompletedTask == nil
+                return priced.tokensPerCompletedTask == 15_000 && route.tokensPerCompletedTask == nil
             } catch { FileHandle.standardError.write(Data("owner-retry: threw \(error)\n".utf8)); return false }
         }()),
         ("pasted backup-pipeline talk is not an R2 material request", {

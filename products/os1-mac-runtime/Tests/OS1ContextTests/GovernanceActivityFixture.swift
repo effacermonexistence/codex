@@ -51,6 +51,7 @@ func runGovernanceActivityFixtures() throws {
     check(s1.samples(since: nil, includeHistorical: false).count == 2, "two attempts one task")
     let mixed = s1.routes(since: nil, includeHistorical: false).first { $0.id.hasPrefix("mixed") }!
     check(abs(mixed.completionsPerMillionTokens! - 1_000_000/350) < 0.001, "retry efficiency denominator")
+    check(mixed.tokensPerCompletedTask == 350, "completed-task token cost uses adopted tasks, not direct-only completions")
     try legacy.record(scope: scope, observation: failed); try legacy.record(scope: scope, observation: good)
     check(store.snapshot(legacyRoot: legacy.root).samples(since: nil, includeHistorical: true).count == 2, "legacy duplicate excluded")
     check(store.snapshot(legacyRoot: legacy.root).samples(since: start.addingTimeInterval(100), includeHistorical: true).isEmpty, "old duplicate cannot reenter filtered period")

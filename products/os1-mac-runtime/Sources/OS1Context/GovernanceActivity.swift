@@ -81,11 +81,12 @@ public struct GovernanceRoute: Identifiable, Sendable {
     public var completionRate: Double? { terminalTasks > 0 ? Double(adoptedTasks) / Double(terminalTasks) : nil }
     /// Share of terminal tasks the owner never had to re-ask about.
     public var firstPassRate: Double? { terminalTasks > 0 ? Double(firstPassTasks) / Double(terminalTasks) : nil }
-    /// Tokens spent on every task on this route, divided by the tasks that
-    /// were completed in one click. Retries and failures stay in the cost.
+    /// Tokens spent on every terminal task on this route, divided by adopted
+    /// tasks. Retries and failures stay in the cost; missing usage disables
+    /// the ratio rather than turning an unknown cost into zero.
     public var tokensPerCompletedTask: Double? {
-        guard terminalTasks > 0, meteredTasks == terminalTasks, taskTokens > 0, firstPassTasks > 0 else { return nil }
-        return Double(taskTokens) / Double(firstPassTasks)
+        guard terminalTasks > 0, meteredTasks == terminalTasks, taskTokens > 0, adoptedTasks > 0 else { return nil }
+        return Double(taskTokens) / Double(adoptedTasks)
     }
     public var adoptionRate: Double? { attempts > 0 ? Double(adoptedAttempts) / Double(attempts) : nil }
     public var meanTokens: Double? { measuredAttempts > 0 ? Double(tokens) / Double(measuredAttempts) : nil }
@@ -110,8 +111,8 @@ public struct GovernanceComparison: Identifiable, Sendable {
     /// causal estimate of model or governance uplift.
     public var baselineMeanTokens: Double? = nil
     public var candidateMeanTokens: Double? = nil
-    /// Cost per one-click-completed task, candidate vs baseline (positive =
-    /// candidate cheaper per completion). Nil until both routes completed one.
+    /// Cost per completed task, candidate vs baseline (positive = candidate
+    /// cheaper per completion). Nil until both routes completed one.
     public var completionCostSavings: Double? = nil
 }
 
