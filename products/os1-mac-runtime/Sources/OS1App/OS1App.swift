@@ -1349,6 +1349,123 @@ private func steeringInteractionSelfTest() async throws {
     print("Live corrections: \(checks) checks passed; model calls 0; same-task/ACK/persistence/FIFO/isolation/restart/stale-result")
 }
 
+/// build205 regression. An input the owner accepted as steering of the live
+/// turn used to exist only as a queue row until the run happened to take it,
+/// so the owner's sentence disappeared from the transcript. It must now show
+/// as the ordinary pink user bubble immediately, must never claim delivery
+/// before the run's own receipt, and must survive save/restore exactly once.
+@MainActor
+private func steeringVisibilitySelfTest() async throws {
+    var checks = 0
+    func check(_ condition: Bool, _ message: String) throws {
+        guard condition else { throw RunnerError.message("Steering visibility: " + message) }; checks += 1
+    }
+    func eventually(_ condition: () -> Bool) async throws {
+        let end = Date().addingTimeInterval(8)
+        while !condition(), Date() < end { try await Task.sleep(for: .milliseconds(10)) }
+        try check(condition(), "scheduler deadline")
+    }
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("os1-steer-visible-" + UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let mailbox = ExecutionSteering(root: root.appendingPathComponent("run-steering"))
+    var starts: [PendingSubmission] = []
+    var gates: [UUID: CheckedContinuation<Void, Never>] = [:]
+    let store = SessionStore(storageRoot: root, runOperation: { submission, _, _, _, _ in
+        starts.append(submission)
+        await withCheckedContinuation { gates[submission.sessionID] = $0 }
+        return AppRunSummary(status: "complete", steps: [AppRunStep(sequence: 1, provider: "codex",
+            action: "fixture", model: "fixture", effort: "none", revasDisposition: "adopted",
+            sessionID: UUID().uuidString, permissionProfile: "workspace_write", exitCode: 0,
+            output: "fixture 답변", stderr: "", durationMS: 0, nativeRecord: nil)],
+            persistedCorrectionIDs: mailbox.persistedIDs(submission.id))
+    })
+    let id = store.selectedSessionID!
+    func rows(_ text: String) -> [ChatMessage] {
+        store.selectedSession!.messages.filter { $0.role == .user && $0.text == text }
+    }
+    func state(_ text: String) -> SteeringDeliveryState? { rows(text).first?.steeringDelivery }
+
+    let cold = "그 말이 아니라, 준비 중에 보낸 것도 바로 보여야 해."
+    let live = "그 말이 아니라, 지금 실행 중인 턴에 바로 반영해."
+    let stuck = "그 말이 아니라, 중지 확인 중에도 입력은 보존해."
+    store.composer = "스티어링 표시를 확인하는 원래 작업."; store.send()
+    try await eventually { gates[id] != nil }
+    let active = store.activeRuns[id]!
+
+    // The turn is still preparing, so it cannot take input yet. The sentence
+    // the owner already sent is nonetheless in the transcript, marked as being
+    // handed over — this is the exact row that used to be missing.
+    store.composer = cold; store.send()
+    try check(!store.canSteerSelectedRun && mailbox.inputs(active.submissionID).isEmpty,
+        "a preparing turn accepted input")
+    try check(store.queuedSubmissions.count == 1, "correction did not wait for the turn")
+    try check(rows(cold).count == 1 && state(cold) == .waiting,
+        "steered input stayed invisible while it waited in the queue")
+
+    // Hand-off promotes that same row instead of writing the sentence twice.
+    store.activeRuns[id]?.provider = .codex
+    store.activeRuns[id]?.activity = RuntimeActivity(.executing, provider: "codex")
+    try mailbox.open(submissionID: active.submissionID, threadID: "thread", turnID: "turn")
+    try await eventually { store.queuedSubmissions.isEmpty && mailbox.inputs(active.submissionID).count == 1 }
+    try check(rows(cold).count == 1, "hand-off duplicated the owner's sentence")
+    try check(rows(cold)[0].id == mailbox.inputs(active.submissionID)[0].id,
+        "the visible bubble is not the input that was delivered")
+    try check(state(cold) == .pending, "handed-over input not marked as awaiting the run's receipt")
+
+    // Enqueued is not received: only the run's own receipt says delivered.
+    let handed = mailbox.inputs(active.submissionID)[0]
+    try mailbox.record(handed, state: .sending, threadID: "thread", turnID: "turn")
+    try await eventually { store.activeRuns[id]?.steeringReady == true }
+    try check(state(cold) == .pending, "an unacknowledged input was shown as delivered")
+    try mailbox.record(handed, state: .accepted, threadID: "thread", turnID: "turn")
+    try await eventually { state(cold) == .delivered }
+
+    // The explicit steer action on a live turn shows its input at once.
+    store.composer = live; store.sendCorrectionToCurrentRun()
+    try check(store.composer.isEmpty && rows(live).count == 1 && state(live) == .pending,
+        "explicit steering did not show its input as awaiting receipt")
+    try check(mailbox.inputs(active.submissionID).count == 2, "explicit steering did not reach the run")
+
+    // Stop was requested, so neither the run nor the queue can take this one.
+    // It stays preserved in the queue and stays visible; it must not restart
+    // the task behind the owner's back.
+    store.activeRuns[id]?.cancellationRequested = true
+    let beforeStuck = starts.count
+    store.composer = stuck; store.sendCorrectionToCurrentRun()
+    try check(starts.count == beforeStuck && mailbox.inputs(active.submissionID).count == 2,
+        "a blocked steer restarted the task or forced delivery")
+    try check(store.queuedSubmissions.count == 1 && rows(stuck).count == 1 && state(stuck) == .waiting,
+        "a blocked steer left the owner's sentence invisible in the queue")
+
+    // Restart: every sentence survives exactly once, confirmed delivery stays
+    // confirmed, and nothing keeps claiming a hand-off that cannot happen.
+    store.flushPendingState()
+    let reloaded = SessionStore(storageRoot: root)
+    let restored = reloaded.sessions.first { $0.id == id }!.messages.filter { $0.role == .user }
+    for text in [cold, live, stuck] {
+        try check(restored.filter { $0.text == text }.count == 1, "restart lost or duplicated a steered input")
+    }
+    try check(restored.first { $0.text == cold }?.steeringDelivery == .delivered, "restart lost a confirmed delivery")
+    try check(restored.first { $0.text == live }?.steeringDelivery == .undelivered,
+        "restart kept claiming an unconfirmed hand-off was still in flight")
+    try check(reloaded.queuedSubmissions.count == 1 &&
+        restored.first { $0.text == stuck }?.steeringDelivery == .waiting,
+        "a request still waiting in the queue lost its preserved request or its state")
+
+    // Cancelling the queued request retires the row it created, and never
+    // touches a sentence the run already received.
+    store.removeQueued(store.queuedSubmissions[0].id)
+    try check(rows(stuck).isEmpty && rows(cold).count == 1 && rows(live).count == 1,
+        "cancelling a queued request left a phantom bubble or removed a delivered one")
+
+    gates.removeValue(forKey: id)!.resume()
+    try await eventually { !store.isSessionRunning(id) }
+    try check(starts.count == 1, "the visible steering path started an extra turn")
+    try check(state(cold) == .delivered && state(live) == .undelivered,
+        "run completion did not settle the visible delivery states")
+    print("Steering visibility: \(checks) checks passed; model calls 0; immediate bubble/pending-vs-delivered/no-duplicate/restart")
+}
+
 @MainActor
 private func replacementInteractionSelfTest() async throws {
     var checks = 0
@@ -2687,6 +2804,25 @@ private enum MessageRole: String, Codable, Sendable {
     case system
 }
 
+/// Visible delivery state of an owner input that was accepted as steering of a
+/// live turn. OS-1 accepting and durably holding an input is not the backend
+/// receiving it, so the two are never shown as the same thing. Only `waiting`
+/// and `pending` are in flight; the rest are terminal and never rewritten.
+private enum SteeringDeliveryState: String, Codable, Equatable, Sendable {
+    /// Accepted and preserved by OS-1, not yet handed to the run's mailbox.
+    case waiting
+    /// In the run's steering mailbox; the backend has not acknowledged it.
+    case pending
+    /// The run acknowledged receipt (accepted or persisted).
+    case delivered
+    /// The run refused the input. The text stays preserved.
+    case rejected
+    /// The run ended without ever acknowledging it. The text stays preserved.
+    case undelivered
+
+    var isInFlight: Bool { self == .waiting || self == .pending }
+}
+
 private struct ChatMessage: Codable, Identifiable, Equatable, Sendable {
     let id: UUID
     let role: MessageRole
@@ -2703,6 +2839,10 @@ private struct ChatMessage: Codable, Identifiable, Equatable, Sendable {
     /// A corrected import, retained byte-for-byte for audit but not authored by
     /// the user. Never render or hand this managed transport row to a model.
     var nativeManagedTurnID: String? = nil
+    /// Present only on an owner input the owner steered into a live turn, so
+    /// the bubble can show whether OS-1 is still handing it over or the run
+    /// actually received it. Absent on every ordinary message.
+    var steeringDelivery: SteeringDeliveryState? = nil
 
     init(
         id: UUID = UUID(),
@@ -4714,6 +4854,13 @@ private final class SessionStore: ObservableObject {
             sessions[index].queuePaused == true ||
             queuedSubmissions.contains(where: { $0.sessionID == submission.sessionID }) {
             queuedSubmissions.append(submission)
+            // An input the owner submitted as a correction of the turn that is
+            // running now was already accepted; it belongs in the transcript
+            // immediately, marked as still being handed over. An ordinary
+            // follow-up is not steering and stays in the queue panel only.
+            if submission.amendedRequest != nil, isSessionRunning(submission.sessionID) {
+                showAcceptedSteeringInput(submission)
+            }
             statusText = submission.amendedRequest == nil
                 ? "대기열에 추가됨 · 이 대화 \(selectedSessionQueueCount)개 대기"
                 : "정정 보존됨 · 현재 턴이 입력을 받으면 전달하며, 불가능하면 같은 목표의 후속 작업으로 이어갑니다"
@@ -4764,8 +4911,76 @@ private final class SessionStore: ObservableObject {
         if !ExecutionSteering.isTaskReplacement(text), let active = inFlightSubmissions[session.id], active.recoveryParentID == nil {
             item.amendedRequest = active.executionRequest
         }
-        queuedSubmissions.append(item); composer = ""; composerAttachments = []; save()
+        queuedSubmissions.append(item)
+        // The owner took the explicit steer action, so this input is accepted
+        // even though the live turn could not take it yet. Show it now instead
+        // of leaving it visible only as a queue row.
+        if isSessionRunning(session.id) { showAcceptedSteeringInput(item) }
+        composer = ""; composerAttachments = []; save()
         advanceQueued(item.id)
+    }
+    /// Shows an accepted steering input as the ordinary pink user bubble right
+    /// away, marked as awaiting delivery. Never creates a second copy of a
+    /// message that is already visible, so the later delivery or start of the
+    /// same submission updates one row instead of duplicating the owner's text.
+    private func showAcceptedSteeringInput(_ item: PendingSubmission) {
+        guard let index = sessions.firstIndex(where: { $0.id == item.sessionID }) else { return }
+        if let position = sessions[index].messages.firstIndex(where: { $0.id == item.userMessageID }) {
+            if sessions[index].messages[position].steeringDelivery?.isInFlight != false {
+                sessions[index].messages[position].steeringDelivery = .waiting
+            }
+        } else {
+            var message = ChatMessage(id: item.userMessageID, role: .user, text: item.request)
+            message.steeringDelivery = .waiting
+            sessions[index].messages.append(message)
+        }
+        sessions[index].updatedAt = Date()
+    }
+    /// Mirrors the run's own receipts onto the visible bubbles so the owner can
+    /// tell an input OS-1 is still handing over from one the run has taken.
+    /// Terminal states are never rewritten.
+    private func refreshSteeringDelivery(_ conversationID: UUID) {
+        guard let index = sessions.firstIndex(where: { $0.id == conversationID }),
+              let active = activeRuns[conversationID],
+              sessions[index].messages.contains(where: { $0.steeringDelivery?.isInFlight == true }) else { return }
+        var changed = false
+        for input in steeringMailbox.inputs(active.submissionID) {
+            guard let position = sessions[index].messages.firstIndex(where: { $0.id == input.id }),
+                  sessions[index].messages[position].steeringDelivery?.isInFlight == true else { continue }
+            let state: SteeringDeliveryState
+            switch steeringMailbox.receipt(input)?.state {
+            case .accepted, .persisted: state = .delivered
+            case .rejected: state = .rejected
+            case .sending, nil: state = .pending
+            }
+            if sessions[index].messages[position].steeringDelivery != state {
+                sessions[index].messages[position].steeringDelivery = state
+                changed = true
+            }
+        }
+        if changed { save() }
+    }
+    /// Resolves every still-in-flight steering bubble once its run is over. An
+    /// input the run never acknowledged stays visible and preserved, marked
+    /// undelivered; one still waiting in the queue keeps its own state, because
+    /// an explicit action or the next turn still delivers it.
+    private func settleSteeringDelivery(conversationID: UUID, submissionID: UUID?) {
+        guard let index = sessions.firstIndex(where: { $0.id == conversationID }),
+              sessions[index].messages.contains(where: { $0.steeringDelivery?.isInFlight == true }) else { return }
+        let receipts = submissionID.map { id in
+            Dictionary(steeringMailbox.inputs(id).map { ($0.id, steeringMailbox.receipt($0)?.state) },
+                       uniquingKeysWith: { first, _ in first })
+        } ?? [:]
+        for position in sessions[index].messages.indices
+        where sessions[index].messages[position].steeringDelivery?.isInFlight == true {
+            let id = sessions[index].messages[position].id
+            if queuedSubmissions.contains(where: { $0.userMessageID == id }) { continue }
+            switch receipts[id] ?? nil {
+            case .accepted, .persisted: sessions[index].messages[position].steeringDelivery = .delivered
+            case .rejected: sessions[index].messages[position].steeringDelivery = .rejected
+            case .sending, nil: sessions[index].messages[position].steeringDelivery = .undelivered
+            }
+        }
     }
     func canSteerQueued(_ item: PendingSubmission) -> Bool {
         !ExecutionSteering.isTaskReplacement(item.request) && canSteer(item.sessionID) && !editingQueueIDs.contains(item.id) &&
@@ -4851,7 +5066,16 @@ private final class SessionStore: ObservableObject {
                 pending.liveCorrections = (pending.liveCorrections ?? []) + [text]
                 inFlightSubmissions[id] = pending
             }
-            sessions[index].messages.append(ChatMessage(id: input.id, role: .user, text: text))
+            // The bubble may already be on screen from the moment the owner
+            // accepted this input. Hand-off promotes that same row rather than
+            // writing the owner's sentence into the transcript twice.
+            if let position = sessions[index].messages.firstIndex(where: { $0.id == input.id }) {
+                sessions[index].messages[position].steeringDelivery = .pending
+            } else {
+                var message = ChatMessage(id: input.id, role: .user, text: text)
+                message.steeringDelivery = .pending
+                sessions[index].messages.append(message)
+            }
             sessions[index].taskContext?.decideSemantic("User correction to current task: " + text)
             activeRuns[id]?.correctionRevision = sessions[index].taskContext?.latestSemanticRevision
             sessions[index].updatedAt = Date()
@@ -4973,6 +5197,11 @@ private final class SessionStore: ObservableObject {
                 text: submission.request
             ))
             sessions[index].updatedAt = Date()
+        } else if let position = sessions[index].messages.firstIndex(where: { $0.id == submission.userMessageID }),
+                  sessions[index].messages[position].steeringDelivery?.isInFlight == true {
+            // This input is starting as its own turn, so it is no longer an
+            // input OS-1 is trying to hand to an earlier run.
+            sessions[index].messages[position].steeringDelivery = nil
         }
         let codexSessionID = sessions[index].codexSessionID
         let claudeSessionID = sessions[index].claudeSessionID
@@ -5000,6 +5229,7 @@ private final class SessionStore: ObservableObject {
                 if self.queuedSubmissions.contains(where: { $0.sessionID == submission.sessionID && $0.amendedRequest != nil }) {
                     self.promoteQueuedCorrections(submission.sessionID)
                 }
+                self.refreshSteeringDelivery(submission.sessionID)
                 try? await Task.sleep(for: .milliseconds(250))
             }
         }
@@ -5306,6 +5536,9 @@ private final class SessionStore: ObservableObject {
             }
             // A superseded attempt must not release the newer run's admission.
             guard activeRuns[submission.sessionID]?.submissionID == submission.id else { save(); return }
+            // Read this run's receipts while they still identify it, so no
+            // bubble keeps claiming a hand-off that can no longer happen.
+            settleSteeringDelivery(conversationID: submission.sessionID, submissionID: submission.id)
             activeRuns.removeValue(forKey: submission.sessionID)
             inFlightSubmissions.removeValue(forKey: submission.sessionID)
             if selectedSessionID == submission.sessionID { statusText = sessionStatuses[submission.sessionID] ?? "Ready" }
@@ -6134,6 +6367,15 @@ private final class SessionStore: ObservableObject {
         if !value.showCodex, surface == .codex { surface = .auto }
     }
     func removeQueued(_ id: UUID) {
+        // Cancelling or pulling back a queued request also retires the bubble
+        // that represented it. Nothing delivered is ever removed: only a row
+        // still awaiting hand-off, whose text the owner now owns again.
+        if let item = queuedSubmissions.first(where: { $0.id == id }),
+           let index = sessions.firstIndex(where: { $0.id == item.sessionID }) {
+            sessions[index].messages.removeAll {
+                $0.id == item.userMessageID && $0.steeringDelivery?.isInFlight == true
+            }
+        }
         queuedSubmissions.removeAll { $0.id == id }
         pausedQueueIDs.remove(id); editingQueueIDs.remove(id)
         save()
@@ -6152,6 +6394,23 @@ private final class SessionStore: ObservableObject {
         queuedSubmissions[index].request = request
         if let preference = queuedSubmissions[index].configuredProvider {
             queuedSubmissions[index].provider = preference == .auto ? (explicitlyRequestedProvider(in: request) ?? .auto) : preference
+        }
+        // An already visible, still undelivered request shows what the queue
+        // now actually holds, keeping its identity and place in the transcript.
+        let messageID = queuedSubmissions[index].userMessageID
+        if let session = sessions.firstIndex(where: { $0.id == queuedSubmissions[index].sessionID }),
+           let position = sessions[session].messages.firstIndex(where: {
+               $0.id == messageID && $0.steeringDelivery?.isInFlight == true
+           }) {
+            let previous = sessions[session].messages[position]
+            var replacement = ChatMessage(id: previous.id, role: previous.role, text: request,
+                provider: previous.provider, permissionProfile: previous.permissionProfile,
+                timestamp: previous.timestamp, nativeRecordVerified: previous.nativeRecordVerified,
+                nativeIngestedID: previous.nativeIngestedID)
+            replacement.nativeManagedTurnID = previous.nativeManagedTurnID
+            replacement.steeringDelivery = previous.steeringDelivery
+            sessions[session].messages[position] = replacement
+            sessions[session].updatedAt = Date()
         }
         save()
         return true
@@ -6321,6 +6580,14 @@ private final class SessionStore: ObservableObject {
                     sessionID:nil,blocker:.effectsUncertain,dispatchStage:.dispatched)
             }
             sessions[index].lastFailure = recovered
+        }
+        // No run is live right after a restart. Every steered input stays
+        // visible, but nothing may keep claiming a hand-off is in progress:
+        // an input still waiting in the queue keeps its state, and the rest
+        // settle against their own run's receipts.
+        for index in sessions.indices {
+            settleSteeringDelivery(conversationID: sessions[index].id,
+                                   submissionID: sessions[index].lastFailure?.id)
         }
         // Failures already persisted before exit are not in envelope.inFlight.
         // Hydrate their paid results too; a restart must not hide the answer or
@@ -7033,7 +7300,12 @@ private struct OS1DesktopApp: App {
         }
         if CommandLine.arguments.contains("--self-test-steering") {
             Task { @MainActor in
-                do { try await steeringInteractionSelfTest(); try await replacementInteractionSelfTest(); exit(EXIT_SUCCESS) }
+                do {
+                    try await steeringInteractionSelfTest()
+                    try await steeringVisibilitySelfTest()
+                    try await replacementInteractionSelfTest()
+                    exit(EXIT_SUCCESS)
+                }
                 catch { fputs("\(error.localizedDescription)\n", stderr); exit(EXIT_FAILURE) }
             }
             NSApplication.shared.run()
@@ -9266,6 +9538,22 @@ private enum TimelinePalette {
     static let userBubble = NSColor(calibratedRed: 0.62, green: 0.24, blue: 0.43, alpha: 1)
 }
 
+/// The one line under a steered input that separates "OS-1 accepted and is
+/// still handing this over" from "the run actually received it". Ordinary
+/// messages carry no state and render exactly as before.
+private func steeringDeliveryCaption(_ state: SteeringDeliveryState?) -> [(String, NSFont, NSColor)] {
+    guard let state else { return [] }
+    let (text, color): (String, NSColor)
+    switch state {
+    case .waiting: (text, color) = ("전달 대기 · 현재 작업에 전달을 준비 중입니다", TimelinePalette.muted)
+    case .pending: (text, color) = ("전달 대기 · 현재 작업의 수신 확인 중입니다", TimelinePalette.muted)
+    case .delivered: (text, color) = ("전달 완료 · 현재 작업이 입력을 받았습니다", TimelinePalette.green)
+    case .rejected: (text, color) = ("전달 거절됨 · 입력은 보존했습니다", TimelinePalette.pink)
+    case .undelivered: (text, color) = ("전달되지 않음 · 입력은 보존했습니다", TimelinePalette.muted)
+    }
+    return [("\u{2028}" + text, NSFont.systemFont(ofSize: 10, weight: .medium), color)]
+}
+
 private func timelineNormalizedText(_ value: String) -> String {
     value
         .replacingOccurrences(of: "\r\n", with: "\n")
@@ -9389,7 +9677,7 @@ private func timelineAttributedDocument(
                     timelineNormalizedText(shown),
                     NSFont.systemFont(ofSize: 14, weight: .medium),
                     TimelinePalette.text
-                )],
+                )] + steeringDeliveryCaption(message.steeringDelivery),
                 richContent: previews
             )
         case .assistant:

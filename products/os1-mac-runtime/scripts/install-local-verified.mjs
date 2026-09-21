@@ -159,6 +159,15 @@ try {
         if (message.nativeManagedTurnID === undefined) delete copy.nativeManagedTurnID;
         else copy.nativeManagedTurnID = message.nativeManagedTurnID;
       }
+      if (copy.steeringDelivery !== message.steeringDelivery) {
+        // A restart can only settle a steered input that was still being
+        // handed over into a terminal state. The text, ID, role and time stay
+        // fixed, and a delivery that was already confirmed is never rewritten.
+        assert(['waiting', 'pending'].includes(message.steeringDelivery) &&
+          ['delivered', 'rejected', 'undelivered'].includes(copy.steeringDelivery),
+          'only an in-flight steering hand-off may change state across install');
+        copy.steeringDelivery = message.steeringDelivery;
+      }
       assert.deepEqual(copy, message, 'existing message bytes/role/ID/time changed');
     }
   }
