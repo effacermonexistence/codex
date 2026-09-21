@@ -70,7 +70,7 @@ func selfRepairCommand(_ arguments: [String]) async throws -> Bool {
 /// Shared with the runtime hook in main.swift.
 let selfRepairFailurePrefixText = "OS-1 self-repair could not complete: "
 
-let os1RuntimeVersionString = "OS-1 Runtime 0.9.134 (self-repair-build200)"
+let os1RuntimeVersionString = "OS-1 Runtime 0.9.138 (self-repair-build204)"
 
 /// Serialize source edits without dropping a queued request after three minutes.
 /// flock ownership, not a stale lock-file timestamp, determines availability.
@@ -451,8 +451,7 @@ private func applySelfUpdate(root requested: String?) throws {
         print(summary)
         return
     }
-    let transient = ["leave the installation unchanged", "Fleet work/claim unresolved", "queue changed during installation"]
-        .contains(where: text.contains)
+    let transient = SelfUpdate.isTransientInstallFailure(text)
     if transient {
         // Busy is not failure: an active user task or a running fleet job
         // must never consume the install budget. The intent simply stays

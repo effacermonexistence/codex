@@ -80,6 +80,7 @@ final class SourceContextTests {
         try runTakeoverFixtures()
         try runCodexSessionIndexFixtures()
         try runBackendHealthFixtures()
+        try runBackendWindowFocusFixtures()
         try runSelfUpdateFixtures()
         try runLocalizationFixtures()
         try runAttachmentFixtures()
@@ -150,6 +151,15 @@ final class SourceContextTests {
         let models = ["gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "claude-opus-5", "claude-sonnet-5", "claude-fable-5-1"]
         XCTAssertEqual(TaskWorkflow.architecture.preferredModels(models), Set(["gpt-6-astra"]))
         XCTAssertEqual(TaskWorkflow.implementation.preferredModels(models), Set(["gpt-5.6-terra", "claude-sonnet-5"]))
+        let codex = ["gpt-6-astra", "gpt-5.6-terra"]
+        let claude = ["claude-opus-5", "claude-sonnet-5"]
+        for stage in [TaskWorkflow.architecture, .verification] {
+            XCTAssertEqual(stage.preferredModelsByProvider([codex, claude]), Set(["gpt-6-astra", "claude-opus-5"]))
+            XCTAssertEqual(stage.preferredModelsByProvider([[], claude]), Set(["claude-opus-5"]))
+            XCTAssertEqual(stage.preferredModelsByProvider([codex, []]), Set(["gpt-6-astra"]))
+        }
+        XCTAssertEqual(TaskWorkflow.implementation.preferredModelsByProvider([codex, claude]), Set(["gpt-5.6-terra", "claude-sonnet-5"]))
+        XCTAssertTrue(TaskWorkflow.architecture.preferredModelsByProvider([[], []]).isEmpty)
         XCTAssertEqual(TaskWorkflow.verification.preferredEfforts(["low", "medium", "high"]), ["high"])
         XCTAssertEqual(TaskWorkflow.implementation.preferredEfforts(["low", "high"]), ["low", "high"])
         XCTAssertEqual(TaskWorkflow.verdict("checked\nOS1_WORKFLOW_VERDICT: PASS"), true)

@@ -50,6 +50,12 @@ const idle = () => {
     assert(!fs.existsSync(path.join(fleetRoot, name)), 'Fleet work/claim unresolved; do not interrupt it');
   }
 };
+// Legacy staged GUI copies can overwrite the same session store. Do not install through an unquiesced writer.
+const foreignWriters = () => run('/bin/ps', ['-axo', 'pid=,args=']).split('\n').filter(line => {
+  const match = line.trim().match(/^(\d+)\s+(.*)$/);
+  return match && match[2].endsWith('/Contents/MacOS/OS1App') && match[2] !== path.join(app, 'Contents/MacOS/OS1App');
+});
+assert.equal(foreignWriters().length, 0, 'non-installed OS1 writer is running; leave installation unchanged');
 const oldRequirement = requirement(app);
 const sourceRequirement = requirement(source);
 const signerRotation = sourceRequirement !== oldRequirement;

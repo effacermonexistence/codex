@@ -182,14 +182,27 @@ final class CodexDesktopTransport {
         guard let owner = responseOwner, !owner.isEmpty else { throw failure("owner identity missing") }
         owners[threadID] = owner
     }
+    static let desktopBundleID = "com.openai.codex"
+
     /// Ensure the Desktop owner is available without opening a thread or
     /// activating the app. Automatic backend routing must not steal focus;
     /// explicit user reveal remains in `revealInCodexDesktop`.
-    static func ensureRunning(threadID: String) throws {
+    ///
+    /// `launch` is the caller's `BackendWindowFocus.desktopLaunch` decision, so
+    /// the focus policy lives in one place. It is false whenever Desktop is
+    /// already running: `open -b <bundle id>` would then deliver a reopen Apple
+    /// Event, and Desktop answers that by showing and focusing its window —
+    /// which is how every automatic route used to jump in front of the app the
+    /// owner was actually using. A running owner serves the turn through its
+    /// IPC socket; its window is not involved and must not be touched.
+    static func ensureRunning(threadID: String, launch: Bool) throws {
         guard UUID(uuidString: threadID) != nil else { throw NSError(domain: "OS1.CodexDesktop", code: 3) }
+        guard launch else { return }
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-        process.arguments = ["-g", "-b", "com.openai.codex"]
+        // Cold launch only. `-g` keeps a launch out of the foreground, and a
+        // launch — unlike a reopen — carries no activation request of its own.
+        process.arguments = ["-g", "-b", desktopBundleID]
         try process.run(); process.waitUntilExit()
         guard process.terminationStatus == 0 else { throw NSError(domain: "OS1.CodexDesktop", code: 2) }
     }

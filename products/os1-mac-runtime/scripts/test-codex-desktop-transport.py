@@ -8,10 +8,15 @@ main = (root/'Sources/OS1/main.swift').read_text()
 transport = (root/'Sources/OS1/CodexDesktopTransport.swift').read_text()
 assert 'CodexDesktopTransport.textInput(prompt)' in main
 assert 'CodexDesktopTransport.textInput(correction.text)' in main
-assert 'CodexDesktopTransport.ensureRunning(threadID: threadID)' in main
+assert 'CodexDesktopTransport.ensureRunning(threadID: threadID,' in main
 assert 'CodexDesktopTransport.open(threadID: threadID)' not in main
-assert 'static func ensureRunning(threadID: String)' in transport
-assert 'process.arguments = ["-g", "-b", "com.openai.codex"]' in transport
+assert 'static func ensureRunning(threadID: String, launch: Bool)' in transport
+# The launch decision comes from the single focus policy, and a running owner
+# must resolve to launch: false so no reopen Apple Event reaches Desktop.
+assert 'launch: BackendWindowFocus.desktopLaunch(isRunning: codexDesktopIsRunning()) == .backgroundLaunch' in main
+assert 'guard launch else { return }' in transport
+assert 'process.arguments = ["-g", "-b", desktopBundleID]' in transport
+assert 'static let desktopBundleID = "com.openai.codex"' in transport
 assert 'codex://threads/' not in transport
 with tempfile.TemporaryDirectory(prefix='os1-ipc-') as temp:
     temp = Path(temp)

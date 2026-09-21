@@ -183,7 +183,7 @@ public enum BackendRecovery {
         guard requested == "auto" else { return nil }
         // Claude's session quota is account-wide, not an effort/quality issue.
         if failed == "claude" { return codexAvailable ? "codex" : nil }
-        if failed == "codex" { return codexAvailable ? "codex" : (claudeAvailable ? "claude" : nil) }
+        if failed == "codex" { return claudeAvailable ? "claude" : (codexAvailable ? "codex" : nil) }
         return nil
     }
     /// A native quota rejection with verified zero execution consumes a dispatch,
@@ -193,6 +193,14 @@ public enum BackendRecovery {
                                          step: Int, limit: Int, alreadyExtended: Bool) -> Int {
         guard requested == "auto", stage == .rejectedBeforeExecution,
               !alreadyExtended, step == limit, limit > 0, limit < Int.max else { return limit }
+        return limit + 1
+    }
+    /// One extra alternate is safe only when no backend action was sent.
+    public static func undispatchedAttemptLimit(requested: String, stage: BackendDispatchStage,
+                                                blocker: BackendBlocker, step: Int, limit: Int,
+                                                alreadyExtended: Bool, alternateAvailable: Bool) -> Int {
+        guard requested == "auto", stage == .notDispatched, blocker == .capabilityUnavailable,
+              alternateAvailable, !alreadyExtended, step == limit, limit > 0, limit < Int.max else { return limit }
         return limit + 1
     }
     public static func permitsAutomaticReplay(permission: String, stage: BackendDispatchStage) -> Bool {

@@ -85,5 +85,23 @@ func runBackendHealthFixtures() throws {
     check(ClaudeQuotaBackoff.active(at: backoffURL, now: now.addingTimeInterval(400)) != nil, "new rejection renews cooldown")
     try Data("not-json".utf8).write(to: backoffURL)
     check(ClaudeQuotaBackoff.active(at: backoffURL, now: now) == nil, "corrupt receipt not adopted")
+    let crossed = BackendHealth(claude: .init(state: .quotaExhausted, recoversAt: now.addingTimeInterval(10)),
+                                codex: .init(state: .usable), checkedAt: now)
+    check(!crossed.resetCrossed(at: now), "future reset not crossed")
+    check(crossed.resetCrossed(at: now.addingTimeInterval(10)), "reset crossing detected even with Codex usable")
+    check(BackendHealth.shouldProbe(lastStartedAt: nil, inFlight: false, health: nil, now: now), "startup probe")
+    check(BackendHealth.shouldProbe(lastStartedAt: now, inFlight: false, health: crossed, now: now.addingTimeInterval(10)), "reset triggers probe")
+    check(!BackendHealth.shouldProbe(lastStartedAt: nil, inFlight: true, health: crossed, now: now), "no overlapping probes")
+    check(!BackendHealth.shouldProbe(lastStartedAt: now, inFlight: false, health: nil, now: now.addingTimeInterval(59)), "bounded polling")
+    check(BackendHealth.shouldProbe(lastStartedAt: now, inFlight: false, health: nil, now: now.addingTimeInterval(60)), "poll without waiting jobs")
+    let crossedURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: crossedURL) }
+    try crossed.save(to: crossedURL)
+    check(BackendHealth.load(from: crossedURL, maxAge: 90, now: now.addingTimeInterval(11)) == nil, "reset invalidates old cache, not permission to run")
+    check(BackendRecovery.quotaRecoveryPreference(requested: "auto", failed: "codex", codexAvailable: true, claudeAvailable: true) == "claude", "quota failure prefers other usable provider")
+    check(BackendRecovery.quotaRecoveryPreference(requested: "auto", failed: "codex", codexAvailable: true, claudeAvailable: false) == "codex", "remaining Codex model if Claude unavailable")
+    check(BackendRecovery.undispatchedAttemptLimit(requested: "auto", stage: .notDispatched, blocker: .capabilityUnavailable, step: 1, limit: 1, alreadyExtended: false, alternateAvailable: true) == 2, "undispatched transport failure gets alternate")
+    check(BackendRecovery.undispatchedAttemptLimit(requested: "auto", stage: .dispatched, blocker: .capabilityUnavailable, step: 1, limit: 1, alreadyExtended: false, alternateAvailable: true) == 1, "started work never replayed")
+    check(BackendRecovery.undispatchedAttemptLimit(requested: "auto", stage: .notDispatched, blocker: .capabilityUnavailable, step: 2, limit: 2, alreadyExtended: true, alternateAvailable: true) == 2, "alternate bounded once")
     print("Backend health: \(count) checks passed; classification, repair order, wording, private cache and staleness")
 }

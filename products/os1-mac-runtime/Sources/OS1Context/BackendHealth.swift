@@ -83,6 +83,23 @@ public struct BackendHealth: Codable, Equatable, Sendable {
         return Backend(state: .probeFailed, detail: source)
     }
 
+    /// Poll metadata independently of blocked jobs. A reset invalidates evidence;
+    /// it never grants availability without a new native probe.
+    public func resetCrossed(at now: Date) -> Bool {
+        [claude, codex].contains { backend in
+            [backend.recoversAt, backend.windowResetsAt].compactMap { $0 }
+                .contains { $0 > checkedAt && $0 <= now }
+        }
+    }
+
+    public static func shouldProbe(lastStartedAt: Date?, inFlight: Bool,
+                                   health: BackendHealth?, now: Date) -> Bool {
+        guard !inFlight else { return false }
+        guard let last = lastStartedAt else { return true }
+        let elapsed = now.timeIntervalSince(last)
+        return elapsed >= 60 || (elapsed >= 5 && health?.resetCrossed(at: now) == true)
+    }
+
     // MARK: cache
 
     public static var defaultURL: URL {
@@ -101,13 +118,13 @@ public struct BackendHealth: Codable, Equatable, Sendable {
     }
 
     /// Nil when absent, unreadable, from the future, or older than `maxAge`.
-    public static func load(from url: URL = BackendHealth.defaultURL, maxAge: TimeInterval, now: Date = Date()) -> BackendHealth? {
+    public static func load(from url: URL = BackendHealth.defaultURL, maxAge: TimeInterval, now: Date = Date(), invalidateReset: Bool = true) -> BackendHealth? {
         guard let data = try? Data(contentsOf: url), data.count <= 16_384 else { return nil }
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         guard let health = try? decoder.decode(BackendHealth.self, from: data) else { return nil }
         let age = now.timeIntervalSince(health.checkedAt)
-        guard age >= -5, age <= maxAge else { return nil }
+        guard age >= -5, age <= maxAge, (!invalidateReset || !health.resetCrossed(at: now)) else { return nil }
         return health
     }
 

@@ -1,4 +1,7 @@
 import Foundation
+import Darwin
+import OS1System
+
 
 /// OS-1 repairing OS-1, end to end. A write-scope task edits the source
 /// checkout and runs `os1 self-update stage`, which builds the signed release,
@@ -8,6 +11,26 @@ import Foundation
 /// receipt into the conversation that asked for the change. Public state only;
 /// the installer's own signature, self-test and idle checks still apply.
 public enum SelfUpdate {
+    /// Installation identity is independent of whichever staged executable is running.
+    public static func installedAppURL(home: URL = FileManager.default.homeDirectoryForCurrentUser) -> URL {
+        home.appendingPathComponent("Applications/OS-1 CLODEX.app")
+    }
+    public static func isInstalledApp(_ bundleURL: URL, home: URL = FileManager.default.homeDirectoryForCurrentUser) -> Bool {
+        bundleURL.resolvingSymlinksInPath().standardizedFileURL == installedAppURL(home: home).resolvingSymlinksInPath().standardizedFileURL
+    }
+    public static func installedBuild(home: URL = FileManager.default.homeDirectoryForCurrentUser) -> Int {
+        let info = installedAppURL(home: home).appendingPathComponent("Contents/Info.plist")
+        guard let data = try? Data(contentsOf: info),
+              let plist = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any] else { return 0 }
+        if let value = plist["CFBundleVersion"] as? String { return Int(value) ?? 0 }
+        return (plist["CFBundleVersion"] as? NSNumber)?.intValue ?? 0
+    }
+    public static func isTransientInstallFailure(_ text: String) -> Bool {
+        ["leave the installation unchanged", "leave installation unchanged", "Fleet work/claim unresolved",
+         "queue changed during installation", "another installer owns maintenance lease", "non-installed OS1 writer is running"]
+            .contains(where: text.contains)
+    }
+
     /// Match credential tokens, not an embedded suffix in `task-...` filenames.
     public static func secretPatternHit(_ text: String) -> String? {
         let patterns = [
@@ -232,4 +255,17 @@ public enum SelfUpdate {
         return "OS-1 자체 업데이트 build \(intent.build) (\(intent.version)) 설치 실패 · 이전 빌드를 유지합니다\(commit)"
             + (error.map { " · 원인: \(String($0.suffix(300)))" } ?? "")
     }
+}
+
+/// Exactly one installed GUI may open the live store. Diagnostic modes exit before acquiring this lease.
+public final class OS1LiveStoreLease {
+    private let descriptor: Int32
+    public init(home: URL = FileManager.default.homeDirectoryForCurrentUser) throws {
+        let root = home.appendingPathComponent("Library/Application Support/OS-1")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        descriptor = Darwin.open(root.appendingPathComponent("live-gui.lock").path, O_CREAT | O_RDWR | O_NOFOLLOW | O_CLOEXEC, 0o600)
+        guard descriptor >= 0 else { throw CocoaError(.fileWriteUnknown) }
+    }
+    public func tryAcquire() -> Bool { os1_flock(descriptor, LOCK_EX | LOCK_NB) == 0 }
+    deinit { _ = os1_flock(descriptor, LOCK_UN); Darwin.close(descriptor) }
 }

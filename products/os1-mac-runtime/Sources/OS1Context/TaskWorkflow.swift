@@ -86,6 +86,14 @@ public enum TaskWorkflow: String, Codable, Sendable, CaseIterable {
         return Set(identifiers.filter { Self.modelTier($0) == target })
     }
 
+    /// Stage quality preference must not erase another usable transport.
+    /// Select within each provider; the signed router still ranks the union.
+    public func preferredModelsByProvider(_ inventories: [[String]]) -> Set<String> {
+        inventories.reduce(into: Set<String>()) { result, models in
+            result.formUnion(preferredModels(models))
+        }
+    }
+
     public func preferredEfforts(_ efforts: [String]) -> [String] {
         let selected: [String]
         switch self {

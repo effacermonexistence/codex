@@ -5830,23 +5830,33 @@ private final class SessionStore: ObservableObject {
     }
     /// A backend that comes back (official login approved, quota reset) is an
     /// external-state change: replay a preflight-only hold once per observed
-    /// recovery, never a dispatched or write-uncertain failure. While such a
-    /// hold exists the read-only probe (`os1 backend-health --refresh`) runs
-    /// at most once a minute; no model call happens until health says usable.
+    /// recovery, never a dispatched or write-uncertain failure. Independent
+    /// metadata probes run even without holds; observed reset boundaries
+    /// trigger a fresh check rather than assuming renewed availability.
     private var backendHealthProbeStartedAt: Date?
+    private var backendHealthProbeInFlight = false
     private var maintenanceTask: Task<Void, Never>?
     private let storeLaunchedAt = Date()
     func resumeBackendRecoveries(healthURL: URL = BackendHealth.defaultURL, now: Date = Date()) {
+        // Monitoring must run even when another provider works and no jobs wait.
+        // Metadata-only, bounded to one concurrent probe; no inference or login.
+        if customStorageRoot == nil,
+           BackendHealth.shouldProbe(lastStartedAt: backendHealthProbeStartedAt,
+                                     inFlight: backendHealthProbeInFlight,
+                                     health: BackendHealth.load(from: healthURL, maxAge: 90, now: now, invalidateReset: false), now: now) {
+            backendHealthProbeStartedAt = now
+            backendHealthProbeInFlight = true
+            Task { [weak self] in
+                await OS1Runner.refreshBackendHealth()
+                self?.backendHealthProbeInFlight = false
+            }
+        }
         let waiting = sessions.filter {
             $0.lastBackendFailure?.blocker == .backendUnavailable && $0.lastFailure?.preflightOnly == true &&
             $0.lastFailure?.recoveryParentID == nil && !isSessionRunning($0.id)
         }
         guard !waiting.isEmpty else { return }
         guard let health = BackendHealth.load(from: healthURL, maxAge: 90, now: now) else {
-            if customStorageRoot == nil, backendHealthProbeStartedAt.map({ now.timeIntervalSince($0) >= 60 }) ?? true {
-                backendHealthProbeStartedAt = now
-                Task.detached(priority: .utility) { await OS1Runner.refreshBackendHealth() }
-            }
             return
         }
         guard health.anyUsable else {
@@ -5879,9 +5889,9 @@ private final class SessionStore: ObservableObject {
     private var selfUpdateRoots: [String] = []
     private var selfUpdateRootsCachedAt: Date?
     private var selfUpdateLaunchedAt: Date?
-    var installedBuildNumber: Int { Int(Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "") ?? 0 }
+    var installedBuildNumber: Int { SelfUpdate.installedBuild() }
     func applyPendingSelfUpdate(now: Date = Date()) {
-        guard customStorageRoot == nil else { return }
+        guard customStorageRoot == nil, SelfUpdate.isInstalledApp(Bundle.main.bundleURL) else { return }
         if selfUpdateRootsCachedAt.map({ now.timeIntervalSince($0) > 60 }) ?? true {
             selfUpdateRoots = LocalProjectWorkspace.candidates(projectID: "os1-clodex")
             selfUpdateRootsCachedAt = now
@@ -6460,6 +6470,11 @@ private enum Theme {
     static let background = Color(red: 0.008, green: 0.008, blue: 0.011)
     static let panel = Color(red: 0.015, green: 0.014, blue: 0.017)
     static let panelRaised = Color(red: 0.035, green: 0.029, blue: 0.034)
+    /// Persistent session selection needs more contrast than the ordinary
+    /// raised panel so a clicked conversation remains obvious at a glance.
+    static let sessionSelectionFill = Color(red: 0.105, green: 0.082, blue: 0.102)
+    static let sessionSelectionBorder = Color.white.opacity(0.26)
+    static let sessionHoverFill = Color.white.opacity(0.055)
     static let border = Color.white.opacity(0.14)
     static let borderStrong = Color.white.opacity(0.22)
     static let muted = Color.white.opacity(0.47)
@@ -6751,6 +6766,12 @@ private func codexShellSelfTest() throws {
         throw RunnerError.message("Shell test cannot execute a backend")
     }, nativeSessionOpener: { _ in false })
     let selected = store.selectedSessionID!
+    let alternate = ConversationSession(title: "Selection fixture", workspace: root.path, updatedAt: .distantPast)
+    store.sessions.append(alternate)
+    store.select(alternate.id)
+    try check(store.selectedSessionID == alternate.id, "session selection moves to the clicked row")
+    store.select(selected)
+    try check(store.selectedSessionID == selected, "session selection returns to the previously selected row")
     store.activeRuns[selected] = .init(submissionID: id, started: Date(),
         activity: RuntimeActivity(.executing, provider: "codex"), provider: .codex, handedRevision: 0)
     for request in ["QUEUED_ONLY_FIRST_SENTINEL", "QUEUED_ONLY_SECOND_SENTINEL"] {
@@ -6860,6 +6881,11 @@ private func renderShellPreview(to output: URL) throws {
     let store = SessionStore(storageRoot: root, runOperation: { _, _, _, _, _ in
         throw RunnerError.message("Preview cannot execute a backend")
     }, nativeSessionOpener: { _ in false })
+    store.sessions.append(ConversationSession(
+        title: "선택 상태 확인",
+        workspace: root.path,
+        updatedAt: .distantPast
+    ))
     let id = store.selectedSessionID!
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
     store.sessions[0].workspace = root.path
@@ -6906,6 +6932,7 @@ private func renderShellPreview(to output: URL) throws {
 
 @main
 private struct OS1DesktopApp: App {
+    private static var liveStoreLease: OS1LiveStoreLease?
     @StateObject private var store: SessionStore
 
     init() {
@@ -7327,6 +7354,22 @@ private struct OS1DesktopApp: App {
         // second live session-store writer when an older executable is used.
         if CommandLine.arguments.dropFirst().contains(where: { $0.hasPrefix("--") }) {
             fputs("Unsupported OS1 diagnostic option; live sessions were not opened.\n", stderr)
+            exit(EXIT_FAILURE)
+        }
+        // A staged/fleet build must never become a second live-store writer or consume installation intents.
+        guard SelfUpdate.isInstalledApp(Bundle.main.bundleURL) else {
+            fputs("Non-installed OS1 GUI refused; live sessions were not opened. Use the installed application.\n", stderr)
+            exit(EXIT_FAILURE)
+        }
+        do {
+            let lease = try OS1LiveStoreLease()
+            guard lease.tryAcquire() else {
+                fputs("An installed OS1 GUI already owns the live store.\n", stderr)
+                exit(EXIT_SUCCESS)
+            }
+            Self.liveStoreLease = lease
+        } catch {
+            fputs("OS1 could not acquire live-store ownership; sessions were not opened.\n", stderr)
             exit(EXIT_FAILURE)
         }
         _store = StateObject(wrappedValue: SessionStore())
@@ -8812,6 +8855,19 @@ private struct SessionRow: View {
     var queuedCount = 0
     var previewTime: Date? = nil
     let action: () -> Void
+    @State private var isHovering = false
+
+    private var rowShape: RoundedRectangle {
+        RoundedRectangle(cornerRadius: 11, style: .continuous)
+    }
+
+    private var rowFill: Color {
+        selected ? Theme.sessionSelectionFill : (isHovering ? Theme.sessionHoverFill : .clear)
+    }
+
+    private var rowBorder: Color {
+        selected ? Theme.sessionSelectionBorder : (isHovering ? Theme.border.opacity(0.75) : .clear)
+    }
 
     var body: some View {
         Button(action: action) {
@@ -8820,7 +8876,7 @@ private struct SessionRow: View {
                     if activity != nil { RunningSessionIndicator(previewTime: previewTime) }
                     if session.pinnedAt != nil { Image(systemName: "pin.fill").font(.system(size: 10)).foregroundStyle(Theme.pink) }
                     Text(session.title)
-                        .font(.system(size: 13, weight: .regular))
+                        .font(.system(size: 13, weight: selected ? .semibold : .regular))
                         .foregroundStyle(Theme.text)
                         .lineLimit(1)
                     Spacer(minLength: 0)
@@ -8849,17 +8905,27 @@ private struct SessionRow: View {
             .padding(.vertical, 9)
             .frame(maxWidth: .infinity, alignment: .leading)
             .contentShape(Rectangle())
-            .background(selected ? Theme.panelRaised : Color.clear)
-            .overlay(
-                RoundedRectangle(cornerRadius: 11)
-                    .stroke(Color.clear)
-            )
-            .overlay(alignment: .bottom) {
-                Rectangle().fill(Theme.border.opacity(0.5)).frame(height: 1)
+            .background(rowShape.fill(rowFill))
+            .overlay(rowShape.stroke(rowBorder, lineWidth: selected ? 1 : 0.75))
+            .overlay(alignment: .leading) {
+                if selected {
+                    Capsule()
+                        .fill(Theme.pink)
+                        .frame(width: 3)
+                        .padding(.vertical, 7)
+                        .padding(.leading, 4)
+                }
             }
-            .clipShape(RoundedRectangle(cornerRadius: 11))
+            .overlay(alignment: .bottom) {
+                if !selected {
+                    Rectangle().fill(Theme.border.opacity(0.5)).frame(height: 1)
+                }
+            }
+            .clipShape(rowShape)
         }
         .buttonStyle(.plain)
+        .onHover { isHovering = $0 }
+        .accessibilityValue(selected ? "선택됨" : "선택 안 됨")
     }
 }
 

@@ -14,6 +14,25 @@ func runSelfUpdateFixtures() throws {
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: root) }
     let home = root.appendingPathComponent("home", isDirectory: true)
+    let installed = SelfUpdate.installedAppURL(home: home)
+    try FileManager.default.createDirectory(at: installed.appendingPathComponent("Contents"), withIntermediateDirectories: true)
+    try PropertyListSerialization.data(fromPropertyList: ["CFBundleVersion": "199"], format: .xml, options: 0)
+        .write(to: installed.appendingPathComponent("Contents/Info.plist"))
+    check(SelfUpdate.installedBuild(home: home) == 199, "read actual installed build, not staged caller build200")
+    check(SelfUpdate.isInstalledApp(installed, home: home), "installed GUI owns store")
+    check(!SelfUpdate.isInstalledApp(root.appendingPathComponent("stage/OS-1 CLODEX.app"), home: home), "staged GUI must not own store")
+    let alias = root.appendingPathComponent("alias.app")
+    try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: installed)
+    check(SelfUpdate.isInstalledApp(alias, home: home), "canonical symlink identity")
+    let first = try OS1LiveStoreLease(home: home)
+    check(first.tryAcquire(), "first GUI acquires ownership")
+    let second = try OS1LiveStoreLease(home: home)
+    check(!second.tryAcquire(), "second GUI cannot open shared store")
+    check(SelfUpdate.installedBuild(home: root.appendingPathComponent("missing")) == 0, "missing installation is not a completed install")
+    for message in ["active task did not drain; leave installation unchanged", "active user task; leave the installation unchanged", "another installer owns maintenance lease", "non-installed OS1 writer is running"] {
+        check(SelfUpdate.isTransientInstallFailure(message), "busy must preserve staged intent: " + message)
+    }
+    check(!SelfUpdate.isTransientInstallFailure("signature mismatch"), "signature error is not a transient busy state")
     let checkoutA = root.appendingPathComponent("a").path
     let checkoutB = root.appendingPathComponent("b").path
 

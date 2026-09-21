@@ -4956,7 +4956,11 @@ final class CodexAppServerClient: @unchecked Sendable {
 func runCodexDesktopTurn(executable: String, threadID: String, prompt: String, workspace: String,
                          model: String?, effort: String, permissionProfile: String, instructions: String, deadline: Date,
                          onDispatch: () -> Void) throws -> CodexTurnOutput {
-    try CodexDesktopTransport.ensureRunning(threadID: threadID)
+    // Automatic routing: never activate Desktop. A running owner is reached
+    // through its IPC socket, so no reopen event is sent and the owner's
+    // frontmost application keeps the foreground.
+    try CodexDesktopTransport.ensureRunning(threadID: threadID,
+        launch: BackendWindowFocus.desktopLaunch(isRunning: codexDesktopIsRunning()) == .backgroundLaunch)
     var connection: CodexDesktopTransport?
     let discoveryDeadline = min(deadline, Date().addingTimeInterval(20))
     while Date() < discoveryDeadline {
@@ -4967,7 +4971,7 @@ func runCodexDesktopTurn(executable: String, threadID: String, prompt: String, w
             connection = candidate; break
         } catch { Thread.sleep(forTimeInterval: 0.5) }
     }
-    guard let desktop = connection else { throw OS1Error.message("Codex Desktop did not acknowledge ownership; no task was started") }
+    guard let desktop = connection else { throw OS1Error.backendBlocked(.capabilityUnavailable) }
     let sandbox: [String: Any]
     switch permissionProfile {
     case "read_only": sandbox = ["type": "readOnly", "networkAccess": true]
@@ -5090,7 +5094,9 @@ func codexTurnIsPersisted(_ turns: Any?, turnID: String, finalAnswer: String, co
     }
 }
 
-let codexDesktopBundleID = "com.openai.codex"
+// One identifier for both the running check and the launch decision, so the
+// focus policy cannot drift from the app it is supposed to leave alone.
+let codexDesktopBundleID = CodexDesktopTransport.desktopBundleID
 
 /// Codex threads have a single writer: whichever app-server process opens a
 /// thread takes `~/.codex/thread-writer-locks/<id>.lock`. Execution now goes
@@ -5100,6 +5106,12 @@ enum DesktopRevealMode: String {
     // `background` is retained for existing callers, but is record-only.
     // Automatic backend startup never sends a thread URL to the desktop.
     case never, background, always
+
+    /// `always` is only ever requested by an explicit owner reveal; every other
+    /// mode belongs to automatic work that must not take the foreground.
+    var focusIntent: BackendWindowFocus.Intent {
+        self == .always ? .explicitUserReveal : .automaticBackendWork
+    }
 }
 
 func codexDesktopIsRunning() -> Bool {
@@ -5123,7 +5135,9 @@ func codexDesktopVisibility(
     reveal: (String) throws -> Void,
     threadID: String
 ) -> String {
-    guard mode == .always else {
+    // The deep link activates Codex Desktop, so only an explicit owner reveal
+    // may send it. Automatic modes keep the native record and the foreground.
+    guard BackendWindowFocus.mayActivateBackendWindow(mode.focusIntent) else {
         return mode == .background ? "native_record_only" : "not_revealed"
     }
     guard desktopRunning else { return "desktop_not_running" }
@@ -5203,7 +5217,8 @@ func claudeDesktopVisibility(
     reveal: (String) throws -> String,
     sessionID: String
 ) -> String {
-    guard mode == .always else {
+    // `claude://resume` activates Claude Desktop; same rule as Codex above.
+    guard BackendWindowFocus.mayActivateBackendWindow(mode.focusIntent) else {
         return mode == .background ? "native_record_only" : "not_revealed"
     }
     do {
@@ -6847,9 +6862,10 @@ func runTaskWithOwnerPolicy(
     // The signed router receives only stage-eligible native model/effort
     // tuples. A stage directive in prose alone would not enforce this policy.
     if let workflowStage {
-        let models = (providerPreference == "claude" || codexCapacity <= 0 ? [] : codexCatalog.models.map(\.slug)) +
-            (providerPreference == "codex" || claudeCapacity <= 0 ? [] : observedClaudeCatalog.map(\.model))
-        let selected = workflowStage.preferredModels(models)
+        let selected = workflowStage.preferredModelsByProvider([
+            providerPreference == "claude" || codexCapacity <= 0 ? [] : codexCatalog.models.map(\.slug),
+            providerPreference == "codex" || claudeCapacity <= 0 ? [] : observedClaudeCatalog.map(\.model)
+        ])
         codexCatalog = ActiveCodexCatalog(models: codexCatalog.models.compactMap { row in
             guard selected.contains(row.slug) else { return nil }
             let efforts = workflowStage.preferredEfforts(row.supportedEfforts)
@@ -7266,6 +7282,13 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
                     terminalPermissionFailure = .backendBlocked(safeBlocker)
                 }
                 if backendBlocker(error) != nil {
+                    let alternateAvailable = ticket.provider == "codex"
+                        ? hasClaudeExecutable && claudeCapacity > 0
+                        : !codexCatalog.models.isEmpty && codexCapacity > 0
+                    let expandedLimit = BackendRecovery.undispatchedAttemptLimit(requested: providerPreference,
+                        stage: dispatchStage, blocker: safeBlocker, step: step, limit: attemptLimit,
+                        alreadyExtended: quotaBudgetExtended, alternateAvailable: alternateAvailable)
+                    if expandedLimit > attemptLimit { quotaBudgetExtended = true; attemptLimit = expandedLimit }
                     sourceRecoveryProvider = BackendRecovery.alternate(requested: providerPreference,
                         failed: ticket.provider, permission: ticket.permissionProfile, blocker: safeBlocker,
                         codexAvailable: !codexCatalog.models.isEmpty && codexCapacity > 0,
@@ -8488,6 +8511,28 @@ func selfTest() throws {
           ) == "Codex Desktop currently owns Codex session x",
           codexWriterConflictMessage(OS1Error.message("Codex desktop protocol rejected thread/resume"), threadID: "x") == nil else {
         throw OS1Error.message("Codex desktop reveal policy validation failed")
+    }
+    // Automatic routing must never activate a backend window. A running Desktop
+    // owner is reached through its IPC socket, so `ensureRunning` sends no
+    // reopen event — the exact call that used to pull Codex in front of the
+    // app the owner was using. `launch: false` therefore has to be a no-op that
+    // still validates its thread identity.
+    let runningThread = "0f9b2c68-49cf-4f2f-9a6e-2b0cd1a4f7e3"
+    try CodexDesktopTransport.ensureRunning(threadID: runningThread, launch: false)
+    var refusedInvalidThread = false
+    do { try CodexDesktopTransport.ensureRunning(threadID: "not-a-uuid", launch: false) }
+    catch { refusedInvalidThread = true }
+    guard refusedInvalidThread,
+          BackendWindowFocus.desktopLaunch(isRunning: true) == .useRunningOwner,
+          BackendWindowFocus.desktopLaunch(isRunning: false) == .backgroundLaunch,
+          BackendWindowFocus.mayActivateBackendWindow(.explicitUserReveal),
+          !BackendWindowFocus.mayActivateBackendWindow(.automaticBackendWork),
+          DesktopRevealMode.always.focusIntent == .explicitUserReveal,
+          DesktopRevealMode.background.focusIntent == .automaticBackendWork,
+          DesktopRevealMode.never.focusIntent == .automaticBackendWork,
+          BackendWindowFocus.backgroundLaunchOptions == ["-g", "-b"],
+          codexDesktopBundleID == CodexDesktopTransport.desktopBundleID else {
+        throw OS1Error.message("Backend window focus policy validation failed")
     }
     let transcriptRoot = FileManager.default.temporaryDirectory
         .appendingPathComponent("os1-self-test-\(UUID().uuidString)", isDirectory: true)
