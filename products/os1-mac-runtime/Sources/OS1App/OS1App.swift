@@ -1013,6 +1013,41 @@ private func parallelInteractionSelfTest() async throws {
     let failedReviewReload = SessionStore(storageRoot: failedReviewRoot)
     try check(failedReviewReload.selectedSession!.lastFailure?.recoveryAttempted == true &&
         failedReviewReload.selectedSession!.taskContext?.objective.requestText == "DEPLOY ONCE", "restart forgot recovery budget or objective")
+    // Readback must release admission before dispatching the preserved objective.
+    for verified in [true, false] {
+        var calls: [PendingSubmission] = []
+        let resumeStore = SessionStore(storageRoot: root.appendingPathComponent("readback-dispatch-\(verified)"),
+            runOperation: { submission, _, _, _, _ in
+                calls.append(submission)
+                try await Task.sleep(for: .milliseconds(30))
+                if calls.count == 1 {
+                    throw RunnerError.backend(BackendFailureNotice(provider: "claude", sessionID: interruptedID,
+                        blocker: .effectsUncertain, dispatchStage: .dispatched, permissionProfile: "workspace_write"))
+                }
+                let output = submission.readOnlyReconciliation == true ? "OS1_EFFECTS: none" : "Original objective executed"
+                return AppRunSummary(status: "complete", steps: [AppRunStep(sequence: 1, provider: "codex",
+                    action: "test", model: "fixture", effort: "low", revasDisposition: "adopted",
+                    sessionID: UUID().uuidString, permissionProfile: "workspace_write", exitCode: 0,
+                    output: output, stderr: "", durationMS: 30,
+                    nativeRecord: verified ? AppNativeRecord(turnID: nil, recordPath: nil,
+                        persistence: "verified", desktopVisibility: "not_opened") : nil)])
+            })
+        resumeStore.composer = "REPAIR ORIGINAL"; resumeStore.send()
+        let resumeDeadline = Date().addingTimeInterval(8)
+        while !resumeStore.activeRuns.isEmpty && Date() < resumeDeadline {
+            try await Task.sleep(for: .milliseconds(30))
+        }
+        try check(resumeStore.activeRuns.isEmpty, "readback scheduler failed to drain")
+        try check(calls.count == (verified ? 3 : 2), "verified readback must dispatch original exactly once; unverified readback must not replay")
+        try check(calls.filter { $0.readOnlyReconciliation == true }.count == 1, "readback recursively dispatched")
+        if verified {
+            try check(calls[2].id == calls[0].id && calls[2].request == "REPAIR ORIGINAL" && calls[2].readbackResumed == true,
+                "readback lost original submission identity or resume guard")
+            try check(resumeStore.selectedSession!.lastFailure == nil, "successful resumed objective remained failed")
+        } else {
+            try check(resumeStore.selectedSession!.lastFailure?.request == "REPAIR ORIGINAL", "unverified readback discarded original")
+        }
+    }
     // A stop can race with a previously emitted effects-uncertain notice.
     var cancelledCalls = 0
     let cancelledStore = SessionStore(storageRoot: root.appendingPathComponent("cancel-review"), runOperation: { _, _, _, _, _ in
@@ -5275,6 +5310,7 @@ private final class SessionStore: ObservableObject {
         }
 
         Task {
+            var pendingReadbackResume: PendingSubmission?
             do {
                 // Selection-triggered ingestion may still be reading when the
                 // user presses Enter. Await the bound native history before
@@ -5491,21 +5527,16 @@ private final class SessionStore: ObservableObject {
                         sessionStatuses[submission.sessionID] = os1Tr("배포 확인됨 · 재배포 없음", "Deployment verified · no redeployment")
                         appendTaskEvent(conversationID: submission.sessionID, kind: "recovery_completed",
                             summary: "Independent Railway and current preview verification completed the original deployment; no replay")
-                    } else if let verdictText = visibleSteps.last?.output,
-                       BackendRecovery.effectsVerdict(in: verdictText) == .nothingApplied,
-                       var original = sessions[target].lastFailure, original.recoveryParentID == nil,
-                       original.readbackResumed != true || (original.resumedUnderBuild ?? 0) < installedBuildNumber,
-                       !FileManager.default.fileExists(atPath: ExecutionCancellation.url(submissionID: original.id).path) {
-                        original.readbackResumed = true
-                        original.resumedUnderBuild = installedBuildNumber
-                        sessions[target].lastFailure = original
-                        sessions[target].messages.append(ChatMessage(role: .system,
-                            text: os1Tr("재확인 결과 이전 시도의 변경이 전혀 반영되지 않았음이 확인됐습니다. 보존한 원래 작업을 이어서 실행합니다.",
-                                        "The readback verified that nothing from the interrupted attempt was applied. Resuming the preserved objective.")))
-                        appendTaskEvent(conversationID: submission.sessionID, kind: "readback_resume",
-                            summary: "OS1_EFFECTS: none — uncertain-effect hold released; resuming the preserved objective once")
-                        save()
-                        start(original)
+                    } else if allVerified, let final = visibleSteps.last,
+                       final.exitCode == 0,
+                       ["adopted", "control_verified"].contains(final.revasDisposition),
+                       BackendRecovery.effectsVerdict(in: final.output) == .nothingApplied,
+                       let original = sessions[target].lastFailure, original.recoveryParentID == nil,
+                       submission.recoveryParentID == original.id,
+                       original.readbackResumed != true || (original.resumedUnderBuild ?? 0) < installedBuildNumber {
+                        // Admission still belongs to the readback. Never call start here:
+                        // its active-run guard would drop the original without dispatch.
+                        pendingReadbackResume = original
                     }
                 } else {
                     sessions[target].completedForkCheckpoint = ConversationForkCheckpoint(
@@ -5597,6 +5628,27 @@ private final class SessionStore: ObservableObject {
             // run's work, already represented here by the adopted answer:
             // consume them, never replay them into the owner's conversation.
             consumeNativeRecords(conversationID: submission.sessionID)
+            if var original = pendingReadbackResume,
+               let target = sessions.firstIndex(where: { $0.id == submission.sessionID }),
+               sessions[target].lastFailure?.id == original.id,
+               !isSessionRunning(submission.sessionID),
+               activeRuns.count < Self.maximumConcurrentSessions,
+               !queuedSubmissions.contains(where: { $0.sessionID == submission.sessionID && $0.startNextRequested == true }),
+               !FileManager.default.fileExists(atPath: ExecutionCancellation.url(submissionID: original.id).path),
+               !FileManager.default.fileExists(atPath: ExecutionCancellation.url(submissionID: submission.id).path) {
+                original.readbackResumed = true
+                original.resumedUnderBuild = installedBuildNumber
+                sessions[target].lastFailure = original
+                start(original)
+                if activeRuns[submission.sessionID]?.submissionID == original.id {
+                    sessions[target].messages.append(ChatMessage(role: .system,
+                        text: os1Tr("재확인 결과 이전 시도의 변경이 반영되지 않았음이 확인되어 보존한 원래 작업을 재개했습니다.",
+                                    "The readback verified no changes were applied. The preserved objective has resumed.")))
+                    appendTaskEvent(conversationID: submission.sessionID, kind: "readback_resume",
+                        summary: "Verified OS1_EFFECTS: none; released readback admission and dispatched preserved objective")
+                    save()
+                }
+            }
             runNextQueuedSubmissionIfNeeded()
         }
     }
