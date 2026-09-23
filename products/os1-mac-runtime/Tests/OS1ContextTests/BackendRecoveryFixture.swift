@@ -7,6 +7,11 @@ func runBackendRecoveryFixtures() throws {
     func check(_ value: Bool, _ message: String) {
         precondition(value, "Backend recovery: " + message); count += 1
     }
+    check(BackendRecovery.needsAutomaticReadback(attempted: nil, verdictReconciled: nil), "legacy failure gets a verdict readback")
+    check(BackendRecovery.needsAutomaticReadback(attempted: true, verdictReconciled: nil), "pre-contract readback migrates once")
+    check(!BackendRecovery.needsAutomaticReadback(attempted: true, verdictReconciled: true), "reconciled failure stays held across app upgrades")
+    check(BackendRecovery.mayResumeAfterReadback(alreadyResumed: nil), "first verified none may resume")
+    check(!BackendRecovery.mayResumeAfterReadback(alreadyResumed: true), "upgrade cannot replenish original execution budget")
     check(BackendRecovery.rejectedAdoptionBlocker(exitCode: 0, output: "saved answer", persistence: "verified") == .verificationRejected, "verified response is not an unknown execution")
     check(BackendRecovery.rejectedAdoptionBlocker(exitCode: 1, output: "partial", persistence: "verified") == .effectsUncertain, "failed execution remains uncertain")
     check(BackendRecovery.rejectedAdoptionBlocker(exitCode: 0, output: " \n", persistence: "verified") == .effectsUncertain, "empty response cannot establish success")

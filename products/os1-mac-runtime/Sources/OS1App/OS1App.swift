@@ -3137,17 +3137,14 @@ private struct PendingSubmission: Identifiable, Codable, Equatable, Sendable {
     /// Set when a clean readback (OS1_EFFECTS: none) already resumed this
     /// objective once, so one verified-no-effects verdict buys one resume.
     var readbackResumed: Bool? = nil
-    /// The OS-1 build under which that resume happened. A build that replaced
-    /// itself to fix the cause earns one fresh resume; the same build never
-    /// retries in a loop.
+    /// Historical receipt only; a new build does not authorize another replay.
     var resumedUnderBuild: Int? = nil
     /// Set once a readback under the OS1_EFFECTS verdict contract ran for
     /// this failure; failures reconciled before that contract existed get
     /// exactly one more readback under it.
     var verdictReconciled: Bool? = nil
-    /// The OS-1 build whose runtime last examined this failure. When OS-1
-    /// replaces itself, a held failure gets one fresh readback under the new
-    /// build — the runtime that failed it no longer exists.
+    /// Historical receipt only; automatic reconciliation is contract-scoped,
+    /// not replenished whenever an unrelated app build is installed.
     var reconciledUnderBuild: Int? = nil
     var executionRequest: String {
         (liveCorrections ?? []).reduce(amendedRequest.map {
@@ -5533,7 +5530,7 @@ private final class SessionStore: ObservableObject {
                        BackendRecovery.effectsVerdict(in: final.output) == .nothingApplied,
                        let original = sessions[target].lastFailure, original.recoveryParentID == nil,
                        submission.recoveryParentID == original.id,
-                       original.readbackResumed != true || (original.resumedUnderBuild ?? 0) < installedBuildNumber {
+                       BackendRecovery.mayResumeAfterReadback(alreadyResumed: original.readbackResumed) {
                         // Admission still belongs to the readback. Never call start here:
                         // its active-run guard would drop the original without dispatch.
                         pendingReadbackResume = original
@@ -6409,8 +6406,8 @@ private final class SessionStore: ObservableObject {
             guard !isSessionRunning(session.id),
                   session.lastBackendFailure?.requiresReadback == true,
                   let failed = session.lastFailure, failed.recoveryParentID == nil,
-                  failed.recoveryAttempted != true || failed.verdictReconciled != true
-                      || (failed.reconciledUnderBuild ?? 0) < installedBuildNumber,
+                  BackendRecovery.needsAutomaticReadback(attempted: failed.recoveryAttempted,
+                      verdictReconciled: failed.verdictReconciled),
                   !FileManager.default.fileExists(atPath: ExecutionCancellation.url(submissionID: failed.id).path) else { continue }
             appendTaskEvent(conversationID: session.id, kind: "stale_reconcile",
                 summary: "Held failure predates the verdict contract; running its read-only readback now")

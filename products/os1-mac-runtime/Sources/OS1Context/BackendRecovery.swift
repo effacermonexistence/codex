@@ -155,6 +155,19 @@ public struct BackendFailureNotice: Codable, Equatable, Sendable {
 }
 
 public enum BackendRecovery {
+    /// A build upgrade is not evidence that a failed operation is safe to replay.
+    /// Only legacy failures that never ran the verdict contract get one automatic
+    /// readback. Explicit owner retries remain available through the UI.
+    public static func needsAutomaticReadback(attempted: Bool?, verdictReconciled: Bool?) -> Bool {
+        attempted != true || verdictReconciled != true
+    }
+
+    /// One verified no-effects verdict can resume an objective once. Installing
+    /// another build does not replenish this execution budget.
+    public static func mayResumeAfterReadback(alreadyResumed: Bool?) -> Bool {
+        alreadyResumed != true
+    }
+
     /// Failed adoption must not erase a successfully persisted native response.
     /// This classification does not authorize replay or override remote verification.
     public static func rejectedAdoptionBlocker(exitCode: Int, output: String, persistence: String) -> BackendBlocker {
