@@ -171,6 +171,18 @@ func runTaskContextFixtures(root: URL) throws {
         try check(PreparationIntent.detect(text)?.projectID == expected,
                   "excluded project must not hijack source acquisition: \(text)")
     }
+    for text in ["파일을 변경하라", "함수를 구현하라", "버튼을 삭제하라"] {
+        try check(ScopeResolution.resolve(text).scope == .workspaceWrite, "formal edit ending: \(text)")
+    }
+    for text in ["파일을 수정하지 마라", "OS1 수정하라는 문장을 번역해", "OS1 수정하라니 가능한가?"] {
+        try check(ScopeResolution.resolve(text).scope == .readOnly, "formal verb must not expand refusal/mention: \(text)")
+    }
+    let focusRepairImperative = "자동 라우팅 때 Codex/Claude 창이 앞으로 나오지 않게 수정하라. 사용자가 명시적으로 열 때는 허용하고 OS1 자체도 always-on-top으로 만들지 마라"
+    for text in [focusRepairImperative, focusRepairImperative.decomposedStringWithCanonicalMapping] {
+        try check(ScopeResolution.resolve(text).scope == .workspaceWrite, "formal imperative retains write objective")
+        try check(PreparationIntent.detect(text)?.projectID == "os1-clodex" && PreparationIntent.detect(text)?.modifies == true, "self repair binds source before dispatch")
+        try check(TaskWorkflow.shouldDecompose(text, scope: ScopeResolution.resolve(text).scope), "self repair enters completion workflow")
+    }
     try check(PreparationIntent.detect("OS1과 Instagram 모두 수정해")?.projectID == nil,
               "multiple positive projects must not resolve through registry order")
     try check(PreparationIntent.detect("인스타그램 가격이 두 번 나가는 버그 손봐줘")?.modifies == true, "specific repair retains edit intent")

@@ -789,6 +789,9 @@ public struct ScopeResolution: Equatable, Sendable {
     // than a bare "write" so ordinary requests such as "write a summary" do
     // not gain workspace authority.
     static let positiveFileEditPatterns = [
+        // Formal Korean imperatives are edits too. Match the verb ending,
+        // not a bare stem that could appear in a prohibition or a noun.
+        #"(?:수정|삭제|변경|편집|추가|구현)\s*하라(?=\s|[.!?;]|$)"#,
         #"[A-Za-z0-9_./-]+\.[A-Za-z0-9]{1,16}(?:에|으로)\s*(?:기록|저장|작성)(?:해|하세|하십|하라)"#,
         #"(?i)\b(?:delete|create|write|save|rename|remove|edit|modify|update)\s+[\"“][^\"”\n]+\.[A-Za-z0-9]{1,16}[\"”]"#,
         #"(?:수정|삭제|변경|편집|추가)\s*(?:해(?:줘|주세요|라)?|요청(?:합니다|해))"#,
