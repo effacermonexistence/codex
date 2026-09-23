@@ -183,6 +183,16 @@ func runTaskContextFixtures(root: URL) throws {
         try check(PreparationIntent.detect(text)?.projectID == "os1-clodex" && PreparationIntent.detect(text)?.modifies == true, "self repair binds source before dispatch")
         try check(TaskWorkflow.shouldDecompose(text, scope: ScopeResolution.resolve(text).scope), "self repair enters completion workflow")
     }
+    let shortRepair = "라우팅할 때 Codex·Claude 창이 앞으로 튀어나오는 문제를 고쳐"
+    try check(TaskWorkflow.shouldDecompose(shortRepair, scope: .workspaceWrite, projectID: "os1-clodex"), "bound self repair must enter workflow")
+    try check(!TaskWorkflow.shouldDecompose(shortRepair, scope: .readOnly, projectID: "os1-clodex"), "binding cannot grant write permission")
+    try check(!TaskWorkflow.shouldDecompose(shortRepair, scope: .workspaceWrite, projectID: "other"), "binding is project scoped")
+    try check(TaskWorkflow.sourceAlreadySatisfied("evidence\nOS1_SOURCE_STATE: ALREADY_SATISFIED"), "structured no-op candidate")
+    try check(!TaskWorkflow.sourceAlreadySatisfied("OS1_SOURCE_STATE: ALREADY_SATISFIED\nclaim"), "marker must be terminal")
+    try check(!TaskWorkflow.sourceAlreadySatisfied("OS1_SOURCE_STATE: ALREADY_SATISFIED\nOS1_SOURCE_STATE: ALREADY_SATISFIED"), "duplicate marker rejected")
+    try check(TaskWorkflow.permitsBoundedRepair(verdict: false, stageIndex: 1), "no-op verification BLOCK permits one repair")
+    try check(!TaskWorkflow.permitsBoundedRepair(verdict: false, stageIndex: 2, repairAttempted: true), "one repair maximum")
+    try check(!TaskWorkflow.permitsBoundedRepair(verdict: nil, stageIndex: 1), "malformed no-op verifier cannot authorize repair")
     try check(PreparationIntent.detect("OS1과 Instagram 모두 수정해")?.projectID == nil,
               "multiple positive projects must not resolve through registry order")
     try check(PreparationIntent.detect("인스타그램 가격이 두 번 나가는 버그 손봐줘")?.modifies == true, "specific repair retains edit intent")

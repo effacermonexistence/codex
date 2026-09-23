@@ -6397,6 +6397,7 @@ func runWorkflowTaskWithOwnerPolicy(
     var architectureOutput = ""
     var stagePlan: [TaskWorkflow] = TaskWorkflow.allCases
     var stageIndex = 0
+    var repairAttempted = false
     // Governance measures the owner's whole task, not three apparently
     // successful subtasks. Every stage attempt is charged to this one id.
     let workflowMonitorID = UUID().uuidString.lowercased()
@@ -6415,7 +6416,7 @@ func runWorkflowTaskWithOwnerPolicy(
     while stageIndex < stagePlan.count {
         let stage = stagePlan[stageIndex]
         RuntimeActivity.emit(.preparing, publicText: stage.progressText)
-        var stagePrompt = stage == .implementation && stageIndex > 2
+        var stagePrompt = stage == .implementation && repairAttempted
             ? TaskWorkflow.repairPrompt(original: prompt, architecture: architectureOutput,
                 failedVerification: priorOutput ?? "")
             : stage.prompt(original: prompt, prior: priorOutput)
@@ -6429,6 +6430,9 @@ func runWorkflowTaskWithOwnerPolicy(
             }.joined(separator: "\n")
             stagePrompt += "\nRUNTIME-VERIFIED EXECUTION RECORD LOCATORS (record persistence and permissions verified by OS-1, not blanket proof of model claims):\n" + records
             stagePrompt += "\nRead these primary records when checking pre-change observations, tool results and historical scope. Architecture handoff for locating evidence (not itself proof):\n" + String(architectureOutput.prefix(8_000))
+        }
+        if repairRoot != nil && stage == .architecture {
+            stagePrompt += "\nIDEMPOTENT SELF-REPAIR: Inspect source and existing regressions. If the requested source behavior is already implemented, identify exact source/test evidence and end with OS1_SOURCE_STATE: ALREADY_SATISFIED. This only skips redundant editing; a fresh independent verifier must still validate source readiness, and OS-1 must stage/install a verified release. Never invent a change just to satisfy a mutation check. If a defect remains, return the implementation contract without that marker."
         }
         if repairRoot != nil {
             stagePrompt += "\nSELF-REPAIR RELEASE BOUNDARY: This workflow verifies source readiness first. Do not install, stage a release, bump versions, or commit/push. OS-1 performs those mechanical steps only after the independent verification PASS. Check actual source, deterministic tests, and a local rendering when relevant. Do not require the old installed app to already contain this uninstalled patch; do not claim installation or live recovery. Installation has its own later receipt and rollback gate."
@@ -6466,19 +6470,25 @@ func runWorkflowTaskWithOwnerPolicy(
         }
         if stage == .verification && TaskWorkflow.verdict(adopted.output) != true {
             guard TaskWorkflow.permitsBoundedRepair(verdict: TaskWorkflow.verdict(adopted.output),
-                stageIndex: stageIndex) else {
+                stageIndex: stageIndex, repairAttempted: repairAttempted) else {
                 return held("verification: 분리된 검증 단계가 PASS를 증명하지 못했습니다. 구현 결과와 검증 기록은 보존했습니다. 이전 쓰기 단계를 자동 재실행하지 말고 실패 근거를 확인한 뒤 수정 범위를 다시 지정해야 합니다.")
             }
             // Only an explicit, verified BLOCK opens one bounded repair pass.
             // Missing/malformed verdicts and uncertain implementation writes
             // cannot authorize replay.
+            repairAttempted = true
             stagePlan.append(contentsOf: [.implementation, .verification])
         }
         if stage != .verification {
             if adopted.provider == "codex" { codexID = adopted.sessionID }
             if adopted.provider == "claude" { claudeID = adopted.sessionID }
         }
-        if stage == .architecture { architectureOutput = adopted.output }
+        if stage == .architecture {
+            architectureOutput = adopted.output
+            if repairRoot != nil && TaskWorkflow.sourceAlreadySatisfied(adopted.output) {
+                stagePlan = [.architecture, .verification]
+            }
+        }
         priorOutput = adopted.output
         stageContext = try SessionHandoff(transcript: handoff.transcript,
             source: source, taskContext: taskState).encoded()
@@ -6486,7 +6496,7 @@ func runWorkflowTaskWithOwnerPolicy(
     }
     if let repairRoot, TaskWorkflow.permitsSelfUpdate(stage: .verification, finalVerdict: TaskWorkflow.verdict(priorOutput ?? "")) {
         switch completeOS1SelfRepair(root: repairRoot, objective: prompt,
-            startedAt: workflowStartedAt, startHead: workflowStartHead) {
+            startedAt: workflowStartedAt, startHead: workflowStartHead, verifiedSourceReady: true) {
         case .notApplicable: break
         case .staged(_, let note):
             RuntimeActivity.emit(.verifying, publicText: note)
@@ -10072,8 +10082,10 @@ struct OS1Main {
                     throw OS1Error.message("At least one backend capacity must be above zero")
                 }
                 let sessionContext = try readSessionContext(contextPath)
+                let boundProjectID = try SessionHandoff.decode(sessionContext).taskContext?.project?.projectID
                 let workflow = !requireReadOnly &&
-                    TaskWorkflow.shouldDecompose(prompt, scope: ScopeResolution.resolve(prompt).scope) &&
+                    TaskWorkflow.shouldDecompose(prompt, scope: ScopeResolution.resolve(prompt).scope,
+                        projectID: boundProjectID) &&
                     PreparationIntent.detect(prompt)?.modifies != false
                 let summary = try await (workflow ? runWorkflowTask(
                     prompt: prompt, workspace: workspace, providerPreference: providerPreference,

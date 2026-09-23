@@ -39,7 +39,7 @@ public enum TaskWorkflow: String, Codable, Sendable, CaseIterable {
         """
     }
 
-    public static func shouldDecompose(_ request: String, scope: TaskContext.Scope) -> Bool {
+    public static func shouldDecompose(_ request: String, scope: TaskContext.Scope, projectID: String? = nil) -> Bool {
         guard scope == .workspaceWrite else { return false }
         if isBoundedAppearanceEdit(request) { return false }
         let text = request.precomposedStringWithCanonicalMapping.lowercased()
@@ -50,7 +50,7 @@ public enum TaskWorkflow: String, Codable, Sendable, CaseIterable {
                         "implement", "finish", "complete", "build", "fix", "repair", "ship", "deploy"].contains { text.contains($0) }
         let explicitMultiStage = ["설계", "검증", "테스트", "로그", "원인", "완수율", "아키텍처",
                                   "architecture", "verify", "test", "root cause", "end-to-end", "e2e"].contains { text.contains($0) }
-        return delivery && (explicitMultiStage || substantial)
+        return delivery && (explicitMultiStage || substantial || projectID == "os1-clodex")
     }
 
     /// Phase instructions constrain actions, not executor capabilities.
@@ -224,7 +224,13 @@ public enum TaskWorkflow: String, Codable, Sendable, CaseIterable {
         return markers[0].hasSuffix("PASS")
     }
 
-    public static func permitsBoundedRepair(verdict: Bool?, stageIndex: Int) -> Bool {
-        verdict == false && stageIndex == 2
+    public static func sourceAlreadySatisfied(_ output: String) -> Bool {
+        let lines = output.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+        let marker = "OS1_SOURCE_STATE: ALREADY_SATISFIED"
+        return lines.filter { $0 == marker }.count == 1 && lines.last == marker
+    }
+
+    public static func permitsBoundedRepair(verdict: Bool?, stageIndex: Int, repairAttempted: Bool = false) -> Bool {
+        verdict == false && !repairAttempted && (stageIndex == 1 || stageIndex == 2)
     }
 }

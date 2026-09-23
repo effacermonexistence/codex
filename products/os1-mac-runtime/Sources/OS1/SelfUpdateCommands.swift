@@ -70,7 +70,7 @@ func selfRepairCommand(_ arguments: [String]) async throws -> Bool {
 /// Shared with the runtime hook in main.swift.
 let selfRepairFailurePrefixText = "OS-1 self-repair could not complete: "
 
-let os1RuntimeVersionString = "OS-1 Runtime 0.9.154 (self-repair-build220)"
+let os1RuntimeVersionString = "OS-1 Runtime 0.9.155 (self-repair-build221)"
 
 /// Serialize source edits without dropping a queued request after three minutes.
 /// flock ownership, not a stale lock-file timestamp, determines availability.
@@ -321,7 +321,7 @@ func selfRepairSecretHit(root: String, git: String, since startHead: String? = n
 /// self-tests, staging, commit, push — is OS-1's own, so completion never
 /// depends on a backend following instructions. The caller holds the
 /// source-write lease. Never throws: the outcome is part of the task's result.
-func completeOS1SelfRepair(root: String, objective: String, startedAt: Date, startHead: String? = nil) -> SelfRepairCompletion {
+func completeOS1SelfRepair(root: String, objective: String, startedAt: Date, startHead: String? = nil, verifiedSourceReady: Bool = false) -> SelfRepairCompletion {
     let runtime = URL(fileURLWithPath: root).appendingPathComponent(SelfUpdate.runtimeRelativePath).path
     let installed = installedOS1Build()
     guard let git = try? findExecutable("git") else { return .failed("git is not available") }
@@ -340,7 +340,7 @@ func completeOS1SelfRepair(root: String, objective: String, startedAt: Date, sta
        committed.0 == 0 {
         changed += String(decoding: committed.1, as: UTF8.self).split(separator: "\n").map(String.init)
     }
-    guard !changed.isEmpty else { return .notApplicable("no source change under \(SelfUpdate.runtimeRelativePath)") }
+    guard !changed.isEmpty || verifiedSourceReady else { return .notApplicable("no source change under \(SelfUpdate.runtimeRelativePath)") }
     if let hit = selfRepairSecretHit(root: root, git: git, since: startHead) {
         return .failed("refusing to commit or stage: possible credential in the change (\(hit))")
     }
