@@ -22,6 +22,10 @@ browser = (root / 'Sources/OS1App/BrowserPanel.swift').read_text()
 main = (root / 'Sources/OS1/main.swift').read_text()
 transport = (root / 'Sources/OS1/CodexDesktopTransport.swift').read_text()
 policy = (root / 'Sources/OS1Context/BackendWindowFocus.swift').read_text()
+swift_sources = {
+    path.relative_to(root).as_posix(): path.read_text()
+    for path in sorted((root / 'Sources').rglob('*.swift'))
+}
 checks = 0
 
 
@@ -38,16 +42,18 @@ check('intent == .explicitUserReveal' in policy, 'only an explicit reveal may ac
 check('public static let backgroundLaunchOptions = ["-g", "-b"]' in policy, 'background launch options are pinned')
 
 # 2. The transport never reopens a running owner.
-check('static func ensureRunning(threadID: String, launch: Bool) throws {' in transport,
-      'ensureRunning takes the launch decision from the caller')
-check('guard launch else { return }' in transport, 'a running Desktop owner is never launched or reopened')
-check(transport.index('guard launch else { return }') < transport.index('/usr/bin/open'),
+check('launch: BackendWindowFocus.DesktopLaunch,' in transport,
+      'ensureRunning takes the typed launch decision from the caller')
+check('guard launch == .backgroundLaunch else { return }' in transport,
+      'a running Desktop owner is never launched or reopened')
+check(transport.index('guard launch == .backgroundLaunch else { return }') < transport.index('URL(fileURLWithPath: "/usr/bin/open")'),
       'the running-owner guard must precede any open invocation')
-check('process.arguments = ["-g", "-b", desktopBundleID]' in transport, 'cold launch stays in the background')
+check('BackendWindowFocus.backgroundLaunchOptions + [desktopBundleID]' in transport,
+      'cold launch arguments come from the single focus policy')
 check('codex://threads/' not in transport, 'the transport never sends an activating thread URL')
 
 # 3. The single automatic caller passes the policy decision.
-check('launch: BackendWindowFocus.desktopLaunch(isRunning: codexDesktopIsRunning()) == .backgroundLaunch' in main,
+check('launch: BackendWindowFocus.desktopLaunch(isRunning: codexDesktopIsRunning())' in main,
       'automatic Codex routing asks the focus policy before launching')
 # Every call site must state a launch decision; none may default to launching.
 ensure_calls = re.findall(r'CodexDesktopTransport\.ensureRunning\([^)]*\)', main, re.S)
@@ -68,8 +74,7 @@ check('"--desktop-reveal", "background",' in app, 'the app routes with record-on
 for forbidden in ['activateIgnoringOtherApps', 'orderFrontRegardless', 'NSApp.activate',
                   'NSApplication.shared.activate', 'NSWindow.Level', '.floatingPanel',
                   'level = .floating', 'hidesOnDeactivate']:
-    for name, source in [('OS1App.swift', app), ('BrowserPanel.swift', browser),
-                         ('main.swift', main), ('CodexDesktopTransport.swift', transport)]:
+    for name, source in swift_sources.items():
         check(forbidden not in source, f'{name} must not pin a window above other apps ({forbidden})')
 
 # 6. Every call that can bring an application forward is a known, explicit site.
@@ -97,18 +102,19 @@ allowed = {
         'Button("Open in Claude Desktop") { store.openInClaudeDesktop() }',
     },
     'Sources/OS1/CodexDesktopTransport.swift': {
-        'process.executableURL = URL(fileURLWithPath: "/usr/bin/open")',
+        'URL(fileURLWithPath: "/usr/bin/open"),',
     },
     'Sources/OS1/main.swift': {
         # revealInCodexDesktop / revealInClaudeDesktop: explicit reveal only.
         'let result = try commandOutput("/usr/bin/open", [url], timeout: 15)',
         '"/usr/bin/open",',
+        # Self-test assertion for the injected cold-start launcher.
+        'automaticLaunches[0].0.path == "/usr/bin/open",',
     },
 }
 pattern = re.compile(r'NSWorkspace\.shared\.open\(|NSWorkspace\.shared\.activateFileViewerSelecting|'
                      r'/usr/bin/open|openInCodexDesktop\(\)|openInClaudeDesktop\(\)')
-for relative in sorted(allowed) + ['Sources/OS1Context/BackendWindowFocus.swift']:
-    text = (root / relative).read_text()
+for relative, text in swift_sources.items():
     permitted = allowed.get(relative, set())
     for number, line in enumerate(text.splitlines(), start=1):
         stripped = line.strip()

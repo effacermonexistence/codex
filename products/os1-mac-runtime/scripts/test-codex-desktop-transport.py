@@ -10,12 +10,12 @@ assert 'CodexDesktopTransport.textInput(prompt)' in main
 assert 'CodexDesktopTransport.textInput(correction.text)' in main
 assert 'CodexDesktopTransport.ensureRunning(threadID: threadID,' in main
 assert 'CodexDesktopTransport.open(threadID: threadID)' not in main
-assert 'static func ensureRunning(threadID: String, launch: Bool)' in transport
+assert 'launch: BackendWindowFocus.DesktopLaunch,' in transport
 # The launch decision comes from the single focus policy, and a running owner
-# must resolve to launch: false so no reopen Apple Event reaches Desktop.
-assert 'launch: BackendWindowFocus.desktopLaunch(isRunning: codexDesktopIsRunning()) == .backgroundLaunch' in main
-assert 'guard launch else { return }' in transport
-assert 'process.arguments = ["-g", "-b", desktopBundleID]' in transport
+# must resolve to `.useRunningOwner` so no reopen Apple Event reaches Desktop.
+assert 'launch: BackendWindowFocus.desktopLaunch(isRunning: codexDesktopIsRunning())' in main
+assert 'guard launch == .backgroundLaunch else { return }' in transport
+assert 'BackendWindowFocus.backgroundLaunchOptions + [desktopBundleID]' in transport
 assert 'static let desktopBundleID = "com.openai.codex"' in transport
 assert 'codex://threads/' not in transport
 with tempfile.TemporaryDirectory(prefix='os1-ipc-') as temp:
@@ -30,7 +30,17 @@ with tempfile.TemporaryDirectory(prefix='os1-ipc-') as temp:
  print(value["ok"] as? Bool == true ? "PASS" : "INVALID")
  } catch { print("REJECTED") }
 ''')
-    subprocess.run(['swiftc',str(root/'Sources/OS1/CodexDesktopTransport.swift'),str(temp/'main.swift'),'-o',str(temp/'test')],check=True)
+    subprocess.run([
+        'swiftc', '-emit-library', '-emit-module', '-module-name', 'OS1Context',
+        str(root/'Sources/OS1Context/BackendWindowFocus.swift'),
+        '-emit-module-path', str(temp/'OS1Context.swiftmodule'),
+        '-o', str(temp/'libOS1Context.dylib')
+    ], check=True)
+    subprocess.run([
+        'swiftc', '-I', str(temp), '-L', str(temp), '-lOS1Context',
+        str(root/'Sources/OS1/CodexDesktopTransport.swift'), str(temp/'main.swift'),
+        '-o', str(temp/'test')
+    ], check=True)
     def exact(c,n):
         b=b''
         while len(b)<n:
@@ -62,7 +72,9 @@ with tempfile.TemporaryDirectory(prefix='os1-ipc-') as temp:
                     send(c,dict(type='response',requestId=r['requestId'],result=dict(ok=True)))
             except BaseException as e: errors.append(repr(e))
         t=threading.Thread(target=server);t.start()
-        result=subprocess.run([str(temp/'test'),path],capture_output=True,text=True,timeout=5)
+        environment = dict(__import__('os').environ)
+        environment['DYLD_LIBRARY_PATH'] = str(temp)
+        result=subprocess.run([str(temp/'test'),path],capture_output=True,text=True,timeout=5,env=environment)
         t.join(3);srv.close()
         assert not errors,(case,errors)
         assert result.stdout.strip()==('PASS' if case=='success' else 'REJECTED'),(case,result.stdout)

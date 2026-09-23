@@ -4967,7 +4967,7 @@ func runCodexDesktopTurn(executable: String, threadID: String, prompt: String, w
     // through its IPC socket, so no reopen event is sent and the owner's
     // frontmost application keeps the foreground.
     try CodexDesktopTransport.ensureRunning(threadID: threadID,
-        launch: BackendWindowFocus.desktopLaunch(isRunning: codexDesktopIsRunning()) == .backgroundLaunch)
+        launch: BackendWindowFocus.desktopLaunch(isRunning: codexDesktopIsRunning()))
     var connection: CodexDesktopTransport?
     let discoveryDeadline = min(deadline, Date().addingTimeInterval(20))
     while Date() < discoveryDeadline {
@@ -8530,14 +8530,37 @@ func selfTest() throws {
     // Automatic routing must never activate a backend window. A running Desktop
     // owner is reached through its IPC socket, so `ensureRunning` sends no
     // reopen event — the exact call that used to pull Codex in front of the
-    // app the owner was using. `launch: false` therefore has to be a no-op that
-    // still validates its thread identity.
+    // app the owner was using. `.useRunningOwner` therefore has to be a no-op
+    // that still validates its thread identity.
     let runningThread = "0f9b2c68-49cf-4f2f-9a6e-2b0cd1a4f7e3"
-    try CodexDesktopTransport.ensureRunning(threadID: runningThread, launch: false)
+    var automaticLaunches: [(URL, [String])] = []
+    let recordAutomaticLaunch: (URL, [String]) throws -> Int32 = { executable, arguments in
+        automaticLaunches.append((executable, arguments))
+        return 0
+    }
+    try CodexDesktopTransport.ensureRunning(
+        threadID: runningThread,
+        launch: .useRunningOwner,
+        launcher: recordAutomaticLaunch
+    )
     var refusedInvalidThread = false
-    do { try CodexDesktopTransport.ensureRunning(threadID: "not-a-uuid", launch: false) }
+    do {
+        try CodexDesktopTransport.ensureRunning(
+            threadID: "not-a-uuid",
+            launch: .useRunningOwner,
+            launcher: recordAutomaticLaunch
+        )
+    }
     catch { refusedInvalidThread = true }
+    try CodexDesktopTransport.ensureRunning(
+        threadID: runningThread,
+        launch: .backgroundLaunch,
+        launcher: recordAutomaticLaunch
+    )
     guard refusedInvalidThread,
+          automaticLaunches.count == 1,
+          automaticLaunches[0].0.path == "/usr/bin/open",
+          automaticLaunches[0].1 == ["-g", "-b", codexDesktopBundleID],
           BackendWindowFocus.desktopLaunch(isRunning: true) == .useRunningOwner,
           BackendWindowFocus.desktopLaunch(isRunning: false) == .backgroundLaunch,
           BackendWindowFocus.mayActivateBackendWindow(.explicitUserReveal),

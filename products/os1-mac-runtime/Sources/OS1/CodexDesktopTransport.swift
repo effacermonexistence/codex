@@ -1,5 +1,6 @@
 import Foundation
 import Darwin
+import OS1Context
 
 /// Versioned, local Desktop IPC. Desktop owns the writer; OS1 never fabricates
 /// a running thread from a rollout file or starts a parallel CLI turn.
@@ -189,21 +190,32 @@ final class CodexDesktopTransport {
     /// explicit user reveal remains in `revealInCodexDesktop`.
     ///
     /// `launch` is the caller's `BackendWindowFocus.desktopLaunch` decision, so
-    /// the focus policy lives in one place. It is false whenever Desktop is
-    /// already running: `open -b <bundle id>` would then deliver a reopen Apple
+    /// the focus policy lives in one place. It is `.useRunningOwner` whenever
+    /// Desktop is already running: `open -b <bundle id>` would then deliver a reopen Apple
     /// Event, and Desktop answers that by showing and focusing its window —
     /// which is how every automatic route used to jump in front of the app the
     /// owner was actually using. A running owner serves the turn through its
     /// IPC socket; its window is not involved and must not be touched.
-    static func ensureRunning(threadID: String, launch: Bool) throws {
+    static func ensureRunning(
+        threadID: String,
+        launch: BackendWindowFocus.DesktopLaunch,
+        launcher: (URL, [String]) throws -> Int32 = { executableURL, arguments in
+            let process = Process()
+            process.executableURL = executableURL
+            process.arguments = arguments
+            try process.run()
+            process.waitUntilExit()
+            return process.terminationStatus
+        }
+    ) throws {
         guard UUID(uuidString: threadID) != nil else { throw NSError(domain: "OS1.CodexDesktop", code: 3) }
-        guard launch else { return }
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+        guard launch == .backgroundLaunch else { return }
         // Cold launch only. `-g` keeps a launch out of the foreground, and a
         // launch — unlike a reopen — carries no activation request of its own.
-        process.arguments = ["-g", "-b", desktopBundleID]
-        try process.run(); process.waitUntilExit()
-        guard process.terminationStatus == 0 else { throw NSError(domain: "OS1.CodexDesktop", code: 2) }
+        let status = try launcher(
+            URL(fileURLWithPath: "/usr/bin/open"),
+            BackendWindowFocus.backgroundLaunchOptions + [desktopBundleID]
+        )
+        guard status == 0 else { throw NSError(domain: "OS1.CodexDesktop", code: 2) }
     }
 }
