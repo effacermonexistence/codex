@@ -60,7 +60,7 @@ let before = front(), mark = events.count
 var failure: String? = nil
 do {
     try CodexDesktopTransport.ensureRunning(threadID: threadID,
-        launch: decision == .backgroundLaunch)
+        launch: decision)
 } catch { failure = String(describing: error) }
 settle(4)
 phases.append(["phase": "current_policy", "desktopWasRunning": wasRunning,
