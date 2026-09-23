@@ -1047,9 +1047,13 @@ func providerOutputDeclaresCapabilityFailure(_ data: Data, prompt: String, evide
         "cannot run", "can't run", "unable to run", "cannot execute", "can't execute", "unable to execute",
         "cannot access", "can't access", "unable to access", "tool is unavailable", "tools are unavailable",
         "permission is unavailable", "no bash", "no shell", "no wrangler",
-        "못 한다", "못합니다", "failed to upload", "cannot continue", "can't continue",
+        "failed to upload", "cannot continue", "can't continue",
     ]
-    return markers.contains(where: output.contains)
+    // A technical diagnosis ("the existing code cannot prevent activation")
+    // is not the executor declining its task. Bare inability words match both.
+    let selfRefusal = #"(?:저는|제가|나는|내가)[^.\n]{0,80}(?:수행|실행|진행|처리|접근|조회)(?:하지|을|를)?\s*못(?:합니다|한다|해)"#
+    return markers.contains(where: output.contains) ||
+        output.range(of: selfRefusal, options: .regularExpression) != nil
 }
 
 private func outputContractIssues(_ data: Data, prompt: String, snapshotOnly: Bool = false) -> [String] {
@@ -9498,6 +9502,10 @@ func selfTest() throws {
          (try? executableProviderPreference(requested: "auto", prompt: "GitHub 최신 상태 확인해", codexAvailable: false, claudeAvailable: true)) == "claude"),
         ("read-only shell wording with no backend at all still stops",
          (try? executableProviderPreference(requested: "auto", prompt: "GitHub 최신 상태 확인해", codexAvailable: false, claudeAvailable: false)) == nil),
+        ("technical inability is not executor incapability",
+         !providerOutputDeclaresCapabilityFailure(Data("open -g는 새로 뜬 앱이 자기 창을 활성화하는 것은 막지 못합니다.".utf8), prompt: "자동 라우팅 때 창이 앞으로 나오지 않게 수정하라")),
+        ("direct first-person inability remains blocked",
+         providerOutputDeclaresCapabilityFailure(Data("저는 이 작업을 직접 수행하지 못합니다.".utf8), prompt: "수정해")),
         ("snapshot-only explanation that notes no execution is not a capability failure",
          !providerOutputDeclaresCapabilityFailure(Data("이번 작업은 읽기 전용이라 실행할 수 없어 첨부된 자료만 정리했습니다.".utf8),
                                                   prompt: "QM이랑 GR자료 R2에서 다 가져와 설명만 해", evidenceSupplied: true)),
