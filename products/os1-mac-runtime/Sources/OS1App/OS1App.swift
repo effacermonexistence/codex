@@ -1043,6 +1043,15 @@ private func parallelInteractionSelfTest() async throws {
         if verified {
             try check(calls[2].id == calls[0].id && calls[2].request == "REPAIR ORIGINAL" && calls[2].readbackResumed == true,
                 "readback lost original submission identity or resume guard")
+            var rejectedDelivery = calls[0]
+            rejectedDelivery.deliveryID = "retained-rejected-artifact"
+            rejectedDelivery.savedResultNeedsReview = true
+            rejectedDelivery.prepareVerifiedNoEffectsResume(build: 219)
+            try check(rejectedDelivery.deliveryID == nil && rejectedDelivery.savedResultNeedsReview == nil,
+                "verified no-effects resume redelivered a rejected artifact instead of executing")
+            try check(rejectedDelivery.id == calls[0].id && rejectedDelivery.request == calls[0].request &&
+                rejectedDelivery.readbackResumed == true && rejectedDelivery.resumedUnderBuild == 219,
+                "no-effects resume lost original custody or replenished replay budget")
             try check(resumeStore.selectedSession!.lastFailure == nil, "successful resumed objective remained failed")
         } else {
             try check(resumeStore.selectedSession!.lastFailure?.request == "REPAIR ORIGINAL", "unverified readback discarded original")
@@ -3146,6 +3155,16 @@ private struct PendingSubmission: Identifiable, Codable, Equatable, Sendable {
     /// Historical receipt only; automatic reconciliation is contract-scoped,
     /// not replenished whenever an unrelated app build is installed.
     var reconciledUnderBuild: Int? = nil
+    /// Called only after the verified `none` gate. Keep original custody and
+    /// outbox evidence, but execute the objective rather than redeliver the
+    /// rejected artifact. Other effects verdicts never enter this transition.
+    mutating func prepareVerifiedNoEffectsResume(build: Int) {
+        deliveryID = nil
+        savedResultNeedsReview = nil
+        readbackResumed = true
+        resumedUnderBuild = build
+    }
+
     var executionRequest: String {
         (liveCorrections ?? []).reduce(amendedRequest.map {
             ExecutionSteering.continuation(original: $0, correction: request)
@@ -5633,8 +5652,7 @@ private final class SessionStore: ObservableObject {
                !queuedSubmissions.contains(where: { $0.sessionID == submission.sessionID && $0.startNextRequested == true }),
                !FileManager.default.fileExists(atPath: ExecutionCancellation.url(submissionID: original.id).path),
                !FileManager.default.fileExists(atPath: ExecutionCancellation.url(submissionID: submission.id).path) {
-                original.readbackResumed = true
-                original.resumedUnderBuild = installedBuildNumber
+                original.prepareVerifiedNoEffectsResume(build: installedBuildNumber)
                 sessions[target].lastFailure = original
                 start(original)
                 if activeRuns[submission.sessionID]?.submissionID == original.id {
