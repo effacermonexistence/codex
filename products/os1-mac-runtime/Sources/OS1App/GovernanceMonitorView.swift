@@ -5,6 +5,7 @@ import OS1Context
 private enum GovernanceMonitorSection: String, CaseIterable, Identifiable {
     case live = "핵심"
     case details = "상세"
+    case learning = "학습"
     case accounts = "로그인"
     var id: Self { self }
 }
@@ -332,7 +333,7 @@ struct GovernanceMonitorView: View {
                 }
                 .pickerStyle(.segmented)
                 .labelsHidden()
-                .frame(width: 300)
+                .frame(width: 380)
                 Spacer()
                 if section != .accounts {
                     Picker("기간", selection: $window) { ForEach(["전체", "24시간", "7일"], id: \.self) { Text($0) } }.frame(width: 155)
@@ -369,6 +370,10 @@ struct GovernanceMonitorView: View {
             DisclosureGroup("모델 비교 · 과거 matched 관측") { comparisonWorkbench; comparePanel }
             tracePanel
             methodology
+        case .learning:
+            learningLoop
+            learningTrend
+            learningRoutes
         case .accounts:
             BackendAccountsPanel(model: accounts, dark: true, readOnly: preview)
         }
@@ -681,6 +686,84 @@ struct GovernanceMonitorView: View {
         }
         .padding(12).background(green.opacity(0.035), in: RoundedRectangle(cornerRadius: 8))
     }
+    // MARK: - 학습: what routing learned from every task (route learning v38)
+
+    private var learningLoop: some View {
+        panel("학습 루프", subtitle: "작업할 때마다 자동으로 돌아갑니다 · 역전파 구조를 라우팅에 대응") {
+            VStack(alignment: .leading, spacing: 6) {
+                learningStep("1", "순전파", "RCC가 경로(백엔드·모델·추론 강도)를 고르고 실행합니다.")
+                learningStep("2", "손실", "검증된 결과 하나를 얻는 데 든 시간과 토큰. 실패하면 그만큼 더 듭니다.")
+                learningStep("3", "귀속", "결과·시간·토큰을 실제로 실행한 그 경로와 작업 종류에 기록합니다(서버 장부).")
+                learningStep("4", "갱신", "경로별 완료율·시간·토큰이 매번 갱신되고, 오래된 기록은 7일 반감기로 흐려집니다.")
+                learningStep("5", "다음 선택", "완료를 우선으로, 같은 제공자 안에서는 토큰이 적고 빠른 경로를 고릅니다. 첫 시도의 일부는 덜 써 본 경로를 시험합니다.")
+            }
+            Text("토큰은 입력 환산치입니다: 새 입력 + 캐시 읽기 × 0.1 + 출력 × 5. Codex와 Claude는 한도가 따로라 서로의 토큰 수로 일을 옮기지 않습니다.")
+                .font(.system(size: 10)).foregroundStyle(muted).fixedSize(horizontal: false, vertical: true)
+        }
+    }
+    private func learningStep(_ index: String, _ title: String, _ detail: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text(index).font(.system(size: 10, weight: .bold, design: .monospaced)).foregroundStyle(green).frame(width: 12)
+            Text(title).font(.system(size: 11, weight: .semibold)).frame(width: 64, alignment: .leading)
+            Text(detail).font(.system(size: 11)).foregroundStyle(Color(white: 0.8)).fixedSize(horizontal: false, vertical: true)
+        }
+    }
+    private var learningTrendValue: GovernanceLearningTrend { GovernanceLearning.trend(snapshot, now: refreshed) }
+    private var learningTrend: some View {
+        let trend = learningTrendValue
+        func change(_ recent: Double?, _ previous: Double?, format: (Double) -> String, lowerIsBetter: Bool) -> (String, Color) {
+            guard let recent else { return ("—", muted) }
+            guard let previous, previous > 0 else { return (format(recent), .white) }
+            let better = lowerIsBetter ? recent < previous : recent > previous
+            return ("\(format(previous)) → \(format(recent))", recent == previous ? .white : (better ? green : pink))
+        }
+        let completion = change(trend.recent.completionRate, trend.previous.completionRate,
+                                format: { String(format: "%.0f%%", $0 * 100) }, lowerIsBetter: false)
+        let tokens = change(trend.recent.tokensPerCompletion, trend.previous.tokensPerCompletion,
+                            format: { tokenLabel($0) }, lowerIsBetter: true)
+        let seconds = change(trend.recent.secondsPerCompletion, trend.previous.secondsPerCompletion,
+                             format: { String(format: "%.0fs", $0) }, lowerIsBetter: true)
+        return panel("좋아지고 있나", subtitle: "지난 7일 vs 그 전 7일 · 초록은 개선, 분홍은 악화") {
+            HStack(spacing: 10) {
+                compactCard("완료율", completion.0, "시도 \(trend.recent.attempts) · 완료 \(trend.recent.adopted)", color: completion.1)
+                compactCard("완료 1건당 토큰", tokens.0, "실패한 시도의 토큰 포함", color: tokens.1)
+                compactCard("완료 1건당 시간", seconds.0, "검증된 결과 기준", color: seconds.1)
+            }
+        }
+    }
+    private func tokenLabel(_ value: Double) -> String {
+        value >= 1_000_000 ? String(format: "%.2fM", value / 1_000_000)
+            : value >= 1_000 ? String(format: "%.0fk", value / 1_000) : String(format: "%.0f", value)
+    }
+    private var learningRouteRows: [GovernanceLearningRoute] {
+        GovernanceLearning.routes(snapshot, since: since, provider: provider == "전체" ? nil : provider)
+    }
+    private var learningRoutes: some View {
+        let rows = learningRouteRows
+        let leaders = GovernanceLearning.leaders(rows)
+        return panel("경로별로 배운 것", subtitle: "제공자 안에서 완료 1건당 토큰이 적은 순 · ★ 가장 효율적인 경로(시도 3회 이상)") {
+            Grid(alignment: .leading, horizontalSpacing: 14, verticalSpacing: 10) {
+                GridRow {
+                    Text("경로"); Text("시도"); Text("완료율"); Text("시도당 토큰"); Text("완료당 토큰"); Text("완료 시간")
+                }.font(.system(size: 10)).foregroundStyle(muted)
+                ForEach(rows) { row in
+                    GridRow {
+                        HStack(spacing: 5) {
+                            Text(leaders[row.provider] == row.id ? "★" : " ").foregroundStyle(green).frame(width: 10)
+                            Text(short(row.id)).foregroundStyle(row.provider == "claude" ? pink : green)
+                        }.frame(maxWidth: .infinity, alignment: .leading)
+                        Text("\(row.attempts)")
+                        Text(percent(row.completionRate))
+                        Text(row.tokensPerAttempt.map(tokenLabel) ?? "—")
+                        Text(row.tokensPerCompletion.map(tokenLabel) ?? "—")
+                        Text(row.meanSecondsCompleted.map { String(format: "%.0fs", $0) } ?? "—")
+                    }.font(.system(size: 11, design: .monospaced)).monospacedDigit()
+                }
+            }
+            if rows.isEmpty { Text("선택한 기간에 경로 기록이 없습니다.").font(.system(size: 12)).foregroundStyle(muted) }
+        }
+    }
+
     private func panel<Content: View>(_ title: String, subtitle: String, @ViewBuilder content: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: 12) {
             Text(title).font(.system(size: 14, weight: .semibold))

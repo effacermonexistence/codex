@@ -53,6 +53,8 @@ describe("route learning ledger", () => {
     // Unknown input or output is unmeasured, never zero.
     expect(weightedTokens({ input_tokens: null, cache_tokens: null, output_tokens: 100 })).toBeNull();
     expect(weightedTokens(undefined)).toBeNull();
+    // A step that spent nothing never ran; it is unmeasured, not a 1-token attempt.
+    expect(weightedTokens({ input_tokens: 0, cache_tokens: 0, output_tokens: 0 })).toBeNull();
     expect(validStepUsage({ input_tokens: 10, cache_tokens: 20, output_tokens: 1 })).toBe(false);
     expect(validStepUsage({ input_tokens: 10, cache_tokens: 5, output_tokens: 1, prompt: "x" })).toBe(false);
     expect(validStepUsage({ input_tokens: -1, cache_tokens: null, output_tokens: 1 })).toBe(false);

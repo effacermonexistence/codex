@@ -31,11 +31,16 @@ export function validStepUsage(value: unknown): value is StepUsage {
     (v.cache_tokens === null || v.input_tokens === null || (v.cache_tokens as number) <= (v.input_tokens as number));
 }
 
-/** Input-token equivalents, or null when the step's usage is not fully known. */
+/**
+ * Input-token equivalents, or null when the step's usage is not fully known.
+ * A step that spent nothing never reached inference; counting it as a real
+ * attempt would drag the route's geometric mean toward one token.
+ */
 export function weightedTokens(usage: StepUsage | undefined): number | null {
   if (!usage || usage.input_tokens === null || usage.output_tokens === null) return null;
   const cache = Math.min(usage.cache_tokens ?? 0, usage.input_tokens);
-  return (usage.input_tokens - cache) + CACHE_READ_WEIGHT * cache + OUTPUT_WEIGHT * usage.output_tokens;
+  const weighted = (usage.input_tokens - cache) + CACHE_READ_WEIGHT * cache + OUTPUT_WEIGHT * usage.output_tokens;
+  return weighted > 0 ? weighted : null;
 }
 
 export type LearningObservation = {

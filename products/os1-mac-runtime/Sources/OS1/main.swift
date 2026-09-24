@@ -556,17 +556,58 @@ struct ArtifactUpload: Codable {
     }
 }
 
+/// Tokens a step spent, signed with its result so the route core can charge
+/// them to the route that ran (route learning schema 2). Counts only.
+struct StepUsage: Codable, Equatable {
+    let inputTokens: Int?
+    let outputTokens: Int?
+    let cacheTokens: Int?
+
+    enum CodingKeys: String, CodingKey {
+        case inputTokens = "input_tokens"
+        case outputTokens = "output_tokens"
+        case cacheTokens = "cache_tokens"
+    }
+
+    /// The gateway requires all three keys; an unmeasured count is null.
+    func encode(to encoder: Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        if let inputTokens { try values.encode(inputTokens, forKey: .inputTokens) } else { try values.encodeNil(forKey: .inputTokens) }
+        if let outputTokens { try values.encode(outputTokens, forKey: .outputTokens) } else { try values.encodeNil(forKey: .outputTokens) }
+        if let cacheTokens { try values.encode(cacheTokens, forKey: .cacheTokens) } else { try values.encodeNil(forKey: .cacheTokens) }
+    }
+
+    /// The same trust rule completion feedback uses: Codex counts only from
+    /// the deduplicated rollout accounting (v2); Claude's result counts as is.
+    static func measured(_ usage: CompletionMeasuredUsage?, provider: String) -> StepUsage? {
+        guard let usage, provider == "claude" || provider == "codex" else { return nil }
+        if provider == "codex", !(usage.resource.format == .codexRolloutJSONL && usage.resource.accountingVersion == 2) {
+            return nil
+        }
+        let limit = 10_000_000_000
+        func bounded(_ value: Int?) -> Int? { value.flatMap { (0...limit).contains($0) ? $0 : nil } }
+        let input = bounded(usage.inputTokens), output = bounded(usage.outputTokens)
+        var cache = bounded(usage.cacheTokens)
+        if let value = cache, let input, value > input { cache = input }
+        guard input != nil || output != nil, (input ?? 0) + (output ?? 0) > 0 else { return nil }
+        return StepUsage(inputTokens: input, outputTokens: output, cacheTokens: cache)
+    }
+}
+
 struct ResultSubmission: Codable {
     let ticket: Ticket
     let resultHash: String
     let artifactRef: String
     let deviceSignature: String
+    /// Present only on an os1-result-v2 submission.
+    var usage: StepUsage? = nil
 
     enum CodingKeys: String, CodingKey {
         case ticket
         case resultHash = "result_hash"
         case artifactRef = "artifact_ref"
         case deviceSignature = "device_signature"
+        case usage
     }
 }
 
@@ -1723,10 +1764,26 @@ func ticketBytes(_ ticket: Ticket) -> Data {
 }
 
 func resultBytes(_ result: ResultSubmission) -> Data {
-    Data([
-        "os1-result-v1", result.ticket.executionID, String(result.ticket.sequence),
-        result.ticket.nonce, result.resultHash, result.artifactRef,
-    ].joined(separator: "\n").utf8)
+    let base = [result.ticket.executionID, String(result.ticket.sequence),
+                result.ticket.nonce, result.resultHash, result.artifactRef]
+    // v2 also signs the step's usage; without usage the bytes stay v1 exactly.
+    guard let usage = result.usage else { return Data((["os1-result-v1"] + base).joined(separator: "\n").utf8) }
+    func count(_ value: Int?) -> String { value.map(String.init) ?? "null" }
+    return Data((["os1-result-v2"] + base + [count(usage.inputTokens), count(usage.cacheTokens), count(usage.outputTokens)])
+        .joined(separator: "\n").utf8)
+}
+
+/// Delivers a result; when a gateway from before signed usage refuses the v2
+/// submission, delivers the same result without usage. That v1 submission is
+/// signed by exactly the bytes the artifact upload was signed with.
+func deliverResult(_ client: APIClient, _ submission: ResultSubmission, v1Signature: String) async throws -> RouteResponse {
+    do {
+        return try await client.deliver("/v1/results", body: submission, as: RouteResponse.self)
+    } catch OS1Error.service(let status, _, _) where submission.usage != nil && (400...403).contains(status) {
+        let plain = ResultSubmission(ticket: submission.ticket, resultHash: submission.resultHash,
+                                     artifactRef: submission.artifactRef, deviceSignature: v1Signature)
+        return try await client.deliver("/v1/results", body: plain, as: RouteResponse.self)
+    }
 }
 
 func verifyTicket(_ ticket: Ticket, config: RuntimeConfig) throws {
@@ -7870,18 +7927,22 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
         let resultHash = sha256Hex(artifactData)
         RuntimeActivity.emit(.verifying, provider: ticket.provider, model: model, effort: effort)
         let artifactRef = "r2://os1-private-results/\(ticket.executionID)/\(ticket.sequence)/\(resultHash).json"
-        var submission = ResultSubmission(ticket: ticket, resultHash: resultHash, artifactRef: artifactRef, deviceSignature: "")
-        submission = ResultSubmission(
-            ticket: ticket,
-            resultHash: resultHash,
-            artifactRef: artifactRef,
-            deviceSignature: Base64URL.encode(try key.sign(resultBytes(submission)))
-        )
+        // The artifact upload keeps the v1 signature; the result also signs the
+        // step's measured tokens (v2) so route learning can charge them.
+        let unsigned = ResultSubmission(ticket: ticket, resultHash: resultHash, artifactRef: artifactRef, deviceSignature: "")
+        let v1Signature = Base64URL.encode(try key.sign(resultBytes(unsigned)))
+        var submission = ResultSubmission(ticket: ticket, resultHash: resultHash, artifactRef: artifactRef, deviceSignature: v1Signature)
+        if let usage = StepUsage.measured(attemptUsage, provider: ticket.provider) {
+            var measured = unsigned
+            measured.usage = usage
+            submission = ResultSubmission(ticket: ticket, resultHash: resultHash, artifactRef: artifactRef,
+                                          deviceSignature: Base64URL.encode(try key.sign(resultBytes(measured))), usage: usage)
+        }
         let upload = ArtifactUpload(
             ticket: ticket,
             artifactBase64: Base64URL.encode(artifactData),
             resultHash: resultHash,
-            deviceSignature: submission.deviceSignature
+            deviceSignature: v1Signature
         )
         let pendingStep = RunStepSummary(sequence: ticket.sequence, provider: ticket.provider, action: ticket.action,
             model: model, effort: effort, revasDisposition: "verification_pending", sessionID: execution.sessionID,
@@ -7904,7 +7965,7 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
             let uploaded: [String: String] = try await client.deliver("/v1/artifacts", body: upload, as: [String: String].self)
             guard uploaded["artifact_ref"] == artifactRef else { throw OS1Error.message("Artifact upload binding failed") }
             AttemptLatencyTrace.mark("artifact_uploaded")
-            route = try await client.deliver("/v1/results", body: submission, as: RouteResponse.self)
+            route = try await deliverResult(client, submission, v1Signature: v1Signature)
             AttemptLatencyTrace.mark("remote_verified")
             delivery.response = try JSONEncoder().encode(route)
             try DeliveryOutbox().save(delivery)
@@ -8119,7 +8180,10 @@ func resumeDelivery(_ identifier: String) async throws -> RunSummary {
           step.nativeRecord?.persistence == artifact.nativeRecord.persistence,
           submission.ticket.provider == artifact.provider, submission.ticket.action == artifact.action,
           submission.ticket.permissionProfile == artifact.permissionProfile,
-          upload.ticket.signature == submission.ticket.signature, upload.deviceSignature == submission.deviceSignature,
+          upload.ticket.signature == submission.ticket.signature,
+          // A v2 result is signed over its usage too, so only a v1 result
+          // shares the upload's signature byte for byte.
+          submission.usage != nil || upload.deviceSignature == submission.deviceSignature,
           submission.ticket.executionID + "-" + String(submission.ticket.sequence) == record.id,
           try Base64URL.decode(upload.artifactBase64) == record.artifact else { throw OS1Error.message("저장된 결과 무결성 확인 실패") }
     let client = APIClient(config: config, token: try githubToken(), deviceID: id)
@@ -8132,7 +8196,7 @@ func resumeDelivery(_ identifier: String) async throws -> RunSummary {
         }
         // Local cache is custody, not proof of server adoption. The immutable
         // signed result is always read back through the idempotent ledger.
-        route = try await client.deliver("/v1/results", body: submission, as: RouteResponse.self)
+        route = try await deliverResult(client, submission, v1Signature: upload.deviceSignature)
         record.response = try JSONEncoder().encode(route)
         try box.save(record)
     } catch {
@@ -10564,7 +10628,59 @@ func selfTest() throws {
     print("OS-1 completion preflight, feedback wire, replay guard and adoption: \(completionChecks.count) checks OK")
     try ModelAvailability.selfTest()
     try backendHealthLabelSelfTest()
+    try resultUsageSelfTest()
     print("OS-1 native session, permission orchestration, model, effort, and executor contract self-test: OK")
+}
+
+/// Route learning schema 2: the device signs a step's tokens with its result.
+/// The v1 bytes must never change (the artifact upload and older gateways
+/// verify them), and the v2 bytes must match the gateway's canonical form.
+func resultUsageSelfTest() throws {
+    var checks = 0
+    func check(_ value: Bool, _ label: String) throws {
+        guard value else { throw OS1Error.message("Result usage regression: " + label) }
+        checks += 1
+    }
+    let ticket = Ticket(executionID: "3f7c2a82-3b21-4f39-9e3a-8dd9af83c79c", sequence: 2, provider: "claude",
+                        action: "cl_sonnet_medium", permissionProfile: "read_only", expiresAt: "2026-09-01T00:00:00.000Z",
+                        nonce: "Q2hhbmdlTWVOb3RBbmRUaGVuQ2hhbmdlTWVBZ2Fpbg", signature: String(repeating: "A", count: 86))
+    let plain = ResultSubmission(ticket: ticket, resultHash: String(repeating: "b", count: 64),
+                                 artifactRef: "r2://os1-private-results/execution/result.json", deviceSignature: "")
+    try check(String(decoding: resultBytes(plain), as: UTF8.self) == [
+        "os1-result-v1", ticket.executionID, "2", ticket.nonce, plain.resultHash, plain.artifactRef].joined(separator: "\n"),
+        "v1 bytes changed")
+    var measured = plain
+    measured.usage = StepUsage(inputTokens: 800_000, outputTokens: 3_000, cacheTokens: 790_000)
+    try check(String(decoding: resultBytes(measured), as: UTF8.self) == [
+        "os1-result-v2", ticket.executionID, "2", ticket.nonce, plain.resultHash, plain.artifactRef,
+        "800000", "790000", "3000"].joined(separator: "\n"), "v2 bytes differ from the gateway's canonical form")
+    let json = try JSONSerialization.jsonObject(with: JSONEncoder().encode(measured)) as? [String: Any]
+    try check(Set((json?["usage"] as? [String: Any])?.keys ?? [:].keys) == ["input_tokens", "output_tokens", "cache_tokens"],
+              "usage must carry exactly the three counts")
+    let plainJSON = try JSONSerialization.jsonObject(with: JSONEncoder().encode(plain)) as? [String: Any]
+    try check(plainJSON?["usage"] == nil, "a result without usage must not send the key")
+    let unmeasured = try JSONSerialization.jsonObject(with: JSONEncoder().encode(
+        StepUsage(inputTokens: 5, outputTokens: nil, cacheTokens: nil))) as? [String: Any]
+    try check(unmeasured?["output_tokens"] is NSNull && unmeasured?["cache_tokens"] is NSNull, "unmeasured counts are null")
+    // Stored deliveries from before usage still decode.
+    let legacy = Data(#"{"ticket":{"execution_id":"3f7c2a82-3b21-4f39-9e3a-8dd9af83c79c","sequence":2,"provider":"claude","action":"cl_sonnet_medium","permission_profile":"read_only","expires_at":"2026-09-01T00:00:00.000Z","nonce":"Q2hhbmdlTWVOb3RBbmRUaGVuQ2hhbmdlTWVBZ2Fpbg","signature":"AAAA"},"result_hash":"bb","artifact_ref":"r2://x","device_signature":"sig"}"#.utf8)
+    try check((try JSONDecoder().decode(ResultSubmission.self, from: legacy)).usage == nil, "a stored v1 delivery must still decode")
+    // Trust rule: Codex counts only from deduplicated rollout accounting.
+    func resource(_ format: CompletionUsageFormat, _ version: Int?) -> CompletionUsageResourceMetadata {
+        CompletionUsageResourceMetadata(format: format, byteCount: 1, sha256: String(repeating: "c", count: 64),
+                                        usageRecordCount: 1, accountingVersion: version)
+    }
+    let claudeUsage = CompletionMeasuredUsage(inputTokens: 100, outputTokens: 10, cacheTokens: 400,
+                                              resource: resource(.claudeResultJSON, 1))
+    try check(StepUsage.measured(claudeUsage, provider: "claude") == StepUsage(inputTokens: 100, outputTokens: 10, cacheTokens: 100),
+              "cache never exceeds input")
+    try check(StepUsage.measured(CompletionMeasuredUsage(inputTokens: 5, outputTokens: 1, cacheTokens: 0,
+        resource: resource(.codexRolloutJSONL, 1)), provider: "codex") == nil, "old Codex accounting is not trusted")
+    try check(StepUsage.measured(CompletionMeasuredUsage(inputTokens: 5, outputTokens: 1, cacheTokens: 0,
+        resource: resource(.codexRolloutJSONL, 2)), provider: "codex") != nil, "deduplicated Codex accounting is sent")
+    try check(StepUsage.measured(claudeUsage, provider: "local") == nil && StepUsage.measured(nil, provider: "claude") == nil,
+              "no usage for local steps or unmeasured runs")
+    print("Result usage: \(checks) checks OK; v1 bytes unchanged, v2 matches the gateway")
 }
 
 func usage() {
