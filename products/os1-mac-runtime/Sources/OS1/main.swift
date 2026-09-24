@@ -4509,6 +4509,10 @@ final class CodexAppServerClient: @unchecked Sendable {
     private var nextRequestID = 1
     private var closed = false
     private(set) var ownsThreadWriter = false
+    /// A new thread's title is cosmetic (Codex Desktop's list) and cost
+    /// ≈0.5 s before the turn (2026-09-24 trace); it is sent right after the
+    /// turn starts, and its reply is ignored like any non-turn message.
+    private(set) var pendingThreadName: (threadID: String, name: String)?
     private var activeTurn: (thread: String, turn: String)?
     private var steeringRequests: [Int: SteeringInput] = [:]
     private let steering: ExecutionSteering
@@ -4724,17 +4728,17 @@ final class CodexAppServerClient: @unchecked Sendable {
         // A fork is the new writable/visible continuation, so name it after
         // the request that created this handoff instead of inheriting a stale
         // title from the first turn in the chain.
-        if forkedFromDesktopOwnedThread || existingName?.isEmpty != false {
-            _ = try request(
-                "thread/name/set",
-                params: ["threadId": threadID, "name": title],
-                deadline: deadline
-            )
-            AttemptLatencyTrace.mark("thread_named")
-        }
+        pendingThreadName = forkedFromDesktopOwnedThread || existingName?.isEmpty != false ? (threadID, title) : nil
         try makeVisible(threadID: threadID, deadline: deadline)
         ownsThreadWriter = true
         return threadID
+    }
+
+    /// Names a thread that will not run through `runTurn` on this connection.
+    func applyPendingThreadName(deadline: Date) {
+        guard let pending = pendingThreadName else { return }
+        pendingThreadName = nil
+        _ = try? request("thread/name/set", params: ["threadId": pending.threadID, "name": pending.name], deadline: deadline)
     }
 
     /// Prepare only. A real developer message persists a new empty thread;
@@ -4805,6 +4809,12 @@ final class CodexAppServerClient: @unchecked Sendable {
             throw OS1Error.message("Codex did not start a persistent desktop turn")
         }
         activeTurn = (threadID, turnID)
+        if let pending = pendingThreadName, pending.threadID == threadID {
+            pendingThreadName = nil
+            let id = nextRequestID; nextRequestID += 1
+            try? send(["jsonrpc": "2.0", "id": id, "method": "thread/name/set",
+                       "params": ["threadId": pending.threadID, "name": pending.name]])
+        }
         onStarted?()
         // Only the provider's turn/start acknowledgement establishes a running turn.
         RuntimeActivity.emit(.executing, provider: "codex", model: model, effort: effort,
@@ -5625,6 +5635,7 @@ private func execute(
                     idleTimeout: idleTimeout.map(TimeInterval.init),
                     onDispatch: { onDispatch?(actualSessionID) })
             } else {
+                appServer.applyPendingThreadName(deadline: min(deadline, Date().addingTimeInterval(10)))
                 appServer.close()
                 turn = try runCodexDesktopTurn(executable: codex, threadID: actualSessionID,
                     prompt: prompt, workspace: workspace, model: model, effort: effort,
@@ -9316,6 +9327,42 @@ func selfTest() throws {
         }
         protocolRecoveryChecks += 1
     }
+    // A new thread's title goes out right after turn/start, never before it.
+    let namingLog = approvalFixture.appendingPathComponent("naming-requests.log")
+    let namingPeer = approvalFixture.appendingPathComponent("naming-peer.py")
+    let namingThread = UUID().uuidString.lowercased(), namingTurn = UUID().uuidString.lowercased()
+    try Data("""
+    #!/usr/bin/python3
+    import sys, json
+    log = open('\(namingLog.path)', 'a')
+    for line in sys.stdin:
+        r = json.loads(line)
+        if 'method' in r: log.write(r['method'] + '\\n'); log.flush()
+        if 'id' not in r: continue
+        m = r.get('method')
+        if m == 'thread/start': out = {'result': {'thread': {'id': '\(namingThread)', 'source': 'os1'}}}
+        elif m == 'threadSection/list': out = {'result': {'data': [{'id': 'fixture-section', 'name': 'OS-1 Backend'}]}}
+        elif m == 'turn/start': out = {'result': {'turn': {'id': '\(namingTurn)'}}}
+        else: out = {'result': {}}
+        print(json.dumps(dict({'jsonrpc': '2.0', 'id': r['id']}, **out)), flush=True)
+        if m == 'turn/start':
+            print(json.dumps({'jsonrpc': '2.0', 'method': 'turn/completed', 'params': {'threadId': '\(namingThread)', 'turn': {'id': '\(namingTurn)', 'status': 'completed', 'items': [{'type': 'agentMessage', 'phase': 'final_answer', 'text': 'named'}]}}}), flush=True)
+    """.utf8).write(to: namingPeer)
+    try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: namingPeer.path)
+    let namingServer = try CodexAppServerClient(executable: namingPeer.path, workspace: approvalFixture.path)
+    let namedThread = try namingServer.startOrResumeThread(existingSessionID: nil, workspace: approvalFixture.path,
+        model: nil, instructions: "fixture", permissionProfile: "read_only", title: "fixture title",
+        deadline: Date().addingTimeInterval(8))
+    let namedTurn = try namingServer.runTurn(threadID: namedThread, prompt: "fixture", workspace: approvalFixture.path,
+        model: nil, effort: "low", permissionProfile: "read_only", deadline: Date().addingTimeInterval(8))
+    namingServer.close()
+    let namingMethods = ((try? String(contentsOf: namingLog, encoding: .utf8)) ?? "").split(separator: "\n").map(String.init)
+    guard String(decoding: namedTurn.output, as: UTF8.self) == "named",
+          let startIndex = namingMethods.firstIndex(of: "turn/start"),
+          let nameIndex = namingMethods.firstIndex(of: "thread/name/set"), nameIndex > startIndex else {
+        throw OS1Error.message("A new Codex thread must be titled right after turn/start: \(namingMethods)")
+    }
+    protocolRecoveryChecks += 1
     let noAckPeer = approvalFixture.appendingPathComponent("no-ack.sh")
     try Data("""
     #!/bin/sh
