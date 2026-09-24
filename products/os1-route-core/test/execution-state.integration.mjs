@@ -27,7 +27,7 @@ try {
   equal(await call('begin',base),'created');
   equal(await call('startAttempt',{...command,device_id:'other'}),null);
   const lease=await call('startAttempt',command);
-  equal(lease,{execution_deadline:t+1_800_000,submission_deadline:t+88_200_000});
+  equal(lease,{execution_deadline:t+14_400_000,submission_deadline:t+100_800_000});
   equal(await call('startAttempt',{...command,now:t+1000}),lease);
   equal(await call('permitsArtifact',result),true);
   equal(await call('permitsArtifact',{...result,device_id:'other'}),false);
@@ -44,7 +44,12 @@ try {
   equal(await call('permitsArtifact',result,'late'),false);
   equal(await call('begin',base,'expiry'),'created');
   await call('startAttempt',command,'expiry');
-  equal(await call('startAttempt',{...command,now:t+1_800_001},'expiry'),null);
-  equal(await call('claim',{...result,now:t+88_200_001},'expiry'),{kind:'rejected'});
-  console.log(`Execution SQLite integration: ${checks} checks passed; 335s result accepted; stale starts, identity changes, hash changes and unfenced finalization rejected.`);
+  equal(await call('startAttempt',{...command,now:t+1_800_001},'expiry'),lease);
+  equal(await call('startAttempt',{...command,now:t+14_400_001},'expiry'),null);
+  equal(await call('claim',{...result,now:t+100_800_001},'expiry'),{kind:'rejected'});
+  // A three-hour attempt that kept working is still accepted.
+  equal(await call('begin',base,'long'),'created');
+  await call('startAttempt',command,'long');
+  equal((await call('claim',{...result,now:t+10_800_000},'long')).kind,'claimed');
+  console.log(`Execution SQLite integration: ${checks} checks passed; 335s and 3h results accepted; stale starts, identity changes, hash changes and unfenced finalization rejected.`);
 } finally { await mf.dispose(); }
