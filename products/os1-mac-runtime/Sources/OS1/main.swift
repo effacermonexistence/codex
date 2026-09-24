@@ -6631,6 +6631,25 @@ func runWorkflowTaskWithOwnerPolicy(
         taskContext: taskState, monitorTaskID: workflowMonitorID)
 }
 
+/// The unpaid account-inventory probes, started as early as possible so they
+/// overlap the owner-policy refresh and the device/registration setup. They
+/// read local account metadata only: no routing, no model call.
+struct PreflightInventory: Sendable {
+    let workspace: String
+    let codex: Task<ActiveCodexCatalog, Never>?
+    let claude: Task<(configured: [ClaudeModelCapability], routable: [ClaudeModelCapability]), Never>
+
+    static func start(workspace: String, config: RuntimeConfig, showCodex: Bool) -> PreflightInventory {
+        PreflightInventory(workspace: workspace, codex: showCodex ? Task.detached {
+            (try? ModelAvailability.codexCatalog(workspace: workspace, config: config)) ??
+                ActiveCodexCatalog(models: [], source: "native account metadata unavailable")
+        } : nil, claude: Task.detached {
+            (try? ModelAvailability.claudeCatalogs(workspace: workspace, config: config))
+                ?? (configured: [ClaudeModelCapability](), routable: [ClaudeModelCapability]())
+        })
+    }
+}
+
 // Refresh the device owner policy before dispatch; absence is never a silent
 // bypass. A workflow pins one verified version through every stage.
 func loadCurrentOwnerPolicy() throws -> OwnerPolicySnapshot? {
@@ -6668,6 +6687,12 @@ func runTask(
     monitorTaskIDOverride: String? = nil,
     heldOS1SourceRoot: String? = nil
 ) async throws -> RunSummary {
+    // Inventories first: they overlap the policy refresh (≈1 s, 2026-09-24).
+    // A refused policy still stops the run before any routing or model call.
+    let preflight = (try? RuntimeConfig.load()).map {
+        PreflightInventory.start(workspace: URL(fileURLWithPath: workspace).standardizedFileURL.path,
+                                 config: $0, showCodex: OS1Settings.load().showCodex)
+    }
     let policy = try loadCurrentOwnerPolicy()
     return try await OwnerPolicyContext.$snapshot.withValue(policy) {
         try await runTaskWithOwnerPolicy(
@@ -6686,7 +6711,8 @@ func runTask(
                 workflowStage: workflowStage,
                 ownerPrompt: ownerPrompt,
                 monitorTaskIDOverride: monitorTaskIDOverride,
-                heldOS1SourceRoot: heldOS1SourceRoot)
+                heldOS1SourceRoot: heldOS1SourceRoot,
+                preflight: preflight)
     }
 }
 
@@ -6706,7 +6732,8 @@ func runTaskWithOwnerPolicy(
     workflowStage: TaskWorkflow? = nil,
     ownerPrompt: String? = nil,
     monitorTaskIDOverride: String? = nil,
-    heldOS1SourceRoot: String? = nil
+    heldOS1SourceRoot: String? = nil,
+    preflight: PreflightInventory? = nil
 ) async throws -> RunSummary {
     RuntimeActivity.emit(.preparing)
     if requireReadOnly, let verified = try await RailwayDelivery.recoverySummary(request: prompt) {
@@ -6973,15 +7000,12 @@ func runTaskWithOwnerPolicy(
     // run while the device key, GitHub token and registration are prepared;
     // one after another they cost about 1.2 s more per run (2026-09-24).
     let userSettings = OS1Settings.load()
-    let probeWorkspace = canonicalWorkspace
-    let codexProbe: Task<ActiveCodexCatalog, Never>? = userSettings.showCodex ? Task.detached {
-        (try? ModelAvailability.codexCatalog(workspace: probeWorkspace, config: config)) ??
-            ActiveCodexCatalog(models: [], source: "native account metadata unavailable")
-    } : nil
-    let claudeProbe = Task.detached {
-        (try? ModelAvailability.claudeCatalogs(workspace: probeWorkspace, config: config))
-            ?? (configured: [ClaudeModelCapability](), routable: [ClaudeModelCapability]())
-    }
+    // Reuse the probes runTask started before the policy refresh when they
+    // cover this exact workspace and Codex setting; otherwise probe now.
+    let inventory = preflight.flatMap { $0.workspace == canonicalWorkspace && ($0.codex != nil) == userSettings.showCodex ? $0 : nil }
+        ?? PreflightInventory.start(workspace: canonicalWorkspace, config: config, showCodex: userSettings.showCodex)
+    let codexProbe = inventory.codex
+    let claudeProbe = inventory.claude
     let key = try SigningKey.loadOrCreate()
     let id = try deviceID()
     let client = APIClient(config: config, token: try githubToken(), deviceID: id)
