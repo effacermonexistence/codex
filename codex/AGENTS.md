@@ -31,6 +31,9 @@ Marimba audio, Fn emoji action disabled, pure black desktop, login-session
 idle Always On, and Codex queued follow-ups. Finish macOS's device-local
 Handy microphone/Accessibility prompts and restart an already-open Codex app
 to activate queue mode. This profile does not install the EXO app.
+The OS-1 installer configures EXO and needs macOS administrator approval; do
+not run it for a default new-Mac setup. It is an explicit
+`OMAR_INSTALL_OS1=1` opt-in when the user requests OS-1/EXO installation.
 
 After GitHub and Wrangler OAuth, verify Cloudflare Account ID
 `d18c5d440fedbf100c4afd13b4b7a2c0`, bucket `omar-private-archive`, and

@@ -160,10 +160,6 @@ if ! codex_cli_is_usable; then
 fi
 
 "$install_root/scripts/bootstrap-claude-code.sh"
-if [[ "${OMAR_SKIP_OS1:-0}" != "1" ]]; then
-  "$node_install_root/bin/node" "$install_root/scripts/bootstrap-os1-release.mjs"
-fi
-
 pnpm --dir "$install_root" install --frozen-lockfile
 
 cloudflare_mcp_is_current() {
@@ -247,6 +243,12 @@ install_executable_with_backup \
 
 "$install_root/scripts/configure-new-mac.sh"
 
+# OS-1's current installer requires an administrator password and configures
+# EXO. Keep it separate from the user's default Codex/R2 desktop profile.
+if [[ "${OMAR_INSTALL_OS1:-0}" == "1" && "${OMAR_SKIP_OS1:-0}" != "1" ]]; then
+  "$node_install_root/bin/node" "$install_root/scripts/bootstrap-os1-release.mjs"
+fi
+
 if ! cmp -s "$install_root/codex/AGENTS.md" "$codex_config_dir/AGENTS.md"; then
   echo "Codex global instruction verification failed" >&2
   exit 1
@@ -261,7 +263,11 @@ echo
 echo "Installed durable setup at: $install_root"
 echo "Installed Codex instructions: $codex_config_dir/AGENTS.md"
 echo "Installed Claude instructions: $claude_config_dir/CLAUDE.md"
-echo "Installed OS-1 CLODEX: /Applications/OS-1 CLODEX.app"
+if [[ "${OMAR_INSTALL_OS1:-0}" == "1" && "${OMAR_SKIP_OS1:-0}" != "1" ]]; then
+  echo "Installed OS-1 CLODEX: /Applications/OS-1 CLODEX.app"
+else
+  echo "OS-1/EXO installer: skipped (opt in with OMAR_INSTALL_OS1=1)"
+fi
 echo "Installed R2 EXO monitor sync: $local_bin/os1-exo-monitor-sync"
 echo "Configured Mac defaults: Handy Fn + sound, emoji off, black wallpaper, idle Always On, Codex queue"
 echo "Node.js: $(node --version)"

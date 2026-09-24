@@ -132,7 +132,10 @@ follow-ups to queue mode. The Always On assertion applies while the user is
 logged in and the lid is open. Handy microphone and Accessibility permissions
 are approved in macOS on each device. Already-open Codex sessions need a
 restart to pick up queue mode. The EXO app is not installed by this desktop
-profile.
+profile. The OS-1 installer currently configures EXO and requires macOS
+administrator approval, so it is separate: run
+`OMAR_INSTALL_OS1=1 ./scripts/bootstrap-new-mac.sh` only when OS-1/EXO
+installation is requested.
 
 OAuth credentials are intentionally not copied or committed. Sign in once per
 new Mac to Codex/ChatGPT, GitHub, Claude, the Cloudflare MCP endpoint, and
