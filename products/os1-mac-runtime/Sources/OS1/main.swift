@@ -157,18 +157,29 @@ struct ActiveCodexCatalog {
 
 /// Health of the local backends as this preflight observed them. The Claude
 /// login probe runs only when the catalog came back empty; a populated
-/// catalog is proof of a usable backend on its own.
+/// catalog is proof of a usable backend on its own. `claudeLimitedOnly` is set
+/// only when the native inventory answered and model-scoped limits alone
+/// emptied the catalog; a failed probe is never reported as a quota wait.
 func observedBackendHealth(claudeCatalog: [ClaudeModelCapability], codexCatalog: ActiveCodexCatalog,
-                           workspace: String, now: Date = Date()) -> BackendHealth {
+                           workspace: String, claudeLimitedOnly: Bool = false,
+                           receipts: URL = ClaudeQuotaBackoff.defaultDirectory,
+                           authProbe: ((String) -> ModelAvailability.ClaudeAuthProbe)? = nil,
+                           now: Date = Date()) -> BackendHealth {
     let claude: BackendHealth.Backend
-    if ClaudeQuotaBackoff.active(now: now) != nil {
+    let modelLimited = ClaudeQuotaBackoff.activeModels(directory: receipts, now: now).joined(separator: ", ")
+    if ClaudeQuotaBackoff.active(at: receipts.appendingPathComponent(ClaudeQuotaBackoff.defaultURL.lastPathComponent), now: now) != nil {
         claude = BackendHealth.Backend(state: .quotaExhausted,
             detail: "최근 실행에서 한도 거절됨 · 5분 재시도 간격 적용, 실제 한도 복구 시각은 미확인")
     } else if !claudeCatalog.isEmpty {
-        claude = BackendHealth.Backend(state: .usable)
+        claude = BackendHealth.Backend(state: .usable,
+            detail: modelLimited.isEmpty ? nil : "모델별 한도로 \(modelLimited) 제외 · 나머지 Claude 모델 사용 가능")
+    } else if claudeLimitedOnly, !modelLimited.isEmpty {
+        claude = BackendHealth.Backend(state: .quotaExhausted,
+            detail: "모델별 한도(\(modelLimited))로 실행 가능한 Claude 모델 없음 · 1시간 재확인, 실제 복구 시각은 미확인")
     } else {
-        switch ModelAvailability.claudeAuthProbe(workspace: workspace) {
-        case .loggedIn: claude = BackendHealth.Backend(state: .probeFailed, detail: "로그인은 유효하지만 사용 가능한 모델 목록을 받지 못함")
+        switch (authProbe ?? ModelAvailability.claudeAuthProbe)(workspace) {
+        case .loggedIn: claude = BackendHealth.Backend(state: .probeFailed, detail: "로그인은 유효하지만 사용 가능한 모델 목록을 받지 못함"
+            + (modelLimited.isEmpty ? "" : " · 모델별 한도 기록: \(modelLimited)"))
         case .loggedOut: claude = BackendHealth.Backend(state: .loggedOut, detail: "현재 Claude CLI가 loggedIn=false를 반환함; 원인과 만료 여부는 미확인")
         case .missing: claude = BackendHealth.Backend(state: .missing, detail: "claude 실행 파일 없음")
         case .failed(let detail): claude = BackendHealth.Backend(state: .probeFailed, detail: detail)
@@ -178,6 +189,35 @@ func observedBackendHealth(claudeCatalog: [ClaudeModelCapability], codexCatalog:
         resetsAt: codexCatalog.quotaResetsAt, executablePresent: (try? findExecutable("codex")) != nil,
         window: codexCatalog.quotaWindow)
     return BackendHealth(claude: claude, codex: codex, checkedAt: now)
+}
+
+/// The health label may blame a model-scoped limit only when the inventory
+/// answered and those limits alone emptied the catalog. Isolated receipts;
+/// no login probe, no model call.
+func backendHealthLabelSelfTest() throws {
+    let receipts = FileManager.default.temporaryDirectory.appendingPathComponent("os1-health-label-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: receipts) }
+    try ClaudeQuotaBackoff.record(model: "fable", directory: receipts)
+    let codex = ActiveCodexCatalog(models: [], source: "self-test")
+    var probes = 0
+    let loggedIn: (String) -> ModelAvailability.ClaudeAuthProbe = { _ in probes += 1; return .loggedIn(nil) }
+    func health(_ catalog: [ClaudeModelCapability], limitedOnly: Bool) -> BackendHealth.Backend {
+        observedBackendHealth(claudeCatalog: catalog, codexCatalog: codex, workspace: receipts.path,
+                              claudeLimitedOnly: limitedOnly, receipts: receipts, authProbe: loggedIn).claude
+    }
+    let limited = health([], limitedOnly: true)
+    let probeFailed = health([], limitedOnly: false)
+    let usable = health([ClaudeModelCapability(model: "opus", supportedEfforts: ["xhigh"])], limitedOnly: false)
+    try ClaudeQuotaBackoff.record(at: receipts.appendingPathComponent(ClaudeQuotaBackoff.defaultURL.lastPathComponent))
+    let account = health([ClaudeModelCapability(model: "opus", supportedEfforts: ["xhigh"])], limitedOnly: false)
+    let checks = [
+        limited.state == .quotaExhausted, limited.detail?.contains("모델별 한도(fable)") == true,
+        probeFailed.state == .probeFailed, probeFailed.detail?.contains("모델별 한도 기록: fable") == true,
+        usable.state == .usable, usable.detail?.contains("fable 제외") == true,
+        account.state == .quotaExhausted, account.detail?.contains("5분") == true, probes == 1,
+    ]
+    guard checks.allSatisfy({ $0 }) else { throw OS1Error.message("Backend health label regression failed") }
+    print("Backend health label: \(checks.count) checks OK; failed inventory never reported as a model-limit wait")
 }
 
 /// Full read-only probe of both backends (native metadata only, no inference).
@@ -190,8 +230,9 @@ func probeBackendHealth(workspace: String, config: RuntimeConfig) -> BackendHeal
         ? ((try? ModelAvailability.codexCatalog(workspace: workspace, config: config))
             ?? ActiveCodexCatalog(models: [], source: "native account metadata unavailable"))
         : ActiveCodexCatalog(models: [], source: BackendHealth.disabledCatalogSource)
-    let claude = (try? ModelAvailability.claudeCatalog(workspace: workspace, config: config)) ?? []
-    let health = observedBackendHealth(claudeCatalog: claude, codexCatalog: codex, workspace: workspace)
+    let claude = (try? ModelAvailability.claudeCatalogs(workspace: workspace, config: config)) ?? (configured: [], routable: [])
+    let health = observedBackendHealth(claudeCatalog: claude.routable, codexCatalog: codex, workspace: workspace,
+                                       claudeLimitedOnly: !claude.configured.isEmpty && claude.routable.isEmpty)
     try? health.save()
     return health
 }
@@ -712,6 +753,8 @@ struct RejectedProviderExecution: Error, CustomStringConvertible {
     let execution: ProviderExecution
     let cause: Error
     var quotaRejectedBeforeExecution: Bool = false
+    /// Scope of a Claude quota rejection; nil when unclassified (treated as account-wide).
+    var quotaScope: ClaudeQuotaScope? = nil
     var description: String { String(describing: cause) }
 }
 
@@ -4089,9 +4132,32 @@ struct APIClient {
     let deviceID: String
     var requestTimeoutSeconds: TimeInterval = 30
 
+    /// Delays before each re-probe of `/v1/capabilities`. A gateway whose
+    /// inner service timed out answers 200 with a null schema, which looks
+    /// exactly like an old server; one such miss must not fail the task.
+    static let capabilityRetryDelaysMS: [UInt64] = [500, 1_500]
+
     /// Metadata negotiation only: never spends a model call or changes auth.
     /// Older/offline gateways retain their existing three-field contract.
+    /// The GET is unpaid and side-effect free, so a miss is confirmed twice
+    /// more with a short backoff before the run is refused.
     func supportsCompletionFeedback(requireModelAvailability: Bool = false) async -> Bool {
+        if await probeCompletionFeedback(requireModelAvailability: requireModelAvailability) { return true }
+        for (attempt, delay) in Self.capabilityRetryDelaysMS.enumerated() {
+            // A stop request ends the re-check at once; the caller then reports
+            // the cancellation instead of holding a run slot for more probes.
+            if ExecutionCancellation.isCancelled { return false }
+            RuntimeActivity.emit(.routing, publicText: os1Tr(
+                "라우팅 서버 모델 확인 재시도 \(attempt + 2)/\(Self.capabilityRetryDelaysMS.count + 1) · 유료 호출 없음",
+                "Re-checking routing-server model support \(attempt + 2)/\(Self.capabilityRetryDelaysMS.count + 1) · no paid call"))
+            try? await Task.sleep(nanoseconds: delay * 1_000_000)
+            if ExecutionCancellation.isCancelled { return false }
+            if await probeCompletionFeedback(requireModelAvailability: requireModelAvailability) { return true }
+        }
+        return false
+    }
+
+    private func probeCompletionFeedback(requireModelAvailability: Bool) async -> Bool {
         guard let base = URL(string: config.apiURL),
               let url = URL(string: "/v1/capabilities", relativeTo: base) else { return false }
         var request = URLRequest(url: url)
@@ -5654,6 +5720,13 @@ private func execute(
                 workspace: executionWorkspace, started: started, cause: error)
             rejection.quotaRejectedBeforeExecution = backendBlocker(error) == .quotaExhausted &&
                 stream.claudeQuotaRejectedBeforeExecution(sessionID: activeSessionID)
+            if backendBlocker(error) == .quotaExhausted, var scoped = object {
+                // Scope the same envelope the parser classified: the read-only
+                // lane's denials are the bound doing its job, not a policy verdict.
+                if ticket.permissionProfile == "read_only" { scoped["permission_denials"] = [] as [Any] }
+                rejection.quotaScope = BackendRecovery.claudeQuotaScope(status: raw.0 == 0 ? 1 : raw.0,
+                    object: scoped, dispatchedModel: model)
+            }
             throw rejection
         }
         let outputIssues = outputContractIssues(parsed.output, prompt: lockedObjective, snapshotOnly: hasPreloadedR2Evidence)
@@ -6858,13 +6931,16 @@ func runTaskWithOwnerPolicy(
         // it, and never treat its absence as a failure to repair.
         codexCatalog = ActiveCodexCatalog(models: [], source: BackendHealth.disabledCatalogSource)
     }
-    var observedClaudeCatalog = (try? ModelAvailability.claudeCatalog(workspace: canonicalWorkspace, config: config)) ?? []
+    let claudeCatalogs = (try? ModelAvailability.claudeCatalogs(workspace: canonicalWorkspace, config: config)) ?? (configured: [], routable: [])
+    var observedClaudeCatalog = claudeCatalogs.routable
+    let claudeLimitedOnly = !claudeCatalogs.configured.isEmpty && claudeCatalogs.routable.isEmpty
     // Owner's rule: a dead-backend preflight is a repair trigger, not a dead
     // end. Diagnose, run the repair OS-1 may do itself, and continue in place;
     // otherwise hold the request with the diagnosis so the app can replay it
     // by itself once a backend is back.
     if codexCatalog.models.isEmpty, observedClaudeCatalog.isEmpty, publicDeterministicExpression(prompt) == nil {
-        let health = observedBackendHealth(claudeCatalog: observedClaudeCatalog, codexCatalog: codexCatalog, workspace: canonicalWorkspace)
+        let health = observedBackendHealth(claudeCatalog: observedClaudeCatalog, codexCatalog: codexCatalog,
+                                           workspace: canonicalWorkspace, claudeLimitedOnly: claudeLimitedOnly)
         try? health.save()
         RuntimeActivity.emit(.recovering, publicText: health.publicSummary)
         let repair = selfRepairBackends(health: health, codexCatalog: codexCatalog, workspace: canonicalWorkspace, config: config)
@@ -6879,7 +6955,8 @@ func runTaskWithOwnerPolicy(
             throw OS1Error.message(diagnosis)
         }
     } else {
-        try? observedBackendHealth(claudeCatalog: observedClaudeCatalog, codexCatalog: codexCatalog, workspace: canonicalWorkspace).save()
+        try? observedBackendHealth(claudeCatalog: observedClaudeCatalog, codexCatalog: codexCatalog,
+                                   workspace: canonicalWorkspace, claudeLimitedOnly: claudeLimitedOnly).save()
     }
     // The signed router receives only stage-eligible native model/effort
     // tuples. A stage directive in prose alone would not enforce this policy.
@@ -6906,7 +6983,7 @@ func runTaskWithOwnerPolicy(
             throw OS1Error.message("\(workflowStage.rawValue): 현재 계정·설정에서 실행 가능한 단계별 모델이 없어 호출하지 않았습니다.")
         }
     }
-    let claudeCatalog = observedClaudeCatalog
+    var claudeCatalog = observedClaudeCatalog
     let hasClaudeExecutable = !claudeCatalog.isEmpty
     let repairedContext = repairedSource ? (context ?? "") + """
 
@@ -6954,8 +7031,9 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
     var feedbackScope = instructionFeedbackScope(initialCorrections?.instructions ?? "", input: localPrompt,
         codexID: codexSessionID, claudeID: claudeSessionID)
     let feedbackSupported = await client.supportsCompletionFeedback(requireModelAvailability: true)
+    if ExecutionCancellation.isCancelled { throw OS1Error.backendBlocked(.cancelled) }
     guard feedbackSupported else {
-        throw OS1Error.message("사용자별 모델 확인을 지원하는 라우팅 서버에 연결하지 못했습니다. 모델을 임의 선택하지 않았으며 유료 호출은 하지 않았습니다.")
+        throw OS1Error.message("라우팅 서버에서 사용자별 모델 확인을 \(1 + APIClient.capabilityRetryDelaysMS.count)회 시도했지만 확인되지 않았습니다(연결 실패, 서버 내부 지연 또는 미지원 서버). 모델을 임의 선택하지 않았으며 유료 호출은 하지 않았습니다.")
     }
     guard feedbackSupported || !codexCatalog.models.isEmpty else {
         // Legacy servers require a nonempty Codex catalog even for Claude.
@@ -7185,7 +7263,16 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
                     blocker: backendBlocker(error) ?? .unclassified,
                     publicProgress: (error as? RejectedProviderExecution)?.execution.artifact.output ?? "")
                 if backendBlocker(error) == .quotaExhausted {
-                    if ticket.provider == "claude" { try? ClaudeQuotaBackoff.record() }
+                    // Scope comes from the CLI's own sentence checked against the
+                    // dispatched model; unknown or mixed evidence stays account-wide.
+                    let claudeScope: ClaudeQuotaScope? = ticket.provider == "claude"
+                        ? ((error as? RejectedProviderExecution)?.quotaScope ?? .account) : nil
+                    switch claudeScope {
+                    case .model(let family)?: try? ClaudeQuotaBackoff.record(model: family)
+                    case .account?: try? ClaudeQuotaBackoff.record()
+                    case nil: break
+                    }
+                    let modelScoped = claudeScope.map { $0 != .account } ?? false
                     if (error as? RejectedProviderExecution)?.quotaRejectedBeforeExecution == true,
                        workspaceHash(observedWorkspace) == beforeHash {
                         dispatchStage = .rejectedBeforeExecution
@@ -7202,28 +7289,34 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
                     attemptRecorded = true
                     failedCandidates.insert(candidateKey)
                     let quotaLimit = BackendRecovery.quotaAttemptLimit(requested: providerPreference,
-                        stage: dispatchStage, step: step, limit: attemptLimit, alreadyExtended: quotaBudgetExtended)
+                        stage: dispatchStage, step: step, limit: attemptLimit, alreadyExtended: quotaBudgetExtended,
+                        modelScoped: modelScoped)
                     if quotaLimit > attemptLimit {
                         quotaBudgetExtended = true
                         attemptLimit = quotaLimit
                     }
-                    guard providerPreference == "auto", step < attemptLimit,
+                    guard step < attemptLimit,
                           BackendRecovery.permitsAutomaticReplay(permission: ticket.permissionProfile, stage: dispatchStage) else { throw error }
                     if ticket.provider == "codex" {
                         codexCatalog = ActiveCodexCatalog(models: codexCatalog.models.filter { $0.slug != model }, source: codexCatalog.source)
                         if codexCatalog.models.isEmpty { quotaUnavailableProviders.insert("codex") }
-                    } else if ticket.provider == "claude" {
-                        quotaUnavailableProviders.insert("claude")
                     }
-                    guard let nextPreference = BackendRecovery.quotaRecoveryPreference(requested: providerPreference,
-                        failed: ticket.provider, codexAvailable: !codexCatalog.models.isEmpty,
-                        claudeAvailable: hasClaudeExecutable && !quotaUnavailableProviders.contains("claude")) else { throw error }
+                    // Auto re-routes anywhere; an explicit Claude choice only within
+                    // Claude after a model-scoped limit; every other pin stops here.
+                    let reroute = BackendRecovery.quotaReroute(failed: ticket.provider, scope: claudeScope,
+                        requested: providerPreference, claudeModels: claudeCatalog.map(\.model),
+                        codexAvailable: !codexCatalog.models.isEmpty, claudeExecutable: hasClaudeExecutable,
+                        unavailable: quotaUnavailableProviders)
+                    claudeCatalog = claudeCatalog.filter { reroute.claudeModels.contains($0.model) }
+                    quotaUnavailableProviders = reroute.unavailable
+                    guard let nextPreference = reroute.nextPreference else { throw error }
                     var freshContext = request.executionContext
                     if let existing = freshContext, let continuation {
                         freshContext = ExecutionInputContext(executionPermissionProfile: existing.executionPermissionProfile, inputUTF8Bytes: existing.inputUTF8Bytes + (try continuation.handoffBlock()).utf8.count,
                             sourceUTF8Bytes: existing.sourceUTF8Bytes, historyUTF8Bytes: existing.historyUTF8Bytes,
                             completionFeedback: existing.completionFeedback, availableClaudeModels: existing.availableClaudeModels)
                     }
+                    freshContext?.availableClaudeModels = claudeCatalog
                     if feedbackSupported {
                         freshContext?.completionFeedback = try feedbackStore.load(scope: feedbackScope)?.publicFeedback()
                     }
@@ -7231,11 +7324,15 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
                         capacityPlan: request.capacityPlan, executorContractVersion: request.executorContractVersion,
                         executorContractSHA256: request.executorContractSHA256, availableCodexModels: codexCatalog.models,
                         executionContext: freshContext)
-                    RuntimeActivity.emit(.recovering,
-                        publicText: "\(ticket.provider) 사용량 한도에 도달했습니다. 같은 요청을 \(nextPreference)로 이어갑니다. 로그인은 변경하지 않습니다.")
+                    let remaining = [claudeCatalog.isEmpty ? "" : "Claude: " + claudeCatalog.map(\.model).joined(separator: ", "),
+                                     nextPreference == "claude" || codexCatalog.models.isEmpty ? "" : "Codex"].filter { !$0.isEmpty }
+                    RuntimeActivity.emit(.recovering, publicText: modelScoped
+                        ? "Claude \(model) 모델 한도에 도달했습니다. 이 모델만 1시간 제외하고 같은 요청을 남은 모델(\(remaining.joined(separator: " · ")))로 다시 라우팅합니다. 로그인은 변경하지 않습니다."
+                        : "\(ticket.provider) 사용량 한도에 도달했습니다. 같은 요청을 \(nextPreference)로 이어갑니다. 로그인은 변경하지 않습니다.")
                     route = try await client.post("/v1/executions", body: next, as: RouteResponse.self)
-                    guard route.ticket?.permissionProfile == ticket.permissionProfile,
-                          route.ticket?.provider == nextPreference else { throw error }
+                    guard let nextTicket = route.ticket, nextTicket.permissionProfile == ticket.permissionProfile,
+                          nextPreference == "auto" ? ["claude", "codex"].contains(nextTicket.provider)
+                                                   : nextTicket.provider == nextPreference else { throw error }
                     lastFailureNotice = nil
                     continue
                 }
@@ -7276,6 +7373,7 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
                                 sourceUTF8Bytes: existing.sourceUTF8Bytes, historyUTF8Bytes: existing.historyUTF8Bytes,
                                 completionFeedback: existing.completionFeedback, availableClaudeModels: existing.availableClaudeModels)
                         }
+                        freshContext?.availableClaudeModels = claudeCatalog
                         if feedbackSupported {
                             freshContext?.completionFeedback = try feedbackStore.load(scope: feedbackScope)?.publicFeedback()
                         }
@@ -7479,6 +7577,7 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
                     sourceUTF8Bytes: existing.sourceUTF8Bytes, historyUTF8Bytes: existing.historyUTF8Bytes,
                     completionFeedback: existing.completionFeedback, availableClaudeModels: existing.availableClaudeModels)
             }
+            freshContext?.availableClaudeModels = claudeCatalog
             if feedbackSupported {
                 freshContext?.completionFeedback = try feedbackStore.load(scope: feedbackScope)?.publicFeedback()
             }
@@ -7548,6 +7647,7 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
                     sourceUTF8Bytes: existing.sourceUTF8Bytes, historyUTF8Bytes: existing.historyUTF8Bytes,
                     completionFeedback: existing.completionFeedback, availableClaudeModels: existing.availableClaudeModels)
             }
+            recoveryContext?.availableClaudeModels = claudeCatalog
             if feedbackSupported {
                 recoveryContext?.completionFeedback = try ((try? feedbackStore.load(scope: feedbackScope)) ??
                     CompletionFeedbackLedger(scope: feedbackScope)).publicFeedback()
@@ -9862,6 +9962,7 @@ func selfTest() throws {
     }
     print("OS-1 completion preflight, feedback wire, replay guard and adoption: \(completionChecks.count) checks OK")
     try ModelAvailability.selfTest()
+    try backendHealthLabelSelfTest()
     print("OS-1 native session, permission orchestration, model, effort, and executor contract self-test: OK")
 }
 

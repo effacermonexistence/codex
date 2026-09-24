@@ -85,6 +85,32 @@ func runBackendHealthFixtures() throws {
     check(ClaudeQuotaBackoff.active(at: backoffURL, now: now.addingTimeInterval(400)) != nil, "new rejection renews cooldown")
     try Data("not-json".utf8).write(to: backoffURL)
     check(ClaudeQuotaBackoff.active(at: backoffURL, now: now) == nil, "corrupt receipt not adopted")
+    // Per-model receipts: separate files, 1 h cooldown, legacy account file unchanged.
+    let legacyURL = root.appendingPathComponent("legacy-quota.json")
+    try Data(#"{"observedAt":811898883.695509,"retryAfter":811899183.695509}"#.utf8).write(to: legacyURL)
+    check(ClaudeQuotaBackoff.active(at: legacyURL, now: Date(timeIntervalSinceReferenceDate: 811_898_900)) != nil, "legacy account receipt still decodes")
+    try ClaudeQuotaBackoff.record(at: backoffURL, now: now)
+    check(!String(decoding: try Data(contentsOf: backoffURL), as: UTF8.self).contains("model"), "account receipt format unchanged")
+    let modelDirectory = root.appendingPathComponent("model-backoff", isDirectory: true)
+    check(ClaudeQuotaBackoff.activeModels(directory: modelDirectory, now: now).isEmpty, "no invented model cooldown")
+    try ClaudeQuotaBackoff.record(model: "fable", directory: modelDirectory, now: now)
+    check(ClaudeQuotaBackoff.active(model: "fable", directory: modelDirectory, now: now.addingTimeInterval(3_599)) != nil, "model cooldown active")
+    check(ClaudeQuotaBackoff.active(model: "fable", directory: modelDirectory, now: now.addingTimeInterval(3_600)) == nil, "model cooldown expires after 1 h")
+    check(ClaudeQuotaBackoff.active(model: "fable", directory: modelDirectory, now: now.addingTimeInterval(-1)) == nil, "future model rejection rejected")
+    check(ClaudeQuotaBackoff.active(model: "opus", directory: modelDirectory, now: now) == nil, "other models unaffected")
+    check(ClaudeQuotaBackoff.activeModels(directory: modelDirectory, now: now) == ["fable"], "active model list")
+    check(ClaudeQuotaBackoff.activeModels(directory: modelDirectory, now: now.addingTimeInterval(3_600)).isEmpty, "expired model not listed")
+    let fableURL = ClaudeQuotaBackoff.modelURL("fable", directory: modelDirectory)!
+    check(ClaudeQuotaBackoff.active(at: fableURL, now: now) == nil, "model receipt never read as account receipt")
+    check(ClaudeQuotaBackoff.active(at: modelDirectory.appendingPathComponent("claude-quota-backoff.json"), now: now) == nil, "model receipt does not create an account receipt")
+    check((try FileManager.default.attributesOfItem(atPath: fableURL.path)[.posixPermissions] as? NSNumber)?.intValue == 0o600, "model receipt private")
+    try Data(#"{"observedAt":0,"retryAfter":3600}"#.utf8).write(to: ClaudeQuotaBackoff.modelURL("opus", directory: modelDirectory)!)
+    check(ClaudeQuotaBackoff.active(model: "opus", directory: modelDirectory, now: Date(timeIntervalSinceReferenceDate: 10)) == nil, "account-shaped file is not a model receipt")
+    for bad in ["../x", "Fable", String(repeating: "a", count: 33), ""] {
+        try ClaudeQuotaBackoff.record(model: bad, directory: modelDirectory, now: now)
+    }
+    check(try FileManager.default.contentsOfDirectory(atPath: modelDirectory.path).sorted() ==
+          ["claude-quota-backoff.model-fable.json", "claude-quota-backoff.model-opus.json"], "invalid family writes nothing")
     let crossed = BackendHealth(claude: .init(state: .quotaExhausted, recoversAt: now.addingTimeInterval(10)),
                                 codex: .init(state: .usable), checkedAt: now)
     check(!crossed.resetCrossed(at: now), "future reset not crossed")

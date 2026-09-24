@@ -1183,6 +1183,158 @@ private func parallelInteractionSelfTest() async throws {
 
 /// Exercise the actual manager, not a stand-alone Array FIFO. Runner gates
 /// make edit/completion races reproducible without model tokens or live writes.
+/// Global admission cap visibility and fairness (2026-09-23 incident): with
+/// four runs active, a fifth+ conversation's request must say it waits for a
+/// slot (not just "not delivered"), keep its global place when the owner
+/// presses its arrow, get no phantom "task replaced" context, and start in
+/// order as slots free. Gated fixtures; no model calls; no user sessions.
+@MainActor
+private func slotWaitVisibilitySelfTest() async throws {
+    var checks = 0
+    func check(_ condition: @autoclosure () -> Bool, _ message: String) throws {
+        guard condition() else { throw RunnerError.message("Slot wait: " + message) }; checks += 1
+    }
+    func eventually(_ condition: () -> Bool) async throws {
+        let deadline = Date().addingTimeInterval(8)
+        while !condition(), Date() < deadline { try await Task.sleep(for: .milliseconds(10)) }
+        try check(condition(), "asynchronous scheduler deadline")
+    }
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("os1-slot-wait-" + UUID().uuidString)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    var starts: [String] = []
+    var gates: [String: CheckedContinuation<Void, Never>] = [:]
+    let store = SessionStore(storageRoot: root, runOperation: { submission, _, _, _, _ in
+        starts.append(submission.request)
+        await withCheckedContinuation { gates[submission.request] = $0 }
+        return AppRunSummary(status: "complete", steps: [AppRunStep(sequence: 1, provider: "codex", action: "fixture",
+            model: "fixture", effort: "none", revasDisposition: "adopted", sessionID: UUID().uuidString,
+            permissionProfile: "read_only", exitCode: 0, output: "answer " + submission.request, stderr: "",
+            durationMS: 0, nativeRecord: nil)])
+    }, nativeSessionOpener: { _ in false })
+    func finish(_ name: String) async throws {
+        try await eventually { gates[name] != nil }
+        gates.removeValue(forKey: name)!.resume()
+    }
+    var running: [UUID] = []
+    for n in 1...SessionStore.maximumConcurrentSessions {
+        if n > 1 { store.createSession() }
+        running.append(store.selectedSessionID!)
+        store.composer = "S\(n)"; store.send()
+    }
+    try await eventually { gates.count == SessionStore.maximumConcurrentSessions }
+    try check(store.activeRuns.count == SessionStore.maximumConcurrentSessions, "cap was not reached")
+    store.createSession(); let e = store.selectedSessionID!
+    store.composer = "E1"; store.send()
+    store.createSession(); let f = store.selectedSessionID!
+    store.composer = "F1"; store.send()
+    store.createSession(); let g = store.selectedSessionID!
+    store.composer = "G1"; store.send()
+    try check(store.queuedSubmissions.map(\.request) == ["E1", "F1", "G1"] && starts.count == 4, "fifth+ conversation launched past the cap")
+    let limit = "\(SessionStore.maximumConcurrentSessions)/\(SessionStore.maximumConcurrentSessions)"
+    try check(store.globalSlotWait(e)?.position == 1 && store.globalSlotWait(f)?.position == 2 && store.globalSlotWait(g)?.position == 3,
+        "slot-wait order does not match the scheduler's admission order")
+    for id in [e, f, g] {
+        let reason = store.queueReason(id)
+        try check(reason.contains("실행 슬롯 대기") && reason.contains(limit), "cap wait not stated: \(reason)")
+        try check(store.waitingBubbleReason(id) == reason, "bubble reason differs from the queue reason")
+    }
+    try check(store.queueReason(f).contains("대기 순서 2") && !store.queueReason(e).contains("대기 순서"), "wait position missing")
+    for id in running {
+        try check(store.globalSlotWait(id) == nil && store.waitingBubbleReason(id) == nil, "a running conversation reported a slot wait")
+    }
+    try check(store.sidebarQueueStatus(f).hasPrefix("슬롯 대기 · 2번째") && store.sidebarQueueStatus(f).contains(limit),
+        "sidebar subtitle hides the wait position")
+    // A running conversation's follow-up at the cap: the slot its run frees
+    // goes to the conversations already waiting, so it must not promise more.
+    store.select(running[0]); store.composer = "S1 follow-up"; store.send()
+    try check(store.globalSlotWait(running[0]) == nil && store.queueReason(running[0]).contains("먼저 기다리는 대화 3개") &&
+        !store.queueReason(running[0]).contains("끝나면 순서대로 자동 실행"), "own-run follow-up over-promises: \(store.queueReason(running[0]))")
+    let followUp = store.queuedSubmissions.first { $0.request == "S1 follow-up" }!
+    try check(store.queueActionLabel(followUp).contains("먼저 기다리는 대화 3개"), "arrow label over-promises at the cap")
+    try check(store.globalSlotWait(e)?.mayStartFirst == 0 && store.globalSlotWait(g)?.mayStartFirst == 0 &&
+        !store.queueReason(e).contains("먼저 시작될 수"), "a follow-up queued behind the waiting conversations was counted ahead of them")
+    store.removeQueued(store.queuedSubmissions.first { $0.request == "S1 follow-up" }!.id)
+    // The arrow on a sole, idle request: visible bubble, same global place,
+    // honest label, and no replacement semantics in a conversation with no task.
+    let pressed = store.queuedSubmissions.first { $0.request == "F1" }!
+    try check(store.queueActionLabel(pressed).contains("실행 슬롯이 비면") && store.queueActionLabel(pressed).contains(limit),
+        "arrow label promises an immediate start at the cap")
+    store.advanceQueued(pressed.id, ownerRequested: true)
+    try check(store.queuedSubmissions.map(\.request) == ["E1", "F1", "G1"], "pressing the arrow demoted the request: \(store.queuedSubmissions.map(\.request))")
+    try check(store.queuedSubmissions.first { $0.id == pressed.id }?.startNextRequested != true &&
+        store.queuedSubmissions.first { $0.id == pressed.id }?.replacesSubmissionID == nil, "idle request marked as a task replacement")
+    let fSession = store.sessions.first { $0.id == f }!
+    try check(fSession.messages.filter { $0.id == pressed.userMessageID }.first?.steeringDelivery == .waiting, "pressed request not shown")
+    let document = timelineAttributedDocument(messages: fSession.messages,
+        queuedSubmissions: store.queuedSubmissions.filter { $0.sessionID == f }, isRunning: false,
+        workspace: fSession.workspace, waitingReason: store.waitingBubbleReason(f)).string
+    try check(document.contains("백엔드 전달 전") && document.contains("실행 슬롯 대기") && document.contains(limit) &&
+        !document.contains("아직 백엔드에 전달되지 않았습니다"), "bubble caption hides the slot wait: \(document)")
+    // An owner hold keeps its own reason and removes the conversation from the
+    // slot order; the next conversation moves up.
+    store.pauseQueue(e)
+    try check(store.globalSlotWait(e) == nil && store.queueReason(e).contains("일시정지") && store.globalSlotWait(f)?.position == 1,
+        "paused conversation still reported as waiting for a slot")
+    store.resumeQueue(e)
+    try check(store.globalSlotWait(e)?.position == 1, "resumed conversation lost its place")
+    // Slots free: admission follows the stated order, one per freed slot.
+    try await finish("S1")
+    try await eventually { starts.contains("E1") }
+    try check(!starts.contains("F1") && store.isSessionRunning(e) && store.globalSlotWait(f)?.position == 1 &&
+        store.globalSlotWait(g)?.position == 2, "freed slot skipped the first waiting conversation")
+    try await finish("S2")
+    try await eventually { starts.contains("F1") }
+    try check(!starts.contains("G1"), "two waiting conversations took one freed slot")
+    try check(store.sessions.first { $0.id == f }?.preservedTasks?.isEmpty != false &&
+        store.sessions.first { $0.id == f }?.messages.filter { $0.id == pressed.userMessageID }.count == 1 &&
+        store.sessions.first { $0.id == f }?.messages.first { $0.id == pressed.userMessageID }?.steeringDelivery == nil,
+        "pressed idle request started with phantom replacement state or a duplicate bubble")
+    for name in ["S3", "S4", "E1", "F1"] { try await finish(name) }
+    try await eventually { starts.contains("G1") }
+    try await finish("G1")
+    try await eventually { store.activeRuns.isEmpty }
+    try check(store.queuedSubmissions.isEmpty && starts.count == 7 && Set(starts).count == 7, "queue did not drain exactly once")
+    try check(store.waitingBubbleReason(g) == nil && store.globalSlotWait(g) == nil, "stale slot wait after drain")
+    // Admission is FIFO per conversation: a running conversation's follow-up
+    // queued BEFORE E takes the slot its own run frees. E must not promise a
+    // start on any freed slot; it states the range and why.
+    for (n, id) in running.enumerated() { store.select(id); store.composer = "T\(n + 1)"; store.send() }
+    try await eventually { gates.count == SessionStore.maximumConcurrentSessions }
+    store.select(running[0]); store.composer = "T1 follow-up"; store.send()
+    store.select(e); store.composer = "E2"; store.send()
+    store.select(f); store.composer = "F2"; store.send()
+    try check(store.queuedSubmissions.map(\.request) == ["T1 follow-up", "E2", "F2"], "follow-up fixture order")
+    try check(store.globalSlotWait(e).map { [$0.position, $0.mayStartFirst] } == [1, 1] &&
+        store.globalSlotWait(f).map { [$0.position, $0.mayStartFirst] } == [2, 1], "follow-up ahead not counted")
+    let eReason = store.queueReason(e)
+    try check(eReason.contains("대기 순서 1~2") && eReason.contains("앞선 대화의 다음 요청 1개") &&
+        !eReason.contains("다른 작업이 끝나면 자동 시작"), "unconditional start promised with a follow-up ahead: \(eReason)")
+    try check(store.sidebarQueueStatus(e).hasPrefix("슬롯 대기 · 1~2번째") && store.sidebarQueueStatus(f).hasPrefix("슬롯 대기 · 2~3번째"),
+        "sidebar order hides the follow-up ahead: \(store.sidebarQueueStatus(e))")
+    // An owner hold on that conversation removes its follow-up from the count.
+    store.pauseQueue(running[0])
+    try check(store.globalSlotWait(e).map { [$0.position, $0.mayStartFirst] } == [1, 0] &&
+        store.queueReason(e).contains("다른 작업이 끝나면 자동 시작"), "held follow-up still counted ahead")
+    store.resumeQueue(running[0])
+    try check(store.globalSlotWait(e)?.mayStartFirst == 1, "resumed follow-up not counted again")
+    // The stated order is what the scheduler does: T1's slot goes to its own
+    // follow-up, E2 waits for the next freed slot and then says so plainly.
+    try await finish("T1")
+    try await eventually { starts.contains("T1 follow-up") }
+    try check(!starts.contains("E2") && store.globalSlotWait(e).map { [$0.position, $0.mayStartFirst] } == [1, 0] &&
+        store.queueReason(e).contains("다른 작업이 끝나면 자동 시작"), "follow-up precedence differs from the stated order")
+    try await finish("T2")
+    try await eventually { starts.contains("E2") }
+    try check(!starts.contains("F2"), "one freed slot admitted two conversations")
+    for name in ["T3", "T4", "T1 follow-up", "E2"] { try await finish(name) }
+    try await eventually { starts.contains("F2") }
+    try await finish("F2")
+    try await eventually { store.activeRuns.isEmpty }
+    try check(store.queuedSubmissions.isEmpty && starts.count == 14 && Set(starts).count == 14, "follow-up scenario did not drain exactly once")
+    print("Slot wait visibility: \(checks) checks passed; model calls 0; cap \(limit) reason/order/arrow/bubble/pause/follow-up/drain")
+}
+
 @MainActor
 private func queueForkInteractionSelfTest() async throws {
     var checks = 0
@@ -4345,8 +4497,70 @@ private final class SessionStore: ObservableObject {
         activeRuns[sessionID] != nil
     }
 
+    /// Non-nil only when the global admission cap is the sole thing holding
+    /// this conversation's next request: the conversation is idle and its head
+    /// item is eligible (no failure, pause, edit, restart or source hold).
+    /// Mirrors runNextQueuedSubmissionIfNeeded, so `position` is the order in
+    /// which the scheduler will admit waiting conversations when slots free.
+    /// Admission is FIFO per conversation, not globally: a request queued ahead
+    /// of this head in a conversation that is running (or will run first)
+    /// takes the slot that conversation's own run frees. `mayStartFirst` counts
+    /// those requests, so the real order lies in position...position+mayStartFirst.
+    func globalSlotWait(_ sessionID: UUID) -> (running: Int, limit: Int, position: Int, mayStartFirst: Int)? {
+        guard !isSessionRunning(sessionID), activeRuns.count >= Self.maximumConcurrentSessions,
+              let headIndex = queuedSubmissions.firstIndex(where: { $0.sessionID == sessionID }),
+              queueEligible(queuedSubmissions[headIndex]) else { return nil }
+        var headReady: [UUID: Bool] = [:], position = 1, mayStartFirst = 0
+        for item in queuedSubmissions[..<headIndex] {
+            let isHead = headReady[item.sessionID] == nil
+            if isHead { headReady[item.sessionID] = queueEligible(item, ignoringRun: true) }
+            guard headReady[item.sessionID] == true, queueEligible(item, ignoringRun: true) else { continue }
+            if isHead && !isSessionRunning(item.sessionID) { position += 1 } else { mayStartFirst += 1 }
+        }
+        return (activeRuns.count, Self.maximumConcurrentSessions, position, mayStartFirst)
+    }
+
+    /// Eligible waiting conversations whose next request is ahead of this
+    /// conversation's own head: with every slot in use, each freed slot goes
+    /// to them first, even when this conversation's own run is the one ending.
+    func conversationsWaitingAhead(of sessionID: UUID) -> Int {
+        guard let head = queuedSubmissions.firstIndex(where: { $0.sessionID == sessionID }) else { return 0 }
+        var heads = Set<UUID>([sessionID]), count = 0
+        for item in queuedSubmissions[..<head] where heads.insert(item.sessionID).inserted && queueEligible(item) { count += 1 }
+        return count
+    }
+
+    /// Compact sidebar subtitle; the full reason stays in the row's help text.
+    func sidebarQueueStatus(_ sessionID: UUID) -> String {
+        if let wait = globalSlotWait(sessionID) {
+            let order = wait.mayStartFirst > 0 ? "\(wait.position)~\(wait.position + wait.mayStartFirst)" : "\(wait.position)"
+            return "슬롯 대기 · \(order)번째 · \(wait.running)/\(wait.limit) 사용 중"
+        }
+        return queueReason(sessionID)
+    }
+
+    func globalSlotWaitText(_ sessionID: UUID) -> String? {
+        guard let wait = globalSlotWait(sessionID) else { return nil }
+        let base = "실행 슬롯 대기 · 동시 실행 \(wait.running)/\(wait.limit) 사용 중"
+        guard wait.mayStartFirst > 0 else {
+            return base + " · 다른 작업이 끝나면 자동 시작" + (wait.position > 1 ? " · 대기 순서 \(wait.position)" : "")
+        }
+        // Not every freed slot is this request's: say which ones go first.
+        return base + " · 빈 슬롯 순서대로 자동 시작 · 대기 순서 \(wait.position)~\(wait.position + wait.mayStartFirst)"
+            + " · 앞선 대화의 다음 요청 \(wait.mayStartFirst)개는 그 대화의 작업이 끝나면 먼저 시작될 수 있습니다"
+    }
+
+    /// Reason shown under a queued request's own bubble. Nil while this
+    /// conversation runs: a `.waiting` bubble then means a hand-over to the
+    /// live turn, whose own caption stays accurate.
+    func waitingBubbleReason(_ sessionID: UUID) -> String? {
+        guard !isSessionRunning(sessionID), queuedSubmissions.contains(where: { $0.sessionID == sessionID }) else { return nil }
+        return queueReason(sessionID)
+    }
+
     func queueReason(_ sessionID: UUID) -> String {
         guard let session = sessions.first(where: { $0.id == sessionID }) else { return "대화 없음" }
+        if let slot = globalSlotWaitText(sessionID) { return slot }
         if queuedSubmissions.contains(where: { $0.sessionID == sessionID && $0.startNextRequested == true }), isSessionRunning(sessionID) {
             return "현재 실행 종료 확인 중 · 확인 후 선택한 요청을 시작합니다"
         }
@@ -4357,8 +4571,18 @@ private final class SessionStore: ObservableObject {
         let items = queuedSubmissions.filter { $0.sessionID == sessionID }
         if items.contains(where: { pausedQueueIDs.contains($0.id) }) { return "앱 재시작 후 보존된 대기열 · 계속 실행을 눌러 주세요" }
         if items.contains(where: { editingQueueIDs.contains($0.id) }) { return "대기 요청 편집 중 · 저장 또는 취소 후 계속됩니다" }
-        if isSessionRunning(sessionID) { return "현재 작업이 끝나면 순서대로 자동 실행됩니다" }
-        if activeRuns.count >= Self.maximumConcurrentSessions { return "다른 작업의 실행 슬롯 대기 중" }
+        if isSessionRunning(sessionID) {
+            let ahead = conversationsWaitingAhead(of: sessionID)
+            // The slot this run frees is admitted in global order; say so
+            // instead of promising the follow-up starts right after it.
+            if activeRuns.count >= Self.maximumConcurrentSessions, ahead > 0 {
+                return "현재 작업이 끝난 뒤 실행 슬롯 순서대로 시작 · 먼저 기다리는 대화 \(ahead)개 · 동시 실행 \(activeRuns.count)/\(Self.maximumConcurrentSessions) 사용 중"
+            }
+            return "현재 작업이 끝나면 순서대로 자동 실행됩니다"
+        }
+        if activeRuns.count >= Self.maximumConcurrentSessions {
+            return "다른 작업의 실행 슬롯 대기 중 · 동시 실행 \(activeRuns.count)/\(Self.maximumConcurrentSessions) 사용 중"
+        }
         return "순서대로 실행 준비 중"
     }
 
@@ -4377,9 +4601,11 @@ private final class SessionStore: ObservableObject {
         save()
     }
 
-    private func queueEligible(_ next: PendingSubmission) -> Bool {
+    /// `ignoringRun` asks whether the request would be admitted once its own
+    /// conversation's current run ends (owner and failure holds still apply).
+    private func queueEligible(_ next: PendingSubmission, ignoringRun: Bool = false) -> Bool {
         guard let session = sessions.first(where: { $0.id == next.sessionID }) else { return false }
-        return !isSessionRunning(next.sessionID) && session.queuePaused != true &&
+        return (ignoringRun || !isSessionRunning(next.sessionID)) && session.queuePaused != true &&
             ((session.lastFailure == nil && session.lastBackendFailure == nil && session.taskContext?.sourcePreparation == nil) ||
              (next.startNextRequested == true && mayAdvancePastFailure(next, session: session))) &&
             !pausedQueueIDs.contains(next.id) && !editingQueueIDs.contains(next.id)
@@ -5161,7 +5387,17 @@ private final class SessionStore: ObservableObject {
         if canSteerQueued(item) { return "현재 작업에 반영" }
         if activeRuns[item.sessionID]?.cancellationRequested == true { return "현재 실행 종료 확인 중" }
         if !canAdvanceQueued(item) { return canReconcileQueued(item) ? "이전 변경 상태 확인 · 대기 요청 보존" : "이전 변경 상태 확인 필요" }
-        return isSessionRunning(item.sessionID) ? "현재 작업을 중지하고 이 요청부터 시작" : "이 요청부터 시작"
+        if isSessionRunning(item.sessionID) {
+            let ahead = conversationsWaitingAhead(of: item.sessionID)
+            return activeRuns.count >= Self.maximumConcurrentSessions && ahead > 0
+                ? "현재 작업을 중지하고 이 요청부터 시작 · 먼저 기다리는 대화 \(ahead)개 뒤에 실행 슬롯 대기"
+                : "현재 작업을 중지하고 이 요청부터 시작"
+        }
+        // The arrow cannot bypass the global admission cap; say so instead of
+        // promising a start that only happens when another task frees a slot.
+        return activeRuns.count >= Self.maximumConcurrentSessions
+            ? "실행 슬롯이 비면 이 요청부터 시작 · 동시 실행 \(activeRuns.count)/\(Self.maximumConcurrentSessions) 사용 중"
+            : "이 요청부터 시작"
     }
 
     /// Explicit queue action; native steering where possible, otherwise a
@@ -5184,9 +5420,24 @@ private final class SessionStore: ObservableObject {
             sessionStatuses[item.sessionID] = "이전 변경 확인 필요 · 새 요청은 대기열에 보존했습니다"
             save(); return
         }
+        let freshEdit = isNewEditAfterReadOnlyTask(item, session: sessions[sessionIndex])
+        // An idle conversation with nothing failed, held or running has no task
+        // to replace: the arrow only puts this request first in its own
+        // conversation. Marking it as a replacement would record a phantom
+        // "previous unfinished work" decision into its context at admission.
+        if !isSessionRunning(item.sessionID), sessions[sessionIndex].lastFailure == nil,
+           sessions[sessionIndex].lastBackendFailure == nil, sessions[sessionIndex].taskContext?.sourcePreparation == nil,
+           !freshEdit, !ExecutionSteering.isTaskReplacement(item.request) {
+            pausedQueueIDs.remove(id)
+            sessions[sessionIndex].queuePaused = false
+            let next = queuedSubmissions.remove(at: index)
+            queuedSubmissions.insert(next, at: min(queuedSubmissions.firstIndex(where: { $0.sessionID == item.sessionID }) ?? index, index))
+            save()
+            runNextQueuedSubmissionIfNeeded()
+            return
+        }
         queuedSubmissions[index].startNextRequested = true
         queuedSubmissions[index].replacesSubmissionID = sessions[sessionIndex].lastFailure?.id ?? activeRuns[item.sessionID]?.submissionID
-        let freshEdit = isNewEditAfterReadOnlyTask(item, session: sessions[sessionIndex])
         queuedSubmissions[index].replacesObjective = ExecutionSteering.isTaskReplacement(item.request) || freshEdit
         if freshEdit { queuedSubmissions[index].amendedRequest = nil }
         if queuedSubmissions[index].replacesObjective == true {
@@ -5198,7 +5449,10 @@ private final class SessionStore: ObservableObject {
         pausedQueueIDs.remove(id)
         sessions[sessionIndex].queuePaused = false
         let next = queuedSubmissions.remove(at: index)
-        let first = queuedSubmissions.firstIndex(where: { $0.sessionID == item.sessionID }) ?? queuedSubmissions.endIndex
+        // Pressing moves the item ahead of its own conversation's earlier items
+        // only; it never falls behind other conversations' waiting requests
+        // (a sole or already-first item keeps its global place).
+        let first = min(queuedSubmissions.firstIndex(where: { $0.sessionID == item.sessionID }) ?? index, index)
         queuedSubmissions.insert(next, at: first)
         save()
         if activeRuns[item.sessionID] != nil { cancelRun(item.sessionID) }
@@ -7526,7 +7780,7 @@ private struct OS1DesktopApp: App {
         }
         if CommandLine.arguments.contains("--self-test-parallel") {
             Task { @MainActor in
-                do { try await parallelInteractionSelfTest(); exit(EXIT_SUCCESS) }
+                do { try await parallelInteractionSelfTest(); try await slotWaitVisibilitySelfTest(); exit(EXIT_SUCCESS) }
                 catch { fputs("\(error.localizedDescription)\n", stderr); exit(EXIT_FAILURE) }
             }
             NSApplication.shared.run()
@@ -9363,11 +9617,16 @@ private struct SessionSidebar: View {
                             Text("고정됨").font(.system(size: 9, weight: .bold)).foregroundStyle(Theme.muted)
                                 .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 13)
                         }
+                        let queuedCount = store.queuedSubmissions.filter { $0.sessionID == session.id }.count
+                        let idleQueue = queuedCount > 0 && !store.isSessionRunning(session.id)
                         SessionRow(
                             session: session,
                             selected: store.selectedSessionID == session.id,
                             activity: store.activeRuns[session.id]?.activity,
-                            queuedCount: store.queuedSubmissions.filter { $0.sessionID == session.id }.count
+                            queuedCount: queuedCount,
+                            queueStatus: idleQueue ? store.sidebarQueueStatus(session.id) : nil,
+                            slotWait: idleQueue && store.globalSlotWait(session.id) != nil,
+                            queueHelp: idleQueue ? store.queueReason(session.id) : nil
                         ) { store.select(session.id) }
                         .contextMenu {
                             Button(session.pinnedAt == nil ? "상단에 고정" : "고정 해제") { store.togglePin(session.id) }
@@ -9565,6 +9824,12 @@ private struct SessionRow: View {
     let selected: Bool
     var activity: RuntimeActivity? = nil
     var queuedCount = 0
+    /// Why this idle conversation's queue has not started (nil while it runs).
+    var queueStatus: String? = nil
+    /// The global slot cap is the only blocker for this conversation's queue.
+    var slotWait = false
+    /// Full queue reason for the tooltip when the subtitle is abbreviated.
+    var queueHelp: String? = nil
     var previewTime: Date? = nil
     let action: () -> Void
     @State private var isHovering = false
@@ -9594,12 +9859,15 @@ private struct SessionRow: View {
                     Spacer(minLength: 0)
                 }
                 HStack(spacing: 6) {
-                    Text(activity?.label ?? URL(fileURLWithPath: session.workspace).lastPathComponent)
+                    Text(activity?.label ?? queueStatus ?? URL(fileURLWithPath: session.workspace).lastPathComponent)
                         .font(.system(size: 11))
-                        .foregroundStyle(Theme.muted)
+                        .foregroundStyle(slotWait && activity == nil ? Theme.pink : Theme.muted)
                         .lineLimit(1)
+                        .help(activity == nil ? (queueHelp ?? queueStatus ?? "") : "")
                     Spacer(minLength: 0)
-                    if queuedCount > 0 { Text("대기 \(queuedCount)").font(.system(size: 10)).foregroundStyle(Theme.pink) }
+                    if queuedCount > 0 {
+                        Text("대기 \(queuedCount)").font(.system(size: 10)).foregroundStyle(Theme.pink)
+                    }
                 }
                 if let activity {
                     HStack(spacing: 5) {
@@ -9762,7 +10030,8 @@ private struct ConversationView: View {
                         session: session,
                         isRunning: store.isSessionRunning(session.id),
                         queuedSubmissions: store.queuedSubmissions.filter { $0.sessionID == session.id },
-                        publicProgress: store.activeRuns[session.id]?.activity.publicText
+                        publicProgress: store.activeRuns[session.id]?.activity.publicText,
+                        waitingReason: store.waitingBubbleReason(session.id)
                     )
                 }
                 ComposerView(store: store, session: session)
@@ -9866,6 +10135,17 @@ private struct WelcomeView: View {
     var body: some View {
         VStack(spacing: 24) {
             Spacer()
+            if store.queuedSubmissions.contains(where: { $0.sessionID == session.id }) {
+                // The first request was received but has not started; showing
+                // the empty-chat prompt here read as "nothing was sent".
+                VStack(spacing: 10) {
+                    Text("요청을 받았습니다 · 아직 실행 전").font(.system(size: 20, weight: .medium)).foregroundStyle(Theme.text)
+                    Text(store.queueReason(session.id)).font(.system(size: 13))
+                        .foregroundStyle(store.globalSlotWait(session.id) != nil ? Theme.pink : Theme.muted)
+                        .multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)
+                        .accessibilityIdentifier("os1.welcome.queued")
+                }.padding(.horizontal, 40)
+            } else {
             Text(os1Tr("무엇을 만들어 볼까요?", "What should we build?")).font(.system(size: 26, weight: .medium)).foregroundStyle(Theme.text)
             HStack(spacing: 12) {
                 ForEach(suggestions, id: \.0) { item in
@@ -9875,6 +10155,7 @@ private struct WelcomeView: View {
                             .background(Theme.panelRaised, in: RoundedRectangle(cornerRadius: 10))
                     }.buttonStyle(.plain).foregroundStyle(Theme.muted)
                 }
+            }
             }
             Spacer()
         }.frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -9988,11 +10269,14 @@ private enum TimelinePalette {
 /// The one line under a steered input that separates "OS-1 accepted and is
 /// still handing this over" from "the run actually received it". Ordinary
 /// messages carry no state and render exactly as before.
-private func steeringDeliveryCaption(_ state: SteeringDeliveryState?) -> [(String, NSFont, NSColor)] {
+/// `queueReason` is the owning conversation's actual queue blocker, passed
+/// only for a request still waiting in an idle conversation's queue, so the
+/// bubble names why it has not reached a backend (e.g. the global slot cap).
+private func steeringDeliveryCaption(_ state: SteeringDeliveryState?, queueReason: String? = nil) -> [(String, NSFont, NSColor)] {
     guard let state else { return [] }
     let (text, color): (String, NSColor)
     switch state {
-    case .waiting: (text, color) = ("전달 대기 · 아직 백엔드에 전달되지 않았습니다", TimelinePalette.muted)
+    case .waiting: (text, color) = (queueReason.map { "백엔드 전달 전 · " + $0 } ?? "전달 대기 · 아직 백엔드에 전달되지 않았습니다", TimelinePalette.muted)
     case .pending: (text, color) = ("전달 대기 · 현재 작업에 전달했고 수신 확인 중입니다", TimelinePalette.muted)
     case .delivered: (text, color) = ("전달 완료 · 현재 작업이 입력을 받았습니다", TimelinePalette.green)
     case .rejected: (text, color) = ("전달 거절됨 · 입력은 보존했습니다", TimelinePalette.pink)
@@ -10059,9 +10343,11 @@ private func timelineAttributedDocument(
     expanded: Set<String> = [],
     expandAll: Bool = false,
     sourceStore: SourceContextStore = SourceContextStore(),
-    publicProgress: String? = nil
+    publicProgress: String? = nil,
+    waitingReason: String? = nil
 ) -> NSAttributedString {
     let document = NSMutableAttributedString()
+    let queuedMessageIDs = Set(queuedSubmissions.map(\.userMessageID))
 
     func appendBlock(
         role: String,
@@ -10125,7 +10411,8 @@ private func timelineAttributedDocument(
                     timelineNormalizedText(shown),
                     NSFont.systemFont(ofSize: 14, weight: .medium),
                     TimelinePalette.text
-                )] + steeringDeliveryCaption(message.steeringDelivery),
+                )] + steeringDeliveryCaption(message.steeringDelivery,
+                    queueReason: queuedMessageIDs.contains(message.id) ? waitingReason : nil),
                 trailingSpacing: previews == nil ? 40 : 20
             )
             if let previews {
@@ -10361,6 +10648,10 @@ private struct TranscriptRenderInput: Equatable {
     let isRunning: Bool
     let workspace: String
     var publicProgress: String? = nil
+    /// Part of the render identity: a queued bubble's caption changes when
+    /// the reason it waits changes (slot freed, hold released) without any
+    /// message edit.
+    var waitingReason: String? = nil
 }
 
 private final class TranscriptClipView: NSClipView {
@@ -10380,6 +10671,7 @@ private struct ContinuousTranscriptView: NSViewRepresentable {
     let isRunning: Bool
     let workspace: String
     var publicProgress: String? = nil
+    var waitingReason: String? = nil
 
     final class Coordinator: NSObject, NSTextViewDelegate {
         var renderedSessionID: UUID?
@@ -10396,7 +10688,8 @@ private struct ContinuousTranscriptView: NSViewRepresentable {
             let scroll = textView.enclosingScrollView
             let origin = scroll?.contentView.bounds.origin
             let document = timelineAttributedDocument(messages: content.messages, queuedSubmissions: content.queuedSubmissions,
-                isRunning: content.isRunning, workspace: content.workspace, expanded: expanded, publicProgress: content.publicProgress)
+                isRunning: content.isRunning, workspace: content.workspace, expanded: expanded, publicProgress: content.publicProgress,
+                waitingReason: content.waitingReason)
             textView.textStorage?.setAttributedString(document)
             textView.needsDisplay = true
             if let origin { scroll?.contentView.scroll(to: origin) }
@@ -10461,7 +10754,8 @@ private struct ContinuousTranscriptView: NSViewRepresentable {
         if changingSession { context.coordinator.expanded.removeAll() }
         context.coordinator.content = self
         let input = TranscriptRenderInput(sessionID: sessionID, messages: messages,
-            queued: queuedSubmissions, isRunning: isRunning, workspace: workspace, publicProgress: publicProgress)
+            queued: queuedSubmissions, isRunning: isRunning, workspace: workspace, publicProgress: publicProgress,
+            waitingReason: waitingReason)
         // Math attachments have object identity. Comparing freshly rendered
         // attributed strings would rewrite the text storage on every keystroke.
         guard context.coordinator.lastInput != input else { return }
@@ -10473,7 +10767,8 @@ private struct ContinuousTranscriptView: NSViewRepresentable {
             isRunning: isRunning,
             workspace: workspace,
             expanded: context.coordinator.expanded,
-            publicProgress: publicProgress
+            publicProgress: publicProgress,
+            waitingReason: waitingReason
         )
         guard !textView.attributedString().isEqual(to: document) else { return }
 
@@ -10507,6 +10802,7 @@ private struct MessageTimeline: View {
     let isRunning: Bool
     let queuedSubmissions: [PendingSubmission]
     var publicProgress: String? = nil
+    var waitingReason: String? = nil
 
     var body: some View {
         ContinuousTranscriptView(
@@ -10515,7 +10811,8 @@ private struct MessageTimeline: View {
             queuedSubmissions: queuedSubmissions,
             isRunning: isRunning,
             workspace: session.workspace,
-            publicProgress: publicProgress
+            publicProgress: publicProgress,
+            waitingReason: waitingReason
         )
     }
 }
@@ -10906,6 +11203,7 @@ private struct ConversationQueueView: View {
             HStack {
                 Text(session.queuePaused == true ? "대기 메시지 \(items.count) · 일시정지" : "대기 메시지 \(items.count)")
                     .font(.system(size: 11, weight: .medium)).foregroundStyle(Theme.muted)
+                    .accessibilityIdentifier("os1.queue.header")
                 Spacer()
                 Menu {
                     if store.canResumeQueue(session.id) {
@@ -10918,7 +11216,18 @@ private struct ConversationQueueView: View {
                     .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
                     .help(store.queueReason(session.id)).accessibilityLabel("대기열 옵션")
             }
-            if store.activeRuns[session.id]?.cancellationRequested == true || session.lastFailure != nil {
+            if store.globalSlotWait(session.id) != nil ||
+                (store.activeRuns[session.id]?.cancellationRequested != true && session.lastFailure == nil) {
+                // The actual blocker, visible without opening the menu: the
+                // global slot cap reads differently from this chat's own order.
+                Text(store.queueReason(session.id))
+                    .font(.system(size: 11, weight: store.globalSlotWait(session.id) != nil ? .medium : .regular))
+                    .foregroundStyle(store.globalSlotWait(session.id) != nil ? Theme.pink : Theme.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityIdentifier("os1.queue.reason")
+            }
+            if store.globalSlotWait(session.id) == nil,
+               store.activeRuns[session.id]?.cancellationRequested == true || session.lastFailure != nil {
                 Text(store.activeRuns[session.id]?.cancellationRequested == true
                     ? "실행이 끝나는 대로 선택한 요청을 시작합니다"
                     : "이전 작업과 대기 요청은 보존됩니다. 화살표로 실행하거나, 변경 상태가 불확실하면 먼저 실제 변경 상태를 확인합니다.")
@@ -11023,6 +11332,8 @@ private struct ComposerView: View {
                     ? "현재 상태 확인 · 재실행하지 않음" : "OS-1에서 다시 확인하고 시도") { store.retrySelectedFailure() }
                     .font(.system(size: 12, weight: .medium))
                     .disabled(store.activeRuns.count >= SessionStore.maximumConcurrentSessions)
+                    .help(store.activeRuns.count >= SessionStore.maximumConcurrentSessions
+                        ? "동시 실행 \(store.activeRuns.count)/\(SessionStore.maximumConcurrentSessions) 사용 중 · 다른 작업이 끝나면 누를 수 있습니다" : "")
             }
             if store.selectedSessionQueueCount > 0 || session.queuePaused == true {
                 ConversationQueueView(store: store, session: session)

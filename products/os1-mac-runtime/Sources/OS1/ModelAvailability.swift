@@ -44,6 +44,9 @@ enum ModelAvailability {
             !claudeRows([defaults, sonnet]).contains { $0.model == "opus" },
             claudeRows([["value": "fable"]]).isEmpty,
             claudeRows([fable.merging(["supportedEffortLevels": ["ultra"]]) { _, n in n }]).isEmpty,
+            excludingModelLimited(["fable", "opus", "sonnet", "claude-fable-5-1[1m]"].map {
+                ClaudeModelCapability(model: $0, supportedEfforts: ["low"]) }, limited: ["fable"]).map(\.model) == ["opus", "sonnet"],
+            excludingModelLimited([ClaudeModelCapability(model: "opus", supportedEfforts: ["xhigh"])], limited: []).count == 1,
         ]
         guard checks.allSatisfy({ $0 }) else { throw OS1Error.message("Model availability regression failed") }
         print("OS-1 account model metadata: \(checks.count) checks OK")
@@ -146,15 +149,30 @@ enum ModelAvailability {
     }
 
     static func claudeCatalog(workspace: String, config: RuntimeConfig) throws -> [ClaudeModelCapability] {
-        guard ClaudeQuotaBackoff.active() == nil else { return [] }
+        try claudeCatalogs(workspace: workspace, config: config).routable
+    }
+
+    /// `configured`: the native inventory mapped to configured profiles, before
+    /// model-scoped limits. `routable` removes families with an active receipt.
+    /// Only when `configured` is non-empty and `routable` empty is an empty
+    /// catalog caused by model limits rather than a failed inventory probe.
+    static func claudeCatalogs(workspace: String, config: RuntimeConfig) throws
+        -> (configured: [ClaudeModelCapability], routable: [ClaudeModelCapability]) {
+        guard ClaudeQuotaBackoff.active() == nil else { return ([], []) }
         let native = try claudeModels(workspace: workspace)
         let profiles = config.executionProfiles ?? [:]
-        return Set(profiles.values.filter { $0.provider == "claude" }.map(\.model)).sorted().compactMap { model in
+        let configured: [ClaudeModelCapability] = Set(profiles.values.filter { $0.provider == "claude" }.map(\.model)).sorted().compactMap { model in
             guard let row = native.first(where: { $0.model == model }) else { return nil }
             let mapped = Set(profiles.values.filter { $0.provider == "claude" && $0.model == model }.map(\.effort))
             let efforts = row.efforts.filter { mapped.contains($0) }
             return efforts.isEmpty ? nil : ClaudeModelCapability(model: model, supportedEfforts: efforts)
         }
+        return (configured, excludingModelLimited(configured, limited: Set(ClaudeQuotaBackoff.activeModels())))
+    }
+
+    /// A model-scoped limit removes only that family; the rest stays routable.
+    static func excludingModelLimited(_ catalog: [ClaudeModelCapability], limited: Set<String>) -> [ClaudeModelCapability] {
+        catalog.filter { !limited.contains(BackendRecovery.claudeModelFamily($0.model)) }
     }
 
     static func codexCatalog(workspace: String, config: RuntimeConfig) throws -> ActiveCodexCatalog {

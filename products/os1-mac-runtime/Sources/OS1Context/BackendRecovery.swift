@@ -154,6 +154,29 @@ public struct BackendFailureNotice: Codable, Equatable, Sendable {
     }
 }
 
+/// Where a Claude quota rejection applies. `.model` is carried only when every
+/// limit sentence of the CLI names the dispatched model's own allowance, or the
+/// CLI gates that model with "Switch to another model"; everything else stays
+/// account-wide.
+public enum ClaudeQuotaScope: Equatable, Sendable {
+    case model(String)
+    case account
+}
+
+/// One quota rejection's effect on the rest of the run: the Claude models that
+/// stay routable, the providers now out, and where the same request goes next
+/// (nil: stop and surface the rejection).
+public struct QuotaReroute: Equatable, Sendable {
+    public let claudeModels: [String]
+    public let unavailable: Set<String>
+    public let nextPreference: String?
+    public init(claudeModels: [String], unavailable: Set<String>, nextPreference: String?) {
+        self.claudeModels = claudeModels
+        self.unavailable = unavailable
+        self.nextPreference = nextPreference
+    }
+}
+
 public enum BackendRecovery {
     /// A build upgrade is not evidence that a failed operation is safe to replay.
     /// Only legacy failures that never ran the verdict contract get one automatic
@@ -180,31 +203,118 @@ public enum BackendRecovery {
     public static func claudeQuotaFailure(status: Int32, object: [String: Any]) -> Bool {
         guard status != 0 || object["is_error"] as? Bool == true,
               (object["permission_denials"] as? [Any] ?? []).isEmpty else { return false }
-        let errors = object["errors"] as? [String] ?? []
-        let text = ([object["result"] as? String ?? ""] + errors).joined(separator: "\n").lowercased()
-        // Model-specific quota messages are emitted by the same CLI error protocol.
-        // Match an anchored sentence, not an arbitrary mention of a limit.
-        let modelLimit = text.range(of: #"(?m)^you[’']ve reached your [a-z0-9 ._-]{1,64} limit(?:[. ·]|$)"#,
-                                    options: .regularExpression) != nil
-        return modelLimit || ["you've hit your session limit", "you’ve hit your session limit", "you've hit your weekly limit",
-                "you’ve hit your weekly limit", "usage limit reached",
-                "usage limit exceeded", "rate limit exceeded", "rate_limit_error", "insufficient_quota"]
+        let text = claudeLimitText(object)
+        // The CLI's own limit sentences match only at the start of a line,
+        // never an arbitrary mention of a limit.
+        return !claudeLimitSentences(text).isEmpty || ["you've hit your session limit", "you've hit your weekly limit",
+            "usage limit reached", "usage limit exceeded", "rate limit exceeded", "rate_limit_error", "insufficient_quota"]
             .contains(where: text.contains)
     }
-    public static func quotaRecoveryPreference(requested: String, failed: String,
+    /// A limit sentence as the Claude CLI (2.1.263) prints it.
+    enum ClaudeLimitSentence: Equatable {
+        /// "You've reached|hit your <name> limit" (no name: "You've hit your limit")
+        /// and "<name> requires usage credits." `gated`: this very sentence goes on
+        /// ". Switch to another model", the CLI's tail for a model that needs credits.
+        case named([String], gated: Bool)
+        /// "You're out of usage credits": account-wide unless gated the same way.
+        case credits(gated: Bool)
+        /// Org, seat, allocation and extra-usage sentences: always account-wide.
+        case account
+    }
+    static func claudeLimitText(_ object: [String: Any]) -> String {
+        let errors = object["errors"] as? [String] ?? []
+        return ([object["result"] as? String ?? ""] + errors).joined(separator: "\n").lowercased()
+            .replacingOccurrences(of: "’", with: "'")
+    }
+    private static let claudeLimitPattern = try? NSRegularExpression(pattern:
+        #"(?m)^(?:you've (?:reached|hit) your (?:([a-z0-9 ._'-]{1,64}?) )?limit(?=$|[\s.,;:!·\)])(\. switch to another model)?|([a-z0-9][a-z0-9 ._-]{0,40}) requires usage credits\.|(you're out of usage credits)(\. switch to another model)?|(you're out of extra usage|your org is out of usage|your seat type doesn't include|your usage allocation has been disabled|your group's usage limit is set to|this service is disabled for your org))"#)
+    static func claudeLimitSentences(_ text: String) -> [ClaudeLimitSentence] {
+        guard let pattern = claudeLimitPattern else { return [] }
+        return pattern.matches(in: text, range: NSRange(text.startIndex..., in: text)).map { match in
+            func group(_ index: Int) -> String? { Range(match.range(at: index), in: text).map { String(text[$0]) } }
+            if group(6) != nil { return .account }
+            if group(4) != nil { return .credits(gated: group(5) != nil) }
+            return .named((group(1) ?? group(3) ?? "").split(separator: " ").map(String.init), gated: group(2) != nil)
+        }
+    }
+    /// "fable", "fable[1m]" and "claude-fable-5-1[1m]" share one allowance family.
+    public static func claudeModelFamily(_ model: String) -> String {
+        let lowered = model.lowercased()
+        let base = lowered.hasPrefix("claude-") ? String(lowered.dropFirst(7)) : lowered
+        return String(base.prefix { $0 != "-" && $0 != "[" && $0 != " " })
+    }
+    /// Nil unless `claudeQuotaFailure` holds. `.model(family)` only when every
+    /// limit sentence names the dispatched family (optionally "Claude" and a
+    /// version number), or is a credits/spend sentence the CLI closes with
+    /// "Switch to another model" — its own statement that other models still
+    /// run. Unparsed, mismatched or mixed evidence stays `.account`.
+    public static func claudeQuotaScope(status: Int32, object: [String: Any], dispatchedModel: String?) -> ClaudeQuotaScope? {
+        guard claudeQuotaFailure(status: status, object: object) else { return nil }
+        let text = claudeLimitText(object)
+        let accountAnywhere = ["you've hit your session limit", "you've hit your weekly limit", "you've hit your usage limit",
+            "you've hit your limit", "usage limit reached", "usage limit exceeded", "insufficient_quota",
+            "your org is out of usage", "your seat type", "usage allocation", "out of extra usage", "disabled for your org"]
+        let sentences = claudeLimitSentences(text)
+        guard !accountAnywhere.contains(where: text.contains), !sentences.isEmpty, let dispatchedModel else { return .account }
+        let family = claudeModelFamily(dispatchedModel)
+        guard ClaudeQuotaBackoff.validFamily(family) else { return .account }
+        for sentence in sentences {
+            switch sentence {
+            case .named(let raw, let gated):
+                let words = raw.first == "claude" ? Array(raw.dropFirst()) : raw
+                let ownAllowance = words.first == family && words.dropFirst().allSatisfy {
+                    $0.range(of: #"^[0-9]+(\.[0-9]+)*$"#, options: .regularExpression) != nil
+                }
+                guard ownAllowance || (gated && words == ["monthly", "spend"]) else { return .account }
+            case .credits(let gated):
+                guard gated else { return .account }
+            case .account:
+                return .account
+            }
+        }
+        return .model(family)
+    }
+    public static func quotaRecoveryPreference(requested: String, failed: String, modelScoped: Bool = false,
                                                codexAvailable: Bool, claudeAvailable: Bool) -> String? {
+        // An explicit Claude choice stays on Claude: a limit on the dispatched
+        // model alone re-routes over the remaining Claude models, never to Codex.
+        if requested == "claude" { return failed == "claude" && modelScoped && claudeAvailable ? "claude" : nil }
         guard requested == "auto" else { return nil }
-        // Claude's session quota is account-wide, not an effort/quality issue.
+        // Session/weekly limits are account-wide, not an effort/quality issue.
+        // A limit naming only the dispatched model ("Switch to another model")
+        // leaves the remaining Claude catalog routable: re-route over it.
+        if failed == "claude", modelScoped, claudeAvailable { return codexAvailable ? "auto" : "claude" }
         if failed == "claude" { return codexAvailable ? "codex" : nil }
         if failed == "codex" { return claudeAvailable ? "claude" : (codexAvailable ? "codex" : nil) }
         return nil
     }
+    /// One quota rejection's effect, as a pure decision. A model-scoped Claude
+    /// limit drops only that family; an account-wide one drops the whole Claude
+    /// catalog, so no later re-post advertises Claude again in this run.
+    public static func quotaReroute(failed: String, scope: ClaudeQuotaScope?, requested: String, claudeModels: [String],
+                                    codexAvailable: Bool, claudeExecutable: Bool, unavailable: Set<String>) -> QuotaReroute {
+        var models = claudeModels, out = unavailable, modelScoped = false
+        if failed == "claude" {
+            if case .model(let family)? = scope {
+                modelScoped = true
+                models.removeAll { claudeModelFamily($0) == family }
+                if models.isEmpty { out.insert("claude") }
+            } else {
+                models = []
+                out.insert("claude")
+            }
+        }
+        return QuotaReroute(claudeModels: models, unavailable: out,
+            nextPreference: quotaRecoveryPreference(requested: requested, failed: failed, modelScoped: modelScoped,
+                codexAvailable: codexAvailable, claudeAvailable: claudeExecutable && !out.contains("claude")))
+    }
     /// A native quota rejection with verified zero execution consumes a dispatch,
     /// not the workflow's single write attempt. Grant exactly one alternate slot.
-    /// Uncertain/started writes and explicitly pinned providers never qualify.
+    /// Uncertain/started writes never qualify; a pinned provider only for a
+    /// model-scoped Claude limit, which re-routes within Claude.
     public static func quotaAttemptLimit(requested: String, stage: BackendDispatchStage,
-                                         step: Int, limit: Int, alreadyExtended: Bool) -> Int {
-        guard requested == "auto", stage == .rejectedBeforeExecution,
+                                         step: Int, limit: Int, alreadyExtended: Bool, modelScoped: Bool = false) -> Int {
+        guard requested == "auto" || (requested == "claude" && modelScoped), stage == .rejectedBeforeExecution,
               !alreadyExtended, step == limit, limit > 0, limit < Int.max else { return limit }
         return limit + 1
     }
