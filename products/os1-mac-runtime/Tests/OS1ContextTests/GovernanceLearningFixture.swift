@@ -90,5 +90,47 @@ func runGovernanceLearningFixtures() throws {
     check(trend.previous.secondsPerCompletion == 90 && trend.recent.secondsPerCompletion == 30, "time per verified result fell")
     check(GovernanceLearning.trend(GovernanceSnapshot(), now: now).recent.completionRate == nil, "no data is no rate, not zero")
 
-    print("Governance learning: \(checks) checks passed; weighted tokens, per-verified-result cost, trend")
+    // Regression 2026-09-24: last week was nearly all Claude, this week nearly
+    // all Codex. The blended trend read as a token regression that no route
+    // caused; per backend, neither week-over-week change is a comparison.
+    var shifted = GovernanceSnapshot()
+    shifted.tasks = (0..<12).map { index in
+        task([attempt("claude", "sonnet", "medium", .adopted, input: 20_000, output: 0, seconds: 20)],
+             at: now.addingTimeInterval(-10 * 86_400 - Double(index) * 60))
+    } + (0..<12).map { index in
+        task([attempt("codex", "gpt-5.6-sol", "medium", .adopted, input: 200_000, output: 0, seconds: 20)],
+             at: now.addingTimeInterval(-86_400 - Double(index) * 60))
+    }
+    let blended = GovernanceLearning.trend(shifted, now: now)
+    check(blended.previous.tokensPerCompletion == 20_000 && blended.recent.tokensPerCompletion == 200_000,
+          "the blended figure moves with the provider mix")
+    let perBackend = GovernanceLearning.trends(shifted, now: now)
+    check(perBackend.map(\.provider) == ["codex", "claude"], "one trend per backend with evidence")
+    check(perBackend.allSatisfy { !$0.completionComparable && !$0.tokensComparable && !$0.secondsComparable },
+          "a backend absent from one week is never compared across weeks")
+    check(perBackend.first { $0.provider == "codex" }?.recent.tokensPerCompletion == 200_000,
+          "the recent value is still shown")
+
+    // Comparable only with enough samples in both weeks.
+    func week(_ provider: String, _ count: Int, daysAgo: Double, input: Int) -> [GovernanceTask] {
+        (0..<count).map { index in
+            task([attempt(provider, "sonnet", "medium", .adopted, input: input, output: 0, seconds: 20)],
+                 at: now.addingTimeInterval(-daysAgo * 86_400 - Double(index) * 60))
+        }
+    }
+    var enough = GovernanceSnapshot()
+    enough.tasks = week("claude", GovernanceLearning.minimumTrendSamples, daysAgo: 10, input: 40_000)
+        + week("claude", GovernanceLearning.minimumTrendSamples, daysAgo: 2, input: 30_000)
+    let claudeTrend = GovernanceLearning.trend(enough, now: now, provider: "claude")
+    check(claudeTrend.completionComparable && claudeTrend.tokensComparable && claudeTrend.secondsComparable,
+          "ten verified results in each week compare")
+    check(claudeTrend.previous.tokensPerCompletion == 40_000 && claudeTrend.recent.tokensPerCompletion == 30_000,
+          "same-backend change is measured")
+    var thin = GovernanceSnapshot()
+    thin.tasks = week("claude", GovernanceLearning.minimumTrendSamples - 1, daysAgo: 10, input: 40_000)
+        + week("claude", GovernanceLearning.minimumTrendSamples, daysAgo: 2, input: 30_000)
+    check(!GovernanceLearning.trend(thin, now: now, provider: "claude").completionComparable, "nine samples do not compare")
+    check(GovernanceLearning.trends(GovernanceSnapshot(), now: now).isEmpty, "no evidence, no rows")
+
+    print("Governance learning: \(checks) checks passed; weighted tokens, per-verified-result cost, per-backend trend")
 }

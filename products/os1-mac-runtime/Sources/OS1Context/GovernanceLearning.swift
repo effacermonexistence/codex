@@ -33,19 +33,37 @@ public struct GovernanceLearningRoute: Identifiable, Equatable, Sendable {
 public struct GovernanceLearningWindow: Equatable, Sendable {
     public let attempts: Int
     public let adopted: Int
+    /// Verified results whose attempt had trustworthy token accounting.
+    public let measuredCompletions: Int
+    /// Verified results with a recorded duration.
+    public let timedCompletions: Int
     public let tokensPerCompletion: Double?
     public let secondsPerCompletion: Double?
     public var completionRate: Double? { attempts > 0 ? Double(adopted) / Double(attempts) : nil }
 }
 
+/// One backend's last `days` against the `days` before. A week-over-week
+/// change is only a comparison when both weeks hold enough of the same kind
+/// of evidence; otherwise the view shows the recent value alone.
 public struct GovernanceLearningTrend: Equatable, Sendable {
+    public let provider: String?
     public let recent: GovernanceLearningWindow
     public let previous: GovernanceLearningWindow
+
+    public var completionComparable: Bool { Self.enough(recent.attempts, previous.attempts) }
+    public var tokensComparable: Bool { Self.enough(recent.measuredCompletions, previous.measuredCompletions) }
+    public var secondsComparable: Bool { Self.enough(recent.timedCompletions, previous.timedCompletions) }
+
+    static func enough(_ recent: Int, _ previous: Int) -> Bool {
+        recent >= GovernanceLearning.minimumTrendSamples && previous >= GovernanceLearning.minimumTrendSamples
+    }
 }
 
 public enum GovernanceLearning {
     public static let cacheReadWeight = 0.1
     public static let outputWeight = 5.0
+    /// Fewest samples per week before a week-over-week change is shown.
+    public static let minimumTrendSamples = 10
     static let routeOutcomes: Set<String> = ["adopted", "quality_failure", "timeout", "capability_failure"]
 
     /// Input-token equivalents of one attempt, or nil when its usage is not
@@ -121,12 +139,13 @@ public enum GovernanceLearning {
         return best.mapValues(\.id)
     }
 
-    static func window(_ snapshot: GovernanceSnapshot, from start: Date, to end: Date) -> GovernanceLearningWindow {
+    static func window(_ snapshot: GovernanceSnapshot, from start: Date, to end: Date,
+                       provider: String? = nil) -> GovernanceLearningWindow {
         var attempts = 0, adopted = 0, measuredAdopted = 0, timed = 0
         var tokens = 0.0, measured = false, seconds = 0.0
         for task in snapshot.tasks where task.startedAt >= start && task.startedAt < end {
             for attempt in task.attempts {
-                guard let observation = counted(attempt) else { continue }
+                guard let observation = counted(attempt), provider == nil || attempt.provider == provider else { continue }
                 attempts += 1
                 let success = observation.outcome.rawValue == "adopted"
                 if success { adopted += 1 }
@@ -138,17 +157,30 @@ public enum GovernanceLearning {
             }
         }
         return GovernanceLearningWindow(
-            attempts: attempts, adopted: adopted,
+            attempts: attempts, adopted: adopted, measuredCompletions: measuredAdopted, timedCompletions: timed,
             // Every measured attempt's tokens, failures included, per verified result.
             tokensPerCompletion: measured && measuredAdopted > 0 ? tokens / Double(measuredAdopted) : nil,
             secondsPerCompletion: timed > 0 ? seconds / Double(timed) : nil)
     }
 
     /// The last `days` against the `days` before: is routing getting better?
-    public static func trend(_ snapshot: GovernanceSnapshot, now: Date = Date(), days: Int = 7) -> GovernanceLearningTrend {
+    /// Pass a provider: Codex and Claude have separate quotas and very
+    /// different fixed context, so a shift of work between them is not a
+    /// routing gain or loss (2026-09-24: one week was 97% Claude, the next
+    /// 86% Codex, and the blended figure read as a 4.7x token regression).
+    public static func trend(_ snapshot: GovernanceSnapshot, now: Date = Date(), days: Int = 7,
+                             provider: String? = nil) -> GovernanceLearningTrend {
         let span = TimeInterval(days) * 86_400
         return GovernanceLearningTrend(
-            recent: window(snapshot, from: now.addingTimeInterval(-span), to: now.addingTimeInterval(1)),
-            previous: window(snapshot, from: now.addingTimeInterval(-2 * span), to: now.addingTimeInterval(-span)))
+            provider: provider,
+            recent: window(snapshot, from: now.addingTimeInterval(-span), to: now.addingTimeInterval(1), provider: provider),
+            previous: window(snapshot, from: now.addingTimeInterval(-2 * span), to: now.addingTimeInterval(-span),
+                             provider: provider))
+    }
+
+    /// One trend per backend that has route evidence in either week.
+    public static func trends(_ snapshot: GovernanceSnapshot, now: Date = Date(), days: Int = 7) -> [GovernanceLearningTrend] {
+        ["codex", "claude"].map { trend(snapshot, now: now, days: days, provider: $0) }
+            .filter { $0.recent.attempts > 0 || $0.previous.attempts > 0 }
     }
 }

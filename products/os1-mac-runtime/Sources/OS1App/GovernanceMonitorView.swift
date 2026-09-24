@@ -708,27 +708,46 @@ struct GovernanceMonitorView: View {
             Text(detail).font(.system(size: 11)).foregroundStyle(Color(white: 0.8)).fixedSize(horizontal: false, vertical: true)
         }
     }
-    private var learningTrendValue: GovernanceLearningTrend { GovernanceLearning.trend(snapshot, now: refreshed) }
+    private var learningTrendValues: [GovernanceLearningTrend] { GovernanceLearning.trends(snapshot, now: refreshed) }
+    /// "previous → recent" coloured by direction, or the recent value alone
+    /// when either week is too thin to compare.
+    private func trendChange(_ recent: Double?, _ previous: Double?, comparable: Bool,
+                             format: (Double) -> String, lowerIsBetter: Bool) -> (String, Color) {
+        guard let recent else { return ("—", muted) }
+        guard comparable, let previous, previous > 0 else { return (format(recent), .white) }
+        let better = lowerIsBetter ? recent < previous : recent > previous
+        return ("\(format(previous)) → \(format(recent))", recent == previous ? .white : (better ? green : pink))
+    }
     private var learningTrend: some View {
-        let trend = learningTrendValue
-        func change(_ recent: Double?, _ previous: Double?, format: (Double) -> String, lowerIsBetter: Bool) -> (String, Color) {
-            guard let recent else { return ("—", muted) }
-            guard let previous, previous > 0 else { return (format(recent), .white) }
-            let better = lowerIsBetter ? recent < previous : recent > previous
-            return ("\(format(previous)) → \(format(recent))", recent == previous ? .white : (better ? green : pink))
-        }
-        let completion = change(trend.recent.completionRate, trend.previous.completionRate,
-                                format: { String(format: "%.0f%%", $0 * 100) }, lowerIsBetter: false)
-        let tokens = change(trend.recent.tokensPerCompletion, trend.previous.tokensPerCompletion,
-                            format: { tokenLabel($0) }, lowerIsBetter: true)
-        let seconds = change(trend.recent.secondsPerCompletion, trend.previous.secondsPerCompletion,
-                             format: { String(format: "%.0fs", $0) }, lowerIsBetter: true)
-        return panel("좋아지고 있나", subtitle: "지난 7일 vs 그 전 7일 · 초록은 개선, 분홍은 악화") {
-            HStack(spacing: 10) {
-                compactCard("완료율", completion.0, "시도 \(trend.recent.attempts) · 완료 \(trend.recent.adopted)", color: completion.1)
-                compactCard("완료 1건당 토큰", tokens.0, "실패한 시도의 토큰 포함", color: tokens.1)
-                compactCard("완료 1건당 시간", seconds.0, "검증된 결과 기준", color: seconds.1)
+        let trends = learningTrendValues
+        return panel("좋아지고 있나",
+                     subtitle: "백엔드별 지난 7일 vs 그 전 7일 · 초록은 개선, 분홍은 악화 · 한쪽 주가 \(GovernanceLearning.minimumTrendSamples)건 미만이면 최근 값만") {
+            Grid(alignment: .leading, horizontalSpacing: 14, verticalSpacing: 10) {
+                GridRow {
+                    Text("백엔드"); Text("완료율"); Text("완료 1건당 토큰"); Text("완료 1건당 시간"); Text("시도 (전 → 최근)")
+                }.font(.system(size: 10)).foregroundStyle(muted)
+                ForEach(trends, id: \.provider) { trend in
+                    let completion = trendChange(trend.recent.completionRate, trend.previous.completionRate,
+                                                 comparable: trend.completionComparable,
+                                                 format: { String(format: "%.0f%%", $0 * 100) }, lowerIsBetter: false)
+                    let tokens = trendChange(trend.recent.tokensPerCompletion, trend.previous.tokensPerCompletion,
+                                             comparable: trend.tokensComparable, format: { tokenLabel($0) }, lowerIsBetter: true)
+                    let seconds = trendChange(trend.recent.secondsPerCompletion, trend.previous.secondsPerCompletion,
+                                              comparable: trend.secondsComparable,
+                                              format: { String(format: "%.0fs", $0) }, lowerIsBetter: true)
+                    GridRow {
+                        Text(trend.provider == "claude" ? "Claude" : "Codex")
+                            .foregroundStyle(trend.provider == "claude" ? pink : green)
+                        Text(completion.0).foregroundStyle(completion.1)
+                        Text(tokens.0).foregroundStyle(tokens.1)
+                        Text(seconds.0).foregroundStyle(seconds.1)
+                        Text("\(trend.previous.attempts) → \(trend.recent.attempts)").foregroundStyle(muted)
+                    }.font(.system(size: 11, design: .monospaced)).monospacedDigit()
+                }
             }
+            if trends.isEmpty { Text("최근 14일에 경로 기록이 없습니다.").font(.system(size: 12)).foregroundStyle(muted) }
+            Text("같은 백엔드끼리만 비교합니다. 토큰은 실패한 시도까지 포함한 완료 1건당 값이고, 작업 종류나 백엔드에 넣은 지침 파일 크기가 바뀌면 경로와 무관하게 같이 바뀝니다.")
+                .font(.system(size: 10)).foregroundStyle(muted).fixedSize(horizontal: false, vertical: true)
         }
     }
     private func tokenLabel(_ value: Double) -> String {
