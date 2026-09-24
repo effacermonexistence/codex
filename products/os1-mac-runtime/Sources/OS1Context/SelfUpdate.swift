@@ -41,6 +41,15 @@ public enum SelfUpdate {
     }
 
     public static let runtimeRelativePath = "products/os1-mac-runtime"
+    /// build-release.sh re-points this tracked link at the checkout's own
+    /// cache on every release build. It is per-machine state, never a source
+    /// change: counting or committing it made a fleet-job self-repair push a
+    /// link into that job's temporary cache.
+    public static let releaseEntryRelativePath = "products/os1-mac-runtime/release"
+    /// Changed paths that count as a self-repair source change.
+    public static func sourceChanges(_ paths: [String]) -> [String] {
+        paths.filter { !$0.isEmpty && $0 != releaseEntryRelativePath }
+    }
     public static let intentRelativePath = "products/os1-mac-runtime/release/self-update-intent.json"
     public static let stagedAppRelativePath = "products/os1-mac-runtime/release/stage/Applications/OS-1 CLODEX.app"
     public static let installerRelativePath = "products/os1-mac-runtime/scripts/install-local-verified.mjs"

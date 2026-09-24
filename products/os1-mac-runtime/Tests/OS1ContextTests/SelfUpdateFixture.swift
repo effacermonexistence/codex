@@ -91,5 +91,14 @@ func runSelfUpdateFixtures() throws {
           && card.contains("do NOT run `self-update stage`") && card.contains("commits the change on the current branch, pushes it")
           && card.contains("0123456789ab") && card.contains("Task scope: readOnly")
           && card.contains("never say OS-1 can only be partially self-repaired"), "contract keeps the mechanical tail with OS-1, forbids manual installs, names build floor and scope")
-    print("Self-update: \(count) checks passed; intent/outcome custody, apply decision matrix, contract wording")
+
+    // The release link is re-pointed by every release build in any checkout
+    // (2026-09-23: a fleet self-repair committed a link into its job cache).
+    check(SelfUpdate.sourceChanges(["products/os1-mac-runtime/release"]).isEmpty,
+          "re-pointed release link alone is not a source change")
+    check(SelfUpdate.sourceChanges(["products/os1-mac-runtime/release", "products/os1-mac-runtime/Sources/OS1App/OS1App.swift", ""])
+          == ["products/os1-mac-runtime/Sources/OS1App/OS1App.swift"], "real source changes survive, the link and blanks do not")
+    check(SelfUpdate.sourceChanges(["products/os1-mac-runtime/release/self-update-intent.json", "products/os1-mac-runtime/releases"]).count == 2,
+          "only the exact link path is excluded")
+    print("Self-update: \(count) checks passed; intent/outcome custody, apply decision matrix, contract wording, release link")
 }

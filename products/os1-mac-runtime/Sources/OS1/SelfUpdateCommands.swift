@@ -70,7 +70,7 @@ func selfRepairCommand(_ arguments: [String]) async throws -> Bool {
 /// Shared with the runtime hook in main.swift.
 let selfRepairFailurePrefixText = "OS-1 self-repair could not complete: "
 
-let os1RuntimeVersionString = "OS-1 Runtime 0.9.160 (self-repair-build226)"
+let os1RuntimeVersionString = "OS-1 Runtime 0.9.161 (self-repair-build227)"
 
 /// Serialize source edits without dropping a queued request after three minutes.
 /// flock ownership, not a stale lock-file timestamp, determines availability.
@@ -330,7 +330,7 @@ func completeOS1SelfRepair(root: String, objective: String, startedAt: Date, sta
     }
     guard let status = try? commandOutput(git, ["-C", root, "status", "--porcelain", "--", SelfUpdate.runtimeRelativePath], timeout: 60),
           status.0 == 0 else { return .failed("git status failed under \(root)") }
-    var changed = String(decoding: status.1, as: UTF8.self).split(separator: "\n").map { String($0.dropFirst(3)) }
+    var changed = SelfUpdate.sourceChanges(String(decoding: status.1, as: UTF8.self).split(separator: "\n").map { String($0.dropFirst(3)) })
     // A backend that commits its own work (Claude does, under the owner's
     // remote-completion contract) leaves a clean tree; the change is then
     // the commits made since the task started, not the dirt in the tree.
@@ -338,7 +338,7 @@ func completeOS1SelfRepair(root: String, objective: String, startedAt: Date, sta
     if let startHead, let head, head != startHead,
        let committed = try? commandOutput(git, ["-C", root, "diff", "--name-only", startHead, head, "--", SelfUpdate.runtimeRelativePath], timeout: 60),
        committed.0 == 0 {
-        changed += String(decoding: committed.1, as: UTF8.self).split(separator: "\n").map(String.init)
+        changed += SelfUpdate.sourceChanges(String(decoding: committed.1, as: UTF8.self).split(separator: "\n").map(String.init))
     }
     guard !changed.isEmpty || verifiedSourceReady else { return .notApplicable("no source change under \(SelfUpdate.runtimeRelativePath)") }
     if let hit = selfRepairSecretHit(root: root, git: git, since: startHead) {
@@ -366,7 +366,8 @@ func completeOS1SelfRepair(root: String, objective: String, startedAt: Date, sta
     let subject = "os1: self-repair build \(build) — " + String(firstLine.prefix(64))
     let body = "Objective (owner request):\n" + String(objective.prefix(1_500)) + "\n\nStaged by OS-1 self-repair · " +
         intent.checks.joined(separator: ", ") + " · OS-1 installs this build by itself."
-    let add = try? commandOutput(git, ["-C", root, "add", "-A", "--", SelfUpdate.runtimeRelativePath], timeout: 60)
+    let add = try? commandOutput(git, ["-C", root, "add", "-A", "--", SelfUpdate.runtimeRelativePath,
+                                        ":(exclude)" + SelfUpdate.releaseEntryRelativePath], timeout: 60)
     guard add?.0 == 0 else { return .failed("git add failed: " + (add.map { outputTail($0) } ?? "")) }
     let commit = try? commandOutput(git, ["-C", root, "commit", "-q", "-m", subject, "-m", body], timeout: 120)
     guard commit?.0 == 0, let head = gitHead(root) else {
