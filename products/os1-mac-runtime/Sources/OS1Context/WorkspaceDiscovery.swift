@@ -55,7 +55,12 @@ public enum WorkspaceDiscovery {
             if FileManager.default.fileExists(atPath:target,isDirectory:&directory), directory.boolValue { candidates.insert(target) }
             if candidates.count >= 8 { break }
         }
-        guard !candidates.isEmpty else { return "\nWorkspace is projectless. Do not recursively search the home directory; use exact user/source paths or ask for the missing project selection.\n" }
+        // A copy of OS-1's source under a dated folder once took an OS-1 fix
+        // that never reached the app (2026-09-23): name the one live tree.
+        let liveOS1 = LocalProjectWorkspace.resolve(projectID: "os1-clodex", requested: workspace, home: home).map {
+            "\nOS-1 CLODEX (this app) live source, the only tree OS-1 builds and installs from: \($0.workspace). Any other folder containing products/os1-mac-runtime (for example a dated copy under ~/Documents/Codex) is a stale snapshot: never edit it.\n"
+        } ?? ""
+        guard !candidates.isEmpty else { return "\nWorkspace is projectless. Do not recursively search the home directory; use exact user/source paths or ask for the missing project selection.\n" + liveOS1 }
         let runtimeHints = candidates.sorted().compactMap { path -> String? in
             let package = URL(fileURLWithPath: path).appendingPathComponent("runtime/package.json")
             guard let bytes = try? Data(contentsOf: package), bytes.count <= 100_000,
@@ -65,6 +70,6 @@ public enum WorkspaceDiscovery {
         }.joined()
         return "\nVerified local directory candidates from the existing project registry (not a write grant or an active-release claim):\n" +
             candidates.sorted().map { "- " + $0 }.joined(separator:"\n") +
-            "\nInspect relevant exact paths first. Do not run recursive Glob/Grep over HOME. Preserve the user's selected workspace and verify which project/release is actually active before changes.\n" + runtimeHints
+            "\nInspect relevant exact paths first. Do not run recursive Glob/Grep over HOME. Preserve the user's selected workspace and verify which project/release is actually active before changes.\n" + runtimeHints + liveOS1
     }
 }

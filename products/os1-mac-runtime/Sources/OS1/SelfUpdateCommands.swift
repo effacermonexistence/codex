@@ -37,7 +37,7 @@ func selfRepairCommand(_ arguments: [String]) async throws -> Bool {
     // No implicit default: a bare `os1 self-repair` must never bump, build
     // and commit the checkout it happens to be run from.
     guard arguments.count > 1 else {
-        throw OS1Error.message("self-repair: usage: os1 self-repair complete --source <OS-1 checkout> [--objective <text>]")
+        throw OS1Error.message("self-repair: usage: os1 self-repair complete --source <OS-1 checkout> [--objective <text>] | os1 self-repair route --prompt <text> [--workspace <folder>]")
     }
     let subcommand = arguments[1]
     var options: [String: String] = [:]
@@ -48,7 +48,26 @@ func selfRepairCommand(_ arguments: [String]) async throws -> Bool {
         options[String(key.dropFirst(2))] = arguments[index + 1]
         index += 2
     }
-    guard subcommand == "complete" else { throw OS1Error.message("self-repair: expected complete") }
+    if subcommand == "route" {
+        // Read-only: which source tree OS-1 would work in for this request.
+        guard let prompt = options["prompt"] else { throw OS1Error.message("self-repair route: --prompt is required") }
+        let workspace = options["workspace"] ?? FileManager.default.homeDirectoryForCurrentUser.path
+        let binding = localProjectBinding(request: prompt, workspace: workspace,
+            namedProjectID: PreparationIntent.detect(prompt)?.projectID, boundProjectID: nil, readOnly: false)
+        var target = workspace
+        if let projectID = binding.projectID, LocalProjectWorkspace.root(containing: workspace, projectID: projectID) == nil {
+            target = resolveLocalProjectWorkspace(projectID: projectID, requested: workspace)?.workspace ?? workspace
+        }
+        let report: [String: Any] = [
+            "project": binding.projectID ?? NSNull(), "inferred": binding.inferred,
+            "signals": binding.inference?.signals ?? [], "blockedBy": binding.inference?.blockedBy ?? NSNull(),
+            "workspace": target, "selfRepair": LocalProjectWorkspace.root(containing: target, projectID: "os1-clodex") != nil,
+        ]
+        let data = try JSONSerialization.data(withJSONObject: report, options: [.sortedKeys, .withoutEscapingSlashes])
+        print(String(decoding: data, as: UTF8.self))
+        return true
+    }
+    guard subcommand == "complete" else { throw OS1Error.message("self-repair: expected complete or route") }
     let requested = options["source"] ?? FileManager.default.currentDirectoryPath
     guard let root = LocalProjectWorkspace.root(containing: requested, projectID: "os1-clodex") else {
         throw OS1Error.message("self-repair: \(requested) is not inside an OS-1 source tree")
@@ -70,15 +89,24 @@ func selfRepairCommand(_ arguments: [String]) async throws -> Bool {
 /// Shared with the runtime hook in main.swift.
 let selfRepairFailurePrefixText = "OS-1 self-repair could not complete: "
 
-let os1RuntimeVersionString = "OS-1 Runtime 0.9.173 (self-repair-build239)"
+let os1RuntimeVersionString = "OS-1 Runtime 0.9.174 (self-repair-build240)"
+
+func os1SourceWriteLeaseURL(root: String) throws -> URL {
+    let directory = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".os1/self-update", isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+    let canonical = URL(fileURLWithPath: root).resolvingSymlinksInPath().standardizedFileURL.path
+    return directory.appendingPathComponent("source-write-" + sha256Hex(Data(canonical.utf8)).prefix(16) + ".lock")
+}
+
+/// The source-write lease if no other OS-1 writer holds it right now.
+func tryAcquireOS1SourceWriteLease(root: String) throws -> ExclusiveHookLease? {
+    try ExclusiveHookLease.tryAcquire(at: os1SourceWriteLeaseURL(root: root))
+}
 
 /// Serialize source edits without dropping a queued request after three minutes.
 /// flock ownership, not a stale lock-file timestamp, determines availability.
 func acquireOS1SourceWriteLease(root: String, timeoutSeconds: Int? = nil) throws -> ExclusiveHookLease {
-    let directory = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".os1/self-update", isDirectory: true)
-    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-    let canonical = URL(fileURLWithPath: root).resolvingSymlinksInPath().standardizedFileURL.path
-    let lock = directory.appendingPathComponent("source-write-" + sha256Hex(Data(canonical.utf8)).prefix(16) + ".lock")
+    let lock = try os1SourceWriteLeaseURL(root: root)
     let deadline = timeoutSeconds.map { Date().addingTimeInterval(TimeInterval($0)) }
     var lastNotice = Date.distantPast
     return try ExclusiveHookLease.acquireWaiting(at: lock, beforeAttempt: {
@@ -481,4 +509,105 @@ private func printSelfUpdateStatus(root: String?) throws {
     encoder.dateEncodingStrategy = .iso8601
     encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes, .prettyPrinted]
     print(String(decoding: try encoder.encode(status), as: UTF8.self))
+}
+
+// MARK: Requests about OS-1 work in OS-1's live source tree
+
+/// The registered local project a turn works in. A named or already bound
+/// project wins; otherwise a request about OS-1 itself binds OS-1 (see
+/// `OS1SelfReference`). Another named or bound registered project is never
+/// overridden, and read-only work is never inferred.
+struct LocalProjectBinding: Equatable {
+    let projectID: String?
+    let inference: OS1SelfReference.Inference?
+    var inferred: Bool { projectID == "os1-clodex" && inference?.bound == true }
+}
+
+func localProjectBinding(request: String, workspace: String, namedProjectID: String?, boundProjectID: String?,
+                         readOnly: Bool, os1Roots: [String]? = nil) -> LocalProjectBinding {
+    for id in [namedProjectID, boundProjectID].compactMap({ $0 }) where ProjectAdapterRegistry.kind(for: id) == .localWorkspace {
+        return LocalProjectBinding(projectID: id, inference: nil)
+    }
+    let otherProject = namedProjectID != nil || boundProjectID.map { ProjectAdapterRegistry.kind(for: $0) != nil } == true
+    guard !otherProject, !readOnly else { return LocalProjectBinding(projectID: nil, inference: nil) }
+    let inference = OS1SelfReference.infer(request: request, projectless: OS1SelfReference.isProjectless(workspace),
+        os1Roots: os1Roots ?? LocalProjectWorkspace.candidates(projectID: "os1-clodex"))
+    return LocalProjectBinding(projectID: inference.bound ? "os1-clodex" : nil, inference: inference)
+}
+
+/// Source commit of the installed build, when OS-1 installed it itself.
+func installedOS1SourceCommit() -> String? {
+    let installed = installedOS1Build()
+    return SelfUpdate.outcomes().last(where: { $0.success && $0.intent.build == installed })?.intent.sourceCommit
+}
+
+/// A registered root is current when it already contains the installed
+/// build's source commit, so a stale clone never outranks the live tree just
+/// because its index was touched more recently.
+func resolveLocalProjectWorkspace(projectID: String, requested: String) -> LocalProjectWorkspace.Resolution? {
+    guard projectID == "os1-clodex", let commit = installedOS1SourceCommit(), let git = try? findExecutable("git") else {
+        return LocalProjectWorkspace.resolve(projectID: projectID, requested: requested)
+    }
+    return LocalProjectWorkspace.resolve(projectID: projectID, requested: requested) { root in
+        (try? commandOutput(git, ["-C", root, "merge-base", "--is-ancestor", commit, "HEAD"], timeout: 10))?.0 == 0
+    }
+}
+
+/// A write task whose folder contains the live OS-1 tree (usually HOME) but
+/// which was not bound to it. If its backend changed OS-1's source anyway,
+/// OS-1 still finishes that repair, or says plainly why it did not.
+struct OS1SourceWatch: Equatable {
+    let root: String
+    let head: String?
+    let fingerprint: String?
+
+    /// Status, tracked diff and untracked contents of the runtime subtree.
+    static func fingerprint(root: String) -> String? {
+        guard let git = try? findExecutable("git") else { return nil }
+        let runtime = SelfUpdate.runtimeRelativePath
+        guard let status = try? commandOutput(git, ["-C", root, "status", "--porcelain=v1", "-uall", "--", runtime], timeout: 20),
+              status.0 == 0, status.1.count <= 4_000_000,
+              let diff = try? commandOutput(git, ["-C", root, "diff", "HEAD", "--", runtime], timeout: 30), diff.0 == 0 else { return nil }
+        var data = status.1 + diff.1
+        for line in String(decoding: status.1, as: UTF8.self).split(separator: "\n").prefix(500) where line.hasPrefix("?? ") {
+            let url = URL(fileURLWithPath: root).appendingPathComponent(String(line.dropFirst(3)))
+            if let bytes = try? Data(contentsOf: url), bytes.count <= 2_000_000 { data += bytes }
+        }
+        return sha256Hex(data)
+    }
+
+    static func capture(workspace: String) -> OS1SourceWatch? {
+        let folder = LocalProjectWorkspace.executionPath(workspace)
+        guard LocalProjectWorkspace.root(containing: folder, projectID: "os1-clodex") == nil,
+              let live = resolveLocalProjectWorkspace(projectID: "os1-clodex", requested: folder)?.workspace else { return nil }
+        let root = LocalProjectWorkspace.executionPath(live)
+        guard root.hasPrefix(folder == "/" ? "/" : folder + "/") else { return nil }
+        return OS1SourceWatch(root: root, head: gitHead(root), fingerprint: fingerprint(root: root))
+    }
+
+    func changed() -> Bool {
+        gitHead(root) != head || OS1SourceWatch.fingerprint(root: root) != fingerprint
+    }
+}
+
+/// Finish an OS-1 source change made by a task that was not bound to OS-1.
+/// Never waits for another writer: its build would include this change.
+func finishUnboundOS1Change(_ watch: OS1SourceWatch, objective: String, startedAt: Date) -> String {
+    let busy = os1Tr("OS-1 자체 수리: 이 작업이 OS-1 소스(\(watch.root))를 바꿨지만 다른 OS-1 자체 수리가 같은 소스를 쓰는 중이라 따로 마무리하지 않았습니다. 변경은 작업 트리에 그대로 있고, 진행 중인 자체 수리 빌드나 다음 자체 수리에 함께 빌드·설치됩니다.",
+        "OS-1 self-repair: this task changed OS-1's source (\(watch.root)), but another OS-1 self-repair is writing the same source, so it was not finished separately. The change stays in the working tree and is built and installed with that repair or the next one.")
+    guard let lease = try? tryAcquireOS1SourceWriteLease(root: watch.root) else { return busy }
+    defer { withExtendedLifetime(lease) {} }
+    // Commits OS-1 itself made meanwhile belong to another repair.
+    if let start = watch.head, let head = gitHead(watch.root), head != start, let git = try? findExecutable("git"),
+       let log = try? commandOutput(git, ["-C", watch.root, "log", "--format=%s", "\(start)..\(head)"], timeout: 20), log.0 == 0,
+       String(decoding: log.1, as: UTF8.self).split(separator: "\n").contains(where: {
+           $0.hasPrefix("os1: self-repair build") || $0.hasPrefix("OS-1 build")
+       }) {
+        return busy
+    }
+    switch completeOS1SelfRepair(root: watch.root, objective: objective, startedAt: startedAt, startHead: watch.head) {
+    case .notApplicable: return ""
+    case .staged(_, let note): return note
+    case .failed(let diagnostic): return selfRepairFailurePrefixText + diagnostic
+    }
 }

@@ -86,6 +86,45 @@ private func providerDisplayName(_ provider: String?) -> String {
     provider == "local" ? "OS-1" : (provider ?? "OS-1").uppercased()
 }
 
+/// The executor that ran and the model it ran are separate facts: a `gpt-*`
+/// model under Codex must never read like a ChatGPT/GPT route (owner report
+/// 2026-09-23: "코덱스의 라우팅인지 GPT의 라우팅인지 구분이 안가").
+private struct ExecutionRoutePresentation: Equatable {
+    let executionLine: String
+    let modelLine: String?
+    let detail: String
+
+    init(activity: RuntimeActivity?) {
+        let provider = activity?.provider?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        switch provider {
+        case _ where activity == nil:
+            executionLine = os1Tr("라우팅 결과: 실행 기록 없음", "Route: no execution recorded")
+            detail = os1Tr("이 대화에는 현재 실행 백엔드 기록이 없습니다.", "This conversation has no running backend record.")
+        case "codex":
+            executionLine = os1Tr("라우팅 결과: Codex 실행", "Route: Codex")
+            detail = os1Tr("Codex가 실제 실행 경로입니다. gpt-*는 모델 이름이며 GPT/ChatGPT 경로를 뜻하지 않습니다.",
+                           "Codex is the executor. gpt-* is the model name, not a GPT/ChatGPT route.")
+        case "claude":
+            executionLine = os1Tr("라우팅 결과: Claude Code 실행", "Route: Claude Code")
+            detail = os1Tr("Claude Code가 실제 실행 경로입니다. 모델 이름은 따로 표시합니다.",
+                           "Claude Code is the executor. The model name is shown separately.")
+        case "local":
+            executionLine = os1Tr("라우팅 결과: OS-1 내부 처리", "Route: handled inside OS-1")
+            detail = os1Tr("외부 Codex·Claude Code 실행 없이 OS-1이 처리했습니다.", "OS-1 handled this without a Codex or Claude Code run.")
+        case nil, "", "routing":
+            executionLine = os1Tr("라우팅 결과: 아직 선택 전", "Route: not selected yet")
+            detail = os1Tr("실행 백엔드가 정해지기 전입니다. 모델 이름만으로 경로를 판단하지 않습니다.",
+                           "No backend is selected yet. A model name alone does not decide the route.")
+        default:
+            executionLine = os1Tr("라우팅 결과: \(provider!.uppercased()) 실행", "Route: \(provider!.uppercased())")
+            detail = os1Tr("기록된 실행 백엔드와 모델 이름을 따로 표시합니다.", "The recorded backend and model are shown separately.")
+        }
+        modelLine = activity?.model.flatMap { $0.isEmpty ? nil : os1Tr("모델: \($0)", "Model: \($0)") }
+    }
+
+    var governanceLine: String { modelLine.map { "\(executionLine) · \($0)" } ?? executionLine }
+}
+
 /// Backend records created by OS-1 contain a bounded execution envelope. The
 /// native inspector shows the user's request, never that control/source blob.
 private func visibleBackendUserRequest(_ value: String) -> String? {
@@ -7781,6 +7820,15 @@ private func codexShellSelfTest() throws {
         guard condition else { throw RunnerError.message("Shell regression: " + name) }
         checks += 1
     }
+    // Executor and model are separate facts on every running surface.
+    let codexRoute = ExecutionRoutePresentation(activity: RuntimeActivity(.executing, provider: "codex", model: "gpt-5.6-luna"))
+    try check(codexRoute.executionLine.contains("Codex") && !codexRoute.executionLine.lowercased().contains("gpt"), "Codex executor is explicit, not a GPT route")
+    try check(codexRoute.modelLine?.contains("gpt-5.6-luna") == true && codexRoute.governanceLine.contains("gpt-5.6-luna"), "the GPT model name stays beside the Codex executor")
+    let claudeRoute = ExecutionRoutePresentation(activity: RuntimeActivity(.executing, provider: "claude", model: "claude-fixture"))
+    try check(claudeRoute.executionLine.contains("Claude Code"), "Claude Code executor is explicit")
+    let pendingRoute = ExecutionRoutePresentation(activity: RuntimeActivity(.routing))
+    try check(pendingRoute.modelLine == nil && !pendingRoute.executionLine.contains("Codex") && !pendingRoute.executionLine.contains("Claude"),
+              "unresolved routing never impersonates an executor")
     let id = UUID()
     let root = FileManager.default.temporaryDirectory.appendingPathComponent("os1-shell-test-" + UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }
@@ -8218,7 +8266,7 @@ private struct OS1DesktopApp: App {
                 try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
                 let started = Date(timeIntervalSinceReferenceDate: 1_000)
                 for (index, elapsed) in [4.0, 4.3, 65.0].enumerated() {
-                    let content = RunActivityBanner(activity: RuntimeActivity(.executing, provider: "claude", model: "fixture", effort: "low", timestamp: started),
+                    let content = RunActivityBanner(activity: RuntimeActivity(.executing, provider: "codex", model: "gpt-5.6-luna", effort: "medium", timestamp: started),
                         started: started, previewTime: started.addingTimeInterval(elapsed))
                         .frame(width: 900, height: 74).background(Theme.background).environment(\.colorScheme, .dark)
                     let view = NSHostingView(rootView: content)
@@ -8230,15 +8278,17 @@ private struct OS1DesktopApp: App {
                     try data.write(to: output.appendingPathComponent("activity-\(index).png"))
                     let rowContent = VStack(spacing: 4) {
                         SessionRow(session: ConversationSession(title: "연구 자료 분석", workspace: "/tmp"), selected: true,
-                            activity: RuntimeActivity(.executing, provider: "claude"), queuedCount: 1,
+                            activity: RuntimeActivity(.executing, provider: "claude", model: "claude-fixture"), queuedCount: 1,
                             previewTime: started.addingTimeInterval(elapsed), action: {})
                         SessionRow(session: ConversationSession(title: "자동화 복원 검토", workspace: "/tmp"), selected: false,
-                            activity: RuntimeActivity(.executing, provider: "codex"),
+                            activity: RuntimeActivity(.executing, provider: "codex", model: "gpt-5.6-luna"),
                             previewTime: started.addingTimeInterval(elapsed), action: {})
+                        SessionRow(session: ConversationSession(title: "새 라우팅 요청", workspace: "/tmp"), selected: false,
+                            activity: RuntimeActivity(.routing), previewTime: started.addingTimeInterval(elapsed), action: {})
                         SessionRow(session: ConversationSession(title: "완료한 대화", workspace: "/tmp"), selected: false, action: {})
-                    }.frame(width: 290, height: 228).background(Theme.background).environment(\.colorScheme, .dark)
+                    }.frame(width: 290, height: 330).background(Theme.background).environment(\.colorScheme, .dark)
                     let rows = NSHostingView(rootView: rowContent)
-                    rows.frame = NSRect(x: 0, y: 0, width: 290, height: 228); rows.layoutSubtreeIfNeeded()
+                    rows.frame = NSRect(x: 0, y: 0, width: 290, height: 330); rows.layoutSubtreeIfNeeded()
                     guard let rowBitmap = rows.bitmapImageRepForCachingDisplay(in: rows.bounds) else { throw SourceContextError.invalid }
                     rows.cacheDisplay(in: rows.bounds, to: rowBitmap)
                     guard let rowPNG = rowBitmap.representation(using: .png, properties: [:]) else { throw SourceContextError.invalid }
@@ -8849,7 +8899,8 @@ private struct RootView: View {
                 .accessibilityHidden(governanceOpen)
                 if governanceOpen {
                     GovernanceMonitorView(active: store.activeRuns.values.map { run in
-                        [run.activity.provider ?? "routing", run.activity.model ?? "pending", run.activity.effort ?? "pending"].joined(separator: " · ")
+                        let route = ExecutionRoutePresentation(activity: run.activity)
+                        return run.activity.effort.map { route.governanceLine + " · " + os1Tr("추론: \($0)", "Reasoning: \($0)") } ?? route.governanceLine
                     }.sorted(), queued: store.queuedSubmissions.count, onClose: { governanceOpen = false })
                     .onExitCommand { governanceOpen = false }
                 }
@@ -10190,15 +10241,23 @@ private struct SessionRow: View {
                     }
                 }
                 if let activity {
+                    let route = ExecutionRoutePresentation(activity: activity)
                     HStack(spacing: 5) {
-                        Text(providerDisplayName(activity.provider))
-                        if let model = activity.model, !model.isEmpty { Text(model) }
+                        Text(route.executionLine)
                         Text("· 수렴 단계 \(activity.convergenceLabel)")
                         Spacer(minLength: 0)
                     }
                     .font(.system(size: 9, weight: .medium))
                     .foregroundStyle(Theme.pink.opacity(0.9))
                     .lineLimit(1)
+                    .help(route.detail)
+                    if let modelLine = route.modelLine {
+                        Text(modelLine)
+                            .font(.system(size: 9))
+                            .foregroundStyle(Theme.muted)
+                            .lineLimit(1)
+                            .help(route.detail)
+                    }
                 }
             }
             .padding(.horizontal, 13)
@@ -10265,18 +10324,20 @@ private struct SessionExecutionBadge: View {
         HStack(spacing: compact ? 5 : 7) {
             Circle().fill(Theme.green).frame(width: compact ? 5 : 6, height: compact ? 5 : 6)
             VStack(alignment: .leading, spacing: 2) {
+                let route = ExecutionRoutePresentation(activity: activity)
                 HStack(spacing: 5) {
                     Text("실행 세션")
                         .font(.system(size: compact ? 9 : 10, weight: .bold))
-                    Text(providerTitle)
+                    Text(route.executionLine)
                         .font(.system(size: compact ? 9 : 10, weight: .semibold))
-                    if let model = activity.model, !model.isEmpty {
-                        Text(model).font(.system(size: compact ? 9 : 10)).foregroundStyle(Theme.muted)
+                    if let modelLine = route.modelLine {
+                        Text(modelLine).font(.system(size: compact ? 9 : 10)).foregroundStyle(Theme.muted)
                     }
                     if let effort = activity.effort, !effort.isEmpty {
-                        Text(effort).font(.system(size: compact ? 9 : 10)).foregroundStyle(Theme.muted)
+                        Text(os1Tr("추론: \(effort)", "Reasoning: \(effort)")).font(.system(size: compact ? 9 : 10)).foregroundStyle(Theme.muted)
                     }
                 }
+                .help(route.detail)
                 HStack(spacing: 5) {
                     Text("수렴 단계 · \(activity.convergenceLabel)")
                     if let sessionID {
@@ -11460,9 +11521,11 @@ private struct RunActivityBanner: View {
                 }.frame(width: 16, height: 16).accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: 3) {
                     HStack {
+                        let route = ExecutionRoutePresentation(activity: activity)
                         Text(stopping ? "작업 중지 확인 중" : activity.label).font(.system(size: 11))
-                        if let model = activity.model { Text(model).font(.system(size: 10)).foregroundStyle(Theme.muted) }
-                        if let effort = activity.effort { Text(effort).font(.system(size: 10)).foregroundStyle(Theme.muted) }
+                        Text(route.executionLine).font(.system(size: 10, weight: .medium)).foregroundStyle(Theme.pink).help(route.detail)
+                        if let modelLine = route.modelLine { Text(modelLine).font(.system(size: 10)).foregroundStyle(Theme.muted).help(route.detail) }
+                        if let effort = activity.effort { Text(os1Tr("추론: \(effort)", "Reasoning: \(effort)")).font(.system(size: 10)).foregroundStyle(Theme.muted) }
                         if let tool = activity.toolProgressLabel { Text(tool).font(.system(size: 10)).foregroundStyle(Theme.muted) }
                     }
                     if activity.toolProgressLabel != nil && quiet < 30 {

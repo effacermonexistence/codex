@@ -6579,9 +6579,12 @@ func runWorkflowTaskWithOwnerPolicy(
 ) async throws -> RunSummary {
     let handoff = try SessionHandoff.decode(context)
     let workflowStartedAt = Date()
-    let projectID = PreparationIntent.detect(prompt)?.projectID ?? handoff.taskContext?.project?.projectID
+    let namedProjectID = PreparationIntent.detect(prompt)?.projectID
+    let projectID = localProjectBinding(request: prompt, workspace: workspace, namedProjectID: namedProjectID,
+        boundProjectID: handoff.taskContext?.project?.projectID, readOnly: false).projectID
+        ?? namedProjectID ?? handoff.taskContext?.project?.projectID
     let workflowWorkspace = projectID == "os1-clodex"
-        ? (LocalProjectWorkspace.resolve(projectID: "os1-clodex", requested: workspace)?.workspace ?? workspace)
+        ? (resolveLocalProjectWorkspace(projectID: "os1-clodex", requested: workspace)?.workspace ?? workspace)
         : workspace
     let repairRoot = LocalProjectWorkspace.root(containing: workflowWorkspace, projectID: "os1-clodex")
     // Hold custody across architecture, implementation and independent verification.
@@ -6886,14 +6889,25 @@ func runTaskWithOwnerPolicy(
     // A registered local-workspace project is its own source tree. When the
     // conversation lives elsewhere (usually HOME), work in the project's
     // registered root; the bound project keeps that root for later turns.
-    let localProjectID = preparation?.projectID.flatMap { ProjectAdapterRegistry.kind(for: $0) == .localWorkspace ? $0 : nil }
-        ?? taskState.project.flatMap { ProjectAdapterRegistry.kind(for: $0.projectID) == .localWorkspace ? $0.projectID : nil }
+    // A request about OS-1 itself that names no project ("말풍선이 안 맞아,
+    // 코덱스 기준으로 고쳐") binds OS-1 too, so OS-1 can finish the repair.
+    let projectBinding = localProjectBinding(request: TaskWorkflow.preparationRequest(owner: ownerPrompt, stagePrompt: prompt),
+        workspace: requestedWorkspace, namedProjectID: preparation?.projectID, boundProjectID: taskState.project?.projectID,
+        readOnly: requireReadOnly)
+    let localProjectID = projectBinding.projectID
     var canonicalWorkspace = requestedWorkspace
     if let localProjectID, LocalProjectWorkspace.root(containing: requestedWorkspace, projectID: localProjectID) == nil {
-        if let resolved = LocalProjectWorkspace.resolve(projectID: localProjectID, requested: requestedWorkspace) {
+        if let resolved = resolveLocalProjectWorkspace(projectID: localProjectID, requested: requestedWorkspace) {
             canonicalWorkspace = resolved.workspace
-            RuntimeActivity.emit(.preparing, publicText: "\(ProjectAdapterRegistry.label(for: localProjectID)) 소스 작업 폴더로 \(resolved.workspace)을(를) 사용합니다. 대화 폴더 \(requestedWorkspace)에는 해당 소스가 없습니다."
-                + (resolved.alternates.isEmpty ? "" : " 다른 등록 후보: \(resolved.alternates.joined(separator: ", "))"))
+            if projectBinding.inferred {
+                RuntimeActivity.emit(.preparing, publicText: os1Tr(
+                    "OS-1 자체 수정 요청으로 보고 OS-1 소스 \(resolved.workspace)에서 작업합니다 (근거: \(projectBinding.inference?.signals.prefix(3).joined(separator: " · ") ?? "")). 끝나면 OS-1이 직접 빌드·검증·설치합니다.",
+                    "Treating this as a change to OS-1 itself: working in OS-1's source \(resolved.workspace) (evidence: \(projectBinding.inference?.signals.prefix(3).joined(separator: " · ") ?? "")). OS-1 builds, verifies and installs it itself."))
+                _ = applyWorkspaceBaseline(projectID: localProjectID, workspace: resolved.workspace, context: &taskState)
+            } else {
+                RuntimeActivity.emit(.preparing, publicText: "\(ProjectAdapterRegistry.label(for: localProjectID)) 소스 작업 폴더로 \(resolved.workspace)을(를) 사용합니다. 대화 폴더 \(requestedWorkspace)에는 해당 소스가 없습니다."
+                    + (resolved.alternates.isEmpty ? "" : " 다른 등록 후보: \(resolved.alternates.joined(separator: ", "))"))
+            }
         } else if preparation?.projectID == localProjectID {
             throw OS1Error.message("\(ProjectAdapterRegistry.label(for: localProjectID)) 소스 폴더를 찾지 못했습니다. 대화 폴더 \(requestedWorkspace)에는 \(LocalProjectWorkspace.marker(for: localProjectID) ?? "프로젝트 표식")이(가) 없고 등록된 프로젝트 목록에도 해당 소스 트리가 없습니다. 소스 체크아웃 폴더를 이 대화의 작업 폴더로 선택한 뒤 다시 요청하세요.")
         }
@@ -6925,6 +6939,10 @@ func runTaskWithOwnerPolicy(
         if heldOS1SourceRoot.map({ URL(fileURLWithPath: $0).resolvingSymlinksInPath().standardizedFileURL.path }) != URL(fileURLWithPath: os1Root).resolvingSymlinksInPath().standardizedFileURL.path { os1SourceLease = try acquireOS1SourceWriteLease(root: os1Root) }
         os1StartHead = gitHead(os1Root)
     }
+    // A write task in a folder that contains OS-1's live tree (HOME) can
+    // still change OS-1; then OS-1 finishes that repair after the turn.
+    let os1SourceWatch = resolvedScope == .workspaceWrite && previewDeploymentTarget == nil && os1StartHead == nil
+        ? OS1SourceWatch.capture(workspace: canonicalWorkspace) : nil
     let pinnedEvidence = try (requireReadOnly || !requestsFreshSource(objectiveRequest)) ? attachedSource.map { try loadSource($0) } : nil
     let discussesPinnedProvenance = pinnedEvidence != nil && RegisteredProjectSource.discussesAttachedProvenance(objectiveRequest)
     let sourceSelectionContext = SCVProjectMaterials.isVerificationMode(pinnedEvidence?.verificationMode) &&
@@ -7708,6 +7726,14 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
                 attemptFailure = note
                 terminalPermissionFailure = OS1Error.message(note)
             }
+        } else if let os1SourceWatch, TaskWorkflow.permitsSelfUpdate(stage: workflowStage, finalVerdict: nil), attemptFailure == nil,
+                  dispatchStage == .dispatched, execution.artifact.exitCode == 0, ticket.permissionProfile == "workspace_write",
+                  os1SourceWatch.changed() {
+            // Not bound to OS-1, yet OS-1's source changed: never leave a fix
+            // that only lives in the working tree, and never interleave with
+            // another OS-1 writer (then its build carries this change).
+            let note = finishUnboundOS1Change(os1SourceWatch, objective: prompt, startedAt: attemptStartedAt)
+            if !note.isEmpty { execution = execution.appendingOutput(note) }
         }
         // Observe delivered loopback URLs outside the provider process. Never
         // adopt a dead preview just because files or the model response exist.
@@ -10278,6 +10304,48 @@ func selfTest() throws {
                       try String(contentsOf: commands, encoding: .utf8).contains("(self-repair-build150)") else { return false }
                 // The secret scan refuses a credential-looking change.
                 return selfRepairSecretHit(root: "/nonexistent-os1-root", git: "/usr/bin/true") == nil
+            } catch { return false }
+        }()),
+        ("a request about OS-1 without its name binds OS-1; named or bound projects win", {
+            let home = FileManager.default.homeDirectoryForCurrentUser.path
+            let bubble = "왜 말풍선이 딱 안 맞냐? 코덱스 보면 딱딱 맞거든? 코덱스 기준으로 고쳐"
+            func bind(_ request: String, named: String? = nil, bound: String? = nil, readOnly: Bool = false) -> LocalProjectBinding {
+                localProjectBinding(request: request, workspace: home, namedProjectID: named, boundProjectID: bound, readOnly: readOnly, os1Roots: [])
+            }
+            let inferred = bind(bubble), named = bind("OS1 고쳐", named: "os1-clodex")
+            return inferred.projectID == "os1-clodex" && inferred.inferred && named.projectID == "os1-clodex" && !named.inferred
+                && bind(bubble, named: "scv-instagram").projectID == nil && bind(bubble, bound: "scv-instagram").projectID == nil
+                && bind(bubble, bound: "workspace:LUA").projectID == "os1-clodex" && bind(bubble, bound: "os1-clodex").projectID == "os1-clodex"
+                && bind(bubble, readOnly: true).projectID == nil && bind("이번 주 작업 목록 만들어줘").projectID == nil
+        }()),
+        ("an unbound task's OS-1 source change is detected and never finished over another writer", {
+            guard let git = try? findExecutable("git") else { return false }
+            let root = FileManager.default.temporaryDirectory.appendingPathComponent("os1-source-watch-" + UUID().uuidString, isDirectory: true)
+            let source = root.appendingPathComponent("products/os1-mac-runtime/Sources/OS1", isDirectory: true)
+            defer {
+                try? FileManager.default.removeItem(at: root)
+                if let lock = try? os1SourceWriteLeaseURL(root: root.path) { try? FileManager.default.removeItem(at: lock) }
+            }
+            func run(_ arguments: [String]) -> Bool {
+                (try? commandOutput(git, ["-C", root.path, "-c", "user.name=OS-1 fixture", "-c", "user.email=fixture@os1.invalid"] + arguments, timeout: 30))?.0 == 0
+            }
+            do {
+                try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
+                try "let a = 1\n".write(to: source.appendingPathComponent("A.swift"), atomically: true, encoding: .utf8)
+                guard run(["init", "-q"]), run(["add", "-A"]), run(["commit", "-q", "-m", "base"]) else { return false }
+                let watch = OS1SourceWatch(root: root.path, head: gitHead(root.path), fingerprint: OS1SourceWatch.fingerprint(root: root.path))
+                guard watch.fingerprint != nil, !watch.changed() else { return false }
+                try "let a = 2\n".write(to: source.appendingPathComponent("A.swift"), atomically: true, encoding: .utf8)
+                guard watch.changed() else { return false }
+                // Another OS-1 writer holds the source: report, never interleave.
+                var other = try tryAcquireOS1SourceWriteLease(root: root.path)
+                guard other != nil else { return false }
+                let busy = finishUnboundOS1Change(watch, objective: "fixture", startedAt: Date())
+                other = nil
+                guard busy.contains(root.path), gitHead(root.path) == watch.head else { return false }
+                // A commit OS-1 itself made meanwhile belongs to another repair.
+                guard run(["commit", "-q", "-am", "os1: self-repair build 999 — another repair"]), let otherRepair = gitHead(root.path) else { return false }
+                return finishUnboundOS1Change(watch, objective: "fixture", startedAt: Date()).contains(root.path) && gitHead(root.path) == otherRepair
             } catch { return false }
         }()),
         ("self-update applies only a newer, fresh, idle-time intent", {
