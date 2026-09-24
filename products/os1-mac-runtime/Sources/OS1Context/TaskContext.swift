@@ -491,7 +491,7 @@ public extension TaskContext.ObjectiveKind {
            ["설명", "explain", "왜", "why", "뭐야", "what is", "어떻게 되", "알려줘"].contains(where: value.contains) { return .explain }
         if ScopeResolution.resolve(value).scope == .workspaceWrite { return .modify }
         if ["검증", "verify", "확인해", "테스트해", "check that"].contains(where: value.contains) { return .verify }
-        if PreparationIntent.detect(request) != nil { return .prepare }
+        if PreparationIntent.detect(request)?.preparationOnly == true { return .prepare }
         if ProjectMaterialIntent.scv(request)?.requiresTransformation == false { return .acquire }
         if ["수정", "고쳐", "구현", "바꿔", "fix", "implement", "modify", "edit", "change"].contains(where: value.contains) { return .modify }
         return .other
@@ -550,6 +550,11 @@ public struct PreparationIntent: Equatable, Sendable {
     public let kind: Kind
     public let projectID: String?
     public let modifies: Bool
+    /// True only for an explicit, preparation-limited request ("준비만 해",
+    /// "세팅해", "작업 폴더만 잡아줘"). Only this may produce the local
+    /// work_preparation / prepared-state answer; every other detected intent
+    /// (fix, let's fix, continue, finish, can-you) is dispatched to a backend.
+    public let preparationOnly: Bool
 
     /// Registered projects only. A registered id resolves to an adapter in
     /// `ProjectAdapterRegistry`; an unregistered "workspace:<name>" project
@@ -570,6 +575,24 @@ public struct PreparationIntent: Equatable, Sendable {
                                            "don't modify", "do not change", "don't change", "explain only", "read only", "읽기만"]
     static let refusalMarkers = ["손보지 마", "손보지마", "손대지 마", "손대지마", "준비하지 마", "준비 하지 마", "이어서 하지 마", "계속하지 마", "don't prepare", "do not prepare", "don't continue"]
     static let changeVerbs = ["손봐", "손 봐", "수정", "고치", "고쳐", "바꾸", "구현", "fix", "modify", "edit", "change", "implement"]
+    static let preparationOnlyPatterns = [
+        #"(?:준비|세팅|셋업)\s*(?:만|을|를)?\s*(?:좀\s*)?(?:해|하자|시켜)"#,
+        #"(?:작업\s*)?(?:폴더|워크스페이스)\s*(?:만|를|을)?\s*(?:좀\s*)?(?:잡아|정해|설정해|열어|연결해)"#,
+        #"(?:자료|컨텍스트|맥락)\s*만\s*(?:좀\s*)?(?:가져|준비|붙여|잡아)"#,
+        #"(?i)\b(?:get(?:\s+\w+){0,2}\s+ready|prepare\s+only|just\s+(?:prepare|set\s+up)|set\s+up\s+the\s+(?:workspace|context))\b"#,
+    ]
+    /// Work the owner asked for that the change-verb list does not cover.
+    static let executionDirectives = ["손봐", "손 봐", "고쳐", "고치", "수정", "구현", "추가", "만들", "바꿔", "바꾸", "개선", "해결", "잡아줘",
+        "완료", "완성", "끝까지", "마저", "계속", "진행", "멈추지", "이어서", "빌드해", "빌드 해", "테스트해", "테스트 해", "테스트 돌", "배포해", "커밋해", "푸시해",
+        "fix", "implement", "build", "finish", "complete", "continue", "keep going", "don't stop", "go ahead"]
+    /// The whole request ends by asking whether something can be done. A
+    /// requirement ("할 수 있어야 돼"), "불가능해", a complaint followed by an
+    /// imperative, or an English polite imperative ("can you fix…") is not one.
+    static func isFeasibilityOnlyQuestion(_ value: String) -> Bool {
+        value.range(of: #"(?<!불)(?:가능(?:하냐|하니|해|한지|할까|합니까)|할\s*수\s*(?:있냐|있어|있는지|있니)|되냐|되겠냐|되나요|될까)요?\s*[?？]?\s*$"#,
+                    options: .regularExpression) != nil ||
+        value.range(of: #"(?i)\b(?:is it possible|are you able|would it be possible)\b[^.!\n]*\?\s*$"#, options: .regularExpression) != nil
+    }
     /// "…가능하냐?" asks whether something can be done. It binds the named
     /// project so the answer is concrete, but it never authorizes a change.
     public static let feasibilityMarkers = [
@@ -633,10 +656,11 @@ public struct PreparationIntent: Equatable, Sendable {
            ["번역", "translate", "비판", "critique", "프롬프트", "prompt", "인용", "quote"].contains(where: value.contains) { return nil }
         if refusalMarkers.contains(where: value.contains) { return nil }
         let prohibited = modificationProhibitions.contains(where: value.contains)
-        let prepare = prepareMarkers.contains(where: value.contains)
+        let explicitPreparation = preparationOnlyPatterns.contains { value.range(of: $0, options: .regularExpression) != nil }
+        let prepare = explicitPreparation || prepareMarkers.contains(where: value.contains)
         let continues = continueMarkers.contains(where: value.contains)
         let explains = explainMarkers.contains(where: value.contains)
-        let feasibility = isFeasibilityQuestion(value)
+        let feasibility = isFeasibilityOnlyQuestion(value)
         // A write-scope sentence that names the project ("…에 한 줄 추가해") is
         // a change even when it uses none of the listed change verbs.
         let scopeWrite = projectID != nil && ScopeResolution.resolve(value).scope == .workspaceWrite
@@ -659,8 +683,13 @@ public struct PreparationIntent: Equatable, Sendable {
                 with: " ", options: .regularExpression)
         }
         let wantsChange = changeVerbs.contains(where: remaining.contains) || (scopeWrite && !prepare && !continues)
-        return PreparationIntent(kind: kind, projectID: projectID,
-                                 modifies: kind != .explainFromContext && wantsChange && !prohibited && !feasibility)
+        let modifies = kind != .explainFromContext && wantsChange && !prohibited && !feasibility
+        var rest = remaining
+        for pattern in preparationOnlyPatterns { rest = rest.replacingOccurrences(of: pattern, with: " ", options: .regularExpression) }
+        for phrase in modificationProhibitions + refusalMarkers { rest = rest.replacingOccurrences(of: phrase, with: " ") }
+        let preparationOnly = kind == .prepare && explicitPreparation && !modifies && !continues &&
+            !executionDirectives.contains(where: rest.contains)
+        return PreparationIntent(kind: kind, projectID: projectID, modifies: modifies, preparationOnly: preparationOnly)
     }
 }
 

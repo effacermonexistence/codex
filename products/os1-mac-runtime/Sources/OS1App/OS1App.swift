@@ -5637,7 +5637,7 @@ private final class SessionStore: ObservableObject {
         taskContext.setObjective(TaskContext.Objective(requestText: submission.executionRequest,
             kind: TaskContext.ObjectiveKind.classify(submission.executionRequest),
             scope: submission.amendedRequest != nil ? taskContext.objective.scope :
-                (submission.readOnlyReconciliation == true || PreparationIntent.detect(submission.executionRequest)?.modifies == false ? .readOnly : resolution.scope),
+                (submission.readOnlyReconciliation == true || PreparationIntent.detect(submission.executionRequest)?.preparationOnly == true ? .readOnly : resolution.scope),
             prohibitions: Array(Set(resolution.prohibitions + (submission.amendedRequest != nil ? taskContext.objective.prohibitions : []))).sorted()))
         sessions[index].taskContext = taskContext
         appendTaskEvent(conversationID: sessions[index].id, kind: "objective", summary: submission.request)

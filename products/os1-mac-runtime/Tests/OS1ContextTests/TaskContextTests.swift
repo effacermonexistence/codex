@@ -158,8 +158,11 @@ func runTaskContextFixtures(root: URL) throws {
     for text in ["인스타그램 오토메이션 좀 손보자", "인스타 자동화 손 좀 보자", "인스타그램 손볼 건데",
                  "인스타그램 오토메이션 좀 손보자".decomposedStringWithCanonicalMapping, "OS1 손보자"] {
         try check(PreparationIntent.detect(text)?.kind == .prepare && PreparationIntent.detect(text)?.modifies == false,
-                  "bare work intent prepares without inventing a change: \(text)")
-        try check(TaskContext.ObjectiveKind.classify(text) == .prepare, "work request is not other")
+                  "bare work intent binds the project without inventing a change: \(text)")
+        // "손보자" asks for work: a backend handles it (build 228), it is not
+        // answered with the local prepared-state card.
+        try check(PreparationIntent.detect(text)?.preparationOnly == false, "bare work intent reaches a backend: \(text)")
+        try check(TaskContext.ObjectiveKind.classify(text) != .prepare, "work request is not labelled preparation-only: \(text)")
     }
     for (text, expected) in [
         ("OS1 자가수리를 실행해. 대상은 /workspace/products/os1-mac-runtime 이다. 창 문제 고쳐. 공개 사이트 배포, Instagram, 외부 발송은 하지 마.", "os1-clodex"),
@@ -222,6 +225,32 @@ func runTaskContextFixtures(root: URL) throws {
     try check(PreparationIntent.detect("R2 연결시켜") == nil, "connection control is not preparation")
     let noProject = PreparationIntent.detect("그거 이어서 하자")
     try check(noProject?.kind == .continueWork && noProject?.projectID == nil, "project unresolved → must come from the conversation, never guessed")
+
+    // 2026-09-24: "끝까지 좀 해줘 … 멈추지 마" came back as the canned
+    // work_preparation card. Only an explicit, preparation-limited request is
+    // answered locally; asking for work (fix, continue, finish, can-you) runs.
+    let ownerParityRequest = "그래서 다 했어 아니 끝까지 좀 해줘 목표는 OS1이 모든 작업을 다 할 수 있어야 돼 자기가 고치는 것부터 시작해서 뭐 WML이 걸 고치든가 그러니까 성능은 커로드 코드나 코덱스랑 똑같아야 돼 고네가 완료되면 내가 클로드 코드 쓰는 거랑 코덱스 쓰는 거랑 차이가 거의 분갈이 안 갈 정도로 만들기 전까지 멈추지 마"
+    for text in [ownerParityRequest, "Can you fix the OS1 routing bug?", "Could you implement streaming output in OS-1?",
+                 "OS1이 스스로 코드를 수정할 수 있어야 해. 그렇게 만들어줘", "OS1 빌드가 불가능해. 고쳐줘", "OS1 로그인 왜 안 되냐 고쳐놔",
+                 "OS1 고치자", "OS1 수정하자", "OS1 작업하자, 라우팅부터", "OS1 하던 거 마저 해줘", "OS1 아까 결정한 대로 진행해", "이어서 해줘",
+                 "OS1 세팅 화면 새로 만들어줘", "OS1 세팅하고 새 기능 추가해", "OS1 개선 작업 시작해", "클로덱스 자가수리 이어서 끝까지 해",
+                 "OS1 손보자, 버그 다 잡아", "Let's fix OS1's queue slot bug", "OS1 그 작업 계속 진행해", "인스타 가격 문구 수정할 수 있어야 돼. 고쳐",
+                 "야 여기서 OS1 수정 가능하냐?", "인스타그램 손보자", "OS1 준비해서 새 기능 추가해", "OS1 세팅해야 할 게 있어서 고쳐줘",
+                 "OS1 세팅 끝났으면 버그 다 잡아줘"] {
+        for form in [text, text.decomposedStringWithCanonicalMapping] {
+            try check(PreparationIntent.detect(form)?.preparationOnly != true, "work request reaches a backend: \(text)")
+            try check(TaskContext.ObjectiveKind.classify(form) != .prepare, "work request is not labelled preparation-only: \(text)")
+        }
+    }
+    try check(PreparationIntent.detect(ownerParityRequest) == nil, "a requirement statement is not a preparation request")
+    for text in ["OS1 준비만 해", "OS1 작업 폴더만 잡아줘", "OS1 앱 수정 좀 하자 준비해", "OS1 수정 해야되니까 셋업해", setupIncident, caseB,
+                 "OS1 세팅만 해줘, 아직 고치지 마", "OS1 앱 사이드바 고치자 준비해", "인스타그램 수정해야 하니까 준비해", "Get OS1 ready",
+                 "OS1 셋업 좀 해줘", "클로덱스 준비 좀 해줘"] {
+        for form in [text, text.decomposedStringWithCanonicalMapping] {
+            try check(PreparationIntent.detect(form)?.preparationOnly == true, "explicit preparation stays local: \(text)")
+            try check(PreparationIntent.detect(form)?.modifies == false, "explicit preparation never modifies: \(text)")
+        }
+    }
 
     // B. Mixed allow/deny sentences keep the write scope and the prohibition.
     let mixed = ScopeResolution.resolve("파일은 수정해. 서버는 변경하지 마")

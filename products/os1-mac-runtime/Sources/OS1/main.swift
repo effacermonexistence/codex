@@ -6687,8 +6687,10 @@ func runTaskWithOwnerPolicy(
     if sourceDetached { taskState.sources.removeAll(); taskState.touch(now: objectiveStartedAt) }
     let scopeResolution = ScopeResolution.resolve(objectiveRequest)
     let preparation = requireReadOnly ? nil : PreparationIntent.detect(TaskWorkflow.preparationRequest(owner: ownerPrompt, stagePrompt: prompt))
+    // Only an explicit preparation-only request is labelled "prepare"; a
+    // continuation or "can it…?" question is ordinary work for the backend.
     let kind: TaskContext.ObjectiveKind = preparation.map {
-        $0.modifies ? .modify : ($0.kind == .explainFromContext ? .explain : .prepare)
+        $0.preparationOnly ? .prepare : $0.modifies ? .modify : ($0.kind == .explainFromContext ? .explain : .other)
     } ?? TaskContext.ObjectiveKind.classify(objectiveRequest)
     // The dispatcher delegates execution capability, not guessed intent.
     // Original task text/prohibitions remain binding for both backends.
@@ -6764,7 +6766,7 @@ func runTaskWithOwnerPolicy(
                            pinnedEvidence?.sources.first?["live_manifest_sha256"] == scvLive?.manifestSHA256))
     if r2Objective == nil, scvPreparation, let preparation {
         r2Objective = R2RetrievalObjective(inheritedSource: scvAttached,
-            requiresTransformation: preparation.modifies || preparation.kind == .explainFromContext,
+            requiresTransformation: !preparation.preparationOnly,
             materialKind: .scvProject, requestSHA256: sha256Hex(Data(prompt.utf8)), contextSHA256: nil)
     }
     if protectedRouteMaterialRequested(objectiveRequest, context: context) || protectedRouteMaterialInEvidence(objectiveRequest) {
@@ -6792,7 +6794,9 @@ func runTaskWithOwnerPolicy(
     if let preparation, preparationAdapter == .localWorkspace, let projectID = preparationProject, r2Objective == nil {
         // Same capability, different adapter: the workspace is the source.
         let revision = applyWorkspaceBaseline(projectID: projectID, workspace: canonicalWorkspace, context: &taskState)
-        if !preparation.modifies && preparation.kind != .explainFromContext {
+        // The canned prepared-state answer is only for "준비만 해"-style
+        // requests; asking for work (fix, continue, finish, can-you) runs.
+        if preparation.preparationOnly {
             var summary = try runWorkspacePreparationControl(projectID: projectID, workspace: canonicalWorkspace,
                 revision: revision, context: taskState, startedAt: objectiveStartedAt)
             summary.sourceContext = attachedSource
@@ -9619,14 +9623,17 @@ func selfTest() throws {
          CodexContextBudget.excluded(models: [("small", 128_000), ("large", 272_000), ("unknown", nil)], baseInstructionBytes: 859_674) == ["small"]),
         ("context budget never guesses without sizes",
          CodexContextBudget.excluded(models: [("small", 128_000)], baseInstructionBytes: nil).isEmpty),
-        ("feasibility question about a registered project prepares without modifying",
-         PreparationIntent.detect("야 여기서 OS1 수정 가능하냐?").map { $0.kind == .prepare && $0.projectID == "os1-clodex" && !$0.modifies } == true),
+        ("feasibility question binds the project, reaches a backend and does not modify",
+         PreparationIntent.detect("야 여기서 OS1 수정 가능하냐?").map { $0.kind == .prepare && $0.projectID == "os1-clodex" && !$0.modifies && !$0.preparationOnly } == true),
+        ("finish-it request is not answered with the canned preparation card",
+         PreparationIntent.detect("OS1 하던 거 마저 해줘")?.preparationOnly == false && PreparationIntent.detect("OS1 준비만 해")?.preparationOnly == true),
         ("feasibility question without a registered project stays a plain question",
          PreparationIntent.detect("이거 수정 가능하냐?") == nil),
         ("modification request keeps modifying", PreparationIntent.detect("OS1 앱 라우팅 버그 고쳐")?.modifies == true),
         ("write-scope request without a listed verb still modifies",
          PreparationIntent.detect("OS1 앱 저장소의 README.md 맨 끝에 한 줄만 추가해. 다른 파일은 건드리지 마.")?.modifies == true),
-        ("bare preparation stays non-modifying", PreparationIntent.detect("OS1 앱 수정 좀 하자 준비해")?.modifies == false),
+        ("bare preparation stays non-modifying and local",
+         PreparationIntent.detect("OS1 앱 수정 좀 하자 준비해").map { !$0.modifies && $0.preparationOnly } == true),
         ("evidence-backed shell wording may run on Claude",
          (try? executableProviderPreference(requested: "auto", prompt: "GitHub 최신 상태 확인해", codexAvailable: false, claudeAvailable: true, evidenceSupplied: true)) == "claude"),
         ("write-scope shell wording may run on Claude",
@@ -10187,7 +10194,7 @@ struct OS1Main {
                 let workflow = !requireReadOnly &&
                     TaskWorkflow.shouldDecompose(prompt, scope: ScopeResolution.resolve(prompt).scope,
                         projectID: boundProjectID) &&
-                    PreparationIntent.detect(prompt)?.modifies != false
+                    PreparationIntent.detect(prompt)?.preparationOnly != true
                 let summary = try await (workflow ? runWorkflowTask(
                     prompt: prompt, workspace: workspace, providerPreference: providerPreference,
                     context: sessionContext, codexSessionID: codexSessionID,
