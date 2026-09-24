@@ -115,11 +115,17 @@ final class SourceContextTests {
         precondition(SelfUpdate.secretPatternHit("Bearer " + syntheticToken) != nil)
         precondition(SelfUpdate.secretPatternHit("prefix/" + syntheticToken) != nil)
 
+        // One turn does the whole job, like Codex and Claude Code; separate
+        // stages only when the owner asks for them.
         let request = "인스타그램 오토메이션 테스크 완료해"
         XCTAssertEqual(ScopeResolution.resolve(request).scope, .workspaceWrite)
-        XCTAssertTrue(TaskWorkflow.shouldDecompose(request, scope: .workspaceWrite))
-        XCTAssertTrue(TaskWorkflow.shouldDecompose("OS1 고쳐", scope: .workspaceWrite))
-        XCTAssertTrue(TaskWorkflow.shouldDecompose("Fix OS-1", scope: .workspaceWrite))
+        XCTAssertFalse(TaskWorkflow.shouldDecompose(request, scope: .workspaceWrite))
+        XCTAssertFalse(TaskWorkflow.shouldDecompose("OS1 고쳐", scope: .workspaceWrite))
+        XCTAssertFalse(TaskWorkflow.shouldDecompose("Fix OS-1", scope: .workspaceWrite))
+        XCTAssertFalse(TaskWorkflow.shouldDecompose("OS1 라우팅 고치고 로그 원인까지 테스트해", scope: .workspaceWrite, projectID: "os1-clodex"))
+        XCTAssertTrue(TaskWorkflow.shouldDecompose("OS1 라우팅 고치고 별도 검증까지 해", scope: .workspaceWrite))
+        XCTAssertTrue(TaskWorkflow.shouldDecompose("Fix OS-1 routing with an independent verification pass", scope: .workspaceWrite))
+        XCTAssertFalse(TaskWorkflow.shouldDecompose("OS1 라우팅 별도 검증해", scope: .readOnly))
         XCTAssertFalse(TaskWorkflow.shouldDecompose("인스타그램 오토메이션 상태 설명해", scope: .readOnly))
         XCTAssertFalse(TaskWorkflow.shouldDecompose("README 수정해", scope: .workspaceWrite))
         XCTAssertFalse(TaskWorkflow.permitsSelfUpdate(stage: .implementation, finalVerdict: true))

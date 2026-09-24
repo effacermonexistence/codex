@@ -39,19 +39,25 @@ public enum TaskWorkflow: String, Codable, Sendable, CaseIterable {
         """
     }
 
+    /// One backend turn does the whole job, as Codex and Claude Code do: the
+    /// backend plans, edits and tests in its own loop, and OS-1's own checks
+    /// (the self-repair build and tests, delivery checks) follow. Splitting a
+    /// request into architecture, implementation and verification turns is
+    /// used only when the owner asks for that separation explicitly: between
+    /// 2026-09-19 and 09-23 the automatic split ran 15 owner requests, 8 of
+    /// them ended held or unfinished, and they took a median of 22 minutes.
     public static func shouldDecompose(_ request: String, scope: TaskContext.Scope, projectID: String? = nil) -> Bool {
         guard scope == .workspaceWrite else { return false }
-        if isBoundedAppearanceEdit(request) { return false }
         let text = request.precomposedStringWithCanonicalMapping.lowercased()
-        let substantial = ["오토메이션", "automation", "아키텍처", "architecture",
-                           "통합", "integration", "integrate", "워크플로", "workflow", "파이프라인", "pipeline",
-                           "os1", "os-1", "clodex", "복구", "restore", "self-repair", "셀프", "end-to-end", "e2e"].contains { text.contains($0) }
-        let delivery = ["구현", "완성", "완료", "끝까지", "고쳐", "수정", "만들", "추가", "설치", "배포",
-                        "implement", "finish", "complete", "build", "fix", "repair", "ship", "deploy"].contains { text.contains($0) }
-        let explicitMultiStage = ["설계", "검증", "테스트", "로그", "원인", "완수율", "아키텍처",
-                                  "architecture", "verify", "test", "root cause", "end-to-end", "e2e"].contains { text.contains($0) }
-        return delivery && (explicitMultiStage || substantial || projectID == "os1-clodex")
+        return explicitStagingMarkers.contains(where: text.contains)
     }
+
+    /// The owner asking for separate stages or an independent verifier.
+    public static let explicitStagingMarkers = [
+        "독립 검증", "독립적으로 검증", "별도 검증", "별도로 검증", "검증은 따로", "따로 검증", "단계별로 나눠", "단계를 나눠",
+        "설계·구현·검증", "설계, 구현, 검증",
+        "independent verification", "separate verification", "verify separately", "in separate stages", "staged workflow",
+    ]
 
     /// Phase instructions constrain actions, not executor capabilities.
     public var executionPermissionProfile: String { "workspace_write" }

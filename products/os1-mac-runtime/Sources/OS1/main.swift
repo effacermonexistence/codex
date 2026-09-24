@@ -1074,6 +1074,18 @@ private func postCheckRejectionChecks() -> [(String, Bool)] {
          !finishedTurnRejectedByPostCheck(rejected(exit: 0, output: "answer", persistence: "verified", cause: OS1Error.backendBlocked(.quotaExhausted)), classified: .effectsUncertain)),
         ("a read-only lane keeps its bounded retry",
          !finishedTurnRejectedByPostCheck(rejected(exit: 0, output: "answer", persistence: "verified", cause: languageCheck), classified: .unclassified)),
+        ("a finished write turn that names a limit is its answer, not effects-uncertain",
+         finishedTurnRejectedByPostCheck(rejected(exit: 0, output: "파일은 고쳤고, 샌드박스라 배포는 실행할 수 없었습니다", persistence: "verified",
+            cause: OS1Error.backendBlocked(.capabilityUnavailable)), classified: .effectsUncertain)),
+        ("a read-only answer naming a limit is shown when no other backend can try",
+         finishedTurnRejectedByPostCheck(rejected(exit: 0, output: "그 로그에는 접근할 수 없어 대신 설정을 확인했습니다", persistence: "verified",
+            cause: OS1Error.backendBlocked(.capabilityUnavailable)), classified: .unclassified, alternateAvailable: false)),
+        ("a read-only answer naming a limit still lets another backend try",
+         !finishedTurnRejectedByPostCheck(rejected(exit: 0, output: "그 로그에는 접근할 수 없습니다", persistence: "verified",
+            cause: OS1Error.backendBlocked(.capabilityUnavailable)), classified: .unclassified, alternateAvailable: true)),
+        ("an interrupted turn naming a limit stays effects-uncertain",
+         !finishedTurnRejectedByPostCheck(rejected(exit: 69, output: "실행할 수 없", persistence: "interrupted_unverified",
+            cause: OS1Error.backendBlocked(.capabilityUnavailable)), classified: .effectsUncertain)),
     ]
 }
 
@@ -6387,9 +6399,14 @@ func sourceOnlyFailoverProvider(requested: String, failed: String, permission: S
 /// refused only by OS-1's own post-check is a rejected result, not an
 /// interrupted write with uncertain effects. Protocol blockers (quota, denial,
 /// timeout) and interrupted artifacts keep their own classification.
-func finishedTurnRejectedByPostCheck(_ error: Error, classified: BackendBlocker) -> Bool {
-    guard classified == .effectsUncertain, backendBlocker(error) == nil,
-          let rejected = error as? RejectedProviderExecution else { return false }
+func finishedTurnRejectedByPostCheck(_ error: Error, classified: BackendBlocker, alternateAvailable: Bool = false) -> Bool {
+    guard let rejected = error as? RejectedProviderExecution else { return false }
+    let blocker = backendBlocker(error)
+    // A finished answer that names a limit ("…can't access X, so I did Y") is
+    // the backend's own account, the way Codex or Claude Code would show it.
+    // It is the result, unless another backend can still try a read-only task.
+    let limitWording = blocker == .capabilityUnavailable && (classified == .effectsUncertain || !alternateAvailable)
+    guard (classified == .effectsUncertain && blocker == nil) || limitWording else { return false }
     return BackendRecovery.rejectedAdoptionBlocker(exitCode: Int(rejected.execution.artifact.exitCode),
         output: rejected.execution.artifact.output,
         persistence: rejected.execution.nativeRecord.persistence) == .verificationRejected
@@ -7648,7 +7665,13 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
                 // is never replayed, but it is shown as a rejected result, not
                 // "effects uncertain" with a readback (8 owner turns, 105
                 // readbacks in the week to 2026-09-24).
-                if finishedTurnRejectedByPostCheck(error, classified: safeBlocker) {
+                let alternateForLimit = BackendRecovery.alternate(requested: providerPreference,
+                    failed: ticket.provider, permission: ticket.permissionProfile, blocker: .capabilityUnavailable,
+                    codexAvailable: !codexCatalog.models.isEmpty && codexCapacity > 0,
+                    claudeAvailable: hasClaudeExecutable && claudeCapacity > 0,
+                    alreadySwitched: sourceBackendSwitched, remainingAttempts: attemptLimit - step,
+                    dispatchStage: dispatchStage, unavailableProviders: quotaUnavailableProviders) != nil
+                if finishedTurnRejectedByPostCheck(error, classified: safeBlocker, alternateAvailable: alternateForLimit) {
                     safeBlocker = .verificationRejected
                     if terminalPermissionFailure == nil { terminalPermissionFailure = .backendBlocked(.verificationRejected) }
                 }

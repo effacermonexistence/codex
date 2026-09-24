@@ -184,12 +184,12 @@ func runTaskContextFixtures(root: URL) throws {
     for text in [focusRepairImperative, focusRepairImperative.decomposedStringWithCanonicalMapping] {
         try check(ScopeResolution.resolve(text).scope == .workspaceWrite, "formal imperative retains write objective")
         try check(PreparationIntent.detect(text)?.projectID == "os1-clodex" && PreparationIntent.detect(text)?.modifies == true, "self repair binds source before dispatch")
-        try check(TaskWorkflow.shouldDecompose(text, scope: ScopeResolution.resolve(text).scope), "self repair enters completion workflow")
+        try check(!TaskWorkflow.shouldDecompose(text, scope: ScopeResolution.resolve(text).scope), "self repair runs as one backend turn")
     }
     let shortRepair = "라우팅할 때 Codex·Claude 창이 앞으로 튀어나오는 문제를 고쳐"
-    try check(TaskWorkflow.shouldDecompose(shortRepair, scope: .workspaceWrite, projectID: "os1-clodex"), "bound self repair must enter workflow")
-    try check(!TaskWorkflow.shouldDecompose(shortRepair, scope: .readOnly, projectID: "os1-clodex"), "binding cannot grant write permission")
-    try check(!TaskWorkflow.shouldDecompose(shortRepair, scope: .workspaceWrite, projectID: "other"), "binding is project scoped")
+    try check(!TaskWorkflow.shouldDecompose(shortRepair, scope: .workspaceWrite, projectID: "os1-clodex"), "bound self repair runs as one backend turn")
+    try check(TaskWorkflow.shouldDecompose(shortRepair + ". 구현 뒤 독립 검증까지 해", scope: .workspaceWrite, projectID: "os1-clodex"), "owner-requested stages still decompose")
+    try check(!TaskWorkflow.shouldDecompose(shortRepair + ". 독립 검증까지 해", scope: .readOnly, projectID: "os1-clodex"), "stages cannot grant write permission")
     try check(TaskWorkflow.sourceAlreadySatisfied("evidence\nOS1_SOURCE_STATE: ALREADY_SATISFIED"), "structured no-op candidate")
     try check(!TaskWorkflow.sourceAlreadySatisfied("OS1_SOURCE_STATE: ALREADY_SATISFIED\nclaim"), "marker must be terminal")
     try check(!TaskWorkflow.sourceAlreadySatisfied("OS1_SOURCE_STATE: ALREADY_SATISFIED\nOS1_SOURCE_STATE: ALREADY_SATISFIED"), "duplicate marker rejected")
