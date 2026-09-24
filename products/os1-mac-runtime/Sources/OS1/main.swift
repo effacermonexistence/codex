@@ -1043,6 +1043,31 @@ func sourceRoutingTask(_ prompt: String, hasSource: Bool) -> String {
 /// A question about recoverability is not authorization to back up or restore
 /// production. Preserve the original request for the executor; only normalize
 /// the public routing objective. Explicit action clauses retain their intent.
+/// Build 228: finished turns refused by a local post-check are rejected
+/// results (answer shown, no readback), interrupted ones stay uncertain.
+private func postCheckRejectionChecks() -> [(String, Bool)] {
+    func rejected(exit: Int32, output: String, persistence: String, cause: Error) -> RejectedProviderExecution {
+        let record = NativeRecordEvidence(turnID: nil, recordPath: nil, persistence: persistence, desktopVisibility: "fixture")
+        let artifact = Artifact(provider: "codex", action: "execute", permissionProfile: "workspace_write", model: "fixture",
+            effort: "none", executorContractVersion: "fixture", executorContractSHA256: "fixture", exitCode: exit, output: output,
+            stderr: "", durationMS: 0, workspaceBeforeHash: "a", workspaceAfterHash: "a", nativeRecord: record)
+        return RejectedProviderExecution(execution: ProviderExecution(artifact: artifact, sessionID: UUID().uuidString, nativeRecord: record), cause: cause)
+    }
+    let languageCheck = OS1Error.message("Answer the user's Korean request in Korean, not English-only prose.")
+    return [
+        ("finished turn refused by a language check is a rejected result",
+         finishedTurnRejectedByPostCheck(rejected(exit: 0, output: "CFBundleVersion: 188", persistence: "verified", cause: languageCheck), classified: .effectsUncertain)),
+        ("interrupted turn stays effects-uncertain",
+         !finishedTurnRejectedByPostCheck(rejected(exit: 69, output: "partial", persistence: "interrupted_unverified", cause: languageCheck), classified: .effectsUncertain)),
+        ("unverified native record stays effects-uncertain",
+         !finishedTurnRejectedByPostCheck(rejected(exit: 0, output: "answer", persistence: "unverified: transcript not found", cause: languageCheck), classified: .effectsUncertain)),
+        ("a protocol blocker keeps its own class",
+         !finishedTurnRejectedByPostCheck(rejected(exit: 0, output: "answer", persistence: "verified", cause: OS1Error.backendBlocked(.quotaExhausted)), classified: .effectsUncertain)),
+        ("a read-only lane keeps its bounded retry",
+         !finishedTurnRejectedByPostCheck(rejected(exit: 0, output: "answer", persistence: "verified", cause: languageCheck), classified: .unclassified)),
+    ]
+}
+
 private func asksRecoveryReadiness(_ prompt: String) -> Bool {
     // Quoted OS-1 output ("복구 기준점(Gold 포인터): 기록 없음") is not the
     // user's question; classify only the user's own lines.
@@ -1071,6 +1096,10 @@ private func promptRequestsCapabilityExplanation(_ prompt: String) -> Bool {
 /// nonzero unavailable artifact, never an adopted chat answer.
 func providerOutputDeclaresCapabilityFailure(_ data: Data, prompt: String, evidenceSupplied: Bool = false,
                                              boundedShell: Bool = false) -> Bool {
+    // A readback reports what it could not verify ("권한이 없어 … 증거 없음")
+    // and ends with its OS1_EFFECTS verdict; that verdict decides the outcome,
+    // and the quoted old objective ("고쳐") is not the current request.
+    if BackendRecovery.isReadbackPrompt(prompt) { return false }
     let request = prompt.precomposedStringWithCanonicalMapping.lowercased()
     let repairRequested = ["고쳐", "수정해", "수정 해", "진행해", "실행해", "배포해", "fix it", "repair it", "deploy it"]
         .contains(where: request.contains)
@@ -6264,6 +6293,18 @@ func sourceOnlyFailoverProvider(requested: String, failed: String, permission: S
     return nil
 }
 
+/// A turn that finished (exit 0, answer, verified native record) and was
+/// refused only by OS-1's own post-check is a rejected result, not an
+/// interrupted write with uncertain effects. Protocol blockers (quota, denial,
+/// timeout) and interrupted artifacts keep their own classification.
+func finishedTurnRejectedByPostCheck(_ error: Error, classified: BackendBlocker) -> Bool {
+    guard classified == .effectsUncertain, backendBlocker(error) == nil,
+          let rejected = error as? RejectedProviderExecution else { return false }
+    return BackendRecovery.rejectedAdoptionBlocker(exitCode: Int(rejected.execution.artifact.exitCode),
+        output: rejected.execution.artifact.output,
+        persistence: rejected.execution.nativeRecord.persistence) == .verificationRejected
+}
+
 func backendBlocker(_ error: Error) -> BackendBlocker? {
     if let rejected = error as? RejectedProviderExecution { return backendBlocker(rejected.cause) }
     if let failure = error as? OS1Error {
@@ -7400,8 +7441,19 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
                 let blocker = backendBlocker(error) ?? .unclassified
                 // Local diffs cannot prove remote effects absent. Never replay a
                 // partially executed write operation after an unknown outcome.
-                let safeBlocker = BackendRecovery.classifiedBlocker(blocker, permission: ticket.permissionProfile,
+                var safeBlocker = BackendRecovery.classifiedBlocker(blocker, permission: ticket.permissionProfile,
                     stage: dispatchStage, workspaceChanged: beforeHash != afterHash)
+                // A turn that finished (exit 0, answer, verified native record)
+                // and was refused only by OS-1's own post-check (language,
+                // delivery receipt, capability wording) is not an interrupted
+                // write: its answer states what it did. It stays terminal and
+                // is never replayed, but it is shown as a rejected result, not
+                // "effects uncertain" with a readback (8 owner turns, 105
+                // readbacks in the week to 2026-09-24).
+                if finishedTurnRejectedByPostCheck(error, classified: safeBlocker) {
+                    safeBlocker = .verificationRejected
+                    if terminalPermissionFailure == nil { terminalPermissionFailure = .backendBlocked(.verificationRejected) }
+                }
                 lastFailureNotice = BackendFailureNotice(provider: ticket.provider, sessionID: interruptedSessionID,
                     blocker: safeBlocker, dispatchStage: dispatchStage, source: sourceContext, permissionProfile: ticket.permissionProfile,
                     publicProgress: (error as? RejectedProviderExecution)?.execution.artifact.output)
@@ -9432,7 +9484,13 @@ func selfTest() throws {
             Data("R2 원문과 최신 GitHub 상태를 검증했고 결과는 다음과 같습니다.".utf8),
             prompt: incidentPrompt
         )),
-    ]
+        // 2026-09-24: a readback that honestly named what it could not verify
+        // was rejected because the quoted old objective said "고쳐".
+        ("readback naming an unverifiable step is a verdict, not a capability failure", !providerOutputDeclaresCapabilityFailure(
+            Data("배포 로그는 확인했지만 권한이 없어 라이브 동작 증거가 없음\nOS1_EFFECTS: partial".utf8),
+            prompt: BackendRecovery.readbackPrompt(objective: "인스타 가격 버그 고쳐")
+        )),
+    ] + postCheckRejectionChecks()
     let failedCapabilityChecks = capabilityGateChecks.filter { !$0.1 }.map(\.0)
     guard failedCapabilityChecks.isEmpty else {
         throw OS1Error.message("Capability routing validation failed: \(failedCapabilityChecks.joined(separator: ", "))")

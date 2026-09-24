@@ -1863,8 +1863,11 @@ private func replacementInteractionSelfTest() async throws {
         if scenario == "terminal-failure" {
             // Reproduce build95's persisted ordinary queue entry, including an
             // edit hold. The new action must work without rewriting its bytes.
+            // A paused queue keeps the entry unacknowledged, as a legacy store did.
+            store.pauseQueue(id)
             store.composer = "R2에 있는 QMGR 통합하는거 가져와봐"; store.send()
             let item = store.queuedSubmissions[0]
+            try check(item.startNextRequested != true, "paused legacy entry was acknowledged by itself")
             try check(store.beginQueueEdit(item.id) && !store.canAdvanceQueued(item), "editing hold")
             try check(store.updateQueued(item.id, request: replacement), "legacy queue edit")
             store.endQueueEdit(item.id); store.advanceQueued(item.id)
@@ -1902,25 +1905,25 @@ private func replacementInteractionSelfTest() async throws {
                 "abandoned objective follow-up was executed under new context")
             store.removeQueued(store.queuedSubmissions[0].id)
         }
-        // Explicit queue action cannot bypass unknown-effect safeguards for a
-        // write, even if the text says "instead".
+        // A new owner message after an unknown-effect write runs as the next
+        // turn (Claude Code/Codex never block it); the failed request is kept,
+        // never re-sent, and the new turn gets its evidence.
         store.sessions[0].lastFailure = original
         store.sessions[0].lastBackendFailure = BackendFailureNotice(provider: "codex", sessionID: nil,
             blocker: .effectsUncertain, dispatchStage: .dispatched)
+        let preservedBeforeDeploy = store.sessions[0].preservedTasks?.count ?? 0
+        let beforeAcknowledged = starts.count
         store.composer = "프로덕션을 지금 배포해"; store.send()
-        try check(!store.isRunning && store.queuedSubmissions.count == 1 && !store.canAdvanceQueued(store.queuedSubmissions[0]),
-            "unknown previous mutation bypassed")
-        try check(store.canReconcileQueued(store.queuedSubmissions[0]), "uncertain queue has no safe inspection action")
-        try check(store.queueActionLabel(store.queuedSubmissions[0]).contains("상태 확인"), "inspection mislabeled as steering")
-        let held = store.queuedSubmissions[0]
-        let beforeReadback = starts.count
-        store.advanceQueued(held.id)
-        try await eventually { starts.count == beforeReadback + 1 && gates[starts.last!.id] != nil }
-        try check(starts.last!.readOnlyReconciliation == true && store.queuedSubmissions.contains { $0.id == held.id },
-            "queue recovery replayed uncertain write or consumed owner request")
+        try await eventually { starts.count == beforeAcknowledged + 1 && gates[starts.last!.id] != nil }
+        try check(starts.last!.request == "프로덕션을 지금 배포해" && starts.last!.readOnlyReconciliation != true &&
+                  !starts.dropFirst(beforeAcknowledged).contains { $0.id == original.id || $0.request == original.request },
+            "unknown previous mutation was replayed, or the owner's new message did not run once")
+        try check(store.sessions[0].preservedTasks?.count == preservedBeforeDeploy + 1 && store.sessions[0].lastFailure == nil,
+            "moved-past failure not preserved")
+        try check(store.sessions[0].taskContext?.activeDecisions.contains { $0.text.contains("did NOT re-run") && $0.text.contains(original.request) } == true,
+            "next turn lost the failed turn's evidence")
         gates.removeValue(forKey: starts.last!.id)!.resume()
         try await eventually { !store.isRunning }
-        store.removeQueued(held.id)
         store.sessions[0].lastFailure = original
         store.sessions[0].lastBackendFailure = BackendFailureNotice(provider: "codex", sessionID: nil,
             blocker: .effectsUncertain, dispatchStage: .dispatched, permissionProfile: "read_only")
@@ -1931,7 +1934,7 @@ private func replacementInteractionSelfTest() async throws {
         try check(starts.last!.request == "OS1 스티어링 고쳐" && starts.last!.amendedRequest == nil &&
             store.sessions[0].taskContext?.objective.scope == .workspaceWrite,
             "new explicit repair inherited read-only scope or replayed old objective")
-        try check(store.sessions[0].preservedTasks?.count == 2, "read-only failure history lost")
+        try check(store.sessions[0].preservedTasks?.count == 3, "read-only failure history lost")
         gates.removeValue(forKey: starts.last!.id)!.resume()
         try await eventually { !store.isRunning }
         // Completed explanation must not freeze future explicit repair permission.
@@ -1951,6 +1954,163 @@ private func replacementInteractionSelfTest() async throws {
 
     }
     print("Task replacement: \(checks) checks PASS; terminal/Claude/recovery/NFD/provenance/duplicate/edit/permission; model calls 0")
+}
+
+/// 2026-09-24: seven conversations never answered the owner again because an
+/// earlier failure held every new message. Claude Code and Codex never block
+/// the next turn on the previous turn's outcome; OS-1 must not either, and it
+/// must never re-send the failed request to get there.
+@MainActor
+private func failureAcknowledgementSelfTest() async throws {
+    var checks = 0
+    func check(_ value: Bool, _ reason: String) throws {
+        guard value else { throw RunnerError.message("Failure acknowledgement: " + reason) }; checks += 1
+    }
+    func eventually(_ condition: () -> Bool) async throws {
+        let deadline = Date().addingTimeInterval(6)
+        while !condition(), Date() < deadline { try await Task.sleep(for: .milliseconds(10)) }
+        let satisfied = condition()
+        try check(satisfied, "scheduler deadline")
+    }
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("os1-failure-ack-" + UUID().uuidString)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    var starts: [PendingSubmission] = []
+    var gates: [String: CheckedContinuation<Void, Never>] = [:]
+    let operation: SessionStore.RunOperation = { submission, _, _, _, _ in
+        starts.append(submission)
+        await withCheckedContinuation { gates[submission.request] = $0 }
+        return AppRunSummary(status: "complete", steps: [AppRunStep(sequence: 1, provider: "codex", action: "fixture",
+            model: "fixture", effort: "none", revasDisposition: "adopted", sessionID: UUID().uuidString,
+            permissionProfile: "workspace_write", exitCode: 0, output: "answer " + submission.request, stderr: "",
+            durationMS: 0, nativeRecord: nil)])
+    }
+    let store = SessionStore(storageRoot: root, runOperation: operation, nativeSessionOpener: { _ in false })
+    store.updateSettings { $0.parallelRunLimit = 4 }
+    func finish(_ request: String) async throws {
+        try await eventually { gates[request] != nil }
+        gates.removeValue(forKey: request)!.resume()
+        try await eventually { !starts.isEmpty && store.activeRuns.values.allSatisfy { run in starts.first { $0.id == run.submissionID }?.request != request } }
+    }
+    func heldConversation(_ failed: String, notice: BackendFailureNotice?, mutate: (inout PendingSubmission) -> Void = { _ in }) -> (UUID, PendingSubmission) {
+        store.createSession()
+        let id = store.selectedSessionID!
+        let index = store.sessions.firstIndex { $0.id == id }!
+        store.sessions[index].workspace = root.path
+        var original = PendingSubmission(sessionID: id, userMessageID: UUID(), request: failed, provider: .auto,
+            workspace: root.path, codexCapacity: 30, claudeCapacity: 100)
+        mutate(&original)
+        store.sessions[index].lastFailure = original
+        store.sessions[index].lastBackendFailure = notice
+        return (id, original)
+    }
+    func session(_ id: UUID) -> ConversationSession { store.sessions.first { $0.id == id }! }
+    func neverResent(_ original: PendingSubmission) -> Bool {
+        !starts.contains { $0.id == original.id || $0.request == original.request }
+    }
+
+    // 1. An uncertain write (the 66AC3BE4 / C19AC79B shape): the owner's next
+    //    message runs once, with the failed turn's evidence, never its replay.
+    let uncertain = BackendFailureNotice(provider: "codex", sessionID: nil, blocker: .effectsUncertain,
+        dispatchStage: .dispatched, permissionProfile: "workspace_write", diagnosis: "backend_exit=0; adoption=retry")
+    let (a, originalA) = heldConversation("인스타 가격 문구 배포해", notice: uncertain)
+    store.composer = "OS1 큐 버그 고쳐"; store.send()
+    try await eventually { gates["OS1 큐 버그 고쳐"] != nil }
+    try check(starts.filter { $0.sessionID == a }.map(\.request) == ["OS1 큐 버그 고쳐"] && neverResent(originalA),
+        "new message after an uncertain write did not run exactly once, or the failed request was re-sent")
+    try check(starts.last!.readOnlyReconciliation != true && starts.last!.amendedRequest == nil, "new turn became a readback or an amendment")
+    try check(session(a).lastFailure == nil && session(a).lastBackendFailure == nil && session(a).preservedTasks?.count == 1,
+        "acknowledged failure was not preserved exactly once")
+    let decisions = session(a).taskContext?.activeDecisions.map(\.text) ?? []
+    try check(decisions.contains { $0.contains("did NOT re-run") && $0.contains(originalA.request) && $0.contains("effects_uncertain") && $0.contains("adoption=retry") },
+        "next turn did not receive the failed turn's evidence: \(decisions)")
+    try check(session(a).messages.contains { $0.role == .user && $0.text == "OS1 큐 버그 고쳐" }, "owner message missing from the transcript")
+    try check(session(a).taskContext?.objective.requestText == "OS1 큐 버그 고쳐" && session(a).taskContext?.objective.scope == .workspaceWrite,
+        "new request did not become the objective with its own write permission")
+    try await finish("OS1 큐 버그 고쳐")
+
+    // 2. A saved result that needs review and already used its readback
+    //    budget (the 0632613F shape, no backend notice): permanently stuck
+    //    before; the next message now runs.
+    let (b, originalB) = heldConversation("통합해", notice: nil) {
+        $0.savedResultNeedsReview = true; $0.readbackResumed = true; $0.recoveryAttempted = true; $0.verdictReconciled = true
+    }
+    store.composer = "이어서 해줘"; store.send()
+    try await eventually { gates["이어서 해줘"] != nil }
+    try check(starts.filter { $0.sessionID == b }.map(\.request) == ["이어서 해줘"] && neverResent(originalB) && session(b).lastFailure == nil,
+        "exhausted-readback conversation still swallowed the owner's message")
+    try await finish("이어서 해줘")
+
+    // 3. A request queued before the failure was seen stays in order: it is
+    //    admitted first, then the new message. Neither re-sends the failure.
+    let (c, originalC) = heldConversation("사이트 배포해", notice: uncertain)
+    store.pauseQueue(c)
+    store.composer = "EARLIER"; store.send()
+    let cIndex = store.sessions.firstIndex { $0.id == c }!
+    store.sessions[cIndex].queuePaused = false
+    let earlier = store.queuedSubmissions.first { $0.request == "EARLIER" }!
+    try check(earlier.startNextRequested != true && !starts.contains { $0.request == "EARLIER" }, "an unacknowledged legacy item started by itself")
+    try check(store.queueReason(c).contains("이어서 실행할 수 있습니다") && store.canAdvanceQueued(earlier)
+              && store.queueActionLabel(earlier).contains("다시 실행하지 않고"), "held queue does not say how to continue: \(store.queueReason(c))")
+    store.composer = "LATER"; store.send()
+    try await eventually { gates["EARLIER"] != nil }
+    try check(store.queuedSubmissions.contains { $0.request == "LATER" } && !starts.contains { $0.request == "LATER" },
+        "queue order broken: the new message overtook the earlier request")
+    try await finish("EARLIER")
+    try await eventually { gates["LATER"] != nil }
+    try check(starts.filter { $0.sessionID == c }.map(\.request) == ["EARLIER", "LATER"] && neverResent(originalC)
+              && session(c).preservedTasks?.count == 1, "earlier/later order or preservation wrong")
+    try await finish("LATER")
+
+    // 4. A backend outage keeps its automatic replay: nothing was dispatched,
+    //    OS-1 re-runs that request itself when a backend returns, so a new
+    //    message waits behind it rather than overtaking it.
+    let outage = BackendFailureNotice(provider: "claude", sessionID: nil, blocker: .backendUnavailable, dispatchStage: .notDispatched)
+    let (d, _) = heldConversation("주간 리포트 만들어", notice: outage)
+    store.composer = "OUTAGE-FOLLOWUP"; store.send()
+    try check(!starts.contains { $0.request == "OUTAGE-FOLLOWUP" } && store.queuedSubmissions.contains { $0.sessionID == d && $0.startNextRequested != true },
+        "a follow-up overtook the preserved request of a backend outage")
+    store.removeQueued(store.queuedSubmissions.first { $0.sessionID == d }!.id)
+
+    // 5. Restart: an acknowledged message waiting for a slot survives the
+    //    relaunch and resumes after the restart hold; an unacknowledged
+    //    legacy item in another held conversation does not.
+    store.updateSettings { $0.parallelRunLimit = 1 }
+    store.createSession(); let busy = store.selectedSessionID!
+    store.sessions[store.sessions.firstIndex { $0.id == busy }!].workspace = root.path
+    store.composer = "BUSY"; store.send()
+    try await eventually { gates["BUSY"] != nil }
+    let (e, originalE) = heldConversation("앱 설치해", notice: uncertain)
+    store.composer = "E-NEW"; store.send()
+    let (f, _) = heldConversation("문서 정리해", notice: uncertain)
+    store.pauseQueue(f)
+    store.composer = "F-LEGACY"; store.send()
+    try check(store.queuedSubmissions.first { $0.request == "E-NEW" }?.startNextRequested == true
+              && store.queuedSubmissions.first { $0.request == "F-LEGACY" }?.startNextRequested != true, "acknowledgement marking wrong")
+    store.flushPendingState()
+    var restartedStarts: [String] = []
+    let restarted = SessionStore(storageRoot: root, runOperation: { submission, _, _, _, _ in
+        restartedStarts.append(submission.request)
+        return AppRunSummary(status: "complete", steps: [AppRunStep(sequence: 1, provider: "codex", action: "fixture",
+            model: "fixture", effort: "none", revasDisposition: "adopted", sessionID: UUID().uuidString,
+            permissionProfile: "read_only", exitCode: 0, output: "restarted " + submission.request, stderr: "",
+            durationMS: 0, nativeRecord: nil)])
+    }, nativeSessionOpener: { _ in false })
+    restarted.updateSettings { $0.parallelRunLimit = 4 }
+    let fIndex = restarted.sessions.firstIndex { $0.id == f }!
+    restarted.sessions[fIndex].queuePaused = false
+    try check(restartedStarts.isEmpty, "a relaunch fired saved queue entries by itself")
+    restarted.releaseRestartHolds(now: Date().addingTimeInterval(120))
+    try await eventually { restartedStarts.contains("E-NEW") }
+    try check(!restartedStarts.contains("F-LEGACY") && !restartedStarts.contains(originalE.request),
+        "restart released an unacknowledged held item or re-sent a failed request: \(restartedStarts)")
+    try check(restarted.sessions.first { $0.id == e }?.lastFailure == nil, "acknowledged failure not moved past after restart")
+    try await eventually { !restarted.isRunning }
+    // The pre-restart store stands in for the exited process: drop its copy
+    // of the queue before letting its last run finish.
+    for item in store.queuedSubmissions { store.removeQueued(item.id) }
+    try await finish("BUSY")
+    print("Failure acknowledgement: \(checks) checks passed; model calls 0; next message runs once, failed request never re-sent, order, outage, restart")
 }
 
 @MainActor
@@ -4343,7 +4503,10 @@ private enum OS1Runner {
         let errorText = String(decoding: try Data(contentsOf: stderrURL), as: UTF8.self)
             .trimmingCharacters(in: .whitespacesAndNewlines)
         guard process.terminationStatus == 0 else {
-            if let data = try? Data(contentsOf: failureURL), data.count < 4096,
+            // A rejected answer rides in publicProgress (up to 24k characters);
+            // the old 4 KiB cap silently turned such notices into generic
+            // failures and the answer never reached the chat.
+            if let data = try? Data(contentsOf: failureURL), data.count < 512 * 1_024,
                let notice = try? JSONDecoder().decode(BackendFailureNotice.self, from: data),
                ["claude", "codex", "local"].contains(notice.provider) {
                 throw RunnerError.backend(notice)
@@ -4625,9 +4788,14 @@ private final class SessionStore: ObservableObject {
             return "현재 실행 종료 확인 중 · 확인 후 선택한 요청을 시작합니다"
         }
         if session.queuePaused == true { return "대기열 일시정지 · 실행 중 작업은 계속됩니다" }
-        if session.lastBackendFailure?.requiresReadback == true { return "이전 작업의 변경 결과 확인 후 계속할 수 있습니다" }
+        if session.lastFailure != nil || session.lastBackendFailure != nil,
+           session.lastBackendFailure?.blocker != .backendUnavailable, session.taskContext?.sourcePreparation == nil,
+           queuedSubmissions.contains(where: { $0.sessionID == sessionID && $0.startNextRequested == true }) {
+            return "이전 실패 작업은 보존 · 다시 실행하지 않고 다음 요청을 이어서 실행합니다"
+        }
+        if session.lastBackendFailure?.requiresReadback == true { return "이전 작업의 변경 결과 확인 전 · 새 메시지나 화살표로 이어서 실행할 수 있습니다" }
         if session.taskContext?.sourcePreparation != nil { return "검증 원본 확보 대기 · 뒤의 요청은 보존됩니다" }
-        if session.lastFailure != nil { return "이전 작업 확인 필요 · 뒤의 요청은 보존됩니다" }
+        if session.lastFailure != nil { return "이전 작업 실패 · 새 메시지나 화살표로 이어서 실행할 수 있습니다" }
         let items = queuedSubmissions.filter { $0.sessionID == sessionID }
         if items.contains(where: { pausedQueueIDs.contains($0.id) }) { return "앱 재시작 후 보존된 대기열 · 계속 실행을 눌러 주세요" }
         if items.contains(where: { editingQueueIDs.contains($0.id) }) { return "대기 요청 편집 중 · 저장 또는 취소 후 계속됩니다" }
@@ -4681,14 +4849,36 @@ private final class SessionStore: ObservableObject {
          (session.lastFailure != nil && session.lastBackendFailure?.permissionProfile == "read_only"))
     }
 
+    /// An owner request marked to move past a failure moves past exactly that
+    /// failure; a newer failure holds the queue again. Claude Code and Codex
+    /// never block the next turn on the previous one's outcome. OS-1 keeps the
+    /// failed request (never re-sent), hands its evidence to the next turn
+    /// (`start`) and takes the new turn's permission from its own text only.
     private func mayAdvancePastFailure(_ next: PendingSubmission, session: ConversationSession) -> Bool {
         if let failed = session.lastFailure, next.replacesSubmissionID != failed.id { return false }
-        // A new read is independent of an uncertain previous write. A dependent
-        // write must still reconcile; an action button never expands permission.
-        if session.lastBackendFailure?.requiresReadback == true || session.lastFailure?.savedResultNeedsReview == true {
-            return ExecutionSteering.isIndependentRead(next.request) || isNewEditAfterReadOnlyTask(next, session: session)
-        }
         return true
+    }
+
+    /// A new owner message in a conversation held by an earlier failure is the
+    /// owner acknowledging that failure, which is on screen. The first waiting
+    /// request of the conversation is admitted past it, queue order kept. A
+    /// backend outage keeps its automatic replay, a source preparation keeps
+    /// its gate, an owner-paused queue stays paused.
+    private func acknowledgeFailureHold(sessionIndex index: Int) {
+        let session = sessions[index]
+        guard session.lastFailure != nil || session.lastBackendFailure != nil,
+              session.lastBackendFailure?.blocker != .backendUnavailable,
+              session.taskContext?.sourcePreparation == nil, session.queuePaused != true,
+              let first = queuedSubmissions.firstIndex(where: { $0.sessionID == session.id }),
+              queuedSubmissions[first].recoveryParentID == nil,
+              queuedSubmissions[first].startNextRequested != true,
+              !editingQueueIDs.contains(queuedSubmissions[first].id) else { return }
+        queuedSubmissions[first].startNextRequested = true
+        queuedSubmissions[first].replacesSubmissionID = session.lastFailure?.id
+        // The owner is here: this conversation's restart hold is released.
+        pausedQueueIDs.subtract(queuedSubmissions.filter { $0.sessionID == session.id }.map(\.id))
+        appendTaskEvent(conversationID: session.id, kind: "failure_acknowledged",
+            summary: "Owner sent a new request after the failure; the failed request is preserved and not re-run")
     }
 
     private var orderedSessions: [ConversationSession] {
@@ -5286,6 +5476,7 @@ private final class SessionStore: ObservableObject {
             sessions[index].queuePaused == true ||
             queuedSubmissions.contains(where: { $0.sessionID == submission.sessionID }) {
             queuedSubmissions.append(submission)
+            acknowledgeFailureHold(sessionIndex: index)
             // An input the owner submitted as a correction of the turn that is
             // running now was already accepted; it belongs in the transcript
             // immediately, marked as still being handed over. An ordinary
@@ -5447,6 +5638,10 @@ private final class SessionStore: ObservableObject {
         if canSteerQueued(item) { return "현재 작업에 반영" }
         if activeRuns[item.sessionID]?.cancellationRequested == true { return "현재 실행 종료 확인 중" }
         if !canAdvanceQueued(item) { return canReconcileQueued(item) ? "이전 변경 상태 확인 · 대기 요청 보존" : "이전 변경 상태 확인 필요" }
+        if !isSessionRunning(item.sessionID),
+           sessions.first(where: { $0.id == item.sessionID }).map({ $0.lastFailure != nil || $0.lastBackendFailure != nil }) == true {
+            return "이전 실패 작업은 다시 실행하지 않고 이 요청부터 시작"
+        }
         if isSessionRunning(item.sessionID) {
             let ahead = conversationsWaitingAhead(of: item.sessionID)
             return activeRuns.count >= maximumConcurrentSessions && ahead > 0
@@ -5615,7 +5810,14 @@ private final class SessionStore: ObservableObject {
                     sessions[index].taskContext?.projectID = continuingProject.projectID
                 }
             }
-            sessions[index].taskContext?.decideSemantic("The user selected a new request. Previous unfinished work is preserved, not completed. Do not replay previous actions; inspect actual state before any further mutation.")
+            // A conversation without a context yet (new or legacy) still hands
+            // the evidence on: create it now instead of dropping the note.
+            if sessions[index].taskContext == nil {
+                sessions[index].taskContext = migratedTaskContext(sessions[index], sourceContext: sessions[index].sourceContext)
+            }
+            sessions[index].taskContext?.decideSemantic(BackendRecovery.priorFailureHandoff(
+                request: sessions[index].preservedTasks?.last?.request?.request,
+                notice: sessions[index].preservedTasks?.last?.failure))
             appendTaskEvent(conversationID: submission.sessionID, kind: "task_replaced", summary: submission.request)
             save()
         }
@@ -6810,7 +7012,8 @@ private final class SessionStore: ObservableObject {
         var released = false
         for item in queuedSubmissions where pausedQueueIDs.contains(item.id) && !editingQueueIDs.contains(item.id) {
             guard let session = sessions.first(where: { $0.id == item.sessionID }),
-                  session.lastFailure == nil, session.lastBackendFailure == nil,
+                  (session.lastFailure == nil && session.lastBackendFailure == nil) ||
+                    (item.startNextRequested == true && mayAdvancePastFailure(item, session: session)),
                   session.taskContext?.sourcePreparation == nil, session.queuePaused != true else { continue }
             pausedQueueIDs.remove(item.id)
             released = true
@@ -6835,6 +7038,7 @@ private final class SessionStore: ObservableObject {
         for session in sessions {
             guard !isSessionRunning(session.id),
                   session.lastBackendFailure?.requiresReadback == true,
+                  !queuedSubmissions.contains(where: { $0.sessionID == session.id && $0.startNextRequested == true }),
                   let failed = session.lastFailure, failed.recoveryParentID == nil,
                   BackendRecovery.needsAutomaticReadback(attempted: failed.recoveryAttempted,
                       verdictReconciled: failed.verdictReconciled),
@@ -7881,6 +8085,7 @@ private struct OS1DesktopApp: App {
                     try await steeringInteractionSelfTest()
                     try await steeringVisibilitySelfTest()
                     try await replacementInteractionSelfTest()
+                    try await failureAcknowledgementSelfTest()
                     exit(EXIT_SUCCESS)
                 }
                 catch { fputs("\(error.localizedDescription)\n", stderr); exit(EXIT_FAILURE) }
@@ -11340,7 +11545,7 @@ private struct ConversationQueueView: View {
                store.activeRuns[session.id]?.cancellationRequested == true || session.lastFailure != nil {
                 Text(store.activeRuns[session.id]?.cancellationRequested == true
                     ? "실행이 끝나는 대로 선택한 요청을 시작합니다"
-                    : "이전 작업과 대기 요청은 보존됩니다. 화살표로 실행하거나, 변경 상태가 불확실하면 먼저 실제 변경 상태를 확인합니다.")
+                    : "이전 작업은 보존되며 다시 실행하지 않습니다. 새 메시지를 보내거나 화살표를 누르면 이어서 실행하고, 다음 작업이 실제 상태를 먼저 확인합니다.")
                     .font(.system(size: 11)).foregroundStyle(Theme.muted)
                     .fixedSize(horizontal: false, vertical: true)
             }

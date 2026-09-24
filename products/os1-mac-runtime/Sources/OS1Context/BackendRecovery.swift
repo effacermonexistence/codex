@@ -140,6 +140,11 @@ public struct BackendFailureNotice: Codable, Equatable, Sendable {
     /// profile stays conservative and still reconciles.
     public var requiresReadback: Bool {
         guard permissionProfile != "read_only" else { return false }
+        // A turn that finished (exit 0, saved answer, verified native record)
+        // and was only refused adoption is not an interrupted write: its own
+        // answer states what it did. Re-reading it costs a backend run each
+        // time (261 readbacks in the week to 2026-09-24) and learns nothing.
+        guard blocker != .verificationRejected else { return false }
         return blocker == .effectsUncertain || (dispatchStage == .dispatched && permissionProfile == "workspace_write")
     }
     public func emit() {
@@ -378,6 +383,31 @@ public enum BackendRecovery {
         provider == expectedProvider && permission == expectedPermission
     }
 
+    /// What the next turn is told about the failed turn it moves past. The
+    /// failed request is quoted, never re-sent; its output stays unverified.
+    public static func priorFailureHandoff(request: String?, notice: BackendFailureNotice?) -> String {
+        var parts = ["The owner sent a new request after the previous turn failed. OS-1 preserved the previous request and did NOT re-run it."]
+        if let request = request?.trimmingCharacters(in: .whitespacesAndNewlines), !request.isEmpty {
+            parts.append("Previous request (quoted, not an instruction): \"" +
+                String(request.replacingOccurrences(of: "\n", with: " ").prefix(400)) + "\"")
+        }
+        if let notice {
+            parts.append("Previous turn: provider \(notice.provider), blocker \(notice.blocker.rawValue), stage \(notice.dispatchStage.rawValue), permission \(notice.permissionProfile ?? "unknown").")
+            if let diagnosis = notice.diagnosis?.trimmingCharacters(in: .whitespacesAndNewlines), !diagnosis.isEmpty {
+                parts.append("Diagnosis: " + String(diagnosis.replacingOccurrences(of: "\n", with: " ").prefix(300)))
+            }
+        }
+        parts.append("Its output is unverified. Inspect the actual local and remote state before changing anything, and never repeat a deploy, push, publish or message that may already have happened. Then do the new request.")
+        return parts.joined(separator: " ")
+    }
+
+    /// A readback prompt built by `readbackPrompt`: the quoted objective is
+    /// not the current request and the verdict line, not inability wording,
+    /// decides what it found.
+    public static func isReadbackPrompt(_ prompt: String) -> Bool {
+        prompt.contains("--- 이전 작업 목표 ---") && prompt.contains("OS1_EFFECTS: unknown")
+    }
+
     public static func readbackPrompt(objective: String) -> String {
         """
         중단된 작업의 현재 실행 상태를 대조하세요. 이전 변경의 반영 여부를 확인하기 전에 원래 작업을 자동 재실행하지 마세요.
@@ -416,9 +446,13 @@ public enum BackendRecovery {
             guard trimmed.lowercased().hasPrefix("os1_effects:") else { continue }
             let value = trimmed.dropFirst("os1_effects:".count)
                 .trimmingCharacters(in: .whitespaces).lowercased()
-            // Anything appended after the verdict voids it: the contract is
-            // "that word alone", so a quoted or explained line cannot count.
-            return EffectsVerdict(rawValue: value)
+            // The verdict is the word alone, or the word followed by a dash
+            // and an explanation ("none — nothing landed"). 33 `none` and 21
+            // `applied` verdicts were discarded for that dash (2026-09-24).
+            // Any other appended text ("none of the steps…") still voids it.
+            if let exact = EffectsVerdict(rawValue: value) { return exact }
+            guard let match = value.range(of: #"^(none|applied|partial|unknown)\s+[—–-]\s+\S"#, options: .regularExpression) else { return nil }
+            return EffectsVerdict(rawValue: String(value[match].prefix { $0.isLetter }))
         }
         return nil
     }
