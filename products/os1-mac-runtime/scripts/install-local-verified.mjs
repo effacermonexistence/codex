@@ -16,6 +16,10 @@ const allowLocalSignerRotation = options.includes('--allow-local-signer-rotation
 const source = fs.realpathSync(sourceArg), home = os.homedir();
 const recovery = path.resolve(recoveryArg), app = path.join(home, 'Applications/OS-1 CLODEX.app');
 const cli = path.join(home, '.local/bin/os1'), resource = path.join(source, 'Contents/Resources/os1');
+// The stable CLI reads the config beside it (and the Fleet agent points
+// OS1_CONFIG at it). It must be the app's config: until build 235 this file
+// was never replaced, so the CLI kept a 2026-09-13 config.
+const cliConfig = path.join(path.dirname(cli), 'config.json'), sourceConfig = path.join(source, 'Contents/Resources/config.json');
 const store = path.join(home, 'Library/Application Support/OS-1/sessions.json');
 const fleetRoot = path.join(home, '.os1/fleet');
 const service = `gui/${process.getuid()}/com.os1.fleet-agent`;
@@ -72,12 +76,16 @@ const fleetLoaded = spawnSync('/bin/launchctl', ['print', service], { stdio: 'ig
 fs.mkdirSync(recovery, { mode: 0o700 });
 const stageApp = path.join(path.dirname(app), `.os1-verified-${expectedBuild}-${process.pid}.app`);
 const stageCLI = path.join(path.dirname(cli), `.os1-verified-${expectedBuild}-${process.pid}`);
-assert(!fs.existsSync(stageApp) && !fs.existsSync(stageCLI));
+const stageConfig = path.join(path.dirname(cli), `.os1-verified-${expectedBuild}-${process.pid}.config.json`);
+assert(!fs.existsSync(stageApp) && !fs.existsSync(stageCLI) && !fs.existsSync(stageConfig));
+assert(!fs.existsSync(cliConfig) || !fs.lstatSync(cliConfig).isSymbolicLink());
 const backupApp = path.join(recovery, 'OS-1 CLODEX.app'), backupCLI = path.join(recovery, 'os1');
-let paused = false, appMoved = false, cliMoved = false, activated = false;
+const backupConfig = path.join(recovery, 'config.json');
+let paused = false, appMoved = false, cliMoved = false, configMoved = false, configInstalled = false, activated = false;
 const receipt = { startedAt: new Date().toISOString(), build: expectedBuild, app, recovery,
   previousAppHash: hash(path.join(app, 'Contents/MacOS/OS1App')), previousCLIHash: hash(cli),
   stagedAppHash: hash(path.join(source, 'Contents/MacOS/OS1App')), stagedCLIHash: hash(resource),
+  previousCLIConfigHash: fs.existsSync(cliConfig) ? hash(cliConfig) : null, stagedCLIConfigHash: hash(sourceConfig),
   previousRequirement: oldRequirement, sourceRequirement, signerRotation,
   signerRotationAuthorized: allowLocalSignerRotation, checks: [] };
 try {
@@ -92,6 +100,8 @@ try {
   fs.writeFileSync(maintenanceLease, String(process.pid), { mode: 0o600, flag: 'wx' });
   run('/usr/bin/ditto', [source, stageApp]);
   fs.copyFileSync(resource, stageCLI, fs.constants.COPYFILE_EXCL); fs.chmodSync(stageCLI, 0o755);
+  fs.copyFileSync(sourceConfig, stageConfig, fs.constants.COPYFILE_EXCL); fs.chmodSync(stageConfig, 0o644);
+  assert.equal(hash(stageConfig), receipt.stagedCLIConfigHash);
   run('/usr/bin/codesign', ['--verify', '--deep', '--strict', stageApp]);
   assert.equal(hash(stageCLI), receipt.stagedCLIHash);
   // A maintenance task may already be scheduled when the lease is acquired.
@@ -119,6 +129,10 @@ try {
   fs.renameSync(stageApp, app);
   fs.renameSync(cli, backupCLI); cliMoved = true;
   fs.renameSync(stageCLI, cli);
+  if (fs.existsSync(cliConfig)) { fs.renameSync(cliConfig, backupConfig); configMoved = true; }
+  fs.renameSync(stageConfig, cliConfig); configInstalled = true;
+  assert.equal(hash(cliConfig), receipt.stagedCLIConfigHash);
+  receipt.checks.push('cli config matches the app config: PASS');
   run('/usr/bin/codesign', ['--verify', '--deep', '--strict', app]);
   assert.equal(requirement(app), sourceRequirement);
   assert.equal(hash(cli), receipt.stagedCLIHash);
@@ -187,12 +201,15 @@ try {
   // custody for reconciliation rather than moving a live executable.
   if (appPIDs().length === 0 && paused) {
     if (cliMoved) { if (fs.existsSync(cli)) fs.renameSync(cli, path.join(recovery, 'unadopted-os1')); fs.renameSync(backupCLI, cli); }
+    if (configInstalled && fs.existsSync(cliConfig)) fs.renameSync(cliConfig, path.join(recovery, 'unadopted-config.json'));
+    if (configMoved) fs.renameSync(backupConfig, cliConfig);
     if (appMoved) { if (fs.existsSync(app)) fs.renameSync(app, path.join(recovery, 'unadopted-app.app')); fs.renameSync(backupApp, app); }
     receipt.binaryRollback = true;
   }
   throw error;
 } finally {
   if (fs.existsSync(maintenanceLease) && fs.readFileSync(maintenanceLease, 'utf8').trim() === String(process.pid)) fs.unlinkSync(maintenanceLease);
+  if (fs.existsSync(stageConfig)) fs.rmSync(stageConfig);
   // Recovery errors must not suppress the original failure receipt.
   try {
     if (paused) run('/bin/launchctl', ['bootstrap', `gui/${process.getuid()}`, plist]);
