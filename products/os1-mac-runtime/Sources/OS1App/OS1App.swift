@@ -6197,6 +6197,11 @@ private final class SessionStore: ObservableObject {
                         }
                         holdStatus = BackendHealth.load(maxAge: 900)?.waitingStatus ?? "백엔드 복구 대기 · 복구 시 자동 재실행"
                     }
+                    if case .backend(let notice)? = error as? RunnerError, notice.blocker == .verificationRejected,
+                       sessions[target].lastFailure?.deliveryID != nil || notice.publicProgress?.isEmpty == false {
+                        // The answer is on screen; only its adoption failed.
+                        holdStatus = "답변 도착 · 원격 검증 미채택 · 다음 메시지로 이어서 진행"
+                    }
                     sessions[target].messages.append(ChatMessage(
                         role: .system,
                         text: description.isEmpty ? "OS-1 작업이 중단되었습니다. 다시 시도해 주세요." : description

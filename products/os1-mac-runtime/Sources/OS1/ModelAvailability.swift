@@ -11,6 +11,25 @@ struct ClaudeModelCapability: Codable, Equatable {
     }
 }
 
+/// Process-local, short-lived: the native Claude inventory probed for this
+/// run. Never persisted, never shared across runs or workspaces.
+final class ClaudeInventoryCache: @unchecked Sendable {
+    static let shared = ClaudeInventoryCache()
+    private let lock = NSLock()
+    private var entry: (workspace: String, at: Date, models: [NativeClaudeModel])?
+    func models(workspace: String, maxAge: TimeInterval, now: Date = Date()) -> [NativeClaudeModel]? {
+        lock.lock(); defer { lock.unlock() }
+        guard let entry, entry.workspace == workspace, maxAge > 0,
+              now.timeIntervalSince(entry.at) >= 0, now.timeIntervalSince(entry.at) <= maxAge else { return nil }
+        return entry.models
+    }
+    func store(_ models: [NativeClaudeModel], workspace: String, at: Date = Date()) {
+        lock.lock(); defer { lock.unlock() }
+        entry = (workspace, at, models)
+    }
+    func clear() { lock.lock(); entry = nil; lock.unlock() }
+}
+
 struct NativeClaudeModel {
     let model: String
     let invocation: String
@@ -47,9 +66,23 @@ enum ModelAvailability {
             excludingModelLimited(["fable", "opus", "sonnet", "claude-fable-5-1[1m]"].map {
                 ClaudeModelCapability(model: $0, supportedEfforts: ["low"]) }, limited: ["fable"]).map(\.model) == ["opus", "sonnet"],
             excludingModelLimited([ClaudeModelCapability(model: "opus", supportedEfforts: ["xhigh"])], limited: []).count == 1,
-        ]
+        ] + inventoryCacheChecks(claudeRows([sonnet]))
         guard checks.allSatisfy({ $0 }) else { throw OS1Error.message("Model availability regression failed") }
         print("OS-1 account model metadata: \(checks.count) checks OK")
+    }
+    /// The per-run inventory reuse: same workspace and fresh only.
+    static func inventoryCacheChecks(_ rows: [NativeClaudeModel]) -> [Bool] {
+        let cache = ClaudeInventoryCache()
+        let t = Date(timeIntervalSince1970: 1_790_000_000)
+        cache.store(rows, workspace: "/w", at: t)
+        return [
+            cache.models(workspace: "/w", maxAge: 60, now: t.addingTimeInterval(30))?.map(\.model) == rows.map(\.model),
+            cache.models(workspace: "/w", maxAge: 60, now: t.addingTimeInterval(61)) == nil,
+            cache.models(workspace: "/other", maxAge: 60, now: t.addingTimeInterval(1)) == nil,
+            cache.models(workspace: "/w", maxAge: 0, now: t) == nil,
+            cache.models(workspace: "/w", maxAge: 60, now: t.addingTimeInterval(-5)) == nil,
+            { cache.clear(); return cache.models(workspace: "/w", maxAge: 60, now: t) == nil }(),
+        ]
     }
     static func codexRows(_ rows: [[String: Any]]) -> [CodexModelCapability] {
         var seen = Set<String>()
@@ -120,7 +153,20 @@ enum ModelAvailability {
         return loggedIn ? .loggedIn(status["email"] as? String) : .loggedOut
     }
 
+    /// A recent inventory from this process (same workspace), else a live probe.
+    static func claudeModels(workspace: String, maxAge: TimeInterval) throws -> [NativeClaudeModel] {
+        if let cached = ClaudeInventoryCache.shared.models(workspace: workspace, maxAge: maxAge) { return cached }
+        return try claudeModels(workspace: workspace)
+    }
+
+    /// Always a live probe; a successful one refreshes the process cache.
     static func claudeModels(workspace: String) throws -> [NativeClaudeModel] {
+        let models = try probeClaudeModels(workspace: workspace)
+        ClaudeInventoryCache.shared.store(models, workspace: workspace)
+        return models
+    }
+
+    private static func probeClaudeModels(workspace: String) throws -> [NativeClaudeModel] {
         let executable = try findExecutable("claude")
         let auth = try commandOutput(executable, ["auth", "status", "--json"], timeout: 8,
             currentDirectory: workspace)

@@ -35,8 +35,8 @@ public enum BackendBlocker: String, Codable, Sendable {
             return os1Tr("작업을 중지했습니다. 요청과 이미 받은 결과는 OS1에 보존했습니다. 실행된 변경은 자동으로 되돌리거나 다시 실행하지 않습니다.",
                 "The task was stopped. The request and any results already received are preserved in OS1. Executed changes are not automatically reverted or re-run.")
         case .verificationRejected:
-            return os1Tr("백엔드 실행과 응답 저장은 확인됐지만 결과 검증을 통과하지 못했습니다. 저장된 출력과 실행 기록을 보존했습니다. 이미 실행된 작업은 중복 실행하지 않습니다.",
-                "Backend execution and response persistence were verified, but result verification did not pass. The saved output and native execution record are preserved. Already executed work is not replayed.")
+            return os1Tr("답변은 저장해 위에 표시했습니다. 원격 결과 검증은 통과하지 못해 채택으로 표시하지 않았고, 이미 실행된 작업은 다시 실행하지 않습니다. 다음 메시지를 보내면 그대로 이어서 진행합니다.",
+                "The answer is saved and shown above. Remote result verification did not pass, so it is not marked adopted; work already done is not replayed. Your next message continues normally.")
         case .deliveryPending:
             return os1Tr("백엔드 답변을 OS1에 저장했습니다. 서버 검증·전달은 아직 끝나지 않았습니다. ‘저장된 결과 전달’을 누르면 모델을 다시 실행하지 않고 저장된 답변만 재접수합니다.",
                 "The backend answer is saved in OS1, but server verification and delivery have not finished. 'Deliver saved result' re-submits only the saved answer without running a model again.")

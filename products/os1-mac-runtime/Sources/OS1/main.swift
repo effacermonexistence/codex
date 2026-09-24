@@ -5676,9 +5676,16 @@ private func execute(
             : previousSessionID!
         let startsNewSession = previousSessionID == nil || desktopOwnsPrevious || sourceOnly
         let activeSessionID = requestedSessionID
-        guard let nativeModel = try ModelAvailability.claudeModels(workspace: executionWorkspace).first(where: {
-            $0.model == model && $0.efforts.contains(effort)
-        }) else { throw OS1Error.backendBlocked(.capabilityUnavailable) }
+        // The inventory this run probed a moment ago is reused (≈1 s per
+        // Claude attempt); a model it does not list is re-probed live before
+        // the route is refused.
+        func routed(_ rows: [NativeClaudeModel]) -> NativeClaudeModel? {
+            rows.first { $0.model == model && $0.efforts.contains(effort) }
+        }
+        guard let nativeModel = try routed(ModelAvailability.claudeModels(workspace: executionWorkspace, maxAge: 60))
+            ?? routed(ModelAvailability.claudeModels(workspace: executionWorkspace)) else {
+            throw OS1Error.backendBlocked(.capabilityUnavailable)
+        }
         // Live steering: with an owning OS-1 submission, the run reads
         // stream-json user messages from stdin so the owner's corrections
         // join this same session mid-run — Codex parity. Source-only answers
@@ -6962,21 +6969,32 @@ func runTaskWithOwnerPolicy(
             persistedCorrectionIDs: ExecutionSteering.currentSubmission.map { ExecutionSteering().persistedIDs($0) },
             monitorTaskID: monitorTaskID)
     }
+    // The two account inventories are unpaid, independent local probes. They
+    // run while the device key, GitHub token and registration are prepared;
+    // one after another they cost about 1.2 s more per run (2026-09-24).
+    let userSettings = OS1Settings.load()
+    let probeWorkspace = canonicalWorkspace
+    let codexProbe: Task<ActiveCodexCatalog, Never>? = userSettings.showCodex ? Task.detached {
+        (try? ModelAvailability.codexCatalog(workspace: probeWorkspace, config: config)) ??
+            ActiveCodexCatalog(models: [], source: "native account metadata unavailable")
+    } : nil
+    let claudeProbe = Task.detached {
+        (try? ModelAvailability.claudeCatalogs(workspace: probeWorkspace, config: config))
+            ?? (configured: [ClaudeModelCapability](), routable: [ClaudeModelCapability]())
+    }
     let key = try SigningKey.loadOrCreate()
     let id = try deviceID()
     let client = APIClient(config: config, token: try githubToken(), deviceID: id)
     try await register(client: client, key: key)
-    let userSettings = OS1Settings.load()
     var codexCatalog: ActiveCodexCatalog
-    if userSettings.showCodex {
-        codexCatalog = (try? ModelAvailability.codexCatalog(workspace: canonicalWorkspace, config: config)) ??
-            ActiveCodexCatalog(models: [], source: "native account metadata unavailable")
+    if let codexProbe {
+        codexCatalog = await codexProbe.value
     } else {
         // The user removed Codex in Settings: never probe it, never route to
         // it, and never treat its absence as a failure to repair.
         codexCatalog = ActiveCodexCatalog(models: [], source: BackendHealth.disabledCatalogSource)
     }
-    let claudeCatalogs = (try? ModelAvailability.claudeCatalogs(workspace: canonicalWorkspace, config: config)) ?? (configured: [], routable: [])
+    let claudeCatalogs = await claudeProbe.value
     var observedClaudeCatalog = claudeCatalogs.routable
     let claudeLimitedOnly = !claudeCatalogs.configured.isEmpty && claudeCatalogs.routable.isEmpty
     // Owner's rule: a dead-backend preflight is a repair trigger, not a dead
@@ -7122,6 +7140,11 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
     // app's 100 ms poll could read it, so the owner's "Auto" was redirected
     // to Codex with nothing on screen.
     RuntimeActivity.emit(.routing, provider: burnNotice == nil ? nil : "codex", publicText: burnNotice)
+    // The first attempt's before-state is read while the route is decided
+    // (≈0.45 s hidden). Nothing OS-1 does in between writes the workspace;
+    // a concurrent outside edit can only read as "changed", never as "none".
+    let routedWorkspace = canonicalWorkspace
+    let speculativeBeforeHash = Task.detached { workspaceHash(routedWorkspace) }
     var route: RouteResponse = try await client.post(
         "/v1/executions",
         body: request,
@@ -7214,7 +7237,8 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
         }
         let observedWorkspace = try providerExecutionWorkspace(provider: ticket.provider,
             permission: ticket.permissionProfile, hasSource: r2Evidence != nil, workspace: canonicalWorkspace)
-        let beforeHash = workspaceHash(observedWorkspace)
+        let beforeHash = step == 1 && observedWorkspace == routedWorkspace
+            ? await speculativeBeforeHash.value : workspaceHash(observedWorkspace)
         let attemptPrompt = localPrompt + (try continuation?.handoffBlock() ?? "")
         let attemptInputSHA256 = CompletionFeedbackScope.inputDigest(assembledInput: attemptPrompt,
             codexSessionID: nativeSessions["codex"] ?? nil, claudeSessionID: nativeSessions["claude"] ?? nil,
