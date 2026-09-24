@@ -373,6 +373,10 @@ async function recordLearning(env: Env, state: { claimLearning(sequence: number)
   try {
     if (!snapshot.learning_object || !(await state.claimLearning(sequence))) return;
     await env.ROUTING_BUDGETS.getByName(snapshot.learning_object).observe(observation);
+    // Audit trail of what the router learned; tuple and outcome only.
+    console.log(JSON.stringify({ event: "route_learning_recorded", provider: observation.provider, model: observation.model,
+      effort: observation.effort, task_class: observation.task_class, adopted: observation.adopted,
+      duration_ms: observation.duration_ms }));
   } catch {
     console.error(JSON.stringify({ event: "route_learning_unrecorded" }));
   }
@@ -430,6 +434,7 @@ export default {
         const learningObject = await supportsRouteLearning(env.RCC_V26, bundle.rcc.policy_sha256) ?
           await budgetObjectName(env, body.principal.subject) : undefined;
         const learning = learningObject ? await learnedRoutes(budget, body.execution_id, 1) : undefined;
+        if (learning) console.log(JSON.stringify({ event: "route_learning_used", rows: learning.rows.length }));
         stage.current = "route";
         const selected = await routeWithRcc(env, bundle, context, "", learning);
         if (!selected) return Response.json({ status: "failed" });
