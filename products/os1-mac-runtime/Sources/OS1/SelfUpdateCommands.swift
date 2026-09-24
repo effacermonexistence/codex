@@ -89,7 +89,7 @@ func selfRepairCommand(_ arguments: [String]) async throws -> Bool {
 /// Shared with the runtime hook in main.swift.
 let selfRepairFailurePrefixText = "OS-1 self-repair could not complete: "
 
-let os1RuntimeVersionString = "OS-1 Runtime 0.9.174 (self-repair-build240)"
+let os1RuntimeVersionString = "OS-1 Runtime 0.9.175 (self-repair-build241)"
 
 func os1SourceWriteLeaseURL(root: String) throws -> URL {
     let directory = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".os1/self-update", isDirectory: true)
@@ -372,6 +372,7 @@ func completeOS1SelfRepair(root: String, objective: String, startedAt: Date, sta
     if let hit = selfRepairSecretHit(root: root, git: git, since: startHead) {
         return .failed("refusing to commit or stage: possible credential in the change (\(hit))")
     }
+    if let stale = staleOS1SourceDiagnostic(root: root) { return .failed(stale) }
     RuntimeActivity.emit(.verifying, publicText: os1Tr("OS-1 자체 수리 마무리 · 변경 \(changed.count)개 파일 · 버전 올리고 빌드·검증·스테이징·커밋까지 OS-1이 직접 합니다",
         "OS-1 finishing its own repair · \(changed.count) changed file(s) · version bump, build, tests, staging and commit are OS-1's own"))
     let build: Int, version: String
@@ -414,8 +415,14 @@ func completeOS1SelfRepair(root: String, objective: String, startedAt: Date, sta
     } else {
         pushNote = "commit is local only — push to origin/\(branch) did not succeed"
     }
+    // Only registered roots are installed automatically; a fleet clone or
+    // another checkout must not promise an install that will not happen.
+    let registered = LocalProjectWorkspace.candidates(projectID: "os1-clodex").map(LocalProjectWorkspace.executionPath)
+        .contains(LocalProjectWorkspace.executionPath(root))
+    let installNote = registered ? "OS-1 installs this build by itself when no task is running and posts the receipt here."
+        : "This checkout is not a registered OS-1 source, so OS-1 does not install it by itself; merge the pushed commit into the live source to ship it."
     let note = "OS-1 self-repair: staged build \(build) (\(version)) · " + intent.checks.joined(separator: ", ") +
-        " · commit \(head.prefix(7)) on \(branch) · \(pushNote) · OS-1 installs this build by itself when no task is running and posts the receipt here."
+        " · commit \(head.prefix(7)) on \(branch) · \(pushNote) · " + installNote
     return .staged(build: build, note: note)
 }
 
@@ -610,4 +617,14 @@ func finishUnboundOS1Change(_ watch: OS1SourceWatch, objective: String, startedA
     case .staged(_, let note): return note
     case .failed(let diagnostic): return selfRepairFailurePrefixText + diagnostic
     }
+}
+
+/// Staging a checkout that lacks the installed build's source commit would
+/// install older code under a newer build number (a stale copy such as a
+/// dated folder, or a tree behind the build that is running).
+func staleOS1SourceDiagnostic(root: String, installedCommit: String? = installedOS1SourceCommit()) -> String? {
+    guard let installedCommit, let git = try? findExecutable("git"),
+          let result = try? commandOutput(git, ["-C", root, "merge-base", "--is-ancestor", installedCommit, "HEAD"], timeout: 20),
+          result.0 != 0 else { return nil }
+    return "refusing to stage \(root): it does not contain the installed build's source commit \(installedCommit.prefix(7)), so its build would bring back older code. The change stays in the working tree; work in the live OS-1 source or bring this checkout up to date first."
 }

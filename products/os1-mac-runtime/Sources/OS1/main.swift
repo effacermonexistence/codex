@@ -10348,6 +10348,27 @@ func selfTest() throws {
                 return finishUnboundOS1Change(watch, objective: "fixture", startedAt: Date()).contains(root.path) && gitHead(root.path) == otherRepair
             } catch { return false }
         }()),
+        ("a checkout without the installed build's commit is never staged", {
+            guard let git = try? findExecutable("git") else { return false }
+            let root = FileManager.default.temporaryDirectory.appendingPathComponent("os1-stale-root-" + UUID().uuidString, isDirectory: true)
+            defer { try? FileManager.default.removeItem(at: root) }
+            func run(_ arguments: [String]) -> Bool {
+                (try? commandOutput(git, ["-C", root.path, "-c", "user.name=OS-1 fixture", "-c", "user.email=fixture@os1.invalid"] + arguments, timeout: 30))?.0 == 0
+            }
+            do {
+                try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+                try "a\n".write(to: root.appendingPathComponent("a.txt"), atomically: true, encoding: .utf8)
+                guard run(["init", "-q"]), run(["add", "-A"]), run(["commit", "-q", "-m", "old"]), let old = gitHead(root.path) else { return false }
+                try "b\n".write(to: root.appendingPathComponent("a.txt"), atomically: true, encoding: .utf8)
+                guard run(["commit", "-q", "-am", "installed"]), let installed = gitHead(root.path) else { return false }
+                // Current tree: fine. Back at the old commit (a stale copy): refused.
+                guard staleOS1SourceDiagnostic(root: root.path, installedCommit: installed) == nil,
+                      staleOS1SourceDiagnostic(root: root.path, installedCommit: nil) == nil,
+                      run(["checkout", "-q", old]) else { return false }
+                return staleOS1SourceDiagnostic(root: root.path, installedCommit: installed)?.contains(String(installed.prefix(7))) == true
+                    && staleOS1SourceDiagnostic(root: root.path, installedCommit: String(repeating: "e", count: 40)) != nil
+            } catch { return false }
+        }()),
         ("self-update applies only a newer, fresh, idle-time intent", {
             let now = Date()
             func intent(build: Int, stagedAt: Date = now, state: String = "pending", attempts: Int = 0, lastAttempt: Date? = nil) -> SelfUpdate.Intent {
