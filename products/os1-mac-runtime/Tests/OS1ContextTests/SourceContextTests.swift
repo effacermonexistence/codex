@@ -295,6 +295,19 @@ final class SourceContextTests {
         for answer in ["Ben.\nLuaIsHere :3\nThe build is 231.", "Ben.\nLuaIsHere :3", "LuaIsHere :3 231 is the build"] {
             XCTAssertFalse(HumanOutputContract.issues(in: answer, request: valueOnly).isEmpty)
         }
+        // Names asked for by a Korean request are identifiers, not English prose.
+        let names = "파일을 수정하지 말고, 이 저장소의 products 폴더에 있는 하위 폴더 이름을 알파벳 순으로 쉼표로 구분해 한 줄로 답해."
+        for answer in ["Ben.\nLuaIsHere :3\nos1-auth-service,os1-device-registry,os1-exo-monitor,os1-mac-runtime,scv-instagram",
+                       "os1-auth-service, os1-mac-runtime, scv-instagram", "- Documents\n- Downloads\n- Desktop",
+                       "`gpt-6-sol`", "main", "/Users/LUA/Documents/Codex/OS1-queue-slot-visibility-build224",
+                       "Ben.\nLuaIsHere :3\n\n1. os1-route-core\n2. os1-private-route-core"] {
+            XCTAssertTrue(HumanOutputContract.issues(in: answer, request: names).isEmpty)
+        }
+        for answer in ["The folders are os1-auth-service and scv-instagram.", "Ben.\nLuaIsHere :3\nUse gpt-6-sol for this",
+                       "Folders: os1-auth-service", "```\nos1-auth-service\n```", #"\(\unknown{os1}\)"#] {
+            XCTAssertFalse(HumanOutputContract.issues(in: answer, request: names).isEmpty)
+        }
+        print("Identifier-only answers: 12 language-boundary checks PASS")
 
         let literal = "Verification marker: orchard-lantern-29\nService state: staging verified; production not deployed\nUnfinished gate: independent read-only production fingerprint check"
         for request in ["이전 대화의 원문 값 그대로 세 줄로 적어줘", "원문 문구 그대로 보여줘",

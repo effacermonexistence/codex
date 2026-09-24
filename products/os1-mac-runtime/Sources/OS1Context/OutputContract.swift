@@ -108,6 +108,32 @@ public enum HumanOutputContract {
         return rows.allSatisfy { validRow($0) || validRow(field($0)) }
     }
 
+    /// Names the user asked for (folders, files, branches, models, paths) are
+    /// identifiers in any language, not English prose. 2026-09-24: a Korean
+    /// request for the folder names under products/ was answered with exactly
+    /// those names and refused as "English-only prose". Two plain words in a
+    /// row read as prose; a "Key:" field stays with requestedNumericFieldsOnly.
+    static func identifierOnly(_ answer: String) -> Bool {
+        var text = answer.replacingOccurrences(of: #"```[\s\S]*?```"#, with: " ", options: .regularExpression)
+        text = text.replacingOccurrences(of: #"`[^`\n]+`"#, with: " inline-code ", options: .regularExpression)
+        let tokens = text.split(whereSeparator: \.isWhitespace)
+            .map { $0.trimmingCharacters(in: CharacterSet(charactersIn: "*_\"'()[]")) }
+            .filter { !$0.isEmpty }
+        guard tokens.contains(where: { $0.rangeOfCharacter(from: .letters) != nil }) else { return false }
+        var words = 0
+        for token in tokens {
+            // Math, LaTeX and assignments are judged by numericMathOnly.
+            if token.hasSuffix(":") || token.rangeOfCharacter(from: CharacterSet(charactersIn: "\\{}$=")) != nil { return false }
+            if token.range(of: #"^[A-Za-z]{2,}[.!?;]?$"#, options: .regularExpression) != nil {
+                words += 1
+                if words >= 2 { return false }
+            } else {
+                words = 0
+            }
+        }
+        return true
+    }
+
     public static func issues(in answer: String, request: String) -> [String] {
         // Reproducing a source/log is not an assertion that its syntax or
         // stage design is valid. Never "repair" quoted original material.
@@ -121,7 +147,7 @@ public enum HumanOutputContract {
             // prose: "Ben. / LuaIsHere :3 / 231" is a numeric answer (2026-09-24,
             // a Codex value-only answer was refused for the header alone).
             let body = text.replacingOccurrences(of: #"\A\s*Ben\.\s*LuaIsHere :3\s*"#, with: "", options: .regularExpression)
-            let neutral = body.range(of: #"^[\p{N}\s\p{P}\p{S}]+$"#, options: .regularExpression) != nil || Double(body.trimmingCharacters(in: .whitespacesAndNewlines)) != nil || numericMathOnly(body) || requestedNumericFieldsOnly(text, request: request)
+            let neutral = body.range(of: #"^[\p{N}\s\p{P}\p{S}]+$"#, options: .regularExpression) != nil || Double(body.trimmingCharacters(in: .whitespacesAndNewlines)) != nil || numericMathOnly(body) || requestedNumericFieldsOnly(text, request: request) || identifierOnly(body)
             if wantsKorean(request), !preservesOriginalValues(request), !neutral, !text.unicodeScalars.contains(where: { (0xAC00...0xD7A3).contains($0.value) }) {
                 issues.append("Answer the user's Korean request in Korean, not English-only prose.")
             }
