@@ -5,6 +5,7 @@ import OS1Context
 private enum GovernanceMonitorSection: String, CaseIterable, Identifiable {
     case live = "핵심"
     case details = "상세"
+    case accounts = "로그인"
     var id: Self { self }
 }
 
@@ -38,6 +39,7 @@ struct GovernanceMonitorView: View {
     @State private var deltaHistoryContext = ""
     @State private var projection: GovernanceDashboardProjection
     @State private var projectionFilterContext = "전체|전체"
+    @StateObject private var accounts = BackendAccountsModel()
     @Environment(\.dismiss) private var dismiss
     private let green = Color(red: 0.23, green: 0.9, blue: 0.56)
     private let pink = Color(red: 0.99, green: 0.61, blue: 0.77)
@@ -330,12 +332,14 @@ struct GovernanceMonitorView: View {
                 }
                 .pickerStyle(.segmented)
                 .labelsHidden()
-                .frame(width: 220)
+                .frame(width: 300)
                 Spacer()
-                Picker("기간", selection: $window) { ForEach(["전체", "24시간", "7일"], id: \.self) { Text($0) } }.frame(width: 155)
-                Picker("백엔드", selection: $provider) { Text("전체").tag("전체"); Text("Codex").tag("codex"); Text("Claude Code").tag("claude") }.frame(width: 190)
+                if section != .accounts {
+                    Picker("기간", selection: $window) { ForEach(["전체", "24시간", "7일"], id: \.self) { Text($0) } }.frame(width: 155)
+                    Picker("백엔드", selection: $provider) { Text("전체").tag("전체"); Text("Codex").tag("codex"); Text("Claude Code").tag("claude") }.frame(width: 190)
+                }
             }
-            if !rows.isEmpty {
+            if section != .accounts, !rows.isEmpty {
                 HStack(spacing: 10) {
                     Text("기준").font(.system(size: 10, weight: .semibold)).foregroundStyle(muted)
                     Picker("기준 경로", selection: $baseline) {
@@ -365,6 +369,8 @@ struct GovernanceMonitorView: View {
             DisclosureGroup("모델 비교 · 과거 matched 관측") { comparisonWorkbench; comparePanel }
             tracePanel
             methodology
+        case .accounts:
+            BackendAccountsPanel(model: accounts, dark: true, readOnly: preview)
         }
     }
     private func card(_ title: String, _ value: String, _ note: String, color: Color = .white) -> some View {

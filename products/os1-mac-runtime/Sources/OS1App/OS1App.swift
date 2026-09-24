@@ -4302,15 +4302,6 @@ private func compactSessionAge(_ date: Date) -> String {
     return date.formatted(date: .abbreviated, time: .omitted)
 }
 
-/// Collects a child's two pipes from their reader threads.
-private final class ProcessOutputBuffer: @unchecked Sendable {
-    private let lock = NSLock()
-    private var out = Data(), error = Data()
-    func appendOut(_ data: Data) { lock.lock(); out += data; lock.unlock() }
-    func appendError(_ data: Data) { lock.lock(); error += data; lock.unlock() }
-    func contents() -> (Data, Data) { lock.lock(); defer { lock.unlock() }; return (out, error) }
-}
-
 private enum OS1Runner {
     static func pinNativeSession(id: String, pinned: Bool, before: String?) async throws {
         try await Task.detached(priority: .userInitiated) {
@@ -4331,52 +4322,6 @@ private enum OS1Runner {
             }
         }.value
     }
-    /// `os1 accounts …`: the runtime owns the account file and runs the
-    /// provider's own browser sign-in. The app passes arguments and reads the
-    /// result; no credential crosses this boundary.
-    static func accounts(_ arguments: [String], timeout: TimeInterval) async throws -> String {
-        let path = try executable()
-        return try await Task.detached(priority: .userInitiated) {
-            let process = Process(), output = Pipe(), errors = Pipe()
-            process.executableURL = URL(fileURLWithPath: path)
-            process.arguments = arguments
-            process.currentDirectoryURL = FileManager.default.homeDirectoryForCurrentUser
-            process.standardOutput = output
-            process.standardError = errors
-            var environment = ProcessInfo.processInfo.environment
-            let home = FileManager.default.homeDirectoryForCurrentUser.path
-            environment["PATH"] = ["\(home)/.local/bin", "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin",
-                                   "/usr/sbin", "/sbin", environment["PATH"] ?? ""].joined(separator: ":")
-            process.environment = environment
-            // Read both pipes while the child runs: a sign-in prints progress
-            // and would otherwise fill a pipe buffer and stall.
-            let collected = ProcessOutputBuffer()
-            output.fileHandleForReading.readabilityHandler = { collected.appendOut($0.availableData) }
-            errors.fileHandleForReading.readabilityHandler = { collected.appendError($0.availableData) }
-            try process.run()
-            let deadline = Date().addingTimeInterval(timeout)
-            while process.isRunning && Date() < deadline { try await Task.sleep(for: .milliseconds(200)) }
-            if process.isRunning {
-                process.terminate()
-                throw RunnerError.message(os1Tr("로그인 확인 시간이 초과됐습니다. 브라우저에서 승인을 마쳤는지 확인하세요.",
-                                                "The sign-in was not confirmed in time. Check that you finished approving it in the browser."))
-            }
-            process.waitUntilExit()
-            output.fileHandleForReading.readabilityHandler = nil
-            errors.fileHandleForReading.readabilityHandler = nil
-            collected.appendOut(output.fileHandleForReading.readDataToEndOfFile())
-            collected.appendError(errors.fileHandleForReading.readDataToEndOfFile())
-            let (stdout, stderr) = collected.contents()
-            guard process.terminationStatus == 0 else {
-                let text = String(decoding: stderr + stdout, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
-                throw RunnerError.message(text.isEmpty
-                    ? os1Tr("계정 작업을 확인하지 못했습니다.", "The account change could not be confirmed.")
-                    : String(text.suffix(400)))
-            }
-            return String(decoding: stdout, as: UTF8.self)
-        }.value
-    }
-
     /// Read-only backend probe (`os1 backend-health --refresh`): native
     /// metadata only, no inference, no login. It refreshes the shared health
     /// record that the recovery monitor and the fleet heartbeat read.
@@ -4664,6 +4609,7 @@ private final class SessionStore: ObservableObject {
     @Published var accountBusy: String?
     @Published var accountNotice: String?
     @Published var accountsOpen = false
+    private var accountObserver: NSObjectProtocol?
     @Published var composer = "" {
         didSet {
             if let index = selectedIndex { sessions[index].draft = composer }
@@ -7204,7 +7150,7 @@ private final class SessionStore: ObservableObject {
         accountNotice = nil
         defer { accountBusy = nil }
         do {
-            _ = try await OS1Runner.accounts(arguments, timeout: timeout)
+            _ = try await BackendAccountRunner.run(arguments, timeout: timeout)
         } catch {
             accountNotice = error.localizedDescription
         }
@@ -7214,7 +7160,7 @@ private final class SessionStore: ObservableObject {
     /// Read-only: asks each provider's own status command who is signed in.
     func refreshAccounts() async {
         guard customStorageRoot == nil else { return }
-        _ = try? await OS1Runner.accounts(["accounts", "list", "--json"], timeout: 90)
+        _ = try? await BackendAccountRunner.run(["accounts", "list", "--json"], timeout: 90)
         accountBook = BackendAccounts.load()
     }
 
@@ -7235,6 +7181,16 @@ private final class SessionStore: ObservableObject {
 
     func forgetAccount(provider: String, id: String) async {
         await runAccounts(["accounts", "forget", "--provider", provider, "--id", id], timeout: 120)
+    }
+
+    /// The governance panel and the settings sheet change accounts through the
+    /// runtime; the rail follows them instead of holding a stale copy.
+    func observeAccountChanges() {
+        guard accountObserver == nil, customStorageRoot == nil else { return }
+        accountObserver = NotificationCenter.default.addObserver(
+            forName: BackendAccountsModel.changed, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.accountBook = BackendAccounts.load() }
+        }
     }
 
     func accounts(for provider: ProviderChoice) -> [BackendAccount] {
@@ -8710,118 +8666,29 @@ private struct OS1DesktopApp: App {
 /// User settings, configured like Codex: language and backends in one pane,
 /// persisted to OS-1's settings.json which every OS-1 process reads.
 /// Sign in to Codex and Claude Code from OS-1, with more than one account
-/// each. OS-1 starts the provider's own browser sign-in and records the label
-/// and state only; the credential stays with that provider's CLI.
+/// each. The same list the RCC Governance panel shows, so there is one account
+/// screen rather than two that can disagree.
 private struct BackendAccountsView: View {
     @ObservedObject var store: SessionStore
-    @State private var addingProvider: String?
-    @State private var newLabel = ""
-
-    private func providers() -> [ProviderChoice] {
-        [.codex, .claude].filter { $0 != .codex || store.appSettings.showCodex }
-    }
+    @StateObject private var model = BackendAccountsModel()
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack {
                 Text(os1Tr("백엔드 계정", "Backend accounts")).font(.headline)
                 Spacer()
-                Button(os1Tr("새로 확인", "Refresh")) { Task { await store.refreshAccounts() } }
                 Button(os1Tr("닫기", "Close")) { store.accountsOpen = false }.keyboardShortcut(.cancelAction)
             }
             .padding(.horizontal, 18).padding(.vertical, 14)
             Divider()
             ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
-                    ForEach(providers()) { provider in
-                        section(provider)
-                    }
-                    Text(os1Tr("로그인은 각 제공자의 공식 창에서 진행됩니다. OS-1은 계정 이름과 로그인 여부만 기록하고 토큰은 보지 않습니다. 계정마다 별도의 홈 디렉터리를 쓰므로 한 Mac에서 여러 계정을 번갈아 쓸 수 있습니다.",
-                               "Each sign-in runs in that provider's own official flow. OS-1 records only the account name and whether it is signed in — never a token. Each account gets its own home directory, so several accounts can share one Mac."))
-                        .font(.footnote).foregroundStyle(.secondary)
-                    if let notice = store.accountNotice {
-                        Text(notice).font(.footnote).foregroundStyle(Theme.amber).textSelection(.enabled)
-                    }
-                }
-                .padding(18)
+                BackendAccountsPanel(model: model,
+                                     providers: store.appSettings.showCodex ? BackendAccounts.providers
+                                        : BackendAccounts.providers.filter { $0 != "codex" })
+                    .padding(18)
             }
         }
-        .frame(width: 560, height: 520)
-        .task { await store.refreshAccounts() }
-    }
-
-    @ViewBuilder
-    private func section(_ provider: ProviderChoice) -> some View {
-        let key = provider.rawValue
-        let rows = store.accounts(for: provider)
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 8) {
-                ProviderBrandIcon(provider: provider, size: 18)
-                Text(provider.title).font(.system(size: 13, weight: .semibold))
-                Text(provider == .claude ? "Anthropic" : "OpenAI").font(.footnote).foregroundStyle(.secondary)
-                Spacer()
-                if store.accountBusy == key { ProgressView().controlSize(.small) }
-                Button(os1Tr("계정 추가", "Add account")) {
-                    newLabel = ""
-                    addingProvider = key
-                }
-                .disabled(store.accountBusy != nil)
-            }
-            ForEach(rows) { row in
-                HStack(spacing: 10) {
-                    Image(systemName: store.accountBook.active[key] == row.id ? "largecircle.fill.circle" : "circle")
-                        .foregroundStyle(store.accountBook.active[key] == row.id ? Theme.pink : Theme.muted)
-                        .onTapGesture { Task { await store.useAccount(provider: key, id: row.id) } }
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(row.label).font(.system(size: 12))
-                        Text(row.signedIn
-                             ? (row.signedInAs.map { os1Tr("로그인됨 · \($0)", "Signed in · \($0)") } ?? os1Tr("로그인됨", "Signed in"))
-                             : os1Tr("로그아웃 — 이 계정으로는 실행되지 않습니다", "Signed out — nothing runs on this account"))
-                            .font(.footnote)
-                            .foregroundStyle(row.signedIn ? Color.secondary : Theme.amber)
-                    }
-                    Spacer()
-                    Button(row.signedIn ? os1Tr("다시 로그인", "Sign in again") : os1Tr("로그인", "Sign in")) {
-                        Task { await store.signIn(provider: key, accountID: row.id) }
-                    }
-                    .disabled(store.accountBusy != nil)
-                    if row.signedIn {
-                        Button(os1Tr("로그아웃", "Sign out")) {
-                            Task { await store.signOutAccount(provider: key, id: row.id) }
-                        }.disabled(store.accountBusy != nil)
-                    }
-                    if !row.isDefault {
-                        Button(os1Tr("삭제", "Remove")) {
-                            Task { await store.forgetAccount(provider: key, id: row.id) }
-                        }.disabled(store.accountBusy != nil)
-                    }
-                }
-                .padding(.vertical, 5).padding(.horizontal, 10)
-                .background(RoundedRectangle(cornerRadius: 10).fill(Color.white.opacity(0.04)))
-            }
-        }
-        .sheet(isPresented: Binding(get: { addingProvider == key }, set: { if !$0 { addingProvider = nil } })) {
-            VStack(alignment: .leading, spacing: 12) {
-                Text(os1Tr("\(provider.title) 계정 추가", "Add a \(provider.title) account")).font(.headline)
-                TextField(os1Tr("계정 이름 (예: 회사 계정)", "Account name (e.g. Work)"), text: $newLabel)
-                    .textFieldStyle(.roundedBorder)
-                Text(os1Tr("이름은 이 Mac에서 계정을 구분하기 위한 것입니다. 다음 단계에서 \(provider.title)의 공식 로그인 창이 열립니다.",
-                           "The name only tells accounts apart on this Mac. The next step opens \(provider.title)'s own sign-in."))
-                    .font(.footnote).foregroundStyle(.secondary)
-                HStack {
-                    Spacer()
-                    Button(os1Tr("취소", "Cancel")) { addingProvider = nil }.keyboardShortcut(.cancelAction)
-                    Button(os1Tr("로그인 열기", "Open sign-in")) {
-                        let label = newLabel
-                        addingProvider = nil
-                        Task { await store.signIn(provider: key, newLabel: label) }
-                    }
-                    .keyboardShortcut(.defaultAction)
-                    .disabled(BackendAccounts.validLabel(newLabel) == nil)
-                }
-            }
-            .padding(18).frame(width: 380)
-        }
+        .frame(width: 600, height: 540)
     }
 }
 
@@ -9199,6 +9066,12 @@ private struct RootView: View {
             store.handleComposerDrop(providers)
         }
         .ignoresSafeArea()
+        .task {
+            // The rail's sign-in state follows whatever the governance panel
+            // or the settings sheet changed, and is verified once at launch.
+            store.observeAccountChanges()
+            await store.refreshAccounts()
+        }
         .task {
             while !Task.isCancelled {
                 await store.refreshSidebarMetadata()
@@ -9636,6 +9509,26 @@ private func railSelectionSelfTest() throws {
     try check(store.accountBook.active["claude"] == added && store.accountNotice == nil && store.accountBusy == nil,
         "a fixture store holds only the assigned book and reports no failure")
     try check(BackendAccounts.load() != book, "the fixture book was never written to the owner's account file")
+
+    // The account list is one screen: governance and settings render the same
+    // panel from the same model, so they can never disagree.
+    let panelModel = BackendAccountsModel()
+    let governancePanel = BackendAccountsPanel(model: panelModel, dark: true, readOnly: true)
+    let settingsPanel = BackendAccountsPanel(model: panelModel)
+    try check(governancePanel.providers == settingsPanel.providers
+        && governancePanel.providers == BackendAccounts.providers,
+        "both account screens list the same providers")
+    try check(governancePanel.readOnly && !settingsPanel.readOnly,
+        "the design-time governance preview must not offer a sign-in")
+    let codexOnly = BackendAccountsPanel(model: panelModel, providers: ["claude"])
+    try check(codexOnly.providers == ["claude"], "turning a backend off removes it from the account list")
+    try check(BackendAccountsStyle.title("claude") == "Claude Code"
+        && BackendAccountsStyle.organization("claude") == "Anthropic"
+        && BackendAccountsStyle.organization("codex") == "OpenAI",
+        "each provider is named by its own organization")
+    try check(BackendAccountsStyle.initial("  회사 계정 ") == "회"
+        && BackendAccountsStyle.initial("work") == "W",
+        "an account shows one letter, the way an account list does")
 
     print("Provider rail selection: \(checks) checks passed; model calls 0; live backend writes 0")
 }
