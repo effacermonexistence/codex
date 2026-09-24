@@ -62,6 +62,7 @@ chmod 0755 \
   "$install_root/scripts/bootstrap-claude-code.sh" \
   "$install_root/scripts/install-os1-exo-monitor-from-r2.sh" \
   "$install_root/scripts/restore-from-r2.sh" \
+  "$install_root/scripts/configure-new-mac.sh" \
   "$install_root/scripts/doctor.sh" \
   "$install_root/products/os1-mac-runtime/scripts/install-os1.sh"
 
@@ -244,6 +245,8 @@ install_executable_with_backup \
   "$install_root/scripts/install-os1-exo-monitor-from-r2.sh" \
   "$local_bin/os1-exo-monitor-sync"
 
+"$install_root/scripts/configure-new-mac.sh"
+
 if ! cmp -s "$install_root/codex/AGENTS.md" "$codex_config_dir/AGENTS.md"; then
   echo "Codex global instruction verification failed" >&2
   exit 1
@@ -260,6 +263,7 @@ echo "Installed Codex instructions: $codex_config_dir/AGENTS.md"
 echo "Installed Claude instructions: $claude_config_dir/CLAUDE.md"
 echo "Installed OS-1 CLODEX: /Applications/OS-1 CLODEX.app"
 echo "Installed R2 EXO monitor sync: $local_bin/os1-exo-monitor-sync"
+echo "Configured Mac defaults: Handy Fn + sound, emoji off, black wallpaper, idle Always On, Codex queue"
 echo "Node.js: $(node --version)"
 echo "pnpm: $(pnpm --version)"
 echo "Codex CLI: $(codex --version)"

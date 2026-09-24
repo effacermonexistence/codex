@@ -5,6 +5,7 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 codex_config_dir="${OMAR_CODEX_CONFIG_DIR:-${HOME:?}/.codex}"
 claude_config_dir="${OMAR_CLAUDE_CONFIG_DIR:-${HOME:?}/.claude}"
 backup_bucket="omar-private-archive"
+cloudflare_account_id="d18c5d440fedbf100c4afd13b4b7a2c0"
 backup_worker_url="https://omar-git-r2-backup.omar-git-r2-backup.workers.dev/health"
 
 if ! command -v node >/dev/null 2>&1; then
@@ -141,6 +142,59 @@ fi
 
 if [[ "$(uname -s)" == "Darwin" ]]; then
   add_check pass "macOS host" "$(sw_vers -productVersion 2>/dev/null || uname -r)"
+  handy_app="$HOME/Applications/Handy.app"
+  if [[ ! -d "$handy_app" && -d /Applications/Handy.app ]]; then
+    handy_app=/Applications/Handy.app
+  fi
+  if [[ -d "$handy_app" ]] &&
+     [[ "$(plutil -extract CFBundleShortVersionString raw -o - "$handy_app/Contents/Info.plist" 2>/dev/null)" == "0.9.7" ]] &&
+     codesign --verify --deep --strict "$handy_app" >/dev/null 2>&1 &&
+     [[ "$(codesign -dv --verbose=2 "$handy_app" 2>&1)" == *"TeamIdentifier=UWFLB4GC25"* ]]; then
+    add_check pass "Handy app" "$handy_app"
+  else
+    add_check fail "Handy app" "official signed Handy app is missing"
+  fi
+  handy_model="$HOME/Library/Application Support/com.pais.handy/models/whisper-medium-q4_1.bin"
+  if [[ -f "$handy_model" ]] &&
+     [[ "$(shasum -a 256 "$handy_model" | awk '{print $1}')" == "79283fc1f9fe12ca3248543fbd54b73292164d8df5a16e095e2bceeaaabddf57" ]]; then
+    add_check pass "Handy speech model" "Whisper Medium hash matches"
+  else
+    add_check fail "Handy speech model" "Whisper Medium is missing or has a different hash"
+  fi
+  handy_settings="$HOME/Library/Application Support/com.pais.handy/settings_store.json"
+  if [[ -f "$handy_settings" ]] && node - "$handy_settings" <<'NODE'
+const fs = require('node:fs');
+const s = JSON.parse(fs.readFileSync(process.argv[2], 'utf8')).settings;
+process.exit(s?.bindings?.transcribe?.current_binding === 'fn' &&
+  s.audio_feedback === true && s.sound_theme === 'marimba' &&
+  s.selected_model === 'medium' ? 0 : 1);
+NODE
+  then
+    add_check pass "Handy Fn and sound" "Fn transcription and Marimba feedback configured"
+  else
+    add_check fail "Handy Fn and sound" "run scripts/configure-new-mac.sh"
+  fi
+  if [[ "$(defaults read com.apple.HIToolbox AppleFnUsageType 2>/dev/null)" == "0" ]]; then
+    add_check pass "Fn emoji action" "disabled"
+  else
+    add_check fail "Fn emoji action" "macOS still uses Fn/Globe for another action"
+  fi
+  if [[ "$(osascript -e 'tell application "System Events" to get picture of every desktop' 2>/dev/null)" == *"$HOME/Pictures/black-000000.png"* ]]; then
+    add_check pass "black desktop" "pure black wallpaper selected"
+  else
+    add_check fail "black desktop" "pure black wallpaper is not selected"
+  fi
+  if launchctl print "gui/$(id -u)/com.effacermonexistence.always-on" 2>/dev/null | grep -F 'state = running' >/dev/null; then
+    add_check pass "idle Always On" "caffeinate launch agent is running"
+  else
+    add_check fail "idle Always On" "caffeinate launch agent is not running"
+  fi
+  if [[ -f "$codex_config_dir/config.toml" ]] &&
+     grep -Eq '^followUpQueueMode[[:space:]]*=[[:space:]]*"queue"' "$codex_config_dir/config.toml"; then
+    add_check pass "Codex follow-up queue" "queue mode configured"
+  else
+    add_check fail "Codex follow-up queue" "queue mode is not configured"
+  fi
 else
   add_check warn "macOS host" "not macOS: $(uname -s)"
 fi
@@ -197,10 +251,28 @@ if have_command pnpm; then
 fi
 
 if [[ "$skip_cloudflare" -eq 0 ]] && have_command pnpm; then
-  if (cd "$repo_root" && pnpm exec wrangler whoami >/dev/null 2>&1); then
-    add_check pass "Cloudflare login" "wrangler is authenticated"
+  if wrangler_identity="$(cd "$repo_root" && pnpm exec wrangler whoami 2>&1)"; then
+    if [[ "$wrangler_identity" == *"$cloudflare_account_id"* ]]; then
+      add_check pass "Cloudflare login" "Wrangler is connected to the expected account"
+    else
+      add_check fail "Cloudflare login" "Wrangler is connected to a different Cloudflare account"
+    fi
   else
     add_check warn "Cloudflare login" "run from $repo_root: pnpm exec wrangler login"
+  fi
+
+  bucket_visible=0
+  for attempt in 1 2; do
+    if bucket_list="$(cd "$repo_root" && pnpm exec wrangler r2 bucket list 2>&1)" &&
+       grep -Eq "^name:[[:space:]]+$backup_bucket$" <<< "$bucket_list"; then
+      bucket_visible=1
+      break
+    fi
+  done
+  if [[ "$bucket_visible" -eq 1 ]]; then
+    add_check pass "R2 bucket" "$backup_bucket is visible"
+  else
+    add_check warn "R2 bucket" "$backup_bucket is not visible from this login"
   fi
 
   if (cd "$repo_root" && pnpm exec wrangler r2 object get "$backup_bucket/git-bundles/effacermonexistence/codex/latest.json" --remote --pipe >/dev/null 2>&1); then

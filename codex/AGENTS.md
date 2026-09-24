@@ -16,7 +16,7 @@ bootstrap script from the source-of-truth repository, then run it:
 curl -fsSL \
   https://raw.githubusercontent.com/effacermonexistence/codex/main/scripts/bootstrap-new-mac.sh \
   -o /tmp/omar-bootstrap-new-mac.sh
-sed -n '1,260p' /tmp/omar-bootstrap-new-mac.sh
+sed -n '1,400p' /tmp/omar-bootstrap-new-mac.sh
 bash /tmp/omar-bootstrap-new-mac.sh
 ```
 
@@ -24,6 +24,25 @@ After bootstrap, complete only the unavoidable per-device OAuth logins for
 Codex/ChatGPT, GitHub, Claude, and Cloudflare. Never copy authentication caches
 between personal Macs and never commit tokens, passwords, OAuth codes, API
 keys, Wrangler credentials, GitHub PATs, or Claude credentials.
+
+The bootstrap also applies the standard local desktop profile: official
+SHA-256-pinned Handy with its Whisper Medium model, Fn transcription and
+Marimba audio, Fn emoji action disabled, pure black desktop, login-session
+idle Always On, and Codex queued follow-ups. Finish macOS's device-local
+Handy microphone/Accessibility prompts and restart an already-open Codex app
+to activate queue mode. This profile does not install the EXO app.
+
+After GitHub and Wrangler OAuth, verify Cloudflare Account ID
+`d18c5d440fedbf100c4afd13b4b7a2c0`, bucket `omar-private-archive`, and
+the MacBook Pro MDM reference using the private
+`effacermonexistence/omar-r2-device-setup/scripts/verify-r2-connection.sh`.
+Fetch that script with authenticated `gh`, inspect it, then run it. A matching
+bucket name alone is not the final R2 verification.
+
+On a completely fresh Mac, this global file is not present until the first
+bootstrap. The first Codex request must identify
+`https://github.com/effacermonexistence/codex` (or continue a task that already
+knows it); later bare setup phrases use this installed guidance.
 
 Use the authenticated `gh` CLI for GitHub operations. Use the official
 Cloudflare API MCP server or the repository's pinned Wrangler dependency for

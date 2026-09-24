@@ -113,7 +113,7 @@ account's memory. On a new Mac, download and run the reviewed bootstrap:
 curl -fsSL \
   https://raw.githubusercontent.com/effacermonexistence/codex/main/scripts/bootstrap-new-mac.sh \
   -o /tmp/omar-bootstrap-new-mac.sh
-sed -n '1,260p' /tmp/omar-bootstrap-new-mac.sh
+sed -n '1,400p' /tmp/omar-bootstrap-new-mac.sh
 bash /tmp/omar-bootstrap-new-mac.sh
 ```
 
@@ -124,11 +124,37 @@ endpoint for both Codex and Claude, then copies durable non-secret guidance to
 `~/.codex/AGENTS.md` and `~/.claude/CLAUDE.md`. Existing instruction files are
 backed up before they are replaced.
 
+The same command also installs the SHA-256-pinned official Handy app and
+Whisper Medium model; configures Fn transcription with Marimba start/stop
+sounds; disables macOS's Fn emoji action; sets the desktop to pure `#000000`;
+starts a login-session idle sleep/display sleep assertion; and sets Codex
+follow-ups to queue mode. The Always On assertion applies while the user is
+logged in and the lid is open. Handy microphone and Accessibility permissions
+are approved in macOS on each device. Already-open Codex sessions need a
+restart to pick up queue mode. The EXO app is not installed by this desktop
+profile.
+
 OAuth credentials are intentionally not copied or committed. Sign in once per
 new Mac to Codex/ChatGPT, GitHub, Claude, the Cloudflare MCP endpoint, and
-Wrangler. The GitHub-to-R2 workflow itself needs no laptop login because it
-uses GitHub Actions OIDC. After bootstrap, confirm readiness with
-`pnpm run doctor`.
+Wrangler. Confirm that Wrangler is connected to Cloudflare Account ID
+`d18c5d440fedbf100c4afd13b4b7a2c0` and can read
+`omar-private-archive`. The private `omar-r2-device-setup` repository contains
+the R2 device verification script and MacBook Pro MDM reference key; retrieve
+and run that script after GitHub and Wrangler OAuth:
+
+```bash
+gh api repos/effacermonexistence/omar-r2-device-setup/contents/scripts/verify-r2-connection.sh --jq .content | base64 -D > /tmp/verify-r2-connection.sh
+sed -n '1,160p' /tmp/verify-r2-connection.sh
+bash /tmp/verify-r2-connection.sh
+```
+
+The GitHub-to-R2 workflow itself needs no laptop login because it uses GitHub
+Actions OIDC. After bootstrap, confirm readiness with `pnpm run doctor`.
+
+On a completely fresh Mac, Codex has not yet received this repository's global
+`AGENTS.md`. Start the first Codex request with the repository address, for
+example: “`https://github.com/effacermonexistence/codex` 기준으로 새 맥 세팅해.”
+After that first bootstrap, a bare “새 맥 세팅해” loads the installed guidance.
 
 Once `codex/AGENTS.md` has been installed globally, the phrases `시스템 세팅해`,
 `시스템 셋업해`, `새 맥 세팅해`, and `맥북 복구해` tell a new Codex task to
