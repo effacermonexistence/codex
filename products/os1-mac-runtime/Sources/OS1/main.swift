@@ -299,10 +299,29 @@ func executableCodexCatalog(_ catalog: ActiveCodexCatalog, config: RuntimeConfig
                               quotaWindow: catalog.quotaWindow)
 }
 
+/// Why the Claude Code rail cannot run, with the owner's fix when there is
+/// one. The Claude app's own Code tab is signed in separately; OS-1 runs the
+/// Claude Code CLI on this Mac, which has its own sign-in.
+func claudeUnavailableDescription(workspace: String) -> String? {
+    switch ModelAvailability.claudeAuthProbe(workspace: workspace) {
+    case .loggedOut:
+        return os1Tr("이 Mac의 Claude Code CLI가 로그아웃 상태입니다 · 터미널에서 claude auth login으로 한 번 로그인하면 Claude로 실행됩니다",
+                     "the Claude Code CLI on this Mac is signed out · run claude auth login once and Claude runs again")
+    case .missing:
+        return os1Tr("claude 실행 파일이 없습니다", "the claude executable is missing")
+    case .loggedIn:
+        let limited = ClaudeQuotaBackoff.activeModels().joined(separator: ", ")
+        return limited.isEmpty ? nil : os1Tr("모델별 한도: \(limited)", "model limits: \(limited)")
+    case .failed(let detail):
+        return detail
+    }
+}
+
 func executableProviderPreference(requested: String, prompt: String, codexAvailable: Bool,
                                   claudeAvailable: Bool, localAvailable: Bool = false,
                                   evidenceSupplied: Bool = false, scope: TaskContext.Scope? = nil,
-                                  codexUnavailableReason: String? = nil) throws -> String {
+                                  codexUnavailableReason: String? = nil,
+                                  claudeUnavailableReason: (() -> String?)? = nil) throws -> String {
     // Only the read-only Claude lane lacks a shell. When OS-1 itself supplies
     // the verified evidence, or the ticket carries a write profile, the
     // objective is not shell-bound and either backend may execute it.
@@ -321,10 +340,13 @@ func executableProviderPreference(requested: String, prompt: String, codexAvaila
     }
     if constrained == "claude" {
         if claudeAvailable { return "claude" }
+        // Asked only here: the owner named Claude and it is missing, so say
+        // why and how to bring it back instead of a bare switch notice.
+        let why = claudeUnavailableReason?().map { " (\($0))" } ?? ""
         guard codexAvailable else {
-            throw OS1Error.message("선택한 Claude 실행 환경이 없고 Codex 실행 환경도 없습니다. 모델 호출 없이 사전 검사에서 중단했으며 요청은 보존했습니다.")
+            throw OS1Error.message("선택한 Claude 실행 환경이 없고\(why) Codex 실행 환경도 없습니다. 모델 호출 없이 사전 검사에서 중단했으며 요청은 보존했습니다.")
         }
-        RuntimeActivity.emit(.routing, publicText: "Claude를 사용할 수 없어 이 작업을 Codex로 수행합니다.")
+        RuntimeActivity.emit(.routing, publicText: "Claude를 사용할 수 없어\(why) 이 작업을 Codex로 수행합니다.")
         return "codex"
     }
     if !codexAvailable && !claudeAvailable && localAvailable { return "auto" }
@@ -702,9 +724,6 @@ struct RunStepSummary: Codable {
     let stderr: String
     let durationMS: Int64
     let nativeRecord: NativeRecordEvidence?
-    /// Logical product mode selected for this step. The actual executable
-    /// transport remains `provider`; this field never claims browser-UI use.
-    var executionSurface: String? = nil
     var workflowStage: String? = nil
     var verifiedPreviewDelivery: VerifiedPreviewDelivery? = nil
     var ownerPolicySourceSHA256: String? = OwnerPolicyContext.snapshot?.sourceSHA256
@@ -718,7 +737,6 @@ struct RunStepSummary: Codable {
         case exitCode = "exit_code"
         case durationMS = "duration_ms"
         case nativeRecord = "native_record"
-        case executionSurface = "execution_surface"
         case verifiedPreviewDelivery = "verified_preview_delivery"
         case workflowStage = "workflow_stage"
         case ownerPolicySourceSHA256 = "owner_policy_source_sha256"
@@ -7261,10 +7279,12 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
     // The quoted original operation is context, not a second execute request.
     // Keep this new review's task identity distinct while retaining all source
     // and full-input accounting without downgrading backend capability.
-    let baseRoutingTask = ScopeResolution.delegationRoutingObjective(
+    // The routing task is what the private router classifies and what
+    // completion feedback is keyed on; build 245 appended a fixed surface
+    // directive here, which changed every task's classification and key.
+    let routingTask = ScopeResolution.delegationRoutingObjective(
         routingTaskOverride ?? (requireReadOnly ? statusReconciliationRoutingTask
             : sourceAwareRoutingTask(prompt, evidence: r2Evidence)), internalReadOnly: internalReadOnly)
-    let routingTask = baseRoutingTask + "\n" + ExecutionSurfacePolicy.routingDirective(scope: resolvedScope)
     let feedbackStore = CompletionFeedbackStore()
     func instructionFeedbackScope(_ instructions: String, input: String, codexID: String?, claudeID: String?) -> CompletionFeedbackScope {
         CompletionFeedbackScope(objectiveSHA256: sha256Hex(Data(routingTask.utf8)), sourceSHA256: sourceContext?.sha256,
@@ -7315,7 +7335,8 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
             prompt: requireReadOnly ? routingTask : prompt, codexAvailable: !codexCatalog.models.isEmpty,
             claudeAvailable: hasClaudeExecutable, localAvailable: publicDeterministicExpression(prompt) != nil,
             evidenceSupplied: r2Evidence != nil, scope: resolvedScope,
-            codexUnavailableReason: codexCatalog.models.isEmpty ? codexCatalog.source : nil),
+            codexUnavailableReason: codexCatalog.models.isEmpty ? codexCatalog.source : nil,
+            claudeUnavailableReason: { claudeUnavailableDescription(workspace: canonicalWorkspace) }),
         capacityPlan: CapacityPlan(codex: codexCapacity, claude: claudeCapacity),
         executorContractVersion: config.executorContract.version,
         executorContractSHA256: config.executorContract.sha256,
@@ -7805,7 +7826,6 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
             model: model, effort: effort, revasDisposition: "verification_pending", sessionID: execution.sessionID,
             permissionProfile: ticket.permissionProfile, exitCode: artifact.exitCode, output: artifact.output,
             stderr: artifact.stderr, durationMS: artifact.durationMS, nativeRecord: execution.nativeRecord,
-            executionSurface: ExecutionSurfacePolicy.surface(providerID: ticket.provider, permissionProfile: ticket.permissionProfile)?.rawValue,
             verifiedPreviewDelivery: verifiedPreviewDelivery)
         var delivery = DeliveryRecord(id: "\(ticket.executionID)-\(ticket.sequence)", apiURL: config.apiURL, deviceID: id,
             resultSHA256: resultHash, artifact: artifactData, upload: try JSONEncoder().encode(upload),
@@ -7997,7 +8017,6 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
                 stderr: artifact.stderr,
                 durationMS: artifact.durationMS,
                 nativeRecord: adoptedRecord,
-                executionSurface: ExecutionSurfacePolicy.surface(providerID: ticket.provider, permissionProfile: ticket.permissionProfile)?.rawValue,
                 verifiedPreviewDelivery: verifiedPreviewDelivery
             ))
         }
@@ -9991,6 +10010,22 @@ func selfTest() throws {
         ("catalog effort intersection", mapped.models.first?.supportedEfforts == ["high"] && mapped.models.first?.defaultEffort == "high"),
         ("missing Codex auto routes available Claude", try executableProviderPreference(requested: "auto", prompt: "Explain", codexAvailable: false, claudeAvailable: true) == "claude"),
         ("missing Claude auto routes available Codex", try executableProviderPreference(requested: "auto", prompt: "Explain", codexAvailable: true, claudeAvailable: false) == "codex"),
+        ("a named Claude that cannot run says why", {
+            do {
+                _ = try executableProviderPreference(requested: "claude", prompt: "Explain this source", codexAvailable: false,
+                    claudeAvailable: false, claudeUnavailableReason: { "signed out · run claude auth login" })
+                return false
+            } catch { return String(describing: error).contains("signed out · run claude auth login") }
+        }()),
+        ("the Claude reason is asked only when Claude was named and is missing", {
+            var asked = 0
+            let reason: () -> String? = { asked += 1; return "signed out" }
+            let routed = (try? executableProviderPreference(requested: "auto", prompt: "Explain", codexAvailable: true,
+                claudeAvailable: false, claudeUnavailableReason: reason)) == "codex" &&
+                (try? executableProviderPreference(requested: "claude", prompt: "Explain", codexAvailable: true,
+                    claudeAvailable: true, claudeUnavailableReason: reason)) == "claude"
+            return routed && asked == 0
+        }()),
         ("explicit missing pin falls back to the available backend",
          (try? executableProviderPreference(requested: "codex", prompt: "Explain this source", codexAvailable: false, claudeAvailable: true)) == "claude" &&
          (try? executableProviderPreference(requested: "claude", prompt: "Explain this source", codexAvailable: true, claudeAvailable: false)) == "codex"),
@@ -10398,6 +10433,30 @@ func selfTest() throws {
                       run(["checkout", "-q", old]) else { return false }
                 return staleOS1SourceDiagnostic(root: root.path, installedCommit: installed)?.contains(String(installed.prefix(7))) == true
                     && staleOS1SourceDiagnostic(root: root.path, installedCommit: String(repeating: "e", count: 40)) != nil
+            } catch { return false }
+        }()),
+        ("an uncommitted OS-1 source tree is never staged by the stage command", {
+            guard let git = try? findExecutable("git") else { return false }
+            let root = FileManager.default.temporaryDirectory.appendingPathComponent("os1-dirty-root-" + UUID().uuidString, isDirectory: true)
+            defer { try? FileManager.default.removeItem(at: root) }
+            func run(_ arguments: [String]) -> Bool {
+                (try? commandOutput(git, ["-C", root.path, "-c", "user.name=OS-1 fixture", "-c", "user.email=fixture@os1.invalid"] + arguments, timeout: 30))?.0 == 0
+            }
+            do {
+                let runtime = root.appendingPathComponent(SelfUpdate.runtimeRelativePath, isDirectory: true)
+                try FileManager.default.createDirectory(at: runtime.appendingPathComponent("Sources"), withIntermediateDirectories: true)
+                try "a\n".write(to: runtime.appendingPathComponent("Sources/a.swift"), atomically: true, encoding: .utf8)
+                try "other\n".write(to: root.appendingPathComponent("unrelated.txt"), atomically: true, encoding: .utf8)
+                guard run(["init", "-q"]), run(["add", "-A"]), run(["commit", "-q", "-m", "clean"]) else { return false }
+                // Clean, or dirty only outside OS-1's runtime: allowed.
+                guard uncommittedOS1SourceDiagnostic(root: root.path) == nil else { return false }
+                try "changed\n".write(to: root.appendingPathComponent("unrelated.txt"), atomically: true, encoding: .utf8)
+                guard uncommittedOS1SourceDiagnostic(root: root.path) == nil else { return false }
+                // An edited or new runtime file: refused, and the reason says to commit.
+                try "b\n".write(to: runtime.appendingPathComponent("Sources/a.swift"), atomically: true, encoding: .utf8)
+                try "new\n".write(to: runtime.appendingPathComponent("Sources/b.swift"), atomically: true, encoding: .utf8)
+                guard let refused = uncommittedOS1SourceDiagnostic(root: root.path), refused.contains("2 uncommitted"), refused.contains("Commit") else { return false }
+                return run(["add", "-A"]) && run(["commit", "-q", "-m", "committed"]) && uncommittedOS1SourceDiagnostic(root: root.path) == nil
             } catch { return false }
         }()),
         ("self-update applies only a newer, fresh, idle-time intent", {

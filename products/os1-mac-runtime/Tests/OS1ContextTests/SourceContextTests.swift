@@ -98,26 +98,6 @@ final class SourceContextTests {
         print("OS-1 source context and output: 13 regression groups passed")
     }
     func testTaskWorkflowRouting() {
-        XCTAssertEqual(ExecutionSurfacePolicy.automaticCandidates(scope: .readOnly), [.codex, .claudeCode])
-        XCTAssertEqual(ExecutionSurfacePolicy.automaticCandidates(scope: .workspaceWrite), [.codex, .claudeCode])
-        XCTAssertTrue(ExecutionSurfacePolicy.automaticCandidates(scope: .fullAccess).isEmpty)
-        XCTAssertEqual(OS1ExecutionSurface.chatGPT.quotaPool, .openAIConversation)
-        XCTAssertEqual(OS1ExecutionSurface.codex.quotaPool, .openAIAgentic)
-        XCTAssertEqual(OS1ExecutionSurface.claude.quotaPool, .anthropicInteractive)
-        XCTAssertEqual(OS1ExecutionSurface.claudeCode.quotaPool, .anthropicProgrammatic)
-        XCTAssertFalse(OS1ExecutionSurface.chatGPT.isAutomaticExecutorAvailable)
-        XCTAssertFalse(OS1ExecutionSurface.claude.isAutomaticExecutorAvailable)
-        XCTAssertTrue(OS1ExecutionSurface.codex.isAutomaticExecutorAvailable)
-        XCTAssertTrue(OS1ExecutionSurface.claudeCode.isAutomaticExecutorAvailable)
-        XCTAssertEqual(ExecutionSurfacePolicy.surface(providerID: "codex", permissionProfile: "read_only"), .codex)
-        XCTAssertEqual(ExecutionSurfacePolicy.surface(providerID: "codex", permissionProfile: "workspace_write"), .codex)
-        XCTAssertEqual(ExecutionSurfacePolicy.surface(providerID: "claude", permissionProfile: "read_only"), .claudeCode)
-        XCTAssertEqual(ExecutionSurfacePolicy.surface(providerID: "claude", permissionProfile: "workspace_write"), .claudeCode)
-        XCTAssertNil(ExecutionSurfacePolicy.surface(providerID: "local", permissionProfile: "read_only"))
-        XCTAssertTrue(ExecutionSurfacePolicy.routingDirective(scope: .readOnly).contains("Claude Code via claude"))
-        XCTAssertTrue(ExecutionSurfacePolicy.routingDirective(scope: .readOnly).contains("not automatic executors"))
-        XCTAssertTrue(ExecutionSurfacePolicy.routingDirective(scope: .workspaceWrite).contains("Claude Code via claude"))
-
         // Cosmetic work stays a single implementation; mixed runtime changes do not.
         for request in ["OS1 사이드바 위쪽 공백 줄여", "Fix OS-1 sidebar top padding and verify the layout.", "OS1 화면 버튼 색상 바꿔", "Change OS1 sidebar spacing"] {
             XCTAssertTrue(TaskWorkflow.isBoundedAppearanceEdit(request))
@@ -135,19 +115,21 @@ final class SourceContextTests {
         precondition(SelfUpdate.secretPatternHit("Bearer " + syntheticToken) != nil)
         precondition(SelfUpdate.secretPatternHit("prefix/" + syntheticToken) != nil)
 
-        // Small work stays in one turn. Explicit staging and structural
-        // multi-step repairs use independently routed stages.
+        // One turn does the whole job, like Codex and Claude Code; separate
+        // stages only when the owner asks for them (build 246 reverted 244's
+        // keyword split).
         let request = "인스타그램 오토메이션 테스크 완료해"
         XCTAssertEqual(ScopeResolution.resolve(request).scope, .workspaceWrite)
         XCTAssertFalse(TaskWorkflow.shouldDecompose(request, scope: .workspaceWrite))
         XCTAssertFalse(TaskWorkflow.shouldDecompose("OS1 고쳐", scope: .workspaceWrite))
         XCTAssertFalse(TaskWorkflow.shouldDecompose("Fix OS-1", scope: .workspaceWrite))
-        XCTAssertTrue(TaskWorkflow.shouldDecompose("OS1 라우팅 고치고 로그 원인까지 테스트해", scope: .workspaceWrite, projectID: "os1-clodex"))
+        XCTAssertFalse(TaskWorkflow.shouldDecompose("OS1 라우팅 고치고 로그 원인까지 테스트해", scope: .workspaceWrite, projectID: "os1-clodex"))
         XCTAssertTrue(TaskWorkflow.shouldDecompose("OS1 라우팅 고치고 별도 검증까지 해", scope: .workspaceWrite))
         XCTAssertTrue(TaskWorkflow.shouldDecompose("Fix OS-1 routing with an independent verification pass", scope: .workspaceWrite))
         XCTAssertTrue(TaskWorkflow.shouldDecompose("같은 테스크를 쪼개서 각각 라우팅하게 해줘", scope: .workspaceWrite))
         XCTAssertTrue(TaskWorkflow.shouldDecompose("작업을 나눠서 모델별로 나눠 실행해", scope: .workspaceWrite))
-        XCTAssertTrue(TaskWorkflow.shouldDecompose("Fix the backend queue and test it", scope: .workspaceWrite))
+        XCTAssertFalse(TaskWorkflow.shouldDecompose("Fix the backend queue and test it", scope: .workspaceWrite))
+        XCTAssertFalse(TaskWorkflow.shouldDecompose("그러면 라우팅 아키텍처 고쳐야지", scope: .workspaceWrite))
         XCTAssertFalse(TaskWorkflow.shouldDecompose("OS1 라우팅 별도 검증해", scope: .readOnly))
         XCTAssertFalse(TaskWorkflow.shouldDecompose("인스타그램 오토메이션 상태 설명해", scope: .readOnly))
         XCTAssertFalse(TaskWorkflow.shouldDecompose("README 수정해", scope: .workspaceWrite))

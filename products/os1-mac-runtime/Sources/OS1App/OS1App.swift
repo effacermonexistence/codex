@@ -101,13 +101,13 @@ private struct ExecutionRoutePresentation: Equatable {
             executionLine = os1Tr("라우팅 결과: 실행 기록 없음", "Route: no execution recorded")
             detail = os1Tr("이 대화에는 현재 실행 백엔드 기록이 없습니다.", "This conversation has no running backend record.")
         case "codex":
-            executionLine = os1Tr("라우팅 결과: Codex 실행", "Route: Codex")
-            detail = os1Tr("Codex가 실제 실행 경로입니다. gpt-*는 모델 이름이며 GPT/ChatGPT 경로를 뜻하지 않습니다.",
-                           "Codex is the executor. gpt-* is the model name, not a GPT/ChatGPT route.")
+            executionLine = os1Tr("라우팅 결과: Codex 실행 · OpenAI Codex 한도", "Route: Codex · OpenAI Codex usage")
+            detail = os1Tr("Codex가 실제 실행 경로이고 Codex 사용량을 씁니다(ChatGPT 채팅 한도와 별개). gpt-*는 모델 이름이며 ChatGPT 경로를 뜻하지 않습니다.",
+                           "Codex is the executor and uses Codex usage (separate from ChatGPT chat limits). gpt-* is the model name, not a ChatGPT route.")
         case "claude":
-            executionLine = os1Tr("라우팅 결과: Claude Code 실행", "Route: Claude Code")
-            detail = os1Tr("Claude Code가 실제 실행 경로입니다. 모델 이름은 따로 표시합니다.",
-                           "Claude Code is the executor. The model name is shown separately.")
+            executionLine = os1Tr("라우팅 결과: Claude Code 실행 · Anthropic 한도", "Route: Claude Code · Anthropic usage")
+            detail = os1Tr("Claude Code가 실제 실행 경로이고 Claude 채팅과 같은 Anthropic 한도를 씁니다. 모델 이름은 따로 표시합니다.",
+                           "Claude Code is the executor and shares the Anthropic plan limit with Claude chat. The model name is shown separately.")
         case "local":
             executionLine = os1Tr("라우팅 결과: OS-1 내부 처리", "Route: handled inside OS-1")
             detail = os1Tr("외부 Codex·Claude Code 실행 없이 OS-1이 처리했습니다.", "OS-1 handled this without a Codex or Claude Code run.")
@@ -3682,7 +3682,6 @@ private struct AppRunStep: Decodable, Sendable {
     let stderr: String
     let durationMS: Int64
     let nativeRecord: AppNativeRecord?
-    var executionSurface: String? = nil
     var workflowStage: String? = nil
     var verifiedPreviewDelivery: VerifiedPreviewDelivery? = nil
 
@@ -3694,7 +3693,6 @@ private struct AppRunStep: Decodable, Sendable {
         case exitCode = "exit_code"
         case durationMS = "duration_ms"
         case nativeRecord = "native_record"
-        case executionSurface = "execution_surface"
         case verifiedPreviewDelivery = "verified_preview_delivery"
         case workflowStage = "workflow_stage"
     }
@@ -7828,6 +7826,8 @@ private func codexShellSelfTest() throws {
     try check(codexRoute.modelLine?.contains("gpt-5.6-luna") == true && codexRoute.governanceLine.contains("gpt-5.6-luna"), "the GPT model name stays beside the Codex executor")
     let claudeRoute = ExecutionRoutePresentation(activity: RuntimeActivity(.executing, provider: "claude", model: "claude-fixture"))
     try check(claudeRoute.executionLine.contains("Claude Code"), "Claude Code executor is explicit")
+    try check(codexRoute.executionLine.contains("OpenAI") && claudeRoute.executionLine.contains("Anthropic")
+              && !codexRoute.executionLine.contains("ChatGPT"), "the route names whose usage it spends, and never claims ChatGPT")
     let pendingRoute = ExecutionRoutePresentation(activity: RuntimeActivity(.routing))
     try check(pendingRoute.modelLine == nil && !pendingRoute.executionLine.contains("Codex") && !pendingRoute.executionLine.contains("Claude"),
               "unresolved routing never impersonates an executor")

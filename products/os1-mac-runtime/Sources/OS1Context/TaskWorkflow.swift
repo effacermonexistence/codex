@@ -39,22 +39,23 @@ public enum TaskWorkflow: String, Codable, Sendable, CaseIterable {
         """
     }
 
-    /// Small, bounded work stays in one backend turn. Explicitly staged work and
-    /// substantial structural repairs are split into architecture,
-    /// implementation and independent verification so each stage can be routed
-    /// against its own capability/capacity tuple. This restores automatic split
-    /// only for requests whose wording carries a structural object plus a
-    /// repair/build/verification action; ordinary edits keep the fast path.
+    /// One backend turn does the whole job, as Codex and Claude Code do: the
+    /// backend plans, edits and tests in its own loop, and OS-1's own checks
+    /// follow. Splitting into architecture, implementation and verification
+    /// turns happens only when the owner asks for it ("쪼개", "각각 라우팅",
+    /// "독립 검증"). Automatic splitting by keyword ran 15 owner requests
+    /// between 2026-09-19 and 09-23 and left 8 held or unfinished (median 22
+    /// minutes); build 244 brought it back for "routing/architecture + fix"
+    /// wording, and with one live backend every stage ran on the same Codex
+    /// account, so a split only tripled the turns and the quota.
     public static func shouldDecompose(_ request: String, scope: TaskContext.Scope, projectID: String? = nil) -> Bool {
         guard scope == .workspaceWrite else { return false }
         let text = request.precomposedStringWithCanonicalMapping.lowercased()
-        if explicitStagingMarkers.contains(where: text.contains) { return true }
-        if isBoundedAppearanceEdit(request) { return false }
-        return structuralWorkflowObjects.contains(where: text.contains)
-            && structuralWorkflowActions.contains(where: text.contains)
+        return explicitStagingMarkers.contains(where: text.contains)
     }
 
-    /// The owner asking for separate stages or an independent verifier.
+    /// The owner asking for separate stages, separately routed parts, or an
+    /// independent verifier.
     public static let explicitStagingMarkers = [
         "독립 검증", "독립적으로 검증", "별도 검증", "별도로 검증", "검증은 따로", "따로 검증", "단계별로 나눠", "단계를 나눠",
         "테스크를 쪼개", "태스크를 쪼개", "작업을 쪼개", "작업을 나눠서", "작업 나눠서", "서브태스크로 나눠", "하위 작업으로 나눠",
@@ -62,22 +63,6 @@ public enum TaskWorkflow: String, Codable, Sendable, CaseIterable {
         "설계·구현·검증", "설계, 구현, 검증",
         "independent verification", "separate verification", "verify separately", "in separate stages", "staged workflow",
         "split the task", "split this task", "route each stage", "route subtasks separately",
-    ]
-
-    /// Deterministic client-side admission only. The signed private router still
-    /// chooses the provider/model/effort for each admitted stage; these words do
-    /// not encode private scores or thresholds.
-    public static let structuralWorkflowObjects = [
-        "라우팅", "routing", "router", "아키텍처", "architecture", "backend", "백엔드", "quota", "쿼터",
-        "인증", "auth", "권한", "permission", "schema", "스키마", "migration", "마이그레이션",
-        "queue", "대기열", "복구", "recovery", "restore", "database", "데이터베이스", "persistence",
-        "deadlock", "교착", "보안", "security", "배포", "deployment", "runtime", "런타임",
-        "agent", "에이전트", "workflow", "워크플로", "executor", "실행기",
-    ]
-
-    public static let structuralWorkflowActions = [
-        "원인", "root cause", "debug", "디버그", "고쳐", "수정", "repair", "fix", "구현", "implement",
-        "만들", "build", "설계", "design", "검증", "verify", "test", "테스트", "적용", "apply", "연결", "connect",
     ]
 
     /// Phase instructions constrain actions, not executor capabilities.

@@ -89,7 +89,7 @@ func selfRepairCommand(_ arguments: [String]) async throws -> Bool {
 /// Shared with the runtime hook in main.swift.
 let selfRepairFailurePrefixText = "OS-1 self-repair could not complete: "
 
-let os1RuntimeVersionString = "OS-1 Runtime 0.9.179 (four-surface-routing-build245)"
+let os1RuntimeVersionString = "OS-1 Runtime 0.9.180 (honest-routing-build246)"
 
 func os1SourceWriteLeaseURL(root: String) throws -> URL {
     let directory = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".os1/self-update", isDirectory: true)
@@ -170,6 +170,11 @@ private func stageSelfUpdate(source: String?) throws {
     guard let root = LocalProjectWorkspace.root(containing: requested, projectID: "os1-clodex") else {
         throw OS1Error.message("self-update stage: \(requested) is not inside an OS-1 source tree (marker \(LocalProjectWorkspace.marker(for: "os1-clodex") ?? ""))")
     }
+    // A backend that stages its own uncommitted edit installs code that is in
+    // neither git nor the R2 backup (builds 244/245, 2026-09-24). The
+    // self-repair tail stages, commits and pushes on its own; this command is
+    // for committed trees.
+    if let dirty = uncommittedOS1SourceDiagnostic(root: root) { throw OS1Error.message(dirty) }
     // Staging builds and rewrites release/ inside the checkout — take the
     // same source-write lease as any other OS-1 self-write.
     let lease = try acquireOS1SourceWriteLease(root: root)
@@ -617,6 +622,20 @@ func finishUnboundOS1Change(_ watch: OS1SourceWatch, objective: String, startedA
     case .staged(_, let note): return note
     case .failed(let diagnostic): return selfRepairFailurePrefixText + diagnostic
     }
+}
+
+/// `os1 self-update stage` refuses a tree with uncommitted OS-1 source: the
+/// installed build must be reproducible from git (and so from R2).
+func uncommittedOS1SourceDiagnostic(root: String) -> String? {
+    guard let git = try? findExecutable("git"),
+          let status = try? commandOutput(git, ["-C", root, "status", "--porcelain", "--", SelfUpdate.runtimeRelativePath], timeout: 60),
+          status.0 == 0 else { return nil }
+    let changed = String(decoding: status.1, as: UTF8.self).split(separator: "\n").filter {
+        // The release link is rewritten by every build; it is not source.
+        !$0.hasSuffix(SelfUpdate.runtimeRelativePath + "/release")
+    }
+    guard !changed.isEmpty else { return nil }
+    return "self-update stage: \(root) has \(changed.count) uncommitted OS-1 source file(s). Commit them first, so the installed build exists in git and the R2 backup. When a task changes OS-1's own source, OS-1 commits, builds, installs and pushes it itself after the turn; do not stage it from inside the task."
 }
 
 /// Staging a checkout that lacks the installed build's source commit would

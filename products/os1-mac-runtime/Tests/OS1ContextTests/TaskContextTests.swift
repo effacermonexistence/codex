@@ -10,16 +10,6 @@ func runTaskContextFixtures(root: URL) throws {
         guard try value() else { throw NSError(domain: "TaskContextTests", code: 1, userInfo: [NSLocalizedDescriptionKey: message]) }
         count += 1
     }
-    try check(ExecutionSurfacePolicy.automaticCandidates(scope: .readOnly) == [.codex, .claudeCode], "read-only exposes only verifiable agent transports")
-    try check(ExecutionSurfacePolicy.automaticCandidates(scope: .workspaceWrite) == [.codex, .claudeCode], "write scope exposes both provider agent modes")
-    try check(ExecutionSurfacePolicy.automaticCandidates(scope: .fullAccess).isEmpty, "full access is never automatically delegated")
-    try check(ExecutionSurfacePolicy.surface(providerID: "codex", permissionProfile: "read_only") == .codex, "read-only capability does not relabel Codex as ChatGPT")
-    try check(ExecutionSurfacePolicy.surface(providerID: "claude", permissionProfile: "read_only") == .claudeCode, "read-only capability does not relabel Claude CLI as consumer Claude")
-    try check(ExecutionSurfacePolicy.surface(providerID: "codex", permissionProfile: "workspace_write") == .codex, "OpenAI write transport maps to Codex")
-    try check(ExecutionSurfacePolicy.surface(providerID: "claude", permissionProfile: "workspace_write") == .claudeCode, "Anthropic write transport maps to Claude Code")
-    try check(!OS1ExecutionSurface.chatGPT.isAutomaticExecutorAvailable && !OS1ExecutionSurface.claude.isAutomaticExecutorAvailable, "consumer chat surfaces cannot be claimed without a real executor")
-    try check(ExecutionSurfacePolicy.routingDirective(scope: .readOnly).contains("Codex via codex"), "read-only route directive names the actual OpenAI transport")
-    try check(ExecutionSurfacePolicy.routingDirective(scope: .workspaceWrite).contains("Claude Code via claude"), "write route directive names Anthropic agent surface")
     for raw in ["https://example.com/", "http://127.0.0.1:4173/", "https://example.com/path?q=1"] {
         try check(BrowserNavigation.url(raw) != nil, "browser supports real web URLs")
     }
@@ -194,10 +184,10 @@ func runTaskContextFixtures(root: URL) throws {
     for text in [focusRepairImperative, focusRepairImperative.decomposedStringWithCanonicalMapping] {
         try check(ScopeResolution.resolve(text).scope == .workspaceWrite, "formal imperative retains write objective")
         try check(PreparationIntent.detect(text)?.projectID == "os1-clodex" && PreparationIntent.detect(text)?.modifies == true, "self repair binds source before dispatch")
-        try check(TaskWorkflow.shouldDecompose(text, scope: ScopeResolution.resolve(text).scope), "structural self repair decomposes by stage")
+        try check(!TaskWorkflow.shouldDecompose(text, scope: ScopeResolution.resolve(text).scope), "self repair runs as one backend turn")
     }
     let shortRepair = "라우팅할 때 Codex·Claude 창이 앞으로 튀어나오는 문제를 고쳐"
-    try check(TaskWorkflow.shouldDecompose(shortRepair, scope: .workspaceWrite, projectID: "os1-clodex"), "structural routing repair decomposes by stage")
+    try check(!TaskWorkflow.shouldDecompose(shortRepair, scope: .workspaceWrite, projectID: "os1-clodex"), "bound self repair runs as one backend turn")
     try check(TaskWorkflow.shouldDecompose(shortRepair + ". 구현 뒤 독립 검증까지 해", scope: .workspaceWrite, projectID: "os1-clodex"), "owner-requested stages still decompose")
     try check(!TaskWorkflow.shouldDecompose(shortRepair + ". 독립 검증까지 해", scope: .readOnly, projectID: "os1-clodex"), "stages cannot grant write permission")
     try check(TaskWorkflow.sourceAlreadySatisfied("evidence\nOS1_SOURCE_STATE: ALREADY_SATISFIED"), "structured no-op candidate")
