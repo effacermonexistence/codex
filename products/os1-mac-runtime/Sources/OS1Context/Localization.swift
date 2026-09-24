@@ -17,6 +17,26 @@ public struct OS1Settings: Codable, Equatable, Sendable {
     public var burnCodexBeforeReset: Bool? = nil
     /// Hours before the window reset at which the burn starts (default 12).
     public var codexBurnLeadHours: Int? = nil
+    /// Conversations OS-1 may run at the same time. Until this was settable the
+    /// cap was a fixed 4: once four runs were active every other conversation
+    /// waited, which looked like "OS-1 does not run in parallel". Optional so
+    /// older settings files still decode; read it through `parallelRuns`.
+    public var parallelRunLimit: Int? = nil
+
+    /// Supported range for `parallelRunLimit`. One conversation at a time is a
+    /// deliberate serial mode; the upper bound keeps a raised cap from starting
+    /// more backend turns than a desktop machine and its quotas can carry.
+    public static let parallelRunRange = 1...12
+    public static let defaultParallelRuns = 4
+
+    /// The cap actually applied: an unset or out-of-range value never disables
+    /// admission or removes the bound.
+    public static func clampedParallelRuns(_ value: Int?) -> Int {
+        guard let value else { return defaultParallelRuns }
+        return min(max(value, parallelRunRange.lowerBound), parallelRunRange.upperBound)
+    }
+
+    public var parallelRuns: Int { OS1Settings.clampedParallelRuns(parallelRunLimit) }
 
     public init(interfaceLanguage: String = "en", outputLanguage: String = "auto", showCodex: Bool = true) {
         self.interfaceLanguage = interfaceLanguage
@@ -39,6 +59,8 @@ public struct OS1Settings: Codable, Equatable, Sendable {
         var settings = value
         if !["en", "ko", "system"].contains(settings.interfaceLanguage) { settings.interfaceLanguage = "en" }
         if settings.outputLanguage.isEmpty || settings.outputLanguage.count > 40 { settings.outputLanguage = "auto" }
+        // A hand-edited file must not be able to serialize or flood execution.
+        if let limit = settings.parallelRunLimit { settings.parallelRunLimit = clampedParallelRuns(limit) }
         return settings
     }
 

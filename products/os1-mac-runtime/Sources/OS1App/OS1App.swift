@@ -1215,18 +1215,21 @@ private func slotWaitVisibilitySelfTest() async throws {
             permissionProfile: "read_only", exitCode: 0, output: "answer " + submission.request, stderr: "",
             durationMS: 0, nativeRecord: nil)])
     }, nativeSessionOpener: { _ in false })
+    // Pin the admission cap: the fixture must not inherit the machine's own
+    // Settings value, and a fixture store never writes the owner's file.
+    store.updateSettings { $0.parallelRunLimit = 4 }
     func finish(_ name: String) async throws {
         try await eventually { gates[name] != nil }
         gates.removeValue(forKey: name)!.resume()
     }
     var running: [UUID] = []
-    for n in 1...SessionStore.maximumConcurrentSessions {
+    for n in 1...store.maximumConcurrentSessions {
         if n > 1 { store.createSession() }
         running.append(store.selectedSessionID!)
         store.composer = "S\(n)"; store.send()
     }
-    try await eventually { gates.count == SessionStore.maximumConcurrentSessions }
-    try check(store.activeRuns.count == SessionStore.maximumConcurrentSessions, "cap was not reached")
+    try await eventually { gates.count == store.maximumConcurrentSessions }
+    try check(store.activeRuns.count == store.maximumConcurrentSessions, "cap was not reached")
     store.createSession(); let e = store.selectedSessionID!
     store.composer = "E1"; store.send()
     store.createSession(); let f = store.selectedSessionID!
@@ -1234,7 +1237,7 @@ private func slotWaitVisibilitySelfTest() async throws {
     store.createSession(); let g = store.selectedSessionID!
     store.composer = "G1"; store.send()
     try check(store.queuedSubmissions.map(\.request) == ["E1", "F1", "G1"] && starts.count == 4, "fifth+ conversation launched past the cap")
-    let limit = "\(SessionStore.maximumConcurrentSessions)/\(SessionStore.maximumConcurrentSessions)"
+    let limit = "\(store.maximumConcurrentSessions)/\(store.maximumConcurrentSessions)"
     try check(store.globalSlotWait(e)?.position == 1 && store.globalSlotWait(f)?.position == 2 && store.globalSlotWait(g)?.position == 3,
         "slot-wait order does not match the scheduler's admission order")
     for id in [e, f, g] {
@@ -1303,7 +1306,7 @@ private func slotWaitVisibilitySelfTest() async throws {
     // queued BEFORE E takes the slot its own run frees. E must not promise a
     // start on any freed slot; it states the range and why.
     for (n, id) in running.enumerated() { store.select(id); store.composer = "T\(n + 1)"; store.send() }
-    try await eventually { gates.count == SessionStore.maximumConcurrentSessions }
+    try await eventually { gates.count == store.maximumConcurrentSessions }
     store.select(running[0]); store.composer = "T1 follow-up"; store.send()
     store.select(e); store.composer = "E2"; store.send()
     store.select(f); store.composer = "F2"; store.send()
@@ -1335,7 +1338,48 @@ private func slotWaitVisibilitySelfTest() async throws {
     try await finish("F2")
     try await eventually { store.activeRuns.isEmpty }
     try check(store.queuedSubmissions.isEmpty && starts.count == 14 && Set(starts).count == 14, "follow-up scenario did not drain exactly once")
-    print("Slot wait visibility: \(checks) checks passed; model calls 0; cap \(limit) reason/order/arrow/bubble/pause/follow-up/drain")
+    // The cap is the owner's setting, not a build constant (2026-09-23: three
+    // conversations "did not run in parallel" because four other runs held
+    // every slot and nothing said the ceiling could be raised). Raising it must
+    // start the waiting conversations at once, with no new user action;
+    // lowering it must not interrupt a run that already started.
+    let cap = store.maximumConcurrentSessions
+    for n in 1...cap {
+        store.createSession()
+        store.composer = "P\(n)"; store.send()
+    }
+    try await eventually { gates.count == cap }
+    store.createSession(); let h = store.selectedSessionID!
+    store.composer = "H1"; store.send()
+    store.createSession(); let i = store.selectedSessionID!
+    store.composer = "I1"; store.send()
+    try check(store.globalSlotWait(h)?.limit == cap && store.globalSlotWait(i)?.position == 2 &&
+        store.queueReason(h).contains("설정(⌘,)"), "slot wait does not say where the cap is raised: \(store.queueReason(h))")
+    let beforeRaise = starts.count
+    store.updateSettings { $0.parallelRunLimit = cap + 2 }
+    try check(store.maximumConcurrentSessions == cap + 2, "owner cap not applied to admission")
+    try await eventually { starts.count == beforeRaise + 2 }
+    try check(Array(starts.suffix(2)) == ["H1", "I1"] && store.queuedSubmissions.isEmpty &&
+        store.activeRuns.count == cap + 2 && store.globalSlotWait(h) == nil,
+        "raising the cap did not start the conversations that were only waiting for a slot")
+    // Lowering it is not a stop button: running work finishes, admission stops.
+    store.updateSettings { $0.parallelRunLimit = 1 }
+    try check(store.activeRuns.count == cap + 2 && starts.count == beforeRaise + 2 && gates.count == cap + 2,
+        "lowering the cap interrupted work that had already started")
+    store.createSession(); let j = store.selectedSessionID!
+    store.composer = "J1"; store.send()
+    try check(!starts.contains("J1") && store.globalSlotWait(j)?.limit == 1, "lowered cap not applied to the next request")
+    // An out-of-range value never removes the bound or serializes by accident.
+    store.updateSettings { $0.parallelRunLimit = 0 }
+    try check(store.maximumConcurrentSessions == OS1Settings.parallelRunRange.lowerBound, "cap accepted below its range")
+    store.updateSettings { $0.parallelRunLimit = 99 }
+    try check(store.maximumConcurrentSessions == OS1Settings.parallelRunRange.upperBound &&
+        store.parallelRunSettingHint.isEmpty, "cap accepted above its range, or the raise hint is shown at the maximum")
+    try await eventually { starts.contains("J1") }
+    for name in Array(starts.suffix(cap + 3)) { try await finish(name) }
+    try await eventually { store.activeRuns.isEmpty }
+    try check(store.queuedSubmissions.isEmpty && Set(starts).count == starts.count, "owner-cap scenario did not drain exactly once")
+    print("Slot wait visibility: \(checks) checks passed; model calls 0; cap \(limit) reason/order/arrow/bubble/pause/follow-up/drain/owner-cap")
 }
 
 @MainActor
@@ -4336,7 +4380,11 @@ private final class SessionStore: ObservableObject {
     typealias NativeSessionOpener = (URL) -> Bool
     typealias NativePinOperation = @MainActor (String, Bool, String?) async throws -> Void
     // Admission is global; ownership, sequencing, context and display are not.
-    static let maximumConcurrentSessions = 4
+    // The cap is the owner's (Settings ⌘, → 동시 실행), not a build constant:
+    // four was a hidden ceiling that silently held every further conversation.
+    // Raising it admits the waiting conversations at once; lowering it never
+    // interrupts a run that already started.
+    var maximumConcurrentSessions: Int { appSettings.parallelRuns }
     /// Raw JSON of conversations this build could not decode, carried through
     /// every save so nothing is lost while the cause is fixed.
     private var unreadableSessions: [PreservedSession] = []
@@ -4510,7 +4558,7 @@ private final class SessionStore: ObservableObject {
     /// takes the slot that conversation's own run frees. `mayStartFirst` counts
     /// those requests, so the real order lies in position...position+mayStartFirst.
     func globalSlotWait(_ sessionID: UUID) -> (running: Int, limit: Int, position: Int, mayStartFirst: Int)? {
-        guard !isSessionRunning(sessionID), activeRuns.count >= Self.maximumConcurrentSessions,
+        guard !isSessionRunning(sessionID), activeRuns.count >= maximumConcurrentSessions,
               let headIndex = queuedSubmissions.firstIndex(where: { $0.sessionID == sessionID }),
               queueEligible(queuedSubmissions[headIndex]) else { return nil }
         var headReady: [UUID: Bool] = [:], position = 1, mayStartFirst = 0
@@ -4520,7 +4568,7 @@ private final class SessionStore: ObservableObject {
             guard headReady[item.sessionID] == true, queueEligible(item, ignoringRun: true) else { continue }
             if isHead && !isSessionRunning(item.sessionID) { position += 1 } else { mayStartFirst += 1 }
         }
-        return (activeRuns.count, Self.maximumConcurrentSessions, position, mayStartFirst)
+        return (activeRuns.count, maximumConcurrentSessions, position, mayStartFirst)
     }
 
     /// Eligible waiting conversations whose next request is ahead of this
@@ -4542,15 +4590,24 @@ private final class SessionStore: ObservableObject {
         return queueReason(sessionID)
     }
 
+    /// The cap is the owner's setting, so the wait always says where it is
+    /// raised. Only shown while raising it is still possible.
+    var parallelRunSettingHint: String {
+        maximumConcurrentSessions < OS1Settings.parallelRunRange.upperBound
+            ? " · 설정(⌘,) 동시 실행에서 늘리면 대기 중인 대화가 바로 시작됩니다" : ""
+    }
+
     func globalSlotWaitText(_ sessionID: UUID) -> String? {
         guard let wait = globalSlotWait(sessionID) else { return nil }
         let base = "실행 슬롯 대기 · 동시 실행 \(wait.running)/\(wait.limit) 사용 중"
         guard wait.mayStartFirst > 0 else {
             return base + " · 다른 작업이 끝나면 자동 시작" + (wait.position > 1 ? " · 대기 순서 \(wait.position)" : "")
+                + parallelRunSettingHint
         }
         // Not every freed slot is this request's: say which ones go first.
         return base + " · 빈 슬롯 순서대로 자동 시작 · 대기 순서 \(wait.position)~\(wait.position + wait.mayStartFirst)"
             + " · 앞선 대화의 다음 요청 \(wait.mayStartFirst)개는 그 대화의 작업이 끝나면 먼저 시작될 수 있습니다"
+            + parallelRunSettingHint
     }
 
     /// Reason shown under a queued request's own bubble. Nil while this
@@ -4578,13 +4635,13 @@ private final class SessionStore: ObservableObject {
             let ahead = conversationsWaitingAhead(of: sessionID)
             // The slot this run frees is admitted in global order; say so
             // instead of promising the follow-up starts right after it.
-            if activeRuns.count >= Self.maximumConcurrentSessions, ahead > 0 {
-                return "현재 작업이 끝난 뒤 실행 슬롯 순서대로 시작 · 먼저 기다리는 대화 \(ahead)개 · 동시 실행 \(activeRuns.count)/\(Self.maximumConcurrentSessions) 사용 중"
+            if activeRuns.count >= maximumConcurrentSessions, ahead > 0 {
+                return "현재 작업이 끝난 뒤 실행 슬롯 순서대로 시작 · 먼저 기다리는 대화 \(ahead)개 · 동시 실행 \(activeRuns.count)/\(maximumConcurrentSessions) 사용 중"
             }
             return "현재 작업이 끝나면 순서대로 자동 실행됩니다"
         }
-        if activeRuns.count >= Self.maximumConcurrentSessions {
-            return "다른 작업의 실행 슬롯 대기 중 · 동시 실행 \(activeRuns.count)/\(Self.maximumConcurrentSessions) 사용 중"
+        if activeRuns.count >= maximumConcurrentSessions {
+            return "다른 작업의 실행 슬롯 대기 중 · 동시 실행 \(activeRuns.count)/\(maximumConcurrentSessions) 사용 중"
         }
         return "순서대로 실행 준비 중"
     }
@@ -5224,7 +5281,7 @@ private final class SessionStore: ObservableObject {
                   let objective = sessions[index].taskContext?.objective.requestText, !objective.isEmpty {
             submission.amendedRequest = objective
         }
-        if isSessionRunning(submission.sessionID) || activeRuns.count >= Self.maximumConcurrentSessions ||
+        if isSessionRunning(submission.sessionID) || activeRuns.count >= maximumConcurrentSessions ||
             sessions[index].lastFailure != nil || sessions[index].lastBackendFailure != nil ||
             sessions[index].queuePaused == true ||
             queuedSubmissions.contains(where: { $0.sessionID == submission.sessionID }) {
@@ -5381,7 +5438,7 @@ private final class SessionStore: ObservableObject {
         guard !editingQueueIDs.contains(item.id),
               queuedSubmissions.contains(where: { $0.id == item.id }),
               !isSessionRunning(item.sessionID),
-              activeRuns.count < Self.maximumConcurrentSessions,
+              activeRuns.count < maximumConcurrentSessions,
               let session = sessions.first(where: { $0.id == item.sessionID }),
               session.lastFailure != nil else { return false }
         return session.lastBackendFailure?.requiresReadback == true || session.lastFailure?.savedResultNeedsReview == true
@@ -5392,14 +5449,14 @@ private final class SessionStore: ObservableObject {
         if !canAdvanceQueued(item) { return canReconcileQueued(item) ? "이전 변경 상태 확인 · 대기 요청 보존" : "이전 변경 상태 확인 필요" }
         if isSessionRunning(item.sessionID) {
             let ahead = conversationsWaitingAhead(of: item.sessionID)
-            return activeRuns.count >= Self.maximumConcurrentSessions && ahead > 0
+            return activeRuns.count >= maximumConcurrentSessions && ahead > 0
                 ? "현재 작업을 중지하고 이 요청부터 시작 · 먼저 기다리는 대화 \(ahead)개 뒤에 실행 슬롯 대기"
                 : "현재 작업을 중지하고 이 요청부터 시작"
         }
         // The arrow cannot bypass the global admission cap; say so instead of
         // promising a start that only happens when another task frees a slot.
-        return activeRuns.count >= Self.maximumConcurrentSessions
-            ? "실행 슬롯이 비면 이 요청부터 시작 · 동시 실행 \(activeRuns.count)/\(Self.maximumConcurrentSessions) 사용 중"
+        return activeRuns.count >= maximumConcurrentSessions
+            ? "실행 슬롯이 비면 이 요청부터 시작 · 동시 실행 \(activeRuns.count)/\(maximumConcurrentSessions) 사용 중"
             : "이 요청부터 시작"
     }
 
@@ -5535,7 +5592,7 @@ private final class SessionStore: ObservableObject {
     }
 
     private func start(_ submission: PendingSubmission) {
-        guard !isSessionRunning(submission.sessionID), activeRuns.count < Self.maximumConcurrentSessions,
+        guard !isSessionRunning(submission.sessionID), activeRuns.count < maximumConcurrentSessions,
               let index = sessions.firstIndex(where: { $0.id == submission.sessionID }) else {
             return
         }
@@ -5973,7 +6030,7 @@ private final class SessionStore: ObservableObject {
                let target = sessions.firstIndex(where: { $0.id == submission.sessionID }),
                sessions[target].lastFailure?.id == original.id,
                !isSessionRunning(submission.sessionID),
-               activeRuns.count < Self.maximumConcurrentSessions,
+               activeRuns.count < maximumConcurrentSessions,
                !FileManager.default.fileExists(atPath: ExecutionCancellation.url(submissionID: original.id).path),
                !FileManager.default.fileExists(atPath: ExecutionCancellation.url(submissionID: submission.id).path) {
                 let queuedFollowUp = queuedSubmissions.firstIndex {
@@ -6205,7 +6262,7 @@ private final class SessionStore: ObservableObject {
     private func runNextQueuedSubmissionIfNeeded() {
         // A queued turn in A must not block ready work in B. Within A the
         // first queued turn is the only eligible one, and context is built now.
-        while activeRuns.count < Self.maximumConcurrentSessions,
+        while activeRuns.count < maximumConcurrentSessions,
               let index = queuedSubmissions.firstIndex(where: { next in
                   queueEligible(next) &&
                   !queuedSubmissions.prefix(while: { $0.id != next.id }).contains(where: { $0.sessionID == next.sessionID })
@@ -6501,7 +6558,7 @@ private final class SessionStore: ObservableObject {
     /// no automatic mutation, login, remote-source substitution or UI reveal.
     func resumeRegisteredSourcePreparations(root: URL = RegisteredProjectSource.defaultRoot) {
         for session in sessions {
-            guard activeRuns.count < Self.maximumConcurrentSessions,
+            guard activeRuns.count < maximumConcurrentSessions,
                   !isSessionRunning(session.id), session.lastBackendFailure == nil,
                   let pending = session.taskContext?.sourcePreparation, pending.canLookForRegistration,
                   let failed = session.lastFailure, failed.preflightOnly == true,
@@ -6561,7 +6618,7 @@ private final class SessionStore: ObservableObject {
         }
         let identity = ISO8601DateFormatter().string(from: health.checkedAt)
         for session in waiting {
-            guard activeRuns.count < Self.maximumConcurrentSessions,
+            guard activeRuns.count < maximumConcurrentSessions,
                   let failed = session.lastFailure, failed.backendRecoveryIdentity != identity,
                   !FileManager.default.fileExists(atPath: ExecutionCancellation.url(submissionID: failed.id).path),
                   let index = sessions.firstIndex(where: { $0.id == session.id }) else { continue }
@@ -6661,7 +6718,7 @@ private final class SessionStore: ObservableObject {
     }
     func retrySelectedFailure() {
         guard !isRunning, let failed = selectedSession?.lastFailure,
-              activeRuns.count < Self.maximumConcurrentSessions else { return }
+              activeRuns.count < maximumConcurrentSessions else { return }
         if failed.savedResultNeedsReview == true { reconcileSelectedFailure(); return }
         if failed.deliveryID != nil { start(failed); return }
         guard selectedSession?.lastBackendFailure?.requiresReadback != true else {
@@ -6688,11 +6745,11 @@ private final class SessionStore: ObservableObject {
     func reconcileSelectedFailure() {
         guard !isRunning, let failed = selectedSession?.lastFailure,
               (selectedSession?.lastBackendFailure?.requiresReadback == true || failed.savedResultNeedsReview == true),
-              activeRuns.count < Self.maximumConcurrentSessions else { return }
+              activeRuns.count < maximumConcurrentSessions else { return }
         beginReconciliation(conversationID: failed.sessionID)
     }
     private func beginReconciliation(conversationID: UUID) {
-        guard !isSessionRunning(conversationID), activeRuns.count < Self.maximumConcurrentSessions,
+        guard !isSessionRunning(conversationID), activeRuns.count < maximumConcurrentSessions,
               let index = sessions.firstIndex(where: { $0.id == conversationID }),
               let failed = sessions[index].lastFailure else { return }
         let request = BackendRecovery.readbackPrompt(objective: failed.request)
@@ -6731,8 +6788,10 @@ private final class SessionStore: ObservableObject {
         // rail without a restart.
         let disk = OS1Settings.load()
         if disk != appSettings {
+            let previousParallelRuns = appSettings.parallelRuns
             appSettings = disk
             if !disk.showCodex, surface == .codex { surface = .auto }
+            if disk.parallelRuns > previousParallelRuns { runNextQueuedSubmissionIfNeeded() }
         }
         resumeRegisteredSourcePreparations()
         resumeBackendRecoveries()
@@ -6822,9 +6881,17 @@ private final class SessionStore: ObservableObject {
         var value = appSettings
         mutate(&value)
         guard value != appSettings else { return }
+        let previousParallelRuns = appSettings.parallelRuns
         appSettings = value
-        do { try value.save() } catch { alertMessage = error.localizedDescription }
+        // Only the live store owns settings.json; a fixture store changes its
+        // own admission without touching the owner's file.
+        if customStorageRoot == nil {
+            do { try value.save() } catch { alertMessage = error.localizedDescription }
+        }
         if !value.showCodex, surface == .codex { surface = .auto }
+        // A raised cap is the owner asking for the waiting conversations to run
+        // now: admit them here instead of at the next queue event or restart.
+        if value.parallelRuns > previousParallelRuns { runNextQueuedSubmissionIfNeeded() }
     }
     func removeQueued(_ id: UUID) {
         // Cancelling or pulling back a queued request also retires the bubble
@@ -7911,6 +7978,29 @@ private struct OS1DesktopApp: App {
                 try png.write(to: output); print(output.path); exit(EXIT_SUCCESS)
             } catch { fputs("\(error.localizedDescription)\n", stderr); exit(EXIT_FAILURE) }
         }
+        // The Settings pane is where the parallel-run cap is changed, so its
+        // layout is checked by rendering it, not by reading the code.
+        if let flag = CommandLine.arguments.firstIndex(of: "--render-settings-preview") {
+            do {
+                guard CommandLine.arguments.count > flag + 1 else { throw SourceContextError.invalid }
+                let output = URL(fileURLWithPath: CommandLine.arguments[flag + 1])
+                if CommandLine.arguments.count > flag + 2 {
+                    setenv("OS1_INTERFACE_LANGUAGE", CommandLine.arguments[flag + 2], 1)
+                    OS1Localization.invalidate()
+                }
+                let root = FileManager.default.temporaryDirectory.appendingPathComponent("os1-settings-preview-" + UUID().uuidString)
+                try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+                defer { try? FileManager.default.removeItem(at: root) }
+                let store = SessionStore(storageRoot: root, nativeSessionOpener: { _ in false })
+                let content = OS1SettingsView(store: store).environment(\.colorScheme, .dark)
+                let view = NSHostingView(rootView: content)
+                view.frame = NSRect(x: 0, y: 0, width: 560, height: 640); view.layoutSubtreeIfNeeded()
+                guard let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { throw SourceContextError.invalid }
+                view.cacheDisplay(in: view.bounds, to: bitmap)
+                guard let png = bitmap.representation(using: .png, properties: [:]) else { throw SourceContextError.invalid }
+                try png.write(to: output); print(output.path); exit(EXIT_SUCCESS)
+            } catch { fputs("\(error.localizedDescription)\n", stderr); exit(EXIT_FAILURE) }
+        }
         if let flag = CommandLine.arguments.firstIndex(of: "--render-activity-preview") {
             do {
                 guard CommandLine.arguments.count > flag + 1 else { throw SourceContextError.invalid }
@@ -8261,6 +8351,21 @@ private struct OS1SettingsView: View {
                            "Interface language applies to menus and status text. Response ‘Auto’ answers in whatever language you type — an English keyboard with a Korean message still gets a Korean answer."))
                     .font(.footnote).foregroundStyle(.secondary)
             }
+            Section(os1Tr("동시 실행", "Parallel runs")) {
+                Picker(os1Tr("동시에 실행할 대화 수", "Conversations running at the same time"),
+                       selection: Binding(get: { store.appSettings.parallelRuns },
+                                          set: { value in store.updateSettings { $0.parallelRunLimit = value } })) {
+                    ForEach(Array(OS1Settings.parallelRunRange), id: \.self) { count in
+                        Text(verbatim: "\(count)").tag(count)
+                    }
+                }
+                Text(os1Tr("서로 다른 대화는 여기까지 동시에 실행됩니다. 지금 \(store.activeRuns.count)개 실행 중 · 대기 \(store.queuedSubmissions.count)개. 값을 올리면 슬롯을 기다리던 대화가 바로 시작되고, 내리면 이미 실행 중인 작업은 그대로 끝납니다. 한 대화 안의 후속 요청은 같은 작업 맥락을 이어가므로 순서대로 실행됩니다.",
+                           "Different conversations run at the same time up to this number. \(store.activeRuns.count) running · \(store.queuedSubmissions.count) waiting. Raising it starts conversations that were waiting for a slot; lowering it lets running tasks finish. Follow-ups inside one conversation continue the same task and still run in order."))
+                    .font(.footnote).foregroundStyle(.secondary)
+                Text(os1Tr("높일수록 백엔드 한도(Codex·Claude)가 더 빨리 소진되고 기기 부하가 커집니다.",
+                           "A higher number uses the Codex/Claude quotas faster and loads the machine more."))
+                    .font(.footnote).foregroundStyle(.secondary)
+            }
             Section(os1Tr("백엔드", "Backends")) {
                 Toggle(os1Tr("Codex 백엔드 사용", "Use the Codex backend"), isOn: binding(\.showCodex))
                 Text(os1Tr("끄면 레일에서 사라지고 어떤 작업도 Codex로 라우팅되지 않습니다. Claude와 OS-1 로컬 실행만 사용합니다.",
@@ -8280,7 +8385,9 @@ private struct OS1SettingsView: View {
             }
         }
         .formStyle(.grouped)
-        .frame(width: 560, height: 420)
+        // Rendered at this size: language, parallel runs, backends and about
+        // all fit without scrolling to reach the cap.
+        .frame(width: 560, height: 640)
     }
 }
 
@@ -11334,9 +11441,9 @@ private struct ComposerView: View {
                 Button(session.lastFailure?.savedResultNeedsReview == true ? "저장된 결과·현재 상태 검토 · 변경 재실행 없음" : session.lastFailure?.deliveryID != nil ? "저장된 결과 전달 · 모델 재실행 없음" : session.lastBackendFailure?.requiresReadback == true
                     ? "현재 상태 확인 · 재실행하지 않음" : "OS-1에서 다시 확인하고 시도") { store.retrySelectedFailure() }
                     .font(.system(size: 12, weight: .medium))
-                    .disabled(store.activeRuns.count >= SessionStore.maximumConcurrentSessions)
-                    .help(store.activeRuns.count >= SessionStore.maximumConcurrentSessions
-                        ? "동시 실행 \(store.activeRuns.count)/\(SessionStore.maximumConcurrentSessions) 사용 중 · 다른 작업이 끝나면 누를 수 있습니다" : "")
+                    .disabled(store.activeRuns.count >= store.maximumConcurrentSessions)
+                    .help(store.activeRuns.count >= store.maximumConcurrentSessions
+                        ? "동시 실행 \(store.activeRuns.count)/\(store.maximumConcurrentSessions) 사용 중 · 다른 작업이 끝나면 누를 수 있습니다" : "")
             }
             if store.selectedSessionQueueCount > 0 || session.queuePaused == true {
                 ConversationQueueView(store: store, session: session)
