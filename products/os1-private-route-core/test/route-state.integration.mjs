@@ -120,6 +120,7 @@ import { RouteState as ProductionRouteState, RoutingBudgetState as ProductionBud
 export class RoutingBudgetState extends ProductionBudgetState {
   testObserve(observation) { this.observe(observation); return this.learningRows(); }
   testRows() { return this.learningRows(); }
+  testRows2() { return this.learningRows(2); }
 }
 export class RouteState extends ProductionRouteState {
   testBegin(input) { return this.begin(input); }
@@ -149,6 +150,7 @@ export default {
       else if (body.op === "claim") value = await state.testClaim(body.sequence);
       else if (body.op === "observe") value = await env.ROUTING_BUDGETS.getByName(body.name).testObserve(body.observation);
       else if (body.op === "rows") value = await env.ROUTING_BUDGETS.getByName(body.name).testRows();
+      else if (body.op === "rows2") value = await env.ROUTING_BUDGETS.getByName(body.name).testRows2();
       else throw new Error("unknown operation");
       return Response.json({ ok: true, value });
     } catch { return Response.json({ ok: false }, { status: 409 }); }
@@ -308,18 +310,24 @@ try {
   const learningSecond = (await call(miniflare, { op: "snapshot", name: "learning", sequence: 2 })).value;
   assert.ok(learningSecond.step_started_ms >= learningFirst.step_started_ms);
   assert.equal((await call(miniflare, { op: "claim", name: "learning", sequence: 2 })).value, true);
-  const outcome = { provider: "codex", model: "gpt-test", effort: "medium", task_class: "source_review", adopted: true, duration_ms: 30_000 };
+  const outcome = { provider: "codex", model: "gpt-test", effort: "medium", task_class: "source_review", adopted: true,
+    duration_ms: 30_000, tokens: 100_000 };
   await call(miniflare, { op: "observe", name: "fixture:owner", observation: outcome });
   const ledger = (await call(miniflare, { op: "observe", name: "fixture:owner",
-    observation: { ...outcome, adopted: false, duration_ms: 5_000 } })).value;
+    observation: { ...outcome, adopted: false, duration_ms: 5_000, tokens: 400_000 } })).value;
   assert.equal(ledger.length, 1);
   assert.equal(ledger[0].class, "source_review");
   assert.ok(Math.abs(ledger[0].n - 2) < 0.001 && Math.abs(ledger[0].s - 1) < 0.001);
   assert.equal(ledger[0].d, 30);
+  // Schema 2 reads the real SQLite columns: both attempts' tokens, geometric mean.
+  const tokenRows = (await call(miniflare, { op: "rows2", name: "fixture:owner" })).value;
+  assert.equal(tokenRows[0].k, 200_000);
+  assert.ok(Math.abs(tokenRows[0].kn - 2) < 0.001);
+  assert.equal(ledger[0].k, undefined, "schema 1 rows never carry tokens");
   await call(miniflare, { op: "observe", name: "fixture:owner", observation: { ...outcome, task_class: "deterministic_exact" } }, 409);
   assert.deepEqual((await call(miniflare, { op: "rows", name: "fixture:other" })).value, []);
 
-  console.log("route-state workerd integration: 5/5 checks passed");
+  console.log("route-state workerd integration: 6/6 checks passed");
 } finally {
   clearTimeout(watchdog);
   if (miniflare) await miniflare.dispose();

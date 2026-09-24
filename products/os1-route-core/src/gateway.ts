@@ -244,6 +244,7 @@ export async function submitResult(request: Request, env: Env): Promise<Response
       sequence: result.ticket.sequence,
       artifact_ref: result.artifact_ref,
       expected_artifact_hash: result.result_hash,
+      ...(result.usage ? { usage: result.usage } : {}),
     },
   }, true);
   let response: PublicResponse;

@@ -80,5 +80,21 @@ describe("asymmetric ticket signatures", () => {
         publicJwk,
       ),
     ).resolves.toBe(false);
+
+    // Usage is signed with the result (v2): a count changed in transit, or
+    // attached to a v1 signature, fails; v1 bytes are unchanged without usage.
+    expect(new TextDecoder().decode(canonicalResult(result)).split("\n")[0]).toBe("os1-result-v1");
+    const usage = { input_tokens: 800_000, output_tokens: 3_000, cache_tokens: 790_000 };
+    const withUsage = { ...result, usage, device_signature: "" };
+    expect(new TextDecoder().decode(canonicalResult(withUsage)).split("\n")).toEqual([
+      "os1-result-v2", result.ticket.execution_id, "2", result.ticket.nonce, "b".repeat(64),
+      result.artifact_ref, "800000", "790000", "3000"]);
+    const v2 = await crypto.subtle.sign({ name: "ECDSA", hash: "SHA-256" }, pair.privateKey, canonicalResult(withUsage));
+    withUsage.device_signature = Buffer.from(v2).toString("base64url");
+    await expect(verifyDeviceResult(withUsage, publicJwk)).resolves.toBe(true);
+    await expect(verifyDeviceResult({ ...withUsage, usage: { ...usage, output_tokens: 1 } }, publicJwk)).resolves.toBe(false);
+    await expect(verifyDeviceResult({ ...result, usage }, publicJwk)).resolves.toBe(false);
+    const unmeasured = { ...result, usage: { input_tokens: null, output_tokens: null, cache_tokens: null } };
+    expect(new TextDecoder().decode(canonicalResult(unmeasured)).split("\n").slice(-3)).toEqual(["null", "null", "null"]);
   });
 });
