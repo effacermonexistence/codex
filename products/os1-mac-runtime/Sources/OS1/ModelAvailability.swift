@@ -136,7 +136,8 @@ enum ModelAvailability {
     /// login; used to explain an empty catalog and to decide self-repair.
     static func claudeAuthProbe(workspace: String) -> ClaudeAuthProbe {
         guard let executable = try? findExecutable("claude") else { return .missing }
-        guard let auth = try? commandOutput(executable, ["auth", "status", "--json"], timeout: 8, currentDirectory: workspace) else {
+        guard let auth = try? commandOutput(executable, ["auth", "status", "--json"], timeout: 8, currentDirectory: workspace,
+                                            environmentOverrides: backendAccountEnvironment("claude")) else {
             return .failed("auth status probe did not run")
         }
         guard let status = (try? JSONSerialization.jsonObject(with: auth.1)) as? [String: Any] else {
@@ -169,7 +170,7 @@ enum ModelAvailability {
     private static func probeClaudeModels(workspace: String) throws -> [NativeClaudeModel] {
         let executable = try findExecutable("claude")
         let auth = try commandOutput(executable, ["auth", "status", "--json"], timeout: 8,
-            currentDirectory: workspace)
+            currentDirectory: workspace, environmentOverrides: backendAccountEnvironment("claude"))
         guard auth.0 == 0, let status = try JSONSerialization.jsonObject(with: auth.1) as? [String: Any],
               status["loggedIn"] as? Bool == true else { throw OS1Error.message("Claude account is unavailable") }
         let id = UUID().uuidString
@@ -180,7 +181,8 @@ enum ModelAvailability {
         let output = try commandOutput(executable, ["--print", "--input-format", "stream-json",
             "--output-format", "stream-json", "--verbose", "--strict-mcp-config", "--mcp-config",
             "{\"mcpServers\":{}}", "--tools", "", "--no-session-persistence"], input: input,
-            timeout: 12, currentDirectory: workspace, isProvider: true)
+            timeout: 12, currentDirectory: workspace, isProvider: true,
+            environmentOverrides: backendAccountEnvironment("claude"))
         guard output.0 == 0, output.1.count <= 2_000_000 else { throw OS1Error.message("Claude model metadata unavailable") }
         for line in output.1.split(separator: 10) {
             guard let message = try? JSONSerialization.jsonObject(with: Data(line)) as? [String: Any],

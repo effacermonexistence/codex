@@ -253,7 +253,7 @@ func selfRepairBackends(health: BackendHealth, codexCatalog: ActiveCodexCatalog,
         switch step {
         case .reconnectClaude:
             guard environment["OS1_ALLOW_AUTHENTICATION"] == "1" else {
-                notes.append("이 실행 환경에서는 공식 로그인 창을 열 수 없습니다. OS-1 앱에서 같은 요청을 보내거나 터미널에서 `claude auth login`을 실행하세요.")
+                notes.append("이 실행 환경에서는 공식 로그인 창을 열 수 없습니다. OS-1 앱 왼쪽 CLAUDE 타일에서 로그인하거나 `os1 accounts login --provider claude`를 실행하세요.")
                 continue
             }
             RuntimeActivity.emit(.authorizing,
@@ -305,8 +305,9 @@ func executableCodexCatalog(_ catalog: ActiveCodexCatalog, config: RuntimeConfig
 func claudeUnavailableDescription(workspace: String) -> String? {
     switch ModelAvailability.claudeAuthProbe(workspace: workspace) {
     case .loggedOut:
-        return os1Tr("이 Mac의 Claude Code CLI가 로그아웃 상태입니다 · 터미널에서 claude auth login으로 한 번 로그인하면 Claude로 실행됩니다",
-                     "the Claude Code CLI on this Mac is signed out · run claude auth login once and Claude runs again")
+        let account = BackendAccounts.active(provider: "claude", in: BackendAccountState.shared.book())
+        return os1Tr("Claude 계정(\(account.label))이 로그아웃 상태입니다 · 왼쪽 CLAUDE 타일에서 로그인하면 Claude로 실행됩니다",
+                     "the Claude account (\(account.label)) is signed out · sign in from the CLAUDE tile on the left and Claude runs again")
     case .missing:
         return os1Tr("claude 실행 파일이 없습니다", "the claude executable is missing")
     case .loggedIn:
@@ -1989,8 +1990,8 @@ func activeCodexCatalog(
     cacheURL: URL? = nil,
     now: Date = Date()
 ) throws -> ActiveCodexCatalog {
-    let url = cacheURL ?? FileManager.default.homeDirectoryForCurrentUser
-        .appendingPathComponent(".codex/models_cache.json")
+    let url = cacheURL ?? BackendAccounts.home(provider: "codex", in: BackendAccountState.shared.book())
+        .appendingPathComponent("models_cache.json")
     if let data = try? Data(contentsOf: url),
        let cache = try? JSONDecoder().decode(CachedCodexCatalog.self, from: data) {
         var seen = Set<String>()
@@ -2130,8 +2131,11 @@ private func claudeLoginAlreadyRunning() -> Bool {
     return result.0 == 0 && !result.1.isEmpty
 }
 
-private func runClaudeLoginInTerminal(deadlineSeconds: Int = 300) throws -> (Int32, Data, Data) {
+func runClaudeLoginInTerminal(home: URL? = nil, deadlineSeconds: Int = 300) throws -> (Int32, Data, Data) {
     let claude = try findExecutable("claude")
+    // Which account signs in: an added account has its own config directory,
+    // and the default one keeps the CLI's own.
+    let configDirectory = home?.path ?? backendAccountEnvironment("claude")["CLAUDE_CONFIG_DIR"]
     // Starting `claude auth login` clears the stored session immediately, so a
     // flow the owner never finishes turns "expired" into "no credential at
     // all". Never stack a second window on top of a pending one: wait for the
@@ -2145,7 +2149,7 @@ private func runClaudeLoginInTerminal(deadlineSeconds: Int = 300) throws -> (Int
         while Date() < deadline {
             if ExecutionCancellation.isCancelled { throw OS1Error.backendBlocked(.cancelled) }
             Thread.sleep(forTimeInterval: 3)
-            if (try? existingClaudeConnection()) != nil { return (0, Data(), Data()) }
+            if (try? existingClaudeConnection(home: home)) != nil { return (0, Data(), Data()) }
             if !claudeLoginAlreadyRunning() { break }
         }
         throw ConnectionFailure.authentication
@@ -2164,6 +2168,7 @@ private func runClaudeLoginInTerminal(deadlineSeconds: Int = 300) throws -> (Int
     #!/bin/zsh
     set -u
     claude_bin="$1"
+    [[ -n "${2:-}" ]] && export CLAUDE_CONFIG_DIR="$2"
     run_dir="$(mktemp -d "${TMPDIR:-/tmp}/os1-claude-login.XXXXXX")"
     chmod 700 "$run_dir"
     fifo="$run_dir/stdin"
@@ -2173,7 +2178,13 @@ private func runClaudeLoginInTerminal(deadlineSeconds: Int = 300) throws -> (Int
     "$claude_bin" auth login --claudeai < "$fifo" > /dev/null 2>&1 &
     login_pid=$!
     exec 3> "$fifo"
-    sleep 3
+    # The browser callback finishes most sign-ins on its own. Ask for a code
+    # only when it has not, so the owner is never handed a step they do not need.
+    for _ in {1..12}; do
+      "$claude_bin" auth status --json 2>/dev/null | grep -q '"loggedIn": *true' && { exec 3>&-; exit 0; }
+      kill -0 "$login_pid" 2>/dev/null || break
+      sleep 2
+    done
     osascript > "$run_dir/answer" 2>/dev/null <<'APPLESCRIPT'
     tell me to activate
     set reply to display dialog "\(message)" default answer "" with hidden answer with title "\(title)" buttons {"\(cancel)", "\(confirm)"} default button "\(confirm)" with icon note
@@ -2194,7 +2205,8 @@ private func runClaudeLoginInTerminal(deadlineSeconds: Int = 300) throws -> (Int
     try Data(body.utf8).write(to: script, options: .atomic)
     try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: script.path)
     func quoted(_ value: String) -> String { "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'" }
-    let launched = try commandOutput("/bin/sh", ["-c", "nohup \(quoted(script.path)) \(quoted(claude)) > /dev/null 2>&1 &"], timeout: 20)
+    let launched = try commandOutput("/bin/sh", ["-c",
+        "nohup \(quoted(script.path)) \(quoted(claude)) \(quoted(configDirectory ?? "")) > /dev/null 2>&1 &"], timeout: 20)
     guard launched.0 == 0 else { throw ConnectionFailure.unavailable }
     RuntimeActivity.emit(.authorizing,
         publicText: os1Tr("공식 Claude 로그인을 열었습니다. 브라우저에서 승인한 뒤 표시된 코드를 앞에 뜬 팝업에 붙여넣으면 OS1이 같은 작업을 이어갑니다.",
@@ -2204,9 +2216,50 @@ private func runClaudeLoginInTerminal(deadlineSeconds: Int = 300) throws -> (Int
     while Date() < deadline {
         if ExecutionCancellation.isCancelled { throw OS1Error.backendBlocked(.cancelled) }
         Thread.sleep(forTimeInterval: 3)
-        if (try? existingClaudeConnection()) != nil { return (0, Data(), Data()) }
+        if (try? existingClaudeConnection(home: home)) != nil { return (0, Data(), Data()) }
     }
     throw ConnectionFailure.authentication
+}
+
+/// Codex signs in through its own local callback server, so the CLI finishes
+/// on its own once the owner approves in the browser: no dialog, no code, and
+/// nothing for OS-1 to relay.
+func runCodexLogin(home: URL? = nil, deadlineSeconds: Int = 300) throws -> (Int32, Data, Data) {
+    let codex = try findExecutable("codex")
+    var environment = home.map { ["CODEX_HOME": $0.path] } ?? backendAccountEnvironment("codex")
+    if let directory = environment["CODEX_HOME"] {
+        try FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true,
+                                                attributes: [.posixPermissions: 0o700])
+    }
+    environment["OS1_INTERNAL_PROVIDER_EXECUTION"] = "1"
+    func signedIn() -> Bool {
+        guard let status = try? commandOutput(codex, ["login", "status"], timeout: 15,
+                                              environmentOverrides: environment) else { return false }
+        return status.0 == 0 && String(decoding: status.1, as: UTF8.self).lowercased().contains("logged in")
+    }
+    if signedIn() { return (0, Data(), Data()) }
+    var launch = ["nohup", quotedShellArgument(codex), "login"]
+    for (key, value) in environment.sorted(by: { $0.key < $1.key }) {
+        launch.insert("\(key)=\(quotedShellArgument(value))", at: 0)
+    }
+    let command = "env " + launch.joined(separator: " ") + " > /dev/null 2>&1 &"
+    let launched = try commandOutput("/bin/sh", ["-c", command], timeout: 20)
+    guard launched.0 == 0 else { throw ConnectionFailure.unavailable }
+    RuntimeActivity.emit(.authorizing,
+        publicText: os1Tr("공식 Codex 로그인을 열었습니다. 브라우저에서 승인하면 그대로 이어집니다.",
+                          "The official Codex sign-in is open. Approve it in the browser and it continues on its own."),
+        tool: "codex")
+    let deadline = Date().addingTimeInterval(TimeInterval(deadlineSeconds))
+    while Date() < deadline {
+        if ExecutionCancellation.isCancelled { throw OS1Error.backendBlocked(.cancelled) }
+        Thread.sleep(forTimeInterval: 3)
+        if signedIn() { return (0, Data(), Data()) }
+    }
+    throw ConnectionFailure.authentication
+}
+
+func quotedShellArgument(_ value: String) -> String {
+    "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
 }
 
 private struct ConnectionControlTargets: OptionSet {
@@ -2261,15 +2314,17 @@ private func verifyR2Connection() throws -> String {
 }
 
 private func verifyClaudeConnection() throws -> String {
-    try withConnectionRecovery(service: "claude", probe: existingClaudeConnection)
+    try withConnectionRecovery(service: "claude", probe: { try existingClaudeConnection() })
 }
 
 /// Read-only Claude Code OAuth status probe. Never mutates or issues a login
 /// on its own; `withConnectionRecovery` decides whether a fresh `claude auth
 /// login` is warranted after this throws `.authentication`.
-private func existingClaudeConnection() throws -> String {
+private func existingClaudeConnection(home: URL? = nil) throws -> String {
     let claude = try findExecutable("claude")
-    let result = try commandOutput(claude, ["auth", "status", "--json"], timeout: 15)
+    let environment = home.map { ["CLAUDE_CONFIG_DIR": $0.path] } ?? backendAccountEnvironment("claude")
+    let result = try commandOutput(claude, ["auth", "status", "--json"], timeout: 15,
+                                   environmentOverrides: environment)
     let text = String(decoding: result.1 + result.2, as: UTF8.self)
     guard result.0 == 0, let status = decodedJSONObject(result.1), status["loggedIn"] as? Bool == true else {
         throw ConnectionFailure.classify(text.isEmpty ? "not logged in" : text)
@@ -4568,7 +4623,11 @@ final class CodexAppServerClient: @unchecked Sendable {
         // otherwise waits through repeated OAuth transport failures before a
         // simple turn can begin.
         process.arguments = ["app-server", "-c", "mcp_servers.cloudflare-api.enabled=false"]
-        process.environment = ProviderExecutionEnvironment.marked(ProcessInfo.processInfo.environment)
+        // The account the owner chose owns this run's CODEX_HOME; the default
+        // account adds nothing, so the app server starts exactly as before.
+        process.environment = ProviderExecutionEnvironment
+            .marked(ProcessInfo.processInfo.environment)
+            .merging(backendAccountEnvironment("codex")) { _, new in new }
         process.currentDirectoryURL = URL(fileURLWithPath: workspace, isDirectory: true)
         process.standardInput = input
         process.standardOutput = output
@@ -5480,8 +5539,9 @@ func claudeTranscriptPath(
     modifiedAfter: Date? = nil,
     containing assistantText: String? = nil
 ) -> String? {
-    let root = projectsRoot ?? FileManager.default.homeDirectoryForCurrentUser
-        .appendingPathComponent(".claude/projects", isDirectory: true)
+    // Claude writes its transcript under the active account's config
+    // directory, so a second account's records are read from its own home.
+    let root = projectsRoot ?? claudeProjectsRoot()
     guard let projects = try? FileManager.default.contentsOfDirectory(
         at: root,
         includingPropertiesForKeys: [.isDirectoryKey],
@@ -5837,6 +5897,7 @@ private func execute(
             idleTimeout: idleTimeout.map(TimeInterval.init),
             currentDirectory: executionWorkspace,
             isProvider: true,
+            environmentOverrides: backendAccountEnvironment("claude"),
             onLaunch: { onDispatch?(activeSessionID) },
             onOutput: { bytes in
                 stream.ingestClaude(bytes)
@@ -10512,6 +10573,9 @@ func usage() {
 
       os1 doctor
       os1 self-test
+      os1 accounts list [--json]
+      os1 accounts login --provider codex|claude [--id ACCOUNT] [--new] [--label NAME]
+      os1 accounts use|logout|forget --provider codex|claude [--id ACCOUNT]
       os1 fleet-snapshot
       os1 fleet-run --workspace /path --prompt "task" [--profile codex|claude|os1|build|test|exo]
       os1 fleet-wait --job UUID [--timeout-seconds 5...3600]
@@ -10546,6 +10610,10 @@ struct OS1Main {
             switch command {
             case "version", "--version", "-V": print(os1RuntimeVersionString)
             case "doctor": try doctor()
+            // Owner-facing sign-in for the backends, with more than one
+            // account each. OS-1 starts the provider's own browser login and
+            // records the label and home only — never a credential.
+            case "accounts": try BackendAccountCommands.run(arguments)
             case "sidebar-pin":
                 guard (4...5).contains(arguments.count), arguments[1] == "codex",
                       let id = try normalizedSessionID(arguments[2]), ["true", "false"].contains(arguments[3]) else {

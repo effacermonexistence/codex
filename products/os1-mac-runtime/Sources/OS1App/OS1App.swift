@@ -4302,6 +4302,15 @@ private func compactSessionAge(_ date: Date) -> String {
     return date.formatted(date: .abbreviated, time: .omitted)
 }
 
+/// Collects a child's two pipes from their reader threads.
+private final class ProcessOutputBuffer: @unchecked Sendable {
+    private let lock = NSLock()
+    private var out = Data(), error = Data()
+    func appendOut(_ data: Data) { lock.lock(); out += data; lock.unlock() }
+    func appendError(_ data: Data) { lock.lock(); error += data; lock.unlock() }
+    func contents() -> (Data, Data) { lock.lock(); defer { lock.unlock() }; return (out, error) }
+}
+
 private enum OS1Runner {
     static func pinNativeSession(id: String, pinned: Bool, before: String?) async throws {
         try await Task.detached(priority: .userInitiated) {
@@ -4322,6 +4331,52 @@ private enum OS1Runner {
             }
         }.value
     }
+    /// `os1 accounts …`: the runtime owns the account file and runs the
+    /// provider's own browser sign-in. The app passes arguments and reads the
+    /// result; no credential crosses this boundary.
+    static func accounts(_ arguments: [String], timeout: TimeInterval) async throws -> String {
+        let path = try executable()
+        return try await Task.detached(priority: .userInitiated) {
+            let process = Process(), output = Pipe(), errors = Pipe()
+            process.executableURL = URL(fileURLWithPath: path)
+            process.arguments = arguments
+            process.currentDirectoryURL = FileManager.default.homeDirectoryForCurrentUser
+            process.standardOutput = output
+            process.standardError = errors
+            var environment = ProcessInfo.processInfo.environment
+            let home = FileManager.default.homeDirectoryForCurrentUser.path
+            environment["PATH"] = ["\(home)/.local/bin", "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin",
+                                   "/usr/sbin", "/sbin", environment["PATH"] ?? ""].joined(separator: ":")
+            process.environment = environment
+            // Read both pipes while the child runs: a sign-in prints progress
+            // and would otherwise fill a pipe buffer and stall.
+            let collected = ProcessOutputBuffer()
+            output.fileHandleForReading.readabilityHandler = { collected.appendOut($0.availableData) }
+            errors.fileHandleForReading.readabilityHandler = { collected.appendError($0.availableData) }
+            try process.run()
+            let deadline = Date().addingTimeInterval(timeout)
+            while process.isRunning && Date() < deadline { try await Task.sleep(for: .milliseconds(200)) }
+            if process.isRunning {
+                process.terminate()
+                throw RunnerError.message(os1Tr("로그인 확인 시간이 초과됐습니다. 브라우저에서 승인을 마쳤는지 확인하세요.",
+                                                "The sign-in was not confirmed in time. Check that you finished approving it in the browser."))
+            }
+            process.waitUntilExit()
+            output.fileHandleForReading.readabilityHandler = nil
+            errors.fileHandleForReading.readabilityHandler = nil
+            collected.appendOut(output.fileHandleForReading.readDataToEndOfFile())
+            collected.appendError(errors.fileHandleForReading.readDataToEndOfFile())
+            let (stdout, stderr) = collected.contents()
+            guard process.terminationStatus == 0 else {
+                let text = String(decoding: stderr + stdout, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+                throw RunnerError.message(text.isEmpty
+                    ? os1Tr("계정 작업을 확인하지 못했습니다.", "The account change could not be confirmed.")
+                    : String(text.suffix(400)))
+            }
+            return String(decoding: stdout, as: UTF8.self)
+        }.value
+    }
+
     /// Read-only backend probe (`os1 backend-health --refresh`): native
     /// metadata only, no inference, no login. It refreshes the shared health
     /// record that the recovery monitor and the fleet heartbeat read.
@@ -4601,6 +4656,14 @@ private final class SessionStore: ObservableObject {
     /// Codex-style user settings (language, backends). The file is the source
     /// of truth for every OS-1 process; this copy drives the UI.
     @Published var appSettings = OS1Settings.load()
+    /// Which Codex and Claude accounts this Mac is signed in to. The runtime
+    /// owns the file; the app reads it and asks the runtime to change it.
+    /// No credential is ever held here — only labels and sign-in state.
+    @Published var accountBook = BackendAccounts.load()
+    /// The provider whose sign-in is running, so its rail tile can say so.
+    @Published var accountBusy: String?
+    @Published var accountNotice: String?
+    @Published var accountsOpen = false
     @Published var composer = "" {
         didSet {
             if let index = selectedIndex { sessions[index].draft = composer }
@@ -7125,6 +7188,65 @@ private final class SessionStore: ObservableObject {
         }
     }
     func flushPendingState() { draftSaveTask?.cancel(); save() }
+
+    // MARK: - Backend accounts
+    //
+    // Every change is made by the runtime (`os1 accounts …`), which runs the
+    // provider's own sign-in. The app shows the result and never handles a
+    // credential.
+
+    private func runAccounts(_ arguments: [String], timeout: TimeInterval) async {
+        guard customStorageRoot == nil else { return }
+        let provider = arguments.firstIndex(of: "--provider").flatMap { index in
+            arguments.indices.contains(index + 1) ? arguments[index + 1] : nil
+        }
+        accountBusy = provider
+        accountNotice = nil
+        defer { accountBusy = nil }
+        do {
+            _ = try await OS1Runner.accounts(arguments, timeout: timeout)
+        } catch {
+            accountNotice = error.localizedDescription
+        }
+        accountBook = BackendAccounts.load()
+    }
+
+    /// Read-only: asks each provider's own status command who is signed in.
+    func refreshAccounts() async {
+        guard customStorageRoot == nil else { return }
+        _ = try? await OS1Runner.accounts(["accounts", "list", "--json"], timeout: 90)
+        accountBook = BackendAccounts.load()
+    }
+
+    func signIn(provider: String, accountID: String? = nil, newLabel: String? = nil) async {
+        var arguments = ["accounts", "login", "--provider", provider]
+        if let accountID { arguments += ["--id", accountID] }
+        if let newLabel { arguments += ["--new", "--label", newLabel] }
+        await runAccounts(arguments, timeout: 420)
+    }
+
+    func useAccount(provider: String, id: String) async {
+        await runAccounts(["accounts", "use", "--provider", provider, "--id", id], timeout: 60)
+    }
+
+    func signOutAccount(provider: String, id: String) async {
+        await runAccounts(["accounts", "logout", "--provider", provider, "--id", id], timeout: 120)
+    }
+
+    func forgetAccount(provider: String, id: String) async {
+        await runAccounts(["accounts", "forget", "--provider", provider, "--id", id], timeout: 120)
+    }
+
+    func accounts(for provider: ProviderChoice) -> [BackendAccount] {
+        guard provider != .auto else { return [] }
+        return BackendAccounts.accounts(provider: provider.rawValue, in: accountBook)
+    }
+
+    func activeAccount(for provider: ProviderChoice) -> BackendAccount? {
+        guard provider != .auto else { return nil }
+        return BackendAccounts.active(provider: provider.rawValue, in: accountBook)
+    }
+
     func updateSettings(_ mutate: (inout OS1Settings) -> Void) {
         var value = appSettings
         mutate(&value)
@@ -7524,6 +7646,8 @@ private enum Theme {
     static let pink = Color(red: 0.93, green: 0.70, blue: 0.80)
     static let pinkDeep = Color(red: 0.22, green: 0.10, blue: 0.16)
     static let green = Color(red: 0.28, green: 0.93, blue: 0.55)
+    /// Needs the owner, but nothing is broken: a backend waiting for sign-in.
+    static let amber = Color(red: 0.99, green: 0.78, blue: 0.35)
     static let sidebarWidth: CGFloat = 256
     static let conversationWidth: CGFloat = 760
     /// Codex converges image attachments on a readable card instead of
@@ -8491,7 +8615,7 @@ private struct OS1DesktopApp: App {
                 try sidebarSynchronizationSelfTest()
                 try backendRecoverySelfTest()
                 try selfUpdateReportSelfTest()
-                print("OS-1 app provider intent, source continuity, voice, math, selection, pin/archive/drafts/queue, backend self-repair, self-update self-test: OK")
+                print("OS-1 app provider intent, source continuity, voice, math, selection, pin/archive/drafts/queue, backend accounts, backend self-repair, self-update self-test: OK")
                 exit(EXIT_SUCCESS)
             } catch {
                 fputs("\(error.localizedDescription)\n", stderr)
@@ -8585,6 +8709,122 @@ private struct OS1DesktopApp: App {
 
 /// User settings, configured like Codex: language and backends in one pane,
 /// persisted to OS-1's settings.json which every OS-1 process reads.
+/// Sign in to Codex and Claude Code from OS-1, with more than one account
+/// each. OS-1 starts the provider's own browser sign-in and records the label
+/// and state only; the credential stays with that provider's CLI.
+private struct BackendAccountsView: View {
+    @ObservedObject var store: SessionStore
+    @State private var addingProvider: String?
+    @State private var newLabel = ""
+
+    private func providers() -> [ProviderChoice] {
+        [.codex, .claude].filter { $0 != .codex || store.appSettings.showCodex }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack {
+                Text(os1Tr("백엔드 계정", "Backend accounts")).font(.headline)
+                Spacer()
+                Button(os1Tr("새로 확인", "Refresh")) { Task { await store.refreshAccounts() } }
+                Button(os1Tr("닫기", "Close")) { store.accountsOpen = false }.keyboardShortcut(.cancelAction)
+            }
+            .padding(.horizontal, 18).padding(.vertical, 14)
+            Divider()
+            ScrollView {
+                VStack(alignment: .leading, spacing: 18) {
+                    ForEach(providers()) { provider in
+                        section(provider)
+                    }
+                    Text(os1Tr("로그인은 각 제공자의 공식 창에서 진행됩니다. OS-1은 계정 이름과 로그인 여부만 기록하고 토큰은 보지 않습니다. 계정마다 별도의 홈 디렉터리를 쓰므로 한 Mac에서 여러 계정을 번갈아 쓸 수 있습니다.",
+                               "Each sign-in runs in that provider's own official flow. OS-1 records only the account name and whether it is signed in — never a token. Each account gets its own home directory, so several accounts can share one Mac."))
+                        .font(.footnote).foregroundStyle(.secondary)
+                    if let notice = store.accountNotice {
+                        Text(notice).font(.footnote).foregroundStyle(Theme.amber).textSelection(.enabled)
+                    }
+                }
+                .padding(18)
+            }
+        }
+        .frame(width: 560, height: 520)
+        .task { await store.refreshAccounts() }
+    }
+
+    @ViewBuilder
+    private func section(_ provider: ProviderChoice) -> some View {
+        let key = provider.rawValue
+        let rows = store.accounts(for: provider)
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                ProviderBrandIcon(provider: provider, size: 18)
+                Text(provider.title).font(.system(size: 13, weight: .semibold))
+                Text(provider == .claude ? "Anthropic" : "OpenAI").font(.footnote).foregroundStyle(.secondary)
+                Spacer()
+                if store.accountBusy == key { ProgressView().controlSize(.small) }
+                Button(os1Tr("계정 추가", "Add account")) {
+                    newLabel = ""
+                    addingProvider = key
+                }
+                .disabled(store.accountBusy != nil)
+            }
+            ForEach(rows) { row in
+                HStack(spacing: 10) {
+                    Image(systemName: store.accountBook.active[key] == row.id ? "largecircle.fill.circle" : "circle")
+                        .foregroundStyle(store.accountBook.active[key] == row.id ? Theme.pink : Theme.muted)
+                        .onTapGesture { Task { await store.useAccount(provider: key, id: row.id) } }
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(row.label).font(.system(size: 12))
+                        Text(row.signedIn
+                             ? (row.signedInAs.map { os1Tr("로그인됨 · \($0)", "Signed in · \($0)") } ?? os1Tr("로그인됨", "Signed in"))
+                             : os1Tr("로그아웃 — 이 계정으로는 실행되지 않습니다", "Signed out — nothing runs on this account"))
+                            .font(.footnote)
+                            .foregroundStyle(row.signedIn ? Color.secondary : Theme.amber)
+                    }
+                    Spacer()
+                    Button(row.signedIn ? os1Tr("다시 로그인", "Sign in again") : os1Tr("로그인", "Sign in")) {
+                        Task { await store.signIn(provider: key, accountID: row.id) }
+                    }
+                    .disabled(store.accountBusy != nil)
+                    if row.signedIn {
+                        Button(os1Tr("로그아웃", "Sign out")) {
+                            Task { await store.signOutAccount(provider: key, id: row.id) }
+                        }.disabled(store.accountBusy != nil)
+                    }
+                    if !row.isDefault {
+                        Button(os1Tr("삭제", "Remove")) {
+                            Task { await store.forgetAccount(provider: key, id: row.id) }
+                        }.disabled(store.accountBusy != nil)
+                    }
+                }
+                .padding(.vertical, 5).padding(.horizontal, 10)
+                .background(RoundedRectangle(cornerRadius: 10).fill(Color.white.opacity(0.04)))
+            }
+        }
+        .sheet(isPresented: Binding(get: { addingProvider == key }, set: { if !$0 { addingProvider = nil } })) {
+            VStack(alignment: .leading, spacing: 12) {
+                Text(os1Tr("\(provider.title) 계정 추가", "Add a \(provider.title) account")).font(.headline)
+                TextField(os1Tr("계정 이름 (예: 회사 계정)", "Account name (e.g. Work)"), text: $newLabel)
+                    .textFieldStyle(.roundedBorder)
+                Text(os1Tr("이름은 이 Mac에서 계정을 구분하기 위한 것입니다. 다음 단계에서 \(provider.title)의 공식 로그인 창이 열립니다.",
+                           "The name only tells accounts apart on this Mac. The next step opens \(provider.title)'s own sign-in."))
+                    .font(.footnote).foregroundStyle(.secondary)
+                HStack {
+                    Spacer()
+                    Button(os1Tr("취소", "Cancel")) { addingProvider = nil }.keyboardShortcut(.cancelAction)
+                    Button(os1Tr("로그인 열기", "Open sign-in")) {
+                        let label = newLabel
+                        addingProvider = nil
+                        Task { await store.signIn(provider: key, newLabel: label) }
+                    }
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(BackendAccounts.validLabel(newLabel) == nil)
+                }
+            }
+            .padding(18).frame(width: 380)
+        }
+    }
+}
+
 private struct OS1SettingsView: View {
     @ObservedObject var store: SessionStore
 
@@ -8626,6 +8866,23 @@ private struct OS1SettingsView: View {
                     .font(.footnote).foregroundStyle(.secondary)
                 Text(os1Tr("높일수록 백엔드 한도(Codex·Claude)가 더 빨리 소진되고 기기 부하가 커집니다.",
                            "A higher number uses the Codex/Claude quotas faster and loads the machine more."))
+                    .font(.footnote).foregroundStyle(.secondary)
+            }
+            Section(os1Tr("계정", "Accounts")) {
+                ForEach([ProviderChoice.codex, ProviderChoice.claude]) { provider in
+                    let account = store.activeAccount(for: provider)
+                    LabeledContent(provider.title) {
+                        Text(account.map { row in
+                            row.signedIn
+                                ? row.label + (row.signedInAs.map { " · \($0)" } ?? "")
+                                : os1Tr("\(row.label) · 로그아웃", "\(row.label) · signed out")
+                        } ?? "—")
+                        .foregroundStyle(account?.signedIn == false ? Theme.amber : Color.secondary)
+                    }
+                }
+                Button(os1Tr("계정 관리…", "Manage accounts…")) { store.accountsOpen = true }
+                Text(os1Tr("Codex와 Claude Code 로그인을 OS-1에서 직접 합니다. 제공자별로 여러 계정을 등록하고 어느 계정으로 실행할지 고를 수 있습니다.",
+                           "Sign in to Codex and Claude Code from OS-1. Each provider can hold several accounts, and you choose which one runs."))
                     .font(.footnote).foregroundStyle(.secondary)
             }
             Section(os1Tr("백엔드", "Backends")) {
@@ -8914,6 +9171,7 @@ private struct RootView: View {
             }
             }
         }
+        .sheet(isPresented: $store.accountsOpen) { BackendAccountsView(store: store) }
         .environment(\.openURL, OpenURLAction { url in
             guard BrowserNavigation.url(url.absoluteString) != nil else { return .systemAction }
             browser.open(url, key: browserKey)
@@ -9083,6 +9341,10 @@ private struct ProviderRail: View {
             ForEach([ProviderChoice.codex, ProviderChoice.claude].filter {
                 $0 != .codex || store.appSettings.showCodex
             }) { provider in
+                let account = store.activeAccount(for: provider)
+                // Never claim a backend is signed out before its own status
+                // command has answered: an unverified account reads as fine.
+                let verified = account.map { $0.verifiedAt == nil || $0.signedIn } ?? true
                 BackendStatus(
                     provider: provider,
                     selected: store.surface == provider,
@@ -9090,8 +9352,28 @@ private struct ProviderRail: View {
                     linked: provider == .codex
                         ? store.selectedSession?.codexSessionID != nil
                         : store.selectedSession?.claudeSessionID != nil,
+                    signedIn: verified,
+                    signingIn: store.accountBusy == provider.rawValue,
+                    accountLabel: account?.label,
                     disabled: false
-                ) { store.inspectBackend(provider) }
+                ) {
+                    // A signed-out backend cannot run anything, so the tile
+                    // offers the sign-in instead of an empty session list.
+                    if !verified { store.accountsOpen = true } else { store.inspectBackend(provider) }
+                }
+                .contextMenu {
+                    ForEach(store.accounts(for: provider)) { row in
+                        Button {
+                            Task { await store.useAccount(provider: provider.rawValue, id: row.id) }
+                        } label: {
+                            Label(row.label + (row.signedIn ? "" : os1Tr(" (로그아웃)", " (signed out)")),
+                                  systemImage: store.accountBook.active[provider.rawValue] == row.id ? "checkmark" : "")
+                        }
+                        .disabled(store.accountBook.active[provider.rawValue] == row.id)
+                    }
+                    Divider()
+                    Button(os1Tr("\(provider.title) 계정…", "\(provider.title) accounts…")) { store.accountsOpen = true }
+                }
             }
 
             Spacer()
@@ -9125,11 +9407,28 @@ private struct BackendStatus: View {
     let selected: Bool
     let active: Bool
     let linked: Bool
+    var signedIn: Bool = true
+    var signingIn: Bool = false
+    var accountLabel: String?
     let disabled: Bool
     let action: () -> Void
 
     private var appearance: RailItemAppearance {
         RailItemAppearance.resolve(selected: selected, linked: linked)
+    }
+
+    /// Sign-in outranks session state: a signed-out backend cannot run, so
+    /// "NO SESSION" would send the owner looking in the wrong place.
+    var stateText: String {
+        if signingIn { return "SIGNING IN" }
+        if !signedIn { return "SIGN IN" }
+        return linked ? "OPEN" : "NO SESSION"
+    }
+
+    private var stateColor: Color {
+        if signingIn { return Theme.pink }
+        if !signedIn { return Theme.amber }
+        return linked ? Theme.green : Theme.muted
     }
 
     var body: some View {
@@ -9142,9 +9441,11 @@ private struct BackendStatus: View {
                     .tracking(1.1)
                     .lineLimit(1)
                     .minimumScaleFactor(0.8)
+                // A backend that is signed out cannot run anything, so that is
+                // what the tile says; the session state only matters once it can.
                 HStack(spacing: 3) {
-                    Circle().fill(linked ? Theme.green : Theme.muted).frame(width: 4, height: 4)
-                    Text(linked ? "OPEN" : "NO SESSION")
+                    Circle().fill(stateColor).frame(width: 4, height: 4)
+                    Text(stateText)
                         .font(.system(size: 5.5, weight: .bold))
                         .lineLimit(1)
                         .minimumScaleFactor(0.65)
@@ -9301,6 +9602,40 @@ private func railSelectionSelfTest() throws {
     try check(store.surface == .auto, "the OS-1 ring must return to the Clodex home surface")
     store.inspectBackend(.auto)
     try check(store.surface == .auto, "auto is not a browsable backend surface")
+
+    // Accounts: a signed-out backend must say so on its own tile, and a
+    // fixture store must never reach the owner's real account file.
+    var book = BackendAccounts.normalized(BackendAccountBook())
+    for position in book.accounts.indices {
+        book.accounts[position].signedIn = true
+        book.accounts[position].verifiedAt = Date()
+    }
+    try check(store.activeAccount(for: .claude)?.isDefault == true,
+        "a fresh Mac shows the provider's own sign-in as the active account")
+    try check(store.accounts(for: .auto).isEmpty, "the OS-1 home is not a signed-in backend")
+    let added = UUID().uuidString.lowercased()
+    book.accounts.append(BackendAccount(id: added, provider: "claude", label: "회사 계정",
+        homePath: BackendAccounts.accountsRoot().appendingPathComponent("claude/\(added)").path,
+        signedIn: false, verifiedAt: Date()))
+    book.active["claude"] = added
+    store.accountBook = book
+    try check(store.accounts(for: .claude).count == 2, "both Claude accounts are listed")
+    try check(store.activeAccount(for: .claude)?.signedIn == false && store.activeAccount(for: .codex)?.signedIn == true,
+        "each provider reports its own account state")
+    let signedOutTile = BackendStatus(provider: .claude, selected: false, active: false, linked: true,
+        signedIn: false, signingIn: false, accountLabel: "회사 계정", disabled: false) {}
+    let signedInTile = BackendStatus(provider: .claude, selected: false, active: false, linked: true,
+        signedIn: true, signingIn: false, accountLabel: "회사 계정", disabled: false) {}
+    try check(signedOutTile.stateText == "SIGN IN" && signedInTile.stateText == "OPEN",
+        "a signed-out backend must offer the sign-in instead of a session state")
+    try check(BackendStatus(provider: .codex, selected: false, active: false, linked: false,
+        signedIn: true, signingIn: true, accountLabel: nil, disabled: false) {}.stateText == "SIGNING IN",
+        "a running sign-in is visible on the tile")
+    // Changing accounts goes through the runtime, so a fixture store must not
+    // touch the owner's real account file: its book only changes when assigned.
+    try check(store.accountBook.active["claude"] == added && store.accountNotice == nil && store.accountBusy == nil,
+        "a fixture store holds only the assigned book and reports no failure")
+    try check(BackendAccounts.load() != book, "the fixture book was never written to the owner's account file")
 
     print("Provider rail selection: \(checks) checks passed; model calls 0; live backend writes 0")
 }
