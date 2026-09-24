@@ -42,6 +42,19 @@ the MacBook Pro MDM reference using the private
 Fetch that script with authenticated `gh`, inspect it, then run it. A matching
 bucket name alone is not the final R2 verification.
 
+For a new Mac request, do not stop after the bootstrap prints login commands.
+Inspect current sign-ins; complete missing Git Command Line Tools and the
+device-local Codex, GitHub CLI, Claude and Wrangler OAuth flows, requesting
+only the approvals the user must perform. If Git is unavailable, start
+`xcode-select --install`, wait for the installation, then continue. Use
+`gh auth login --hostname github.com --git-protocol https --web` and
+`pnpm exec wrangler login --use-keyring` only when their existing logins are
+missing. Run `scripts/finish-new-mac.sh` from the installed repository,
+resolve its reported gate, and rerun until it passes. The finisher checks
+GitHub push permission, converts a bootstrap archive to a real Git checkout
+when needed, verifies the pinned private R2 helper and MacBook Pro MDM object,
+and runs the local doctor. Never call setup complete at the bootstrap printout.
+
 On a completely fresh Mac, this global file is not present until the first
 bootstrap. The first Codex request must identify
 `https://github.com/effacermonexistence/codex` (or continue a task that already

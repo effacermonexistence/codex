@@ -14,6 +14,7 @@ readonly local_bin="$HOME/.local/bin"
 readonly node_install_parent="$HOME/.local/share"
 readonly node_install_root="$HOME/.local/share/node-v${node_version}"
 readonly archive_url="https://github.com/${repo_owner}/${repo_name}/archive/refs/heads/${repo_branch}.tar.gz"
+readonly repository_url="https://github.com/${repo_owner}/${repo_name}.git"
 
 export PATH="$node_install_root/bin:$local_bin:$PATH"
 
@@ -55,14 +56,56 @@ curl -fL --retry 3 --proto '=https' --tlsv1.2 \
   -o "$bootstrap_tmp/repository.tar.gz" "$archive_url"
 tar -xzf "$bootstrap_tmp/repository.tar.gz" -C "$bootstrap_tmp"
 
-mkdir -p "$install_root"
-ditto "$bootstrap_tmp/${repo_name}-${repo_branch}" "$install_root"
+# A fresh Mac needs a real checkout for later GitHub work. Apple's Git stub
+# needs Command Line Tools; keep the archive path available until those are
+# approved and installed on this device.
+fresh_install=0
+if [[ ! -e "$install_root" ]]; then
+  fresh_install=1
+elif [[ -d "$install_root" ]] &&
+     [[ -z "$(find "$install_root" -mindepth 1 -print -quit)" ]]; then
+  rmdir "$install_root"
+  fresh_install=1
+fi
+git_ready=0
+if command -v git >/dev/null 2>&1; then
+  git_binary="$(command -v git)"
+  if [[ "$git_binary" != /usr/bin/git ]] || xcode-select -p >/dev/null 2>&1; then
+    if git --version >/dev/null 2>&1; then
+      git_ready=1
+    fi
+  fi
+fi
+
+if [[ "$fresh_install" -eq 1 && "$git_ready" -eq 1 ]]; then
+  mkdir -p "$(dirname "$install_root")"
+  checkout_stage="$(mktemp -d "$(dirname "$install_root")/.codex-checkout.XXXXXX")"
+  rmdir "$checkout_stage"
+  if GIT_TERMINAL_PROMPT=0 git clone --depth 1 --branch "$repo_branch" \
+      "$repository_url" "$checkout_stage"; then
+    mv "$checkout_stage" "$install_root"
+  else
+    rm -rf "$checkout_stage"
+    mkdir -p "$install_root"
+    ditto "$bootstrap_tmp/${repo_name}-${repo_branch}" "$install_root"
+    touch "$install_root/.omar-bootstrap-archive"
+    echo "Git clone is pending; the archive was preserved for setup." >&2
+  fi
+else
+  mkdir -p "$install_root"
+  ditto "$bootstrap_tmp/${repo_name}-${repo_branch}" "$install_root"
+  if [[ "$fresh_install" -eq 1 ]]; then
+    touch "$install_root/.omar-bootstrap-archive"
+    echo "Git Command Line Tools are pending; the archive was preserved for setup." >&2
+  fi
+fi
 chmod 0755 \
   "$install_root/scripts/bootstrap-new-mac.sh" \
   "$install_root/scripts/bootstrap-claude-code.sh" \
   "$install_root/scripts/install-os1-exo-monitor-from-r2.sh" \
   "$install_root/scripts/restore-from-r2.sh" \
   "$install_root/scripts/configure-new-mac.sh" \
+  "$install_root/scripts/finish-new-mac.sh" \
   "$install_root/scripts/doctor.sh" \
   "$install_root/products/os1-mac-runtime/scripts/install-os1.sh"
 
@@ -286,3 +329,4 @@ echo "  Cloudflare:    codex mcp login cloudflare-api; claude mcp login cloudfla
 echo "  Wrangler:      cd \"$install_root\" && pnpm exec wrangler login --use-keyring"
 echo
 echo "No GitHub PAT, Cloudflare API token, or R2 secret is required by the backup workflow."
+echo "After the per-device OAuth approvals, verify every setup gate with: $install_root/scripts/finish-new-mac.sh"

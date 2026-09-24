@@ -106,6 +106,17 @@ pnpm run doctor:strict
 
 ## New Mac: one bootstrap command
 
+On a Mac with only Codex installed, paste this as the **first Codex message**:
+
+```text
+이 Mac은 완전히 새 Mac이야. https://github.com/effacermonexistence/codex 의 main을 새 Mac 설정 원본으로 사용해. https://raw.githubusercontent.com/effacermonexistence/codex/main/scripts/bootstrap-new-mac.sh 를 내려받아 전체 내용을 확인하고 실행해. Git Command Line Tools, GitHub CLI, Codex/ChatGPT, Claude, Cloudflare Wrangler의 기기별 로그인이 필요하면 기존 연결을 먼저 확인하고 내가 브라우저나 macOS에서 승인할 단계만 알려줘. 승인 후 멈추지 말고 scripts/finish-new-mac.sh가 통과할 때까지 진행해. GitHub push 권한, 실제 Git 체크아웃, 정확한 Cloudflare 계정과 R2 버킷 및 MacBook Pro MDM 객체 읽기, Handy Fn/알림음, 검은 배경, Always On, Codex Q를 확인해. OS-1/EXO는 설치하지 마. 비밀번호나 인증 코드는 채팅에 요구하지 마.
+```
+
+This is one request, with only the unavoidable device-local browser/macOS
+approvals. A brand-new Mac cannot inherit another Mac's OAuth or Keychain
+entries. The agent must continue after bootstrap and run
+`scripts/finish-new-mac.sh` before reporting success.
+
 The durable setup lives in this public repository, not in a laptop or an AI
 account's memory. On a new Mac, download and run the reviewed bootstrap:
 
@@ -152,7 +163,10 @@ bash /tmp/verify-r2-connection.sh
 ```
 
 The GitHub-to-R2 workflow itself needs no laptop login because it uses GitHub
-Actions OIDC. After bootstrap, confirm readiness with `pnpm run doctor`.
+Actions OIDC. After OAuth approvals, confirm readiness with
+`scripts/finish-new-mac.sh`. It verifies the actual Git checkout, authenticated
+GitHub push access, exact Cloudflare account, R2 bucket and private MacBook Pro
+MDM object, then runs `pnpm run doctor`.
 
 On a completely fresh Mac, Codex has not yet received this repository's global
 `AGENTS.md`. Start the first Codex request with the repository address, for

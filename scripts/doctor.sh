@@ -81,6 +81,12 @@ check_file() {
 }
 
 check_file "$repo_root/package.json" "project package"
+if [[ -d "$repo_root/.git" ]] &&
+   [[ "$(git -C "$repo_root" remote get-url origin 2>/dev/null)" == "https://github.com/effacermonexistence/codex.git" ]]; then
+  add_check pass "GitHub checkout" "local repository has the expected origin"
+else
+  add_check fail "GitHub checkout" "run scripts/finish-new-mac.sh after GitHub OAuth"
+fi
 check_file "$repo_root/wrangler.jsonc" "wrangler config"
 check_file "$repo_root/codex/AGENTS.md" "durable Codex guidance"
 check_file "$repo_root/CLAUDE.md" "durable Claude guidance"
