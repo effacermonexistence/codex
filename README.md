@@ -109,7 +109,7 @@ pnpm run doctor:strict
 On a Mac with only Codex installed, paste this as the **first Codex message**:
 
 ```text
-이 Mac은 완전히 새 Mac이야. https://github.com/effacermonexistence/codex 의 main을 새 Mac 설정 원본으로 사용해. https://raw.githubusercontent.com/effacermonexistence/codex/main/scripts/bootstrap-new-mac.sh 를 내려받아 전체 내용을 확인하고 실행해. Git Command Line Tools, GitHub CLI, Codex/ChatGPT, Claude, Cloudflare Wrangler의 기기별 로그인이 필요하면 기존 연결을 먼저 확인하고 내가 브라우저나 macOS에서 승인할 단계만 알려줘. 승인 후 멈추지 말고 scripts/finish-new-mac.sh가 통과할 때까지 진행해. GitHub push 권한, 실제 Git 체크아웃, 정확한 Cloudflare 계정과 R2 버킷 및 MacBook Pro MDM 객체 읽기, Handy Fn/알림음, 검은 배경, Always On, Codex Q를 확인해. OS-1/EXO는 설치하지 마. 비밀번호나 인증 코드는 채팅에 요구하지 마.
+이 Mac은 완전히 새 Mac이야. https://github.com/effacermonexistence/codex 의 main을 새 Mac 설정 원본으로 사용해. https://raw.githubusercontent.com/effacermonexistence/codex/main/scripts/bootstrap-new-mac.sh 를 내려받아 전체 내용을 확인하고 실행해. Git Command Line Tools, GitHub CLI, Codex/ChatGPT, Claude, Cloudflare Wrangler의 기기별 로그인이 필요하면 기존 연결을 먼저 확인하고 내가 브라우저나 macOS에서 승인할 단계만 알려줘. 승인 후 멈추지 말고 scripts/finish-new-mac.sh가 통과할 때까지 진행해. GitHub push 권한, 실제 Git 체크아웃, 정확한 Cloudflare 계정과 R2 버킷 및 MacBook Pro MDM 객체 읽기, Handy Fn/알림음, 검은 배경, 빈 Dock, Always On, Codex Q를 확인해. OS-1/EXO는 설치하지 마. 비밀번호나 인증 코드는 채팅에 요구하지 마.
 ```
 
 This is one request, with only the unavoidable device-local browser/macOS
@@ -138,7 +138,8 @@ backed up before they are replaced.
 The same command also installs the SHA-256-pinned official Handy app and
 Whisper Medium model; configures Fn transcription with Marimba start/stop
 sounds; disables macOS's Fn emoji action; sets the desktop to pure `#000000`;
-starts a login-session idle sleep/display sleep assertion; and sets Codex
+clears pinned Dock apps and folders and disables suggested/recent apps; starts a
+login-session idle sleep/display sleep assertion; and sets Codex
 follow-ups to queue mode. The Always On assertion applies while the user is
 logged in and the lid is open. Handy microphone and Accessibility permissions
 are approved in macOS on each device. Already-open Codex sessions need a

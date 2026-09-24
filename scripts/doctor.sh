@@ -190,6 +190,14 @@ NODE
   else
     add_check fail "black desktop" "pure black wallpaper is not selected"
   fi
+  dock_apps="$(defaults export com.apple.dock - 2>/dev/null | plutil -extract persistent-apps raw -o - - 2>/dev/null || true)"
+  dock_others="$(defaults export com.apple.dock - 2>/dev/null | plutil -extract persistent-others raw -o - - 2>/dev/null || true)"
+  dock_recents="$(defaults read com.apple.dock show-recents 2>/dev/null || true)"
+  if [[ "$dock_apps" == "0" && "$dock_others" == "0" && "$dock_recents" == "0" ]]; then
+    add_check pass "empty Dock" "no pinned apps or folders; suggested and recent apps disabled"
+  else
+    add_check fail "empty Dock" "run scripts/configure-new-mac.sh"
+  fi
   if launchctl print "gui/$(id -u)/com.effacermonexistence.always-on" 2>/dev/null | grep -F 'state = running' >/dev/null; then
     add_check pass "idle Always On" "caffeinate launch agent is running"
   else

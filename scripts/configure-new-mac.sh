@@ -159,6 +159,31 @@ end run
 APPLESCRIPT
 fi
 
+# Clear the removable Dock shortcuts, including the Downloads stack. Finder,
+# Trash, and icons for running apps remain under macOS control.
+dock_item_count() {
+  defaults export com.apple.dock - 2>/dev/null |
+    plutil -extract "$1" raw -o - - 2>/dev/null || printf 'missing'
+}
+
+if [[ "$(dock_item_count persistent-apps)" != "0" ||
+      "$(dock_item_count persistent-others)" != "0" ||
+      "$(defaults read com.apple.dock show-recents 2>/dev/null || true)" != "0" ]]; then
+  dock_backup="$HOME/Library/Preferences/com.apple.dock.before-omar-bootstrap.$(date -u +%Y%m%dT%H%M%SZ).$$.plist"
+  defaults export com.apple.dock "$dock_backup"
+  echo "Preserved existing Dock settings: $dock_backup"
+  defaults write com.apple.dock persistent-apps -array
+  defaults write com.apple.dock persistent-others -array
+  defaults write com.apple.dock show-recents -bool false
+  killall Dock >/dev/null 2>&1 || true
+fi
+if [[ "$(dock_item_count persistent-apps)" != "0" ||
+      "$(dock_item_count persistent-others)" != "0" ||
+      "$(defaults read com.apple.dock show-recents 2>/dev/null || true)" != "0" ]]; then
+  echo "Dock verification failed: removable items or recent apps remain." >&2
+  exit 1
+fi
+
 mkdir -p "$(dirname "$agent_file")"
 if [[ ! -f "$agent_file" ]] ||
    ! cmp -s "$repo_root/assets/mac/$agent_label.plist" "$agent_file"; then
@@ -215,4 +240,5 @@ if (!/^followUpQueueMode\s*=\s*"queue"\s*$/m.test(fs.readFileSync(codex, 'utf8')
 NODE
 
 echo "Mac defaults ready: Handy Fn + sound + medium model, emoji off, pure black wallpaper, idle Always On, Codex queue."
+echo "Dock ready: no pinned apps or folders; suggested and recent apps disabled."
 echo "Approve Handy microphone/Accessibility prompts on this Mac if macOS shows them; restart an already-open Codex app to load queue mode."

@@ -312,7 +312,7 @@ else
   echo "OS-1/EXO installer: skipped (opt in with OMAR_INSTALL_OS1=1)"
 fi
 echo "Installed R2 EXO monitor sync: $local_bin/os1-exo-monitor-sync"
-echo "Configured Mac defaults: Handy Fn + sound, emoji off, black wallpaper, idle Always On, Codex queue"
+echo "Configured Mac defaults: Handy Fn + sound, emoji off, black wallpaper, empty Dock, idle Always On, Codex queue"
 echo "Node.js: $(node --version)"
 echo "pnpm: $(pnpm --version)"
 echo "Codex CLI: $(codex --version)"
