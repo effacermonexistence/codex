@@ -4682,6 +4682,7 @@ final class CodexAppServerClient: @unchecked Sendable {
             result = try request("thread/start", params: params, deadline: deadline)
         }
 
+        AttemptLatencyTrace.mark(existingSessionID == nil ? "thread_started" : "thread_resumed")
         guard var thread = result["thread"] as? [String: Any],
               let rawID = thread["id"] as? String,
               var threadID = try normalizedSessionID(rawID) else {
@@ -4729,6 +4730,7 @@ final class CodexAppServerClient: @unchecked Sendable {
                 params: ["threadId": threadID, "name": title],
                 deadline: deadline
             )
+            AttemptLatencyTrace.mark("thread_named")
         }
         try makeVisible(threadID: threadID, deadline: deadline)
         ownsThreadWriter = true
@@ -5527,6 +5529,7 @@ private func execute(
     workspace: String,
     timeout: Int,
     idleTimeout: Int? = nil,
+    trustedCodexModels: [CodexModelCapability]? = nil,
     providerSessionID: String?,
     model: String?,
     effort: String,
@@ -5592,9 +5595,13 @@ private func execute(
         defer { appServer.close() }
         try appServer.initialize(deadline: deadline)
         AttemptLatencyTrace.mark("codex_initialized")
-        guard let model, try appServer.models(deadline: min(deadline, Date().addingTimeInterval(12))).contains(where: {
-            $0.slug == model && $0.supportedEfforts.contains(effort)
-        }) else { throw OS1Error.backendBlocked(.capabilityUnavailable) }
+        func listed(_ rows: [CodexModelCapability]) -> Bool {
+            rows.contains { $0.slug == model && $0.supportedEfforts.contains(effort) }
+        }
+        guard model != nil, try trustedCodexModels.map(listed) == true ||
+                listed(appServer.models(deadline: min(deadline, Date().addingTimeInterval(12)))) else {
+            throw OS1Error.backendBlocked(.capabilityUnavailable)
+        }
         AttemptLatencyTrace.mark("codex_ready")
         let actualSessionID = try appServer.startOrResumeThread(
             existingSessionID: expectedSessionID,
@@ -7110,8 +7117,12 @@ func runTaskWithOwnerPolicy(
     }
     AttemptLatencyTrace.mark("registered")
     var codexCatalog: ActiveCodexCatalog
+    // The account check and model list this run just made are reused by an
+    // attempt that starts soon after (≈0.35 s account/read per attempt).
+    var codexInventoryObservedAt: Date?
     if let codexProbe {
         codexCatalog = await codexProbe.value
+        codexInventoryObservedAt = Date()
     } else {
         // The user removed Codex in Settings: never probe it, never route to
         // it, and never treat its absence as a failure to repair.
@@ -7424,6 +7435,8 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
                     workspace: canonicalWorkspace,
                     timeout: attemptTimeout,
                     idleTimeout: config.providerIdleTimeoutSeconds,
+                    trustedCodexModels: codexInventoryObservedAt.map { Date().timeIntervalSince($0) < 120 } == true
+                        ? codexCatalog.models : nil,
                     providerSessionID: nativeSessions[ticket.provider] ?? nil,
                     model: model,
                     effort: effort,
