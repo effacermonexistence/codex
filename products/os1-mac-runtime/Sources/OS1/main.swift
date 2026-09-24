@@ -1812,6 +1812,10 @@ func commandOutput(
     }
     process.standardOutput = stdout
     process.standardError = stderr
+    // Wake the wait loop the moment the child exits instead of on the next
+    // 100 ms tick; a run spawns dozens of short git/gh/python children.
+    let exited = DispatchSemaphore(value: 0)
+    process.terminationHandler = { _ in exited.signal() }
     if let input {
         let pipe = Pipe()
         process.standardInput = pipe
@@ -1857,7 +1861,7 @@ func commandOutput(
             let bytes = writtenBytes()
             if bytes != observedBytes { observedBytes = bytes; watchdog.observeActivity() }
         }
-        Thread.sleep(forTimeInterval: 0.1)
+        _ = exited.wait(timeout: .now() + 0.1)
     }
     if process.isRunning {
         process.terminate()
@@ -5536,6 +5540,7 @@ private func execute(
     onDispatch: ((String?) -> Void)? = nil,
     onInstructions: ((String) -> Void)? = nil
 ) throws -> ProviderExecution {
+    AttemptLatencyTrace.mark("execute_entered")
     let started = Date()
     let executionWorkspace = try providerExecutionWorkspace(provider: ticket.provider,
         permission: ticket.permissionProfile, hasSource: preloadedR2Evidence != nil, workspace: workspace)
@@ -5581,10 +5586,12 @@ private func execute(
         // Startup may run configured hooks or MCP initialization before the
         // first turn. Once the process starts, absent local diffs cannot prove
         // that replaying a write-profile objective would be safe.
+        AttemptLatencyTrace.mark("instructions_ready")
         let appServer = try CodexAppServerClient(executable: codex, workspace: workspace,
             submissionID: ExecutionSteering.currentSubmission)
         defer { appServer.close() }
         try appServer.initialize(deadline: deadline)
+        AttemptLatencyTrace.mark("codex_initialized")
         guard let model, try appServer.models(deadline: min(deadline, Date().addingTimeInterval(12))).contains(where: {
             $0.slug == model && $0.supportedEfforts.contains(effort)
         }) else { throw OS1Error.backendBlocked(.capabilityUnavailable) }
@@ -5899,6 +5906,7 @@ private func execute(
         nativeRecord: nativeRecord,
         driftApplication: driftApplication
     )
+    AttemptLatencyTrace.mark("candidate_built")
     do { try validateCandidate?() }
     catch {
         if let drift = error as? DriftDetected, let driftApplication,
@@ -5913,6 +5921,7 @@ private func execute(
         }
         throw RejectedProviderExecution(execution: candidate, cause: error)
     }
+    AttemptLatencyTrace.mark("candidate_validated")
     return candidate
 }
 
@@ -6692,19 +6701,38 @@ func runWorkflowTaskWithOwnerPolicy(
 /// The unpaid account-inventory probes, started as early as possible so they
 /// overlap the owner-policy refresh and the device/registration setup. They
 /// read local account metadata only: no routing, no model call.
+/// Device identity, gateway registration and the gateway's model-check
+/// capability do not depend on the owner policy, so they overlap its refresh
+/// (≈0.5 s registration + ≈0.4 s capability probe, 2026-09-24 latency trace).
+struct PreparedGateway: @unchecked Sendable {
+    let client: APIClient
+    let key: SigningKey
+    let feedbackSupported: Bool
+}
+
 struct PreflightInventory: Sendable {
     let workspace: String
     let codex: Task<ActiveCodexCatalog, Never>?
     let claude: Task<(configured: [ClaudeModelCapability], routable: [ClaudeModelCapability]), Never>
+    var gateway: Task<PreparedGateway?, Never>? = nil
 
-    static func start(workspace: String, config: RuntimeConfig, showCodex: Bool) -> PreflightInventory {
+    static func start(workspace: String, config: RuntimeConfig, showCodex: Bool, prepareGateway: Bool = false) -> PreflightInventory {
         PreflightInventory(workspace: workspace, codex: showCodex ? Task.detached {
             (try? ModelAvailability.codexCatalog(workspace: workspace, config: config)) ??
                 ActiveCodexCatalog(models: [], source: "native account metadata unavailable")
         } : nil, claude: Task.detached {
             (try? ModelAvailability.claudeCatalogs(workspace: workspace, config: config))
                 ?? (configured: [ClaudeModelCapability](), routable: [ClaudeModelCapability]())
-        })
+        }, gateway: prepareGateway ? Task.detached {
+            // Any failure leaves the inline path to redo it and report it.
+            do {
+                let key = try SigningKey.loadOrCreate()
+                let client = APIClient(config: config, token: try githubToken(), deviceID: try deviceID())
+                try await register(client: client, key: key)
+                return PreparedGateway(client: client, key: key,
+                    feedbackSupported: await client.supportsCompletionFeedback(requireModelAvailability: true))
+            } catch { return nil }
+        } : nil)
     }
 }
 
@@ -6750,7 +6778,7 @@ func runTask(
     AttemptLatencyTrace.begin()
     let preflight = (try? RuntimeConfig.load()).map {
         PreflightInventory.start(workspace: URL(fileURLWithPath: workspace).standardizedFileURL.path,
-                                 config: $0, showCodex: OS1Settings.load().showCodex)
+                                 config: $0, showCodex: OS1Settings.load().showCodex, prepareGateway: true)
     }
     let policy = try loadCurrentOwnerPolicy()
     AttemptLatencyTrace.mark("policy")
@@ -7066,10 +7094,20 @@ func runTaskWithOwnerPolicy(
         ?? PreflightInventory.start(workspace: canonicalWorkspace, config: config, showCodex: userSettings.showCodex)
     let codexProbe = inventory.codex
     let claudeProbe = inventory.claude
-    let key = try SigningKey.loadOrCreate()
-    let id = try deviceID()
-    let client = APIClient(config: config, token: try githubToken(), deviceID: id)
-    try await register(client: client, key: key)
+    let prepared: PreparedGateway? = await inventory.gateway?.value ?? nil
+    let key: SigningKey
+    let id: String
+    let client: APIClient
+    if let prepared, prepared.client.config.apiURL == config.apiURL {
+        key = prepared.key
+        client = prepared.client
+        id = client.deviceID
+    } else {
+        key = try SigningKey.loadOrCreate()
+        id = try deviceID()
+        client = APIClient(config: config, token: try githubToken(), deviceID: id)
+        try await register(client: client, key: key)
+    }
     AttemptLatencyTrace.mark("registered")
     var codexCatalog: ActiveCodexCatalog
     if let codexProbe {
@@ -7178,7 +7216,9 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
         objective: DriftScope.digest(prompt))
     var feedbackScope = instructionFeedbackScope(initialCorrections?.instructions ?? "", input: localPrompt,
         codexID: codexSessionID, claudeID: claudeSessionID)
-    let feedbackSupported = await client.supportsCompletionFeedback(requireModelAvailability: true)
+    // A probe answered during the policy refresh is reused; a miss is re-probed.
+    let feedbackSupported = prepared?.feedbackSupported == true && prepared?.client.config.apiURL == config.apiURL
+        ? true : await client.supportsCompletionFeedback(requireModelAvailability: true)
     if ExecutionCancellation.isCancelled { throw OS1Error.backendBlocked(.cancelled) }
     guard feedbackSupported else {
         throw OS1Error.message("라우팅 서버에서 사용자별 모델 확인을 \(1 + APIClient.capabilityRetryDelaysMS.count)회 시도했지만 확인되지 않았습니다(연결 실패, 서버 내부 지연 또는 미지원 서버). 모델을 임의 선택하지 않았으며 유료 호출은 하지 않았습니다.")
@@ -7376,6 +7416,7 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
                 workspaceBeforeHash: beforeHash
             )
         } else {
+            AttemptLatencyTrace.mark("attempt_prepared")
             do {
                 execution = try execute(
                     ticket: ticket,
@@ -9205,6 +9246,13 @@ func selfTest() throws {
     guard wireDispatched && wireStarted && recovered.turnID == recoveredTurn &&
           String(decoding: recovered.output, as: UTF8.self) == "fixture readback complete" else {
         throw OS1Error.message("Recovery adapter failed real stdio dispatch/result binding")
+    }
+    protocolRecoveryChecks += 1
+    // A short child returns when it exits, not on the next 100 ms poll tick.
+    let shortStarted = Date()
+    for _ in 0..<10 { _ = try commandOutput("/usr/bin/true", [], timeout: 10) }
+    guard Date().timeIntervalSince(shortStarted) < 0.6 else {
+        throw OS1Error.message("Ten short child processes took \(Date().timeIntervalSince(shortStarted)) s; exit must wake the wait")
     }
     protocolRecoveryChecks += 1
     // Latency marks are relative to the attempt start, written once, then cleared.
