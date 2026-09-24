@@ -702,6 +702,9 @@ struct RunStepSummary: Codable {
     let stderr: String
     let durationMS: Int64
     let nativeRecord: NativeRecordEvidence?
+    /// Logical product mode selected for this step. The actual executable
+    /// transport remains `provider`; this field never claims browser-UI use.
+    var executionSurface: String? = nil
     var workflowStage: String? = nil
     var verifiedPreviewDelivery: VerifiedPreviewDelivery? = nil
     var ownerPolicySourceSHA256: String? = OwnerPolicyContext.snapshot?.sourceSHA256
@@ -715,6 +718,7 @@ struct RunStepSummary: Codable {
         case exitCode = "exit_code"
         case durationMS = "duration_ms"
         case nativeRecord = "native_record"
+        case executionSurface = "execution_surface"
         case verifiedPreviewDelivery = "verified_preview_delivery"
         case workflowStage = "workflow_stage"
         case ownerPolicySourceSHA256 = "owner_policy_source_sha256"
@@ -7257,9 +7261,10 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
     // The quoted original operation is context, not a second execute request.
     // Keep this new review's task identity distinct while retaining all source
     // and full-input accounting without downgrading backend capability.
-    let routingTask = ScopeResolution.delegationRoutingObjective(
+    let baseRoutingTask = ScopeResolution.delegationRoutingObjective(
         routingTaskOverride ?? (requireReadOnly ? statusReconciliationRoutingTask
             : sourceAwareRoutingTask(prompt, evidence: r2Evidence)), internalReadOnly: internalReadOnly)
+    let routingTask = baseRoutingTask + "\n" + ExecutionSurfacePolicy.routingDirective(scope: resolvedScope)
     let feedbackStore = CompletionFeedbackStore()
     func instructionFeedbackScope(_ instructions: String, input: String, codexID: String?, claudeID: String?) -> CompletionFeedbackScope {
         CompletionFeedbackScope(objectiveSHA256: sha256Hex(Data(routingTask.utf8)), sourceSHA256: sourceContext?.sha256,
@@ -7799,7 +7804,9 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
         let pendingStep = RunStepSummary(sequence: ticket.sequence, provider: ticket.provider, action: ticket.action,
             model: model, effort: effort, revasDisposition: "verification_pending", sessionID: execution.sessionID,
             permissionProfile: ticket.permissionProfile, exitCode: artifact.exitCode, output: artifact.output,
-            stderr: artifact.stderr, durationMS: artifact.durationMS, nativeRecord: execution.nativeRecord, verifiedPreviewDelivery: verifiedPreviewDelivery)
+            stderr: artifact.stderr, durationMS: artifact.durationMS, nativeRecord: execution.nativeRecord,
+            executionSurface: ExecutionSurfacePolicy.surface(providerID: ticket.provider, permissionProfile: ticket.permissionProfile)?.rawValue,
+            verifiedPreviewDelivery: verifiedPreviewDelivery)
         var delivery = DeliveryRecord(id: "\(ticket.executionID)-\(ticket.sequence)", apiURL: config.apiURL, deviceID: id,
             resultSHA256: resultHash, artifact: artifactData, upload: try JSONEncoder().encode(upload),
             submission: try JSONEncoder().encode(submission), step: try JSONEncoder().encode(pendingStep),
@@ -7990,6 +7997,7 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
                 stderr: artifact.stderr,
                 durationMS: artifact.durationMS,
                 nativeRecord: adoptedRecord,
+                executionSurface: ExecutionSurfacePolicy.surface(providerID: ticket.provider, permissionProfile: ticket.permissionProfile)?.rawValue,
                 verifiedPreviewDelivery: verifiedPreviewDelivery
             ))
         }

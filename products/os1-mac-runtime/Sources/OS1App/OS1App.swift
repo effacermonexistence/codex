@@ -19,14 +19,14 @@ private enum ProviderChoice: String, CaseIterable, Codable, Identifiable, Sendab
         switch self {
         case .auto: return "Auto"
         case .codex: return "Codex"
-        case .claude: return "Claude"
+        case .claude: return "Claude Code"
         }
     }
     var subtitle: String {
         switch self {
         case .auto: return "RCC chooses"
-        case .codex: return "Build & edit"
-        case .claude: return "Analyze & review"
+        case .codex: return "OpenAI agent"
+        case .claude: return "Anthropic agent"
         }
     }
     var symbol: String {
@@ -3682,6 +3682,7 @@ private struct AppRunStep: Decodable, Sendable {
     let stderr: String
     let durationMS: Int64
     let nativeRecord: AppNativeRecord?
+    var executionSurface: String? = nil
     var workflowStage: String? = nil
     var verifiedPreviewDelivery: VerifiedPreviewDelivery? = nil
 
@@ -3693,6 +3694,7 @@ private struct AppRunStep: Decodable, Sendable {
         case exitCode = "exit_code"
         case durationMS = "duration_ms"
         case nativeRecord = "native_record"
+        case executionSurface = "execution_surface"
         case verifiedPreviewDelivery = "verified_preview_delivery"
         case workflowStage = "workflow_stage"
     }
