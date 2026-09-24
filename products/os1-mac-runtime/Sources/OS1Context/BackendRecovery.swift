@@ -147,13 +147,24 @@ public struct BackendFailureNotice: Codable, Equatable, Sendable {
         guard blocker != .verificationRejected else { return false }
         return blocker == .effectsUncertain || (dispatchStage == .dispatched && permissionProfile == "workspace_write")
     }
+    /// The most recent notice this process emitted, for in-process callers
+    /// (the Fleet agent) that have no OS1_FAILURE_FILE: a job that failed only
+    /// adoption can still return the answer its backend produced.
+    nonisolated(unsafe) private static var lastEmitted: BackendFailureNotice?
+    private static let lastEmittedLock = NSLock()
+    public static func takeLastEmitted() -> BackendFailureNotice? {
+        lastEmittedLock.lock(); defer { lastEmittedLock.unlock() }
+        let value = lastEmitted; lastEmitted = nil; return value
+    }
     public func emit() {
+        Self.lastEmittedLock.lock(); Self.lastEmitted = self; Self.lastEmittedLock.unlock()
         guard let path = ProcessInfo.processInfo.environment["OS1_FAILURE_FILE"],
               let data = try? JSONEncoder().encode(self) else { return }
         try? data.write(to: URL(fileURLWithPath: path), options: .atomic)
         try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path)
     }
     public static func clear() {
+        lastEmittedLock.lock(); lastEmitted = nil; lastEmittedLock.unlock()
         guard let path = ProcessInfo.processInfo.environment["OS1_FAILURE_FILE"] else { return }
         try? FileManager.default.removeItem(at: URL(fileURLWithPath: path))
     }

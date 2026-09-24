@@ -600,6 +600,23 @@ private func executeFleetAssignment(_ assignment: FleetAssignment, role: String,
     return String(decoding: data, as: UTF8.self)
 }
 
+/// A failed job still returns what its backend produced when only adoption
+/// failed (the answer the app shows): the caller must not lose a correct
+/// answer to a verifier disagreement. Bounded; never a success claim.
+func fleetFailureResult(error: Error, jobID: String, notice: BackendFailureNotice?) -> [String: String] {
+    var result = [
+        "error": String(String(describing: error).prefix(8_000)),
+        "job_id": jobID,
+        "partial_work": "Inspect this job's native records and checkout before resuming remaining work.",
+    ]
+    if let notice, let answer = notice.publicProgress?.trimmingCharacters(in: .whitespacesAndNewlines), !answer.isEmpty {
+        result["blocker"] = notice.blocker.rawValue
+        result["unadopted_answer"] = String(answer.suffix(8_000))
+        result["unadopted_answer_note"] = "Backend answer saved but not adopted (\(notice.blocker.rawValue)); treat as unverified."
+    }
+    return result
+}
+
 private func completeFleetJob(
     client: APIClient,
     key: SigningKey,
@@ -684,15 +701,14 @@ func runFleetAgent(role: String, once: Bool) async throws {
                     }
                     work.phase = "running"
                     try fleetPersist(work, at: activeFile)
+                    _ = BackendFailureNotice.takeLastEmitted()
                     do {
                         work.result = try await executeFleetAssignment(work.assignment, role: role, config: config)
                         work.outcome = "complete"
                     } catch {
-                        work.result = String(decoding: try JSONEncoder().encode([
-                            "error": String(String(describing: error).prefix(8_000)),
-                            "job_id": work.assignment.jobID,
-                            "partial_work": "Inspect this job's native records and checkout before resuming remaining work.",
-                        ]), as: UTF8.self)
+                        work.result = String(decoding: try JSONEncoder().encode(
+                            fleetFailureResult(error: error, jobID: work.assignment.jobID,
+                                               notice: BackendFailureNotice.takeLastEmitted())), as: UTF8.self)
                         work.outcome = "failed"
                     }
                     work.phase = "delivery_pending"
@@ -1197,6 +1213,17 @@ func fleetSelfTest() throws {
         invalid.exoAPIURL = address
         try check((try? EXOConfiguration(runtimeConfig: invalid)) == nil, "non-loopback or credential URL accepted")
     }
+    // A job refused only adoption returns its backend's answer, labelled.
+    let refused = BackendFailureNotice(provider: "claude", sessionID: nil, blocker: .verificationRejected,
+        dispatchStage: .dispatched, permissionProfile: "workspace_write", publicProgress: "  응, 가능함.  ")
+    refused.emit()
+    let carried = fleetFailureResult(error: OS1Error.backendBlocked(.verificationRejected), jobID: "job",
+                                     notice: BackendFailureNotice.takeLastEmitted())
+    try check(carried["unadopted_answer"] == "응, 가능함." && carried["blocker"] == "verification_rejected"
+              && carried["unadopted_answer_note"]?.contains("not adopted") == true, "refused job lost its backend answer")
+    try check(BackendFailureNotice.takeLastEmitted() == nil, "an emitted notice is taken once")
+    let bare = fleetFailureResult(error: OS1Error.message("x"), jobID: "job", notice: nil)
+    try check(bare["unadopted_answer"] == nil && bare["error"] == "x" && bare["job_id"] == "job", "plain failure invented an answer")
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent("os1-fleet-self-test-" + UUID().uuidString)
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
     defer { try? FileManager.default.removeItem(at: directory) }
