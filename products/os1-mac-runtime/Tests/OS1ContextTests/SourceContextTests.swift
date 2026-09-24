@@ -280,6 +280,13 @@ final class SourceContextTests {
             XCTAssertFalse(HumanOutputContract.issues(in: answer, request: versionRequest).isEmpty)
         }
         print("Requested numeric fields: 17 language-boundary checks PASS")
+        let valueOnly = "products/os1-mac-runtime/Resources/Info.plist 의 CFBundleVersion 값만 답해."
+        for answer in ["231", "Ben.\nLuaIsHere :3\n231", "Ben.  \nLuaIsHere :3\n\n**231**", "Ben.\nLuaIsHere :3\n\n0.9.165"] {
+            XCTAssertTrue(HumanOutputContract.issues(in: answer, request: valueOnly).isEmpty)
+        }
+        for answer in ["Ben.\nLuaIsHere :3\nThe build is 231.", "Ben.\nLuaIsHere :3", "LuaIsHere :3 231 is the build"] {
+            XCTAssertFalse(HumanOutputContract.issues(in: answer, request: valueOnly).isEmpty)
+        }
 
         let literal = "Verification marker: orchard-lantern-29\nService state: staging verified; production not deployed\nUnfinished gate: independent read-only production fingerprint check"
         for request in ["이전 대화의 원문 값 그대로 세 줄로 적어줘", "원문 문구 그대로 보여줘",

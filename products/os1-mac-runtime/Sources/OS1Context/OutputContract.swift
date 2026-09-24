@@ -117,7 +117,11 @@ public enum HumanOutputContract {
         let text = answer.precomposedStringWithCanonicalMapping
         let blocks = fencedJSON(text)
         if !wantsMachineFormat(request) {
-            let neutral = text.range(of: #"^[\p{N}\s\p{P}\p{S}]+$"#, options: .regularExpression) != nil || Double(text.trimmingCharacters(in: .whitespacesAndNewlines)) != nil || numericMathOnly(text) || requestedNumericFieldsOnly(text, request: request)
+            // The owner's persona header is the invocation surface, not English
+            // prose: "Ben. / LuaIsHere :3 / 231" is a numeric answer (2026-09-24,
+            // a Codex value-only answer was refused for the header alone).
+            let body = text.replacingOccurrences(of: #"\A\s*Ben\.\s*LuaIsHere :3\s*"#, with: "", options: .regularExpression)
+            let neutral = body.range(of: #"^[\p{N}\s\p{P}\p{S}]+$"#, options: .regularExpression) != nil || Double(body.trimmingCharacters(in: .whitespacesAndNewlines)) != nil || numericMathOnly(body) || requestedNumericFieldsOnly(text, request: request)
             if wantsKorean(request), !preservesOriginalValues(request), !neutral, !text.unicodeScalars.contains(where: { (0xAC00...0xD7A3).contains($0.value) }) {
                 issues.append("Answer the user's Korean request in Korean, not English-only prose.")
             }
