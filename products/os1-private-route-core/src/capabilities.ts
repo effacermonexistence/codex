@@ -3,7 +3,9 @@ import { readBoundedJson } from "../../os1-route-core/src/io";
 /** Support is usable only with the same source-locked adapter as this policy. */
 export async function supportsCompletionFeedback(binding: Fetcher, expectedPolicy: string, requireModelAvailability = false): Promise<boolean> {
   try {
-    const response = await binding.fetch("https://internal/capabilities", {
+    // Name the pinned policy: a worker holding several source-locked adapters
+    // (mid-rollover) confirms exactly this one instead of its default.
+    const response = await binding.fetch(`https://internal/capabilities?policy=${encodeURIComponent(expectedPolicy)}`, {
       method: "GET", signal: AbortSignal.timeout(2_000),
     });
     if (!response.ok) return false;
