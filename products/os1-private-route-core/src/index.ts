@@ -1,7 +1,11 @@
 import { DurableObject } from "cloudflare:workers";
 import { appendCompletionObservation, completionFeedbackMatchesTask, validCompletionFeedback, validExecutionContext,
   type CompletionObservation, type ExecutionContext } from "./execution-context";
-import { supportsCompletionFeedback } from "./capabilities";
+import { supportsCompletionFeedback, supportsRouteLearning } from "./capabilities";
+import {
+  exportLearningRows, LEARNING_CLASSES, routeSeed, updateLearning, validLearningObservation,
+  type LearningObservation, type LearningRow, type StoredLearning,
+} from "./route-learning";
 import { availableModelTuple } from "../../os1-route-core/src/execution-context";
 import {
   executionProfileFor, loadPolicyBundle, parseExecutionProfiles,
@@ -39,7 +43,10 @@ type RouteContext = {
   current_run_observations?: CompletionObservation[];
   attempt: number;
 };
+type RouteLearning = { rows: LearningRow[]; seed: string };
 type RouteSnapshot = RoutedStep & RouteContext & {
+  learning_object?: string;
+  step_started_ms?: number;
   expected_model: string;
   expected_effort: string;
   policy_version: string;
@@ -87,7 +94,8 @@ function profileAction(profiles: ExecutionProfiles, provider: ExecutionProvider,
   return matches[0]![0];
 }
 
-async function routeWithRcc(env: Env, bundle: PolicyBundle, context: RouteContext, retryProvider = ""): Promise<RoutedStep | undefined> {
+async function routeWithRcc(env: Env, bundle: PolicyBundle, context: RouteContext, retryProvider = "",
+  learning?: RouteLearning): Promise<RoutedStep | undefined> {
   // Capability is a typed execution envelope, never a rewrite of the task.
   // Keep the legacy semantic classifier/verifier contract free of this field.
   const { execution_permission_profile, ...semanticContext } = context.execution_context ?? {};
@@ -102,6 +110,7 @@ async function routeWithRcc(env: Env, bundle: PolicyBundle, context: RouteContex
     available_codex_models: context.available_codex_models,
     ...(context.execution_context ? { execution_context: semanticContext } : {}),
     ...(context.execution_context?.completion_feedback ? { current_run_observations: context.current_run_observations ?? [] } : {}),
+    ...(learning ? { route_learning: { schema: 1, rows: learning.rows }, route_seed: learning.seed } : {}),
   });
   if (context.execution_context?.completion_feedback && record(value) && exact(value, ["status", "policy_sha256"]) &&
     value.status === "no_eligible" && value.policy_sha256 === bundle.rcc.policy_sha256) return undefined;
@@ -149,12 +158,20 @@ export class RouteState extends DurableObject<Env> {
       if (!columns.some(column => column.name === "current_run_observations_json")) {
         this.ctx.storage.sql.exec("ALTER TABLE route ADD COLUMN current_run_observations_json TEXT");
       }
+      if (!columns.some(column => column.name === "learning_object")) {
+        this.ctx.storage.sql.exec("ALTER TABLE route ADD COLUMN learning_object TEXT");
+      }
+      if (!columns.some(column => column.name === "step_started_ms")) {
+        this.ctx.storage.sql.exec("ALTER TABLE route ADD COLUMN step_started_ms INTEGER");
+      }
+      this.ctx.storage.sql.exec("CREATE TABLE IF NOT EXISTS learned (sequence INTEGER PRIMARY KEY)");
       this.ctx.storage.sql.exec("CREATE TABLE IF NOT EXISTS decisions (sequence INTEGER PRIMARY KEY, artifact_hash TEXT NOT NULL, response_json TEXT NOT NULL)");
     });
   }
 
   begin(input: RoutedStep & RouteContext & { policy_version: string; policy_sha256: string; rcc_policy_sha256: string;
-    executor_contract_version: string; executor_contract_sha256: string; execution_profiles: ExecutionProfiles }): "created" | "exists" {
+    executor_contract_version: string; executor_contract_sha256: string; execution_profiles: ExecutionProfiles;
+    learning_object?: string }): "created" | "exists" {
     return this.ctx.storage.transactionSync(() => {
       if (this.ctx.storage.sql.exec<{ present: number }>("SELECT 1 AS present FROM route WHERE singleton=1").toArray()[0]) return "exists";
       this.ctx.storage.sql.exec(
@@ -170,6 +187,8 @@ export class RouteState extends DurableObject<Env> {
       );
       if (input.execution_context) this.ctx.storage.sql.exec(
         "UPDATE route SET execution_context_json=? WHERE singleton=1", JSON.stringify(input.execution_context));
+      this.ctx.storage.sql.exec("UPDATE route SET learning_object=?, step_started_ms=? WHERE singleton=1",
+        input.learning_object ?? null, Date.now());
       return "created";
     });
   }
@@ -205,6 +224,8 @@ export class RouteState extends DurableObject<Env> {
       available_codex_models: catalog, attempt: Number(row.attempt), sequence: Number(row.sequence),
       ...(executionContext ? { execution_context: executionContext as ExecutionContext } : {}),
       current_run_observations: currentRun as CompletionObservation[],
+      ...(typeof row.learning_object === "string" ? { learning_object: row.learning_object } : {}),
+      ...(typeof row.step_started_ms === "number" ? { step_started_ms: row.step_started_ms } : {}),
       expected_model: expected.model, expected_effort: expected.effort,
       policy_version: String(row.policy_version), policy_sha256: String(row.policy_sha256),
       rcc_policy_sha256: String(row.rcc_policy_sha256),
@@ -242,11 +263,20 @@ export class RouteState extends DurableObject<Env> {
       }
       this.ctx.storage.sql.exec(
         `UPDATE route SET provider=?,action=?,permission_profile=?,provider_pinned=?,route_id=?,verification_profile=?,
-         attempt=?,sequence=?,verified_artifact_hash=? WHERE singleton=1`,
+         attempt=?,sequence=?,verified_artifact_hash=?,step_started_ms=? WHERE singleton=1`,
         next.provider, next.action, next.permission_profile, next.provider_pinned ? 1 : 0, next.route_id,
-        next.verification_profile, sequence + 1, sequence + 1, verifiedHash,
+        next.verification_profile, sequence + 1, sequence + 1, verifiedHash, Date.now(),
       );
       return persist({ status: "step" as const, provider: next.provider, action: next.action, permission_profile: next.permission_profile });
+    });
+  }
+
+  /** True exactly once per step, so a re-delivered result is learned once. */
+  claimLearning(sequence: number): boolean {
+    return this.ctx.storage.transactionSync(() => {
+      if (this.ctx.storage.sql.exec("SELECT 1 FROM learned WHERE sequence=?", sequence).toArray()[0]) return false;
+      this.ctx.storage.sql.exec("INSERT INTO learned(sequence) VALUES(?)", sequence);
+      return true;
     });
   }
 }
@@ -257,7 +287,26 @@ export class RoutingBudgetState extends DurableObject<Env> {
     ctx.blockConcurrencyWhile(async () => {
       this.ctx.storage.sql.exec("CREATE TABLE IF NOT EXISTS start_budget (window INTEGER PRIMARY KEY, starts INTEGER NOT NULL)");
       this.ctx.storage.sql.exec("CREATE TABLE IF NOT EXISTS usage (singleton INTEGER PRIMARY KEY CHECK(singleton=1), week INTEGER NOT NULL, codex INTEGER NOT NULL, claude INTEGER NOT NULL)");
+      this.ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS learning (provider TEXT NOT NULL, model TEXT NOT NULL,
+        effort TEXT NOT NULL, task_class TEXT NOT NULL, n REAL NOT NULL, s REAL NOT NULL, dlog REAL NOT NULL,
+        dn REAL NOT NULL, at_ms INTEGER NOT NULL, PRIMARY KEY(provider, model, effort, task_class))`);
     });
+  }
+  /** Adds one verified step outcome to this owner's decayed route ledger. */
+  observe(observation: LearningObservation): void {
+    if (!validLearningObservation(observation)) throw new Error("invalid learning observation");
+    this.ctx.storage.transactionSync(() => {
+      const previous = this.ctx.storage.sql.exec<StoredLearning>(
+        "SELECT * FROM learning WHERE provider=? AND model=? AND effort=? AND task_class=?",
+        observation.provider, observation.model, observation.effort, observation.task_class).toArray()[0];
+      const next = updateLearning(previous, observation, Date.now());
+      this.ctx.storage.sql.exec(
+        "INSERT OR REPLACE INTO learning(provider,model,effort,task_class,n,s,dlog,dn,at_ms) VALUES(?,?,?,?,?,?,?,?,?)",
+        next.provider, next.model, next.effort, next.task_class, next.n, next.s, next.dlog, next.dn, next.at_ms);
+    });
+  }
+  learningRows(): LearningRow[] {
+    return exportLearningRows(this.ctx.storage.sql.exec<StoredLearning>("SELECT * FROM learning").toArray(), Date.now());
   }
   consumeStart(limit: number): boolean {
     return this.ctx.storage.transactionSync(() => {
@@ -305,6 +354,28 @@ async function evaluate(env: Env, body: unknown): Promise<{ outcome: "pass" | "f
     throw new Error("evaluation denied");
   }
   return value as { outcome: "pass" | "fail" | "retry"; verified_artifact_hash: string; next_provider: ExecutionProvider };
+}
+
+/** Learning helps ranking; an unreadable ledger never blocks a route. */
+async function learnedRoutes(budget: { learningRows(): LearningRow[] | Promise<LearningRow[]> }, executionId: string,
+  attempt: number): Promise<RouteLearning | undefined> {
+  try {
+    return { rows: await budget.learningRows(), seed: await routeSeed(executionId, attempt) };
+  } catch {
+    console.error(JSON.stringify({ event: "route_learning_unavailable" }));
+    return undefined;
+  }
+}
+
+/** One outcome per verified step, recorded after the decision persisted. */
+async function recordLearning(env: Env, state: { claimLearning(sequence: number): boolean | Promise<boolean> },
+  snapshot: RouteSnapshot, sequence: number, observation: LearningObservation): Promise<void> {
+  try {
+    if (!snapshot.learning_object || !(await state.claimLearning(sequence))) return;
+    await env.ROUTING_BUDGETS.getByName(snapshot.learning_object).observe(observation);
+  } catch {
+    console.error(JSON.stringify({ event: "route_learning_unrecorded" }));
+  }
 }
 
 export default {
@@ -355,8 +426,12 @@ export default {
           capacity_plan: plan, available_codex_models: task.available_codex_models, attempt: 1,
           ...(task.execution_context ? { execution_context: task.execution_context as ExecutionContext } : {}),
         };
+        stage.current = "learning";
+        const learningObject = await supportsRouteLearning(env.RCC_V26, bundle.rcc.policy_sha256) ?
+          await budgetObjectName(env, body.principal.subject) : undefined;
+        const learning = learningObject ? await learnedRoutes(budget, body.execution_id, 1) : undefined;
         stage.current = "route";
-        const selected = await routeWithRcc(env, bundle, context);
+        const selected = await routeWithRcc(env, bundle, context, "", learning);
         if (!selected) return Response.json({ status: "failed" });
         stage.current = "usage";
         if (selected.provider !== "local") await budget.record(selected.provider);
@@ -364,7 +439,7 @@ export default {
         if ((await state.begin({ ...selected, ...context, policy_version: bundle.policy_version,
           policy_sha256: env.POLICY_BUNDLE_SHA256, rcc_policy_sha256: bundle.rcc.policy_sha256,
           executor_contract_version: executorContract.version, executor_contract_sha256: executorContract.sha256,
-          execution_profiles: bundle.execution_profiles })) !== "created") throw new Error("denied");
+          execution_profiles: bundle.execution_profiles, ...(learningObject ? { learning_object: learningObject } : {}) })) !== "created") throw new Error("denied");
         return stepResponse(selected);
       }
       stage.current = "validate_result";
@@ -408,9 +483,20 @@ export default {
           capacity_plan: snapshot.capacity_plan, available_codex_models: snapshot.available_codex_models,
           execution_context: executionContext, current_run_observations: currentRun, attempt: sequence + 1 };
         const retryProvider = evaluated.next_provider === "local" ? "" : evaluated.next_provider;
-        next = await routeWithRcc(env, bundle, context, retryProvider);
+        const learning = snapshot.learning_object && await supportsRouteLearning(env.RCC_V26, bundle.rcc.policy_sha256) ?
+          await learnedRoutes(env.ROUTING_BUDGETS.getByName(snapshot.learning_object), body.execution_id, sequence + 1) : undefined;
+        next = await routeWithRcc(env, bundle, context, retryProvider, learning);
       }
       const decision = await state.advance(sequence, evaluated.outcome, evaluated.verified_artifact_hash, next, executionContext, currentRun);
+      if (observation && snapshot.learning_object && LEARNING_CLASSES.has(snapshot.verification_profile)) {
+        stage.current = "learning_record";
+        await recordLearning(env, state, snapshot, sequence, {
+          provider: observation.provider as "codex" | "claude", model: observation.model, effort: observation.effort,
+          task_class: snapshot.verification_profile, adopted: evaluated.outcome === "pass",
+          duration_ms: snapshot.step_started_ms === undefined ? null :
+            Math.min(86_400_000, Math.max(0, Date.now() - snapshot.step_started_ms)),
+        });
+      }
       return decision.status === "step" ? stepResponse(decision) : Response.json(decision);
     } catch {
       console.error(JSON.stringify({ event: "private_route_denied", stage: stage.current }));

@@ -1,19 +1,48 @@
 import { readBoundedJson } from "../../os1-route-core/src/io";
 
-/** Support is usable only with the same source-locked adapter as this policy. */
-export async function supportsCompletionFeedback(binding: Fetcher, expectedPolicy: string, requireModelAvailability = false): Promise<boolean> {
+const CAPABILITY_KEY_SETS = [
+  "completion_feedback_schema,policy_sha256",
+  "completion_feedback_schema,model_availability_schema,policy_sha256",
+  "completion_feedback_schema,model_availability_schema,policy_sha256,route_learning_schema",
+];
+
+async function capabilities(binding: Fetcher, expectedPolicy: string): Promise<Record<string, unknown> | undefined> {
   try {
     // Name the pinned policy: a worker holding several source-locked adapters
     // (mid-rollover) confirms exactly this one instead of its default.
     const response = await binding.fetch(`https://internal/capabilities?policy=${encodeURIComponent(expectedPolicy)}`, {
       method: "GET", signal: AbortSignal.timeout(2_000),
     });
-    if (!response.ok) return false;
+    if (!response.ok) return undefined;
     const value = await readBoundedJson(response, 256);
-    return typeof value === "object" && value !== null && !Array.isArray(value) &&
-      ["completion_feedback_schema,policy_sha256", "completion_feedback_schema,model_availability_schema,policy_sha256"].includes(Object.keys(value).sort().join()) &&
-      (value as Record<string, unknown>).completion_feedback_schema === 1 &&
-      (!requireModelAvailability || (value as Record<string, unknown>).model_availability_schema === 1) &&
-      (value as Record<string, unknown>).policy_sha256 === expectedPolicy;
-  } catch { return false; }
+    if (typeof value !== "object" || value === null || Array.isArray(value) ||
+      !CAPABILITY_KEY_SETS.includes(Object.keys(value).sort().join())) return undefined;
+    const record = value as Record<string, unknown>;
+    return record.completion_feedback_schema === 1 && record.policy_sha256 === expectedPolicy ? record : undefined;
+  } catch { return undefined; }
+}
+
+/** Support is usable only with the same source-locked adapter as this policy. */
+export async function supportsCompletionFeedback(binding: Fetcher, expectedPolicy: string, requireModelAvailability = false): Promise<boolean> {
+  const value = await capabilities(binding, expectedPolicy);
+  return value !== undefined && (!requireModelAvailability || value.model_availability_schema === 1);
+}
+
+const learningSupport = new WeakMap<Fetcher, Map<string, { supported: boolean; expires: number }>>();
+
+/**
+ * Whether the pinned adapter ranks routes by server-recorded outcomes. Asked
+ * on every route start, so the answer is kept per binding for a minute; a
+ * failed probe is not kept, and routing then proceeds without learning.
+ */
+export async function supportsRouteLearning(binding: Fetcher, expectedPolicy: string, nowMs = Date.now()): Promise<boolean> {
+  const cached = learningSupport.get(binding)?.get(expectedPolicy);
+  if (cached && cached.expires > nowMs) return cached.supported;
+  const value = await capabilities(binding, expectedPolicy);
+  if (value === undefined) return false;
+  const supported = value.route_learning_schema === 1;
+  const entries = learningSupport.get(binding) ?? new Map();
+  entries.set(expectedPolicy, { supported, expires: nowMs + 60_000 });
+  learningSupport.set(binding, entries);
+  return supported;
 }

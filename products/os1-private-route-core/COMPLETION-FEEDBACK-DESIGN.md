@@ -108,3 +108,37 @@ claim lease. An unrelated private evaluation/network failure can still leave
 a claimed result pending; fixing that lease is outside this patch. The legacy
 epoch-week initial-route counter is also not a rolling or retry usage ledger
 and is not used as measured cost by this implementation.
+
+## Cross-task route learning (policy v37, 2026-09-24)
+
+The owner asked for routing that tries models, keeps the ones that complete
+work, prefers the cheaper one, and keeps adapting. Exact-objective feedback
+above only helps when the same task is sent again, so every new task used the
+static source preference; `gpt-6-astra` was in no preference list.
+
+State. `RoutingBudgetState` (one per owner principal) keeps a `learning`
+table: decayed attempts `n`, adopted `s`, and the geometric-mean seconds of
+adopted steps, per (provider, model, effort, verification class), with a
+7-day half-life. `RouteState` stores the ledger name and the step start time.
+After a result's decision persists, `claimLearning(sequence)` lets exactly one
+delivery record `adopted = evaluator pass` and the measured step time. Local
+steps and `deterministic_exact` are not learned. Prompts, answers and
+principals never enter the ledger; tokens are not known server-side, so step
+time is the cost signal.
+
+Decision. When the pinned adapter answers `route_learning_schema: 1`, route
+starts and retries send `route_learning` (at most 256 rows) and a per-run
+`route_seed` to the policy. The v37 adapter keeps every existing constraint
+(effort floor, provider pin, inventory, current-run exclusions, same-objective
+history, permission and verification profile) and ranks only the tuples those
+constraints admit, by expected time to a verified result, where a failure
+costs a retry. A bounded share of first attempts tries the cheapest admitted
+effort of a model this task class has barely measured, only when an optimistic
+estimate beats the best known route; retries never explore. Weights and
+priors stay in the private source-locked adapter, as above.
+
+Failure behaviour. An unreadable ledger or an unrecordable outcome is logged
+(`route_learning_unavailable` / `route_learning_unrecorded`) and routing
+continues without learning. Capability answers are cached per binding for a
+minute; failed probes are not cached. Rolling the route core back re-pins v36;
+the worker keeps the v36 adapter byte-identical.
