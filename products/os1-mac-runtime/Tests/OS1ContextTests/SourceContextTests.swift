@@ -80,6 +80,7 @@ final class SourceContextTests {
         try runTakeoverFixtures()
         try runCodexSessionIndexFixtures()
         try runBackendHealthFixtures()
+        try runProviderActivityWatchdogFixtures()
         try runBackendWindowFocusFixtures()
         try runSelfUpdateFixtures()
         try runLocalizationFixtures()

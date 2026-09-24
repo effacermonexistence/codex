@@ -339,6 +339,9 @@ struct RuntimeConfig: Codable {
     let ticketVerifyingKeyRaw: String
     let maximumSteps: Int
     let executionTimeoutSeconds: Int
+    /// Seconds a provider may stay silent before its attempt stops; the
+    /// attempt itself may run up to `executionTimeoutSeconds` while active.
+    var executionIdleTimeoutSeconds: Int? = nil
     let modelProfiles: ModelProfiles?
     let effortProfiles: EffortProfiles?
     let executionProfiles: [String: RoutedExecutionProfile]?
@@ -354,6 +357,7 @@ struct RuntimeConfig: Codable {
         case ticketVerifyingKeyRaw = "ticket_verifying_key_raw"
         case maximumSteps = "maximum_steps"
         case executionTimeoutSeconds = "execution_timeout_seconds"
+        case executionIdleTimeoutSeconds = "execution_idle_timeout_seconds"
         case modelProfiles = "model_profiles"
         case effortProfiles = "effort_profiles"
         case executionProfiles = "execution_profiles"
@@ -364,6 +368,10 @@ struct RuntimeConfig: Codable {
         case exoStartupTimeoutSeconds = "exo_startup_timeout_seconds"
         case exoMaximumOutputTokens = "exo_maximum_output_tokens"
     }
+
+    /// An older config without the idle key keeps its single cap as the
+    /// quiet limit, so nothing it allowed before is stopped earlier.
+    var providerIdleTimeoutSeconds: Int { executionIdleTimeoutSeconds ?? executionTimeoutSeconds }
 
     private static func executableURL() -> URL {
         var size: UInt32 = 0
@@ -404,6 +412,7 @@ struct RuntimeConfig: Codable {
             guard URL(string: value.apiURL)?.scheme == "https",
                   value.maximumSteps >= 1, value.maximumSteps <= 4,
                   value.executionTimeoutSeconds >= 60,
+                  value.executionIdleTimeoutSeconds.map({ (60...value.executionTimeoutSeconds).contains($0) }) ?? true,
                   value.modelProfiles.map({ profiles in
                       [
                           profiles.codex.standard,
@@ -1766,6 +1775,7 @@ func commandOutput(
     _ arguments: [String],
     input: Data? = nil,
     timeout: Int = 30,
+    idleTimeout: TimeInterval? = nil,
     currentDirectory: String? = nil,
     isProvider: Bool = false,
     environmentOverrides: [String: String] = [:],
@@ -1822,22 +1832,41 @@ func commandOutput(
         try process.run()
         onLaunch?()
     }
-    let deadline = Date().addingTimeInterval(TimeInterval(timeout))
+    // `timeout` is the hard ceiling. With `idleTimeout`, a provider that keeps
+    // writing (stream-json events, progress) runs on until that ceiling;
+    // only silence for `idleTimeout` seconds stops it earlier.
+    var watchdog = ProviderActivityWatchdog(ceiling: Date().addingTimeInterval(TimeInterval(timeout)), idle: idleTimeout)
+    var observedBytes: Int64 = -1
+    func writtenBytes() -> Int64 {
+        var total: Int64 = 0
+        for handle in [stdout, stderr] {
+            var info = stat()
+            if fstat(handle.fileDescriptor, &info) == 0 { total += Int64(info.st_size) }
+        }
+        return total
+    }
     let reader = onOutput == nil ? nil : try FileHandle(forReadingFrom: stdoutURL)
     defer { try? reader?.close() }
     func drain() throws {
         guard let reader, let onOutput else { return }
         while let bytes = try reader.read(upToCount: 65_536), !bytes.isEmpty { onOutput(bytes) }
     }
-    while process.isRunning && Date() < deadline && !ExecutionCancellation.isCancelled {
-        try drain(); Thread.sleep(forTimeInterval: 0.1)
+    while process.isRunning && !watchdog.expired() && !ExecutionCancellation.isCancelled {
+        try drain()
+        if idleTimeout != nil {
+            let bytes = writtenBytes()
+            if bytes != observedBytes { observedBytes = bytes; watchdog.observeActivity() }
+        }
+        Thread.sleep(forTimeInterval: 0.1)
     }
     if process.isRunning {
         process.terminate()
         Thread.sleep(forTimeInterval: 1)
         if process.isRunning { kill(process.processIdentifier, SIGKILL) }
         if ExecutionCancellation.isCancelled { throw OS1Error.backendBlocked(.cancelled) }
-        if isProvider { throw OS1Error.message("Local provider execution timed out") }
+        if isProvider {
+            throw OS1Error.message(idleTimeout == nil ? ProviderActivityWatchdog.timeoutText : watchdog.expiryReason())
+        }
         // Do not mislabel a preflight/source utility as a model failure or
         // send it into provider retry logic. Never expose command arguments.
         throw OS1Error.message("로컬 자료·연결 확인 중 \(URL(fileURLWithPath: executable).lastPathComponent) 응답 대기시간(\(timeout)초)을 초과했습니다. 기존 대화와 자료는 유지했습니다.")
@@ -4724,6 +4753,7 @@ final class CodexAppServerClient: @unchecked Sendable {
         effort: String,
         permissionProfile: String,
         deadline: Date,
+        idleTimeout: TimeInterval? = nil,
         onDispatch: (() -> Void)? = nil,
         onStarted: (() -> Void)? = nil
     ) throws -> CodexTurnOutput {
@@ -4782,7 +4812,7 @@ final class CodexAppServerClient: @unchecked Sendable {
                 .record(submissionID: id, threadID: threadID, turnID: turnID)
             try steering.open(submissionID: id, threadID: threadID, turnID: turnID)
         }
-        let output = try waitForTurn(threadID: threadID, turnID: turnID, deadline: deadline)
+        let output = try waitForTurn(threadID: threadID, turnID: turnID, deadline: deadline, idleTimeout: idleTimeout)
         return CodexTurnOutput(turnID: turnID, output: output)
     }
 
@@ -4877,18 +4907,25 @@ final class CodexAppServerClient: @unchecked Sendable {
         )
     }
 
-    private func waitForTurn(threadID: String, turnID: String, deadline: Date) throws -> Data {
+    private func waitForTurn(threadID: String, turnID: String, deadline: Date, idleTimeout: TimeInterval? = nil) throws -> Data {
         let stream = ExecutionStream()
         interruptedPublicProgress = ""
         defer { interruptedPublicProgress = stream.text }
         var revision = 0
+        // Every app-server message (item, delta, usage, status) is activity:
+        // a working turn runs to the ceiling, a silent one stops at `idle`.
+        var watchdog = ProviderActivityWatchdog(ceiling: deadline, idle: idleTimeout)
         while true {
             let message: [String: Any]
             if !deferredNotifications.isEmpty {
                 message = deferredNotifications.removeFirst()
             } else {
-                message = try nextMessage(deadline: deadline)
+                do { message = try nextMessage(deadline: watchdog.deadline) }
+                catch OS1Error.message(let text) where text == ProviderActivityWatchdog.timeoutText && idleTimeout != nil {
+                    throw OS1Error.message(watchdog.expiryReason())
+                }
             }
+            watchdog.observeActivity()
             if let method = message["method"] as? String, message["id"] != nil {
                 try rejectServerRequest(message, method: method)
                 continue
@@ -5038,7 +5075,7 @@ final class CodexAppServerClient: @unchecked Sendable {
             lock.unlock()
             let remaining = deadline.timeIntervalSinceNow
             guard remaining > 0 else {
-                throw OS1Error.message("Local provider execution timed out")
+                throw OS1Error.message(ProviderActivityWatchdog.timeoutText)
             }
             if messageAvailable.wait(timeout: .now() + min(remaining, 0.2)) == .timedOut { continue }
             if !process.isRunning {
@@ -5057,6 +5094,7 @@ final class CodexAppServerClient: @unchecked Sendable {
 /// and no CLI fallback after a possibly delivered start request.
 func runCodexDesktopTurn(executable: String, threadID: String, prompt: String, workspace: String,
                          model: String?, effort: String, permissionProfile: String, instructions: String, deadline: Date,
+                         idleTimeout: TimeInterval? = nil,
                          onDispatch: () -> Void) throws -> CodexTurnOutput {
     // Automatic routing: never activate Desktop. A running owner is reached
     // through its IPC socket, so no reopen event is sent and the owner's
@@ -5104,7 +5142,11 @@ func runCodexDesktopTurn(executable: String, threadID: String, prompt: String, w
     defer { if let submission = ExecutionSteering.currentSubmission { mailbox.close(submission) } }
     defer { try? desktop.follow(threadID: threadID, following: false) }
     var previous = ""
-    while Date() < deadline {
+    // Desktop state changes (new items, a growing current item, status) are
+    // activity: a working turn runs to the ceiling, a silent one stops at `idle`.
+    var watchdog = ProviderActivityWatchdog(ceiling: deadline, idle: idleTimeout)
+    var observed = ""
+    while !watchdog.expired() {
         if ExecutionCancellation.isCancelled {
             _ = try? desktop.request("thread-follower-interrupt-turn", version: 4, params: [
                 "conversationId": threadID, "expectedTurnId": turnID, "mode": "user-stop"])
@@ -5129,6 +5171,9 @@ func runCodexDesktopTurn(executable: String, threadID: String, prompt: String, w
         }
         if let current = try desktop.observeTurn(threadID: threadID, turnID: turnID, deadline: deadline) {
             let items = current["items"] as? [[String: Any]] ?? []
+            let lastItemBytes = items.last.flatMap { try? JSONSerialization.data(withJSONObject: $0) }?.count ?? 0
+            let marker = "\(items.count)|\(current["status"] as? String ?? "")|\(lastItemBytes)"
+            if marker != observed { observed = marker; watchdog.observeActivity() }
             let agents = items.filter { $0["type"] as? String == "agentMessage" }
             let progress = agents.compactMap { $0["text"] as? String }.joined(separator: "\n\n")
             if progress != previous {
@@ -5149,7 +5194,7 @@ func runCodexDesktopTurn(executable: String, threadID: String, prompt: String, w
     }
     _ = try? desktop.request("thread-follower-interrupt-turn", version: 4, params: [
         "conversationId": threadID, "expectedTurnId": turnID, "mode": "system"])
-    throw OS1Error.message("Desktop turn timed out; preserved for inspection, not replayed")
+    throw OS1Error.message("Desktop turn timed out (\(watchdog.expiryReason())); preserved for inspection, not replayed")
 }
 
 struct CodexTurnOutput {
@@ -5477,6 +5522,7 @@ private func execute(
     prompt: String,
     workspace: String,
     timeout: Int,
+    idleTimeout: Int? = nil,
     providerSessionID: String?,
     model: String?,
     effort: String,
@@ -5560,12 +5606,14 @@ private func execute(
                 turn = try appServer.runTurn(threadID: actualSessionID, prompt: prompt,
                     workspace: workspace, model: model, effort: effort,
                     permissionProfile: ticket.permissionProfile, deadline: deadline,
+                    idleTimeout: idleTimeout.map(TimeInterval.init),
                     onDispatch: { onDispatch?(actualSessionID) })
             } else {
                 appServer.close()
                 turn = try runCodexDesktopTurn(executable: codex, threadID: actualSessionID,
                     prompt: prompt, workspace: workspace, model: model, effort: effort,
                     permissionProfile: ticket.permissionProfile, instructions: instructions, deadline: deadline,
+                    idleTimeout: idleTimeout.map(TimeInterval.init),
                     onDispatch: { onDispatch?(actualSessionID) })
             }
         } catch {
@@ -5722,6 +5770,7 @@ private func execute(
             claude,
             arguments,
             timeout: timeout,
+            idleTimeout: idleTimeout.map(TimeInterval.init),
             currentDirectory: executionWorkspace,
             isProvider: true,
             onLaunch: { onDispatch?(activeSessionID) },
@@ -6181,6 +6230,7 @@ func runLocalTask(
                     prompt: executionPrompt,
                     workspace: workspace,
                     timeout: r2Evidence == nil ? config.executionTimeoutSeconds : min(config.executionTimeoutSeconds, 120),
+                    idleTimeout: r2Evidence == nil ? config.providerIdleTimeoutSeconds : nil,
                     providerSessionID: nativeSessions[decision.provider] ?? nil,
                     model: decision.model,
                     effort: decision.effort,
@@ -7317,6 +7367,7 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
                     prompt: attemptPrompt,
                     workspace: canonicalWorkspace,
                     timeout: attemptTimeout,
+                    idleTimeout: config.providerIdleTimeoutSeconds,
                     providerSessionID: nativeSessions[ticket.provider] ?? nil,
                     model: model,
                     effort: effort,
@@ -9057,6 +9108,28 @@ func selfTest() throws {
         throw OS1Error.message("Already-dispatched providers must not recursively enqueue Fleet work")
     }
     protocolRecoveryChecks += 1
+    // Idle watchdog (2026-09-24): a provider that keeps writing outlives the
+    // idle limit; silence stops it; the ceiling still bounds a chatty one.
+    let chatty = try commandOutput("/bin/sh", ["-c", "for i in 1 2 3 4 5 6; do echo $i; sleep 0.25; done"],
+        timeout: 30, idleTimeout: 0.8, isProvider: true)
+    guard chatty.0 == 0, String(decoding: chatty.1, as: UTF8.self).contains("6") else {
+        throw OS1Error.message("An active provider must not be stopped by the idle limit")
+    }
+    protocolRecoveryChecks += 1
+    for (script, ceiling, expected) in [("echo started; exec sleep 20", 30, "no backend activity"),
+                                        ("while true; do echo x; sleep 0.1; done", 1, "attempt ceiling")] {
+        let started = Date()
+        do {
+            _ = try commandOutput("/bin/sh", ["-c", script], timeout: ceiling, idleTimeout: 0.5, isProvider: true)
+            throw OS1Error.message("Provider watchdog did not stop: \(expected)")
+        } catch OS1Error.message(let text) where text.hasPrefix(ProviderActivityWatchdog.timeoutText) {
+            guard text.contains(expected), Date().timeIntervalSince(started) < 8,
+                  backendBlocker(OS1Error.message(text)) == .timeout else {
+                throw OS1Error.message("Provider watchdog reason or timing is wrong: \(text)")
+            }
+        }
+        protocolRecoveryChecks += 1
+    }
     // A new writer must run its own turn: no Desktop renderer exists yet.
     // An existing writer conflict must retain the same thread and use IPC.
     for desktopOwned in [false, true] {
@@ -9115,6 +9188,37 @@ func selfTest() throws {
         throw OS1Error.message("Recovery adapter failed real stdio dispatch/result binding")
     }
     protocolRecoveryChecks += 1
+    // A turn that keeps emitting events outlives the idle limit; a silent one
+    // stops at it (never at a fixed 30-minute cap).
+    for streaming in [true, false] {
+        let idlePeer = approvalFixture.appendingPathComponent("idle-\(streaming).sh")
+        let idleTurn = UUID().uuidString.lowercased()
+        let usage = #"{"jsonrpc":"2.0","method":"thread/tokenUsage/updated","params":{"threadId":"\#(recoveredSession)","turnId":"\#(idleTurn)"}}"#
+        try Data("""
+        #!/bin/sh
+        IFS= read -r request
+        printf '%s\\n' '{"jsonrpc":"2.0","id":1,"result":{"turn":{"id":"\(idleTurn)"}}}'
+        \(streaming ? "for i in 1 2 3 4 5 6; do sleep 0.25; printf '%s\\n' '\(usage)'; done" : "")
+        \(streaming ? "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"method\":\"turn/completed\",\"params\":{\"threadId\":\"\(recoveredSession)\",\"turn\":{\"id\":\"\(idleTurn)\",\"status\":\"completed\",\"items\":[{\"type\":\"agentMessage\",\"phase\":\"final_answer\",\"text\":\"long turn done\"}]}}}'" : "")
+        while IFS= read -r ignored; do :; done
+        """.utf8).write(to: idlePeer)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: idlePeer.path)
+        let idleServer = try CodexAppServerClient(executable: idlePeer.path, workspace: approvalFixture.path)
+        defer { idleServer.close() }
+        let started = Date()
+        do {
+            let turn = try idleServer.runTurn(threadID: recoveredSession, prompt: "fixture", workspace: approvalFixture.path,
+                model: nil, effort: "low", permissionProfile: "read_only", deadline: Date().addingTimeInterval(30), idleTimeout: 0.8)
+            guard streaming, String(decoding: turn.output, as: UTF8.self) == "long turn done" else {
+                throw OS1Error.message("A silent Codex turn must stop at the idle limit")
+            }
+        } catch OS1Error.message(let text) where text.hasPrefix(ProviderActivityWatchdog.timeoutText) {
+            guard !streaming, text.contains("no backend activity"), Date().timeIntervalSince(started) < 8 else {
+                throw OS1Error.message("A streaming Codex turn must not be stopped for idleness: \(text)")
+            }
+        }
+        protocolRecoveryChecks += 1
+    }
     let noAckPeer = approvalFixture.appendingPathComponent("no-ack.sh")
     try Data("""
     #!/bin/sh

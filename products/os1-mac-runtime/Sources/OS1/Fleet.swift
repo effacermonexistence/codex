@@ -717,7 +717,15 @@ func runFleetAgent(role: String, once: Bool) async throws {
                 guard work.phase == "delivery_pending", let result = work.result, let outcome = work.outcome else {
                     throw OS1Error.message("Fleet result outbox is invalid; preserved without re-execution")
                 }
-                try await completeFleetJob(client: client, key: key, assignment: work.assignment, outcome: outcome, result: result)
+                do {
+                    try await completeFleetJob(client: client, key: key, assignment: work.assignment, outcome: outcome, result: result)
+                } catch {
+                    // An expired job can never accept this result. Keep the
+                    // result locally and free the agent instead of retrying
+                    // delivery forever; never re-execute.
+                    guard try await fleetJobState(client: client, key: key, jobID: work.assignment.jobID) == "expired" else { throw error }
+                    fputs("OS-1 fleet: job \(work.assignment.jobID) expired before delivery; result kept at ~/.os1/fleet/jobs/\(work.assignment.jobID)/fleet-result.json\n", stderr)
+                }
                 if once { try? await refreshFleetResultCache(client: client, key: key) }
                 try fleetPersist(work, at: fleetJobDirectory(work.assignment.jobID).appendingPathComponent("fleet-result.json"))
                 try FileManager.default.removeItem(at: activeFile)
@@ -967,6 +975,24 @@ func waitForFleetTask(jobID: String, timeoutSeconds: Int = 3_600) async throws -
         if let result = try fleetValidatedResult(status, jobID: jobID) { return result }
     }
     throw OS1Error.message("Fleet wait ended; job may still be running. Resume fleet-wait with the same job ID; do not submit duplicate work.")
+}
+
+/// The executor may read its own job's state (the gateway accepts submitter or executor).
+private func fleetJobState(client: APIClient, key: SigningKey, jobID: String) async throws -> String {
+    let statusAt = fleetNowMs()
+    let statusNonce = try randomNonce()
+    let signature = Base64URL.encode(try key.sign(statusBytes(
+        deviceID: client.deviceID, jobID: jobID, sentAtMs: statusAt, nonce: statusNonce
+    )))
+    let status: FleetJobStatus = try await client.post(
+        "/v1/fleet/status",
+        body: FleetStatusRequest(jobID: jobID, sentAtMs: statusAt, nonce: statusNonce, signature: signature),
+        as: FleetJobStatus.self
+    )
+    guard status.jobID.lowercased() == jobID.lowercased() else {
+        throw OS1Error.message("Fleet result job identity mismatch")
+    }
+    return status.state
 }
 
 private func fleetValidatedResult(_ status: FleetJobStatus, jobID: String) throws -> String? {
