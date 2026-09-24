@@ -5588,6 +5588,7 @@ private func execute(
         guard let model, try appServer.models(deadline: min(deadline, Date().addingTimeInterval(12))).contains(where: {
             $0.slug == model && $0.supportedEfforts.contains(effort)
         }) else { throw OS1Error.backendBlocked(.capabilityUnavailable) }
+        AttemptLatencyTrace.mark("codex_ready")
         let actualSessionID = try appServer.startOrResumeThread(
             existingSessionID: expectedSessionID,
             workspace: workspace,
@@ -5597,6 +5598,7 @@ private func execute(
             title: codexSessionTitle(from: lockedObjective),
             deadline: deadline
         )
+        AttemptLatencyTrace.mark("thread_ready")
         // A newly created thread has no Desktop renderer owner. Its current
         // app-server writer must execute it; waiting for a nonexistent UI owner
         // deadlocks dispatch. Only an actual writer conflict uses Desktop IPC.
@@ -5626,8 +5628,10 @@ private func execute(
         // it. Never hide a second paid repair inside one signed route ticket.
         var recordPath: String?
         var persistence = "verified"
+        AttemptLatencyTrace.mark("turn_completed")
         let writerStderr = appServer.stderr()
         appServer.close()
+        AttemptLatencyTrace.mark("writer_closed")
         do {
             // A live writer's in-memory turn list is not persistence evidence.
             // This new process only reads; it never resumes/starts another turn.
@@ -5661,6 +5665,7 @@ private func execute(
         } catch {
             persistence = "unverified: \(error)"
         }
+        AttemptLatencyTrace.mark("record_verified")
         let correctedObjective = ExecutionSteering.currentSubmission.map { id in
             let mailbox = ExecutionSteering()
             return mailbox.inputs(id).filter { mailbox.receipt($0)?.state == .persisted }
@@ -5792,6 +5797,7 @@ private func execute(
                 workspace: executionWorkspace, started: started, cause: error)
         }
         stream.finishClaude()
+        AttemptLatencyTrace.mark("provider_exited")
         let resultData = stream.result ?? raw.1
         onUsage?(CompletionUsageParser.parseClaudeResult(resultData))
         let parsed: ClaudePrintResult
@@ -6481,6 +6487,8 @@ private func recordCompletionAttempt(store: CompletionFeedbackStore, scope: Comp
                                      ticket: Ticket, model: String, effort: String,
                                      outcome: CompletionOutcome, usage: CompletionMeasuredUsage?,
                                      startedAt: Date, source: SourceReference?, monitorTaskID: String, monitorScope: CompletionFeedbackScope) {
+    AttemptLatencyTrace.mark("recorded")
+    AttemptLatencyTrace.finish(executionID: ticket.executionID, sequence: ticket.sequence, provider: ticket.provider)
     let observation = CompletionFeedbackObservation(
             executionID: ticket.executionID, sequence: ticket.sequence, provider: ticket.provider,
             model: model, effort: effort,
@@ -6739,11 +6747,13 @@ func runTask(
 ) async throws -> RunSummary {
     // Inventories first: they overlap the policy refresh (≈1 s, 2026-09-24).
     // A refused policy still stops the run before any routing or model call.
+    AttemptLatencyTrace.begin()
     let preflight = (try? RuntimeConfig.load()).map {
         PreflightInventory.start(workspace: URL(fileURLWithPath: workspace).standardizedFileURL.path,
                                  config: $0, showCodex: OS1Settings.load().showCodex)
     }
     let policy = try loadCurrentOwnerPolicy()
+    AttemptLatencyTrace.mark("policy")
     return try await OwnerPolicyContext.$snapshot.withValue(policy) {
         try await runTaskWithOwnerPolicy(
                 prompt: prompt,
@@ -7060,6 +7070,7 @@ func runTaskWithOwnerPolicy(
     let id = try deviceID()
     let client = APIClient(config: config, token: try githubToken(), deviceID: id)
     try await register(client: client, key: key)
+    AttemptLatencyTrace.mark("registered")
     var codexCatalog: ActiveCodexCatalog
     if let codexProbe {
         codexCatalog = await codexProbe.value
@@ -7219,11 +7230,13 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
     // a concurrent outside edit can only read as "changed", never as "none".
     let routedWorkspace = canonicalWorkspace
     let speculativeBeforeHash = Task.detached { workspaceHash(routedWorkspace) }
+    AttemptLatencyTrace.mark("route_request")
     var route: RouteResponse = try await client.post(
         "/v1/executions",
         body: request,
         as: RouteResponse.self
     )
+    AttemptLatencyTrace.mark("routed")
     recordRoutingInput(request, ticket: route.ticket, source: sourceContext)
     var steps: [RunStepSummary] = []
     var failedCandidates = Set<String>()
@@ -7298,6 +7311,7 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
             throw OS1Error.message("라우팅된 Claude 모델·effort가 현재 계정의 모델 목록과 달라 유료 호출 전에 차단했습니다.")
         }
         let startData = Data(["os1-attempt-start-v1", ticket.executionID, String(ticket.sequence), ticket.nonce, ticket.signature].joined(separator: "\n").utf8)
+        AttemptLatencyTrace.beginIfIdle()
         let lease: AttemptStartReceipt = try await client.post("/v1/attempts/start",
             body: AttemptStartRequest(ticket: ticket, device_signature: Base64URL.encode(try key.sign(startData))), as: AttemptStartReceipt.self)
         guard lease.execution_id == ticket.executionID, lease.sequence == ticket.sequence,
@@ -7305,6 +7319,7 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
             throw OS1Error.message("실행 시작 확인이 일치하지 않아 백엔드를 호출하지 않았습니다.")
         }
         let attemptTimeout = min(config.executionTimeoutSeconds, max(1, Int(deadline.timeIntervalSinceNow) - 1))
+        AttemptLatencyTrace.mark("lease")
         RuntimeActivity.emit(.preparing, provider: ticket.provider, model: model, effort: effort)
         if progress {
             print("OS-1 step \(step): \(ticket.provider) / \(ticket.action) / \(effort) / \(ticket.permissionProfile)")
@@ -7380,6 +7395,7 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
                         r2RetrievalRequiresTransformation(prompt) || referencesPriorSource(prompt),
                     onUsage: { attemptUsage = $0 },
                     onDispatch: { sessionID in
+                        AttemptLatencyTrace.mark("dispatched")
                         dispatchStage = .dispatched
                         interruptedSessionID = sessionID
                         RuntimeActivity.emit(.preparing, provider: ticket.provider, model: model,
@@ -7648,6 +7664,7 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
         let verifiedPreviewDelivery = attemptFailure == nil && execution.artifact.exitCode == 0 && requireReadOnly
             ? await RailwayDelivery.recoveredPreview(output: execution.artifact.output, workspace: canonicalWorkspace, request: prompt) : nil
         let artifact = execution.artifact
+        AttemptLatencyTrace.mark("artifact_ready")
         let artifactData = try JSONEncoder().encode(artifact)
         let resultHash = sha256Hex(artifactData)
         RuntimeActivity.emit(.verifying, provider: ticket.provider, model: model, effort: effort)
@@ -7684,7 +7701,9 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
         do {
             let uploaded: [String: String] = try await client.deliver("/v1/artifacts", body: upload, as: [String: String].self)
             guard uploaded["artifact_ref"] == artifactRef else { throw OS1Error.message("Artifact upload binding failed") }
+            AttemptLatencyTrace.mark("artifact_uploaded")
             route = try await client.deliver("/v1/results", body: submission, as: RouteResponse.self)
+            AttemptLatencyTrace.mark("remote_verified")
             delivery.response = try JSONEncoder().encode(route)
             try DeliveryOutbox().save(delivery)
         } catch {
@@ -9186,6 +9205,23 @@ func selfTest() throws {
     guard wireDispatched && wireStarted && recovered.turnID == recoveredTurn &&
           String(decoding: recovered.output, as: UTF8.self) == "fixture readback complete" else {
         throw OS1Error.message("Recovery adapter failed real stdio dispatch/result binding")
+    }
+    protocolRecoveryChecks += 1
+    // Latency marks are relative to the attempt start, written once, then cleared.
+    let latencyRoot = approvalFixture.appendingPathComponent("latency", isDirectory: true)
+    let latencyExecution = UUID().uuidString.lowercased()
+    AttemptLatencyTrace.begin(at: Date(timeIntervalSince1970: 100))
+    AttemptLatencyTrace.mark("lease", at: Date(timeIntervalSince1970: 100.25))
+    AttemptLatencyTrace.mark("dispatched", at: Date(timeIntervalSince1970: 101.5))
+    AttemptLatencyTrace.finish(executionID: latencyExecution, sequence: 2, provider: "codex", root: latencyRoot)
+    let latencyRecord = (try? JSONSerialization.jsonObject(with: Data(contentsOf:
+        latencyRoot.appendingPathComponent("latency-\(latencyExecution)-2.json")))) as? [String: Any]
+    let latencyMarks = latencyRecord?["marks"] as? [[String: Any]] ?? []
+    AttemptLatencyTrace.mark("after-finish")
+    guard latencyMarks.count == 2, latencyMarks[0]["name"] as? String == "lease", latencyMarks[0]["ms"] as? Int == 250,
+          latencyMarks[1]["ms"] as? Int == 1_500, latencyRecord?["provider"] as? String == "codex",
+          AttemptLatencyTrace.take() == nil else {
+        throw OS1Error.message("Attempt latency marks must be attempt-relative, written once and cleared")
     }
     protocolRecoveryChecks += 1
     // A turn that keeps emitting events outlives the idle limit; a silent one
