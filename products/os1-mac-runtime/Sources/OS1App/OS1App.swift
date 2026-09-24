@@ -1197,7 +1197,10 @@ private func slotWaitVisibilitySelfTest() async throws {
     func eventually(_ condition: () -> Bool) async throws {
         let deadline = Date().addingTimeInterval(8)
         while !condition(), Date() < deadline { try await Task.sleep(for: .milliseconds(10)) }
-        try check(condition(), "asynchronous scheduler deadline")
+        // Evaluate here: the optimizer's region check rejects handing the
+        // closure itself to the main-actor autoclosure after a suspension.
+        let satisfied = condition()
+        try check(satisfied, "asynchronous scheduler deadline")
     }
     let root = FileManager.default.temporaryDirectory.appendingPathComponent("os1-slot-wait-" + UUID().uuidString)
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
