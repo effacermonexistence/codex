@@ -1,12 +1,22 @@
 import SwiftUI
+import Charts
 import OS1Context
 
 private enum GovernanceMonitorSection: String, CaseIterable, Identifiable {
-    case live = "실시간"
-    case tokens = "토큰"
-    case performance = "테스크 완료율"
-    case compare = "모델 비교"
+    case live = "핵심"
+    case details = "상세"
     var id: Self { self }
+}
+
+private struct GovernanceChartPoint: Identifiable {
+    let id: Date
+    let value: Double
+}
+
+private struct GovernanceActivityChartPoint: Identifiable {
+    let id: Date
+    let started: Double
+    let finished: Double
 }
 
 /// Read-only projection; opening this panel never starts a provider, replay, or benchmark.
@@ -24,6 +34,10 @@ struct GovernanceMonitorView: View {
     @State private var scenarioTasks = 100
     @State private var selectedTaskID = ""
     @State private var refreshed = Date()
+    @State private var deltaHistory = GovernanceDeltaHistory()
+    @State private var deltaHistoryContext = ""
+    @State private var projection: GovernanceDashboardProjection
+    @State private var projectionFilterContext = "전체|전체"
     @Environment(\.dismiss) private var dismiss
     private let green = Color(red: 0.23, green: 0.9, blue: 0.56)
     private let pink = Color(red: 0.99, green: 0.61, blue: 0.77)
@@ -38,36 +52,48 @@ struct GovernanceMonitorView: View {
         self.preview = preview
         _snapshot = State(initialValue: snapshot)
         _section = State(initialValue: GovernanceMonitorSection(rawValue: previewSection) ?? .live)
-        let available = snapshot.routes(since: nil, includeHistorical: true).filter { $0.attempts > 0 }
+        _refreshed = State(initialValue: snapshot.loadedAt)
+        let initialProjection = snapshot.dashboardProjection(provider: nil, since: nil,
+                                                             includeHistorical: true, now: snapshot.loadedAt)
+        _projection = State(initialValue: initialProjection)
+        let available = initialProjection.rows.filter { $0.attempts > 0 }
         let initialBaseline = available.first(where: {
-            snapshot.comparisons(baseline: $0.id, since: nil, includeHistorical: true).contains { $0.tokenSavings != nil }
+            initialProjection.comparisonsByBaseline[$0.id]?.contains { $0.tokenSavings != nil } == true
         })?.id ?? available.first(where: {
-            !snapshot.comparisons(baseline: $0.id, since: nil, includeHistorical: true).isEmpty
+            !(initialProjection.comparisonsByBaseline[$0.id] ?? []).isEmpty
         })?.id ?? available.first?.id ?? ""
         _baseline = State(initialValue: initialBaseline)
-        let initialComparisons = snapshot.comparisons(baseline: initialBaseline, since: nil, includeHistorical: true)
-        _candidate = State(initialValue: initialComparisons.first(where: { $0.tokenSavings != nil })?.id
-            ?? initialComparisons.first?.id ?? "")
+        let initialComparisons = initialProjection.comparisonsByBaseline[initialBaseline] ?? []
+        let initialCandidate = initialComparisons.first(where: { $0.tokenSavings != nil })?.id
+            ?? initialComparisons.first?.id ?? ""
+        _candidate = State(initialValue: initialCandidate)
+        if let comparison = initialComparisons.first(where: { $0.id == initialCandidate }) {
+            var history = GovernanceDeltaHistory()
+            history.append(at: snapshot.loadedAt, tokenSavings: comparison.tokenSavings,
+                           taskCompletionDelta: comparison.taskCompletionDelta)
+            _deltaHistory = State(initialValue: history)
+            _deltaHistoryContext = State(initialValue: ["전체", "전체", initialBaseline, initialCandidate]
+                .joined(separator: "|"))
+        }
     }
     private var since: Date? {
         window == "전체" ? nil : refreshed.addingTimeInterval(window == "24시간" ? -86_400 : -604_800)
     }
-    private var filtered: GovernanceSnapshot {
-        var value = snapshot
-        if provider != "전체" {
-            // Mixed-backend tasks stay intact; do not discard their retry costs.
-            value.tasks = value.tasks.filter { $0.attempts.contains { $0.provider == provider } }
-            value.historical = value.historical.filter { $0.observation.provider == provider }
-        }
-        return value
+    private var filterContext: String { [window, provider].joined(separator: "|") }
+    private var projectionIsCurrent: Bool { projectionFilterContext == filterContext }
+    private var projectionRequestID: String {
+        let rollingWindowTick = window == "전체" ? "all" : String(Int(refreshed.timeIntervalSince1970))
+        return [String(snapshot.loadedAt.timeIntervalSince1970), filterContext, rollingWindowTick]
+            .joined(separator: "|")
     }
-    private var tasks: [GovernanceTask] { filtered.selectedTasks(since: since) }
-    private var terminal: [GovernanceTask] { tasks.filter(\.isTerminal) }
-    private var rows: [GovernanceRoute] { filtered.routes(since: since, includeHistorical: since == nil) }
+    private var filtered: GovernanceSnapshot { projection.snapshot }
+    private var tasks: [GovernanceTask] { projectionIsCurrent ? projection.tasks : [] }
+    private var terminal: [GovernanceTask] { projectionIsCurrent ? projection.terminalTasks : [] }
+    private var rows: [GovernanceRoute] { projectionIsCurrent ? projection.rows : [] }
     private var measuredRows: [GovernanceRoute] { rows.filter { $0.measuredAttempts > 0 }.prefix(8).map { $0 } }
     private var baselineRow: GovernanceRoute? { rows.first { $0.id == baseline } }
     private var maxMeanTokens: Double { max(1, measuredRows.compactMap(\.meanTokens).max() ?? 1) }
-    private var samples: [(String, CompletionFeedbackObservation)] { filtered.samples(since: since, includeHistorical: since == nil) }
+    private var samples: [(String, CompletionFeedbackObservation)] { projectionIsCurrent ? projection.samples : [] }
     private var usage: [Int] { samples.compactMap { GovernanceSnapshot.tokens($0.1) } }
     private var completed: Int { terminal.filter(\.isAdopted).count }
     private var taskCompletionRate: Double? {
@@ -82,30 +108,28 @@ struct GovernanceMonitorView: View {
         return Double(tokens) / Double(completed)
     }
     private var comparisons: [GovernanceComparison] {
-        filtered.comparisons(baseline: baseline, since: since, includeHistorical: since == nil)
+        projectionIsCurrent ? (projection.comparisonsByBaseline[baseline] ?? []) : []
     }
     private var selectedComparison: GovernanceComparison? { comparisons.first { $0.id == candidate } }
     private var candidateRow: GovernanceRoute? { rows.first { $0.id == candidate } }
-    private var taskCompletionDelta: Double? {
-        guard let baseline = baselineRow?.completionRate,
-              let candidate = candidateRow?.completionRate else { return nil }
-        return candidate - baseline
-    }
+    private var taskCompletionDelta: Double? { selectedComparison?.taskCompletionDelta }
+    private var completionEfficiencyDelta: Double? { selectedComparison?.completionEfficiencyDelta }
     private var meteredTasks: [GovernanceTask] { terminal.filter { $0.tokens != nil } }
-    private var quality: GovernanceQualitySummary { filtered.quality(since: since) }
+    private var quality: GovernanceQualitySummary {
+        projectionIsCurrent ? projection.quality : GovernanceQualitySummary(outcomes: [], tokens: [])
+    }
     private var adoptionEfficiency: Double? {
         let tokens = meteredTasks.compactMap(\.tokens).reduce(0,+)
         guard !terminal.isEmpty, terminal.count == meteredTasks.count, tokens > 0 else { return nil }
         return Double(completed) * 1_000_000 / Double(tokens)
     }
     private var observedHours: Double {
-        filtered.observedTaskHours(now: refreshed, since: since)
+        projectionIsCurrent ? projection.observedTaskHours : 0
     }
     private var recentTasks: [GovernanceTask] { Array(tasks.sorted { $0.startedAt > $1.startedAt }.prefix(12)) }
     private var selectedTask: GovernanceTask? {
         tasks.first { $0.id == selectedTaskID } ?? recentTasks.first
     }
-    private var comparisonID: String { baseline + "→" + candidate }
     private var selectedSavedTokensPerTask: Int? {
         guard let baseline = selectedComparison?.baselineMeanTokens,
               let candidate = selectedComparison?.candidateMeanTokens else { return nil }
@@ -125,6 +149,7 @@ struct GovernanceMonitorView: View {
     private func percent(_ n: Double?) -> String { n.map { String(format: "%.1f%%", $0 * 100) } ?? "—" }
     private func decimal(_ n: Double?) -> String { n.map { String(format: "%.2f", $0) } ?? "—" }
     private func delta(_ n: Double?) -> String { n.map { String(format: "%+.1f%%", $0 * 100) } ?? "—" }
+    private func percentagePoints(_ n: Double?) -> String { n.map { String(format: "%+.1fpp", $0 * 100) } ?? "—" }
     private func short(_ route: String) -> String { route.replacingOccurrences(of: " / ", with: " · ") }
     private func compactTokenAxis(_ value: Double) -> String {
         let magnitude = abs(value)
@@ -146,6 +171,53 @@ struct GovernanceMonitorView: View {
         guard let value else { return "—" }
         return value >= 0 ? "+\(num(value)) 절약" : "\(num(abs(value))) 추가"
     }
+    private var currentHistoryContext: String { [window, provider, baseline, candidate].joined(separator: "|") }
+    private var tokenDeltaPoints: [GovernanceChartPoint] {
+        deltaHistory.points.compactMap { point in
+            point.tokenSavings.map { GovernanceChartPoint(id: point.id, value: $0 * 100) }
+        }
+    }
+    private var completionDeltaPoints: [GovernanceChartPoint] {
+        deltaHistory.points.compactMap { point in
+            point.taskCompletionDelta.map { GovernanceChartPoint(id: point.id, value: $0 * 100) }
+        }
+    }
+    /// Live activity is independent of matched baseline/candidate data. The
+    /// old delta charts are intentionally empty until a paired comparison
+    /// exists; that must not hide the real-time governance stream.
+    private var liveActivityPoints: [GovernanceActivityChartPoint] {
+        guard projectionIsCurrent else { return [] }
+        let end = refreshed
+        let span: TimeInterval = window == "24시간" ? 86_400 : (window == "7일" ? 604_800 : 1_800)
+        let bucketSeconds: TimeInterval = window == "전체" ? 60 : (window == "24시간" ? 900 : 3_600)
+        let start = end.addingTimeInterval(-span)
+        var buckets: [Date: (started: Double, finished: Double)] = [:]
+        func key(_ date: Date) -> Date {
+            Date(timeIntervalSince1970: floor(date.timeIntervalSince1970 / bucketSeconds) * bucketSeconds)
+        }
+        for task in tasks {
+            if task.startedAt >= start, task.startedAt <= end {
+                let bucket = key(task.startedAt)
+                var value = buckets[bucket] ?? (started: 0, finished: 0)
+                value.started += 1
+                buckets[bucket] = value
+            }
+            if let endedAt = task.endedAt, endedAt >= start, endedAt <= end {
+                let bucket = key(endedAt)
+                var value = buckets[bucket] ?? (started: 0, finished: 0)
+                value.finished += 1
+                buckets[bucket] = value
+            }
+        }
+        // Keep a live zero/current point so the chart remains visible before
+        // the first receipt and continues to show its current time window.
+        let currentBucket = key(end)
+        if buckets[currentBucket] == nil { buckets[currentBucket] = (started: 0, finished: 0) }
+        return buckets.keys.sorted().map { date in
+            let value = buckets[date] ?? (started: 0, finished: 0)
+            return GovernanceActivityChartPoint(id: date, started: value.started, finished: value.finished)
+        }
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -155,7 +227,6 @@ struct GovernanceMonitorView: View {
                 VStack(alignment: .leading, spacing: 18) {
                     controls
                     sectionContent
-                    methodology
                 }.padding(24)
             }
         }
@@ -164,33 +235,68 @@ struct GovernanceMonitorView: View {
         .foregroundStyle(Color(white: 0.94))
         .preferredColorScheme(.dark)
         .task {
-            guard !preview else { setBaseline(); return }
+            if preview { return }
+            let cache = GovernanceActivityIncrementalCache()
             while !Task.isCancelled {
                 let tick = ContinuousClock.now
-                let value = await Task.detached(priority: .utility) {
-                    GovernanceActivityStore().snapshot()
+                let update = await Task.detached(priority: .utility) {
+                    cache.snapshotIfChanged()
                 }.value
                 guard !Task.isCancelled else { return }
-                snapshot = value; setBaseline()
                 refreshed = Date()
+                if let update {
+                    snapshot = update.snapshot
+                }
                 try? await Task.sleep(until: tick.advanced(by: .seconds(1)), clock: .continuous)
             }
         }
-        .onChange(of: provider) { _ in
+        .task(id: projectionRequestID) {
+            let source = snapshot
+            let selectedProvider = provider == "전체" ? nil : provider
+            let selectedSince = since
+            let includeHistorical = selectedSince == nil
+            let now = refreshed
+            let context = filterContext
+            let next = await Task.detached(priority: .utility) {
+                source.dashboardProjection(provider: selectedProvider, since: selectedSince,
+                                           includeHistorical: includeHistorical, now: now)
+            }.value
+            guard !Task.isCancelled else { return }
+            projection = next
+            projectionFilterContext = context
             setBaseline()
-        }
-        .onChange(of: window) { _ in
-            setBaseline()
+            await Task.yield()
+            recordDeltaPoint(at: now)
         }
         .onChange(of: baseline) { _ in setCandidate() }
+        .onChange(of: currentHistoryContext) { _ in
+            deltaHistory = GovernanceDeltaHistory()
+            deltaHistoryContext = ""
+            if projectionIsCurrent { recordDeltaPoint(at: refreshed) }
+        }
+    }
+    private func recordDeltaPoint(at date: Date) {
+        let context = currentHistoryContext
+        if deltaHistoryContext != context {
+            deltaHistory = GovernanceDeltaHistory()
+            deltaHistoryContext = context
+        }
+        let token = selectedComparison?.tokenSavings
+        let completion = taskCompletionDelta
+        if let last = deltaHistory.points.last,
+           abs(last.id.timeIntervalSince(date)) < 0.1,
+           last.tokenSavings == token,
+           last.taskCompletionDelta == completion { return }
+        deltaHistory.append(at: date, tokenSavings: token, taskCompletionDelta: completion)
     }
     private func setBaseline() {
+        guard projectionIsCurrent else { return }
         let available = rows.filter { $0.attempts > 0 }
         if !available.contains(where: { $0.id == baseline }) {
             baseline = available.first(where: {
-                filtered.comparisons(baseline: $0.id, since: since, includeHistorical: since == nil).contains { $0.tokenSavings != nil }
+                projection.comparisonsByBaseline[$0.id]?.contains { $0.tokenSavings != nil } == true
             })?.id
-                ?? available.first(where: { !filtered.comparisons(baseline: $0.id, since: since, includeHistorical: since == nil).isEmpty })?.id
+                ?? available.first(where: { !(projection.comparisonsByBaseline[$0.id] ?? []).isEmpty })?.id
                 ?? available.first?.id
                 ?? ""
         }
@@ -211,43 +317,54 @@ struct GovernanceMonitorView: View {
             }
             Spacer()
             Circle().fill(green).frame(width: 6, height: 6)
-            Text(preview ? "읽기 전용 미리보기" : "LIVE · 1초 갱신").font(.system(size: 11)).foregroundStyle(green)
+            Text(preview ? "읽기 전용 미리보기" : "LIVE · 1초 감지 · 변경 시 집계").font(.system(size: 11)).foregroundStyle(green)
             Button { if let onClose { onClose() } else { dismiss() } } label: { Image(systemName: "xmark").frame(width: 26, height: 26) }
                 .buttonStyle(.plain).accessibilityLabel("Close governance monitor")
         }.padding(24).frame(maxWidth: .infinity)
     }
     private var controls: some View {
-        HStack(spacing: 16) {
-            Picker("화면", selection: $section) {
-                ForEach(GovernanceMonitorSection.allCases) { Text($0.rawValue).tag($0) }
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 16) {
+                Picker("화면", selection: $section) {
+                    ForEach(GovernanceMonitorSection.allCases) { Text($0.rawValue).tag($0) }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .frame(width: 220)
+                Spacer()
+                Picker("기간", selection: $window) { ForEach(["전체", "24시간", "7일"], id: \.self) { Text($0) } }.frame(width: 155)
+                Picker("백엔드", selection: $provider) { Text("전체").tag("전체"); Text("Codex").tag("codex"); Text("Claude Code").tag("claude") }.frame(width: 190)
             }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .frame(maxWidth: 500)
-            Spacer()
-            Picker("기간", selection: $window) { ForEach(["전체", "24시간", "7일"], id: \.self) { Text($0) } }.frame(width: 155)
-            Picker("백엔드", selection: $provider) { Text("전체").tag("전체"); Text("Codex").tag("codex"); Text("Claude Code").tag("claude") }.frame(width: 190)
+            if !rows.isEmpty {
+                HStack(spacing: 10) {
+                    Text("기준").font(.system(size: 10, weight: .semibold)).foregroundStyle(muted)
+                    Picker("기준 경로", selection: $baseline) {
+                        ForEach(rows.filter { $0.attempts > 0 }) { row in Text(short(row.id)).tag(row.id) }
+                    }.labelsHidden().frame(maxWidth: 390)
+                    Image(systemName: "arrow.right").foregroundStyle(muted)
+                    Text("비교").font(.system(size: 10, weight: .semibold)).foregroundStyle(muted)
+                    Picker("비교 경로", selection: $candidate) {
+                        if comparisons.isEmpty { Text("matched 기록 없음").tag("") }
+                        ForEach(comparisons) { item in Text(short(item.id)).tag(item.id) }
+                    }.labelsHidden().frame(maxWidth: 390)
+                    Spacer()
+                }
+            }
         }
     }
     @ViewBuilder private var sectionContent: some View {
         switch section {
         case .live:
             compactMetrics
+            liveActivityChart
+            deltaCharts
             liveRow
+        case .details:
             taskMonitorTable
-        case .tokens:
-            compactMetrics
             routeTable
-            pairedPanel
-        case .performance:
-            performanceMetrics
-            completionChart
-            routeTable
+            DisclosureGroup("모델 비교 · 과거 matched 관측") { comparisonWorkbench; comparePanel }
             tracePanel
-        case .compare:
-            comparisonWorkbench
-            pairedPanel
-            DisclosureGroup("과거 matched 관측 · 인과 비교 아님") { comparePanel }
+            methodology
         }
     }
     private func card(_ title: String, _ value: String, _ note: String, color: Color = .white) -> some View {
@@ -270,14 +387,157 @@ struct GovernanceMonitorView: View {
     }
     private var compactMetrics: some View {
         HStack(spacing: 10) {
-            compactCard("완료 토큰", tokensPerCompletedTask.map { num(Int($0)) + " tok/완료" } ?? "—",
-                        "종료 테스크의 실측 토큰", color: green)
-            compactCard("토큰 절감율 델타", delta(selectedComparison?.tokenSavings),
-                        selectedComparison.map { "matched \($0.matchedScopes)묶음" } ?? "동일 요청 비교 데이터 없음",
+            compactCard("테스크 완료율", percent(taskCompletionRate),
+                        "완료 \(completed) / 종료 \(terminal.count)", color: green)
+            compactCard("토큰 감소율 Δ", delta(selectedComparison?.tokenSavings),
+                        selectedComparison.map { "matched \($0.matchedScopes)묶음 · 실패 포함" } ?? "동일 요청 비교 데이터 없음",
                         color: (selectedComparison?.tokenSavings ?? 0) >= 0 ? green : pink)
-            compactCard("테스크 완료율 델타", delta(taskCompletionDelta),
-                        "현재 완료율 \(percent(taskCompletionRate)) · 기준→비교", color: green)
+            compactCard("테스크 완료율 Δ", percentagePoints(taskCompletionDelta),
+                        "matched \(percent(selectedComparison?.baselineTaskCompletionRate)) → \(percent(selectedComparison?.candidateTaskCompletionRate))",
+                        color: (taskCompletionDelta ?? 0) >= 0 ? green : pink)
+            compactCard("종합 효율 Δ", delta(completionEfficiencyDelta),
+                        "완료/1M tok · 실패·재시도 포함",
+                        color: (completionEfficiencyDelta ?? 0) >= 0 ? green : pink)
         }
+    }
+    private var deltaCharts: some View {
+        HStack(alignment: .top, spacing: 12) {
+            deltaChart(title: "토큰 감소율 Δ", current: delta(selectedComparison?.tokenSavings), unit: "%",
+                       note: "matched 요청 · 실패·재시도 비용 포함", points: tokenDeltaPoints,
+                       color: (selectedComparison?.tokenSavings ?? 0) >= 0 ? green : pink)
+            deltaChart(title: "테스크 완료율 Δ", current: percentagePoints(taskCompletionDelta), unit: "pp",
+                       note: "비교 − 기준 · 같은 matched 요청", points: completionDeltaPoints,
+                       color: (taskCompletionDelta ?? 0) >= 0 ? green : pink)
+        }
+    }
+    private var liveActivityChart: some View {
+        let points = liveActivityPoints
+        let maxValue = max(1, points.flatMap { [$0.started, $0.finished] }.max() ?? 1)
+        let windowLabel = window == "전체" ? "최근 30분" : window
+        return VStack(alignment: .leading, spacing: 11) {
+            HStack(alignment: .firstTextBaseline) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("실시간 거버넌스 활동").font(.system(size: 12, weight: .semibold))
+                    Text("작업 시작·종료 영수증 · \(windowLabel)")
+                        .font(.system(size: 9)).foregroundStyle(muted)
+                }
+                Spacer()
+                HStack(spacing: 10) {
+                    Label("시작", systemImage: "circle.fill").foregroundStyle(green)
+                    Label("종료", systemImage: "circle.fill").foregroundStyle(pink)
+                }.font(.system(size: 9, weight: .medium))
+            }
+            Chart {
+                RuleMark(y: .value("기준", 0))
+                    .foregroundStyle(Color.white.opacity(0.16))
+                    .lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 4]))
+                ForEach(points) { point in
+                    LineMark(x: .value("시간", point.id), y: .value("시작", point.started))
+                        .foregroundStyle(green)
+                        .lineStyle(StrokeStyle(lineWidth: 2.2, lineCap: .round, lineJoin: .round))
+                        .symbol(Circle())
+                    LineMark(x: .value("시간", point.id), y: .value("종료", point.finished))
+                        .foregroundStyle(pink)
+                        .lineStyle(StrokeStyle(lineWidth: 2.2, lineCap: .round, lineJoin: .round))
+                        .symbol(Circle())
+                }
+            }
+            .chartYScale(domain: 0...maxValue + 1)
+            .chartXAxis {
+                AxisMarks(values: .automatic(desiredCount: 5)) { _ in
+                    AxisGridLine().foregroundStyle(Color.white.opacity(0.06))
+                    AxisValueLabel(format: .dateTime.hour().minute())
+                        .font(.system(size: 8)).foregroundStyle(muted)
+                }
+            }
+            .chartYAxis {
+                AxisMarks(position: .leading, values: .automatic(desiredCount: 4)) { value in
+                    AxisGridLine().foregroundStyle(Color.white.opacity(0.06))
+                    AxisValueLabel {
+                        if let number = value.as(Double.self) {
+                            Text(String(Int(number.rounded())))
+                                .font(.system(size: 8, design: .monospaced)).foregroundStyle(muted)
+                        }
+                    }
+                }
+            }
+            .frame(height: 170)
+            Text(points.count == 1 && points[0].started == 0 && points[0].finished == 0
+                 ? "실시간 작업 영수증을 기다리는 중입니다."
+                 : "새 영수증이 저장되면 다음 폴링 주기에 그래프가 갱신됩니다.")
+                .font(.system(size: 9)).foregroundStyle(muted)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(15)
+        .background(Color.white.opacity(0.04), in: RoundedRectangle(cornerRadius: 12))
+    }
+    private func chartDomain(_ points: [GovernanceChartPoint]) -> ClosedRange<Double> {
+        let values = points.map(\.value) + [0]
+        let low = values.min() ?? -1
+        let high = values.max() ?? 1
+        let span = max(1, high - low)
+        return (low - span * 0.16)...(high + span * 0.16)
+    }
+    private func deltaChart(title: String, current: String, unit: String, note: String,
+                            points: [GovernanceChartPoint], color: Color) -> some View {
+        VStack(alignment: .leading, spacing: 11) {
+            HStack(alignment: .firstTextBaseline) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(title).font(.system(size: 12, weight: .semibold))
+                    Text(note).font(.system(size: 9)).foregroundStyle(muted)
+                }
+                Spacer()
+                Text(current).font(.system(size: 22, weight: .semibold, design: .rounded))
+                    .monospacedDigit().foregroundStyle(color)
+            }
+            if points.isEmpty {
+                VStack(spacing: 7) {
+                    Image(systemName: "chart.xyaxis.line").font(.system(size: 24)).foregroundStyle(muted.opacity(0.55))
+                    Text("비교 가능한 실측 델타가 없습니다.").font(.system(size: 10)).foregroundStyle(muted)
+                }
+                .frame(maxWidth: .infinity, minHeight: 155)
+            } else {
+                Chart {
+                    RuleMark(y: .value("기준", 0))
+                        .foregroundStyle(Color.white.opacity(0.16))
+                        .lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 4]))
+                    ForEach(points) { point in
+                        LineMark(x: .value("시간", point.id), y: .value("델타", point.value))
+                            .foregroundStyle(color)
+                            .lineStyle(StrokeStyle(lineWidth: 2.2, lineCap: .round, lineJoin: .round))
+                        AreaMark(x: .value("시간", point.id), yStart: .value("기준", 0), yEnd: .value("델타", point.value))
+                            .foregroundStyle(LinearGradient(colors: [color.opacity(0.24), color.opacity(0.015)], startPoint: .top, endPoint: .bottom))
+                    }
+                    if let last = points.last {
+                        PointMark(x: .value("현재 시간", last.id), y: .value("현재 델타", last.value))
+                            .foregroundStyle(color).symbolSize(34)
+                    }
+                }
+                .chartYScale(domain: chartDomain(points))
+                .chartXAxis {
+                    AxisMarks(values: .automatic(desiredCount: 4)) { _ in
+                        AxisGridLine().foregroundStyle(Color.white.opacity(0.06))
+                        AxisValueLabel(format: .dateTime.hour().minute())
+                            .font(.system(size: 8)).foregroundStyle(muted)
+                    }
+                }
+                .chartYAxis {
+                    AxisMarks(position: .leading, values: .automatic(desiredCount: 4)) { value in
+                        AxisGridLine().foregroundStyle(Color.white.opacity(0.06))
+                        AxisValueLabel {
+                            if let number = value.as(Double.self) {
+                                Text(String(format: "%+.0f%@", number, unit))
+                                    .font(.system(size: 8, design: .monospaced)).foregroundStyle(muted)
+                            }
+                        }
+                    }
+                }
+                .frame(height: 155)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(15)
+        .background(Color.white.opacity(0.04), in: RoundedRectangle(cornerRadius: 12))
     }
     private var performanceMetrics: some View {
         HStack(spacing: 10) {
@@ -427,8 +687,8 @@ struct GovernanceMonitorView: View {
             HStack(spacing: 10) {
                 deltaCard("현재 완료율", percent(taskCompletionRate),
                           "완료 \(completed) / 종료 \(terminal.count)", green)
-                deltaCard("기준→비교", delta(taskCompletionDelta),
-                          "동일 경로의 종료 테스크만", (taskCompletionDelta ?? 0) >= 0 ? green : pink)
+                deltaCard("기준→비교", percentagePoints(taskCompletionDelta),
+                          "동일 matched 요청 묶음", (taskCompletionDelta ?? 0) >= 0 ? green : pink)
                 deltaCard("완료 토큰", tokensPerCompletedTask.map { num(Int($0)) + " tok/완료" } ?? "—",
                           "실측 토큰·재시도 비용 포함", green)
             }
@@ -515,7 +775,7 @@ struct GovernanceMonitorView: View {
                         Text("기준 \(short(item.baseline)) · \(item.baselineAttempts)회")
                         Text("가정 \(short(item.id)) · \(item.candidateAttempts)회")
                         Spacer()
-                        Text("테스크 완료율 \(percent(baselineRow?.completionRate)) → \(percent(candidateRow?.completionRate))")
+                        Text("matched 완료율 \(percent(item.baselineTaskCompletionRate)) → \(percent(item.candidateTaskCompletionRate))")
                     }
                     .font(.system(size: 9, design: .monospaced)).foregroundStyle(muted)
                     Text("가정값은 matched scope의 경로별 절대 평균 토큰을 \(scenarioTasks)배한 단순 투영입니다. 작업 구성·순서·선택 편향을 제거하지 않으며 실행을 자동으로 시작하지 않습니다.")

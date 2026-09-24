@@ -1057,6 +1057,64 @@ private func parallelInteractionSelfTest() async throws {
             try check(resumeStore.selectedSession!.lastFailure?.request == "REPAIR ORIGINAL", "unverified readback discarded original")
         }
     }
+    // Codex-style completion handoff: when a readback verifies that the
+    // previous attempt changed nothing, a follow-up entered after the visible
+    // output must become the next native turn. It must not wait behind an
+    // automatic replay of the old objective.
+    var handoffCalls: [PendingSubmission] = []
+    var handoffContexts: [String: SessionHandoff] = [:]
+    func handoffEventually(_ condition: () -> Bool) async throws {
+        let deadline = Date().addingTimeInterval(8)
+        while !condition(), Date() < deadline { try await Task.sleep(for: .milliseconds(20)) }
+        try check(condition(), "readback follow-up handoff scheduler deadline")
+    }
+    let handoffRoot = root.appendingPathComponent("readback-followup-handoff")
+    let handoffStore = SessionStore(storageRoot: handoffRoot,
+        runOperation: { submission, context, codex, _, _ in
+            handoffCalls.append(submission)
+            handoffContexts[submission.request] = try SessionHandoff.decode(context)
+            try await Task.sleep(for: .milliseconds(25))
+            if handoffCalls.count == 1 {
+                throw RunnerError.backend(BackendFailureNotice(provider: "codex", sessionID: interruptedID,
+                    blocker: .effectsUncertain, dispatchStage: .dispatched, permissionProfile: "workspace_write"))
+            }
+            if submission.readOnlyReconciliation == true {
+                try check(codex == interruptedID, "readback lost the native Codex session")
+                return AppRunSummary(status: "complete", steps: [AppRunStep(sequence: 1, provider: "codex",
+                    action: "readback", model: "fixture", effort: "low", revasDisposition: "adopted",
+                    sessionID: UUID().uuidString, permissionProfile: "workspace_write", exitCode: 0,
+                    output: "OS1_EFFECTS: none", stderr: "", durationMS: 25,
+                    nativeRecord: AppNativeRecord(turnID: nil, recordPath: nil,
+                        persistence: "verified", desktopVisibility: "not_opened"))])
+            }
+            try check(submission.request == "FOLLOW-UP STEERING", "queued follow-up was not dispatched")
+            try check(codex == interruptedID, "follow-up opened a new Codex session instead of continuing: got=\(codex ?? "nil") expected=\(interruptedID)")
+            return AppRunSummary(status: "complete", steps: [AppRunStep(sequence: 1, provider: "codex",
+                action: "follow-up", model: "fixture", effort: "low", revasDisposition: "adopted",
+                sessionID: UUID().uuidString, permissionProfile: "workspace_write", exitCode: 0,
+                output: "follow-up output", stderr: "", durationMS: 25, nativeRecord: nil)])
+        })
+    handoffStore.composer = "ORIGINAL OBJECTIVE"; handoffStore.send()
+    let handoffSessionID = handoffStore.selectedSessionID!
+    try await handoffEventually { handoffCalls.count == 1 }
+    handoffStore.composer = "FOLLOW-UP STEERING"; handoffStore.send()
+    try check(handoffStore.queuedSubmissions.map(\.request) == ["FOLLOW-UP STEERING"],
+        "follow-up steering was not retained behind the completed output")
+    try await handoffEventually { handoffCalls.count == 3 && handoffStore.activeRuns.isEmpty }
+    try check(handoffCalls.count == 3 && handoffCalls[0].request == "ORIGINAL OBJECTIVE" &&
+        handoffCalls[1].readOnlyReconciliation == true && handoffCalls[2].request == "FOLLOW-UP STEERING",
+        "readback handoff replayed or skipped the follow-up turn: \(handoffCalls.map(\.request))")
+    try check(handoffCalls[1].readOnlyReconciliation == true && handoffCalls[2].readOnlyReconciliation != true,
+        "follow-up handoff did not separate readback from the next user turn")
+    try check(handoffContexts["FOLLOW-UP STEERING"]?.transcript.contains("follow-up") == false,
+        "follow-up context incorrectly included its own output")
+    try check(handoffStore.queuedSubmissions.isEmpty && handoffStore.selectedSession!.lastFailure == nil &&
+        handoffStore.selectedSession!.lastBackendFailure == nil &&
+        handoffStore.selectedSession!.preservedTasks?.isEmpty == false,
+        "verified readback did not release the queued Codex follow-up cleanly: queue=\(handoffStore.queuedSubmissions.count), failure=\(handoffStore.selectedSession!.lastFailure?.request ?? "nil"), backend=\(handoffStore.selectedSession!.lastBackendFailure != nil), preserved=\(handoffStore.selectedSession!.preservedTasks?.count ?? 0), messages=\(handoffStore.selectedSession!.messages.suffix(3).map(\.text))")
+    try check(handoffStore.sessions.first(where: { $0.id == handoffSessionID })?.messages.contains {
+        $0.role == .assistant && $0.text == "follow-up output"
+    } == true, "follow-up output was not adopted into the conversation")
     // A stop can race with a previously emitted effects-uncertain notice.
     var cancelledCalls = 0
     let cancelledStore = SessionStore(storageRoot: root.appendingPathComponent("cancel-review"), runOperation: { _, _, _, _, _ in
@@ -3144,7 +3202,9 @@ private struct PendingSubmission: Identifiable, Codable, Equatable, Sendable {
     var replacesSubmissionID: UUID? = nil
     var replacesObjective: Bool? = nil
     /// Set when a clean readback (OS1_EFFECTS: none) already resumed this
-    /// objective once, so one verified-no-effects verdict buys one resume.
+    /// objective once. A verified follow-up turn takes precedence over this
+    /// replay path, matching Codex: the completed output stays in the native
+    /// transcript and steering becomes the next turn in that same session.
     var readbackResumed: Bool? = nil
     /// Historical receipt only; a new build does not authorize another replay.
     var resumedUnderBuild: Int? = nil
@@ -5353,7 +5413,8 @@ private final class SessionStore: ObservableObject {
                             self.activeRuns[submission.sessionID]?.activity = activity
                             self.activeRuns[submission.sessionID]?.provider = activity.provider.flatMap(ProviderChoice.init(rawValue:))
                             self.promoteQueuedCorrections(submission.sessionID)
-                            if let nativeID = activity.nativeSessionID,
+                            if submission.recoveryParentID == nil,
+                               let nativeID = activity.nativeSessionID,
                                let provider = activity.provider.flatMap(ProviderChoice.init(rawValue:)) {
                                 self.recordNativeSession(provider, id: nativeID, conversationID: submission.sessionID)
                             }
@@ -5417,7 +5478,8 @@ private final class SessionStore: ObservableObject {
                         }
                         if let source = summary.sourceContext { sessions[target].sourceContext = source }
                         for step in visibleAdoptedSteps(summary.steps) where stepRecordIsVerified(step) {
-                            if let provider = ProviderChoice(rawValue: step.provider) {
+                            if submission.recoveryParentID == nil,
+                               let provider = ProviderChoice(rawValue: step.provider) {
                                 recordNativeSession(provider, id: step.sessionID, conversationID: submission.sessionID)
                             }
                             sessions[target].messages.append(ChatMessage(role: .assistant,
@@ -5478,7 +5540,8 @@ private final class SessionStore: ObservableObject {
                        let turn = record.turnID, UUID(uuidString: turn) != nil {
                         sessions[target].ownedCodexTurnIDs = Array(Set((sessions[target].ownedCodexTurnIDs ?? []) + [turn])).sorted()
                     }
-                    if let provider = ProviderChoice(rawValue: step.provider) {
+                    if submission.recoveryParentID == nil,
+                       let provider = ProviderChoice(rawValue: step.provider) {
                         recordNativeSession(provider, id: step.sessionID, conversationID: submission.sessionID)
                     }
                 }
@@ -5525,8 +5588,13 @@ private final class SessionStore: ObservableObject {
                     // The readback ends with a machine-checkable verdict. Only
                     // "none" — the backend verified from real state that the
                     // interrupted attempt changed nothing — releases the
-                    // uncertain-effect hold, and it buys exactly one resume of
-                    // the preserved objective. Applied clears only with independent
+                    // uncertain-effect hold, and normally buys exactly one
+                    // resume of the preserved objective. If a user follow-up
+                    // is already queued, that follow-up takes precedence: the
+                    // completed output is kept as the preceding Codex turn and
+                    // the follow-up is dispatched through the same native
+                    // session instead of replaying the old objective first.
+                    // Applied clears only with independent
                     // exact-preview delivery evidence; partial/unknown keep the hold.
                     if let original = sessions[target].lastFailure,
                        let final = visibleSteps.last,
@@ -5649,19 +5717,47 @@ private final class SessionStore: ObservableObject {
                sessions[target].lastFailure?.id == original.id,
                !isSessionRunning(submission.sessionID),
                activeRuns.count < Self.maximumConcurrentSessions,
-               !queuedSubmissions.contains(where: { $0.sessionID == submission.sessionID && $0.startNextRequested == true }),
                !FileManager.default.fileExists(atPath: ExecutionCancellation.url(submissionID: original.id).path),
                !FileManager.default.fileExists(atPath: ExecutionCancellation.url(submissionID: submission.id).path) {
-                original.prepareVerifiedNoEffectsResume(build: installedBuildNumber)
-                sessions[target].lastFailure = original
-                start(original)
-                if activeRuns[submission.sessionID]?.submissionID == original.id {
-                    sessions[target].messages.append(ChatMessage(role: .system,
-                        text: os1Tr("재확인 결과 이전 시도의 변경이 반영되지 않았음이 확인되어 보존한 원래 작업을 재개했습니다.",
-                                    "The readback verified no changes were applied. The preserved objective has resumed.")))
-                    appendTaskEvent(conversationID: submission.sessionID, kind: "readback_resume",
-                        summary: "Verified OS1_EFFECTS: none; released readback admission and dispatched preserved objective")
+                let queuedFollowUp = queuedSubmissions.firstIndex {
+                    $0.sessionID == submission.sessionID &&
+                    $0.id != original.id &&
+                    $0.recoveryParentID == nil
+                }
+                if let queuedFollowUp {
+                    // The original output already exists in the conversation.
+                    // Preserve its custody/history, release only the uncertain-
+                    // effects hold, and let the queued request become the next
+                    // native Codex turn. Do not mark it startNextRequested:
+                    // that flag means “advance past an unresolved failure” and
+                    // would incorrectly require the failure to remain present.
+                    sessions[target].preservedTasks = (sessions[target].preservedTasks ?? []) + [PreservedTask(
+                        request: original, failure: sessions[target].lastBackendFailure,
+                        context: sessions[target].taskContext, source: sessions[target].sourceContext, timestamp: Date())]
+                    sessions[target].lastFailure = nil
+                    sessions[target].lastBackendFailure = nil
+                    sessions[target].completedForkCheckpoint = ConversationForkCheckpoint(
+                        throughMessageID: sessions[target].messages.last?.id,
+                        source: sessions[target].sourceContext, context: sessions[target].taskContext)
+                    sessionStatuses[submission.sessionID] = os1Tr("출력 확인됨 · 후속 스티어링을 다음 Codex 턴으로 전달합니다.",
+                                                                  "Output retained · dispatching follow-up as the next Codex turn.")
+                    appendTaskEvent(conversationID: submission.sessionID, kind: "readback_followup_handoff",
+                        summary: "Verified OS1_EFFECTS: none; preserved completed output and released queued follow-up as next native turn")
+                    queuedSubmissions[queuedFollowUp].startNextRequested = nil
+                    queuedSubmissions[queuedFollowUp].replacesSubmissionID = nil
                     save()
+                } else {
+                    original.prepareVerifiedNoEffectsResume(build: installedBuildNumber)
+                    sessions[target].lastFailure = original
+                    start(original)
+                    if activeRuns[submission.sessionID]?.submissionID == original.id {
+                        sessions[target].messages.append(ChatMessage(role: .system,
+                            text: os1Tr("재확인 결과 이전 시도의 변경이 반영되지 않았음이 확인되어 보존한 원래 작업을 재개했습니다.",
+                                        "The readback verified no changes were applied. The preserved objective has resumed.")))
+                        appendTaskEvent(conversationID: submission.sessionID, kind: "readback_resume",
+                            summary: "Verified OS1_EFFECTS: none; released readback admission and dispatched preserved objective")
+                        save()
+                    }
                 }
             }
             runNextQueuedSubmissionIfNeeded()
@@ -10178,9 +10274,23 @@ private final class ContinuousTranscriptTextView: NSTextView {
                 forCharacterRange: range,
                 actualCharacterRange: nil
             )
-            var rect = layoutManager.boundingRect(forGlyphRange: glyphRange, in: textContainer)
-            rect.origin.x += origin.x
-            rect.origin.y += origin.y
+            // `boundingRect(forGlyphRange:)` can include the whole aligned line
+            // fragment for a right-aligned paragraph. That made a short user
+            // message paint as a full-width bubble. Use each line's used rect
+            // instead: it is the actual glyph envelope, so the bubble follows
+            // the text like Codex while retaining the transcript's wrap width.
+            var rect = NSRect.null
+            layoutManager.enumerateLineFragments(forGlyphRange: glyphRange) { _, usedRect, _, _, _ in
+                var glyphRect = usedRect
+                glyphRect.origin.x += origin.x
+                glyphRect.origin.y += origin.y
+                rect = rect.union(glyphRect)
+            }
+            if rect.isNull {
+                rect = layoutManager.boundingRect(forGlyphRange: glyphRange, in: textContainer)
+                rect.origin.x += origin.x
+                rect.origin.y += origin.y
+            }
             let contentRect = rect
             switch role {
             case MessageRole.user.rawValue:
