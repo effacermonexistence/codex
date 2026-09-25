@@ -33,6 +33,22 @@ has_handy() {
   [[ "$signature" == *"TeamIdentifier=$handy_team"* ]]
 }
 
+handy_activation_policy() {
+  osascript -l JavaScript -e '
+    (function () {
+      ObjC.import("AppKit");
+      const apps = $.NSWorkspace.sharedWorkspace.runningApplications;
+      for (let i = 0; i < apps.count; i++) {
+        const app = apps.objectAtIndex(i);
+        if (ObjC.unwrap(app.bundleIdentifier) === "com.pais.handy") {
+          return String(app.activationPolicy);
+        }
+      }
+      return "not-running";
+    })()
+  ' 2>/dev/null
+}
+
 handy_app=""
 for candidate in "$HOME/Applications/Handy.app" /Applications/Handy.app; do
   if has_handy "$candidate"; then
@@ -92,15 +108,16 @@ const s = JSON.parse(fs.readFileSync(process.argv[2], 'utf8')).settings;
 process.exit(s?.bindings?.transcribe?.current_binding === 'fn' &&
   s.shortcut_activation === 'hold_or_toggle' &&
   s.audio_feedback === true && s.sound_theme === 'marimba' &&
-  s.autostart_enabled === true && s.selected_model === 'medium' ? 0 : 1);
+  s.autostart_enabled === true && s.selected_model === 'medium' &&
+  s.show_tray_icon === true && s.start_hidden === true ? 0 : 1);
 NODE
 then
   osascript -e 'tell application id "com.pais.handy" to quit' >/dev/null 2>&1 || true
   for _ in 1 2 3 4 5 6 7 8 9 10; do
-    pgrep -f '/Handy.app/Contents/MacOS/handy$' >/dev/null || break
+    pgrep -f '/Handy.app/Contents/MacOS/handy([[:space:]]|$)' >/dev/null || break
     sleep 1
   done
-  if pgrep -f '/Handy.app/Contents/MacOS/handy$' >/dev/null; then
+  if pgrep -f '/Handy.app/Contents/MacOS/handy([[:space:]]|$)' >/dev/null; then
     echo "Handy is still running; close it before changing its settings." >&2
     exit 1
   fi
@@ -124,6 +141,8 @@ settings.audio_feedback = true;
 settings.audio_feedback_volume = 1.0;
 settings.sound_theme = 'marimba';
 settings.autostart_enabled = true;
+settings.show_tray_icon = true;
+settings.start_hidden = true;
 settings.selected_model = 'medium';
 settings.selected_language = 'auto';
 settings.onboarding_completed = true;
@@ -223,7 +242,28 @@ if (!fs.existsSync(file) || fs.readFileSync(file, 'utf8') !== content) {
 }
 NODE
 
-open -a "$handy_app"
+if [[ "$(handy_activation_policy)" == "0" ]]; then
+  osascript -e 'tell application id "com.pais.handy" to quit' >/dev/null 2>&1 || true
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    pgrep -f '/Handy.app/Contents/MacOS/handy([[:space:]]|$)' >/dev/null || break
+    sleep 1
+  done
+  if pgrep -f '/Handy.app/Contents/MacOS/handy([[:space:]]|$)' >/dev/null; then
+    echo "Handy is still running in the Dock; close it before restarting." >&2
+    exit 1
+  fi
+fi
+if [[ "$(handy_activation_policy)" != "1" ]]; then
+  open -a "$handy_app" --args --start-hidden
+fi
+for ((attempt=0; attempt<45; attempt++)); do
+  [[ "$(handy_activation_policy)" == "1" ]] && break
+  sleep 1
+done
+if [[ "$(handy_activation_policy)" != "1" ]]; then
+  echo "Handy is not running as a menu bar only app. Approve any macOS permission prompts, close its settings window, then rerun." >&2
+  exit 1
+fi
 
 [[ "$(shasum -a 256 "$handy_model" | awk '{print $1}')" == "$handy_model_sha" ]]
 [[ "$(osascript -e 'tell application "System Events" to get picture of every desktop')" == *"$wallpaper"* ]]
@@ -235,10 +275,11 @@ const [handy, codex] = process.argv.slice(2);
 const s = JSON.parse(fs.readFileSync(handy, 'utf8')).settings;
 if (s.bindings?.transcribe?.current_binding !== 'fn' ||
     s.audio_feedback !== true || s.sound_theme !== 'marimba' ||
-    s.selected_model !== 'medium' || s.autostart_enabled !== true) process.exit(1);
+    s.selected_model !== 'medium' || s.autostart_enabled !== true ||
+    s.show_tray_icon !== true || s.start_hidden !== true) process.exit(1);
 if (!/^followUpQueueMode\s*=\s*"queue"\s*$/m.test(fs.readFileSync(codex, 'utf8'))) process.exit(1);
 NODE
 
-echo "Mac defaults ready: Handy Fn + sound + medium model, emoji off, pure black wallpaper, idle Always On, Codex queue."
+echo "Mac defaults ready: Handy Fn + sound + medium model + menu bar only, emoji off, pure black wallpaper, idle Always On, Codex queue."
 echo "Dock ready: no pinned apps or folders; suggested and recent apps disabled."
 echo "Approve Handy microphone/Accessibility prompts on this Mac if macOS shows them; restart an already-open Codex app to load queue mode."

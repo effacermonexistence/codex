@@ -173,12 +173,31 @@ const fs = require('node:fs');
 const s = JSON.parse(fs.readFileSync(process.argv[2], 'utf8')).settings;
 process.exit(s?.bindings?.transcribe?.current_binding === 'fn' &&
   s.audio_feedback === true && s.sound_theme === 'marimba' &&
-  s.selected_model === 'medium' ? 0 : 1);
+  s.selected_model === 'medium' && s.autostart_enabled === true &&
+  s.show_tray_icon === true && s.start_hidden === true ? 0 : 1);
 NODE
   then
-    add_check pass "Handy Fn and sound" "Fn transcription and Marimba feedback configured"
+    add_check pass "Handy Fn and sound" "Fn transcription, Marimba feedback, and menu bar only startup configured"
   else
     add_check fail "Handy Fn and sound" "run scripts/configure-new-mac.sh"
+  fi
+  handy_policy="$(osascript -l JavaScript -e '
+    (function () {
+      ObjC.import("AppKit");
+      const apps = $.NSWorkspace.sharedWorkspace.runningApplications;
+      for (let i = 0; i < apps.count; i++) {
+        const app = apps.objectAtIndex(i);
+        if (ObjC.unwrap(app.bundleIdentifier) === "com.pais.handy") {
+          return String(app.activationPolicy);
+        }
+      }
+      return "not-running";
+    })()
+  ' 2>/dev/null)"
+  if [[ "$handy_policy" == "1" ]]; then
+    add_check pass "Handy menu bar only" "running as a menu bar app without an idle Dock icon"
+  else
+    add_check fail "Handy menu bar only" "run scripts/configure-new-mac.sh and close any Handy settings window"
   fi
   if [[ "$(defaults read com.apple.HIToolbox AppleFnUsageType 2>/dev/null)" == "0" ]]; then
     add_check pass "Fn emoji action" "disabled"

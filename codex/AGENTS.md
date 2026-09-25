@@ -27,7 +27,8 @@ keys, Wrangler credentials, GitHub PATs, or Claude credentials.
 
 The bootstrap also applies the standard local desktop profile: official
 SHA-256-pinned Handy with its Whisper Medium model, Fn transcription and
-Marimba audio, Fn emoji action disabled, pure black desktop, empty removable
+Marimba audio, menu bar icon enabled with hidden startup and no idle Dock icon,
+Fn emoji action disabled, pure black desktop, empty removable
 Dock items with suggested/recent apps disabled, login-session idle Always On,
 and Codex queued follow-ups. Finish macOS's device-local
 Handy microphone/Accessibility prompts and restart an already-open Codex app
