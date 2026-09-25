@@ -3464,8 +3464,8 @@ private struct ConversationSession: Codable, Identifiable, Sendable {
         codexSessionID: String? = nil,
         claudeSessionID: String? = nil,
         lastProvider: String? = nil,
-        codexCapacity: Int = 30,
-        claudeCapacity: Int = 100,
+        codexCapacity: Int = CapacityMix.defaultCodex,
+        claudeCapacity: Int = CapacityMix.defaultClaude,
         updatedAt: Date = Date()
     ) {
         self.id = id
@@ -3483,8 +3483,8 @@ private struct ConversationSession: Codable, Identifiable, Sendable {
         self.updatedAt = updatedAt
     }
 
-    var effectiveCodexCapacity: Int { codexCapacity ?? 30 }
-    var effectiveClaudeCapacity: Int { claudeCapacity ?? 100 }
+    var effectiveCodexCapacity: Int { codexCapacity ?? CapacityMix.defaultCodex }
+    var effectiveClaudeCapacity: Int { claudeCapacity ?? CapacityMix.defaultClaude }
     var visibleMessages: [ChatMessage] { messages.filter { $0.nativeManagedTurnID == nil } }
 }
 

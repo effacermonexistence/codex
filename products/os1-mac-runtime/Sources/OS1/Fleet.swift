@@ -653,14 +653,15 @@ private func executeFleetAssignment(_ assignment: FleetAssignment, role: String,
         default: prompt = assignment.task
         }
         let preference = ["codex", "claude"].contains(assignment.profile) ? assignment.profile : "auto"
+        let mix = fleetCapacityMix(preference: preference)
         run = try await (fleetRunsStaged(prompt) ? runWorkflowTask(
             prompt: prompt, workspace: workspace, providerPreference: preference,
             context: nil, codexSessionID: nil, claudeSessionID: nil,
-            codexCapacity: 100, claudeCapacity: 100, progress: false, desktopReveal: .never
+            codexCapacity: mix.codex, claudeCapacity: mix.claude, progress: false, desktopReveal: .never
         ) : runTask(
             prompt: prompt, workspace: workspace, providerPreference: preference,
             context: nil, codexSessionID: nil, claudeSessionID: nil,
-            codexCapacity: 100, claudeCapacity: 100, progress: false, desktopReveal: .never
+            codexCapacity: mix.codex, claudeCapacity: mix.claude, progress: false, desktopReveal: .never
         ))
         guard run.status == "complete", !run.steps.isEmpty, run.steps.allSatisfy({ $0.exitCode == 0 }) else {
             throw OS1Error.message("Fleet governed execution has not completed")
@@ -683,6 +684,14 @@ private func executeFleetAssignment(_ assignment: FleetAssignment, role: String,
     let data = try encoder.encode(receipt)
     guard data.count <= 65_536 else { throw OS1Error.message("Fleet result exceeds the signed result limit") }
     return String(decoding: data, as: UTF8.self)
+}
+
+/// An automatic fleet job routes with the same capacity mix as a new app
+/// conversation (Codex 30 %, Claude 100 %), so a task handed over from a Claude
+/// Code session is routed the way the same task typed into OS-1 would be. A
+/// job that names a backend keeps both at 100 %: its backend is already fixed.
+func fleetCapacityMix(preference: String) -> (codex: Int, claude: Int) {
+    preference == "auto" ? (CapacityMix.defaultCodex, CapacityMix.defaultClaude) : (100, 100)
 }
 
 /// A fleet job splits exactly when `os1 run` would: the owner asked for
@@ -1507,5 +1516,10 @@ func fleetSelfTest() throws {
     try check(!fleetRunsStaged("/tmp/os1-split/calc.py 파일에 add(a, b) 함수를 만들고 python3로 실행해서 결과를 확인해."),
               "unsplit request was staged")
     try check(!fleetRunsStaged("이 코드 구조를 설명해. 작업을 쪼개서 각각 라우팅해."), "read-only question was staged")
-    print("OS-1 Fleet self-test: \(checks) checks OK; config, EXO candidate, private read-only result validation, fair result polling, truthful capacity flags, local backend note, account environment and staged split")
+    // Build 261: an automatic fleet job uses the app's default capacity mix.
+    try check(fleetCapacityMix(preference: "auto") == (CapacityMix.defaultCodex, CapacityMix.defaultClaude)
+              && fleetCapacityMix(preference: "auto") == (30, 100), "automatic fleet job ignored the capacity mix")
+    try check(fleetCapacityMix(preference: "codex") == (100, 100) && fleetCapacityMix(preference: "claude") == (100, 100),
+              "named-backend fleet job changed its capacity")
+    print("OS-1 Fleet self-test: \(checks) checks OK; config, EXO candidate, private read-only result validation, fair result polling, truthful capacity flags, local backend note, account environment, staged split and capacity mix")
 }
