@@ -9209,92 +9209,117 @@ private struct ProviderRail: View {
         self._governanceOpen = governanceOpen
     }
 
+    // The rail is assembled from named sub-views. Written as one expression it
+    // took the type-checker over a second here and blew the compiler's budget
+    // on the slower release runner ("unable to type-check this expression in
+    // reasonable time"), so the layout below must stay split.
     var body: some View {
         VStack(spacing: ProviderRailLayout.stackSpacing) {
-            let homeAppearance = RailItemAppearance.resolve(selected: store.surface == .auto, linked: true)
-            Button { store.showClodexHome() } label: {
-                VStack(spacing: 6) {
-                    OmarAGILogo(size: 40)
-                        .opacity(homeAppearance.contentOpacity)
-                    Text("OS-1")
-                        .font(.system(size: 7, weight: .bold))
-                        .tracking(1.1)
-                        .foregroundStyle(Color.white.opacity(homeAppearance.contentOpacity))
-                }
-                .frame(width: ProviderRailLayout.itemWidth, height: ProviderRailLayout.homeHeight)
-                .background(RailSelectionBackground(accent: ProviderChoice.auto.tint, appearance: homeAppearance))
-                .contentShape(RoundedRectangle(cornerRadius: Theme.radiusControl, style: .continuous))
-            }
-            .buttonStyle(.plain)
-            .help("Clodex home")
-            .accessibilityLabel("Clodex home")
-            .accessibilityValue(store.surface == .auto ? "선택됨" : "선택 안 됨")
-            // Only OS-1 moves; Codex and Claude stay on the reference grid.
-            .padding(.top, ProviderRailLayout.homeTopPadding)
+            homeButton
 
             // Codex disappears entirely when switched off in Settings — the
             // runtime refuses to route to it too, so the rail stays truthful.
-            ForEach([ProviderChoice.codex, ProviderChoice.claude].filter {
-                $0 != .codex || store.appSettings.showCodex
-            }) { provider in
-                let account = store.activeAccount(for: provider)
-                // Never claim a backend is signed out before its own status
-                // command has answered: an unverified account reads as fine.
-                let verified = account.map { $0.verifiedAt == nil || $0.signedIn } ?? true
-                BackendStatus(
-                    provider: provider,
-                    selected: store.surface == provider,
-                    active: store.selectedSession?.lastProvider == provider.rawValue,
-                    linked: provider == .codex
-                        ? store.selectedSession?.codexSessionID != nil
-                        : store.selectedSession?.claudeSessionID != nil,
-                    signedIn: verified,
-                    signingIn: store.accountBusy == provider.rawValue,
-                    accountLabel: account?.label,
-                    disabled: false
-                ) {
-                    // A signed-out backend cannot run anything, so the tile
-                    // offers the sign-in instead of an empty session list.
-                    if !verified { store.accountsOpen = true } else { store.inspectBackend(provider) }
-                }
-                .contextMenu {
-                    ForEach(store.accounts(for: provider)) { row in
-                        Button {
-                            Task { await store.useAccount(provider: provider.rawValue, id: row.id) }
-                        } label: {
-                            Label(row.label + (row.signedIn ? "" : os1Tr(" (로그아웃)", " (signed out)")),
-                                  systemImage: store.accountBook.active[provider.rawValue] == row.id ? "checkmark" : "")
-                        }
-                        .disabled(store.accountBook.active[provider.rawValue] == row.id)
-                    }
-                    Divider()
-                    Button(os1Tr("\(provider.title) 계정…", "\(provider.title) accounts…")) { store.accountsOpen = true }
-                }
+            ForEach(visibleProviders) { provider in
+                backendTile(provider)
             }
 
             Spacer()
 
-            Button { governanceOpen.toggle() } label: {
-              VStack(spacing: 6) {
-                Circle().fill(Theme.green).frame(width: 9, height: 9)
-                    .shadow(color: Theme.green.opacity(0.85), radius: 6)
-                Text("RCC\nGOVERNED")
-                    .font(.system(size: 7, weight: .bold))
-                    .tracking(0.7)
-                    .multilineTextAlignment(.center)
-                    .foregroundStyle(Theme.muted)
-              }.frame(width: 56, height: 52).contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .help("RCC Governance · 토큰, 완수율, 효율 활동 모니터")
-            .accessibilityLabel("RCC Governance Activity Monitor")
-            .accessibilityValue(governanceOpen ? "열림" : "닫힘")
-            .background(governanceOpen ? Theme.green.opacity(0.10) : Color.clear, in: RoundedRectangle(cornerRadius: 10))
+            governanceButton
         }
         .padding(.top, ProviderRailLayout.railTopPadding)
         .padding(.bottom, 24)
         .frame(width: 78)
         .background(Color.black.opacity(0.74))
+    }
+
+    private var visibleProviders: [ProviderChoice] {
+        [ProviderChoice.codex, ProviderChoice.claude].filter {
+            $0 != .codex || store.appSettings.showCodex
+        }
+    }
+
+    private var homeButton: some View {
+        let homeAppearance = RailItemAppearance.resolve(selected: store.surface == .auto, linked: true)
+        return Button { store.showClodexHome() } label: {
+            VStack(spacing: 6) {
+                OmarAGILogo(size: 40)
+                    .opacity(homeAppearance.contentOpacity)
+                Text("OS-1")
+                    .font(.system(size: 7, weight: .bold))
+                    .tracking(1.1)
+                    .foregroundStyle(Color.white.opacity(homeAppearance.contentOpacity))
+            }
+            .frame(width: ProviderRailLayout.itemWidth, height: ProviderRailLayout.homeHeight)
+            .background(RailSelectionBackground(accent: ProviderChoice.auto.tint, appearance: homeAppearance))
+            .contentShape(RoundedRectangle(cornerRadius: Theme.radiusControl, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .help("Clodex home")
+        .accessibilityLabel("Clodex home")
+        .accessibilityValue(store.surface == .auto ? "선택됨" : "선택 안 됨")
+        // Only OS-1 moves; Codex and Claude stay on the reference grid.
+        .padding(.top, ProviderRailLayout.homeTopPadding)
+    }
+
+    private func backendTile(_ provider: ProviderChoice) -> some View {
+        let account = store.activeAccount(for: provider)
+        // Never claim a backend is signed out before its own status
+        // command has answered: an unverified account reads as fine.
+        let verified = account.map { $0.verifiedAt == nil || $0.signedIn } ?? true
+        let linked: Bool = provider == .codex
+            ? store.selectedSession?.codexSessionID != nil
+            : store.selectedSession?.claudeSessionID != nil
+        return BackendStatus(
+            provider: provider,
+            selected: store.surface == provider,
+            active: store.selectedSession?.lastProvider == provider.rawValue,
+            linked: linked,
+            signedIn: verified,
+            signingIn: store.accountBusy == provider.rawValue,
+            accountLabel: account?.label,
+            disabled: false
+        ) {
+            // A signed-out backend cannot run anything, so the tile
+            // offers the sign-in instead of an empty session list.
+            if !verified { store.accountsOpen = true } else { store.inspectBackend(provider) }
+        }
+        .contextMenu { accountMenu(for: provider) }
+    }
+
+    @ViewBuilder
+    private func accountMenu(for provider: ProviderChoice) -> some View {
+        ForEach(store.accounts(for: provider)) { row in
+            let isActive = store.accountBook.active[provider.rawValue] == row.id
+            Button {
+                Task { await store.useAccount(provider: provider.rawValue, id: row.id) }
+            } label: {
+                Label(row.label + (row.signedIn ? "" : os1Tr(" (로그아웃)", " (signed out)")),
+                      systemImage: isActive ? "checkmark" : "")
+            }
+            .disabled(isActive)
+        }
+        Divider()
+        Button(os1Tr("\(provider.title) 계정…", "\(provider.title) accounts…")) { store.accountsOpen = true }
+    }
+
+    private var governanceButton: some View {
+        Button { governanceOpen.toggle() } label: {
+          VStack(spacing: 6) {
+            Circle().fill(Theme.green).frame(width: 9, height: 9)
+                .shadow(color: Theme.green.opacity(0.85), radius: 6)
+            Text("RCC\nGOVERNED")
+                .font(.system(size: 7, weight: .bold))
+                .tracking(0.7)
+                .multilineTextAlignment(.center)
+                .foregroundStyle(Theme.muted)
+          }.frame(width: 56, height: 52).contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help("RCC Governance · 토큰, 완수율, 효율 활동 모니터")
+        .accessibilityLabel("RCC Governance Activity Monitor")
+        .accessibilityValue(governanceOpen ? "열림" : "닫힘")
+        .background(governanceOpen ? Theme.green.opacity(0.10) : Color.clear, in: RoundedRectangle(cornerRadius: 10))
     }
 }
 
