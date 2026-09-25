@@ -67,6 +67,16 @@ final class SourceContextTests {
         ] {
             precondition(ScopeResolution.resolve(text).scope == scope, text)
         }
+        // Build 262: what puts this machine in scope keeps the full Claude lane.
+        for text in ["이 저장소에서 찾아줘", "코드 설명해", "로그 확인해", "OS1 상태 알려줘", "파일 하나 만들어",
+                     "README.md 내용 알려줘", "테스트 돌려봐", "이거 고쳐", "방금 그거 뭐였지"] {
+            precondition(ClaudeChatLane.needsWorkspaceMaterial(text), text)
+        }
+        for text in ["2의 10제곱은? 숫자만 답해.", "다음 문장을 영문으로 번역해줘: 내일 회의 시간을 오후 3시로 옮겨도 될까요?",
+                     "다음 글을 한 줄로 요약해줘: 회의에서 출시를 2주 미루기로 했다.", "양자역학이 뭔지 쉽게 설명해줘"] {
+            precondition(!ClaudeChatLane.needsWorkspaceMaterial(text), text)
+        }
+        XCTAssertEqual(ClaudeChatLane.claudeArguments.first, "--safe-mode")
         let explicitSplit = "/tmp/os1-split/calc.py 파일에 add(a, b) 함수를 만들고 python3로 실행해서 결과를 확인해. 작업을 쪼개서 각각 라우팅해."
         XCTAssertTrue(TaskWorkflow.shouldDecompose(explicitSplit, scope: ScopeResolution.resolve(explicitSplit).scope))
         XCTAssertFalse(TaskWorkflow.shouldDecompose("/tmp/os1-split/calc.py 파일에 add(a, b) 함수를 만들고 python3로 실행해서 결과를 확인해.",

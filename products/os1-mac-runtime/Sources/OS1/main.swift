@@ -2972,9 +2972,28 @@ private func sourceAnswerWorkspace() throws -> String {
     return root.path
 }
 
+/// A Claude turn that needs nothing from this machine: no files, no commands,
+/// no attached image — the model answering from the request itself. It runs the
+/// way Claude chat does, with the coding agent's customizations off (see
+/// `ClaudeChatLane`), which measured 56x fewer tokens and 4x less time for the
+/// same answer on the same subscription. Read-only only, and a pure function of
+/// the owner's objective: the workspace is resolved with it before dispatch and
+/// hashed again after, so both sides must reach the same answer.
+func claudeChatLane(provider: String, permission: String, hasSource: Bool, objective: String) -> Bool {
+    provider == "claude" && permission == "read_only" && !hasSource
+        && !ClaudeChatLane.needsWorkspaceMaterial(objective)
+        && !promptRequiresShellCapability(objective)
+        && RequestNamedPaths.extract(objective).isEmpty
+        && ImageInput.encodeAll(in: objective).isEmpty
+}
+
 /// Same resolver is used before dispatch, by the executor, and after return.
 private func providerExecutionWorkspace(provider: String, permission: String,
-                                        hasSource: Bool, workspace: String) throws -> String {
+                                        hasSource: Bool, workspace: String,
+                                        objective: String) throws -> String {
+    if claudeChatLane(provider: provider, permission: permission, hasSource: hasSource, objective: objective) {
+        return try sourceAnswerWorkspace()
+    }
     if ExecutionWorkspace.usesSourceIsolation(provider: provider, permission: permission,
         hasSource: hasSource, workspace: workspace,
         home: FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL.path) {
@@ -5761,9 +5780,10 @@ private func execute(
 ) throws -> ProviderExecution {
     AttemptLatencyTrace.mark("execute_entered")
     let started = Date()
-    let executionWorkspace = try providerExecutionWorkspace(provider: ticket.provider,
-        permission: ticket.permissionProfile, hasSource: preloadedR2Evidence != nil, workspace: workspace)
     let lockedObjective = objectivePrompt ?? prompt
+    let executionWorkspace = try providerExecutionWorkspace(provider: ticket.provider,
+        permission: ticket.permissionProfile, hasSource: preloadedR2Evidence != nil, workspace: workspace,
+        objective: lockedObjective)
     // Claude's read-only lane carries a bounded shell (ClaudeReadOnlyShell):
     // a shell-bound objective is not refused here; the backend is told the
     // bound so it verifies what it can and names what it could not run.
@@ -5944,6 +5964,15 @@ private func execute(
             throw OS1Error.backendBlocked(.capabilityUnavailable)
         }
         let sourceOnly = hasPreloadedR2Evidence && ticket.permissionProfile == "read_only"
+        // Same customization-free shape as a source-only answer, chosen for an
+        // objective that needs nothing from this machine.
+        let chatLane = claudeChatLane(provider: ticket.provider, permission: ticket.permissionProfile,
+                                      hasSource: hasPreloadedR2Evidence, objective: lockedObjective)
+        if chatLane {
+            RuntimeActivity.emit(.preparing, provider: "claude", model: model, effort: effort,
+                publicText: os1Tr("Claude 대화 모드로 실행합니다 · 코딩 도구·지침 없이 모델만 사용해 토큰을 아낍니다.",
+                                  "Running Claude in chat mode · the model alone, without coding tools or instructions, to save tokens."))
+        }
         let projectlessRead = ticket.permissionProfile == "read_only" &&
             workspace == FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL.path
         let previousSessionID = try normalizedSessionID(providerSessionID)
@@ -5955,10 +5984,12 @@ private func execute(
         let desktopOwnsPrevious = previousSessionID.flatMap {
             claudeDesktopSessionMetadataPath(sessionID: $0)
         } != nil
-        let requestedSessionID = (previousSessionID == nil || desktopOwnsPrevious || sourceOnly)
+        // A chat-mode turn starts its own session: resuming a full Claude Code
+        // thread would reload everything this lane exists to leave out.
+        let requestedSessionID = (previousSessionID == nil || desktopOwnsPrevious || sourceOnly || chatLane)
             ? UUID().uuidString.lowercased()
             : previousSessionID!
-        let startsNewSession = previousSessionID == nil || desktopOwnsPrevious || sourceOnly
+        let startsNewSession = previousSessionID == nil || desktopOwnsPrevious || sourceOnly || chatLane
         let activeSessionID = requestedSessionID
         // The inventory this run probed a moment ago is reused (≈1 s per
         // Claude attempt); a model it does not list is re-probed live before
@@ -5974,10 +6005,10 @@ private func execute(
         // stream-json user messages from stdin so the owner's corrections
         // join this same session mid-run — Codex parity. Source-only answers
         // stay one-shot.
-        let steeringSubmission = sourceOnly ? nil : ExecutionSteering.currentSubmission
+        let steeringSubmission = (sourceOnly || chatLane) ? nil : ExecutionSteering.currentSubmission
         // Attached images ride the same stream as real image blocks — a path
         // string is useless to a read-only lane that cannot open Desktop.
-        let attachedImages = sourceOnly ? [] : ImageInput.encodeAll(in: prompt)
+        let attachedImages = (sourceOnly || chatLane) ? [] : ImageInput.encodeAll(in: prompt)
         let steerDriver: ClaudeSteerDriver? = (steeringSubmission != nil || !attachedImages.isEmpty)
             ? ClaudeSteerDriver(submissionID: steeringSubmission, sessionID: activeSessionID, prompt: prompt, images: attachedImages)
             : nil
@@ -5995,10 +6026,10 @@ private func execute(
             title: claudeSessionTitle(from: lockedObjective),
             permissionProfile: ticket.permissionProfile,
             prompt: prompt,
-            sourceContextOnly: hasPreloadedR2Evidence,
+            sourceContextOnly: hasPreloadedR2Evidence || chatLane,
             streamInput: steerDriver != nil
         )
-        if projectlessRead && !sourceOnly { arguments.insert("--safe-mode", at: 1) }
+        if projectlessRead && !sourceOnly && !chatLane { arguments.insert("--safe-mode", at: 1) }
         let stream = ExecutionStream()
         var revision = 0
         let raw: (Int32, Data, Data)
@@ -6440,7 +6471,8 @@ func runLocalTask(
         let ticket = localTicket(decision, sequence: attempt)
         RuntimeActivity.emit(.preparing, provider: decision.provider, model: decision.model, effort: decision.effort)
         let observedWorkspace = try providerExecutionWorkspace(provider: ticket.provider,
-            permission: ticket.permissionProfile, hasSource: r2Evidence != nil, workspace: workspace)
+            permission: ticket.permissionProfile, hasSource: r2Evidence != nil, workspace: workspace,
+            objective: prompt)
         let beforeHash = workspaceHash(observedWorkspace)
         let executionPrompt: String
         if let retryReason {
@@ -7643,7 +7675,8 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
             print("OS-1 step \(step): \(ticket.provider) / \(ticket.action) / \(effort) / \(ticket.permissionProfile)")
         }
         let observedWorkspace = try providerExecutionWorkspace(provider: ticket.provider,
-            permission: ticket.permissionProfile, hasSource: r2Evidence != nil, workspace: canonicalWorkspace)
+            permission: ticket.permissionProfile, hasSource: r2Evidence != nil, workspace: canonicalWorkspace,
+            objective: prompt)
         let beforeHash = step == 1 && observedWorkspace == routedWorkspace
             ? await speculativeBeforeHash.value : observedStateHash(observedWorkspace)
         let attemptPrompt = localPrompt + (try continuation?.handoffBlock() ?? "")
@@ -10104,6 +10137,23 @@ func selfTest() throws {
             Data("배포 로그는 확인했지만 권한이 없어 라이브 동작 증거가 없음\nOS1_EFFECTS: partial".utf8),
             prompt: BackendRecovery.readbackPrompt(objective: "인스타 가격 버그 고쳐")
         )),
+        // Build 262: the Claude chat lane answers only what needs nothing here.
+        ("chat lane answers a plain question", claudeChatLane(provider: "claude", permission: "read_only", hasSource: false,
+            objective: "2의 10제곱은? 숫자만 답해.")),
+        ("chat lane answers a translation", claudeChatLane(provider: "claude", permission: "read_only", hasSource: false,
+            objective: "다음 문장을 영문으로 번역해줘: 내일 회의 시간을 오후 3시로 옮겨도 될까요?")),
+        ("chat lane keeps a repository question on the full lane", !claudeChatLane(provider: "claude", permission: "read_only",
+            hasSource: false, objective: "이 저장소에서 동시 실행 기본값이 몇인지 소스에서 찾아 한 줄로 답해.")),
+        ("chat lane keeps an OS-1 question on the full lane", !claudeChatLane(provider: "claude", permission: "read_only",
+            hasSource: false, objective: "OS1이 지금 어떤 백엔드로 라우팅하는지 알려줘")),
+        ("chat lane keeps a named path on the full lane", !claudeChatLane(provider: "claude", permission: "read_only",
+            hasSource: false, objective: "~/Documents 안에 뭐가 있는지 알려줘")),
+        ("chat lane never takes a write ticket", !claudeChatLane(provider: "claude", permission: "workspace_write",
+            hasSource: false, objective: "2의 10제곱은?")),
+        ("chat lane never takes Codex", !claudeChatLane(provider: "codex", permission: "read_only", hasSource: false,
+            objective: "2의 10제곱은?")),
+        ("chat lane leaves an attached source to its own lane", !claudeChatLane(provider: "claude", permission: "read_only",
+            hasSource: true, objective: "2의 10제곱은?")),
         // Build 258: a staged task inside a checkout of this repository is an
         // OS-1 repair only when the request is about OS-1.
         ("staged OS-1 request is an OS-1 repair", workflowIsOS1Repair(repairRoot: "/checkout", projectID: "os1-clodex")),
