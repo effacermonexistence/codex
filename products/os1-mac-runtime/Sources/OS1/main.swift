@@ -1150,6 +1150,26 @@ private func postCheckRejectionChecks() -> [(String, Bool)] {
         ("an interrupted turn naming a limit stays effects-uncertain",
          !finishedTurnRejectedByPostCheck(rejected(exit: 69, output: "실행할 수 없", persistence: "interrupted_unverified",
             cause: OS1Error.backendBlocked(.capabilityUnavailable)), classified: .effectsUncertain)),
+        // Build 253: runs are dispatched with write permission, so a read-scope
+        // question refused only by a post-check, with nothing changed, still
+        // gets the bounded corrective retry (2026-09-25, Korean → English).
+        ("a read-scope question refused by the language check is corrected, not final",
+         postCheckRetryEligible(rejected(exit: 0, output: "It accepts one verdict word.", persistence: "verified",
+            cause: DriftDetected(.presentation)), prompt: "effectsVerdict가 어떤 형식을 인정하는지 두 줄로 설명해. 수정하지 마.", workspaceChanged: false)),
+        ("a changed state is never retried",
+         !postCheckRetryEligible(rejected(exit: 0, output: "It accepts one verdict word.", persistence: "verified",
+            cause: DriftDetected(.presentation)), prompt: "effectsVerdict가 어떤 형식을 인정하는지 두 줄로 설명해.", workspaceChanged: true)),
+        ("a write-scope request is never retried",
+         !postCheckRetryEligible(rejected(exit: 0, output: "Fixed it.", persistence: "verified",
+            cause: DriftDetected(.presentation)), prompt: "이 버그 고쳐줘", workspaceChanged: false)),
+        ("only OS-1's own post-check drift is retried",
+         !postCheckRetryEligible(rejected(exit: 0, output: "answer", persistence: "verified",
+            cause: OS1Error.backendBlocked(.quotaExhausted)), prompt: "RCC가 뭐야?", workspaceChanged: false)),
+        ("an interrupted or unrecorded turn is never retried here",
+         !postCheckRetryEligible(rejected(exit: 69, output: "partial", persistence: "interrupted_unverified",
+            cause: DriftDetected(.presentation)), prompt: "RCC가 뭐야?", workspaceChanged: false)
+         && !postCheckRetryEligible(rejected(exit: 0, output: "  ", persistence: "verified",
+            cause: DriftDetected(.presentation)), prompt: "RCC가 뭐야?", workspaceChanged: false)),
     ]
 }
 
@@ -6570,6 +6590,22 @@ func finishedTurnRejectedByPostCheck(_ error: Error, classified: BackendBlocker,
         persistence: rejected.execution.nativeRecord.persistence) == .verificationRejected
 }
 
+/// Every run is dispatched with write permission (438c757, 2026-09-19), so
+/// the ticket's permission no longer tells a question from a change request,
+/// and a finished answer refused only by OS-1's own post-check (language,
+/// format, objective, deliverable) became final instead of corrected
+/// (2026-09-25: a Korean question answered in English). When the request's
+/// scope is read-only and nothing in the observed state changed, re-running
+/// can repeat no effect, so the bounded retry that carries the rejected
+/// answer and the exact defect applies — as it always did for read_only
+/// tickets. A changed state or a write-scope request stays final.
+func postCheckRetryEligible(_ error: Error, prompt: String, workspaceChanged: Bool) -> Bool {
+    guard !workspaceChanged, let rejected = error as? RejectedProviderExecution, rejected.cause is DriftDetected,
+          rejected.execution.artifact.exitCode == 0, rejected.execution.nativeRecord.persistence == "verified",
+          !rejected.execution.artifact.output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
+    return ScopeResolution.resolve(prompt).scope == .readOnly
+}
+
 func backendBlocker(_ error: Error) -> BackendBlocker? {
     if let rejected = error as? RejectedProviderExecution { return backendBlocker(rejected.cause) }
     if let failure = error as? OS1Error {
@@ -7620,6 +7656,9 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
         var execution: ProviderExecution
         var sourceRecoveryProvider: String?
         var terminalPermissionFailure: OS1Error?
+        // A read-scope answer refused only by OS-1's own post-check, with
+        // nothing changed, gets the bounded corrective retry (see below).
+        var postCheckRetry = false
         if ticket.provider == "local", r2Evidence != nil, !reuseSource {
             execution = unavailableProviderExecution(
                 ticket: ticket,
@@ -7838,7 +7877,10 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
                     claudeAvailable: hasClaudeExecutable && claudeCapacity > 0,
                     alreadySwitched: sourceBackendSwitched, remainingAttempts: attemptLimit - step,
                     dispatchStage: dispatchStage, unavailableProviders: quotaUnavailableProviders) != nil
-                if finishedTurnRejectedByPostCheck(error, classified: safeBlocker, alternateAvailable: alternateForLimit) {
+                postCheckRetry = postCheckRetryEligible(error, prompt: prompt, workspaceChanged: beforeHash != afterHash)
+                if postCheckRetry {
+                    safeBlocker = .unclassified
+                } else if finishedTurnRejectedByPostCheck(error, classified: safeBlocker, alternateAvailable: alternateForLimit) {
                     safeBlocker = .verificationRejected
                     if terminalPermissionFailure == nil { terminalPermissionFailure = .backendBlocked(.verificationRejected) }
                 }
@@ -8017,7 +8059,7 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
         let locallyAdoptable = completionLocallyAdoptable(failure: attemptFailure,
             exitCode: artifact.exitCode, output: artifact.output, persistence: execution.nativeRecord.persistence)
         if route.status == "complete", !locallyAdoptable, sourceRecoveryProvider == nil, terminalPermissionFailure == nil,
-           step < attemptLimit, ticket.permissionProfile == "read_only", let diagnostic = attemptFailure,
+           step < attemptLimit, ticket.permissionProfile == "read_only" || postCheckRetry, let diagnostic = attemptFailure,
            !artifact.output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             // The route service accepted the artifact but the answer failed a
             // local contract (source use, claim ceiling, structure). Read-only
