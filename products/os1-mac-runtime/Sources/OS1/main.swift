@@ -8297,7 +8297,22 @@ func doctor() throws {
     _ = try githubToken()
     print("OS-1 configuration: OK (\(config.apiURL))")
     print("OS-1 device key: \(key.securityMode)")
-    print("GitHub, Codex, Claude: available")
+    // Installed is not usable: report each backend's login exactly as runs
+    // see it (the active account's environment). Until 2026-09-24 this line
+    // said "Claude: available" while every Claude run was logged out.
+    let book = BackendAccounts.load()
+    var backendStates: [String] = []
+    for provider in ["codex", "claude"] {
+        let account = BackendAccounts.active(provider: provider, in: book)
+        let state = BackendAccountCommands.probe(provider: provider, home: BackendAccounts.homeURL(for: account),
+                                                 isDefault: account.isDefault)
+        let name = provider == "claude" ? "Claude" : "Codex"
+        backendStates.append(state.signedIn
+            ? "\(name): signed in (\(account.label)\(state.detail.map { " · \($0)" } ?? ""))"
+            : "\(name): NOT signed in (\(account.label)) — sign in from OS-1's \(name.uppercased()) tile")
+    }
+    print("GitHub: available")
+    for line in backendStates { print(line) }
 }
 
 func steeringProtocolSelfTest() throws {

@@ -96,10 +96,22 @@ enum BackendAccountCommands {
 
     // MARK: - Reading
 
-    /// The provider's own status command, run against one account's home.
+    /// The environment a provider CLI sees for one account — the same one
+    /// runs use. The default account is the CLI's own home with nothing
+    /// injected; naming that home explicitly selects a different credential
+    /// slot. Regression 2026-09-24: status and sign-out set
+    /// CLAUDE_CONFIG_DIR=~/.claude for the default account, so OS-1 showed a
+    /// Claude login ("max") that runs could not use, while every Claude run
+    /// was logged out.
+    static func accountEnvironment(provider: String, home: URL, isDefault: Bool) -> [String: String] {
+        guard !isDefault else { return [:] }
+        return BackendAccounts.environmentKey(provider: provider).map { [$0: home.path] } ?? [:]
+    }
+
+    /// The provider's own status command, run exactly as runs see the account.
     /// Read-only: it starts no login and makes no model call.
-    static func probe(provider: String, home: URL) -> (signedIn: Bool, detail: String?) {
-        let environment = BackendAccounts.environmentKey(provider: provider).map { [$0: home.path] } ?? [:]
+    static func probe(provider: String, home: URL, isDefault: Bool) -> (signedIn: Bool, detail: String?) {
+        let environment = accountEnvironment(provider: provider, home: home, isDefault: isDefault)
         if provider == "claude" {
             guard let executable = try? findExecutable("claude"),
                   let output = try? commandOutput(executable, ["auth", "status", "--json"], timeout: 12,
@@ -122,7 +134,8 @@ enum BackendAccountCommands {
         var updated = BackendAccounts.normalized(book)
         for position in updated.accounts.indices {
             let account = updated.accounts[position]
-            let result = probe(provider: account.provider, home: BackendAccounts.homeURL(for: account))
+            let result = probe(provider: account.provider, home: BackendAccounts.homeURL(for: account),
+                               isDefault: account.isDefault)
             updated.accounts[position].signedIn = result.signedIn
             updated.accounts[position].signedInAs = result.detail
             updated.accounts[position].verifiedAt = Date()
@@ -194,7 +207,7 @@ enum BackendAccountCommands {
         }
         let home = BackendAccounts.homeURL(for: book.accounts[position])
         let others = book.accounts.filter { $0.provider == provider && $0.id != target && $0.signedIn }
-        let result = try signOut(provider: provider, home: home)
+        let result = try signOut(provider: provider, home: home, isDefault: book.accounts[position].isDefault)
         // A provider may hold one credential for every account on this Mac.
         // Re-probe the others instead of reporting a sign-out that also took them.
         let refreshedBook = refreshed(BackendAccounts.load())
@@ -212,12 +225,12 @@ enum BackendAccountCommands {
         }
     }
 
-    private static func signOut(provider: String, home: URL) throws -> Bool {
-        let environment = BackendAccounts.environmentKey(provider: provider).map { [$0: home.path] } ?? [:]
+    private static func signOut(provider: String, home: URL, isDefault: Bool) throws -> Bool {
+        let environment = accountEnvironment(provider: provider, home: home, isDefault: isDefault)
         let executable = try findExecutable(provider)
         let arguments = provider == "claude" ? ["auth", "logout"] : ["logout"]
         let output = try? commandOutput(executable, arguments, timeout: 30, environmentOverrides: environment)
-        return probe(provider: provider, home: home).signedIn == false && (output?.0 == 0 || output == nil)
+        return probe(provider: provider, home: home, isDefault: isDefault).signedIn == false && (output?.0 == 0 || output == nil)
     }
 
     /// Runs the provider's own browser sign-in against one account's home and
@@ -266,7 +279,7 @@ enum BackendAccountCommands {
             outcome = .failure(error)
         }
 
-        let state = probe(provider: provider, home: home)
+        let state = probe(provider: provider, home: home, isDefault: account.isDefault)
         var updated = BackendAccounts.load()
         if let position = updated.accounts.firstIndex(where: { $0.id == account.id }) {
             updated.accounts[position].signedIn = state.signedIn

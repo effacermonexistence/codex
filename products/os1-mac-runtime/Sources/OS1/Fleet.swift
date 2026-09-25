@@ -955,10 +955,32 @@ enum FleetSubmissionError: Error, CustomStringConvertible {
     case pending(String)
     var description: String {
         switch self {
-        case .noCapacity: return "No eligible OS-1 fleet node is online; no remote job was created"
+        case .noCapacity:
+            // "No node online" alone sent the owner looking for a network
+            // fault when this Mac was online but its Claude was logged out
+            // (2026-09-24). Say what this Mac itself cannot run.
+            return "No eligible OS-1 fleet node is online; no remote job was created"
+                + (fleetLocalBackendNote().map { ". " + $0 } ?? "")
         case .pending(let id): return "Fleet submission delivery is uncertain; recover with fleet-resume-submit --intent \(id). Do not submit duplicate work."
         }
     }
+}
+
+/// This Mac's backends that cannot run now, from the last health check.
+func fleetLocalBackendNote(health: BackendHealth? = BackendHealth.load(maxAge: 900)) -> String? {
+    guard let health else { return nil }
+    let blocked = [("Codex", health.codex), ("Claude", health.claude)].compactMap { name, backend -> String? in
+        switch backend.state {
+        case .usable, .disabled: return nil
+        case .loggedOut: return "\(name) is not signed in — sign in from OS-1's \(name.uppercased()) tile"
+        case .quotaExhausted: return "\(name) usage limit reached"
+            + (backend.recoversAt.map { " until " + ISO8601DateFormatter().string(from: $0) } ?? "")
+        default: return "\(name) \(backend.state.rawValue.replacingOccurrences(of: "_", with: " "))"
+        }
+    }
+    guard !blocked.isEmpty else { return nil }
+    let checked = ISO8601DateFormatter().string(from: health.checkedAt)
+    return "On this Mac: " + blocked.joined(separator: "; ") + " (checked \(checked))"
 }
 
 private struct FleetSubmissionIntent: Codable {
@@ -1450,5 +1472,21 @@ func fleetSelfTest() throws {
     try check(!deadFlags.codex && !deadFlags.claude, "dead backends advertised as fleet capacity")
     try check(aliveFlags.codex && !aliveFlags.claude, "usable backend not advertised, or missing binary advertised")
     try check(!unknownFlags.codex && !unknownFlags.claude, "unprobed node advertised capacity")
-    print("OS-1 Fleet self-test: \(checks) checks OK; config, EXO candidate, private read-only result validation, fair result polling and truthful capacity flags")
+    // No capacity names what this Mac cannot run (2026-09-24: a logged-out
+    // Claude read as "no node online").
+    let loggedOutClaude = BackendHealth(claude: BackendHealth.Backend(state: .loggedOut), codex: BackendHealth.Backend(state: .usable))
+    try check(fleetLocalBackendNote(health: loggedOutClaude)?.contains("Claude is not signed in") == true
+              && fleetLocalBackendNote(health: loggedOutClaude)?.contains("Codex") == false, "logged-out Claude not named")
+    try check(fleetLocalBackendNote(health: alive) == nil && fleetLocalBackendNote(health: nil) == nil, "healthy node gained a note")
+    try check(fleetLocalBackendNote(health: dead)?.contains("Codex usage limit reached") == true, "exhausted Codex not named")
+    // Account status and sign-out see an account exactly as runs do: the
+    // default account injects nothing (naming ~/.claude selects another slot).
+    let claudeHome = URL(fileURLWithPath: "/Users/test/.claude", isDirectory: true)
+    try check(BackendAccountCommands.accountEnvironment(provider: "claude", home: claudeHome, isDefault: true).isEmpty,
+              "default Claude account status injected CLAUDE_CONFIG_DIR")
+    try check(BackendAccountCommands.accountEnvironment(provider: "claude", home: claudeHome, isDefault: false)
+              == ["CLAUDE_CONFIG_DIR": "/Users/test/.claude"], "second Claude account lost its own home")
+    try check(BackendAccountCommands.accountEnvironment(provider: "codex", home: claudeHome, isDefault: true).isEmpty,
+              "default Codex account status injected CODEX_HOME")
+    print("OS-1 Fleet self-test: \(checks) checks OK; config, EXO candidate, private read-only result validation, fair result polling, truthful capacity flags, local backend note and account environment")
 }
