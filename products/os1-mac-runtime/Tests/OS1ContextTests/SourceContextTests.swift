@@ -57,9 +57,20 @@ final class SourceContextTests {
             ("돌아가는 건 탑에 고정되게 수정해야돼 그럼 밑으로 쭉 내려야 되냐?", .workspaceWrite),
             ("설정 수정해서 올리라니까 그게 되냐?", .workspaceWrite),
             ("로그인 버그 고쳐줘", .workspaceWrite),
+            // Build 257: a chained change verb and a polite imperative are requests.
+            ("/tmp/os1-split/calc.py 파일에 add(a, b) 함수를 만들고 python3로 실행해서 결과를 확인해. 작업을 쪼개서 각각 라우팅해.", .workspaceWrite),
+            ("OS1 자가수리 실행 테스트입니다. 버그를 실제로 수정하세요.", .workspaceWrite),
+            ("index.html 파일을 새로 작성하고 브라우저로 확인해", .workspaceWrite),
+            ("이런 앱 만들고 싶은데 어떻게 시작해?", .readOnly),
+            ("지금 뭐 만들고 있어?", .readOnly),
+            ("이 파일 만들고 테스트까지 할 수 있어?", .readOnly),
         ] {
             precondition(ScopeResolution.resolve(text).scope == scope, text)
         }
+        let explicitSplit = "/tmp/os1-split/calc.py 파일에 add(a, b) 함수를 만들고 python3로 실행해서 결과를 확인해. 작업을 쪼개서 각각 라우팅해."
+        XCTAssertTrue(TaskWorkflow.shouldDecompose(explicitSplit, scope: ScopeResolution.resolve(explicitSplit).scope))
+        XCTAssertFalse(TaskWorkflow.shouldDecompose("/tmp/os1-split/calc.py 파일에 add(a, b) 함수를 만들고 python3로 실행해서 결과를 확인해.",
+                                                    scope: .workspaceWrite))
 
         // Fixtures assert exact Korean runtime wording; pin the language so a
         // user's interface-language setting cannot flip the expectations.

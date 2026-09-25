@@ -859,6 +859,13 @@ public struct ScopeResolution: Equatable, Sendable {
         #"(?:수정|삭제|변경|편집|추가|구현)\s*하라(?=\s|[.!?;]|$)"#,
         // "README.en.md로 저장해" saves as a file just like "…에 저장해".
         #"[A-Za-z0-9_./-]+\.[A-Za-z0-9]{1,16}(?:에|으로|로)\s*(?:기록|저장|작성)(?:해|하세|하십|하라)"#,
+        // A change verb chained into the next step is still the request:
+        // "calc.py 파일에 add 함수를 만들고 실행해서 확인해", "…구현하고 …수정하세요"
+        // (2026-09-25: six such owner requests read as read-only, so an
+        // explicit "쪼개서 각각 라우팅해" on them could not split). "만들고
+        // 싶어" (a wish) and "만들고 있어" (in progress) are not requests.
+        #"(?:만들|구현하|추가하|작성하|생성하|삭제하|저장하|변경하|편집하)고(?!\s*(?:싶|있))"#,
+        #"(?:수정|삭제|변경|편집|추가|구현|작성|생성|저장)\s*(?:하세요|하십시오|해\s*주세요|해\s*주십시오)"#,
         #"(?i)\b(?:delete|create|write|save|rename|remove|edit|modify|update)\s+[\"“][^\"”\n]+\.[A-Za-z0-9]{1,16}[\"”]"#,
         #"(?:수정|삭제|변경|편집|추가)\s*(?:해(?:줘|주세요|라)?|요청(?:합니다|해))"#,
         // Bounded Korean removal imperatives, not questions, quotations or negations.

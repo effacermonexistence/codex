@@ -652,12 +652,16 @@ private func executeFleetAssignment(_ assignment: FleetAssignment, role: String,
         case "test": prompt = "Run and verify the requested repository tests.\n\n\(assignment.task)"
         default: prompt = assignment.task
         }
-        run = try await runTask(
-            prompt: prompt, workspace: workspace,
-            providerPreference: ["codex", "claude"].contains(assignment.profile) ? assignment.profile : "auto",
+        let preference = ["codex", "claude"].contains(assignment.profile) ? assignment.profile : "auto"
+        run = try await (fleetRunsStaged(prompt) ? runWorkflowTask(
+            prompt: prompt, workspace: workspace, providerPreference: preference,
             context: nil, codexSessionID: nil, claudeSessionID: nil,
             codexCapacity: 100, claudeCapacity: 100, progress: false, desktopReveal: .never
-        )
+        ) : runTask(
+            prompt: prompt, workspace: workspace, providerPreference: preference,
+            context: nil, codexSessionID: nil, claudeSessionID: nil,
+            codexCapacity: 100, claudeCapacity: 100, progress: false, desktopReveal: .never
+        ))
         guard run.status == "complete", !run.steps.isEmpty, run.steps.allSatisfy({ $0.exitCode == 0 }) else {
             throw OS1Error.message("Fleet governed execution has not completed")
         }
@@ -679,6 +683,15 @@ private func executeFleetAssignment(_ assignment: FleetAssignment, role: String,
     let data = try encoder.encode(receipt)
     guard data.count <= 65_536 else { throw OS1Error.message("Fleet result exceeds the signed result limit") }
     return String(decoding: data, as: UTF8.self)
+}
+
+/// A fleet job splits exactly when `os1 run` would: the owner asked for
+/// separate stages ("쪼개서", "각각 라우팅", "독립 검증") on a change request.
+/// Until build 257 a fleet job always ran one turn, so the same request split
+/// in the app and not when a Claude Code session handed it to OS-1.
+func fleetRunsStaged(_ prompt: String) -> Bool {
+    TaskWorkflow.shouldDecompose(prompt, scope: ScopeResolution.resolve(prompt).scope) &&
+        PreparationIntent.detect(prompt)?.preparationOnly != true
 }
 
 /// A failed job still returns what its backend produced when only adoption
@@ -1488,5 +1501,11 @@ func fleetSelfTest() throws {
               == ["CLAUDE_CONFIG_DIR": "/Users/test/.claude"], "second Claude account lost its own home")
     try check(BackendAccountCommands.accountEnvironment(provider: "codex", home: claudeHome, isDefault: true).isEmpty,
               "default Codex account status injected CODEX_HOME")
-    print("OS-1 Fleet self-test: \(checks) checks OK; config, EXO candidate, private read-only result validation, fair result polling, truthful capacity flags, local backend note and account environment")
+    // Build 257: a fleet job splits when the owner asks, exactly like `os1 run`.
+    try check(fleetRunsStaged("/tmp/os1-split/calc.py 파일에 add(a, b) 함수를 만들고 python3로 실행해서 결과를 확인해. 작업을 쪼개서 각각 라우팅해."),
+              "explicit split request ran as one turn")
+    try check(!fleetRunsStaged("/tmp/os1-split/calc.py 파일에 add(a, b) 함수를 만들고 python3로 실행해서 결과를 확인해."),
+              "unsplit request was staged")
+    try check(!fleetRunsStaged("이 코드 구조를 설명해. 작업을 쪼개서 각각 라우팅해."), "read-only question was staged")
+    print("OS-1 Fleet self-test: \(checks) checks OK; config, EXO candidate, private read-only result validation, fair result polling, truthful capacity flags, local backend note, account environment and staged split")
 }
