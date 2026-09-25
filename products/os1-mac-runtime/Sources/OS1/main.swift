@@ -7143,7 +7143,16 @@ func runTaskWithOwnerPolicy(
     // The dispatcher delegates execution capability, not guessed intent.
     // Original task text/prohibitions remain binding for both backends.
     let internalReadOnly = requireReadOnly
-    let resolvedScope = ScopeResolution.delegationScope(internalReadOnly: internalReadOnly)
+    // A text operation carrying its own payload delegates a read-only envelope
+    // and asks the route core for a read-only ticket. Both come from this one
+    // predicate on this one text, so the authority floor and the signed ticket
+    // cannot disagree; every other request keeps the executable envelope.
+    let selfContainedText = workflowStage == nil && !requireReadOnly
+        && ClaudeChatLane.selfContainedTextOperation(prompt)
+        && !promptRequiresShellCapability(prompt)
+    let resolvedScope = selfContainedText
+        ? TaskContext.Scope.readOnly
+        : ScopeResolution.delegationScope(internalReadOnly: internalReadOnly)
     if taskState.objective.requestText != objectiveRequest || taskState.objective.kind != kind || taskState.objective.scope != resolvedScope {
         taskState.setObjective(TaskContext.Objective(requestText: objectiveRequest, kind: kind,
             scope: resolvedScope, prohibitions: scopeResolution.prohibitions), now: objectiveStartedAt)
@@ -7543,9 +7552,7 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
     // ran Claude with bypassPermissions and the whole coding agent. Ask for
     // read-only where the request provably needs nothing here — its own text to
     // translate or summarize — and leave every other run exactly as it was.
-    inputContext.executionPermissionProfile = ClaudeChatLane.selfContainedTextOperation(prompt)
-        && workflowStage == nil && !promptRequiresShellCapability(prompt)
-        ? "read_only" : "workspace_write"
+    inputContext.executionPermissionProfile = selfContainedText ? "read_only" : "workspace_write"
     inputContext.availableClaudeModels = claudeCatalog
     if feedbackSupported {
         inputContext.completionFeedback = try ((try? feedbackStore.load(scope: feedbackScope)) ??
