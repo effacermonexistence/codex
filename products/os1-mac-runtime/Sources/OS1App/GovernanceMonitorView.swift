@@ -319,11 +319,43 @@ struct GovernanceMonitorView: View {
                 Text("ACTIVITY MONITOR  /  CODEX + CLAUDE CODE").font(.system(size: 10, weight: .medium, design: .monospaced)).tracking(1.1).foregroundStyle(muted)
             }
             Spacer()
-            Circle().fill(green).frame(width: 6, height: 6)
-            Text(preview ? "읽기 전용 미리보기" : "LIVE · 1초 감지 · 변경 시 집계").font(.system(size: 11)).foregroundStyle(green)
+            if !preview { heartbeatTrace(width: 72, height: 18) }
+            Circle().fill(green)
+                .frame(width: 6, height: 6)
+                .scaleEffect(preview ? 1 : (heartbeatPulse ? 1.45 : 0.8))
+                .opacity(preview ? 1 : (heartbeatPulse ? 1 : 0.5))
+            Text(preview ? "읽기 전용 미리보기" : "LIVE · 1초 heartbeat · 활동은 영수증 기준")
+                .font(.system(size: 11)).foregroundStyle(green)
             Button { if let onClose { onClose() } else { dismiss() } } label: { Image(systemName: "xmark").frame(width: 26, height: 26) }
                 .buttonStyle(.plain).accessibilityLabel("Close governance monitor")
         }.padding(24).frame(maxWidth: .infinity)
+    }
+    private var heartbeatPulse: Bool {
+        Int(refreshed.timeIntervalSince1970) % 2 == 0
+    }
+    /// A detector heartbeat, deliberately separate from task telemetry. It
+    /// proves the one-second polling loop is alive without fabricating work.
+    private func heartbeatTrace(width: CGFloat, height: CGFloat) -> some View {
+        let phase = CGFloat(Int(refreshed.timeIntervalSince1970) % 12) / 11
+        return Canvas { context, size in
+            let mid = size.height / 2
+            let pulseX = max(12, min(size.width - 12, size.width * phase))
+            var path = Path()
+            path.move(to: CGPoint(x: 0, y: mid))
+            path.addLine(to: CGPoint(x: max(0, pulseX - 11), y: mid))
+            path.addLine(to: CGPoint(x: max(0, pulseX - 6), y: mid - 3))
+            path.addLine(to: CGPoint(x: pulseX - 2, y: size.height - 2))
+            path.addLine(to: CGPoint(x: pulseX + 2, y: 2))
+            path.addLine(to: CGPoint(x: min(size.width, pulseX + 6), y: mid + 3))
+            path.addLine(to: CGPoint(x: min(size.width, pulseX + 11), y: mid))
+            path.addLine(to: CGPoint(x: size.width, y: mid))
+            context.stroke(path, with: .color(green.opacity(0.88)),
+                           style: StrokeStyle(lineWidth: 1.4, lineCap: .round, lineJoin: .round))
+        }
+        .frame(width: width, height: height)
+        .accessibilityElement()
+        .accessibilityLabel("1초 감지 heartbeat")
+        .accessibilityValue(refreshed.formatted(date: .omitted, time: .standard))
     }
     private var controls: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -433,6 +465,12 @@ struct GovernanceMonitorView: View {
                         .font(.system(size: 9)).foregroundStyle(muted)
                 }
                 Spacer()
+                HStack(spacing: 7) {
+                    heartbeatTrace(width: 92, height: 18)
+                    Text("감지 \(refreshed.formatted(date: .omitted, time: .standard))")
+                        .font(.system(size: 9, design: .monospaced))
+                        .foregroundStyle(green)
+                }
                 HStack(spacing: 10) {
                     Label("시작", systemImage: "circle.fill").foregroundStyle(green)
                     Label("종료", systemImage: "circle.fill").foregroundStyle(pink)
@@ -474,8 +512,8 @@ struct GovernanceMonitorView: View {
             }
             .frame(height: 170)
             Text(points.count == 1 && points[0].started == 0 && points[0].finished == 0
-                 ? "실시간 작업 영수증을 기다리는 중입니다."
-                 : "새 영수증이 저장되면 다음 폴링 주기에 그래프가 갱신됩니다.")
+                 ? "Heartbeat는 1초마다 이동합니다. 작업 활동선은 새 영수증이 생길 때만 바뀝니다."
+                 : "Heartbeat는 1초마다 이동하고, 작업 활동선은 다음 영수증 폴링에서 갱신됩니다.")
                 .font(.system(size: 9)).foregroundStyle(muted)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
