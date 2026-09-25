@@ -863,7 +863,7 @@ func unavailableProviderExecution(
             stderr: "",
             durationMS: 0,
             workspaceBeforeHash: workspaceBeforeHash,
-            workspaceAfterHash: workspaceHash(workspace),
+            workspaceAfterHash: observedStateHash(workspace),
             nativeRecord: nativeRecord
         ),
         sessionID: UUID().uuidString.lowercased(),
@@ -4543,6 +4543,24 @@ func workspaceHash(_ workspace: String) -> String {
     return sha256Hex(material)
 }
 
+/// Paths named in the current request (RequestNamedPaths), set once around a
+/// task so every before/after comparison in it — including the one each
+/// backend runner takes after the turn — observes the same state.
+enum RequestObservation {
+    @TaskLocal static var namedPaths: [String] = []
+}
+
+/// The state OS-1 compares before and after a backend turn: the workspace
+/// plus every path the request names. With no named path it equals
+/// `workspaceHash`, so requests without paths behave exactly as before.
+func observedStateHash(_ workspace: String, named: [String] = RequestObservation.namedPaths) -> String {
+    let base = workspaceHash(workspace)
+    guard !named.isEmpty else { return base }
+    var material = Data(base.utf8)
+    material.append(RequestNamedPaths.stateMaterial(named))
+    return sha256Hex(material)
+}
+
 func readSessionContext(_ path: String?) throws -> String? {
     guard let path else { return nil }
     let url = URL(fileURLWithPath: path).standardizedFileURL
@@ -5657,7 +5675,7 @@ private func interruptedExecution(ticket: Ticket, model: String?, effort: String
         model: model ?? "provider-default", effort: effort, executorContractVersion: contract.version,
         executorContractSHA256: contract.sha256, exitCode: 69, output: String(publicProgress.suffix(24_000)), stderr: "",
         durationMS: Int64(Date().timeIntervalSince(started) * 1_000), workspaceBeforeHash: beforeHash,
-        workspaceAfterHash: workspaceHash(workspace), nativeRecord: record)
+        workspaceAfterHash: observedStateHash(workspace), nativeRecord: record)
     return RejectedProviderExecution(execution: ProviderExecution(artifact: artifact, sessionID: sessionID, nativeRecord: record), cause: cause)
 }
 
@@ -6069,7 +6087,7 @@ private func execute(
             stderr: boundedString(result.2, maximum: 180_000),
             durationMS: Int64(Date().timeIntervalSince(started) * 1_000),
             workspaceBeforeHash: workspaceBeforeHash,
-            workspaceAfterHash: workspaceHash(executionWorkspace),
+            workspaceAfterHash: observedStateHash(executionWorkspace),
             nativeRecord: nativeRecord
         ),
         sessionID: sessionID,
@@ -6232,7 +6250,7 @@ func executePublicDeterministic(
             stderr: "",
             durationMS: Int64(Date().timeIntervalSince(started) * 1_000),
             workspaceBeforeHash: workspaceBeforeHash,
-            workspaceAfterHash: workspaceHash(workspace),
+            workspaceAfterHash: observedStateHash(workspace),
             nativeRecord: nativeRecord
         ),
         sessionID: ticket.executionID,
@@ -6308,7 +6326,7 @@ func executeLocalDeterministic(
             stderr: "",
             durationMS: Int64(Date().timeIntervalSince(started) * 1_000),
             workspaceBeforeHash: workspaceBeforeHash,
-            workspaceAfterHash: workspaceHash(workspace),
+            workspaceAfterHash: observedStateHash(workspace),
             nativeRecord: NativeRecordEvidence(
                 turnID: decision.routeID,
                 recordPath: receiptURL.path,
@@ -6960,7 +6978,9 @@ func runTask(
     }
     let policy = try loadCurrentOwnerPolicy()
     AttemptLatencyTrace.mark("policy")
+    let namedPaths = RequestNamedPaths.extract((ownerPrompt.map { $0 + "\n" } ?? "") + prompt)
     return try await OwnerPolicyContext.$snapshot.withValue(policy) {
+        try await RequestObservation.$namedPaths.withValue(namedPaths) {
         try await runTaskWithOwnerPolicy(
                 prompt: prompt,
                 workspace: workspace,
@@ -6979,6 +6999,7 @@ func runTask(
                 monitorTaskIDOverride: monitorTaskIDOverride,
                 heldOS1SourceRoot: heldOS1SourceRoot,
                 preflight: preflight)
+        }
     }
 }
 
@@ -7470,7 +7491,9 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
     // (≈0.45 s hidden). Nothing OS-1 does in between writes the workspace;
     // a concurrent outside edit can only read as "changed", never as "none".
     let routedWorkspace = canonicalWorkspace
-    let speculativeBeforeHash = Task.detached { workspaceHash(routedWorkspace) }
+    // Detached tasks do not inherit task-locals: pass the named paths.
+    let observedNamedPaths = RequestObservation.namedPaths
+    let speculativeBeforeHash = Task.detached { observedStateHash(routedWorkspace, named: observedNamedPaths) }
     AttemptLatencyTrace.mark("route_request")
     var route: RouteResponse = try await client.post(
         "/v1/executions",
@@ -7568,7 +7591,7 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
         let observedWorkspace = try providerExecutionWorkspace(provider: ticket.provider,
             permission: ticket.permissionProfile, hasSource: r2Evidence != nil, workspace: canonicalWorkspace)
         let beforeHash = step == 1 && observedWorkspace == routedWorkspace
-            ? await speculativeBeforeHash.value : workspaceHash(observedWorkspace)
+            ? await speculativeBeforeHash.value : observedStateHash(observedWorkspace)
         let attemptPrompt = localPrompt + (try continuation?.handoffBlock() ?? "")
         let attemptInputSHA256 = CompletionFeedbackScope.inputDigest(assembledInput: attemptPrompt,
             codexSessionID: nativeSessions["codex"] ?? nil, claudeSessionID: nativeSessions["claude"] ?? nil,
@@ -7678,12 +7701,12 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
                     }
                     let modelScoped = claudeScope.map { $0 != .account } ?? false
                     if (error as? RejectedProviderExecution)?.quotaRejectedBeforeExecution == true,
-                       workspaceHash(observedWorkspace) == beforeHash {
+                       observedStateHash(observedWorkspace) == beforeHash {
                         dispatchStage = .rejectedBeforeExecution
                     }
                     lastFailureNotice = BackendFailureNotice(provider: ticket.provider, sessionID: interruptedSessionID,
                         blocker: BackendRecovery.classifiedBlocker(.quotaExhausted, permission: ticket.permissionProfile,
-                            stage: dispatchStage, workspaceChanged: workspaceHash(observedWorkspace) != beforeHash),
+                            stage: dispatchStage, workspaceChanged: observedStateHash(observedWorkspace) != beforeHash),
                         dispatchStage: dispatchStage, source: sourceContext, permissionProfile: ticket.permissionProfile,
                         publicProgress: (error as? RejectedProviderExecution)?.execution.artifact.output)
                     lastFailureNotice?.emit()
@@ -7796,7 +7819,7 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
                 if let failure = ((error as? RejectedProviderExecution)?.cause ?? error) as? OS1Error, failure.isTerminalBackendFailure {
                     terminalPermissionFailure = failure
                 }
-                let afterHash = workspaceHash(observedWorkspace)
+                let afterHash = observedStateHash(observedWorkspace)
                 let blocker = backendBlocker(error) ?? .unclassified
                 // Local diffs cannot prove remote effects absent. Never replay a
                 // partially executed write operation after an unknown outcome.
@@ -8396,6 +8419,25 @@ func selfTest() throws {
     try Data("real mutation".utf8).write(to: isolatedFixture.appendingPathComponent("changed.txt"))
     guard workspaceHash(isolatedFixture.path) != observedBefore else {
         throw OS1Error.message("real workspace mutation was missed")
+    }
+    // Regression 2026-09-24: a file the owner named outside what the
+    // workspace state covers was created but never observed. Named paths
+    // join every before/after comparison of the task, runners included.
+    let namedTarget = scopeFixture.appendingPathComponent("elsewhere/probe.txt").path
+    let namedPaths = RequestNamedPaths.extract("\(namedTarget) 파일을 만들고 정확히 OK 한 줄로 답해")
+    guard namedPaths == [(namedTarget as NSString).standardizingPath],
+          observedStateHash(isolatedFixture.path, named: []) == workspaceHash(isolatedFixture.path) else {
+        throw OS1Error.message("named path observation regression (extraction or no-path identity)")
+    }
+    let namedBefore = RequestObservation.$namedPaths.withValue(namedPaths) { observedStateHash(isolatedFixture.path) }
+    let namedUnchanged = RequestObservation.$namedPaths.withValue(namedPaths) { observedStateHash(isolatedFixture.path) }
+    try FileManager.default.createDirectory(atPath: (namedTarget as NSString).deletingLastPathComponent,
+                                            withIntermediateDirectories: true)
+    try Data("OK".utf8).write(to: URL(fileURLWithPath: namedTarget))
+    let namedAfter = RequestObservation.$namedPaths.withValue(namedPaths) { observedStateHash(isolatedFixture.path) }
+    guard namedBefore == namedUnchanged, namedAfter != namedBefore,
+          workspaceHash(isolatedFixture.path) == observedStateHash(isolatedFixture.path) else {
+        throw OS1Error.message("a write to a named path outside the workspace was not observed")
     }
 
     guard r2ReadOnlyProfileArguments == [

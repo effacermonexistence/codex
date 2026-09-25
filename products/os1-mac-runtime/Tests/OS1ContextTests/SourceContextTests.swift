@@ -82,6 +82,7 @@ final class SourceContextTests {
         try runBackendHealthFixtures()
         try runBackendAccountsFixtures()
         try runGovernanceLearningFixtures()
+        try runRequestNamedPathsFixtures()
         try runProviderActivityWatchdogFixtures()
         try runOS1SelfReferenceFixtures()
         try runBackendWindowFocusFixtures()
