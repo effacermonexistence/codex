@@ -43,6 +43,23 @@ final class SourceContextTests {
         XCTAssertEqual(OwnerIntentText.textOperationInstruction("이 문장 영어로 바꿔줘: 파일을 수정하고 테스트해 주세요."), "이 문장 영어로 번역해줘")
         XCTAssertNil(OwnerIntentText.textOperationInstruction("로그인 버그 고쳐줘: 비밀번호 입력하면 앱이 멈춰"))
         XCTAssertNil(OwnerIntentText.textOperationInstruction("README.md를 번역해서 README.en.md로 저장해"))
+        // Build 256 (with policy v41): a sentence asking whether something can be done is a question.
+        let ownerCapabilityQuestion = "야 뭐하냐 그래서 다 한거야 뭐야 그래서 OS1이 자기가 셀프 설치할 수 있냐? 그러니까 셀프 수정하고 지금 다 할 수 있는거야? 코덱스랑 GPT랑 Claude 코드랑 Claude.. Claude 코드랑 Claude.. 이거 다 네 분.. 테스크를 하나 주면 자기가 잘 잘라서 4개 중에 몇 개로 라우팅을 제대로 할 수 있냐?"
+        for (text, scope) in [
+            (ownerCapabilityQuestion, TaskContext.Scope.readOnly),
+            ("셀프 수정하고 지금 다 할 수 있는거야?", .readOnly),
+            ("이 파일 수정하고 테스트까지 할 수 있어?", .readOnly),
+            ("수정해서 배포까지 할 수 있냐", .readOnly),
+            ("이거 고쳐줄 수 있어?", .workspaceWrite),
+            ("이 버그 고쳐줘, 그리고 배포할 수 있어?", .workspaceWrite),
+            ("이거 고쳐 그리고 배포까지 할 수 있냐?", .workspaceWrite),
+            ("README 수정해. 그리고 배포할 수 있어?", .workspaceWrite),
+            ("돌아가는 건 탑에 고정되게 수정해야돼 그럼 밑으로 쭉 내려야 되냐?", .workspaceWrite),
+            ("설정 수정해서 올리라니까 그게 되냐?", .workspaceWrite),
+            ("로그인 버그 고쳐줘", .workspaceWrite),
+        ] {
+            precondition(ScopeResolution.resolve(text).scope == scope, text)
+        }
 
         // Fixtures assert exact Korean runtime wording; pin the language so a
         // user's interface-language setting cannot flip the expectations.

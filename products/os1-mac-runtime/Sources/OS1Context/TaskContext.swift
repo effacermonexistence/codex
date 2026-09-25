@@ -890,6 +890,40 @@ public struct ScopeResolution: Equatable, Sendable {
                                       "편집하지 마", "설명만", "read only", "read-only", "do not modify", "don't modify",
                                       "do not change", "don't change", "explain only", "no changes"]
 
+    // A sentence that as a whole asks whether something CAN be done is a
+    // question, even when the verb and "할 수 있…" are apart (2026-09-25: "셀프
+    // 수정하고 지금 다 할 수 있는거야?" was dispatched as a change, nothing
+    // changed, and the correct answer was refused). Same rule as the remote
+    // verifier, policy v41. A benefactive ("고쳐줄 수 있어?", "해줘"), a stated
+    // obligation ("탑에 놔둬야돼", "내려야 되냐?"), a relayed order ("하라고")
+    // or an imperative before a new clause ("고쳐 그리고 … 할 수 있냐?") keeps
+    // the sentence a request, and so does a long dictated run-on.
+    static let capabilityQuestionEnding = #"(?:(?:할|될|하는\s*게|하는\s*것)\s*수\s*(?:있|없)(?:(?:냐|니|나요|습니까|을까요|을까|는지|는가|겠냐|겠니)\s*[?？]?|(?:어|어요|나|는\s*거야|는\s*거냐|는\s*거지|는\s*건가|는\s*건지|는\s*거예요|지|죠|겠어)\s*[?？])|가능(?:(?:하냐|하니|합니까|할까요|할까|한지|한가|하겠냐)\s*[?？]?|(?:해|해요|한\s*거야|한\s*거냐|한가요|하겠어)\s*[?？])|(?<!야)(?<!야\s)(?:되냐|되니|되나요|될까요|될까|되겠냐)\s*[?？]?|(?<!야)(?<!야\s)(?:돼|되나|되는\s*거야|되는\s*거냐|되겠어)\s*[?？])\s*$"#
+    static let capabilityRequestMarkers = #"줘|주세요|주십시오|줄래|주겠|(?:줄|주실)\s*수|야\s*(?:돼|되|된|됨|함|한다|합니다|해|겠)|라고|라니까|하라|해라"#
+    static let capabilityImperative = #"(?:고쳐|바꿔|만들어|지워|옮겨|넣어|빼|(?:수정|변경|편집|삭제|추가|구현|설치|배포|저장|작성|생성|적용|반영|교체|업데이트)\s*해)(?:라|요)?(?=\s|[,!]|$)"#
+    static let capabilityQuestionMaxCharacters = 200
+
+    /// The request with every whole capability-question sentence replaced by
+    /// " question? ". Used only to decide whether a change is asked for.
+    public static func withoutCapabilityQuestions(_ value: String) -> String {
+        var result = "", sentence = ""
+        func flush() {
+            let trimmed = sentence.trimmingCharacters(in: .whitespacesAndNewlines)
+            let isQuestion = !trimmed.isEmpty && trimmed.count <= capabilityQuestionMaxCharacters &&
+                trimmed.range(of: capabilityQuestionEnding, options: .regularExpression) != nil &&
+                trimmed.range(of: capabilityRequestMarkers, options: .regularExpression) == nil &&
+                trimmed.range(of: capabilityImperative, options: .regularExpression) == nil
+            result += isQuestion ? " question? " : sentence
+            sentence = ""
+        }
+        for character in value {
+            sentence.append(character)
+            if ".!?？。\n".contains(character) { flush() }
+        }
+        flush()
+        return result
+    }
+
     public static func resolve(_ prompt: String) -> ScopeResolution {
         let value = OwnerIntentText.normalized(OwnerIntentText.authorityText(prompt))
         var prohibitions: [String] = []
@@ -942,8 +976,9 @@ public struct ScopeResolution: Equatable, Sendable {
             remaining = remaining.replacingOccurrences(of: target.pattern, with: " ")
         }
         let generallyProhibited = generalProhibitions.contains(where: remaining.contains)
-        let asksEdit = positiveEdit.contains(where: remaining.contains) ||
-            positiveFileEditPatterns.contains { remaining.range(of: $0, options: .regularExpression) != nil }
+        let editView = withoutCapabilityQuestions(remaining)
+        let asksEdit = positiveEdit.contains(where: editView.contains) ||
+            positiveFileEditPatterns.contains { editView.range(of: $0, options: .regularExpression) != nil }
         if generallyProhibited && !asksEdit {
             if !prohibitions.contains("do not modify files") { prohibitions.append("do not modify files") }
             return ScopeResolution(scope: .readOnly, prohibitions: prohibitions)
