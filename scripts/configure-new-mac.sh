@@ -162,6 +162,13 @@ if [[ "$(defaults read com.apple.HIToolbox AppleFnUsageType)" != "0" ]]; then
   exit 1
 fi
 
+# Let F1/F2 control display brightness directly; Fn alone remains Handy's shortcut.
+defaults write -g com.apple.keyboard.fnState -bool false
+if [[ "$(defaults read -g com.apple.keyboard.fnState)" != "0" ]]; then
+  echo "Display brightness function-key preference verification failed." >&2
+  exit 1
+fi
+
 mkdir -p "$(dirname "$wallpaper")"
 if [[ ! -f "$wallpaper" ]] ||
    ! cmp -s "$repo_root/assets/mac/black-000000.png" "$wallpaper"; then
@@ -280,6 +287,6 @@ if (s.bindings?.transcribe?.current_binding !== 'fn' ||
 if (!/^followUpQueueMode\s*=\s*"queue"\s*$/m.test(fs.readFileSync(codex, 'utf8'))) process.exit(1);
 NODE
 
-echo "Mac defaults ready: Handy Fn + sound + medium model + menu bar only, emoji off, pure black wallpaper, idle Always On, Codex queue."
+echo "Mac defaults ready: Handy Fn + sound + medium model + menu bar only, emoji off, F1/F2 brightness, pure black wallpaper, idle Always On, Codex queue."
 echo "Dock ready: no pinned apps or folders; suggested and recent apps disabled."
 echo "Approve Handy microphone/Accessibility prompts on this Mac if macOS shows them; restart an already-open Codex app to load queue mode."

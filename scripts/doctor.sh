@@ -204,6 +204,11 @@ NODE
   else
     add_check fail "Fn emoji action" "macOS still uses Fn/Globe for another action"
   fi
+  if [[ "$(defaults read -g com.apple.keyboard.fnState 2>/dev/null)" == "0" ]]; then
+    add_check pass "F1/F2 brightness keys" "top-row keys control display brightness directly"
+  else
+    add_check fail "F1/F2 brightness keys" "disable standard function keys in Keyboard settings"
+  fi
   if [[ "$(osascript -e 'tell application "System Events" to get picture of every desktop' 2>/dev/null)" == *"$HOME/Pictures/black-000000.png"* ]]; then
     add_check pass "black desktop" "pure black wallpaper selected"
   else
