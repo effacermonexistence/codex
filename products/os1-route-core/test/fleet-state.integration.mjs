@@ -53,8 +53,18 @@ try {
   equal(await call('claim',['other',now+1,'claim-one'],'empty'),{status:'idle'});
   const c=await call('claim',['air',now+2,'claim-one'],'empty');equal(c.assignment.job_id,'second');
   equal(await call('claim',['air',now+3,'claim-one'],'empty'),c);
-  equal((await call('jobStatus',['pro','second',now+3600001],'empty')).state,'expired');
-  equal(await call('complete',['air','second','complete','late','hash',now+3600002],'empty'),{status:'rejected'});
+  // A started job outlives the one-hour queue TTL and still delivers after a
+  // long run; an unstarted job still expires at that TTL.
+  equal((await call('jobStatus',['pro','second',now+3600001],'empty')).state,'claimed');
+  equal(await call('complete',['air','second','complete','long run','hash',now+7200000],'empty'),{status:'stored'});
+  equal((await call('jobStatus',['pro','second',now+7200001],'empty')).state,'complete');
+  const third=await call('submit',[{...spec,job_id:'third',request_nonce:'third'}],'empty');equal(third.status,'queued');
+  const fourth=await call('submit',[{...spec,job_id:'fourth',request_nonce:'fourth',created_at_ms:now+5}],'empty');equal(fourth.status,'queued');
+  equal((await call('claim',['air',now+10,'claim-third'],'empty')).assignment.job_id,'third');
+  equal((await call('jobStatus',['pro','fourth',now+3600001],'empty')).state,'expired');
+  equal((await call('jobStatus',['pro','third',now+10+43200000],'empty')).state,'claimed');
+  equal((await call('jobStatus',['pro','third',now+10+43200001],'empty')).state,'expired');
+  equal(await call('complete',['air','third','complete','late','hash',now+10+43200002],'empty'),{status:'rejected'});
   // Placement preference survives the real SQLite submit/claim/receipt boundary.
   for (const profile of ['codex','claude','exo']) {
     const fleetName='preferred-'+profile;
@@ -80,5 +90,5 @@ try {
     equal(fallback.assignment.executor_device_id,'pro');
     equal(await call('submit',[{...preferredSpec,requirements:{...preferredSpec.requirements,prefer_device_id:'pro'}}],fleetName),{status:'rejected'});
   }
-  console.log(`Fleet SQLite recovery: ${checks} checks passed; submit/claim/result replay creates no duplicate work.`);
+  console.log(`Fleet SQLite recovery: ${checks} checks passed; submit/claim/result replay creates no duplicate work; started jobs outlive the queue TTL.`);
 } finally {await mf.dispose();}

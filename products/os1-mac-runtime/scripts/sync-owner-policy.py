@@ -32,20 +32,25 @@ def latest_note(index):
 
 INDEX_SCRIPT = 'with timeout of 15 seconds\n tell application "Notes"\n set epoch to current date\n set year of epoch to 1970\n set month of epoch to January\n set day of epoch to 1\n set time of epoch to 0\n set rows to ""\n repeat with n in (every note whose name contains "RCC ENGINE v26")\n set rows to rows & (id of n) & tab & ((modification date of n) - epoch) & linefeed\n end repeat\n return rows\n end tell\nend timeout'
 
-def refresh(root, run_osa=osa):
+# An unchanged, recently certified snapshot is not rewritten. The Swift
+# loader accepts a certification up to 24 h old; re-certify hourly.
+RECERTIFY_SECONDS = 3600
+
+def refresh(root, run_osa=osa, now=time.time):
     root.mkdir(mode=0o700, parents=True, exist_ok=True)
     os.chmod(root, 0o700)
     with open(root/"sync.lock", "a") as lock:
         os.chmod(root/"sync.lock", 0o600)
         fcntl.flock(lock, fcntl.LOCK_EX)
-        return refresh_locked(root, run_osa)
+        return refresh_locked(root, run_osa, now)
 
-def refresh_locked(ROOT, run_osa):
+def refresh_locked(ROOT, run_osa, now=time.time):
     note,modified=latest_note(run_osa(INDEX_SCRIPT))
     active=ROOT/'active.json'
     if active.is_symlink(): raise ValueError('Policy pointer must not be a symlink')
     old=json.loads(active.read_text()) if active.exists() else {}
-    if old.get('sourceID')==note and old.get('sourceModified')==modified:
+    cached = old.get('sourceID')==note and old.get('sourceModified')==modified
+    if cached:
         digest=old.get('sourceSHA256', '')
         if len(digest)!=64 or any(c not in '0123456789abcdef' for c in digest) or old.get('sourceFile')!=digest+'.txt':
             raise ValueError('Invalid cached source path')
@@ -53,11 +58,14 @@ def refresh_locked(ROOT, run_osa):
         if path.is_symlink() or path.stat().st_size>4_000_000: raise ValueError('Invalid cached source')
         source=path.read_text()
         if sha(source)!=digest: raise ValueError('Cached source integrity failure')
+        # The index read above is the certification: the newest note still
+        # carries the cached identity and time. Nothing was captured, so a
+        # second index read has no capture window to guard (≈0.9 s per run).
     else:
         source=run_osa('with timeout of 20 seconds\n tell application "Notes" to get plaintext of note id "'+note+'"\nend timeout')+'\n'
-    # A concurrent edit/newer note must never be certified with the old timestamp.
-    if latest_note(run_osa(INDEX_SCRIPT)) != (note, modified):
-        raise ValueError('Canonical note changed during capture; existing snapshot retained')
+        # A concurrent edit/newer note must never be certified with the old timestamp.
+        if latest_note(run_osa(INDEX_SCRIPT)) != (note, modified):
+            raise ValueError('Canonical note changed during capture; existing snapshot retained')
     if not 1000<len(source.encode())<=4_000_000 or 'REVAS' not in source: raise SystemExit('Invalid canonical note')
     # Exact, bounded extracts. Required anchors missing => no promotion. Original is
     # preserved in full, including patches outside the execution projection.
@@ -82,9 +90,15 @@ def refresh_locked(ROOT, run_osa):
     usable alternative on pre-dispatch unavailability. Never replay uncertain external effects blindly.
     Use actual token usage when returned; label estimates and missing quota/cost values. No invented
     savings or completion rates. OS1 delegates execution; backend permissions remain authoritative.'''
-    digest=sha(source); write(ROOT, digest+'.txt',source)
+    digest=sha(source)
     record=dict(schema=1,sourceSHA256=digest,sourceFile=digest+'.txt',projectionSHA256=sha(routing+'\n'+projection),
-     projection=projection,sourceID=note,sourceModified=modified,checkedAt=time.time(),routing=routing)
+     projection=projection,sourceID=note,sourceModified=modified,checkedAt=now(),routing=routing)
+    same=cached and all(old.get(k)==record[k] for k in record if k!='checkedAt')
+    try: age=record['checkedAt']-float(old.get('checkedAt'))
+    except (TypeError, ValueError): age=-1
+    if same and 0<=age<RECERTIFY_SECONDS:
+        return {k:old[k] for k in ['sourceSHA256','projectionSHA256','checkedAt']}
+    if not cached: write(ROOT, digest+'.txt',source)
     write(ROOT, 'active.json',json.dumps(record,ensure_ascii=False,indent=2)+'\n')
     return {k:record[k] for k in ['sourceSHA256','projectionSHA256','checkedAt']}
 

@@ -19,14 +19,14 @@ private enum ProviderChoice: String, CaseIterable, Codable, Identifiable, Sendab
         switch self {
         case .auto: return "Auto"
         case .codex: return "Codex"
-        case .claude: return "Claude"
+        case .claude: return "Claude Code"
         }
     }
     var subtitle: String {
         switch self {
         case .auto: return "RCC chooses"
-        case .codex: return "Build & edit"
-        case .claude: return "Analyze & review"
+        case .codex: return "OpenAI agent"
+        case .claude: return "Anthropic agent"
         }
     }
     var symbol: String {
@@ -84,6 +84,45 @@ private func explicitlyRequestedProvider(in request: String) -> ProviderChoice? 
 
 private func providerDisplayName(_ provider: String?) -> String {
     provider == "local" ? "OS-1" : (provider ?? "OS-1").uppercased()
+}
+
+/// The executor that ran and the model it ran are separate facts: a `gpt-*`
+/// model under Codex must never read like a ChatGPT/GPT route (owner report
+/// 2026-09-23: "코덱스의 라우팅인지 GPT의 라우팅인지 구분이 안가").
+private struct ExecutionRoutePresentation: Equatable {
+    let executionLine: String
+    let modelLine: String?
+    let detail: String
+
+    init(activity: RuntimeActivity?) {
+        let provider = activity?.provider?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        switch provider {
+        case _ where activity == nil:
+            executionLine = os1Tr("라우팅 결과: 실행 기록 없음", "Route: no execution recorded")
+            detail = os1Tr("이 대화에는 현재 실행 백엔드 기록이 없습니다.", "This conversation has no running backend record.")
+        case "codex":
+            executionLine = os1Tr("라우팅 결과: Codex 실행 · OpenAI Codex 한도", "Route: Codex · OpenAI Codex usage")
+            detail = os1Tr("Codex가 실제 실행 경로이고 Codex 사용량을 씁니다(ChatGPT 채팅 한도와 별개). gpt-*는 모델 이름이며 ChatGPT 경로를 뜻하지 않습니다.",
+                           "Codex is the executor and uses Codex usage (separate from ChatGPT chat limits). gpt-* is the model name, not a ChatGPT route.")
+        case "claude":
+            executionLine = os1Tr("라우팅 결과: Claude Code 실행 · Anthropic 한도", "Route: Claude Code · Anthropic usage")
+            detail = os1Tr("Claude Code가 실제 실행 경로이고 Claude 채팅과 같은 Anthropic 한도를 씁니다. 모델 이름은 따로 표시합니다.",
+                           "Claude Code is the executor and shares the Anthropic plan limit with Claude chat. The model name is shown separately.")
+        case "local":
+            executionLine = os1Tr("라우팅 결과: OS-1 내부 처리", "Route: handled inside OS-1")
+            detail = os1Tr("외부 Codex·Claude Code 실행 없이 OS-1이 처리했습니다.", "OS-1 handled this without a Codex or Claude Code run.")
+        case nil, "", "routing":
+            executionLine = os1Tr("라우팅 결과: 아직 선택 전", "Route: not selected yet")
+            detail = os1Tr("실행 백엔드가 정해지기 전입니다. 모델 이름만으로 경로를 판단하지 않습니다.",
+                           "No backend is selected yet. A model name alone does not decide the route.")
+        default:
+            executionLine = os1Tr("라우팅 결과: \(provider!.uppercased()) 실행", "Route: \(provider!.uppercased())")
+            detail = os1Tr("기록된 실행 백엔드와 모델 이름을 따로 표시합니다.", "The recorded backend and model are shown separately.")
+        }
+        modelLine = activity?.model.flatMap { $0.isEmpty ? nil : os1Tr("모델: \($0)", "Model: \($0)") }
+    }
+
+    var governanceLine: String { modelLine.map { "\(executionLine) · \($0)" } ?? executionLine }
 }
 
 /// Backend records created by OS-1 contain a bounded execution envelope. The
@@ -172,6 +211,28 @@ private func taskContextSelfTest() throws {
     }
     guard TaskContext.explicitDecisions(in: "결정: Node 20으로 간다\n그리고 수정해") == ["Node 20으로 간다"] else {
         throw RunnerError.message("Explicit decision capture failed")
+    }
+}
+
+private func governanceHeartbeatSelfTest() throws {
+    let start = Date(timeIntervalSince1970: 1_800_000_000)
+    var history = GovernanceHeartbeatHistory()
+    for second in 0...15 {
+        history.record(at: start.addingTimeInterval(TimeInterval(second)))
+    }
+    guard history.points.count == 16,
+          zip(history.points, history.points.dropFirst()).allSatisfy({ $0.id < $1.id }),
+          Set(history.points.map(\.value)).count >= 3 else {
+        throw RunnerError.message("OS-1 governance heartbeat stopped or failed to animate past 10 seconds")
+    }
+    for second in 16...90 {
+        history.record(at: start.addingTimeInterval(TimeInterval(second)))
+    }
+    let final = start.addingTimeInterval(90)
+    guard history.points.count <= 48,
+          history.points.first.map({ $0.id >= final.addingTimeInterval(-45) }) == true,
+          history.points.last?.id == final else {
+        throw RunnerError.message("OS-1 governance heartbeat rolling window is not bounded or current")
     }
 }
 
@@ -1013,6 +1074,108 @@ private func parallelInteractionSelfTest() async throws {
     let failedReviewReload = SessionStore(storageRoot: failedReviewRoot)
     try check(failedReviewReload.selectedSession!.lastFailure?.recoveryAttempted == true &&
         failedReviewReload.selectedSession!.taskContext?.objective.requestText == "DEPLOY ONCE", "restart forgot recovery budget or objective")
+    // Readback must release admission before dispatching the preserved objective.
+    for verified in [true, false] {
+        var calls: [PendingSubmission] = []
+        let resumeStore = SessionStore(storageRoot: root.appendingPathComponent("readback-dispatch-\(verified)"),
+            runOperation: { submission, _, _, _, _ in
+                calls.append(submission)
+                try await Task.sleep(for: .milliseconds(30))
+                if calls.count == 1 {
+                    throw RunnerError.backend(BackendFailureNotice(provider: "claude", sessionID: interruptedID,
+                        blocker: .effectsUncertain, dispatchStage: .dispatched, permissionProfile: "workspace_write"))
+                }
+                let output = submission.readOnlyReconciliation == true ? "OS1_EFFECTS: none" : "Original objective executed"
+                return AppRunSummary(status: "complete", steps: [AppRunStep(sequence: 1, provider: "codex",
+                    action: "test", model: "fixture", effort: "low", revasDisposition: "adopted",
+                    sessionID: UUID().uuidString, permissionProfile: "workspace_write", exitCode: 0,
+                    output: output, stderr: "", durationMS: 30,
+                    nativeRecord: verified ? AppNativeRecord(turnID: nil, recordPath: nil,
+                        persistence: "verified", desktopVisibility: "not_opened") : nil)])
+            })
+        resumeStore.composer = "REPAIR ORIGINAL"; resumeStore.send()
+        let resumeDeadline = Date().addingTimeInterval(8)
+        while !resumeStore.activeRuns.isEmpty && Date() < resumeDeadline {
+            try await Task.sleep(for: .milliseconds(30))
+        }
+        try check(resumeStore.activeRuns.isEmpty, "readback scheduler failed to drain")
+        try check(calls.count == (verified ? 3 : 2), "verified readback must dispatch original exactly once; unverified readback must not replay")
+        try check(calls.filter { $0.readOnlyReconciliation == true }.count == 1, "readback recursively dispatched")
+        if verified {
+            try check(calls[2].id == calls[0].id && calls[2].request == "REPAIR ORIGINAL" && calls[2].readbackResumed == true,
+                "readback lost original submission identity or resume guard")
+            var rejectedDelivery = calls[0]
+            rejectedDelivery.deliveryID = "retained-rejected-artifact"
+            rejectedDelivery.savedResultNeedsReview = true
+            rejectedDelivery.prepareVerifiedNoEffectsResume(build: 219)
+            try check(rejectedDelivery.deliveryID == nil && rejectedDelivery.savedResultNeedsReview == nil,
+                "verified no-effects resume redelivered a rejected artifact instead of executing")
+            try check(rejectedDelivery.id == calls[0].id && rejectedDelivery.request == calls[0].request &&
+                rejectedDelivery.readbackResumed == true && rejectedDelivery.resumedUnderBuild == 219,
+                "no-effects resume lost original custody or replenished replay budget")
+            try check(resumeStore.selectedSession!.lastFailure == nil, "successful resumed objective remained failed")
+        } else {
+            try check(resumeStore.selectedSession!.lastFailure?.request == "REPAIR ORIGINAL", "unverified readback discarded original")
+        }
+    }
+    // Codex-style completion handoff: when a readback verifies that the
+    // previous attempt changed nothing, a follow-up entered after the visible
+    // output must become the next native turn. It must not wait behind an
+    // automatic replay of the old objective.
+    var handoffCalls: [PendingSubmission] = []
+    var handoffContexts: [String: SessionHandoff] = [:]
+    func handoffEventually(_ condition: () -> Bool) async throws {
+        let deadline = Date().addingTimeInterval(8)
+        while !condition(), Date() < deadline { try await Task.sleep(for: .milliseconds(20)) }
+        try check(condition(), "readback follow-up handoff scheduler deadline")
+    }
+    let handoffRoot = root.appendingPathComponent("readback-followup-handoff")
+    let handoffStore = SessionStore(storageRoot: handoffRoot,
+        runOperation: { submission, context, codex, _, _ in
+            handoffCalls.append(submission)
+            handoffContexts[submission.request] = try SessionHandoff.decode(context)
+            try await Task.sleep(for: .milliseconds(25))
+            if handoffCalls.count == 1 {
+                throw RunnerError.backend(BackendFailureNotice(provider: "codex", sessionID: interruptedID,
+                    blocker: .effectsUncertain, dispatchStage: .dispatched, permissionProfile: "workspace_write"))
+            }
+            if submission.readOnlyReconciliation == true {
+                try check(codex == interruptedID, "readback lost the native Codex session")
+                return AppRunSummary(status: "complete", steps: [AppRunStep(sequence: 1, provider: "codex",
+                    action: "readback", model: "fixture", effort: "low", revasDisposition: "adopted",
+                    sessionID: UUID().uuidString, permissionProfile: "workspace_write", exitCode: 0,
+                    output: "OS1_EFFECTS: none", stderr: "", durationMS: 25,
+                    nativeRecord: AppNativeRecord(turnID: nil, recordPath: nil,
+                        persistence: "verified", desktopVisibility: "not_opened"))])
+            }
+            try check(submission.request == "FOLLOW-UP STEERING", "queued follow-up was not dispatched")
+            try check(codex == interruptedID, "follow-up opened a new Codex session instead of continuing: got=\(codex ?? "nil") expected=\(interruptedID)")
+            return AppRunSummary(status: "complete", steps: [AppRunStep(sequence: 1, provider: "codex",
+                action: "follow-up", model: "fixture", effort: "low", revasDisposition: "adopted",
+                sessionID: UUID().uuidString, permissionProfile: "workspace_write", exitCode: 0,
+                output: "follow-up output", stderr: "", durationMS: 25, nativeRecord: nil)])
+        })
+    handoffStore.composer = "ORIGINAL OBJECTIVE"; handoffStore.send()
+    let handoffSessionID = handoffStore.selectedSessionID!
+    try await handoffEventually { handoffCalls.count == 1 }
+    handoffStore.composer = "FOLLOW-UP STEERING"; handoffStore.send()
+    try check(handoffStore.queuedSubmissions.map(\.request) == ["FOLLOW-UP STEERING"],
+        "follow-up steering was not retained behind the completed output")
+    try await handoffEventually { handoffCalls.count == 3 && handoffStore.activeRuns.isEmpty }
+    try check(handoffCalls.count == 3 && handoffCalls[0].request == "ORIGINAL OBJECTIVE" &&
+        handoffCalls[1].readOnlyReconciliation == true && handoffCalls[2].request == "FOLLOW-UP STEERING",
+        "readback handoff replayed or skipped the follow-up turn: \(handoffCalls.map(\.request))")
+    try check(handoffCalls[1].readOnlyReconciliation == true && handoffCalls[2].readOnlyReconciliation != true,
+        "follow-up handoff did not separate readback from the next user turn")
+    try check(handoffContexts["FOLLOW-UP STEERING"]?.transcript.contains("follow-up") == false,
+        "follow-up context incorrectly included its own output")
+    try check(handoffStore.queuedSubmissions.isEmpty && handoffStore.selectedSession!.lastFailure == nil &&
+        handoffStore.selectedSession!.lastBackendFailure == nil &&
+        handoffStore.selectedSession!.preservedTasks?.isEmpty == false,
+        "verified readback did not release the queued Codex follow-up cleanly: queue=\(handoffStore.queuedSubmissions.count), failure=\(handoffStore.selectedSession!.lastFailure?.request ?? "nil"), backend=\(handoffStore.selectedSession!.lastBackendFailure != nil), preserved=\(handoffStore.selectedSession!.preservedTasks?.count ?? 0), messages=\(handoffStore.selectedSession!.messages.suffix(3).map(\.text))")
+    try check(handoffStore.sessions.first(where: { $0.id == handoffSessionID })?.messages.contains {
+        $0.role == .assistant && $0.text == "follow-up output"
+    } == true, "follow-up output was not adopted into the conversation")
     // A stop can race with a previously emitted effects-uncertain notice.
     var cancelledCalls = 0
     let cancelledStore = SessionStore(storageRoot: root.appendingPathComponent("cancel-review"), runOperation: { _, _, _, _, _ in
@@ -1081,6 +1244,205 @@ private func parallelInteractionSelfTest() async throws {
 
 /// Exercise the actual manager, not a stand-alone Array FIFO. Runner gates
 /// make edit/completion races reproducible without model tokens or live writes.
+/// Global admission cap visibility and fairness (2026-09-23 incident): with
+/// four runs active, a fifth+ conversation's request must say it waits for a
+/// slot (not just "not delivered"), keep its global place when the owner
+/// presses its arrow, get no phantom "task replaced" context, and start in
+/// order as slots free. Gated fixtures; no model calls; no user sessions.
+@MainActor
+private func slotWaitVisibilitySelfTest() async throws {
+    var checks = 0
+    func check(_ condition: @autoclosure () -> Bool, _ message: String) throws {
+        guard condition() else { throw RunnerError.message("Slot wait: " + message) }; checks += 1
+    }
+    func eventually(_ condition: () -> Bool) async throws {
+        let deadline = Date().addingTimeInterval(8)
+        while !condition(), Date() < deadline { try await Task.sleep(for: .milliseconds(10)) }
+        // Evaluate here: the optimizer's region check rejects handing the
+        // closure itself to the main-actor autoclosure after a suspension.
+        let satisfied = condition()
+        try check(satisfied, "asynchronous scheduler deadline")
+    }
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("os1-slot-wait-" + UUID().uuidString)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    var starts: [String] = []
+    var gates: [String: CheckedContinuation<Void, Never>] = [:]
+    let store = SessionStore(storageRoot: root, runOperation: { submission, _, _, _, _ in
+        starts.append(submission.request)
+        await withCheckedContinuation { gates[submission.request] = $0 }
+        return AppRunSummary(status: "complete", steps: [AppRunStep(sequence: 1, provider: "codex", action: "fixture",
+            model: "fixture", effort: "none", revasDisposition: "adopted", sessionID: UUID().uuidString,
+            permissionProfile: "read_only", exitCode: 0, output: "answer " + submission.request, stderr: "",
+            durationMS: 0, nativeRecord: nil)])
+    }, nativeSessionOpener: { _ in false })
+    // Pin the admission cap: the fixture must not inherit the machine's own
+    // Settings value, and a fixture store never writes the owner's file.
+    store.updateSettings { $0.parallelRunLimit = 4 }
+    func finish(_ name: String) async throws {
+        try await eventually { gates[name] != nil }
+        gates.removeValue(forKey: name)!.resume()
+    }
+    var running: [UUID] = []
+    for n in 1...store.maximumConcurrentSessions {
+        if n > 1 { store.createSession() }
+        running.append(store.selectedSessionID!)
+        store.composer = "S\(n)"; store.send()
+    }
+    try await eventually { gates.count == store.maximumConcurrentSessions }
+    try check(store.activeRuns.count == store.maximumConcurrentSessions, "cap was not reached")
+    store.createSession(); let e = store.selectedSessionID!
+    store.composer = "E1"; store.send()
+    store.createSession(); let f = store.selectedSessionID!
+    store.composer = "F1"; store.send()
+    store.createSession(); let g = store.selectedSessionID!
+    store.composer = "G1"; store.send()
+    try check(store.queuedSubmissions.map(\.request) == ["E1", "F1", "G1"] && starts.count == 4, "fifth+ conversation launched past the cap")
+    let limit = "\(store.maximumConcurrentSessions)/\(store.maximumConcurrentSessions)"
+    try check(store.globalSlotWait(e)?.position == 1 && store.globalSlotWait(f)?.position == 2 && store.globalSlotWait(g)?.position == 3,
+        "slot-wait order does not match the scheduler's admission order")
+    for id in [e, f, g] {
+        let reason = store.queueReason(id)
+        try check(reason.contains("실행 슬롯 대기") && reason.contains(limit), "cap wait not stated: \(reason)")
+        try check(store.waitingBubbleReason(id) == reason, "bubble reason differs from the queue reason")
+    }
+    try check(store.queueReason(f).contains("대기 순서 2") && !store.queueReason(e).contains("대기 순서"), "wait position missing")
+    for id in running {
+        try check(store.globalSlotWait(id) == nil && store.waitingBubbleReason(id) == nil, "a running conversation reported a slot wait")
+    }
+    try check(store.sidebarQueueStatus(f).hasPrefix("슬롯 대기 · 2번째") && store.sidebarQueueStatus(f).contains(limit),
+        "sidebar subtitle hides the wait position")
+    // A running conversation's follow-up at the cap: the slot its run frees
+    // goes to the conversations already waiting, so it must not promise more.
+    store.select(running[0]); store.composer = "S1 follow-up"; store.send()
+    try check(store.globalSlotWait(running[0]) == nil && store.queueReason(running[0]).contains("먼저 기다리는 대화 3개") &&
+        !store.queueReason(running[0]).contains("끝나면 순서대로 자동 실행"), "own-run follow-up over-promises: \(store.queueReason(running[0]))")
+    let followUp = store.queuedSubmissions.first { $0.request == "S1 follow-up" }!
+    try check(store.queueActionLabel(followUp).contains("먼저 기다리는 대화 3개"), "arrow label over-promises at the cap")
+    try check(store.globalSlotWait(e)?.mayStartFirst == 0 && store.globalSlotWait(g)?.mayStartFirst == 0 &&
+        !store.queueReason(e).contains("먼저 시작될 수"), "a follow-up queued behind the waiting conversations was counted ahead of them")
+    store.removeQueued(store.queuedSubmissions.first { $0.request == "S1 follow-up" }!.id)
+    // The arrow on a sole, idle request: visible bubble, same global place,
+    // honest label, and no replacement semantics in a conversation with no task.
+    let pressed = store.queuedSubmissions.first { $0.request == "F1" }!
+    try check(store.queueActionLabel(pressed).contains("실행 슬롯이 비면") && store.queueActionLabel(pressed).contains(limit),
+        "arrow label promises an immediate start at the cap")
+    store.advanceQueued(pressed.id, ownerRequested: true)
+    try check(store.queuedSubmissions.map(\.request) == ["E1", "F1", "G1"], "pressing the arrow demoted the request: \(store.queuedSubmissions.map(\.request))")
+    try check(store.queuedSubmissions.first { $0.id == pressed.id }?.startNextRequested != true &&
+        store.queuedSubmissions.first { $0.id == pressed.id }?.replacesSubmissionID == nil, "idle request marked as a task replacement")
+    let fSession = store.sessions.first { $0.id == f }!
+    try check(fSession.messages.filter { $0.id == pressed.userMessageID }.first?.steeringDelivery == .waiting, "pressed request not shown")
+    let document = timelineAttributedDocument(messages: fSession.messages,
+        queuedSubmissions: store.queuedSubmissions.filter { $0.sessionID == f }, isRunning: false,
+        workspace: fSession.workspace, waitingReason: store.waitingBubbleReason(f)).string
+    try check(document.contains("백엔드 전달 전") && document.contains("실행 슬롯 대기") && document.contains(limit) &&
+        !document.contains("아직 백엔드에 전달되지 않았습니다"), "bubble caption hides the slot wait: \(document)")
+    // An owner hold keeps its own reason and removes the conversation from the
+    // slot order; the next conversation moves up.
+    store.pauseQueue(e)
+    try check(store.globalSlotWait(e) == nil && store.queueReason(e).contains("일시정지") && store.globalSlotWait(f)?.position == 1,
+        "paused conversation still reported as waiting for a slot")
+    store.resumeQueue(e)
+    try check(store.globalSlotWait(e)?.position == 1, "resumed conversation lost its place")
+    // Slots free: admission follows the stated order, one per freed slot.
+    try await finish("S1")
+    try await eventually { starts.contains("E1") }
+    try check(!starts.contains("F1") && store.isSessionRunning(e) && store.globalSlotWait(f)?.position == 1 &&
+        store.globalSlotWait(g)?.position == 2, "freed slot skipped the first waiting conversation")
+    try await finish("S2")
+    try await eventually { starts.contains("F1") }
+    try check(!starts.contains("G1"), "two waiting conversations took one freed slot")
+    try check(store.sessions.first { $0.id == f }?.preservedTasks?.isEmpty != false &&
+        store.sessions.first { $0.id == f }?.messages.filter { $0.id == pressed.userMessageID }.count == 1 &&
+        store.sessions.first { $0.id == f }?.messages.first { $0.id == pressed.userMessageID }?.steeringDelivery == nil,
+        "pressed idle request started with phantom replacement state or a duplicate bubble")
+    for name in ["S3", "S4", "E1", "F1"] { try await finish(name) }
+    try await eventually { starts.contains("G1") }
+    try await finish("G1")
+    try await eventually { store.activeRuns.isEmpty }
+    try check(store.queuedSubmissions.isEmpty && starts.count == 7 && Set(starts).count == 7, "queue did not drain exactly once")
+    try check(store.waitingBubbleReason(g) == nil && store.globalSlotWait(g) == nil, "stale slot wait after drain")
+    // Admission is FIFO per conversation: a running conversation's follow-up
+    // queued BEFORE E takes the slot its own run frees. E must not promise a
+    // start on any freed slot; it states the range and why.
+    for (n, id) in running.enumerated() { store.select(id); store.composer = "T\(n + 1)"; store.send() }
+    try await eventually { gates.count == store.maximumConcurrentSessions }
+    store.select(running[0]); store.composer = "T1 follow-up"; store.send()
+    store.select(e); store.composer = "E2"; store.send()
+    store.select(f); store.composer = "F2"; store.send()
+    try check(store.queuedSubmissions.map(\.request) == ["T1 follow-up", "E2", "F2"], "follow-up fixture order")
+    try check(store.globalSlotWait(e).map { [$0.position, $0.mayStartFirst] } == [1, 1] &&
+        store.globalSlotWait(f).map { [$0.position, $0.mayStartFirst] } == [2, 1], "follow-up ahead not counted")
+    let eReason = store.queueReason(e)
+    try check(eReason.contains("대기 순서 1~2") && eReason.contains("앞선 대화의 다음 요청 1개") &&
+        !eReason.contains("다른 작업이 끝나면 자동 시작"), "unconditional start promised with a follow-up ahead: \(eReason)")
+    try check(store.sidebarQueueStatus(e).hasPrefix("슬롯 대기 · 1~2번째") && store.sidebarQueueStatus(f).hasPrefix("슬롯 대기 · 2~3번째"),
+        "sidebar order hides the follow-up ahead: \(store.sidebarQueueStatus(e))")
+    // An owner hold on that conversation removes its follow-up from the count.
+    store.pauseQueue(running[0])
+    try check(store.globalSlotWait(e).map { [$0.position, $0.mayStartFirst] } == [1, 0] &&
+        store.queueReason(e).contains("다른 작업이 끝나면 자동 시작"), "held follow-up still counted ahead")
+    store.resumeQueue(running[0])
+    try check(store.globalSlotWait(e)?.mayStartFirst == 1, "resumed follow-up not counted again")
+    // The stated order is what the scheduler does: T1's slot goes to its own
+    // follow-up, E2 waits for the next freed slot and then says so plainly.
+    try await finish("T1")
+    try await eventually { starts.contains("T1 follow-up") }
+    try check(!starts.contains("E2") && store.globalSlotWait(e).map { [$0.position, $0.mayStartFirst] } == [1, 0] &&
+        store.queueReason(e).contains("다른 작업이 끝나면 자동 시작"), "follow-up precedence differs from the stated order")
+    try await finish("T2")
+    try await eventually { starts.contains("E2") }
+    try check(!starts.contains("F2"), "one freed slot admitted two conversations")
+    for name in ["T3", "T4", "T1 follow-up", "E2"] { try await finish(name) }
+    try await eventually { starts.contains("F2") }
+    try await finish("F2")
+    try await eventually { store.activeRuns.isEmpty }
+    try check(store.queuedSubmissions.isEmpty && starts.count == 14 && Set(starts).count == 14, "follow-up scenario did not drain exactly once")
+    // The cap is the owner's setting, not a build constant (2026-09-23: three
+    // conversations "did not run in parallel" because four other runs held
+    // every slot and nothing said the ceiling could be raised). Raising it must
+    // start the waiting conversations at once, with no new user action;
+    // lowering it must not interrupt a run that already started.
+    let cap = store.maximumConcurrentSessions
+    for n in 1...cap {
+        store.createSession()
+        store.composer = "P\(n)"; store.send()
+    }
+    try await eventually { gates.count == cap }
+    store.createSession(); let h = store.selectedSessionID!
+    store.composer = "H1"; store.send()
+    store.createSession(); let i = store.selectedSessionID!
+    store.composer = "I1"; store.send()
+    try check(store.globalSlotWait(h)?.limit == cap && store.globalSlotWait(i)?.position == 2 &&
+        store.queueReason(h).contains("설정(⌘,)"), "slot wait does not say where the cap is raised: \(store.queueReason(h))")
+    let beforeRaise = starts.count
+    store.updateSettings { $0.parallelRunLimit = cap + 2 }
+    try check(store.maximumConcurrentSessions == cap + 2, "owner cap not applied to admission")
+    try await eventually { starts.count == beforeRaise + 2 }
+    try check(Array(starts.suffix(2)) == ["H1", "I1"] && store.queuedSubmissions.isEmpty &&
+        store.activeRuns.count == cap + 2 && store.globalSlotWait(h) == nil,
+        "raising the cap did not start the conversations that were only waiting for a slot")
+    // Lowering it is not a stop button: running work finishes, admission stops.
+    store.updateSettings { $0.parallelRunLimit = 1 }
+    try check(store.activeRuns.count == cap + 2 && starts.count == beforeRaise + 2 && gates.count == cap + 2,
+        "lowering the cap interrupted work that had already started")
+    store.createSession(); let j = store.selectedSessionID!
+    store.composer = "J1"; store.send()
+    try check(!starts.contains("J1") && store.globalSlotWait(j)?.limit == 1, "lowered cap not applied to the next request")
+    // An out-of-range value never removes the bound or serializes by accident.
+    store.updateSettings { $0.parallelRunLimit = 0 }
+    try check(store.maximumConcurrentSessions == OS1Settings.parallelRunRange.lowerBound, "cap accepted below its range")
+    store.updateSettings { $0.parallelRunLimit = 99 }
+    try check(store.maximumConcurrentSessions == OS1Settings.parallelRunRange.upperBound &&
+        store.parallelRunSettingHint.isEmpty, "cap accepted above its range, or the raise hint is shown at the maximum")
+    try await eventually { starts.contains("J1") }
+    for name in Array(starts.suffix(cap + 3)) { try await finish(name) }
+    try await eventually { store.activeRuns.isEmpty }
+    try check(store.queuedSubmissions.isEmpty && Set(starts).count == starts.count, "owner-cap scenario did not drain exactly once")
+    print("Slot wait visibility: \(checks) checks passed; model calls 0; cap \(limit) reason/order/arrow/bubble/pause/follow-up/drain/owner-cap")
+}
+
 @MainActor
 private func queueForkInteractionSelfTest() async throws {
     var checks = 0
@@ -1349,6 +1711,158 @@ private func steeringInteractionSelfTest() async throws {
     print("Live corrections: \(checks) checks passed; model calls 0; same-task/ACK/persistence/FIFO/isolation/restart/stale-result")
 }
 
+/// build205 regression. An input the owner accepted as steering of the live
+/// turn used to exist only as a queue row until the run happened to take it,
+/// so the owner's sentence disappeared from the transcript. It must now show
+/// as the ordinary pink user bubble immediately, must never claim delivery
+/// before the run's own receipt, and must survive save/restore exactly once.
+@MainActor
+private func steeringVisibilitySelfTest() async throws {
+    var checks = 0
+    func check(_ condition: Bool, _ message: String) throws {
+        guard condition else { throw RunnerError.message("Steering visibility: " + message) }; checks += 1
+    }
+    func eventually(_ condition: () -> Bool) async throws {
+        let end = Date().addingTimeInterval(8)
+        while !condition(), Date() < end { try await Task.sleep(for: .milliseconds(10)) }
+        try check(condition(), "scheduler deadline")
+    }
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("os1-steer-visible-" + UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let mailbox = ExecutionSteering(root: root.appendingPathComponent("run-steering"))
+    var starts: [PendingSubmission] = []
+    var gates: [UUID: CheckedContinuation<Void, Never>] = [:]
+    let store = SessionStore(storageRoot: root, runOperation: { submission, _, _, _, _ in
+        starts.append(submission)
+        await withCheckedContinuation { gates[submission.sessionID] = $0 }
+        return AppRunSummary(status: "complete", steps: [AppRunStep(sequence: 1, provider: "codex",
+            action: "fixture", model: "fixture", effort: "none", revasDisposition: "adopted",
+            sessionID: UUID().uuidString, permissionProfile: "workspace_write", exitCode: 0,
+            output: "fixture 답변", stderr: "", durationMS: 0, nativeRecord: nil)],
+            persistedCorrectionIDs: mailbox.persistedIDs(submission.id))
+    })
+    let id = store.selectedSessionID!
+    func rows(_ text: String) -> [ChatMessage] {
+        store.selectedSession!.messages.filter { $0.role == .user && $0.text == text }
+    }
+    func state(_ text: String) -> SteeringDeliveryState? { rows(text).first?.steeringDelivery }
+
+    let cold = "그 말이 아니라, 준비 중에 보낸 것도 바로 보여야 해."
+    let live = "그 말이 아니라, 지금 실행 중인 턴에 바로 반영해."
+    let stuck = "그 말이 아니라, 중지 확인 중에도 입력은 보존해."
+    store.composer = "스티어링 표시를 확인하는 원래 작업."; store.send()
+    try await eventually { gates[id] != nil }
+    let active = store.activeRuns[id]!
+
+    // The turn is still preparing, so it cannot take input yet. The sentence
+    // the owner already sent is nonetheless in the transcript, marked as being
+    // handed over — this is the exact row that used to be missing.
+    store.composer = cold; store.send()
+    try check(!store.canSteerSelectedRun && mailbox.inputs(active.submissionID).isEmpty,
+        "a preparing turn accepted input")
+    try check(store.queuedSubmissions.count == 1, "correction did not wait for the turn")
+    try check(rows(cold).count == 1 && state(cold) == .waiting,
+        "steered input stayed invisible while it waited in the queue")
+
+    // Hand-off promotes that same row instead of writing the sentence twice.
+    store.activeRuns[id]?.provider = .codex
+    store.activeRuns[id]?.activity = RuntimeActivity(.executing, provider: "codex")
+    try mailbox.open(submissionID: active.submissionID, threadID: "thread", turnID: "turn")
+    try await eventually { store.queuedSubmissions.isEmpty && mailbox.inputs(active.submissionID).count == 1 }
+    try check(rows(cold).count == 1, "hand-off duplicated the owner's sentence")
+    try check(rows(cold)[0].id == mailbox.inputs(active.submissionID)[0].id,
+        "the visible bubble is not the input that was delivered")
+    try check(state(cold) == .pending, "handed-over input not marked as awaiting the run's receipt")
+
+    // Enqueued is not received: only the run's own receipt says delivered.
+    let handed = mailbox.inputs(active.submissionID)[0]
+    try mailbox.record(handed, state: .sending, threadID: "thread", turnID: "turn")
+    try await eventually { store.activeRuns[id]?.steeringReady == true }
+    try check(state(cold) == .pending, "an unacknowledged input was shown as delivered")
+    try mailbox.record(handed, state: .accepted, threadID: "thread", turnID: "turn")
+    try await eventually { state(cold) == .delivered }
+
+    // The explicit steer action on a live turn shows its input at once.
+    store.composer = live; store.sendCorrectionToCurrentRun()
+    try check(store.composer.isEmpty && rows(live).count == 1 && state(live) == .pending,
+        "explicit steering did not show its input as awaiting receipt")
+    try check(mailbox.inputs(active.submissionID).count == 2, "explicit steering did not reach the run")
+
+    // Stop was requested, so neither the run nor the queue can take this one.
+    // It stays preserved in the queue and stays visible; it must not restart
+    // the task behind the owner's back.
+    store.activeRuns[id]?.cancellationRequested = true
+    let beforeStuck = starts.count
+    store.composer = stuck; store.sendCorrectionToCurrentRun()
+    try check(starts.count == beforeStuck && mailbox.inputs(active.submissionID).count == 2,
+        "a blocked steer restarted the task or forced delivery")
+    try check(store.queuedSubmissions.count == 1 && rows(stuck).count == 1 && state(stuck) == .waiting,
+        "a blocked steer left the owner's sentence invisible in the queue")
+
+    // The queue's own arrow is an explicit acceptance too. An ordinary queued
+    // follow-up stays in the queue panel only until the owner presses it, and
+    // becomes a visible bubble the moment they do — even when the run is
+    // cancelling and can neither take it nor start it.
+    let arrow = "그 다음에 이 요청도 이어서 처리해."
+    store.composer = arrow; store.send()
+    let pressed = store.queuedSubmissions.first { $0.request == arrow }!
+    try check(rows(arrow).isEmpty, "an unpressed ordinary queue request was written into the transcript")
+    try check(!store.canSteerQueued(pressed) && !store.canAdvanceQueued(pressed),
+        "the cancelling run could take or start the queued request")
+    store.advanceQueued(pressed.id, ownerRequested: true)
+    try check(rows(arrow).count == 1 && state(arrow) == .waiting,
+        "the queue arrow left the owner's pressed request invisible")
+    try check(store.queuedSubmissions.contains { $0.id == pressed.id } && starts.count == beforeStuck,
+        "the queue arrow consumed the preserved request or started a turn")
+
+    // A correction that arrived while the turn could not take it is visible
+    // from arrival. Pressing the arrow once the turn can take it hands over
+    // that same row instead of writing a second copy.
+    let steered = "그 말이 아니라, 대기열 화살표로 지금 반영해."
+    store.composer = steered; store.send()
+    let queuedSteer = store.queuedSubmissions.first { $0.request == steered }!
+    try check(rows(steered).count == 1 && state(steered) == .waiting, "a live-turn amendment was not shown on arrival")
+    store.activeRuns[id]?.cancellationRequested = false
+    store.advanceQueued(queuedSteer.id, ownerRequested: true)
+    try check(rows(steered).count == 1 && state(steered) == .pending,
+        "the queue arrow duplicated the sentence or did not hand it over")
+    try check(mailbox.inputs(active.submissionID).count == 3, "the queue arrow did not reach the run")
+
+    // Restart: every sentence survives exactly once, confirmed delivery stays
+    // confirmed, and nothing keeps claiming a hand-off that cannot happen.
+    store.flushPendingState()
+    let reloaded = SessionStore(storageRoot: root)
+    let restored = reloaded.sessions.first { $0.id == id }!.messages.filter { $0.role == .user }
+    for text in [cold, live, stuck, arrow, steered] {
+        try check(restored.filter { $0.text == text }.count == 1, "restart lost or duplicated a steered input")
+    }
+    try check(restored.first { $0.text == cold }?.steeringDelivery == .delivered, "restart lost a confirmed delivery")
+    for text in [live, steered] {
+        try check(restored.first { $0.text == text }?.steeringDelivery == .undelivered,
+            "restart kept claiming an unconfirmed hand-off was still in flight")
+    }
+    try check(reloaded.queuedSubmissions.map(\.request) == [stuck, arrow] &&
+        [stuck, arrow].allSatisfy { text in
+            restored.first { row in row.text == text }?.steeringDelivery == .waiting
+        },
+        "a request still waiting in the queue lost its preserved request or its state")
+
+    // Cancelling a queued request retires the row it created, and never
+    // touches a sentence the run already received.
+    for item in store.queuedSubmissions { store.removeQueued(item.id) }
+    try check(rows(stuck).isEmpty && rows(arrow).isEmpty,
+        "cancelling a queued request left a phantom bubble")
+    try check(rows(cold).count == 1 && rows(live).count == 1 && rows(steered).count == 1,
+        "cancelling a queued request removed a delivered sentence")
+
+    gates.removeValue(forKey: id)!.resume()
+    try await eventually { !store.isSessionRunning(id) }
+    try check(starts.count == 1, "the visible steering path started an extra turn")
+    try check(state(cold) == .delivered && state(live) == .undelivered && state(steered) == .undelivered,
+        "run completion did not settle the visible delivery states")
+    print("Steering visibility: \(checks) checks passed; model calls 0; immediate bubble/pending-vs-delivered/no-duplicate/restart")
+}
+
 @MainActor
 private func replacementInteractionSelfTest() async throws {
     var checks = 0
@@ -1410,8 +1924,11 @@ private func replacementInteractionSelfTest() async throws {
         if scenario == "terminal-failure" {
             // Reproduce build95's persisted ordinary queue entry, including an
             // edit hold. The new action must work without rewriting its bytes.
+            // A paused queue keeps the entry unacknowledged, as a legacy store did.
+            store.pauseQueue(id)
             store.composer = "R2에 있는 QMGR 통합하는거 가져와봐"; store.send()
             let item = store.queuedSubmissions[0]
+            try check(item.startNextRequested != true, "paused legacy entry was acknowledged by itself")
             try check(store.beginQueueEdit(item.id) && !store.canAdvanceQueued(item), "editing hold")
             try check(store.updateQueued(item.id, request: replacement), "legacy queue edit")
             store.endQueueEdit(item.id); store.advanceQueued(item.id)
@@ -1449,25 +1966,25 @@ private func replacementInteractionSelfTest() async throws {
                 "abandoned objective follow-up was executed under new context")
             store.removeQueued(store.queuedSubmissions[0].id)
         }
-        // Explicit queue action cannot bypass unknown-effect safeguards for a
-        // write, even if the text says "instead".
+        // A new owner message after an unknown-effect write runs as the next
+        // turn (Claude Code/Codex never block it); the failed request is kept,
+        // never re-sent, and the new turn gets its evidence.
         store.sessions[0].lastFailure = original
         store.sessions[0].lastBackendFailure = BackendFailureNotice(provider: "codex", sessionID: nil,
             blocker: .effectsUncertain, dispatchStage: .dispatched)
+        let preservedBeforeDeploy = store.sessions[0].preservedTasks?.count ?? 0
+        let beforeAcknowledged = starts.count
         store.composer = "프로덕션을 지금 배포해"; store.send()
-        try check(!store.isRunning && store.queuedSubmissions.count == 1 && !store.canAdvanceQueued(store.queuedSubmissions[0]),
-            "unknown previous mutation bypassed")
-        try check(store.canReconcileQueued(store.queuedSubmissions[0]), "uncertain queue has no safe inspection action")
-        try check(store.queueActionLabel(store.queuedSubmissions[0]).contains("상태 확인"), "inspection mislabeled as steering")
-        let held = store.queuedSubmissions[0]
-        let beforeReadback = starts.count
-        store.advanceQueued(held.id)
-        try await eventually { starts.count == beforeReadback + 1 && gates[starts.last!.id] != nil }
-        try check(starts.last!.readOnlyReconciliation == true && store.queuedSubmissions.contains { $0.id == held.id },
-            "queue recovery replayed uncertain write or consumed owner request")
+        try await eventually { starts.count == beforeAcknowledged + 1 && gates[starts.last!.id] != nil }
+        try check(starts.last!.request == "프로덕션을 지금 배포해" && starts.last!.readOnlyReconciliation != true &&
+                  !starts.dropFirst(beforeAcknowledged).contains { $0.id == original.id || $0.request == original.request },
+            "unknown previous mutation was replayed, or the owner's new message did not run once")
+        try check(store.sessions[0].preservedTasks?.count == preservedBeforeDeploy + 1 && store.sessions[0].lastFailure == nil,
+            "moved-past failure not preserved")
+        try check(store.sessions[0].taskContext?.activeDecisions.contains { $0.text.contains("did NOT re-run") && $0.text.contains(original.request) } == true,
+            "next turn lost the failed turn's evidence")
         gates.removeValue(forKey: starts.last!.id)!.resume()
         try await eventually { !store.isRunning }
-        store.removeQueued(held.id)
         store.sessions[0].lastFailure = original
         store.sessions[0].lastBackendFailure = BackendFailureNotice(provider: "codex", sessionID: nil,
             blocker: .effectsUncertain, dispatchStage: .dispatched, permissionProfile: "read_only")
@@ -1478,7 +1995,7 @@ private func replacementInteractionSelfTest() async throws {
         try check(starts.last!.request == "OS1 스티어링 고쳐" && starts.last!.amendedRequest == nil &&
             store.sessions[0].taskContext?.objective.scope == .workspaceWrite,
             "new explicit repair inherited read-only scope or replayed old objective")
-        try check(store.sessions[0].preservedTasks?.count == 2, "read-only failure history lost")
+        try check(store.sessions[0].preservedTasks?.count == 3, "read-only failure history lost")
         gates.removeValue(forKey: starts.last!.id)!.resume()
         try await eventually { !store.isRunning }
         // Completed explanation must not freeze future explicit repair permission.
@@ -1498,6 +2015,163 @@ private func replacementInteractionSelfTest() async throws {
 
     }
     print("Task replacement: \(checks) checks PASS; terminal/Claude/recovery/NFD/provenance/duplicate/edit/permission; model calls 0")
+}
+
+/// 2026-09-24: seven conversations never answered the owner again because an
+/// earlier failure held every new message. Claude Code and Codex never block
+/// the next turn on the previous turn's outcome; OS-1 must not either, and it
+/// must never re-send the failed request to get there.
+@MainActor
+private func failureAcknowledgementSelfTest() async throws {
+    var checks = 0
+    func check(_ value: Bool, _ reason: String) throws {
+        guard value else { throw RunnerError.message("Failure acknowledgement: " + reason) }; checks += 1
+    }
+    func eventually(_ condition: () -> Bool) async throws {
+        let deadline = Date().addingTimeInterval(6)
+        while !condition(), Date() < deadline { try await Task.sleep(for: .milliseconds(10)) }
+        let satisfied = condition()
+        try check(satisfied, "scheduler deadline")
+    }
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("os1-failure-ack-" + UUID().uuidString)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    var starts: [PendingSubmission] = []
+    var gates: [String: CheckedContinuation<Void, Never>] = [:]
+    let operation: SessionStore.RunOperation = { submission, _, _, _, _ in
+        starts.append(submission)
+        await withCheckedContinuation { gates[submission.request] = $0 }
+        return AppRunSummary(status: "complete", steps: [AppRunStep(sequence: 1, provider: "codex", action: "fixture",
+            model: "fixture", effort: "none", revasDisposition: "adopted", sessionID: UUID().uuidString,
+            permissionProfile: "workspace_write", exitCode: 0, output: "answer " + submission.request, stderr: "",
+            durationMS: 0, nativeRecord: nil)])
+    }
+    let store = SessionStore(storageRoot: root, runOperation: operation, nativeSessionOpener: { _ in false })
+    store.updateSettings { $0.parallelRunLimit = 4 }
+    func finish(_ request: String) async throws {
+        try await eventually { gates[request] != nil }
+        gates.removeValue(forKey: request)!.resume()
+        try await eventually { !starts.isEmpty && store.activeRuns.values.allSatisfy { run in starts.first { $0.id == run.submissionID }?.request != request } }
+    }
+    func heldConversation(_ failed: String, notice: BackendFailureNotice?, mutate: (inout PendingSubmission) -> Void = { _ in }) -> (UUID, PendingSubmission) {
+        store.createSession()
+        let id = store.selectedSessionID!
+        let index = store.sessions.firstIndex { $0.id == id }!
+        store.sessions[index].workspace = root.path
+        var original = PendingSubmission(sessionID: id, userMessageID: UUID(), request: failed, provider: .auto,
+            workspace: root.path, codexCapacity: 30, claudeCapacity: 100)
+        mutate(&original)
+        store.sessions[index].lastFailure = original
+        store.sessions[index].lastBackendFailure = notice
+        return (id, original)
+    }
+    func session(_ id: UUID) -> ConversationSession { store.sessions.first { $0.id == id }! }
+    func neverResent(_ original: PendingSubmission) -> Bool {
+        !starts.contains { $0.id == original.id || $0.request == original.request }
+    }
+
+    // 1. An uncertain write (the 66AC3BE4 / C19AC79B shape): the owner's next
+    //    message runs once, with the failed turn's evidence, never its replay.
+    let uncertain = BackendFailureNotice(provider: "codex", sessionID: nil, blocker: .effectsUncertain,
+        dispatchStage: .dispatched, permissionProfile: "workspace_write", diagnosis: "backend_exit=0; adoption=retry")
+    let (a, originalA) = heldConversation("인스타 가격 문구 배포해", notice: uncertain)
+    store.composer = "OS1 큐 버그 고쳐"; store.send()
+    try await eventually { gates["OS1 큐 버그 고쳐"] != nil }
+    try check(starts.filter { $0.sessionID == a }.map(\.request) == ["OS1 큐 버그 고쳐"] && neverResent(originalA),
+        "new message after an uncertain write did not run exactly once, or the failed request was re-sent")
+    try check(starts.last!.readOnlyReconciliation != true && starts.last!.amendedRequest == nil, "new turn became a readback or an amendment")
+    try check(session(a).lastFailure == nil && session(a).lastBackendFailure == nil && session(a).preservedTasks?.count == 1,
+        "acknowledged failure was not preserved exactly once")
+    let decisions = session(a).taskContext?.activeDecisions.map(\.text) ?? []
+    try check(decisions.contains { $0.contains("did NOT re-run") && $0.contains(originalA.request) && $0.contains("effects_uncertain") && $0.contains("adoption=retry") },
+        "next turn did not receive the failed turn's evidence: \(decisions)")
+    try check(session(a).messages.contains { $0.role == .user && $0.text == "OS1 큐 버그 고쳐" }, "owner message missing from the transcript")
+    try check(session(a).taskContext?.objective.requestText == "OS1 큐 버그 고쳐" && session(a).taskContext?.objective.scope == .workspaceWrite,
+        "new request did not become the objective with its own write permission")
+    try await finish("OS1 큐 버그 고쳐")
+
+    // 2. A saved result that needs review and already used its readback
+    //    budget (the 0632613F shape, no backend notice): permanently stuck
+    //    before; the next message now runs.
+    let (b, originalB) = heldConversation("통합해", notice: nil) {
+        $0.savedResultNeedsReview = true; $0.readbackResumed = true; $0.recoveryAttempted = true; $0.verdictReconciled = true
+    }
+    store.composer = "이어서 해줘"; store.send()
+    try await eventually { gates["이어서 해줘"] != nil }
+    try check(starts.filter { $0.sessionID == b }.map(\.request) == ["이어서 해줘"] && neverResent(originalB) && session(b).lastFailure == nil,
+        "exhausted-readback conversation still swallowed the owner's message")
+    try await finish("이어서 해줘")
+
+    // 3. A request queued before the failure was seen stays in order: it is
+    //    admitted first, then the new message. Neither re-sends the failure.
+    let (c, originalC) = heldConversation("사이트 배포해", notice: uncertain)
+    store.pauseQueue(c)
+    store.composer = "EARLIER"; store.send()
+    let cIndex = store.sessions.firstIndex { $0.id == c }!
+    store.sessions[cIndex].queuePaused = false
+    let earlier = store.queuedSubmissions.first { $0.request == "EARLIER" }!
+    try check(earlier.startNextRequested != true && !starts.contains { $0.request == "EARLIER" }, "an unacknowledged legacy item started by itself")
+    try check(store.queueReason(c).contains("이어서 실행할 수 있습니다") && store.canAdvanceQueued(earlier)
+              && store.queueActionLabel(earlier).contains("다시 실행하지 않고"), "held queue does not say how to continue: \(store.queueReason(c))")
+    store.composer = "LATER"; store.send()
+    try await eventually { gates["EARLIER"] != nil }
+    try check(store.queuedSubmissions.contains { $0.request == "LATER" } && !starts.contains { $0.request == "LATER" },
+        "queue order broken: the new message overtook the earlier request")
+    try await finish("EARLIER")
+    try await eventually { gates["LATER"] != nil }
+    try check(starts.filter { $0.sessionID == c }.map(\.request) == ["EARLIER", "LATER"] && neverResent(originalC)
+              && session(c).preservedTasks?.count == 1, "earlier/later order or preservation wrong")
+    try await finish("LATER")
+
+    // 4. A backend outage keeps its automatic replay: nothing was dispatched,
+    //    OS-1 re-runs that request itself when a backend returns, so a new
+    //    message waits behind it rather than overtaking it.
+    let outage = BackendFailureNotice(provider: "claude", sessionID: nil, blocker: .backendUnavailable, dispatchStage: .notDispatched)
+    let (d, _) = heldConversation("주간 리포트 만들어", notice: outage)
+    store.composer = "OUTAGE-FOLLOWUP"; store.send()
+    try check(!starts.contains { $0.request == "OUTAGE-FOLLOWUP" } && store.queuedSubmissions.contains { $0.sessionID == d && $0.startNextRequested != true },
+        "a follow-up overtook the preserved request of a backend outage")
+    store.removeQueued(store.queuedSubmissions.first { $0.sessionID == d }!.id)
+
+    // 5. Restart: an acknowledged message waiting for a slot survives the
+    //    relaunch and resumes after the restart hold; an unacknowledged
+    //    legacy item in another held conversation does not.
+    store.updateSettings { $0.parallelRunLimit = 1 }
+    store.createSession(); let busy = store.selectedSessionID!
+    store.sessions[store.sessions.firstIndex { $0.id == busy }!].workspace = root.path
+    store.composer = "BUSY"; store.send()
+    try await eventually { gates["BUSY"] != nil }
+    let (e, originalE) = heldConversation("앱 설치해", notice: uncertain)
+    store.composer = "E-NEW"; store.send()
+    let (f, _) = heldConversation("문서 정리해", notice: uncertain)
+    store.pauseQueue(f)
+    store.composer = "F-LEGACY"; store.send()
+    try check(store.queuedSubmissions.first { $0.request == "E-NEW" }?.startNextRequested == true
+              && store.queuedSubmissions.first { $0.request == "F-LEGACY" }?.startNextRequested != true, "acknowledgement marking wrong")
+    store.flushPendingState()
+    var restartedStarts: [String] = []
+    let restarted = SessionStore(storageRoot: root, runOperation: { submission, _, _, _, _ in
+        restartedStarts.append(submission.request)
+        return AppRunSummary(status: "complete", steps: [AppRunStep(sequence: 1, provider: "codex", action: "fixture",
+            model: "fixture", effort: "none", revasDisposition: "adopted", sessionID: UUID().uuidString,
+            permissionProfile: "read_only", exitCode: 0, output: "restarted " + submission.request, stderr: "",
+            durationMS: 0, nativeRecord: nil)])
+    }, nativeSessionOpener: { _ in false })
+    restarted.updateSettings { $0.parallelRunLimit = 4 }
+    let fIndex = restarted.sessions.firstIndex { $0.id == f }!
+    restarted.sessions[fIndex].queuePaused = false
+    try check(restartedStarts.isEmpty, "a relaunch fired saved queue entries by itself")
+    restarted.releaseRestartHolds(now: Date().addingTimeInterval(120))
+    try await eventually { restartedStarts.contains("E-NEW") }
+    try check(!restartedStarts.contains("F-LEGACY") && !restartedStarts.contains(originalE.request),
+        "restart released an unacknowledged held item or re-sent a failed request: \(restartedStarts)")
+    try check(restarted.sessions.first { $0.id == e }?.lastFailure == nil, "acknowledged failure not moved past after restart")
+    try await eventually { !restarted.isRunning }
+    // The pre-restart store stands in for the exited process: drop its copy
+    // of the queue before letting its last run finish.
+    for item in store.queuedSubmissions { store.removeQueued(item.id) }
+    try await finish("BUSY")
+    print("Failure acknowledgement: \(checks) checks passed; model calls 0; next message runs once, failed request never re-sent, order, outage, restart")
 }
 
 @MainActor
@@ -2687,6 +3361,25 @@ private enum MessageRole: String, Codable, Sendable {
     case system
 }
 
+/// Visible delivery state of an owner input that was accepted as steering of a
+/// live turn. OS-1 accepting and durably holding an input is not the backend
+/// receiving it, so the two are never shown as the same thing. Only `waiting`
+/// and `pending` are in flight; the rest are terminal and never rewritten.
+private enum SteeringDeliveryState: String, Codable, Equatable, Sendable {
+    /// Accepted and preserved by OS-1, not yet handed to the run's mailbox.
+    case waiting
+    /// In the run's steering mailbox; the backend has not acknowledged it.
+    case pending
+    /// The run acknowledged receipt (accepted or persisted).
+    case delivered
+    /// The run refused the input. The text stays preserved.
+    case rejected
+    /// The run ended without ever acknowledging it. The text stays preserved.
+    case undelivered
+
+    var isInFlight: Bool { self == .waiting || self == .pending }
+}
+
 private struct ChatMessage: Codable, Identifiable, Equatable, Sendable {
     let id: UUID
     let role: MessageRole
@@ -2703,6 +3396,10 @@ private struct ChatMessage: Codable, Identifiable, Equatable, Sendable {
     /// A corrected import, retained byte-for-byte for audit but not authored by
     /// the user. Never render or hand this managed transport row to a model.
     var nativeManagedTurnID: String? = nil
+    /// Present only on an owner input the owner steered into a live turn, so
+    /// the bubble can show whether OS-1 is still handing it over or the run
+    /// actually received it. Absent on every ordinary message.
+    var steeringDelivery: SteeringDeliveryState? = nil
 
     init(
         id: UUID = UUID(),
@@ -2767,8 +3464,8 @@ private struct ConversationSession: Codable, Identifiable, Sendable {
         codexSessionID: String? = nil,
         claudeSessionID: String? = nil,
         lastProvider: String? = nil,
-        codexCapacity: Int = 30,
-        claudeCapacity: Int = 100,
+        codexCapacity: Int = CapacityMix.defaultCodex,
+        claudeCapacity: Int = CapacityMix.defaultClaude,
         updatedAt: Date = Date()
     ) {
         self.id = id
@@ -2786,8 +3483,8 @@ private struct ConversationSession: Codable, Identifiable, Sendable {
         self.updatedAt = updatedAt
     }
 
-    var effectiveCodexCapacity: Int { codexCapacity ?? 30 }
-    var effectiveClaudeCapacity: Int { claudeCapacity ?? 100 }
+    var effectiveCodexCapacity: Int { codexCapacity ?? CapacityMix.defaultCodex }
+    var effectiveClaudeCapacity: Int { claudeCapacity ?? CapacityMix.defaultClaude }
     var visibleMessages: [ChatMessage] { messages.filter { $0.nativeManagedTurnID == nil } }
 }
 
@@ -2925,20 +3622,29 @@ private struct PendingSubmission: Identifiable, Codable, Equatable, Sendable {
     var replacesSubmissionID: UUID? = nil
     var replacesObjective: Bool? = nil
     /// Set when a clean readback (OS1_EFFECTS: none) already resumed this
-    /// objective once, so one verified-no-effects verdict buys one resume.
+    /// objective once. A verified follow-up turn takes precedence over this
+    /// replay path, matching Codex: the completed output stays in the native
+    /// transcript and steering becomes the next turn in that same session.
     var readbackResumed: Bool? = nil
-    /// The OS-1 build under which that resume happened. A build that replaced
-    /// itself to fix the cause earns one fresh resume; the same build never
-    /// retries in a loop.
+    /// Historical receipt only; a new build does not authorize another replay.
     var resumedUnderBuild: Int? = nil
     /// Set once a readback under the OS1_EFFECTS verdict contract ran for
     /// this failure; failures reconciled before that contract existed get
     /// exactly one more readback under it.
     var verdictReconciled: Bool? = nil
-    /// The OS-1 build whose runtime last examined this failure. When OS-1
-    /// replaces itself, a held failure gets one fresh readback under the new
-    /// build — the runtime that failed it no longer exists.
+    /// Historical receipt only; automatic reconciliation is contract-scoped,
+    /// not replenished whenever an unrelated app build is installed.
     var reconciledUnderBuild: Int? = nil
+    /// Called only after the verified `none` gate. Keep original custody and
+    /// outbox evidence, but execute the objective rather than redeliver the
+    /// rejected artifact. Other effects verdicts never enter this transition.
+    mutating func prepareVerifiedNoEffectsResume(build: Int) {
+        deliveryID = nil
+        savedResultNeedsReview = nil
+        readbackResumed = true
+        resumedUnderBuild = build
+    }
+
     var executionRequest: String {
         (liveCorrections ?? []).reduce(amendedRequest.map {
             ExecutionSteering.continuation(original: $0, correction: request)
@@ -2999,6 +3705,7 @@ private struct AppRunStep: Decodable, Sendable {
     let durationMS: Int64
     let nativeRecord: AppNativeRecord?
     var workflowStage: String? = nil
+    var verifiedPreviewDelivery: VerifiedPreviewDelivery? = nil
 
     enum CodingKeys: String, CodingKey {
         case sequence, provider, action, model, effort, output, stderr
@@ -3008,6 +3715,7 @@ private struct AppRunStep: Decodable, Sendable {
         case exitCode = "exit_code"
         case durationMS = "duration_ms"
         case nativeRecord = "native_record"
+        case verifiedPreviewDelivery = "verified_preview_delivery"
         case workflowStage = "workflow_stage"
     }
 }
@@ -3028,6 +3736,8 @@ private func stepRecordIsVerified(_ step: AppRunStep) -> Bool {
           let attributes = try? FileManager.default.attributesOfItem(atPath: path),
           (attributes[.posixPermissions] as? NSNumber)?.intValue == 0o600 else { return false }
     switch step.action {
+    case "preview_delivery_readback":
+        return step.verifiedPreviewDelivery?.matchesControlReceipt(receipt) == true
     case "registered_source_retrieval":
         guard receipt["operation"] as? String == "registered_source_retrieval",
               receipt["verification_mode"] as? String == RegisteredProjectSource.verificationMode,
@@ -3142,6 +3852,7 @@ private func nativeRecordReceipt(_ step: AppRunStep) -> String {
     switch record.desktopVisibility {
     case "local_only": parts.append("local exact receipt persisted")
     case "control_only": parts.append("local control receipt persisted")
+    case "desktop_owned": parts.append("Codex Desktop: same thread executed in app")
     case "revealed": parts.append("Codex Desktop: synced and opened")
     case "claude_revealed": parts.append("Claude Desktop: synced and opened")
     case "registered_in_background": parts.append("Codex Desktop: synced in background")
@@ -3797,7 +4508,7 @@ private enum OS1Runner {
             "--desktop-reveal", "background",
         ]
         let savedResult = submissionID.flatMap { DeliveryOutbox().forSubmission($0.uuidString) }
-        if let storedID = deliveryID ?? savedResult?.id { arguments = ["resume-delivery", storedID] }
+        if !requireReadOnly, let storedID = deliveryID ?? savedResult?.id { arguments = ["resume-delivery", storedID] }
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: try executable())
@@ -3853,7 +4564,10 @@ private enum OS1Runner {
         let errorText = String(decoding: try Data(contentsOf: stderrURL), as: UTF8.self)
             .trimmingCharacters(in: .whitespacesAndNewlines)
         guard process.terminationStatus == 0 else {
-            if let data = try? Data(contentsOf: failureURL), data.count < 4096,
+            // A rejected answer rides in publicProgress (up to 24k characters);
+            // the old 4 KiB cap silently turned such notices into generic
+            // failures and the answer never reached the chat.
+            if let data = try? Data(contentsOf: failureURL), data.count < 512 * 1_024,
                let notice = try? JSONDecoder().decode(BackendFailureNotice.self, from: data),
                ["claude", "codex", "local"].contains(notice.provider) {
                 throw RunnerError.backend(notice)
@@ -3890,7 +4604,11 @@ private final class SessionStore: ObservableObject {
     typealias NativeSessionOpener = (URL) -> Bool
     typealias NativePinOperation = @MainActor (String, Bool, String?) async throws -> Void
     // Admission is global; ownership, sequencing, context and display are not.
-    static let maximumConcurrentSessions = 4
+    // The cap is the owner's (Settings ⌘, → 동시 실행), not a build constant:
+    // four was a hidden ceiling that silently held every further conversation.
+    // Raising it admits the waiting conversations at once; lowering it never
+    // interrupts a run that already started.
+    var maximumConcurrentSessions: Int { appSettings.parallelRuns }
     /// Raw JSON of conversations this build could not decode, carried through
     /// every save so nothing is lost while the cause is fixed.
     private var unreadableSessions: [PreservedSession] = []
@@ -3905,6 +4623,15 @@ private final class SessionStore: ObservableObject {
     /// Codex-style user settings (language, backends). The file is the source
     /// of truth for every OS-1 process; this copy drives the UI.
     @Published var appSettings = OS1Settings.load()
+    /// Which Codex and Claude accounts this Mac is signed in to. The runtime
+    /// owns the file; the app reads it and asks the runtime to change it.
+    /// No credential is ever held here — only labels and sign-in state.
+    @Published var accountBook = BackendAccounts.load()
+    /// The provider whose sign-in is running, so its rail tile can say so.
+    @Published var accountBusy: String?
+    @Published var accountNotice: String?
+    @Published var accountsOpen = false
+    private var accountObserver: NSObjectProtocol?
     @Published var composer = "" {
         didSet {
             if let index = selectedIndex { sessions[index].draft = composer }
@@ -4054,20 +4781,106 @@ private final class SessionStore: ObservableObject {
         activeRuns[sessionID] != nil
     }
 
+    /// Non-nil only when the global admission cap is the sole thing holding
+    /// this conversation's next request: the conversation is idle and its head
+    /// item is eligible (no failure, pause, edit, restart or source hold).
+    /// Mirrors runNextQueuedSubmissionIfNeeded, so `position` is the order in
+    /// which the scheduler will admit waiting conversations when slots free.
+    /// Admission is FIFO per conversation, not globally: a request queued ahead
+    /// of this head in a conversation that is running (or will run first)
+    /// takes the slot that conversation's own run frees. `mayStartFirst` counts
+    /// those requests, so the real order lies in position...position+mayStartFirst.
+    func globalSlotWait(_ sessionID: UUID) -> (running: Int, limit: Int, position: Int, mayStartFirst: Int)? {
+        guard !isSessionRunning(sessionID), activeRuns.count >= maximumConcurrentSessions,
+              let headIndex = queuedSubmissions.firstIndex(where: { $0.sessionID == sessionID }),
+              queueEligible(queuedSubmissions[headIndex]) else { return nil }
+        var headReady: [UUID: Bool] = [:], position = 1, mayStartFirst = 0
+        for item in queuedSubmissions[..<headIndex] {
+            let isHead = headReady[item.sessionID] == nil
+            if isHead { headReady[item.sessionID] = queueEligible(item, ignoringRun: true) }
+            guard headReady[item.sessionID] == true, queueEligible(item, ignoringRun: true) else { continue }
+            if isHead && !isSessionRunning(item.sessionID) { position += 1 } else { mayStartFirst += 1 }
+        }
+        return (activeRuns.count, maximumConcurrentSessions, position, mayStartFirst)
+    }
+
+    /// Eligible waiting conversations whose next request is ahead of this
+    /// conversation's own head: with every slot in use, each freed slot goes
+    /// to them first, even when this conversation's own run is the one ending.
+    func conversationsWaitingAhead(of sessionID: UUID) -> Int {
+        guard let head = queuedSubmissions.firstIndex(where: { $0.sessionID == sessionID }) else { return 0 }
+        var heads = Set<UUID>([sessionID]), count = 0
+        for item in queuedSubmissions[..<head] where heads.insert(item.sessionID).inserted && queueEligible(item) { count += 1 }
+        return count
+    }
+
+    /// Compact sidebar subtitle; the full reason stays in the row's help text.
+    func sidebarQueueStatus(_ sessionID: UUID) -> String {
+        if let wait = globalSlotWait(sessionID) {
+            let order = wait.mayStartFirst > 0 ? "\(wait.position)~\(wait.position + wait.mayStartFirst)" : "\(wait.position)"
+            return "슬롯 대기 · \(order)번째 · \(wait.running)/\(wait.limit) 사용 중"
+        }
+        return queueReason(sessionID)
+    }
+
+    /// The cap is the owner's setting, so the wait always says where it is
+    /// raised. Only shown while raising it is still possible.
+    var parallelRunSettingHint: String {
+        maximumConcurrentSessions < OS1Settings.parallelRunRange.upperBound
+            ? " · 설정(⌘,) 동시 실행에서 늘리면 대기 중인 대화가 바로 시작됩니다" : ""
+    }
+
+    func globalSlotWaitText(_ sessionID: UUID) -> String? {
+        guard let wait = globalSlotWait(sessionID) else { return nil }
+        let base = "실행 슬롯 대기 · 동시 실행 \(wait.running)/\(wait.limit) 사용 중"
+        guard wait.mayStartFirst > 0 else {
+            return base + " · 다른 작업이 끝나면 자동 시작" + (wait.position > 1 ? " · 대기 순서 \(wait.position)" : "")
+                + parallelRunSettingHint
+        }
+        // Not every freed slot is this request's: say which ones go first.
+        return base + " · 빈 슬롯 순서대로 자동 시작 · 대기 순서 \(wait.position)~\(wait.position + wait.mayStartFirst)"
+            + " · 앞선 대화의 다음 요청 \(wait.mayStartFirst)개는 그 대화의 작업이 끝나면 먼저 시작될 수 있습니다"
+            + parallelRunSettingHint
+    }
+
+    /// Reason shown under a queued request's own bubble. Nil while this
+    /// conversation runs: a `.waiting` bubble then means a hand-over to the
+    /// live turn, whose own caption stays accurate.
+    func waitingBubbleReason(_ sessionID: UUID) -> String? {
+        guard !isSessionRunning(sessionID), queuedSubmissions.contains(where: { $0.sessionID == sessionID }) else { return nil }
+        return queueReason(sessionID)
+    }
+
     func queueReason(_ sessionID: UUID) -> String {
         guard let session = sessions.first(where: { $0.id == sessionID }) else { return "대화 없음" }
+        if let slot = globalSlotWaitText(sessionID) { return slot }
         if queuedSubmissions.contains(where: { $0.sessionID == sessionID && $0.startNextRequested == true }), isSessionRunning(sessionID) {
             return "현재 실행 종료 확인 중 · 확인 후 선택한 요청을 시작합니다"
         }
         if session.queuePaused == true { return "대기열 일시정지 · 실행 중 작업은 계속됩니다" }
-        if session.lastBackendFailure?.requiresReadback == true { return "이전 작업의 변경 결과 확인 후 계속할 수 있습니다" }
+        if session.lastFailure != nil || session.lastBackendFailure != nil,
+           session.lastBackendFailure?.blocker != .backendUnavailable, session.taskContext?.sourcePreparation == nil,
+           queuedSubmissions.contains(where: { $0.sessionID == sessionID && $0.startNextRequested == true }) {
+            return "이전 실패 작업은 보존 · 다시 실행하지 않고 다음 요청을 이어서 실행합니다"
+        }
+        if session.lastBackendFailure?.requiresReadback == true { return "이전 작업의 변경 결과 확인 전 · 새 메시지나 화살표로 이어서 실행할 수 있습니다" }
         if session.taskContext?.sourcePreparation != nil { return "검증 원본 확보 대기 · 뒤의 요청은 보존됩니다" }
-        if session.lastFailure != nil { return "이전 작업 확인 필요 · 뒤의 요청은 보존됩니다" }
+        if session.lastFailure != nil { return "이전 작업 실패 · 새 메시지나 화살표로 이어서 실행할 수 있습니다" }
         let items = queuedSubmissions.filter { $0.sessionID == sessionID }
         if items.contains(where: { pausedQueueIDs.contains($0.id) }) { return "앱 재시작 후 보존된 대기열 · 계속 실행을 눌러 주세요" }
         if items.contains(where: { editingQueueIDs.contains($0.id) }) { return "대기 요청 편집 중 · 저장 또는 취소 후 계속됩니다" }
-        if isSessionRunning(sessionID) { return "현재 작업이 끝나면 순서대로 자동 실행됩니다" }
-        if activeRuns.count >= Self.maximumConcurrentSessions { return "다른 작업의 실행 슬롯 대기 중" }
+        if isSessionRunning(sessionID) {
+            let ahead = conversationsWaitingAhead(of: sessionID)
+            // The slot this run frees is admitted in global order; say so
+            // instead of promising the follow-up starts right after it.
+            if activeRuns.count >= maximumConcurrentSessions, ahead > 0 {
+                return "현재 작업이 끝난 뒤 실행 슬롯 순서대로 시작 · 먼저 기다리는 대화 \(ahead)개 · 동시 실행 \(activeRuns.count)/\(maximumConcurrentSessions) 사용 중"
+            }
+            return "현재 작업이 끝나면 순서대로 자동 실행됩니다"
+        }
+        if activeRuns.count >= maximumConcurrentSessions {
+            return "다른 작업의 실행 슬롯 대기 중 · 동시 실행 \(activeRuns.count)/\(maximumConcurrentSessions) 사용 중"
+        }
         return "순서대로 실행 준비 중"
     }
 
@@ -4086,9 +4899,11 @@ private final class SessionStore: ObservableObject {
         save()
     }
 
-    private func queueEligible(_ next: PendingSubmission) -> Bool {
+    /// `ignoringRun` asks whether the request would be admitted once its own
+    /// conversation's current run ends (owner and failure holds still apply).
+    private func queueEligible(_ next: PendingSubmission, ignoringRun: Bool = false) -> Bool {
         guard let session = sessions.first(where: { $0.id == next.sessionID }) else { return false }
-        return !isSessionRunning(next.sessionID) && session.queuePaused != true &&
+        return (ignoringRun || !isSessionRunning(next.sessionID)) && session.queuePaused != true &&
             ((session.lastFailure == nil && session.lastBackendFailure == nil && session.taskContext?.sourcePreparation == nil) ||
              (next.startNextRequested == true && mayAdvancePastFailure(next, session: session))) &&
             !pausedQueueIDs.contains(next.id) && !editingQueueIDs.contains(next.id)
@@ -4104,14 +4919,36 @@ private final class SessionStore: ObservableObject {
          (session.lastFailure != nil && session.lastBackendFailure?.permissionProfile == "read_only"))
     }
 
+    /// An owner request marked to move past a failure moves past exactly that
+    /// failure; a newer failure holds the queue again. Claude Code and Codex
+    /// never block the next turn on the previous one's outcome. OS-1 keeps the
+    /// failed request (never re-sent), hands its evidence to the next turn
+    /// (`start`) and takes the new turn's permission from its own text only.
     private func mayAdvancePastFailure(_ next: PendingSubmission, session: ConversationSession) -> Bool {
         if let failed = session.lastFailure, next.replacesSubmissionID != failed.id { return false }
-        // A new read is independent of an uncertain previous write. A dependent
-        // write must still reconcile; an action button never expands permission.
-        if session.lastBackendFailure?.requiresReadback == true || session.lastFailure?.savedResultNeedsReview == true {
-            return ExecutionSteering.isIndependentRead(next.request) || isNewEditAfterReadOnlyTask(next, session: session)
-        }
         return true
+    }
+
+    /// A new owner message in a conversation held by an earlier failure is the
+    /// owner acknowledging that failure, which is on screen. The first waiting
+    /// request of the conversation is admitted past it, queue order kept. A
+    /// backend outage keeps its automatic replay, a source preparation keeps
+    /// its gate, an owner-paused queue stays paused.
+    private func acknowledgeFailureHold(sessionIndex index: Int) {
+        let session = sessions[index]
+        guard session.lastFailure != nil || session.lastBackendFailure != nil,
+              session.lastBackendFailure?.blocker != .backendUnavailable,
+              session.taskContext?.sourcePreparation == nil, session.queuePaused != true,
+              let first = queuedSubmissions.firstIndex(where: { $0.sessionID == session.id }),
+              queuedSubmissions[first].recoveryParentID == nil,
+              queuedSubmissions[first].startNextRequested != true,
+              !editingQueueIDs.contains(queuedSubmissions[first].id) else { return }
+        queuedSubmissions[first].startNextRequested = true
+        queuedSubmissions[first].replacesSubmissionID = session.lastFailure?.id
+        // The owner is here: this conversation's restart hold is released.
+        pausedQueueIDs.subtract(queuedSubmissions.filter { $0.sessionID == session.id }.map(\.id))
+        appendTaskEvent(conversationID: session.id, kind: "failure_acknowledged",
+            summary: "Owner sent a new request after the failure; the failed request is preserved and not re-run")
     }
 
     private var orderedSessions: [ConversationSession] {
@@ -4704,11 +5541,19 @@ private final class SessionStore: ObservableObject {
                   let objective = sessions[index].taskContext?.objective.requestText, !objective.isEmpty {
             submission.amendedRequest = objective
         }
-        if isSessionRunning(submission.sessionID) || activeRuns.count >= Self.maximumConcurrentSessions ||
+        if isSessionRunning(submission.sessionID) || activeRuns.count >= maximumConcurrentSessions ||
             sessions[index].lastFailure != nil || sessions[index].lastBackendFailure != nil ||
             sessions[index].queuePaused == true ||
             queuedSubmissions.contains(where: { $0.sessionID == submission.sessionID }) {
             queuedSubmissions.append(submission)
+            acknowledgeFailureHold(sessionIndex: index)
+            // An input the owner submitted as a correction of the turn that is
+            // running now was already accepted; it belongs in the transcript
+            // immediately, marked as still being handed over. An ordinary
+            // follow-up is not steering and stays in the queue panel only.
+            if submission.amendedRequest != nil, isSessionRunning(submission.sessionID) {
+                showAcceptedSteeringInput(submission)
+            }
             statusText = submission.amendedRequest == nil
                 ? "대기열에 추가됨 · 이 대화 \(selectedSessionQueueCount)개 대기"
                 : "정정 보존됨 · 현재 턴이 입력을 받으면 전달하며, 불가능하면 같은 목표의 후속 작업으로 이어갑니다"
@@ -4759,8 +5604,76 @@ private final class SessionStore: ObservableObject {
         if !ExecutionSteering.isTaskReplacement(text), let active = inFlightSubmissions[session.id], active.recoveryParentID == nil {
             item.amendedRequest = active.executionRequest
         }
-        queuedSubmissions.append(item); composer = ""; composerAttachments = []; save()
+        queuedSubmissions.append(item)
+        // The owner took the explicit steer action, so this input is accepted
+        // even though the live turn could not take it yet. Show it now instead
+        // of leaving it visible only as a queue row.
+        if isSessionRunning(session.id) { showAcceptedSteeringInput(item) }
+        composer = ""; composerAttachments = []; save()
         advanceQueued(item.id)
+    }
+    /// Shows an accepted steering input as the ordinary pink user bubble right
+    /// away, marked as awaiting delivery. Never creates a second copy of a
+    /// message that is already visible, so the later delivery or start of the
+    /// same submission updates one row instead of duplicating the owner's text.
+    private func showAcceptedSteeringInput(_ item: PendingSubmission) {
+        guard let index = sessions.firstIndex(where: { $0.id == item.sessionID }) else { return }
+        if let position = sessions[index].messages.firstIndex(where: { $0.id == item.userMessageID }) {
+            if sessions[index].messages[position].steeringDelivery?.isInFlight != false {
+                sessions[index].messages[position].steeringDelivery = .waiting
+            }
+        } else {
+            var message = ChatMessage(id: item.userMessageID, role: .user, text: item.request)
+            message.steeringDelivery = .waiting
+            sessions[index].messages.append(message)
+        }
+        sessions[index].updatedAt = Date()
+    }
+    /// Mirrors the run's own receipts onto the visible bubbles so the owner can
+    /// tell an input OS-1 is still handing over from one the run has taken.
+    /// Terminal states are never rewritten.
+    private func refreshSteeringDelivery(_ conversationID: UUID) {
+        guard let index = sessions.firstIndex(where: { $0.id == conversationID }),
+              let active = activeRuns[conversationID],
+              sessions[index].messages.contains(where: { $0.steeringDelivery?.isInFlight == true }) else { return }
+        var changed = false
+        for input in steeringMailbox.inputs(active.submissionID) {
+            guard let position = sessions[index].messages.firstIndex(where: { $0.id == input.id }),
+                  sessions[index].messages[position].steeringDelivery?.isInFlight == true else { continue }
+            let state: SteeringDeliveryState
+            switch steeringMailbox.receipt(input)?.state {
+            case .accepted, .persisted: state = .delivered
+            case .rejected: state = .rejected
+            case .sending, nil: state = .pending
+            }
+            if sessions[index].messages[position].steeringDelivery != state {
+                sessions[index].messages[position].steeringDelivery = state
+                changed = true
+            }
+        }
+        if changed { save() }
+    }
+    /// Resolves every still-in-flight steering bubble once its run is over. An
+    /// input the run never acknowledged stays visible and preserved, marked
+    /// undelivered; one still waiting in the queue keeps its own state, because
+    /// an explicit action or the next turn still delivers it.
+    private func settleSteeringDelivery(conversationID: UUID, submissionID: UUID?) {
+        guard let index = sessions.firstIndex(where: { $0.id == conversationID }),
+              sessions[index].messages.contains(where: { $0.steeringDelivery?.isInFlight == true }) else { return }
+        let receipts = submissionID.map { id in
+            Dictionary(steeringMailbox.inputs(id).map { ($0.id, steeringMailbox.receipt($0)?.state) },
+                       uniquingKeysWith: { first, _ in first })
+        } ?? [:]
+        for position in sessions[index].messages.indices
+        where sessions[index].messages[position].steeringDelivery?.isInFlight == true {
+            let id = sessions[index].messages[position].id
+            if queuedSubmissions.contains(where: { $0.userMessageID == id }) { continue }
+            switch receipts[id] ?? nil {
+            case .accepted, .persisted: sessions[index].messages[position].steeringDelivery = .delivered
+            case .rejected: sessions[index].messages[position].steeringDelivery = .rejected
+            case .sending, nil: sessions[index].messages[position].steeringDelivery = .undelivered
+            }
+        }
     }
     func canSteerQueued(_ item: PendingSubmission) -> Bool {
         !ExecutionSteering.isTaskReplacement(item.request) && canSteer(item.sessionID) && !editingQueueIDs.contains(item.id) &&
@@ -4786,7 +5699,7 @@ private final class SessionStore: ObservableObject {
         guard !editingQueueIDs.contains(item.id),
               queuedSubmissions.contains(where: { $0.id == item.id }),
               !isSessionRunning(item.sessionID),
-              activeRuns.count < Self.maximumConcurrentSessions,
+              activeRuns.count < maximumConcurrentSessions,
               let session = sessions.first(where: { $0.id == item.sessionID }),
               session.lastFailure != nil else { return false }
         return session.lastBackendFailure?.requiresReadback == true || session.lastFailure?.savedResultNeedsReview == true
@@ -4795,14 +5708,33 @@ private final class SessionStore: ObservableObject {
         if canSteerQueued(item) { return "현재 작업에 반영" }
         if activeRuns[item.sessionID]?.cancellationRequested == true { return "현재 실행 종료 확인 중" }
         if !canAdvanceQueued(item) { return canReconcileQueued(item) ? "이전 변경 상태 확인 · 대기 요청 보존" : "이전 변경 상태 확인 필요" }
-        return isSessionRunning(item.sessionID) ? "현재 작업을 중지하고 이 요청부터 시작" : "이 요청부터 시작"
+        if !isSessionRunning(item.sessionID),
+           sessions.first(where: { $0.id == item.sessionID }).map({ $0.lastFailure != nil || $0.lastBackendFailure != nil }) == true {
+            return "이전 실패 작업은 다시 실행하지 않고 이 요청부터 시작"
+        }
+        if isSessionRunning(item.sessionID) {
+            let ahead = conversationsWaitingAhead(of: item.sessionID)
+            return activeRuns.count >= maximumConcurrentSessions && ahead > 0
+                ? "현재 작업을 중지하고 이 요청부터 시작 · 먼저 기다리는 대화 \(ahead)개 뒤에 실행 슬롯 대기"
+                : "현재 작업을 중지하고 이 요청부터 시작"
+        }
+        // The arrow cannot bypass the global admission cap; say so instead of
+        // promising a start that only happens when another task frees a slot.
+        return activeRuns.count >= maximumConcurrentSessions
+            ? "실행 슬롯이 비면 이 요청부터 시작 · 동시 실행 \(activeRuns.count)/\(maximumConcurrentSessions) 사용 중"
+            : "이 요청부터 시작"
     }
 
     /// Explicit queue action; native steering where possible, otherwise a
     /// durable next-run intent. Cancellation is acknowledged by run termination,
     /// not by writing its marker. The existing admission remains held until then.
-    func advanceQueued(_ id: UUID) {
+    func advanceQueued(_ id: UUID, ownerRequested: Bool = false) {
         guard let item = queuedSubmissions.first(where: { $0.id == id }) else { return }
+        // The owner pressed this request's own action, so it is accepted now.
+        // It belongs in the transcript immediately whether it reaches the live
+        // turn, waits behind a state check, or starts as the next turn. A
+        // request nobody pressed stays in the queue panel only.
+        if ownerRequested { showAcceptedSteeringInput(item) }
         if canSteerQueued(item) { steerQueued(id); return }
         if !canAdvanceQueued(item), canReconcileQueued(item) {
             beginReconciliation(conversationID: item.sessionID)
@@ -4813,9 +5745,24 @@ private final class SessionStore: ObservableObject {
             sessionStatuses[item.sessionID] = "이전 변경 확인 필요 · 새 요청은 대기열에 보존했습니다"
             save(); return
         }
+        let freshEdit = isNewEditAfterReadOnlyTask(item, session: sessions[sessionIndex])
+        // An idle conversation with nothing failed, held or running has no task
+        // to replace: the arrow only puts this request first in its own
+        // conversation. Marking it as a replacement would record a phantom
+        // "previous unfinished work" decision into its context at admission.
+        if !isSessionRunning(item.sessionID), sessions[sessionIndex].lastFailure == nil,
+           sessions[sessionIndex].lastBackendFailure == nil, sessions[sessionIndex].taskContext?.sourcePreparation == nil,
+           !freshEdit, !ExecutionSteering.isTaskReplacement(item.request) {
+            pausedQueueIDs.remove(id)
+            sessions[sessionIndex].queuePaused = false
+            let next = queuedSubmissions.remove(at: index)
+            queuedSubmissions.insert(next, at: min(queuedSubmissions.firstIndex(where: { $0.sessionID == item.sessionID }) ?? index, index))
+            save()
+            runNextQueuedSubmissionIfNeeded()
+            return
+        }
         queuedSubmissions[index].startNextRequested = true
         queuedSubmissions[index].replacesSubmissionID = sessions[sessionIndex].lastFailure?.id ?? activeRuns[item.sessionID]?.submissionID
-        let freshEdit = isNewEditAfterReadOnlyTask(item, session: sessions[sessionIndex])
         queuedSubmissions[index].replacesObjective = ExecutionSteering.isTaskReplacement(item.request) || freshEdit
         if freshEdit { queuedSubmissions[index].amendedRequest = nil }
         if queuedSubmissions[index].replacesObjective == true {
@@ -4827,7 +5774,10 @@ private final class SessionStore: ObservableObject {
         pausedQueueIDs.remove(id)
         sessions[sessionIndex].queuePaused = false
         let next = queuedSubmissions.remove(at: index)
-        let first = queuedSubmissions.firstIndex(where: { $0.sessionID == item.sessionID }) ?? queuedSubmissions.endIndex
+        // Pressing moves the item ahead of its own conversation's earlier items
+        // only; it never falls behind other conversations' waiting requests
+        // (a sole or already-first item keeps its global place).
+        let first = min(queuedSubmissions.firstIndex(where: { $0.sessionID == item.sessionID }) ?? index, index)
         queuedSubmissions.insert(next, at: first)
         save()
         if activeRuns[item.sessionID] != nil { cancelRun(item.sessionID) }
@@ -4846,7 +5796,16 @@ private final class SessionStore: ObservableObject {
                 pending.liveCorrections = (pending.liveCorrections ?? []) + [text]
                 inFlightSubmissions[id] = pending
             }
-            sessions[index].messages.append(ChatMessage(id: input.id, role: .user, text: text))
+            // The bubble may already be on screen from the moment the owner
+            // accepted this input. Hand-off promotes that same row rather than
+            // writing the owner's sentence into the transcript twice.
+            if let position = sessions[index].messages.firstIndex(where: { $0.id == input.id }) {
+                sessions[index].messages[position].steeringDelivery = .pending
+            } else {
+                var message = ChatMessage(id: input.id, role: .user, text: text)
+                message.steeringDelivery = .pending
+                sessions[index].messages.append(message)
+            }
             sessions[index].taskContext?.decideSemantic("User correction to current task: " + text)
             activeRuns[id]?.correctionRevision = sessions[index].taskContext?.latestSemanticRevision
             sessions[index].updatedAt = Date()
@@ -4898,7 +5857,7 @@ private final class SessionStore: ObservableObject {
     }
 
     private func start(_ submission: PendingSubmission) {
-        guard !isSessionRunning(submission.sessionID), activeRuns.count < Self.maximumConcurrentSessions,
+        guard !isSessionRunning(submission.sessionID), activeRuns.count < maximumConcurrentSessions,
               let index = sessions.firstIndex(where: { $0.id == submission.sessionID }) else {
             return
         }
@@ -4921,7 +5880,14 @@ private final class SessionStore: ObservableObject {
                     sessions[index].taskContext?.projectID = continuingProject.projectID
                 }
             }
-            sessions[index].taskContext?.decideSemantic("The user selected a new request. Previous unfinished work is preserved, not completed. Do not replay previous actions; inspect actual state before any further mutation.")
+            // A conversation without a context yet (new or legacy) still hands
+            // the evidence on: create it now instead of dropping the note.
+            if sessions[index].taskContext == nil {
+                sessions[index].taskContext = migratedTaskContext(sessions[index], sourceContext: sessions[index].sourceContext)
+            }
+            sessions[index].taskContext?.decideSemantic(BackendRecovery.priorFailureHandoff(
+                request: sessions[index].preservedTasks?.last?.request?.request,
+                notice: sessions[index].preservedTasks?.last?.failure))
             appendTaskEvent(conversationID: submission.sessionID, kind: "task_replaced", summary: submission.request)
             save()
         }
@@ -4943,7 +5909,7 @@ private final class SessionStore: ObservableObject {
         taskContext.setObjective(TaskContext.Objective(requestText: submission.executionRequest,
             kind: TaskContext.ObjectiveKind.classify(submission.executionRequest),
             scope: submission.amendedRequest != nil ? taskContext.objective.scope :
-                (submission.readOnlyReconciliation == true || PreparationIntent.detect(submission.executionRequest)?.modifies == false ? .readOnly : resolution.scope),
+                (submission.readOnlyReconciliation == true || PreparationIntent.detect(submission.executionRequest)?.preparationOnly == true ? .readOnly : resolution.scope),
             prohibitions: Array(Set(resolution.prohibitions + (submission.amendedRequest != nil ? taskContext.objective.prohibitions : []))).sorted()))
         sessions[index].taskContext = taskContext
         appendTaskEvent(conversationID: sessions[index].id, kind: "objective", summary: submission.request)
@@ -4968,6 +5934,11 @@ private final class SessionStore: ObservableObject {
                 text: submission.request
             ))
             sessions[index].updatedAt = Date()
+        } else if let position = sessions[index].messages.firstIndex(where: { $0.id == submission.userMessageID }),
+                  sessions[index].messages[position].steeringDelivery?.isInFlight == true {
+            // This input is starting as its own turn, so it is no longer an
+            // input OS-1 is trying to hand to an earlier run.
+            sessions[index].messages[position].steeringDelivery = nil
         }
         let codexSessionID = sessions[index].codexSessionID
         let claudeSessionID = sessions[index].claudeSessionID
@@ -4995,11 +5966,13 @@ private final class SessionStore: ObservableObject {
                 if self.queuedSubmissions.contains(where: { $0.sessionID == submission.sessionID && $0.amendedRequest != nil }) {
                     self.promoteQueuedCorrections(submission.sessionID)
                 }
+                self.refreshSteeringDelivery(submission.sessionID)
                 try? await Task.sleep(for: .milliseconds(250))
             }
         }
 
         Task {
+            var pendingReadbackResume: PendingSubmission?
             do {
                 // Selection-triggered ingestion may still be reading when the
                 // user presses Enter. Await the bound native history before
@@ -5026,7 +5999,8 @@ private final class SessionStore: ObservableObject {
                             self.activeRuns[submission.sessionID]?.activity = activity
                             self.activeRuns[submission.sessionID]?.provider = activity.provider.flatMap(ProviderChoice.init(rawValue:))
                             self.promoteQueuedCorrections(submission.sessionID)
-                            if let nativeID = activity.nativeSessionID,
+                            if submission.recoveryParentID == nil,
+                               let nativeID = activity.nativeSessionID,
                                let provider = activity.provider.flatMap(ProviderChoice.init(rawValue:)) {
                                 self.recordNativeSession(provider, id: nativeID, conversationID: submission.sessionID)
                             }
@@ -5090,7 +6064,8 @@ private final class SessionStore: ObservableObject {
                         }
                         if let source = summary.sourceContext { sessions[target].sourceContext = source }
                         for step in visibleAdoptedSteps(summary.steps) where stepRecordIsVerified(step) {
-                            if let provider = ProviderChoice(rawValue: step.provider) {
+                            if submission.recoveryParentID == nil,
+                               let provider = ProviderChoice(rawValue: step.provider) {
                                 recordNativeSession(provider, id: step.sessionID, conversationID: submission.sessionID)
                             }
                             sessions[target].messages.append(ChatMessage(role: .assistant,
@@ -5151,7 +6126,8 @@ private final class SessionStore: ObservableObject {
                        let turn = record.turnID, UUID(uuidString: turn) != nil {
                         sessions[target].ownedCodexTurnIDs = Array(Set((sessions[target].ownedCodexTurnIDs ?? []) + [turn])).sorted()
                     }
-                    if let provider = ProviderChoice(rawValue: step.provider) {
+                    if submission.recoveryParentID == nil,
+                       let provider = ProviderChoice(rawValue: step.provider) {
                         recordNativeSession(provider, id: step.sessionID, conversationID: submission.sessionID)
                     }
                 }
@@ -5198,24 +6174,39 @@ private final class SessionStore: ObservableObject {
                     // The readback ends with a machine-checkable verdict. Only
                     // "none" — the backend verified from real state that the
                     // interrupted attempt changed nothing — releases the
-                    // uncertain-effect hold, and it buys exactly one resume of
-                    // the preserved objective. applied/partial/unknown keep
-                    // the hold and the owner's explicit retry button.
-                    if let verdictText = visibleSteps.last?.output,
-                       BackendRecovery.effectsVerdict(in: verdictText) == .nothingApplied,
-                       var original = sessions[target].lastFailure, original.recoveryParentID == nil,
-                       original.readbackResumed != true || (original.resumedUnderBuild ?? 0) < installedBuildNumber,
-                       !FileManager.default.fileExists(atPath: ExecutionCancellation.url(submissionID: original.id).path) {
-                        original.readbackResumed = true
-                        original.resumedUnderBuild = installedBuildNumber
-                        sessions[target].lastFailure = original
-                        sessions[target].messages.append(ChatMessage(role: .system,
-                            text: os1Tr("재확인 결과 이전 시도의 변경이 전혀 반영되지 않았음이 확인됐습니다. 보존한 원래 작업을 이어서 실행합니다.",
-                                        "The readback verified that nothing from the interrupted attempt was applied. Resuming the preserved objective.")))
-                        appendTaskEvent(conversationID: submission.sessionID, kind: "readback_resume",
-                            summary: "OS1_EFFECTS: none — uncertain-effect hold released; resuming the preserved objective once")
-                        save()
-                        start(original)
+                    // uncertain-effect hold, and normally buys exactly one
+                    // resume of the preserved objective. If a user follow-up
+                    // is already queued, that follow-up takes precedence: the
+                    // completed output is kept as the preceding Codex turn and
+                    // the follow-up is dispatched through the same native
+                    // session instead of replaying the old objective first.
+                    // Applied clears only with independent
+                    // exact-preview delivery evidence; partial/unknown keep the hold.
+                    if let original = sessions[target].lastFailure,
+                       let final = visibleSteps.last,
+                       final.verifiedPreviewDelivery?.completes(originalRequest: original.request,
+                           effectsApplied: BackendRecovery.effectsVerdict(in: final.output) == .applied,
+                           nativeAdopted: allVerified && ["adopted", "control_verified"].contains(final.revasDisposition) && final.exitCode == 0) == true {
+                        // Exact current preview, public bytes, service, domain and deployment
+                        // independently verified. Clear only this objective; never replay it.
+                        sessions[target].lastFailure = nil
+                        sessions[target].lastBackendFailure = nil
+                        sessions[target].completedForkCheckpoint = ConversationForkCheckpoint(
+                            throughMessageID: sessions[target].messages.last?.id,
+                            source: sessions[target].sourceContext, context: sessions[target].taskContext)
+                        sessionStatuses[submission.sessionID] = os1Tr("배포 확인됨 · 재배포 없음", "Deployment verified · no redeployment")
+                        appendTaskEvent(conversationID: submission.sessionID, kind: "recovery_completed",
+                            summary: "Independent Railway and current preview verification completed the original deployment; no replay")
+                    } else if allVerified, let final = visibleSteps.last,
+                       final.exitCode == 0,
+                       ["adopted", "control_verified"].contains(final.revasDisposition),
+                       BackendRecovery.effectsVerdict(in: final.output) == .nothingApplied,
+                       let original = sessions[target].lastFailure, original.recoveryParentID == nil,
+                       submission.recoveryParentID == original.id,
+                       BackendRecovery.mayResumeAfterReadback(alreadyResumed: original.readbackResumed) {
+                        // Admission still belongs to the readback. Never call start here:
+                        // its active-run guard would drop the original without dispatch.
+                        pendingReadbackResume = original
                     }
                 } else {
                     sessions[target].completedForkCheckpoint = ConversationForkCheckpoint(
@@ -5276,6 +6267,11 @@ private final class SessionStore: ObservableObject {
                         }
                         holdStatus = BackendHealth.load(maxAge: 900)?.waitingStatus ?? "백엔드 복구 대기 · 복구 시 자동 재실행"
                     }
+                    if case .backend(let notice)? = error as? RunnerError, notice.blocker == .verificationRejected,
+                       sessions[target].lastFailure?.deliveryID != nil || notice.publicProgress?.isEmpty == false {
+                        // The answer is on screen; only its adoption failed.
+                        holdStatus = "답변 도착 · 원격 검증 미채택 · 다음 메시지로 이어서 진행"
+                    }
                     sessions[target].messages.append(ChatMessage(
                         role: .system,
                         text: description.isEmpty ? "OS-1 작업이 중단되었습니다. 다시 시도해 주세요." : description
@@ -5286,6 +6282,9 @@ private final class SessionStore: ObservableObject {
             }
             // A superseded attempt must not release the newer run's admission.
             guard activeRuns[submission.sessionID]?.submissionID == submission.id else { save(); return }
+            // Read this run's receipts while they still identify it, so no
+            // bubble keeps claiming a hand-off that can no longer happen.
+            settleSteeringDelivery(conversationID: submission.sessionID, submissionID: submission.id)
             activeRuns.removeValue(forKey: submission.sessionID)
             inFlightSubmissions.removeValue(forKey: submission.sessionID)
             if selectedSessionID == submission.sessionID { statusText = sessionStatuses[submission.sessionID] ?? "Ready" }
@@ -5304,6 +6303,54 @@ private final class SessionStore: ObservableObject {
             // run's work, already represented here by the adopted answer:
             // consume them, never replay them into the owner's conversation.
             consumeNativeRecords(conversationID: submission.sessionID)
+            if var original = pendingReadbackResume,
+               let target = sessions.firstIndex(where: { $0.id == submission.sessionID }),
+               sessions[target].lastFailure?.id == original.id,
+               !isSessionRunning(submission.sessionID),
+               activeRuns.count < maximumConcurrentSessions,
+               !FileManager.default.fileExists(atPath: ExecutionCancellation.url(submissionID: original.id).path),
+               !FileManager.default.fileExists(atPath: ExecutionCancellation.url(submissionID: submission.id).path) {
+                let queuedFollowUp = queuedSubmissions.firstIndex {
+                    $0.sessionID == submission.sessionID &&
+                    $0.id != original.id &&
+                    $0.recoveryParentID == nil
+                }
+                if let queuedFollowUp {
+                    // The original output already exists in the conversation.
+                    // Preserve its custody/history, release only the uncertain-
+                    // effects hold, and let the queued request become the next
+                    // native Codex turn. Do not mark it startNextRequested:
+                    // that flag means “advance past an unresolved failure” and
+                    // would incorrectly require the failure to remain present.
+                    sessions[target].preservedTasks = (sessions[target].preservedTasks ?? []) + [PreservedTask(
+                        request: original, failure: sessions[target].lastBackendFailure,
+                        context: sessions[target].taskContext, source: sessions[target].sourceContext, timestamp: Date())]
+                    sessions[target].lastFailure = nil
+                    sessions[target].lastBackendFailure = nil
+                    sessions[target].completedForkCheckpoint = ConversationForkCheckpoint(
+                        throughMessageID: sessions[target].messages.last?.id,
+                        source: sessions[target].sourceContext, context: sessions[target].taskContext)
+                    sessionStatuses[submission.sessionID] = os1Tr("출력 확인됨 · 후속 스티어링을 다음 Codex 턴으로 전달합니다.",
+                                                                  "Output retained · dispatching follow-up as the next Codex turn.")
+                    appendTaskEvent(conversationID: submission.sessionID, kind: "readback_followup_handoff",
+                        summary: "Verified OS1_EFFECTS: none; preserved completed output and released queued follow-up as next native turn")
+                    queuedSubmissions[queuedFollowUp].startNextRequested = nil
+                    queuedSubmissions[queuedFollowUp].replacesSubmissionID = nil
+                    save()
+                } else {
+                    original.prepareVerifiedNoEffectsResume(build: installedBuildNumber)
+                    sessions[target].lastFailure = original
+                    start(original)
+                    if activeRuns[submission.sessionID]?.submissionID == original.id {
+                        sessions[target].messages.append(ChatMessage(role: .system,
+                            text: os1Tr("재확인 결과 이전 시도의 변경이 반영되지 않았음이 확인되어 보존한 원래 작업을 재개했습니다.",
+                                        "The readback verified no changes were applied. The preserved objective has resumed.")))
+                        appendTaskEvent(conversationID: submission.sessionID, kind: "readback_resume",
+                            summary: "Verified OS1_EFFECTS: none; released readback admission and dispatched preserved objective")
+                        save()
+                    }
+                }
+            }
             runNextQueuedSubmissionIfNeeded()
         }
     }
@@ -5492,7 +6539,7 @@ private final class SessionStore: ObservableObject {
     private func runNextQueuedSubmissionIfNeeded() {
         // A queued turn in A must not block ready work in B. Within A the
         // first queued turn is the only eligible one, and context is built now.
-        while activeRuns.count < Self.maximumConcurrentSessions,
+        while activeRuns.count < maximumConcurrentSessions,
               let index = queuedSubmissions.firstIndex(where: { next in
                   queueEligible(next) &&
                   !queuedSubmissions.prefix(while: { $0.id != next.id }).contains(where: { $0.sessionID == next.sessionID })
@@ -5788,7 +6835,7 @@ private final class SessionStore: ObservableObject {
     /// no automatic mutation, login, remote-source substitution or UI reveal.
     func resumeRegisteredSourcePreparations(root: URL = RegisteredProjectSource.defaultRoot) {
         for session in sessions {
-            guard activeRuns.count < Self.maximumConcurrentSessions,
+            guard activeRuns.count < maximumConcurrentSessions,
                   !isSessionRunning(session.id), session.lastBackendFailure == nil,
                   let pending = session.taskContext?.sourcePreparation, pending.canLookForRegistration,
                   let failed = session.lastFailure, failed.preflightOnly == true,
@@ -5810,23 +6857,33 @@ private final class SessionStore: ObservableObject {
     }
     /// A backend that comes back (official login approved, quota reset) is an
     /// external-state change: replay a preflight-only hold once per observed
-    /// recovery, never a dispatched or write-uncertain failure. While such a
-    /// hold exists the read-only probe (`os1 backend-health --refresh`) runs
-    /// at most once a minute; no model call happens until health says usable.
+    /// recovery, never a dispatched or write-uncertain failure. Independent
+    /// metadata probes run even without holds; observed reset boundaries
+    /// trigger a fresh check rather than assuming renewed availability.
     private var backendHealthProbeStartedAt: Date?
+    private var backendHealthProbeInFlight = false
     private var maintenanceTask: Task<Void, Never>?
     private let storeLaunchedAt = Date()
     func resumeBackendRecoveries(healthURL: URL = BackendHealth.defaultURL, now: Date = Date()) {
+        // Monitoring must run even when another provider works and no jobs wait.
+        // Metadata-only, bounded to one concurrent probe; no inference or login.
+        if customStorageRoot == nil,
+           BackendHealth.shouldProbe(lastStartedAt: backendHealthProbeStartedAt,
+                                     inFlight: backendHealthProbeInFlight,
+                                     health: BackendHealth.load(from: healthURL, maxAge: 90, now: now, invalidateReset: false), now: now) {
+            backendHealthProbeStartedAt = now
+            backendHealthProbeInFlight = true
+            Task { [weak self] in
+                await OS1Runner.refreshBackendHealth()
+                self?.backendHealthProbeInFlight = false
+            }
+        }
         let waiting = sessions.filter {
             $0.lastBackendFailure?.blocker == .backendUnavailable && $0.lastFailure?.preflightOnly == true &&
             $0.lastFailure?.recoveryParentID == nil && !isSessionRunning($0.id)
         }
         guard !waiting.isEmpty else { return }
         guard let health = BackendHealth.load(from: healthURL, maxAge: 90, now: now) else {
-            if customStorageRoot == nil, backendHealthProbeStartedAt.map({ now.timeIntervalSince($0) >= 60 }) ?? true {
-                backendHealthProbeStartedAt = now
-                Task.detached(priority: .utility) { await OS1Runner.refreshBackendHealth() }
-            }
             return
         }
         guard health.anyUsable else {
@@ -5838,7 +6895,7 @@ private final class SessionStore: ObservableObject {
         }
         let identity = ISO8601DateFormatter().string(from: health.checkedAt)
         for session in waiting {
-            guard activeRuns.count < Self.maximumConcurrentSessions,
+            guard activeRuns.count < maximumConcurrentSessions,
                   let failed = session.lastFailure, failed.backendRecoveryIdentity != identity,
                   !FileManager.default.fileExists(atPath: ExecutionCancellation.url(submissionID: failed.id).path),
                   let index = sessions.firstIndex(where: { $0.id == session.id }) else { continue }
@@ -5859,9 +6916,9 @@ private final class SessionStore: ObservableObject {
     private var selfUpdateRoots: [String] = []
     private var selfUpdateRootsCachedAt: Date?
     private var selfUpdateLaunchedAt: Date?
-    var installedBuildNumber: Int { Int(Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "") ?? 0 }
+    var installedBuildNumber: Int { SelfUpdate.installedBuild() }
     func applyPendingSelfUpdate(now: Date = Date()) {
-        guard customStorageRoot == nil else { return }
+        guard customStorageRoot == nil, SelfUpdate.isInstalledApp(Bundle.main.bundleURL) else { return }
         if selfUpdateRootsCachedAt.map({ now.timeIntervalSince($0) > 60 }) ?? true {
             selfUpdateRoots = LocalProjectWorkspace.candidates(projectID: "os1-clodex")
             selfUpdateRootsCachedAt = now
@@ -5938,7 +6995,7 @@ private final class SessionStore: ObservableObject {
     }
     func retrySelectedFailure() {
         guard !isRunning, let failed = selectedSession?.lastFailure,
-              activeRuns.count < Self.maximumConcurrentSessions else { return }
+              activeRuns.count < maximumConcurrentSessions else { return }
         if failed.savedResultNeedsReview == true { reconcileSelectedFailure(); return }
         if failed.deliveryID != nil { start(failed); return }
         guard selectedSession?.lastBackendFailure?.requiresReadback != true else {
@@ -5965,11 +7022,11 @@ private final class SessionStore: ObservableObject {
     func reconcileSelectedFailure() {
         guard !isRunning, let failed = selectedSession?.lastFailure,
               (selectedSession?.lastBackendFailure?.requiresReadback == true || failed.savedResultNeedsReview == true),
-              activeRuns.count < Self.maximumConcurrentSessions else { return }
+              activeRuns.count < maximumConcurrentSessions else { return }
         beginReconciliation(conversationID: failed.sessionID)
     }
     private func beginReconciliation(conversationID: UUID) {
-        guard !isSessionRunning(conversationID), activeRuns.count < Self.maximumConcurrentSessions,
+        guard !isSessionRunning(conversationID), activeRuns.count < maximumConcurrentSessions,
               let index = sessions.firstIndex(where: { $0.id == conversationID }),
               let failed = sessions[index].lastFailure else { return }
         let request = BackendRecovery.readbackPrompt(objective: failed.request)
@@ -6008,8 +7065,10 @@ private final class SessionStore: ObservableObject {
         // rail without a restart.
         let disk = OS1Settings.load()
         if disk != appSettings {
+            let previousParallelRuns = appSettings.parallelRuns
             appSettings = disk
             if !disk.showCodex, surface == .codex { surface = .auto }
+            if disk.parallelRuns > previousParallelRuns { runNextQueuedSubmissionIfNeeded() }
         }
         resumeRegisteredSourcePreparations()
         resumeBackendRecoveries()
@@ -6028,7 +7087,8 @@ private final class SessionStore: ObservableObject {
         var released = false
         for item in queuedSubmissions where pausedQueueIDs.contains(item.id) && !editingQueueIDs.contains(item.id) {
             guard let session = sessions.first(where: { $0.id == item.sessionID }),
-                  session.lastFailure == nil, session.lastBackendFailure == nil,
+                  (session.lastFailure == nil && session.lastBackendFailure == nil) ||
+                    (item.startNextRequested == true && mayAdvancePastFailure(item, session: session)),
                   session.taskContext?.sourcePreparation == nil, session.queuePaused != true else { continue }
             pausedQueueIDs.remove(item.id)
             released = true
@@ -6053,9 +7113,10 @@ private final class SessionStore: ObservableObject {
         for session in sessions {
             guard !isSessionRunning(session.id),
                   session.lastBackendFailure?.requiresReadback == true,
+                  !queuedSubmissions.contains(where: { $0.sessionID == session.id && $0.startNextRequested == true }),
                   let failed = session.lastFailure, failed.recoveryParentID == nil,
-                  failed.recoveryAttempted != true || failed.verdictReconciled != true
-                      || (failed.reconciledUnderBuild ?? 0) < installedBuildNumber,
+                  BackendRecovery.needsAutomaticReadback(attempted: failed.recoveryAttempted,
+                      verdictReconciled: failed.verdictReconciled),
                   !FileManager.default.fileExists(atPath: ExecutionCancellation.url(submissionID: failed.id).path) else { continue }
             appendTaskEvent(conversationID: session.id, kind: "stale_reconcile",
                 summary: "Held failure predates the verdict contract; running its read-only readback now")
@@ -6095,15 +7156,101 @@ private final class SessionStore: ObservableObject {
         }
     }
     func flushPendingState() { draftSaveTask?.cancel(); save() }
+
+    // MARK: - Backend accounts
+    //
+    // Every change is made by the runtime (`os1 accounts …`), which runs the
+    // provider's own sign-in. The app shows the result and never handles a
+    // credential.
+
+    private func runAccounts(_ arguments: [String], timeout: TimeInterval) async {
+        guard customStorageRoot == nil else { return }
+        let provider = arguments.firstIndex(of: "--provider").flatMap { index in
+            arguments.indices.contains(index + 1) ? arguments[index + 1] : nil
+        }
+        accountBusy = provider
+        accountNotice = nil
+        defer { accountBusy = nil }
+        do {
+            _ = try await BackendAccountRunner.run(arguments, timeout: timeout)
+        } catch {
+            accountNotice = error.localizedDescription
+        }
+        accountBook = BackendAccounts.load()
+    }
+
+    /// Read-only: asks each provider's own status command who is signed in.
+    func refreshAccounts() async {
+        guard customStorageRoot == nil else { return }
+        _ = try? await BackendAccountRunner.run(["accounts", "list", "--json"], timeout: 90)
+        accountBook = BackendAccounts.load()
+    }
+
+    func signIn(provider: String, accountID: String? = nil, newLabel: String? = nil) async {
+        var arguments = ["accounts", "login", "--provider", provider]
+        if let accountID { arguments += ["--id", accountID] }
+        if let newLabel { arguments += ["--new", "--label", newLabel] }
+        await runAccounts(arguments, timeout: 420)
+    }
+
+    func useAccount(provider: String, id: String) async {
+        await runAccounts(["accounts", "use", "--provider", provider, "--id", id], timeout: 60)
+    }
+
+    func signOutAccount(provider: String, id: String) async {
+        await runAccounts(["accounts", "logout", "--provider", provider, "--id", id], timeout: 120)
+    }
+
+    func forgetAccount(provider: String, id: String) async {
+        await runAccounts(["accounts", "forget", "--provider", provider, "--id", id], timeout: 120)
+    }
+
+    /// The governance panel and the settings sheet change accounts through the
+    /// runtime; the rail follows them instead of holding a stale copy.
+    func observeAccountChanges() {
+        guard accountObserver == nil, customStorageRoot == nil else { return }
+        accountObserver = NotificationCenter.default.addObserver(
+            forName: BackendAccountsModel.changed, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.accountBook = BackendAccounts.load() }
+        }
+    }
+
+    func accounts(for provider: ProviderChoice) -> [BackendAccount] {
+        guard provider != .auto else { return [] }
+        return BackendAccounts.accounts(provider: provider.rawValue, in: accountBook)
+    }
+
+    func activeAccount(for provider: ProviderChoice) -> BackendAccount? {
+        guard provider != .auto else { return nil }
+        return BackendAccounts.active(provider: provider.rawValue, in: accountBook)
+    }
+
     func updateSettings(_ mutate: (inout OS1Settings) -> Void) {
         var value = appSettings
         mutate(&value)
         guard value != appSettings else { return }
+        let previousParallelRuns = appSettings.parallelRuns
         appSettings = value
-        do { try value.save() } catch { alertMessage = error.localizedDescription }
+        // Only the live store owns settings.json; a fixture store changes its
+        // own admission without touching the owner's file.
+        if customStorageRoot == nil {
+            do { try value.save() } catch { alertMessage = error.localizedDescription }
+        }
         if !value.showCodex, surface == .codex { surface = .auto }
+        // A raised cap is the owner asking for the waiting conversations to run
+        // now: admit them here instead of at the next queue event or restart.
+        if value.parallelRuns > previousParallelRuns { runNextQueuedSubmissionIfNeeded() }
     }
     func removeQueued(_ id: UUID) {
+        // Cancelling or pulling back a queued request also retires the bubble
+        // that represented it. Nothing delivered is ever removed: only a row
+        // still awaiting hand-off, whose text the owner now owns again.
+        if let item = queuedSubmissions.first(where: { $0.id == id }),
+           let index = sessions.firstIndex(where: { $0.id == item.sessionID }) {
+            sessions[index].messages.removeAll {
+                $0.id == item.userMessageID && $0.steeringDelivery?.isInFlight == true
+            }
+        }
         queuedSubmissions.removeAll { $0.id == id }
         pausedQueueIDs.remove(id); editingQueueIDs.remove(id)
         save()
@@ -6122,6 +7269,23 @@ private final class SessionStore: ObservableObject {
         queuedSubmissions[index].request = request
         if let preference = queuedSubmissions[index].configuredProvider {
             queuedSubmissions[index].provider = preference == .auto ? (explicitlyRequestedProvider(in: request) ?? .auto) : preference
+        }
+        // An already visible, still undelivered request shows what the queue
+        // now actually holds, keeping its identity and place in the transcript.
+        let messageID = queuedSubmissions[index].userMessageID
+        if let session = sessions.firstIndex(where: { $0.id == queuedSubmissions[index].sessionID }),
+           let position = sessions[session].messages.firstIndex(where: {
+               $0.id == messageID && $0.steeringDelivery?.isInFlight == true
+           }) {
+            let previous = sessions[session].messages[position]
+            var replacement = ChatMessage(id: previous.id, role: previous.role, text: request,
+                provider: previous.provider, permissionProfile: previous.permissionProfile,
+                timestamp: previous.timestamp, nativeRecordVerified: previous.nativeRecordVerified,
+                nativeIngestedID: previous.nativeIngestedID)
+            replacement.nativeManagedTurnID = previous.nativeManagedTurnID
+            replacement.steeringDelivery = previous.steeringDelivery
+            sessions[session].messages[position] = replacement
+            sessions[session].updatedAt = Date()
         }
         save()
         return true
@@ -6292,6 +7456,14 @@ private final class SessionStore: ObservableObject {
             }
             sessions[index].lastFailure = recovered
         }
+        // No run is live right after a restart. Every steered input stays
+        // visible, but nothing may keep claiming a hand-off is in progress:
+        // an input still waiting in the queue keeps its state, and the rest
+        // settle against their own run's receipts.
+        for index in sessions.indices {
+            settleSteeringDelivery(conversationID: sessions[index].id,
+                                   submissionID: sessions[index].lastFailure?.id)
+        }
         // Failures already persisted before exit are not in envelope.inFlight.
         // Hydrate their paid results too; a restart must not hide the answer or
         // offer blind generation as the only recovery. Fixtures stay isolated.
@@ -6440,6 +7612,11 @@ private enum Theme {
     static let background = Color(red: 0.008, green: 0.008, blue: 0.011)
     static let panel = Color(red: 0.015, green: 0.014, blue: 0.017)
     static let panelRaised = Color(red: 0.035, green: 0.029, blue: 0.034)
+    /// Persistent session selection needs more contrast than the ordinary
+    /// raised panel so a clicked conversation remains obvious at a glance.
+    static let sessionSelectionFill = Color(red: 0.105, green: 0.082, blue: 0.102)
+    static let sessionSelectionBorder = Color.white.opacity(0.26)
+    static let sessionHoverFill = Color.white.opacity(0.055)
     static let border = Color.white.opacity(0.14)
     static let borderStrong = Color.white.opacity(0.22)
     static let muted = Color.white.opacity(0.47)
@@ -6447,13 +7624,34 @@ private enum Theme {
     static let pink = Color(red: 0.93, green: 0.70, blue: 0.80)
     static let pinkDeep = Color(red: 0.22, green: 0.10, blue: 0.16)
     static let green = Color(red: 0.28, green: 0.93, blue: 0.55)
+    /// Needs the owner, but nothing is broken: a backend waiting for sign-in.
+    static let amber = Color(red: 0.99, green: 0.78, blue: 0.35)
     static let sidebarWidth: CGFloat = 256
     static let conversationWidth: CGFloat = 760
+    /// Codex converges image attachments on a readable card instead of
+    /// shrinking them into the user's text bubble.
+    static let attachmentPreviewMaxEdge: CGFloat = 360
     static let radiusShell: CGFloat = 22
     static let radiusPanel: CGFloat = 18
     static let radiusControl: CGFloat = 13
     static let radiusMessage: CGFloat = 16
     static let radiusComposer: CGFloat = 22
+}
+
+/// Window chrome shared by the conversation/browser columns. The sidebar is
+/// intentionally allowed under the transparent titlebar; its first button is
+/// still kept below this band by `SidebarHeaderLayout`.
+enum RootChromeLayout {
+    static let titlebarBand: CGFloat = 28
+    static let browserToggleHeight: CGFloat = 30
+}
+
+private enum SidebarHeaderLayout {
+    static let titleTop: CGFloat = 14
+    static let titleBottomGap: CGFloat = 16
+    /// The first painted row of the centred 13 pt label sits 12 pt below the
+    /// 36 pt button's frame edge in the production render.
+    static let buttonLabelPaintInset: CGFloat = 12
 }
 
 private struct OmarAGILogo: View {
@@ -6724,6 +7922,17 @@ private func codexShellSelfTest() throws {
         guard condition else { throw RunnerError.message("Shell regression: " + name) }
         checks += 1
     }
+    // Executor and model are separate facts on every running surface.
+    let codexRoute = ExecutionRoutePresentation(activity: RuntimeActivity(.executing, provider: "codex", model: "gpt-5.6-luna"))
+    try check(codexRoute.executionLine.contains("Codex") && !codexRoute.executionLine.lowercased().contains("gpt"), "Codex executor is explicit, not a GPT route")
+    try check(codexRoute.modelLine?.contains("gpt-5.6-luna") == true && codexRoute.governanceLine.contains("gpt-5.6-luna"), "the GPT model name stays beside the Codex executor")
+    let claudeRoute = ExecutionRoutePresentation(activity: RuntimeActivity(.executing, provider: "claude", model: "claude-fixture"))
+    try check(claudeRoute.executionLine.contains("Claude Code"), "Claude Code executor is explicit")
+    try check(codexRoute.executionLine.contains("OpenAI") && claudeRoute.executionLine.contains("Anthropic")
+              && !codexRoute.executionLine.contains("ChatGPT"), "the route names whose usage it spends, and never claims ChatGPT")
+    let pendingRoute = ExecutionRoutePresentation(activity: RuntimeActivity(.routing))
+    try check(pendingRoute.modelLine == nil && !pendingRoute.executionLine.contains("Codex") && !pendingRoute.executionLine.contains("Claude"),
+              "unresolved routing never impersonates an executor")
     let id = UUID()
     let root = FileManager.default.temporaryDirectory.appendingPathComponent("os1-shell-test-" + UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }
@@ -6731,6 +7940,12 @@ private func codexShellSelfTest() throws {
         throw RunnerError.message("Shell test cannot execute a backend")
     }, nativeSessionOpener: { _ in false })
     let selected = store.selectedSessionID!
+    let alternate = ConversationSession(title: "Selection fixture", workspace: root.path, updatedAt: .distantPast)
+    store.sessions.append(alternate)
+    store.select(alternate.id)
+    try check(store.selectedSessionID == alternate.id, "session selection moves to the clicked row")
+    store.select(selected)
+    try check(store.selectedSessionID == selected, "session selection returns to the previously selected row")
     store.activeRuns[selected] = .init(submissionID: id, started: Date(),
         activity: RuntimeActivity(.executing, provider: "codex"), provider: .codex, handedRevision: 0)
     for request in ["QUEUED_ONLY_FIRST_SENTINEL", "QUEUED_ONLY_SECOND_SENTINEL"] {
@@ -6756,7 +7971,19 @@ private func codexShellSelfTest() throws {
     let decoded = try appended.split(separator: "\n").suffix(2).map { try JSONDecoder().decode(String.self, from: Data($0.utf8)) }
     try check(decoded == paths, "file-reference quoting round-trips Unicode, quote and newline")
     try check(appendingFileReferences([], to: "그대로") == "그대로", "cancel/no files leaves draft unchanged")
-    let visibleAttachmentPaths = ["/tmp/os1-inline-preview.png", "/tmp/os1-notes.pdf", "/tmp/os1-plan.txt"]
+    let previewURL = root.appendingPathComponent("os1-inline-preview.png")
+    let previewImage = NSImage(size: NSSize(width: 1600, height: 900))
+    previewImage.lockFocus()
+    NSColor.black.setFill()
+    NSRect(x: 0, y: 0, width: 1600, height: 900).fill()
+    previewImage.unlockFocus()
+    guard let previewTIFF = previewImage.tiffRepresentation,
+          let previewRep = NSBitmapImageRep(data: previewTIFF),
+          let previewPNG = previewRep.representation(using: .png, properties: [:]) else {
+        throw RunnerError.message("Shell regression: image fixture could not be encoded")
+    }
+    try previewPNG.write(to: previewURL)
+    let visibleAttachmentPaths = [previewURL.path, "/tmp/os1-notes.pdf", "/tmp/os1-plan.txt"]
     let attachedMessage = ChatMessage(role: .user, text: appendingFileReferences(visibleAttachmentPaths, to: "첨부를 확인해 줘"))
     let attachmentDocument = timelineAttributedDocument(
         messages: [attachedMessage], queuedSubmissions: [], isRunning: false, workspace: "/tmp",
@@ -6764,13 +7991,32 @@ private func codexShellSelfTest() throws {
     )
     let attachmentText = attachmentDocument.string
     try check(!attachmentText.contains(PromptAttachments.marker)
-        && !attachmentText.contains("/tmp/os1-inline-preview.png")
+        && !attachmentText.contains(previewURL.path)
         && !attachmentText.contains("/tmp/os1-notes.pdf"),
         "attachment transport paths never leak into the visible transcript")
-    try check(attachmentText.contains("PNG · os1-inline-preview.png")
+    try check(!attachmentText.contains("os1-inline-preview.png")
         && attachmentText.contains("PDF · os1-notes.pdf")
         && attachmentText.contains("TXT · os1-plan.txt"),
-        "image and document attachments render labeled visual cards")
+        "image cards hide redundant filenames while document cards keep labels")
+    var renderedAttachments: [(NSTextAttachment, Int)] = []
+    attachmentDocument.enumerateAttribute(
+        .attachment,
+        in: NSRange(location: 0, length: attachmentDocument.length)
+    ) { value, range, _ in
+        if let attachment = value as? NSTextAttachment {
+            renderedAttachments.append((attachment, range.location))
+        }
+    }
+    try check(renderedAttachments.count == 3, "every accepted attachment remains visible")
+    let imageBounds = renderedAttachments[0].0.bounds
+    try check(abs(max(imageBounds.width, imageBounds.height) - Theme.attachmentPreviewMaxEdge) < 0.5,
+        "image card uses the 360-point Codex convergence edge")
+    let imageRole = attachmentDocument.attribute(
+        .os1TimelineRole,
+        at: renderedAttachments[0].1,
+        effectiveRange: nil
+    ) as? NSString
+    try check(imageRole == "userAttachment", "image card renders outside the pink user bubble")
     store.addAttachments(visibleAttachmentPaths.map(URL.init(fileURLWithPath:)))
     try check(PromptAttachments.paths(in: store.composedRequest(from: "")) == visibleAttachmentPaths,
         "shared drop path becomes attachments instead of composer text")
@@ -6840,6 +8086,11 @@ private func renderShellPreview(to output: URL) throws {
     let store = SessionStore(storageRoot: root, runOperation: { _, _, _, _, _ in
         throw RunnerError.message("Preview cannot execute a backend")
     }, nativeSessionOpener: { _ in false })
+    store.sessions.append(ConversationSession(
+        title: "선택 상태 확인",
+        workspace: root.path,
+        updatedAt: .distantPast
+    ))
     let id = store.selectedSessionID!
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
     store.sessions[0].workspace = root.path
@@ -6886,6 +8137,7 @@ private func renderShellPreview(to output: URL) throws {
 
 @main
 private struct OS1DesktopApp: App {
+    private static var liveStoreLease: OS1LiveStoreLease?
     @StateObject private var store: SessionStore
 
     init() {
@@ -6959,7 +8211,7 @@ private struct OS1DesktopApp: App {
         }
         if CommandLine.arguments.contains("--self-test-parallel") {
             Task { @MainActor in
-                do { try await parallelInteractionSelfTest(); exit(EXIT_SUCCESS) }
+                do { try await parallelInteractionSelfTest(); try await slotWaitVisibilitySelfTest(); exit(EXIT_SUCCESS) }
                 catch { fputs("\(error.localizedDescription)\n", stderr); exit(EXIT_FAILURE) }
             }
             NSApplication.shared.run()
@@ -6986,7 +8238,13 @@ private struct OS1DesktopApp: App {
         }
         if CommandLine.arguments.contains("--self-test-steering") {
             Task { @MainActor in
-                do { try await steeringInteractionSelfTest(); try await replacementInteractionSelfTest(); exit(EXIT_SUCCESS) }
+                do {
+                    try await steeringInteractionSelfTest()
+                    try await steeringVisibilitySelfTest()
+                    try await replacementInteractionSelfTest()
+                    try await failureAcknowledgementSelfTest()
+                    exit(EXIT_SUCCESS)
+                }
                 catch { fputs("\(error.localizedDescription)\n", stderr); exit(EXIT_FAILURE) }
             }
             NSApplication.shared.run()
@@ -7053,14 +8311,52 @@ private struct OS1DesktopApp: App {
                 exit(EXIT_FAILURE)
             }
         }
+        if let flag = CommandLine.arguments.firstIndex(of: "--render-sidebar-header-preview") {
+            do {
+                guard CommandLine.arguments.count > flag + 1 else { throw SourceContextError.invalid }
+                setenv("OS1_INTERFACE_LANGUAGE", "ko", 1)
+                OS1Localization.invalidate()
+                let output = URL(fileURLWithPath: CommandLine.arguments[flag + 1], isDirectory: true)
+                _ = try renderSidebarHeaderPreview(to: output)
+                print(output.path)
+                exit(EXIT_SUCCESS)
+            } catch {
+                fputs("\(error.localizedDescription)\n", stderr)
+                exit(EXIT_FAILURE)
+            }
+        }
         if let flag = CommandLine.arguments.firstIndex(of: "--render-governance-preview") {
             do {
                 guard CommandLine.arguments.count > flag + 1 else { throw SourceContextError.invalid }
                 let output = URL(fileURLWithPath: CommandLine.arguments[flag + 1])
-                let content = GovernanceMonitorView(preview: true, snapshot: GovernanceActivityStore().snapshot())
+                let initialSection = CommandLine.arguments.count > flag + 2 ? CommandLine.arguments[flag + 2] : "실시간"
+                let content = GovernanceMonitorView(preview: true, snapshot: GovernanceActivityStore().snapshot(), previewSection: initialSection)
                     .frame(width: 1080, height: 1250).environment(\.colorScheme, .dark)
                 let view = NSHostingView(rootView: content)
                 view.frame = NSRect(x: 0, y: 0, width: 1080, height: 1250); view.layoutSubtreeIfNeeded()
+                guard let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { throw SourceContextError.invalid }
+                view.cacheDisplay(in: view.bounds, to: bitmap)
+                guard let png = bitmap.representation(using: .png, properties: [:]) else { throw SourceContextError.invalid }
+                try png.write(to: output); print(output.path); exit(EXIT_SUCCESS)
+            } catch { fputs("\(error.localizedDescription)\n", stderr); exit(EXIT_FAILURE) }
+        }
+        // The Settings pane is where the parallel-run cap is changed, so its
+        // layout is checked by rendering it, not by reading the code.
+        if let flag = CommandLine.arguments.firstIndex(of: "--render-settings-preview") {
+            do {
+                guard CommandLine.arguments.count > flag + 1 else { throw SourceContextError.invalid }
+                let output = URL(fileURLWithPath: CommandLine.arguments[flag + 1])
+                if CommandLine.arguments.count > flag + 2 {
+                    setenv("OS1_INTERFACE_LANGUAGE", CommandLine.arguments[flag + 2], 1)
+                    OS1Localization.invalidate()
+                }
+                let root = FileManager.default.temporaryDirectory.appendingPathComponent("os1-settings-preview-" + UUID().uuidString)
+                try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+                defer { try? FileManager.default.removeItem(at: root) }
+                let store = SessionStore(storageRoot: root, nativeSessionOpener: { _ in false })
+                let content = OS1SettingsView(store: store).environment(\.colorScheme, .dark)
+                let view = NSHostingView(rootView: content)
+                view.frame = NSRect(x: 0, y: 0, width: 560, height: 640); view.layoutSubtreeIfNeeded()
                 guard let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { throw SourceContextError.invalid }
                 view.cacheDisplay(in: view.bounds, to: bitmap)
                 guard let png = bitmap.representation(using: .png, properties: [:]) else { throw SourceContextError.invalid }
@@ -7074,7 +8370,7 @@ private struct OS1DesktopApp: App {
                 try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
                 let started = Date(timeIntervalSinceReferenceDate: 1_000)
                 for (index, elapsed) in [4.0, 4.3, 65.0].enumerated() {
-                    let content = RunActivityBanner(activity: RuntimeActivity(.executing, provider: "claude", model: "fixture", effort: "low", timestamp: started),
+                    let content = RunActivityBanner(activity: RuntimeActivity(.executing, provider: "codex", model: "gpt-5.6-luna", effort: "medium", timestamp: started),
                         started: started, previewTime: started.addingTimeInterval(elapsed))
                         .frame(width: 900, height: 74).background(Theme.background).environment(\.colorScheme, .dark)
                     let view = NSHostingView(rootView: content)
@@ -7086,15 +8382,17 @@ private struct OS1DesktopApp: App {
                     try data.write(to: output.appendingPathComponent("activity-\(index).png"))
                     let rowContent = VStack(spacing: 4) {
                         SessionRow(session: ConversationSession(title: "연구 자료 분석", workspace: "/tmp"), selected: true,
-                            activity: RuntimeActivity(.executing, provider: "claude"), queuedCount: 1,
+                            activity: RuntimeActivity(.executing, provider: "claude", model: "claude-fixture"), queuedCount: 1,
                             previewTime: started.addingTimeInterval(elapsed), action: {})
                         SessionRow(session: ConversationSession(title: "자동화 복원 검토", workspace: "/tmp"), selected: false,
-                            activity: RuntimeActivity(.executing, provider: "codex"),
+                            activity: RuntimeActivity(.executing, provider: "codex", model: "gpt-5.6-luna"),
                             previewTime: started.addingTimeInterval(elapsed), action: {})
+                        SessionRow(session: ConversationSession(title: "새 라우팅 요청", workspace: "/tmp"), selected: false,
+                            activity: RuntimeActivity(.routing), previewTime: started.addingTimeInterval(elapsed), action: {})
                         SessionRow(session: ConversationSession(title: "완료한 대화", workspace: "/tmp"), selected: false, action: {})
-                    }.frame(width: 290, height: 228).background(Theme.background).environment(\.colorScheme, .dark)
+                    }.frame(width: 290, height: 330).background(Theme.background).environment(\.colorScheme, .dark)
                     let rows = NSHostingView(rootView: rowContent)
-                    rows.frame = NSRect(x: 0, y: 0, width: 290, height: 228); rows.layoutSubtreeIfNeeded()
+                    rows.frame = NSRect(x: 0, y: 0, width: 290, height: 330); rows.layoutSubtreeIfNeeded()
                     guard let rowBitmap = rows.bitmapImageRepForCachingDisplay(in: rows.bounds) else { throw SourceContextError.invalid }
                     rows.cacheDisplay(in: rows.bounds, to: rowBitmap)
                     guard let rowPNG = rowBitmap.representation(using: .png, properties: [:]) else { throw SourceContextError.invalid }
@@ -7286,6 +8584,7 @@ private struct OS1DesktopApp: App {
         }
         if CommandLine.arguments.contains("--self-test") {
             do {
+                try governanceHeartbeatSelfTest()
                 try nativeProvenanceSelfTest()
                 try savedFailurePreviewSelfTest()
                 try providerIntentSelfTest()
@@ -7295,7 +8594,7 @@ private struct OS1DesktopApp: App {
                 try sidebarSynchronizationSelfTest()
                 try backendRecoverySelfTest()
                 try selfUpdateReportSelfTest()
-                print("OS-1 app provider intent, source continuity, voice, math, selection, pin/archive/drafts/queue, backend self-repair, self-update self-test: OK")
+                print("OS-1 app continuous governance heartbeat, provider intent, source continuity, voice, math, selection, pin/archive/drafts/queue, backend accounts, backend self-repair, self-update self-test: OK")
                 exit(EXIT_SUCCESS)
             } catch {
                 fputs("\(error.localizedDescription)\n", stderr)
@@ -7306,6 +8605,22 @@ private struct OS1DesktopApp: App {
         // second live session-store writer when an older executable is used.
         if CommandLine.arguments.dropFirst().contains(where: { $0.hasPrefix("--") }) {
             fputs("Unsupported OS1 diagnostic option; live sessions were not opened.\n", stderr)
+            exit(EXIT_FAILURE)
+        }
+        // A staged/fleet build must never become a second live-store writer or consume installation intents.
+        guard SelfUpdate.isInstalledApp(Bundle.main.bundleURL) else {
+            fputs("Non-installed OS1 GUI refused; live sessions were not opened. Use the installed application.\n", stderr)
+            exit(EXIT_FAILURE)
+        }
+        do {
+            let lease = try OS1LiveStoreLease()
+            guard lease.tryAcquire() else {
+                fputs("An installed OS1 GUI already owns the live store.\n", stderr)
+                exit(EXIT_SUCCESS)
+            }
+            Self.liveStoreLease = lease
+        } catch {
+            fputs("OS1 could not acquire live-store ownership; sessions were not opened.\n", stderr)
             exit(EXIT_FAILURE)
         }
         _store = StateObject(wrappedValue: SessionStore())
@@ -7373,6 +8688,33 @@ private struct OS1DesktopApp: App {
 
 /// User settings, configured like Codex: language and backends in one pane,
 /// persisted to OS-1's settings.json which every OS-1 process reads.
+/// Sign in to Codex and Claude Code from OS-1, with more than one account
+/// each. The same list the RCC Governance panel shows, so there is one account
+/// screen rather than two that can disagree.
+private struct BackendAccountsView: View {
+    @ObservedObject var store: SessionStore
+    @StateObject private var model = BackendAccountsModel()
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack {
+                Text(os1Tr("백엔드 계정", "Backend accounts")).font(.headline)
+                Spacer()
+                Button(os1Tr("닫기", "Close")) { store.accountsOpen = false }.keyboardShortcut(.cancelAction)
+            }
+            .padding(.horizontal, 18).padding(.vertical, 14)
+            Divider()
+            ScrollView {
+                BackendAccountsPanel(model: model,
+                                     providers: store.appSettings.showCodex ? BackendAccounts.providers
+                                        : BackendAccounts.providers.filter { $0 != "codex" })
+                    .padding(18)
+            }
+        }
+        .frame(width: 600, height: 540)
+    }
+}
+
 private struct OS1SettingsView: View {
     @ObservedObject var store: SessionStore
 
@@ -7401,6 +8743,38 @@ private struct OS1SettingsView: View {
                            "Interface language applies to menus and status text. Response ‘Auto’ answers in whatever language you type — an English keyboard with a Korean message still gets a Korean answer."))
                     .font(.footnote).foregroundStyle(.secondary)
             }
+            Section(os1Tr("동시 실행", "Parallel runs")) {
+                Picker(os1Tr("동시에 실행할 대화 수", "Conversations running at the same time"),
+                       selection: Binding(get: { store.appSettings.parallelRuns },
+                                          set: { value in store.updateSettings { $0.parallelRunLimit = value } })) {
+                    ForEach(Array(OS1Settings.parallelRunRange), id: \.self) { count in
+                        Text(verbatim: "\(count)").tag(count)
+                    }
+                }
+                Text(os1Tr("서로 다른 대화는 여기까지 동시에 실행됩니다. 지금 \(store.activeRuns.count)개 실행 중 · 대기 \(store.queuedSubmissions.count)개. 값을 올리면 슬롯을 기다리던 대화가 바로 시작되고, 내리면 이미 실행 중인 작업은 그대로 끝납니다. 한 대화 안의 후속 요청은 같은 작업 맥락을 이어가므로 순서대로 실행됩니다.",
+                           "Different conversations run at the same time up to this number. \(store.activeRuns.count) running · \(store.queuedSubmissions.count) waiting. Raising it starts conversations that were waiting for a slot; lowering it lets running tasks finish. Follow-ups inside one conversation continue the same task and still run in order."))
+                    .font(.footnote).foregroundStyle(.secondary)
+                Text(os1Tr("높일수록 백엔드 한도(Codex·Claude)가 더 빨리 소진되고 기기 부하가 커집니다.",
+                           "A higher number uses the Codex/Claude quotas faster and loads the machine more."))
+                    .font(.footnote).foregroundStyle(.secondary)
+            }
+            Section(os1Tr("계정", "Accounts")) {
+                ForEach([ProviderChoice.codex, ProviderChoice.claude]) { provider in
+                    let account = store.activeAccount(for: provider)
+                    LabeledContent(provider.title) {
+                        Text(account.map { row in
+                            row.signedIn
+                                ? row.label + (row.signedInAs.map { " · \($0)" } ?? "")
+                                : os1Tr("\(row.label) · 로그아웃", "\(row.label) · signed out")
+                        } ?? "—")
+                        .foregroundStyle(account?.signedIn == false ? Theme.amber : Color.secondary)
+                    }
+                }
+                Button(os1Tr("계정 관리…", "Manage accounts…")) { store.accountsOpen = true }
+                Text(os1Tr("Codex와 Claude Code 로그인을 OS-1에서 직접 합니다. 제공자별로 여러 계정을 등록하고 어느 계정으로 실행할지 고를 수 있습니다.",
+                           "Sign in to Codex and Claude Code from OS-1. Each provider can hold several accounts, and you choose which one runs."))
+                    .font(.footnote).foregroundStyle(.secondary)
+            }
             Section(os1Tr("백엔드", "Backends")) {
                 Toggle(os1Tr("Codex 백엔드 사용", "Use the Codex backend"), isOn: binding(\.showCodex))
                 Text(os1Tr("끄면 레일에서 사라지고 어떤 작업도 Codex로 라우팅되지 않습니다. Claude와 OS-1 로컬 실행만 사용합니다.",
@@ -7420,7 +8794,9 @@ private struct OS1SettingsView: View {
             }
         }
         .formStyle(.grouped)
-        .frame(width: 560, height: 420)
+        // Rendered at this size: language, parallel runs, backends and about
+        // all fit without scrolling to reach the cap.
+        .frame(width: 560, height: 640)
     }
 }
 
@@ -7616,24 +8992,55 @@ private func sidebarSynchronizationSelfTest() throws {
     print("Sidebar synchronization: \(checks) checks passed; model calls 0; live backend writes 0")
 }
 
+private struct BrowserToggleBar: View {
+    let visible: Bool
+    let toggle: () -> Void
+
+    var body: some View {
+        HStack {
+            Spacer()
+            Button(action: toggle) {
+                Label("브라우저", systemImage: "sidebar.right")
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(Theme.pink)
+            .accessibilityLabel("오른쪽 브라우저 전환")
+            .accessibilityValue(visible ? "열림" : "닫힘")
+            .help("오른쪽 브라우저 열기/닫기")
+        }
+        .padding(.horizontal, 14)
+        .frame(height: RootChromeLayout.browserToggleHeight)
+        // Only clickable right-side chrome stays below the transparent
+        // titlebar. The non-interactive sidebar title can occupy that band.
+        .padding(.top, RootChromeLayout.titlebarBand)
+    }
+}
+
 private struct RootView: View {
     @ObservedObject var store: SessionStore
     @State private var governanceOpen = false
+    @StateObject private var browser = OS1BrowserWorkspace()
+    private var browserKey: String { store.selectedSessionID?.uuidString ?? "native-\(store.surface.rawValue)" }
     @State private var windowDropTargeted = false
 
     var body: some View {
         HStack(spacing: 0) {
             ProviderRail(store: store, governanceOpen: $governanceOpen)
             Rectangle().fill(Theme.border).frame(width: 1)
+            HSplitView {
             ZStack {
                 // Keep the conversation mounted: toggling must not reset draft, scroll, queue or run.
                 HStack(spacing: 0) {
                     if store.surface == .auto {
                         SessionSidebar(store: store)
                         Rectangle().fill(Theme.border).frame(width: 1)
-                        ConversationView(store: store)
+                        VStack(spacing: 0) {
+                            BrowserToggleBar(visible: browser.visible) { browser.visible.toggle() }
+                            ConversationView(store: store)
+                        }
                     } else {
-                        NativeSessionBrowser(store: store, provider: store.surface)
+                        NativeSessionBrowser(store: store, provider: store.surface,
+                            browserVisible: browser.visible, toggleBrowser: { browser.visible.toggle() })
                     }
                 }
                 .opacity(governanceOpen ? 0 : 1)
@@ -7641,12 +9048,25 @@ private struct RootView: View {
                 .accessibilityHidden(governanceOpen)
                 if governanceOpen {
                     GovernanceMonitorView(active: store.activeRuns.values.map { run in
-                        [run.activity.provider ?? "routing", run.activity.model ?? "pending", run.activity.effort ?? "pending"].joined(separator: " · ")
+                        let route = ExecutionRoutePresentation(activity: run.activity)
+                        return run.activity.effort.map { route.governanceLine + " · " + os1Tr("추론: \($0)", "Reasoning: \($0)") } ?? route.governanceLine
                     }.sorted(), queued: store.queuedSubmissions.count, onClose: { governanceOpen = false })
                     .onExitCommand { governanceOpen = false }
                 }
             }
+            .frame(minWidth: 540, maxWidth: .infinity, maxHeight: .infinity)
+            if browser.visible {
+                OS1BrowserPanel(page: browser.page(browserKey), close: { browser.visible = false })
+                    .id(browserKey)
+            }
+            }
         }
+        .sheet(isPresented: $store.accountsOpen) { BackendAccountsView(store: store) }
+        .environment(\.openURL, OpenURLAction { url in
+            guard BrowserNavigation.url(url.absoluteString) != nil else { return .systemAction }
+            browser.open(url, key: browserKey)
+            return .handled
+        })
         .frame(minWidth: 980, maxWidth: .infinity, minHeight: 680, maxHeight: .infinity)
         .background(Theme.background)
         // Files dropped anywhere in the window attach to the current
@@ -7669,6 +9089,12 @@ private struct RootView: View {
             store.handleComposerDrop(providers)
         }
         .ignoresSafeArea()
+        .task {
+            // The rail's sign-in state follows whatever the governance panel
+            // or the settings sheet changed, and is verified once at launch.
+            store.observeAccountChanges()
+            await store.refreshAccounts()
+        }
         .task {
             while !Task.isCancelled {
                 await store.refreshSidebarMetadata()
@@ -7783,68 +9209,117 @@ private struct ProviderRail: View {
         self._governanceOpen = governanceOpen
     }
 
+    // The rail is assembled from named sub-views. Written as one expression it
+    // took the type-checker over a second here and blew the compiler's budget
+    // on the slower release runner ("unable to type-check this expression in
+    // reasonable time"), so the layout below must stay split.
     var body: some View {
         VStack(spacing: ProviderRailLayout.stackSpacing) {
-            let homeAppearance = RailItemAppearance.resolve(selected: store.surface == .auto, linked: true)
-            Button { store.showClodexHome() } label: {
-                VStack(spacing: 6) {
-                    OmarAGILogo(size: 40)
-                        .opacity(homeAppearance.contentOpacity)
-                    Text("OS-1")
-                        .font(.system(size: 7, weight: .bold))
-                        .tracking(1.1)
-                        .foregroundStyle(Color.white.opacity(homeAppearance.contentOpacity))
-                }
-                .frame(width: ProviderRailLayout.itemWidth, height: ProviderRailLayout.homeHeight)
-                .background(RailSelectionBackground(accent: ProviderChoice.auto.tint, appearance: homeAppearance))
-                .contentShape(RoundedRectangle(cornerRadius: Theme.radiusControl, style: .continuous))
-            }
-            .buttonStyle(.plain)
-            .help("Clodex home")
-            .accessibilityLabel("Clodex home")
-            .accessibilityValue(store.surface == .auto ? "선택됨" : "선택 안 됨")
-            // Only OS-1 moves; Codex and Claude stay on the reference grid.
-            .padding(.top, ProviderRailLayout.homeTopPadding)
+            homeButton
 
             // Codex disappears entirely when switched off in Settings — the
             // runtime refuses to route to it too, so the rail stays truthful.
-            ForEach([ProviderChoice.codex, ProviderChoice.claude].filter {
-                $0 != .codex || store.appSettings.showCodex
-            }) { provider in
-                BackendStatus(
-                    provider: provider,
-                    selected: store.surface == provider,
-                    active: store.selectedSession?.lastProvider == provider.rawValue,
-                    linked: provider == .codex
-                        ? store.selectedSession?.codexSessionID != nil
-                        : store.selectedSession?.claudeSessionID != nil,
-                    disabled: false
-                ) { store.inspectBackend(provider) }
+            ForEach(visibleProviders) { provider in
+                backendTile(provider)
             }
 
             Spacer()
 
-            Button { governanceOpen.toggle() } label: {
-              VStack(spacing: 6) {
-                Circle().fill(Theme.green).frame(width: 9, height: 9)
-                    .shadow(color: Theme.green.opacity(0.85), radius: 6)
-                Text("RCC\nGOVERNED")
-                    .font(.system(size: 7, weight: .bold))
-                    .tracking(0.7)
-                    .multilineTextAlignment(.center)
-                    .foregroundStyle(Theme.muted)
-              }.frame(width: 56, height: 52).contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .help("RCC Governance · 토큰, 완수율, 효율 활동 모니터")
-            .accessibilityLabel("RCC Governance Activity Monitor")
-            .accessibilityValue(governanceOpen ? "열림" : "닫힘")
-            .background(governanceOpen ? Theme.green.opacity(0.10) : Color.clear, in: RoundedRectangle(cornerRadius: 10))
+            governanceButton
         }
         .padding(.top, ProviderRailLayout.railTopPadding)
         .padding(.bottom, 24)
         .frame(width: 78)
         .background(Color.black.opacity(0.74))
+    }
+
+    private var visibleProviders: [ProviderChoice] {
+        [ProviderChoice.codex, ProviderChoice.claude].filter {
+            $0 != .codex || store.appSettings.showCodex
+        }
+    }
+
+    private var homeButton: some View {
+        let homeAppearance = RailItemAppearance.resolve(selected: store.surface == .auto, linked: true)
+        return Button { store.showClodexHome() } label: {
+            VStack(spacing: 6) {
+                OmarAGILogo(size: 40)
+                    .opacity(homeAppearance.contentOpacity)
+                Text("OS-1")
+                    .font(.system(size: 7, weight: .bold))
+                    .tracking(1.1)
+                    .foregroundStyle(Color.white.opacity(homeAppearance.contentOpacity))
+            }
+            .frame(width: ProviderRailLayout.itemWidth, height: ProviderRailLayout.homeHeight)
+            .background(RailSelectionBackground(accent: ProviderChoice.auto.tint, appearance: homeAppearance))
+            .contentShape(RoundedRectangle(cornerRadius: Theme.radiusControl, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .help("Clodex home")
+        .accessibilityLabel("Clodex home")
+        .accessibilityValue(store.surface == .auto ? "선택됨" : "선택 안 됨")
+        // Only OS-1 moves; Codex and Claude stay on the reference grid.
+        .padding(.top, ProviderRailLayout.homeTopPadding)
+    }
+
+    private func backendTile(_ provider: ProviderChoice) -> some View {
+        let account = store.activeAccount(for: provider)
+        // Never claim a backend is signed out before its own status
+        // command has answered: an unverified account reads as fine.
+        let verified = account.map { $0.verifiedAt == nil || $0.signedIn } ?? true
+        let linked: Bool = provider == .codex
+            ? store.selectedSession?.codexSessionID != nil
+            : store.selectedSession?.claudeSessionID != nil
+        return BackendStatus(
+            provider: provider,
+            selected: store.surface == provider,
+            active: store.selectedSession?.lastProvider == provider.rawValue,
+            linked: linked,
+            signedIn: verified,
+            signingIn: store.accountBusy == provider.rawValue,
+            accountLabel: account?.label,
+            disabled: false
+        ) {
+            // A signed-out backend cannot run anything, so the tile
+            // offers the sign-in instead of an empty session list.
+            if !verified { store.accountsOpen = true } else { store.inspectBackend(provider) }
+        }
+        .contextMenu { accountMenu(for: provider) }
+    }
+
+    @ViewBuilder
+    private func accountMenu(for provider: ProviderChoice) -> some View {
+        ForEach(store.accounts(for: provider)) { row in
+            let isActive = store.accountBook.active[provider.rawValue] == row.id
+            Button {
+                Task { await store.useAccount(provider: provider.rawValue, id: row.id) }
+            } label: {
+                Label(row.label + (row.signedIn ? "" : os1Tr(" (로그아웃)", " (signed out)")),
+                      systemImage: isActive ? "checkmark" : "")
+            }
+            .disabled(isActive)
+        }
+        Divider()
+        Button(os1Tr("\(provider.title) 계정…", "\(provider.title) accounts…")) { store.accountsOpen = true }
+    }
+
+    private var governanceButton: some View {
+        Button { governanceOpen.toggle() } label: {
+          VStack(spacing: 6) {
+            Circle().fill(Theme.green).frame(width: 9, height: 9)
+                .shadow(color: Theme.green.opacity(0.85), radius: 6)
+            Text("RCC\nGOVERNED")
+                .font(.system(size: 7, weight: .bold))
+                .tracking(0.7)
+                .multilineTextAlignment(.center)
+                .foregroundStyle(Theme.muted)
+          }.frame(width: 56, height: 52).contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help("RCC Governance · 토큰, 완수율, 효율 활동 모니터")
+        .accessibilityLabel("RCC Governance Activity Monitor")
+        .accessibilityValue(governanceOpen ? "열림" : "닫힘")
+        .background(governanceOpen ? Theme.green.opacity(0.10) : Color.clear, in: RoundedRectangle(cornerRadius: 10))
     }
 }
 
@@ -7853,11 +9328,28 @@ private struct BackendStatus: View {
     let selected: Bool
     let active: Bool
     let linked: Bool
+    var signedIn: Bool = true
+    var signingIn: Bool = false
+    var accountLabel: String?
     let disabled: Bool
     let action: () -> Void
 
     private var appearance: RailItemAppearance {
         RailItemAppearance.resolve(selected: selected, linked: linked)
+    }
+
+    /// Sign-in outranks session state: a signed-out backend cannot run, so
+    /// "NO SESSION" would send the owner looking in the wrong place.
+    var stateText: String {
+        if signingIn { return "SIGNING IN" }
+        if !signedIn { return "SIGN IN" }
+        return linked ? "OPEN" : "NO SESSION"
+    }
+
+    private var stateColor: Color {
+        if signingIn { return Theme.pink }
+        if !signedIn { return Theme.amber }
+        return linked ? Theme.green : Theme.muted
     }
 
     var body: some View {
@@ -7870,9 +9362,11 @@ private struct BackendStatus: View {
                     .tracking(1.1)
                     .lineLimit(1)
                     .minimumScaleFactor(0.8)
+                // A backend that is signed out cannot run anything, so that is
+                // what the tile says; the session state only matters once it can.
                 HStack(spacing: 3) {
-                    Circle().fill(linked ? Theme.green : Theme.muted).frame(width: 4, height: 4)
-                    Text(linked ? "OPEN" : "NO SESSION")
+                    Circle().fill(stateColor).frame(width: 4, height: 4)
+                    Text(stateText)
                         .font(.system(size: 5.5, weight: .bold))
                         .lineLimit(1)
                         .minimumScaleFactor(0.65)
@@ -7995,6 +9489,7 @@ private func railSelectionSelfTest() throws {
         && ProviderRailLayout.backendHeight == 80,
         "Codex and Claude reference-card geometry must remain unchanged")
     try railPixelGapSelfTest()
+    try sidebarHeaderPixelSelfTest()
 
     for linked in [true, false] {
         let quiet = RailItemAppearance.resolve(selected: false, linked: linked)
@@ -8028,6 +9523,60 @@ private func railSelectionSelfTest() throws {
     try check(store.surface == .auto, "the OS-1 ring must return to the Clodex home surface")
     store.inspectBackend(.auto)
     try check(store.surface == .auto, "auto is not a browsable backend surface")
+
+    // Accounts: a signed-out backend must say so on its own tile, and a
+    // fixture store must never reach the owner's real account file.
+    var book = BackendAccounts.normalized(BackendAccountBook())
+    for position in book.accounts.indices {
+        book.accounts[position].signedIn = true
+        book.accounts[position].verifiedAt = Date()
+    }
+    try check(store.activeAccount(for: .claude)?.isDefault == true,
+        "a fresh Mac shows the provider's own sign-in as the active account")
+    try check(store.accounts(for: .auto).isEmpty, "the OS-1 home is not a signed-in backend")
+    let added = UUID().uuidString.lowercased()
+    book.accounts.append(BackendAccount(id: added, provider: "claude", label: "회사 계정",
+        homePath: BackendAccounts.accountsRoot().appendingPathComponent("claude/\(added)").path,
+        signedIn: false, verifiedAt: Date()))
+    book.active["claude"] = added
+    store.accountBook = book
+    try check(store.accounts(for: .claude).count == 2, "both Claude accounts are listed")
+    try check(store.activeAccount(for: .claude)?.signedIn == false && store.activeAccount(for: .codex)?.signedIn == true,
+        "each provider reports its own account state")
+    let signedOutTile = BackendStatus(provider: .claude, selected: false, active: false, linked: true,
+        signedIn: false, signingIn: false, accountLabel: "회사 계정", disabled: false) {}
+    let signedInTile = BackendStatus(provider: .claude, selected: false, active: false, linked: true,
+        signedIn: true, signingIn: false, accountLabel: "회사 계정", disabled: false) {}
+    try check(signedOutTile.stateText == "SIGN IN" && signedInTile.stateText == "OPEN",
+        "a signed-out backend must offer the sign-in instead of a session state")
+    try check(BackendStatus(provider: .codex, selected: false, active: false, linked: false,
+        signedIn: true, signingIn: true, accountLabel: nil, disabled: false) {}.stateText == "SIGNING IN",
+        "a running sign-in is visible on the tile")
+    // Changing accounts goes through the runtime, so a fixture store must not
+    // touch the owner's real account file: its book only changes when assigned.
+    try check(store.accountBook.active["claude"] == added && store.accountNotice == nil && store.accountBusy == nil,
+        "a fixture store holds only the assigned book and reports no failure")
+    try check(BackendAccounts.load() != book, "the fixture book was never written to the owner's account file")
+
+    // The account list is one screen: governance and settings render the same
+    // panel from the same model, so they can never disagree.
+    let panelModel = BackendAccountsModel()
+    let governancePanel = BackendAccountsPanel(model: panelModel, dark: true, readOnly: true)
+    let settingsPanel = BackendAccountsPanel(model: panelModel)
+    try check(governancePanel.providers == settingsPanel.providers
+        && governancePanel.providers == BackendAccounts.providers,
+        "both account screens list the same providers")
+    try check(governancePanel.readOnly && !settingsPanel.readOnly,
+        "the design-time governance preview must not offer a sign-in")
+    let codexOnly = BackendAccountsPanel(model: panelModel, providers: ["claude"])
+    try check(codexOnly.providers == ["claude"], "turning a backend off removes it from the account list")
+    try check(BackendAccountsStyle.title("claude") == "Claude Code"
+        && BackendAccountsStyle.organization("claude") == "Anthropic"
+        && BackendAccountsStyle.organization("codex") == "OpenAI",
+        "each provider is named by its own organization")
+    try check(BackendAccountsStyle.initial("  회사 계정 ") == "회"
+        && BackendAccountsStyle.initial("work") == "W",
+        "an account shows one letter, the way an account list does")
 
     print("Provider rail selection: \(checks) checks passed; model calls 0; live backend writes 0")
 }
@@ -8080,9 +9629,163 @@ private func renderProviderRailPreview(to output: URL) throws {
         .write(to: output.appendingPathComponent("provider-rail-preview.json"), options: .atomic)
 }
 
+/// Composed production-shell rendering used to prove the sidebar header's
+/// actual painted position rather than inferring it from padding constants.
+private struct SidebarHeaderPixelMetrics {
+    let titleTopPoints: CGFloat
+    let newTaskLabelTopPoints: CGFloat
+    let newTaskButtonTopPoints: CGFloat
+}
+
+private let sidebarTitleTopMaximum: CGFloat = 20
+private let sidebarNewTaskButtonTopMinimum: CGFloat = 32
+private let sidebarNewTaskButtonTopMaximum: CGFloat = 60
+
+private func measureSidebarHeaderPixels(_ bitmap: NSBitmapImageRep, viewWidth: CGFloat) throws -> SidebarHeaderPixelMetrics {
+    let scale = CGFloat(bitmap.pixelsWide) / viewWidth
+    // The 78 pt provider rail and one-pixel divider end at x=79. Scan only
+    // the left portion of the 256 pt session sidebar so conversation chrome
+    // and split-view dividers cannot influence the measurement.
+    let xStart = max(0, Int((79 + 9) * scale))
+    let xEnd = min(bitmap.pixelsWide, Int(240 * scale))
+    let yEnd = min(bitmap.pixelsHigh, Int(180 * scale))
+    let minimumPaintedPixels = max(4, Int(ceil(4 * scale)))
+
+    func rowIsPainted(_ y: Int) -> Bool {
+        var painted = 0
+        for x in xStart..<xEnd {
+            guard let color = bitmap.colorAt(x: x, y: y) else { continue }
+            let brightest = max(color.redComponent, max(color.greenComponent, color.blueComponent))
+            if color.alphaComponent > 0.1, brightest > 0.17 {
+                painted += 1
+                if painted >= minimumPaintedPixels { return true }
+            }
+        }
+        return false
+    }
+
+    var runs: [(start: Int, end: Int)] = []
+    var runStart: Int?
+    for y in 0..<yEnd {
+        if rowIsPainted(y) {
+            if runStart == nil { runStart = y }
+        } else if let start = runStart {
+            runs.append((start, y))
+            runStart = nil
+        }
+    }
+    if let start = runStart { runs.append((start, yEnd)) }
+
+    let minimumRunHeight = max(3, Int(ceil(3 * scale)))
+    let substantiveRuns = runs.filter { $0.end - $0.start >= minimumRunHeight }
+    guard let title = substantiveRuns.first else {
+        throw RunnerError.message("Sidebar header pixels: title not found")
+    }
+    let minimumGap = Int(ceil(8 * scale))
+    guard let newTaskLabel = substantiveRuns.first(where: { $0.start >= title.end + minimumGap }) else {
+        throw RunnerError.message("Sidebar header pixels: new-task label not found")
+    }
+
+    let titleTop = CGFloat(title.start) / scale
+    let labelTop = CGFloat(newTaskLabel.start) / scale
+    return SidebarHeaderPixelMetrics(
+        titleTopPoints: titleTop,
+        newTaskLabelTopPoints: labelTop,
+        newTaskButtonTopPoints: labelTop - SidebarHeaderLayout.buttonLabelPaintInset
+    )
+}
+
+@MainActor
+@discardableResult
+private func renderSidebarHeaderPreview(to output: URL) throws -> SidebarHeaderPixelMetrics {
+    try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true,
+        attributes: [.posixPermissions: 0o700])
+    let fixtureRoot = FileManager.default.temporaryDirectory
+        .appendingPathComponent("os1-sidebar-header-preview-" + UUID().uuidString, isDirectory: true)
+    try FileManager.default.createDirectory(at: fixtureRoot, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: fixtureRoot) }
+
+    let store = SessionStore(storageRoot: fixtureRoot, nativeSessionOpener: { _ in false })
+    let content = RootView(store: store)
+        .frame(width: 1_360, height: 760)
+        .background(Theme.background)
+        .environment(\.colorScheme, .dark)
+    let view = NSHostingView(rootView: content)
+    view.frame = NSRect(x: 0, y: 0, width: 1_360, height: 760)
+    RunLoop.main.run(until: Date().addingTimeInterval(0.12))
+    view.layoutSubtreeIfNeeded()
+    view.needsDisplay = true
+    view.displayIfNeeded()
+    guard let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else {
+        throw RunnerError.message("Sidebar header preview: no bitmap")
+    }
+    view.cacheDisplay(in: view.bounds, to: bitmap)
+    guard let data = bitmap.representation(using: .png, properties: [:]) else {
+        throw RunnerError.message("Sidebar header preview: no PNG")
+    }
+    try data.write(to: output.appendingPathComponent("sidebar-header.png"), options: .atomic)
+    let metrics = try measureSidebarHeaderPixels(bitmap, viewWidth: view.bounds.width)
+    let manifest: [String: Any] = [
+        "composedRootView": true,
+        "widthPoints": 1_360,
+        "heightPoints": 760,
+        "pixelWidth": bitmap.pixelsWide,
+        "pixelHeight": bitmap.pixelsHigh,
+        "scale": CGFloat(bitmap.pixelsWide) / view.bounds.width,
+        "titleTopPoints": metrics.titleTopPoints,
+        "titleTopMaximumPoints": sidebarTitleTopMaximum,
+        "newTaskLabelTopPoints": metrics.newTaskLabelTopPoints,
+        "newTaskButtonTopPoints": metrics.newTaskButtonTopPoints,
+        "newTaskButtonTopMinimumPoints": sidebarNewTaskButtonTopMinimum,
+        "newTaskButtonTopMaximumPoints": sidebarNewTaskButtonTopMaximum,
+    ]
+    try JSONSerialization.data(withJSONObject: manifest, options: [.prettyPrinted, .sortedKeys])
+        .write(to: output.appendingPathComponent("sidebar-header-preview.json"), options: .atomic)
+    return metrics
+}
+
+@MainActor
+private func sidebarHeaderPixelSelfTest() throws {
+    let output = FileManager.default.temporaryDirectory
+        .appendingPathComponent("os1-sidebar-header-test-" + UUID().uuidString, isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: output) }
+    let metrics = try renderSidebarHeaderPreview(to: output)
+    guard metrics.titleTopPoints <= sidebarTitleTopMaximum else {
+        throw RunnerError.message(
+            "Sidebar header pixels: title top \(metrics.titleTopPoints)pt exceeds \(sidebarTitleTopMaximum)pt"
+        )
+    }
+    guard metrics.newTaskButtonTopPoints >= sidebarNewTaskButtonTopMinimum,
+          metrics.newTaskButtonTopPoints <= sidebarNewTaskButtonTopMaximum else {
+        throw RunnerError.message(
+            "Sidebar header pixels: new-task button top \(metrics.newTaskButtonTopPoints)pt outside "
+                + "\(sidebarNewTaskButtonTopMinimum)...\(sidebarNewTaskButtonTopMaximum)pt"
+        )
+    }
+    print(
+        "Sidebar header pixels: title top \(metrics.titleTopPoints)pt; "
+            + "new-task label top \(metrics.newTaskLabelTopPoints)pt; "
+            + "inferred button top \(metrics.newTaskButtonTopPoints)pt"
+    )
+}
+
 private struct NativeSessionBrowser: View {
     @ObservedObject var store: SessionStore
     let provider: ProviderChoice
+    let browserVisible: Bool
+    let toggleBrowser: () -> Void
+
+    init(
+        store: SessionStore,
+        provider: ProviderChoice,
+        browserVisible: Bool = false,
+        toggleBrowser: @escaping () -> Void = {}
+    ) {
+        self.store = store
+        self.provider = provider
+        self.browserVisible = browserVisible
+        self.toggleBrowser = toggleBrowser
+    }
 
     private var recordedSessionID: String? {
         store.linkedNativeSessionID(for: provider)
@@ -8103,8 +9806,8 @@ private struct NativeSessionBrowser: View {
                 .font(.system(size: 13, weight: .semibold))
                 .tracking(0.4)
                 .padding(.horizontal, 24)
-                .padding(.top, 22)
-                .padding(.bottom, 18)
+                .padding(.top, SidebarHeaderLayout.titleTop)
+                .padding(.bottom, SidebarHeaderLayout.titleBottomGap)
 
                 VStack(alignment: .leading, spacing: 5) {
                     Text(provider == .claude ? "CLAUDE CODE SESSIONS" : "CODEX SESSIONS")
@@ -8221,7 +9924,10 @@ private struct NativeSessionBrowser: View {
 
             Rectangle().fill(Theme.border).frame(width: 1)
 
-            NativeTranscriptView(store: store, provider: provider)
+            VStack(spacing: 0) {
+                BrowserToggleBar(visible: browserVisible, toggle: toggleBrowser)
+                NativeTranscriptView(store: store, provider: provider)
+            }
         }
         .onChange(of: store.linkedNativeSessionID(for: provider)) { _ in
             if store.surface == provider { store.inspectBackend(provider) }
@@ -8500,8 +10206,8 @@ private struct SessionSidebar: View {
             .font(.system(size: 13, weight: .semibold))
             .tracking(0.4)
             .padding(.horizontal, 16)
-            .padding(.top, 22)
-            .padding(.bottom, 18)
+            .padding(.top, SidebarHeaderLayout.titleTop)
+            .padding(.bottom, SidebarHeaderLayout.titleBottomGap)
 
             Button { store.createSession() } label: {
                 Label("새 작업", systemImage: "square.and.pencil")
@@ -8560,11 +10266,16 @@ private struct SessionSidebar: View {
                             Text("고정됨").font(.system(size: 9, weight: .bold)).foregroundStyle(Theme.muted)
                                 .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 13)
                         }
+                        let queuedCount = store.queuedSubmissions.filter { $0.sessionID == session.id }.count
+                        let idleQueue = queuedCount > 0 && !store.isSessionRunning(session.id)
                         SessionRow(
                             session: session,
                             selected: store.selectedSessionID == session.id,
                             activity: store.activeRuns[session.id]?.activity,
-                            queuedCount: store.queuedSubmissions.filter { $0.sessionID == session.id }.count
+                            queuedCount: queuedCount,
+                            queueStatus: idleQueue ? store.sidebarQueueStatus(session.id) : nil,
+                            slotWait: idleQueue && store.globalSlotWait(session.id) != nil,
+                            queueHelp: idleQueue ? store.queueReason(session.id) : nil
                         ) { store.select(session.id) }
                         .contextMenu {
                             Button(session.pinnedAt == nil ? "상단에 고정" : "고정 해제") { store.togglePin(session.id) }
@@ -8762,8 +10473,27 @@ private struct SessionRow: View {
     let selected: Bool
     var activity: RuntimeActivity? = nil
     var queuedCount = 0
+    /// Why this idle conversation's queue has not started (nil while it runs).
+    var queueStatus: String? = nil
+    /// The global slot cap is the only blocker for this conversation's queue.
+    var slotWait = false
+    /// Full queue reason for the tooltip when the subtitle is abbreviated.
+    var queueHelp: String? = nil
     var previewTime: Date? = nil
     let action: () -> Void
+    @State private var isHovering = false
+
+    private var rowShape: RoundedRectangle {
+        RoundedRectangle(cornerRadius: 11, style: .continuous)
+    }
+
+    private var rowFill: Color {
+        selected ? Theme.sessionSelectionFill : (isHovering ? Theme.sessionHoverFill : .clear)
+    }
+
+    private var rowBorder: Color {
+        selected ? Theme.sessionSelectionBorder : (isHovering ? Theme.border.opacity(0.75) : .clear)
+    }
 
     var body: some View {
         Button(action: action) {
@@ -8772,35 +10502,141 @@ private struct SessionRow: View {
                     if activity != nil { RunningSessionIndicator(previewTime: previewTime) }
                     if session.pinnedAt != nil { Image(systemName: "pin.fill").font(.system(size: 10)).foregroundStyle(Theme.pink) }
                     Text(session.title)
-                        .font(.system(size: 13, weight: .regular))
+                        .font(.system(size: 13, weight: selected ? .semibold : .regular))
                         .foregroundStyle(Theme.text)
                         .lineLimit(1)
                     Spacer(minLength: 0)
                 }
                 HStack(spacing: 6) {
-                    Text(activity?.label ?? URL(fileURLWithPath: session.workspace).lastPathComponent)
+                    Text(activity?.label ?? queueStatus ?? URL(fileURLWithPath: session.workspace).lastPathComponent)
                         .font(.system(size: 11))
-                        .foregroundStyle(Theme.muted)
+                        .foregroundStyle(slotWait && activity == nil ? Theme.pink : Theme.muted)
                         .lineLimit(1)
+                        .help(activity == nil ? (queueHelp ?? queueStatus ?? "") : "")
                     Spacer(minLength: 0)
-                    if queuedCount > 0 { Text("대기 \(queuedCount)").font(.system(size: 10)).foregroundStyle(Theme.pink) }
+                    if queuedCount > 0 {
+                        Text("대기 \(queuedCount)").font(.system(size: 10)).foregroundStyle(Theme.pink)
+                    }
+                }
+                if let activity {
+                    let route = ExecutionRoutePresentation(activity: activity)
+                    HStack(spacing: 5) {
+                        Text(route.executionLine)
+                        Text("· 수렴 단계 \(activity.convergenceLabel)")
+                        Spacer(minLength: 0)
+                    }
+                    .font(.system(size: 9, weight: .medium))
+                    .foregroundStyle(Theme.pink.opacity(0.9))
+                    .lineLimit(1)
+                    .help(route.detail)
+                    if let modelLine = route.modelLine {
+                        Text(modelLine)
+                            .font(.system(size: 9))
+                            .foregroundStyle(Theme.muted)
+                            .lineLimit(1)
+                            .help(route.detail)
+                    }
                 }
             }
             .padding(.horizontal, 13)
             .padding(.vertical, 9)
             .frame(maxWidth: .infinity, alignment: .leading)
             .contentShape(Rectangle())
-            .background(selected ? Theme.panelRaised : Color.clear)
-            .overlay(
-                RoundedRectangle(cornerRadius: 11)
-                    .stroke(Color.clear)
-            )
-            .overlay(alignment: .bottom) {
-                Rectangle().fill(Theme.border.opacity(0.5)).frame(height: 1)
+            .background(rowShape.fill(rowFill))
+            .overlay(rowShape.stroke(rowBorder, lineWidth: selected ? 1 : 0.75))
+            .overlay(alignment: .leading) {
+                if selected {
+                    Capsule()
+                        .fill(Theme.pink)
+                        .frame(width: 3)
+                        .padding(.vertical, 7)
+                        .padding(.leading, 4)
+                }
             }
-            .clipShape(RoundedRectangle(cornerRadius: 11))
+            .overlay(alignment: .bottom) {
+                if !selected {
+                    Rectangle().fill(Theme.border.opacity(0.5)).frame(height: 1)
+                }
+            }
+            .clipShape(rowShape)
         }
         .buttonStyle(.plain)
+        .onHover { isHovering = $0 }
+        .accessibilityValue(selected ? "선택됨" : "선택 안 됨")
+    }
+}
+
+private extension RuntimeActivity {
+    /// Public execution convergence is a phase/signal indicator only. The
+    /// model's private convergence value is not exposed by the runtime.
+    var convergenceLabel: String {
+        switch phase {
+        case .preparing: return "준비"
+        case .source: return "자료"
+        case .authorizing: return "승인"
+        case .routing: return "라우팅"
+        case .executing: return "실행"
+        case .verifying: return "검증"
+        case .syncing: return "동기화"
+        case .recovering: return "복구"
+        }
+    }
+}
+
+private struct SessionExecutionBadge: View {
+    let session: ConversationSession
+    let activity: RuntimeActivity
+    let compact: Bool
+
+    private var sessionID: String? {
+        activity.nativeSessionID
+            ?? (activity.provider == ProviderChoice.codex.rawValue ? session.codexSessionID : nil)
+            ?? (activity.provider == ProviderChoice.claude.rawValue ? session.claudeSessionID : nil)
+    }
+
+    private var providerTitle: String {
+        providerDisplayName(activity.provider)
+    }
+
+    var body: some View {
+        HStack(spacing: compact ? 5 : 7) {
+            Circle().fill(Theme.green).frame(width: compact ? 5 : 6, height: compact ? 5 : 6)
+            VStack(alignment: .leading, spacing: 2) {
+                let route = ExecutionRoutePresentation(activity: activity)
+                HStack(spacing: 5) {
+                    Text("실행 세션")
+                        .font(.system(size: compact ? 9 : 10, weight: .bold))
+                    Text(route.executionLine)
+                        .font(.system(size: compact ? 9 : 10, weight: .semibold))
+                    if let modelLine = route.modelLine {
+                        Text(modelLine).font(.system(size: compact ? 9 : 10)).foregroundStyle(Theme.muted)
+                    }
+                    if let effort = activity.effort, !effort.isEmpty {
+                        Text(os1Tr("추론: \(effort)", "Reasoning: \(effort)")).font(.system(size: compact ? 9 : 10)).foregroundStyle(Theme.muted)
+                    }
+                }
+                .help(route.detail)
+                HStack(spacing: 5) {
+                    Text("수렴 단계 · \(activity.convergenceLabel)")
+                    if let sessionID {
+                        Text("· \(String(sessionID.prefix(8)))…")
+                    } else {
+                        Text("· 백엔드 세션 연결 중")
+                    }
+                }
+                .font(.system(size: compact ? 8 : 9, weight: .medium))
+                .foregroundStyle(Theme.muted)
+            }
+            .lineLimit(1)
+        }
+        .foregroundStyle(Theme.text)
+        .padding(.horizontal, compact ? 7 : 9)
+        .padding(.vertical, compact ? 4 : 6)
+        .background(Theme.green.opacity(0.08), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous).stroke(Theme.green.opacity(0.24)))
+        .help("실행 중인 백엔드 세션과 OS-1 공개 수렴 단계를 표시합니다. 모델 내부 수렴값은 노출되지 않습니다.")
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("실행 세션 \(providerTitle), 수렴 단계 \(activity.convergenceLabel)")
     }
 }
 
@@ -8853,7 +10689,8 @@ private struct ConversationView: View {
                         session: session,
                         isRunning: store.isSessionRunning(session.id),
                         queuedSubmissions: store.queuedSubmissions.filter { $0.sessionID == session.id },
-                        publicProgress: store.activeRuns[session.id]?.activity.publicText
+                        publicProgress: store.activeRuns[session.id]?.activity.publicText,
+                        waitingReason: store.waitingBubbleReason(session.id)
                     )
                 }
                 ComposerView(store: store, session: session)
@@ -8916,6 +10753,9 @@ private struct ConversationHeader: View {
                 Text("/").foregroundStyle(Theme.muted.opacity(0.5))
                 Text(session.title).fontWeight(.medium).lineLimit(1).foregroundStyle(Theme.text)
                 Spacer(minLength: 8)
+                if let activity = store.activeRuns[session.id]?.activity {
+                    SessionExecutionBadge(session: session, activity: activity, compact: true)
+                }
                 Menu {
                     Button(session.pinnedAt == nil ? "상단에 고정" : "고정 해제") { store.togglePin(session.id) }
                     Button("이름 변경…") { store.promptRename(session.id) }
@@ -8954,6 +10794,17 @@ private struct WelcomeView: View {
     var body: some View {
         VStack(spacing: 24) {
             Spacer()
+            if store.queuedSubmissions.contains(where: { $0.sessionID == session.id }) {
+                // The first request was received but has not started; showing
+                // the empty-chat prompt here read as "nothing was sent".
+                VStack(spacing: 10) {
+                    Text("요청을 받았습니다 · 아직 실행 전").font(.system(size: 20, weight: .medium)).foregroundStyle(Theme.text)
+                    Text(store.queueReason(session.id)).font(.system(size: 13))
+                        .foregroundStyle(store.globalSlotWait(session.id) != nil ? Theme.pink : Theme.muted)
+                        .multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)
+                        .accessibilityIdentifier("os1.welcome.queued")
+                }.padding(.horizontal, 40)
+            } else {
             Text(os1Tr("무엇을 만들어 볼까요?", "What should we build?")).font(.system(size: 26, weight: .medium)).foregroundStyle(Theme.text)
             HStack(spacing: 12) {
                 ForEach(suggestions, id: \.0) { item in
@@ -8963,6 +10814,7 @@ private struct WelcomeView: View {
                             .background(Theme.panelRaised, in: RoundedRectangle(cornerRadius: 10))
                     }.buttonStyle(.plain).foregroundStyle(Theme.muted)
                 }
+            }
             }
             Spacer()
         }.frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -9006,11 +10858,14 @@ private extension NSAttributedString.Key {
 /// thumbnails; every other file gets its native document icon and name.
 /// The quoted transport path stays in stored message text but never becomes
 /// the visible transcript payload.
-private func timelineAttachmentPreviews(paths: [String], maxEdge: CGFloat = 360) -> NSAttributedString? {
+private func timelineAttachmentPreviews(
+    paths: [String],
+    maxEdge: CGFloat = Theme.attachmentPreviewMaxEdge
+) -> NSAttributedString? {
     let result = NSMutableAttributedString()
     // Every attachment the composer accepted (it caps at 24) gets a card; a
     // silent cut at six lost files 7+ without a trace.
-    for path in paths {
+    for (index, path) in paths.enumerated() {
         let url = URL(fileURLWithPath: path)
         let attachment = NSTextAttachment()
         var isImagePreview = false
@@ -9026,24 +10881,28 @@ private func timelineAttachmentPreviews(paths: [String], maxEdge: CGFloat = 360)
             attachment.bounds = CGRect(
                 x: 0,
                 y: 0,
-                width: CGFloat(cgImage.width) * scale / 2,
-                height: CGFloat(cgImage.height) * scale / 2
+                width: CGFloat(cgImage.width) * scale,
+                height: CGFloat(cgImage.height) * scale
             )
             isImagePreview = true
         } else {
             attachment.image = NSWorkspace.shared.icon(forFile: path)
             attachment.bounds = CGRect(x: 0, y: -3, width: 24, height: 24)
         }
-        result.append(NSAttributedString(string: "\n"))
+        if index > 0 { result.append(NSAttributedString(string: "\n")) }
         result.append(NSAttributedString(attachment: attachment))
-        let kind = isImagePreview ? "이미지" : (url.pathExtension.isEmpty ? "파일" : url.pathExtension.uppercased())
-        result.append(NSAttributedString(
-            string: "  \(kind) · \(url.lastPathComponent)",
-            attributes: [
-                .font: NSFont.systemFont(ofSize: isImagePreview ? 10 : 11, weight: .medium),
-                .foregroundColor: TimelinePalette.muted,
-            ]
-        ))
+        // The image is the card. Repeating its filename beside the preview
+        // adds clutter; document attachments still need a visible label.
+        if !isImagePreview {
+            let kind = url.pathExtension.isEmpty ? "파일" : url.pathExtension.uppercased()
+            result.append(NSAttributedString(
+                string: "  \(kind) · \(url.lastPathComponent)",
+                attributes: [
+                    .font: NSFont.systemFont(ofSize: 11, weight: .medium),
+                    .foregroundColor: TimelinePalette.muted,
+                ]
+            ))
+        }
     }
     return result.length == 0 ? nil : result
 }
@@ -9062,6 +10921,27 @@ private enum TimelinePalette {
     static let green = NSColor(calibratedRed: 0.28, green: 0.93, blue: 0.55, alpha: 1)
     static let codex = NSColor(calibratedRed: 0.95, green: 0.64, blue: 0.80, alpha: 1)
     static let claude = NSColor(calibratedRed: 0.98, green: 0.53, blue: 0.68, alpha: 1)
+    // User bubbles share the app's pink family while staying readable against the dark transcript.
+    static let userBubble = NSColor(calibratedRed: 0.62, green: 0.24, blue: 0.43, alpha: 1)
+}
+
+/// The one line under a steered input that separates "OS-1 accepted and is
+/// still handing this over" from "the run actually received it". Ordinary
+/// messages carry no state and render exactly as before.
+/// `queueReason` is the owning conversation's actual queue blocker, passed
+/// only for a request still waiting in an idle conversation's queue, so the
+/// bubble names why it has not reached a backend (e.g. the global slot cap).
+private func steeringDeliveryCaption(_ state: SteeringDeliveryState?, queueReason: String? = nil) -> [(String, NSFont, NSColor)] {
+    guard let state else { return [] }
+    let (text, color): (String, NSColor)
+    switch state {
+    case .waiting: (text, color) = (queueReason.map { "백엔드 전달 전 · " + $0 } ?? "전달 대기 · 아직 백엔드에 전달되지 않았습니다", TimelinePalette.muted)
+    case .pending: (text, color) = ("전달 대기 · 현재 작업에 전달했고 수신 확인 중입니다", TimelinePalette.muted)
+    case .delivered: (text, color) = ("전달 완료 · 현재 작업이 입력을 받았습니다", TimelinePalette.green)
+    case .rejected: (text, color) = ("전달 거절됨 · 입력은 보존했습니다", TimelinePalette.pink)
+    case .undelivered: (text, color) = ("전달되지 않음 · 입력은 보존했습니다", TimelinePalette.muted)
+    }
+    return [("\u{2028}" + text, NSFont.systemFont(ofSize: 10, weight: .medium), color)]
 }
 
 private func timelineNormalizedText(_ value: String) -> String {
@@ -9122,16 +11002,19 @@ private func timelineAttributedDocument(
     expanded: Set<String> = [],
     expandAll: Bool = false,
     sourceStore: SourceContextStore = SourceContextStore(),
-    publicProgress: String? = nil
+    publicProgress: String? = nil,
+    waitingReason: String? = nil
 ) -> NSAttributedString {
     let document = NSMutableAttributedString()
+    let queuedMessageIDs = Set(queuedSubmissions.map(\.userMessageID))
 
     func appendBlock(
         role: String,
         alignment: NSTextAlignment = .left,
         minimumHeadIndent: CGFloat = 0,
         components: [(String, NSFont, NSColor)],
-        richContent: NSAttributedString? = nil
+        richContent: NSAttributedString? = nil,
+        trailingSpacing: CGFloat = 40
     ) {
         let paragraph = NSMutableParagraphStyle()
         paragraph.alignment = alignment
@@ -9166,16 +11049,16 @@ private func timelineAttributedDocument(
         ]))
         let lastParagraph = (document.string as NSString).paragraphRange(for: NSRange(location: document.length - 1, length: 1))
         let finalStyle = endingStyle.mutableCopy() as! NSMutableParagraphStyle
-        finalStyle.paragraphSpacing = 40
+        finalStyle.paragraphSpacing = trailingSpacing
         document.addAttribute(.paragraphStyle, value: finalStyle, range: lastParagraph)
     }
 
     for (index, message) in messages.enumerated() {
         switch message.role {
         case .user:
-            // Every attachment is visible as an inline card. The quoted path
-            // block remains transport-only: it is preserved in storage/copy
-            // but never leaks into the visible conversation as raw text.
+            // Codex-style convergence: text owns the user bubble while image
+            // cards stay outside it. The transport path remains stored/copyable
+            // but never becomes visible transcript text.
             let paths = PromptAttachments.paths(in: message.text)
             let previews = timelineAttachmentPreviews(paths: paths)
             let shown = paths.isEmpty ? message.text : PromptAttachments.textWithoutReferences(message.text)
@@ -9187,9 +11070,19 @@ private func timelineAttributedDocument(
                     timelineNormalizedText(shown),
                     NSFont.systemFont(ofSize: 14, weight: .medium),
                     TimelinePalette.text
-                )],
-                richContent: previews
+                )] + steeringDeliveryCaption(message.steeringDelivery,
+                    queueReason: queuedMessageIDs.contains(message.id) ? waitingReason : nil),
+                trailingSpacing: previews == nil ? 40 : 20
             )
+            if let previews {
+                appendBlock(
+                    role: "userAttachment",
+                    alignment: .right,
+                    minimumHeadIndent: 100,
+                    components: [],
+                    richContent: previews
+                )
+            }
         case .assistant:
             let provider = providerDisplayName(message.provider)
             let providerColor = message.provider == "local"
@@ -9327,9 +11220,23 @@ private final class ContinuousTranscriptTextView: NSTextView {
                 forCharacterRange: range,
                 actualCharacterRange: nil
             )
-            var rect = layoutManager.boundingRect(forGlyphRange: glyphRange, in: textContainer)
-            rect.origin.x += origin.x
-            rect.origin.y += origin.y
+            // `boundingRect(forGlyphRange:)` can include the whole aligned line
+            // fragment for a right-aligned paragraph. That made a short user
+            // message paint as a full-width bubble. Use each line's used rect
+            // instead: it is the actual glyph envelope, so the bubble follows
+            // the text like Codex while retaining the transcript's wrap width.
+            var rect = NSRect.null
+            layoutManager.enumerateLineFragments(forGlyphRange: glyphRange) { _, usedRect, _, _, _ in
+                var glyphRect = usedRect
+                glyphRect.origin.x += origin.x
+                glyphRect.origin.y += origin.y
+                rect = rect.union(glyphRect)
+            }
+            if rect.isNull {
+                rect = layoutManager.boundingRect(forGlyphRange: glyphRange, in: textContainer)
+                rect.origin.x += origin.x
+                rect.origin.y += origin.y
+            }
             let contentRect = rect
             switch role {
             case MessageRole.user.rawValue:
@@ -9367,7 +11274,7 @@ private final class ContinuousTranscriptTextView: NSTextView {
         for frame in timelineFrames() {
             switch frame.role {
             case MessageRole.user.rawValue:
-                drawRoundedBackground(frame.paint, fill: TimelinePalette.panelRaised, stroke: NSColor.clear, dirtyRect: dirtyRect)
+                drawRoundedBackground(frame.paint, fill: TimelinePalette.userBubble, stroke: NSColor.clear, dirtyRect: dirtyRect)
             case MessageRole.receipt.rawValue:
                 drawRoundedBackground(frame.paint, fill: NSColor.clear, stroke: NSColor.clear, dirtyRect: dirtyRect)
             case "queued":
@@ -9400,6 +11307,10 @@ private struct TranscriptRenderInput: Equatable {
     let isRunning: Bool
     let workspace: String
     var publicProgress: String? = nil
+    /// Part of the render identity: a queued bubble's caption changes when
+    /// the reason it waits changes (slot freed, hold released) without any
+    /// message edit.
+    var waitingReason: String? = nil
 }
 
 private final class TranscriptClipView: NSClipView {
@@ -9419,6 +11330,7 @@ private struct ContinuousTranscriptView: NSViewRepresentable {
     let isRunning: Bool
     let workspace: String
     var publicProgress: String? = nil
+    var waitingReason: String? = nil
 
     final class Coordinator: NSObject, NSTextViewDelegate {
         var renderedSessionID: UUID?
@@ -9435,7 +11347,8 @@ private struct ContinuousTranscriptView: NSViewRepresentable {
             let scroll = textView.enclosingScrollView
             let origin = scroll?.contentView.bounds.origin
             let document = timelineAttributedDocument(messages: content.messages, queuedSubmissions: content.queuedSubmissions,
-                isRunning: content.isRunning, workspace: content.workspace, expanded: expanded, publicProgress: content.publicProgress)
+                isRunning: content.isRunning, workspace: content.workspace, expanded: expanded, publicProgress: content.publicProgress,
+                waitingReason: content.waitingReason)
             textView.textStorage?.setAttributedString(document)
             textView.needsDisplay = true
             if let origin { scroll?.contentView.scroll(to: origin) }
@@ -9500,7 +11413,8 @@ private struct ContinuousTranscriptView: NSViewRepresentable {
         if changingSession { context.coordinator.expanded.removeAll() }
         context.coordinator.content = self
         let input = TranscriptRenderInput(sessionID: sessionID, messages: messages,
-            queued: queuedSubmissions, isRunning: isRunning, workspace: workspace, publicProgress: publicProgress)
+            queued: queuedSubmissions, isRunning: isRunning, workspace: workspace, publicProgress: publicProgress,
+            waitingReason: waitingReason)
         // Math attachments have object identity. Comparing freshly rendered
         // attributed strings would rewrite the text storage on every keystroke.
         guard context.coordinator.lastInput != input else { return }
@@ -9512,7 +11426,8 @@ private struct ContinuousTranscriptView: NSViewRepresentable {
             isRunning: isRunning,
             workspace: workspace,
             expanded: context.coordinator.expanded,
-            publicProgress: publicProgress
+            publicProgress: publicProgress,
+            waitingReason: waitingReason
         )
         guard !textView.attributedString().isEqual(to: document) else { return }
 
@@ -9546,6 +11461,7 @@ private struct MessageTimeline: View {
     let isRunning: Bool
     let queuedSubmissions: [PendingSubmission]
     var publicProgress: String? = nil
+    var waitingReason: String? = nil
 
     var body: some View {
         ContinuousTranscriptView(
@@ -9554,7 +11470,8 @@ private struct MessageTimeline: View {
             queuedSubmissions: queuedSubmissions,
             isRunning: isRunning,
             workspace: session.workspace,
-            publicProgress: publicProgress
+            publicProgress: publicProgress,
+            waitingReason: waitingReason
         )
     }
 }
@@ -9882,9 +11799,11 @@ private struct RunActivityBanner: View {
                 }.frame(width: 16, height: 16).accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: 3) {
                     HStack {
+                        let route = ExecutionRoutePresentation(activity: activity)
                         Text(stopping ? "작업 중지 확인 중" : activity.label).font(.system(size: 11))
-                        if let model = activity.model { Text(model).font(.system(size: 10)).foregroundStyle(Theme.muted) }
-                        if let effort = activity.effort { Text(effort).font(.system(size: 10)).foregroundStyle(Theme.muted) }
+                        Text(route.executionLine).font(.system(size: 10, weight: .medium)).foregroundStyle(Theme.pink).help(route.detail)
+                        if let modelLine = route.modelLine { Text(modelLine).font(.system(size: 10)).foregroundStyle(Theme.muted).help(route.detail) }
+                        if let effort = activity.effort { Text(os1Tr("추론: \(effort)", "Reasoning: \(effort)")).font(.system(size: 10)).foregroundStyle(Theme.muted) }
                         if let tool = activity.toolProgressLabel { Text(tool).font(.system(size: 10)).foregroundStyle(Theme.muted) }
                     }
                     if activity.toolProgressLabel != nil && quiet < 30 {
@@ -9945,6 +11864,7 @@ private struct ConversationQueueView: View {
             HStack {
                 Text(session.queuePaused == true ? "대기 메시지 \(items.count) · 일시정지" : "대기 메시지 \(items.count)")
                     .font(.system(size: 11, weight: .medium)).foregroundStyle(Theme.muted)
+                    .accessibilityIdentifier("os1.queue.header")
                 Spacer()
                 Menu {
                     if store.canResumeQueue(session.id) {
@@ -9957,10 +11877,21 @@ private struct ConversationQueueView: View {
                     .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
                     .help(store.queueReason(session.id)).accessibilityLabel("대기열 옵션")
             }
-            if store.activeRuns[session.id]?.cancellationRequested == true || session.lastFailure != nil {
+            if store.globalSlotWait(session.id) != nil ||
+                (store.activeRuns[session.id]?.cancellationRequested != true && session.lastFailure == nil) {
+                // The actual blocker, visible without opening the menu: the
+                // global slot cap reads differently from this chat's own order.
+                Text(store.queueReason(session.id))
+                    .font(.system(size: 11, weight: store.globalSlotWait(session.id) != nil ? .medium : .regular))
+                    .foregroundStyle(store.globalSlotWait(session.id) != nil ? Theme.pink : Theme.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityIdentifier("os1.queue.reason")
+            }
+            if store.globalSlotWait(session.id) == nil,
+               store.activeRuns[session.id]?.cancellationRequested == true || session.lastFailure != nil {
                 Text(store.activeRuns[session.id]?.cancellationRequested == true
                     ? "실행이 끝나는 대로 선택한 요청을 시작합니다"
-                    : "이전 작업과 대기 요청은 보존됩니다. 화살표로 실행하거나, 변경 상태가 불확실하면 먼저 실제 변경 상태를 확인합니다.")
+                    : "이전 작업은 보존되며 다시 실행하지 않습니다. 새 메시지를 보내거나 화살표를 누르면 이어서 실행하고, 다음 작업이 실제 상태를 먼저 확인합니다.")
                     .font(.system(size: 11)).foregroundStyle(Theme.muted)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -9970,7 +11901,7 @@ private struct ConversationQueueView: View {
                         HStack(alignment: .center, spacing: 6) {
                             Text(item.request).lineLimit(2).frame(maxWidth: .infinity, alignment: .leading)
                                 .help(item.request)
-                            Button { store.advanceQueued(item.id) } label: {
+                            Button { store.advanceQueued(item.id, ownerRequested: true) } label: {
                                 Image(systemName: "arrow.up").frame(width: 26, height: 26)
                             }.buttonStyle(.plain)
                                 .disabled(!store.canSteerQueued(item) && !store.canAdvanceQueued(item) && !store.canReconcileQueued(item))
@@ -10061,7 +11992,9 @@ private struct ComposerView: View {
                 Button(session.lastFailure?.savedResultNeedsReview == true ? "저장된 결과·현재 상태 검토 · 변경 재실행 없음" : session.lastFailure?.deliveryID != nil ? "저장된 결과 전달 · 모델 재실행 없음" : session.lastBackendFailure?.requiresReadback == true
                     ? "현재 상태 확인 · 재실행하지 않음" : "OS-1에서 다시 확인하고 시도") { store.retrySelectedFailure() }
                     .font(.system(size: 12, weight: .medium))
-                    .disabled(store.activeRuns.count >= SessionStore.maximumConcurrentSessions)
+                    .disabled(store.activeRuns.count >= store.maximumConcurrentSessions)
+                    .help(store.activeRuns.count >= store.maximumConcurrentSessions
+                        ? "동시 실행 \(store.activeRuns.count)/\(store.maximumConcurrentSessions) 사용 중 · 다른 작업이 끝나면 누를 수 있습니다" : "")
             }
             if store.selectedSessionQueueCount > 0 || session.queuePaused == true {
                 ConversationQueueView(store: store, session: session)

@@ -109,4 +109,26 @@ describe("strict trust-boundary contracts", () => {
       }),
     ).toThrow();
   });
+
+  it("accepts a result with or without measured usage, and nothing but counts in it", () => {
+    const base = {
+      ticket: {
+        execution_id: "3f7c2a82-3b21-4f39-9e3a-8dd9af83c79c", sequence: 1, provider: "codex",
+        action: "cx_56terra_medium", permission_profile: "read_only", expires_at: "2026-09-01T00:00:00.000Z",
+        nonce: "Q2hhbmdlTWVOb3RBbmRUaGVuQ2hhbmdlTWVBZ2Fpbg", signature: "A".repeat(86),
+      },
+      result_hash: "0".repeat(64),
+      artifact_ref: "r2://os1-private-results/execution/result.json",
+      device_signature: "A".repeat(86),
+    };
+    expect(parseResultRequest(base).usage).toBeUndefined();
+    const usage = { input_tokens: 10, output_tokens: 2, cache_tokens: 5 };
+    expect(parseResultRequest({ ...base, usage }).usage).toEqual(usage);
+    expect(parseResultRequest({ ...base, usage: { input_tokens: null, output_tokens: null, cache_tokens: null } }).usage)
+      .toEqual({ input_tokens: null, output_tokens: null, cache_tokens: null });
+    for (const bad of [{ ...usage, cache_tokens: 11 }, { ...usage, prompt: "x" }, { input_tokens: 1, output_tokens: 1 },
+      { ...usage, input_tokens: -1 }, { ...usage, output_tokens: 1.5 }, "10", null]) {
+      expect(() => parseResultRequest({ ...base, usage: bad })).toThrow();
+    }
+  });
 });

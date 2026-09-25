@@ -8,18 +8,62 @@ public enum TaskWorkflow: String, Codable, Sendable, CaseIterable {
     case implementation
     case verification
 
-    public static func shouldDecompose(_ request: String, scope: TaskContext.Scope) -> Bool {
+    /// A narrow owner-request fast path. Product names alone do not make a
+    /// spacing edit an architecture task. Mixed/structural requests fail closed.
+    public static func isBoundedAppearanceEdit(_ request: String) -> Bool {
+        let text = request.precomposedStringWithCanonicalMapping.lowercased()
+        guard text.count <= 1200 else { return false }
+        let surface = ["ui", "interface", "인터페이스", "사이드바", "sidebar", "화면", "버튼", "button", "헤더", "header"]
+        let cosmetic = ["여백", "공백", "간격", "padding", "spacing", "margin", "폰트", "글자체", "font", "색상", "색깔", "color", "corner radius"]
+        let edit = ["수정", "고쳐", "바꿔", "줄여", "올려", "없애", "fix", "change", "reduce", "remove", "adjust"]
+        let structural = ["라우팅", "routing", "router", "아키텍", "architecture", "backend", "백엔드", "백핸드", "quota", "쿼터", "인증", "로그인", "auth", "권한", "permission", "schema", "스키마", "migration", "마이그레이션", "telemetry", "실시간", "stream", "스티어링", "steering", "queue", "대기열", "복구", "restore", "데이터", "database", "저장", "persistence", "deadlock", "교착", "원인", "root cause", "멈", "freeze", "hanging", "hung", "crash", "충돌", "api", "보안", "security", "접근성", "accessibility", "키보드", "keyboard", "동작", "behavior", "전체 테스트", "모든 테스트", "전체 검증", "전수", "full test", "all test", "full suite", "end-to-end", "e2e"]
+        return surface.contains(where: text.contains)
+            && cosmetic.contains(where: text.contains)
+            && edit.contains(where: text.contains)
+            && !structural.contains(where: text.contains)
+    }
+
+    public static func validationContract(ownerRequest: String, scope: TaskContext.Scope) -> String? {
+        guard scope == .workspaceWrite, isBoundedAppearanceEdit(ownerRequest) else { return nil }
+        return """
+        OS1 VALIDATION PROFILE: BOUNDED_APPEARANCE_EDIT
+        This owner request is a bounded visual change, not a new architecture.
+        Inspect the target view and preserve existing work. Implement the smallest change.
+        Validate with the affected layout regression, one build, and one actual render/UI observation.
+        Do not expand this task into a full runtime/fleet test battery or another model review unless
+        the diff changes behavior/shared runtime logic or the owner explicitly requests that coverage.
+        A failed renderer is a verification limitation, not a reason to repeat the same render/build loop.
+        Use a different available UI observation once; if unavailable, report that exact limitation.
+        Report source, build, installed state and visible effect separately. Existing self-update,
+        permission, rollback and installation gates remain authoritative; do not bypass them.
+        """
+    }
+
+    /// One backend turn does the whole job, as Codex and Claude Code do: the
+    /// backend plans, edits and tests in its own loop, and OS-1's own checks
+    /// follow. Splitting into architecture, implementation and verification
+    /// turns happens only when the owner asks for it ("쪼개", "각각 라우팅",
+    /// "독립 검증"). Automatic splitting by keyword ran 15 owner requests
+    /// between 2026-09-19 and 09-23 and left 8 held or unfinished (median 22
+    /// minutes); build 244 brought it back for "routing/architecture + fix"
+    /// wording, and with one live backend every stage ran on the same Codex
+    /// account, so a split only tripled the turns and the quota.
+    public static func shouldDecompose(_ request: String, scope: TaskContext.Scope, projectID: String? = nil) -> Bool {
         guard scope == .workspaceWrite else { return false }
         let text = request.precomposedStringWithCanonicalMapping.lowercased()
-        let substantial = ["오토메이션", "automation", "아키텍처", "architecture",
-                           "통합", "integration", "integrate", "워크플로", "workflow", "파이프라인", "pipeline",
-                           "os1", "os-1", "clodex", "복구", "restore", "self-repair", "셀프", "end-to-end", "e2e"].contains { text.contains($0) }
-        let delivery = ["구현", "완성", "완료", "끝까지", "고쳐", "수정", "만들", "추가", "설치", "배포",
-                        "implement", "finish", "complete", "build", "fix", "repair", "ship", "deploy"].contains { text.contains($0) }
-        let explicitMultiStage = ["설계", "검증", "테스트", "로그", "원인", "완수율", "아키텍처",
-                                  "architecture", "verify", "test", "root cause", "end-to-end", "e2e"].contains { text.contains($0) }
-        return delivery && (explicitMultiStage || substantial)
+        return explicitStagingMarkers.contains(where: text.contains)
     }
+
+    /// The owner asking for separate stages, separately routed parts, or an
+    /// independent verifier.
+    public static let explicitStagingMarkers = [
+        "독립 검증", "독립적으로 검증", "별도 검증", "별도로 검증", "검증은 따로", "따로 검증", "단계별로 나눠", "단계를 나눠",
+        "테스크를 쪼개", "태스크를 쪼개", "작업을 쪼개", "작업을 나눠서", "작업 나눠서", "서브태스크로 나눠", "하위 작업으로 나눠",
+        "각각 라우팅", "따로따로 라우팅", "단계마다 라우팅", "모델별로 나눠",
+        "설계·구현·검증", "설계, 구현, 검증",
+        "independent verification", "separate verification", "verify separately", "in separate stages", "staged workflow",
+        "split the task", "split this task", "route each stage", "route subtasks separately",
+    ]
 
     /// Phase instructions constrain actions, not executor capabilities.
     public var executionPermissionProfile: String { "workspace_write" }
@@ -29,11 +73,11 @@ public enum TaskWorkflow: String, Codable, Sendable, CaseIterable {
     public var routingTask: String {
         switch self {
         case .architecture:
-            return "Execute architecture preparation for an authorized build. Inspect sources and requirements and return an implementation contract; the workflow automatically continues to implementation. This is not an interrupted-task status request."
+            return "Review current repository sources, requirements and logs for software architecture. Return an evidence-grounded architecture contract with concrete paths, acceptance tests and rollback boundaries. This phase delivers analysis, not overall task completion."
         case .implementation:
             return "Implement the authorized source change: modify files in the authorized workspace according to the architecture contract, then run deterministic tests. Avoid unrelated work and external side effects."
         case .verification:
-            return "Execute independent verification of the implemented artifact. Inspect actual files, tests and results against the owner objective; report PASS or BLOCK."
+            return "Review actual repository artifacts, tests and execution records against the owner objective. Return an independent PASS or BLOCK verdict with evidence."
         }
     }
 
@@ -84,6 +128,24 @@ public enum TaskWorkflow: String, Codable, Sendable, CaseIterable {
             target = tiers.contains(3) ? 3 : (tiers.contains(2) ? 2 : (tiers.max() ?? 0))
         }
         return Set(identifiers.filter { Self.modelTier($0) == target })
+    }
+
+    /// Stage quality preference must not erase another usable transport.
+    /// Select within each provider; the signed router still ranks the union.
+    public func preferredModelsByProvider(_ inventories: [[String]]) -> Set<String> {
+        inventories.reduce(into: Set<String>()) { result, models in
+            result.formUnion(preferredModels(models))
+        }
+    }
+
+    /// Cost preference is not an availability boundary. Retain stronger models
+    /// so the signed router can satisfy a task-specific capability floor.
+    public func eligibleModelsByProvider(_ inventories: [[String]]) -> Set<String> {
+        guard self == .implementation else { return preferredModelsByProvider(inventories) }
+        return inventories.reduce(into: Set<String>()) { result, models in
+            let floor = preferredModels(models).map { Self.modelTier($0) }.min() ?? 0
+            result.formUnion(models.filter { Self.modelTier($0) >= floor })
+        }
     }
 
     public func preferredEfforts(_ efforts: [String]) -> [String] {
@@ -174,7 +236,13 @@ public enum TaskWorkflow: String, Codable, Sendable, CaseIterable {
         return markers[0].hasSuffix("PASS")
     }
 
-    public static func permitsBoundedRepair(verdict: Bool?, stageIndex: Int) -> Bool {
-        verdict == false && stageIndex == 2
+    public static func sourceAlreadySatisfied(_ output: String) -> Bool {
+        let lines = output.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+        let marker = "OS1_SOURCE_STATE: ALREADY_SATISFIED"
+        return lines.filter { $0 == marker }.count == 1 && lines.last == marker
+    }
+
+    public static func permitsBoundedRepair(verdict: Bool?, stageIndex: Int, repairAttempted: Bool = false) -> Bool {
+        verdict == false && !repairAttempted && (stageIndex == 1 || stageIndex == 2)
     }
 }

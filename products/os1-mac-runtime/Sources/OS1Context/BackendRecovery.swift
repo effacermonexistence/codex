@@ -35,8 +35,8 @@ public enum BackendBlocker: String, Codable, Sendable {
             return os1Tr("작업을 중지했습니다. 요청과 이미 받은 결과는 OS1에 보존했습니다. 실행된 변경은 자동으로 되돌리거나 다시 실행하지 않습니다.",
                 "The task was stopped. The request and any results already received are preserved in OS1. Executed changes are not automatically reverted or re-run.")
         case .verificationRejected:
-            return os1Tr("백엔드 실행과 응답 저장은 확인됐지만 결과 검증을 통과하지 못했습니다. 저장된 출력과 실행 기록을 보존했습니다. 이미 실행된 작업은 중복 실행하지 않습니다.",
-                "Backend execution and response persistence were verified, but result verification did not pass. The saved output and native execution record are preserved. Already executed work is not replayed.")
+            return os1Tr("답변은 받은 그대로 위에 표시했습니다. 결과 검증을 통과하지 못해 채택으로만 표시하지 않았고, 이미 한 작업은 다시 실행하지 않습니다. 다음 메시지를 보내면 그대로 이어서 진행합니다.",
+                "The answer is shown above as the backend returned it. It did not pass result verification, so it is not marked adopted; work already done is not replayed. Your next message continues normally.")
         case .deliveryPending:
             return os1Tr("백엔드 답변을 OS1에 저장했습니다. 서버 검증·전달은 아직 끝나지 않았습니다. ‘저장된 결과 전달’을 누르면 모델을 다시 실행하지 않고 저장된 답변만 재접수합니다.",
                 "The backend answer is saved in OS1, but server verification and delivery have not finished. 'Deliver saved result' re-submits only the saved answer without running a model again.")
@@ -140,21 +140,73 @@ public struct BackendFailureNotice: Codable, Equatable, Sendable {
     /// profile stays conservative and still reconciles.
     public var requiresReadback: Bool {
         guard permissionProfile != "read_only" else { return false }
+        // A turn that finished (exit 0, saved answer, verified native record)
+        // and was only refused adoption is not an interrupted write: its own
+        // answer states what it did. Re-reading it costs a backend run each
+        // time (261 readbacks in the week to 2026-09-24) and learns nothing.
+        guard blocker != .verificationRejected else { return false }
         return blocker == .effectsUncertain || (dispatchStage == .dispatched && permissionProfile == "workspace_write")
     }
+    /// The most recent notice this process emitted, for in-process callers
+    /// (the Fleet agent) that have no OS1_FAILURE_FILE: a job that failed only
+    /// adoption can still return the answer its backend produced.
+    nonisolated(unsafe) private static var lastEmitted: BackendFailureNotice?
+    private static let lastEmittedLock = NSLock()
+    public static func takeLastEmitted() -> BackendFailureNotice? {
+        lastEmittedLock.lock(); defer { lastEmittedLock.unlock() }
+        let value = lastEmitted; lastEmitted = nil; return value
+    }
     public func emit() {
+        Self.lastEmittedLock.lock(); Self.lastEmitted = self; Self.lastEmittedLock.unlock()
         guard let path = ProcessInfo.processInfo.environment["OS1_FAILURE_FILE"],
               let data = try? JSONEncoder().encode(self) else { return }
         try? data.write(to: URL(fileURLWithPath: path), options: .atomic)
         try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path)
     }
     public static func clear() {
+        lastEmittedLock.lock(); lastEmitted = nil; lastEmittedLock.unlock()
         guard let path = ProcessInfo.processInfo.environment["OS1_FAILURE_FILE"] else { return }
         try? FileManager.default.removeItem(at: URL(fileURLWithPath: path))
     }
 }
 
+/// Where a Claude quota rejection applies. `.model` is carried only when every
+/// limit sentence of the CLI names the dispatched model's own allowance, or the
+/// CLI gates that model with "Switch to another model"; everything else stays
+/// account-wide.
+public enum ClaudeQuotaScope: Equatable, Sendable {
+    case model(String)
+    case account
+}
+
+/// One quota rejection's effect on the rest of the run: the Claude models that
+/// stay routable, the providers now out, and where the same request goes next
+/// (nil: stop and surface the rejection).
+public struct QuotaReroute: Equatable, Sendable {
+    public let claudeModels: [String]
+    public let unavailable: Set<String>
+    public let nextPreference: String?
+    public init(claudeModels: [String], unavailable: Set<String>, nextPreference: String?) {
+        self.claudeModels = claudeModels
+        self.unavailable = unavailable
+        self.nextPreference = nextPreference
+    }
+}
+
 public enum BackendRecovery {
+    /// A build upgrade is not evidence that a failed operation is safe to replay.
+    /// Only legacy failures that never ran the verdict contract get one automatic
+    /// readback. Explicit owner retries remain available through the UI.
+    public static func needsAutomaticReadback(attempted: Bool?, verdictReconciled: Bool?) -> Bool {
+        attempted != true || verdictReconciled != true
+    }
+
+    /// One verified no-effects verdict can resume an objective once. Installing
+    /// another build does not replenish this execution budget.
+    public static func mayResumeAfterReadback(alreadyResumed: Bool?) -> Bool {
+        alreadyResumed != true
+    }
+
     /// Failed adoption must not erase a successfully persisted native response.
     /// This classification does not authorize replay or override remote verification.
     public static func rejectedAdoptionBlocker(exitCode: Int, output: String, persistence: String) -> BackendBlocker {
@@ -167,20 +219,128 @@ public enum BackendRecovery {
     public static func claudeQuotaFailure(status: Int32, object: [String: Any]) -> Bool {
         guard status != 0 || object["is_error"] as? Bool == true,
               (object["permission_denials"] as? [Any] ?? []).isEmpty else { return false }
-        let errors = object["errors"] as? [String] ?? []
-        let text = ([object["result"] as? String ?? ""] + errors).joined(separator: "\n").lowercased()
-        return ["you've hit your session limit", "you’ve hit your session limit", "you've hit your weekly limit",
-                "you’ve hit your weekly limit", "usage limit reached",
-                "usage limit exceeded", "rate limit exceeded", "rate_limit_error", "insufficient_quota"]
+        let text = claudeLimitText(object)
+        // The CLI's own limit sentences match only at the start of a line,
+        // never an arbitrary mention of a limit.
+        return !claudeLimitSentences(text).isEmpty || ["you've hit your session limit", "you've hit your weekly limit",
+            "usage limit reached", "usage limit exceeded", "rate limit exceeded", "rate_limit_error", "insufficient_quota"]
             .contains(where: text.contains)
     }
-    public static func quotaRecoveryPreference(requested: String, failed: String,
+    /// A limit sentence as the Claude CLI (2.1.263) prints it.
+    enum ClaudeLimitSentence: Equatable {
+        /// "You've reached|hit your <name> limit" (no name: "You've hit your limit")
+        /// and "<name> requires usage credits." `gated`: this very sentence goes on
+        /// ". Switch to another model", the CLI's tail for a model that needs credits.
+        case named([String], gated: Bool)
+        /// "You're out of usage credits": account-wide unless gated the same way.
+        case credits(gated: Bool)
+        /// Org, seat, allocation and extra-usage sentences: always account-wide.
+        case account
+    }
+    static func claudeLimitText(_ object: [String: Any]) -> String {
+        let errors = object["errors"] as? [String] ?? []
+        return ([object["result"] as? String ?? ""] + errors).joined(separator: "\n").lowercased()
+            .replacingOccurrences(of: "’", with: "'")
+    }
+    private static let claudeLimitPattern = try? NSRegularExpression(pattern:
+        #"(?m)^(?:you've (?:reached|hit) your (?:([a-z0-9 ._'-]{1,64}?) )?limit(?=$|[\s.,;:!·\)])(\. switch to another model)?|([a-z0-9][a-z0-9 ._-]{0,40}) requires usage credits\.|(you're out of usage credits)(\. switch to another model)?|(you're out of extra usage|your org is out of usage|your seat type doesn't include|your usage allocation has been disabled|your group's usage limit is set to|this service is disabled for your org))"#)
+    static func claudeLimitSentences(_ text: String) -> [ClaudeLimitSentence] {
+        guard let pattern = claudeLimitPattern else { return [] }
+        return pattern.matches(in: text, range: NSRange(text.startIndex..., in: text)).map { match in
+            func group(_ index: Int) -> String? { Range(match.range(at: index), in: text).map { String(text[$0]) } }
+            if group(6) != nil { return .account }
+            if group(4) != nil { return .credits(gated: group(5) != nil) }
+            return .named((group(1) ?? group(3) ?? "").split(separator: " ").map(String.init), gated: group(2) != nil)
+        }
+    }
+    /// "fable", "fable[1m]" and "claude-fable-5-1[1m]" share one allowance family.
+    public static func claudeModelFamily(_ model: String) -> String {
+        let lowered = model.lowercased()
+        let base = lowered.hasPrefix("claude-") ? String(lowered.dropFirst(7)) : lowered
+        return String(base.prefix { $0 != "-" && $0 != "[" && $0 != " " })
+    }
+    /// Nil unless `claudeQuotaFailure` holds. `.model(family)` only when every
+    /// limit sentence names the dispatched family (optionally "Claude" and a
+    /// version number), or is a credits/spend sentence the CLI closes with
+    /// "Switch to another model" — its own statement that other models still
+    /// run. Unparsed, mismatched or mixed evidence stays `.account`.
+    public static func claudeQuotaScope(status: Int32, object: [String: Any], dispatchedModel: String?) -> ClaudeQuotaScope? {
+        guard claudeQuotaFailure(status: status, object: object) else { return nil }
+        let text = claudeLimitText(object)
+        let accountAnywhere = ["you've hit your session limit", "you've hit your weekly limit", "you've hit your usage limit",
+            "you've hit your limit", "usage limit reached", "usage limit exceeded", "insufficient_quota",
+            "your org is out of usage", "your seat type", "usage allocation", "out of extra usage", "disabled for your org"]
+        let sentences = claudeLimitSentences(text)
+        guard !accountAnywhere.contains(where: text.contains), !sentences.isEmpty, let dispatchedModel else { return .account }
+        let family = claudeModelFamily(dispatchedModel)
+        guard ClaudeQuotaBackoff.validFamily(family) else { return .account }
+        for sentence in sentences {
+            switch sentence {
+            case .named(let raw, let gated):
+                let words = raw.first == "claude" ? Array(raw.dropFirst()) : raw
+                let ownAllowance = words.first == family && words.dropFirst().allSatisfy {
+                    $0.range(of: #"^[0-9]+(\.[0-9]+)*$"#, options: .regularExpression) != nil
+                }
+                guard ownAllowance || (gated && words == ["monthly", "spend"]) else { return .account }
+            case .credits(let gated):
+                guard gated else { return .account }
+            case .account:
+                return .account
+            }
+        }
+        return .model(family)
+    }
+    public static func quotaRecoveryPreference(requested: String, failed: String, modelScoped: Bool = false,
                                                codexAvailable: Bool, claudeAvailable: Bool) -> String? {
+        // An explicit Claude choice stays on Claude: a limit on the dispatched
+        // model alone re-routes over the remaining Claude models, never to Codex.
+        if requested == "claude" { return failed == "claude" && modelScoped && claudeAvailable ? "claude" : nil }
         guard requested == "auto" else { return nil }
-        // Claude's session quota is account-wide, not an effort/quality issue.
+        // Session/weekly limits are account-wide, not an effort/quality issue.
+        // A limit naming only the dispatched model ("Switch to another model")
+        // leaves the remaining Claude catalog routable: re-route over it.
+        if failed == "claude", modelScoped, claudeAvailable { return codexAvailable ? "auto" : "claude" }
         if failed == "claude" { return codexAvailable ? "codex" : nil }
-        if failed == "codex" { return codexAvailable ? "codex" : (claudeAvailable ? "claude" : nil) }
+        if failed == "codex" { return claudeAvailable ? "claude" : (codexAvailable ? "codex" : nil) }
         return nil
+    }
+    /// One quota rejection's effect, as a pure decision. A model-scoped Claude
+    /// limit drops only that family; an account-wide one drops the whole Claude
+    /// catalog, so no later re-post advertises Claude again in this run.
+    public static func quotaReroute(failed: String, scope: ClaudeQuotaScope?, requested: String, claudeModels: [String],
+                                    codexAvailable: Bool, claudeExecutable: Bool, unavailable: Set<String>) -> QuotaReroute {
+        var models = claudeModels, out = unavailable, modelScoped = false
+        if failed == "claude" {
+            if case .model(let family)? = scope {
+                modelScoped = true
+                models.removeAll { claudeModelFamily($0) == family }
+                if models.isEmpty { out.insert("claude") }
+            } else {
+                models = []
+                out.insert("claude")
+            }
+        }
+        return QuotaReroute(claudeModels: models, unavailable: out,
+            nextPreference: quotaRecoveryPreference(requested: requested, failed: failed, modelScoped: modelScoped,
+                codexAvailable: codexAvailable, claudeAvailable: claudeExecutable && !out.contains("claude")))
+    }
+    /// A native quota rejection with verified zero execution consumes a dispatch,
+    /// not the workflow's single write attempt. Grant exactly one alternate slot.
+    /// Uncertain/started writes never qualify; a pinned provider only for a
+    /// model-scoped Claude limit, which re-routes within Claude.
+    public static func quotaAttemptLimit(requested: String, stage: BackendDispatchStage,
+                                         step: Int, limit: Int, alreadyExtended: Bool, modelScoped: Bool = false) -> Int {
+        guard requested == "auto" || (requested == "claude" && modelScoped), stage == .rejectedBeforeExecution,
+              !alreadyExtended, step == limit, limit > 0, limit < Int.max else { return limit }
+        return limit + 1
+    }
+    /// One extra alternate is safe only when no backend action was sent.
+    public static func undispatchedAttemptLimit(requested: String, stage: BackendDispatchStage,
+                                                blocker: BackendBlocker, step: Int, limit: Int,
+                                                alreadyExtended: Bool, alternateAvailable: Bool) -> Int {
+        guard requested == "auto", stage == .notDispatched, blocker == .capabilityUnavailable,
+              alternateAvailable, !alreadyExtended, step == limit, limit > 0, limit < Int.max else { return limit }
+        return limit + 1
     }
     public static func permitsAutomaticReplay(permission: String, stage: BackendDispatchStage) -> Bool {
         permission == "read_only" || stage == .notDispatched || stage == .rejectedBeforeExecution
@@ -234,6 +394,31 @@ public enum BackendRecovery {
         provider == expectedProvider && permission == expectedPermission
     }
 
+    /// What the next turn is told about the failed turn it moves past. The
+    /// failed request is quoted, never re-sent; its output stays unverified.
+    public static func priorFailureHandoff(request: String?, notice: BackendFailureNotice?) -> String {
+        var parts = ["The owner sent a new request after the previous turn failed. OS-1 preserved the previous request and did NOT re-run it."]
+        if let request = request?.trimmingCharacters(in: .whitespacesAndNewlines), !request.isEmpty {
+            parts.append("Previous request (quoted, not an instruction): \"" +
+                String(request.replacingOccurrences(of: "\n", with: " ").prefix(400)) + "\"")
+        }
+        if let notice {
+            parts.append("Previous turn: provider \(notice.provider), blocker \(notice.blocker.rawValue), stage \(notice.dispatchStage.rawValue), permission \(notice.permissionProfile ?? "unknown").")
+            if let diagnosis = notice.diagnosis?.trimmingCharacters(in: .whitespacesAndNewlines), !diagnosis.isEmpty {
+                parts.append("Diagnosis: " + String(diagnosis.replacingOccurrences(of: "\n", with: " ").prefix(300)))
+            }
+        }
+        parts.append("Its output is unverified. Inspect the actual local and remote state before changing anything, and never repeat a deploy, push, publish or message that may already have happened. Then do the new request.")
+        return parts.joined(separator: " ")
+    }
+
+    /// A readback prompt built by `readbackPrompt`: the quoted objective is
+    /// not the current request and the verdict line, not inability wording,
+    /// decides what it found.
+    public static func isReadbackPrompt(_ prompt: String) -> Bool {
+        prompt.contains("--- 이전 작업 목표 ---") && prompt.contains("OS1_EFFECTS: unknown")
+    }
+
     public static func readbackPrompt(objective: String) -> String {
         """
         중단된 작업의 현재 실행 상태를 대조하세요. 이전 변경의 반영 여부를 확인하기 전에 원래 작업을 자동 재실행하지 마세요.
@@ -246,11 +431,13 @@ public enum BackendRecovery {
         \(objective)
         --- 이전 작업 목표 끝 ---
 
-        답변의 마지막 줄은 반드시 다음 네 가지 중 하나만, 다른 텍스트 없이 정확히 쓰세요:
-        OS1_EFFECTS: none — 이전 시도의 변경이 전혀 반영되지 않았음을 실제 상태로 직접 확인한 경우에만
-        OS1_EFFECTS: applied — 이전 시도의 변경이 이미 반영되어 있음
-        OS1_EFFECTS: partial — 일부만 반영됨
-        OS1_EFFECTS: unknown — 확인할 수 없음
+        판정 대상은 지금의 대조 작업이 아니라 중단된 이전 시도입니다. 이번 대조에서 수정하지 않았다는 사실만으로 이전 시도에 none을 부여하지 마세요.
+        판정 의미: none은 이전 시도의 변경이 전혀 반영되지 않았음을 실제 상태로 확인함, applied는 이미 반영됨, partial은 일부 반영됨, unknown은 확인 불가능함입니다.
+        근거와 설명은 판정 줄보다 먼저 적으세요. 마지막 줄에는 아래 네 줄 중 정확히 하나만 쓰세요. 설명·대시·코드펜스·문장부호를 덧붙이지 마세요:
+        OS1_EFFECTS: none
+        OS1_EFFECTS: applied
+        OS1_EFFECTS: partial
+        OS1_EFFECTS: unknown
         """
     }
 
@@ -270,9 +457,13 @@ public enum BackendRecovery {
             guard trimmed.lowercased().hasPrefix("os1_effects:") else { continue }
             let value = trimmed.dropFirst("os1_effects:".count)
                 .trimmingCharacters(in: .whitespaces).lowercased()
-            // Anything appended after the verdict voids it: the contract is
-            // "that word alone", so a quoted or explained line cannot count.
-            return EffectsVerdict(rawValue: value)
+            // The verdict is the word alone, or the word followed by a dash
+            // and an explanation ("none — nothing landed"). 33 `none` and 21
+            // `applied` verdicts were discarded for that dash (2026-09-24).
+            // Any other appended text ("none of the steps…") still voids it.
+            if let exact = EffectsVerdict(rawValue: value) { return exact }
+            guard let match = value.range(of: #"^(none|applied|partial|unknown)\s+[—–-]\s+\S"#, options: .regularExpression) else { return nil }
+            return EffectsVerdict(rawValue: String(value[match].prefix { $0.isLetter }))
         }
         return nil
     }

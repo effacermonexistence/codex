@@ -77,6 +77,16 @@ describe("private policy bundle", () => {
       },
     }))).toThrow();
   });
+  it("admits the production profile table, including models added after astra", () => {
+    const production = JSON.parse(readFileSync(new URL("../../os1-mac-runtime/Config/production.json", import.meta.url), "utf8"));
+    const parsed = parsePolicyBundle(JSON.stringify({ ...bundle, execution_profiles: production.execution_profiles }));
+    expect(Object.keys(parsed.execution_profiles).length).toBe(Object.keys(production.execution_profiles).length);
+    expect(parsed.execution_profiles.cx_6sol_medium).toEqual({ provider: "codex", model: "gpt-6-sol", effort: "medium" });
+    expect(parsed.execution_profiles.cx_6luna_low).toEqual({ provider: "codex", model: "gpt-6-luna", effort: "low" });
+    const oversized = Object.fromEntries(Array.from({ length: 129 }, (_, index) =>
+      [`cx_${index}`, { provider: "codex", model: "gpt-test", effort: "low" }]));
+    expect(() => parsePolicyBundle(JSON.stringify({ ...bundle, execution_profiles: oversized }))).toThrow();
+  });
   it("rejects unknown fields and invalid contract hashes", () => {
     expect(() => parsePolicyBundle(JSON.stringify({ ...bundle, rationale: "leak" }))).toThrow();
     expect(() => parsePolicyBundle(JSON.stringify({ ...bundle, schema: 3 }))).toThrow();

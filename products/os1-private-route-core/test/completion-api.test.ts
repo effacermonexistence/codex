@@ -33,7 +33,10 @@ describe("private completion API", () => {
       ROUTING_BUDGETS: { getByName: () => ({ consumeStart: async () => { budgets++; return true; } }) },
       POLICY_BUNDLE_KEY: `os1/policies/${policy}.json`, POLICY_BUNDLE_SHA256: policy, MAX_POLICY_BUNDLE_BYTES: "65536",
       POLICY_BUNDLES: { get: async () => ({ size: bytes.length, arrayBuffer: async () => bytes.buffer }) },
-      RCC_V26: { fetch: async (request: Request) => { routes++;
+      RCC_V26: { fetch: async (request: Request | string) => {
+        // A capability probe (URL string) is not a routing call.
+        if (typeof request === "string") return new Response("old", { status: 404 });
+        routes++;
         const body = await request.json() as Record<string, any>;
         expect(body.current_run_observations).toEqual([]);
         expect(body.execution_context.completion_feedback.objective_sha256).toBe(objective);
@@ -71,7 +74,8 @@ describe("private completion API", () => {
         return { status: "failed" };
       } }) }, RESULT_EVALUATOR: { fetch: async () => Response.json({ outcome: "retry",
         verified_artifact_hash: "f".repeat(64), next_provider: "claude" }) },
-      RCC_V26: { fetch: async (request: Request) => {
+      RCC_V26: { fetch: async (request: Request | string) => {
+        if (typeof request === "string") return new Response("old", { status: 404 });
         const body = await request.json() as Record<string, any>;
         expect(body.current_run_observations).toHaveLength(1);
         expect(body.current_run_observations[0].provider).toBe("claude");
@@ -114,7 +118,8 @@ describe("typed delegation capability", () => {
       ROUTING_BUDGETS: { getByName: () => ({ consumeStart: async () => true, record: async () => {} }) },
       POLICY_BUNDLE_KEY: `os1/policies/${policy}.json`, POLICY_BUNDLE_SHA256: policy, MAX_POLICY_BUNDLE_BYTES: "65536",
       POLICY_BUNDLES: { get: async () => ({ size: bytes.length, arrayBuffer: async () => bytes.buffer }) },
-      RCC_V26: { fetch: async (request: Request) => {
+      RCC_V26: { fetch: async (request: Request | string) => {
+        if (typeof request === "string") return new Response("old", { status: 404 });
         const body: any = await request.json();
         expect(body.prompt).toBe(task);
         expect(body.execution_context.execution_permission_profile).toBeUndefined();

@@ -7,6 +7,11 @@ func runBackendRecoveryFixtures() throws {
     func check(_ value: Bool, _ message: String) {
         precondition(value, "Backend recovery: " + message); count += 1
     }
+    check(BackendRecovery.needsAutomaticReadback(attempted: nil, verdictReconciled: nil), "legacy failure gets a verdict readback")
+    check(BackendRecovery.needsAutomaticReadback(attempted: true, verdictReconciled: nil), "pre-contract readback migrates once")
+    check(!BackendRecovery.needsAutomaticReadback(attempted: true, verdictReconciled: true), "reconciled failure stays held across app upgrades")
+    check(BackendRecovery.mayResumeAfterReadback(alreadyResumed: nil), "first verified none may resume")
+    check(!BackendRecovery.mayResumeAfterReadback(alreadyResumed: true), "upgrade cannot replenish original execution budget")
     check(BackendRecovery.rejectedAdoptionBlocker(exitCode: 0, output: "saved answer", persistence: "verified") == .verificationRejected, "verified response is not an unknown execution")
     check(BackendRecovery.rejectedAdoptionBlocker(exitCode: 1, output: "partial", persistence: "verified") == .effectsUncertain, "failed execution remains uncertain")
     check(BackendRecovery.rejectedAdoptionBlocker(exitCode: 0, output: " \n", persistence: "verified") == .effectsUncertain, "empty response cannot establish success")
@@ -19,7 +24,22 @@ func runBackendRecoveryFixtures() throws {
     check(restoredRejection.blocker == .verificationRejected, "verification rejection survives round trip")
     check(restoredRejection.publicProgress == "Actual backend response", "rejected output remains inspectable")
     check(restoredRejection.sessionID == "01a0ba68-59ac-7071-82f7-539d2c7f1694", "native execution identity preserved")
-    check(restoredRejection.requiresReadback, "rejection never authorizes replay of a dispatched writer")
+    check(!restoredRejection.requiresReadback, "a finished turn refused adoption needs no readback: its saved answer says what it did")
+    check(!BackendRecovery.permitsAutomaticReplay(permission: "workspace_write", stage: .dispatched),
+          "rejection never authorizes replay of a dispatched writer")
+    check(BackendFailureNotice(provider: "codex", sessionID: nil, blocker: .effectsUncertain, dispatchStage: .dispatched,
+                               permissionProfile: "workspace_write").requiresReadback, "an interrupted writer still reads back")
+    check(BackendFailureNotice(provider: "claude", sessionID: nil, blocker: .unclassified, dispatchStage: .dispatched,
+                               permissionProfile: "workspace_write").requiresReadback, "an unclassified dispatched writer still reads back")
+    // A new owner message moves past a failure with its evidence, never a replay.
+    let handoff = BackendRecovery.priorFailureHandoff(request: "프로덕션을\n배포해", notice: rejected)
+    check(handoff.contains("did NOT re-run") && handoff.contains("\"프로덕션을 배포해\"") && handoff.contains("verification_rejected")
+          && handoff.contains("workspace_write") && handoff.contains("adoption=retry")
+          && handoff.contains("never repeat a deploy, push, publish or message"), "prior-failure handoff carries evidence: \(handoff)")
+    check(BackendRecovery.priorFailureHandoff(request: nil, notice: nil).contains("did NOT re-run"), "handoff without evidence stays honest")
+    check(BackendRecovery.priorFailureHandoff(request: String(repeating: "가", count: 2_000), notice: nil).count < 1_000, "quoted request is bounded")
+    check(BackendRecovery.isReadbackPrompt(BackendRecovery.readbackPrompt(objective: "OS1 고쳐")), "readback prompt recognised")
+    check(!BackendRecovery.isReadbackPrompt("OS1 고쳐"), "ordinary request is not a readback")
     for (text, expected) in [
         ("Failed to upload code with status code 401 Unauthorized", BackendBlocker.authenticationRequired),
         ("Permission for this action was denied by the Claude Code auto mode classifier. Reason: Blocked by classifier.", .policyDenied),
@@ -165,10 +185,23 @@ func runBackendRecoveryFixtures() throws {
     check(!BackendRecovery.readbackPrompt(objective: "x").contains("read-only") &&
         !BackendRecovery.readbackPrompt(objective: "x").contains("읽기 전용"), "reconciliation does not impose read-only executor capability")
     check(BackendRecovery.readbackPrompt(objective: "x").contains("OS1_EFFECTS: none"), "readback demands the machine-checkable verdict")
+    let recoveryPrompt = BackendRecovery.readbackPrompt(objective: "inspect existing delivery; do not redeploy")
+    let advertisedVerdicts = recoveryPrompt.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }
+        .filter { $0.hasPrefix("OS1_EFFECTS:") }
+    check(advertisedVerdicts.count == 4 && advertisedVerdicts.allSatisfy { BackendRecovery.effectsVerdict(in: $0) != nil },
+          "every advertised readback wire format passes the real parser")
+    check(recoveryPrompt.contains("이번 대조에서 수정하지 않았다는 사실만으로"),
+          "no-op readback must not imply interrupted attempt had no effects")
     check(BackendRecovery.effectsVerdict(in: "확인 결과...\nOS1_EFFECTS: none") == .nothingApplied, "verdict none parses")
     check(BackendRecovery.effectsVerdict(in: "a\nos1_effects:  Applied \n") == .applied, "verdict is case/space tolerant")
     check(BackendRecovery.effectsVerdict(in: "OS1_EFFECTS: none\n추가 확인 후\nOS1_EFFECTS: partial") == .partial, "the last verdict line wins")
     check(BackendRecovery.effectsVerdict(in: "OS1_EFFECTS: none 그런데 일부는 모름") == nil, "an explained verdict is void")
+    check(BackendRecovery.effectsVerdict(in: "근거\nOS1_EFFECTS: none — 이전 시도는 아무것도 반영하지 않음") == .nothingApplied, "dash-explained none parses")
+    check(BackendRecovery.effectsVerdict(in: "OS1_EFFECTS: applied - build 190 already installed") == .applied, "hyphen-explained applied parses")
+    check(BackendRecovery.effectsVerdict(in: "OS1_EFFECTS: partial – tests pending") == .partial, "en-dash partial parses")
+    check(BackendRecovery.effectsVerdict(in: "OS1_EFFECTS: none of the steps ran") == nil, "none-of prose is not a verdict")
+    check(BackendRecovery.effectsVerdict(in: "OS1_EFFECTS: none —") == nil, "a dangling dash is not an explained verdict")
+    check(BackendRecovery.effectsVerdict(in: "OS1_EFFECTS: nonexistent — x") == nil, "only the four words count")
     check(BackendRecovery.effectsVerdict(in: "이 작업은 변경이 없었습니다") == nil, "prose without the marker is no verdict")
     // OS-1-authored prompts must never be re-ingested as the owner's message.
     check(NativeIngestion.isOS1ControlPrompt(BackendRecovery.readbackPrompt(objective: "코덱스 고쳐")), "readback prompt is recognized as OS-1's own")

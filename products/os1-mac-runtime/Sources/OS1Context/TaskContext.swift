@@ -491,7 +491,7 @@ public extension TaskContext.ObjectiveKind {
            ["설명", "explain", "왜", "why", "뭐야", "what is", "어떻게 되", "알려줘"].contains(where: value.contains) { return .explain }
         if ScopeResolution.resolve(value).scope == .workspaceWrite { return .modify }
         if ["검증", "verify", "확인해", "테스트해", "check that"].contains(where: value.contains) { return .verify }
-        if PreparationIntent.detect(request) != nil { return .prepare }
+        if PreparationIntent.detect(request)?.preparationOnly == true { return .prepare }
         if ProjectMaterialIntent.scv(request)?.requiresTransformation == false { return .acquire }
         if ["수정", "고쳐", "구현", "바꿔", "fix", "implement", "modify", "edit", "change"].contains(where: value.contains) { return .modify }
         return .other
@@ -550,13 +550,18 @@ public struct PreparationIntent: Equatable, Sendable {
     public let kind: Kind
     public let projectID: String?
     public let modifies: Bool
+    /// True only for an explicit, preparation-limited request ("준비만 해",
+    /// "세팅해", "작업 폴더만 잡아줘"). Only this may produce the local
+    /// work_preparation / prepared-state answer; every other detected intent
+    /// (fix, let's fix, continue, finish, can-you) is dispatched to a backend.
+    public let preparationOnly: Bool
 
     /// Registered projects only. A registered id resolves to an adapter in
     /// `ProjectAdapterRegistry`; an unregistered "workspace:<name>" project
     /// never triggers a local control answer.
     public static let projectAliases: [(id: String, aliases: [String])] = [
         ("scv-instagram", ["인스타", "instagram", "scv"]),
-        ("os1-clodex", ["os1", "os-1", "clodex", "클로덱스"]),
+        ("os1-clodex", ["os1", "os-1", "clodex", "클로덱스", "rcc governance", "rcc 거버넌스", "rcc 가버넌스", "rcc 가보면서"]),
     ]
     static let prepareMarkers = ["손보자", "손 보자", "손좀 보자", "손 좀 보자", "손보려고", "손볼 건데", "손볼건데",
                                  "준비해", "준비하자", "준비 좀", "준비할", "준비 해", "수정 좀 하자", "수정하자", "수정 하자", "고치자", "고쳐보자",
@@ -570,6 +575,24 @@ public struct PreparationIntent: Equatable, Sendable {
                                            "don't modify", "do not change", "don't change", "explain only", "read only", "읽기만"]
     static let refusalMarkers = ["손보지 마", "손보지마", "손대지 마", "손대지마", "준비하지 마", "준비 하지 마", "이어서 하지 마", "계속하지 마", "don't prepare", "do not prepare", "don't continue"]
     static let changeVerbs = ["손봐", "손 봐", "수정", "고치", "고쳐", "바꾸", "구현", "fix", "modify", "edit", "change", "implement"]
+    static let preparationOnlyPatterns = [
+        #"(?:준비|세팅|셋업)\s*(?:만|을|를)?\s*(?:좀\s*)?(?:해|하자|시켜)"#,
+        #"(?:작업\s*)?(?:폴더|워크스페이스)\s*(?:만|를|을)?\s*(?:좀\s*)?(?:잡아|정해|설정해|열어|연결해)"#,
+        #"(?:자료|컨텍스트|맥락)\s*만\s*(?:좀\s*)?(?:가져|준비|붙여|잡아)"#,
+        #"(?i)\b(?:get(?:\s+\w+){0,2}\s+ready|prepare\s+only|just\s+(?:prepare|set\s+up)|set\s+up\s+the\s+(?:workspace|context))\b"#,
+    ]
+    /// Work the owner asked for that the change-verb list does not cover.
+    static let executionDirectives = ["손봐", "손 봐", "고쳐", "고치", "수정", "구현", "추가", "만들", "바꿔", "바꾸", "개선", "해결", "잡아줘",
+        "완료", "완성", "끝까지", "마저", "계속", "진행", "멈추지", "이어서", "빌드해", "빌드 해", "테스트해", "테스트 해", "테스트 돌", "배포해", "커밋해", "푸시해",
+        "fix", "implement", "build", "finish", "complete", "continue", "keep going", "don't stop", "go ahead"]
+    /// The whole request ends by asking whether something can be done. A
+    /// requirement ("할 수 있어야 돼"), "불가능해", a complaint followed by an
+    /// imperative, or an English polite imperative ("can you fix…") is not one.
+    static func isFeasibilityOnlyQuestion(_ value: String) -> Bool {
+        value.range(of: #"(?<!불)(?:가능(?:하냐|하니|해|한지|할까|합니까)|할\s*수\s*(?:있냐|있어|있는지|있니)|되냐|되겠냐|되나요|될까)요?\s*[?？]?\s*$"#,
+                    options: .regularExpression) != nil ||
+        value.range(of: #"(?i)\b(?:is it possible|are you able|would it be possible)\b[^.!\n]*\?\s*$"#, options: .regularExpression) != nil
+    }
     /// "…가능하냐?" asks whether something can be done. It binds the named
     /// project so the answer is concrete, but it never authorizes a change.
     public static let feasibilityMarkers = [
@@ -591,20 +614,53 @@ public struct PreparationIntent: Equatable, Sendable {
                            options: .regularExpression) != nil
     }
 
+    // Select the requested project, never a project mentioned only as an exclusion.
+    // This is a selection projection; the original prompt and its constraints
+    // remain intact for execution. Registry order must not decide ambiguous targets.
+    private static func requestedProject(in value: String) -> String? {
+        let clauses = value.replacingOccurrences(of: #"(?:[.!?]\s+|[;\n])"#,
+            with: "\n", options: .regularExpression).components(separatedBy: "\n")
+        var positive = Set<String>()
+        for clause in clauses {
+            let excludes = clause.range(of: #"(?:하지\s*마|하지\s*말|손대지|건드리지|제외|do not|don't|leave .* alone|preserve|보존)"#,
+                                        options: .regularExpression) != nil
+            // A contrast may keep the named project while prohibiting only setup:
+            // 'Instagram 세팅은 하지 말고 가격 문구 수정해'.
+            let contrastEdit = clause.components(separatedBy: "말고").dropFirst()
+                .contains { tail in changeVerbs.contains(where: tail.contains) }
+            guard !excludes || contrastEdit else { continue }
+            for project in projectAliases where project.aliases.contains(where: { containsProjectAlias($0, in: clause) }) {
+                positive.insert(project.id)
+            }
+        }
+        return positive.count == 1 ? positive.first : nil
+    }
+
     public static func detect(_ prompt: String) -> PreparationIntent? {
-        let value = OwnerIntentText.normalized(OwnerIntentText.authorityText(prompt))
+        let original = OwnerIntentText.normalized(OwnerIntentText.authorityText(prompt))
+        let projectID = requestedProject(in: original)
+        // A prohibition scoped to a different named project must not prohibit
+        // the selected project. Unscoped/global prohibitions remain in force.
+        let value = original.replacingOccurrences(of: #"(?:[.!?]\s+|[;\n])"#,
+            with: "\n", options: .regularExpression).components(separatedBy: "\n").filter { clause in
+            guard let projectID else { return true }
+            let named = projectAliases.filter { project in
+                project.aliases.contains { containsProjectAlias($0, in: clause) }
+            }.map(\.id)
+            let excluded = clause.range(of: #"(?:하지\s*마|하지\s*말|손대지|건드리지|제외|do not|don't|preserve|보존)"#,
+                                        options: .regularExpression) != nil
+            return !excluded || named.isEmpty || named.contains(projectID)
+        }.joined(separator: "\n")
         guard !value.isEmpty else { return nil }
         if ["\"", "“", "`", "'"].contains(where: value.contains),
            ["번역", "translate", "비판", "critique", "프롬프트", "prompt", "인용", "quote"].contains(where: value.contains) { return nil }
         if refusalMarkers.contains(where: value.contains) { return nil }
         let prohibited = modificationProhibitions.contains(where: value.contains)
-        let prepare = prepareMarkers.contains(where: value.contains)
+        let explicitPreparation = preparationOnlyPatterns.contains { value.range(of: $0, options: .regularExpression) != nil }
+        let prepare = explicitPreparation || prepareMarkers.contains(where: value.contains)
         let continues = continueMarkers.contains(where: value.contains)
         let explains = explainMarkers.contains(where: value.contains)
-        let projectID = projectAliases.first { project in
-            project.aliases.contains { containsProjectAlias($0, in: value) }
-        }?.id
-        let feasibility = isFeasibilityQuestion(value)
+        let feasibility = isFeasibilityOnlyQuestion(value)
         // A write-scope sentence that names the project ("…에 한 줄 추가해") is
         // a change even when it uses none of the listed change verbs.
         let scopeWrite = projectID != nil && ScopeResolution.resolve(value).scope == .workspaceWrite
@@ -627,8 +683,13 @@ public struct PreparationIntent: Equatable, Sendable {
                 with: " ", options: .regularExpression)
         }
         let wantsChange = changeVerbs.contains(where: remaining.contains) || (scopeWrite && !prepare && !continues)
-        return PreparationIntent(kind: kind, projectID: projectID,
-                                 modifies: kind != .explainFromContext && wantsChange && !prohibited && !feasibility)
+        let modifies = kind != .explainFromContext && wantsChange && !prohibited && !feasibility
+        var rest = remaining
+        for pattern in preparationOnlyPatterns { rest = rest.replacingOccurrences(of: pattern, with: " ", options: .regularExpression) }
+        for phrase in modificationProhibitions + refusalMarkers { rest = rest.replacingOccurrences(of: phrase, with: " ") }
+        let preparationOnly = kind == .prepare && explicitPreparation && !modifies && !continues &&
+            !executionDirectives.contains(where: rest.contains)
+        return PreparationIntent(kind: kind, projectID: projectID, modifies: modifies, preparationOnly: preparationOnly)
     }
 }
 
@@ -667,8 +728,44 @@ public enum ProjectAdapterRegistry {
 public enum OwnerIntentText {
     /// Permission projection only. Preserve the original prompt as evidence;
     /// quoted examples and feasibility questions are not execution authority.
+    /// The instruction of a translation, summary or proofreading request
+    /// without the text it operates on, or nil when the request is not one.
+    /// The router classifies this instead of the whole request (the executor
+    /// still receives everything): the payload's verbs are data, not intent.
+    public static func textOperationInstruction(_ prompt: String) -> String? {
+        let original = prompt.precomposedStringWithCanonicalMapping
+        let stripped = strippedTextOperationPayload(original)
+        guard stripped != original else { return nil }
+        let instruction = stripped.trimmingCharacters(in: .whitespacesAndNewlines)
+        return instruction.isEmpty ? nil : instruction
+    }
+
+    static func strippedTextOperationPayload(_ input: String) -> String {
+        // "영어로 바꿔줘" is a translation, not an edit.
+        var text = input.replacingOccurrences(of: #"((?:영어|영문|한국어|한글|국문|일본어|일어|중국어)(?:으)?로)\s*바꿔"#,
+                                              with: "$1 번역해", options: .regularExpression)
+        // The text handed to a translation, summary or proofreading is data,
+        // not the owner's instruction: "다음 문장을 영문으로 번역해줘: 내일 회의
+        // 시간을 오후 3시로 옮겨도 될까요?" was read as a request to move
+        // something, routed as a change and refused (2026-09-25).
+        let textOperation = #"(?:번역|요약|교정|윤문|다듬|영작|의역|직역|translat\w*|summari[sz]\w*|proofread\w*|rephras\w*|paraphras\w*)"#
+        for (pattern, template) in [
+            // "…번역해줘: <text>", "Translate to Korean: <text>"
+            (#"(?is)^([^:：\n]{0,160}"# + textOperation + #"[^:：\n]{0,80}?)\s*[:：]\s*\S.*$"#, "$1"),
+            // Spoken, no separator: "영어로 번역해줘 <text>" — the imperative
+            // ends the instruction. Translation only; "번역해서 …로 저장해" keeps
+            // its action because "해서" is not an imperative ending.
+            (#"(?s)^(.{0,160}?(?:번역|영작)\s*(?:해\s*줘요?|해\s*주세요|해\s*줄래|해\s*봐|해|하시오))[.!,]?\s+\S.*$"#, "$1"),
+            // "\"<text>\"를 번역해줘"
+            (#"(?i)[\"“'‘][^\"”'’\n]{1,400}[\"”'’](?=\s*(?:을|를|은|는|이|가)?\s*[^\n]{0,40}"# + textOperation + ")", " "),
+        ] {
+            text = text.replacingOccurrences(of: pattern, with: template, options: .regularExpression)
+        }
+        return text
+    }
+
     public static func authorityText(_ prompt: String) -> String {
-        var text = prompt.precomposedStringWithCanonicalMapping
+        var text = strippedTextOperationPayload(prompt.precomposedStringWithCanonicalMapping)
         for pattern in [
             #"(?s)```.*?```"#,
             #"(?m)^\s*>[^\n]*"#,
@@ -738,6 +835,15 @@ public struct ScopeResolution: Equatable, Sendable {
     // only complete bounded clauses, not "... but change ..." or filenames.
     static let relativeTargetFencePattern = #"(?i)(?:^|(?<=[.!?;\n]))\s*(?:do not|don't|never)\s+(?:modify|edit|change|delete|remove|write(?: to)?)\s+(?:any\s+)?other\s+(?:files?|folders?|directories|services?|settings)(?:\s*(?:,\s*(?:(?:and|or)\s+)?|(?:and|or)\s+)(?:other\s+)?(?:files?|folders?|directories|services?|settings)){0,8}\s*(?=[.!?;\n]|$)"#
 
+    // An explicit preservation clause for existing resources is not a blanket
+    // prohibition on creating a new isolated resource. Keep the entire fence
+    // in the handoff; only remove it from the global-negation classifier.
+    static let existingResourceFencePattern = #"(?i)(?:^|(?<=[.!?;\n]))\s*(?:do not|don't|never)\s+(?:modify|edit|change|delete|remove)\s+(?:any\s+)?existing\s+(?:projects?|sites?|files?|directories|services?|deployments?|sessions?)\b(?![^.!?;\n]*\b(?:but|however|instead|unless|not|never)\b)[^.!?;\n]*(?=[.!?;\n]|$)"#
+
+    // Relative Korean targets preserve unrelated resources; they never revoke
+    // an independently authorized edit. Match whole clauses, not bare negation.
+    static let koreanRelativeTargetFencePattern = #"(?:^|(?<=[.!?;\n]))\s*(?:새로운\s*기능(?:이나|과|및)\s*)?다른\s*(?:제품|프로젝트|파일|서비스)(?:\s*(?:수정|변경|삭제))(?:은|는|을|를)?\s*하지\s*마(?:세요|십시오)?\s*(?=[.!?;\n]|$)"#
+
     static let positiveEdit = ["손봐", "손 봐", "수정해", "수정하고", "수정 해", "고쳐", "고치고", "고치라니까", "고치라고", "구현하라고", "고치지", "고치자", "바꿔", "바꾸고", "구현해", "추가해", "삭제해", "리팩터", "만들어",
                                "완료해", "완성해", "끝까지 해", "마저 해", "마저해",
                                "일치시켜", "일치시키", "통일해", "통일하", "맞춰", "때려넣", "넣어줘", "넣어 줘",
@@ -748,6 +854,18 @@ public struct ScopeResolution: Equatable, Sendable {
     // than a bare "write" so ordinary requests such as "write a summary" do
     // not gain workspace authority.
     static let positiveFileEditPatterns = [
+        // Formal Korean imperatives are edits too. Match the verb ending,
+        // not a bare stem that could appear in a prohibition or a noun.
+        #"(?:수정|삭제|변경|편집|추가|구현)\s*하라(?=\s|[.!?;]|$)"#,
+        // "README.en.md로 저장해" saves as a file just like "…에 저장해".
+        #"[A-Za-z0-9_./-]+\.[A-Za-z0-9]{1,16}(?:에|으로|로)\s*(?:기록|저장|작성)(?:해|하세|하십|하라)"#,
+        // A change verb chained into the next step is still the request:
+        // "calc.py 파일에 add 함수를 만들고 실행해서 확인해", "…구현하고 …수정하세요"
+        // (2026-09-25: six such owner requests read as read-only, so an
+        // explicit "쪼개서 각각 라우팅해" on them could not split). "만들고
+        // 싶어" (a wish) and "만들고 있어" (in progress) are not requests.
+        #"(?:만들|구현하|추가하|작성하|생성하|삭제하|저장하|변경하|편집하)고(?!\s*(?:싶|있))"#,
+        #"(?:수정|삭제|변경|편집|추가|구현|작성|생성|저장)\s*(?:하세요|하십시오|해\s*주세요|해\s*주십시오)"#,
         #"(?i)\b(?:delete|create|write|save|rename|remove|edit|modify|update)\s+[\"“][^\"”\n]+\.[A-Za-z0-9]{1,16}[\"”]"#,
         #"(?:수정|삭제|변경|편집|추가)\s*(?:해(?:줘|주세요|라)?|요청(?:합니다|해))"#,
         // Bounded Korean removal imperatives, not questions, quotations or negations.
@@ -779,17 +897,53 @@ public struct ScopeResolution: Equatable, Sendable {
                                       "편집하지 마", "설명만", "read only", "read-only", "do not modify", "don't modify",
                                       "do not change", "don't change", "explain only", "no changes"]
 
+    // A sentence that as a whole asks whether something CAN be done is a
+    // question, even when the verb and "할 수 있…" are apart (2026-09-25: "셀프
+    // 수정하고 지금 다 할 수 있는거야?" was dispatched as a change, nothing
+    // changed, and the correct answer was refused). Same rule as the remote
+    // verifier, policy v41. A benefactive ("고쳐줄 수 있어?", "해줘"), a stated
+    // obligation ("탑에 놔둬야돼", "내려야 되냐?"), a relayed order ("하라고")
+    // or an imperative before a new clause ("고쳐 그리고 … 할 수 있냐?") keeps
+    // the sentence a request, and so does a long dictated run-on.
+    static let capabilityQuestionEnding = #"(?:(?:할|될|하는\s*게|하는\s*것)\s*수\s*(?:있|없)(?:(?:냐|니|나요|습니까|을까요|을까|는지|는가|겠냐|겠니)\s*[?？]?|(?:어|어요|나|는\s*거야|는\s*거냐|는\s*거지|는\s*건가|는\s*건지|는\s*거예요|지|죠|겠어)\s*[?？])|가능(?:(?:하냐|하니|합니까|할까요|할까|한지|한가|하겠냐)\s*[?？]?|(?:해|해요|한\s*거야|한\s*거냐|한가요|하겠어)\s*[?？])|(?<!야)(?<!야\s)(?:되냐|되니|되나요|될까요|될까|되겠냐)\s*[?？]?|(?<!야)(?<!야\s)(?:돼|되나|되는\s*거야|되는\s*거냐|되겠어)\s*[?？])\s*$"#
+    static let capabilityRequestMarkers = #"줘|주세요|주십시오|줄래|주겠|(?:줄|주실)\s*수|야\s*(?:돼|되|된|됨|함|한다|합니다|해|겠)|라고|라니까|하라|해라"#
+    static let capabilityImperative = #"(?:고쳐|바꿔|만들어|지워|옮겨|넣어|빼|(?:수정|변경|편집|삭제|추가|구현|설치|배포|저장|작성|생성|적용|반영|교체|업데이트)\s*해)(?:라|요)?(?=\s|[,!]|$)"#
+    static let capabilityQuestionMaxCharacters = 200
+
+    /// The request with every whole capability-question sentence replaced by
+    /// " question? ". Used only to decide whether a change is asked for.
+    public static func withoutCapabilityQuestions(_ value: String) -> String {
+        var result = "", sentence = ""
+        func flush() {
+            let trimmed = sentence.trimmingCharacters(in: .whitespacesAndNewlines)
+            let isQuestion = !trimmed.isEmpty && trimmed.count <= capabilityQuestionMaxCharacters &&
+                trimmed.range(of: capabilityQuestionEnding, options: .regularExpression) != nil &&
+                trimmed.range(of: capabilityRequestMarkers, options: .regularExpression) == nil &&
+                trimmed.range(of: capabilityImperative, options: .regularExpression) == nil
+            result += isQuestion ? " question? " : sentence
+            sentence = ""
+        }
+        for character in value {
+            sentence.append(character)
+            if ".!?？。\n".contains(character) { flush() }
+        }
+        flush()
+        return result
+    }
+
     public static func resolve(_ prompt: String) -> ScopeResolution {
         let value = OwnerIntentText.normalized(OwnerIntentText.authorityText(prompt))
         var prohibitions: [String] = []
         var remaining = value
-        if let pattern = try? NSRegularExpression(pattern: relativeTargetFencePattern) {
+        for fence in [relativeTargetFencePattern, existingResourceFencePattern, koreanRelativeTargetFencePattern] {
+        if let pattern = try? NSRegularExpression(pattern: fence) {
             let range = NSRange(remaining.startIndex..<remaining.endIndex, in: remaining)
             for match in pattern.matches(in: remaining, range: range) {
                 guard let captured = Range(match.range, in: remaining) else { continue }
                 prohibitions.append(String(remaining[captured]).trimmingCharacters(in: .whitespacesAndNewlines))
             }
             remaining = pattern.stringByReplacingMatches(in: remaining, range: range, withTemplate: " ")
+        }
         }
         if let pattern = try? NSRegularExpression(pattern: enumeratedProhibitionPattern) {
             let range = NSRange(remaining.startIndex..<remaining.endIndex, in: remaining)
@@ -829,8 +983,9 @@ public struct ScopeResolution: Equatable, Sendable {
             remaining = remaining.replacingOccurrences(of: target.pattern, with: " ")
         }
         let generallyProhibited = generalProhibitions.contains(where: remaining.contains)
-        let asksEdit = positiveEdit.contains(where: remaining.contains) ||
-            positiveFileEditPatterns.contains { remaining.range(of: $0, options: .regularExpression) != nil }
+        let editView = withoutCapabilityQuestions(remaining)
+        let asksEdit = positiveEdit.contains(where: editView.contains) ||
+            positiveFileEditPatterns.contains { editView.range(of: $0, options: .regularExpression) != nil }
         if generallyProhibited && !asksEdit {
             if !prohibitions.contains("do not modify files") { prohibitions.append("do not modify files") }
             return ScopeResolution(scope: .readOnly, prohibitions: prohibitions)

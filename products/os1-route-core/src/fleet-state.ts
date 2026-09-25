@@ -1,5 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
 import {
+  FLEET_CLAIMED_JOB_TTL_MS,
   FLEET_NODE_STALE_AFTER_MS,
   placeFleetJob,
   type FleetNode,
@@ -351,7 +352,11 @@ export class FleetState extends DurableObject<Env> {
 
   private expire(nowMs: number): void {
     this.ctx.storage.sql.exec(
-      "UPDATE fleet_jobs SET state='expired' WHERE state IN ('queued','claimed') AND expires_at_ms<?",
+      `UPDATE fleet_jobs SET state='expired'
+       WHERE (state='queued' AND expires_at_ms<?)
+          OR (state='claimed' AND MAX(expires_at_ms, COALESCE(claimed_at_ms, created_at_ms) + ?)<?)`,
+      nowMs,
+      FLEET_CLAIMED_JOB_TTL_MS,
       nowMs,
     );
     this.ctx.storage.sql.exec(

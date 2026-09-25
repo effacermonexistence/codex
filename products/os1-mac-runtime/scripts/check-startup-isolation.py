@@ -20,3 +20,10 @@ maintenance = s[s.index('    func runMaintenanceTick()'):s.index('    func relea
 assert maintenance.index('install-maintenance.pid') < maintenance.index('resumeBackendRecoveries()')
 assert 'kill(pid, 0) == 0 { return }' in maintenance
 print('Installer maintenance lease: 2 checks PASS')
+
+live_start = s.index('        _store = StateObject(wrappedValue: SessionStore())')
+assert s.index('guard SelfUpdate.isInstalledApp(Bundle.main.bundleURL) else') < live_start
+assert s.index('let lease = try OS1LiveStoreLease()') < live_start
+assert 'var installedBuildNumber: Int { SelfUpdate.installedBuild() }' in s
+assert 'guard customStorageRoot == nil, SelfUpdate.isInstalledApp(Bundle.main.bundleURL)' in s
+print('Live GUI ownership / actual installed-build gate: 4 checks PASS')

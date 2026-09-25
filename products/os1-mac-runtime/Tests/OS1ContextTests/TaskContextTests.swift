@@ -10,6 +10,74 @@ func runTaskContextFixtures(root: URL) throws {
         guard try value() else { throw NSError(domain: "TaskContextTests", code: 1, userInfo: [NSLocalizedDescriptionKey: message]) }
         count += 1
     }
+    for raw in ["https://example.com/", "http://127.0.0.1:4173/", "https://example.com/path?q=1"] {
+        try check(BrowserNavigation.url(raw) != nil, "browser supports real web URLs")
+    }
+    for raw in ["javascript:alert(1)", "file:///etc/passwd", "data:text/html,hi", "https://user:secret@example.com/", "not a URL", "https://"] {
+        try check(BrowserNavigation.url(raw) == nil, "browser blocks non-web and embedded credentials")
+    }
+    let deliveryID = "01234567-89ab-cdef-0123-456789abcdef"
+    let domains = Data(#"{"domains":[{"domain":"site.up.railway.app","syncStatus":"ACTIVE"}]}"#.utf8)
+    try check(WebsiteDelivery.assignedDomainMatches(domains, url: URL(string: "https://site.up.railway.app/")!), "exact active service domain matches")
+    try check(!WebsiteDelivery.assignedDomainMatches(domains, url: URL(string: "https://unrelated.example/")!), "unrelated proof host cannot validate Railway delivery")
+    try check(!WebsiteDelivery.assignedDomainMatches(domains, url: URL(string: "https://site.up.railway.app:444/")!), "unexpected proof port rejected")
+    try check(!WebsiteDelivery.assignedDomainMatches(Data(#"{"domains":[{"domain":"site.up.railway.app","syncStatus":"PENDING"}]}"#.utf8), url: URL(string: "https://site.up.railway.app/")!), "pending domain rejected")
+    try check(!WebsiteDelivery.assignedDomainMatches(Data("{}".utf8), url: URL(string: "https://site.up.railway.app/")!), "missing domain evidence fails closed")
+    let receiptObject: [String: String] = ["workspace": root.path, "projectID": deliveryID,
+        "serviceID": deliveryID, "environmentID": deliveryID, "deploymentID": deliveryID,
+        "url": "https://example.up.railway.app/", "proofPath": "/os1-delivery-proof.txt", "proofSHA256": String(repeating: "a", count: 64)]
+    func receiptValid(_ object: [String: String]) throws -> Bool {
+        try JSONDecoder().decode(WebsiteDelivery.Receipt.self, from: JSONSerialization.data(withJSONObject: object)).validate(workspace: root.path)
+    }
+    try check(receiptValid(receiptObject), "delivery identity valid")
+    var nestedReceipt = receiptObject; nestedReceipt["workspace"] = root.appendingPathComponent("new-demo").path
+    try check(receiptValid(nestedReceipt), "new isolated project within active workspace is valid")
+    nestedReceipt["workspace"] = root.path + "-sibling"
+    try check(!receiptValid(nestedReceipt), "prefix sibling is not within workspace")
+    nestedReceipt["workspace"] = root.appendingPathComponent("../outside").path
+    try check(!receiptValid(nestedReceipt), "normalized traversal cannot escape workspace")
+    let createProtected = "Implement a new isolated website. Do not change any existing project, other deployments, or other sessions. Verify the new website."
+    let protectedScope = ScopeResolution.resolve(createProtected)
+    try check(protectedScope.scope == .workspaceWrite, "preserving existing resources does not forbid new website")
+    try check(protectedScope.prohibitions.contains(where: { $0.contains("existing project") }), "preservation fence survives")
+    try check(ScopeResolution.resolve("Implement a website. Do not change any files.").scope == .readOnly, "blanket no-write is not a preservation fence")
+
+    for (key, value) in [("workspace", "/wrong"), ("deploymentID", "fake"), ("url", "http://example.com"),
+                          ("url", "https://user:secret@example.com"), ("proofPath", "//other.host/a"),
+                          ("proofPath", "/../secret"), ("proofSHA256", "abc")] {
+        var invalid = receiptObject; invalid[key] = value
+        try check(!receiptValid(invalid), "delivery rejects invalid \(key)")
+    }
+    try check(WebsiteDelivery.receiptPath(in: "Quoted prose mentioning OS1_RAILWAY_RECEIPT: /x") == nil, "no prose marker hijack")
+    try check(WebsiteDelivery.receiptPath(in: "Done\nOS1_RAILWAY_RECEIPT: /tmp/result.json") == "/tmp/result.json", "standalone receipt")
+    try check(WebsiteDelivery.receiptPath(in: "OS1_RAILWAY_RECEIPT: `/tmp/MacBook Air (2)/receipt.json`") == "/tmp/MacBook Air (2)/receipt.json", "Markdown receipt preserves spaces and exact path")
+    try check(WebsiteDelivery.receiptPath(in: "OS1_RAILWAY_RECEIPT: `relative.json`") == nil, "relative receipt rejected")
+    try check(WebsiteDelivery.receiptPath(in: "OS1_RAILWAY_RECEIPT: `/tmp/x.json` extra") == nil, "trailing prose rejected")
+    try check(WebsiteDelivery.receiptPath(in: "OS1_RAILWAY_RECEIPT: `/tmp/x.json") == nil, "unbalanced Markdown rejected")
+    for input in ["http://127.0.0.1:4173/야 이거 레일리웨이 올려", "Deploy http://localhost:4173/ to Railway", "http://[::1]:4173/path"] {
+        try check(PreviewTargetBinding.endpoints(in: input).map(\.absoluteString) == ["http://127.0.0.1:4173/"], "explicit endpoint identity, including Korean suffix")
+    }
+    try check(PreviewTargetBinding.endpoints(in: "https://remote.example:4173/").isEmpty, "remote URL does not select local workspace")
+    try check(PreviewTargetBinding.endpoints(in: "http://localhost:99999/").isEmpty, "invalid port rejected")
+    try check(PreviewTargetBinding.endpoints(in: "http://localhost:4173/ http://127.0.0.1:4173/").count == 1, "same endpoint deduplicated")
+    try check(PreviewTargetBinding.endpoints(in: "http://localhost:4173/ http://localhost:4327/").count == 2, "distinct targets remain ambiguous")
+    try check(!PreviewTargetBinding.sameWorkspace(root.path, root.path + "-other"), "another project cannot substitute")
+    try check(!PreviewTargetBinding.sameWorkspace(root.path, root.path + "/child"), "bound target requires exact root, not any descendant")
+    try check(PreviewTargetBinding.sameWorkspace(root.path, root.path + "/."), "canonical alias allowed")
+    try check(PreviewTargetBinding.isRailwayRequest("이거 레일리웨이 올려"), "owner's deployment request recognized")
+    try check(PreviewTargetBinding.shouldBindNewDeployment(request: "http://127.0.0.1:4173/ Railway deploy", readOnly: false), "new deployment receives request identity")
+    try check(!PreviewTargetBinding.shouldBindNewDeployment(request: "http://127.0.0.1:4173/ Railway deploy", readOnly: true), "recovery readback must not replace historical deployment identity")
+    try check(!PreviewTargetBinding.shouldBindNewDeployment(request: "read this receipt", readOnly: false), "unrelated request does not create deployment contract")
+    let currentProof = Data(#"{"requestID":"current","previewHTMLSHA256":"site-a"}"#.utf8)
+    try check(PreviewTargetBinding.matchesDelivery(proof: currentProof, requestID: "current", htmlSHA256: "site-a", servedHTMLSHA256: "site-a"), "exact requested site and current receipt accepted")
+    try check(!PreviewTargetBinding.matchesDelivery(proof: currentProof, requestID: "new-request", htmlSHA256: "site-a", servedHTMLSHA256: "site-a"), "old receipt from same site rejected")
+    try check(!PreviewTargetBinding.matchesDelivery(proof: currentProof, requestID: "current", htmlSHA256: "site-a", servedHTMLSHA256: "luma"), "correct proof with wrong actual page rejected")
+    try check(!PreviewTargetBinding.matchesDelivery(proof: currentProof, requestID: "current", htmlSHA256: "site-b", servedHTMLSHA256: "site-b"), "other site's proof rejected")
+    try check(!PreviewTargetBinding.matchesDelivery(proof: Data("current site-a".utf8), requestID: "current", htmlSHA256: "site-a", servedHTMLSHA256: "site-a"), "word matching is not proof schema")
+    try check(!PreviewTargetBinding.matchesDelivery(proof: Data(#"{"requestID":"current","comment":"site-a"}"#.utf8), requestID: "current", htmlSHA256: "site-a", servedHTMLSHA256: "site-a"), "missing fingerprint not repaired from adjacent text")
+    try check(PreviewTargetBinding.endpoints(in: "https://localhost:4173/").first?.scheme == "https", "TLS endpoint is not silently downgraded")
+    try check(WebsiteDelivery.capabilityCard.contains("not automatic permission"), "capability is not authorization")
+    try check(ScopeResolution.resolve("Implement a website. Do not modify existing files but do not change anything at all.").scope == .readOnly, "contrastive blanket prohibition must survive")
     // User-directed capability is independent of a heuristic speech-act label.
     for request in ["BUILD THE DEMO.", "이거 작업하시면 됩니다 하세요", "Read only. Explain this code.", "준비해", "Delete the obsolete fixture, not other files."] {
         let scope = ScopeResolution.delegationScope(internalReadOnly: false)
@@ -90,9 +158,46 @@ func runTaskContextFixtures(root: URL) throws {
     for text in ["인스타그램 오토메이션 좀 손보자", "인스타 자동화 손 좀 보자", "인스타그램 손볼 건데",
                  "인스타그램 오토메이션 좀 손보자".decomposedStringWithCanonicalMapping, "OS1 손보자"] {
         try check(PreparationIntent.detect(text)?.kind == .prepare && PreparationIntent.detect(text)?.modifies == false,
-                  "bare work intent prepares without inventing a change: \(text)")
-        try check(TaskContext.ObjectiveKind.classify(text) == .prepare, "work request is not other")
+                  "bare work intent binds the project without inventing a change: \(text)")
+        // "손보자" asks for work: a backend handles it (build 228), it is not
+        // answered with the local prepared-state card.
+        try check(PreparationIntent.detect(text)?.preparationOnly == false, "bare work intent reaches a backend: \(text)")
+        try check(TaskContext.ObjectiveKind.classify(text) != .prepare, "work request is not labelled preparation-only: \(text)")
     }
+    for (text, expected) in [
+        ("OS1 자가수리를 실행해. 대상은 /workspace/products/os1-mac-runtime 이다. 창 문제 고쳐. 공개 사이트 배포, Instagram, 외부 발송은 하지 마.", "os1-clodex"),
+        ("Instagram 버그 수정해. OS1은 건드리지 마.", "scv-instagram"),
+        ("Do not modify Instagram; fix OS1 window focus", "os1-clodex"),
+        ("Fix Instagram delivery; preserve OS1", "scv-instagram"),
+        ("OS1 고쳐. Instagram은 보존해.", "os1-clodex")
+    ] {
+        try check(PreparationIntent.detect(text)?.projectID == expected,
+                  "excluded project must not hijack source acquisition: \(text)")
+    }
+    for text in ["파일을 변경하라", "함수를 구현하라", "버튼을 삭제하라"] {
+        try check(ScopeResolution.resolve(text).scope == .workspaceWrite, "formal edit ending: \(text)")
+    }
+    for text in ["파일을 수정하지 마라", "OS1 수정하라는 문장을 번역해", "OS1 수정하라니 가능한가?"] {
+        try check(ScopeResolution.resolve(text).scope == .readOnly, "formal verb must not expand refusal/mention: \(text)")
+    }
+    let focusRepairImperative = "자동 라우팅 때 Codex/Claude 창이 앞으로 나오지 않게 수정하라. 사용자가 명시적으로 열 때는 허용하고 OS1 자체도 always-on-top으로 만들지 마라"
+    for text in [focusRepairImperative, focusRepairImperative.decomposedStringWithCanonicalMapping] {
+        try check(ScopeResolution.resolve(text).scope == .workspaceWrite, "formal imperative retains write objective")
+        try check(PreparationIntent.detect(text)?.projectID == "os1-clodex" && PreparationIntent.detect(text)?.modifies == true, "self repair binds source before dispatch")
+        try check(!TaskWorkflow.shouldDecompose(text, scope: ScopeResolution.resolve(text).scope), "self repair runs as one backend turn")
+    }
+    let shortRepair = "라우팅할 때 Codex·Claude 창이 앞으로 튀어나오는 문제를 고쳐"
+    try check(!TaskWorkflow.shouldDecompose(shortRepair, scope: .workspaceWrite, projectID: "os1-clodex"), "bound self repair runs as one backend turn")
+    try check(TaskWorkflow.shouldDecompose(shortRepair + ". 구현 뒤 독립 검증까지 해", scope: .workspaceWrite, projectID: "os1-clodex"), "owner-requested stages still decompose")
+    try check(!TaskWorkflow.shouldDecompose(shortRepair + ". 독립 검증까지 해", scope: .readOnly, projectID: "os1-clodex"), "stages cannot grant write permission")
+    try check(TaskWorkflow.sourceAlreadySatisfied("evidence\nOS1_SOURCE_STATE: ALREADY_SATISFIED"), "structured no-op candidate")
+    try check(!TaskWorkflow.sourceAlreadySatisfied("OS1_SOURCE_STATE: ALREADY_SATISFIED\nclaim"), "marker must be terminal")
+    try check(!TaskWorkflow.sourceAlreadySatisfied("OS1_SOURCE_STATE: ALREADY_SATISFIED\nOS1_SOURCE_STATE: ALREADY_SATISFIED"), "duplicate marker rejected")
+    try check(TaskWorkflow.permitsBoundedRepair(verdict: false, stageIndex: 1), "no-op verification BLOCK permits one repair")
+    try check(!TaskWorkflow.permitsBoundedRepair(verdict: false, stageIndex: 2, repairAttempted: true), "one repair maximum")
+    try check(!TaskWorkflow.permitsBoundedRepair(verdict: nil, stageIndex: 1), "malformed no-op verifier cannot authorize repair")
+    try check(PreparationIntent.detect("OS1과 Instagram 모두 수정해")?.projectID == nil,
+              "multiple positive projects must not resolve through registry order")
     try check(PreparationIntent.detect("인스타그램 가격이 두 번 나가는 버그 손봐줘")?.modifies == true, "specific repair retains edit intent")
     try check(ScopeResolution.resolve("가격 안내 파일 손봐줘. 배포하지 마").scope == .workspaceWrite, "specific edit scope with no deployment")
     try check(PreparationIntent.detect("인스타그램 손보지 마") == nil, "no acquisition for refusal")
@@ -120,6 +225,32 @@ func runTaskContextFixtures(root: URL) throws {
     try check(PreparationIntent.detect("R2 연결시켜") == nil, "connection control is not preparation")
     let noProject = PreparationIntent.detect("그거 이어서 하자")
     try check(noProject?.kind == .continueWork && noProject?.projectID == nil, "project unresolved → must come from the conversation, never guessed")
+
+    // 2026-09-24: "끝까지 좀 해줘 … 멈추지 마" came back as the canned
+    // work_preparation card. Only an explicit, preparation-limited request is
+    // answered locally; asking for work (fix, continue, finish, can-you) runs.
+    let ownerParityRequest = "그래서 다 했어 아니 끝까지 좀 해줘 목표는 OS1이 모든 작업을 다 할 수 있어야 돼 자기가 고치는 것부터 시작해서 뭐 WML이 걸 고치든가 그러니까 성능은 커로드 코드나 코덱스랑 똑같아야 돼 고네가 완료되면 내가 클로드 코드 쓰는 거랑 코덱스 쓰는 거랑 차이가 거의 분갈이 안 갈 정도로 만들기 전까지 멈추지 마"
+    for text in [ownerParityRequest, "Can you fix the OS1 routing bug?", "Could you implement streaming output in OS-1?",
+                 "OS1이 스스로 코드를 수정할 수 있어야 해. 그렇게 만들어줘", "OS1 빌드가 불가능해. 고쳐줘", "OS1 로그인 왜 안 되냐 고쳐놔",
+                 "OS1 고치자", "OS1 수정하자", "OS1 작업하자, 라우팅부터", "OS1 하던 거 마저 해줘", "OS1 아까 결정한 대로 진행해", "이어서 해줘",
+                 "OS1 세팅 화면 새로 만들어줘", "OS1 세팅하고 새 기능 추가해", "OS1 개선 작업 시작해", "클로덱스 자가수리 이어서 끝까지 해",
+                 "OS1 손보자, 버그 다 잡아", "Let's fix OS1's queue slot bug", "OS1 그 작업 계속 진행해", "인스타 가격 문구 수정할 수 있어야 돼. 고쳐",
+                 "야 여기서 OS1 수정 가능하냐?", "인스타그램 손보자", "OS1 준비해서 새 기능 추가해", "OS1 세팅해야 할 게 있어서 고쳐줘",
+                 "OS1 세팅 끝났으면 버그 다 잡아줘"] {
+        for form in [text, text.decomposedStringWithCanonicalMapping] {
+            try check(PreparationIntent.detect(form)?.preparationOnly != true, "work request reaches a backend: \(text)")
+            try check(TaskContext.ObjectiveKind.classify(form) != .prepare, "work request is not labelled preparation-only: \(text)")
+        }
+    }
+    try check(PreparationIntent.detect(ownerParityRequest) == nil, "a requirement statement is not a preparation request")
+    for text in ["OS1 준비만 해", "OS1 작업 폴더만 잡아줘", "OS1 앱 수정 좀 하자 준비해", "OS1 수정 해야되니까 셋업해", setupIncident, caseB,
+                 "OS1 세팅만 해줘, 아직 고치지 마", "OS1 앱 사이드바 고치자 준비해", "인스타그램 수정해야 하니까 준비해", "Get OS1 ready",
+                 "OS1 셋업 좀 해줘", "클로덱스 준비 좀 해줘"] {
+        for form in [text, text.decomposedStringWithCanonicalMapping] {
+            try check(PreparationIntent.detect(form)?.preparationOnly == true, "explicit preparation stays local: \(text)")
+            try check(PreparationIntent.detect(form)?.modifies == false, "explicit preparation never modifies: \(text)")
+        }
+    }
 
     // B. Mixed allow/deny sentences keep the write scope and the prohibition.
     let mixed = ScopeResolution.resolve("파일은 수정해. 서버는 변경하지 마")
@@ -411,6 +542,19 @@ func runTaskContextFixtures(root: URL) throws {
             "unknown turns were hidden without ownership evidence")
     }
 
+    // Backend writable roots must denote the real target, not a path alias.
+    do {
+        let temp = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: temp) }
+        let physical = temp.appendingPathComponent("real workspace")
+        let alias = temp.appendingPathComponent("alias")
+        try FileManager.default.createDirectory(at: physical, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: physical)
+        let expected = physical.resolvingSymlinksInPath().path
+        try check(LocalProjectWorkspace.executionPath(alias.path) == expected, "backend root must resolve symlink without changing target")
+        try check(LocalProjectWorkspace.executionPath(expected) == expected, "physical backend root stays unchanged")
+    }
+
     // MARK: N. Common preparation structure: a second registered project uses the same path
     do {
         let second = PreparationIntent.detect("OS1 앱 수정 좀 하자 준비해")
@@ -449,5 +593,24 @@ func runTaskContextFixtures(root: URL) throws {
         try check(OS1ReceiptText.stripped("한 줄 요청") == "한 줄 요청", "no receipt, no change")
     }
 
+
+    let recoveryReceipt = VerifiedPreviewDelivery(previewURL: "http://127.0.0.1:4173/", deploymentID: deliveryID, verifiedAt: 1000)
+    let control: [String: Any] = ["operation": "preview_delivery_readback", "model_invoked": false, "deployment_invoked": false, "railway_identity_verified": true, "public_content_verified": true, "preview_url": recoveryReceipt.previewURL, "deployment_id": deliveryID, "verified_at": 1000.0]
+    try check(recoveryReceipt.matchesControlReceipt(control), "fresh independent delivery control receipt accepted")
+    for key in control.keys {
+        var missing = control; missing.removeValue(forKey: key)
+        try check(!recoveryReceipt.matchesControlReceipt(missing), "missing control evidence rejected: \(key)")
+    }
+    for (key, value) in [("model_invoked", true as Any), ("deployment_invoked", true as Any), ("railway_identity_verified", false as Any), ("public_content_verified", false as Any), ("preview_url", "http://127.0.0.1:4174/" as Any), ("deployment_id", UUID().uuidString as Any), ("verified_at", 999.0 as Any)] {
+        var changed = control; changed[key] = value
+        try check(!recoveryReceipt.matchesControlReceipt(changed), "mismatched control evidence rejected: \(key)")
+    }
+    try check(recoveryReceipt.completes(originalRequest: "http://127.0.0.1:4173/야 Railway 올려", effectsApplied: true, nativeAdopted: true, now: 1001), "verified recovery closes exact deploy without replay")
+    for request in ["http://127.0.0.1:4174/ Railway 올려", "웹사이트 만들어", "http://127.0.0.1:4173/ 고쳐", "http://127.0.0.1:4173/ http://127.0.0.1:4174/ Railway"] {
+        try check(!recoveryReceipt.completes(originalRequest: request, effectsApplied: true, nativeAdopted: true, now: 1001), "different or ambiguous objective keeps hold")
+    }
+    for (applied, adopted, now) in [(false,true,1001.0),(true,false,1001.0),(true,true,1400.0),(true,true,999.0)] {
+        try check(!recoveryReceipt.completes(originalRequest: "http://127.0.0.1:4173/ Railway", effectsApplied: applied, nativeAdopted: adopted, now: now), "partial, unverified, stale and future evidence cannot clear hold")
+    }
     print("OS-1 task context fixtures: \(count) checks passed")
 }
