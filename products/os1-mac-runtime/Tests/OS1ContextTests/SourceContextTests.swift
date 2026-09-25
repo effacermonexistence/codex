@@ -67,15 +67,24 @@ final class SourceContextTests {
         ] {
             precondition(ScopeResolution.resolve(text).scope == scope, text)
         }
-        // Build 262: what puts this machine in scope keeps the full Claude lane.
-        for text in ["이 저장소에서 찾아줘", "코드 설명해", "로그 확인해", "OS1 상태 알려줘", "파일 하나 만들어",
-                     "README.md 내용 알려줘", "테스트 돌려봐", "이거 고쳐", "방금 그거 뭐였지"] {
+        // Build 262/263: only a text operation carrying its own payload is a chat turn.
+        for text in ["다음 문장을 영문으로 번역해줘: 내일 회의 시간을 오후 3시로 옮겨도 될까요?",
+                     "Translate to Korean: Please delete the old files and deploy.",
+                     "다음 글을 한 줄로 요약해줘: 오늘 회의에서 출시를 2주 미루기로 했다."] {
+            precondition(ClaudeChatLane.selfContainedTextOperation(text), text)
+        }
+        for text in ["그럼 실제로 해봐 다 되는지 하나씩 하나씩 4개 다 해봐", "그래서 했냐고", "이 저장소에서 찾아줘",
+                     "OS1 상태 알려줘", "README.md를 번역해서 README.en.md로 저장해", "이 코드 설명하고 고쳐줘",
+                     "다음 문장을 영문으로 번역해줘", "양자역학이 뭔지 쉽게 설명해줘"] {
+            precondition(!ClaudeChatLane.selfContainedTextOperation(text), text)
+        }
+        for text in ["이 저장소에서 찾아줘", "로그 확인해", "OS1 상태 알려줘", "테스트 돌려봐", "이거 고쳐", "방금 그거 뭐였지"] {
             precondition(ClaudeChatLane.needsWorkspaceMaterial(text), text)
         }
-        for text in ["2의 10제곱은? 숫자만 답해.", "다음 문장을 영문으로 번역해줘: 내일 회의 시간을 오후 3시로 옮겨도 될까요?",
-                     "다음 글을 한 줄로 요약해줘: 회의에서 출시를 2주 미루기로 했다.", "양자역학이 뭔지 쉽게 설명해줘"] {
-            precondition(!ClaudeChatLane.needsWorkspaceMaterial(text), text)
-        }
+        // The instruction of a text operation asks for work but names nothing here.
+        precondition(ClaudeChatLane.asksForWork("다음 문장을 영문으로 번역해줘"))
+        precondition(!ClaudeChatLane.namesMachineMaterial("다음 문장을 영문으로 번역해줘"))
+        precondition(ClaudeChatLane.namesMachineMaterial("이 저장소 코드 설명"))
         XCTAssertEqual(ClaudeChatLane.claudeArguments.first, "--safe-mode")
         let explicitSplit = "/tmp/os1-split/calc.py 파일에 add(a, b) 함수를 만들고 python3로 실행해서 결과를 확인해. 작업을 쪼개서 각각 라우팅해."
         XCTAssertTrue(TaskWorkflow.shouldDecompose(explicitSplit, scope: ScopeResolution.resolve(explicitSplit).scope))

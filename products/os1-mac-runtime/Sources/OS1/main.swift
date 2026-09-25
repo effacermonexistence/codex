@@ -2981,7 +2981,7 @@ private func sourceAnswerWorkspace() throws -> String {
 /// hashed again after, so both sides must reach the same answer.
 func claudeChatLane(provider: String, permission: String, hasSource: Bool, objective: String) -> Bool {
     provider == "claude" && permission == "read_only" && !hasSource
-        && !ClaudeChatLane.needsWorkspaceMaterial(objective)
+        && ClaudeChatLane.selfContainedTextOperation(objective)
         && !promptRequiresShellCapability(objective)
         && RequestNamedPaths.extract(objective).isEmpty
         && ImageInput.encodeAll(in: objective).isEmpty
@@ -7537,7 +7537,15 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
     }
     var inputContext = try executionInputContext(prompt: prompt, assembled: localPrompt,
         history: context, evidence: r2Evidence, config: config)
-    inputContext.executionPermissionProfile = "workspace_write"
+    // 438c757 asked for workspace_write on every run so delegated workflow
+    // stages stayed executable, and the route core takes this value over the
+    // policy's own: since then no ticket has been read-only, so a translation
+    // ran Claude with bypassPermissions and the whole coding agent. Ask for
+    // read-only where the request provably needs nothing here — its own text to
+    // translate or summarize — and leave every other run exactly as it was.
+    inputContext.executionPermissionProfile = ClaudeChatLane.selfContainedTextOperation(prompt)
+        && workflowStage == nil && !promptRequiresShellCapability(prompt)
+        ? "read_only" : "workspace_write"
     inputContext.availableClaudeModels = claudeCatalog
     if feedbackSupported {
         inputContext.completionFeedback = try ((try? feedbackStore.load(scope: feedbackScope)) ??
@@ -10137,15 +10145,19 @@ func selfTest() throws {
             Data("배포 로그는 확인했지만 권한이 없어 라이브 동작 증거가 없음\nOS1_EFFECTS: partial".utf8),
             prompt: BackendRecovery.readbackPrompt(objective: "인스타 가격 버그 고쳐")
         )),
-        // Build 262: the Claude chat lane answers only what needs nothing here.
-        ("chat lane answers a plain question", claudeChatLane(provider: "claude", permission: "read_only", hasSource: false,
-            objective: "2의 10제곱은? 숫자만 답해.")),
+        // Build 262/263: the chat lane takes only a self-contained text operation.
         ("chat lane answers a translation", claudeChatLane(provider: "claude", permission: "read_only", hasSource: false,
             objective: "다음 문장을 영문으로 번역해줘: 내일 회의 시간을 오후 3시로 옮겨도 될까요?")),
+        ("chat lane answers a summary", claudeChatLane(provider: "claude", permission: "read_only", hasSource: false,
+            objective: "다음 글을 한 줄로 요약해줘: 오늘 회의에서 출시를 2주 미루고 QA 두 명을 추가하기로 했다.")),
+        ("chat lane keeps an action request on the full lane", !claudeChatLane(provider: "claude", permission: "read_only",
+            hasSource: false, objective: "그럼 실제로 해봐 다 되는지 하나씩 하나씩 4개 다 해봐")),
+        ("chat lane keeps a status question on the full lane", !claudeChatLane(provider: "claude", permission: "read_only",
+            hasSource: false, objective: "그래서 했냐고")),
         ("chat lane keeps a repository question on the full lane", !claudeChatLane(provider: "claude", permission: "read_only",
             hasSource: false, objective: "이 저장소에서 동시 실행 기본값이 몇인지 소스에서 찾아 한 줄로 답해.")),
-        ("chat lane keeps an OS-1 question on the full lane", !claudeChatLane(provider: "claude", permission: "read_only",
-            hasSource: false, objective: "OS1이 지금 어떤 백엔드로 라우팅하는지 알려줘")),
+        ("chat lane keeps a file translation on the full lane", !claudeChatLane(provider: "claude", permission: "read_only",
+            hasSource: false, objective: "README.md를 번역해서 README.en.md로 저장해")),
         ("chat lane keeps a named path on the full lane", !claudeChatLane(provider: "claude", permission: "read_only",
             hasSource: false, objective: "~/Documents 안에 뭐가 있는지 알려줘")),
         ("chat lane never takes a write ticket", !claudeChatLane(provider: "claude", permission: "workspace_write",
