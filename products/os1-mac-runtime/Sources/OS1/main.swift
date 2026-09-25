@@ -1118,6 +1118,17 @@ func sourceRoutingTask(_ prompt: String, hasSource: Bool) -> String {
 /// the public routing objective. Explicit action clauses retain their intent.
 /// Build 228: finished turns refused by a local post-check are rejected
 /// results (answer shown, no readback), interrupted ones stay uncertain.
+/// Only a request about OS-1 itself is an OS-1 repair: its verified workflow
+/// may skip an already-satisfied edit and still stage and install a release.
+/// Any other staged task that merely runs inside a checkout of this
+/// repository (a fleet job's clone, the owner's main checkout) finishes an
+/// OS-1 release only if it actually changed OS-1's source. 2026-09-25: a
+/// split test that wrote /tmp/os1-split/calc.py started a full OS-1 release
+/// build in a fleet clone, headed for a self-repair commit and push.
+func workflowIsOS1Repair(repairRoot: String?, projectID: String?) -> Bool {
+    repairRoot != nil && projectID == "os1-clodex"
+}
+
 private func postCheckRejectionChecks() -> [(String, Bool)] {
     func rejected(exit: Int32, output: String, persistence: String, cause: Error) -> RejectedProviderExecution {
         let record = NativeRecordEvidence(turnID: nil, recordPath: nil, persistence: persistence, desktopVisibility: "fixture")
@@ -6804,6 +6815,7 @@ func runWorkflowTaskWithOwnerPolicy(
         ? (resolveLocalProjectWorkspace(projectID: "os1-clodex", requested: workspace)?.workspace ?? workspace)
         : workspace
     let repairRoot = LocalProjectWorkspace.root(containing: workflowWorkspace, projectID: "os1-clodex")
+    let os1Repair = workflowIsOS1Repair(repairRoot: repairRoot, projectID: projectID)
     // Hold custody across architecture, implementation and independent verification.
     // Child stages share this in-process lease; no staged build exists before PASS.
     let workflowLease = try repairRoot.map { try acquireOS1SourceWriteLease(root: $0) }
@@ -6857,7 +6869,7 @@ func runWorkflowTaskWithOwnerPolicy(
             stagePrompt += "\nRUNTIME-VERIFIED EXECUTION RECORD LOCATORS (record persistence and permissions verified by OS-1, not blanket proof of model claims):\n" + records
             stagePrompt += "\nRead these primary records when checking pre-change observations, tool results and historical scope. Architecture handoff for locating evidence (not itself proof):\n" + String(architectureOutput.prefix(8_000))
         }
-        if repairRoot != nil && stage == .architecture {
+        if os1Repair && stage == .architecture {
             stagePrompt += "\nIDEMPOTENT SELF-REPAIR: Inspect source and existing regressions. If the requested source behavior is already implemented, identify exact source/test evidence and end with OS1_SOURCE_STATE: ALREADY_SATISFIED. This only skips redundant editing; a fresh independent verifier must still validate source readiness, and OS-1 must stage/install a verified release. Never invent a change just to satisfy a mutation check. If a defect remains, return the implementation contract without that marker."
         }
         if repairRoot != nil {
@@ -6911,7 +6923,7 @@ func runWorkflowTaskWithOwnerPolicy(
         }
         if stage == .architecture {
             architectureOutput = adopted.output
-            if repairRoot != nil && TaskWorkflow.sourceAlreadySatisfied(adopted.output) {
+            if os1Repair && TaskWorkflow.sourceAlreadySatisfied(adopted.output) {
                 stagePlan = [.architecture, .verification]
             }
         }
@@ -6922,7 +6934,7 @@ func runWorkflowTaskWithOwnerPolicy(
     }
     if let repairRoot, TaskWorkflow.permitsSelfUpdate(stage: .verification, finalVerdict: TaskWorkflow.verdict(priorOutput ?? "")) {
         switch completeOS1SelfRepair(root: repairRoot, objective: prompt,
-            startedAt: workflowStartedAt, startHead: workflowStartHead, verifiedSourceReady: true) {
+            startedAt: workflowStartedAt, startHead: workflowStartHead, verifiedSourceReady: os1Repair) {
         case .notApplicable: break
         case .staged(_, let note):
             RuntimeActivity.emit(.verifying, publicText: note)
@@ -10092,6 +10104,11 @@ func selfTest() throws {
             Data("배포 로그는 확인했지만 권한이 없어 라이브 동작 증거가 없음\nOS1_EFFECTS: partial".utf8),
             prompt: BackendRecovery.readbackPrompt(objective: "인스타 가격 버그 고쳐")
         )),
+        // Build 258: a staged task inside a checkout of this repository is an
+        // OS-1 repair only when the request is about OS-1.
+        ("staged OS-1 request is an OS-1 repair", workflowIsOS1Repair(repairRoot: "/checkout", projectID: "os1-clodex")),
+        ("staged unrelated task in an OS-1 checkout is not an OS-1 repair", !workflowIsOS1Repair(repairRoot: "/checkout", projectID: nil)),
+        ("staged task outside an OS-1 checkout is not an OS-1 repair", !workflowIsOS1Repair(repairRoot: nil, projectID: "os1-clodex")),
     ] + postCheckRejectionChecks()
     let failedCapabilityChecks = capabilityGateChecks.filter { !$0.1 }.map(\.0)
     guard failedCapabilityChecks.isEmpty else {
