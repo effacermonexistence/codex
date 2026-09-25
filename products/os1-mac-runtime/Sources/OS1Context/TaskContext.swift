@@ -728,8 +728,44 @@ public enum ProjectAdapterRegistry {
 public enum OwnerIntentText {
     /// Permission projection only. Preserve the original prompt as evidence;
     /// quoted examples and feasibility questions are not execution authority.
+    /// The instruction of a translation, summary or proofreading request
+    /// without the text it operates on, or nil when the request is not one.
+    /// The router classifies this instead of the whole request (the executor
+    /// still receives everything): the payload's verbs are data, not intent.
+    public static func textOperationInstruction(_ prompt: String) -> String? {
+        let original = prompt.precomposedStringWithCanonicalMapping
+        let stripped = strippedTextOperationPayload(original)
+        guard stripped != original else { return nil }
+        let instruction = stripped.trimmingCharacters(in: .whitespacesAndNewlines)
+        return instruction.isEmpty ? nil : instruction
+    }
+
+    static func strippedTextOperationPayload(_ input: String) -> String {
+        // "영어로 바꿔줘" is a translation, not an edit.
+        var text = input.replacingOccurrences(of: #"((?:영어|영문|한국어|한글|국문|일본어|일어|중국어)(?:으)?로)\s*바꿔"#,
+                                              with: "$1 번역해", options: .regularExpression)
+        // The text handed to a translation, summary or proofreading is data,
+        // not the owner's instruction: "다음 문장을 영문으로 번역해줘: 내일 회의
+        // 시간을 오후 3시로 옮겨도 될까요?" was read as a request to move
+        // something, routed as a change and refused (2026-09-25).
+        let textOperation = #"(?:번역|요약|교정|윤문|다듬|영작|의역|직역|translat\w*|summari[sz]\w*|proofread\w*|rephras\w*|paraphras\w*)"#
+        for (pattern, template) in [
+            // "…번역해줘: <text>", "Translate to Korean: <text>"
+            (#"(?is)^([^:：\n]{0,160}"# + textOperation + #"[^:：\n]{0,80}?)\s*[:：]\s*\S.*$"#, "$1"),
+            // Spoken, no separator: "영어로 번역해줘 <text>" — the imperative
+            // ends the instruction. Translation only; "번역해서 …로 저장해" keeps
+            // its action because "해서" is not an imperative ending.
+            (#"(?s)^(.{0,160}?(?:번역|영작)\s*(?:해\s*줘요?|해\s*주세요|해\s*줄래|해\s*봐|해|하시오))[.!,]?\s+\S.*$"#, "$1"),
+            // "\"<text>\"를 번역해줘"
+            (#"(?i)[\"“'‘][^\"”'’\n]{1,400}[\"”'’](?=\s*(?:을|를|은|는|이|가)?\s*[^\n]{0,40}"# + textOperation + ")", " "),
+        ] {
+            text = text.replacingOccurrences(of: pattern, with: template, options: .regularExpression)
+        }
+        return text
+    }
+
     public static func authorityText(_ prompt: String) -> String {
-        var text = prompt.precomposedStringWithCanonicalMapping
+        var text = strippedTextOperationPayload(prompt.precomposedStringWithCanonicalMapping)
         for pattern in [
             #"(?s)```.*?```"#,
             #"(?m)^\s*>[^\n]*"#,
@@ -821,7 +857,8 @@ public struct ScopeResolution: Equatable, Sendable {
         // Formal Korean imperatives are edits too. Match the verb ending,
         // not a bare stem that could appear in a prohibition or a noun.
         #"(?:수정|삭제|변경|편집|추가|구현)\s*하라(?=\s|[.!?;]|$)"#,
-        #"[A-Za-z0-9_./-]+\.[A-Za-z0-9]{1,16}(?:에|으로)\s*(?:기록|저장|작성)(?:해|하세|하십|하라)"#,
+        // "README.en.md로 저장해" saves as a file just like "…에 저장해".
+        #"[A-Za-z0-9_./-]+\.[A-Za-z0-9]{1,16}(?:에|으로|로)\s*(?:기록|저장|작성)(?:해|하세|하십|하라)"#,
         #"(?i)\b(?:delete|create|write|save|rename|remove|edit|modify|update)\s+[\"“][^\"”\n]+\.[A-Za-z0-9]{1,16}[\"”]"#,
         #"(?:수정|삭제|변경|편집|추가)\s*(?:해(?:줘|주세요|라)?|요청(?:합니다|해))"#,
         // Bounded Korean removal imperatives, not questions, quotations or negations.

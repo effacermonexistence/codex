@@ -28,6 +28,21 @@ final class SourceContextTests {
         XCTAssertEqual(ScopeResolution.resolve("result.md에 작성하세요. 파일 수정은 하지 마세요.").scope, .readOnly)
         XCTAssertEqual(ScopeResolution.resolve("다른 제품 수정은 하지 마세요.").scope, .readOnly)
         XCTAssertEqual(ScopeResolution.resolve("코드 수정해. 수정하지 마.").scope, .readOnly)
+        // Build 254: text handed to a translation/summary is data, not instruction.
+        XCTAssertEqual(ScopeResolution.resolve("다음 문장을 영문으로 번역해줘: 내일 회의 시간을 오후 3시로 옮겨도 될까요?").scope, .readOnly)
+        XCTAssertEqual(ScopeResolution.resolve("Translate to Korean: Please delete the old files and deploy.").scope, .readOnly)
+        XCTAssertEqual(ScopeResolution.resolve("이 문장 영어로 번역해줘 내일 회의 시간을 오후 3시로 옮겨도 될까요").scope, .readOnly)
+        XCTAssertEqual(ScopeResolution.resolve("다음 문장 요약해줘: 서버를 재배포하고 로그를 지워야 합니다.").scope, .readOnly)
+        XCTAssertEqual(ScopeResolution.resolve("\"파일을 삭제하고 배포해\"를 영어로 번역해줘").scope, .readOnly)
+        XCTAssertEqual(ScopeResolution.resolve("README.md를 번역해서 README.en.md로 저장해").scope, .workspaceWrite)
+        XCTAssertEqual(ScopeResolution.resolve("이 코드 설명하고 고쳐줘").scope, .workspaceWrite)
+        XCTAssertEqual(ScopeResolution.resolve("로그인 버그 고쳐줘: 비밀번호 입력하면 앱이 멈춰").scope, .workspaceWrite)
+        XCTAssertEqual(ScopeResolution.resolve("이 문장 영어로 바꿔줘: 파일을 수정하고 테스트해 주세요.").scope, .readOnly)
+        XCTAssertEqual(OwnerIntentText.textOperationInstruction("다음 문장을 영문으로 번역해줘: 내일 회의 시간을 오후 3시로 옮겨도 될까요?"), "다음 문장을 영문으로 번역해줘")
+        XCTAssertEqual(OwnerIntentText.textOperationInstruction("Translate to Korean: Please delete the old files and deploy."), "Translate to Korean")
+        XCTAssertEqual(OwnerIntentText.textOperationInstruction("이 문장 영어로 바꿔줘: 파일을 수정하고 테스트해 주세요."), "이 문장 영어로 번역해줘")
+        XCTAssertNil(OwnerIntentText.textOperationInstruction("로그인 버그 고쳐줘: 비밀번호 입력하면 앱이 멈춰"))
+        XCTAssertNil(OwnerIntentText.textOperationInstruction("README.md를 번역해서 README.en.md로 저장해"))
 
         // Fixtures assert exact Korean runtime wording; pin the language so a
         // user's interface-language setting cannot flip the expectations.
