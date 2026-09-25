@@ -356,6 +356,13 @@ final class SourceContextTests {
         XCTAssertTrue(HumanOutputContract.issues(in: "설명\n" + longJSON, request: request).contains { $0.contains("JSON-dominated") })
         XCTAssertTrue(HumanOutputContract.issues(in: longJSON, request: "JSON으로만 작성해").isEmpty)
         XCTAssertFalse(HumanOutputContract.wantsKorean("이 내용을 영어로 작성해줘"))
+        // Build 254: naming English or a translation chooses the output language.
+        XCTAssertFalse(HumanOutputContract.wantsKorean("이 문장을 영문으로 번역해줘"))
+        XCTAssertFalse(HumanOutputContract.wantsKorean("답변은 English로 써줘"))
+        XCTAssertFalse(HumanOutputContract.wantsKorean("이 메일 영작해줘: 내일 회의 시간을 바꾸고 싶습니다"))
+        XCTAssertTrue(HumanOutputContract.issues(in: "Could we move tomorrow's meeting?", request: "이 문장을 영문으로 번역해줘").isEmpty)
+        XCTAssertTrue(HumanOutputContract.wantsKorean("이 함수가 무엇을 하는지 두 줄로 설명해"))
+        XCTAssertFalse(HumanOutputContract.issues(in: "It accepts one verdict word.", request: "이 함수가 무엇을 하는지 두 줄로 설명해").isEmpty)
         XCTAssertTrue(HumanOutputContract.issues(in: "2", request: "1 더하기 1 답만 줘").isEmpty)
         XCTAssertTrue(HumanOutputContract.issues(in: "```json\n{ broken }\n```", request: "원문 그대로 보여줘").isEmpty)
         let stages = "V1_WEAK_FIELD V2_COVARIANT_STRESS V3_CURVED_CONSERVATION V7_PHYSICAL_DERIVATION"

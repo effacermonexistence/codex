@@ -60,7 +60,10 @@ public enum HumanOutputContract {
 
     public static func wantsKorean(_ request: String) -> Bool {
         let value = request.precomposedStringWithCanonicalMapping.lowercased()
-        if ["영어로", "in english", "answer in english"].contains(where: value.contains) { return false }
+        // Any request that names English or a translation chooses its own
+        // output language: "영문으로 번역해줘" or "English로 써줘" asked for
+        // English and was refused as "not Korean" (found 2026-09-25).
+        if ["영어로", "영문", "영작", "영어 버전", "english", "번역", "translat"].contains(where: value.contains) { return false }
         return value.unicodeScalars.filter { (0xAC00...0xD7A3).contains($0.value) }.count >= 3
     }
 
