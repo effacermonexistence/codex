@@ -214,6 +214,28 @@ private func taskContextSelfTest() throws {
     }
 }
 
+private func governanceHeartbeatSelfTest() throws {
+    let start = Date(timeIntervalSince1970: 1_800_000_000)
+    var history = GovernanceHeartbeatHistory()
+    for second in 0...15 {
+        history.record(at: start.addingTimeInterval(TimeInterval(second)))
+    }
+    guard history.points.count == 16,
+          zip(history.points, history.points.dropFirst()).allSatisfy({ $0.id < $1.id }),
+          Set(history.points.map(\.value)).count >= 3 else {
+        throw RunnerError.message("OS-1 governance heartbeat stopped or failed to animate past 10 seconds")
+    }
+    for second in 16...90 {
+        history.record(at: start.addingTimeInterval(TimeInterval(second)))
+    }
+    let final = start.addingTimeInterval(90)
+    guard history.points.count <= 48,
+          history.points.first.map({ $0.id >= final.addingTimeInterval(-45) }) == true,
+          history.points.last?.id == final else {
+        throw RunnerError.message("OS-1 governance heartbeat rolling window is not bounded or current")
+    }
+}
+
 @MainActor
 private func providerIntentSelfTest() throws {
     let sourceRef = SourceReference(kind: .snapshot, id: UUID(), sha256: String(repeating: "b", count: 64))
@@ -8562,6 +8584,7 @@ private struct OS1DesktopApp: App {
         }
         if CommandLine.arguments.contains("--self-test") {
             do {
+                try governanceHeartbeatSelfTest()
                 try nativeProvenanceSelfTest()
                 try savedFailurePreviewSelfTest()
                 try providerIntentSelfTest()
@@ -8571,7 +8594,7 @@ private struct OS1DesktopApp: App {
                 try sidebarSynchronizationSelfTest()
                 try backendRecoverySelfTest()
                 try selfUpdateReportSelfTest()
-                print("OS-1 app provider intent, source continuity, voice, math, selection, pin/archive/drafts/queue, backend accounts, backend self-repair, self-update self-test: OK")
+                print("OS-1 app continuous governance heartbeat, provider intent, source continuity, voice, math, selection, pin/archive/drafts/queue, backend accounts, backend self-repair, self-update self-test: OK")
                 exit(EXIT_SUCCESS)
             } catch {
                 fputs("\(error.localizedDescription)\n", stderr)

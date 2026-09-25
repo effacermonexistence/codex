@@ -10,9 +10,34 @@ private enum GovernanceMonitorSection: String, CaseIterable, Identifiable {
     var id: Self { self }
 }
 
-private struct GovernanceChartPoint: Identifiable {
+struct GovernanceChartPoint: Identifiable {
     let id: Date
     let value: Double
+}
+
+/// A bounded, receipt-independent liveness trace for the monitor itself.
+/// It proves that the one-second detector loop is still sampling; it never
+/// claims provider work or task activity.
+struct GovernanceHeartbeatHistory {
+    private(set) var points: [GovernanceChartPoint] = []
+
+    mutating func record(at date: Date) {
+        let second = Int(date.timeIntervalSince1970.rounded(.down))
+        let phase = ((second % 4) + 4) % 4
+        let level: Double
+        switch phase {
+        case 0: level = 0.86
+        case 1: level = 0.12
+        case 2: level = 0.34
+        default: level = 0.12
+        }
+        points.append(GovernanceChartPoint(id: date, value: level))
+        let cutoff = date.addingTimeInterval(-45)
+        points.removeAll { $0.id < cutoff }
+        if points.count > 48 {
+            points.removeFirst(points.count - 48)
+        }
+    }
 }
 
 private struct GovernanceActivityChartPoint: Identifiable {
@@ -36,6 +61,7 @@ struct GovernanceMonitorView: View {
     @State private var scenarioTasks = 100
     @State private var selectedTaskID = ""
     @State private var refreshed = Date()
+    @State private var heartbeatHistory = GovernanceHeartbeatHistory()
     @State private var deltaHistory = GovernanceDeltaHistory()
     @State private var deltaHistoryContext = ""
     @State private var projection: GovernanceDashboardProjection
@@ -56,6 +82,13 @@ struct GovernanceMonitorView: View {
         _snapshot = State(initialValue: snapshot)
         _section = State(initialValue: GovernanceMonitorSection(rawValue: previewSection) ?? .live)
         _refreshed = State(initialValue: snapshot.loadedAt)
+        if preview {
+            var history = GovernanceHeartbeatHistory()
+            for offset in (-30...0) {
+                history.record(at: snapshot.loadedAt.addingTimeInterval(TimeInterval(offset)))
+            }
+            _heartbeatHistory = State(initialValue: history)
+        }
         let initialProjection = snapshot.dashboardProjection(provider: nil, since: nil,
                                                              includeHistorical: true, now: snapshot.loadedAt)
         _projection = State(initialValue: initialProjection)
@@ -247,6 +280,7 @@ struct GovernanceMonitorView: View {
                 }.value
                 guard !Task.isCancelled else { return }
                 refreshed = Date()
+                recordHeartbeat(at: refreshed)
                 if let update {
                     snapshot = update.snapshot
                 }
@@ -291,6 +325,12 @@ struct GovernanceMonitorView: View {
            last.tokenSavings == token,
            last.taskCompletionDelta == completion { return }
         deltaHistory.append(at: date, tokenSavings: token, taskCompletionDelta: completion)
+    }
+    /// Record one real polling-loop sample per second. This is detector
+    /// liveness, not provider/task activity, and is kept separate from the
+    /// receipt-backed start/finish series.
+    private func recordHeartbeat(at date: Date) {
+        heartbeatHistory.record(at: date)
     }
     private func setBaseline() {
         guard projectionIsCurrent else { return }
@@ -455,8 +495,13 @@ struct GovernanceMonitorView: View {
     }
     private var liveActivityChart: some View {
         let points = liveActivityPoints
+        let heartbeatPoints = heartbeatHistory.points.isEmpty
+            ? [GovernanceChartPoint(id: refreshed, value: 0.12)]
+            : heartbeatHistory.points
         let maxValue = max(1, points.flatMap { [$0.started, $0.finished] }.max() ?? 1)
         let windowLabel = window == "전체" ? "최근 30분" : window
+        let heartbeatStart = refreshed.addingTimeInterval(-30)
+        let heartbeatEnd = refreshed.addingTimeInterval(1)
         return VStack(alignment: .leading, spacing: 11) {
             HStack(alignment: .firstTextBaseline) {
                 VStack(alignment: .leading, spacing: 3) {
@@ -511,9 +556,31 @@ struct GovernanceMonitorView: View {
                 }
             }
             .frame(height: 170)
-            Text(points.count == 1 && points[0].started == 0 && points[0].finished == 0
-                 ? "Heartbeat는 1초마다 이동합니다. 작업 활동선은 새 영수증이 생길 때만 바뀝니다."
-                 : "Heartbeat는 1초마다 이동하고, 작업 활동선은 다음 영수증 폴링에서 갱신됩니다.")
+            HStack {
+                Text("실시간 감지 파형 · 1초 샘플")
+                    .font(.system(size: 9, weight: .medium))
+                    .foregroundStyle(green)
+                Spacer()
+                Text("최근 30초")
+                    .font(.system(size: 8, design: .monospaced))
+                    .foregroundStyle(muted)
+            }
+            Chart(heartbeatPoints) { point in
+                AreaMark(x: .value("감지 시간", point.id), y: .value("heartbeat", point.value))
+                    .foregroundStyle(LinearGradient(colors: [green.opacity(0.28), green.opacity(0.01)],
+                                                    startPoint: .top, endPoint: .bottom))
+                LineMark(x: .value("감지 시간", point.id), y: .value("heartbeat", point.value))
+                    .foregroundStyle(green)
+                    .lineStyle(StrokeStyle(lineWidth: 1.8, lineCap: .round, lineJoin: .round))
+            }
+            .chartXScale(domain: heartbeatStart...heartbeatEnd)
+            .chartYScale(domain: 0...1)
+            .chartXAxis(.hidden)
+            .chartYAxis(.hidden)
+            .frame(height: 46)
+            .accessibilityLabel("1초 실시간 감지 파형")
+            .accessibilityValue("\(heartbeatPoints.count)개 샘플 · 마지막 \(refreshed.formatted(date: .omitted, time: .standard))")
+            Text("감지 파형은 작업 유무와 관계없이 계속 흐릅니다. 시작·종료 활동선은 실제 영수증이 생길 때만 바뀝니다.")
                 .font(.system(size: 9)).foregroundStyle(muted)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
