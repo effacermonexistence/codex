@@ -33,6 +33,11 @@ Dock items with suggested/recent apps disabled, login-session idle Always On,
 and Codex queued follow-ups. Finish macOS's device-local
 Handy microphone/Accessibility prompts and restart an already-open Codex app
 to activate queue mode. This profile does not install the EXO app.
+For F1/F2, inspect the live switch in System Settings > Keyboard > Keyboard
+Shortcuts > Function Keys and turn off standard function keys if it is on.
+The stored `com.apple.keyboard.fnState=0` preference and doctor pass can differ
+from the live switch while System Settings is running; confirm physical
+F1/F2 brightness response before calling this part finished.
 The OS-1 installer configures EXO and needs macOS administrator approval; do
 not run it for a default new-Mac setup. It is an explicit
 `OMAR_INSTALL_OS1=1` opt-in when the user requests OS-1/EXO installation.

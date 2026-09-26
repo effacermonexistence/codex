@@ -162,7 +162,8 @@ if [[ "$(defaults read com.apple.HIToolbox AppleFnUsageType)" != "0" ]]; then
   exit 1
 fi
 
-# Let F1/F2 control display brightness directly; Fn alone remains Handy's shortcut.
+# Store media-key mode. A running System Settings app can retain the previous
+# live switch state, so the finisher must inspect it before claiming F1/F2 work.
 defaults write -g com.apple.keyboard.fnState -bool false
 if [[ "$(defaults read -g com.apple.keyboard.fnState)" != "0" ]]; then
   echo "Display brightness function-key preference verification failed." >&2
@@ -288,5 +289,6 @@ if (!/^followUpQueueMode\s*=\s*"queue"\s*$/m.test(fs.readFileSync(codex, 'utf8')
 NODE
 
 echo "Mac defaults ready: Handy Fn + sound + medium model + menu bar only, emoji off, F1/F2 brightness, pure black wallpaper, idle Always On, Codex queue."
+echo "Verify the live F1/F2 switch in System Settings > Keyboard > Keyboard Shortcuts > Function Keys; a stored preference alone does not prove the keys work."
 echo "Dock ready: no pinned apps or folders; suggested and recent apps disabled."
 echo "Approve Handy microphone/Accessibility prompts on this Mac if macOS shows them; restart an already-open Codex app to load queue mode."

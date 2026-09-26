@@ -140,6 +140,8 @@ Whisper Medium model; configures Fn transcription with Marimba start/stop
 sounds; keeps Handy running with a menu bar icon and no idle Dock icon; disables
 macOS's Fn emoji action while keeping F1/F2 as direct brightness keys; sets the
 desktop to pure `#000000`;
+the live F1/F2 switch must also be checked in System Settings because a running
+settings app can retain its prior state after the preference is written;
 clears pinned Dock apps and folders and disables suggested/recent apps; starts a
 login-session idle sleep/display sleep assertion; and sets Codex
 follow-ups to queue mode. Handy may show a Dock icon temporarily while its
