@@ -14,13 +14,23 @@ assert 'launch: BackendWindowFocus.DesktopLaunch,' in transport
 # The launch decision comes from the single focus policy, and a running owner
 # must resolve to `.useRunningOwner` so no reopen Apple Event reaches Desktop.
 assert 'launch: BackendWindowFocus.desktopLaunch(isRunning: codexDesktopIsRunning())' in main
-assert 'guard launch == .backgroundLaunch else { return }' in transport
-assert 'BackendWindowFocus.backgroundLaunchOptions + [desktopBundleID]' in transport
+assert 'guard launch == .useRunningOwner else {' in transport
+assert '/usr/bin/open' not in transport
+assert 'try launcher(' not in transport
 assert 'static let desktopBundleID = "com.openai.codex"' in transport
 assert 'codex://threads/' not in transport
 with tempfile.TemporaryDirectory(prefix='os1-ipc-') as temp:
     temp = Path(temp)
     (temp/'main.swift').write_text('''import Foundation
+ import OS1Context
+ let id = "0f9b2c68-49cf-4f2f-9a6e-2b0cd1a4f7e3"
+ var launches = 0
+ let launcher: (URL, [String]) throws -> Int32 = { _, _ in launches += 1; return 0 }
+ try CodexDesktopTransport.ensureRunning(threadID: id, launch: .useRunningOwner, launcher: launcher)
+ var refused = false
+ do { try CodexDesktopTransport.ensureRunning(threadID: id, launch: .backgroundLaunch, launcher: launcher) }
+ catch { refused = true }
+ precondition(refused && launches == 0)
  do {
  let input = CodexDesktopTransport.textInput("fixture 한글")
  precondition(input["text"] as? String == "fixture 한글")

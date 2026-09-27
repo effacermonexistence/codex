@@ -36,8 +36,8 @@ public enum BackendWindowFocus {
         /// with Codex Desktop (`com.openai.codex`) already running: `open -g -b`
         /// exited 0 and moved the foreground off the owner's frontmost app.
         case useRunningOwner = "use_running_owner"
-        /// Not running: a cold launch carries no reopen event, so `-g` does
-        /// keep the new process out of the foreground.
+        /// Legacy wire value for a missing owner. This is now a refusal state:
+        /// automatic work must not cold-launch a GUI app either.
         case backgroundLaunch = "background_launch"
     }
 
@@ -45,8 +45,7 @@ public enum BackendWindowFocus {
         isRunning ? .useRunningOwner : .backgroundLaunch
     }
 
-    /// Exactly the `/usr/bin/open` options a background launch may use. The
-    /// bundle identifier is appended by the caller. An activating form (`open
-    /// <url>`, `open -a`, `open` without `-g`) is reserved for explicit reveal.
+    /// Legacy launch options retained for record compatibility only. Automatic
+    /// routing does not execute them; explicit reveal is a separate user action.
     public static let backgroundLaunchOptions = ["-g", "-b"]
 }

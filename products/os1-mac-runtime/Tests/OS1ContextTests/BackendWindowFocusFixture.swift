@@ -26,11 +26,11 @@ func runBackendWindowFocusFixtures() throws {
     check(BackendWindowFocus.desktopLaunch(isRunning: true) == .useRunningOwner,
           "a running Desktop owner is reached over IPC; no reopen event is sent")
     check(BackendWindowFocus.desktopLaunch(isRunning: false) == .backgroundLaunch,
-          "a missing Desktop owner is cold-launched instead of left unavailable")
+          "a missing Desktop owner is identified so transport can refuse GUI startup")
     check(BackendWindowFocus.desktopLaunch(isRunning: true) != .backgroundLaunch,
           "the running case must not fall through to a launch")
 
-    // Cold launch stays out of the foreground and carries no thread URL.
+    // Legacy options remain stable, but are no longer executed automatically.
     check(BackendWindowFocus.backgroundLaunchOptions == ["-g", "-b"],
           "background launch keeps -g and targets a bundle identifier, not a URL")
     check(BackendWindowFocus.backgroundLaunchOptions.contains("-g"),

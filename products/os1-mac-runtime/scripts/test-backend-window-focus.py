@@ -44,12 +44,12 @@ check('public static let backgroundLaunchOptions = ["-g", "-b"]' in policy, 'bac
 # 2. The transport never reopens a running owner.
 check('launch: BackendWindowFocus.DesktopLaunch,' in transport,
       'ensureRunning takes the typed launch decision from the caller')
-check('guard launch == .backgroundLaunch else { return }' in transport,
-      'a running Desktop owner is never launched or reopened')
-check(transport.index('guard launch == .backgroundLaunch else { return }') < transport.index('URL(fileURLWithPath: "/usr/bin/open")'),
-      'the running-owner guard must precede any open invocation')
-check('BackendWindowFocus.backgroundLaunchOptions + [desktopBundleID]' in transport,
-      'cold launch arguments come from the single focus policy')
+check('guard launch == .useRunningOwner else {' in transport,
+      'missing Desktop owner is refused before dispatch')
+check('try launcher(' not in transport and 'try process.run()' not in transport,
+      'automatic transport has no GUI launch side effects')
+check('/usr/bin/open' not in transport,
+      'automatic transport cannot invoke LaunchServices')
 check('codex://threads/' not in transport, 'the transport never sends an activating thread URL')
 
 # 3. The single automatic caller passes the policy decision.

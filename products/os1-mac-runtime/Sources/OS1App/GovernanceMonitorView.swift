@@ -284,6 +284,20 @@ struct GovernanceMonitorView: View {
                 if let update {
                     snapshot = update.snapshot
                 }
+                // Delta charts previously only advanced inside the
+                // projection-recompute task, which only reruns when a new
+                // receipt file lands (snapshot.loadedAt changes) or the
+                // window/provider filter changes. Under the default "전체"
+                // window that could go arbitrarily long with zero task
+                // activity, so the token/completion delta lines and the
+                // compact metric cards stopped advancing even though the
+                // header still claimed "LIVE · 1초 heartbeat". Re-plot the
+                // currently valid measured delta once per heartbeat tick too
+                // so the series keeps drawing in real time; this replots an
+                // already-computed value, it never fabricates a new one.
+                if projectionIsCurrent {
+                    recordDeltaPoint(at: refreshed)
+                }
                 try? await Task.sleep(until: tick.advanced(by: .seconds(1)), clock: .continuous)
             }
         }

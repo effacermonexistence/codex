@@ -33,6 +33,34 @@ func runSelfUpdateFixtures() throws {
         check(SelfUpdate.isTransientInstallFailure(message), "busy must preserve staged intent: " + message)
     }
     check(!SelfUpdate.isTransientInstallFailure("signature mismatch"), "signature error is not a transient busy state")
+    // A requested checkout is not authoritative merely because its marker exists.
+    // Apply the installed-source floor to every candidate, including a sole candidate.
+    let workspaceHome = root.appendingPathComponent("workspace-home", isDirectory: true)
+    let stale = workspaceHome.appendingPathComponent("stale", isDirectory: true)
+    let current = workspaceHome.appendingPathComponent("current", isDirectory: true)
+    for checkout in [stale, current] {
+        let marker = checkout.appendingPathComponent("products/os1-mac-runtime/Package.swift")
+        try FileManager.default.createDirectory(at: marker.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("// fixture".utf8).write(to: marker)
+    }
+    let config = workspaceHome.appendingPathComponent(".codex/config.toml")
+    try FileManager.default.createDirectory(at: config.deletingLastPathComponent(), withIntermediateDirectories: true)
+    let currentPath = current.standardizedFileURL.resolvingSymlinksInPath().path
+    let stalePath = stale.standardizedFileURL.resolvingSymlinksInPath().path
+    try Data("[projects.\(String(reflecting: current.path))]\ntrust_level = \"trusted\"\n".utf8).write(to: config)
+    let resolved = LocalProjectWorkspace.resolve(projectID: "os1-clodex", requested: stale.path, home: workspaceHome, isCurrent: { $0 == currentPath })
+    check(resolved?.workspace == currentPath, "stale requested checkout falls back to current registered checkout")
+    check(resolved?.fromRequestedWorkspace == false, "fallback does not claim requested-source identity")
+    check(LocalProjectWorkspace.resolve(projectID: "os1-clodex", requested: stale.path, home: workspaceHome, isCurrent: { _ in false }) == nil, "all stale candidates fail closed")
+    check(LocalProjectWorkspace.resolve(projectID: "os1-clodex", requested: stale.path, home: workspaceHome)?.workspace == stalePath, "without a floor the valid requested checkout remains preferred")
+    check(LocalProjectWorkspace.resolve(projectID: "os1-clodex", requested: current.path, home: workspaceHome, isCurrent: { $0 == currentPath })?.fromRequestedWorkspace == true, "current requested checkout retains authority")
+    let workspaceAlias = workspaceHome.appendingPathComponent("current-alias")
+    try FileManager.default.createSymbolicLink(at: workspaceAlias, withDestinationURL: current)
+    let aliased = LocalProjectWorkspace.resolve(projectID: "os1-clodex", requested: workspaceAlias.path, home: workspaceHome, isCurrent: { $0 == currentPath })
+    check(aliased?.workspace == currentPath && aliased?.alternates.isEmpty == true, "symlink and registered source deduplicate by canonical identity")
+    try Data().write(to: config)
+    check(LocalProjectWorkspace.resolve(projectID: "os1-clodex", requested: stale.path, home: workspaceHome, isCurrent: { _ in false }) == nil, "sole stale requested checkout cannot bypass installed-source floor")
+
     let checkoutA = root.appendingPathComponent("a").path
     let checkoutB = root.appendingPathComponent("b").path
 

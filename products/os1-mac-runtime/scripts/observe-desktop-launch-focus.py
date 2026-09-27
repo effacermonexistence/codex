@@ -64,7 +64,8 @@ do {
 } catch { failure = String(describing: error) }
 settle(4)
 phases.append(["phase": "current_policy", "desktopWasRunning": wasRunning,
-               "decision": decision.rawValue, "launched": decision == .backgroundLaunch,
+               "decision": decision.rawValue, "launched": false,
+               "missingOwnerRefused": !wasRunning && failure != nil,
                "error": failure ?? "none",
                "foregroundBefore": before, "foregroundAfter": front(),
                "activations": Array(events.dropFirst(mark))])
@@ -86,13 +87,15 @@ if includeLegacy {
                    "activations": Array(events.dropFirst(mark))])
 }
 
-let watched: Set<String> = ["com.openai.codex", "com.anthropic.claudefordesktop", "com.omaragi.os1"]
+// OS-1 being frontmost is observable: a backend taking focus would emit an
+// activation. Only an already-frontmost backend makes this check blind.
+let watched: Set<String> = ["com.openai.codex", "com.anthropic.claudefordesktop"]
 let currentActivations = (current["activations"] as! [[String: String]])
     .filter { watched.contains($0["bundleID"] ?? "") }
 let blind = watched.contains(initial)
 let status: String
 if blind { status = "UNKNOWN_WATCHED_APP_ALREADY_FRONTMOST" }
-else if failure != nil { status = "REVIEW_ENSURE_RUNNING_FAILED" }
+else if failure != nil && wasRunning { status = "REVIEW_ENSURE_RUNNING_FAILED" }
 else if !currentActivations.isEmpty || (current["foregroundAfter"] as! String) != before {
     status = "FAIL_FOREGROUND_TAKEN"
 } else { status = "PASS" }

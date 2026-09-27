@@ -61,32 +61,31 @@ public enum LocalProjectWorkspace {
         public let fromRequestedWorkspace: Bool
     }
 
-    /// Prefer the requested workspace when it is inside the project; otherwise
-    /// a current registered root (`isCurrent`, e.g. one that contains the
-    /// installed build's commit) before a stale one, then the most recently
-    /// changed (its git index, else the directory itself). Other matching
-    /// roots are reported as alternates.
+    /// Prefer the requested workspace only when it also satisfies `isCurrent`.
+    /// Every candidate, including a sole/requested root, crosses the same gate.
+    /// Never fall back to a known stale tree for a self-update.
     public static func resolve(projectID: String, requested: String,
                                home: URL = FileManager.default.homeDirectoryForCurrentUser,
                                isCurrent: ((String) -> Bool)? = nil) -> Resolution? {
-        if let root = root(containing: requested, projectID: projectID) {
-            return Resolution(workspace: root, alternates: [], fromRequestedWorkspace: true)
-        }
-        let found = candidates(projectID: projectID, home: home)
+        let requestedRoot = root(containing: requested, projectID: projectID).map(executionPath)
+        var seen = Set<String>()
+        let found = ([requestedRoot].compactMap { $0 } + candidates(projectID: projectID, home: home).map(executionPath))
+            .filter { seen.insert($0).inserted }
+            .filter { isCurrent?($0) ?? true }
         guard !found.isEmpty else { return nil }
         func changedAt(_ root: String) -> Date {
             let index = URL(fileURLWithPath: root).appendingPathComponent(".git/index").path
             let path = FileManager.default.fileExists(atPath: index) ? index : root
             return (try? FileManager.default.attributesOfItem(atPath: path))?[.modificationDate] as? Date ?? .distantPast
         }
-        // One answer per real directory (a registered symlink shares it).
-        let distinct = Set(found.map(executionPath)).count
-        var currentByTarget: [String: Bool] = [:]
-        for root in found where currentByTarget[executionPath(root)] == nil {
-            currentByTarget[executionPath(root)] = distinct > 1 ? isCurrent?(root) ?? true : true
+        let ordered = found.sorted {
+            if $0 == $1 { return false }
+            if $0 == requestedRoot { return true }
+            if $1 == requestedRoot { return false }
+            let lhs = changedAt($0), rhs = changedAt($1)
+            return lhs == rhs ? $0 < $1 : lhs > rhs
         }
-        func current(_ root: String) -> Int { currentByTarget[executionPath(root)] == true ? 1 : 0 }
-        let ordered = found.sorted { (current($0), changedAt($0)) > (current($1), changedAt($1)) }
-        return Resolution(workspace: ordered[0], alternates: Array(ordered.dropFirst()), fromRequestedWorkspace: false)
+        return Resolution(workspace: ordered[0], alternates: Array(ordered.dropFirst()),
+                          fromRequestedWorkspace: ordered[0] == requestedRoot)
     }
 }

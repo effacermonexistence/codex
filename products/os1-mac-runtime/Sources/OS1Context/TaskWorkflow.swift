@@ -110,7 +110,7 @@ public enum TaskWorkflow: String, Codable, Sendable, CaseIterable {
     public static func modelTier(_ identifier: String) -> Int {
         let model = identifier.lowercased()
         if model.contains("astra") { return 6 }
-        if model.contains("5.6-sol") || model.contains("daybreak") || model.contains("opus") { return 5 }
+        if model.contains("6-sol") || model.contains("5.6-sol") || model.contains("daybreak") || model.contains("opus") { return 5 }
         if model.contains("terra") || model.contains("sonnet") { return 3 }
         if model.contains("luna") || model.contains("fable") { return 2 }
         if model.contains("mini") || model.contains("spark") || model.contains("haiku") { return 1 }

@@ -9267,15 +9267,16 @@ func selfTest() throws {
         )
     }
     catch { refusedInvalidThread = true }
-    try CodexDesktopTransport.ensureRunning(
-        threadID: runningThread,
-        launch: .backgroundLaunch,
-        launcher: recordAutomaticLaunch
-    )
-    guard refusedInvalidThread,
-          automaticLaunches.count == 1,
-          automaticLaunches[0].0.path == "/usr/bin/open",
-          automaticLaunches[0].1 == ["-g", "-b", codexDesktopBundleID],
+    var refusedMissingOwner = false
+    do {
+        try CodexDesktopTransport.ensureRunning(
+            threadID: runningThread,
+            launch: .backgroundLaunch,
+            launcher: recordAutomaticLaunch
+        )
+    } catch { refusedMissingOwner = true }
+    guard refusedInvalidThread, refusedMissingOwner,
+          automaticLaunches.isEmpty,
           BackendWindowFocus.desktopLaunch(isRunning: true) == .useRunningOwner,
           BackendWindowFocus.desktopLaunch(isRunning: false) == .backgroundLaunch,
           BackendWindowFocus.mayActivateBackendWindow(.explicitUserReveal),
