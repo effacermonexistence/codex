@@ -92,6 +92,8 @@
     "cx_spark_high": { "provider": "codex", "model": "gpt-5.3-codex-spark", "effort": "high" },
     "cx_spark_xhigh": { "provider": "codex", "model": "gpt-5.3-codex-spark", "effort": "xhigh" },
     "cl_fable_low": { "provider": "claude", "model": "fable", "effort": "low" },
+    "cl_fable_xhigh": { "provider": "claude", "model": "fable", "effort": "xhigh" },
+    "cl_fable_max": { "provider": "claude", "model": "fable", "effort": "max" },
     "cl_sonnet_medium": { "provider": "claude", "model": "sonnet", "effort": "medium" },
     "cl_opus_xhigh": { "provider": "claude", "model": "opus", "effort": "xhigh" },
     "cl_opus_max": { "provider": "claude", "model": "opus", "effort": "max" }

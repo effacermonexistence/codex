@@ -107,12 +107,15 @@ public enum TaskWorkflow: String, Codable, Sendable, CaseIterable {
 
     /// Stage policy operates only on the native account's observed model
     /// inventory. These are routing tiers, not measured quality or price claims.
+    /// Tier 6 is each provider's newest top model, the reference the signed
+    /// router's quality floor runs (RCC v45): Codex's gpt-6-astra and Claude
+    /// Code's Fable ("most capable for your hardest and longest-running work").
     public static func modelTier(_ identifier: String) -> Int {
         let model = identifier.lowercased()
-        if model.contains("astra") { return 6 }
+        if model.contains("astra") || model.contains("fable") { return 6 }
         if model.contains("6-sol") || model.contains("5.6-sol") || model.contains("daybreak") || model.contains("opus") { return 5 }
         if model.contains("terra") || model.contains("sonnet") { return 3 }
-        if model.contains("luna") || model.contains("fable") { return 2 }
+        if model.contains("luna") { return 2 }
         if model.contains("mini") || model.contains("spark") || model.contains("haiku") { return 1 }
         return 0
     }

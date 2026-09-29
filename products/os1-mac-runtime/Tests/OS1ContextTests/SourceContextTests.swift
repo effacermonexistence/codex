@@ -241,10 +241,12 @@ final class SourceContextTests {
         XCTAssertEqual(TaskWorkflow.architecture.preferredModels(["gpt-6-sol", "gpt-6-luna"]), Set(["gpt-6-sol"]))
         XCTAssertEqual(TaskWorkflow.implementation.eligibleModelsByProvider([["gpt-6-astra", "gpt-6-sol", "gpt-5.6-terra"]]), Set(["gpt-6-astra", "gpt-6-sol", "gpt-5.6-terra"]))
         let models = ["gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "claude-opus-5", "claude-sonnet-5", "claude-fable-5-1"]
-        XCTAssertEqual(TaskWorkflow.implementation.eligibleModelsByProvider([["fable", "opus"]]), Set(["fable", "opus"]))
-        XCTAssertEqual(TaskWorkflow.implementation.eligibleModelsByProvider([["gpt-5.6-luna", "gpt-5.6-terra", "gpt-6-astra"], ["fable", "opus"]]), Set(["gpt-5.6-terra", "gpt-6-astra", "fable", "opus"]))
-        XCTAssertEqual(TaskWorkflow.architecture.eligibleModelsByProvider([["fable", "opus"]]), Set(["opus"]))
-        XCTAssertEqual(TaskWorkflow.architecture.preferredModels(models), Set(["gpt-6-astra"]))
+        XCTAssertEqual(TaskWorkflow.modelTier("claude-fable-5-1"), TaskWorkflow.modelTier("gpt-6-astra"))
+        XCTAssertEqual(TaskWorkflow.implementation.eligibleModelsByProvider([["fable", "opus", "sonnet"]]), Set(["fable", "opus", "sonnet"]))
+        XCTAssertEqual(TaskWorkflow.implementation.eligibleModelsByProvider([["fable", "opus"]]), Set(["fable"]))
+        XCTAssertEqual(TaskWorkflow.implementation.eligibleModelsByProvider([["gpt-5.6-luna", "gpt-5.6-terra", "gpt-6-astra"], ["fable", "opus"]]), Set(["gpt-5.6-terra", "gpt-6-astra", "fable"]))
+        XCTAssertEqual(TaskWorkflow.architecture.eligibleModelsByProvider([["fable", "opus"]]), Set(["fable"]))
+        XCTAssertEqual(TaskWorkflow.architecture.preferredModels(models), Set(["gpt-6-astra", "claude-fable-5-1"]))
         XCTAssertEqual(TaskWorkflow.implementation.preferredModels(models), Set(["gpt-5.6-terra", "claude-sonnet-5"]))
         let codex = ["gpt-6-astra", "gpt-5.6-terra"]
         let claude = ["claude-opus-5", "claude-sonnet-5"]
