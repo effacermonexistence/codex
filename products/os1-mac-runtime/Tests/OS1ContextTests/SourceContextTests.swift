@@ -146,6 +146,7 @@ final class SourceContextTests {
         try runGovernanceLearningFixtures()
         try runRequestNamedPathsFixtures()
         try runProviderActivityWatchdogFixtures()
+        runABCDCarryPolicyFixtures()
         try runOS1SelfReferenceFixtures()
         try runBackendWindowFocusFixtures()
         try runSelfUpdateFixtures()

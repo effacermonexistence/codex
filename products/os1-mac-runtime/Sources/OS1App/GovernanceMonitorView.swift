@@ -484,12 +484,12 @@ struct GovernanceMonitorView: View {
     }
     private var compactMetrics: some View {
         HStack(spacing: 10) {
-            compactCard("테스크 완료율", percent(taskCompletionRate),
+            compactCard("실행 완료율", percent(taskCompletionRate),
                         "완료 \(completed) / 종료 \(terminal.count)", color: green)
             compactCard("토큰 감소율 Δ", delta(selectedComparison?.tokenSavings),
                         selectedComparison.map { "matched \($0.matchedScopes)묶음 · 실패 포함" } ?? "동일 요청 비교 데이터 없음",
                         color: (selectedComparison?.tokenSavings ?? 0) >= 0 ? green : pink)
-            compactCard("테스크 완료율 Δ", percentagePoints(taskCompletionDelta),
+            compactCard("실행 완료율 Δ", percentagePoints(taskCompletionDelta),
                         "matched \(percent(selectedComparison?.baselineTaskCompletionRate)) → \(percent(selectedComparison?.candidateTaskCompletionRate))",
                         color: (taskCompletionDelta ?? 0) >= 0 ? green : pink)
             compactCard("종합 효율 Δ", delta(completionEfficiencyDelta),
@@ -502,7 +502,7 @@ struct GovernanceMonitorView: View {
             deltaChart(title: "토큰 감소율 Δ", current: delta(selectedComparison?.tokenSavings), unit: "%",
                        note: "matched 요청 · 실패·재시도 비용 포함", points: tokenDeltaPoints,
                        color: (selectedComparison?.tokenSavings ?? 0) >= 0 ? green : pink)
-            deltaChart(title: "테스크 완료율 Δ", current: percentagePoints(taskCompletionDelta), unit: "pp",
+            deltaChart(title: "실행 완료율 Δ", current: percentagePoints(taskCompletionDelta), unit: "pp",
                        note: "비교 − 기준 · 같은 matched 요청", points: completionDeltaPoints,
                        color: (taskCompletionDelta ?? 0) >= 0 ? green : pink)
         }
@@ -671,7 +671,7 @@ struct GovernanceMonitorView: View {
     }
     private var performanceMetrics: some View {
         HStack(spacing: 10) {
-            compactCard("테스크 완료율", percent(taskCompletionRate),
+            compactCard("실행 완료율", percent(taskCompletionRate),
                         "완료 \(completed)/종료 \(terminal.count)건", color: green)
             compactCard("바로 완료", terminal.isEmpty ? "—" : "\(firstPass)건",
                         "추가 수정 요청 없음")
@@ -910,9 +910,9 @@ struct GovernanceMonitorView: View {
         }.padding(16).background(Color.white.opacity(0.035), in: RoundedRectangle(cornerRadius: 12))
     }
     private var completionChart: some View {
-        panel("테스크 완료율 델타", subtitle: "그래프 대신 종료 영수증과 기준→비교 차이를 직접 표시") {
+        panel("실행 완료율 델타", subtitle: "그래프 대신 종료 영수증과 기준→비교 차이를 직접 표시") {
             HStack(spacing: 10) {
-                deltaCard("현재 완료율", percent(taskCompletionRate),
+                deltaCard("현재 실행 완료율", percent(taskCompletionRate),
                           "완료 \(completed) / 종료 \(terminal.count)", green)
                 deltaCard("기준→비교", percentagePoints(taskCompletionDelta),
                           "동일 matched 요청 묶음", (taskCompletionDelta ?? 0) >= 0 ? green : pink)
@@ -925,7 +925,7 @@ struct GovernanceMonitorView: View {
         panel("실행 경로 비교", subtitle: "모델명 + reasoning effort · 서로 다른 백엔드로 재시도한 작업은 mixed로 별도 계산") {
             Grid(alignment: .leading, horizontalSpacing: 14, verticalSpacing: 11) {
                 GridRow {
-                    Text("모델 / 추론 강도"); Text("시도"); Text("채택률"); Text("평균 토큰"); Text("평균 지연"); Text("테스크 완료율"); Text("완료/1M")
+                    Text("모델 / 추론 강도"); Text("시도"); Text("채택률"); Text("평균 토큰"); Text("평균 지연"); Text("실행 완료율"); Text("완료/1M")
                 }.font(.system(size: 10)).foregroundStyle(muted)
                 ForEach(rows) { row in
                     GridRow {
@@ -994,7 +994,7 @@ struct GovernanceMonitorView: View {
                         card("가정 토큰 차이", projectedDeltaText(projectedTokenDifference),
                              "\(scenarioTasks)개 matched 요청 · \(delta(item.tokenSavings))", color: (projectedTokenDifference ?? 0) >= 0 ? green : pink)
                         card("시도 채택률 변화", String(format: "%+.1fpp", item.adoptionDelta * 100),
-                             "\(item.matchedScopes)묶음 · 테스크 완료율과 구별", color: item.adoptionDelta >= 0 ? green : pink)
+                             "\(item.matchedScopes)묶음 · 실행 완료율과 구별", color: item.adoptionDelta >= 0 ? green : pink)
                         card("지연 차이", delta(item.latencySavings),
                              "양수면 가정 경로가 더 빠름", color: (item.latencySavings ?? 0) >= 0 ? green : pink)
                     }
@@ -1051,14 +1051,14 @@ struct GovernanceMonitorView: View {
         panel("절약과 완료 · 동일 테스크 대조", subtitle: "토큰 절약과 실제 완료를 함께 비교 · off/on 대조 영수증 연결 전에는 미측정") {
             HStack(spacing: 10) {
                 card("실제 기준 대비 토큰 절약", "—", "짝지은 대조 실행 없음")
-                card("테스크 완료율 변화 / 회귀", "—", "같은 테스크·같은 판정 기준 필요")
+                card("실행 완료율 변화 / 회귀", "—", "같은 테스크·같은 판정 기준 필요")
                 card("종합 효율 향상", "—", "성공 건수와 총비용을 함께 비교")
             }
             DisclosureGroup("엄밀한 계산 기준") {
                 VStack(alignment: .leading, spacing: 9) {
                     Text("사전 고정한 동일 작업 집합: baseline A와 최적화 B를 각각 실행. 입력·환경·검증기·예산·측정 창을 고정하고, 실험에서 바꾸기로 한 경로만 변경합니다. 기준 실행을 추측하거나 자동 유료 호출하지 않습니다.")
                     Text("Tₐ = Σ 모든 호출의 입력+출력 토큰 · 실패·재시도·평가·보조 호출 포함. Eₐ = 검증 성공 건수 Sₐ ÷ Tₐ × 1,000,000")
-                    Text("토큰 절약 = 1 − Tᵦ/Tₐ · 테스크 완료율 변화 = (Sᵦ−Sₐ)/N · 효율 향상 = Eᵦ/Eₐ − 1. 평균 절약률을 다시 평균하지 않습니다.")
+                    Text("토큰 절약 = 1 − Tᵦ/Tₐ · 실행 완료율 변화 = (Sᵦ−Sₐ)/N · 효율 향상 = Eᵦ/Eₐ − 1. 평균 절약률을 다시 평균하지 않습니다.")
                     Text("동일 작업에서 실패→성공 C와 성공→실패 B를 따로 셉니다. 순증 = C−B. 순증이 양수여도 회귀 B를 숨기지 않습니다.")
                     Text("N=0, 기준 토큰=0, 기준 효율=0 또는 계측·목표 검증 누락이면 해당 비율은 —. 성공 0건은 측정된 0이며, 미검증은 0이 아닙니다. 진행 중 작업과 종료된 작업의 분모를 섞지 않습니다.")
                     Text("관측 Pareto 개선: 토큰 비증가 + 완수 비감소 + 최소 하나 개선. 반대는 회귀, 방향이 엇갈리면 교환관계, 모두 같으면 변화 없음. 표본 분류가 통계적 유의성이나 무회귀를 보증하지 않습니다.")
@@ -1093,7 +1093,7 @@ struct GovernanceMonitorView: View {
             VStack(alignment: .leading, spacing: 6) {
                 Text("결과 채택 = OS1 실행·출력·저장 게이트 통과. 목표 달성 검증은 별도입니다. 현재 목표별 테스트/사용자 승인 영수증이 연결되지 않아 검증 완료율·검증 효율은 미측정입니다.")
                 Text("입력 + 출력 토큰에 재시도·실패 비용을 포함합니다. 캐시는 입력에 포함된 부분이므로 다시 더하지 않습니다. 제공자별 토크나이저가 달라 교차 제공자 토큰 절약 비교는 하지 않습니다.")
-                Text("과거 기록은 요청당 최대 16회 보관된 시도 표본입니다. 시각·테스크 종료가 없으므로 과거 테스크 완료율과 실시간 추이는 소급 생성하지 않습니다. 새 테스크는 별도 원자적 기록으로 누적합니다. 확인된 결과 재전송은 기존 테스크에 합쳐 호출을 중복 계산하지 않습니다.")
+                Text("과거 기록은 요청당 최대 16회 보관된 시도 표본입니다. 시각·테스크 종료가 없으므로 과거 실행 완료율과 실시간 추이는 소급 생성하지 않습니다. 새 테스크는 별도 원자적 기록으로 누적합니다. 확인된 결과 재전송은 기존 테스크에 합쳐 호출을 중복 계산하지 않습니다.")
                 Text("새 기록 \(snapshot.tasks.count)건 · 과거 시도 \(snapshot.historical.count)회 · 읽기/검증 거부 \(snapshot.rejectedRecords)건 · 표시 한도 초과 \(snapshot.omittedFiles)건 · 요금표 미연결: 토큰 절약 ≠ 금액 절약")
             }
             .padding(.top, 8)
