@@ -37,6 +37,35 @@ public enum CodexContextBudget {
         return size.intValue
     }
 
+    /// The owner's governing instructions (model_instructions_file, ≈190k
+    /// tokens) fill ~73% of a model's default 272k window, leaving ~70k for
+    /// the task; a real repair that reads a large source file overflowed and
+    /// Codex truncated tool output ("Output exceeded the available model
+    /// context"). Where the catalog publishes a larger `max_context_window`,
+    /// OS-1 runs the model with it. Verified 2026-09-29 on gpt-6-astra:
+    /// window 828,400 (872,000 × 95%), a 324,534-token turn answered correctly.
+    public static func extendedWindowOverride(model: String?, windows: [String: (context: Int, max: Int)]? = nil) -> String? {
+        guard let model else { return nil }
+        guard let entry = (windows ?? cachedWindowLimits())[model], entry.max > entry.context else { return nil }
+        return "model_context_window=\(entry.max)"
+    }
+
+    /// Default and maximum context windows in ~/.codex/models_cache.json, by slug.
+    public static func cachedWindowLimits(
+        codexHome: URL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex")
+    ) -> [String: (context: Int, max: Int)] {
+        guard let data = try? Data(contentsOf: codexHome.appendingPathComponent("models_cache.json")),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let models = object["models"] as? [[String: Any]] else { return [:] }
+        var limits: [String: (context: Int, max: Int)] = [:]
+        for model in models {
+            guard let slug = model["slug"] as? String, let window = model["context_window"] as? Int, window > 0 else { continue }
+            let maximum = (model["max_context_window"] as? Int).map { max($0, window) } ?? window
+            limits[slug] = (window, maximum)
+        }
+        return limits
+    }
+
     /// Context windows published in ~/.codex/models_cache.json, by slug.
     public static func cachedContextWindows(
         codexHome: URL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex")

@@ -21,3 +21,14 @@ every `claude auth status` it ran then reported `loggedIn=false`, so Claude look
 - Every child OS-1 starts (`commandOutput`, the Codex app server) drops an enclosing agent
   session's identity: `CLAUDECODE`, `CLAUDE_CODE_*`, `CODEX_THREAD_ID`, `CODEX_SANDBOX*`.
   The account OS-1 means is still set explicitly (`CLAUDE_CONFIG_DIR` / `CODEX_HOME`).
+
+## Build 271 — room to work inside the owner's governing instructions
+
+Every Codex turn carries the owner's `model_instructions_file` (859,674 bytes ≈ 187,500 input
+tokens, measured on OS-1's own threads 2026-09-29). In the default 272k window (258,400 usable)
+that left ~70k tokens for the task itself; a repair that reads a large source file overflowed and
+Codex truncated tool output ("Output exceeded the available model context and was truncated").
+The Codex catalog publishes `max_context_window` 872,000 for the current models. OS-1 now starts
+its app server with `-c model_context_window=<max>` for the routed model when the catalog's
+maximum exceeds its default. Verified directly on gpt-6-astra: window 828,400, a 324,534-token
+turn answered correctly. The owner's own `~/.codex/config.toml` is not changed.

@@ -4746,7 +4746,8 @@ final class CodexAppServerClient: @unchecked Sendable {
     private let steeringSubmission: UUID?
 
     init(executable: String, workspace: String, onLaunch: (() -> Void)? = nil,
-         steering: ExecutionSteering = ExecutionSteering(), submissionID: UUID? = nil) throws {
+         steering: ExecutionSteering = ExecutionSteering(), submissionID: UUID? = nil,
+         configOverrides: [String] = []) throws {
         self.steering = steering
         self.steeringSubmission = submissionID
         let temporary = FileManager.default.temporaryDirectory
@@ -4761,6 +4762,7 @@ final class CodexAppServerClient: @unchecked Sendable {
         // otherwise waits through repeated OAuth transport failures before a
         // simple turn can begin.
         process.arguments = ["app-server", "-c", "mcp_servers.cloudflare-api.enabled=false"]
+            + configOverrides.flatMap { ["-c", $0] }
         // The account the owner chose owns this run's CODEX_HOME; the default
         // account adds nothing, so the app server starts exactly as before.
         process.environment = ProviderExecutionEnvironment
@@ -5834,7 +5836,8 @@ private func execute(
         // that replaying a write-profile objective would be safe.
         AttemptLatencyTrace.mark("instructions_ready")
         let appServer = try CodexAppServerClient(executable: codex, workspace: workspace,
-            submissionID: ExecutionSteering.currentSubmission)
+            submissionID: ExecutionSteering.currentSubmission,
+            configOverrides: CodexContextBudget.extendedWindowOverride(model: model).map { [$0] } ?? [])
         defer { appServer.close() }
         try appServer.initialize(deadline: deadline)
         AttemptLatencyTrace.mark("codex_initialized")
@@ -10393,6 +10396,13 @@ func selfTest() throws {
          CodexContextBudget.excluded(models: [("small", 128_000), ("large", 272_000), ("unknown", nil)], baseInstructionBytes: 859_674) == ["small"]),
         ("context budget never guesses without sizes",
          CodexContextBudget.excluded(models: [("small", 128_000)], baseInstructionBytes: nil).isEmpty),
+        ("a model with a larger published maximum runs with it",
+         CodexContextBudget.extendedWindowOverride(model: "gpt-6-astra",
+            windows: ["gpt-6-astra": (context: 272_000, max: 872_000)]) == "model_context_window=872000"),
+        ("no override without a larger maximum, an unknown model or a model",
+         CodexContextBudget.extendedWindowOverride(model: "gpt-5.5", windows: ["gpt-5.5": (context: 272_000, max: 272_000)]) == nil &&
+            CodexContextBudget.extendedWindowOverride(model: "unknown", windows: [:]) == nil &&
+            CodexContextBudget.extendedWindowOverride(model: nil, windows: [:]) == nil),
         ("feasibility question binds the project, reaches a backend and does not modify",
          PreparationIntent.detect("야 여기서 OS1 수정 가능하냐?").map { $0.kind == .prepare && $0.projectID == "os1-clodex" && !$0.modifies && !$0.preparationOnly } == true),
         ("finish-it request is not answered with the canned preparation card",
