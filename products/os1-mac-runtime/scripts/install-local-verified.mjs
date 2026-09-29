@@ -33,6 +33,18 @@ assert(!fs.lstatSync(app).isSymbolicLink() && !fs.lstatSync(cli).isSymbolicLink(
 const run = (exe, args, timeout = 60000) => execFileSync(exe, args, {
   encoding: 'utf8', timeout, maxBuffer: 8 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'],
 });
+// `open` hands its own environment to the app it launches. An install run from
+// inside a Claude Code or Codex session (CLAUDECODE, CLAUDE_CODE_SESSION_ID …)
+// relaunched OS-1 as that session's child and its Claude probes reported
+// "signed out". Relaunch with the environment a Finder launch would have.
+const guiEnvironment = () => Object.fromEntries(Object.entries({
+  HOME: home, USER: process.env.USER, LOGNAME: process.env.LOGNAME, SHELL: process.env.SHELL,
+  TMPDIR: process.env.TMPDIR, __CF_USER_TEXT_ENCODING: process.env.__CF_USER_TEXT_ENCODING,
+  PATH: '/usr/bin:/bin:/usr/sbin:/sbin',
+}).filter(([, value]) => typeof value === 'string' && value.length));
+const launchApp = () => execFileSync('/usr/bin/open', ['-g', app], {
+  encoding: 'utf8', timeout: 60000, stdio: ['ignore', 'pipe', 'pipe'], env: guiEnvironment(),
+});
 const hash = file => createHash('sha256').update(fs.readFileSync(file)).digest('hex');
 const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
 const appPIDs = () => run('/bin/ps', ['-axo', 'pid=,args=']).split('\n').flatMap(line => {
@@ -153,7 +165,7 @@ try {
   // per-session preservation checks below re-verify every message.
   assert.deepEqual(JSON.parse(fs.readFileSync(store)), original, 'verification changed the real session store');
   if (paused) { run('/bin/launchctl', ['bootstrap', `gui/${process.getuid()}`, plist]); paused = false; }
-  if (wasRunning.length) run('/usr/bin/open', ['-g', app]);
+  if (wasRunning.length) launchApp();
   await wait(3000);
   const after = JSON.parse(fs.readFileSync(store));
   assert.deepEqual(after.queued ?? [], originalQueue, 'installation changed or ran a queued request');
@@ -213,7 +225,7 @@ try {
   // Recovery errors must not suppress the original failure receipt.
   try {
     if (paused) run('/bin/launchctl', ['bootstrap', `gui/${process.getuid()}`, plist]);
-    if (receipt.binaryRollback && wasRunning.length) run('/usr/bin/open', ['-g', app]);
+    if (receipt.binaryRollback && wasRunning.length) launchApp();
   } catch (error) { receipt.recoveryError = String(error.stack || error); }
   fs.writeFileSync(path.join(recovery, 'install-receipt.json'), JSON.stringify(receipt, null, 2), { mode: 0o600 });
   fs.writeFileSync(path.join(recovery, 'RECOVERY.md'),

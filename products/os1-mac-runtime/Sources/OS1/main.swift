@@ -1927,6 +1927,9 @@ func commandOutput(
         .appendingPathComponent(".cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin").path
     environment["PATH"] = [nodeDirectory, "/opt/homebrew/bin", "/usr/local/bin", environment["PATH"] ?? "/usr/bin:/bin"].joined(separator: ":")
     if let currentDirectory { environment["PWD"] = currentDirectory }
+    // No child — a provider run or a probe such as `claude auth status` —
+    // inherits an enclosing agent session's identity (see ProviderExecutionEnvironment).
+    environment = environment.filter { !ProviderExecutionEnvironment.foreignSessionVariable($0.key) }
     if isProvider { environment = ProviderExecutionEnvironment.marked(environment) }
     environment.merge(environmentOverrides) { _, new in new }
     process.environment = environment
@@ -2011,6 +2014,10 @@ func findExecutable(_ name: String) throws -> String {
         "/opt/homebrew/bin/\(name)",
         "/usr/local/bin/\(name)",
         name == "python3" ? "/usr/bin/python3" : "",
+        // The ChatGPT/Codex desktop app (26.924, 2026-09-26) moved its CLI to
+        // codex-cli/bin/codex, a launcher for codex-cli/CodexCLI.app; the old
+        // Resources/codex stays for earlier app versions.
+        name == "codex" ? "/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex" : "",
         name == "codex" ? "/Applications/ChatGPT.app/Contents/Resources/codex" : "",
     ]
     for candidate in candidates where !candidate.isEmpty {

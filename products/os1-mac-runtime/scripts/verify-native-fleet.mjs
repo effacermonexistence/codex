@@ -129,6 +129,7 @@ async function run() {
       const marker = `OS1_NATIVE_${role.toUpperCase()}_${profile.toUpperCase()}_${randomUUID()}`;
       const prompt = `Read products/os1-exo-monitor/manifest.json and report its release_id and objective_version fields. Do not change files, services, repository refs, or settings. Include the verification label ${marker} in the final answer.`;
       const binary = profile === 'claude' ? join(home,'.local/bin/claude') : [
+        '/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex',
         '/Applications/ChatGPT.app/Contents/Resources/codex',
         '/Applications/Codex.app/Contents/Resources/codex',
         join(home,'.local/bin/codex'),

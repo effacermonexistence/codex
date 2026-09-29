@@ -48,6 +48,13 @@ func runExecutionFixtures() throws {
     check(marked["OS1_INTERNAL_PROVIDER_EXECUTION"] == "1")
     check(marked["PATH"] == inherited["PATH"] && marked["UNCHANGED"] == inherited["UNCHANGED"])
     check(ProviderExecutionEnvironment.marked(marked) == marked)
+    // A foreign agent session's identity never reaches a backend child.
+    let nested = ProviderExecutionEnvironment.marked(inherited.merging([
+        "CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "fixture", "CLAUDE_CODE_OAUTH_SCOPES": "user:inference",
+        "CODEX_THREAD_ID": "fixture", "CLAUDE_CONFIG_DIR": "/fixture/claude", "CODEX_HOME": "/fixture/codex"]) { _, new in new })
+    check(nested["CLAUDECODE"] == nil && nested["CLAUDE_CODE_SESSION_ID"] == nil && nested["CLAUDE_CODE_OAUTH_SCOPES"] == nil)
+    check(nested["CODEX_THREAD_ID"] == nil && nested["CLAUDE_CONFIG_DIR"] == "/fixture/claude" && nested["CODEX_HOME"] == "/fixture/codex")
+    check(nested["PATH"] == inherited["PATH"] && nested["OS1_INTERNAL_PROVIDER_EXECUTION"] == "1")
     let root = FileManager.default.temporaryDirectory.appendingPathComponent("os1-outbox-fixture-" + UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }
     let data = Data("finished paid result".utf8)
