@@ -9544,11 +9544,19 @@ private struct BackendStatus: View {
 /// Renders the production rail and measures the painted tiles the way the
 /// owner did on his screenshot: down the centre column, OS-1's filled tile
 /// ends, Codex's outline begins, and so on. Both gaps must be the same.
-private func railPixelGapSelfTest() throws {
+private func railPixelGapSelfTest(surfacesBadged: Bool = false) throws -> [(Int, Int)] {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent("os1-rail-pixels-" + UUID().uuidString, isDirectory: true)
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: root) }
     let store = SessionStore(storageRoot: root, nativeSessionOpener: { _ in false })
+    // The same rail, once plain and once with both tiles routed to their
+    // alternative surface, so the badge is proven not to move the geometry.
+    if surfacesBadged {
+        store.updateSettings {
+            $0.setSurface(.chatgpt, for: .openAI)
+            $0.setSurface(.claudeChat, for: .anthropic)
+        }
+    }
     guard let index = store.selectedIndex else { throw RunnerError.message("Provider rail regression: no fixture conversation") }
     // Both backends linked so their outlines are visible at 2x, as on the
     // owner's rail; OS-1 selected as on his screenshot.
@@ -9595,6 +9603,7 @@ private func railPixelGapSelfTest() throws {
     // Codex and Claude keep their pre-change coordinates relative to the rail top.
     let expectedCodexTop = Int(ProviderRailLayout.codexTop * scale)
     try check(abs(codexTop - expectedCodexTop) <= 2, "Codex outline at \(codexTop)px, expected \(expectedCodexTop)px")
+    return [home, (codexTop, codexBottom), (claudeTop, claudeTop)]
 }
 
 @MainActor
@@ -9627,7 +9636,13 @@ private func railSelectionSelfTest() throws {
     try check(ProviderRailLayout.itemWidth == 58 && ProviderRailLayout.homeHeight == 68
         && ProviderRailLayout.backendHeight == 80,
         "Codex and Claude reference-card geometry must remain unchanged")
-    try railPixelGapSelfTest()
+    // Measured twice: a badged rail must paint its tiles on exactly the same
+    // pixels as a plain one, because the badge is an overlay.
+    let plainTiles = try railPixelGapSelfTest()
+    let badgedTiles = try railPixelGapSelfTest(surfacesBadged: true)
+    try check(plainTiles.count == badgedTiles.count
+        && zip(plainTiles, badgedTiles).allSatisfy { abs($0.0 - $1.0) <= 1 && abs($0.1 - $1.1) <= 1 },
+        "a surface badge moved the painted rail tiles: \(plainTiles) vs \(badgedTiles)")
     try sidebarHeaderPixelSelfTest()
 
     for linked in [true, false] {
@@ -9813,8 +9828,13 @@ private func renderProviderRailPreview(to output: URL) throws {
     defer { try? FileManager.default.removeItem(at: fixtureRoot) }
 
     var written: [String] = []
-    for surface in ProviderChoice.allCases {
-        let store = SessionStore(storageRoot: fixtureRoot.appendingPathComponent(surface.rawValue, isDirectory: true),
+    // Every selection state, plus the same two backend states with each tile
+    // routed to its alternative surface so the rail badge is visible here too.
+    let states: [(String, ProviderChoice, Bool)] =
+        ProviderChoice.allCases.map { ($0.rawValue, $0, false) }
+        + [("codex-chatgpt", .codex, true), ("claude-chat", .claude, true)]
+    for (label, surface, badged) in states {
+        let store = SessionStore(storageRoot: fixtureRoot.appendingPathComponent(label, isDirectory: true),
             nativeSessionOpener: { _ in false })
         guard let index = store.selectedIndex else { throw SourceContextError.invalid }
         store.sessions[index].title = "Rail fixture"
@@ -9822,12 +9842,18 @@ private func renderProviderRailPreview(to output: URL) throws {
         store.sessions[index].codexSessionID = nil
         store.sessions[index].lastProvider = "claude"
         store.surface = surface
+        if badged {
+            store.updateSettings {
+                $0.setSurface(.chatgpt, for: .openAI)
+                $0.setSurface(.claudeChat, for: .anthropic)
+            }
+        }
         let content = ProviderRail(store: store)
-            .frame(width: 78, height: 420)
+            .frame(width: 78, height: 680)
             .background(Theme.background)
             .environment(\.colorScheme, .dark)
         let view = NSHostingView(rootView: content)
-        view.frame = NSRect(x: 0, y: 0, width: 78, height: 420)
+        view.frame = NSRect(x: 0, y: 0, width: 78, height: 680)
         RunLoop.main.run(until: Date().addingTimeInterval(0.05))
         view.layoutSubtreeIfNeeded()
         view.needsDisplay = true
@@ -9835,7 +9861,7 @@ private func renderProviderRailPreview(to output: URL) throws {
         guard let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { throw SourceContextError.invalid }
         view.cacheDisplay(in: view.bounds, to: bitmap)
         guard let data = bitmap.representation(using: .png, properties: [:]) else { throw SourceContextError.invalid }
-        let name = "rail-\(surface.rawValue)-selected.png"
+        let name = "rail-\(label)-selected.png"
         try data.write(to: output.appendingPathComponent(name), options: .atomic)
         written.append(name)
     }
