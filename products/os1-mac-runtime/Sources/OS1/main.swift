@@ -7380,9 +7380,22 @@ func runTaskWithOwnerPolicy(
         os1StartHead = gitHead(os1Root)
     }
     // A write task in a folder that contains OS-1's live tree (HOME) can
-    // still change OS-1; then OS-1 finishes that repair after the turn.
-    let os1SourceWatch = resolvedScope == .workspaceWrite && previewDeploymentTarget == nil && os1StartHead == nil
-        ? OS1SourceWatch.capture(workspace: canonicalWorkspace) : nil
+    // still change OS-1; then OS-1 finishes that repair after the turn. It
+    // holds the shared lease for the whole turn: beside other HOME tasks, but
+    // never beside an OS-1 repair, whose build would carry its half-written
+    // edits (the profile-menu repair of 2026-09-30 failed exactly so).
+    var os1SharedLease: ExclusiveHookLease?
+    defer { withExtendedLifetime(os1SharedLease) {} }
+    var os1SharedLeaseRoot: String?
+    var os1SourceWatch: OS1SourceWatch?
+    if resolvedScope == .workspaceWrite, previewDeploymentTarget == nil, os1StartHead == nil,
+       let containedRoot = OS1SourceWatch.containedRoot(workspace: canonicalWorkspace) {
+        if heldOS1SourceRoot.map({ URL(fileURLWithPath: $0).resolvingSymlinksInPath().standardizedFileURL.path }) != URL(fileURLWithPath: containedRoot).resolvingSymlinksInPath().standardizedFileURL.path {
+            os1SharedLease = try acquireOS1SourceSharedLease(root: containedRoot)
+            os1SharedLeaseRoot = containedRoot
+        }
+        os1SourceWatch = OS1SourceWatch.capture(workspace: canonicalWorkspace)
+    }
     let pinnedEvidence = try (requireReadOnly || !requestsFreshSource(objectiveRequest)) ? attachedSource.map { try loadSource($0) } : nil
     let discussesPinnedProvenance = pinnedEvidence != nil && RegisteredProjectSource.discussesAttachedProvenance(objectiveRequest)
     let sourceSelectionContext = SCVProjectMaterials.isVerificationMode(pinnedEvidence?.verificationMode) &&
@@ -7842,6 +7855,11 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
         }) else {
             throw OS1Error.message("라우팅된 Claude 모델·effort가 현재 계정의 모델 목록과 달라 유료 호출 전에 차단했습니다.")
         }
+        // A verifier retry writes again: the shared lease released for this
+        // task's own finishing is taken back before the next backend call.
+        if os1SharedLease == nil, let root = os1SharedLeaseRoot, ticket.permissionProfile == "workspace_write" {
+            os1SharedLease = try acquireOS1SourceSharedLease(root: root)
+        }
         let startData = Data(["os1-attempt-start-v1", ticket.executionID, String(ticket.sequence), ticket.nonce, ticket.signature].joined(separator: "\n").utf8)
         AttemptLatencyTrace.beginIfIdle()
         let lease: AttemptStartReceipt = try await client.post("/v1/attempts/start",
@@ -8196,7 +8214,9 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
                   os1SourceWatch.changed() {
             // Not bound to OS-1, yet OS-1's source changed: never leave a fix
             // that only lives in the working tree, and never interleave with
-            // another OS-1 writer (then its build carries this change).
+            // another OS-1 writer (then its build carries this change). Our
+            // own shared lease would block the exclusive one finishing needs.
+            os1SharedLease = nil
             let note = finishUnboundOS1Change(os1SourceWatch, objective: prompt, startedAt: attemptStartedAt)
             if !note.isEmpty { execution = execution.appendingOutput(note) }
         }
@@ -10904,6 +10924,21 @@ func selfTest() throws {
                 guard run(["commit", "-q", "-am", "os1: self-repair build 999 — another repair"]), let otherRepair = gitHead(root.path) else { return false }
                 return finishUnboundOS1Change(watch, objective: "fixture", startedAt: Date()).contains(root.path) && gitHead(root.path) == otherRepair
             } catch { return false }
+        }()),
+        ("a HOME task shares OS-1's source with HOME tasks, never with an OS-1 repair", {
+            let root = FileManager.default.temporaryDirectory.appendingPathComponent("os1-shared-lease-" + UUID().uuidString, isDirectory: true)
+            guard let lock = try? os1SourceWriteLeaseURL(root: root.path) else { return false }
+            defer { try? FileManager.default.removeItem(at: lock) }
+            var homeA = try? ExclusiveHookLease.tryAcquire(at: lock, shared: true)
+            var homeB = try? ExclusiveHookLease.tryAcquire(at: lock, shared: true)
+            guard homeA != nil, homeB != nil, (try? tryAcquireOS1SourceWriteLease(root: root.path)) == nil else { return false }
+            homeA = nil
+            guard (try? tryAcquireOS1SourceWriteLease(root: root.path)) == nil else { return false }
+            homeB = nil
+            var repair = try? tryAcquireOS1SourceWriteLease(root: root.path)
+            guard repair != nil, (try? ExclusiveHookLease.tryAcquire(at: lock, shared: true)) == nil else { return false }
+            repair = nil
+            return (try? ExclusiveHookLease.tryAcquire(at: lock, shared: true)) != nil
         }()),
         ("a checkout without the installed build's commit is never staged", {
             guard let git = try? findExecutable("git") else { return false }

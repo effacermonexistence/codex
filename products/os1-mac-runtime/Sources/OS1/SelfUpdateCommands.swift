@@ -89,7 +89,7 @@ func selfRepairCommand(_ arguments: [String]) async throws -> Bool {
 /// Shared with the runtime hook in main.swift.
 let selfRepairFailurePrefixText = "OS-1 self-repair could not complete: "
 
-let os1RuntimeVersionString = "OS-1 Runtime 0.9.208 (self-repair-build274)"
+let os1RuntimeVersionString = "OS-1 Runtime 0.9.209 (profile-rail-lease-build275)"
 
 func os1SourceWriteLeaseURL(root: String) throws -> URL {
     let directory = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".os1/self-update", isDirectory: true)
@@ -120,6 +120,26 @@ func acquireOS1SourceWriteLease(root: String, timeoutSeconds: Int? = nil) throws
             RuntimeActivity.emit(.preparing, publicText: os1Tr(
                 "OS-1 소스 쓰기 차례를 기다리는 중 · 백엔드는 아직 시작하지 않았습니다. 기존 작업이 끝나면 자동으로 이어갑니다.",
                 "Waiting for the OS-1 source writer · backend not started. This request continues automatically when the writer releases it."))
+        }
+    })
+}
+
+/// A write task whose folder contains OS-1's live tree (HOME) may change it
+/// without being an OS-1 repair. It runs beside other such tasks, but never
+/// beside an OS-1 repair or staging, which hold the lease exclusively: on
+/// 2026-09-30 a HOME task edited main.swift while the profile-menu repair held
+/// the lease, and that repair's build failed on the half-written code.
+func acquireOS1SourceSharedLease(root: String) throws -> ExclusiveHookLease {
+    let lock = try os1SourceWriteLeaseURL(root: root)
+    var lastNotice = Date.distantPast
+    return try ExclusiveHookLease.acquireWaiting(at: lock, shared: true, beforeAttempt: {
+        if ExecutionCancellation.isCancelled { throw OS1Error.backendBlocked(.cancelled) }
+    }, onContention: {
+        if Date().timeIntervalSince(lastNotice) >= 10 {
+            lastNotice = Date()
+            RuntimeActivity.emit(.preparing, publicText: os1Tr(
+                "OS-1 자체 수리가 OS-1 소스를 쓰는 중이라 기다립니다 · 이 작업 폴더에 OS-1 소스가 있어 동시에 고치면 서로 깨집니다. 백엔드는 아직 시작하지 않았고, 수리가 끝나면 자동으로 이어갑니다.",
+                "Waiting for an OS-1 repair to finish · this folder contains OS-1's source, and two writers at once break each other. Backend not started; this request continues automatically."))
         }
     })
 }
@@ -588,13 +608,17 @@ struct OS1SourceWatch: Equatable {
         return sha256Hex(data)
     }
 
-    static func capture(workspace: String) -> OS1SourceWatch? {
+    /// OS-1's live tree when `workspace` contains it without being inside it.
+    static func containedRoot(workspace: String) -> String? {
         let folder = LocalProjectWorkspace.executionPath(workspace)
         guard LocalProjectWorkspace.root(containing: folder, projectID: "os1-clodex") == nil,
               let live = resolveLocalProjectWorkspace(projectID: "os1-clodex", requested: folder)?.workspace else { return nil }
         let root = LocalProjectWorkspace.executionPath(live)
-        guard root.hasPrefix(folder == "/" ? "/" : folder + "/") else { return nil }
-        return OS1SourceWatch(root: root, head: gitHead(root), fingerprint: fingerprint(root: root))
+        return root.hasPrefix(folder == "/" ? "/" : folder + "/") ? root : nil
+    }
+
+    static func capture(workspace: String) -> OS1SourceWatch? {
+        containedRoot(workspace: workspace).map { OS1SourceWatch(root: $0, head: gitHead($0), fingerprint: fingerprint(root: $0)) }
     }
 
     func changed() -> Bool {
@@ -605,8 +629,8 @@ struct OS1SourceWatch: Equatable {
 /// Finish an OS-1 source change made by a task that was not bound to OS-1.
 /// Never waits for another writer: its build would include this change.
 func finishUnboundOS1Change(_ watch: OS1SourceWatch, objective: String, startedAt: Date) -> String {
-    let busy = os1Tr("OS-1 자체 수리: 이 작업이 OS-1 소스(\(watch.root))를 바꿨지만 다른 OS-1 자체 수리가 같은 소스를 쓰는 중이라 따로 마무리하지 않았습니다. 변경은 작업 트리에 그대로 있고, 진행 중인 자체 수리 빌드나 다음 자체 수리에 함께 빌드·설치됩니다.",
-        "OS-1 self-repair: this task changed OS-1's source (\(watch.root)), but another OS-1 self-repair is writing the same source, so it was not finished separately. The change stays in the working tree and is built and installed with that repair or the next one.")
+    let busy = os1Tr("OS-1 자체 수리: 이 작업이 OS-1 소스(\(watch.root))를 바꿨지만 다른 작업이 같은 소스를 아직 쓰고 있어 따로 마무리하지 않았습니다. 변경은 작업 트리에 그대로 있고, 그 작업이 끝난 뒤의 자체 수리 빌드에 함께 빌드·설치됩니다.",
+        "OS-1 self-repair: this task changed OS-1's source (\(watch.root)), but another task is still using the same source, so it was not finished separately. The change stays in the working tree and is built and installed with the next repair after that task.")
     guard let lease = try? tryAcquireOS1SourceWriteLease(root: watch.root) else { return busy }
     defer { withExtendedLifetime(lease) {} }
     // Commits OS-1 itself made meanwhile belong to another repair.

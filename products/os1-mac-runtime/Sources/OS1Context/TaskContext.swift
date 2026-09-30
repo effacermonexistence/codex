@@ -910,25 +910,47 @@ public struct ScopeResolution: Equatable, Sendable {
     static let capabilityImperative = #"(?:고쳐|바꿔|만들어|지워|옮겨|넣어|빼|(?:수정|변경|편집|삭제|추가|구현|설치|배포|저장|작성|생성|적용|반영|교체|업데이트)\s*해)(?:라|요)?(?=\s|[,!]|$)"#
     static let capabilityQuestionMaxCharacters = 200
 
+    // A question may illustrate the change it asks about with an example or
+    // with someone else's wish: "…커스터마이징 하는게 가능해? 예를 들어서 뭐
+    // 메뉴바를 바꾸고 싶대 … 바꿔! 한번 바꿔주냐?" (2026-09-30: dispatched as a
+    // change, nothing changed, and the correct answer was refused). When every
+    // sentence is such an illustration or a question and the message ends in
+    // a question, none of it is an order. A conditional ("만약 … 고쳐"), a
+    // benefactive request ("해줘") or any plain imperative sentence is.
+    static let illustrativeSentence = #"^(?:뭐\s*)?(?:예를\s*들(?:어서|어|면)|예컨대|이를테면)|싶대|싶다더라|달래(?=\s|[.!?？]|$)|하래(?=\s|[.!?？]|$)"#
+    // "…해주냐?", "…하는지?": asks whether something happens, not for it.
+    static let behaviorQuestionEnding = #"(?:냐|니|나요|는지|는가|을까요|을까|까요)\s*[?？]\s*$"#
+
     /// The request with every whole capability-question sentence replaced by
     /// " question? ". Used only to decide whether a change is asked for.
     public static func withoutCapabilityQuestions(_ value: String) -> String {
-        var result = "", sentence = ""
-        func flush() {
-            let trimmed = sentence.trimmingCharacters(in: .whitespacesAndNewlines)
-            let isQuestion = !trimmed.isEmpty && trimmed.count <= capabilityQuestionMaxCharacters &&
-                trimmed.range(of: capabilityQuestionEnding, options: .regularExpression) != nil &&
-                trimmed.range(of: capabilityRequestMarkers, options: .regularExpression) == nil &&
-                trimmed.range(of: capabilityImperative, options: .regularExpression) == nil
-            result += isQuestion ? " question? " : sentence
-            sentence = ""
-        }
+        var sentences: [String] = [], sentence = ""
         for character in value {
             sentence.append(character)
-            if ".!?？。\n".contains(character) { flush() }
+            if ".!?？。\n".contains(character) { sentences.append(sentence); sentence = "" }
         }
-        flush()
-        return result
+        sentences.append(sentence)
+        func matches(_ text: String, _ pattern: String) -> Bool { text.range(of: pattern, options: .regularExpression) != nil }
+        func capabilityQuestion(_ text: String) -> Bool {
+            text.count <= capabilityQuestionMaxCharacters && matches(text, capabilityQuestionEnding) &&
+                !matches(text, capabilityRequestMarkers) && !matches(text, capabilityImperative)
+        }
+        func behaviorQuestion(_ text: String) -> Bool {
+            // "고쳐 주냐?" is the same question as "고쳐주냐?", not "고쳐".
+            let core = text.replacingOccurrences(of: #"\s+주(?=(?:냐|니|나요)\s*[?？]\s*$)"#, with: "주", options: .regularExpression)
+            return text.count <= capabilityQuestionMaxCharacters && matches(core, behaviorQuestionEnding) &&
+                !matches(core, capabilityRequestMarkers) && !matches(core, capabilityImperative)
+        }
+        func illustration(_ text: String) -> Bool {
+            text.count <= capabilityQuestionMaxCharacters && matches(text, illustrativeSentence) &&
+                !matches(text, capabilityRequestMarkers)
+        }
+        let spoken = sentences.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+        if let last = spoken.last, capabilityQuestion(last) || behaviorQuestion(last),
+           spoken.allSatisfy({ capabilityQuestion($0) || behaviorQuestion($0) || illustration($0) }) {
+            return " question? "
+        }
+        return sentences.map { capabilityQuestion($0.trimmingCharacters(in: .whitespacesAndNewlines)) ? " question? " : $0 }.joined()
     }
 
     public static func resolve(_ prompt: String) -> ScopeResolution {

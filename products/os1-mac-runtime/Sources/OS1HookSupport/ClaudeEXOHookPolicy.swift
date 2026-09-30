@@ -121,12 +121,14 @@ public final class ExclusiveHookLease: @unchecked Sendable {
         self.descriptor = descriptor
     }
 
-    public static func tryAcquire(at url: URL) throws -> ExclusiveHookLease? {
+    /// `shared` takes a reader's lease: any number of readers together, never
+    /// together with the exclusive holder.
+    public static func tryAcquire(at url: URL, shared: Bool = false) throws -> ExclusiveHookLease? {
         let descriptor = open(url.path, O_CREAT | O_RDWR | O_CLOEXEC, S_IRUSR | S_IWUSR)
         guard descriptor >= 0 else {
             throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
         }
-        guard flock(descriptor, LOCK_EX | LOCK_NB) == 0 else {
+        guard flock(descriptor, (shared ? LOCK_SH : LOCK_EX) | LOCK_NB) == 0 else {
             let lockError = errno
             close(descriptor)
             if lockError == EWOULDBLOCK || lockError == EAGAIN {
@@ -138,11 +140,11 @@ public final class ExclusiveHookLease: @unchecked Sendable {
     }
 
     /// Cancellable FIFO-independent contention wait; never steal another writer's lease.
-    public static func acquireWaiting(at url: URL, pollInterval: TimeInterval = 0.25,
+    public static func acquireWaiting(at url: URL, shared: Bool = false, pollInterval: TimeInterval = 0.25,
         beforeAttempt: () throws -> Void, onContention: () throws -> Void = {}) throws -> ExclusiveHookLease {
         while true {
             try beforeAttempt()
-            if let lease = try tryAcquire(at: url) { return lease }
+            if let lease = try tryAcquire(at: url, shared: shared) { return lease }
             try onContention()
             Thread.sleep(forTimeInterval: max(0, pollInterval))
         }

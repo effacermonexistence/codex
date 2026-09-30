@@ -64,6 +64,14 @@ final class SourceContextTests {
             ("이런 앱 만들고 싶은데 어떻게 시작해?", .readOnly),
             ("지금 뭐 만들고 있어?", .readOnly),
             ("이 파일 만들고 테스트까지 할 수 있어?", .readOnly),
+            // Build 275: an example or someone's wish inside a question is not an order.
+            ("야 클로즈나 코덱스가 자기 자신을 자기 자신을 커스터마이징 하는게 가능해?예를 들어서 뭐 메뉴바를 뭐 바꾸고 싶대 뭐 뭐 디자인을 좀 바꾸고 싶대 뭐 바꿔! 한번 바꿔주냐?", .readOnly),
+            ("예를 들어서 메뉴바를 바꾸고 싶대. 그럼 바꿔주냐?", .readOnly),
+            ("디자인 좀 바꾸고 싶대. 바꿔 주냐?", .readOnly),
+            ("메뉴바 바꿔. 예를 들어서 색깔 같은 거. 되냐?", .workspaceWrite),
+            ("만약 테스트 실패하면 고쳐. 알겠냐?", .workspaceWrite),
+            ("예를 들어서 이거 고쳐줘. 할 수 있냐?", .workspaceWrite),
+            ("예를 들어서 메뉴바를 바꿔!", .workspaceWrite),
         ] {
             precondition(ScopeResolution.resolve(text).scope == scope, text)
         }
