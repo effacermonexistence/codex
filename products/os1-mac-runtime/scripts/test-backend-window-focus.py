@@ -110,6 +110,9 @@ allowed = {
         '"/usr/bin/open",',
         # Self-test assertion for the injected cold-start launcher.
         'automaticLaunches[0].0.path == "/usr/bin/open",',
+        # ChatGPT handoff: only `--provider chatgpt`, i.e. the owner picked the
+        # ChatGPT tile; automatic routing has no ChatGPT route (build 275).
+        'let opened = try? commandOutput("/usr/bin/open", ["-b", ChatGPTHandoff.bundleIdentifier], timeout: 20)',
     },
 }
 pattern = re.compile(r'NSWorkspace\.shared\.open\(|NSWorkspace\.shared\.activateFileViewerSelecting|'
