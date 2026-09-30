@@ -4721,7 +4721,16 @@ func workspaceHash(_ workspace: String) -> String {
           inside.0 == 0 else {
         return nonGitWorkspaceHash(workspace)
     }
-    var material = Data("os1-workspace-state-v2\n".utf8)
+    var material = Data("os1-workspace-state-v3\n".utf8)
+    // The commit is part of the state. A backend that commits its own change
+    // (the owner's Stop hook requires that in the owner's repositories) leaves a clean
+    // tree, and without HEAD that read as "nothing changed": the graph fix of
+    // 2026-09-30 was built and installed as build 274, yet its answer was
+    // refused as REQUESTED_CHANGE_NOT_OBSERVED.
+    if let head = try? commandOutput(git, ["-C", workspace, "rev-parse", "HEAD"], timeout: 20), head.0 == 0 {
+        material.append(head.1)
+    }
+    material.append(0)
     for arguments in [
         ["-C", workspace, "status", "--porcelain=v1", "-z"],
         ["-C", workspace, "diff", "--binary", "--no-ext-diff", "HEAD", "--"],
@@ -8748,6 +8757,26 @@ func selfTest() throws {
     guard namedBefore == namedUnchanged, namedAfter != namedBefore,
           workspaceHash(isolatedFixture.path) == observedStateHash(isolatedFixture.path) else {
         throw OS1Error.message("a write to a named path outside the workspace was not observed")
+    }
+    // Regression 2026-09-30 (build 274): a backend that commits its own change
+    // leaves a clean tree; the commit itself must still read as a change.
+    if let git = try? findExecutable("git") {
+        let repository = scopeFixture.appendingPathComponent("committed-change")
+        try FileManager.default.createDirectory(at: repository, withIntermediateDirectories: true)
+        func run(_ arguments: [String]) -> Bool {
+            (try? commandOutput(git, ["-C", repository.path, "-c", "user.name=OS-1 fixture",
+                                      "-c", "user.email=fixture@os1.invalid"] + arguments, timeout: 30))?.0 == 0
+        }
+        try Data("a\n".utf8).write(to: repository.appendingPathComponent("file.txt"))
+        guard run(["init", "-q"]), run(["add", "-A"]), run(["commit", "-q", "-m", "base"]) else {
+            throw OS1Error.message("committed-change fixture could not create its repository")
+        }
+        let cleanBefore = workspaceHash(repository.path)
+        try Data("b\n".utf8).write(to: repository.appendingPathComponent("file.txt"))
+        guard run(["commit", "-q", "-am", "backend's own commit"]),
+              workspaceHash(repository.path) != cleanBefore else {
+            throw OS1Error.message("a change the backend committed itself read as no change")
+        }
     }
 
     guard r2ReadOnlyProfileArguments == [
