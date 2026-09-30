@@ -221,6 +221,96 @@ public struct GovernanceBucket: Identifiable, Sendable {
     public var attempts = 0
 }
 
+/// One sample of the live activity strip: receipts that started or finished
+/// inside the bucket this sample represents. The strip is dense over its whole
+/// window, so a flat line at zero is a measured zero, never a missing sample.
+public struct GovernanceActivityStripPoint: Identifiable, Equatable, Sendable {
+    public let id: Date
+    public let started: Double
+    public let finished: Double
+    public init(id: Date, started: Double, finished: Double) {
+        self.id = id; self.started = started; self.finished = finished
+    }
+}
+
+/// Activity-Monitor-style strip for the governance monitor. The window
+/// `[end - span, end]` is anchored to the current detector tick, buckets sit
+/// on absolute boundaries so interior samples keep their time while the
+/// window slides, and every bucket is present (zero-filled). The first and
+/// last samples are pinned to the window edges so the line always spans the
+/// full width; the head carries the bucket that contains `end`, so a receipt
+/// written this second appears at the right edge immediately.
+public struct GovernanceActivityStrip: Equatable, Sendable {
+    public static let maximumBuckets = 2_000
+    public let start: Date
+    public let end: Date
+    public let bucketSeconds: TimeInterval
+    public let points: [GovernanceActivityStripPoint]
+    public var maxValue: Double { points.map { max($0.started, $0.finished) }.max() ?? 0 }
+    public var startedTotal: Double { points.reduce(0) { $0 + $1.started } }
+    public var finishedTotal: Double { points.reduce(0) { $0 + $1.finished } }
+
+    /// Axis ticks for a sliding window: local-time multiples of `interval`
+    /// (midnight, 4:00, 4:05 … in the given zone) kept `edgeMargin` inside
+    /// both ends so a label is never clipped at the plot edge. As the window
+    /// slides the ticks move with the data, like Activity Monitor's grid.
+    public static func axisTicks(from start: Date, to end: Date, every interval: TimeInterval,
+                                 edgeMargin: TimeInterval, timeZone: TimeZone = .current) -> [Date] {
+        guard interval.isFinite, interval > 0, edgeMargin.isFinite, edgeMargin >= 0, end > start else { return [] }
+        let low = start.timeIntervalSince1970 + edgeMargin
+        let high = end.timeIntervalSince1970 - edgeMargin
+        guard low.isFinite, high.isFinite, high >= low else { return [] }
+        let offset = TimeInterval(timeZone.secondsFromGMT(for: end))
+        var tick = ceil((low + offset) / interval) * interval - offset
+        var ticks: [Date] = []
+        while tick <= high, ticks.count < 64 {
+            ticks.append(Date(timeIntervalSince1970: tick))
+            tick += interval
+        }
+        return ticks
+    }
+
+    public static func build(tasks: [GovernanceTask], until end: Date, span: TimeInterval,
+                             bucketSeconds requested: TimeInterval) -> GovernanceActivityStrip {
+        guard end.timeIntervalSince1970.isFinite, span.isFinite, span > 0,
+              requested.isFinite, requested > 0 else {
+            return GovernanceActivityStrip(start: end, end: end, bucketSeconds: 1, points: [])
+        }
+        // A pathological window/bucket pair is coarsened, never truncated:
+        // the strip must always cover its whole window.
+        let bucket = max(requested, span / Double(maximumBuckets))
+        let start = end.addingTimeInterval(-span)
+        func key(_ date: Date) -> Date {
+            Date(timeIntervalSince1970: floor(date.timeIntervalSince1970 / bucket) * bucket)
+        }
+        var counts: [Date: (started: Double, finished: Double)] = [:]
+        for task in tasks {
+            if task.startedAt >= start, task.startedAt <= end {
+                counts[key(task.startedAt), default: (started: 0, finished: 0)].started += 1
+            }
+            if let endedAt = task.endedAt, endedAt >= start, endedAt <= end {
+                counts[key(endedAt), default: (started: 0, finished: 0)].finished += 1
+            }
+        }
+        var points: [GovernanceActivityStripPoint] = []
+        points.reserveCapacity(Int(span / bucket) + 3)
+        func push(_ x: Date, bucket sample: Date) {
+            let clamped = min(max(x, start), end)
+            guard points.last.map({ $0.id < clamped }) ?? true else { return }
+            let value = counts[sample] ?? (started: 0, finished: 0)
+            points.append(GovernanceActivityStripPoint(id: clamped, started: value.started, finished: value.finished))
+        }
+        push(start, bucket: key(start))
+        var cursor = key(start)
+        while cursor <= end {
+            push(cursor.addingTimeInterval(bucket / 2), bucket: cursor)
+            cursor = cursor.addingTimeInterval(bucket)
+        }
+        push(end, bucket: key(end))
+        return GovernanceActivityStrip(start: start, end: end, bucketSeconds: bucket, points: points)
+    }
+}
+
 public struct GovernanceSnapshot: Sendable {
     public var tasks: [GovernanceTask] = []
     public var historical: [GovernanceHistoricalAttempt] = []

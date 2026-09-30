@@ -198,5 +198,57 @@ func runGovernanceActivityFixtures() throws {
     check(projection.tasks.count == 3 && projection.rows.count == 2 &&
           projection.comparisonsByBaseline["codex / dashboard-base / low"]?.count == 1,
           "dashboard projection precomputes one coherent filtered aggregate off the UI actor")
+    // Live activity strip: a fixed window anchored to the tick, zero-filled,
+    // with absolute buckets so samples slide instead of re-bucketing.
+    let runningID = UUID().uuidString.lowercased()
+    try dashboardStore.begin(id:runningID,now:start.addingTimeInterval(150))
+    let stripTasks = dashboardStore.snapshot(legacyRoot:nil).tasks
+    check(stripTasks.count == 5, "strip fixture has four finished tasks and one running task")
+    let stripEnd = start.addingTimeInterval(200)
+    let strip = GovernanceActivityStrip.build(tasks:stripTasks,until:stripEnd,span:1_800,bucketSeconds:10)
+    check(strip.start == start.addingTimeInterval(-1_600) && strip.end == stripEnd && strip.bucketSeconds == 10,
+          "activity strip keeps the requested window and bucket")
+    check(strip.points.count == 182 && strip.points.first?.id == strip.start && strip.points.last?.id == strip.end,
+          "activity strip is dense over the whole window and pinned to both edges")
+    check(zip(strip.points, strip.points.dropFirst()).allSatisfy { $0.id < $1.id }, "activity strip samples strictly increase")
+    check(strip.startedTotal == 5 && strip.finishedTotal == 4, "activity strip counts every start and finish receipt in the window once")
+    let firstBucket = strip.points.first { $0.id == start.addingTimeInterval(105) }
+    check(firstBucket?.started == 1 && firstBucket?.finished == 1, "receipts land in the absolute bucket containing their time")
+    let runningBucket = strip.points.first { $0.id == start.addingTimeInterval(155) }
+    check(runningBucket?.started == 1 && runningBucket?.finished == 0, "a running task counts as started, not finished")
+    check(strip.points.filter { $0.started == 0 && $0.finished == 0 }.count == strip.points.count - 5,
+          "every bucket without a receipt is a measured zero, not a gap")
+    let slid = GovernanceActivityStrip.build(tasks:stripTasks,until:stripEnd.addingTimeInterval(1),span:1_800,bucketSeconds:10)
+    check(slid.start == strip.start.addingTimeInterval(1) && slid.end == strip.end.addingTimeInterval(1) &&
+          slid.points.first { $0.id == start.addingTimeInterval(105) }?.started == 1,
+          "advancing one second slides the window while interior samples keep their time")
+    let idle = GovernanceActivityStrip.build(tasks:stripTasks,until:start.addingTimeInterval(10_000),span:1_800,bucketSeconds:10)
+    check(idle.points.count == 182 && idle.maxValue == 0 && idle.points.first?.id == start.addingTimeInterval(8_200) &&
+          idle.points.last?.id == start.addingTimeInterval(10_000),
+          "with no receipts in the window the strip still flows at zero across the full width")
+    let head = GovernanceActivityStrip.build(tasks:stripTasks,until:start.addingTimeInterval(150),span:1_800,bucketSeconds:10)
+    check(head.points.last?.id == start.addingTimeInterval(150) && head.points.last?.started == 1,
+          "a receipt written this second appears at the right edge immediately")
+    let coarse = GovernanceActivityStrip.build(tasks:stripTasks,until:stripEnd,span:604_800,bucketSeconds:1)
+    check(coarse.points.count <= GovernanceActivityStrip.maximumBuckets + 3 && coarse.bucketSeconds >= 302 &&
+          coarse.points.last?.id == stripEnd && coarse.startedTotal == 5,
+          "pathological bucket sizes are coarsened, never truncated")
+    check(GovernanceActivityStrip.build(tasks:stripTasks,until:stripEnd,span:0,bucketSeconds:10).points.isEmpty,
+          "an empty window yields no fabricated samples")
+    let utc = TimeZone(identifier: "UTC")!
+    let ticks = GovernanceActivityStrip.axisTicks(from: strip.start, to: strip.end, every: 300, edgeMargin: 72, timeZone: utc)
+    check(ticks.count == 6 && ticks.first == start.addingTimeInterval(-1_400) && ticks.last == start.addingTimeInterval(100) &&
+          ticks.allSatisfy { $0.timeIntervalSince1970.truncatingRemainder(dividingBy: 300) == 0 } &&
+          ticks.allSatisfy { $0 >= strip.start.addingTimeInterval(72) && $0 <= strip.end.addingTimeInterval(-72) },
+          "axis ticks are nice multiples kept a margin inside both plot edges")
+    let shifted = TimeZone(secondsFromGMT: 3_600)!
+    let dayTicks = GovernanceActivityStrip.axisTicks(from: start.addingTimeInterval(-604_800), to: start, every: 86_400,
+                                                     edgeMargin: 600, timeZone: shifted)
+    check(dayTicks.count == 7 && dayTicks.allSatisfy { ($0.timeIntervalSince1970 + 3_600).truncatingRemainder(dividingBy: 86_400) == 0 },
+          "day ticks fall on local midnight in the given time zone")
+    check(GovernanceActivityStrip.axisTicks(from: strip.end, to: strip.start, every: 300, edgeMargin: 0, timeZone: utc).isEmpty &&
+          GovernanceActivityStrip.axisTicks(from: strip.start, to: strip.end, every: 0, edgeMargin: 0, timeZone: utc).isEmpty &&
+          GovernanceActivityStrip.axisTicks(from: strip.start, to: strip.end, every: 1, edgeMargin: 0, timeZone: utc).count == 64,
+          "axis ticks reject an inverted or zero-interval window and stay bounded")
     print("Governance activity: \(checks) checks PASS; paid calls=0; fixtures isolated")
 }

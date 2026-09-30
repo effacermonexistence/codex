@@ -40,12 +40,6 @@ struct GovernanceHeartbeatHistory {
     }
 }
 
-private struct GovernanceActivityChartPoint: Identifiable {
-    let id: Date
-    let started: Double
-    let finished: Double
-}
-
 /// Read-only projection; opening this panel never starts a provider, replay, or benchmark.
 struct GovernanceMonitorView: View {
     var active: [String] = []
@@ -219,41 +213,41 @@ struct GovernanceMonitorView: View {
         }
     }
     /// Live activity is independent of matched baseline/candidate data. The
-    /// old delta charts are intentionally empty until a paired comparison
-    /// exists; that must not hide the real-time governance stream.
-    private var liveActivityPoints: [GovernanceActivityChartPoint] {
-        guard projectionIsCurrent else { return [] }
-        let end = refreshed
-        let span: TimeInterval = window == "24시간" ? 86_400 : (window == "7일" ? 604_800 : 1_800)
-        let bucketSeconds: TimeInterval = window == "전체" ? 60 : (window == "24시간" ? 900 : 3_600)
-        let start = end.addingTimeInterval(-span)
-        var buckets: [Date: (started: Double, finished: Double)] = [:]
-        func key(_ date: Date) -> Date {
-            Date(timeIntervalSince1970: floor(date.timeIntervalSince1970 / bucketSeconds) * bucketSeconds)
-        }
-        for task in tasks {
-            if task.startedAt >= start, task.startedAt <= end {
-                let bucket = key(task.startedAt)
-                var value = buckets[bucket] ?? (started: 0, finished: 0)
-                value.started += 1
-                buckets[bucket] = value
-            }
-            if let endedAt = task.endedAt, endedAt >= start, endedAt <= end {
-                let bucket = key(endedAt)
-                var value = buckets[bucket] ?? (started: 0, finished: 0)
-                value.finished += 1
-                buckets[bucket] = value
-            }
-        }
-        // Keep a live zero/current point so the chart remains visible before
-        // the first receipt and continues to show its current time window.
-        let currentBucket = key(end)
-        if buckets[currentBucket] == nil { buckets[currentBucket] = (started: 0, finished: 0) }
-        return buckets.keys.sorted().map { date in
-            let value = buckets[date] ?? (started: 0, finished: 0)
-            return GovernanceActivityChartPoint(id: date, started: value.started, finished: value.finished)
-        }
+    /// delta charts stay empty until a paired comparison exists; that must not
+    /// hide the real-time governance stream. The strip is a fixed window
+    /// anchored to the detector tick and zero-filled, so with no task running
+    /// the line keeps flowing at zero instead of collapsing to a single dot
+    /// (and sparse buckets are never interpolated into a fake ramp).
+    /// While a filter change is recomputed off the actor, keep drawing the
+    /// last coherent projection under its own window: zeros must never stand
+    /// in for data that simply has not been computed yet.
+    private var liveActivityWindow: String {
+        projectionIsCurrent ? window
+            : (projectionFilterContext.split(separator: "|").first.map(String.init) ?? window)
     }
+    private var liveActivitySpan: TimeInterval {
+        liveActivityWindow == "24시간" ? 86_400 : (liveActivityWindow == "7일" ? 604_800 : 1_800)
+    }
+    private var liveActivityBucketSeconds: TimeInterval {
+        liveActivityWindow == "24시간" ? 900 : (liveActivityWindow == "7일" ? 3_600 : 10)
+    }
+    private var liveActivityWindowLabel: String { liveActivityWindow == "전체" ? "최근 30분" : liveActivityWindow }
+    private var liveActivityBucketLabel: String {
+        liveActivityWindow == "24시간" ? "15분 간격" : (liveActivityWindow == "7일" ? "1시간 간격" : "10초 간격")
+    }
+    private var liveActivityAxisFormat: Date.FormatStyle {
+        liveActivityWindow == "7일" ? .dateTime.month().day() : .dateTime.hour().minute()
+    }
+    private var liveActivityTickInterval: TimeInterval {
+        liveActivityWindow == "24시간" ? 14_400 : (liveActivityWindow == "7일" ? 86_400 : 300)
+    }
+    private var liveActivityStrip: GovernanceActivityStrip {
+        GovernanceActivityStrip.build(tasks: projection.tasks, until: refreshed, span: liveActivitySpan,
+                                      bucketSeconds: liveActivityBucketSeconds)
+    }
+    /// The delta traces are session-local one-second replots; give them the
+    /// same rolling window treatment, anchored to the current tick.
+    private var deltaWindowSeconds: TimeInterval { TimeInterval(deltaHistory.capacity) }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -500,27 +494,32 @@ struct GovernanceMonitorView: View {
     private var deltaCharts: some View {
         HStack(alignment: .top, spacing: 12) {
             deltaChart(title: "토큰 감소율 Δ", current: delta(selectedComparison?.tokenSavings), unit: "%",
-                       note: "matched 요청 · 실패·재시도 비용 포함", points: tokenDeltaPoints,
+                       note: "matched 요청 · 실패·재시도 비용 포함 · 최근 2분 · 1초 간격", points: tokenDeltaPoints,
                        color: (selectedComparison?.tokenSavings ?? 0) >= 0 ? green : pink)
             deltaChart(title: "실행 완료율 Δ", current: percentagePoints(taskCompletionDelta), unit: "pp",
-                       note: "비교 − 기준 · 같은 matched 요청", points: completionDeltaPoints,
+                       note: "비교 − 기준 · 같은 matched 요청 · 최근 2분 · 1초 간격", points: completionDeltaPoints,
                        color: (taskCompletionDelta ?? 0) >= 0 ? green : pink)
         }
     }
     private var liveActivityChart: some View {
-        let points = liveActivityPoints
+        let strip = liveActivityStrip
+        let points = strip.points
+        let startedEvents = points.filter { $0.started > 0 }
+        let finishedEvents = points.filter { $0.finished > 0 }
         let heartbeatPoints = heartbeatHistory.points.isEmpty
             ? [GovernanceChartPoint(id: refreshed, value: 0.12)]
             : heartbeatHistory.points
-        let maxValue = max(1, points.flatMap { [$0.started, $0.finished] }.max() ?? 1)
-        let windowLabel = window == "전체" ? "최근 30분" : window
+        let maxValue = max(1, strip.maxValue)
+        let axisFormat = liveActivityAxisFormat
+        let axisTicks = GovernanceActivityStrip.axisTicks(from: strip.start, to: strip.end, every: liveActivityTickInterval,
+                                                          edgeMargin: liveActivitySpan * 0.04)
         let heartbeatStart = refreshed.addingTimeInterval(-30)
         let heartbeatEnd = refreshed.addingTimeInterval(1)
         return VStack(alignment: .leading, spacing: 11) {
             HStack(alignment: .firstTextBaseline) {
                 VStack(alignment: .leading, spacing: 3) {
                     Text("실시간 거버넌스 활동").font(.system(size: 12, weight: .semibold))
-                    Text("작업 시작·종료 영수증 · \(windowLabel)")
+                    Text("작업 시작·종료 영수증 · \(liveActivityWindowLabel) · \(liveActivityBucketLabel) · 작업이 없으면 0으로 흐름")
                         .font(.system(size: 9)).foregroundStyle(muted)
                 }
                 Spacer()
@@ -539,22 +538,37 @@ struct GovernanceMonitorView: View {
                 RuleMark(y: .value("기준", 0))
                     .foregroundStyle(Color.white.opacity(0.16))
                     .lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 4]))
+                // Explicit series: without them Swift Charts joined the start
+                // and finish values into one zig-zag line.
                 ForEach(points) { point in
-                    LineMark(x: .value("시간", point.id), y: .value("시작", point.started))
+                    AreaMark(x: .value("시간", point.id), y: .value("시작", point.started),
+                             series: .value("계열", "시작"))
+                        .foregroundStyle(LinearGradient(colors: [green.opacity(0.2), green.opacity(0.01)],
+                                                        startPoint: .top, endPoint: .bottom))
+                    LineMark(x: .value("시간", point.id), y: .value("시작", point.started),
+                             series: .value("계열", "시작"))
                         .foregroundStyle(green)
-                        .lineStyle(StrokeStyle(lineWidth: 2.2, lineCap: .round, lineJoin: .round))
-                        .symbol(Circle())
-                    LineMark(x: .value("시간", point.id), y: .value("종료", point.finished))
+                        .lineStyle(StrokeStyle(lineWidth: 1.8, lineCap: .round, lineJoin: .round))
+                    LineMark(x: .value("시간", point.id), y: .value("종료", point.finished),
+                             series: .value("계열", "종료"))
                         .foregroundStyle(pink)
-                        .lineStyle(StrokeStyle(lineWidth: 2.2, lineCap: .round, lineJoin: .round))
-                        .symbol(Circle())
+                        .lineStyle(StrokeStyle(lineWidth: 1.8, lineCap: .round, lineJoin: .round))
+                }
+                ForEach(startedEvents) { point in
+                    PointMark(x: .value("시간", point.id), y: .value("시작", point.started))
+                        .foregroundStyle(green).symbolSize(30)
+                }
+                ForEach(finishedEvents) { point in
+                    PointMark(x: .value("시간", point.id), y: .value("종료", point.finished))
+                        .foregroundStyle(pink).symbolSize(30)
                 }
             }
+            .chartXScale(domain: strip.start...strip.end)
             .chartYScale(domain: 0...maxValue + 1)
             .chartXAxis {
-                AxisMarks(values: .automatic(desiredCount: 5)) { _ in
+                AxisMarks(values: axisTicks) { _ in
                     AxisGridLine().foregroundStyle(Color.white.opacity(0.06))
-                    AxisValueLabel(format: .dateTime.hour().minute())
+                    AxisValueLabel(format: axisFormat)
                         .font(.system(size: 8)).foregroundStyle(muted)
                 }
             }
@@ -570,6 +584,9 @@ struct GovernanceMonitorView: View {
                 }
             }
             .frame(height: 170)
+            .accessibilityElement()
+            .accessibilityLabel("실시간 거버넌스 활동 스트립")
+            .accessibilityValue("\(liveActivityWindowLabel) · 샘플 \(points.count)개 · 시작 \(Int(strip.startedTotal))건 · 종료 \(Int(strip.finishedTotal))건 · 마지막 \(refreshed.formatted(date: .omitted, time: .standard))")
             HStack {
                 Text("실시간 감지 파형 · 1초 샘플")
                     .font(.system(size: 9, weight: .medium))
@@ -594,7 +611,7 @@ struct GovernanceMonitorView: View {
             .frame(height: 46)
             .accessibilityLabel("1초 실시간 감지 파형")
             .accessibilityValue("\(heartbeatPoints.count)개 샘플 · 마지막 \(refreshed.formatted(date: .omitted, time: .standard))")
-            Text("감지 파형은 작업 유무와 관계없이 계속 흐릅니다. 시작·종료 활동선은 실제 영수증이 생길 때만 바뀝니다.")
+            Text("활동선은 작업이 없으면 0으로 계속 흐르고, 실제 시작·종료 영수증이 생길 때만 올라갑니다. 감지 파형은 모니터 자체의 1초 폴링 증거이며 작업을 뜻하지 않습니다.")
                 .font(.system(size: 9)).foregroundStyle(muted)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -627,27 +644,33 @@ struct GovernanceMonitorView: View {
                 }
                 .frame(maxWidth: .infinity, minHeight: 155)
             } else {
+                let windowEnd = refreshed
+                let windowStart = windowEnd.addingTimeInterval(-deltaWindowSeconds)
+                let visible = points.filter { $0.id >= windowStart && $0.id <= windowEnd }
+                let deltaTicks = GovernanceActivityStrip.axisTicks(from: windowStart, to: windowEnd, every: 30,
+                                                                   edgeMargin: deltaWindowSeconds * 0.04)
                 Chart {
                     RuleMark(y: .value("기준", 0))
                         .foregroundStyle(Color.white.opacity(0.16))
                         .lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 4]))
-                    ForEach(points) { point in
+                    ForEach(visible) { point in
                         LineMark(x: .value("시간", point.id), y: .value("델타", point.value))
                             .foregroundStyle(color)
                             .lineStyle(StrokeStyle(lineWidth: 2.2, lineCap: .round, lineJoin: .round))
                         AreaMark(x: .value("시간", point.id), yStart: .value("기준", 0), yEnd: .value("델타", point.value))
                             .foregroundStyle(LinearGradient(colors: [color.opacity(0.24), color.opacity(0.015)], startPoint: .top, endPoint: .bottom))
                     }
-                    if let last = points.last {
+                    if let last = visible.last {
                         PointMark(x: .value("현재 시간", last.id), y: .value("현재 델타", last.value))
                             .foregroundStyle(color).symbolSize(34)
                     }
                 }
+                .chartXScale(domain: windowStart...windowEnd)
                 .chartYScale(domain: chartDomain(points))
                 .chartXAxis {
-                    AxisMarks(values: .automatic(desiredCount: 4)) { _ in
+                    AxisMarks(values: deltaTicks) { _ in
                         AxisGridLine().foregroundStyle(Color.white.opacity(0.06))
-                        AxisValueLabel(format: .dateTime.hour().minute())
+                        AxisValueLabel(format: .dateTime.hour().minute().second())
                             .font(.system(size: 8)).foregroundStyle(muted)
                     }
                 }

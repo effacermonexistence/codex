@@ -236,6 +236,30 @@ private func governanceHeartbeatSelfTest() throws {
     }
 }
 
+/// The activity strip must flow at zero when nothing runs: a fixed window
+/// anchored to the detector tick, one sample per bucket, both edges pinned,
+/// sliding by exactly the tick advance. This is the Activity-Monitor behaviour
+/// the owner asked for; it never fabricates a receipt.
+private func governanceActivityStripSelfTest() throws {
+    let now = Date(timeIntervalSince1970: 1_800_000_000)
+    let idle = GovernanceActivityStrip.build(tasks: [], until: now, span: 1_800, bucketSeconds: 10)
+    guard idle.points.count == 182, idle.points.first?.id == now.addingTimeInterval(-1_800),
+          idle.points.last?.id == now, idle.maxValue == 0,
+          zip(idle.points, idle.points.dropFirst()).allSatisfy({ $0.id < $1.id }) else {
+        throw RunnerError.message("OS-1 governance activity strip does not flow at zero across its full window")
+    }
+    let next = GovernanceActivityStrip.build(tasks: [], until: now.addingTimeInterval(1), span: 1_800, bucketSeconds: 10)
+    guard next.start == idle.start.addingTimeInterval(1), next.end == idle.end.addingTimeInterval(1),
+          next.points.count == idle.points.count,
+          next.points.dropFirst().dropLast().map(\.id) == idle.points.dropFirst().dropLast().map(\.id) else {
+        throw RunnerError.message("OS-1 governance activity strip does not slide with the detector tick")
+    }
+    let week = GovernanceActivityStrip.build(tasks: [], until: now, span: 604_800, bucketSeconds: 3_600)
+    guard week.points.count == 170, week.points.first?.id == now.addingTimeInterval(-604_800), week.points.last?.id == now else {
+        throw RunnerError.message("OS-1 governance activity strip 7-day window is not dense and pinned")
+    }
+}
+
 @MainActor
 private func providerIntentSelfTest() throws {
     let sourceRef = SourceReference(kind: .snapshot, id: UUID(), sha256: String(repeating: "b", count: 64))
@@ -8585,6 +8609,7 @@ private struct OS1DesktopApp: App {
         if CommandLine.arguments.contains("--self-test") {
             do {
                 try governanceHeartbeatSelfTest()
+                try governanceActivityStripSelfTest()
                 try nativeProvenanceSelfTest()
                 try savedFailurePreviewSelfTest()
                 try providerIntentSelfTest()
@@ -8594,7 +8619,7 @@ private struct OS1DesktopApp: App {
                 try sidebarSynchronizationSelfTest()
                 try backendRecoverySelfTest()
                 try selfUpdateReportSelfTest()
-                print("OS-1 app continuous governance heartbeat, provider intent, source continuity, voice, math, selection, pin/archive/drafts/queue, backend accounts, backend self-repair, self-update self-test: OK")
+                print("OS-1 app continuous governance heartbeat, activity strip, provider intent, source continuity, voice, math, selection, pin/archive/drafts/queue, backend accounts, backend self-repair, self-update self-test: OK")
                 exit(EXIT_SUCCESS)
             } catch {
                 fputs("\(error.localizedDescription)\n", stderr)
