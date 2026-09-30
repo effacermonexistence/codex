@@ -8230,6 +8230,23 @@ private struct OS1DesktopApp: App {
     @StateObject private var store: SessionStore
 
     init() {
+        if CommandLine.arguments.contains("--self-test-profile") {
+            Task { @MainActor in
+                do { try await profileMenuSelfTest(); exit(EXIT_SUCCESS) }
+                catch { fputs("\(error.localizedDescription)\n", stderr); exit(EXIT_FAILURE) }
+            }
+            NSApplication.shared.run()
+            exit(EXIT_FAILURE)
+        }
+        if let flag = CommandLine.arguments.firstIndex(of: "--render-profile-preview") {
+            do {
+                guard CommandLine.arguments.count == flag + 2 else { throw SourceContextError.invalid }
+                let output = URL(fileURLWithPath: CommandLine.arguments[flag + 1], isDirectory: true)
+                try renderProfilePreviews(to: output)
+                try renderProfileShellPreviews(to: output)
+                exit(EXIT_SUCCESS)
+            } catch { fputs("\(error.localizedDescription)\n", stderr); exit(EXIT_FAILURE) }
+        }
         if let flag = CommandLine.arguments.firstIndex(of: "--audit-frontier") {
             guard CommandLine.arguments.count == flag + 2 else { exit(EXIT_FAILURE) }
             let root = URL(fileURLWithPath: CommandLine.arguments[flag + 1], isDirectory: true)
@@ -8685,7 +8702,14 @@ private struct OS1DesktopApp: App {
                 try backendRecoverySelfTest()
                 try selfUpdateReportSelfTest()
                 print("OS-1 app continuous governance heartbeat, activity strip, provider intent, source continuity, voice, math, selection, pin/archive/drafts/queue, backend accounts, backend self-repair, self-update self-test: OK")
-                exit(EXIT_SUCCESS)
+                // Keep identity regressions in the standard release self-test,
+                // not only behind the focused development diagnostic.
+                Task { @MainActor in
+                    do { try await profileMenuSelfTest(); exit(EXIT_SUCCESS) }
+                    catch { fputs("\(error.localizedDescription)\n", stderr); exit(EXIT_FAILURE) }
+                }
+                NSApplication.shared.run()
+                exit(EXIT_FAILURE)
             } catch {
                 fputs("\(error.localizedDescription)\n", stderr)
                 exit(EXIT_FAILURE)
@@ -8807,6 +8831,7 @@ private struct BackendAccountsView: View {
 
 private struct OS1SettingsView: View {
     @ObservedObject var store: SessionStore
+    var manageAccounts: (() -> Void)? = nil
 
     private func binding<Value>(_ keyPath: WritableKeyPath<OS1Settings, Value>) -> Binding<Value> {
         Binding(get: { store.appSettings[keyPath: keyPath] },
@@ -8860,7 +8885,9 @@ private struct OS1SettingsView: View {
                         .foregroundStyle(account?.signedIn == false ? Theme.amber : Color.secondary)
                     }
                 }
-                Button(os1Tr("계정 관리…", "Manage accounts…")) { store.accountsOpen = true }
+                Button(os1Tr("계정 관리…", "Manage accounts…")) {
+                    if let manageAccounts { manageAccounts() } else { store.accountsOpen = true }
+                }
                 Text(os1Tr("Codex와 Claude Code 로그인을 OS-1에서 직접 합니다. 제공자별로 여러 계정을 등록하고 어느 계정으로 실행할지 고를 수 있습니다.",
                            "Sign in to Codex and Claude Code from OS-1. Each provider can hold several accounts, and you choose which one runs."))
                     .font(.footnote).foregroundStyle(.secondary)
@@ -9108,14 +9135,19 @@ private struct BrowserToggleBar: View {
 
 private struct RootView: View {
     @ObservedObject var store: SessionStore
-    @State private var governanceOpen = false
+    @State private var profileNavigation = ProfileNavigationState()
+    @StateObject private var identity = OS1IdentityModel()
+    @StateObject private var profileUsage = ProfileUsageModel()
+    @StateObject private var profileAccounts = BackendAccountsModel()
     @StateObject private var browser = OS1BrowserWorkspace()
     private var browserKey: String { store.selectedSessionID?.uuidString ?? "native-\(store.surface.rawValue)" }
     @State private var windowDropTargeted = false
 
     var body: some View {
         HStack(spacing: 0) {
-            ProviderRail(store: store, governanceOpen: $governanceOpen)
+            ProviderRail(store: store, governanceOpen: $profileNavigation.governanceOpen, identity: identity, usage: profileUsage) { destination in
+                profileNavigation.select(destination)
+            }
             Rectangle().fill(Theme.border).frame(width: 1)
             HSplitView {
             ZStack {
@@ -9133,15 +9165,15 @@ private struct RootView: View {
                             browserVisible: browser.visible, toggleBrowser: { browser.visible.toggle() })
                     }
                 }
-                .opacity(governanceOpen ? 0 : 1)
-                .allowsHitTesting(!governanceOpen)
-                .accessibilityHidden(governanceOpen)
-                if governanceOpen {
+                .opacity(profileNavigation.governanceOpen ? 0 : 1)
+                .allowsHitTesting(!profileNavigation.governanceOpen)
+                .accessibilityHidden(profileNavigation.governanceOpen)
+                if profileNavigation.governanceOpen {
                     GovernanceMonitorView(active: store.activeRuns.values.map { run in
                         let route = ExecutionRoutePresentation(activity: run.activity)
                         return run.activity.effort.map { route.governanceLine + " · " + os1Tr("추론: \($0)", "Reasoning: \($0)") } ?? route.governanceLine
-                    }.sorted(), queued: store.queuedSubmissions.count, onClose: { governanceOpen = false })
-                    .onExitCommand { governanceOpen = false }
+                    }.sorted(), queued: store.queuedSubmissions.count, onClose: { profileNavigation.governanceOpen = false })
+                    .onExitCommand { profileNavigation.governanceOpen = false }
                 }
             }
             .frame(minWidth: 540, maxWidth: .infinity, maxHeight: .infinity)
@@ -9152,6 +9184,34 @@ private struct RootView: View {
             }
         }
         .sheet(isPresented: $store.accountsOpen) { BackendAccountsView(store: store) }
+        .sheet(item: $profileNavigation.sheet) { destination in
+            VStack(spacing: 0) {
+                HStack {
+                    Label(destination.title, systemImage: destination.symbol).font(.headline)
+                    Spacer()
+                    Button { profileNavigation.sheet = nil } label: { Image(systemName: "xmark").frame(width: 24, height: 24) }
+                        .buttonStyle(.plain).keyboardShortcut(.cancelAction)
+                        .accessibilityLabel(os1Tr("닫기", "Close"))
+                }.padding(18)
+                Divider()
+                switch destination {
+                case .account: OS1IdentityPanel(model: identity).frame(width: 560, height: 550)
+                case .usage: ProfileUsageView(model: profileUsage).frame(width: 640, height: 510)
+                case .settings: OS1SettingsView(store: store, manageAccounts: { profileNavigation.sheet = .backends })
+                case .backends:
+                    ScrollView {
+                        BackendAccountsPanel(model: profileAccounts, dark: true,
+                            providers: store.appSettings.showCodex ? BackendAccounts.providers : ["claude"])
+                            .padding(22)
+                    }.frame(width: 600, height: 540)
+                case .governance: EmptyView() // Routed without a sheet above.
+                }
+            }.background(ProfileStyle.surface).preferredColorScheme(.dark)
+        }
+        .task { await identity.restoreIfNeeded() }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            Task { await identity.restoreIfNeeded(force: true) }
+        }
         .environment(\.openURL, OpenURLAction { url in
             guard BrowserNavigation.url(url.absoluteString) != nil else { return .systemAction }
             browser.open(url, key: browserKey)
@@ -9293,10 +9353,19 @@ private enum ProviderRailLayout {
 private struct ProviderRail: View {
     @ObservedObject var store: SessionStore
     @Binding var governanceOpen: Bool
+    @ObservedObject var identity: OS1IdentityModel
+    @ObservedObject var usage: ProfileUsageModel
+    var selectProfileDestination: (ProfileDestination) -> Void
+    @State private var profileMenuOpen = false
 
-    init(store: SessionStore, governanceOpen: Binding<Bool> = .constant(false)) {
+    init(store: SessionStore, governanceOpen: Binding<Bool> = .constant(false),
+         identity: OS1IdentityModel? = nil, usage: ProfileUsageModel? = nil,
+         selectProfileDestination: @escaping (ProfileDestination) -> Void = { _ in }) {
         self.store = store
         self._governanceOpen = governanceOpen
+        self.identity = identity ?? OS1IdentityModel()
+        self.usage = usage ?? ProfileUsageModel()
+        self.selectProfileDestination = selectProfileDestination
     }
 
     // The rail is assembled from named sub-views. Written as one expression it
@@ -9315,7 +9384,7 @@ private struct ProviderRail: View {
 
             Spacer()
 
-            governanceButton
+            profileControls
         }
         .padding(.top, ProviderRailLayout.railTopPadding)
         .padding(.bottom, 24)
@@ -9418,23 +9487,38 @@ private struct ProviderRail: View {
         Button(os1Tr("\(provider.title) 계정…", "\(provider.title) accounts…")) { store.accountsOpen = true }
     }
 
-    private var governanceButton: some View {
-        Button { governanceOpen.toggle() } label: {
-          VStack(spacing: 6) {
-            Circle().fill(Theme.green).frame(width: 9, height: 9)
-                .shadow(color: Theme.green.opacity(0.85), radius: 6)
-            Text("RCC\nGOVERNED")
-                .font(.system(size: 7, weight: .bold))
-                .tracking(0.7)
-                .multilineTextAlignment(.center)
-                .foregroundStyle(Theme.muted)
-          }.frame(width: 56, height: 52).contentShape(Rectangle())
+    private var profileControls: some View {
+        VStack(spacing: 8) {
+            Button { selectProfileDestination(.settings) } label: {
+                Image(systemName: "gearshape").font(.system(size: 19, weight: .regular))
+                    .foregroundStyle(Color.white.opacity(0.65)).frame(width: 44, height: 32).contentShape(Rectangle())
+            }
+            .buttonStyle(.plain).help(os1Tr("설정", "Settings"))
+            .accessibilityLabel(os1Tr("설정", "Settings")).accessibilityIdentifier("os1.rail.settings")
+            Button { profileMenuOpen.toggle() } label: {
+                ProfileAvatar(profile: identity.profile, size: 36)
+                    .frame(width: 50, height: 50)
+                    .background(Color.white.opacity(profileMenuOpen ? 0.12 : 0.05), in: RoundedRectangle(cornerRadius: 14))
+                    .overlay(alignment: .bottomTrailing) {
+                        if identity.busy { ProgressView().controlSize(.mini).padding(2) }
+                    }
+                    .contentShape(RoundedRectangle(cornerRadius: 14))
+            }
+            .buttonStyle(.plain)
+            .help(os1Tr("프로필 · 사용량 · 계정", "Profile · usage · accounts"))
+            .accessibilityLabel(os1Tr("프로필 메뉴", "Profile menu"))
+            .accessibilityIdentifier("os1.rail.profile")
+            .accessibilityValue(profileMenuOpen ? os1Tr("열림", "Open") : os1Tr("닫힘", "Closed"))
+            .popover(isPresented: $profileMenuOpen, arrowEdge: .trailing) {
+                ProfileMenuView(profile: identity.profile, busy: identity.busy,
+                                usage: usage.loaded ? usage.summary : nil, select: { destination in
+                    profileMenuOpen = false
+                    DispatchQueue.main.async { selectProfileDestination(destination) }
+                }, signOut: { identity.signOut(); profileMenuOpen = false })
+                .onExitCommand { profileMenuOpen = false }
+            }
+            .task(id: profileMenuOpen) { if profileMenuOpen { await usage.refresh() } }
         }
-        .buttonStyle(.plain)
-        .help("RCC Governance · 토큰, 완수율, 효율 활동 모니터")
-        .accessibilityLabel("RCC Governance Activity Monitor")
-        .accessibilityValue(governanceOpen ? "열림" : "닫힘")
-        .background(governanceOpen ? Theme.green.opacity(0.10) : Color.clear, in: RoundedRectangle(cornerRadius: 10))
     }
 }
 
@@ -9873,6 +9957,76 @@ private func renderProviderRailPreview(to output: URL) throws {
     ]
     try JSONSerialization.data(withJSONObject: manifest, options: [.prettyPrinted, .sortedKeys])
         .write(to: output.appendingPathComponent("provider-rail-preview.json"), options: .atomic)
+}
+
+/// Real rail/sidebar/conversation components with synthetic data, without live
+/// RootView tasks. Both supported window sizes retain the draft and queue.
+@MainActor
+private func renderProfileShellPreviews(to output: URL) throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("os1-profile-shell-" + UUID().uuidString)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let store = SessionStore(storageRoot: root, runOperation: { _, _, _, _, _ in
+        throw RunnerError.message("Profile preview must not execute a backend")
+    }, nativeSessionOpener: { _ in false })
+    guard let id = store.selectedSessionID, let index = store.selectedIndex else { throw SourceContextError.invalid }
+    store.sessions[index].title = "Profile menu preview"
+    store.sessions[index].workspace = root.path
+    store.activeRuns[id] = .init(submissionID: UUID(), started: Date(),
+        activity: RuntimeActivity(.executing, provider: "codex"), provider: .codex, handedRevision: 0)
+    store.composer = "Preserve this queued request"; store.send()
+    store.composer = "Preserve this draft"
+    let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+    let queueBefore = store.queuedSubmissions, sessionsBefore = try encoder.encode(store.sessions), draftBefore = store.composer
+    let profile = AppIdentityProfile(provider: .google, subject: "fixture", name: "Demo User", email: "demo@example.invalid")
+    let identity = OS1IdentityModel(previewProfile: profile)
+    let summary = AppUsageSummary(snapshot: try profileUsageFixture())
+    var metrics: [[String: Any]] = []
+    for (name, width, height) in [("shell-minimum", 980.0, 680.0), ("shell-standard", 1360.0, 760.0)] {
+        let content = HStack(spacing: 0) {
+            ProviderRail(store: store, identity: identity)
+            Rectangle().fill(Theme.border).frame(width: 1)
+            SessionSidebar(store: store)
+            Rectangle().fill(Theme.border).frame(width: 1)
+            ConversationView(store: store)
+        }
+        .overlay(alignment: .bottomLeading) {
+            ProfileMenuView(profile: profile, usage: summary, select: { _ in }, signOut: {})
+                .padding(.leading, 74).padding(.bottom, 24)
+        }
+        .frame(width: width, height: height).background(Theme.background).environment(\.colorScheme, .dark)
+        let view = NSHostingView(rootView: content)
+        view.frame = NSRect(x: 0, y: 0, width: width, height: height)
+        view.layoutSubtreeIfNeeded()
+        guard let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { throw SourceContextError.invalid }
+        view.cacheDisplay(in: view.bounds, to: bitmap)
+        let scale = Double(bitmap.pixelsWide) / width
+        var left = bitmap.pixelsWide, right = 0, top = bitmap.pixelsHigh, bottom = 0
+        for y in Int((height - 120) * scale)..<bitmap.pixelsHigh {
+            for x in 0..<Int(72 * scale) {
+                guard let c = bitmap.colorAt(x: x, y: y)?.usingColorSpace(.deviceRGB),
+                      c.greenComponent > c.redComponent + 0.15, c.greenComponent > 0.4, c.redComponent < 0.3 else { continue }
+                left = min(left, x); right = max(right, x); top = min(top, y); bottom = max(bottom, y)
+            }
+        }
+        let centerX = Double(left + right) / (2 * scale), centerY = Double(top + bottom) / (2 * scale)
+        guard right > left, bottom > top,
+              abs(centerX - 39) <= 2, abs(centerY - (height - 49)) <= 2,
+              bottom < bitmap.pixelsHigh - Int(24 * scale) else {
+            throw RunnerError.message("Profile rail pixels: avatar clipped or displaced at \(width)x\(height)")
+        }
+        guard let png = bitmap.representation(using: .png, properties: [:]) else { throw SourceContextError.invalid }
+        try png.write(to: output.appendingPathComponent(name + ".png"))
+        metrics.append(["file": name + ".png", "widthPoints": width, "heightPoints": height,
+                        "avatarCenterX": centerX, "avatarCenterY": centerY, "avatarNotClipped": true])
+    }
+    guard store.queuedSubmissions == queueBefore, try encoder.encode(store.sessions) == sessionsBefore, store.composer == draftBefore else {
+        throw RunnerError.message("Profile rendering mutated the conversation, queue, or draft")
+    }
+    try JSONSerialization.data(withJSONObject: ["fixturesOnly": true, "layouts": metrics,
+        "draftPreserved": true, "queuePreserved": true, "sessionsPreserved": true], options: [.prettyPrinted, .sortedKeys])
+        .write(to: output.appendingPathComponent("shell-layout.json"))
+    print("Profile shell: minimum/standard native composition pixel checks; draft, queue and session preserved")
 }
 
 /// Composed production-shell rendering used to prove the sidebar header's
