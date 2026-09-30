@@ -106,9 +106,18 @@ public struct GovernanceComparison: Identifiable, Sendable {
     public let tokenSavings: Double?
     public let adoptionDelta: Double
     public let latencySavings: Double?
-    /// Equal-weight matched-scope observations. Nil unless every attempt in
-    /// every matched scope has supported usage; these are descriptive, not a
-    /// causal estimate of model or governance uplift.
+    /// Matched scopes in which every attempt on both routes has supported
+    /// measured usage. Every token, cost and efficiency figure below is
+    /// computed over exactly these scopes (complete-case): a scope with any
+    /// unmeasured attempt is excluded from those sums rather than priced at
+    /// zero. At most `matchedScopes`; when it is zero those figures are nil.
+    public var measuredScopes = 0
+    /// Scopes inside the measured cohort where the route completed at least once.
+    public var measuredBaselineCompletions = 0
+    public var measuredCandidateCompletions = 0
+    /// Equal-weight means over the measured matched-scope cohort. Nil until at
+    /// least one matched scope is fully measured; descriptive, not a causal
+    /// estimate of model or governance uplift.
     public var baselineMeanTokens: Double? = nil
     public var candidateMeanTokens: Double? = nil
     /// Cost per completed task, candidate vs baseline (positive = candidate
@@ -385,9 +394,12 @@ public struct GovernanceSnapshot: Sendable {
 
     /// Equal-weight scope-standardized means, ratio of sums (not mean of percentages), never cross-provider comparisons or causal uplift.
     /// Legacy scopes bind initial requests, not necessarily every recovery prompt.
-    /// Includes failures and retries in token/time costs. All operator-facing
-    /// deltas use this exact matched-scope cohort; unrelated route tasks cannot
-    /// change completion or efficiency while token savings stays fixed.
+    /// Includes failures and retries in token/time costs. The completion delta
+    /// spans every matched scope; token, cost and efficiency deltas span the
+    /// fully measured subset of that same cohort (`measuredScopes`), so an
+    /// unmeasured failed attempt drops its scope from the token figures instead
+    /// of entering them as a free attempt. Unrelated route tasks cannot change
+    /// any of these deltas.
     public func comparisons(baseline: String, since: Date?, includeHistorical: Bool) -> [GovernanceComparison] {
         let grouped = Dictionary(grouping: samples(since: since, includeHistorical: includeHistorical), by: { $0.0 })
         let provider = baseline.components(separatedBy: " / ").first
@@ -398,7 +410,8 @@ public struct GovernanceSnapshot: Sendable {
         return routeIDs.compactMap { route in
             var tokenA: [Double] = [], tokenB: [Double] = [], adoptionDeltas: [Double] = [], timeA: [Double] = [], timeB: [Double] = []
             var completedA = 0, completedB = 0
-            var count = 0, candidateN = 0, baselineN = 0
+            var measuredCompletedA = 0, measuredCompletedB = 0
+            var count = 0, measured = 0, candidateN = 0, baselineN = 0
             for entries in grouped.values {
                 func select(_ key: String) -> [CompletionFeedbackObservation] {
                     entries.map(\.1).filter { [$0.provider, $0.model, $0.effort].joined(separator: " / ") == key }
@@ -414,45 +427,59 @@ public struct GovernanceSnapshot: Sendable {
                 let aRate: Double = Double(aAdopted) / Double(a.count)
                 let bRate: Double = Double(bAdopted) / Double(b.count)
                 adoptionDeltas.append(bRate - aRate)
-                completedA += aAdopted > 0 ? 1 : 0
-                completedB += bAdopted > 0 ? 1 : 0
+                let aCompleted = aAdopted > 0
+                let bCompleted = bAdopted > 0
+                completedA += aCompleted ? 1 : 0
+                completedB += bCompleted ? 1 : 0
                 let at = a.compactMap(Self.tokens), bt = b.compactMap(Self.tokens)
+                // Complete-case cohort: the scope enters the token sums only
+                // when every attempt on both routes was measured. A scope with
+                // an unmeasured attempt (typically a failed attempt whose usage
+                // was never captured) is left out rather than counted at zero.
                 if at.count == a.count, bt.count == b.count {
+                    measured += 1
                     let atSum: Int = at.reduce(0, +)
                     let btSum: Int = bt.reduce(0, +)
                     tokenA.append(Double(atSum)); tokenB.append(Double(btSum))
+                    measuredCompletedA += aCompleted ? 1 : 0
+                    measuredCompletedB += bCompleted ? 1 : 0
                 }
                 let aDurationSum: Int = a.map(\.durationMS).reduce(0, +)
                 let bDurationSum: Int = b.map(\.durationMS).reduce(0, +)
                 timeA.append(Double(aDurationSum)); timeB.append(Double(bDurationSum))
             }
             guard count > 0 else { return nil }
-            let completeMatchedUsage = tokenA.count == count && tokenB.count == count
-            let baselineMeanTokens: Double? = completeMatchedUsage ? tokenA.reduce(0, +) / Double(count) : nil
-            let candidateMeanTokens: Double? = completeMatchedUsage ? tokenB.reduce(0, +) / Double(count) : nil
+            let hasMeasuredUsage = measured > 0 && tokenA.count == measured && tokenB.count == measured
+            let baselineTokens = tokenA.reduce(0, +)
+            let candidateTokens = tokenB.reduce(0, +)
+            let baselineMeanTokens: Double? = hasMeasuredUsage ? baselineTokens / Double(measured) : nil
+            let candidateMeanTokens: Double? = hasMeasuredUsage ? candidateTokens / Double(measured) : nil
             let baselineCompletionRate = Double(completedA) / Double(count)
             let candidateCompletionRate = Double(completedB) / Double(count)
             var comparison = GovernanceComparison(id: route, baseline: baseline, matchedScopes: count,
                 candidateAttempts: candidateN, baselineAttempts: baselineN,
-                tokenSavings: completeMatchedUsage ? GovernanceStatistics.savings(baseline: tokenA.reduce(0,+), candidate: tokenB.reduce(0,+)) : nil,
+                tokenSavings: hasMeasuredUsage ? GovernanceStatistics.savings(baseline: baselineTokens, candidate: candidateTokens) : nil,
                 adoptionDelta: adoptionDeltas.reduce(0,+) / Double(count),
                 latencySavings: timeA.count == count ? GovernanceStatistics.savings(baseline: timeA.reduce(0,+), candidate: timeB.reduce(0,+)) : nil)
+            comparison.measuredScopes = measured
+            comparison.measuredBaselineCompletions = measuredCompletedA
+            comparison.measuredCandidateCompletions = measuredCompletedB
             comparison.baselineMeanTokens = baselineMeanTokens
             comparison.candidateMeanTokens = candidateMeanTokens
             comparison.baselineTaskCompletionRate = baselineCompletionRate
             comparison.candidateTaskCompletionRate = candidateCompletionRate
             comparison.taskCompletionDelta = candidateCompletionRate - baselineCompletionRate
-            if completeMatchedUsage {
-                let baselineTokens = tokenA.reduce(0, +)
-                let candidateTokens = tokenB.reduce(0, +)
-                if completedA > 0, completedB > 0 {
+            if hasMeasuredUsage {
+                // Completions and tokens come from the same measured scopes, so
+                // a completion whose cost is unknown never inflates efficiency.
+                if measuredCompletedA > 0, measuredCompletedB > 0 {
                     comparison.completionCostSavings = GovernanceStatistics.savings(
-                        baseline: baselineTokens / Double(completedA),
-                        candidate: candidateTokens / Double(completedB))
+                        baseline: baselineTokens / Double(measuredCompletedA),
+                        candidate: candidateTokens / Double(measuredCompletedB))
                 }
-                if baselineTokens > 0, candidateTokens > 0, completedA > 0 {
-                    let baselineEfficiency = Double(completedA) / baselineTokens
-                    let candidateEfficiency = Double(completedB) / candidateTokens
+                if baselineTokens > 0, candidateTokens > 0, measuredCompletedA > 0 {
+                    let baselineEfficiency = Double(measuredCompletedA) / baselineTokens
+                    let candidateEfficiency = Double(measuredCompletedB) / candidateTokens
                     comparison.completionEfficiencyDelta = candidateEfficiency / baselineEfficiency - 1
                 }
             }

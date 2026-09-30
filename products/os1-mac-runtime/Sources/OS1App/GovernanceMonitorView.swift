@@ -202,6 +202,28 @@ struct GovernanceMonitorView: View {
         return value >= 0 ? "+\(num(value)) 절약" : "\(num(abs(value))) 추가"
     }
     private var currentHistoryContext: String { [window, provider, baseline, candidate].joined(separator: "|") }
+    /// Cohort label for every token-based figure: matched scopes with usage
+    /// measured on both routes, out of all matched scopes. A scope with an
+    /// unmeasured attempt is excluded, never priced at zero, so the count is
+    /// part of the number.
+    private func tokenCohortNote(_ item: GovernanceComparison?) -> String {
+        guard let item else { return "동일 요청 비교 데이터 없음" }
+        return item.tokenSavings != nil
+            ? "실측 \(item.measuredScopes)/\(item.matchedScopes)묶음 · 실패·재시도 포함"
+            : "matched \(item.matchedScopes)묶음 모두 토큰 미측정 시도 포함"
+    }
+    private var tokenDeltaEmptyText: String {
+        guard let item = selectedComparison else { return "동일 요청 비교 데이터가 없습니다." }
+        return "matched \(item.matchedScopes)묶음 모두에 토큰이 측정되지 않은 시도가 있어 실측 델타를 계산할 수 없습니다."
+    }
+    private func efficiencyCohortNote(_ item: GovernanceComparison?) -> String {
+        guard let item else { return "완료/1M tok · 실패·재시도 포함" }
+        if item.completionEfficiencyDelta != nil {
+            return "완료/1M tok · 실측 \(item.measuredScopes)묶음 · 실패·재시도 포함"
+        }
+        if item.tokenSavings == nil { return "완료/1M tok · 실측 묶음 없음" }
+        return "완료/1M tok · 실측 \(item.measuredScopes)묶음 · 기준 완료 \(item.measuredBaselineCompletions)건이라 정의 불가"
+    }
     private var tokenDeltaPoints: [GovernanceChartPoint] {
         deltaHistory.points.compactMap { point in
             point.tokenSavings.map { GovernanceChartPoint(id: point.id, value: $0 * 100) }
@@ -481,21 +503,22 @@ struct GovernanceMonitorView: View {
             compactCard("실행 완료율", percent(taskCompletionRate),
                         "완료 \(completed) / 종료 \(terminal.count)", color: green)
             compactCard("토큰 감소율 Δ", delta(selectedComparison?.tokenSavings),
-                        selectedComparison.map { "matched \($0.matchedScopes)묶음 · 실패 포함" } ?? "동일 요청 비교 데이터 없음",
+                        tokenCohortNote(selectedComparison),
                         color: (selectedComparison?.tokenSavings ?? 0) >= 0 ? green : pink)
             compactCard("실행 완료율 Δ", percentagePoints(taskCompletionDelta),
                         "matched \(percent(selectedComparison?.baselineTaskCompletionRate)) → \(percent(selectedComparison?.candidateTaskCompletionRate))",
                         color: (taskCompletionDelta ?? 0) >= 0 ? green : pink)
             compactCard("종합 효율 Δ", delta(completionEfficiencyDelta),
-                        "완료/1M tok · 실패·재시도 포함",
+                        efficiencyCohortNote(selectedComparison),
                         color: (completionEfficiencyDelta ?? 0) >= 0 ? green : pink)
         }
     }
     private var deltaCharts: some View {
         HStack(alignment: .top, spacing: 12) {
             deltaChart(title: "토큰 감소율 Δ", current: delta(selectedComparison?.tokenSavings), unit: "%",
-                       note: "matched 요청 · 실패·재시도 비용 포함 · 최근 2분 · 1초 간격", points: tokenDeltaPoints,
-                       color: (selectedComparison?.tokenSavings ?? 0) >= 0 ? green : pink)
+                       note: tokenCohortNote(selectedComparison) + " · 최근 2분 · 1초 간격", points: tokenDeltaPoints,
+                       color: (selectedComparison?.tokenSavings ?? 0) >= 0 ? green : pink,
+                       emptyText: tokenDeltaEmptyText)
             deltaChart(title: "실행 완료율 Δ", current: percentagePoints(taskCompletionDelta), unit: "pp",
                        note: "비교 − 기준 · 같은 matched 요청 · 최근 2분 · 1초 간격", points: completionDeltaPoints,
                        color: (taskCompletionDelta ?? 0) >= 0 ? green : pink)
@@ -626,7 +649,8 @@ struct GovernanceMonitorView: View {
         return (low - span * 0.16)...(high + span * 0.16)
     }
     private func deltaChart(title: String, current: String, unit: String, note: String,
-                            points: [GovernanceChartPoint], color: Color) -> some View {
+                            points: [GovernanceChartPoint], color: Color,
+                            emptyText: String = "비교 가능한 실측 델타가 없습니다.") -> some View {
         VStack(alignment: .leading, spacing: 11) {
             HStack(alignment: .firstTextBaseline) {
                 VStack(alignment: .leading, spacing: 3) {
@@ -640,7 +664,8 @@ struct GovernanceMonitorView: View {
             if points.isEmpty {
                 VStack(spacing: 7) {
                     Image(systemName: "chart.xyaxis.line").font(.system(size: 24)).foregroundStyle(muted.opacity(0.55))
-                    Text("비교 가능한 실측 델타가 없습니다.").font(.system(size: 10)).foregroundStyle(muted)
+                    Text(emptyText).font(.system(size: 10)).foregroundStyle(muted)
+                        .multilineTextAlignment(.center).padding(.horizontal, 24)
                 }
                 .frame(maxWidth: .infinity, minHeight: 155)
             } else {
@@ -1015,7 +1040,7 @@ struct GovernanceMonitorView: View {
                 if let item = selectedComparison {
                     HStack(spacing: 10) {
                         card("가정 토큰 차이", projectedDeltaText(projectedTokenDifference),
-                             "\(scenarioTasks)개 matched 요청 · \(delta(item.tokenSavings))", color: (projectedTokenDifference ?? 0) >= 0 ? green : pink)
+                             "\(scenarioTasks)개 요청 가정 · 실측 \(item.measuredScopes)/\(item.matchedScopes)묶음 · \(delta(item.tokenSavings))", color: (projectedTokenDifference ?? 0) >= 0 ? green : pink)
                         card("시도 채택률 변화", String(format: "%+.1fpp", item.adoptionDelta * 100),
                              "\(item.matchedScopes)묶음 · 실행 완료율과 구별", color: item.adoptionDelta >= 0 ? green : pink)
                         card("지연 차이", delta(item.latencySavings),
@@ -1028,7 +1053,7 @@ struct GovernanceMonitorView: View {
                         Text("matched 완료율 \(percent(item.baselineTaskCompletionRate)) → \(percent(item.candidateTaskCompletionRate))")
                     }
                     .font(.system(size: 9, design: .monospaced)).foregroundStyle(muted)
-                    Text("가정값은 matched scope의 경로별 절대 평균 토큰을 \(scenarioTasks)배한 단순 투영입니다. 작업 구성·순서·선택 편향을 제거하지 않으며 실행을 자동으로 시작하지 않습니다.")
+                    Text("가정값은 양쪽 토큰이 모두 실측된 matched scope(\(item.measuredScopes)/\(item.matchedScopes)묶음)의 경로별 절대 평균 토큰을 \(scenarioTasks)배한 단순 투영입니다. 미측정 묶음은 0이 아니라 제외이며, 작업 구성·순서·선택 편향을 제거하지 않고 실행을 자동으로 시작하지 않습니다.")
                         .font(.system(size: 9)).foregroundStyle(muted)
                 } else {
                     Text("같은 provider의 여러 경로가 동일 요청 묶음에서 관측되면\n모델·reasoning effort를 눌러 토큰·채택률·지연 가정을 볼 수 있습니다.")
@@ -1061,7 +1086,7 @@ struct GovernanceMonitorView: View {
                             Text(String(format: "시도 채택률 차이 %+.1fpp", item.adoptionDelta * 100)).foregroundStyle(item.adoptionDelta >= 0 ? green : pink)
                             Text("지연 단축 \(delta(item.latencySavings))")
                             Spacer()
-                            Text("\(item.matchedScopes)묶음 · 기준 \(item.baselineAttempts) / 비교 \(item.candidateAttempts)회").foregroundStyle(muted)
+                            Text("\(item.matchedScopes)묶음 · 실측 \(item.measuredScopes) · 기준 \(item.baselineAttempts) / 비교 \(item.candidateAttempts)회").foregroundStyle(muted)
                         }.font(.system(size: 11)).monospacedDigit()
                     }.padding(12).background(Color.white.opacity(0.025), in: RoundedRectangle(cornerRadius: 8))
                 }
@@ -1116,6 +1141,7 @@ struct GovernanceMonitorView: View {
             VStack(alignment: .leading, spacing: 6) {
                 Text("결과 채택 = OS1 실행·출력·저장 게이트 통과. 목표 달성 검증은 별도입니다. 현재 목표별 테스트/사용자 승인 영수증이 연결되지 않아 검증 완료율·검증 효율은 미측정입니다.")
                 Text("입력 + 출력 토큰에 재시도·실패 비용을 포함합니다. 캐시는 입력에 포함된 부분이므로 다시 더하지 않습니다. 제공자별 토크나이저가 달라 교차 제공자 토큰 절약 비교는 하지 않습니다.")
+                Text("토큰 감소율·완료 토큰·종합 효율은 기준·비교 양쪽 시도가 모두 실측된 matched 묶음만으로 계산하고 '실측 n/N묶음'으로 표기합니다. 미측정 시도가 하나라도 있는 묶음은 0으로 치지 않고 제외합니다. 실행 완료율 Δ는 matched 묶음 전체를 씁니다.")
                 Text("과거 기록은 요청당 최대 16회 보관된 시도 표본입니다. 시각·테스크 종료가 없으므로 과거 실행 완료율과 실시간 추이는 소급 생성하지 않습니다. 새 테스크는 별도 원자적 기록으로 누적합니다. 확인된 결과 재전송은 기존 테스크에 합쳐 호출을 중복 계산하지 않습니다.")
                 Text("새 기록 \(snapshot.tasks.count)건 · 과거 시도 \(snapshot.historical.count)회 · 읽기/검증 거부 \(snapshot.rejectedRecords)건 · 표시 한도 초과 \(snapshot.omittedFiles)건 · 요금표 미연결: 토큰 절약 ≠ 금액 절약")
             }

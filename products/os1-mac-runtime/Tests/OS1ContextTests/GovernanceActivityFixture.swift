@@ -194,6 +194,70 @@ func runGovernanceActivityFixtures() throws {
           unrelatedFailureComparison.taskCompletionDelta == dashboardComparison.taskCompletionDelta &&
           unrelatedFailureComparison.completionEfficiencyDelta == dashboardComparison.completionEfficiencyDelta,
           "unmatched route failure cannot change any matched-cohort dashboard delta")
+    // Complete-case token cohort: a matched scope with any unmeasured attempt
+    // is excluded from token/cost/efficiency figures (never priced at zero),
+    // while the remaining measured scopes still yield a delta with its size.
+    let cohortStore = GovernanceActivityStore(root:root.appendingPathComponent("cohort"))
+    func cohortScope(_ fill: Character) -> CompletionFeedbackScope {
+        CompletionFeedbackScope(objectiveSHA256: String(repeating: fill, count: 64), sourceSHA256: nil,
+            executorContractSHA256: String(repeating: "b", count: 64), assembledInputSHA256: String(repeating: "c", count: 64))
+    }
+    func cohortTask(_ bound: CompletionFeedbackScope, _ model: String, _ outcome: CompletionOutcome,
+                    _ measured: CompletionMeasuredUsage?, offset: Double) throws {
+        let id = UUID().uuidString.lowercased(), remote = UUID().uuidString.lowercased()
+        try cohortStore.begin(id:id,now:start.addingTimeInterval(offset))
+        let observation = CompletionFeedbackObservation(executionID:remote,sequence:1,provider:"codex",model:model,effort:"low",
+            outcome:outcome,usage:measured,durationMS:1000)
+        try cohortStore.attempt(id:id,executionID:remote,sequence:1,scope:bound,provider:"codex",model:model,effort:"low",
+            startedAt:start.addingTimeInterval(offset+0.1),observation:observation)
+        try cohortStore.finish(id:id,adopted:outcome == .adopted,now:start.addingTimeInterval(offset+1))
+    }
+    func cohortComparison() -> GovernanceComparison {
+        cohortStore.snapshot(legacyRoot:nil).comparisons(baseline:"codex / cheap / low",since:nil,includeHistorical:false)
+            .first { $0.id == "codex / strong / low" }!
+    }
+    func near(_ value: Double?, _ expected: Double) -> Bool { value.map { abs($0 - expected) < 1e-9 } ?? false }
+    // Scope 1: the baseline failed and its usage was never captured — the
+    // shape of nearly every real retry chain.
+    try cohortTask(cohortScope("1"),"cheap",.qualityFailure,nil,offset:300)
+    try cohortTask(cohortScope("1"),"strong",.adopted,usage(150,50),offset:310)
+    let unmeasuredOnly = cohortComparison()
+    check(unmeasuredOnly.matchedScopes == 1 && unmeasuredOnly.measuredScopes == 0 && unmeasuredOnly.tokenSavings == nil &&
+          unmeasuredOnly.baselineMeanTokens == nil && unmeasuredOnly.completionEfficiencyDelta == nil,
+          "a cohort with no fully measured scope has no token delta and no zero-priced attempt")
+    // Scope 2: both attempts measured.
+    try cohortTask(cohortScope("2"),"cheap",.qualityFailure,usage(80,20),offset:320)
+    try cohortTask(cohortScope("2"),"strong",.adopted,usage(300,100),offset:330)
+    let oneMeasured = cohortComparison()
+    check(oneMeasured.matchedScopes == 2 && oneMeasured.measuredScopes == 1,
+          "measured cohort counts only matched scopes with usage on both routes")
+    check(near(oneMeasured.tokenSavings,-3) && oneMeasured.baselineMeanTokens == 100 && oneMeasured.candidateMeanTokens == 400,
+          "token delta comes from the measured scope alone; the unmeasured scope is excluded, not zeroed")
+    check(oneMeasured.taskCompletionDelta == 1 && oneMeasured.baselineTaskCompletionRate == 0 && oneMeasured.candidateTaskCompletionRate == 1,
+          "completion delta still spans every matched scope")
+    check(oneMeasured.measuredBaselineCompletions == 0 && oneMeasured.measuredCandidateCompletions == 1 &&
+          oneMeasured.completionEfficiencyDelta == nil && oneMeasured.completionCostSavings == nil,
+          "efficiency stays undefined while the baseline never completed inside the measured cohort")
+    // Scope 3: both measured and both completed → cost and efficiency exist.
+    try cohortTask(cohortScope("3"),"cheap",.adopted,usage(100,0),offset:340)
+    try cohortTask(cohortScope("3"),"strong",.adopted,usage(50,0),offset:350)
+    let twoMeasured = cohortComparison()
+    check(twoMeasured.matchedScopes == 3 && twoMeasured.measuredScopes == 2 &&
+          near(twoMeasured.tokenSavings, 1 - 450.0/200.0) && twoMeasured.baselineMeanTokens == 100 && twoMeasured.candidateMeanTokens == 225,
+          "measured token figures are ratio-of-sums over the measured scopes")
+    check(twoMeasured.measuredBaselineCompletions == 1 && twoMeasured.measuredCandidateCompletions == 2 &&
+          near(twoMeasured.completionCostSavings, 1 - (450.0/2)/(200.0/1)) &&
+          near(twoMeasured.completionEfficiencyDelta, (2.0/450.0)/(1.0/200.0) - 1),
+          "cost and efficiency use completions and tokens from the same measured scopes")
+    // Scope 4: another unmeasured retry chain must not move any token figure.
+    try cohortTask(cohortScope("4"),"cheap",.capabilityFailure,nil,offset:360)
+    try cohortTask(cohortScope("4"),"strong",.adopted,usage(999,999),offset:370)
+    let extraUnmeasured = cohortComparison()
+    check(extraUnmeasured.matchedScopes == 4 && extraUnmeasured.measuredScopes == 2 &&
+          extraUnmeasured.tokenSavings == twoMeasured.tokenSavings && extraUnmeasured.candidateMeanTokens == twoMeasured.candidateMeanTokens &&
+          extraUnmeasured.completionEfficiencyDelta == twoMeasured.completionEfficiencyDelta &&
+          near(extraUnmeasured.taskCompletionDelta, 4.0/4 - 1.0/4),
+          "an unmeasured matched scope changes the completion delta only, never the measured token figures")
     let projection = dashboard.dashboardProjection(provider:"codex",since:nil,includeHistorical:false,now:start.addingTimeInterval(200))
     check(projection.tasks.count == 3 && projection.rows.count == 2 &&
           projection.comparisonsByBaseline["codex / dashboard-base / low"]?.count == 1,
