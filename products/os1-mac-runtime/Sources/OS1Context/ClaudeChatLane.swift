@@ -90,4 +90,16 @@ public enum ClaudeChatLane {
     /// workspace the turn never reads. Kept next to the rule that selects it so
     /// the two cannot drift apart.
     public static let claudeArguments = ["--safe-mode", "--strict-mcp-config", "--mcp-config", "{\"mcpServers\":{}}"]
+
+    /// The owner picked this lane on the rail (`--provider claude-chat`), so the
+    /// narrow auto-trigger above is not required. Everything else the lane needs
+    /// — read-only ticket, no attached source, no shell, no named path, no image
+    /// — still has to hold, and a request that fails one of those is refused
+    /// before dispatch rather than quietly promoted to the full lane.
+    ///
+    /// Process-scoped: one `os1 run` serves one owner selection, and the flag is
+    /// set from the argument parse before any routing decision.
+    nonisolated(unsafe) private static var explicitSelection = false
+    public static func selectExplicitly() { explicitSelection = true }
+    public static var ownerSelected: Bool { explicitSelection }
 }

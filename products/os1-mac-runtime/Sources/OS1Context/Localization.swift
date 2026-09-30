@@ -17,6 +17,36 @@ public struct OS1Settings: Codable, Equatable, Sendable {
     public var burnCodexBeforeReset: Bool? = nil
     /// Hours before the window reset at which the burn starts (default 12).
     public var codexBurnLeadHours: Int? = nil
+    /// Which surface each rail tile routes to. One OpenAI sign-in can send the
+    /// turn to Codex (OS-1 executes) or hand it to the ChatGPT app (the owner
+    /// runs it); one Anthropic sign-in can use the full Claude Code lane or the
+    /// bounded read-only chat lane. Stored raw and resolved through
+    /// `ProviderSurface.Backend`, so a hand-edited file cannot move a tile onto
+    /// the other account. Optional so older settings files still decode; read
+    /// them through `surface(for:)`.
+    public var openAISurface: String? = nil
+    public var anthropicSurface: String? = nil
+
+    /// The surface a tile actually routes to, with an unknown or foreign value
+    /// falling back to that tile's executor.
+    public func surface(for backend: ProviderSurface.Backend) -> ProviderSurface {
+        switch backend {
+        case .openAI: return backend.resolve(openAISurface)
+        case .anthropic: return backend.resolve(anthropicSurface)
+        }
+    }
+
+    /// Record a tile's chosen surface. A surface belonging to another tile is
+    /// rejected rather than stored, so the selection cannot be made incoherent.
+    public mutating func setSurface(_ surface: ProviderSurface, for backend: ProviderSurface.Backend) {
+        guard backend.surfaces.contains(surface) else { return }
+        let raw = surface == backend.defaultSurface ? nil : surface.rawValue
+        switch backend {
+        case .openAI: openAISurface = raw
+        case .anthropic: anthropicSurface = raw
+        }
+    }
+
     /// Conversations OS-1 may run at the same time. Until this was settable the
     /// cap was a fixed 4: once four runs were active every other conversation
     /// waited, which looked like "OS-1 does not run in parallel". Optional so
@@ -61,6 +91,11 @@ public struct OS1Settings: Codable, Equatable, Sendable {
         if settings.outputLanguage.isEmpty || settings.outputLanguage.count > 40 { settings.outputLanguage = "auto" }
         // A hand-edited file must not be able to serialize or flood execution.
         if let limit = settings.parallelRunLimit { settings.parallelRunLimit = clampedParallelRuns(limit) }
+        // A hand-edited surface must not survive as written: resolve it through
+        // its own tile so the stored value and the routed value cannot differ.
+        for backend in ProviderSurface.Backend.allCases {
+            settings.setSurface(settings.surface(for: backend), for: backend)
+        }
         return settings
     }
 

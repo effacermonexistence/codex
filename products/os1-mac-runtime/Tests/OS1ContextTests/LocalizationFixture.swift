@@ -40,5 +40,43 @@ func runLocalizationFixtures() throws {
           "known code expands to the language name")
     check(OS1Settings(outputLanguage: "Português").outputLanguageDirective.contains("Português"),
           "unknown names pass through verbatim")
+    // Rail surface custody: one tile is one account with two ways to spend it,
+    // so the stored value must survive a restart and must never be able to move
+    // a tile onto the other account.
+    try? FileManager.default.removeItem(at: url)
+    let fresh = OS1Settings.load(from: url)
+    check(fresh.surface(for: .openAI) == .codex && fresh.surface(for: .anthropic) == .claude,
+          "a missing settings file routes each tile to its executor")
+    check(fresh.openAISurface == nil && fresh.anthropicSurface == nil,
+          "the default surface is stored as absent, not written as an override")
+    var chosen = fresh
+    chosen.setSurface(.chatgpt, for: .openAI)
+    chosen.setSurface(.claudeChat, for: .anthropic)
+    try chosen.save(to: url)
+    let reloaded = OS1Settings.load(from: url)
+    check(reloaded.surface(for: .openAI) == .chatgpt && reloaded.surface(for: .anthropic) == .claudeChat,
+          "both chosen surfaces survive a restart")
+    // Returning to the executor clears the stored override rather than pinning it.
+    var cleared = reloaded
+    cleared.setSurface(.codex, for: .openAI)
+    check(cleared.openAISurface == nil && cleared.surface(for: .openAI) == .codex,
+          "choosing the executor again stores nothing")
+    // A surface belonging to the other tile is refused at the setter.
+    var crossed = fresh
+    crossed.setSurface(.claudeChat, for: .openAI)
+    check(crossed.openAISurface == nil && crossed.surface(for: .openAI) == .codex,
+          "the setter refuses a surface from the other account")
+    // A hand-edited file is normalized on load, so the stored value and the
+    // routed value can never disagree.
+    try Data(#"{"interfaceLanguage":"en","outputLanguage":"auto","showCodex":true,"openAISurface":"claude-chat","anthropicSurface":"chatgpt"}"#.utf8).write(to: url)
+    let normalized = OS1Settings.load(from: url)
+    check(normalized.surface(for: .openAI) == .codex && normalized.surface(for: .anthropic) == .claude,
+          "a hand-edited foreign surface falls back to each tile's executor")
+    check(normalized.openAISurface == nil && normalized.anthropicSurface == nil,
+          "the foreign value is not carried forward in the stored file")
+    try Data(#"{"interfaceLanguage":"en","outputLanguage":"auto","showCodex":true,"openAISurface":"chatgpt"}"#.utf8).write(to: url)
+    check(OS1Settings.load(from: url).surface(for: .openAI) == .chatgpt,
+          "a valid hand-edited surface is honoured")
+
     print("Localization: \(count) checks passed; defaults, private custody, tolerant load, env override, output directive")
 }

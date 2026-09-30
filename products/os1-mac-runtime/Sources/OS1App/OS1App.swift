@@ -3639,6 +3639,19 @@ private struct PendingSubmission: Identifiable, Codable, Equatable, Sendable {
     /// Routing preference before an explicit provider name in the queued text.
     /// Absent in legacy stores; retain that item's original provider on edit.
     var configuredProvider: ProviderChoice? = nil
+    /// The surface the chosen backend routes to, as the runtime's `--provider`
+    /// value. A backend tile is one account with two ways to spend it, so the
+    /// tile alone does not say which one ran. Absent in legacy stores and for
+    /// `auto`; resolve it through `runtimeSurface`.
+    var surfaceRaw: String? = nil
+
+    /// The `--provider` value this submission actually dispatches with. Falls
+    /// back to the tile itself, which is the executing surface.
+    var runtimeSurface: String {
+        guard let surfaceRaw, let surface = ProviderSurface(rawValue: surfaceRaw),
+              surface.backend?.rawValue == provider.rawValue else { return provider.rawValue }
+        return surface.rawValue
+    }
     var correctionIDs: [UUID]? = nil
     var liveCorrections: [String]? = nil
     var amendedRequest: String? = nil
@@ -4426,6 +4439,7 @@ private enum OS1Runner {
         workspace: String,
         prompt: String,
         provider: ProviderChoice,
+        surfaceRaw: String? = nil,
         context: String,
         codexSessionID: String?,
         claudeSessionID: String?,
@@ -4442,6 +4456,7 @@ private enum OS1Runner {
                 workspace: workspace,
                 prompt: prompt,
                 provider: provider,
+                surfaceRaw: surfaceRaw,
                 context: context,
                 codexSessionID: codexSessionID,
                 claudeSessionID: claudeSessionID,
@@ -4474,6 +4489,7 @@ private enum OS1Runner {
         workspace: String,
         prompt: String,
         provider: ProviderChoice,
+        surfaceRaw: String?,
         context: String,
         codexSessionID: String?,
         claudeSessionID: String?,
@@ -4502,11 +4518,19 @@ private enum OS1Runner {
         let stdout = try FileHandle(forWritingTo: stdoutURL)
         let stderr = try FileHandle(forWritingTo: stderrURL)
 
+        // One tile is one account with two ways to spend it, so the tile alone
+        // does not name the surface. A stored value that does not belong to
+        // this tile falls back to the tile's executing surface.
+        let routedSurface: String = {
+            guard let surfaceRaw, let surface = ProviderSurface(rawValue: surfaceRaw),
+                  surface.backend?.rawValue == provider.rawValue else { return provider.rawValue }
+            return surface.rawValue
+        }()
         var arguments = [
             "run",
             "--workspace", workspace,
             "--prompt", prompt,
-            "--provider", provider.rawValue,
+            "--provider", routedSurface,
             "--output-format", "json",
         ]
         if !context.isEmpty {
@@ -4723,7 +4747,8 @@ private final class SessionStore: ObservableObject {
         self.nativePinOperation = nativePinOperation
         self.runOperation = runOperation ?? { submission, context, codexID, claudeID, onActivity in
             try await OS1Runner.run(workspace: submission.workspace, prompt: submission.executionRequest,
-                provider: submission.provider, context: context, codexSessionID: codexID, claudeSessionID: claudeID,
+                provider: submission.provider, surfaceRaw: submission.surfaceRaw,
+                context: context, codexSessionID: codexID, claudeSessionID: claudeID,
                 codexCapacity: submission.codexCapacity, claudeCapacity: submission.claudeCapacity,
                 requireReadOnly: submission.readOnlyReconciliation == true, deliveryID: submission.deliveryID,
                 submissionID: submission.id, conversationID: submission.sessionID, onActivity: onActivity)
@@ -5546,6 +5571,10 @@ private final class SessionStore: ObservableObject {
             claudeCapacity: sessions[index].effectiveClaudeCapacity
         )
         submission.configuredProvider = configuredProvider
+        // The tile is the account; the saved surface says which of its two ways
+        // to spend it runs. `auto` has no tile, so the router decides.
+        submission.surfaceRaw = ProviderSurface.Backend(rawValue: provider.rawValue)
+            .map { appSettings.surface(for: $0).rawValue }
         if !isSessionRunning(submission.sessionID),
            isNewEditAfterReadOnlyTask(submission, session: sessions[index]) {
             queuedSubmissions.append(submission)
@@ -5625,6 +5654,10 @@ private final class SessionStore: ObservableObject {
             provider: session.provider == .auto ? (explicitlyRequestedProvider(in: text) ?? .auto) : session.provider,
             workspace: session.workspace, codexCapacity: session.effectiveCodexCapacity, claudeCapacity: session.effectiveClaudeCapacity)
         item.configuredProvider = session.provider
+        // A steer runs on the same surface the tile is set to, otherwise
+        // steering a ChatGPT-selected tile would quietly spend Codex instead.
+        item.surfaceRaw = ProviderSurface.Backend(rawValue: item.provider.rawValue)
+            .map { appSettings.surface(for: $0).rawValue }
         if !ExecutionSteering.isTaskReplacement(text), let active = inFlightSubmissions[session.id], active.recoveryParentID == nil {
             item.amendedRequest = active.executionRequest
         }
@@ -6081,6 +6114,22 @@ private final class SessionStore: ObservableObject {
                     throw RunnerError.message(summary.steps.first?.output ?? "운영 원본 확보 대기 중 · 준비 미완료")
                 }
                 if summary.status != "complete" {
+                    // A handoff is not a failed run: the request left for the
+                    // ChatGPT app and the owner runs it there. Record it in the
+                    // transcript as what it is, and never claim a result.
+                    if summary.status == "handoff" {
+                        let notice = summary.workflowBlocker
+                            ?? os1Tr("ChatGPT 앱으로 넘겼습니다. OS-1이 실행하지 않았습니다.",
+                                     "Handed to the ChatGPT app. OS-1 did not run it.")
+                        sessions[target].messages.append(ChatMessage(role: .system, text: notice))
+                        sessions[target].updatedAt = Date()
+                        appendTaskEvent(conversationID: submission.sessionID, kind: "handoff",
+                            summary: "Request handed to the ChatGPT chat surface; OS-1 executed nothing")
+                        statusText = os1Tr("ChatGPT로 넘김 · 붙여넣기(⌘V)",
+                                           "Handed to ChatGPT · paste it (⌘V)")
+                        save()
+                        return
+                    }
                     if summary.status == "workflow_blocked" {
                         if let result = summary.taskContext, result.conversationID == submission.sessionID {
                             sessions[target].taskContext = sessions[target].taskContext?.adopting(result,
@@ -7237,6 +7286,22 @@ private final class SessionStore: ObservableObject {
             forName: BackendAccountsModel.changed, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.accountBook = BackendAccounts.load() }
         }
+    }
+
+    /// The surface this tile currently routes to, or nil for the router. Only a
+    /// non-default choice is worth showing, so the caller reads `railBadge`.
+    func routedSurface(for provider: ProviderChoice) -> ProviderSurface? {
+        ProviderSurface.Backend(rawValue: provider.rawValue).map { appSettings.surface(for: $0) }
+    }
+
+    /// Record the tile's surface. The selection is persisted settings, not a
+    /// per-run flag, so the rail and the next dispatch cannot disagree; and the
+    /// tile becomes the active one, because choosing what it does is choosing it.
+    func chooseSurface(_ surface: ProviderSurface, for backend: ProviderSurface.Backend) {
+        guard let choice = ProviderChoice(rawValue: backend.rawValue) else { return }
+        updateSettings { $0.setSurface(surface, for: backend) }
+        chooseProvider(choice)
+        statusText = surface.choiceTitle
     }
 
     func accounts(for provider: ProviderChoice) -> [BackendAccount] {
@@ -9303,13 +9368,38 @@ private struct ProviderRail: View {
             signedIn: verified,
             signingIn: store.accountBusy == provider.rawValue,
             accountLabel: account?.label,
+            surfaceBadge: store.routedSurface(for: provider)?.railBadge,
             disabled: false
         ) {
             // A signed-out backend cannot run anything, so the tile
             // offers the sign-in instead of an empty session list.
             if !verified { store.accountsOpen = true } else { store.inspectBackend(provider) }
         }
-        .contextMenu { accountMenu(for: provider) }
+        .contextMenu {
+            surfaceMenu(for: provider)
+            accountMenu(for: provider)
+        }
+    }
+
+    /// The tile is one account; this picks which of its two ways to spend it
+    /// runs. Same shape the ChatGPT app presents: one sign-in, Codex or chat
+    /// chosen inside it. Placed above the account list because it decides what
+    /// the tile does, not merely who it signs in as.
+    @ViewBuilder
+    private func surfaceMenu(for provider: ProviderChoice) -> some View {
+        if let backend = ProviderSurface.Backend(rawValue: provider.rawValue) {
+            let current = store.appSettings.surface(for: backend)
+            ForEach(backend.surfaces, id: \.rawValue) { surface in
+                Button {
+                    store.chooseSurface(surface, for: backend)
+                } label: {
+                    Label(surface.choiceTitle, systemImage: surface == current ? "checkmark" : "")
+                }
+                .disabled(surface == current)
+            }
+            Text(current.usageLine)
+            Divider()
+        }
     }
 
     @ViewBuilder
@@ -9356,6 +9446,10 @@ private struct BackendStatus: View {
     var signedIn: Bool = true
     var signingIn: Bool = false
     var accountLabel: String?
+    /// Set only when the tile routes somewhere other than its own executor, so
+    /// an unchanged tile stays exactly as it was and a changed one says so on
+    /// the rail instead of hiding the choice in a menu.
+    var surfaceBadge: String? = nil
     let disabled: Bool
     let action: () -> Void
 
@@ -9410,6 +9504,23 @@ private struct BackendStatus: View {
                         .padding(5)
                 }
             }
+            // An overlay, never a stack row: the tile height is measured
+            // against the owner's rail screenshot and must not move.
+            .overlay(alignment: .topLeading) {
+                if let surfaceBadge {
+                    Text(surfaceBadge)
+                        .font(.system(size: 6, weight: .heavy))
+                        .tracking(0.5)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.7)
+                        .foregroundStyle(Color.black.opacity(0.85))
+                        .padding(.horizontal, 3)
+                        .padding(.vertical, 1)
+                        .background(provider.tint.opacity(0.92), in: Capsule())
+                        .padding(3)
+                        .allowsHitTesting(false)
+                }
+            }
             .contentShape(RoundedRectangle(cornerRadius: Theme.radiusControl, style: .continuous))
         }
         .buttonStyle(.plain)
@@ -9418,7 +9529,10 @@ private struct BackendStatus: View {
             ? "Show this conversation's recorded \(provider.title) session inside Clodex"
             : "No \(provider.title) session is recorded for this Clodex conversation")
         .accessibilityLabel(provider == .claude ? "Claude Code backend" : "Codex backend")
-        .accessibilityValue(selected ? "선택됨" : "선택 안 됨")
+        // The routed surface travels with the selection state: one account with
+        // two ways to spend it, so "selected" alone does not say which one runs.
+        .accessibilityValue((selected ? "선택됨" : "선택 안 됨")
+            + (surfaceBadge.map { " · " + $0 } ?? ""))
     }
 }
 
@@ -9602,6 +9716,87 @@ private func railSelectionSelfTest() throws {
     try check(BackendAccountsStyle.initial("  회사 계정 ") == "회"
         && BackendAccountsStyle.initial("work") == "W",
         "an account shows one letter, the way an account list does")
+
+    // ---- Surface selection on the rail --------------------------------
+    // One tile is one account with two ways to spend it. The choice must be
+    // visible, persisted, routed, and unable to cross to the other account.
+    let openAI = ProviderSurface.Backend.openAI
+    let anthropic = ProviderSurface.Backend.anthropic
+    try check(store.routedSurface(for: .codex) == .codex && store.routedSurface(for: .claude) == .claude,
+        "an untouched rail routes each tile to the backend OS-1 can actually execute")
+    try check(store.routedSurface(for: .auto) == nil, "the OS-1 home is not a backend surface")
+    try check(store.routedSurface(for: .codex)?.railBadge == nil
+        && store.routedSurface(for: .claude)?.railBadge == nil,
+        "an unchanged tile carries no badge, so the rail looks exactly as it did")
+
+    store.chooseSurface(.chatgpt, for: openAI)
+    try check(store.appSettings.surface(for: openAI) == .chatgpt, "the ChatGPT choice persists in settings")
+    try check(store.routedSurface(for: .codex)?.railBadge != nil, "a changed tile says so on the rail")
+    // Pinning matters: on `auto` the router could send the turn to the other
+    // account and the chosen surface would never fire. So the choice pins the
+    // conversation to that tile. It does not change which pane is on screen.
+    try check(store.selectedSession?.provider == .codex,
+        "choosing what a tile does pins the next turn to that tile")
+    try check(store.appSettings.surface(for: anthropic) == .claude,
+        "the OpenAI tile's surface must not move the Anthropic tile")
+
+    // The dispatched `--provider` follows the tile's surface, and a stale or
+    // foreign stored value falls back to the tile's executor instead of
+    // spending the wrong account.
+    var handoff = PendingSubmission(sessionID: store.sessions[index].id, userMessageID: UUID(),
+        request: "x", provider: .codex, workspace: "/tmp", codexCapacity: 1, claudeCapacity: 1)
+    handoff.surfaceRaw = store.appSettings.surface(for: openAI).rawValue
+    try check(handoff.runtimeSurface == "chatgpt", "a ChatGPT tile dispatches --provider chatgpt")
+    handoff.surfaceRaw = "claude-chat"
+    try check(handoff.runtimeSurface == "codex",
+        "a surface belonging to the other tile never routes this tile's account")
+    handoff.surfaceRaw = "nonsense"
+    try check(handoff.runtimeSurface == "codex", "an unparsable stored surface falls back to the executor")
+    handoff.surfaceRaw = nil
+    try check(handoff.runtimeSurface == "codex", "a legacy submission with no surface runs the executor")
+
+    store.chooseSurface(.claudeChat, for: anthropic)
+    try check(store.appSettings.surface(for: anthropic) == .claudeChat && store.routedSurface(for: .claude) == .claudeChat,
+        "the Anthropic tile can select its bounded chat lane")
+    try check(store.selectedSession?.provider == .claude,
+        "selecting the Claude chat lane pins the next turn to the Anthropic tile")
+    var chat = PendingSubmission(sessionID: store.sessions[index].id, userMessageID: UUID(),
+        request: "x", provider: .claude, workspace: "/tmp", codexCapacity: 1, claudeCapacity: 1)
+    chat.surfaceRaw = store.appSettings.surface(for: anthropic).rawValue
+    try check(chat.runtimeSurface == "claude-chat", "the chat lane dispatches --provider claude-chat")
+
+    // Selecting a surface must not invent a second account, session or pool.
+    try check(store.accounts(for: .codex).count == store.accounts(for: .codex).count,
+        "the surface choice does not change the account list")
+    try check(ProviderSurface.chatgpt.quotaPool != ProviderSurface.codex.quotaPool
+        && ProviderSurface.claudeChat.quotaPool == ProviderSurface.claude.quotaPool,
+        "the rail must not merge the OpenAI pools nor split the Anthropic one")
+
+    // Returning to the executor clears the badge and the stored value, so the
+    // settings file does not accumulate a default written as an override.
+    store.chooseSurface(.codex, for: openAI)
+    store.chooseSurface(.claude, for: anthropic)
+    try check(store.appSettings.openAISurface == nil && store.appSettings.anthropicSurface == nil,
+        "choosing the default again stores nothing rather than pinning it")
+    try check(store.routedSurface(for: .codex)?.railBadge == nil
+        && store.routedSurface(for: .claude)?.railBadge == nil,
+        "returning to the executor clears the rail badge")
+
+    // Bounded read-only recovery must stay on the router: a handoff executes
+    // nothing, so it can never reconcile a failed run.
+    let recovery = PendingSubmission(sessionID: store.sessions[index].id, userMessageID: UUID(),
+        request: "x", provider: .auto, workspace: "/tmp", codexCapacity: 1, claudeCapacity: 1,
+        readOnlyReconciliation: true)
+    try check(recovery.surfaceRaw == nil && recovery.runtimeSurface == "auto",
+        "recovery runs on the router, never on a handoff surface")
+
+    // A badge is painted as an overlay, so the pinned tile height cannot move.
+    let badgedTile = BackendStatus(provider: .codex, selected: true, active: false, linked: false,
+        signedIn: true, signingIn: false, accountLabel: nil, surfaceBadge: "ChatGPT", disabled: false) {}
+    let plainTile = BackendStatus(provider: .codex, selected: true, active: false, linked: false,
+        signedIn: true, signingIn: false, accountLabel: nil, surfaceBadge: nil, disabled: false) {}
+    try check(badgedTile.stateText == plainTile.stateText,
+        "a badge must not change what the tile reports about its session")
 
     print("Provider rail selection: \(checks) checks passed; model calls 0; live backend writes 0")
 }

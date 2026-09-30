@@ -2986,12 +2986,161 @@ private func sourceAnswerWorkspace() throws -> String {
 /// same answer on the same subscription. Read-only only, and a pure function of
 /// the owner's objective: the workspace is resolved with it before dispatch and
 /// hashed again after, so both sides must reach the same answer.
+/// The owner may also select this lane on the rail (`--provider claude-chat`),
+/// which replaces the narrow auto-trigger and nothing else: every structural
+/// condition below still has to hold, and `claudeChatLaneRefusal` stops a
+/// request that fails one before any model is called, so an explicit choice can
+/// never turn into the expensive full lane behind the owner's back.
 func claudeChatLane(provider: String, permission: String, hasSource: Bool, objective: String) -> Bool {
     provider == "claude" && permission == "read_only" && !hasSource
-        && ClaudeChatLane.selfContainedTextOperation(objective)
+        && (ClaudeChatLane.selfContainedTextOperation(objective)
+            || (ClaudeChatLane.ownerSelected && !ClaudeChatLane.namesMachineMaterial(objective)))
         && !promptRequiresShellCapability(objective)
         && RequestNamedPaths.extract(objective).isEmpty
         && ImageInput.encodeAll(in: objective).isEmpty
+}
+
+/// Why an explicitly selected Claude chat lane cannot take this request.
+/// Evaluated before dispatch from the same predicates the lane itself uses.
+func claudeChatLaneRefusal(objective: String, hasSource: Bool) -> String? {
+    // An attached source blocks the lane whatever the request looks like: the
+    // lane never reads a workspace, so it cannot answer from a snapshot.
+    if !hasSource, ClaudeChatLane.selfContainedTextOperation(objective) {
+        // A request that already qualifies for the narrow auto-trigger is
+        // accepted even when its payload mentions machine material: the payload
+        // is data, so "파일을 삭제해" inside a translation is a sentence to
+        // translate, not a task to run.
+        return nil
+    }
+    return ChatGPTHandoff.chatLaneRefusal(
+        needsShell: promptRequiresShellCapability(objective),
+        namedPaths: RequestNamedPaths.extract(objective),
+        images: ImageInput.encodeAll(in: objective).count,
+        hasSource: hasSource,
+        machineMaterial: ClaudeChatLane.namesMachineMaterial(objective)
+    )
+}
+
+/// The rail's routing decisions, checked against the lane predicates that
+/// actually run. Deterministic: no provider, no network, no clipboard.
+func providerSurfaceRoutingSelfTest() throws {
+    let translate = "다음 문장을 영문으로 번역해줘: 내일 회의를 오후 3시로 옮겨도 될까요?"
+    let fileWork = "README.md를 번역해서 README.en.md로 저장해"
+    var checks: [(String, Bool)] = []
+
+    // Without an owner selection the lane keeps its narrow auto-trigger.
+    checks.append(("auto trigger still answers a self-contained text operation",
+        claudeChatLane(provider: "claude", permission: "read_only", hasSource: false, objective: translate)))
+    checks.append(("auto trigger keeps an action request on the full lane",
+        !claudeChatLane(provider: "claude", permission: "read_only", hasSource: false,
+                        objective: "그럼 실제로 해봐 다 되는지")))
+
+    // The refusal is what stops an explicit chat-lane choice from becoming the
+    // full lane. Each structural condition is named before dispatch.
+    checks.append(("chat lane accepts a self-contained text operation",
+        claudeChatLaneRefusal(objective: translate, hasSource: false) == nil))
+    checks.append(("chat lane refuses a named path",
+        claudeChatLaneRefusal(objective: fileWork, hasSource: false) != nil))
+    checks.append(("chat lane refuses an attached source",
+        claudeChatLaneRefusal(objective: translate, hasSource: true) != nil))
+    checks.append(("chat lane refuses a shell objective",
+        claudeChatLaneRefusal(objective: "깃 상태 확인해서 커밋해", hasSource: false) != nil))
+
+    // An explicit selection replaces only the auto-trigger. It never lifts the
+    // read-only, source, shell, path or image conditions.
+    ClaudeChatLane.selectExplicitly()
+    checks.append(("owner selection widens the lane past the auto trigger",
+        claudeChatLane(provider: "claude", permission: "read_only", hasSource: false,
+                       objective: "2의 10제곱은?")))
+    checks.append(("owner selection never takes a write ticket",
+        !claudeChatLane(provider: "claude", permission: "workspace_write", hasSource: false,
+                        objective: "2의 10제곱은?")))
+    checks.append(("owner selection never takes an attached source",
+        !claudeChatLane(provider: "claude", permission: "read_only", hasSource: true,
+                        objective: "2의 10제곱은?")))
+    checks.append(("owner selection never takes Codex",
+        !claudeChatLane(provider: "codex", permission: "read_only", hasSource: false,
+                        objective: "2의 10제곱은?")))
+    checks.append(("owner selection still refuses a named path",
+        !claudeChatLane(provider: "claude", permission: "read_only", hasSource: false, objective: fileWork)))
+
+    // Only executors carry a gateway preference the deployed router accepts.
+    checks.append(("chatgpt has no gateway route", ProviderSurface.chatgpt.gatewayPreference == nil))
+    checks.append(("claude-chat routes as claude", ProviderSurface.claudeChat.gatewayPreference == "claude"))
+
+    // The scope has to follow the selection, or the rail choice is cosmetic:
+    // the lane predicate reads the signed ticket's permission, and a writable
+    // scope produces a write ticket and therefore the full lane.
+    // `delegationScope` ignores its argument and always answers workspaceWrite,
+    // so read-only can only come from this predicate (measured 2026-09-29: an
+    // explicit claude-chat run landed on the full lane until it did).
+    checks.append(("delegation scope is write for ordinary work",
+        ScopeResolution.delegationScope(internalReadOnly: true) == .workspaceWrite))
+    checks.append(("a write ticket cannot serve a read-only objective",
+        !ScopeResolution.permitsTicket(scope: .readOnly, permission: "workspace_write")))
+    checks.append(("the read-only ticket the lane needs is permitted by the read-only scope",
+        ScopeResolution.permitsTicket(scope: .readOnly, permission: "read_only")))
+
+    guard checks.allSatisfy(\.1) else {
+        throw OS1Error.message("Provider surface routing regression: "
+            + checks.filter { !$0.1 }.map(\.0).joined(separator: "; "))
+    }
+    print("OS-1 provider surface routing: \(checks.count) checks OK")
+}
+
+/// Hand the request to the ChatGPT chat surface the owner is signed in to.
+///
+/// No signed ticket, no model call and no adopted result: OS-1 cannot execute
+/// there (see `ProviderSurface.chatgpt`), so it puts the request where the owner
+/// can send it and says exactly that. The application is activated because the
+/// owner chose this surface, which is the one intent
+/// `BackendWindowFocus.mayActivateBackendWindow` permits.
+func runChatGPTHandoff(prompt: String, workspace: String) throws -> RunSummary {
+    RuntimeActivity.emit(.preparing, publicText: os1Tr(
+        "ChatGPT 채팅 표면으로 넘깁니다 · 모델 호출 없음",
+        "Handing the request to the ChatGPT chat surface · no model call"))
+    guard ChatGPTHandoff.installed() else {
+        throw OS1Error.message(os1Tr(
+            "이 맥에 \(ChatGPTHandoff.applicationPath)가 없습니다. ChatGPT 앱을 설치하거나 Codex/Claude를 고르세요.",
+            "\(ChatGPTHandoff.applicationPath) is not on this Mac. Install the ChatGPT app or choose Codex/Claude."))
+    }
+    let executionID = UUID().uuidString.lowercased()
+    let digest = sha256Hex(Data(prompt.utf8))
+
+    // The clipboard carries the request. Verified by reading it back, so the
+    // notice never tells the owner to paste something that is not there.
+    var clipboardVerified = false
+    if let copied = try? commandOutput("/usr/bin/pbcopy", [], input: Data(prompt.utf8), timeout: 10), copied.0 == 0,
+       let readback = try? commandOutput("/usr/bin/pbpaste", [], timeout: 10), readback.0 == 0 {
+        clipboardVerified = sha256Hex(readback.1) == digest
+    }
+
+    var applicationOpened = false
+    if BackendWindowFocus.mayActivateBackendWindow(.explicitUserReveal) {
+        let opened = try? commandOutput("/usr/bin/open", ["-b", ChatGPTHandoff.bundleIdentifier], timeout: 20)
+        applicationOpened = opened?.0 == 0
+    }
+
+    let root = ChatGPTHandoff.receiptRoot()
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true,
+                                            attributes: [.posixPermissions: 0o700])
+    let receiptURL = root.appendingPathComponent("\(executionID).json")
+    let receipt = ChatGPTHandoff.Receipt(executionID: executionID, requestSHA256: digest,
+                                         requestCharacters: prompt.count,
+                                         clipboardVerified: clipboardVerified,
+                                         applicationOpened: applicationOpened)
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+    encoder.dateEncodingStrategy = .iso8601
+    try encoder.encode(receipt).write(to: receiptURL, options: [.atomic])
+    try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: receiptURL.path)
+
+    // A handoff is not a completed governed run, so it must not be reported as
+    // one. `handoff` keeps that boundary visible in the CLI and the app.
+    return RunSummary(status: "handoff", steps: [],
+        workflowBlocker: ChatGPTHandoff.notice(clipboardVerified: clipboardVerified,
+                                               applicationOpened: applicationOpened,
+                                               receiptPath: receiptURL.path))
 }
 
 /// Same resolver is used before dispatch, by the executor, and after return.
@@ -7157,9 +7306,17 @@ func runTaskWithOwnerPolicy(
     // and asks the route core for a read-only ticket. Both come from this one
     // predicate on this one text, so the authority floor and the signed ticket
     // cannot disagree; every other request keeps the executable envelope.
-    let selfContainedText = workflowStage == nil && !requireReadOnly
+    // The owner selecting the bounded chat lane on the rail is the same
+    // authority statement as a self-contained text operation: answer from the
+    // request, touch nothing. It has to reach the scope here, because the
+    // signed ticket's permission is what the lane predicate actually reads —
+    // a rail label that left the scope writable would be cosmetic.
+    let ownerSelectedChatLane = workflowStage == nil && !requireReadOnly
+        && ClaudeChatLane.ownerSelected
+        && claudeChatLaneRefusal(objective: prompt, hasSource: attachedSource != nil) == nil
+    let selfContainedText = (workflowStage == nil && !requireReadOnly
         && ClaudeChatLane.selfContainedTextOperation(prompt)
-        && !promptRequiresShellCapability(prompt)
+        && !promptRequiresShellCapability(prompt)) || ownerSelectedChatLane
     let resolvedScope = selfContainedText
         ? TaskContext.Scope.readOnly
         : ScopeResolution.delegationScope(internalReadOnly: internalReadOnly)
@@ -10836,6 +10993,8 @@ func selfTest() throws {
     }
     print("OS-1 completion preflight, feedback wire, replay guard and adoption: \(completionChecks.count) checks OK")
     try ModelAvailability.selfTest()
+    try ChatGPTHandoff.selfTest()
+    try providerSurfaceRoutingSelfTest()
     try backendHealthLabelSelfTest()
     try resultUsageSelfTest()
     print("OS-1 native session, permission orchestration, model, effort, and executor contract self-test: OK")
@@ -10914,7 +11073,8 @@ func usage() {
       os1 audit-codex-usage /path/to/native-record.jsonl TURN_UUID
       os1 source-register scv-instagram /absolute/runtime-source.tar.gz
       os1 register
-      os1 run --workspace /path/to/project --prompt "task" [--provider auto|codex|claude]
+      os1 run --workspace /path/to/project --prompt "task"
+              [--provider auto|codex|chatgpt|claude|claude-chat]
               [--codex-session-id UUID] [--claude-session-id UUID]
               [--codex-capacity 0...100] [--claude-capacity 0...100]
               [--desktop-reveal never|background|always]
@@ -11106,8 +11266,40 @@ struct OS1Main {
                 guard let workspace, let prompt, !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                     throw OS1Error.message("Both --workspace and --prompt are required")
                 }
-                guard ["auto", "codex", "claude"].contains(providerPreference) else {
-                    throw OS1Error.message("--provider must be auto, codex, or claude")
+                // The rail offers both surfaces of both vendors. Only the
+                // executors reach the gateway; a handoff never asks for a route.
+                guard let surface = ProviderSurface(rawValue: providerPreference) else {
+                    throw OS1Error.message("--provider must be "
+                        + ProviderSurface.allCases.map(\.rawValue).joined(separator: ", "))
+                }
+                if surface == .chatgpt {
+                    let summary = try runChatGPTHandoff(prompt: prompt, workspace: workspace)
+                    if outputFormat == "json" {
+                        let encoder = JSONEncoder()
+                        encoder.outputFormatting = [.withoutEscapingSlashes]
+                        print(String(decoding: try encoder.encode(summary), as: UTF8.self))
+                    } else {
+                        printRunSummary(summary)
+                    }
+                    return
+                }
+                guard let gatewayPreference = surface.gatewayPreference else {
+                    throw OS1Error.message("--provider \(surface.rawValue) has no execution route")
+                }
+                providerPreference = gatewayPreference
+                if surface.forcesClaudeChatLane {
+                    // An explicit bounded-lane choice must not silently become
+                    // the full lane: refuse here, before any provider call.
+                    if let reason = claudeChatLaneRefusal(
+                        objective: prompt,
+                        hasSource: (try? SessionHandoff.decode(readSessionContext(contextPath)))?.source != nil
+                    ) {
+                        throw OS1Error.message(reason)
+                    }
+                    // The selection alone sets the lane. `requireReadOnly` is the
+                    // internal status-reconciliation flag and would switch the
+                    // scope predicate off, so it must stay false here.
+                    ClaudeChatLane.selectExplicitly()
                 }
                 guard ["text", "json"].contains(outputFormat) else {
                     throw OS1Error.message("--output-format must be text or json")
