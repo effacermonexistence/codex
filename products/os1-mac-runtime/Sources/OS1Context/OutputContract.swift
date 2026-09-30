@@ -58,6 +58,18 @@ public enum HumanOutputContract {
             || value.range(of: #"\braw\b"#, options: .regularExpression) != nil
     }
 
+    /// An explicit length limit ("짧게", "핵심만", "두 문장", "briefly") outranks
+    /// the depth OS-1 otherwise asks for (2026-09-30: a "짧게" code question
+    /// padded with failure paths lost to the direct answer).
+    public static func wantsBrevity(_ request: String) -> Bool {
+        let value = request.precomposedStringWithCanonicalMapping.lowercased()
+        // "자세히 … 각 항목은 세 문장씩" sets a per-item format, not a short answer.
+        if ["자세히", "자세하게", "상세", "꼼꼼", "in detail", "detailed", "thorough"].contains(where: value.contains) { return false }
+        if ["짧게", "간단히", "간단하게", "간략히", "짧은 답", "핵심만", "요점만", "한줄로", "brief", "short answer",
+            "in short", "tl;dr", "one sentence", "two sentences", "one line"].contains(where: value.contains) { return true }
+        return value.range(of: #"(?:한|두|세|1|2|3)\s*(?:문장|줄)(?!씩)"#, options: .regularExpression) != nil
+    }
+
     public static func wantsKorean(_ request: String) -> Bool {
         let value = request.precomposedStringWithCanonicalMapping.lowercased()
         // Any request that names English or a translation chooses its own
@@ -72,7 +84,7 @@ public enum HumanOutputContract {
         User-facing OS-1 answer contract:
         - \(preservesOriginalValues(request) ? "The user requests original values or wording. Preserve them exactly, including their original language; do not add a translation just to satisfy a language preference." : wantsKorean(request) ? "Answer in Korean; preserve identifiers and code as needed." : "Use the user's requested language.")
         - Lead with the result in natural language, like a clear conversational coding assistant. Use clear paragraphs and meaningful headings. Avoid repetitive 'conclusion/current position/summary' sections. Do not narrate your internal instructions or reasoning process.
-        - Concise means no padding, never less coverage. Answer at the depth the request needs: for code-flow, failure-point, design, architecture and research requests, cover every stage, error path, limit and condition that matters, with concrete file or function references where they exist.
+        - \(wantsBrevity(request) ? "The user asked for a short answer: give only the essentials that answer it, without edge cases, failure paths or caveats they did not ask for." : "Concise means no padding, never less coverage. Answer at the depth the request needs: for code-flow, failure-point, design, architecture and research requests, cover every stage, error path, limit and condition that matters, with concrete file or function references where they exist.")
         - Use named components and numbered steps for architectures. Do not use a wide matrix of ALL_CAPS stage IDs, gate IDs and dependency IDs as the main explanation. Use a compact table when it makes a comparison clearer; put technical identifiers beside the relevant explanation. Do not end by offering to produce the deliverable the user already requested.
         - \(wantsMachineFormat(request) ? "The user requested a machine/code format: provide that format accurately." : "Schema/architecture/design requests need a readable but concrete design: components and responsibilities, the data model, data flow, dependencies, acceptance conditions and limits. A compact schema block (YAML or a typed record) is welcome when it makes the design concrete; do not append JSON stages/depends_on configurations unless explicitly requested. Use displayed LaTeX for equations rather than a code block.")
         - Keep source facts distinct from proposed extensions and unknowns. Do not claim tests ran or a scientific problem is solved without evidence. Passing proposed internal compatibility gates is NOT sufficient to establish a new physical theory; empirical predictions, independent validation and agreement with existing observations remain separate requirements. A research plan is not a proof that unification is achievable by completing its checklist.

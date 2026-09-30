@@ -410,6 +410,18 @@ final class SourceContextTests {
         XCTAssertFalse(HumanOutputContract.wantsMachineFormat(request))
         XCTAssertFalse(HumanOutputContract.wantsMachineFormat("JSON 말고 이해하기 쉽게 설명해 줘"))
         XCTAssertFalse(HumanOutputContract.wantsMachineFormat("Draw the architecture"))
+        // An explicit length request outranks the depth instruction; a
+        // detailed per-item format ("세 문장씩") is not a short answer.
+        for short in ["OS-1 레일에서 ChatGPT 타일 고르면 어떻게 처리돼? 코드 기준으로 짧게 설명해.",
+                      "양자컴퓨터는 어떤 문제에서 유리해? 두 문장으로 답해.", "라우팅 설계 핵심만.", "Explain it briefly."] {
+            XCTAssertTrue(HumanOutputContract.wantsBrevity(short))
+            XCTAssertTrue(HumanOutputContract.instructions(for: short).contains("The user asked for a short answer"))
+        }
+        for deep in ["바다와 호수의 차이를 스무 항목으로 자세히 설명해. 각 항목은 세 문장씩 써 줘.",
+                     "셀프 업데이트가 어떤 순서로 도는지, 어디서 막힐 수 있는지 코드 기준으로 설명해봐.", request] {
+            XCTAssertFalse(HumanOutputContract.wantsBrevity(deep))
+            XCTAssertTrue(HumanOutputContract.instructions(for: deep).contains("never less coverage"))
+        }
         XCTAssertTrue(HumanOutputContract.issues(in: "The architecture is as follows.", request: request).count == 1)
         XCTAssertTrue(HumanOutputContract.issues(in: "## 제안\n\n현재 자료는 약한 장만 검증했습니다. 전체 통합은 미해결입니다.", request: request).isEmpty)
         let bad = #"{"objective":{"full_adoption_rule":"stages 1-6 must pass","current_stage":"STAGE_2_5_UNRESOLVED","executable_pass_rule":"pass before the next stage"},"stages":[{"stage_id":"STAGE_1_PASS","status":"PASS"},{"stage_id":"STAGE_4_RENORMALIZATION","status":"independent of other stages"},{"stage_id":"STAGE_7_VALIDATION","status":"UNRESOLVED"}],"adoption_policy":{"no_stage_skipping":true}}"#
