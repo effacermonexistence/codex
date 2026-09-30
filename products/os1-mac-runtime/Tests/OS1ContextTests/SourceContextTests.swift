@@ -156,6 +156,7 @@ final class SourceContextTests {
         try runProviderActivityWatchdogFixtures()
         runABCDCarryPolicyFixtures()
         try runLeanBackendInstructionsFixtures()
+        try runOwnerTermDefinitionsFixtures()
         try runOS1SelfReferenceFixtures()
         try runBackendWindowFocusFixtures()
         try runSelfUpdateFixtures()

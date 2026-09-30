@@ -704,6 +704,7 @@ private func executionInputContext(prompt: String, assembled: String, history: S
         sourceExecutionDirective(evidence, required: true).utf8.count + 1 +
         HumanOutputContract.instructions(for: prompt).utf8.count +
         publicWebLookupInstructions(prompt: prompt, hasPreloadedSource: evidence != nil).utf8.count +
+        (OwnerPolicyContext.snapshot?.termDefinitions(for: prompt).utf8.count ?? 0) +
         DriftPolicyStore.maximumInstructionBytes
     guard total > 0, total <= 4_000_000, sourceBytes + historyBytes <= total else {
         throw OS1Error.message("Execution context exceeds the bounded routing input contract")
@@ -5997,7 +5998,9 @@ private func execute(
     }
     let correctionDirective = driftApplication?.instructions ?? ""
     onInstructions?(correctionDirective)
-    let instructions = executorInstructions(contract: executorContract, ticket: ticket) + evidenceDirective + presentationDirective + correctionDirective + boundedShellDirective
+    // Owner terms the projection does not define, quoted from the original.
+    let definitionsDirective = OwnerPolicyContext.snapshot?.termDefinitions(for: lockedObjective) ?? ""
+    let instructions = executorInstructions(contract: executorContract, ticket: ticket) + definitionsDirective + evidenceDirective + presentationDirective + correctionDirective + boundedShellDirective
     if ticket.provider == "codex" {
         guard let codex = try? findExecutable("codex") else {
             throw OS1Error.backendBlocked(.capabilityUnavailable)
@@ -6204,7 +6207,7 @@ private func execute(
         var arguments = try claudeArguments(
             model: nativeModel.invocation,
             effort: effort,
-            instructions: claudeExecutorInstructions(contract: executorContract, ticket: ticket) + evidenceDirective + presentationDirective + correctionDirective
+            instructions: claudeExecutorInstructions(contract: executorContract, ticket: ticket) + definitionsDirective + evidenceDirective + presentationDirective + correctionDirective
                 + (LeanBackendInstructions.claudeEnabled() ? LeanBackendInstructions.claudeWorkspaceContext(
                     home: FileManager.default.homeDirectoryForCurrentUser, workspace: executionWorkspace) : ""),
             sessionID: activeSessionID,
@@ -10986,6 +10989,18 @@ func selfTest() throws {
             return (try? String(contentsOfFile: path, encoding: .utf8)) == "PROJECTION"
                 && claudeLeanEnvironment(environment: [:]).isEmpty == !LeanBackendInstructions.claudeLeanVerified
                 && claudeLeanEnvironment(environment: ["OS1_LEAN_CLAUDE": "1"]) == [LeanBackendInstructions.claudeDisableVariable: "1"]
+        }()),
+        ("a request using an owner term gets the original's own definition, other requests nothing", {
+            let root = FileManager.default.temporaryDirectory.appendingPathComponent("os1-owner-terms-" + UUID().uuidString, isDirectory: true)
+            defer { try? FileManager.default.removeItem(at: root) }
+            let source = "PART 3C — PROOF\n" + String(repeating: "=", count: 40) + "\nalpha_visible_ceiling:\nBest-of chosen with the grader visible.\n"
+            let digest = OwnerPolicySnapshot.digest(Data(source.utf8))
+            guard (try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)) != nil,
+                  (try? Data(source.utf8).write(to: root.appendingPathComponent(digest + ".txt"))) != nil else { return false }
+            let json = #"{"schema":1,"sourceSHA256":"\#(digest)","sourceFile":"\#(digest).txt","projectionSHA256":"p","projection":"PROJECTION","sourceID":"i","sourceModified":"m","checkedAt":0,"routing":"R"}"#
+            guard let snapshot = try? JSONDecoder().decode(OwnerPolicySnapshot.self, from: Data(json.utf8)) else { return false }
+            return snapshot.termDefinitions(for: "alpha_visible_ceiling가 뭐야?", root: root).contains("Best-of chosen with the grader visible.")
+                && snapshot.termDefinitions(for: "바다와 호수 차이를 설명해", root: root).isEmpty
         }()),
         ("a HOME task shares OS-1's source with HOME tasks, never with an OS-1 repair", {
             let root = FileManager.default.temporaryDirectory.appendingPathComponent("os1-shared-lease-" + UUID().uuidString, isDirectory: true)

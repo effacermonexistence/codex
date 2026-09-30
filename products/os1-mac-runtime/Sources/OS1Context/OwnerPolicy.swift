@@ -55,10 +55,22 @@ public struct OwnerPolicySnapshot: Codable, Equatable, Sendable {
         """
     }
     public func verifyOriginal(root: URL = Self.defaultRoot) throws {
+        _ = try originalText(root: root)
+    }
+    /// The original's text, only when it still matches the pinned digest.
+    public func originalText(root: URL = Self.defaultRoot) throws -> String {
         let file = root.appendingPathComponent(sourceFile)
         let values = try file.resourceValues(forKeys: [.isSymbolicLinkKey, .fileSizeKey])
-        guard values.isSymbolicLink != true, (values.fileSize ?? Int.max) <= 4_000_000,
-              Self.digest(try Data(contentsOf: file)) == sourceSHA256 else { throw Failure.invalid }
+        guard values.isSymbolicLink != true, (values.fileSize ?? Int.max) <= 4_000_000 else { throw Failure.invalid }
+        let data = try Data(contentsOf: file)
+        guard Self.digest(data) == sourceSHA256 else { throw Failure.invalid }
+        return String(decoding: data, as: UTF8.self)
+    }
+    /// The original's own definitions of owner terms in `prompt` that the
+    /// projection does not cover ("" for most requests). See OwnerTermDefinitions.
+    public func termDefinitions(for prompt: String, root: URL = Self.defaultRoot) -> String {
+        guard let source = try? originalText(root: root) else { return "" }
+        return OwnerTermDefinitions.directive(prompt: prompt, source: source, covered: routing + "\n" + projection)
     }
     public static var defaultRoot: URL {
         FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".os1/owner-policy")
