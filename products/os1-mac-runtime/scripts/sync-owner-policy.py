@@ -2,7 +2,7 @@
 """Refresh the latest explicitly named RCC engine note; no credentials or R2 writes.
 Atomic, private, content addressed. No model calls and no silent full-text truncation.
 """
-import fcntl, hashlib, json, math, os, pathlib, subprocess, time
+import fcntl, hashlib, json, math, os, pathlib, re, subprocess, time
 def osa(text):
     return subprocess.run(['/usr/bin/osascript','-e',text],capture_output=True,text=True,timeout=20,check=True).stdout.rstrip('\n')
 def sha(s): return hashlib.sha256(s.encode()).hexdigest()
@@ -72,13 +72,19 @@ def refresh_locked(ROOT, run_osa, now=time.time):
     anchors=['CORE OPERATION','PART 1 — RCC CORE LAWS','PART 22A — MEMORY RECALL / PROVENANCE HARD GATE',
              'PART 1C — RCC FOUNDATIONAL BOUNDARY THEORY','UNKNOWN STATE PRESERVATION /',
              'LOCAL FRAME PRIORITY /','STRATEGIC DECISION RANKING STABILITY /']
+    # The core laws are sent whole, up to the next PART heading (bounded):
+    # a 1700-character cut kept only laws 0-5 of the operational core.
+    whole={'PART 1 — RCC CORE LAWS':9000}
     sections=[]
     for anchor in anchors:
         i=source.find(anchor)
         if i<0: raise SystemExit('Required policy anchor absent: '+anchor)
-        fragment=source[i:i+1700]
-        # End at a complete line, explicitly identifying a section excerpt.
-        fragment=fragment.rsplit('\n',1)[0]
+        following=re.search(r'\n=+[ \t]*\nPART \d', source[i+len(anchor):i+whole[anchor]]) if anchor in whole else None
+        if following:
+            fragment=source[i:i+len(anchor)+following.start()].rstrip()
+        else:
+            # End at a complete line, explicitly identifying a section excerpt.
+            fragment=source[i:i+1700].rsplit('\n',1)[0]
         line=source[:i].count("\n")+1
         sections.append('[EXACT SOURCE EXCERPT: '+anchor+"; source line "+str(line)+']\n'+fragment)
     projection='\n\n'.join(sections)

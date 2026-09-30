@@ -51,6 +51,15 @@ class Tests(unittest.TestCase):
         newer=INDEX.replace('100','101')
         with self.assertRaises(ValueError): self.capture([newer, newer+'\nx-coredata://other\t102'])
         self.assertEqual(before,(self.root/'active.json').read_bytes())
+    def test_core_laws_are_sent_whole(self):
+        laws='\n'.join(f'{n}. law {n} text' for n in range(300))
+        bar='='*60
+        source=SOURCE.replace('PART 1 — RCC CORE LAWS\n', 'PART 1 — RCC CORE LAWS\n'+laws+'\n\n'+bar+'\nPART 2 — NEXT\n'+bar+'\n',1)
+        self.capture(source=source)
+        projection=json.loads((self.root/'active.json').read_text())['projection']
+        self.assertIn('299. law 299 text', projection)
+        self.assertNotIn('PART 2 — NEXT', projection)
+        self.assertEqual(projection.count('[EXACT SOURCE EXCERPT'), len(ANCHORS))
     def test_latest_selection(self):
         self.assertEqual(m.latest_note(INDEX+'\nx-coredata://older\t99'),tuple(INDEX.split('\t')))
     def test_applescript_scientific_time(self):
