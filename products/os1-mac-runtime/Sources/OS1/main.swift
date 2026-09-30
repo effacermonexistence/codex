@@ -913,6 +913,21 @@ func validateExecutorContract(_ contract: ExecutorContract) throws -> Bool {
     return true
 }
 
+/// OS-1's Codex runs take the owner-policy projection as base instructions
+/// instead of the owner's whole-engine file (see LeanBackendInstructions).
+func codexLeanInstructionOverrides(environment: [String: String] = ProcessInfo.processInfo.environment,
+                                   root: URL = LeanBackendInstructions.defaultRoot) -> [String] {
+    guard LeanBackendInstructions.enabled(environment), let snapshot = OwnerPolicyContext.snapshot,
+          let file = try? LeanBackendInstructions.codexInstructionsFile(snapshot.projection, root: root) else { return [] }
+    return [LeanBackendInstructions.codexOverride(file: file)]
+}
+
+/// Claude skips every CLAUDE.md; OS-1 supplies the projection (executor
+/// instructions) and the operating header (claudeWorkspaceContext) instead.
+func claudeLeanEnvironment(environment: [String: String] = ProcessInfo.processInfo.environment) -> [String: String] {
+    LeanBackendInstructions.claudeEnabled(environment) ? [LeanBackendInstructions.claudeDisableVariable: "1"] : [:]
+}
+
 func executorInstructions(contract: ExecutorContract, ticket: Ticket) -> String {
     let directives = contract.directives.enumerated().map { "\($0.offset + 1). \($0.element)" }.joined(separator: "\n")
     return """
@@ -5995,7 +6010,8 @@ private func execute(
         AttemptLatencyTrace.mark("instructions_ready")
         let appServer = try CodexAppServerClient(executable: codex, workspace: workspace,
             submissionID: ExecutionSteering.currentSubmission,
-            configOverrides: CodexContextBudget.extendedWindowOverride(model: model).map { [$0] } ?? [])
+            configOverrides: (CodexContextBudget.extendedWindowOverride(model: model).map { [$0] } ?? [])
+                + codexLeanInstructionOverrides())
         defer { appServer.close() }
         try appServer.initialize(deadline: deadline)
         AttemptLatencyTrace.mark("codex_initialized")
@@ -6188,7 +6204,9 @@ private func execute(
         var arguments = try claudeArguments(
             model: nativeModel.invocation,
             effort: effort,
-            instructions: claudeExecutorInstructions(contract: executorContract, ticket: ticket) + evidenceDirective + presentationDirective + correctionDirective,
+            instructions: claudeExecutorInstructions(contract: executorContract, ticket: ticket) + evidenceDirective + presentationDirective + correctionDirective
+                + (LeanBackendInstructions.claudeEnabled() ? LeanBackendInstructions.claudeWorkspaceContext(
+                    home: FileManager.default.homeDirectoryForCurrentUser, workspace: executionWorkspace) : ""),
             sessionID: activeSessionID,
             startNewSession: startsNewSession,
             title: claudeSessionTitle(from: lockedObjective),
@@ -6208,7 +6226,7 @@ private func execute(
             idleTimeout: idleTimeout.map(TimeInterval.init),
             currentDirectory: executionWorkspace,
             isProvider: true,
-            environmentOverrides: backendAccountEnvironment("claude"),
+            environmentOverrides: backendAccountEnvironment("claude").merging(claudeLeanEnvironment()) { _, lean in lean },
             onLaunch: { onDispatch?(activeSessionID) },
             onOutput: { bytes in
                 stream.ingestClaude(bytes)
@@ -10953,6 +10971,21 @@ func selfTest() throws {
                 guard run(["commit", "-q", "-am", "os1: self-repair build 999 — another repair"]), let otherRepair = gitHead(root.path) else { return false }
                 return finishUnboundOS1Change(watch, objective: "fixture", startedAt: Date()).contains(root.path) && gitHead(root.path) == otherRepair
             } catch { return false }
+        }()),
+        ("OS-1's Codex runs get the owner-policy projection, not the owner's whole engine", {
+            let root = FileManager.default.temporaryDirectory.appendingPathComponent("os1-lean-codex-" + UUID().uuidString, isDirectory: true)
+            defer { try? FileManager.default.removeItem(at: root) }
+            let json = #"{"schema":1,"sourceSHA256":"s","sourceFile":"s.txt","projectionSHA256":"p","projection":"PROJECTION","sourceID":"i","sourceModified":"m","checkedAt":0,"routing":"R"}"#
+            guard let snapshot = try? JSONDecoder().decode(OwnerPolicySnapshot.self, from: Data(json.utf8)) else { return false }
+            let none = OwnerPolicyContext.$snapshot.withValue(nil) { codexLeanInstructionOverrides(environment: [:], root: root) }
+            let lean = OwnerPolicyContext.$snapshot.withValue(snapshot) { codexLeanInstructionOverrides(environment: [:], root: root) }
+            let full = OwnerPolicyContext.$snapshot.withValue(snapshot) {
+                codexLeanInstructionOverrides(environment: [LeanBackendInstructions.killSwitch: "1"], root: root) }
+            guard none.isEmpty, full.isEmpty, lean.count == 1, lean[0].hasPrefix("model_instructions_file=\"" + root.path) else { return false }
+            let path = String(lean[0].dropFirst("model_instructions_file=\"".count).dropLast())
+            return (try? String(contentsOfFile: path, encoding: .utf8)) == "PROJECTION"
+                && claudeLeanEnvironment(environment: [:]).isEmpty == !LeanBackendInstructions.claudeLeanVerified
+                && claudeLeanEnvironment(environment: ["OS1_LEAN_CLAUDE": "1"]) == [LeanBackendInstructions.claudeDisableVariable: "1"]
         }()),
         ("a HOME task shares OS-1's source with HOME tasks, never with an OS-1 repair", {
             let root = FileManager.default.temporaryDirectory.appendingPathComponent("os1-shared-lease-" + UUID().uuidString, isDirectory: true)
