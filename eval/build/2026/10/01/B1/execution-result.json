@@ -1,0 +1,31 @@
+{
+  "backend": "codex",
+  "selected_action": "cx_61sol_xhigh",
+  "selected_model": "gpt-6.1-sol",
+  "selected_reasoning_effort": "xhigh",
+  "workspace": "/Users/LUA/.os1/fleet/jobs/5a8a17f3-a700-48ef-aba8-37b334b3e9ec/repository/eval/build/2026/10/01/B1",
+  "recorded_at": "2026-10-01T23:28:24.659526+00:00",
+  "files": {
+    "ledger.py": {
+      "sha256": "e2f9b23d3a4b31cff66d21f9efecd5d409fc7ba679ded4d6e097632b5940af99"
+    },
+    "test_ledger.py": {
+      "sha256": "fb4423f7f6a38dfa7cd6702af9a567a0a9c53afdfdc00665a281727d4d5ce00a"
+    },
+    "README.md": {
+      "sha256": "da5d7a2f98caf85f5382d56fa3d8537ac091400d601eed9e2d0da4601e0d32c2"
+    }
+  },
+  "tests": {
+    "command": [
+      "python3",
+      "-m",
+      "unittest",
+      "-v"
+    ],
+    "exit_code": 0,
+    "test_count": 25,
+    "stdout": "",
+    "stderr": "test_add_outputs_only_id_and_persists_integer_amount_and_memo (test_ledger.LedgerCLITests) ... ok\ntest_atomic_save_failure_preserves_file_and_cleans_temporary_file (test_ledger.LedgerCLITests) ... ok\ntest_corrupt_database_is_not_overwritten (test_ledger.LedgerCLITests) ... ok\ntest_database_paths_are_independent_and_can_contain_spaces (test_ledger.LedgerCLITests) ... ok\ntest_empty_categories_are_rejected (test_ledger.LedgerCLITests) ... ok\ntest_empty_list_creates_database (test_ledger.LedgerCLITests) ... ok\ntest_empty_report_creates_database (test_ledger.LedgerCLITests) ... ok\ntest_help_exits_successfully_without_creating_database (test_ledger.LedgerCLITests) ... ok\ntest_ids_are_not_reused_after_deleting_all_entries (test_ledger.LedgerCLITests) ... ok\ntest_import_all_invalid_rows_and_wrong_column_counts (test_ledger.LedgerCLITests) ... ok\ntest_import_header_only (test_ledger.LedgerCLITests) ... ok\ntest_import_skips_invalid_rows_reports_lines_and_preserves_id_sequence (test_ledger.LedgerCLITests) ... ok\ntest_import_uses_physical_line_numbers_and_accepts_bom_and_crlf (test_ledger.LedgerCLITests) ... ok\ntest_invalid_dates_fail_without_creating_database (test_ledger.LedgerCLITests) ... ok\ntest_invalid_months (test_ledger.LedgerCLITests) ... ok\ntest_list_sorting_and_combined_filters (test_ledger.LedgerCLITests) ... ok\ntest_malformed_csv_does_not_commit_partial_import (test_ledger.LedgerCLITests) ... ok\ntest_missing_and_invalid_ids_leave_database_unchanged (test_ledger.LedgerCLITests) ... ok\ntest_missing_csv_and_bad_header_do_not_modify_database (test_ledger.LedgerCLITests) ... ok\ntest_non_integer_amounts_fail_without_modifying_database (test_ledger.LedgerCLITests) ... ok\ntest_read_commands_do_not_rewrite_existing_database (test_ledger.LedgerCLITests) ... ok\ntest_report_aggregates_and_sorts_by_sum_then_category (test_ledger.LedgerCLITests) ... ok\ntest_unknown_command_and_missing_arguments_exit_2 (test_ledger.LedgerCLITests) ... ok\ntest_unusable_database_paths_exit_2_without_traceback (test_ledger.LedgerCLITests) ... ok\ntest_valid_leap_day (test_ledger.LedgerCLITests) ... ok\n\n----------------------------------------------------------------------\nRan 25 tests in 2.962s\n\nOK\n"
+  }
+}
