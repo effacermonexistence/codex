@@ -1,0 +1,36 @@
+{
+  "recorded_at": "2026-10-01T23:55:01.609751+00:00",
+  "workspace": "/Users/LUA/.os1/fleet/jobs/d281a542-ca4f-4177-ae79-a4ced58f0300/repository/eval/build/2026/10/01/B1",
+  "backend": "codex",
+  "selected_model": "gpt-6.1-sol",
+  "selected_reasoning_effort": "ultra",
+  "assigned_action": "cx_61sol_ultra",
+  "selection_source": "assigned execution constraints",
+  "checks": {
+    "syntax": {
+      "files": [
+        "ledger.py",
+        "test_ledger.py"
+      ],
+      "passed": true
+    },
+    "unittest": {
+      "command": "python3 -B -m unittest -v",
+      "exit_code": 0,
+      "tests_run": 29,
+      "duration_seconds": 6.117,
+      "summary": "OK"
+    }
+  },
+  "artifacts": {
+    "ledger.py": {
+      "sha256": "a574ff9c2115ae501d922fadcde2273322f38d588a7a94140c5a75d3e149b2c6"
+    },
+    "test_ledger.py": {
+      "sha256": "6bc56d1c7913b9e10bf6e2a08f8dbe47fa89d08a73710b165aae140423a5ff11"
+    },
+    "README.md": {
+      "sha256": "1fb7707e8f2b35d18775f999bafdf3d5e093041d0f6ac009f473ca3de0f93758"
+    }
+  }
+}
