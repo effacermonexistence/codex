@@ -1346,7 +1346,13 @@ func fleetResultStatusIsValid(_ run: RunSummary, profile: String) -> Bool {
             $0.action == "exo_distributed_inference" && $0.revasDisposition == "unverified_candidate"
         }
     }
-    return run.status == "complete" && run.steps.allSatisfy { $0.revasDisposition == "adopted" || $0.revasDisposition == "control_verified" }
+    // A reviewed draft (build 289) is an adopted answer that a review replaced:
+    // valid only beside the adopted review that names it. Build 289's first
+    // fleet-run of a reviewed answer was refused here as an integrity failure.
+    let shown = run.steps.filter { $0.revasDisposition == "adopted" || $0.revasDisposition == "control_verified" }
+    let drafts = run.steps.filter { $0.revasDisposition == "reviewed_draft" }
+    return run.status == "complete" && !shown.isEmpty && shown.count + drafts.count == run.steps.count
+        && (drafts.isEmpty || shown.contains { $0.reviewedDraft != nil })
 }
 
 func fleetSelfTest() throws {
@@ -1459,6 +1465,19 @@ func fleetSelfTest() throws {
     try check(fleetResultStatusIsValid(RunSummary(status: "candidate", steps: [candidate]), profile: "exo"), "EXO candidate transport rejected")
     try check(!fleetResultStatusIsValid(RunSummary(status: "complete", steps: [candidate]), profile: "exo"), "unverified EXO called complete")
     try check(!fleetResultStatusIsValid(RunSummary(status: "complete", steps: [candidate]), profile: "codex"), "EXO candidate adopted as native result")
+    var draft = RunStepSummary(sequence: 1, provider: "codex", action: "cx_6astra_max", model: "gpt-6-astra", effort: "max",
+        revasDisposition: "reviewed_draft", sessionID: "fixture-draft", permissionProfile: "workspace_write", exitCode: 0,
+        output: "", stderr: "", durationMS: 1, nativeRecord: nil)
+    var review = RunStepSummary(sequence: 1, provider: "claude", action: "cl_opus55_max", model: "claude-opus-5-5", effort: "max",
+        revasDisposition: "adopted", sessionID: "fixture-review", permissionProfile: "read_only", exitCode: 0,
+        output: "checked", stderr: "", durationMS: 1, nativeRecord: nil)
+    review.reviewedDraft = "codex · gpt-6-astra · max"
+    try check(fleetResultStatusIsValid(RunSummary(status: "complete", steps: [draft, review]), profile: "os1"), "reviewed answer refused")
+    try check(!fleetResultStatusIsValid(RunSummary(status: "complete", steps: [draft]), profile: "os1"), "a lone reviewed draft accepted")
+    review.reviewedDraft = nil
+    try check(!fleetResultStatusIsValid(RunSummary(status: "complete", steps: [draft, review]), profile: "os1"), "a draft without its review accepted")
+    draft.revasDisposition = "retry"
+    try check(!fleetResultStatusIsValid(RunSummary(status: "complete", steps: [draft, review]), profile: "os1"), "an unadopted step accepted")
     let receipt = FleetExecutionReceipt(jobID: assignment.jobID, nodeRole: "air", deviceID: "air", profile: "exo",
         repository: request.workspaceRepository, revision: request.workspaceRevision, resultBranch: nil, resultCommit: nil,
         run: RunSummary(status: "candidate", steps: [candidate]))
