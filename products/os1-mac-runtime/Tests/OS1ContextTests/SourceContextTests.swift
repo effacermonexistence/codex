@@ -248,26 +248,16 @@ final class SourceContextTests {
         XCTAssertEqual(TaskWorkflow.preparationRequest(owner: scratchRequest, stagePrompt: wrapped), scratchRequest)
         XCTAssertNil(PreparationIntent.detect(TaskWorkflow.preparationRequest(owner: scratchRequest, stagePrompt: wrapped))?.projectID)
         XCTAssertEqual(PreparationIntent.detect(TaskWorkflow.preparationRequest(owner: "OS1 고쳐", stagePrompt: wrapped))?.projectID, "os1-clodex")
-        XCTAssertEqual(TaskWorkflow.modelTier("gpt-6-sol"), 5)
-        XCTAssertEqual(TaskWorkflow.architecture.preferredModels(["gpt-6-sol", "gpt-6-luna"]), Set(["gpt-6-sol"]))
-        XCTAssertEqual(TaskWorkflow.implementation.eligibleModelsByProvider([["gpt-6-astra", "gpt-6-sol", "gpt-5.6-terra"]]), Set(["gpt-6-astra", "gpt-6-sol", "gpt-5.6-terra"]))
-        let models = ["gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "claude-opus-5", "claude-sonnet-5", "claude-fable-5-1"]
-        XCTAssertEqual(TaskWorkflow.modelTier("claude-fable-5-1"), TaskWorkflow.modelTier("gpt-6-astra"))
-        XCTAssertEqual(TaskWorkflow.implementation.eligibleModelsByProvider([["fable", "opus", "sonnet"]]), Set(["fable", "opus", "sonnet"]))
-        XCTAssertEqual(TaskWorkflow.implementation.eligibleModelsByProvider([["fable", "opus"]]), Set(["fable"]))
-        XCTAssertEqual(TaskWorkflow.implementation.eligibleModelsByProvider([["gpt-5.6-luna", "gpt-5.6-terra", "gpt-6-astra"], ["fable", "opus"]]), Set(["gpt-5.6-terra", "gpt-6-astra", "fable"]))
-        XCTAssertEqual(TaskWorkflow.architecture.eligibleModelsByProvider([["fable", "opus"]]), Set(["fable"]))
-        XCTAssertEqual(TaskWorkflow.architecture.preferredModels(models), Set(["gpt-6-astra", "claude-fable-5-1"]))
-        XCTAssertEqual(TaskWorkflow.implementation.preferredModels(models), Set(["gpt-5.6-terra", "claude-sonnet-5"]))
-        let codex = ["gpt-6-astra", "gpt-5.6-terra"]
-        let claude = ["claude-opus-5", "claude-sonnet-5"]
-        for stage in [TaskWorkflow.architecture, .verification] {
-            XCTAssertEqual(stage.preferredModelsByProvider([codex, claude]), Set(["gpt-6-astra", "claude-opus-5"]))
-            XCTAssertEqual(stage.preferredModelsByProvider([[], claude]), Set(["claude-opus-5"]))
-            XCTAssertEqual(stage.preferredModelsByProvider([codex, []]), Set(["gpt-6-astra"]))
+        // RCC v47: model choice is the signed router's (benchmarks and prices);
+        // a stage never drops an observed model, whatever its name.
+        let codex = ["gpt-6-astra", "gpt-6-sol", "gpt-5.6-terra"]
+        let claude = ["claude-opus-5-5", "claude-fable-5-1", "claude-sonnet-5-5", "fable", "opus"]
+        for stage in [TaskWorkflow.architecture, .implementation, .verification] {
+            XCTAssertEqual(stage.eligibleModelsByProvider([codex, claude]), Set(codex + claude))
+            XCTAssertEqual(stage.preferredModelsByProvider([[], claude]), Set(claude))
+            XCTAssertEqual(stage.preferredModelsByProvider([codex, []]), Set(codex))
+            XCTAssertTrue(stage.preferredModelsByProvider([[], []]).isEmpty)
         }
-        XCTAssertEqual(TaskWorkflow.implementation.preferredModelsByProvider([codex, claude]), Set(["gpt-5.6-terra", "claude-sonnet-5"]))
-        XCTAssertTrue(TaskWorkflow.architecture.preferredModelsByProvider([[], []]).isEmpty)
         XCTAssertEqual(TaskWorkflow.verification.preferredEfforts(["low", "medium", "high"]), ["high"])
         XCTAssertEqual(TaskWorkflow.implementation.preferredEfforts(["low", "high"]), ["low", "high"])
         XCTAssertEqual(TaskWorkflow.verdict("checked\nOS1_WORKFLOW_VERDICT: PASS"), true)

@@ -130,5 +130,14 @@ describe("strict trust-boundary contracts", () => {
       { ...usage, input_tokens: -1 }, { ...usage, output_tokens: 1.5 }, "10", null]) {
       expect(() => parseResultRequest({ ...base, usage: bad })).toThrow();
     }
+    // v3 adds the cache writes, a part of cache_tokens.
+    const v3 = { ...usage, cache_write_tokens: 3 };
+    expect(parseResultRequest({ ...base, usage: v3 }).usage).toEqual(v3);
+    expect(parseResultRequest({ ...base, usage: { ...usage, cache_write_tokens: null } }).usage)
+      .toEqual({ ...usage, cache_write_tokens: null });
+    for (const bad of [{ ...usage, cache_write_tokens: 6 }, { ...usage, cache_write_tokens: -1 },
+      { ...usage, cache_tokens: null, cache_write_tokens: 1 }, { ...usage, cache_write_tokens: "3" }]) {
+      expect(() => parseResultRequest({ ...base, usage: bad })).toThrow();
+    }
   });
 });

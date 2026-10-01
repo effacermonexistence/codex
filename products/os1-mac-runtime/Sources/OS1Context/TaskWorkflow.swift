@@ -105,50 +105,22 @@ public enum TaskWorkflow: String, Codable, Sendable, CaseIterable {
     }
 
 
-    /// Stage policy operates only on the native account's observed model
-    /// inventory. These are routing tiers, not measured quality or price claims.
-    /// Tier 6 is each provider's newest top model, the reference the signed
-    /// router's quality floor runs (RCC v45): Codex's gpt-6-astra and Claude
-    /// Code's Fable ("most capable for your hardest and longest-running work").
-    public static func modelTier(_ identifier: String) -> Int {
-        let model = identifier.lowercased()
-        if model.contains("astra") || model.contains("fable") { return 6 }
-        if model.contains("6-sol") || model.contains("5.6-sol") || model.contains("daybreak") || model.contains("opus") { return 5 }
-        if model.contains("terra") || model.contains("sonnet") { return 3 }
-        if model.contains("luna") { return 2 }
-        if model.contains("mini") || model.contains("spark") || model.contains("haiku") { return 1 }
-        return 0
-    }
-
-    public func preferredModels(_ identifiers: [String]) -> Set<String> {
-        guard !identifiers.isEmpty else { return [] }
-        let tiers = identifiers.map { Self.modelTier($0) }
-        let target: Int
-        switch self {
-        case .architecture, .verification:
-            target = tiers.max() ?? 0
-        case .implementation:
-            target = tiers.contains(3) ? 3 : (tiers.contains(2) ? 2 : (tiers.max() ?? 0))
-        }
-        return Set(identifiers.filter { Self.modelTier($0) == target })
-    }
-
-    /// Stage quality preference must not erase another usable transport.
-    /// Select within each provider; the signed router still ranks the union.
+    /// Which models a stage may use. Since RCC v47 (owner 2026-09-30: "벤치마크
+    /// 기준이야", "휴리스틱 시스템이면 실패") the signed router ranks models by
+    /// published benchmarks and exact per-token prices, so a stage no longer
+    /// filters models through a fixed name ladder — that ladder put Claude
+    /// Fable above Opus 5.5, which beats it on every published benchmark at
+    /// 40 % of the price. A stage keeps its effort preference
+    /// (`preferredEfforts`); the router's quality floor admits only models
+    /// within measurement noise of the best one available. Every observed
+    /// model of every provider stays a candidate.
     public func preferredModelsByProvider(_ inventories: [[String]]) -> Set<String> {
-        inventories.reduce(into: Set<String>()) { result, models in
-            result.formUnion(preferredModels(models))
-        }
+        Set(inventories.joined())
     }
 
-    /// Cost preference is not an availability boundary. Retain stronger models
-    /// so the signed router can satisfy a task-specific capability floor.
+    /// Same set as `preferredModelsByProvider`: availability is not a stage choice.
     public func eligibleModelsByProvider(_ inventories: [[String]]) -> Set<String> {
-        guard self == .implementation else { return preferredModelsByProvider(inventories) }
-        return inventories.reduce(into: Set<String>()) { result, models in
-            let floor = preferredModels(models).map { Self.modelTier($0) }.min() ?? 0
-            result.formUnion(models.filter { Self.modelTier($0) >= floor })
-        }
+        preferredModelsByProvider(inventories)
     }
 
     public func preferredEfforts(_ efforts: [String]) -> [String] {

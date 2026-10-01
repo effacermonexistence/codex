@@ -75,11 +75,14 @@ export type EvaluatedResult = {
 /**
  * Token counts the device measured for this step and signed with its result.
  * Counts only — no content. Route learning charges them to the route that ran.
+ * `cache_tokens` counts every cached input token; v3 adds `cache_write_tokens`,
+ * the part written to the cache, which providers bill above fresh input.
  */
 export type StepUsage = {
   input_tokens: number | null;
   output_tokens: number | null;
   cache_tokens: number | null;
+  cache_write_tokens?: number | null;
 };
 
 export type ResultRequest = {
@@ -95,10 +98,15 @@ const MAX_STEP_TOKENS = 10_000_000_000;
 export function isStepUsage(value: unknown): value is StepUsage {
   const count = (item: unknown) =>
     item === null || (Number.isSafeInteger(item) && (item as number) >= 0 && (item as number) <= MAX_STEP_TOKENS);
-  return isRecord(value) && hasExactKeys(value, ["input_tokens", "output_tokens", "cache_tokens"]) &&
+  if (!isRecord(value)) return false;
+  const v3 = "cache_write_tokens" in value;
+  return hasExactKeys(value, v3 ? ["input_tokens", "output_tokens", "cache_tokens", "cache_write_tokens"]
+      : ["input_tokens", "output_tokens", "cache_tokens"]) &&
     count(value.input_tokens) && count(value.output_tokens) && count(value.cache_tokens) &&
     (value.cache_tokens === null || value.input_tokens === null ||
-      (value.cache_tokens as number) <= (value.input_tokens as number));
+      (value.cache_tokens as number) <= (value.input_tokens as number)) &&
+    (!v3 || (count(value.cache_write_tokens) && (value.cache_write_tokens === null ||
+      (value.cache_tokens !== null && (value.cache_write_tokens as number) <= (value.cache_tokens as number)))));
 }
 
 export type DeviceRegistration = {
@@ -284,7 +292,8 @@ export function parseTicket(value: unknown): Ticket {
 
 export function parseResultRequest(value: unknown): ResultRequest {
   // `usage` is optional so a client from before route learning schema 2 keeps
-  // working; when present it is part of the signed result (os1-result-v2).
+  // working; when present it is part of the signed result (os1-result-v2, or
+  // v3 when it also carries cache_write_tokens).
   if (
     !isRecord(value) ||
     !hasExactKeys(value, value.usage === undefined
@@ -307,6 +316,8 @@ export function parseResultRequest(value: unknown): ResultRequest {
         input_tokens: (value.usage as StepUsage).input_tokens,
         output_tokens: (value.usage as StepUsage).output_tokens,
         cache_tokens: (value.usage as StepUsage).cache_tokens,
+        ...("cache_write_tokens" in (value.usage as StepUsage)
+          ? { cache_write_tokens: (value.usage as StepUsage).cache_write_tokens ?? null } : {}),
       },
     }),
   };

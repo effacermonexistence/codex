@@ -8,6 +8,14 @@
 // time AND tokens per verified result. Tokens are weighted to input-token
 // equivalents — fresh input + 0.1 × cache reads + 5 × output — which tracks
 // quota burn instead of a raw total dominated by cached context.
+//
+// Schema 3 (owner order 2026-09-30, "코스트 메세지 인 메세지 아웃 그거 정확하게
+// 알아야지"): the weighted total above prices a cache write like a cache read
+// (0.1x) although providers bill it above fresh input (1.25x), and every
+// model has its own cache-read rate (Claude Fable 5.1 0.025x, Opus 5.5 0.05x).
+// A v3 result therefore also signs `cache_write_tokens`, and each route keeps
+// its mean fresh input, cache reads, cache writes and output per measured
+// attempt, so the policy prices a route with that model's own rates.
 
 export const LEARNING_HALF_LIFE_MS = 7 * 24 * 3_600_000;
 export const LEARNING_CLASSES = new Set(["executed_change", "executed_review", "source_review", "native_record"]);
@@ -19,16 +27,51 @@ const MAX_TOKENS = 10_000_000_000;
 export const CACHE_READ_WEIGHT = 0.1;
 export const OUTPUT_WEIGHT = 5;
 
-/** Per-step usage the device signed with its result; counts only. */
-export type StepUsage = { input_tokens: number | null; output_tokens: number | null; cache_tokens: number | null };
+/**
+ * Per-step usage the device signed with its result; counts only. `cache_tokens`
+ * is every cached input token (reads and writes); v3 adds `cache_write_tokens`,
+ * the part of it written to the cache.
+ */
+export type StepUsage = {
+  input_tokens: number | null; output_tokens: number | null; cache_tokens: number | null;
+  cache_write_tokens?: number | null;
+};
 
 export function validStepUsage(value: unknown): value is StepUsage {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
   const v = value as Record<string, unknown>;
   const count = (item: unknown) => item === null || (Number.isSafeInteger(item) && (item as number) >= 0 && (item as number) <= MAX_TOKENS);
-  return Object.keys(v).sort().join() === "cache_tokens,input_tokens,output_tokens" &&
+  const keys = Object.keys(v).sort().join();
+  const v3 = keys === "cache_tokens,cache_write_tokens,input_tokens,output_tokens";
+  return (keys === "cache_tokens,input_tokens,output_tokens" || v3) &&
     count(v.input_tokens) && count(v.output_tokens) && count(v.cache_tokens) &&
-    (v.cache_tokens === null || v.input_tokens === null || (v.cache_tokens as number) <= (v.input_tokens as number));
+    (v.cache_tokens === null || v.input_tokens === null || (v.cache_tokens as number) <= (v.input_tokens as number)) &&
+    (!v3 || (count(v.cache_write_tokens) &&
+      (v.cache_write_tokens === null || (v.cache_tokens !== null && (v.cache_write_tokens as number) <= (v.cache_tokens as number)))));
+}
+
+/** Fresh input, cache reads, cache writes and output of one step (schema 3). */
+export type UsageComponents = { i: number; r: number; w: number; o: number };
+
+/**
+ * The four billed components, or null unless every one was measured: a v2
+ * result cannot tell a cache read from a cache write, and an unmeasured
+ * count is never read as zero.
+ */
+export function usageComponents(usage: StepUsage | undefined): UsageComponents | null {
+  if (!usage || usage.input_tokens === null || usage.output_tokens === null || usage.cache_tokens === null ||
+    usage.cache_write_tokens === undefined || usage.cache_write_tokens === null) return null;
+  if (usage.input_tokens + usage.output_tokens <= 0) return null;
+  const cache = Math.min(usage.cache_tokens, usage.input_tokens);
+  const write = Math.min(usage.cache_write_tokens, cache);
+  return { i: usage.input_tokens - cache, r: cache - write, w: write, o: usage.output_tokens };
+}
+
+function validComponents(value: unknown): value is UsageComponents {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const v = value as Record<string, unknown>;
+  return Object.keys(v).sort().join() === "i,o,r,w" && ["i", "r", "w", "o"].every((key) =>
+    typeof v[key] === "number" && Number.isFinite(v[key]) && (v[key] as number) >= 0 && (v[key] as number) <= MAX_TOKENS);
 }
 
 /**
@@ -52,6 +95,8 @@ export type LearningObservation = {
   duration_ms: number | null;
   /** Weighted tokens this step spent, adopted or not; null when unmeasured. */
   tokens: number | null;
+  /** Schema 3: the step's billed components; absent or null when unmeasured. */
+  components?: UsageComponents | null;
 };
 
 /**
@@ -63,6 +108,8 @@ export type StoredLearning = {
   provider: string; model: string; effort: string; task_class: string;
   n: number; s: number; dlog: number; dn: number; at_ms: number;
   klog?: number | null; kn?: number | null;
+  /** Schema 3: decayed sums of each component and the decayed count measured. */
+  ci?: number | null; cr?: number | null; cw?: number | null; co?: number | null; cn?: number | null;
 };
 
 /**
@@ -74,12 +121,17 @@ export type LearningRow = {
   provider: "codex" | "claude"; model: string; effort: string; class: string;
   n: number; s: number; d: number | null; dn: number;
   k?: number | null; kn?: number;
+  /** Schema 3: mean fresh input, cache reads, cache writes, output per measured attempt. */
+  u?: UsageComponents | null; un?: number;
 };
 
 export function validLearningObservation(value: unknown): value is LearningObservation {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
   const v = value as Record<string, unknown>;
-  return Object.keys(v).sort().join() === "adopted,duration_ms,effort,model,provider,task_class,tokens" &&
+  const keys = Object.keys(v).sort().join();
+  return (keys === "adopted,duration_ms,effort,model,provider,task_class,tokens" ||
+    (keys === "adopted,components,duration_ms,effort,model,provider,task_class,tokens" &&
+      (v.components === null || validComponents(v.components)))) &&
     (v.provider === "codex" || v.provider === "claude") &&
     typeof v.model === "string" && MODEL.test(v.model) &&
     typeof v.effort === "string" && LEARNING_EFFORTS.has(v.effort) &&
@@ -102,6 +154,7 @@ export function updateLearning(previous: StoredLearning | undefined, observation
   // Tokens count on every attempt: a failed route still spent them, and the
   // policy charges that cost to the route that spent it.
   const tokens = observation.tokens === null ? null : Math.max(1, observation.tokens);
+  const parts = observation.components ?? null;
   return {
     provider: observation.provider, model: observation.model, effort: observation.effort, task_class: observation.task_class,
     n: (previous?.n ?? 0) * factor + 1,
@@ -111,13 +164,18 @@ export function updateLearning(previous: StoredLearning | undefined, observation
     at_ms: nowMs,
     klog: (previous?.klog ?? 0) * factor + (tokens === null ? 0 : Math.log(tokens)),
     kn: (previous?.kn ?? 0) * factor + (tokens === null ? 0 : 1),
+    ci: (previous?.ci ?? 0) * factor + (parts ? parts.i : 0),
+    cr: (previous?.cr ?? 0) * factor + (parts ? parts.r : 0),
+    cw: (previous?.cw ?? 0) * factor + (parts ? parts.w : 0),
+    co: (previous?.co ?? 0) * factor + (parts ? parts.o : 0),
+    cn: (previous?.cn ?? 0) * factor + (parts ? 1 : 0),
   };
 }
 
 const round = (value: number, places: number) => Math.round(value * 10 ** places) / 10 ** places;
 
 /** Rows decayed to now, strongest first, in the policy's exact wire shape. */
-export function exportLearningRows(stored: StoredLearning[], nowMs: number, schema: 1 | 2 = 1): LearningRow[] {
+export function exportLearningRows(stored: StoredLearning[], nowMs: number, schema: 1 | 2 | 3 = 1): LearningRow[] {
   return stored
     .filter((row) => (row.provider === "codex" || row.provider === "claude") && MODEL.test(row.model) &&
       LEARNING_EFFORTS.has(row.effort) && LEARNING_CLASSES.has(row.task_class))
@@ -134,7 +192,14 @@ export function exportLearningRows(stored: StoredLearning[], nowMs: number, sche
       const kn = Math.min(n, round(storedKn * factor, 4));
       const k = kn > 0 && storedKn > 0 && row.klog !== null && row.klog !== undefined ?
         Math.min(MAX_TOKENS * OUTPUT_WEIGHT, Math.max(1, Math.round(Math.exp(row.klog / storedKn)))) : null;
-      return { ...base, k, kn: k === null ? 0 : kn };
+      const tokenRow = { ...base, k, kn: k === null ? 0 : kn };
+      if (schema === 2) return tokenRow;
+      // Means are ratios of equally decayed sums: the decay cancels.
+      const storedCn = row.cn ?? 0;
+      const un = Math.min(n, round(storedCn * factor, 4));
+      const mean = (sum: number | null | undefined) => Math.min(MAX_TOKENS, Math.max(0, Math.round((sum ?? 0) / storedCn)));
+      const u = un > 0 && storedCn > 0 ? { i: mean(row.ci), r: mean(row.cr), w: mean(row.cw), o: mean(row.co) } : null;
+      return { ...tokenRow, u, un: u === null ? 0 : un };
     })
     .filter((row) => row.n >= 0.01)
     .sort((a, b) => b.n - a.n || a.model.localeCompare(b.model) || a.effort.localeCompare(b.effort) || a.class.localeCompare(b.class))

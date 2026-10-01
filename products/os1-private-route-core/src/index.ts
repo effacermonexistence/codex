@@ -3,7 +3,7 @@ import { appendCompletionObservation, completionFeedbackMatchesTask, validComple
   type CompletionObservation, type ExecutionContext } from "./execution-context";
 import { routeLearningSchema, supportsCompletionFeedback } from "./capabilities";
 import {
-  exportLearningRows, LEARNING_CLASSES, routeSeed, updateLearning, validLearningObservation, validStepUsage, weightedTokens,
+  exportLearningRows, LEARNING_CLASSES, routeSeed, updateLearning, usageComponents, validLearningObservation, validStepUsage, weightedTokens,
   type LearningObservation, type LearningRow, type StepUsage, type StoredLearning,
 } from "./route-learning";
 import { availableModelTuple } from "../../os1-route-core/src/execution-context";
@@ -43,7 +43,7 @@ type RouteContext = {
   current_run_observations?: CompletionObservation[];
   attempt: number;
 };
-type RouteLearning = { rows: LearningRow[]; seed: string; schema: 1 | 2 };
+type RouteLearning = { rows: LearningRow[]; seed: string; schema: 1 | 2 | 3 };
 type RouteSnapshot = RoutedStep & RouteContext & {
   learning_object?: string;
   step_started_ms?: number;
@@ -294,6 +294,10 @@ export class RoutingBudgetState extends DurableObject<Env> {
       const columns = this.ctx.storage.sql.exec<{ name: string }>("PRAGMA table_info(learning)").toArray().map((row) => row.name);
       if (!columns.includes("klog")) this.ctx.storage.sql.exec("ALTER TABLE learning ADD COLUMN klog REAL");
       if (!columns.includes("kn")) this.ctx.storage.sql.exec("ALTER TABLE learning ADD COLUMN kn REAL");
+      // Billed token components per route (schema 3); older rows read as unmeasured.
+      for (const column of ["ci", "cr", "cw", "co", "cn"]) {
+        if (!columns.includes(column)) this.ctx.storage.sql.exec(`ALTER TABLE learning ADD COLUMN ${column} REAL`);
+      }
     });
   }
   /** Adds one verified step outcome to this owner's decayed route ledger. */
@@ -305,12 +309,12 @@ export class RoutingBudgetState extends DurableObject<Env> {
         observation.provider, observation.model, observation.effort, observation.task_class).toArray()[0];
       const next = updateLearning(previous, observation, Date.now());
       this.ctx.storage.sql.exec(
-        "INSERT OR REPLACE INTO learning(provider,model,effort,task_class,n,s,dlog,dn,at_ms,klog,kn) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+        "INSERT OR REPLACE INTO learning(provider,model,effort,task_class,n,s,dlog,dn,at_ms,klog,kn,ci,cr,cw,co,cn) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         next.provider, next.model, next.effort, next.task_class, next.n, next.s, next.dlog, next.dn, next.at_ms,
-        next.klog ?? 0, next.kn ?? 0);
+        next.klog ?? 0, next.kn ?? 0, next.ci ?? 0, next.cr ?? 0, next.cw ?? 0, next.co ?? 0, next.cn ?? 0);
     });
   }
-  learningRows(schema: 1 | 2 = 1): LearningRow[] {
+  learningRows(schema: 1 | 2 | 3 = 1): LearningRow[] {
     return exportLearningRows(this.ctx.storage.sql.exec<StoredLearning>("SELECT * FROM learning").toArray(), Date.now(), schema);
   }
   consumeStart(limit: number): boolean {
@@ -362,8 +366,8 @@ async function evaluate(env: Env, body: unknown): Promise<{ outcome: "pass" | "f
 }
 
 /** Learning helps ranking; an unreadable ledger never blocks a route. */
-async function learnedRoutes(budget: { learningRows(schema?: 1 | 2): LearningRow[] | Promise<LearningRow[]> }, executionId: string,
-  attempt: number, schema: 1 | 2): Promise<RouteLearning | undefined> {
+async function learnedRoutes(budget: { learningRows(schema?: 1 | 2 | 3): LearningRow[] | Promise<LearningRow[]> }, executionId: string,
+  attempt: number, schema: 1 | 2 | 3): Promise<RouteLearning | undefined> {
   try {
     return { rows: await budget.learningRows(schema), seed: await routeSeed(executionId, attempt), schema };
   } catch {
@@ -381,7 +385,8 @@ async function recordLearning(env: Env, state: { claimLearning(sequence: number)
     // Audit trail of what the router learned; tuple and outcome only.
     console.log(JSON.stringify({ event: "route_learning_recorded", provider: observation.provider, model: observation.model,
       effort: observation.effort, task_class: observation.task_class, adopted: observation.adopted,
-      duration_ms: observation.duration_ms, tokens: observation.tokens === null ? null : Math.round(observation.tokens) }));
+      duration_ms: observation.duration_ms, tokens: observation.tokens === null ? null : Math.round(observation.tokens),
+      components: observation.components ?? null }));
   } catch {
     console.error(JSON.stringify({ event: "route_learning_unrecorded" }));
   }
@@ -439,7 +444,7 @@ export default {
         const learningSchema = await routeLearningSchema(env.RCC_V26, bundle.rcc.policy_sha256);
         const learningObject = learningSchema > 0 ? await budgetObjectName(env, body.principal.subject) : undefined;
         const learning = learningObject && learningSchema > 0 ?
-          await learnedRoutes(budget, body.execution_id, 1, learningSchema as 1 | 2) : undefined;
+          await learnedRoutes(budget, body.execution_id, 1, learningSchema as 1 | 2 | 3) : undefined;
         if (learning) console.log(JSON.stringify({ event: "route_learning_used", rows: learning.rows.length }));
         stage.current = "route";
         const selected = await routeWithRcc(env, bundle, context, "", learning);
@@ -501,7 +506,7 @@ export default {
         const retrySchema = snapshot.learning_object ? await routeLearningSchema(env.RCC_V26, bundle.rcc.policy_sha256) : 0;
         const learning = snapshot.learning_object && retrySchema > 0 ?
           await learnedRoutes(env.ROUTING_BUDGETS.getByName(snapshot.learning_object), body.execution_id, sequence + 1,
-            retrySchema as 1 | 2) : undefined;
+            retrySchema as 1 | 2 | 3) : undefined;
         next = await routeWithRcc(env, bundle, context, retryProvider, learning);
       }
       const decision = await state.advance(sequence, evaluated.outcome, evaluated.verified_artifact_hash, next, executionContext, currentRun);
@@ -513,6 +518,7 @@ export default {
           duration_ms: snapshot.step_started_ms === undefined ? null :
             Math.min(86_400_000, Math.max(0, Date.now() - snapshot.step_started_ms)),
           tokens: weightedTokens(usage),
+          components: usageComponents(usage),
         });
       }
       return decision.status === "step" ? stepResponse(decision) : Response.json(decision);

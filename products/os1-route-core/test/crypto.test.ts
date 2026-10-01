@@ -96,5 +96,20 @@ describe("asymmetric ticket signatures", () => {
     await expect(verifyDeviceResult({ ...result, usage }, publicJwk)).resolves.toBe(false);
     const unmeasured = { ...result, usage: { input_tokens: null, output_tokens: null, cache_tokens: null } };
     expect(new TextDecoder().decode(canonicalResult(unmeasured)).split("\n").slice(-3)).toEqual(["null", "null", "null"]);
+
+    // v3 also signs the cache writes; a v2 signature does not cover them.
+    const writes = { ...usage, cache_write_tokens: 40_000 };
+    const withWrites = { ...result, usage: writes, device_signature: "" };
+    expect(new TextDecoder().decode(canonicalResult(withWrites)).split("\n")).toEqual([
+      "os1-result-v3", result.ticket.execution_id, "2", result.ticket.nonce, "b".repeat(64),
+      result.artifact_ref, "800000", "790000", "3000", "40000"]);
+    const v3 = await crypto.subtle.sign({ name: "ECDSA", hash: "SHA-256" }, pair.privateKey, canonicalResult(withWrites));
+    withWrites.device_signature = Buffer.from(v3).toString("base64url");
+    await expect(verifyDeviceResult(withWrites, publicJwk)).resolves.toBe(true);
+    await expect(verifyDeviceResult({ ...withWrites, usage: { ...writes, cache_write_tokens: 1 } }, publicJwk)).resolves.toBe(false);
+    await expect(verifyDeviceResult({ ...withUsage, usage: writes }, publicJwk)).resolves.toBe(false);
+    const unmeasuredWrites = { ...result, usage: { ...usage, cache_write_tokens: null } };
+    expect(new TextDecoder().decode(canonicalResult(unmeasuredWrites)).split("\n").slice(0, 1)).toEqual(["os1-result-v3"]);
+    expect(new TextDecoder().decode(canonicalResult(unmeasuredWrites)).split("\n").at(-1)).toBe("null");
   });
 });

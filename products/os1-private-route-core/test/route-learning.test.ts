@@ -1,8 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import { createHash } from "node:crypto";
 import {
-  exportLearningRows, LEARNING_HALF_LIFE_MS, routeSeed, updateLearning, validLearningObservation, validStepUsage,
-  weightedTokens, type LearningObservation,
+  exportLearningRows, LEARNING_HALF_LIFE_MS, routeSeed, updateLearning, usageComponents, validLearningObservation,
+  validStepUsage, weightedTokens, type LearningObservation,
 } from "../src/route-learning";
 import { routeLearningSchema, supportsCompletionFeedback, supportsRouteLearning } from "../src/capabilities";
 
@@ -79,6 +79,51 @@ describe("route learning ledger", () => {
     expect(decayed.kn).toBe(1);
     expect(decayed.k).toBe(200_000);
   });
+  it("accepts v3 usage and splits it into the four billed components", () => {
+    const v3 = { input_tokens: 1_000_000, cache_tokens: 990_000, cache_write_tokens: 90_000, output_tokens: 2_000 };
+    expect(validStepUsage(v3)).toBe(true);
+    expect(usageComponents(v3)).toEqual({ i: 10_000, r: 900_000, w: 90_000, o: 2_000 });
+    // The legacy weighted total is unchanged by the extra count.
+    expect(weightedTokens(v3)).toBe(weightedTokens({ input_tokens: 1_000_000, cache_tokens: 990_000, output_tokens: 2_000 }));
+    // A write larger than the cache, or a write without a known cache, is not a count.
+    expect(validStepUsage({ ...v3, cache_write_tokens: 990_001 })).toBe(false);
+    expect(validStepUsage({ ...v3, cache_tokens: null })).toBe(false);
+    expect(validStepUsage({ ...v3, cache_write_tokens: null })).toBe(true);
+    expect(validStepUsage({ ...v3, cache_write_tokens: -1 })).toBe(false);
+    expect(validStepUsage({ ...v3, extra: 1 })).toBe(false);
+    // v2 cannot tell a read from a write; an unmeasured count is not zero.
+    expect(usageComponents({ input_tokens: 10, cache_tokens: 5, output_tokens: 1 })).toBeNull();
+    expect(usageComponents({ ...v3, cache_write_tokens: null })).toBeNull();
+    expect(usageComponents({ ...v3, output_tokens: null })).toBeNull();
+    expect(usageComponents({ input_tokens: 0, cache_tokens: 0, cache_write_tokens: 0, output_tokens: 0 })).toBeNull();
+    expect(usageComponents(undefined)).toBeNull();
+  });
+  it("keeps mean components per measured attempt and exports them only in schema 3", () => {
+    const parts = { i: 1_000, r: 100_000, w: 20_000, o: 3_000 };
+    expect(validLearningObservation({ ...adopted, components: parts })).toBe(true);
+    expect(validLearningObservation({ ...adopted, components: null })).toBe(true);
+    for (const bad of [{ ...parts, i: -1 }, { ...parts, x: 1 }, (({ o, ...rest }) => rest)(parts), { ...parts, r: Number.NaN }]) {
+      expect(validLearningObservation({ ...adopted, components: bad })).toBe(false);
+    }
+    const first = updateLearning(undefined, { ...adopted, tokens: 50_000, components: parts }, 0);
+    const second = updateLearning(first, { ...adopted, adopted: false, tokens: 70_000,
+      components: { i: 3_000, r: 300_000, w: 40_000, o: 5_000 } }, 0);
+    const unmeasured = updateLearning(second, { ...adopted, tokens: null, components: null }, 0);
+    const [row] = exportLearningRows([unmeasured], 0, 3);
+    expect(row.u).toEqual({ i: 2_000, r: 200_000, w: 30_000, o: 4_000 });
+    expect(row.un).toBe(2);
+    expect(row.n).toBe(3);
+    // Decay keeps the means (a ratio of equally decayed sums) and halves the count.
+    const [old] = exportLearningRows([unmeasured], LEARNING_HALF_LIFE_MS, 3);
+    expect(old.u).toEqual(row.u);
+    expect(old.un).toBe(1);
+    // Schema 2 consumers see exactly the v38 row.
+    expect(Object.keys(exportLearningRows([unmeasured], 0, 2)[0]).sort()).toEqual(
+      ["class", "d", "dn", "effort", "k", "kn", "model", "n", "provider", "s"]);
+    // A row written before components existed exports as unmeasured.
+    expect(exportLearningRows([{ ...first, ci: null, cr: null, cw: null, co: null, cn: null }], 0, 3)[0])
+      .toMatchObject({ u: null, un: 0 });
+  });
   it("derives a per-decision seed from the execution and attempt", async () => {
     const seed = await routeSeed("00000000-0000-4000-8000-000000000001", 2);
     expect(seed).toBe(createHash("sha256").update("00000000-0000-4000-8000-000000000001:2").digest("hex"));
@@ -98,7 +143,8 @@ describe("route learning capability", () => {
     expect(await supportsRouteLearning(binding({ ...v37, policy_sha256: "b".repeat(64) }), policy, 0)).toBe(false);
     expect(await routeLearningSchema(binding({ ...v37, route_learning_schema: 2 }), policy, 0)).toBe(2);
     expect(await routeLearningSchema(binding(v37), policy, 0)).toBe(1);
-    expect(await routeLearningSchema(binding({ ...v37, route_learning_schema: 3 }), policy, 0)).toBe(0);
+    expect(await routeLearningSchema(binding({ ...v37, route_learning_schema: 3 }), policy, 0)).toBe(3);
+    expect(await routeLearningSchema(binding({ ...v37, route_learning_schema: 4 }), policy, 0)).toBe(0);
     expect(await supportsRouteLearning(binding({ completion_feedback_schema: 1, model_availability_schema: 1, policy_sha256: policy }), policy, 0)).toBe(false);
     expect(await supportsRouteLearning(binding({ ...v37, extra: 1 }), policy, 0)).toBe(false);
   });
@@ -192,12 +238,13 @@ describe("route learning end to end", () => {
     expect(observed).toHaveLength(1);
   });
 
-  it("carries the step's signed usage into the ledger and sends tokens only to a schema-2 policy", async () => {
+  for (const learningSchema of [2, 3] as const) it(`carries the step's signed usage into the ledger and sends tokens only to a schema-${learningSchema} policy`, async () => {
     let persisted: any;
     const observed: LearningObservation[] = [], routeBodies: any[] = [];
     const tokenRow = { ...ledgerRow, k: 150_000, kn: 2 };
+    const componentRow = { ...tokenRow, u: { i: 1_000, r: 90_000, w: 9_000, o: 2_000 }, un: 2 };
     const budget = { consumeStart: async () => true, record: async () => {},
-      learningRows: async (schema?: number) => schema === 2 ? [tokenRow] : [ledgerRow],
+      learningRows: async (schema?: number) => schema === 3 ? [componentRow] : schema === 2 ? [tokenRow] : [ledgerRow],
       observe: async (value: LearningObservation) => { observed.push(value); } };
     const env = {
       ROUTES: { getByName: () => ({
@@ -212,7 +259,7 @@ describe("route learning end to end", () => {
       POLICY_BUNDLES: { get: async () => ({ size: bytes.length, arrayBuffer: async () => bytes.buffer }) },
       RCC_V26: { fetch: async (request: Request | string) => {
         if (typeof request === "string") return Response.json({ completion_feedback_schema: 1, model_availability_schema: 1,
-          policy_sha256: bundle.rcc.policy_sha256, route_learning_schema: 2 });
+          policy_sha256: bundle.rcc.policy_sha256, route_learning_schema: learningSchema });
         routeBodies.push(await request.json());
         return Response.json({ provider: "codex", provider_pinned: false, permission_profile: "read_only",
           model: "gpt-test", effort: "medium", verification_profile: "executed_review",
@@ -227,7 +274,8 @@ describe("route learning end to end", () => {
         execution_context: { input_utf8_bytes: 1000, source_utf8_bytes: 600, history_utf8_bytes: 200,
           completion_feedback: { schema: 1, objective_sha256: objective, observations: [] } } } }) });
     expect((await service.fetch(start, env)).status).toBe(200);
-    expect(routeBodies[0].route_learning).toEqual({ schema: 2, rows: [tokenRow] });
+    expect(routeBodies[0].route_learning).toEqual(learningSchema === 3 ?
+      { schema: 3, rows: [componentRow] } : { schema: 2, rows: [tokenRow] });
     const result = (usage: unknown) => new Request("https://private/decide", { method: "POST", body: JSON.stringify({ version: 3,
       execution_id: executionId, previous: { sequence: 1,
         artifact_ref: `r2://os1-private-results/${executionId}/1/${"f".repeat(64)}.json`, expected_artifact_hash: "f".repeat(64),
@@ -243,9 +291,17 @@ describe("route learning end to end", () => {
       .toEqual({ status: "complete" });
     expect(observed).toHaveLength(1);
     expect(observed[0].tokens).toBe(10_000 + 79_000 + 15_000);
+    // v2 usage cannot split reads from writes: components stay unmeasured.
+    expect(observed[0].components).toBeNull();
     // A result without usage (older client) still records the outcome, as unmeasured.
     await service.fetch(result(undefined), env);
     expect(observed[1].tokens).toBeNull();
+    expect(observed[1].components).toBeNull();
+    // A v3 result records the four billed components whatever schema the policy reads.
+    expect(await (await service.fetch(result({ input_tokens: 800_000, cache_tokens: 790_000, cache_write_tokens: 40_000,
+      output_tokens: 3_000 }), env)).json()).toEqual({ status: "complete" });
+    expect(observed[2].tokens).toBe(10_000 + 79_000 + 15_000);
+    expect(observed[2].components).toEqual({ i: 10_000, r: 750_000, w: 40_000, o: 3_000 });
   });
 
   it("never lets an unreadable ledger or an unrecordable outcome break routing", async () => {

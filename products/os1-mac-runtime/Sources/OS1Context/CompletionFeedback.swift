@@ -139,13 +139,19 @@ public struct CompletionUsageResourceMetadata: Codable, Equatable, Sendable {
 public struct CompletionMeasuredUsage: Codable, Equatable, Sendable {
     public let inputTokens: Int?
     public let outputTokens: Int?
+    /// Every cached input token: cache reads and cache writes.
     public let cacheTokens: Int?
+    /// The part of `cacheTokens` written to the cache (Claude
+    /// `cache_creation_input_tokens`, Codex `cache_write_input_tokens`). Billed
+    /// above fresh input, so route pricing keeps it apart from cache reads.
+    public let cacheWriteTokens: Int?
     public let resource: CompletionUsageResourceMetadata
 
     enum CodingKeys: String, CodingKey {
         case inputTokens = "input_tokens"
         case outputTokens = "output_tokens"
         case cacheTokens = "cache_tokens"
+        case cacheWriteTokens = "cache_write_tokens"
         case resource
     }
 
@@ -153,11 +159,13 @@ public struct CompletionMeasuredUsage: Codable, Equatable, Sendable {
         inputTokens: Int?,
         outputTokens: Int?,
         cacheTokens: Int?,
+        cacheWriteTokens: Int? = nil,
         resource: CompletionUsageResourceMetadata
     ) {
         self.inputTokens = inputTokens
         self.outputTokens = outputTokens
         self.cacheTokens = cacheTokens
+        self.cacheWriteTokens = cacheWriteTokens
         self.resource = resource
     }
 
@@ -169,6 +177,8 @@ public struct CompletionMeasuredUsage: Codable, Equatable, Sendable {
         else { try values.encodeNil(forKey: .outputTokens) }
         if let cacheTokens { try values.encode(cacheTokens, forKey: .cacheTokens) }
         else { try values.encodeNil(forKey: .cacheTokens) }
+        // Absent unless measured: records written before it stay byte-identical.
+        if let cacheWriteTokens { try values.encode(cacheWriteTokens, forKey: .cacheWriteTokens) }
         try values.encode(resource, forKey: .resource)
     }
 }
@@ -631,13 +641,16 @@ public enum CompletionUsageParser {
         let input: Int?
         let output = sum(records, keys: ["output_tokens"])
         let cache: Int?
+        let cacheWrite: Int?
         if claudeNormalization {
             input = sum(records, keys: ["input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"])
             cache = sum(records, keys: ["cache_creation_input_tokens", "cache_read_input_tokens"])
+            cacheWrite = sum(records, keys: ["cache_creation_input_tokens"])
         } else {
             // Codex input_tokens already includes its cached-input subset.
             input = sum(records, keys: ["input_tokens"])
             cache = sum(records, keys: ["cached_input_tokens", "cache_write_input_tokens"])
+            cacheWrite = sum(records, keys: ["cache_write_input_tokens"])
         }
         let resource = CompletionUsageResourceMetadata(
             format: format,
@@ -646,7 +659,8 @@ public enum CompletionUsageParser {
             usageRecordCount: records.count,
             accountingVersion: format == .codexRolloutJSONL ? 2 : 1
         )
-        return CompletionMeasuredUsage(inputTokens: input, outputTokens: output, cacheTokens: cache, resource: resource)
+        return CompletionMeasuredUsage(inputTokens: input, outputTokens: output, cacheTokens: cache,
+                                       cacheWriteTokens: cache == nil ? nil : cacheWrite, resource: resource)
     }
 
     private static func sum(_ records: [[String: Any]], keys: [String]) -> Int? {

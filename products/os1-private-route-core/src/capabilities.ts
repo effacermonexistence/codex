@@ -28,20 +28,22 @@ export async function supportsCompletionFeedback(binding: Fetcher, expectedPolic
   return value !== undefined && (!requireModelAvailability || value.model_availability_schema === 1);
 }
 
-const learningSupport = new WeakMap<Fetcher, Map<string, { schema: 0 | 1 | 2; expires: number }>>();
+const learningSupport = new WeakMap<Fetcher, Map<string, { schema: 0 | 1 | 2 | 3; expires: number }>>();
 
 /**
  * Which route-learning rows the pinned adapter reads: 0 none, 1 outcome and
- * time (v37), 2 also tokens (v38). Asked on every route start, so the answer
+ * time (v37), 2 also tokens (v38), 3 also the billed token components (v47).
+ * Asked on every route start, so the answer
  * is kept per binding for a minute; a failed probe is not kept, and routing
  * then proceeds without learning.
  */
-export async function routeLearningSchema(binding: Fetcher, expectedPolicy: string, nowMs = Date.now()): Promise<0 | 1 | 2> {
+export async function routeLearningSchema(binding: Fetcher, expectedPolicy: string, nowMs = Date.now()): Promise<0 | 1 | 2 | 3> {
   const cached = learningSupport.get(binding)?.get(expectedPolicy);
   if (cached && cached.expires > nowMs) return cached.schema;
   const value = await capabilities(binding, expectedPolicy);
   if (value === undefined) return 0;
-  const schema = value.route_learning_schema === 2 ? 2 : value.route_learning_schema === 1 ? 1 : 0;
+  const schema = value.route_learning_schema === 3 ? 3 : value.route_learning_schema === 2 ? 2 :
+    value.route_learning_schema === 1 ? 1 : 0;
   const entries = learningSupport.get(binding) ?? new Map();
   entries.set(expectedPolicy, { schema, expires: nowMs + 60_000 });
   learningSupport.set(binding, entries);

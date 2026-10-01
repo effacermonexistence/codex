@@ -72,13 +72,15 @@ export function canonicalResult(result: ResultRequest): Uint8Array {
     result.artifact_ref,
   ];
   // v2 signs the step's measured usage with the result, so a forwarded token
-  // count is exactly what the device reported; v1 stays byte-identical.
+  // count is exactly what the device reported; v1 stays byte-identical. v3
+  // also signs the cache writes (a count, or "null" when unmeasured).
   if (!result.usage) return encoder.encode(["os1-result-v1", ...base].join("\n"));
   const count = (value: number | null) => value === null ? "null" : String(value);
-  return encoder.encode([
-    "os1-result-v2", ...base,
-    count(result.usage.input_tokens), count(result.usage.cache_tokens), count(result.usage.output_tokens),
-  ].join("\n"));
+  const counts = [count(result.usage.input_tokens), count(result.usage.cache_tokens), count(result.usage.output_tokens)];
+  if (result.usage.cache_write_tokens !== undefined) {
+    return encoder.encode(["os1-result-v3", ...base, ...counts, count(result.usage.cache_write_tokens)].join("\n"));
+  }
+  return encoder.encode(["os1-result-v2", ...base, ...counts].join("\n"));
 }
 
 export async function signTicket(

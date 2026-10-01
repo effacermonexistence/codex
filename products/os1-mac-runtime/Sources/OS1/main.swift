@@ -557,24 +557,52 @@ struct ArtifactUpload: Codable {
 }
 
 /// Tokens a step spent, signed with its result so the route core can charge
-/// them to the route that ran (route learning schema 2). Counts only.
+/// them to the route that ran (route learning schema 2). Counts only. v3 also
+/// signs the cache writes (a part of `cacheTokens`) so the router prices each
+/// component at the model's own rate (RCC v47, owner 2026-09-30).
 struct StepUsage: Codable, Equatable {
     let inputTokens: Int?
     let outputTokens: Int?
     let cacheTokens: Int?
+    let cacheWriteTokens: Int?
+    /// v3 shape: the gateway requires exactly four keys, v2 exactly three. A
+    /// stored v2 delivery keeps its shape so its signature still verifies.
+    let signsCacheWrites: Bool
+
+    init(inputTokens: Int?, outputTokens: Int?, cacheTokens: Int?) {
+        self.inputTokens = inputTokens; self.outputTokens = outputTokens; self.cacheTokens = cacheTokens
+        self.cacheWriteTokens = nil; self.signsCacheWrites = false
+    }
+
+    init(inputTokens: Int?, outputTokens: Int?, cacheTokens: Int?, cacheWriteTokens: Int?) {
+        self.inputTokens = inputTokens; self.outputTokens = outputTokens; self.cacheTokens = cacheTokens
+        self.cacheWriteTokens = cacheWriteTokens; self.signsCacheWrites = true
+    }
 
     enum CodingKeys: String, CodingKey {
         case inputTokens = "input_tokens"
         case outputTokens = "output_tokens"
         case cacheTokens = "cache_tokens"
+        case cacheWriteTokens = "cache_write_tokens"
     }
 
-    /// The gateway requires all three keys; an unmeasured count is null.
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        inputTokens = try values.decodeIfPresent(Int.self, forKey: .inputTokens)
+        outputTokens = try values.decodeIfPresent(Int.self, forKey: .outputTokens)
+        cacheTokens = try values.decodeIfPresent(Int.self, forKey: .cacheTokens)
+        signsCacheWrites = values.contains(.cacheWriteTokens)
+        cacheWriteTokens = try values.decodeIfPresent(Int.self, forKey: .cacheWriteTokens)
+    }
+
+    /// The gateway requires all keys of the shape; an unmeasured count is null.
     func encode(to encoder: Encoder) throws {
         var values = encoder.container(keyedBy: CodingKeys.self)
         if let inputTokens { try values.encode(inputTokens, forKey: .inputTokens) } else { try values.encodeNil(forKey: .inputTokens) }
         if let outputTokens { try values.encode(outputTokens, forKey: .outputTokens) } else { try values.encodeNil(forKey: .outputTokens) }
         if let cacheTokens { try values.encode(cacheTokens, forKey: .cacheTokens) } else { try values.encodeNil(forKey: .cacheTokens) }
+        guard signsCacheWrites else { return }
+        if let cacheWriteTokens { try values.encode(cacheWriteTokens, forKey: .cacheWriteTokens) } else { try values.encodeNil(forKey: .cacheWriteTokens) }
     }
 
     /// The same trust rule completion feedback uses: Codex counts only from
@@ -590,7 +618,9 @@ struct StepUsage: Codable, Equatable {
         var cache = bounded(usage.cacheTokens)
         if let value = cache, let input, value > input { cache = input }
         guard input != nil || output != nil, (input ?? 0) + (output ?? 0) > 0 else { return nil }
-        return StepUsage(inputTokens: input, outputTokens: output, cacheTokens: cache)
+        // A write is part of the cache; without a known cache it is unmeasured.
+        let write = cache.flatMap { cache in bounded(usage.cacheWriteTokens).map { min($0, cache) } }
+        return StepUsage(inputTokens: input, outputTokens: output, cacheTokens: cache, cacheWriteTokens: write)
     }
 }
 
@@ -1814,14 +1844,18 @@ func resultBytes(_ result: ResultSubmission) -> Data {
     let base = [result.ticket.executionID, String(result.ticket.sequence),
                 result.ticket.nonce, result.resultHash, result.artifactRef]
     // v2 also signs the step's usage; without usage the bytes stay v1 exactly.
+    // v3 also signs the cache writes.
     guard let usage = result.usage else { return Data((["os1-result-v1"] + base).joined(separator: "\n").utf8) }
     func count(_ value: Int?) -> String { value.map(String.init) ?? "null" }
-    return Data((["os1-result-v2"] + base + [count(usage.inputTokens), count(usage.cacheTokens), count(usage.outputTokens)])
-        .joined(separator: "\n").utf8)
+    let counts = [count(usage.inputTokens), count(usage.cacheTokens), count(usage.outputTokens)]
+    if usage.signsCacheWrites {
+        return Data((["os1-result-v3"] + base + counts + [count(usage.cacheWriteTokens)]).joined(separator: "\n").utf8)
+    }
+    return Data((["os1-result-v2"] + base + counts).joined(separator: "\n").utf8)
 }
 
 /// Delivers a result; when a gateway from before signed usage refuses the v2
-/// submission, delivers the same result without usage. That v1 submission is
+/// (or v3) submission, delivers the same result without usage. That v1 submission is
 /// signed by exactly the bytes the artifact upload was signed with.
 func deliverResult(_ client: APIClient, _ submission: ResultSubmission, v1Signature: String) async throws -> RouteResponse {
     do {
@@ -11168,6 +11202,23 @@ func resultUsageSelfTest() throws {
     let json = try JSONSerialization.jsonObject(with: JSONEncoder().encode(measured)) as? [String: Any]
     try check(Set((json?["usage"] as? [String: Any])?.keys ?? [:].keys) == ["input_tokens", "output_tokens", "cache_tokens"],
               "usage must carry exactly the three counts")
+    // v3 also signs the cache writes, in the gateway's exact form.
+    var written = plain
+    written.usage = StepUsage(inputTokens: 800_000, outputTokens: 3_000, cacheTokens: 790_000, cacheWriteTokens: 40_000)
+    try check(String(decoding: resultBytes(written), as: UTF8.self) == [
+        "os1-result-v3", ticket.executionID, "2", ticket.nonce, plain.resultHash, plain.artifactRef,
+        "800000", "790000", "3000", "40000"].joined(separator: "\n"), "v3 bytes differ from the gateway's canonical form")
+    let writtenJSON = try JSONSerialization.jsonObject(with: JSONEncoder().encode(written)) as? [String: Any]
+    try check(Set((writtenJSON?["usage"] as? [String: Any])?.keys ?? [:].keys) == ["input_tokens", "output_tokens", "cache_tokens", "cache_write_tokens"],
+              "v3 usage must carry exactly the four counts")
+    let unmeasuredWrite = StepUsage(inputTokens: 1, outputTokens: 1, cacheTokens: 0, cacheWriteTokens: nil)
+    try check((try JSONSerialization.jsonObject(with: JSONEncoder().encode(unmeasuredWrite)) as? [String: Any])?["cache_write_tokens"] is NSNull,
+              "an unmeasured cache write is null, not absent")
+    // A stored delivery keeps its signed shape through decode and encode.
+    for stored in [measured, written] {
+        let roundTrip = try JSONDecoder().decode(ResultSubmission.self, from: JSONEncoder().encode(stored))
+        try check(resultBytes(roundTrip) == resultBytes(stored), "a stored delivery must re-encode to its signed bytes")
+    }
     let plainJSON = try JSONSerialization.jsonObject(with: JSONEncoder().encode(plain)) as? [String: Any]
     try check(plainJSON?["usage"] == nil, "a result without usage must not send the key")
     let unmeasured = try JSONSerialization.jsonObject(with: JSONEncoder().encode(
@@ -11183,15 +11234,21 @@ func resultUsageSelfTest() throws {
     }
     let claudeUsage = CompletionMeasuredUsage(inputTokens: 100, outputTokens: 10, cacheTokens: 400,
                                               resource: resource(.claudeResultJSON, 1))
-    try check(StepUsage.measured(claudeUsage, provider: "claude") == StepUsage(inputTokens: 100, outputTokens: 10, cacheTokens: 100),
+    try check(StepUsage.measured(claudeUsage, provider: "claude") == StepUsage(inputTokens: 100, outputTokens: 10, cacheTokens: 100,
+                                                                              cacheWriteTokens: nil),
               "cache never exceeds input")
+    let claudeWrites = CompletionMeasuredUsage(inputTokens: 1_000, outputTokens: 10, cacheTokens: 900, cacheWriteTokens: 950,
+                                               resource: resource(.claudeResultJSON, 1))
+    try check(StepUsage.measured(claudeWrites, provider: "claude") == StepUsage(inputTokens: 1_000, outputTokens: 10, cacheTokens: 900,
+                                                                               cacheWriteTokens: 900),
+              "a cache write never exceeds the cache")
     try check(StepUsage.measured(CompletionMeasuredUsage(inputTokens: 5, outputTokens: 1, cacheTokens: 0,
         resource: resource(.codexRolloutJSONL, 1)), provider: "codex") == nil, "old Codex accounting is not trusted")
     try check(StepUsage.measured(CompletionMeasuredUsage(inputTokens: 5, outputTokens: 1, cacheTokens: 0,
         resource: resource(.codexRolloutJSONL, 2)), provider: "codex") != nil, "deduplicated Codex accounting is sent")
     try check(StepUsage.measured(claudeUsage, provider: "local") == nil && StepUsage.measured(nil, provider: "claude") == nil,
               "no usage for local steps or unmeasured runs")
-    print("Result usage: \(checks) checks OK; v1 bytes unchanged, v2 matches the gateway")
+    print("Result usage: \(checks) checks OK; v1 bytes unchanged, v2 and v3 match the gateway")
 }
 
 func usage() {
