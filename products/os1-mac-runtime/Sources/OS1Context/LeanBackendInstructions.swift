@@ -22,11 +22,11 @@ public enum LeanBackendInstructions {
         environment[killSwitch] != "1"
     }
 
-    /// Codex's lean payload is measured (above). Claude's is built the same
-    /// way but stays off until a blind Claude comparison has passed; the Claude
-    /// CLI was signed out on 2026-09-30, so it could not be measured yet.
-    /// `OS1_LEAN_CLAUDE=1` turns it on for that measurement.
-    public static let claudeLeanVerified = false
+    /// Claude measured 2026-09-30 (same harness, fable at max, six owner
+    /// requests): CLAUDE.md skipped + projection appended was preferred by the
+    /// blind judges 20 / 3 / 1 over the owner's full CLAUDE.md, with 84.6 % fewer
+    /// input tokens. `OS1_FULL_BACKEND_INSTRUCTIONS=1` still restores the default.
+    public static let claudeLeanVerified = true
 
     public static func claudeEnabled(_ environment: [String: String] = ProcessInfo.processInfo.environment) -> Bool {
         enabled(environment) && (claudeLeanVerified || environment["OS1_LEAN_CLAUDE"] == "1")
