@@ -98,6 +98,13 @@ public enum HumanOutputContract {
         """
     }
 
+    /// Claude kept answering explicit short requests at 1.7-2.4x the length
+    /// of direct Codex, adding a rationale, a "what changes the outcome"
+    /// section (the owner's Conclusion / Core reason / Breaking variable
+    /// layout) and a note on files it did not modify. Both judge families
+    /// preferred the short direct answer (2026-10-01, R2/R4: 16/16).
+    static let claudeBrevity = "The user asked for a short answer, and that outranks every default answer layout, including Conclusion / Core reason / Breaking variable: give a lead sentence and only the essential facts, in as few lines as those facts need. Keep them exact: the specific names, numbers and conditions, and an effect that can fail stated as attempted, not done. Leave out background, design rationale, history, alternatives, edge cases, caveats and notes about what you did or did not read, run or modify, unless the user asked for them."
+
     /// Claude gets only the guards against OS-1-specific failures. With the
     /// layout and design guidance written for Codex, Claude's answers grew
     /// 1.6x on a conceptual question (lean payload + this contract: 2,621 vs
@@ -106,7 +113,7 @@ public enum HumanOutputContract {
         """
         User-facing OS-1 answer contract:
         - \(preservesOriginalValues(request) ? "The user requests original values or wording. Preserve them exactly, including their original language; do not add a translation just to satisfy a language preference." : wantsKorean(request) ? "Answer in Korean; preserve identifiers and code as needed." : "Use the user's requested language.")
-        - \(wantsBrevity(request) ? "The user asked for a short answer: give only the essentials that answer it, and keep them exact: the specific names, numbers and conditions, and an effect that can fail stated as attempted, not done. Leave out edge cases and caveats they did not ask for." : "Answer at the depth the request needs; do not pad it with material the user did not ask for.")
+        - \(wantsBrevity(request) ? claudeBrevity : "Answer at the depth the request needs; do not pad it with material the user did not ask for.")
         - Do not make a wide matrix of ALL_CAPS stage, gate or dependency IDs the main explanation, and do not append JSON stages/depends_on configurations unless explicitly requested.
         - Do not claim tests ran or a scientific problem is solved without evidence. Do not repeat hashes, model names, effort or permission settings unless the user asks.
         """

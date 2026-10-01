@@ -406,6 +406,12 @@ final class SourceContextTests {
                       "양자컴퓨터는 어떤 문제에서 유리해? 두 문장으로 답해.", "라우팅 설계 핵심만.", "Explain it briefly."] {
             XCTAssertTrue(HumanOutputContract.wantsBrevity(short))
             XCTAssertTrue(HumanOutputContract.instructions(for: short).contains("The user asked for a short answer"))
+            // Claude: the length request outranks the owner's default answer
+            // layout and drops "files were not modified" notes (2026-10-01).
+            let claude = HumanOutputContract.instructions(for: short, provider: "claude")
+            XCTAssertTrue(claude.contains("The user asked for a short answer") && claude.contains("outranks every default answer layout")
+                          && claude.contains("did or did not read, run or modify"))
+            XCTAssertFalse(HumanOutputContract.instructions(for: short).contains("outranks every default answer layout"))
         }
         for deep in ["바다와 호수의 차이를 스무 항목으로 자세히 설명해. 각 항목은 세 문장씩 써 줘.",
                      "셀프 업데이트가 어떤 순서로 도는지, 어디서 막힐 수 있는지 코드 기준으로 설명해봐.", request] {

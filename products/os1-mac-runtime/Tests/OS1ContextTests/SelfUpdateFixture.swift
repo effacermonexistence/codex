@@ -119,6 +119,10 @@ func runSelfUpdateFixtures() throws {
           && card.contains("do NOT run `self-update stage`") && card.contains("commits the change on the current branch, pushes it")
           && card.contains("0123456789ab") && card.contains("Task scope: readOnly")
           && card.contains("never say OS-1 can only be partially self-repaired"), "contract keeps the mechanical tail with OS-1, forbids manual installs, names build floor and scope")
+    // A read question about OS-1's code is not a change report (2026-10-01:
+    // "파일 수정이나 테스트 실행은 하지 않았습니다" cost a short answer its focus).
+    check(card.contains("If you changed files, report what you changed") && card.contains("If the request only needed reading")
+          && !card.contains("4. Report what you changed"), "only a change is reported")
 
     // The release link is re-pointed by every release build in any checkout
     // (2026-09-23: a fleet self-repair committed a link into its job cache).
