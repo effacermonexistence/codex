@@ -242,6 +242,21 @@ class ImportTest(LedgerTestCase):
         self.assertEqual([line.split(": ", 1)[0] for line in errors], ["line 5", "line 7"])
         self.assertEqual(self.ok("list"), "1\t2024-03-01\t-1000\t식비\ttwo lines\n")
 
+    def test_malformed_rows_are_skipped_without_swallowing_later_rows(self):
+        stdout, errors = self.run_import(
+            "date,amount,category,memo\n"
+            '2024-03-01,-1000,식비,"closed"text\n'  # line 2: text after the closing quote
+            "2024-03-02,-2000,식비,ok\n"  # line 3
+            '2024-03-03,-3000,식비,"never closed\n'  # line 4: the quote is never closed
+            "2024-03-04,-4000,식비,still imported\n"  # line 5
+        )
+        self.assertEqual(stdout, "imported 2 skipped 2\n")
+        self.assertEqual([line.split(": ", 1)[0] for line in errors], ["line 2", "line 4"])
+        self.assertEqual(
+            self.ok("list"),
+            "1\t2024-03-02\t-2000\t식비\tok\n2\t2024-03-04\t-4000\t식비\tstill imported\n",
+        )
+
     def test_handles_bom_and_crlf_and_continues_ids(self):
         self.ok("add", "2024-01-01", "-1", "기타")
         stdout, errors = self.run_import(

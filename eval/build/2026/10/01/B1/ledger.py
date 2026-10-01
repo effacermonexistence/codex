@@ -258,30 +258,46 @@ def cmd_report(args) -> None:
     print(f"TOTAL\t{sum(sums.values())}")
 
 
-def read_csv_rows(path: str) -> list:
-    """Return (line number, fields) for every data row; the header is line 1.
+def csv_records(text: str):
+    """Yield (line number, fields or csv.Error) for each record of a CSV text.
 
-    Line numbers are physical file lines, so a quoted field spanning several
-    lines shifts the rows after it. Empty lines are ignored.
+    Line numbers are physical lines and a record reports its first line. After
+    a parse error such as an unclosed quote, parsing resumes on the line after
+    the broken record's first line, so one bad row cannot swallow the rest.
+    """
+    lines = io.StringIO(text, newline="").readlines()
+    start = 0
+    while start < len(lines):
+        reader = csv.reader((lines[i] for i in range(start, len(lines))), strict=True)
+        done = 0  # lines used by the records already yielded from this reader
+        try:
+            for fields in reader:
+                yield start + done + 1, fields
+                done = reader.line_num
+            return
+        except csv.Error as exc:
+            yield start + done + 1, exc
+            start += done + 1
+
+
+def read_csv(path: str) -> tuple:
+    """Parse an import file into (valid rows, [(line number, reason), ...]).
+
+    The header is line 1. Empty lines are ignored; any other row that is
+    malformed or fails validation is reported against its line.
     """
     try:
         with open(path, encoding="utf-8-sig", newline="") as f:
             text = f.read()
     except (OSError, UnicodeDecodeError) as exc:
         raise LedgerError(f"cannot read CSV file {path}: {exc}") from None
-    reader = csv.reader(io.StringIO(text, newline=""))
-    rows = []
+    rows, problems = [], []
     header_seen = False
-    last_line = 0
-    try:
-        for fields in reader:
-            line_number, last_line = last_line + 1, reader.line_num
-            if not fields:  # an empty line; a row of empty cells is still validated
-                continue
-            if header_seen:
-                rows.append((line_number, fields))
-                continue
-            names = [field.strip().lower() for field in fields]
+    for line_number, fields in csv_records(text):
+        if fields == []:  # an empty line; a row of empty cells is still validated
+            continue
+        if not header_seen:
+            names = [] if isinstance(fields, csv.Error) else [n.strip().lower() for n in fields]
             while names and not names[-1]:
                 names.pop()
             if tuple(names) not in (CSV_HEADER, CSV_HEADER[:3]):
@@ -289,9 +305,14 @@ def read_csv_rows(path: str) -> list:
                     f"CSV file {path} must start with the header {','.join(CSV_HEADER)}"
                 )
             header_seen = True
-    except csv.Error as exc:
-        raise LedgerError(f"cannot parse CSV file {path} at line {reader.line_num}: {exc}") from None
-    return rows
+        elif isinstance(fields, csv.Error):
+            problems.append((line_number, f"malformed CSV row ({fields})"))
+        else:
+            try:
+                rows.append(parse_csv_row(fields))
+            except ValueError as exc:
+                problems.append((line_number, str(exc)))
+    return rows, problems
 
 
 def parse_csv_row(fields: list) -> tuple:
@@ -313,21 +334,15 @@ def parse_csv_row(fields: list) -> tuple:
 
 
 def cmd_import(args) -> None:
-    rows = read_csv_rows(args.csv_path)
+    rows, problems = read_csv(args.csv_path)
     db = load_db(args.db)
-    imported = skipped = 0
-    for line_number, fields in rows:
-        try:
-            date, amount, category, memo = parse_csv_row(fields)
-        except ValueError as exc:
-            print(f"line {line_number}: {exc}", file=sys.stderr)
-            skipped += 1
-            continue
-        add_entry(db, date, amount, category, memo)
-        imported += 1
-    if imported:
+    for row in rows:
+        add_entry(db, *row)
+    if rows:
         save_db(args.db, db)
-    print(f"imported {imported} skipped {skipped}")
+    for line_number, reason in problems:
+        print(f"line {line_number}: {reason}", file=sys.stderr)
+    print(f"imported {len(rows)} skipped {len(problems)}")
 
 
 def build_parser() -> argparse.ArgumentParser:
