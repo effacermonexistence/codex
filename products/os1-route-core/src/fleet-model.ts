@@ -50,8 +50,12 @@ export type FleetPlacement = {
 
 function supports(node: FleetNode, profile: FleetProfile): boolean {
   if (profile === "claude") return node.has_claude;
+  if (profile === "codex") return node.has_codex;
   if (profile === "exo") return node.exo_ready && node.exo_nodes >= 2;
-  return node.has_codex;
+  // os1/build/test run through OS-1's own router, which uses whichever
+  // backend the node can run. A node whose Codex hit its usage limit still
+  // takes them on Claude (2026-10-01: every auto job was refused instead).
+  return node.has_codex || node.has_claude;
 }
 
 function score(node: FleetNode, requirements: FleetRequirements): number {

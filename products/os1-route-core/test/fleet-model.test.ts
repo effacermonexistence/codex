@@ -54,6 +54,19 @@ describe("fleet objective", () => {
     });
   }
 
+  it("routes OS-1 jobs to a node that can run either backend, provider jobs only to that provider", () => {
+    const requirements = { min_memory_mib: 1_024, cpu_weight: 50, prefer_device_id: null };
+    const claudeOnly = node({ has_codex: false });
+    const codexOnly = node({ has_claude: false });
+    for (const profile of ["os1", "build", "test"] as const) {
+      expect(placeFleetJob([claudeOnly], profile, requirements, now)?.executor_device_id).toBe("device:pro");
+      expect(placeFleetJob([codexOnly], profile, requirements, now)?.executor_device_id).toBe("device:pro");
+      expect(placeFleetJob([node({ has_codex: false, has_claude: false })], profile, requirements, now)).toBeNull();
+    }
+    expect(placeFleetJob([claudeOnly], "codex", requirements, now)).toBeNull();
+    expect(placeFleetJob([codexOnly], "claude", requirements, now)).toBeNull();
+  });
+
   it("preserves exact eligibility boundaries before applying preference", () => {
     const preferred = node({ device_id: "device:air", last_seen_ms: now - 30_000, memory_available_mib: 2_048 });
     expect(placeFleetJob([node({}), preferred], "codex", {
@@ -150,10 +163,12 @@ describe("fleet objective", () => {
 
   it("requires the executor used by every single-node profile", () => {
     const requirements = { min_memory_mib: 1_024, cpu_weight: 50, prefer_device_id: null };
+    const none = { has_codex: false, has_claude: false };
     expect(placeFleetJob([node({ has_codex: false })], "codex", requirements, now)).toBeNull();
-    expect(placeFleetJob([node({ has_codex: false })], "os1", requirements, now)).toBeNull();
-    expect(placeFleetJob([node({ has_codex: false })], "build", requirements, now)).toBeNull();
-    expect(placeFleetJob([node({ has_codex: false })], "test", requirements, now)).toBeNull();
+    // OS-1's router runs os1/build/test on whichever backend the node has.
+    expect(placeFleetJob([node(none)], "os1", requirements, now)).toBeNull();
+    expect(placeFleetJob([node(none)], "build", requirements, now)).toBeNull();
+    expect(placeFleetJob([node(none)], "test", requirements, now)).toBeNull();
     expect(placeFleetJob([node({ has_claude: false })], "claude", requirements, now)).toBeNull();
   });
 });
