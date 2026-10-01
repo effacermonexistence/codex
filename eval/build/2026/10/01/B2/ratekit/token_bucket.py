@@ -66,6 +66,6 @@ class TokenBucket:
         elapsed = now - self._updated
         if elapsed <= 0:
             return
-        earned = int(elapsed * self.refill_per_second)
+        earned = elapsed * self.refill_per_second
         self._tokens = min(float(self.capacity), self._tokens + earned)
         self._updated = now
