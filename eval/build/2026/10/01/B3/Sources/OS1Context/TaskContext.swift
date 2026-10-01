@@ -1,0 +1,1165 @@
+import Darwin
+import Foundation
+
+/// OS1-owned shared task state for one conversation. Backend session IDs are
+/// bindings inside this state, never a substitute for it: a new native session
+/// must not reset the objective, decisions, project baseline or sources.
+public struct TaskContext: Codable, Equatable, Sendable {
+    public static let schemaVersion = 1
+
+    public enum ObjectiveKind: String, Codable, Sendable { case acquire, prepare, modify, explain, verify, other }
+    public enum Scope: String, Codable, Sendable {
+        case readOnly = "read_only", workspaceWrite = "workspace_write", fullAccess = "full_access"
+    }
+
+    public struct Objective: Codable, Equatable, Sendable {
+        public var requestText: String
+        public var kind: ObjectiveKind
+        public var completionConditions: [String]
+        public var scope: Scope
+        public var prohibitions: [String]
+        public var pendingDecisions: [String]
+        public init(requestText: String, kind: ObjectiveKind = .other, completionConditions: [String] = [],
+                    scope: Scope = .readOnly, prohibitions: [String] = [], pendingDecisions: [String] = []) {
+            self.requestText = requestText; self.kind = kind; self.completionConditions = completionConditions
+            self.scope = scope; self.prohibitions = prohibitions; self.pendingDecisions = pendingDecisions
+        }
+    }
+
+    /// A recorded fact about a project version. `verifiedAt` is set only when
+    /// OS1 actually checked the live state; a recorded pointer is never live.
+    public struct BaselineRecord: Codable, Equatable, Sendable {
+        public var id: String
+        public var key: String?
+        public var sha256: String?
+        public var bytes: Int?
+        public var recordedAt: String?
+        public var verifiedAt: Date?
+        public init(id: String, key: String? = nil, sha256: String? = nil, bytes: Int? = nil,
+                    recordedAt: String? = nil, verifiedAt: Date? = nil) {
+            self.id = id; self.key = key; self.sha256 = sha256; self.bytes = bytes
+            self.recordedAt = recordedAt; self.verifiedAt = verifiedAt
+        }
+    }
+
+    public struct ProjectBaseline: Codable, Equatable, Sendable {
+        public var projectID: String
+        public var repository: String?
+        public var workspace: String?
+        public var recoveryBaseline: BaselineRecord?
+        public var operatingRecord: BaselineRecord?
+        public var liveVerified: BaselineRecord?
+        public init(projectID: String, repository: String? = nil, workspace: String? = nil,
+                    recoveryBaseline: BaselineRecord? = nil, operatingRecord: BaselineRecord? = nil,
+                    liveVerified: BaselineRecord? = nil) {
+            self.projectID = projectID; self.repository = repository; self.workspace = workspace
+            self.recoveryBaseline = recoveryBaseline; self.operatingRecord = operatingRecord; self.liveVerified = liveVerified
+        }
+    }
+
+    public enum SourceRole: String, Codable, Sendable {
+        case sourceCode = "source_code", operatingReleaseRecord = "operating_release_record",
+             recoveryBaseline = "recovery_baseline", researchOriginal = "research_original",
+             testResult = "test_result", userDocument = "user_document", retrievedSnapshot = "retrieved_snapshot"
+    }
+    public enum Coverage: String, Codable, Sendable { case full, excerpt, truncated }
+    public enum Verification: String, Codable, Sendable { case verified, unverified, mismatch }
+
+    public struct Provenance: Codable, Equatable, Sendable {
+        public var repository: String?
+        public var commit: String?
+        public var bucket: String?
+        public var key: String?
+        public var path: String?
+        public var sha256: String?
+        public var bytes: Int?
+        public var retrievedAt: Date?
+        public init(repository: String? = nil, commit: String? = nil, bucket: String? = nil, key: String? = nil,
+                    path: String? = nil, sha256: String? = nil, bytes: Int? = nil, retrievedAt: Date? = nil) {
+            self.repository = repository; self.commit = commit; self.bucket = bucket; self.key = key
+            self.path = path; self.sha256 = sha256; self.bytes = bytes; self.retrievedAt = retrievedAt
+        }
+    }
+
+    public struct TaskSource: Codable, Equatable, Sendable {
+        public var id: UUID
+        public var role: SourceRole
+        public var label: String
+        public var reference: SourceReference?
+        public var provenance: Provenance
+        public var coverage: Coverage
+        public var verification: Verification
+        public var supersedes: UUID?
+        public init(id: UUID = UUID(), role: SourceRole, label: String, reference: SourceReference? = nil,
+                    provenance: Provenance = Provenance(), coverage: Coverage = .full,
+                    verification: Verification = .unverified, supersedes: UUID? = nil) {
+            self.id = id; self.role = role; self.label = label; self.reference = reference
+            self.provenance = provenance; self.coverage = coverage; self.verification = verification
+            self.supersedes = supersedes
+        }
+    }
+
+    public struct BackendBinding: Codable, Equatable, Sendable {
+        public var provider: String
+        public var nativeSessionID: String
+        public var environmentIdentity: String?
+        public var lastIngestedCursor: String?
+        public var lastHandedRevision: Int?
+        public var capabilities: [String]
+        public var checkedAt: Date?
+        public init(provider: String, nativeSessionID: String, environmentIdentity: String? = nil,
+                    lastIngestedCursor: String? = nil, lastHandedRevision: Int? = nil,
+                    capabilities: [String] = [], checkedAt: Date? = nil) {
+            self.provider = provider; self.nativeSessionID = nativeSessionID; self.environmentIdentity = environmentIdentity
+            self.lastIngestedCursor = lastIngestedCursor; self.lastHandedRevision = lastHandedRevision
+            self.capabilities = capabilities; self.checkedAt = checkedAt
+        }
+    }
+
+    public enum SideEffects: String, Codable, Sendable { case none, possible, confirmed, unknown }
+    public enum Adoption: String, Codable, Sendable { case pending, adopted, rejected, unverified }
+
+    public struct ExecutionRecord: Codable, Equatable, Sendable {
+        public var executionID: String
+        public var provider: String
+        public var stage: String
+        public var startedAt: Date
+        public var lastProgressAt: Date?
+        public var endedAt: Date?
+        public var sideEffects: SideEffects
+        public var artifacts: [String]
+        public var retryReason: String?
+        public var adoption: Adoption
+        public var contextRevision: Int
+        public init(executionID: String, provider: String, stage: String, startedAt: Date, lastProgressAt: Date? = nil,
+                    endedAt: Date? = nil, sideEffects: SideEffects = .unknown, artifacts: [String] = [],
+                    retryReason: String? = nil, adoption: Adoption = .pending, contextRevision: Int) {
+            self.executionID = executionID; self.provider = provider; self.stage = stage; self.startedAt = startedAt
+            self.lastProgressAt = lastProgressAt; self.endedAt = endedAt; self.sideEffects = sideEffects
+            self.artifacts = artifacts; self.retryReason = retryReason; self.adoption = adoption
+            self.contextRevision = contextRevision
+        }
+    }
+
+    public struct Decision: Codable, Equatable, Sendable {
+        public var id: UUID
+        public var text: String
+        public var madeAt: Date
+        public var supersedes: UUID?
+        public init(id: UUID = UUID(), text: String, madeAt: Date, supersedes: UUID? = nil) {
+            self.id = id; self.text = text; self.madeAt = madeAt; self.supersedes = supersedes
+        }
+    }
+
+    public struct Fact: Codable, Equatable, Sendable {
+        public var text: String
+        public var verified: Bool
+        public var evidence: String?
+        public init(text: String, verified: Bool, evidence: String? = nil) {
+            self.text = text; self.verified = verified; self.evidence = evidence
+        }
+    }
+
+    public var schemaVersion: Int
+    public var contextRevision: Int
+    public var conversationID: UUID
+    public var projectID: String?
+    public var objectiveID: UUID
+    public var createdAt: Date
+    public var updatedAt: Date
+    public var objective: Objective
+    public var project: ProjectBaseline?
+    public var sources: [TaskSource]
+    public var bindings: [BackendBinding]
+    public var executions: [ExecutionRecord]
+    public var decisions: [Decision]
+    public var facts: [Fact]
+    public var nextSteps: [String]
+    public var blockers: [String]
+    /// Acquisition is owned by OS1 even when no backend has been dispatched.
+    public var sourcePreparation: SourcePreparationState?
+
+    public init(conversationID: UUID, objective: Objective, projectID: String? = nil, now: Date = Date()) {
+        schemaVersion = Self.schemaVersion; contextRevision = 1
+        self.conversationID = conversationID; self.projectID = projectID; objectiveID = UUID()
+        createdAt = now; updatedAt = now; self.objective = objective; project = nil
+        sources = []; bindings = []; executions = []; decisions = []; facts = []; nextSteps = []; blockers = []
+    }
+
+    /// First revision derived from the fields an existing conversation already
+    /// stores. Nothing is deleted from the conversation; older executables keep
+    /// reading their own fields.
+    public static func migrated(conversationID: UUID, request: String, workspace: String?, sourceContext: SourceReference?,
+                                codexSessionID: String?, claudeSessionID: String?, now: Date = Date()) -> TaskContext {
+        var context = TaskContext(conversationID: conversationID,
+                                  objective: Objective(requestText: request, kind: ObjectiveKind.classify(request)), now: now)
+        if let workspace, !workspace.isEmpty {
+            context.project = ProjectBaseline(projectID: "workspace:" + URL(fileURLWithPath: workspace).lastPathComponent,
+                                              workspace: workspace)
+        }
+        if let sourceContext {
+            context.sources.append(TaskSource(role: .retrievedSnapshot, label: "migrated conversation source",
+                                              reference: sourceContext, provenance: Provenance(sha256: sourceContext.sha256),
+                                              coverage: .full, verification: sourceContext.sha256.isEmpty ? .unverified : .verified))
+        }
+        for (provider, id) in [("codex", codexSessionID), ("claude", claudeSessionID)] {
+            if let id, UUID(uuidString: id) != nil {
+                context.bindings.append(BackendBinding(provider: provider, nativeSessionID: id.lowercased()))
+            }
+        }
+        return context
+    }
+
+    // MARK: - Mutations (each bumps the revision)
+
+    public mutating func touch(now: Date = Date()) {
+        contextRevision += 1
+        updatedAt = now
+    }
+
+    /// Sources accumulate. A new source may explicitly supersede an older one of
+    /// the same role; it never silently removes a source with a different role.
+    public mutating func attach(_ source: TaskSource, replacing previous: UUID? = nil, now: Date = Date()) {
+        var incoming = source
+        if let previous, sources.contains(where: { $0.id == previous && $0.role == source.role }) {
+            incoming.supersedes = previous
+        }
+        if let existing = sources.firstIndex(where: {
+            $0.role == incoming.role && $0.provenance.sha256 != nil && $0.provenance.sha256 == incoming.provenance.sha256
+        }) {
+            sources[existing].verification = incoming.verification
+            sources[existing].coverage = incoming.coverage
+            touch(now: now)
+            return
+        }
+        sources.append(incoming)
+        touch(now: now)
+    }
+
+    /// Sources that have not been explicitly superseded by a newer one.
+    public var activeSources: [TaskSource] {
+        let superseded = Set(sources.compactMap(\.supersedes))
+        return sources.filter { !superseded.contains($0.id) }
+    }
+
+    public mutating func bind(provider: String, nativeSessionID: String, capabilities: [String]? = nil,
+                              environmentIdentity: String? = nil, now: Date = Date()) {
+        let normalized = nativeSessionID.lowercased()
+        if let index = bindings.firstIndex(where: { $0.provider == provider }) {
+            if bindings[index].nativeSessionID != normalized {
+                // A new native session for the same provider keeps the task; only
+                // the ingestion cursor restarts.
+                bindings[index].nativeSessionID = normalized
+                bindings[index].lastIngestedCursor = nil
+            }
+            if let capabilities { bindings[index].capabilities = capabilities; bindings[index].checkedAt = now }
+            if let environmentIdentity { bindings[index].environmentIdentity = environmentIdentity }
+        } else {
+            bindings.append(BackendBinding(provider: provider, nativeSessionID: normalized, environmentIdentity: environmentIdentity,
+                                           capabilities: capabilities ?? [], checkedAt: capabilities == nil ? nil : now))
+        }
+        touch(now: now)
+    }
+
+    public mutating func decide(_ text: String, replacing previous: UUID? = nil, now: Date = Date()) {
+        decisions.append(Decision(text: text, madeAt: now, supersedes: previous))
+        touch(now: now)
+    }
+
+    /// Decisions not superseded by a later decision, oldest first.
+    public var activeDecisions: [Decision] {
+        let superseded = Set(decisions.compactMap(\.supersedes))
+        return decisions.filter { !superseded.contains($0.id) }
+    }
+
+    public mutating func record(execution: ExecutionRecord, now: Date = Date()) {
+        if let index = executions.firstIndex(where: { $0.executionID == execution.executionID }) {
+            executions[index] = execution
+        } else {
+            executions.append(execution)
+        }
+        touch(now: now)
+    }
+
+    /// A late result is adoptable only when no decision or objective change
+    /// happened after the revision that execution was handed.
+    public func acceptsLateResult(fromRevision revision: Int) -> Bool {
+        let decisionRevisionChanged = decisions.contains { $0.madeAt > updatedAt } // defensive; decisions bump revision
+        return revision >= latestSemanticRevision && !decisionRevisionChanged
+    }
+
+    /// Revision of the last change that alters what a backend must know
+    /// (objective, decision, source set, project baseline). Bindings and
+    /// execution bookkeeping do not invalidate in-flight work.
+    public var latestSemanticRevision: Int { semanticRevision }
+    private var semanticRevision: Int {
+        // Encoded as a stored field on every semantic mutation below.
+        return _semanticRevision ?? 1
+    }
+    private var _semanticRevision: Int?
+
+    private mutating func semanticChange(now: Date) {
+        touch(now: now)
+        _semanticRevision = contextRevision
+    }
+
+    public mutating func setObjective(_ objective: Objective, now: Date = Date()) {
+        self.objective = objective
+        objectiveID = UUID()
+        semanticChange(now: now)
+    }
+
+    public mutating func setProject(_ baseline: ProjectBaseline, now: Date = Date()) {
+        project = baseline
+        projectID = baseline.projectID
+        semanticChange(now: now)
+    }
+
+    public mutating func attachSemantic(_ source: TaskSource, replacing previous: UUID? = nil, now: Date = Date()) {
+        attach(source, replacing: previous, now: now)
+        _semanticRevision = contextRevision
+    }
+
+    public mutating func decideSemantic(_ text: String, replacing previous: UUID? = nil, now: Date = Date()) {
+        decide(text, replacing: previous, now: now)
+        _semanticRevision = contextRevision
+    }
+
+    // MARK: - Adopting a runtime result
+
+    /// The app hands a context revision to a run and receives a context back.
+    /// If nothing changed in the app since the handoff, the result replaces the
+    /// stored context. Otherwise the app keeps its newer objective/decisions
+    /// and only merges bookkeeping (sources, bindings, executions, project,
+    /// facts) from the result. A result for another conversation is rejected.
+    public func adopting(_ result: TaskContext, handedRevision: Int?) -> TaskContext {
+        guard result.conversationID == conversationID else { return self }
+        if let handedRevision, handedRevision == contextRevision, result.conversationID == conversationID,
+           result.contextRevision >= contextRevision {
+            return result
+        }
+        var merged = self
+        for source in result.sources where !merged.sources.contains(where: {
+            $0.id == source.id || (source.provenance.sha256 != nil && $0.provenance.sha256 == source.provenance.sha256 && $0.role == source.role)
+        }) { merged.sources.append(source) }
+        for binding in result.bindings {
+            merged.bind(provider: binding.provider, nativeSessionID: binding.nativeSessionID,
+                        capabilities: binding.capabilities.isEmpty ? nil : binding.capabilities,
+                        environmentIdentity: binding.environmentIdentity)
+            if let index = merged.bindings.firstIndex(where: { $0.provider == binding.provider }),
+               merged.bindings[index].lastIngestedCursor == nil {
+                merged.bindings[index].lastIngestedCursor = binding.lastIngestedCursor
+            }
+        }
+        for execution in result.executions { merged.record(execution: execution) }
+        if merged.project == nil, let project = result.project { merged.project = project; merged.projectID = project.projectID }
+        for fact in result.facts where !merged.facts.contains(fact) { merged.facts.append(fact) }
+        if result.objectiveID == objectiveID { merged.sourcePreparation = result.sourcePreparation }
+        if merged.nextSteps.isEmpty { merged.nextSteps = result.nextSteps }
+        merged.touch()
+        return merged
+    }
+
+    /// "결정: …" / "decision: …" lines are the only automatic decision capture;
+    /// everything else stays a request until the user states it as a decision.
+    public static func explicitDecisions(in request: String) -> [String] {
+        request.split(whereSeparator: \.isNewline).compactMap { line -> String? in
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            for marker in ["결정:", "결정 :", "decision:", "Decision:", "DECISION:"] where trimmed.hasPrefix(marker) {
+                let body = trimmed.dropFirst(marker.count).trimmingCharacters(in: .whitespaces)
+                return body.isEmpty ? nil : String(body.prefix(400))
+            }
+            return nil
+        }
+    }
+
+    // MARK: - Handoff
+
+    /// The block every backend receives regardless of transcript truncation.
+    /// Sections are dropped from the least essential end only; the objective,
+    /// scope, prohibitions and active decisions are never dropped.
+    public func handoffBlock(limit: Int = 12_000) -> String {
+        var essential: [String] = []
+        essential.append("OS-1 TASK CONTEXT (revision \(contextRevision), conversation \(conversationID.uuidString.lowercased()))")
+        essential.append("Objective: \(objective.requestText.replacingOccurrences(of: "\n", with: " ").prefix(600))")
+        essential.append("Objective kind: \(objective.kind.rawValue); allowed scope: \(objective.scope.rawValue)")
+        if !objective.completionConditions.isEmpty {
+            essential.append("Completion conditions: " + objective.completionConditions.joined(separator: "; "))
+        }
+        if !objective.prohibitions.isEmpty {
+            essential.append("Prohibitions (binding): " + objective.prohibitions.joined(separator: "; "))
+        }
+        if !objective.pendingDecisions.isEmpty {
+            essential.append("Pending user decisions: " + objective.pendingDecisions.joined(separator: "; "))
+        }
+        let decisionsText = activeDecisions.map { "- \($0.text)" }
+        if !decisionsText.isEmpty { essential.append("Confirmed decisions:\n" + decisionsText.joined(separator: "\n")) }
+
+        var optional: [String] = []
+        if let project {
+            var lines = ["Project: \(project.projectID)"]
+            if let repository = project.repository { lines.append("Repository: \(repository)") }
+            if let workspace = project.workspace { lines.append("Workspace: \(workspace)") }
+            lines.append("Recovery baseline: " + (project.recoveryBaseline.map(Self.describe) ?? "none recorded"))
+            lines.append("Recorded operating release: " + (project.operatingRecord.map(Self.describe) ?? "none recorded"))
+            lines.append("Live-verified state: " + (project.liveVerified.map { record in
+                Self.describe(record) + " (verified \(ISO8601DateFormatter().string(from: record.verifiedAt ?? Date.distantPast)))"
+            } ?? "unknown — not verified in this task; do not assume the recorded release is live"))
+            optional.append(lines.joined(separator: "\n"))
+        }
+        let sourceLines = activeSources.map { source -> String in
+            var parts = ["- [\(source.role.rawValue)] \(source.label)"]
+            if let sha = source.provenance.sha256 ?? source.reference?.sha256, !sha.isEmpty { parts.append("sha256 \(sha.prefix(16))…") }
+            if let key = source.provenance.key { parts.append("key \(key)") }
+            if let path = source.provenance.path { parts.append("path \(path)") }
+            if let commit = source.provenance.commit { parts.append("commit \(commit.prefix(12))") }
+            parts.append("coverage \(source.coverage.rawValue), \(source.verification.rawValue)")
+            return parts.joined(separator: " · ")
+        }
+        if !sourceLines.isEmpty { optional.append("Sources bound to this task (verifiable references):\n" + sourceLines.joined(separator: "\n")) }
+        let verifiedFacts = facts.filter(\.verified).map { "- \($0.text)" + ($0.evidence.map { " (evidence: \($0))" } ?? "") }
+        let claims = facts.filter { !$0.verified }.map { "- \($0.text)" }
+        if !verifiedFacts.isEmpty { optional.append("Verified facts:\n" + verifiedFacts.joined(separator: "\n")) }
+        if !claims.isEmpty { optional.append("Unverified claims (do not treat as facts):\n" + claims.joined(separator: "\n")) }
+        if !nextSteps.isEmpty { optional.append("Next steps: " + nextSteps.joined(separator: "; ")) }
+        if !blockers.isEmpty { optional.append("Blockers: " + blockers.joined(separator: "; ")) }
+        let openExecutions = executions.filter { $0.endedAt == nil || $0.adoption == .pending || $0.sideEffects == .unknown }
+        if !openExecutions.isEmpty {
+            optional.append("Executions with unresolved state: " + openExecutions.map {
+                "\($0.provider) \($0.executionID.prefix(8)) stage \($0.stage) side-effects \($0.sideEffects.rawValue) adoption \($0.adoption.rawValue)"
+            }.joined(separator: "; "))
+        }
+
+        var block = essential.joined(separator: "\n")
+        for section in optional {
+            let candidate = block + "\n\n" + section
+            if candidate.utf8.count > limit { break }
+            block = candidate
+        }
+        return block
+    }
+
+    private static func describe(_ record: BaselineRecord) -> String {
+        var parts = [record.id]
+        if let key = record.key { parts.append("key \(key)") }
+        if let sha = record.sha256 { parts.append("sha256 \(sha.prefix(16))…") }
+        if let bytes = record.bytes { parts.append("\(bytes) bytes") }
+        if let at = record.recordedAt { parts.append("recorded \(at)") }
+        return parts.joined(separator: ", ")
+    }
+}
+
+public extension TaskContext.ProjectBaseline {
+    /// Three separate facts for the user surface. A recorded pointer and a
+    /// recorded release are never presented as the live state.
+    var baselineLines: [String] {
+        var lines: [String] = []
+        if let record = recoveryBaseline {
+            var parts = ["복구 기준점(Gold 포인터): \(record.id)"]
+            if let sha = record.sha256 { parts.append("sha256 \(sha.prefix(12))…") }
+            if let at = record.recordedAt { parts.append("기록 \(at)") }
+            lines.append(parts.joined(separator: " · "))
+        } else {
+            lines.append("복구 기준점(Gold 포인터): 기록 없음")
+        }
+        if let record = operatingRecord {
+            var parts = ["기록된 운영 릴리스: \(record.id)"]
+            if let key = record.key { parts.append("R2 \(key)") }
+            if let sha = record.sha256 { parts.append("sha256 \(sha.prefix(12))…") }
+            if let bytes = record.bytes { parts.append("\(bytes)바이트") }
+            if let at = record.recordedAt { parts.append("기록 \(at)") }
+            parts.append("실제 배포 상태 조회 아님")
+            lines.append(parts.joined(separator: " · "))
+        } else {
+            lines.append("기록된 운영 릴리스: 기록 없음")
+        }
+        if let record = liveVerified, let at = record.verifiedAt {
+            lines.append("운영 서버 실제 상태: \(record.id) · 확인 \(ISO8601DateFormatter().string(from: at))")
+        } else {
+            lines.append("운영 서버 실제 상태: 미확인 (운영 서버를 조회하지 않았습니다)")
+        }
+        return lines
+    }
+}
+
+public extension TaskContext.ObjectiveKind {
+    /// Coarse classification used for the first revision; explicit adapters and
+    /// the preparation intent refine it. Prohibitions win over positive verbs.
+    static func classify(_ request: String) -> TaskContext.ObjectiveKind {
+        let value = OwnerIntentText.normalized(OwnerIntentText.authorityText(request))
+        if ScopeResolution.resolve(value).scope == .readOnly,
+           ["설명", "explain", "왜", "why", "뭐야", "what is", "어떻게 되", "알려줘"].contains(where: value.contains) { return .explain }
+        if ScopeResolution.resolve(value).scope == .workspaceWrite { return .modify }
+        if ["검증", "verify", "확인해", "테스트해", "check that"].contains(where: value.contains) { return .verify }
+        if PreparationIntent.detect(request)?.preparationOnly == true { return .prepare }
+        if ProjectMaterialIntent.scv(request)?.requiresTransformation == false { return .acquire }
+        if ["수정", "고쳐", "구현", "바꿔", "fix", "implement", "modify", "edit", "change"].contains(where: value.contains) { return .modify }
+        return .other
+    }
+}
+
+// MARK: - Event log
+
+public struct TaskEvent: Codable, Equatable, Sendable {
+    public let revision: Int
+    public let at: Date
+    public let kind: String
+    public let summary: String
+    public init(revision: Int, at: Date, kind: String, summary: String) {
+        self.revision = revision; self.at = at; self.kind = kind; self.summary = summary
+    }
+}
+
+/// Append-only per-conversation event log. Progress streaming is not an
+/// event; only durable task changes are recorded.
+public struct TaskEventLog: Sendable {
+    public let root: URL
+    public init(root: URL) { self.root = root }
+    public func url(for conversationID: UUID) -> URL {
+        root.appendingPathComponent(conversationID.uuidString.lowercased() + ".jsonl")
+    }
+    public func append(_ event: TaskEvent, conversationID: UUID) throws {
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        let target = url(for: conversationID)
+        let encoder = JSONEncoder(); encoder.dateEncodingStrategy = .iso8601
+        let line = try encoder.encode(event) + Data([10])
+        // O_APPEND keeps concurrent writers line-atomic; the mode is applied
+        // only when the file is created.
+        let descriptor = open(target.path, O_WRONLY | O_CREAT | O_APPEND | O_NOFOLLOW | O_CLOEXEC, 0o600)
+        guard descriptor >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+        let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
+        defer { try? handle.close() }
+        try handle.write(contentsOf: line)
+    }
+    public func events(for conversationID: UUID) throws -> [TaskEvent] {
+        let target = url(for: conversationID)
+        guard FileManager.default.fileExists(atPath: target.path) else { return [] }
+        let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .iso8601
+        return try Data(contentsOf: target).split(separator: 0x0A).compactMap { try? decoder.decode(TaskEvent.self, from: Data($0)) }
+    }
+}
+
+// MARK: - Preparation / continuation intent (project-independent)
+
+/// "수정 좀 하자 준비해", "그거 이어서 해", "아까 자료 기준으로 설명해" are one
+/// common capability: bind the project, attach existing context, choose a
+/// baseline, make materials available, then route. Adapters interpret sources;
+/// they do not own this flow.
+public struct PreparationIntent: Equatable, Sendable {
+    public enum Kind: String, Sendable { case prepare, continueWork, explainFromContext }
+    public let kind: Kind
+    public let projectID: String?
+    public let modifies: Bool
+    /// True only for an explicit, preparation-limited request ("준비만 해",
+    /// "세팅해", "작업 폴더만 잡아줘"). Only this may produce the local
+    /// work_preparation / prepared-state answer; every other detected intent
+    /// (fix, let's fix, continue, finish, can-you) is dispatched to a backend.
+    public let preparationOnly: Bool
+
+    /// Registered projects only. A registered id resolves to an adapter in
+    /// `ProjectAdapterRegistry`; an unregistered "workspace:<name>" project
+    /// never triggers a local control answer.
+    public static let projectAliases: [(id: String, aliases: [String])] = [
+        ("scv-instagram", ["인스타", "instagram", "scv"]),
+        ("os1-clodex", ["os1", "os-1", "clodex", "클로덱스", "rcc governance", "rcc 거버넌스", "rcc 가버넌스", "rcc 가보면서"]),
+    ]
+    static let prepareMarkers = ["손보자", "손 보자", "손좀 보자", "손 좀 보자", "손보려고", "손볼 건데", "손볼건데",
+                                 "준비해", "준비하자", "준비 좀", "준비할", "준비 해", "수정 좀 하자", "수정하자", "수정 하자", "고치자", "고쳐보자",
+                                 "작업하자", "작업 시작", "시작하자", "prepare", "let's fix", "let's modify", "let's work on", "let's start",
+                                 "get ready", "set up for", "이제 고치자", "이제 수정", "세팅", "셋업"]
+    static let continueMarkers = ["이어서", "계속하자", "계속 하자", "지난번 하던", "하던 거", "하던거", "아까 하던", "아까 결정한", "아까 결정",
+                                  "그 프로젝트", "그 작업", "resume", "continue where", "pick up where", "carry on with",
+                                  "아까 자료 기준", "그 자료 기준", "그 코드 기준", "이전 결정대로", "결정한 방식으로", "as decided"]
+    static let explainMarkers = ["설명해", "설명 해", "설명만", "알려줘", "explain", "describe", "walk me through"]
+    static let modificationProhibitions = ["수정하지 마", "수정하지마", "수정 하지 마", "고치지 마", "바꾸지 마", "변경하지 마", "설명만", "do not modify",
+                                           "don't modify", "do not change", "don't change", "explain only", "read only", "읽기만"]
+    static let refusalMarkers = ["손보지 마", "손보지마", "손대지 마", "손대지마", "준비하지 마", "준비 하지 마", "이어서 하지 마", "계속하지 마", "don't prepare", "do not prepare", "don't continue"]
+    static let changeVerbs = ["손봐", "손 봐", "수정", "고치", "고쳐", "바꾸", "구현", "fix", "modify", "edit", "change", "implement"]
+    static let preparationOnlyPatterns = [
+        #"(?:준비|세팅|셋업)\s*(?:만|을|를)?\s*(?:좀\s*)?(?:해|하자|시켜)"#,
+        #"(?:작업\s*)?(?:폴더|워크스페이스)\s*(?:만|를|을)?\s*(?:좀\s*)?(?:잡아|정해|설정해|열어|연결해)"#,
+        #"(?:자료|컨텍스트|맥락)\s*만\s*(?:좀\s*)?(?:가져|준비|붙여|잡아)"#,
+        #"(?i)\b(?:get(?:\s+\w+){0,2}\s+ready|prepare\s+only|just\s+(?:prepare|set\s+up)|set\s+up\s+the\s+(?:workspace|context))\b"#,
+    ]
+    /// Work the owner asked for that the change-verb list does not cover.
+    static let executionDirectives = ["손봐", "손 봐", "고쳐", "고치", "수정", "구현", "추가", "만들", "바꿔", "바꾸", "개선", "해결", "잡아줘",
+        "완료", "완성", "끝까지", "마저", "계속", "진행", "멈추지", "이어서", "빌드해", "빌드 해", "테스트해", "테스트 해", "테스트 돌", "배포해", "커밋해", "푸시해",
+        "fix", "implement", "build", "finish", "complete", "continue", "keep going", "don't stop", "go ahead"]
+    /// The whole request ends by asking whether something can be done. A
+    /// requirement ("할 수 있어야 돼"), "불가능해", a complaint followed by an
+    /// imperative, or an English polite imperative ("can you fix…") is not one.
+    static func isFeasibilityOnlyQuestion(_ value: String) -> Bool {
+        value.range(of: #"(?<!불)(?:가능(?:하냐|하니|해|한지|할까|합니까)|할\s*수\s*(?:있냐|있어|있는지|있니)|되냐|되겠냐|되나요|될까)요?\s*[?？]?\s*$"#,
+                    options: .regularExpression) != nil ||
+        value.range(of: #"(?i)\b(?:is it possible|are you able|would it be possible)\b[^.!\n]*\?\s*$"#, options: .regularExpression) != nil
+    }
+    /// "…가능하냐?" asks whether something can be done. It binds the named
+    /// project so the answer is concrete, but it never authorizes a change.
+    public static let feasibilityMarkers = [
+        "가능하냐", "가능하니", "가능해", "가능한지", "가능할까", "가능합니까", "할 수 있냐", "할 수 있어", "할 수 있는지", "할 수 있니",
+        "되냐", "되겠냐", "되나요", "될까", "can you", "could you", "is it possible", "are you able", "would it be possible",
+    ]
+    public static func isFeasibilityQuestion(_ value: String) -> Bool {
+        let value = value.precomposedStringWithCanonicalMapping.lowercased()
+        return feasibilityMarkers.contains { value.contains($0) }
+    }
+
+    private static func containsProjectAlias(_ alias: String, in value: String) -> Bool {
+        // ASCII project names must be standalone tokens. Without this guard,
+        // content such as OS1_AUTO_REVIEW_OK is mistaken for a request to
+        // prepare the OS1 project and the requested file mutation never runs.
+        guard alias.unicodeScalars.allSatisfy({ $0.isASCII }) else { return value.contains(alias) }
+        let escaped = NSRegularExpression.escapedPattern(for: alias)
+        return value.range(of: #"(?i)(?<![A-Za-z0-9_])"# + escaped + #"(?![A-Za-z0-9_])"#,
+                           options: .regularExpression) != nil
+    }
+
+    // Select the requested project, never a project mentioned only as an exclusion.
+    // This is a selection projection; the original prompt and its constraints
+    // remain intact for execution. Registry order must not decide ambiguous targets.
+    private static func requestedProject(in value: String) -> String? {
+        let clauses = value.replacingOccurrences(of: #"(?:[.!?]\s+|[;\n])"#,
+            with: "\n", options: .regularExpression).components(separatedBy: "\n")
+        var positive = Set<String>()
+        for clause in clauses {
+            let excludes = clause.range(of: #"(?:하지\s*마|하지\s*말|손대지|건드리지|제외|do not|don't|leave .* alone|preserve|보존)"#,
+                                        options: .regularExpression) != nil
+            // A contrast may keep the named project while prohibiting only setup:
+            // 'Instagram 세팅은 하지 말고 가격 문구 수정해'.
+            let contrastEdit = clause.components(separatedBy: "말고").dropFirst()
+                .contains { tail in changeVerbs.contains(where: tail.contains) }
+            guard !excludes || contrastEdit else { continue }
+            for project in projectAliases where project.aliases.contains(where: { containsProjectAlias($0, in: clause) }) {
+                positive.insert(project.id)
+            }
+        }
+        return positive.count == 1 ? positive.first : nil
+    }
+
+    public static func detect(_ prompt: String) -> PreparationIntent? {
+        let original = OwnerIntentText.normalized(OwnerIntentText.authorityText(prompt))
+        let projectID = requestedProject(in: original)
+        // A prohibition scoped to a different named project must not prohibit
+        // the selected project. Unscoped/global prohibitions remain in force.
+        let value = original.replacingOccurrences(of: #"(?:[.!?]\s+|[;\n])"#,
+            with: "\n", options: .regularExpression).components(separatedBy: "\n").filter { clause in
+            guard let projectID else { return true }
+            let named = projectAliases.filter { project in
+                project.aliases.contains { containsProjectAlias($0, in: clause) }
+            }.map(\.id)
+            let excluded = clause.range(of: #"(?:하지\s*마|하지\s*말|손대지|건드리지|제외|do not|don't|preserve|보존)"#,
+                                        options: .regularExpression) != nil
+            return !excluded || named.isEmpty || named.contains(projectID)
+        }.joined(separator: "\n")
+        guard !value.isEmpty else { return nil }
+        if ["\"", "“", "`", "'"].contains(where: value.contains),
+           ["번역", "translate", "비판", "critique", "프롬프트", "prompt", "인용", "quote"].contains(where: value.contains) { return nil }
+        if refusalMarkers.contains(where: value.contains) { return nil }
+        let prohibited = modificationProhibitions.contains(where: value.contains)
+        let explicitPreparation = preparationOnlyPatterns.contains { value.range(of: $0, options: .regularExpression) != nil }
+        let prepare = explicitPreparation || prepareMarkers.contains(where: value.contains)
+        let continues = continueMarkers.contains(where: value.contains)
+        let explains = explainMarkers.contains(where: value.contains)
+        let feasibility = isFeasibilityOnlyQuestion(value)
+        // A write-scope sentence that names the project ("…에 한 줄 추가해") is
+        // a change even when it uses none of the listed change verbs.
+        let scopeWrite = projectID != nil && ScopeResolution.resolve(value).scope == .workspaceWrite
+        let kind: Kind
+        if explains && (continues || prohibited) && !prepare { kind = .explainFromContext }
+        else if prepare { kind = .prepare }
+        else if continues { kind = .continueWork }
+        else if projectID != nil && feasibility && changeVerbs.contains(where: value.contains) { kind = .prepare }
+        else if scopeWrite { kind = .prepare }
+        else { return nil }
+        // "수정 좀 하자 준비해" is an intent to prepare, not a described change:
+        // only change verbs that survive removing the preparation phrases
+        // themselves make the request a backend modification.
+        var remaining = value
+        for marker in (prepareMarkers + continueMarkers).sorted(by: { $0.count > $1.count }) { remaining = remaining.replacingOccurrences(of: marker, with: " ") }
+        if kind == .prepare, ["준비", "세팅", "셋업", "get ready", "prepare"].contains(where: value.contains) {
+            // A future reason for preparation is not an instruction to edit
+            // now. Concrete imperatives (e.g. 준비하고 가격 로직 수정해) survive.
+            remaining = remaining.replacingOccurrences(of: #"(?:수정|변경|고치|손보)\s*(?:봐야\s*(?:되|하)(?:니까|니|므로)|해야\s*(?:되|하)(?:니까|니|므로)|할\s*(?:건데|거니까)|하려(?:고|니까))"#,
+                with: " ", options: .regularExpression)
+        }
+        let wantsChange = changeVerbs.contains(where: remaining.contains) || (scopeWrite && !prepare && !continues)
+        let modifies = kind != .explainFromContext && wantsChange && !prohibited && !feasibility
+        var rest = remaining
+        for pattern in preparationOnlyPatterns { rest = rest.replacingOccurrences(of: pattern, with: " ", options: .regularExpression) }
+        for phrase in modificationProhibitions + refusalMarkers { rest = rest.replacingOccurrences(of: phrase, with: " ") }
+        let preparationOnly = kind == .prepare && explicitPreparation && !modifies && !continues &&
+            !executionDirectives.contains(where: rest.contains)
+        return PreparationIntent(kind: kind, projectID: projectID, modifies: modifies, preparationOnly: preparationOnly)
+    }
+}
+
+// MARK: - Project adapter registry
+
+/// The preparation capability is common; only the source adapter differs.
+/// `remoteMaterials` acquires a verified package from R2 (SCV Instagram);
+/// `localWorkspace` uses the selected workspace and its git revision.
+public enum ProjectAdapterKind: String, Sendable { case remoteMaterials, localWorkspace }
+
+public enum ProjectAdapterRegistry {
+    public static let adapters: [String: ProjectAdapterKind] = [
+        "scv-instagram": .remoteMaterials,
+        "os1-clodex": .localWorkspace,
+    ]
+    public static func kind(for projectID: String?) -> ProjectAdapterKind? {
+        projectID.flatMap { adapters[$0] }
+    }
+    public static func label(for projectID: String) -> String {
+        switch projectID {
+        case "scv-instagram": return "Instagram 자동화"
+        case "os1-clodex": return "OS-1 CLODEX"
+        default: return projectID
+        }
+    }
+}
+
+// MARK: - Scope resolution for mixed allow/deny sentences
+
+/// "파일은 수정해. 서버는 변경하지 마" must stay a write task with a server
+/// prohibition; "수정하지 말고 설명만" must stay read-only. A string
+/// normalization equal to an expected string is not the meaning; this
+/// resolves the permission and keeps the prohibitions as binding constraints.
+/// Negating “explain only” is not prohibiting edits. Consume only the full
+/// negated clause; a separate file/server prohibition remains authoritative.
+public enum OwnerIntentText {
+    /// Permission projection only. Preserve the original prompt as evidence;
+    /// quoted examples and feasibility questions are not execution authority.
+    /// The instruction of a translation, summary or proofreading request
+    /// without the text it operates on, or nil when the request is not one.
+    /// The router classifies this instead of the whole request (the executor
+    /// still receives everything): the payload's verbs are data, not intent.
+    public static func textOperationInstruction(_ prompt: String) -> String? {
+        let original = prompt.precomposedStringWithCanonicalMapping
+        let stripped = strippedTextOperationPayload(original)
+        guard stripped != original else { return nil }
+        let instruction = stripped.trimmingCharacters(in: .whitespacesAndNewlines)
+        return instruction.isEmpty ? nil : instruction
+    }
+
+    static func strippedTextOperationPayload(_ input: String) -> String {
+        // "영어로 바꿔줘" is a translation, not an edit.
+        var text = input.replacingOccurrences(of: #"((?:영어|영문|한국어|한글|국문|일본어|일어|중국어)(?:으)?로)\s*바꿔"#,
+                                              with: "$1 번역해", options: .regularExpression)
+        // The text handed to a translation, summary or proofreading is data,
+        // not the owner's instruction: "다음 문장을 영문으로 번역해줘: 내일 회의
+        // 시간을 오후 3시로 옮겨도 될까요?" was read as a request to move
+        // something, routed as a change and refused (2026-09-25).
+        let textOperation = #"(?:번역|요약|교정|윤문|다듬|영작|의역|직역|translat\w*|summari[sz]\w*|proofread\w*|rephras\w*|paraphras\w*)"#
+        for (pattern, template) in [
+            // "…번역해줘: <text>", "Translate to Korean: <text>"
+            (#"(?is)^([^:：\n]{0,160}"# + textOperation + #"[^:：\n]{0,80}?)\s*[:：]\s*\S.*$"#, "$1"),
+            // Spoken, no separator: "영어로 번역해줘 <text>" — the imperative
+            // ends the instruction. Translation only; "번역해서 …로 저장해" keeps
+            // its action because "해서" is not an imperative ending.
+            (#"(?s)^(.{0,160}?(?:번역|영작)\s*(?:해\s*줘요?|해\s*주세요|해\s*줄래|해\s*봐|해|하시오))[.!,]?\s+\S.*$"#, "$1"),
+            // "\"<text>\"를 번역해줘"
+            (#"(?i)[\"“'‘][^\"”'’\n]{1,400}[\"”'’](?=\s*(?:을|를|은|는|이|가)?\s*[^\n]{0,40}"# + textOperation + ")", " "),
+        ] {
+            text = text.replacingOccurrences(of: pattern, with: template, options: .regularExpression)
+        }
+        return text
+    }
+
+    public static func authorityText(_ prompt: String) -> String {
+        var text = strippedTextOperationPayload(prompt.precomposedStringWithCanonicalMapping)
+        for pattern in [
+            #"(?s)```.*?```"#,
+            #"(?m)^\s*>[^\n]*"#,
+            #"[\"“][^\"”\n]*(?:delete |remove |fix |modify |수정해|고쳐|삭제해|빼)[^\"”\n]*[\"”]"#,
+            #"(?im)\b(?:how\s+(?:do|can|should)\s+(?:i|we)|(?:can|could|should|may)\s+(?:i|we))\b[^.!?;\n]*[?]?"#,
+            #"[^.!?;\n]*(?:해도\s*(?:돼|되|될)|고쳐졌는지|수정됐는지|삭제됐는지|방법\s*(?:알려|설명))[^.!?;\n]*[?]?"#,
+        ] {
+            text = text.replacingOccurrences(of: pattern, with: " ", options: .regularExpression)
+        }
+        return text
+    }
+
+    public static func normalized(_ prompt: String) -> String {
+        prompt.precomposedStringWithCanonicalMapping.lowercased()
+            .replacingOccurrences(of: #"(?:설명|말)만\s*하지\s*(?:말고|마(?:세요|십시오)?)(?:[.!?,]|\s|$)|(?:don't|do not)\s+just\s+explain\b"#,
+                                  with: " ", options: .regularExpression)
+    }
+}
+
+public struct ScopeResolution: Equatable, Sendable {
+    public let scope: TaskContext.Scope
+    public let prohibitions: [String]
+
+    /// Backend capability is not a natural-language intent classification.
+    /// Ordinary owner tasks receive the executable workspace envelope; their
+    /// original instructions still determine which actions may actually occur.
+    /// Internal reconciliation is a task objective, not a restricted executor.
+    /// The argument is retained for caller compatibility, not permission selection.
+    public static func delegationScope(internalReadOnly: Bool) -> TaskContext.Scope {
+        .workspaceWrite
+    }
+
+    public static func delegationRoutingObjective(_ task: String, internalReadOnly: Bool) -> String {
+        return OwnerIntentText.authorityText(task)
+    }
+
+    public static func permitsTicket(scope: TaskContext.Scope, permission: String) -> Bool {
+        switch scope {
+        case .readOnly: return permission == "read_only"
+        case .workspaceWrite: return permission == "workspace_write"
+        case .fullAccess: return false // Unsupported by the signed execution contract.
+        }
+    }
+
+    /// Public scope projection. Backend selection may choose model/effort, never
+    /// silently widen or shrink the already resolved owner execution scope.
+    public static func routingObjective(_ task: String, scope: TaskContext.Scope) -> String {
+        let authority = OwnerIntentText.authorityText(task)
+        switch scope {
+        case .readOnly:
+            return "Read-only inspection and explanation. Do not modify files. Owner request: " + authority
+        case .workspaceWrite:
+            return "Modify workspace files to fulfill the following authorized request. Preserve all owner prohibitions and unrelated state. Owner request: " + authority
+        case .fullAccess:
+            return "Read-only inspection. Unsupported execution scope; no mutation authorized."
+        }
+    }
+
+    // A shared trailing negation applies to the entire bounded action list,
+    // not just its final item (e.g. "파일 수정, 테스트 실행, 배포는 하지 마").
+    private static let prohibitedListAction = #"(?:(?:파일|코드)\s*(?:수정|변경|편집|작성|삭제)|(?:도구|툴)\s*(?:호출|사용)|(?:명령|테스트|빌드)\s*(?:실행|수행)?|(?:고객|인증)\s*(?:데이터|정보)\s*(?:접근|조회|변경|삭제)|설치|배포|복원|복구|삭제|업로드|리셋|초기화)"#
+    public static let enumeratedProhibitionPattern = prohibitedListAction +
+        #"(?:\s*(?:[,·/]|및|또는|이나|나|과|와)\s*"# + prohibitedListAction +
+        #"){1,8}\s*(?:(?:은|는|을|를)?\s*하지\s*마(?:세요|십시오)?|없이)[.!]?"#
+
+    // Relative scope fences constrain a separately authorized edit. Consume
+    // only complete bounded clauses, not "... but change ..." or filenames.
+    static let relativeTargetFencePattern = #"(?i)(?:^|(?<=[.!?;\n]))\s*(?:do not|don't|never)\s+(?:modify|edit|change|delete|remove|write(?: to)?)\s+(?:any\s+)?other\s+(?:files?|folders?|directories|services?|settings)(?:\s*(?:,\s*(?:(?:and|or)\s+)?|(?:and|or)\s+)(?:other\s+)?(?:files?|folders?|directories|services?|settings)){0,8}\s*(?=[.!?;\n]|$)"#
+
+    // An explicit preservation clause for existing resources is not a blanket
+    // prohibition on creating a new isolated resource. Keep the entire fence
+    // in the handoff; only remove it from the global-negation classifier.
+    static let existingResourceFencePattern = #"(?i)(?:^|(?<=[.!?;\n]))\s*(?:do not|don't|never)\s+(?:modify|edit|change|delete|remove)\s+(?:any\s+)?existing\s+(?:projects?|sites?|files?|directories|services?|deployments?|sessions?)\b(?![^.!?;\n]*\b(?:but|however|instead|unless|not|never)\b)[^.!?;\n]*(?=[.!?;\n]|$)"#
+
+    // Relative Korean targets preserve unrelated resources; they never revoke
+    // an independently authorized edit. Match whole clauses, not bare negation.
+    static let koreanRelativeTargetFencePattern = #"(?:^|(?<=[.!?;\n]))\s*(?:새로운\s*기능(?:이나|과|및)\s*)?다른\s*(?:제품|프로젝트|파일|서비스)(?:\s*(?:수정|변경|삭제))(?:은|는|을|를)?\s*하지\s*마(?:세요|십시오)?\s*(?=[.!?;\n]|$)"#
+
+    static let positiveEdit = ["손봐", "손 봐", "수정해", "수정하고", "수정 해", "고쳐", "고치고", "고치라니까", "고치라고", "구현하라고", "고치지", "고치자", "바꿔", "바꾸고", "구현해", "추가해", "삭제해", "리팩터", "만들어",
+                               "완료해", "완성해", "끝까지 해", "마저 해", "마저해",
+                               "일치시켜", "일치시키", "통일해", "통일하", "맞춰", "때려넣", "넣어줘", "넣어 줘",
+                               "fix ", "modify ", "edit ", "implement ", "add ", "remove ", "rename ", "change the code", "update the code",
+                               "업데이트해", "업데이트 해", "업데이트시켜", "업데이트 시켜", "업데이트하고", "업데이트 하고", "갱신해", "갱신시켜", "반영해", "반영시켜", "반영 시켜", "반영하고", "적용해", "적용시켜", "적용 시켜", "교체해", "옮겨", "지워", "생성해", "apply the change"]
+    // English imperatives often identify the target by filename instead of
+    // saying "file" (for example, "create result.txt"). Keep this narrower
+    // than a bare "write" so ordinary requests such as "write a summary" do
+    // not gain workspace authority.
+    static let positiveFileEditPatterns = [
+        // Formal Korean imperatives are edits too. Match the verb ending,
+        // not a bare stem that could appear in a prohibition or a noun.
+        #"(?:수정|삭제|변경|편집|추가|구현)\s*하라(?=\s|[.!?;]|$)"#,
+        // "README.en.md로 저장해" saves as a file just like "…에 저장해".
+        #"[A-Za-z0-9_./-]+\.[A-Za-z0-9]{1,16}(?:에|으로|로)\s*(?:기록|저장|작성)(?:해|하세|하십|하라)"#,
+        // A change verb chained into the next step is still the request:
+        // "calc.py 파일에 add 함수를 만들고 실행해서 확인해", "…구현하고 …수정하세요"
+        // (2026-09-25: six such owner requests read as read-only, so an
+        // explicit "쪼개서 각각 라우팅해" on them could not split). "만들고
+        // 싶어" (a wish) and "만들고 있어" (in progress) are not requests.
+        #"(?:만들|구현하|추가하|작성하|생성하|삭제하|저장하|변경하|편집하)고(?!\s*(?:싶|있))"#,
+        #"(?:수정|삭제|변경|편집|추가|구현|작성|생성|저장)\s*(?:하세요|하십시오|해\s*주세요|해\s*주십시오)"#,
+        #"(?i)\b(?:delete|create|write|save|rename|remove|edit|modify|update)\s+[\"“][^\"”\n]+\.[A-Za-z0-9]{1,16}[\"”]"#,
+        #"(?:수정|삭제|변경|편집|추가)\s*(?:해(?:줘|주세요|라)?|요청(?:합니다|해))"#,
+        // Bounded Korean removal imperatives, not questions, quotations or negations.
+        #"(?:^|\s)빼(?:줘|주세요|라|라고|버려|버려라)?(?=\s|[.!]|$)"#,
+        #"(?i)\b(?:create|write|save|rename|delete|remove|edit|modify|update)\s+(?:(?:a|an|the)\s+)?(?:file|directory|folder)\b"#,
+        #"(?i)\b(?:create|write|save|rename|delete|remove|edit|modify|update)\s+(?:(?:a|an|the)\s+)?[A-Za-z0-9][A-Za-z0-9._-]*\.[A-Za-z0-9]{1,16}\b"#,
+        #"(?i)\b(?:write|save)\s+(?:the\s+)?(?:result|content|output|changes?)\s+(?:in|into|to)\b"#,
+    ]
+    static let negatedTargets: [(pattern: String, prohibition: String)] = [
+        // A trailing scope fence narrows an explicit edit; it does not revoke
+        // that edit. Consume it before the generic prohibition detector so
+        // "create x; do not modify anything else" remains a bounded write.
+        ("do not modify anything else", "do not modify anything else"),
+        ("don't modify anything else", "do not modify anything else"),
+        ("do not change anything else", "do not modify anything else"),
+        ("don't change anything else", "do not modify anything else"),
+        ("다른 것은 수정하지 마", "do not modify anything else"),
+        ("다른 건 수정하지 마", "do not modify anything else"),
+        ("그 외에는 수정하지 마", "do not modify anything else"),
+        ("서버는 변경하지 마", "do not change the server"), ("서버를 변경하지 마", "do not change the server"), ("서버 변경하지 마", "do not change the server"),
+        ("배포하지 마", "do not deploy"), ("배포는 하지 마", "do not deploy"), ("do not deploy", "do not deploy"), ("don't deploy", "do not deploy"),
+        ("테스트를 실행하지 마", "do not run tests"), ("테스트 실행하지 마", "do not run tests"), ("테스트는 실행하지 마", "do not run tests"),
+        ("do not run tests", "do not run tests"), ("don't run tests", "do not run tests"),
+        ("파일·서버를 변경하거나 테스트를 실행하지 마", "do not change files or servers or run tests"),
+        ("업로드하지 마", "do not upload"), ("삭제하지 마", "do not delete"), ("리셋하지 마", "do not reset"), ("초기화하지 마", "do not reset"),
+    ]
+    static let generalProhibitions = ["빼지 마", "빼지마", "빼지 말고", "손보지 마", "손보지마", "손대지 마", "손대지마", "수정하지 마", "수정하지마", "수정 하지 마", "수정하지 말고", "고치지 마", "고치지 말고", "바꾸지 마", "바꾸지 말고",
+                                      "변경하지 마", "변경하지 말고", "수정은 하지 마", "수정은 하지마", "변경은 하지 마", "편집은 하지 마",
+                                      "편집하지 마", "설명만", "read only", "read-only", "do not modify", "don't modify",
+                                      "do not change", "don't change", "explain only", "no changes"]
+
+    // A sentence that as a whole asks whether something CAN be done is a
+    // question, even when the verb and "할 수 있…" are apart (2026-09-25: "셀프
+    // 수정하고 지금 다 할 수 있는거야?" was dispatched as a change, nothing
+    // changed, and the correct answer was refused). Same rule as the remote
+    // verifier, policy v41. A benefactive ("고쳐줄 수 있어?", "해줘"), a stated
+    // obligation ("탑에 놔둬야돼", "내려야 되냐?"), a relayed order ("하라고")
+    // or an imperative before a new clause ("고쳐 그리고 … 할 수 있냐?") keeps
+    // the sentence a request, and so does a long dictated run-on.
+    static let capabilityQuestionEnding = #"(?:(?:할|될|하는\s*게|하는\s*것)\s*수\s*(?:있|없)(?:(?:냐|니|나요|습니까|을까요|을까|는지|는가|겠냐|겠니)\s*[?？]?|(?:어|어요|나|는\s*거야|는\s*거냐|는\s*거지|는\s*건가|는\s*건지|는\s*거예요|지|죠|겠어)\s*[?？])|가능(?:(?:하냐|하니|합니까|할까요|할까|한지|한가|하겠냐)\s*[?？]?|(?:해|해요|한\s*거야|한\s*거냐|한가요|하겠어)\s*[?？])|(?<!야)(?<!야\s)(?:되냐|되니|되나요|될까요|될까|되겠냐)\s*[?？]?|(?<!야)(?<!야\s)(?:돼|되나|되는\s*거야|되는\s*거냐|되겠어)\s*[?？])\s*$"#
+    static let capabilityRequestMarkers = #"줘|주세요|주십시오|줄래|주겠|(?:줄|주실)\s*수|야\s*(?:돼|되|된|됨|함|한다|합니다|해|겠)|라고|라니까|하라|해라"#
+    static let capabilityImperative = #"(?:고쳐|바꿔|만들어|지워|옮겨|넣어|빼|(?:수정|변경|편집|삭제|추가|구현|설치|배포|저장|작성|생성|적용|반영|교체|업데이트)\s*해)(?:라|요)?(?=\s|[,!]|$)"#
+    static let capabilityQuestionMaxCharacters = 200
+
+    // A question may illustrate the change it asks about with an example or
+    // with someone else's wish: "…커스터마이징 하는게 가능해? 예를 들어서 뭐
+    // 메뉴바를 바꾸고 싶대 … 바꿔! 한번 바꿔주냐?" (2026-09-30: dispatched as a
+    // change, nothing changed, and the correct answer was refused). When every
+    // sentence is such an illustration or a question and the message ends in
+    // a question, none of it is an order. A conditional ("만약 … 고쳐"), a
+    // benefactive request ("해줘") or any plain imperative sentence is.
+    static let illustrativeSentence = #"^(?:뭐\s*)?(?:예를\s*들(?:어서|어|면)|예컨대|이를테면)|싶대|싶다더라|달래(?=\s|[.!?？]|$)|하래(?=\s|[.!?？]|$)"#
+    // "…해주냐?", "…하는지?": asks whether something happens, not for it.
+    static let behaviorQuestionEnding = #"(?:냐|니|나요|는지|는가|을까요|을까|까요)\s*[?？]\s*$"#
+
+    /// The request with every whole capability-question sentence replaced by
+    /// " question? ". Used only to decide whether a change is asked for.
+    public static func withoutCapabilityQuestions(_ value: String) -> String {
+        var sentences: [String] = [], sentence = ""
+        for character in value {
+            sentence.append(character)
+            if ".!?？。\n".contains(character) { sentences.append(sentence); sentence = "" }
+        }
+        sentences.append(sentence)
+        func matches(_ text: String, _ pattern: String) -> Bool { text.range(of: pattern, options: .regularExpression) != nil }
+        func capabilityQuestion(_ text: String) -> Bool {
+            text.count <= capabilityQuestionMaxCharacters && matches(text, capabilityQuestionEnding) &&
+                !matches(text, capabilityRequestMarkers) && !matches(text, capabilityImperative)
+        }
+        func behaviorQuestion(_ text: String) -> Bool {
+            // "고쳐 주냐?" is the same question as "고쳐주냐?", not "고쳐".
+            let core = text.replacingOccurrences(of: #"\s+주(?=(?:냐|니|나요)\s*[?？]\s*$)"#, with: "주", options: .regularExpression)
+            return text.count <= capabilityQuestionMaxCharacters && matches(core, behaviorQuestionEnding) &&
+                !matches(core, capabilityRequestMarkers) && !matches(core, capabilityImperative)
+        }
+        func illustration(_ text: String) -> Bool {
+            text.count <= capabilityQuestionMaxCharacters && matches(text, illustrativeSentence) &&
+                !matches(text, capabilityRequestMarkers)
+        }
+        let spoken = sentences.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+        if let last = spoken.last, capabilityQuestion(last) || behaviorQuestion(last),
+           spoken.allSatisfy({ capabilityQuestion($0) || behaviorQuestion($0) || illustration($0) }) {
+            return " question? "
+        }
+        return sentences.map { capabilityQuestion($0.trimmingCharacters(in: .whitespacesAndNewlines)) ? " question? " : $0 }.joined()
+    }
+
+    public static func resolve(_ prompt: String) -> ScopeResolution {
+        let value = OwnerIntentText.normalized(OwnerIntentText.authorityText(prompt))
+        var prohibitions: [String] = []
+        var remaining = value
+        for fence in [relativeTargetFencePattern, existingResourceFencePattern, koreanRelativeTargetFencePattern] {
+        if let pattern = try? NSRegularExpression(pattern: fence) {
+            let range = NSRange(remaining.startIndex..<remaining.endIndex, in: remaining)
+            for match in pattern.matches(in: remaining, range: range) {
+                guard let captured = Range(match.range, in: remaining) else { continue }
+                prohibitions.append(String(remaining[captured]).trimmingCharacters(in: .whitespacesAndNewlines))
+            }
+            remaining = pattern.stringByReplacingMatches(in: remaining, range: range, withTemplate: " ")
+        }
+        }
+        if let pattern = try? NSRegularExpression(pattern: enumeratedProhibitionPattern) {
+            let range = NSRange(remaining.startIndex..<remaining.endIndex, in: remaining)
+            let matches = pattern.matches(in: remaining, range: range)
+            if !matches.isEmpty {
+                var fileWritesForbidden = false
+                for match in matches {
+                    guard let captured = Range(match.range, in: remaining) else { continue }
+                    let clause = String(remaining[captured])
+                    if clause.range(of: #"(?:파일|코드)\s*(?:수정|변경|편집|작성|삭제)"#, options: .regularExpression) != nil {
+                        fileWritesForbidden = true
+                        if !prohibitions.contains("do not modify files") { prohibitions.append("do not modify files") }
+                    }
+                    for (pattern, prohibition) in [
+                        (#"(?:도구|툴)\s*(?:호출|사용)"#, "do not call tools"),
+                        (#"명령\s*(?:실행|수행)?"#, "do not run commands"),
+                        (#"고객\s*(?:데이터|정보)\s*(?:접근|조회|변경|삭제)"#, "do not access customer data"),
+                        (#"인증\s*(?:데이터|정보)\s*(?:접근|조회|변경|삭제)"#, "do not access authentication data"),
+                    ] where clause.range(of: pattern, options: .regularExpression) != nil {
+                        if !prohibitions.contains(prohibition) { prohibitions.append(prohibition) }
+                    }
+                    for (word, prohibition) in [("테스트", "do not run tests"), ("빌드", "do not build"),
+                        ("설치", "do not install"), ("배포", "do not deploy"), ("복원", "do not restore"),
+                        ("복구", "do not restore"), ("삭제", "do not delete"), ("업로드", "do not upload"),
+                        ("리셋", "do not reset"), ("초기화", "do not reset")] where clause.contains(word) {
+                        if !prohibitions.contains(prohibition) { prohibitions.append(prohibition) }
+                    }
+                }
+                remaining = pattern.stringByReplacingMatches(in: remaining, range: range,
+                    withTemplate: fileWritesForbidden ? "read-only" : " ")
+            }
+        }
+        // Longest patterns first so a compound prohibition is recognized as a
+        // whole before one of its clauses is consumed.
+        for target in negatedTargets.sorted(by: { $0.pattern.count > $1.pattern.count }) where remaining.contains(target.pattern) {
+            if !prohibitions.contains(target.prohibition) { prohibitions.append(target.prohibition) }
+            remaining = remaining.replacingOccurrences(of: target.pattern, with: " ")
+        }
+        let generallyProhibited = generalProhibitions.contains(where: remaining.contains)
+        let editView = withoutCapabilityQuestions(remaining)
+        let asksEdit = positiveEdit.contains(where: editView.contains) ||
+            positiveFileEditPatterns.contains { editView.range(of: $0, options: .regularExpression) != nil }
+        if generallyProhibited && !asksEdit {
+            if !prohibitions.contains("do not modify files") { prohibitions.append("do not modify files") }
+            return ScopeResolution(scope: .readOnly, prohibitions: prohibitions)
+        }
+        if generallyProhibited && asksEdit {
+            // "파일은 수정해. 수정하지 마" is contradictory; keep the safer reading.
+            prohibitions.append("do not modify files")
+            return ScopeResolution(scope: .readOnly, prohibitions: prohibitions)
+        }
+        return ScopeResolution(scope: asksEdit ? .workspaceWrite : .readOnly, prohibitions: prohibitions)
+    }
+}
+
+// MARK: - Baseline selection
+
+public enum BaselinePurpose: String, Sendable { case recoveryRestore, modificationPreparation, explanation }
+
+public struct BaselineSelection: Equatable, Sendable {
+    public let record: TaskContext.BaselineRecord?
+    public let basis: String
+    public let liveStatus: String
+
+    public static func select(_ project: TaskContext.ProjectBaseline, purpose: BaselinePurpose, now: Date = Date()) -> BaselineSelection {
+        let live: String
+        if let verified = project.liveVerified, let at = verified.verifiedAt {
+            live = "live state verified at \(ISO8601DateFormatter().string(from: at)): \(verified.id)"
+        } else {
+            live = "live state unknown (not verified)"
+        }
+        switch purpose {
+        case .recoveryRestore:
+            return BaselineSelection(record: project.recoveryBaseline,
+                                     basis: project.recoveryBaseline == nil ? "no recovery baseline recorded" : "recovery baseline (Gold pointer); never the operating record",
+                                     liveStatus: live)
+        case .modificationPreparation, .explanation:
+            if let operating = project.operatingRecord {
+                return BaselineSelection(record: operating, basis: "recorded operating release; not a live check", liveStatus: live)
+            }
+            return BaselineSelection(record: project.recoveryBaseline,
+                                     basis: project.recoveryBaseline == nil ? "no baseline recorded" : "recovery baseline used because no operating record exists; label it as such",
+                                     liveStatus: live)
+        }
+    }
+}
+
+// MARK: - Incremental native ingestion
+
+public struct NativeRecord: Equatable, Sendable {
+    public let id: String
+    public let ordinal: Int
+    public let role: String
+    public let text: String
+    public let complete: Bool
+    public let turnID: String?
+    public init(id: String, ordinal: Int, role: String, text: String, complete: Bool, turnID: String? = nil) {
+        self.id = id; self.ordinal = ordinal; self.role = role; self.text = text; self.complete = complete
+        self.turnID = turnID
+    }
+}
+
+/// Reads native transcripts forward from a cursor, skips what OS1 itself sent,
+/// and never promotes partial or cancelled output to a completed statement.
+public enum NativeIngestion {
+    public static func newRecords(_ all: [NativeRecord], after cursor: String?, sentByOS1 digests: Set<String>,
+                                  seen: Set<String>, ownedTurnIDs: Set<String> = []) -> (records: [NativeRecord], nextCursor: String?) {
+        let start = cursor.flatMap(Int.init) ?? -1
+        var out: [NativeRecord] = []
+        var last = start
+        for record in all.sorted(by: { $0.ordinal < $1.ordinal }) where record.ordinal > start {
+            last = max(last, record.ordinal)
+            // Partial or cancelled output is never promoted to a completed
+            // statement; like every other filtered record it is just skipped.
+            guard record.complete else { continue }
+            // Intermediate answers of our own completed turn remain in the
+            // native record/journal, not a new external task after its final.
+            if let turn = record.turnID, ownedTurnIDs.contains(turn) { continue }
+            guard !seen.contains(record.id) else { continue }
+            // Anything OS1 already holds verbatim (its own prompts, adopted
+            // outputs) is not ingested a second time, whatever the role.
+            if digests.contains(digestOf(record.text)) { continue }
+            // A native user turn carrying OS-1's own dispatch or control
+            // wrappers was authored by OS-1, never typed by the owner. It must
+            // not be replayed into the conversation as the owner's message.
+            if record.role == "user", isOS1ControlPrompt(record.text) { continue }
+            if record.role == "user", let original = WorkspaceDiscovery.legacyRequestBeforeHints(record.text),
+               digests.contains(digestOf(original)) { continue }
+            out.append(record)
+        }
+        return (out, last >= 0 ? String(last) : cursor)
+    }
+
+    public static func digestOf(_ text: String) -> String {
+        SourceContextStore.digest(Data(text.trimmingCharacters(in: .whitespacesAndNewlines).utf8))
+    }
+
+    /// The cursor to store when an OS-1-dispatched run on this native session
+    /// has just ended: everything complete so far is the run's own work (tool
+    /// narration, hook feedback, intermediate drafts) and is already
+    /// represented by the adopted answer, so none of it is ingested — only
+    /// records the owner adds afterwards, in the native app, are external.
+    public static func consumedCursor(_ all: [NativeRecord], after cursor: String?) -> String? {
+        let start = cursor.flatMap(Int.init) ?? -1
+        var last = start
+        for record in all.sorted(by: { $0.ordinal < $1.ordinal }) where record.ordinal > start {
+            guard record.complete else { break }
+            last = max(last, record.ordinal)
+        }
+        return last >= 0 ? String(last) : cursor
+    }
+
+    /// A native user turn that OS-1 itself authored: every OS-1 dispatch
+    /// opens with one of these exact sentences (the reconciliation readback,
+    /// or the assembled multi-section prompt). Anchored to the start on
+    /// purpose — an owner genuinely quoting internal text puts their own
+    /// words first, and those words keep the turn theirs.
+    public static func isOS1ControlPrompt(_ text: String) -> Bool {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let openers = [
+            "중단된 작업의 현재 실행 상태를 대조하세요",
+            "중단된 작업의 현재 상태만 읽기 전용으로 확인하세요",
+            "Continue the same user-selected work session.",
+        ]
+        return openers.contains { trimmed.hasPrefix($0) }
+    }
+}
+
+
+// MARK: - OS-1's own receipt text inside a request
+
+/// A user often pastes an earlier OS-1 answer back into a new request. The
+/// receipt lines OS-1 itself printed ("REVAS adopted · native record
+/// verified …", "실행 기록 확인됨 · …") are not the user's intent and must not
+/// turn a normal request into a protected-material or archive request.
+public enum OS1ReceiptText {
+    static let fingerprints = [
+        "revas adopted", "os-1 control verified", "native record verified", "native session saved",
+        "external app not opened", "실행 기록 확인됨", "실행 기록 미확인", "세부 정보 접기", "세부 정보 펼치기",
+        "백엔드 실행 기록의 확인 여부입니다", "source snapshot delivered:", "· read only", "· 읽기 전용",
+        "standard claude backend", "standard codex backend", "efficient claude backend", "efficient codex backend",
+        "deep claude backend", "deep codex backend",
+    ]
+
+    /// Removes lines that are recognizably OS-1 receipt output. Everything
+    /// else, including quoted source text, is returned unchanged.
+    public static func stripped(_ request: String) -> String {
+        request.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline).filter { line in
+            let value = String(line).precomposedStringWithCanonicalMapping.lowercased()
+            return !fingerprints.contains(where: value.contains)
+        }.joined(separator: "\n")
+    }
+
+    public static func containsReceipt(_ request: String) -> Bool {
+        stripped(request) != request
+    }
+}

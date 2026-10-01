@@ -1,0 +1,75 @@
+import Foundation
+
+public enum WorkspaceDiscovery {
+    /// Legacy OS1 appended these hints after the current-user boundary. This
+    /// is only a candidate for deduplication: callers MUST independently match
+    /// its prefix against a request already held by OS1, never hide arbitrary
+    /// user text solely because it contains this heading.
+    public static func legacyRequestBeforeHints(_ text: String) -> String? {
+        let heading = "\nVerified local directory candidates from the existing project registry (not a write grant or an active-release claim):\n"
+        let footer = "\nInspect relevant exact paths first. Do not run recursive Glob/Grep over HOME. Preserve the user's selected workspace and verify which project/release is actually active before changes."
+        guard let begin = text.range(of: heading, options: .backwards),
+              let end = text.range(of: footer, range: begin.upperBound..<text.endIndex) else { return nil }
+        let paths = text[begin.upperBound..<end.lowerBound].split(separator: "\n")
+        guard !paths.isEmpty, paths.allSatisfy({ $0.hasPrefix("- /") }) else { return nil }
+        let rest = text[end.upperBound...].trimmingCharacters(in: .whitespacesAndNewlines)
+        // Unknown trailing text could be an actual new user instruction. Keep
+        // it verbatim rather than infer that it belongs to the legacy wrapper.
+        guard rest.isEmpty else { return nil }
+        return text[..<begin.lowerBound].trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Exact preinstalled runtime hints, never a PATH rewrite or installation.
+    public static func nodeContext(version: String, home: URL = FileManager.default.homeDirectoryForCurrentUser) -> String {
+        guard version.range(of: #"^[0-9]+\.[0-9]+\.[0-9]+$"#, options: .regularExpression) != nil else { return "" }
+        let paths = [".local/share/node-v\(version)/bin/node", ".nvm/versions/node/v\(version)/bin/node",
+                     ".volta/tools/image/node/\(version)/bin/node"]
+        let found = paths.map { home.appendingPathComponent($0).path }.filter(FileManager.default.isExecutableFile(atPath:))
+        guard !found.isEmpty else { return "\nProject runtime requirement: Node \(version). No matching managed local executable was found. This does not block source/document reading.\n" }
+        return "\nProject runtime requirement: Node \(version). Existing executable candidates (verify --version before tests):\n" +
+            found.map { "- " + $0 }.joined(separator: "\n") +
+            "\nUse the exact matching runtime for project tests only; do not globally replace Node/PATH. Reading sources does not require tests or npm install.\n"
+    }
+    /// Read only explicitly registered project roots, never recursively glob HOME.
+    /// Paths are candidates, not a selection, a freshness claim or a write grant.
+    public static func context(workspace: String, prompt: String, home: URL = FileManager.default.homeDirectoryForCurrentUser) -> String {
+        guard URL(fileURLWithPath:workspace).standardizedFileURL.path == home.standardizedFileURL.path else { return "" }
+        let config = home.appendingPathComponent(".codex/config.toml")
+        guard let bytes = try? Data(contentsOf:config), bytes.count <= 1_000_000,
+              let text = String(data:bytes,encoding:.utf8) else { return "" }
+        let lower = prompt.precomposedStringWithCanonicalMapping.lowercased()
+        let instagram = lower.contains("instagram") || lower.contains("인스타") || lower.contains("scv")
+        // A request about OS-1 itself must surface the OS-1 source tree, not
+        // be crowded out of the bounded list by unrelated registered roots.
+        let os1 = ["os1", "os-1", "clodex", "클로덱스"].contains { lower.contains($0) }
+        var candidates = Set<String>()
+        let prefix = "[projects."
+        for line in text.split(separator:"\n").prefix(3000) {
+            guard line.hasPrefix(prefix), line.hasSuffix("]") else { continue }
+            let encoded = String(line.dropFirst(prefix.count).dropLast())
+            guard let root = try? JSONDecoder().decode(String.self,from:Data(encoded.utf8)), root.hasPrefix(home.path + "/"),
+                  !root.contains("/.os1/fleet/jobs/"), root != workspace else { continue }
+            if os1, !instagram, LocalProjectWorkspace.root(containing: root, projectID: "os1-clodex") != root { continue }
+            let target = instagram ? URL(fileURLWithPath:root).appendingPathComponent("products/scv-instagram").path : root
+            var directory: ObjCBool = false
+            if FileManager.default.fileExists(atPath:target,isDirectory:&directory), directory.boolValue { candidates.insert(target) }
+            if candidates.count >= 8 { break }
+        }
+        // A copy of OS-1's source under a dated folder once took an OS-1 fix
+        // that never reached the app (2026-09-23): name the one live tree.
+        let liveOS1 = LocalProjectWorkspace.resolve(projectID: "os1-clodex", requested: workspace, home: home).map {
+            "\nOS-1 CLODEX (this app) live source, the only tree OS-1 builds and installs from: \($0.workspace). Any other folder containing products/os1-mac-runtime (for example a dated copy under ~/Documents/Codex) is a stale snapshot: never edit it.\n"
+        } ?? ""
+        guard !candidates.isEmpty else { return "\nWorkspace is projectless. Do not recursively search the home directory; use exact user/source paths or ask for the missing project selection.\n" + liveOS1 }
+        let runtimeHints = candidates.sorted().compactMap { path -> String? in
+            let package = URL(fileURLWithPath: path).appendingPathComponent("runtime/package.json")
+            guard let bytes = try? Data(contentsOf: package), bytes.count <= 100_000,
+                  let json = try? JSONSerialization.jsonObject(with: bytes) as? [String: Any],
+                  let engines = json["engines"] as? [String: String], let version = engines["node"] else { return nil }
+            return nodeContext(version: version, home: home)
+        }.joined()
+        return "\nVerified local directory candidates from the existing project registry (not a write grant or an active-release claim):\n" +
+            candidates.sorted().map { "- " + $0 }.joined(separator:"\n") +
+            "\nInspect relevant exact paths first. Do not run recursive Glob/Grep over HOME. Preserve the user's selected workspace and verify which project/release is actually active before changes.\n" + runtimeHints + liveOS1
+    }
+}
