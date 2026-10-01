@@ -123,6 +123,10 @@ func runSelfUpdateFixtures() throws {
     // "파일 수정이나 테스트 실행은 하지 않았습니다" cost a short answer its focus).
     check(card.contains("If you changed files, report what you changed") && card.contains("If the request only needed reading")
           && !card.contains("4. Report what you changed"), "only a change is reported")
+    // 2026-10-01: "한 줄만 말하면 그대로 작업이 돼" overpromised; a bare "메뉴바 바꿔"
+    // is not bound to OS-1's source. Capability answers carry the conditions.
+    check(card.contains("with the conditions the source imposes") && card.contains("rather than an unconditional promise"),
+          "capability answers keep the source's conditions")
 
     // The release link is re-pointed by every release build in any checkout
     // (2026-09-23: a fleet self-repair committed a link into its job cache).
