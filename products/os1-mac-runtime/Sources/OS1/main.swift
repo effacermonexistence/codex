@@ -458,7 +458,8 @@ struct RuntimeConfig: Codable {
                   }) ?? true,
                   value.executionProfiles != nil,
                   value.executionProfiles.map({ profiles in
-                      !profiles.isEmpty && profiles.count <= 64 && profiles.allSatisfy { action, profile in
+                      // The route core's policy bundle allows 128 profiles.
+                      !profiles.isEmpty && profiles.count <= 128 && profiles.allSatisfy { action, profile in
                           isSafeActionIdentifier(action) &&
                           ["local", "codex", "claude"].contains(profile.provider) &&
                           isSafeModelIdentifier(profile.model) &&
