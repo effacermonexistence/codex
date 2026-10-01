@@ -423,7 +423,8 @@ final class SourceContextTests {
             XCTAssertTrue(HumanOutputContract.instructions(for: deep).contains("never less coverage"))
             // Claude is not pushed past its own depth.
             let claude = HumanOutputContract.instructions(for: deep, provider: "claude")
-            XCTAssertTrue(!claude.contains("never less coverage") && claude.contains("do not pad"))
+            XCTAssertTrue(!claude.contains("never less coverage") && claude.contains("do not pad")
+                          && !claude.contains("meaningful headings") && claude.contains("JSON stages/depends_on"))
         }
         XCTAssertTrue(HumanOutputContract.issues(in: "The architecture is as follows.", request: request).count == 1)
         XCTAssertTrue(HumanOutputContract.issues(in: "## 제안\n\n현재 자료는 약한 장만 검증했습니다. 전체 통합은 미해결입니다.", request: request).isEmpty)

@@ -84,7 +84,8 @@ public enum HumanOutputContract {
     /// while Claude given that sentence ran 40-150 % longer than direct Claude
     /// and lost on focus (2026-09-30 blind evaluation).
     public static func instructions(for request: String, provider: String? = nil) -> String {
-        """
+        if provider == "claude" { return claudeInstructions(for: request) }
+        return """
         User-facing OS-1 answer contract:
         - \(preservesOriginalValues(request) ? "The user requests original values or wording. Preserve them exactly, including their original language; do not add a translation just to satisfy a language preference." : wantsKorean(request) ? "Answer in Korean; preserve identifiers and code as needed." : "Use the user's requested language.")
         - Lead with the result in natural language, like a clear conversational coding assistant. Use clear paragraphs and meaningful headings. Avoid repetitive 'conclusion/current position/summary' sections. Do not narrate your internal instructions or reasoning process.
@@ -94,6 +95,20 @@ public enum HumanOutputContract {
         - Keep source facts distinct from proposed extensions and unknowns. Do not claim tests ran or a scientific problem is solved without evidence. Passing proposed internal compatibility gates is NOT sufficient to establish a new physical theory; empirical predictions, independent validation and agreement with existing observations remain separate requirements. A research plan is not a proof that unification is achievable by completing its checklist.
         - For staged designs, use one consistent set of stages and dependencies. Adoption must cover every required stage/blocker. Do not call a stage independent while requiring all earlier stages to finish first. For machine contracts use explicit required_stage_ids and depends_on arrays instead of duplicated prose ranges.
         - Cite useful source names briefly. OS-1 attaches verified hashes and execution metadata separately; do not repeat hashes, model names, effort or permission settings unless the user asks. No generic VERIFIED/correctness claim in the answer.
+        """
+    }
+
+    /// Claude gets only the guards against OS-1-specific failures. With the
+    /// layout and design guidance written for Codex, Claude's answers grew
+    /// 1.6x on a conceptual question (lean payload + this contract: 2,621 vs
+    /// 1,595 characters; direct Claude 1,316) and lost on focus.
+    static func claudeInstructions(for request: String) -> String {
+        """
+        User-facing OS-1 answer contract:
+        - \(preservesOriginalValues(request) ? "The user requests original values or wording. Preserve them exactly, including their original language; do not add a translation just to satisfy a language preference." : wantsKorean(request) ? "Answer in Korean; preserve identifiers and code as needed." : "Use the user's requested language.")
+        - \(wantsBrevity(request) ? "The user asked for a short answer: give only the essentials that answer it, and keep them exact: the specific names, numbers and conditions, and an effect that can fail stated as attempted, not done. Leave out edge cases and caveats they did not ask for." : "Answer at the depth the request needs; do not pad it with material the user did not ask for.")
+        - Do not make a wide matrix of ALL_CAPS stage, gate or dependency IDs the main explanation, and do not append JSON stages/depends_on configurations unless explicitly requested.
+        - Do not claim tests ran or a scientific problem is solved without evidence. Do not repeat hashes, model names, effort or permission settings unless the user asks.
         """
     }
 
