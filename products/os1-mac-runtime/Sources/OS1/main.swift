@@ -4719,19 +4719,32 @@ struct APIClient {
 
     /// Retries only delivery of already-signed, persisted bytes; never execution.
     func deliver<Request: Encodable, Response: Decodable>(_ path: String, body: Request, as: Response.Type) async throws -> Response {
-        for attempt in 0..<3 {
+        for attempt in 0..<APIClient.deliveryAttempts {
             do { return try await post(path, body: body, as: Response.self) }
             catch {
-                var delay: Int?
-                if error is URLError { delay = (attempt + 1) * 1000 }
-                if case OS1Error.service(let status, _, let retry) = error {
-                    delay = retry ?? (status >= 500 ? (attempt + 1) * 1000 : nil)
-                }
-                guard attempt < 2, let delay, delay <= 60_000 else { throw error }
+                guard let delay = APIClient.deliveryRetryDelayMS(attempt: attempt, error: error) else { throw error }
                 try await Task.sleep(for: .milliseconds(delay))
             }
         }
         throw OS1Error.backendBlocked(.deliveryPending)
+    }
+
+    /// Delivery is idempotent (signed bytes, ledger read-back), so a lost
+    /// network may be waited out. Until build 288 it got about 3 s (1 s + 2 s):
+    /// on 2026-10-01 a finished, paid answer (583 s of Opus max) stayed
+    /// "delivery pending" until it was re-sent by hand, and the re-send was
+    /// adopted. Network loss and 5xx now back off over about a minute; a
+    /// server-given delay is honored up to 60 s; other refusals stop at once.
+    static let deliveryAttempts = 8
+    static func deliveryRetryDelayMS(attempt: Int, error: Error) -> Int? {
+        guard attempt < deliveryAttempts - 1 else { return nil }
+        let backoff = min(15_000, 1_000 << min(attempt, 4))
+        if error is URLError { return backoff }
+        if case OS1Error.service(let status, _, let retry) = error {
+            if let retry { return retry <= 60_000 ? retry : nil }
+            return status >= 500 ? backoff : nil
+        }
+        return nil
     }
 }
 
@@ -11127,6 +11140,17 @@ func selfTest() throws {
                 guard let refused = uncommittedOS1SourceDiagnostic(root: root.path), refused.contains("2 uncommitted"), refused.contains("Commit") else { return false }
                 return run(["add", "-A"]) && run(["commit", "-q", "-m", "committed"]) && uncommittedOS1SourceDiagnostic(root: root.path) == nil
             } catch { return false }
+        }()),
+        ("delivery waits out about a minute of network loss, never a refusal", {
+            let offline = URLError(.notConnectedToInternet)
+            let waits = (0..<APIClient.deliveryAttempts).map { APIClient.deliveryRetryDelayMS(attempt: $0, error: offline) }
+            return waits == [1_000, 2_000, 4_000, 8_000, 15_000, 15_000, 15_000, nil]
+                && waits.compactMap { $0 }.reduce(0, +) == 60_000
+                && APIClient.deliveryRetryDelayMS(attempt: 0, error: OS1Error.service(status: 503, message: "x", retryAfterMS: nil)) == 1_000
+                && APIClient.deliveryRetryDelayMS(attempt: 0, error: OS1Error.service(status: 409, message: "verification_pending", retryAfterMS: 60_000)) == 60_000
+                && APIClient.deliveryRetryDelayMS(attempt: 0, error: OS1Error.service(status: 429, message: "x", retryAfterMS: 61_000)) == nil
+                && APIClient.deliveryRetryDelayMS(attempt: 0, error: OS1Error.service(status: 403, message: "x", retryAfterMS: nil)) == nil
+                && APIClient.deliveryRetryDelayMS(attempt: 0, error: OS1Error.message("Artifact upload binding failed")) == nil
         }()),
         ("self-update applies only a newer, fresh, idle-time intent", {
             let now = Date()
