@@ -103,3 +103,34 @@ public enum ClaudeChatLane {
     public static func selectExplicitly() { explicitSelection = true }
     public static var ownerSelected: Bool { explicitSelection }
 }
+
+/// OpenAI's side of the chat-shaped lane (`--provider gpt-chat`, or the same
+/// narrow auto-trigger on a Codex ticket): GPT through the Codex app-server
+/// with every tool and customization off, in a workspace the turn never reads.
+/// The lane predicate is `ClaudeChatLane`'s; only the transport differs.
+public enum CodexChatLane {
+    /// Built-in tools, apps, plugins, hooks and memories off. Each key was
+    /// read back through the app-server's `config/read` (2026-10-01).
+    public static let featureOverrides = [
+        "features.shell_tool=false", "features.unified_exec=false", "features.apps=false",
+        "features.plugins=false", "features.hooks=false", "features.web_search_request=false",
+        "features.memories=false",
+    ]
+
+    /// `mcp_servers={}` does not replace configured servers (config/read still
+    /// lists them enabled); each one has to be disabled by name.
+    public static func mcpServerNames(configToml: String) -> [String] {
+        var names: [String] = []
+        for line in configToml.components(separatedBy: "\n") {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            guard let match = trimmed.range(of: #"^\[mcp_servers\.([A-Za-z0-9_-]+)\]$"#, options: .regularExpression) else { continue }
+            let name = String(trimmed[match].dropFirst("[mcp_servers.".count).dropLast())
+            if !names.contains(name) { names.append(name) }
+        }
+        return names
+    }
+
+    public static func overrides(configToml: String?) -> [String] {
+        featureOverrides + mcpServerNames(configToml: configToml ?? "").map { "mcp_servers.\($0).enabled=false" }
+    }
+}

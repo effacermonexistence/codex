@@ -13,8 +13,11 @@ import Foundation
 ///
 /// So the distinction lives in the type, not in a string:
 ///
-/// - `codex`, `claude` and `claudeChat` are executors. OS-1 dispatches a signed
-///   ticket, receives output and adopts a verified result.
+/// - `codex`, `gptChat`, `claude` and `claudeChat` are executors. OS-1
+///   dispatches a signed ticket, receives output and adopts a verified result.
+///   `gptChat` is OpenAI's chat-shaped lane: the same GPT models on the Codex
+///   account with tools, plugins, hooks and MCP servers off (Codex usage, not
+///   the ChatGPT chat allowance).
 /// - `chatgpt` is a handoff. Measured 2026-09-29 on ChatGPT.app 26.924.20706:
 ///   the local Codex app-server protocol exposes 187 methods and none of them
 ///   sends a ChatGPT chat message (`CollaborationMode` is Codex's own
@@ -32,6 +35,10 @@ public enum ProviderSurface: String, Codable, Sendable, CaseIterable {
     case codex
     /// OpenAI's chat surface. Handoff only; OS-1 cannot execute here.
     case chatgpt
+    /// OpenAI's chat-shaped lane that OS-1 does execute: GPT through the Codex
+    /// app-server with every tool and customization off, answering from the
+    /// request alone. Spends Codex usage, far less of it than the full lane.
+    case gptChat = "gpt-chat"
     /// Anthropic's coding agent, full lane: machine customizations and tools.
     case claude
     /// Anthropic's chat-shaped lane: the same CLI and the same subscription
@@ -63,24 +70,24 @@ public enum ProviderSurface: String, Codable, Sendable, CaseIterable {
     public var gatewayPreference: String? {
         switch self {
         case .auto: return "auto"
-        case .codex: return "codex"
+        case .codex, .gptChat: return "codex"
         case .claude, .claudeChat: return "claude"
         case .chatgpt: return nil
         }
     }
 
-    /// The owner chose the bounded chat lane explicitly, so the lane's own
+    /// The owner chose a bounded chat lane explicitly, so the lane's own
     /// narrow auto-trigger is not required for it to run.
-    public var forcesClaudeChatLane: Bool { self == .claudeChat }
+    public var forcesChatLane: Bool { self == .claudeChat || self == .gptChat }
 
     /// A chat-shaped lane answers from the request itself, so it must never
     /// carry a write ticket.
-    public var requiresReadOnly: Bool { self == .claudeChat }
+    public var requiresReadOnly: Bool { forcesChatLane }
 
     public var quotaPool: QuotaPool {
         switch self {
         case .auto: return .none
-        case .codex: return .openAICodex
+        case .codex, .gptChat: return .openAICodex
         case .chatgpt: return .openAIChat
         case .claude, .claudeChat: return .anthropic
         }
@@ -98,7 +105,7 @@ public enum ProviderSurface: String, Codable, Sendable, CaseIterable {
         /// the menu order, so the default is never buried under an alternative.
         public var surfaces: [ProviderSurface] {
             switch self {
-            case .openAI: return [.codex, .chatgpt]
+            case .openAI: return [.codex, .gptChat, .chatgpt]
             case .anthropic: return [.claude, .claudeChat]
             }
         }
@@ -125,7 +132,7 @@ public enum ProviderSurface: String, Codable, Sendable, CaseIterable {
     public var backend: Backend? {
         switch self {
         case .auto: return nil
-        case .codex, .chatgpt: return .openAI
+        case .codex, .gptChat, .chatgpt: return .openAI
         case .claude, .claudeChat: return .anthropic
         }
     }
@@ -136,6 +143,7 @@ public enum ProviderSurface: String, Codable, Sendable, CaseIterable {
         switch self {
         case .auto, .codex, .claude: return nil
         case .chatgpt: return "ChatGPT"
+        case .gptChat: return os1Tr("GPT 채팅", "GPT chat")
         case .claudeChat: return os1Tr("채팅", "chat")
         }
     }
@@ -145,6 +153,7 @@ public enum ProviderSurface: String, Codable, Sendable, CaseIterable {
         switch self {
         case .auto: return os1Tr("자동", "Auto")
         case .codex: return os1Tr("Codex — OS-1이 실행", "Codex — OS-1 executes")
+        case .gptChat: return os1Tr("GPT 채팅 — 읽기 전용, 저비용", "GPT chat — read-only, far cheaper")
         case .chatgpt: return os1Tr("ChatGPT — 앱으로 넘김", "ChatGPT — hand to the app")
         case .claude: return os1Tr("Claude Code — 전체 레인", "Claude Code — full lane")
         case .claudeChat: return os1Tr("Claude 채팅 — 읽기 전용, 저비용",
@@ -160,6 +169,8 @@ public enum ProviderSurface: String, Codable, Sendable, CaseIterable {
                                 "RCC chooses among the backends that can actually run.")
         case .codex: return os1Tr("Codex 사용량을 씁니다(ChatGPT 채팅 한도와 별개).",
                                   "Spends Codex usage, separate from the ChatGPT chat allowance.")
+        case .gptChat: return os1Tr("Codex 사용량을 쓰지만 도구·지침·워크스페이스를 빼서 훨씬 적게 씁니다(ChatGPT 채팅 한도와 별개).",
+                                    "Spends Codex usage with tools, instructions and the workspace left out, so it costs far less (separate from the ChatGPT chat allowance).")
         case .chatgpt: return os1Tr("OS-1이 실행하지 않고 로그인된 ChatGPT 앱으로 넘깁니다. 답은 앱에서 직접 받습니다.",
                                     "OS-1 does not run this; it hands the request to the signed-in ChatGPT app, where the answer arrives.")
         case .claude: return os1Tr("Claude 구독 한도를 씁니다(Claude 채팅과 같은 한도).",
@@ -237,8 +248,8 @@ public enum ChatGPTHandoff {
         lines.append("")
         lines.append(os1Tr("ChatGPT 채팅에는 프로그램 실행 경로가 없습니다. 앱 안의 채팅 클라이언트는 sentinel·turnstile·proof-of-work로 보호된 웹 클라이언트이고, 로컬 Codex app-server 프로토콜에는 채팅 전송 메서드가 없습니다. 그래서 OS-1은 결과를 대신 받아오지 않습니다.",
                            "ChatGPT chat has no programmatic execution path: the in-app chat client is a web client guarded by sentinel, turnstile and a proof-of-work challenge, and the local Codex app-server protocol has no chat send method. OS-1 therefore does not collect the answer for you."))
-        lines.append(os1Tr("실행까지 OS-1이 맡아야 하면 Codex(같은 OpenAI 계정, Codex 사용량)나 Claude를 고르세요.",
-                           "If OS-1 should execute as well, choose Codex (the same OpenAI account, Codex usage) or Claude."))
+        lines.append(os1Tr("실행까지 OS-1이 맡아야 하면 GPT 채팅이나 Codex(같은 OpenAI 계정, Codex 사용량), 또는 Claude를 고르세요.",
+                           "If OS-1 should execute as well, choose GPT chat or Codex (the same OpenAI account, Codex usage), or Claude."))
         lines.append("")
         lines.append("handoff receipt: \(receiptPath)")
         return lines.joined(separator: "\n")
@@ -250,28 +261,28 @@ public enum ChatGPTHandoff {
     public static func chatLaneRefusal(needsShell: Bool, namedPaths: [String], images: Int,
                                       hasSource: Bool, machineMaterial: Bool) -> String? {
         if hasSource {
-            return os1Tr("첨부된 소스가 있어 Claude 채팅 레인으로 보낼 수 없습니다. 소스 답변 레인이나 Claude Code를 쓰세요.",
-                         "An attached source cannot go to the Claude chat lane; use the source-answer lane or Claude Code.")
+            return os1Tr("첨부된 소스가 있어 채팅 레인으로 보낼 수 없습니다. 소스 답변 레인이나 Claude Code를 쓰세요.",
+                         "An attached source cannot go to a chat lane; use the source-answer lane or Claude Code.")
         }
         if needsShell {
-            return os1Tr("이 요청은 이 맥에서 명령 실행이 필요해서 도구 없는 Claude 채팅 레인으로 보낼 수 없습니다. Claude Code를 고르세요.",
-                         "This request needs commands on this Mac, so the tool-free Claude chat lane cannot take it. Choose Claude Code.")
+            return os1Tr("이 요청은 이 맥에서 명령 실행이 필요해서 도구 없는 채팅 레인으로 보낼 수 없습니다. Codex나 Claude Code를 고르세요.",
+                         "This request needs commands on this Mac, so the tool-free chat lane cannot take it. Choose Codex or Claude Code.")
         }
         if !namedPaths.isEmpty {
-            return os1Tr("요청이 이 맥의 경로(\(namedPaths.prefix(3).joined(separator: ", ")))를 지목해서 Claude 채팅 레인으로 보낼 수 없습니다. Claude Code를 고르세요.",
-                         "The request names paths on this Mac (\(namedPaths.prefix(3).joined(separator: ", "))), so the Claude chat lane cannot take it. Choose Claude Code.")
+            return os1Tr("요청이 이 맥의 경로(\(namedPaths.prefix(3).joined(separator: ", ")))를 지목해서 채팅 레인으로 보낼 수 없습니다. Codex나 Claude Code를 고르세요.",
+                         "The request names paths on this Mac (\(namedPaths.prefix(3).joined(separator: ", "))), so the chat lane cannot take it. Choose Codex or Claude Code.")
         }
         if images > 0 {
-            return os1Tr("첨부 이미지 \(images)장은 Claude 채팅 레인에서 전달되지 않습니다. Claude Code를 고르세요.",
-                         "\(images) attached image(s) are not delivered on the Claude chat lane. Choose Claude Code.")
+            return os1Tr("첨부 이미지 \(images)장은 채팅 레인에서 전달되지 않습니다. Codex나 Claude Code를 고르세요.",
+                         "\(images) attached image(s) are not delivered on a chat lane. Choose Codex or Claude Code.")
         }
         // A bare filename, a project name or "이거/확인해" all put this machine in
         // scope, and the chat lane has no tools and never reads the workspace.
         // `RequestNamedPaths` only sees real paths, so this is the guard that
         // catches "README.md를 번역해서 저장해".
         if machineMaterial {
-            return os1Tr("이 요청은 이 맥의 파일·프로젝트·기록을 가리켜서 도구 없는 Claude 채팅 레인으로 보낼 수 없습니다. Claude Code를 고르세요.",
-                         "This request points at files, projects or history on this Mac, so the tool-free Claude chat lane cannot take it. Choose Claude Code.")
+            return os1Tr("이 요청은 이 맥의 파일·프로젝트·기록을 가리켜서 도구 없는 채팅 레인으로 보낼 수 없습니다. Codex나 Claude Code를 고르세요.",
+                         "This request points at files, projects or history on this Mac, so the tool-free chat lane cannot take it. Choose Codex or Claude Code.")
         }
         return nil
     }
@@ -286,20 +297,25 @@ public enum ChatGPTHandoff {
         let accepted = Set(["auto", "codex", "claude"])
         checks.append(ProviderSurface.allCases.filter(\.isExecutor)
             .allSatisfy { $0.gatewayPreference.map(accepted.contains) == true })
-        // Both Claude surfaces are one Anthropic pool; the two OpenAI surfaces
-        // are not one pool. A rail label must not invent or merge a pool.
+        // Both Claude surfaces are one Anthropic pool; GPT chat spends Codex
+        // usage, and the ChatGPT handoff is the separate chat allowance. A rail
+        // label must not invent or merge a pool.
         checks.append(ProviderSurface.claude.quotaPool == ProviderSurface.claudeChat.quotaPool)
+        checks.append(ProviderSurface.codex.quotaPool == ProviderSurface.gptChat.quotaPool)
         checks.append(ProviderSurface.codex.quotaPool != ProviderSurface.chatgpt.quotaPool)
         checks.append(ProviderSurface.auto.quotaPool == .none && ProviderSurface.chatgpt.quotaPool == .openAIChat)
         // Only the explicit chat-lane choice forces the bounded lane, and it
         // must carry a read-only ticket so the choice cannot be cosmetic.
-        checks.append(ProviderSurface.allCases.filter(\.forcesClaudeChatLane) == [.claudeChat])
-        checks.append(ProviderSurface.claudeChat.requiresReadOnly && !ProviderSurface.claude.requiresReadOnly)
+        checks.append(ProviderSurface.allCases.filter(\.forcesChatLane) == [.gptChat, .claudeChat])
+        checks.append(ProviderSurface.claudeChat.requiresReadOnly && ProviderSurface.gptChat.requiresReadOnly
+                      && !ProviderSurface.claude.requiresReadOnly && !ProviderSurface.codex.requiresReadOnly)
+        checks.append(ProviderSurface.gptChat.isExecutor && ProviderSurface.gptChat.gatewayPreference == "codex")
         // Wire values are stable: the GUI, the CLI and stored receipts share them.
         checks.append(ProviderSurface(rawValue: "claude-chat") == .claudeChat)
         checks.append(ProviderSurface(rawValue: "chatgpt") == .chatgpt)
+        checks.append(ProviderSurface(rawValue: "gpt-chat") == .gptChat)
         checks.append(ProviderSurface(rawValue: "chat-gpt") == nil)
-        checks.append(ProviderSurface.allCases.count == 5)
+        checks.append(ProviderSurface.allCases.count == 6)
         // The chat lane refuses before dispatch, one reason at a time.
         checks.append(chatLaneRefusal(needsShell: false, namedPaths: [], images: 0,
                                       hasSource: false, machineMaterial: false) == nil)
@@ -325,7 +341,7 @@ public enum ChatGPTHandoff {
         checks.append(!String(decoding: encoded, as: UTF8.self).contains("requestText"))
         // Every rail tile offers exactly its own two surfaces, executing one
         // first, and no surface belongs to two tiles.
-        checks.append(ProviderSurface.Backend.openAI.surfaces == [.codex, .chatgpt])
+        checks.append(ProviderSurface.Backend.openAI.surfaces == [.codex, .gptChat, .chatgpt])
         checks.append(ProviderSurface.Backend.anthropic.surfaces == [.claude, .claudeChat])
         checks.append(ProviderSurface.Backend.allCases.allSatisfy { $0.surfaces.first == $0.defaultSurface })
         checks.append(ProviderSurface.Backend.allCases.allSatisfy { tile in
@@ -341,6 +357,8 @@ public enum ChatGPTHandoff {
         // A stored or hand-edited value that does not belong to the tile falls
         // back to that tile's executor; it never crosses to the other account.
         checks.append(ProviderSurface.Backend.openAI.resolve("chatgpt") == .chatgpt)
+        checks.append(ProviderSurface.Backend.openAI.resolve("gpt-chat") == .gptChat)
+        checks.append(ProviderSurface.Backend.anthropic.resolve("gpt-chat") == .claude)
         checks.append(ProviderSurface.Backend.openAI.resolve("claude-chat") == .codex)
         checks.append(ProviderSurface.Backend.openAI.resolve(nil) == .codex)
         checks.append(ProviderSurface.Backend.openAI.resolve("nonsense") == .codex)
@@ -349,7 +367,8 @@ public enum ChatGPTHandoff {
         checks.append(ProviderSurface.Backend.anthropic.resolve("auto") == .claude)
         // Only a non-default surface is badged, so an unchanged tile stays clean.
         checks.append(ProviderSurface.codex.railBadge == nil && ProviderSurface.claude.railBadge == nil)
-        checks.append(ProviderSurface.chatgpt.railBadge != nil && ProviderSurface.claudeChat.railBadge != nil)
+        checks.append(ProviderSurface.chatgpt.railBadge != nil && ProviderSurface.claudeChat.railBadge != nil
+                      && ProviderSurface.gptChat.railBadge != nil)
         checks.append(ProviderSurface.allCases.allSatisfy { !$0.choiceTitle.isEmpty })
         guard checks.allSatisfy({ $0 }) else { throw ProviderSurfaceError.regression }
         print("OS-1 provider surfaces: \(checks.count) checks OK")

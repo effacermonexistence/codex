@@ -3016,6 +3016,13 @@ func claudeChatLane(provider: String, permission: String, hasSource: Bool, objec
         && ImageInput.encodeAll(in: objective).isEmpty
 }
 
+/// OpenAI's side of the same lane: a Codex ticket that would qualify for the
+/// Claude chat lane runs as GPT chat (tools and customizations off, no
+/// workspace). The predicate is shared so the two lanes cannot drift apart.
+func codexChatLane(provider: String, permission: String, hasSource: Bool, objective: String) -> Bool {
+    provider == "codex" && claudeChatLane(provider: "claude", permission: permission, hasSource: hasSource, objective: objective)
+}
+
 /// Why an explicitly selected Claude chat lane cannot take this request.
 /// Evaluated before dispatch from the same predicates the lane itself uses.
 func claudeChatLaneRefusal(objective: String, hasSource: Bool) -> String? {
@@ -3083,6 +3090,17 @@ func providerSurfaceRoutingSelfTest() throws {
     // Only executors carry a gateway preference the deployed router accepts.
     checks.append(("chatgpt has no gateway route", ProviderSurface.chatgpt.gatewayPreference == nil))
     checks.append(("claude-chat routes as claude", ProviderSurface.claudeChat.gatewayPreference == "claude"))
+    checks.append(("gpt-chat routes as codex", ProviderSurface.gptChat.gatewayPreference == "codex"))
+    checks.append(("a Codex text operation runs as GPT chat",
+        codexChatLane(provider: "codex", permission: "read_only", hasSource: false, objective: translate)
+        && !claudeChatLane(provider: "codex", permission: "read_only", hasSource: false, objective: translate)))
+    checks.append(("GPT chat never takes file work or a write ticket",
+        !codexChatLane(provider: "codex", permission: "read_only", hasSource: false, objective: fileWork)
+        && !codexChatLane(provider: "codex", permission: "workspace_write", hasSource: false, objective: translate)))
+    checks.append(("GPT chat turns tools, hooks and every MCP server off",
+        CodexChatLane.overrides(configToml: "[mcp_servers.alpha]\ncommand = \"x\"\n[mcp_servers.alpha.env]\n[mcp_servers.beta-two]\n")
+            == CodexChatLane.featureOverrides + ["mcp_servers.alpha.enabled=false", "mcp_servers.beta-two.enabled=false"]
+        && CodexChatLane.featureOverrides.contains("features.shell_tool=false")))
 
     // The scope has to follow the selection, or the rail choice is cosmetic:
     // the lane predicate reads the signed ticket's permission, and a writable
@@ -3163,7 +3181,8 @@ func runChatGPTHandoff(prompt: String, workspace: String) throws -> RunSummary {
 private func providerExecutionWorkspace(provider: String, permission: String,
                                         hasSource: Bool, workspace: String,
                                         objective: String) throws -> String {
-    if claudeChatLane(provider: provider, permission: permission, hasSource: hasSource, objective: objective) {
+    if claudeChatLane(provider: provider, permission: permission, hasSource: hasSource, objective: objective)
+        || codexChatLane(provider: provider, permission: permission, hasSource: hasSource, objective: objective) {
         return try sourceAnswerWorkspace()
     }
     if ExecutionWorkspace.usesSourceIsolation(provider: provider, permission: permission,
@@ -6006,15 +6025,27 @@ private func execute(
             throw OS1Error.backendBlocked(.capabilityUnavailable)
         }
         let deadline = Date().addingTimeInterval(TimeInterval(timeout))
-        let expectedSessionID = try normalizedSessionID(providerSessionID)
+        // GPT chat: the model alone, in the empty answer workspace, on a fresh
+        // thread (resuming a full Codex thread would reload what the lane drops).
+        let gptChat = codexChatLane(provider: ticket.provider, permission: ticket.permissionProfile,
+                                    hasSource: hasPreloadedR2Evidence, objective: lockedObjective)
+        if gptChat {
+            RuntimeActivity.emit(.preparing, provider: "codex", model: model, effort: effort,
+                publicText: os1Tr("GPT 채팅 모드로 실행합니다 · 코딩 도구·지침 없이 모델만 사용해 토큰을 아낍니다.",
+                                  "Running GPT in chat mode · the model alone, without coding tools or instructions, to save tokens."))
+        }
+        let codexWorkspace = gptChat ? executionWorkspace : workspace
+        let expectedSessionID = gptChat ? nil : try normalizedSessionID(providerSessionID)
         // Startup may run configured hooks or MCP initialization before the
         // first turn. Once the process starts, absent local diffs cannot prove
         // that replaying a write-profile objective would be safe.
         AttemptLatencyTrace.mark("instructions_ready")
-        let appServer = try CodexAppServerClient(executable: codex, workspace: workspace,
-            submissionID: ExecutionSteering.currentSubmission,
+        let chatOverrides = gptChat ? CodexChatLane.overrides(configToml: try? String(contentsOf:
+            FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex/config.toml"), encoding: .utf8)) : []
+        let appServer = try CodexAppServerClient(executable: codex, workspace: codexWorkspace,
+            submissionID: gptChat ? nil : ExecutionSteering.currentSubmission,
             configOverrides: (CodexContextBudget.extendedWindowOverride(model: model).map { [$0] } ?? [])
-                + codexLeanInstructionOverrides())
+                + codexLeanInstructionOverrides() + chatOverrides)
         defer { appServer.close() }
         try appServer.initialize(deadline: deadline)
         AttemptLatencyTrace.mark("codex_initialized")
@@ -6028,7 +6059,7 @@ private func execute(
         AttemptLatencyTrace.mark("codex_ready")
         let actualSessionID = try appServer.startOrResumeThread(
             existingSessionID: expectedSessionID,
-            workspace: workspace,
+            workspace: codexWorkspace,
             model: model,
             instructions: instructions,
             permissionProfile: ticket.permissionProfile,
@@ -6043,7 +6074,7 @@ private func execute(
         do {
             if appServer.ownsThreadWriter {
                 turn = try appServer.runTurn(threadID: actualSessionID, prompt: prompt,
-                    workspace: workspace, model: model, effort: effort,
+                    workspace: codexWorkspace, model: model, effort: effort,
                     permissionProfile: ticket.permissionProfile, deadline: deadline,
                     idleTimeout: idleTimeout.map(TimeInterval.init),
                     onDispatch: { onDispatch?(actualSessionID) })
@@ -6051,7 +6082,7 @@ private func execute(
                 appServer.applyPendingThreadName(deadline: min(deadline, Date().addingTimeInterval(10)))
                 appServer.close()
                 turn = try runCodexDesktopTurn(executable: codex, threadID: actualSessionID,
-                    prompt: prompt, workspace: workspace, model: model, effort: effort,
+                    prompt: prompt, workspace: codexWorkspace, model: model, effort: effort,
                     permissionProfile: ticket.permissionProfile, instructions: instructions, deadline: deadline,
                     idleTimeout: idleTimeout.map(TimeInterval.init),
                     onDispatch: { onDispatch?(actualSessionID) })
@@ -6073,7 +6104,7 @@ private func execute(
         do {
             // A live writer's in-memory turn list is not persistence evidence.
             // This new process only reads; it never resumes/starts another turn.
-            let reader = try CodexAppServerClient(executable: codex, workspace: workspace)
+            let reader = try CodexAppServerClient(executable: codex, workspace: codexWorkspace)
             defer { reader.close() }
             let readDeadline = Date().addingTimeInterval(20)
             try reader.initialize(deadline: readDeadline)
@@ -11399,7 +11430,7 @@ struct OS1Main {
                     throw OS1Error.message("--provider \(surface.rawValue) has no execution route")
                 }
                 providerPreference = gatewayPreference
-                if surface.forcesClaudeChatLane {
+                if surface.forcesChatLane {
                     // An explicit bounded-lane choice must not silently become
                     // the full lane: refuse here, before any provider call.
                     if let reason = claudeChatLaneRefusal(
