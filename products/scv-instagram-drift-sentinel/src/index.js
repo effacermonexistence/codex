@@ -1,4 +1,4 @@
-const SENTINEL_SCHEMA = 'scv-instagram-drift-sentinel-2026-09-18-v65-v206-running-release-v167-recovery-gold'
+const SENTINEL_SCHEMA = 'scv-instagram-drift-sentinel-2026-10-01-v66-v210-running-release-v167-recovery-gold'
 // GOLD-3 (2026-09-03): v148 (owner-verified v145 plus the owner-ordered polish, live red-team verified) frozen as the reference; the pointer and manifest below are pinned by hash.
 const GOLD_LATEST_KEY = 'scv-instagram-automation/gold/LATEST.json'
 const GOLD_MANIFEST_KEY = 'scv-instagram-automation/gold/SCV_GOLD_MANIFEST_v148.json'
@@ -8,15 +8,15 @@ const GOLD_MANIFEST_SHA256 = '31ea4507381e6ec2c3ce4458d70af4a311f331a4a26651f5d9
 // Comparing the gold manifest against the running release id made the check fail by construction.
 const GOLD_RELEASE_ID = 'scv-instagram-single-20260902-v148'
 const GOLD_CONTENT_FINGERPRINT = '3a9a18631443f4738d13dd803f080979ff4d21ab0d9de1f5054b2f26e2ea3609'
-// v65 (2026-09-18): v206 puts durable client tattoo state behind one provenance-bound authority.
-// Thirteen write sites could set it, the control plane rewrote it from a signal that was true only
-// because it was already set, the classifier wrote it directly, and an unreconciled assistant turn
-// was read as client text. Availability language alone never created it; contaminated state did.
+// v66 (2026-10-01): v210 — a picture is a referent, not a request (v207), and a reply says only what is
+// true about the picture it saw, what this text-only chat can send and whose message it is writing. The
+// studio's own link is not a missing client attachment; a session-length question in the tattoo lane is a
+// service question that owns its answer (v209); a third-party question is answered in the artist's own voice (v210).
 // The latest approved recovery Gold stays v167. Previous v151, GOLD-3 v148, April Golden,
 // and all recovery/reset evidence pins remain unchanged. A deployed release is not a Gold.
-const RELEASE_ID = 'scv-instagram-single-20260914-v206'
-const CONTENT_FINGERPRINT = '79506140d421e1274b1df1a2d9aafc1b5eeb1f50f7177f40d4df7ff4d071630a'
-const RELEASE_MANIFEST = '3d4439260496889fc7815ae9dcbf66b4a7150f6797649cb9adec330bd28ae2b4'
+const RELEASE_ID = 'scv-instagram-single-20260914-v210'
+const CONTENT_FINGERPRINT = '4cf51a3c34893e29ccd247d1272693167b07fd0b8af02d655bdb6eed58ea49b4'
+const RELEASE_MANIFEST = 'dcd630eb0e1dcd6ab409ad16145636022b393255d7fc55f56a4e9690c58b6fd0'
 const RECOVERY_POINT_RELEASE_ID = 'scv-instagram-single-20260908-v167'
 const RECOVERY_POINT_CONTENT_FINGERPRINT = '6b85a63a25c23e9815491413eeb895e6b78ed8faa523f18aefea6b88f392faa7'
 const RECOVERY_POINT_RELEASE_MANIFEST = '2f12a00d12114bbbb05080438dda88a6278a82ae65a9fc9aaaff70a2a25ad4b6'
