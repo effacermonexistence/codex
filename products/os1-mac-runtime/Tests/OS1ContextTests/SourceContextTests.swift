@@ -421,6 +421,9 @@ final class SourceContextTests {
                      "셀프 업데이트가 어떤 순서로 도는지, 어디서 막힐 수 있는지 코드 기준으로 설명해봐.", request] {
             XCTAssertFalse(HumanOutputContract.wantsBrevity(deep))
             XCTAssertTrue(HumanOutputContract.instructions(for: deep).contains("never less coverage"))
+            // Claude is not pushed past its own depth.
+            let claude = HumanOutputContract.instructions(for: deep, provider: "claude")
+            XCTAssertTrue(!claude.contains("never less coverage") && claude.contains("do not pad"))
         }
         XCTAssertTrue(HumanOutputContract.issues(in: "The architecture is as follows.", request: request).count == 1)
         XCTAssertTrue(HumanOutputContract.issues(in: "## 제안\n\n현재 자료는 약한 장만 검증했습니다. 전체 통합은 미해결입니다.", request: request).isEmpty)
