@@ -422,6 +422,39 @@ final class SourceContextTests {
             XCTAssertTrue(!claude.contains("never less coverage") && claude.contains("do not pad")
                           && !claude.contains("meaningful headings") && claude.contains("JSON stages/depends_on"))
         }
+        // Build 289: only a deep explanation of code gets the cross-family
+        // review (measured on R3/H6); short answers and non-code questions keep
+        // the single answer that already held both references.
+        for deepCode in ["OS-1 셀프 업데이트가 스테이징부터 설치까지 어떤 순서로 도는지, 어디서 막힐 수 있는지 코드 기준으로 설명해봐. 파일 수정은 하지 마.",
+                         "OS-1에서 백엔드 답변이 서버 검증·전달 단계에서 실패하면 사용자한테 어떻게 보이고 어떻게 복구되는지 코드 기준으로 설명해봐. 파일 수정은 하지 마.",
+                         "OS-1 셀프 업데이트가 어떤 순서로 도는지 코드 기준으로 설명해봐.",
+                         "products/os1-mac-runtime/Sources/OS1/Fleet.swift 에서 작업이 어떻게 배정되는지 설명해줘.",
+                         "Explain how the self-update code stages and installs a build.",
+                         "runTask 함수가 리뷰 단계를 어떻게 붙이는지 설명해봐.", "worker.py 가 검증을 어떻게 하는지 설명해봐."] {
+            precondition(ReviewPass.applies(request: deepCode), deepCode)
+        }
+        for single in ["products/os1-mac-runtime/Sources/OS1Context/ABCDCarryPolicy.swift 의 certify 함수가 carry 인증서를 발급하는 조건을 짧게 설명해줘.",
+                       "OS-1 레일에서 ChatGPT 타일 고르고 요청 보내면 실제로 어떻게 처리돼? 코드 기준으로 짧게 설명해. 파일 수정은 하지 마.",
+                       "products/os1-mac-runtime/Sources/OS1Context/TaskContext.swift 의 ObjectiveKind.classify 가 요청을 어떻게 분류하는지 짧게 설명해줘.",
+                       "야 클로즈나 코덱스가 자기 자신을 자기 자신을 커스터마이징 하는게 가능해?예를 들어서 뭐 메뉴바를 뭐 바꾸고 싶대 뭐 뭐 디자인을 좀 바꾸고 싶대 뭐 바꿔! 한번 바꿔주냐?",
+                       "바다와 호수의 차이를 스무 항목으로 자세히 설명해. 각 항목은 세 문장씩 써 줘. 파일 수정은 하지 마.",
+                       "QM이랑 슈뢰딩거 방정식이 무슨 관계인지 설명 좀 해줘봐. 파동함수가 실제로 뭘 뜻하는지도.",
+                       "양자컴퓨터는 어떤 문제에서 고전 컴퓨터보다 유리해? 두 문장으로 답해.",
+                       "그럼 QM이랑 GR 통합을 Objective Function으로 잡고 어떻게 진행을 해야 되는데? 한 스키마 아키텍처럼 짜봐.",
+                       "OS1에서 토큰 사용량은 줄이면서 결과 품질은 최신 모델 최대 추론이랑 똑같이 나오게 하려면 라우팅을 어떻게 설계해야 돼? 핵심만.",
+                       "RCC에서 gold-blind final lock이 왜 필요한지 예시 하나로 설명해. scorer_visible_ceiling이랑 뭐가 다른지도.",
+                       "아이셔타인 2-MC스퀘어 설명해봐", "캐시 무효화가 왜 필요한지 한국어 한 문장으로 답해.",
+                       "에이전트가 같은 실패를 반복하지 않게 하려면 실패 기록을 어떻게 설계해야 돼? 핵심만.",
+                       "이 코드 설명하고 고쳐줘", "로그인 버그 고쳐줘: 비밀번호 입력하면 앱이 멈춰",
+                       "Explain what a wave function means in quantum mechanics.", "R2 소스 자료가 어떻게 연결돼 있는지 설명해봐."] {
+            precondition(!ReviewPass.applies(request: single), single)
+        }
+        let reviewPrompt = ReviewPass.prompt(request: "셀프 업데이트 순서를 코드 기준으로 설명해봐.", draft: "스테이징 다음에 설치한다.")
+        XCTAssertTrue(reviewPrompt.contains("셀프 업데이트 순서를 코드 기준으로 설명해봐.") && reviewPrompt.contains("스테이징 다음에 설치한다.")
+                      && reviewPrompt.contains("실제 코드를 직접 읽어서") && reviewPrompt.contains("파일은 수정하지 않는다"))
+        // The reviewer must read the workspace: never the tool-less chat lane.
+        XCTAssertFalse(ClaudeChatLane.selfContainedTextOperation(reviewPrompt))
+        XCTAssertFalse(ClaudeChatLane.selfContainedTextOperation(ReviewPass.prompt(request: "이거 왜 이렇게 돼?", draft: "그냥 그렇다.")))
         XCTAssertTrue(HumanOutputContract.issues(in: "The architecture is as follows.", request: request).count == 1)
         XCTAssertTrue(HumanOutputContract.issues(in: "## 제안\n\n현재 자료는 약한 장만 검증했습니다. 전체 통합은 미해결입니다.", request: request).isEmpty)
         let bad = #"{"objective":{"full_adoption_rule":"stages 1-6 must pass","current_stage":"STAGE_2_5_UNRESOLVED","executable_pass_rule":"pass before the next stage"},"stages":[{"stage_id":"STAGE_1_PASS","status":"PASS"},{"stage_id":"STAGE_4_RENORMALIZATION","status":"independent of other stages"},{"stage_id":"STAGE_7_VALIDATION","status":"UNRESOLVED"}],"adoption_policy":{"no_stage_skipping":true}}"#

@@ -790,11 +790,13 @@ struct RunStepSummary: Codable {
     let action: String
     let model: String?
     let effort: String
-    let revasDisposition: String
+    /// "reviewed_draft" marks an adopted answer that a review replaced: it is
+    /// not shown, but its native session still belongs to the conversation.
+    var revasDisposition: String
     let sessionID: String
     let permissionProfile: String
     let exitCode: Int32
-    let output: String
+    var output: String
     let stderr: String
     let durationMS: Int64
     let nativeRecord: NativeRecordEvidence?
@@ -802,6 +804,8 @@ struct RunStepSummary: Codable {
     var verifiedPreviewDelivery: VerifiedPreviewDelivery? = nil
     var ownerPolicySourceSHA256: String? = OwnerPolicyContext.snapshot?.sourceSHA256
     var ownerPolicyProjectionSHA256: String? = OwnerPolicyContext.snapshot?.projectionSHA256
+    /// On a review's answer: the draft it checked ("codex · gpt-6-astra · high").
+    var reviewedDraft: String? = nil
 
     enum CodingKeys: String, CodingKey {
         case sequence, provider, action, model, effort, output, stderr
@@ -815,6 +819,7 @@ struct RunStepSummary: Codable {
         case workflowStage = "workflow_stage"
         case ownerPolicySourceSHA256 = "owner_policy_source_sha256"
         case ownerPolicyProjectionSHA256 = "owner_policy_projection_sha256"
+        case reviewedDraft = "reviewed_draft"
     }
 }
 
@@ -7333,9 +7338,24 @@ func runTask(
     let policy = try loadCurrentOwnerPolicy()
     AttemptLatencyTrace.mark("policy")
     let namedPaths = RequestNamedPaths.extract((ownerPrompt.map { $0 + "\n" } ?? "") + prompt)
+    // The owner's own deep code explanation, routed by OS-1: a Codex answer is
+    // checked against the code by Claude before it is shown (ReviewPass). The
+    // draft and its review are one owner task for governance accounting.
+    let reviewable = workflowStage == nil && !requireReadOnly && routingTaskOverride == nil && ownerPrompt == nil
+        && monitorTaskIDOverride == nil && providerPreference == "auto" && claudeCapacity > 0
+        && ReviewPass.applies(request: prompt)
+    let reviewMonitorID = reviewable ? UUID().uuidString.lowercased() : nil
     return try await OwnerPolicyContext.$snapshot.withValue(policy) {
         try await RequestObservation.$namedPaths.withValue(namedPaths) {
-        try await runTaskWithOwnerPolicy(
+            if let reviewMonitorID { try? GovernanceActivityStore().begin(id: reviewMonitorID) }
+            var adopted = false
+            defer {
+                if let reviewMonitorID {
+                    try? GovernanceActivityStore().finish(id: reviewMonitorID, adopted: adopted,
+                        cancelled: ExecutionCancellation.isCancelled)
+                }
+            }
+            let draft = try await runTaskWithOwnerPolicy(
                 prompt: prompt,
                 workspace: workspace,
                 providerPreference: providerPreference,
@@ -7350,11 +7370,86 @@ func runTask(
                 routingTaskOverride: routingTaskOverride,
                 workflowStage: workflowStage,
                 ownerPrompt: ownerPrompt,
-                monitorTaskIDOverride: monitorTaskIDOverride,
+                monitorTaskIDOverride: reviewMonitorID ?? monitorTaskIDOverride,
                 heldOS1SourceRoot: heldOS1SourceRoot,
                 preflight: preflight)
+            adopted = draft.status == "complete"
+            guard reviewable else { return draft }
+            return await reviewedCodeExplanation(draft, request: prompt, workspace: workspace, context: context,
+                codexCapacity: codexCapacity, claudeCapacity: claudeCapacity, progress: progress,
+                desktopReveal: desktopReveal, monitorTaskID: reviewMonitorID)
         }
     }
+}
+
+/// Measured 2026-10-01 on the owner's deep code-flow questions (ReviewPass):
+/// a Codex answer that Claude Opus at max checked against the code beat both
+/// direct references, which a single answer did not. The draft is already
+/// adopted and paid for, so every failure of the review — no Claude account
+/// or quota, a refused or rejected review, cancellation — returns that draft
+/// unchanged; the review never makes the owner's answer worse than no review.
+func reviewedCodeExplanation(_ draft: RunSummary, request: String, workspace: String, context: String?,
+                             codexCapacity: Int, claudeCapacity: Int, progress: Bool,
+                             desktopReveal: DesktopRevealMode, monitorTaskID: String?) async -> RunSummary {
+    guard reviewableDraft(draft), !ExecutionCancellation.isCancelled,
+          gitHead(draft.taskContext?.project?.workspace ?? workspace) != nil,
+          let first = draft.steps.first else { return draft }
+    let transcript = (try? SessionHandoff.decode(context))?.transcript ?? ""
+    let reviewContext = try? SessionHandoff(transcript: transcript, source: nil, taskContext: draft.taskContext).encoded()
+    RuntimeActivity.emit(.preparing, provider: "claude", publicText: os1Tr(
+        "\(first.model ?? "Codex") 답변을 Claude가 실제 코드와 대조해 검토합니다. 코드 흐름 설명은 이렇게 교차 검토한 답이 두 기준 모델보다 정확했습니다.",
+        "Claude is checking the \(first.model ?? "Codex") answer against the code: cross-checked code-flow explanations beat both reference models."))
+    let review: RunSummary
+    do {
+        review = try await runTaskWithOwnerPolicy(
+            prompt: ReviewPass.prompt(request: request, draft: first.output),
+            workspace: workspace, providerPreference: "claude", context: reviewContext,
+            // A fresh reviewer session: it judges the draft, not its own history.
+            codexSessionID: nil, claudeSessionID: nil,
+            codexCapacity: codexCapacity, claudeCapacity: claudeCapacity,
+            progress: progress, desktopReveal: desktopReveal,
+            routingTaskOverride: request, ownerPrompt: request,
+            monitorTaskIDOverride: monitorTaskID, readOnlyReview: true)
+    } catch {
+        BackendFailureNotice.clear()
+        RuntimeActivity.emit(.syncing, provider: first.provider, publicText: os1Tr(
+            "검토를 마치지 못해 \(first.model ?? "Codex") 답변을 그대로 전달합니다.",
+            "The review did not finish; delivering the \(first.model ?? "Codex") answer as it was."))
+        return draft
+    }
+    return mergeReviewedRun(draft: draft, review: review) ?? draft
+}
+
+/// The measured case only: one adopted Codex answer, nothing attached that the
+/// reviewer could not read (an attached source runs Claude without tools), and
+/// no live correction the review prompt would not carry.
+func reviewableDraft(_ draft: RunSummary) -> Bool {
+    guard draft.status == "complete", draft.steps.count == 1, let first = draft.steps.first else { return false }
+    return first.provider == "codex" && first.revasDisposition == "adopted" && first.exitCode == 0
+        && !first.output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        && draft.sourceContext == nil && (draft.persistedCorrectionIDs ?? []).isEmpty
+}
+
+/// What the owner sees after a review: the reviewer's answer, labelled with
+/// the draft it checked, and the draft kept as an unshown step whose native
+/// session still belongs to the conversation (so a follow-up can resume it and
+/// its turn is never ingested back as outside work). The draft's text stays in
+/// its native record; repeating it here would only double the receipt size.
+func mergeReviewedRun(draft: RunSummary, review: RunSummary) -> RunSummary? {
+    guard let first = draft.steps.first, review.status == "complete", review.steps.count == 1,
+          var checked = review.steps.first, checked.provider == "claude", checked.revasDisposition == "adopted",
+          checked.exitCode == 0, !checked.output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+    var superseded = first
+    superseded.revasDisposition = "reviewed_draft"
+    superseded.output = ""
+    checked.reviewedDraft = [first.provider, first.model ?? "provider-default", first.effort].joined(separator: " · ")
+    var taskContext = review.taskContext ?? draft.taskContext
+    if let objective = draft.taskContext?.objective, taskContext?.objective != objective {
+        taskContext?.setObjective(objective)
+    }
+    return RunSummary(status: "complete", steps: [superseded, checked], sourceContext: draft.sourceContext,
+        taskContext: taskContext, persistedCorrectionIDs: review.persistedCorrectionIDs,
+        monitorTaskID: review.monitorTaskID ?? draft.monitorTaskID)
 }
 
 func runTaskWithOwnerPolicy(
@@ -7374,7 +7469,8 @@ func runTaskWithOwnerPolicy(
     ownerPrompt: String? = nil,
     monitorTaskIDOverride: String? = nil,
     heldOS1SourceRoot: String? = nil,
-    preflight: PreflightInventory? = nil
+    preflight: PreflightInventory? = nil,
+    readOnlyReview: Bool = false
 ) async throws -> RunSummary {
     RuntimeActivity.emit(.preparing)
     if requireReadOnly, let verified = try await RailwayDelivery.recoverySummary(request: prompt) {
@@ -7426,7 +7522,9 @@ func runTaskWithOwnerPolicy(
     let selfContainedText = (workflowStage == nil && !requireReadOnly
         && ClaudeChatLane.selfContainedTextOperation(prompt)
         && !promptRequiresShellCapability(prompt)) || ownerSelectedChatLane
-    let resolvedScope = selfContainedText
+    // A review (ReviewPass) reads the code and changes nothing: it asks for a
+    // read-only ticket, so Claude runs with its read-only tool set.
+    let resolvedScope = selfContainedText || readOnlyReview
         ? TaskContext.Scope.readOnly
         : ScopeResolution.delegationScope(internalReadOnly: internalReadOnly)
     if taskState.objective.requestText != objectiveRequest || taskState.objective.kind != kind || taskState.objective.scope != resolvedScope {
@@ -7841,7 +7939,7 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
     // ran Claude with bypassPermissions and the whole coding agent. Ask for
     // read-only where the request provably needs nothing here — its own text to
     // translate or summarize — and leave every other run exactly as it was.
-    inputContext.executionPermissionProfile = selfContainedText ? "read_only" : "workspace_write"
+    inputContext.executionPermissionProfile = selfContainedText || readOnlyReview ? "read_only" : "workspace_write"
     inputContext.availableClaudeModels = claudeCatalog
     if feedbackSupported {
         inputContext.completionFeedback = try ((try? feedbackStore.load(scope: feedbackScope)) ??
@@ -7913,7 +8011,9 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
     // A workflow implementation is one native write attempt. The workflow
     // verifier, not the model retry loop, decides whether a bounded repair is
     // warranted; uncertain writes must never be replayed implicitly.
-    var attemptLimit = workflowStage == .implementation ? 1 :
+    // A review is one attempt: its draft is already adopted, so a failed
+    // review returns that draft instead of paying for another try.
+    var attemptLimit = workflowStage == .implementation || readOnlyReview ? 1 :
         (requireReadOnly ? min(2, config.maximumSteps) : config.maximumSteps)
     var quotaBudgetExtended = false
     var step = 0
@@ -8117,7 +8217,9 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
                     let quotaLimit = BackendRecovery.quotaAttemptLimit(requested: providerPreference,
                         stage: dispatchStage, step: step, limit: attemptLimit, alreadyExtended: quotaBudgetExtended,
                         modelScoped: modelScoped)
-                    if quotaLimit > attemptLimit {
+                    // A review never moves to another model: only the measured
+                    // reviewer counts, and the adopted draft is the fallback.
+                    if quotaLimit > attemptLimit, !readOnlyReview {
                         quotaBudgetExtended = true
                         attemptLimit = quotaLimit
                     }
@@ -8669,7 +8771,7 @@ func printRunSummary(_ summary: RunSummary) {
         let verificationLabel = step.revasDisposition == "control_verified"
             ? "OS-1 control verified"
             : "REVAS adopted"
-        print("\n[\(step.provider.uppercased()) · \(step.action) · \(step.model ?? "provider-default") · \(step.effort) · \(verificationLabel) · \(step.permissionProfile) · \(step.sessionID)]")
+        print("\n[\(step.provider.uppercased()) · \(step.action) · \(step.model ?? "provider-default") · \(step.effort) · \(verificationLabel) · \(step.permissionProfile) · \(step.sessionID)\(step.reviewedDraft.map { " · reviewed draft: " + $0 } ?? "")]")
         if let record = step.nativeRecord {
             print("native record: \(record.persistence)"
                 + (record.recordPath.map { " · \($0)" } ?? "")
@@ -11151,6 +11253,38 @@ func selfTest() throws {
                 && APIClient.deliveryRetryDelayMS(attempt: 0, error: OS1Error.service(status: 429, message: "x", retryAfterMS: 61_000)) == nil
                 && APIClient.deliveryRetryDelayMS(attempt: 0, error: OS1Error.service(status: 403, message: "x", retryAfterMS: nil)) == nil
                 && APIClient.deliveryRetryDelayMS(attempt: 0, error: OS1Error.message("Artifact upload binding failed")) == nil
+        }()),
+        ("a reviewed code answer shows the review, owns the draft's session and falls back to the draft", {
+            func step(_ provider: String, _ disposition: String, _ output: String, sequence: Int = 1) -> RunStepSummary {
+                RunStepSummary(sequence: sequence, provider: provider, action: "agent_run",
+                    model: provider == "codex" ? "gpt-6-astra" : "claude-opus-5-5", effort: provider == "codex" ? "high" : "max",
+                    revasDisposition: disposition, sessionID: UUID().uuidString.lowercased(),
+                    permissionProfile: provider == "codex" ? "workspace_write" : "read_only", exitCode: 0, output: output,
+                    stderr: "", durationMS: 1, nativeRecord: nil)
+            }
+            var context = TaskContext.migrated(conversationID: UUID(), request: "코드 기준으로 설명해봐", workspace: "/tmp",
+                sourceContext: nil, codexSessionID: nil, claudeSessionID: nil)
+            context.setObjective(TaskContext.Objective(requestText: "코드 기준으로 설명해봐", kind: .explain, scope: .workspaceWrite))
+            let codex = step("codex", "adopted", "draft answer")
+            let draft = RunSummary(status: "complete", steps: [codex], taskContext: context, monitorTaskID: "m")
+            var reviewedContext = context
+            reviewedContext.setObjective(TaskContext.Objective(requestText: "코드 기준으로 설명해봐", kind: .explain, scope: .readOnly))
+            let review = RunSummary(status: "complete", steps: [step("claude", "adopted", "checked answer", sequence: 2)],
+                taskContext: reviewedContext, monitorTaskID: "m")
+            guard reviewableDraft(draft),
+                  !reviewableDraft(RunSummary(status: "complete", steps: [step("claude", "adopted", "x")])),
+                  !reviewableDraft(RunSummary(status: "complete", steps: [codex], persistedCorrectionIDs: [UUID()])),
+                  !reviewableDraft(RunSummary(status: "complete", steps: [step("local", "adopted", "x"), codex])),
+                  let merged = mergeReviewedRun(draft: draft, review: review) else { return false }
+            let shown = merged.steps.filter { $0.revasDisposition == "adopted" }
+            return merged.status == "complete" && merged.steps.count == 2
+                && shown.map(\.output) == ["checked answer"] && shown.first?.reviewedDraft == "codex · gpt-6-astra · high"
+                && merged.steps.first?.revasDisposition == "reviewed_draft" && merged.steps.first?.output == ""
+                && merged.steps.first?.sessionID == codex.sessionID
+                && merged.taskContext?.objective.scope == .workspaceWrite && merged.monitorTaskID == "m"
+                // An unusable review never replaces the draft.
+                && mergeReviewedRun(draft: draft, review: RunSummary(status: "complete", steps: [step("claude", "adopted", "  ")])) == nil
+                && mergeReviewedRun(draft: draft, review: RunSummary(status: "complete", steps: [step("codex", "adopted", "y")])) == nil
         }()),
         ("self-update applies only a newer, fresh, idle-time intent", {
             let now = Date()

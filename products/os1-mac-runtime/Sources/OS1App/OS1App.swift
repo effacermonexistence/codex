@@ -164,6 +164,12 @@ private func visibleAdoptedSteps(_ steps: [AppRunStep]) -> [AppRunStep] {
     }
 }
 
+/// Adopted answers a review replaced (ReviewPass): never shown, but their
+/// native sessions belong to the conversation.
+private func reviewedDrafts(_ steps: [AppRunStep]) -> [AppRunStep] {
+    steps.filter { $0.revasDisposition == "reviewed_draft" && stepRecordIsVerified($0) }
+}
+
 @MainActor
 private func taskContextSelfTest() throws {
     // v3 handoff carries the OS-1 task context through the session codec.
@@ -550,6 +556,26 @@ private func providerIntentSelfTest() throws {
             desktopVisibility: "control_only"
         )
     )
+    // Build 289: a draft a review replaced is never shown, yet its verified
+    // native session is still owned; an unverified one is not.
+    let reviewedDraft = AppRunStep(sequence: 1, provider: "codex", action: "agent_run", model: "gpt-6-astra", effort: "high",
+        revasDisposition: "reviewed_draft", sessionID: "8eaa48c6-af59-4f4c-a2be-9a0ec3b6fc31", permissionProfile: "workspace_write",
+        exitCode: 0, output: "", stderr: "", durationMS: 1,
+        nativeRecord: AppNativeRecord(turnID: "8eaa48c6-af59-4f4c-a2be-9a0ec3b6fc32", recordPath: "/tmp/draft.jsonl",
+                                      persistence: "verified", desktopVisibility: "desktop_owned"))
+    var review = AppRunStep(sequence: 2, provider: "claude", action: "agent_run", model: "claude-opus-5-5", effort: "max",
+        revasDisposition: "adopted", sessionID: "8eaa48c6-af59-4f4c-a2be-9a0ec3b6fc33", permissionProfile: "read_only",
+        exitCode: 0, output: "checked answer", stderr: "", durationMS: 1, nativeRecord: nil)
+    review.reviewedDraft = "codex · gpt-6-astra · high"
+    let unverifiedDraft = AppRunStep(sequence: 1, provider: "codex", action: "agent_run", model: "gpt-6-astra", effort: "high",
+        revasDisposition: "reviewed_draft", sessionID: "8eaa48c6-af59-4f4c-a2be-9a0ec3b6fc34", permissionProfile: "workspace_write",
+        exitCode: 0, output: "", stderr: "", durationMS: 1, nativeRecord: nil)
+    guard visibleAdoptedSteps([reviewedDraft, review]).map(\.output) == ["checked answer"],
+          reviewedDrafts([reviewedDraft, review, unverifiedDraft]).map(\.sessionID) == [reviewedDraft.sessionID],
+          let decoded = try? JSONDecoder().decode(AppRunStep.self, from: Data(#"{"sequence":2,"provider":"claude","action":"agent_run","model":"claude-opus-5-5","effort":"max","revas_disposition":"adopted","session_id":"8eaa48c6-af59-4f4c-a2be-9a0ec3b6fc33","permission_profile":"read_only","exit_code":0,"output":"a","stderr":"","duration_ms":1,"reviewed_draft":"codex · gpt-6-astra · high"}"#.utf8)),
+          decoded.reviewedDraft == "codex · gpt-6-astra · high" else {
+        throw RunnerError.message("OS-1 reviewed-draft UI self-test failed.")
+    }
     guard visibleAdoptedSteps([rejectedStep, localStep, controlStep]).map(\.output) == ["2", "verified source"],
           stepRecordIsVerified(sourceStatusStep),
           stepRecordIsVerified(qmGRRetrievalStep),
@@ -3743,6 +3769,8 @@ private struct AppRunStep: Decodable, Sendable {
     let nativeRecord: AppNativeRecord?
     var workflowStage: String? = nil
     var verifiedPreviewDelivery: VerifiedPreviewDelivery? = nil
+    /// On a review's answer: the draft it checked against the code.
+    var reviewedDraft: String? = nil
 
     enum CodingKeys: String, CodingKey {
         case sequence, provider, action, model, effort, output, stderr
@@ -3754,6 +3782,7 @@ private struct AppRunStep: Decodable, Sendable {
         case nativeRecord = "native_record"
         case verifiedPreviewDelivery = "verified_preview_delivery"
         case workflowStage = "workflow_stage"
+        case reviewedDraft = "reviewed_draft"
     }
 }
 
@@ -6194,7 +6223,10 @@ private final class SessionStore: ObservableObject {
                     appendTaskEvent(conversationID: submission.sessionID, kind: "adopted",
                         summary: visibleSteps.map { "\($0.provider) \($0.action)" }.joined(separator: ", "))
                 }
-                for step in visibleSteps {
+                // A reviewed draft is not shown, but it ran in this conversation's
+                // native session: own it like a shown answer, so a follow-up can
+                // resume that session and its turn is never ingested as outside work.
+                for step in visibleSteps + reviewedDrafts(summary.steps) {
                     if step.provider == "codex", let record = step.nativeRecord, record.isVerified,
                        let turn = record.turnID, UUID(uuidString: turn) != nil {
                         sessions[target].ownedCodexTurnIDs = Array(Set((sessions[target].ownedCodexTurnIDs ?? []) + [turn])).sorted()
@@ -6221,7 +6253,7 @@ private final class SessionStore: ObservableObject {
                     ))
                     sessions[target].messages.append(ChatMessage(
                         role: .receipt,
-                        text: "\(backendTierLabel(action: step.action, provider: step.provider)) · \(step.model ?? "provider default") · \(step.effort) reasoning · \(step.revasDisposition == "control_verified" ? "OS-1 control verified" : "REVAS adopted") · \(nativeRecordReceipt(step)) · \(step.workflowStage.map { "workflow \($0) · " } ?? "")step \(step.sequence) · \(step.durationMS / 1_000)s · exit \(step.exitCode)" +
+                        text: "\(backendTierLabel(action: step.action, provider: step.provider)) · \(step.model ?? "provider default") · \(step.effort) reasoning · \(step.revasDisposition == "control_verified" ? "OS-1 control verified" : "REVAS adopted") · \(step.reviewedDraft.map { os1Tr("\($0) 초안을 코드와 대조해 검토", "checked the \($0) draft against the code") + " · " } ?? "")\(nativeRecordReceipt(step)) · \(step.workflowStage.map { "workflow \($0) · " } ?? "")step \(step.sequence) · \(step.durationMS / 1_000)s · exit \(step.exitCode)" +
                             (step.provider != "local" && summary.sourceContext != nil
                                 ? " · source snapshot delivered: \(summary.sourceContext!.sha256)" : ""),
                         provider: step.provider,
