@@ -20,7 +20,7 @@ import { fileURLToPath } from 'node:url';
 export const PRODUCT = 'os1-machine-image';
 export const BUCKET = 'omar-private-archive';
 export const REPOSITORY = 'effacermonexistence/codex';
-const PART_BYTES = 200 * 1024 * 1024; // wrangler r2 object put accepts at most 300 MiB
+const PART_BYTES = 90 * 1024 * 1024; // the Cloudflare API rejects larger request bodies (a 200 MiB put failed)
 const NODE_DIR = '.local/share/node-v24.20.0';
 const SUPPORT = 'Library/Application Support/OS-1';
 const FLEET_PLIST = 'Library/LaunchAgents/com.os1.fleet-agent.plist';
