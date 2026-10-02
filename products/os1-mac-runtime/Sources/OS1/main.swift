@@ -7138,6 +7138,35 @@ struct RouteFanoutOutcome {
     var adopted: RunStepSummary?
     var failure: String?
     var handoffReceipt: String?
+    var executionIndex: Int? = nil
+    var attempts: [RouteFanoutAttemptEvidence] = []
+}
+
+func routeFanoutNativeEvidence(_ record: NativeRecordEvidence?) -> RouteFanoutNativeRecordEvidence? {
+    record.map { RouteFanoutNativeRecordEvidence(turnID: $0.turnID, recordPath: $0.recordPath,
+        persistence: $0.persistence, desktopVisibility: $0.desktopVisibility) }
+}
+
+func routeFanoutAttemptEvidence(_ step: RunStepSummary) -> RouteFanoutAttemptEvidence {
+    RouteFanoutAttemptEvidence(sequence: step.sequence, provider: step.provider, action: step.action,
+        model: step.model, effort: step.effort, revasDisposition: step.revasDisposition,
+        sessionID: step.sessionID, permissionProfile: step.permissionProfile, exitCode: step.exitCode,
+        durationMS: step.durationMS, surface: step.surface, nativeRecord: routeFanoutNativeEvidence(step.nativeRecord),
+        reviewedDraft: step.reviewedDraft, resultSHA256: sha256Hex(Data(step.output.utf8)))
+}
+
+func routeFanoutRouteEvidence(_ outcome: RouteFanoutOutcome) -> RouteFanoutRouteEvidence {
+    let step = outcome.adopted
+    return RouteFanoutRouteEvidence(index: outcome.index + 1, surface: outcome.target.surface.rawValue,
+        executionIndex: outcome.executionIndex, payload: outcome.target.payload,
+        payloadSHA256: sha256Hex(Data(outcome.target.payload.utf8)), provider: step?.provider,
+        executedSurface: step?.surface, sessionID: step?.sessionID, model: step?.model, action: step?.action,
+        effort: step?.effort, permissionProfile: step?.permissionProfile, exitCode: step?.exitCode,
+        durationMS: step?.durationMS, revasDisposition: step?.revasDisposition,
+        nativeRecord: routeFanoutNativeEvidence(step?.nativeRecord),
+        resultSHA256: step.map { sha256Hex(Data($0.output.utf8)) },
+        failure: outcome.failure.map { String($0.prefix(500)) }, handoffReceipt: outcome.handoffReceipt,
+        attempts: outcome.attempts)
 }
 
 private func runRouteFanoutWithOwnerPolicy(
@@ -7169,7 +7198,7 @@ private func runRouteFanoutWithOwnerPolicy(
         RuntimeActivity.emit(.preparing, publicText: os1Tr(
             "경로 \(position + 1)/\(plan.targets.count): \(routeFanoutLabel(target.surface))",
             "Route \(position + 1)/\(plan.targets.count): \(routeFanoutLabel(target.surface))"))
-        var outcome = RouteFanoutOutcome(index: index, target: target)
+        var outcome = RouteFanoutOutcome(index: index, target: target, executionIndex: position + 1)
         // An explicit chat-lane name never turns into the full lane: a part the
         // lane cannot answer is refused before any model is called.
         if target.surface.forcesChatLane,
@@ -7189,6 +7218,10 @@ private func runRouteFanoutWithOwnerPolicy(
                 claudeSessionID: fullLane && gateway == "claude" ? claudeID : nil,
                 codexCapacity: 100, claudeCapacity: 100, progress: progress, desktopReveal: desktopReveal,
                 monitorTaskIDOverride: monitorID)
+            // Preserve every step the executor returned before selecting the
+            // adopted answer. A rejected/reviewed step is evidence of an
+            // attempt, never a second adopted route.
+            outcome.attempts = result.steps.map(routeFanoutAttemptEvidence)
             var tagged = result.steps.filter { ["adopted", "control_verified"].contains($0.revasDisposition) }
             for i in tagged.indices { tagged[i].workflowStage = "route \(target.surface.rawValue)" }
             if result.status == "complete", let adopted = tagged.last, ["codex", "claude"].contains(adopted.provider),
@@ -7227,11 +7260,13 @@ private func runRouteFanoutWithOwnerPolicy(
         do {
             let handoff = try performChatGPTHandoff(prompt: text)
             for index in handoffIndices {
-                outcomes.append(RouteFanoutOutcome(index: index, target: plan.targets[index], handoffReceipt: handoff.receipt.path))
+                outcomes.append(RouteFanoutOutcome(index: index, target: plan.targets[index], handoffReceipt: handoff.receipt.path,
+                    executionIndex: plan.targets.count - handoffIndices.count + 1))
             }
         } catch {
             for index in handoffIndices {
-                outcomes.append(RouteFanoutOutcome(index: index, target: plan.targets[index], failure: String(describing: error)))
+                outcomes.append(RouteFanoutOutcome(index: index, target: plan.targets[index], failure: String(describing: error),
+                    executionIndex: plan.targets.count - handoffIndices.count + 1))
             }
         }
     }
@@ -7245,34 +7280,12 @@ private func runRouteFanoutWithOwnerPolicy(
         .appendingPathComponent("Library/Application Support/OS-1/control-receipts", isDirectory: true)
     try FileManager.default.createDirectory(at: receiptRoot, withIntermediateDirectories: true)
     let receiptURL = receiptRoot.appendingPathComponent("\(operationID).json")
-    let routes: [[String: Any]] = outcomes.map { outcome in
-        var route: [String: Any] = [
-            "index": outcome.index + 1,
-            "surface": outcome.target.surface.rawValue,
-            "payload_sha256": sha256Hex(Data(outcome.target.payload.utf8)),
-        ]
-        if let adopted = outcome.adopted {
-            route["provider"] = adopted.provider
-            route["executed_surface"] = adopted.surface
-            route["session_id"] = adopted.sessionID
-            route["model"] = adopted.model ?? "provider-default"
-            route["result_sha256"] = sha256Hex(Data(adopted.output.utf8))
-        }
-        if let failure = outcome.failure { route["failure"] = String(failure.prefix(500)) }
-        if let handoff = outcome.handoffReceipt { route["handoff_receipt"] = handoff }
-        return route
-    }
-    let receipt: [String: Any] = [
-        "schema": 1,
-        "operation_id": operationID,
-        "operation": "route_fanout",
-        "checked_at": ISO8601DateFormatter().string(from: Date()),
-        "model_invoked": false,
-        "monitor_task_id": monitorID,
-        "routes": routes,
-        "result_sha256": sha256Hex(Data(output.utf8)),
-    ]
-    let receiptData = try JSONSerialization.data(withJSONObject: receipt, options: [.sortedKeys])
+    let receipt = RouteFanoutRecord(operationID: operationID,
+        checkedAt: ISO8601DateFormatter().string(from: Date()), monitorTaskID: monitorID,
+        frame: plan.frame, resultSHA256: sha256Hex(Data(output.utf8)), routes: outcomes.map(routeFanoutRouteEvidence))
+    let receiptEncoder = JSONEncoder()
+    receiptEncoder.outputFormatting = [.sortedKeys]
+    let receiptData = try receiptEncoder.encode(receipt)
     try receiptData.write(to: receiptURL, options: [.atomic])
     try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: receiptURL.path)
     guard (try? Data(contentsOf: receiptURL)) == receiptData else {
@@ -7366,6 +7379,37 @@ func routeFanoutSummarySelfTest() throws {
             adopted: step(target.surface.gatewayPreference!, String((index + 1) * 2), surface: target.surface))
     }
     let fourText = routeFanoutSummary(plan: fourPlan, outcomes: fourOutcomes)
+    var recordedOutcomes = fourOutcomes
+    for index in recordedOutcomes.indices {
+        recordedOutcomes[index].executionIndex = index + 1
+        recordedOutcomes[index].attempts = [routeFanoutAttemptEvidence(recordedOutcomes[index].adopted!)]
+    }
+    var reviewed = recordedOutcomes[0].adopted!
+    reviewed.revasDisposition = "reviewed_draft"
+    reviewed.output = "not the adopted answer"
+    recordedOutcomes[0].attempts.insert(routeFanoutAttemptEvidence(reviewed), at: 0)
+    var rejected = recordedOutcomes[0].adopted!
+    rejected.revasDisposition = "rejected"
+    rejected.output = "rejected answer"
+    recordedOutcomes[0].attempts.insert(routeFanoutAttemptEvidence(rejected), at: 0)
+    let fanoutRecord = RouteFanoutRecord(operationID: UUID().uuidString.lowercased(),
+        frame: fourPlan.frame, resultSHA256: sha256Hex(Data(fourText.utf8)),
+        routes: recordedOutcomes.map(routeFanoutRouteEvidence))
+    let recordData = try JSONEncoder().encode(fanoutRecord)
+    let decodedRecord = try JSONDecoder().decode(RouteFanoutRecord.self, from: recordData)
+    let recordObject = try JSONSerialization.jsonObject(with: recordData) as! [String: Any]
+    let legacyRecordData = try JSONSerialization.data(withJSONObject: [
+        "schema": 1, "operation_id": fanoutRecord.operationID, "operation": "route_fanout", "model_invoked": false,
+        "result_sha256": fanoutRecord.resultSHA256,
+        "routes": [["index": 1, "surface": "gpt-chat", "provider": "codex", "executed_surface": "gpt-chat",
+                    "session_id": recordedOutcomes[0].adopted!.sessionID, "model": "legacy-model",
+                    "payload_sha256": sha256Hex(Data("1+1".utf8)), "result_sha256": sha256Hex(Data("2".utf8))]],
+    ])
+    let legacyRecord = try JSONDecoder().decode(RouteFanoutRecord.self, from: legacyRecordData)
+    let failedOutcome = RouteFanoutOutcome(index: 1, target: fourPlan.targets[1], failure: "fixture unavailable",
+        executionIndex: 2)
+    let failedEvidence = routeFanoutRouteEvidence(failedOutcome)
+    let handoffEvidence = routeFanoutRouteEvidence(outcomes[2])
     var changedLane = fourOutcomes
     changedLane[1].adopted = step("codex", "4", surface: .gptChat)
     let changedText = routeFanoutSummary(plan: fourPlan, outcomes: changedLane)
@@ -7384,6 +7428,30 @@ func routeFanoutSummarySelfTest() throws {
         sessionID: UUID().uuidString.lowercased(), publicProgress: "partial answer", beforeHash: "fixture",
         workspace: metadataRoot.path, started: Date(), cause: OS1Error.message("fixture interruption"), surface: "gpt-chat")
     let checks: [(String, Bool)] = [
+        ("receipt schema 2 preserves all four requested and actual routes", decodedRecord == fanoutRecord
+            && decodedRecord.schema == 2 && decodedRecord.routes.count == 4
+            && decodedRecord.routes.map(\.surface) == fourPlan.targets.map { $0.surface.rawValue }
+            && decodedRecord.routes.map(\.payload) == ["1+1", "2+2", "3+3", "4+4"]
+            && decodedRecord.routes.map(\.executionIndex) == [1, 2, 3, 4]
+            && decodedRecord.routes.allSatisfy { $0.action == "agent_run" && $0.effort == "max" && $0.exitCode == 0 }),
+        ("receipt attempts do not turn rejected or reviewed drafts into adopted answers", decodedRecord.routes[0].attempts?.count == 3
+            && decodedRecord.routes[0].attempts?.map(\.revasDisposition) == ["rejected", "reviewed_draft", "adopted"]
+            && decodedRecord.routes[0].revasDisposition == "adopted"
+            && decodedRecord.routes[0].attempts?.first?.resultSHA256 != decodedRecord.routes[0].resultSHA256),
+        ("receipt contains evidence metadata, never duplicated answer or stderr", recordObject["routes"] is [[String: Any]]
+            && !String(decoding: recordData, as: UTF8.self).contains("not the adopted answer")
+            && !String(decoding: recordData, as: UTF8.self).contains("rejected answer")
+            && (recordObject["routes"] as! [[String: Any]]).allSatisfy { $0["output"] == nil && $0["stderr"] == nil }),
+        ("legacy receipt omissions remain unknown", legacyRecord.schema == 1 && legacyRecord.routes[0].surface == "gpt-chat"
+            && legacyRecord.routes[0].executedSurface == "gpt-chat" && legacyRecord.routes[0].model == "legacy-model"
+            && legacyRecord.routes[0].payload == nil && legacyRecord.routes[0].effort == nil
+            && legacyRecord.routes[0].durationMS == nil && legacyRecord.routes[0].nativeRecord == nil
+            && legacyRecord.routes[0].attempts == nil && legacyRecord.frame == nil),
+        ("failed and handed-off routes have no fabricated execution evidence", failedEvidence.failure == "fixture unavailable"
+            && failedEvidence.provider == nil && failedEvidence.model == nil && failedEvidence.nativeRecord == nil
+            && failedEvidence.attempts?.isEmpty == true && handoffEvidence.surface == "chatgpt"
+            && handoffEvidence.handoffReceipt == "/tmp/receipt.json" && handoffEvidence.provider == nil
+            && handoffEvidence.revasDisposition == nil && handoffEvidence.nativeRecord == nil),
         ("interrupted and appended candidates retain their actual lane", interrupted.execution.surface == "gpt-chat"
             && interrupted.execution.appendingOutput("saved").surface == "gpt-chat"),
         ("only actual full-lane sessions continue the bound agent conversation",

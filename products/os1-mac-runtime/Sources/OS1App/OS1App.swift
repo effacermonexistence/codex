@@ -4000,16 +4000,8 @@ private func stepRecordIsVerified(_ step: AppRunStep) -> Bool {
             (receipt["workspace_manifest_sha256"] as? String)?.count == 64 &&
             receipt["model_invoked"] as? Bool == false
     case "route_fanout":
-        // OS-1's summary of one request's parts, each run on the surface it
-        // named; every route answered carries its own native record above.
-        guard receipt["operation"] as? String == "route_fanout",
-              receipt["model_invoked"] as? Bool == false,
-              let routes = receipt["routes"] as? [[String: Any]], !routes.isEmpty else { return false }
-        return routes.allSatisfy { route in
-            (route["surface"] as? String).flatMap(ProviderSurface.init(rawValue:)) != nil &&
-                (route["payload_sha256"] as? String)?.count == 64 &&
-                (route["result_sha256"] == nil || (route["result_sha256"] as? String)?.count == 64)
-        }
+        guard let path = record.recordPath else { return false }
+        return boundRouteFanoutRecord(path: URL(fileURLWithPath: path), id: step.sessionID, output: step.output) != nil
     default:
         return false
     }
@@ -4068,6 +4060,265 @@ private func nativeRecordReceipt(_ step: AppRunStep) -> String {
     default: break
     }
     return parts.joined(separator: " · ")
+}
+
+/// The ordinary step receipt stays unchanged. A fan-out's final receipt owns
+/// the whole request, not just the local summarizer that happened to run last.
+private func executionReceipt(_ step: AppRunStep, source: SourceReference? = nil) -> String {
+    let control = "\(step.routeTitle) · \(step.executionDetail) · \(backendTierLabel(action: step.action, provider: step.provider)) · \(step.model ?? "provider default") · \(step.effort) reasoning · \(step.revasDisposition == "control_verified" ? "OS-1 control verified" : "REVAS adopted") · \(step.reviewedDraft.map { os1Tr("\($0) 초안을 코드와 대조해 검토", "checked the \($0) draft against the code") + " · " } ?? "")\(nativeRecordReceipt(step)) · \(step.workflowStage.map { "workflow \($0) · " } ?? "")step \(step.sequence) · \(step.durationMS / 1_000)s · exit \(step.exitCode)" +
+        (step.provider != "local" && source != nil ? " · source snapshot delivered: \(source!.sha256)" : "")
+    guard step.action == "route_fanout", step.provider == "local", stepRecordIsVerified(step),
+          let path = step.nativeRecord?.recordPath,
+          let record = boundRouteFanoutRecord(path: URL(fileURLWithPath: path), id: step.sessionID, output: step.output) else { return control }
+    return routeFanoutDetails(record) + "\n\nOS-1 제어 기록\n" + control
+}
+
+/// No prose or selected tile is execution authority. Read only the private,
+/// regular, non-symlink receipt whose identity and output digest match this turn.
+private func boundRouteFanoutRecord(path: URL, id: String, output: String) -> RouteFanoutRecord? {
+    guard path.resolvingSymlinksInPath() == path.standardizedFileURL,
+          let attrs = try? FileManager.default.attributesOfItem(atPath: path.path),
+          attrs[.type] as? FileAttributeType == .typeRegular,
+          (attrs[.posixPermissions] as? NSNumber)?.intValue == 0o600,
+          let size = attrs[.size] as? NSNumber, size.intValue <= 1_000_000,
+          let data = try? Data(contentsOf: path), data.count <= 1_000_000,
+          let record = try? JSONDecoder().decode(RouteFanoutRecord.self, from: data),
+          [1, 2].contains(record.schema), record.operation == "route_fanout", !record.modelInvoked,
+          record.operationID == id.lowercased(),
+          [output, output + "\n", output + "\r\n"].contains(where: { appSHA256Hex($0) == record.resultSHA256 }),
+          !record.routes.isEmpty, record.routes.count <= 64,
+          Set(record.routes.map(\.index)) == Set(1...record.routes.count),
+          record.routes.allSatisfy({ route in
+              route.index > 0 && ProviderSurface(rawValue: route.surface) != nil && route.surface != "auto" &&
+              (route.executionIndex == nil || route.executionIndex! > 0) &&
+              (route.durationMS == nil || route.durationMS! >= 0) &&
+              ProjectMaterialObject.validSHA(route.payloadSHA256) &&
+              (route.payload == nil || appSHA256Hex(route.payload!) == route.payloadSHA256) &&
+              (route.resultSHA256 == nil || ProjectMaterialObject.validSHA(route.resultSHA256!)) &&
+              (route.executedSurface == nil || ProviderSurface.resolveExecuted(rawSurface: route.executedSurface,
+                  provider: route.provider)?.rawValue == route.executedSurface) &&
+              (record.schema == 1 || route.resultSHA256 == nil || (route.attempts ?? []).contains {
+                  ["adopted", "control_verified"].contains($0.revasDisposition) && $0.exitCode == 0 &&
+                  $0.provider == route.provider && $0.surface == route.executedSurface &&
+                  $0.sessionID == route.sessionID && $0.model == route.model && $0.resultSHA256 == route.resultSHA256
+              }) && (route.attempts ?? []).allSatisfy {
+                  $0.sequence > 0 && $0.durationMS >= 0 && ProjectMaterialObject.validSHA($0.resultSHA256) &&
+                  ($0.surface == nil || ProviderSurface.resolveExecuted(rawSurface: $0.surface,
+                      provider: $0.provider)?.rawValue == $0.surface)
+              }
+          }) else { return nil }
+    return record
+}
+
+private func routeFanoutDetails(_ record: RouteFanoutRecord, request: String? = nil) -> String {
+    let candidate = request.flatMap(RouteFanout.plan)
+    let requested = candidate.flatMap { plan in
+        plan.targets.count == record.routes.count && record.routes.allSatisfy {
+            let target = plan.targets[$0.index - 1]
+            return target.surface.rawValue == $0.surface && appSHA256Hex(target.payload) == $0.payloadSHA256
+        } ? plan : nil
+    }
+    var lines = ["라우팅 경로 \(record.routes.count)개 · 요청 순서"]
+    for route in record.routes.sorted(by: { $0.index < $1.index }) {
+        let requestedSurface = ProviderSurface(rawValue: route.surface)!
+        // Legacy requests are useful only when the exact payload digest binds
+        // that part. Never parse the answer summary as a source of routing facts.
+        let legacyPayload = requested?.targets.first(where: {
+            $0.surface.rawValue == route.surface && appSHA256Hex($0.payload) == route.payloadSHA256
+        })?.payload
+        let payload = route.payload ?? legacyPayload
+        lines.append("\n\(route.index). 요청: \(requestedSurface.routeTitle)" + (payload.map { " — \($0)" } ?? " · 전달 내용 기록 없음"))
+        if let position = route.executionIndex { lines.append("   처리 순서: \(position)") }
+        if let raw = route.executedSurface, let actual = ProviderSurface(rawValue: raw) {
+            lines.append("   실제 실행: \(actual.routeTitle) · \(actual.executionLine)")
+        } else if route.provider != nil {
+            lines.append("   실제 실행 모드 기록 없음 · 백엔드: \(route.provider!)")
+        }
+        if let failure = route.failure {
+            lines.append("   " + (route.resultSHA256 != nil ? "대체·변경 경로: " : "실패·거절: ") + failure)
+        }
+        if let handoff = route.handoffReceipt {
+            lines.append("   앱 전달만 · OS-1 백엔드 답변 미확인 · 전달 기록: \(URL(fileURLWithPath: handoff).lastPathComponent)")
+        }
+        if let attempts = route.attempts, !attempts.isEmpty {
+            for (index, attempt) in attempts.enumerated() {
+                let title = ProviderSurface.resolveExecuted(rawSurface: attempt.surface, provider: attempt.provider)?.routeTitle
+                    ?? attempt.provider
+                let elapsed = String(format: "%.3f", Double(attempt.durationMS) / 1_000)
+                lines.append("   시도 \(index + 1): \(title) · \(attempt.model ?? "모델 기록 없음") · \(attempt.effort) reasoning · \(attempt.action) · 권한 \(attempt.permissionProfile) · \(attempt.revasDisposition) · step \(attempt.sequence) · \(elapsed)s · exit \(attempt.exitCode)")
+                if let native = attempt.nativeRecord {
+                    let path = native.recordPath.map { URL(fileURLWithPath: $0).lastPathComponent } ?? "경로 기록 없음"
+                    lines.append("      원본 기록: \(native.isVerified ? "실행 당시 확인됨" : native.persistence) · \(path) · 세션 \(attempt.sessionID) · \(native.desktopVisibility)")
+                } else { lines.append("      원본 실행 기록 미확인 · 세션 \(attempt.sessionID)") }
+                if let draft = attempt.reviewedDraft { lines.append("      검토한 초안: \(draft)") }
+            }
+        } else if route.resultSHA256 != nil {
+            // Schema 1 did not record these values. Old UI receipt prose
+            // is conversational context, not new native execution evidence.
+            lines.append("   모델: \(route.model ?? "기록 없음") · 추론 강도·실행 시간·원본 기록: 기록 없음")
+            if let session = route.sessionID { lines.append("   세션: \(session)") }
+        } else if route.handoffReceipt == nil {
+            lines.append("   채택된 답변 없음 · 확인할 수 없는 호출·실행 값은 표시하지 않습니다")
+        }
+    }
+    let frame = record.frame ?? requested?.frame ?? []
+    if !frame.isEmpty { lines.append("\n백엔드에 전달하지 않은 문구: " + frame.joined(separator: " / ")) }
+    return lines.joined(separator: "\n")
+}
+
+/// Render old summaries from their actual control receipt without rewriting
+/// historical messages, dispatching providers, or reopening native sessions.
+private func historicalRouteFanoutDetails(messages: [ChatMessage], index: Int,
+                                         sourceStore: SourceContextStore) -> String? {
+    guard index > 0, messages[index].role == .receipt, messages[index].provider == "local",
+          messages[index].nativeRecordVerified == true,
+          messages[index - 1].role == .assistant, messages[index - 1].provider == "local" else { return nil }
+    let receipt = messages[index], answer = messages[index - 1]
+    guard let pattern = try? NSRegularExpression(pattern: #"[a-fA-F0-9]{8}(?:-[a-fA-F0-9]{4}){3}-[a-fA-F0-9]{12}\.json\b"#) else { return nil }
+    let text = receipt.text as NSString
+    let candidates = Set(pattern.matches(in: receipt.text, range: NSRange(location: 0, length: text.length)).compactMap {
+        UUID(uuidString: String(text.substring(with: $0.range).dropLast(5)))
+    })
+    let records = candidates.compactMap { id in
+        boundRouteFanoutRecord(path: sourceStore.url(for: SourceReference(kind: .receipt, id: id, sha256: "")),
+                              id: id.uuidString, output: answer.text)
+    }
+    guard records.count == 1 else { return nil }
+    let userIndex = messages[..<(index - 1)].lastIndex(where: { $0.role == .user })
+    let originalControl = receipt.text.components(separatedBy: "\n\nOS-1 제어 기록\n").last ?? receipt.text
+    return routeFanoutDetails(records[0], request: userIndex.map { messages[$0].text }) + "\n\nOS-1 제어 기록\n" + originalControl
+}
+
+@MainActor
+private func routeFanoutDetailsSelfTest() throws {
+    var checks = 0
+    func check(_ condition: Bool, _ label: String) throws {
+        checks += 1
+        if !condition { throw RunnerError.message("OS-1 routing details: " + label) }
+    }
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("os1-routing-details-\(UUID())")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let store = SourceContextStore(root: root)
+    let id = UUID(), output = "Routing result · 4/4 executed routes answered"
+    let path = store.url(for: SourceReference(kind: .receipt, id: id, sha256: ""))
+    try FileManager.default.createDirectory(at: path.deletingLastPathComponent(), withIntermediateDirectories: true)
+    let surfaces: [ProviderSurface] = [.gptChat, .codex, .claudeChat, .claude]
+    let request = "1+1 GPT한테. 2+2 Codex한테. 3+3 Claude한테. 4+4 Claudecode한테. 답변 받아와."
+    guard let plan = RouteFanout.plan(request) else { throw RunnerError.message("routing details fixture plan") }
+    let routes = surfaces.enumerated().map { index, surface in
+        let answer = String((index + 1) * 2), session = UUID().uuidString.lowercased()
+        let attempt = RouteFanoutAttemptEvidence(sequence: 1, provider: surface.backend!.rawValue,
+            action: "agent_run", model: "fixture-model-\(index)", effort: "high", revasDisposition: "adopted",
+            sessionID: session, permissionProfile: surface.forcesChatLane ? "read_only" : "workspace_write",
+            exitCode: 0, durationMS: 2_345, surface: surface.rawValue,
+            nativeRecord: RouteFanoutNativeRecordEvidence(turnID: session, recordPath: "/tmp/\(session).jsonl",
+                persistence: "verified", desktopVisibility: "native_record_only"), resultSHA256: appSHA256Hex(answer))
+        return RouteFanoutRouteEvidence(index: index + 1, surface: surface.rawValue, executionIndex: index + 1,
+            payload: plan.targets[index].payload, payloadSHA256: appSHA256Hex(plan.targets[index].payload),
+            provider: surface.backend!.rawValue, executedSurface: surface.rawValue, sessionID: session,
+            model: attempt.model, resultSHA256: attempt.resultSHA256, attempts: [attempt])
+    }
+    let record = RouteFanoutRecord(operationID: id.uuidString.lowercased(), frame: plan.frame,
+        resultSHA256: appSHA256Hex(output), routes: routes.reversed())
+    func write(_ record: RouteFanoutRecord) throws {
+        try JSONEncoder().encode(record).write(to: path, options: .atomic)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path.path)
+    }
+    try write(record)
+    let step = AppRunStep(sequence: 5, provider: "local", action: "route_fanout", model: "os1-control", effort: "none",
+        revasDisposition: "control_verified", sessionID: id.uuidString.lowercased(), permissionProfile: "local_control",
+        exitCode: 0, output: output, stderr: "", durationMS: 10_000,
+        nativeRecord: AppNativeRecord(turnID: id.uuidString.lowercased(), recordPath: path.path,
+            persistence: "verified", desktopVisibility: "control_only"))
+    let text = executionReceipt(step)
+    try check(surfaces.allSatisfy { text.contains("요청: " + $0.routeTitle) && text.contains("실제 실행: " + $0.routeTitle) }, "all four requested and executed routes")
+    try check(text.contains("high reasoning") && text.contains("2.345s") && text.contains("exit 0") &&
+        text.contains("세션") && text.contains("실행 당시 확인됨") && text.contains("OS-1 제어 기록"), "observed metadata, native evidence, separate control")
+    let positions = surfaces.map { (text as NSString).range(of: "요청: " + $0.routeTitle).location }
+    try check(zip(positions, positions.dropFirst()).allSatisfy { $0 < $1 }, "owner order, not stored/execution order")
+    let receipt = ChatMessage(role: .receipt, text: text, provider: "local", nativeRecordVerified: true)
+    let messages = [ChatMessage(role: .user, text: request), ChatMessage(role: .assistant, text: output, provider: "local"), receipt]
+    let restored = try JSONDecoder().decode([ChatMessage].self, from: JSONEncoder().encode(messages))
+    let collapsed = timelineAttributedDocument(messages: restored, queuedSubmissions: [], isRunning: false,
+        workspace: root.path, sourceStore: store).string
+    let expanded = timelineAttributedDocument(messages: restored, queuedSubmissions: [], isRunning: false,
+        workspace: root.path, expandAll: true, sourceStore: store).string
+    try check(!collapsed.contains("요청: GPT") && expanded.contains("요청: GPT") && expanded.contains("fixture-model-3"), "persisted receipt collapse/expand")
+    try check(expanded.components(separatedBy: "라우팅 경로 4개").count == 2, "no repeated aggregation on restart")
+    try check(boundRouteFanoutRecord(path: path, id: id.uuidString, output: output + " altered") == nil,
+        "summary digest mismatch")
+    try check(boundRouteFanoutRecord(path: path, id: UUID().uuidString, output: output) == nil, "operation identity mismatch")
+    try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: path.path)
+    try check(boundRouteFanoutRecord(path: path, id: id.uuidString, output: output) == nil, "non-private receipt")
+    try write(record)
+    let link = root.appendingPathComponent("receipt-link.json")
+    try FileManager.default.createSymbolicLink(at: link, withDestinationURL: path)
+    try check(boundRouteFanoutRecord(path: link, id: id.uuidString, output: output) == nil, "symlink receipt")
+
+    let legacyRoutes = routes.map { RouteFanoutRouteEvidence(index: $0.index, surface: $0.surface,
+        payloadSHA256: $0.payloadSHA256, provider: $0.provider, executedSurface: $0.executedSurface,
+        sessionID: $0.sessionID, model: $0.model, resultSHA256: $0.resultSHA256) }
+    let legacy = RouteFanoutRecord(schema: 1, operationID: id.uuidString.lowercased(), resultSHA256: appSHA256Hex(output), routes: legacyRoutes)
+    try write(legacy)
+    var historical = [ChatMessage(role: .user, text: request)]
+    for (index, route) in legacyRoutes.enumerated() {
+        historical.append(ChatMessage(role: .assistant, text: String((index + 1) * 2), provider: route.provider,
+            executionSurface: route.executedSurface))
+        historical.append(ChatMessage(role: .receipt,
+            text: "\(route.model!) · high reasoning · \(route.sessionID!).jsonl · step 1 · 2s · exit 0",
+            provider: route.provider, executionSurface: route.executedSurface, nativeRecordVerified: true))
+    }
+    historical.append(ChatMessage(role: .assistant, text: output, provider: "local"))
+    historical.append(ChatMessage(role: .receipt, text: "native record verified · \(id.uuidString.lowercased()).json · local control receipt persisted",
+        provider: "local", nativeRecordVerified: true))
+    let stableEncoder = JSONEncoder()
+    stableEncoder.outputFormatting = [.sortedKeys]
+    let originalBytes = try stableEncoder.encode(historical)
+    let oldDetails = historicalRouteFanoutDetails(messages: historical, index: historical.count - 1, sourceStore: store) ?? ""
+    try check(oldDetails.contains("— 1+1") && oldDetails.contains("모델: fixture-model-3") && !oldDetails.contains("high reasoning") &&
+        surfaces.allSatisfy { oldDetails.contains("요청: " + $0.routeTitle) }, "hash-bound legacy backfill without promoting historical UI prose")
+    let afterBytes = try stableEncoder.encode(historical)
+    try check(afterBytes == originalBytes, "legacy rendering never rewrites stored messages")
+    historical[1] = ChatMessage(role: .assistant, text: "wrong answer", provider: "codex", executionSurface: "gpt-chat")
+    let mismatched = historicalRouteFanoutDetails(messages: historical, index: historical.count - 1, sourceStore: store) ?? ""
+    try check(mismatched.contains("모델: fixture-model-0 · 추론 강도·실행 시간·원본 기록: 기록 없음"), "legacy answer mismatch cannot import another step's metadata")
+    let noUser = Array(historical.suffix(2))
+    try check(historicalRouteFanoutDetails(messages: noUser, index: 1, sourceStore: store)?.contains("라우팅 경로 4개") == true,
+        "legacy summary without previous user is safe")
+    let altered = [ChatMessage(role: .assistant, text: output + " altered", provider: "local"), historical.last!]
+    try check(historicalRouteFanoutDetails(messages: altered, index: 1, sourceStore: store) == nil, "legacy display rejects altered output")
+    try FileManager.default.removeItem(at: path)
+    try check(historicalRouteFanoutDetails(messages: historical, index: historical.count - 1, sourceStore: store) == nil,
+        "missing evidence does not synthesize routes")
+
+    let rejected = RouteFanoutAttemptEvidence(sequence: 1, provider: "codex", action: "agent_run", model: "draft-model",
+        effort: "high", revasDisposition: "rejected", sessionID: "failed-session", permissionProfile: "read_only",
+        exitCode: 1, durationMS: 100, surface: "codex", resultSHA256: appSHA256Hex("failed"))
+    let substitute = RouteFanoutAttemptEvidence(sequence: 2, provider: "claude", action: "agent_run", model: "fallback-model",
+        effort: "high", revasDisposition: "adopted", sessionID: "fallback-session", permissionProfile: "read_only",
+        exitCode: 0, durationMS: 200, surface: "claude", resultSHA256: appSHA256Hex("4"))
+    let mixed = RouteFanoutRecord(operationID: id.uuidString.lowercased(), resultSHA256: appSHA256Hex(output), routes: [
+        RouteFanoutRouteEvidence(index: 1, surface: "codex", payload: "2+2", payloadSHA256: appSHA256Hex("2+2"),
+            provider: "claude", executedSurface: "claude", sessionID: substitute.sessionID, model: substitute.model,
+            resultSHA256: appSHA256Hex("4"), failure: "substitute", attempts: [rejected, substitute]),
+        RouteFanoutRouteEvidence(index: 2, surface: "claude-chat", payloadSHA256: appSHA256Hex("3+3"), failure: "quota"),
+        RouteFanoutRouteEvidence(index: 3, surface: "chatgpt", payloadSHA256: appSHA256Hex("question"), handoffReceipt: "/tmp/handoff.json"),
+    ])
+    try write(mixed)
+    let mixedText = executionReceipt(step)
+    try check(mixedText.contains("요청: Codex") && mixedText.contains("실제 실행: Claude Code") && mixedText.contains("대체·변경 경로: substitute"),
+        "requested route never overwrites substitute execution")
+    try check(mixedText.contains("rejected") && mixedText.contains("exit 1") && mixedText.contains("원본 실행 기록 미확인"),
+        "rejected attempts retain their status, not adopted proof")
+    try check(mixedText.contains("실패·거절: quota") && mixedText.contains("앱 전달만 · OS-1 백엔드 답변 미확인"),
+        "failures and handoff remain explicit")
+    let duplicate = RouteFanoutRecord(operationID: id.uuidString.lowercased(), resultSHA256: appSHA256Hex(output), routes: [routes[0], routes[0]])
+    try write(duplicate)
+    try check(boundRouteFanoutRecord(path: path, id: id.uuidString, output: output) == nil, "duplicate route indices")
+    let badPayload = RouteFanoutRouteEvidence(index: 1, surface: "gpt-chat", payload: "changed", payloadSHA256: routes[0].payloadSHA256)
+    try write(RouteFanoutRecord(operationID: id.uuidString.lowercased(), resultSHA256: appSHA256Hex(output), routes: [badPayload]))
+    try check(boundRouteFanoutRecord(path: path, id: id.uuidString, output: output) == nil, "payload digest mismatch")
+    print("OS-1 routing details: \(checks) checks PASS; provider calls 0")
 }
 
 /// Repair the persisted-failure/outbox UI gap without invoking a model, replaying
@@ -6394,9 +6645,7 @@ private final class SessionStore: ObservableObject {
                     ))
                     sessions[target].messages.append(ChatMessage(
                         role: .receipt,
-                        text: "\(step.routeTitle) · \(step.executionDetail) · \(backendTierLabel(action: step.action, provider: step.provider)) · \(step.model ?? "provider default") · \(step.effort) reasoning · \(step.revasDisposition == "control_verified" ? "OS-1 control verified" : "REVAS adopted") · \(step.reviewedDraft.map { os1Tr("\($0) 초안을 코드와 대조해 검토", "checked the \($0) draft against the code") + " · " } ?? "")\(nativeRecordReceipt(step)) · \(step.workflowStage.map { "workflow \($0) · " } ?? "")step \(step.sequence) · \(step.durationMS / 1_000)s · exit \(step.exitCode)" +
-                            (step.provider != "local" && summary.sourceContext != nil
-                                ? " · source snapshot delivered: \(summary.sourceContext!.sha256)" : ""),
+                        text: executionReceipt(step, source: summary.sourceContext),
                         provider: step.provider,
                         executionSurface: step.executedSurface?.rawValue,
                         permissionProfile: step.permissionProfile,
@@ -8720,7 +8969,7 @@ private struct OS1DesktopApp: App {
                         preview.messages.append(ChatMessage(role: .assistant, text: step.output, provider: step.provider, executionSurface: step.executedSurface?.rawValue,
                             permissionProfile: step.permissionProfile))
                         preview.messages.append(ChatMessage(role: .receipt,
-                            text: "\(step.routeTitle) · \(step.executionDetail) · \(backendTierLabel(action: step.action, provider: step.provider)) · \(nativeRecordReceipt(step))",
+                            text: executionReceipt(step, source: summary.sourceContext),
                             provider: step.provider, executionSurface: step.executedSurface?.rawValue, nativeRecordVerified: stepRecordIsVerified(step)))
                     }
                     session = preview // in-memory only; never added to the user's sessions
@@ -8887,6 +9136,7 @@ private struct OS1DesktopApp: App {
                 try nativeProvenanceSelfTest()
                 try savedFailurePreviewSelfTest()
                 try providerIntentSelfTest()
+                try routeFanoutDetailsSelfTest()
                 try taskContextSelfTest()
                 try interactionSelfTest()
                 try railSelectionSelfTest()
@@ -11678,7 +11928,7 @@ private func timelineAttributedDocument(
                 "\(status) · \(show ? "세부 정보 접기" : "세부 정보 보기")", key: key))
             if show {
                 details.append(NSAttributedString(string: "\u{2028}백엔드 실행 기록의 확인 여부입니다. 답변의 정확성이나 과제 완수를 보증하지 않습니다.\u{2028}", attributes: [.font: NSFont.systemFont(ofSize: 11), .foregroundColor: TimelinePalette.muted]))
-                details.append(NSAttributedString(string: timelineNormalizedText(message.text), attributes: [.font: NSFont.monospacedSystemFont(ofSize: 11, weight: .regular), .foregroundColor: TimelinePalette.muted]))
+                details.append(NSAttributedString(string: timelineNormalizedText(historicalRouteFanoutDetails(messages: messages, index: index, sourceStore: sourceStore) ?? message.text), attributes: [.font: NSFont.monospacedSystemFont(ofSize: 11, weight: .regular), .foregroundColor: TimelinePalette.muted]))
             }
             appendBlock(
                 role: MessageRole.receipt.rawValue,
