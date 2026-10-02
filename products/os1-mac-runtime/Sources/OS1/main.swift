@@ -8337,6 +8337,11 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
     if OwnerAuthorityActions.relevant(request: objectiveRequest, context: context) {
         workspaceContext += "\n" + OwnerAuthorityActions.capabilityCard
     }
+    // Domain names: the registry says which ones are free, and the read-only
+    // lane's sandbox reaches the registries for it (2026-10-02).
+    if ReadOnlyLookup.relevant(request: objectiveRequest, context: context) {
+        workspaceContext += "\n" + ReadOnlyLookup.capabilityCard
+    }
     if let target = previewDeploymentTarget { workspaceContext += "\n" + target.contract }
     if let validation = TaskWorkflow.validationContract(ownerRequest: objectiveRequest, scope: resolvedScope) {
         workspaceContext += "\n" + validation

@@ -24,8 +24,11 @@ public enum ClaudeReadOnlyShell {
     /// Session settings for the lane: the listed inspection commands run outside
     /// Claude Code's process sandbox so `gh`/`git`/`railway`/`wrangler` can reach
     /// the network and the keychain (the sandbox would otherwise auto-deny them
-    /// under dontAsk). Everything else stays sandboxed and prefix-gated.
-    public static let sandboxSettings = #"{"sandbox":{"excludedCommands":["git","gh","railway","wrangler","pnpm exec wrangler","os1","node --version","swift --version","codex --version","claude --version"]}}"#
+    /// under dontAsk). Everything else stays sandboxed and prefix-gated; the
+    /// sandbox's network reaches only the public domain registries, so a
+    /// domain question can check which names are free (2026-10-02).
+    public static let sandboxSettings = #"{"sandbox":{"excludedCommands":["git","gh","railway","wrangler","pnpm exec wrangler","os1","node --version","swift --version","codex --version","claude --version"],"network":{"allowedDomains":["#
+        + ReadOnlyLookup.registryHosts.map { "\"\($0)\"" }.joined(separator: ",") + "]}}}"
 
     public static var directive: String {
         "\nThis read-only lane allows only these shell commands: " + allowRules.joined(separator: ", ") +
