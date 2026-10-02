@@ -16,7 +16,7 @@ Afterwards the helper is installed, so later updates are `os1-machine-sync pro` 
 `--verify-only` changes nothing and reports `OS1_MACHINE_IMAGE_IDENTICAL n/n` or every difference.
 The sync uses the Mac's existing Wrangler login (`wrangler login` once if it is signed out).
 
-What happens: the pointer, each part (≤90 MiB) and the package are checked against their SHA-256 and
+What happens: the pointer, each part (≤15 MiB) and the package are checked against their SHA-256 and
 size; archive paths are checked; every file in the image is checked against `IMAGE.json`; then
 
 1. everything except the app is installed file by file (atomic rename), each replaced or extra file
