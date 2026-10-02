@@ -4,7 +4,7 @@ import Foundation
 public let journalRotationBytes = 8_000_000
 
 public struct RuntimeActivity: Codable, Equatable, Sendable {
-    public enum Phase: String, Codable, Sendable { case preparing, source, authorizing, routing, executing, verifying, syncing, recovering }
+    public enum Phase: String, Codable, Sendable { case preparing, waitingForSource, source, authorizing, routing, executing, verifying, syncing, recovering }
     public let phase: Phase
     public let provider: String?
     /// Actual executed mode, recorded only after lane selection. Absence on
@@ -17,18 +17,67 @@ public struct RuntimeActivity: Codable, Equatable, Sendable {
     public let tool: String?
     public let nativeSessionID: String?
     public init(_ phase: Phase, provider: String? = nil, surface: String? = nil, model: String? = nil, effort: String? = nil, timestamp: Date = Date(), publicText: String? = nil, tool: String? = nil, nativeSessionID: String? = nil) {
-        self.phase = phase; self.provider = provider; self.model = model; self.effort = effort; self.timestamp = timestamp
-        self.surface = surface.flatMap { raw in
+        self.phase = phase; self.timestamp = timestamp
+        // A source lease is acquired before dispatch. Never carry an earlier
+        // turn's executed route or native session into this pre-backend wait.
+        self.provider = phase == .waitingForSource ? nil : provider
+        self.model = phase == .waitingForSource ? nil : model
+        self.effort = phase == .waitingForSource ? nil : effort
+        self.surface = (phase == .waitingForSource ? nil : surface).flatMap { raw in
             guard let resolved = ProviderSurface.resolveExecuted(rawSurface: raw, provider: provider),
                   resolved.rawValue == raw else { return nil }
             return raw
         }
-        self.publicText = publicText; self.tool = tool
-        self.nativeSessionID = nativeSessionID.flatMap { UUID(uuidString: $0)?.uuidString.lowercased() }
+        self.publicText = publicText; self.tool = phase == .waitingForSource ? nil : tool
+        self.nativeSessionID = (phase == .waitingForSource ? nil : nativeSessionID).flatMap { UUID(uuidString: $0)?.uuidString.lowercased() }
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case phase, provider, surface, model, effort, timestamp, publicText, tool, nativeSessionID, waitingReason
+    }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        let recordedPhase = try values.decode(Phase.self, forKey: .phase)
+        let publicText = try values.decodeIfPresent(String.self, forKey: .publicText)
+        let waitingReason = try values.decodeIfPresent(String.self, forKey: .waitingReason)
+        // The previous runtime used preparing for these exact public notices.
+        // Recognize only its source-lock telemetry, not arbitrary output prose.
+        let legacySourceNotice = publicText.map { text in
+            ["OS-1 소스 쓰기 차례를 기다리는 중", "OS-1 자체 수리가 OS-1 소스를 쓰는 중이라 기다립니다",
+             "Waiting for the OS-1 source writer", "Waiting for an OS-1 repair to finish"].contains { text.hasPrefix($0) }
+        } ?? false
+        let phase: Phase = recordedPhase == .preparing && (waitingReason == "source_write" || legacySourceNotice)
+            ? .waitingForSource : recordedPhase
+        self.init(phase, provider: try values.decodeIfPresent(String.self, forKey: .provider),
+            surface: try values.decodeIfPresent(String.self, forKey: .surface),
+            model: try values.decodeIfPresent(String.self, forKey: .model),
+            effort: try values.decodeIfPresent(String.self, forKey: .effort),
+            timestamp: try values.decode(Date.self, forKey: .timestamp), publicText: publicText,
+            tool: try values.decodeIfPresent(String.self, forKey: .tool),
+            nativeSessionID: try values.decodeIfPresent(String.self, forKey: .nativeSessionID))
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        // App/runtime updates are staged independently. Old installed apps
+        // reject unknown phase values, but ignore optional keys. Keep their
+        // observer alive while new apps get the precise source-wait state.
+        try values.encode(phase == .waitingForSource ? Phase.preparing : phase, forKey: .phase)
+        if phase == .waitingForSource { try values.encode("source_write", forKey: .waitingReason) }
+        try values.encodeIfPresent(provider, forKey: .provider)
+        try values.encodeIfPresent(surface, forKey: .surface)
+        try values.encodeIfPresent(model, forKey: .model)
+        try values.encodeIfPresent(effort, forKey: .effort)
+        try values.encode(timestamp, forKey: .timestamp)
+        try values.encodeIfPresent(publicText, forKey: .publicText)
+        try values.encodeIfPresent(tool, forKey: .tool)
+        try values.encodeIfPresent(nativeSessionID, forKey: .nativeSessionID)
     }
     public var label: String {
         switch phase {
         case .preparing: return os1Tr("작업 준비 중", "Preparing the task")
+        case .waitingForSource: return os1Tr("OS-1 소스 접근 대기 중", "Waiting for OS-1 source access")
         case .source: return os1Tr("연결·자료 확인 중", "Checking connections and sources")
         case .authorizing: return os1Tr("공식 로그인 승인 대기 중 · 승인 후 같은 작업을 이어갑니다",
                                         "Waiting for the official sign-in · the same task continues after approval")
@@ -56,7 +105,8 @@ public struct RuntimeActivity: Codable, Equatable, Sendable {
         // GPT and Codex (or Claude and Claude Code) share a transport, but a
         // lane change is still a route boundary. Never inherit the other
         // lane's model, native session or surface into its new dispatch.
-        let sameRoute = sameProvider && (surface == nil || surface == previous?.surface)
+        let sameRoute = sameProvider && phase != .waitingForSource && previous?.phase != .waitingForSource &&
+            (surface == nil || surface == previous?.surface)
         let retained = sameRoute && [.verifying, .syncing].contains(phase) ? previous?.publicText : nil
         guard let data = try? JSONEncoder().encode(Self(phase, provider: provider,
             surface: surface ?? (sameRoute ? previous?.surface : nil),

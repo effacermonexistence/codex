@@ -98,9 +98,26 @@ func os1SourceWriteLeaseURL(root: String) throws -> URL {
     return directory.appendingPathComponent("source-write-" + sha256Hex(Data(canonical.utf8)).prefix(16) + ".lock")
 }
 
+/// A queued source writer closes reader admission while existing readers
+/// drain. Keep this separate from the source lease: no lock is stolen and an
+/// interrupted writer releases its intent through descriptor lifetime.
+func os1SourceWriterIntentURL(root: String) throws -> URL {
+    try os1SourceWriteLeaseURL(root: root).appendingPathExtension("writer-intent")
+}
+
 /// The source-write lease if no other OS-1 writer holds it right now.
 func tryAcquireOS1SourceWriteLease(root: String) throws -> ExclusiveHookLease? {
-    try ExclusiveHookLease.tryAcquire(at: os1SourceWriteLeaseURL(root: root))
+    guard let intent = try ExclusiveHookLease.tryAcquire(at: os1SourceWriterIntentURL(root: root)) else { return nil }
+    defer { withExtendedLifetime(intent) {} }
+    return try ExclusiveHookLease.tryAcquire(at: os1SourceWriteLeaseURL(root: root))
+}
+
+/// Readers may share the source only when no writer already owns admission.
+/// Taking both in this order closes the check/acquire race with a new writer.
+func tryAcquireOS1SourceSharedLease(root: String) throws -> ExclusiveHookLease? {
+    guard let intent = try ExclusiveHookLease.tryAcquire(at: os1SourceWriterIntentURL(root: root), shared: true) else { return nil }
+    defer { withExtendedLifetime(intent) {} }
+    return try ExclusiveHookLease.tryAcquire(at: os1SourceWriteLeaseURL(root: root), shared: true)
 }
 
 /// Serialize source edits without dropping a queued request after three minutes.
@@ -109,19 +126,27 @@ func acquireOS1SourceWriteLease(root: String, timeoutSeconds: Int? = nil) throws
     let lock = try os1SourceWriteLeaseURL(root: root)
     let deadline = timeoutSeconds.map { Date().addingTimeInterval(TimeInterval($0)) }
     var lastNotice = Date.distantPast
-    return try ExclusiveHookLease.acquireWaiting(at: lock, beforeAttempt: {
+    let checkCancellation = {
         if ExecutionCancellation.isCancelled { throw OS1Error.backendBlocked(.cancelled) }
         if let deadline, Date() >= deadline {
             throw OS1Error.message("OS-1 source-write wait deadline reached; no source edits were dispatched.")
         }
-    }, onContention: {
+    }
+    let notice = {
         if Date().timeIntervalSince(lastNotice) >= 10 {
             lastNotice = Date()
-            RuntimeActivity.emit(.preparing, publicText: os1Tr(
+            RuntimeActivity.emit(.waitingForSource, publicText: os1Tr(
                 "OS-1 소스 쓰기 차례를 기다리는 중 · 백엔드는 아직 시작하지 않았습니다. 기존 작업이 끝나면 자동으로 이어갑니다.",
                 "Waiting for the OS-1 source writer · backend not started. This request continues automatically when the writer releases it."))
         }
-    })
+    }
+    // Continuous HOME traffic used to win fresh shared leases while this
+    // repair waited indefinitely. A pending writer now prevents new readers.
+    let intent = try ExclusiveHookLease.acquireWaiting(at: os1SourceWriterIntentURL(root: root),
+        beforeAttempt: checkCancellation, onContention: notice)
+    defer { withExtendedLifetime(intent) {} }
+    return try ExclusiveHookLease.acquireWaiting(at: lock,
+        beforeAttempt: checkCancellation, onContention: notice)
 }
 
 /// A write task whose folder contains OS-1's live tree (HOME) may change it
@@ -130,18 +155,18 @@ func acquireOS1SourceWriteLease(root: String, timeoutSeconds: Int? = nil) throws
 /// 2026-09-30 a HOME task edited main.swift while the profile-menu repair held
 /// the lease, and that repair's build failed on the half-written code.
 func acquireOS1SourceSharedLease(root: String) throws -> ExclusiveHookLease {
-    let lock = try os1SourceWriteLeaseURL(root: root)
     var lastNotice = Date.distantPast
-    return try ExclusiveHookLease.acquireWaiting(at: lock, shared: true, beforeAttempt: {
+    while true {
         if ExecutionCancellation.isCancelled { throw OS1Error.backendBlocked(.cancelled) }
-    }, onContention: {
+        if let lease = try tryAcquireOS1SourceSharedLease(root: root) { return lease }
         if Date().timeIntervalSince(lastNotice) >= 10 {
             lastNotice = Date()
-            RuntimeActivity.emit(.preparing, publicText: os1Tr(
-                "OS-1 자체 수리가 OS-1 소스를 쓰는 중이라 기다립니다 · 이 작업 폴더에 OS-1 소스가 있어 동시에 고치면 서로 깨집니다. 백엔드는 아직 시작하지 않았고, 수리가 끝나면 자동으로 이어갑니다.",
-                "Waiting for an OS-1 repair to finish · this folder contains OS-1's source, and two writers at once break each other. Backend not started; this request continues automatically."))
+            RuntimeActivity.emit(.waitingForSource, publicText: os1Tr(
+                "OS-1 소스 접근 순서를 기다립니다 · 이 작업 폴더에 OS-1 소스가 있어 수리와 겹치지 않도록 보호합니다. 백엔드는 아직 시작하지 않았고, 소스 접근이 가능해지면 자동으로 이어갑니다.",
+                "Waiting for OS-1 source access · this folder contains OS-1's source and must not overlap a repair. Backend not started; this request continues automatically when source access is available."))
         }
-    })
+        Thread.sleep(forTimeInterval: 0.25)
+    }
 }
 
 private var installedAppURL: URL {

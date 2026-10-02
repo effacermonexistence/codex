@@ -48,6 +48,14 @@ public enum OS1SelfReference {
     ]
     static let deicticPattern = #"이거|이런|요거|여기|저거|봐봐|보이지|보여"#
     static let inlineImagePattern = #"\.(?:png|jpe?g|gif|webp|heic)(?![a-z0-9])"#
+    /// Route-selection complaints name the pre-dispatch UI, not necessarily
+    /// a backend. Require a shown screen or a failure/latency signal so a
+    /// generic request to implement a route selector is not rebound to OS-1.
+    static let routeSelectionPattern = #"라우트\s*(?:셀렉팅|셀렉션)|실행\s*(?:모델|경로)\s*선택|(?<![a-z0-9_])route\s+(?:selecting|selection)(?![a-z0-9_])|(?<![a-z0-9_])route:\s*not\s+selected\s+yet(?![a-z0-9_])|(?<![a-z0-9_])selecting\s+the\s+execution\s+model(?![a-z0-9_])"#
+    static let routeSelectionProblemPattern = #"오래\s*걸|느리|느려|멈|대기|계속\s*(?:준비|선택)|안\s*(?:끝|넘어|되)|(?<![a-z])(?:stuck|slow|waiting)(?![a-z])|tak(?:es|ing)\s+(?:so|too)\s+long|not\s+selected\s+yet"#
+    /// The same words in a router/network/web framework are another object.
+    /// A named OS-1 request still wins; this veto only protects inference.
+    static let foreignRouteSelectionPattern = #"라우터|공유기|네트워크\s*(?:라우트|라우팅|경로)|패킷|웹\s*앱|웹앱|(?<![a-z0-9_])(?:router|routing table|bgp|ospf|express|next[ .-]?js|react[ -]?router|web app)(?![a-z0-9_])"#
     /// Fixing what is there (not making something new), including the
     /// complaint form OS-1 must act on ("…게 해", "…돼야 되는데", "…안 된다니까").
     static let fixPatterns = [
@@ -124,10 +132,11 @@ public enum OS1SelfReference {
         let words = OwnerIntentText.authorityText(PromptAttachments.textWithoutReferences(request))
         let text = words.precomposedStringWithCanonicalMapping.lowercased()
         let named = namedPatterns.contains { matches($0, text) }
-        let surfaceHits = surfaces.filter { matches($0.pattern, text) }.map(\.label)
+        let hasImage = !PromptAttachments.imagePaths(in: request).isEmpty || matches(inlineImagePattern, text)
+        let routeSelection = matches(routeSelectionPattern, text) && (hasImage || matches(routeSelectionProblemPattern, text))
+        let surfaceHits = surfaces.filter { matches($0.pattern, text) }.map(\.label) + (routeSelection ? ["실행 경로 선택"] : [])
         let parity = matches(parityPattern, text)
         let weak = hints.filter { matches($0.pattern, text) }.map(\.label)
-        let hasImage = !PromptAttachments.imagePaths(in: request).isEmpty || matches(inlineImagePattern, text)
         let showing = hasImage && matches(deicticPattern, text)
         var signals = (named ? ["OS-1 이름"] : []) + surfaceHits
         if parity { signals.append("Codex/Claude Code 기준 비교") }
@@ -143,6 +152,9 @@ public enum OS1SelfReference {
         let asked = words.replacingOccurrences(of: #"(?:[.!?]\s+|[;\n])"#, with: "\n", options: .regularExpression)
             .components(separatedBy: "\n").filter { !matches(exclusionPattern, $0.lowercased()) }.joined(separator: "\n")
         if foreignPatterns.contains(where: { matches($0, asked.lowercased()) }) { return blocked("다른 제품·사이트를 가리킴") }
+        if routeSelection, !named, matches(foreignRouteSelectionPattern, asked.precomposedStringWithCanonicalMapping.lowercased()) {
+            return blocked("다른 제품의 라우트 선택을 가리킴")
+        }
         if let path = foreignTargetPath(in: asked, os1Roots: os1Roots, home: home.path) {
             return blocked("OS-1 밖의 작업 경로를 지정함: \(path)")
         }
