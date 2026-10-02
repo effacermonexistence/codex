@@ -3,32 +3,28 @@
 <plist version="1.0">
 <dict>
 	<key>CFBundleDevelopmentRegion</key>
-	<string>en</string>
+	<string>ko</string>
 	<key>CFBundleDisplayName</key>
-	<string>OS-1 CLODEX</string>
+	<string>OS-1 Checkout</string>
 	<key>CFBundleExecutable</key>
-	<string>OS1App</string>
-	<key>CFBundleIconFile</key>
-	<string>OmarAGI.icns</string>
+	<string>OS1Checkout</string>
 	<key>CFBundleIdentifier</key>
-	<string>com.omaragi.os1</string>
+	<string>com.omaragi.os1.checkout</string>
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleName</key>
-	<string>OS-1 CLODEX</string>
+	<string>OS-1 Checkout</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>0.9.237</string>
+	<string>0.0.0</string>
 	<key>CFBundleVersion</key>
-	<string>303</string>
+	<string>0</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>13.0</string>
-	<key>NSHighResolutionCapable</key>
+	<key>LSUIElement</key>
 	<true/>
-	<key>NSMicrophoneUsageDescription</key>
-	<string>OS-1 uses the microphone to turn your voice into task text with a local Whisper engine when available.</string>
-	<key>NSSpeechRecognitionUsageDescription</key>
-	<string>OS-1 uses speech recognition to transcribe dictated tasks.</string>
+	<key>NSAppleEventsUsageDescription</key>
+	<string>OS-1이 결제 화면을 열고, 직접 승인하신 구매 버튼만 누르기 위해 Safari와 Chrome을 제어합니다.</string>
 </dict>
 </plist>

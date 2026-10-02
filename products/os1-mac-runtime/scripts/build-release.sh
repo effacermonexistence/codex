@@ -93,6 +93,8 @@ if [[ "$skip_build" == "1" ]]; then
   [[ -x "$arm64_build_dir/arm64-apple-macosx/release/OS1App" ]]
   [[ -x "$x86_64_build_dir/x86_64-apple-macosx/release/os1" ]]
   [[ -x "$x86_64_build_dir/x86_64-apple-macosx/release/OS1App" ]]
+  [[ -x "$arm64_build_dir/arm64-apple-macosx/release/OS1Checkout" ]]
+  [[ -x "$x86_64_build_dir/x86_64-apple-macosx/release/OS1Checkout" ]]
 else
   swift build --package-path "$runtime_root" -c release \
     --triple arm64-apple-macosx13.0 \
@@ -124,6 +126,19 @@ lipo -create \
   "$arm64_build_dir/arm64-apple-macosx/release/OS1App" \
   "$x86_64_build_dir/x86_64-apple-macosx/release/OS1App" \
   -output "$stage_dir/Applications/OS-1 CLODEX.app/Contents/MacOS/OS1App"
+# OS-1 Checkout: the owner-approved checkout helper, a separate app so the
+# browser Automation permission the owner grants it is not inherited by
+# backends (they are OS-1's children, not the helper's).
+readonly checkout_app="$stage_dir/Applications/OS-1 CLODEX.app/Contents/Helpers/OS-1 Checkout.app"
+mkdir -p "$checkout_app/Contents/MacOS"
+lipo -create \
+  "$arm64_build_dir/arm64-apple-macosx/release/OS1Checkout" \
+  "$x86_64_build_dir/x86_64-apple-macosx/release/OS1Checkout" \
+  -output "$checkout_app/Contents/MacOS/OS1Checkout"
+install -m 0644 "$runtime_root/Resources/OS1Checkout-Info.plist" "$checkout_app/Contents/Info.plist"
+plutil -replace CFBundleShortVersionString -string "$version" "$checkout_app/Contents/Info.plist"
+plutil -replace CFBundleVersion -string "$(plutil -extract CFBundleVersion raw -o - "$runtime_root/Resources/Info.plist")" \
+  "$checkout_app/Contents/Info.plist"
 
 install -m 0644 "$runtime_root/Resources/Info.plist" \
   "$stage_dir/Applications/OS-1 CLODEX.app/Contents/Info.plist"
@@ -160,6 +175,8 @@ while IFS= read -r payload_file; do
     "Applications/OS-1 CLODEX.app/Contents/Resources/OmarAGI.icns"|\
     "Applications/OS-1 CLODEX.app/Contents/Resources/config.json"|\
     "Applications/OS-1 CLODEX.app/Contents/Info.plist"|\
+    "Applications/OS-1 CLODEX.app/Contents/Helpers/OS-1 Checkout.app/Contents/MacOS/OS1Checkout"|\
+    "Applications/OS-1 CLODEX.app/Contents/Helpers/OS-1 Checkout.app/Contents/Info.plist"|\
     "Applications/OS-1 CLODEX.app/Contents/Resources/SwiftMath_SwiftMath.bundle/Info.plist"|\
     "Applications/OS-1 CLODEX.app/Contents/Resources/SwiftMath_SwiftMath.bundle/SwiftMath-LICENSE.txt"|\
     "Applications/OS-1 CLODEX.app/Contents/Resources/SwiftMath_SwiftMath.bundle/mathFonts.bundle/latinmodern-math.otf"|\
@@ -195,6 +212,10 @@ codesign "${codesign_options[@]}" \
 codesign "${codesign_options[@]}" \
   --identifier com.omaragi.os1.runtime.bundled \
   "$stage_dir/Applications/OS-1 CLODEX.app/Contents/Resources/os1"
+# Inside-out: the nested helper is signed before the bundle that seals it.
+codesign "${codesign_options[@]}" \
+  --entitlements "$runtime_root/Resources/OS1Checkout.entitlements" \
+  --identifier com.omaragi.os1.checkout "$checkout_app"
 codesign "${codesign_options[@]}" \
   --entitlements "$runtime_root/Resources/OS1.entitlements" \
   --identifier com.omaragi.os1 "$stage_dir/Applications/OS-1 CLODEX.app"
@@ -202,6 +223,13 @@ codesign --verify --strict --verbose=2 "$stage_dir/usr/local/bin/os1"
 codesign --verify --deep --strict --verbose=2 "$stage_dir/Applications/OS-1 CLODEX.app"
 lipo -archs "$stage_dir/usr/local/bin/os1" | grep -Eq '(^| )(x86_64 arm64|arm64 x86_64)($| )'
 lipo -archs "$stage_dir/Applications/OS-1 CLODEX.app/Contents/MacOS/OS1App" | grep -Eq '(^| )(x86_64 arm64|arm64 x86_64)($| )'
+codesign --verify --strict --verbose=2 "$checkout_app"
+lipo -archs "$checkout_app/Contents/MacOS/OS1Checkout" | grep -Eq '(^| )(x86_64 arm64|arm64 x86_64)($| )'
+[[ "$(plutil -extract CFBundleShortVersionString raw -o - "$checkout_app/Contents/Info.plist")" == "$version" ]]
+[[ "$(plutil -extract CFBundleIdentifier raw -o - "$checkout_app/Contents/Info.plist")" == "com.omaragi.os1.checkout" ]]
+codesign -d --entitlements :- "$checkout_app" 2>/dev/null | grep -q 'com.apple.security.automation.apple-events' || {
+  echo "OS-1 Checkout lacks the Apple Events entitlement." >&2; exit 1;
+}
 [[ "$(plutil -extract CFBundleShortVersionString raw -o - "$stage_dir/Applications/OS-1 CLODEX.app/Contents/Info.plist")" == "$version" ]]
 runtime_version="$("$stage_dir/usr/local/bin/os1" version)"
 bundle_build="$(plutil -extract CFBundleVersion raw -o - "$stage_dir/Applications/OS-1 CLODEX.app/Contents/Info.plist")"
@@ -215,6 +243,7 @@ bundle_build="$(plutil -extract CFBundleVersion raw -o - "$stage_dir/Application
 "$stage_dir/Applications/OS-1 CLODEX.app/Contents/MacOS/OS1App" --self-test-queue-fork
 "$stage_dir/Applications/OS-1 CLODEX.app/Contents/MacOS/OS1App" --self-test-composer
 "$stage_dir/Applications/OS-1 CLODEX.app/Contents/MacOS/OS1App" --self-test-steering
+"$checkout_app/Contents/MacOS/OS1Checkout" --self-test
 "$arm64_build_dir/arm64-apple-macosx/release/OS1ContextTests"
 "$arm64_build_dir/arm64-apple-macosx/release/FrontierMonitorTests"
 "$arm64_build_dir/arm64-apple-macosx/release/OS1HookSupportTests"
@@ -269,6 +298,8 @@ while IFS= read -r payload_file; do
     "Applications/OS-1 CLODEX.app/Contents/Resources/OmarAGI.icns"|\
     "Applications/OS-1 CLODEX.app/Contents/Resources/config.json"|\
     "Applications/OS-1 CLODEX.app/Contents/Info.plist"|\
+    "Applications/OS-1 CLODEX.app/Contents/Helpers/OS-1 Checkout.app/Contents/MacOS/OS1Checkout"|\
+    "Applications/OS-1 CLODEX.app/Contents/Helpers/OS-1 Checkout.app/Contents/Info.plist"|\
     "Applications/OS-1 CLODEX.app/Contents/Resources/SwiftMath_SwiftMath.bundle/Info.plist"|\
     "Applications/OS-1 CLODEX.app/Contents/Resources/SwiftMath_SwiftMath.bundle/SwiftMath-LICENSE.txt"|\
     "Applications/OS-1 CLODEX.app/Contents/Resources/SwiftMath_SwiftMath.bundle/mathFonts.bundle/latinmodern-math.otf"|\
@@ -276,6 +307,7 @@ while IFS= read -r payload_file; do
     "Applications/OS-1 CLODEX.app/Contents/Resources/SwiftMath_SwiftMath.bundle/mathFonts.bundle/LICENSE"|\
     "Applications/OS-1 CLODEX.app/Contents/Resources/SwiftMath_SwiftMath.bundle/mathFonts.bundle/GUST-FONT-LICENSE.txt"|\
     "Applications/OS-1 CLODEX.app/Contents/_CodeSignature/CodeResources"|\
+    "Applications/OS-1 CLODEX.app/Contents/Helpers/OS-1 Checkout.app/Contents/_CodeSignature/CodeResources"|\
     "usr/local/bin/os1"|\
     "Library/Application Support/OS-1/config.json") ;;
     *) echo "Refusing unexpected expanded payload file: $relative_path" >&2; exit 1 ;;

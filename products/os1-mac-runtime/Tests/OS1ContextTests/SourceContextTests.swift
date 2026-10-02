@@ -168,6 +168,7 @@ final class SourceContextTests {
         try runConversationalQuestionFixtures()
         try runWebsiteDeliveryRelevanceFixtures()
         try runReadOnlyLookupFixtures()
+        try runBrowserCheckoutFixtures()
         let taskRoot = FileManager.default.temporaryDirectory.appendingPathComponent("os1-task-context-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: taskRoot, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: taskRoot) }

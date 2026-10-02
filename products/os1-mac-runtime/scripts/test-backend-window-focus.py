@@ -104,6 +104,12 @@ allowed = {
     'Sources/OS1/CodexDesktopTransport.swift': {
         'URL(fileURLWithPath: "/usr/bin/open"),',
     },
+    # OS-1 Checkout helper launch on a purchase turn: `open -g -j` (not
+    # brought forward, hidden), through LaunchServices so the helper is its
+    # own responsible process (build 303).
+    'Sources/OS1Context/BrowserCheckoutClient.swift': {
+        'process.executableURL = URL(fileURLWithPath: "/usr/bin/open")',
+    },
     'Sources/OS1/main.swift': {
         # revealInCodexDesktop / revealInClaudeDesktop: explicit reveal only.
         'let result = try commandOutput("/usr/bin/open", [url], timeout: 15)',

@@ -73,7 +73,7 @@ verify_unnotarized_beta_package() {
   local app_signature_details
   local expanded_paths
   local release_major release_minor release_patch
-  local expected_payload_files=18 expected_component_files=21
+  local expected_payload_files=18 expected_component_files=21 requires_policy_helper=0
   local policy_helper="$app_path/Contents/Resources/sync-owner-policy.py"
   [[ "$manifest_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || return 1
   IFS=. read -r release_major release_minor release_patch <<< "$manifest_version"
@@ -83,6 +83,14 @@ verify_unnotarized_beta_package() {
         (10#$release_minor == 9 && 10#$release_patch >= 107) )); then
     expected_payload_files=19
     expected_component_files=22
+    requires_policy_helper=1
+  fi
+  # 0.9.237 (build 303) adds the signed OS-1 Checkout helper app: its
+  # executable, Info.plist and code signature.
+  if (( 10#$release_major > 0 || 10#$release_minor > 9 ||
+        (10#$release_minor == 9 && 10#$release_patch >= 237) )); then
+    expected_payload_files=22
+    expected_component_files=25
   fi
 
   pkgutil --expand-full "$package_path" "$expanded_root" || {
@@ -114,7 +122,7 @@ verify_unnotarized_beta_package() {
     return 1
   fi
 
-  if [[ "$expected_payload_files" == "19" ]]; then
+  if (( requires_policy_helper )); then
     [[ -f "$policy_helper" && ! -L "$policy_helper" ]] || {
       echo "OS-1 beta verification requires the owner-policy helper." >&2; return 1;
     }
@@ -162,6 +170,9 @@ verify_unnotarized_beta_package() {
       "Applications/OS-1 CLODEX.app/Contents/Resources/SwiftMath_SwiftMath.bundle/mathFonts.bundle/LICENSE"|\
       "Applications/OS-1 CLODEX.app/Contents/Resources/SwiftMath_SwiftMath.bundle/mathFonts.bundle/GUST-FONT-LICENSE.txt"|\
       "Applications/OS-1 CLODEX.app/Contents/_CodeSignature/CodeResources"|\
+      "Applications/OS-1 CLODEX.app/Contents/Helpers/OS-1 Checkout.app/Contents/MacOS/OS1Checkout"|\
+      "Applications/OS-1 CLODEX.app/Contents/Helpers/OS-1 Checkout.app/Contents/Info.plist"|\
+      "Applications/OS-1 CLODEX.app/Contents/Helpers/OS-1 Checkout.app/Contents/_CodeSignature/CodeResources"|\
       "usr/local/bin/os1"|\
       "Library/Application Support/OS-1/config.json") ;;
       *) echo "OS-1 beta verification refused an unexpected payload file: $relative_path" >&2; return 1 ;;
@@ -180,6 +191,11 @@ verify_unnotarized_beta_package() {
       "/Applications/OS-1 CLODEX.app/Contents/Resources/SwiftMath_SwiftMath.bundle"|\
       "/Applications/OS-1 CLODEX.app/Contents/Resources/SwiftMath_SwiftMath.bundle/mathFonts.bundle"|\
       "/Applications/OS-1 CLODEX.app/Contents/_CodeSignature"|\
+      "/Applications/OS-1 CLODEX.app/Contents/Helpers"|\
+      "/Applications/OS-1 CLODEX.app/Contents/Helpers/OS-1 Checkout.app"|\
+      "/Applications/OS-1 CLODEX.app/Contents/Helpers/OS-1 Checkout.app/Contents"|\
+      "/Applications/OS-1 CLODEX.app/Contents/Helpers/OS-1 Checkout.app/Contents/MacOS"|\
+      "/Applications/OS-1 CLODEX.app/Contents/Helpers/OS-1 Checkout.app/Contents/_CodeSignature"|\
       "/Library"|\
       "/Library/Application Support"|\
       "/Library/Application Support/OS-1"|\
