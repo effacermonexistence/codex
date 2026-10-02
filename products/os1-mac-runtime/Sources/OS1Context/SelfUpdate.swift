@@ -187,6 +187,68 @@ public enum SelfUpdate {
         return .apply
     }
 
+    // MARK: install hold
+
+    /// A staged build installs only while nothing runs, and a steady stream of
+    /// requests means that moment never comes: on 2026-10-02 build 298 ("이거는
+    /// 지워") waited behind five back-to-back tasks and the owner saw the fix
+    /// never arrive ("지우라고 했는데 … 못하는데"). So while a newer build waits
+    /// only for running work, OS-1 starts nothing new — app runs and fleet jobs
+    /// alike: what runs finishes, the build installs, and what waited runs in
+    /// the new build. Bounded, so a hung run cannot freeze OS-1: after this
+    /// long new work starts again and the build waits for a natural idle.
+    public static let holdNewWorkLimit: TimeInterval = 40 * 60
+
+    /// Whether new work must wait for this build. `since` is when the hold for
+    /// this build began; nil means it begins now.
+    public static func holdsNewWork(intent: Intent, installedBuild: Int, since: Date?, now: Date = Date()) -> Bool {
+        switch decision(intent: intent, installedBuild: installedBuild, busy: true, now: now) {
+        case .waitBusy, .applying:
+            return since.map { now.timeIntervalSince($0) < holdNewWorkLimit } ?? true
+        case .apply, .notNewer, .stale, .exhausted:
+            return false
+        }
+    }
+
+    /// The hold as other OS-1 processes see it: the fleet agent claims no new
+    /// job while a fresh one exists. A queued fleet job keeps its one-hour
+    /// start window, longer than the hold, so it runs in the new build.
+    public struct Hold: Codable, Equatable, Sendable {
+        public let build: Int
+        public let since: Date
+        public let expiresAt: Date
+
+        public init(build: Int, since: Date) {
+            self.build = build; self.since = since; self.expiresAt = since.addingTimeInterval(holdNewWorkLimit)
+        }
+    }
+
+    public static func holdURL(home: URL = FileManager.default.homeDirectoryForCurrentUser) -> URL {
+        home.appendingPathComponent(".os1/fleet/self-update-hold.json")
+    }
+
+    public static func saveHold(_ hold: Hold, home: URL = FileManager.default.homeDirectoryForCurrentUser) throws {
+        let url = holdURL(home: home)
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true,
+                                                attributes: [.posixPermissions: 0o700])
+        try encoder.encode(hold).write(to: url, options: .atomic)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+    }
+
+    public static func clearHold(home: URL = FileManager.default.homeDirectoryForCurrentUser) {
+        try? FileManager.default.removeItem(at: holdURL(home: home))
+    }
+
+    /// The hold in force now; an expired or unreadable marker never holds
+    /// anything, so a crashed app cannot stop the fleet for longer than the limit.
+    public static func activeHold(home: URL = FileManager.default.homeDirectoryForCurrentUser, now: Date = Date()) -> Hold? {
+        guard let data = try? Data(contentsOf: holdURL(home: home)), data.count <= 4_096,
+              let hold = try? decoder.decode(Hold.self, from: data), hold.build > 0,
+              hold.since <= now.addingTimeInterval(60), now < hold.expiresAt,
+              hold.expiresAt <= hold.since.addingTimeInterval(holdNewWorkLimit + 1) else { return nil }
+        return hold
+    }
+
     // MARK: outcomes
 
     public static func saveOutcome(_ outcome: Outcome, home: URL = FileManager.default.homeDirectoryForCurrentUser) throws {
