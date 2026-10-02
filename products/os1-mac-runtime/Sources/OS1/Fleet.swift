@@ -596,6 +596,33 @@ private func fleetCheckout(_ assignment: FleetAssignment) throws -> String {
 }
 
 private func fleetCommitResult(_ assignment: FleetAssignment, workspace: String) throws -> (String?, String?) {
+    try fleetPublishResult(jobID: assignment.jobID, workspace: workspace)
+}
+
+/// Build products a backend leaves in the checkout are never part of a fleet
+/// result. Job ff3819eb (2026-10-01) fixed a Swift package correctly, but
+/// `git add -A` also committed its SwiftPM `.build` (2,016 files, 100 MB; the
+/// repository ignores only OS-1's own `.build`), the push failed, and the
+/// owner was told the job failed.
+let fleetResultExcludedPathspecs = [
+    ":(exclude,glob)**/.build/**", ":(exclude,glob)**/.swiftpm/**", ":(exclude,glob)**/DerivedData/**",
+    ":(exclude,glob)**/__pycache__/**", ":(exclude,glob)**/.pytest_cache/**", ":(exclude,glob)**/node_modules/**",
+    ":(exclude,glob)**/*.pyc",
+]
+
+/// Git's own reason for a failed publication step, bounded and with any
+/// credential in a URL or token form removed, so a failure names its cause.
+func fleetPublicationFailure(_ step: String, _ stderr: Data) -> OS1Error {
+    var reason = String(decoding: stderr.suffix(600), as: UTF8.self)
+        .replacingOccurrences(of: #"(https?://)[^/@\s]+@"#, with: "$1***@", options: .regularExpression)
+        .replacingOccurrences(of: #"\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})"#, with: "***", options: .regularExpression)
+        .split(whereSeparator: \.isNewline).map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+        .suffix(4).joined(separator: " | ")
+    if reason.count > 400 { reason = String(reason.suffix(400)) }
+    return OS1Error.message("Fleet result publication failed (\(step)\(reason.isEmpty ? "" : ": " + reason))")
+}
+
+func fleetPublishResult(jobID: String, workspace: String, remote: String = "origin") throws -> (String?, String?) {
     let git = try findExecutable("git")
     let repository = URL(fileURLWithPath: workspace).standardizedFileURL
     let rootResult = try commandOutput(git, ["-C", repository.path, "rev-parse", "--show-toplevel"], timeout: 20)
@@ -604,13 +631,19 @@ private func fleetCommitResult(_ assignment: FleetAssignment, workspace: String)
     let changed = try commandOutput(git, ["-C", root, "status", "--porcelain=v1"], timeout: 30)
     guard changed.0 == 0 else { throw OS1Error.message("Fleet result inspection failed") }
     guard !changed.1.isEmpty else { return (nil, nil) }
-    let branch = "os1-fleet/\(assignment.jobID.lowercased())"
-    guard try commandOutput(git, ["-C", root, "switch", "-c", branch], timeout: 30).0 == 0,
-          try commandOutput(git, ["-C", root, "add", "-A"], timeout: 30).0 == 0,
-          try commandOutput(git, ["-C", root, "commit", "-m", "OS-1 fleet result \(assignment.jobID)"], timeout: 120).0 == 0,
-          try commandOutput(git, ["-C", root, "push", "origin", "HEAD:refs/heads/\(branch)"], timeout: 600).0 == 0 else {
-        throw OS1Error.message("Fleet result publication failed")
-    }
+    let staged = try commandOutput(git, ["-C", root, "add", "-A", "--", "."] + fleetResultExcludedPathspecs, timeout: 120)
+    guard staged.0 == 0 else { throw fleetPublicationFailure("stage", staged.2) }
+    // Only build products changed: nothing to publish.
+    let pending = try commandOutput(git, ["-C", root, "diff", "--cached", "--quiet"], timeout: 30)
+    if pending.0 == 0 { return (nil, nil) }
+    guard pending.0 == 1 else { throw fleetPublicationFailure("inspect", pending.2) }
+    let branch = "os1-fleet/\(jobID.lowercased())"
+    let switched = try commandOutput(git, ["-C", root, "switch", "-c", branch], timeout: 30)
+    guard switched.0 == 0 else { throw fleetPublicationFailure("branch", switched.2) }
+    let committed = try commandOutput(git, ["-C", root, "commit", "-m", "OS-1 fleet result \(jobID)"], timeout: 120)
+    guard committed.0 == 0 else { throw fleetPublicationFailure("commit", committed.2) }
+    let pushed = try commandOutput(git, ["-C", root, "push", remote, "HEAD:refs/heads/\(branch)"], timeout: 600)
+    guard pushed.0 == 0 else { throw fleetPublicationFailure("push", pushed.2) }
     let revision = try commandOutput(git, ["-C", root, "rev-parse", "HEAD"], timeout: 20)
     guard revision.0 == 0 else { throw OS1Error.message("Fleet result revision unavailable") }
     return (branch, String(decoding: revision.1, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines))
@@ -1441,6 +1474,45 @@ func fleetSelfTest() throws {
               "an unknown revision must fall back without leaving a partial checkout")
     try check(!fleetMirrorClone(repository: "../escape", revision: revisions[0], into: missing, mirrors: mirrors, remote: source.path),
               "a repository name outside owner/name is refused")
+    // A result commit carries the work, never the build products left beside it.
+    let job0 = directory.appendingPathComponent("job0", isDirectory: true)
+    let job1 = directory.appendingPathComponent("job1", isDirectory: true)
+    for job in [job0, job1] {
+        _ = try gitOK(["-C", job.path, "config", "user.name", "OS-1"])
+        _ = try gitOK(["-C", job.path, "config", "user.email", "os1@example.invalid"])
+    }
+    func put(_ text: String, _ relative: String, in root: URL) throws {
+        let file = root.appendingPathComponent(relative)
+        try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data(text.utf8).write(to: file)
+    }
+    for product in ["pkg/.build/debug/a.o", "pkg/.swiftpm/state", "pkg/__pycache__/m.cpython-39.pyc", "web/node_modules/x/i.js", "pkg/top.pyc"] {
+        try put("product", product, in: job0)
+        try put("product", product, in: job1)
+    }
+    try put("fixed", "pkg/Sources/a.swift", in: job0)
+    let published = try fleetPublishResult(jobID: "Fixture-Publish", workspace: job0.path)
+    let tree = try gitOK(["-C", source.path, "ls-tree", "-r", "--name-only", "refs/heads/os1-fleet/fixture-publish"])
+        .split(separator: "\n").map(String.init)
+    try check(published.0 == "os1-fleet/fixture-publish" && published.1 == (try gitOK(["-C", source.path, "rev-parse", "refs/heads/os1-fleet/fixture-publish"])),
+              "the published branch must hold the result commit")
+    try check(Set(tree) == ["file.txt", "pkg/Sources/a.swift"], "a fleet result committed build products: \(tree)")
+    let productsOnly = try fleetPublishResult(jobID: "fixture-products", workspace: job1.path)
+    try check(productsOnly.0 == nil && productsOnly.1 == nil
+              && (try gitOK(["-C", source.path, "branch", "--list", "os1-fleet/fixture-products"])).isEmpty,
+              "build products alone were published as a result")
+    try put("fixed", "pkg/Sources/b.swift", in: job1)
+    do {
+        _ = try fleetPublishResult(jobID: "fixture-unreachable", workspace: job1.path, remote: "missing-remote")
+        try check(false, "a failed push reported success")
+    } catch let error as OS1Error {
+        try check(String(describing: error).contains("Fleet result publication failed (push: ")
+                  && String(describing: error).contains("missing-remote"), "a failed push hid git's reason: \(error)")
+    }
+    let redacted = String(describing: fleetPublicationFailure("push", Data(
+        "error: RPC failed; HTTP 400\nfatal: unable to access 'https://x-access-token:ghs_\(String(repeating: "A", count: 30))@github.com/o/r.git/': 400\n".utf8)))
+    try check(redacted.contains("RPC failed") && redacted.contains("https://***@github.com") && !redacted.contains("ghs_")
+              && !redacted.contains("x-access-token"), "a publication failure leaked a credential: \(redacted)")
     let request = FleetSubmitRequest(profile: "codex", task: "fixture", workspaceRepository: "owner/repo",
         workspaceRevision: String(repeating: "a", count: 40), workspaceSubpath: "",
         requirements: FleetRequirements(minMemoryMiB: 2048, cpuWeight: 50, preferDeviceID: nil),
