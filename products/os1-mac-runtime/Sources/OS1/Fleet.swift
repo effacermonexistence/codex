@@ -1118,24 +1118,52 @@ func waitForFleetTask(jobID: String, timeoutSeconds: Int = 3_600) async throws -
     let client = APIClient(config: config, token: try githubToken(), deviceID: id)
     let deadline = Date().addingTimeInterval(TimeInterval(timeoutSeconds))
     let waitStarted = ContinuousClock.now
+    var poll = FleetStatusPoll()
     while Date() < deadline {
         try await Task.sleep(for: fleetStatusInterval(elapsed: ContinuousClock.now - waitStarted))
-        let statusAt = fleetNowMs()
-        let statusNonce = try randomNonce()
-        let signature = Base64URL.encode(try key.sign(statusBytes(
-            deviceID: id, jobID: jobID, sentAtMs: statusAt, nonce: statusNonce
-        )))
-        let status: FleetJobStatus = try await client.post(
-            "/v1/fleet/status",
-            body: FleetStatusRequest(jobID: jobID, sentAtMs: statusAt, nonce: statusNonce, signature: signature),
-            as: FleetJobStatus.self
-        )
+        let status: FleetJobStatus
+        do {
+            let statusAt = fleetNowMs()
+            let statusNonce = try randomNonce()
+            let signature = Base64URL.encode(try key.sign(statusBytes(
+                deviceID: id, jobID: jobID, sentAtMs: statusAt, nonce: statusNonce
+            )))
+            status = try await client.post(
+                "/v1/fleet/status",
+                body: FleetStatusRequest(jobID: jobID, sentAtMs: statusAt, nonce: statusNonce, signature: signature),
+                as: FleetJobStatus.self
+            )
+            poll.succeeded()
+        } catch {
+            try poll.failed(error, jobID: jobID)
+            continue
+        }
         guard status.jobID.lowercased() == jobID.lowercased() else {
             throw OS1Error.message("Fleet result job identity mismatch")
         }
         if let result = try fleetValidatedResult(status, jobID: jobID) { return result }
     }
     throw OS1Error.message("Fleet wait ended; job may still be running. Resume fleet-wait with the same job ID; do not submit duplicate work.")
+}
+
+/// A status read is idempotent: one failed poll is not the job's outcome.
+/// 2026-10-01: the requester of build-eval job b36a0ffe stopped on a single
+/// opaque HTTP 400 from /v1/fleet/status while the job kept running and
+/// finished its fix minutes later; the caller was told the request failed.
+/// Consecutive failures still end the wait, with the resume instruction.
+struct FleetStatusPoll {
+    static let maximumConsecutiveFailures = 6
+    private(set) var consecutiveFailures = 0
+
+    mutating func succeeded() { consecutiveFailures = 0 }
+
+    mutating func failed(_ error: Error, jobID: String) throws {
+        if case OS1Error.backendBlocked(.cancelled) = error { throw error }
+        if error is CancellationError { throw error }
+        consecutiveFailures += 1
+        guard consecutiveFailures >= Self.maximumConsecutiveFailures else { return }
+        throw OS1Error.message("Fleet status unavailable \(consecutiveFailures) times in a row (\(error)); job \(jobID) may still be running. Resume fleet-wait with the same job ID; do not submit duplicate work.")
+    }
 }
 
 /// The executor may read its own job's state (the gateway accepts submitter or executor).
@@ -1508,6 +1536,29 @@ func fleetSelfTest() throws {
     } catch let error as OS1Error {
         try check(String(describing: error).contains("Fleet result publication failed (push: ")
                   && String(describing: error).contains("missing-remote"), "a failed push hid git's reason: \(error)")
+    }
+    // One failed status read never ends a wait; six in a row do, with the resume instruction.
+    var poll = FleetStatusPoll()
+    for _ in 1..<FleetStatusPoll.maximumConsecutiveFailures {
+        try poll.failed(OS1Error.service(status: 400, message: "OS1 서버 요청을 처리하지 못했습니다(HTTP 400).", retryAfterMS: nil), jobID: "job")
+    }
+    poll.succeeded()
+    try check(poll.consecutiveFailures == 0, "a successful status read must reset the failure count")
+    for _ in 1..<FleetStatusPoll.maximumConsecutiveFailures {
+        try poll.failed(OS1Error.message("transient"), jobID: "job")
+    }
+    do {
+        try poll.failed(OS1Error.message("transient"), jobID: "job")
+        try check(false, "endless status failures never ended the wait")
+    } catch let error as OS1Error {
+        try check(String(describing: error).contains("Resume fleet-wait with the same job ID"), "an ended wait lost the resume instruction")
+    }
+    var cancelled = FleetStatusPoll()
+    do {
+        try cancelled.failed(OS1Error.backendBlocked(.cancelled), jobID: "job")
+        try check(false, "a cancelled wait kept polling")
+    } catch OS1Error.backendBlocked(.cancelled) {
+        try check(true, "")
     }
     let redacted = String(describing: fleetPublicationFailure("push", Data(
         "error: RPC failed; HTTP 400\nfatal: unable to access 'https://x-access-token:ghs_\(String(repeating: "A", count: 30))@github.com/o/r.git/': 400\n".utf8)))
