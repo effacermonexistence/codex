@@ -428,9 +428,66 @@ func runTaskContextFixtures(root: URL) throws {
     ]
     let first1 = NativeIngestion.newRecords(records, after: nil, sentByOS1: sent, seen: ["a1"])
     try check(first1.records.map(\.id) == ["u2"], "OS1-sent prompt, already-seen and partial records are excluded")
+    try check(first1.nextCursor == "3", "a sync during generation must not consume the unfinished answer's ordinal")
+    let waiting = NativeIngestion.newRecords(records, after: first1.nextCursor, sentByOS1: sent, seen: ["a1", "u2"])
+    try check(waiting.records.isEmpty && waiting.nextCursor == first1.nextCursor,
+              "repeated syncs during generation keep the unfinished answer eligible")
+    let completedAnswer = NativeRecord(id: "a2", ordinal: 4, role: "assistant", text: "완성된 답변입니다.", complete: true)
+    let completedRecords = Array(records.dropLast()) + [completedAnswer]
+    let finished = NativeIngestion.newRecords(completedRecords, after: waiting.nextCursor, sentByOS1: sent, seen: ["a1", "u2"])
+    try check(finished.records == [completedAnswer] && finished.nextCursor == "4",
+              "the same id and ordinal must be imported with final text once generation finishes")
+    let repeated = NativeIngestion.newRecords(completedRecords, after: finished.nextCursor, sentByOS1: sent, seen: ["a1", "u2", "a2"])
+    try check(repeated.records.isEmpty && repeated.nextCursor == "4", "the completed answer is not imported twice")
     let held = Set(["야 인스타그램 수정 좀 하자 준비해", "준비 상태를 확인했습니다."].map(NativeIngestion.digestOf))
     try check(NativeIngestion.newRecords(records, after: nil, sentByOS1: held, seen: []).records.map(\.id) == ["u2"],
               "an adopted output OS1 already holds is skipped by digest even without a seen id")
+
+    // An unfinished/cancelled record must not hide later complete messages,
+    // but importing those messages must not advance the cursor past the gap.
+    let laterUser = NativeRecord(id: "u3", ordinal: 5, role: "user", text: "다음 요청입니다.", complete: true)
+    let withGap = Array((records + [laterUser]).reversed())
+    let gapFirst = NativeIngestion.newRecords(withGap, after: nil, sentByOS1: held, seen: [])
+    try check(gapFirst.records.map(\.id) == ["u2", "u3"] && gapFirst.nextCursor == "3",
+              "unsorted input is imported in ordinal order while the cursor stays before the first gap")
+    let gapSeen = Set(gapFirst.records.map(\.id))
+    let gapWaiting = NativeIngestion.newRecords(withGap, after: gapFirst.nextCursor, sentByOS1: held, seen: gapSeen)
+    try check(gapWaiting.records.isEmpty && gapWaiting.nextCursor == "3",
+              "seen ids prevent replay of later records while an earlier answer remains incomplete")
+    let gapFinished = NativeIngestion.newRecords(Array((completedRecords + [laterUser]).reversed()),
+        after: gapWaiting.nextCursor, sentByOS1: held, seen: gapSeen)
+    try check(gapFinished.records == [completedAnswer] && gapFinished.nextCursor == "5",
+              "closing the gap imports the late answer and advances through already-seen later records")
+
+    let firstPartial = NativeRecord(id: "partial-first", ordinal: 1, role: "assistant", text: "생성 중…", complete: false)
+    let noPrefix = NativeIngestion.newRecords([firstPartial], after: nil, sentByOS1: [], seen: [])
+    try check(noPrefix.records.isEmpty && noPrefix.nextCursor == nil,
+              "an incomplete first record preserves a nil cursor")
+    let blockedPrefix = NativeIngestion.newRecords([firstPartial, laterUser], after: nil, sentByOS1: [], seen: [])
+    try check(blockedPrefix.records == [laterUser] && blockedPrefix.nextCursor == nil,
+              "later complete records remain importable even without a completed prefix")
+    let unseen = NativeIngestion.newRecords([], after: "5", sentByOS1: [], seen: [])
+    try check(unseen.records.isEmpty && unseen.nextCursor == "5", "an empty snapshot does not reset the saved cursor")
+
+    do {
+        let between = NativeRecord(id: "between", ordinal: 2, role: "user", text: "중간 요청", complete: true)
+        let secondPartial = NativeRecord(id: "partial-second", ordinal: 3, role: "assistant", text: "아직 생성 중…", complete: false)
+        let afterGaps = NativeRecord(id: "after-gaps", ordinal: 4, role: "user", text: "후속 요청", complete: true)
+        let gaps = NativeIngestion.newRecords([afterGaps, secondPartial, between, firstPartial],
+            after: "0", sentByOS1: [], seen: [])
+        try check(gaps.records == [between, afterGaps] && gaps.nextCursor == "0",
+                  "multiple unfinished records preserve the cursor before the earliest gap")
+        let firstDone = NativeRecord(id: firstPartial.id, ordinal: firstPartial.ordinal, role: "assistant", text: "첫 답변", complete: true)
+        let oneGap = NativeIngestion.newRecords([firstDone, between, secondPartial, afterGaps],
+            after: gaps.nextCursor, sentByOS1: [], seen: [between.id, afterGaps.id])
+        try check(oneGap.records == [firstDone] && oneGap.nextCursor == "2",
+                  "completing the first answer advances only as far as the next unfinished answer")
+        let secondDone = NativeRecord(id: secondPartial.id, ordinal: secondPartial.ordinal, role: "assistant", text: "둘째 답변", complete: true)
+        let allDone = NativeIngestion.newRecords([firstDone, between, secondDone, afterGaps],
+            after: oneGap.nextCursor, sentByOS1: [], seen: [firstDone.id, between.id, afterGaps.id])
+        try check(allDone.records == [secondDone] && allDone.nextCursor == "4",
+                  "each formerly unfinished answer is imported once as its gap closes")
+    }
 
     let originalRequest = "바다와 호수의 차이를 설명해."
     let legacyHints = "\nVerified local directory candidates from the existing project registry (not a write grant or an active-release claim):\n- /tmp/example-project\nInspect relevant exact paths first. Do not run recursive Glob/Grep over HOME. Preserve the user's selected workspace and verify which project/release is actually active before changes.\n"
