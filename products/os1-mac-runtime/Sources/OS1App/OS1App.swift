@@ -102,6 +102,10 @@ private struct ExecutionRoutePresentation: Equatable {
         let provider = activity?.provider?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         let route = ProviderSurface.resolveExecuted(rawSurface: activity?.surface, provider: provider)
         switch provider {
+        case _ where activity?.phase == .waitingForSource:
+            executionLine = os1Tr("백엔드 시작 전 · 소스 접근 대기", "Backend not started · waiting for source access")
+            detail = os1Tr("OS-1 소스 수리·업데이트를 기다리고 있습니다. 모델 선택 지연이 아닙니다. 요청은 보존되며 소스 접근이 가능해지면 자동으로 이어갑니다.",
+                           "Waiting for OS-1 source repair or update. This is not a model-selection delay. The request is preserved and continues when source access is available.")
         case _ where activity == nil:
             executionLine = os1Tr("라우팅 결과: 실행 기록 없음", "Route: no execution recorded")
             detail = os1Tr("이 대화에는 현재 실행 백엔드 기록이 없습니다.", "This conversation has no running backend record.")
@@ -122,7 +126,7 @@ private struct ExecutionRoutePresentation: Equatable {
         modelLine = activity?.model.flatMap { $0.isEmpty ? nil : os1Tr("모델: \($0)", "Model: \($0)") }
         // Display the recorded effort, never infer it from the model, provider
         // preference or another conversation. A missing value is not "none".
-        if let activity {
+        if let activity, activity.phase != .waitingForSource {
             let effort = activity.effort?.trimmingCharacters(in: .whitespacesAndNewlines)
             let value: String
             if let effort, !effort.isEmpty {
@@ -5083,6 +5087,10 @@ private final class SessionStore: ObservableObject {
     private var inFlightSubmissions: [UUID: PendingSubmission] = [:]
     private var sessionStatuses: [UUID: String] = [:]
     private let runOperation: RunOperation
+    private let sourceAdmissionCheck: ((PendingSubmission, ConversationSession) -> Bool)?
+    private let sourceAdmissionFixture: (root: String, home: URL)?
+    private var sourceAdmissionRoot: String?
+    private var sourceAdmissionRootCachedAt: Date?
     @Published var sessions: [ConversationSession] = []
     @Published var selectedSessionID: UUID?
     @Published var surface: ProviderChoice = .auto
@@ -5157,10 +5165,14 @@ private final class SessionStore: ObservableObject {
     init(
         storageRoot: URL? = nil,
         runOperation: RunOperation? = nil,
+        sourceAdmissionCheck: ((PendingSubmission, ConversationSession) -> Bool)? = nil,
+        sourceAdmissionFixture: (root: String, home: URL)? = nil,
         nativePinOperation: NativePinOperation? = nil,
         nativeSessionOpener: @escaping NativeSessionOpener = { NSWorkspace.shared.open($0) }
     ) {
         customStorageRoot = storageRoot
+        self.sourceAdmissionCheck = sourceAdmissionCheck
+        self.sourceAdmissionFixture = storageRoot == nil ? nil : sourceAdmissionFixture
         self.nativeSessionOpener = nativeSessionOpener
         self.nativePinOperation = nativePinOperation
         self.runOperation = runOperation ?? { submission, context, codexID, claudeID, onActivity in
@@ -5336,6 +5348,9 @@ private final class SessionStore: ObservableObject {
         let items = queuedSubmissions.filter { $0.sessionID == sessionID }
         if items.contains(where: { pausedQueueIDs.contains($0.id) }) { return "앱 재시작 후 보존된 대기열 · 계속 실행을 눌러 주세요" }
         if items.contains(where: { editingQueueIDs.contains($0.id) }) { return "대기 요청 편집 중 · 저장 또는 취소 후 계속됩니다" }
+        if let activity = sourceWaitingActivity(sessionID) {
+            return activity.publicText ?? "OS-1 소스 쓰기 대기 · 백엔드는 아직 시작하지 않았습니다"
+        }
         if isSessionRunning(sessionID) {
             let ahead = conversationsWaitingAhead(of: sessionID)
             // The slot this run frees is admitted in global order; say so
@@ -5368,12 +5383,89 @@ private final class SessionStore: ObservableObject {
 
     /// `ignoringRun` asks whether the request would be admitted once its own
     /// conversation's current run ends (owner and failure holds still apply).
-    private func queueEligible(_ next: PendingSubmission, ignoringRun: Bool = false) -> Bool {
+    private func queueEligible(_ next: PendingSubmission, ignoringRun: Bool = false, ignoringSource: Bool = false) -> Bool {
         guard let session = sessions.first(where: { $0.id == next.sessionID }) else { return false }
         return (ignoringRun || !isSessionRunning(next.sessionID)) && session.queuePaused != true &&
             ((session.lastFailure == nil && session.lastBackendFailure == nil && session.taskContext?.sourcePreparation == nil) ||
              (next.startNextRequested == true && mayAdvancePastFailure(next, session: session))) &&
-            !pausedQueueIDs.contains(next.id) && !editingQueueIDs.contains(next.id)
+            !pausedQueueIDs.contains(next.id) && !editingQueueIDs.contains(next.id) &&
+            (ignoringSource || !sourceAdmissionBlocked(next, session: session))
+    }
+
+    /// Park only observed source contention before creating a run or native
+    /// backend. The runtime still owns the lease/TOCTOU enforcement. Fixture
+    /// stores never inspect the owner's source locks or installation state.
+    private func sourceAdmissionBlocked(_ next: PendingSubmission, session: ConversationSession) -> Bool {
+        if let sourceAdmissionCheck { return sourceAdmissionCheck(next, session) }
+        guard customStorageRoot == nil || sourceAdmissionFixture != nil else { return false }
+        let home = sourceAdmissionFixture?.home ?? FileManager.default.homeDirectoryForCurrentUser
+        let now = Date()
+        if sourceAdmissionRootCachedAt.map({ now.timeIntervalSince($0) > 60 }) ?? true {
+            sourceAdmissionRoot = sourceAdmissionFixture?.root ?? SourceWriteAdmission.currentRoot(home: home)
+            sourceAdmissionRootCachedAt = now
+        }
+        guard let root = sourceAdmissionRoot else { return false }
+        guard let access = SourceWriteAdmission.access(request: next.executionRequest, workspace: next.workspace,
+            projectID: session.taskContext?.project?.projectID, writeScope: true, root: root, home: home) else { return false }
+        // Do not let a queued source request take a fresh shared lease and
+        // prevent an already-staged upgrade from ever reaching its idle gate.
+        if let intent = SelfUpdate.loadIntent(root: root),
+           [.apply, .applying].contains(SelfUpdate.decision(intent: intent, installedBuild: SelfUpdate.installedBuild(home: home), busy: false, now: now)) {
+            return true
+        }
+        // Read-only work never waits on the writer itself, but source-bound
+        // reads also stay parked for a ready update's brief installation gate.
+        guard sourceWriteAccess(next, session: session, root: root, home: home) != nil else { return false }
+        let admittedWriter = inFlightSubmissions.values.contains { candidate in
+            sessions.first(where: { $0.id == candidate.sessionID }).map {
+                sourceWriteAccess(candidate, session: $0, root: root, home: home) == .exclusive
+            } == true
+        }
+        // Admission precedes the child runtime's lock acquisition. Keep a
+        // second repair queued even in that brief source-lock-free window.
+        if access == .exclusive, admittedWriter { return true }
+        if access == .shared, admittedWriter || queuedSourceWriterIsEligible(root: root, home: home) { return true }
+        guard SourceWriteAdmission.availability(root: root, access: access, home: home) == .busy else { return false }
+        if access == .exclusive, SourceWriteAdmission.heldOnlyByReaders(root: root, home: home), !admittedWriter { return false }
+        return true
+    }
+
+    private func sourceWriteAccess(_ next: PendingSubmission, session: ConversationSession, root: String, home: URL) -> SourceWriteAdmission.Access? {
+        let scope = ScopeResolution.resolve(next.executionRequest).scope
+        let continuingWrite = (next.amendedRequest != nil || next.recoveryParentID != nil) && session.taskContext?.objective.scope == .workspaceWrite
+        guard next.readOnlyReconciliation != true, PreparationIntent.detect(next.executionRequest)?.preparationOnly != true,
+              scope == .workspaceWrite || continuingWrite else { return nil }
+        return SourceWriteAdmission.access(request: next.executionRequest, workspace: next.workspace,
+            projectID: session.taskContext?.project?.projectID, writeScope: true, root: root, home: home)
+    }
+
+    private func queuedSourceWriterIsEligible(root: String, home: URL) -> Bool {
+        var seen = Set<UUID>()
+        return queuedSubmissions.contains { candidate in
+            guard seen.insert(candidate.sessionID).inserted, queueEligible(candidate, ignoringSource: true),
+                  let session = sessions.first(where: { $0.id == candidate.sessionID }) else { return false }
+            return sourceWriteAccess(candidate, session: session, root: root, home: home) == .exclusive
+        }
+    }
+
+    func sourceWaitingActivity(_ sessionID: UUID) -> RuntimeActivity? {
+        guard !isSessionRunning(sessionID),
+              let head = queuedSubmissions.first(where: { $0.sessionID == sessionID }),
+              queueEligible(head, ignoringSource: true),
+              let session = sessions.first(where: { $0.id == sessionID }),
+              sourceAdmissionBlocked(head, session: session) else { return nil }
+        return RuntimeActivity(.waitingForSource, publicText: os1Tr(
+            "OS-1 소스 접근 대기 · 백엔드는 아직 시작하지 않았습니다. 요청은 보존되며 수리·업데이트가 끝나면 자동으로 이어갑니다.",
+            "Waiting for OS-1 source access · backend not started. The request is preserved and continues automatically after repair or update."))
+    }
+
+    /// Shared by maintenance and deterministic tests. A parked request keeps
+    /// its original ID/order/context and is admitted once, only after release.
+    func resumeSourceWaitingSubmissions() {
+        guard activeRuns.count < maximumConcurrentSessions,
+              queuedSubmissions.contains(where: { next in queueEligible(next) &&
+                  !queuedSubmissions.prefix(while: { $0.id != next.id }).contains(where: { $0.sessionID == next.sessionID }) }) else { return }
+        runNextQueuedSubmissionIfNeeded()
     }
 
     // A failed, runtime-enforced read cannot have performed the previous write.
@@ -5454,6 +5546,7 @@ private final class SessionStore: ObservableObject {
     fileprivate func runningNativeSessionIDs(for provider: ProviderChoice) -> Set<String> {
         guard provider != .auto else { return [] }
         return Set(activeRuns.compactMap { conversationID, run in
+            guard run.activity.phase != .waitingForSource else { return nil }
             guard let session = sessions.first(where: { $0.id == conversationID }) else { return nil }
             let activityProvider = run.activity.provider.flatMap(ProviderChoice.init(rawValue:))
             let effectiveProvider = [
@@ -6332,6 +6425,19 @@ private final class SessionStore: ObservableObject {
     private func start(_ submission: PendingSubmission) {
         guard !isSessionRunning(submission.sessionID), activeRuns.count < maximumConcurrentSessions,
               let index = sessions.firstIndex(where: { $0.id == submission.sessionID }) else {
+            return
+        }
+        if sourceAdmissionBlocked(submission, session: sessions[index]) {
+            if !queuedSubmissions.contains(where: { $0.id == submission.id }) {
+                // Keep this head ahead of its own follow-ups even when a lease
+                // changed between the scheduler's probe and this admission.
+                let position = queuedSubmissions.firstIndex(where: { $0.sessionID == submission.sessionID }) ?? queuedSubmissions.count
+                queuedSubmissions.insert(submission, at: position)
+            }
+            let text = sourceWaitingActivity(submission.sessionID)?.label ?? "OS-1 소스 접근 대기 중"
+            sessionStatuses[submission.sessionID] = text
+            if selectedSessionID == submission.sessionID { statusText = text }
+            save()
             return
         }
         if submission.startNextRequested == true {
@@ -7573,6 +7679,7 @@ private final class SessionStore: ObservableObject {
         resumeBackendRecoveries()
         reportSelfUpdateOutcomes()
         applyPendingSelfUpdate()
+        resumeSourceWaitingSubmissions()
         releaseRestartHolds()
         resumeStaleReconciliations()
     }
@@ -8433,6 +8540,7 @@ private func renderComposerPreview(to output: URL) throws {
 @MainActor
 private func codexShellSelfTest() throws {
     try reasoningVisibilitySelfTest()
+    try sourceWaitPresentationSelfTest()
     var checks = 0
     func check(_ condition: Bool, _ name: String) throws {
         guard condition else { throw RunnerError.message("Shell regression: " + name) }
@@ -8608,6 +8716,221 @@ private func codexShellSelfTest() throws {
     composerWindow.orderOut(nil)
     try check(Theme.conversationWidth == 760 && Theme.sidebarWidth == 256, "shared layout dimensions")
     print("Codex-oriented shell: \(checks) checks passed; model calls 0; live state writes 0")
+}
+
+@MainActor
+private func sourceWaitPresentationSelfTest() throws {
+    var checks = 0
+    func check(_ condition: Bool, _ message: String) throws {
+        guard condition else { throw RunnerError.message("Source wait presentation: " + message) }
+        checks += 1
+    }
+    let activity = RuntimeActivity(.waitingForSource, provider: "codex", model: "stale-model", effort: "ultra",
+        publicText: "source writer fixture", nativeSessionID: UUID().uuidString)
+    let data = try JSONEncoder().encode(activity)
+    let decoded = try JSONDecoder().decode(RuntimeActivity.self, from: data)
+    try check(decoded == activity && decoded.phase == .waitingForSource, "explicit source wait round trip")
+    try check(decoded.provider == nil && decoded.model == nil && decoded.effort == nil && decoded.nativeSessionID == nil,
+        "pre-backend source wait discards stale executed identity")
+    struct LegacyActivity: Decodable {
+        enum Phase: String, Decodable { case preparing, source, authorizing, routing, executing, verifying, syncing, recovering }
+        let phase: Phase
+    }
+    try check(try JSONDecoder().decode(LegacyActivity.self, from: data).phase == .preparing,
+        "old installed app can observe new runtime source waits during staged update")
+    let object = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+    try check(object["waitingReason"] as? String == "source_write", "wire records specific wait reason")
+    let legacy = RuntimeActivity(.preparing, publicText: "Waiting for an OS-1 repair to finish · fixture")
+    let legacyDecoded = try JSONDecoder().decode(RuntimeActivity.self, from: JSONEncoder().encode(legacy))
+    try check(legacyDecoded.phase == .waitingForSource, "new app recognizes installed runtime's exact legacy source wait notice")
+    let ordinary = RuntimeActivity(.preparing, publicText: "Checking fixture source files")
+    try check(try JSONDecoder().decode(RuntimeActivity.self, from: JSONEncoder().encode(ordinary)).phase == .preparing,
+        "arbitrary source prose does not manufacture a lock wait")
+    let route = ExecutionRoutePresentation(activity: activity)
+    try check(route.executionLine.contains("백엔드 시작 전") && !route.executionLine.contains("선택 전"),
+        "source contention is not presented as slow routing")
+    try check(route.modelLine == nil && route.reasoningLine == nil, "source wait invents neither executed model nor effort")
+    try check(activity.executionBadgeTitle == "실행 대기" && activity.backendConnectionLabel == "백엔드 아직 시작하지 않음",
+        "badge never claims a native session is connecting before dispatch")
+    try check(activity.convergenceLabel == "소스 접근 대기", "source wait has an explicit public stage")
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("os1-source-wait-rail-" + UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let store = SessionStore(storageRoot: root, runOperation: { _, _, _, _, _ in throw RunnerError.message("presentation fixture must not dispatch") })
+    let conversationID = store.selectedSessionID!, nativeID = UUID().uuidString.lowercased()
+    store.sessions[0].provider = .codex; store.sessions[0].codexSessionID = nativeID
+    store.activeRuns[conversationID] = .init(submissionID: UUID(), started: Date(), activity: activity, provider: .codex)
+    try check(store.runningNativeSessionIDs(for: .codex).isEmpty,
+        "source wait cannot mark a saved native backend session as running")
+    store.activeRuns[conversationID]?.activity = RuntimeActivity(.executing, provider: "codex", nativeSessionID: nativeID)
+    try check(store.runningNativeSessionIDs(for: .codex) == [nativeID], "executing native identity remains visible after source wait")
+    print("Source-wait presentation: \(checks) checks; model calls 0")
+}
+
+@MainActor
+private func sourceWaitSchedulingSelfTest() async throws {
+    var checks = 0
+    func check(_ condition: Bool, _ message: String) throws {
+        guard condition else { throw RunnerError.message("Source wait scheduling: " + message) }
+        checks += 1
+    }
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("os1-source-wait-" + UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    var blocked = true
+    var dispatched: [String] = [], contexts: [String] = []
+    let store = SessionStore(storageRoot: root, runOperation: { submission, context, _, _, _ in
+        dispatched.append(submission.request); contexts.append(context)
+        try await Task.sleep(for: .milliseconds(90))
+        return AppRunSummary(status: "complete", steps: [AppRunStep(sequence: 1, provider: "local", action: "test",
+            model: nil, effort: "none", revasDisposition: "adopted", sessionID: UUID().uuidString, permissionProfile: "read_only",
+            exitCode: 0, output: "fixture " + submission.request, stderr: "", durationMS: 90, nativeRecord: nil)])
+    }, sourceAdmissionCheck: { submission, _ in blocked && submission.request.hasPrefix("SOURCE") })
+    store.updateSettings { $0.parallelRunLimit = 1 }
+    let sourceID = store.selectedSessionID!
+    store.composer = "SOURCE first"; store.send()
+    let firstID = store.queuedSubmissions.first!.id
+    store.composer = "SOURCE second"; store.send()
+    let originalQueue: [PendingSubmission] = store.queuedSubmissions
+    try check(store.activeRuns.isEmpty && dispatched.isEmpty && originalQueue.count == 2,
+        "source wait creates no backend run and consumes no concurrency slot")
+    try check(store.sourceWaitingActivity(sourceID)?.phase == .waitingForSource && store.globalSlotWait(sourceID) == nil,
+        "source wait reason does not impersonate global slot wait")
+    try check(store.queueReason(sourceID).contains("백엔드는 아직 시작하지 않았습니다"), "queued source wait is visible")
+    try check(store.selectedSession?.taskContext == nil, "parked admission does not replace objective before execution")
+    let reload = SessionStore(storageRoot: root, runOperation: { _, _, _, _, _ in throw RunnerError.message("must not replay") })
+    try check(reload.queuedSubmissions.map(\.id) == originalQueue.map(\.id) && reload.activeRuns.isEmpty,
+        "parked requests survive restart with IDs/order intact and no replay")
+    store.createSession(); let siblingID = store.selectedSessionID!
+    store.composer = "SIBLING project"; store.send()
+    try check(store.activeRuns.count == 1 && store.activeRuns[siblingID] != nil && store.activeRuns[sourceID] == nil,
+        "unrelated conversation uses the backend slot while source head stays parked")
+    let deadline = Date().addingTimeInterval(8)
+    while !store.activeRuns.isEmpty && Date() < deadline { try await Task.sleep(for: .milliseconds(20)) }
+    try check(dispatched == ["SIBLING project"] && store.queuedSubmissions.map(\.id) == originalQueue.map(\.id),
+        "sibling completion preserves blocked source queue")
+    let intent = SelfUpdate.Intent(build: 298, version: "fixture", sourceRoot: root.path, sourceCommit: nil,
+        stagedAppSHA256: "fixture-app", stagedCLISHA256: "fixture-cli", conversationID: nil, submissionID: nil, checks: [])
+    try check(SelfUpdate.decision(intent: intent, installedBuild: 297, busy: !store.activeRuns.isEmpty) == .apply,
+        "parked requests alone leave pending install's active-run gate idle")
+    store.createSession(); let cancelSession = store.selectedSessionID!
+    store.composer = "SOURCE cancelled"; store.send()
+    let cancelled = store.queuedSubmissions.first { $0.sessionID == cancelSession }!.id
+    store.removeQueued(cancelled)
+    try check(!store.queuedSubmissions.contains { $0.id == cancelled } && store.activeRuns[cancelSession] == nil,
+        "cancelling parked request launches no backend and removes only that queue item")
+    blocked = false
+    store.resumeSourceWaitingSubmissions(); store.resumeSourceWaitingSubmissions()
+    try check(store.activeRuns[sourceID]?.submissionID == firstID && store.queuedSubmissions.filter { $0.sessionID == sourceID }.count == 1,
+        "released source is admitted once; second request stays per-conversation FIFO")
+    while (!store.activeRuns.isEmpty || !store.queuedSubmissions.isEmpty) && Date() < deadline {
+        store.resumeSourceWaitingSubmissions()
+        try await Task.sleep(for: .milliseconds(20))
+    }
+    try check(store.activeRuns.isEmpty && store.queuedSubmissions.isEmpty, "released queue reaches terminal drain")
+    try check(dispatched == ["SIBLING project", "SOURCE first", "SOURCE second"], "exactly-once resume and cancellation preserve order")
+    try check(contexts.count == 3 && !contexts[1].contains("SOURCE cancelled"), "cancelled input never enters resumed handoff")
+    print("Source-wait scheduling: \(checks) checks; model calls 0")
+}
+
+@MainActor
+private func sourceWriterFairnessSelfTest() async throws {
+    var checks = 0
+    func check(_ condition: Bool, _ message: String) throws {
+        guard condition else { throw RunnerError.message("Source writer fairness: " + message) }
+        checks += 1
+    }
+    let home = FileManager.default.temporaryDirectory.appendingPathComponent("os1-source-fairness-" + UUID().uuidString)
+    let source = home.appendingPathComponent("source"), sibling = home.appendingPathComponent("sibling")
+    defer { try? FileManager.default.removeItem(at: home) }
+    for folder in [source, sibling] { try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true) }
+    let lock = SourceWriteAdmission.lockURL(root: source.path, home: home)
+    let intent = lock.appendingPathExtension("writer-intent")
+    try FileManager.default.createDirectory(at: lock.deletingLastPathComponent(), withIntermediateDirectories: true)
+    try Data().write(to: lock); try Data().write(to: intent)
+    let readerFD = open(lock.path, O_RDONLY | O_CLOEXEC), writerFD = open(lock.path, O_RDONLY | O_CLOEXEC)
+    let intentFD = open(intent.path, O_RDONLY | O_CLOEXEC)
+    guard readerFD >= 0, writerFD >= 0, intentFD >= 0 else { throw RunnerError.message("fairness fixture lock open failed") }
+    defer { close(readerFD); close(writerFD); close(intentFD) }
+    try check(flock(readerFD, LOCK_SH | LOCK_NB) == 0, "initial HOME task owns actual shared lease")
+    var releaseReader = false, releaseWriter = false
+    var dispatched: [String] = []
+    let store = SessionStore(storageRoot: home.appendingPathComponent("store"), runOperation: { submission, _, _, _, onActivity in
+        dispatched.append(submission.request)
+        if submission.request.hasPrefix("HOME first") {
+            while !releaseReader { try await Task.sleep(for: .milliseconds(20)) }
+            _ = flock(readerFD, LOCK_UN)
+        } else if submission.request.hasPrefix("SOURCE repair") {
+            guard flock(intentFD, LOCK_EX | LOCK_NB) == 0 else { throw RunnerError.message("fairness fixture writer intent unavailable") }
+            onActivity(RuntimeActivity(.waitingForSource, publicText: "fixture source writer drains readers"))
+            while flock(writerFD, LOCK_EX | LOCK_NB) != 0 { try await Task.sleep(for: .milliseconds(20)) }
+            onActivity(RuntimeActivity(.executing, provider: "local"))
+            while !releaseWriter { try await Task.sleep(for: .milliseconds(20)) }
+            _ = flock(writerFD, LOCK_UN); _ = flock(intentFD, LOCK_UN)
+        }
+        return AppRunSummary(status: "complete", steps: [AppRunStep(sequence: 1, provider: "local", action: "test", model: nil,
+            effort: "none", revasDisposition: "adopted", sessionID: UUID().uuidString, permissionProfile: "workspace_write",
+            exitCode: 0, output: "fixture " + submission.request, stderr: "", durationMS: 20, nativeRecord: nil)])
+    }, sourceAdmissionFixture: (source.path, home))
+    store.updateSettings { $0.parallelRunLimit = 1 }
+    let readerID = store.selectedSessionID!
+    store.sessions[0].workspace = home.path
+    store.composer = "HOME first 파일 수정해"; store.send()
+    store.createSession(); let writerID = store.selectedSessionID!
+    store.sessions[0].workspace = source.path
+    store.composer = "SOURCE repair 파일 수정해"; store.send()
+    let writerSubmissionID = store.queuedSubmissions.first!.id
+    store.createSession(); let nextHomeID = store.selectedSessionID!
+    store.sessions[0].workspace = home.path
+    store.composer = "HOME next 파일 수정해"; store.send()
+    try check(store.activeRuns.count == 1 && store.activeRuns[readerID] != nil && store.queuedSubmissions.count == 2,
+        "cap-full repair stays queued without stopping the running reader")
+    try check(store.sourceWaitingActivity(nextHomeID)?.phase == .waitingForSource && store.globalSlotWait(nextHomeID) == nil,
+        "eligible queued repair parks new HOME readers rather than admitting a starvation stream")
+    store.updateSettings { $0.parallelRunLimit = 2 }
+    try check(store.activeRuns[writerID]?.submissionID == writerSubmissionID && store.activeRuns.count == 2,
+        "exactly one repair is admitted through a reader-only hold to announce writer intent")
+    try check(store.activeRuns[nextHomeID] == nil && store.queuedSubmissions.count == 1,
+        "shared HOME follower remains parked while repair enters runtime")
+    let deadline = Date().addingTimeInterval(8)
+    while store.activeRuns[writerID]?.activity.phase != .waitingForSource && Date() < deadline { try await Task.sleep(for: .milliseconds(20)) }
+    try check(SourceWriteAdmission.availability(root: source.path, access: .shared, home: home) == .busy,
+        "runtime fixture owns actual writer intent while readers drain")
+    releaseReader = true
+    while (store.activeRuns[readerID] != nil || store.activeRuns[writerID]?.activity.phase != .executing) && Date() < deadline {
+        try await Task.sleep(for: .milliseconds(20))
+    }
+    try check(store.activeRuns[writerID] != nil && store.activeRuns[nextHomeID] == nil && store.queuedSubmissions.count == 1,
+        "reader completion leaves HOME follower parked despite a free backend slot")
+    store.createSession(); let siblingID = store.selectedSessionID!
+    store.sessions[0].workspace = sibling.path
+    store.composer = "SIBLING file 수정해"; store.send()
+    try check(store.activeRuns[siblingID] != nil, "actual sibling project bypasses source repair without changing source guard")
+    while store.activeRuns[siblingID] != nil && Date() < deadline { try await Task.sleep(for: .milliseconds(20)) }
+    releaseWriter = true
+    while (!store.activeRuns.isEmpty || !store.queuedSubmissions.isEmpty) && Date() < deadline {
+        store.resumeSourceWaitingSubmissions(); try await Task.sleep(for: .milliseconds(20))
+    }
+    try check(store.activeRuns.isEmpty && store.queuedSubmissions.isEmpty, "writer and parked HOME follower reach terminal drain")
+    try check(dispatched == ["HOME first 파일 수정해", "SOURCE repair 파일 수정해", "SIBLING file 수정해", "HOME next 파일 수정해"],
+        "repair resumes exactly once before new HOME work; sibling remains independent")
+    releaseWriter = false
+    store.createSession(); let idleWriterID = store.selectedSessionID!
+    store.sessions[0].workspace = source.path
+    store.composer = "SOURCE repair idle 파일 수정해"; store.send()
+    store.createSession(); let followingWriterID = store.selectedSessionID!
+    store.sessions[0].workspace = source.path
+    store.composer = "SOURCE repair follower 파일 수정해"; store.send()
+    // No await between sends: the first child has not announced intent yet.
+    try check(store.activeRuns.count == 1 && store.activeRuns[idleWriterID] != nil &&
+        store.activeRuns[followingWriterID] == nil && store.queuedSubmissions.count == 1,
+        "source-lock-free startup gap admits only one repair, not multiple future lock waiters")
+    releaseWriter = true
+    while (!store.activeRuns.isEmpty || !store.queuedSubmissions.isEmpty) && Date() < deadline {
+        store.resumeSourceWaitingSubmissions(); try await Task.sleep(for: .milliseconds(20))
+    }
+    try check(store.activeRuns.isEmpty && store.queuedSubmissions.isEmpty &&
+        Array(dispatched.suffix(2)) == ["SOURCE repair idle 파일 수정해", "SOURCE repair follower 파일 수정해"],
+        "queued idle-source repair resumes once after the admitted repair terminates")
+    print("Source-writer fairness: \(checks) checks; real isolated flock probes; model calls 0")
 }
 
 @MainActor
@@ -8834,7 +9157,7 @@ private struct OS1DesktopApp: App {
         }
         if CommandLine.arguments.contains("--self-test-parallel") {
             Task { @MainActor in
-                do { try await parallelInteractionSelfTest(); try await slotWaitVisibilitySelfTest(); exit(EXIT_SUCCESS) }
+                do { try await parallelInteractionSelfTest(); try await slotWaitVisibilitySelfTest(); try await sourceWaitSchedulingSelfTest(); try await sourceWriterFairnessSelfTest(); exit(EXIT_SUCCESS) }
                 catch { fputs("\(error.localizedDescription)\n", stderr); exit(EXIT_FAILURE) }
             }
             NSApplication.shared.run()
@@ -11173,7 +11496,7 @@ private struct SessionSidebar: View {
                         SessionRow(
                             session: session,
                             selected: store.selectedSessionID == session.id,
-                            activity: store.activeRuns[session.id]?.activity,
+                            activity: store.activeRuns[session.id]?.activity ?? store.sourceWaitingActivity(session.id),
                             queuedCount: queuedCount,
                             queueStatus: idleQueue ? store.sidebarQueueStatus(session.id) : nil,
                             slotWait: idleQueue && store.globalSlotWait(session.id) != nil,
@@ -11481,6 +11804,7 @@ private extension RuntimeActivity {
     var convergenceLabel: String {
         switch phase {
         case .preparing: return "준비"
+        case .waitingForSource: return "소스 접근 대기"
         case .source: return "자료"
         case .authorizing: return "승인"
         case .routing: return "라우팅"
@@ -11490,6 +11814,11 @@ private extension RuntimeActivity {
         case .recovering: return "복구"
         }
     }
+
+    var executionBadgeTitle: String { phase == .waitingForSource ? "실행 대기" : "실행 세션" }
+    var backendConnectionLabel: String {
+        phase == .waitingForSource ? "백엔드 아직 시작하지 않음" : "백엔드 세션 연결 중"
+    }
 }
 
 private struct SessionExecutionBadge: View {
@@ -11498,18 +11827,21 @@ private struct SessionExecutionBadge: View {
     let compact: Bool
 
     private var sessionID: String? {
-        activity.nativeSessionID
+        guard activity.phase != .waitingForSource else { return nil }
+        return activity.nativeSessionID
             ?? (activity.provider == ProviderChoice.codex.rawValue ? session.codexSessionID : nil)
             ?? (activity.provider == ProviderChoice.claude.rawValue ? session.claudeSessionID : nil)
     }
 
+    private var statusColor: Color { activity.phase == .waitingForSource ? Theme.pink : Theme.green }
+
     var body: some View {
         HStack(spacing: compact ? 5 : 7) {
-            Circle().fill(Theme.green).frame(width: compact ? 5 : 6, height: compact ? 5 : 6)
+            Circle().fill(statusColor).frame(width: compact ? 5 : 6, height: compact ? 5 : 6)
             VStack(alignment: .leading, spacing: 2) {
                 let route = ExecutionRoutePresentation(activity: activity)
                 HStack(spacing: 5) {
-                    Text("실행 세션")
+                    Text(activity.executionBadgeTitle)
                         .font(.system(size: compact ? 9 : 10, weight: .bold))
                     Text(route.executionLine)
                         .font(.system(size: compact ? 9 : 10, weight: .semibold))
@@ -11527,7 +11859,7 @@ private struct SessionExecutionBadge: View {
                     if let sessionID {
                         Text("· \(String(sessionID.prefix(8)))…")
                     } else {
-                        Text("· 백엔드 세션 연결 중")
+                        Text("· \(activity.backendConnectionLabel)")
                     }
                 }
                 .font(.system(size: compact ? 8 : 9, weight: .medium))
@@ -11538,11 +11870,13 @@ private struct SessionExecutionBadge: View {
         .foregroundStyle(Theme.text)
         .padding(.horizontal, compact ? 7 : 9)
         .padding(.vertical, compact ? 4 : 6)
-        .background(Theme.green.opacity(0.08), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous).stroke(Theme.green.opacity(0.24)))
-        .help("실행 중인 백엔드 세션과 OS-1 공개 수렴 단계를 표시합니다. 모델 내부 수렴값은 노출되지 않습니다.")
+        .background(statusColor.opacity(0.08), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous).stroke(statusColor.opacity(0.24)))
+        .help(activity.phase == .waitingForSource
+            ? "소스 수리·업데이트 대기 중이며 백엔드는 아직 시작하지 않았습니다. 요청은 보존됩니다."
+            : "실행 중인 백엔드 세션과 OS-1 공개 수렴 단계를 표시합니다. 모델 내부 수렴값은 노출되지 않습니다.")
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("실행 세션 \(ExecutionRoutePresentation(activity: activity).governanceLine), 수렴 단계 \(activity.convergenceLabel)")
+        .accessibilityLabel("\(activity.executionBadgeTitle) \(ExecutionRoutePresentation(activity: activity).governanceLine), 수렴 단계 \(activity.convergenceLabel)")
     }
 }
 
@@ -11659,7 +11993,7 @@ private struct ConversationHeader: View {
                 Text("/").foregroundStyle(Theme.muted.opacity(0.5))
                 Text(session.title).fontWeight(.medium).lineLimit(1).foregroundStyle(Theme.text)
                 Spacer(minLength: 8)
-                if let activity = store.activeRuns[session.id]?.activity {
+                if let activity = store.activeRuns[session.id]?.activity ?? store.sourceWaitingActivity(session.id) {
                     SessionExecutionBadge(session: session, activity: activity, compact: true)
                         .layoutPriority(1)
                 }
@@ -12719,7 +13053,10 @@ private struct RunActivityBanner: View {
                         Text("최근 실행 신호 \(quiet)초 전 · 결과 검증 전에는 완료로 표시하지 않습니다.")
                             .font(.system(size: 10)).foregroundStyle(Theme.muted)
                     }
-                    if quiet >= 30 {
+                    if activity.phase == .waitingForSource {
+                        Text("백엔드는 아직 시작하지 않았습니다 · 요청은 보존되며 소스 수리·업데이트가 끝나면 자동으로 이어갑니다.")
+                            .font(.system(size: 10)).foregroundStyle(Theme.muted)
+                    } else if quiet >= 30 {
                         Text("마지막 단계 업데이트 \(quiet)초 전 · 실행은 열려 있지만 새 진행 신호를 기다리고 있습니다.")
                             .font(.system(size: 10)).foregroundStyle(Theme.muted)
                     }

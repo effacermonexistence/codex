@@ -33,6 +33,24 @@ func runOS1SelfReferenceFixtures() throws {
     check(bound(bubble).signals.contains("말풍선") && bound(bubble).signals.contains("Codex/Claude Code 기준 비교"), "bubble evidence is named")
     check(bound(queue).signals.contains("대기열"), "Q에 쌓여 is the queue")
 
+    // The October 2 screenshot was a source-writer wait before routing, but
+    // the owner called the visible state "route selecting". The repair must
+    // bind OS-1's live tree instead of becoming another unbound HOME task.
+    let routeWait = "야 무슨 라우트 셀렉팅 하는데 뭐가 이렇게 오래 걸려. 좀 고쳐." +
+        attached("/Users/LUA/Desktop/Screenshot 2026-10-02 at 7.00.32 AM.png")
+    for text in [routeWait, routeWait.decomposedStringWithCanonicalMapping,
+                 "라우트 셀렉팅이 너무 느려. 고쳐.",
+                 "실행 모델 선택이 계속 대기 중이야. 고쳐.",
+                 "Route: not selected yet is stuck. Fix it.",
+                 "Selecting the execution model is taking too long. Fix it."] {
+        let inference = bound(text)
+        check(inference.bound && inference.signals.contains("실행 경로 선택"),
+              "route-selection repair binds with evidence: \(text.prefix(45))")
+    }
+    check(!bound(routeWait, projectless: false).bound, "route-selection complaint never rebinds another project's checkout")
+    check(bound("OS1의 라우트 셀렉팅이 느려. 네트워크 라우팅 설정도 점검해서 고쳐.").bound,
+          "explicit OS-1 remains authoritative over a network mention")
+
     // Other real OS-1 requests without the name.
     for text in [
         "야 시발놈아 왼쪽에 있는 코덱스가 왜 사라져버렸어 고쳐",
@@ -62,6 +80,15 @@ func runOS1SelfReferenceFixtures() throws {
         ("야 너 셀프로 OS1 고칠 수 있냐?", "a feasibility question"),
         ("야 뭐야 내가 왜 세창에 했는데 왜 병렬로 안 돌아가", "a question without a change request"),
         ("express 라우팅 코덱스로 고쳐줘", "web routing done with Codex"),
+        ("express route selection is too slow. Fix it.", "web framework route selection"),
+        ("공유기 라우트 셀렉팅이 오래 걸려. 고쳐." + attached("/Users/LUA/Desktop/router.png"), "router selection even with a screenshot"),
+        ("BGP route selection is stuck. Fix it.", "network route selection"),
+        ("React Router route selection is slow. Fix it.", "browser router selection"),
+        ("웹앱 실행 경로 선택이 느려. 고쳐.", "another web app's execution path"),
+        ("Route: not selected yet on example.com is stuck. Fix it.", "route label on a named website"),
+        ("route selection 알고리즘 구현해", "generic route-selector implementation"),
+        ("라우트 셀렉팅이 오래 걸리는 이유만 설명해. 파일 수정은 하지 마.", "read-only route-selection explanation"),
+        ("Route: not selected yet is slow. Is it possible to fix it?", "route-selection feasibility only"),
         ("코덱스처럼 파이썬 스크립트 만들어줘", "like Codex, but making something new"),
         ("AI 거버넌스 문서 만들어줘", "governance as a document topic"),
         ("이번 주 작업 목록 만들어줘", "a task list"),

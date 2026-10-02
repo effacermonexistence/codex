@@ -8482,8 +8482,15 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
         }
         // A verifier retry writes again: the shared lease released for this
         // task's own finishing is taken back before the next backend call.
+        if ticket.permissionProfile == "read_only" {
+            os1SharedLease = nil
+            os1SourceWatch = nil
+        }
         if os1SharedLease == nil, let root = os1SharedLeaseRoot, ticket.permissionProfile == "workspace_write" {
             os1SharedLease = try acquireOS1SourceSharedLease(root: root)
+            // A source repair may have run during the previous attempt's
+            // external verification. Attribute only this attempt's changes.
+            os1SourceWatch = OS1SourceWatch(root: root, head: gitHead(root), fingerprint: OS1SourceWatch.fingerprint(root: root))
         }
         let startData = Data(["os1-attempt-start-v1", ticket.executionID, String(ticket.sequence), ticket.nonce, ticket.signature].joined(separator: "\n").utf8)
         AttemptLatencyTrace.beginIfIdle()
@@ -8814,6 +8821,13 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
                 dispatchStage: dispatchStage, source: sourceContext, permissionProfile: ticket.permissionProfile,
                 publicProgress: execution.artifact.output, surface: attemptSurface?.rawValue)
         }
+        // Observe this attempt while its shared lease still protects against
+        // an exclusive repair, then release it after a successful terminal
+        // backend result. An interrupted/uncertain native writer retains the
+        // existing protection; uploads and readbacks of a successful result
+        // must not keep a repair waiting after the writer has stopped.
+        let unboundOS1SourceChanged = os1SourceWatch?.changed() == true
+        if execution.artifact.exitCode == 0, attemptFailure == nil { os1SharedLease = nil }
         // OS-1 finishes its own repair. A backend's job ends when the source
         // is changed and builds; the mechanical tail (version bump, signed
         // release, self-tests, staging, commit, push) is OS-1's own, so a
@@ -8840,12 +8854,11 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
             }
         } else if let os1SourceWatch, TaskWorkflow.permitsSelfUpdate(stage: workflowStage, finalVerdict: nil), attemptFailure == nil,
                   dispatchStage == .dispatched, execution.artifact.exitCode == 0, ticket.permissionProfile == "workspace_write",
-                  os1SourceWatch.changed() {
+                  unboundOS1SourceChanged {
             // Not bound to OS-1, yet OS-1's source changed: never leave a fix
             // that only lives in the working tree, and never interleave with
             // another OS-1 writer (then its build carries this change). Our
             // own shared lease would block the exclusive one finishing needs.
-            os1SharedLease = nil
             let note = finishUnboundOS1Change(os1SourceWatch, objective: prompt, startedAt: attemptStartedAt)
             if !note.isEmpty { execution = execution.appendingOutput(note) }
         }
@@ -11554,7 +11567,10 @@ func selfTest() throws {
             let source = root.appendingPathComponent("products/os1-mac-runtime/Sources/OS1", isDirectory: true)
             defer {
                 try? FileManager.default.removeItem(at: root)
-                if let lock = try? os1SourceWriteLeaseURL(root: root.path) { try? FileManager.default.removeItem(at: lock) }
+                if let lock = try? os1SourceWriteLeaseURL(root: root.path) {
+                    try? FileManager.default.removeItem(at: lock)
+                    try? FileManager.default.removeItem(at: lock.appendingPathExtension("writer-intent"))
+                }
             }
             func run(_ arguments: [String]) -> Bool {
                 (try? commandOutput(git, ["-C", root.path, "-c", "user.name=OS-1 fixture", "-c", "user.email=fixture@os1.invalid"] + arguments, timeout: 30))?.0 == 0
@@ -11608,9 +11624,12 @@ func selfTest() throws {
         ("a HOME task shares OS-1's source with HOME tasks, never with an OS-1 repair", {
             let root = FileManager.default.temporaryDirectory.appendingPathComponent("os1-shared-lease-" + UUID().uuidString, isDirectory: true)
             guard let lock = try? os1SourceWriteLeaseURL(root: root.path) else { return false }
-            defer { try? FileManager.default.removeItem(at: lock) }
-            var homeA = try? ExclusiveHookLease.tryAcquire(at: lock, shared: true)
-            var homeB = try? ExclusiveHookLease.tryAcquire(at: lock, shared: true)
+            defer {
+                try? FileManager.default.removeItem(at: lock)
+                try? FileManager.default.removeItem(at: lock.appendingPathExtension("writer-intent"))
+            }
+            var homeA = try? tryAcquireOS1SourceSharedLease(root: root.path)
+            var homeB = try? tryAcquireOS1SourceSharedLease(root: root.path)
             guard homeA != nil, homeB != nil, (try? tryAcquireOS1SourceWriteLease(root: root.path)) == nil else { return false }
             homeA = nil
             guard (try? tryAcquireOS1SourceWriteLease(root: root.path)) == nil else { return false }
@@ -11618,7 +11637,49 @@ func selfTest() throws {
             var repair = try? tryAcquireOS1SourceWriteLease(root: root.path)
             guard repair != nil, (try? ExclusiveHookLease.tryAcquire(at: lock, shared: true)) == nil else { return false }
             repair = nil
-            return (try? ExclusiveHookLease.tryAcquire(at: lock, shared: true)) != nil
+            return (try? tryAcquireOS1SourceSharedLease(root: root.path)) != nil
+        }()),
+        ("a pending OS-1 writer drains existing HOME readers without admitting new ones", {
+            let root = FileManager.default.temporaryDirectory.appendingPathComponent("os1-writer-priority-" + UUID().uuidString, isDirectory: true)
+            guard let lock = try? os1SourceWriteLeaseURL(root: root.path),
+                  let intentURL = try? os1SourceWriterIntentURL(root: root.path) else { return false }
+            defer {
+                try? FileManager.default.removeItem(at: lock)
+                try? FileManager.default.removeItem(at: intentURL)
+            }
+            var reader = try? tryAcquireOS1SourceSharedLease(root: root.path)
+            guard reader != nil else { return false }
+            // The same ownership a real writer holds while waiting for this
+            // reader. No timestamp or lock-file deletion determines admission.
+            var pendingWriter = try? ExclusiveHookLease.tryAcquire(at: intentURL)
+            guard pendingWriter != nil,
+                  (try? tryAcquireOS1SourceSharedLease(root: root.path)) == nil,
+                  (try? tryAcquireOS1SourceWriteLease(root: root.path)) == nil,
+                  (try? ExclusiveHookLease.tryAcquire(at: lock)) == nil else { return false }
+            reader = nil
+            var writer = try? ExclusiveHookLease.tryAcquire(at: lock)
+            guard writer != nil, (try? tryAcquireOS1SourceSharedLease(root: root.path)) == nil else { return false }
+            pendingWriter = nil
+            guard (try? tryAcquireOS1SourceSharedLease(root: root.path)) == nil else { return false }
+            writer = nil
+            return (try? tryAcquireOS1SourceSharedLease(root: root.path)) != nil
+        }()),
+        ("an already expired source-write wait dispatches nothing and leaves admission available", {
+            let root = FileManager.default.temporaryDirectory.appendingPathComponent("os1-writer-deadline-" + UUID().uuidString, isDirectory: true)
+            guard let lock = try? os1SourceWriteLeaseURL(root: root.path) else { return false }
+            defer {
+                try? FileManager.default.removeItem(at: lock)
+                try? FileManager.default.removeItem(at: lock.appendingPathExtension("writer-intent"))
+            }
+            do {
+                _ = try acquireOS1SourceWriteLease(root: root.path, timeoutSeconds: 0)
+                return false
+            } catch OS1Error.message(let diagnostic) {
+                return diagnostic.contains("no source edits were dispatched")
+                    && (try? tryAcquireOS1SourceSharedLease(root: root.path)) != nil
+            } catch {
+                return false
+            }
         }()),
         ("a checkout without the installed build's commit is never staged", {
             guard let git = try? findExecutable("git") else { return false }

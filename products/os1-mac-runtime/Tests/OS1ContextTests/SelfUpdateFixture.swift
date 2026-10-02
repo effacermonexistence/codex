@@ -5,6 +5,7 @@ import OS1Context
 /// apply decision, the outcome record it reports, and the contract wording
 /// handed to the backend.
 func runSelfUpdateFixtures() throws {
+    try runSourceWriteAdmissionFixtures()
     var count = 0
     func check(_ value: Bool, _ message: String) {
         precondition(value, "Self-update: " + message); count += 1
