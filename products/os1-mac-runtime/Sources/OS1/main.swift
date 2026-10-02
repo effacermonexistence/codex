@@ -3170,6 +3170,18 @@ func providerSurfaceRoutingSelfTest() throws {
 /// owner chose this surface, which is the one intent
 /// `BackendWindowFocus.mayActivateBackendWindow` permits.
 func runChatGPTHandoff(prompt: String, workspace: String) throws -> RunSummary {
+    let handoff = try performChatGPTHandoff(prompt: prompt)
+    // A handoff is not a completed governed run, so it must not be reported as
+    // one. `handoff` keeps that boundary visible in the CLI and the app.
+    return RunSummary(status: "handoff", steps: [],
+        workflowBlocker: ChatGPTHandoff.notice(clipboardVerified: handoff.clipboardVerified,
+                                               applicationOpened: handoff.applicationOpened,
+                                               receiptPath: handoff.receipt.path))
+}
+
+/// Puts the request on the clipboard (verified by read-back), brings the
+/// signed-in ChatGPT app forward and writes the handoff receipt. Runs no model.
+func performChatGPTHandoff(prompt: String) throws -> (receipt: URL, clipboardVerified: Bool, applicationOpened: Bool) {
     RuntimeActivity.emit(.preparing, publicText: os1Tr(
         "ChatGPT 채팅 표면으로 넘깁니다 · 모델 호출 없음",
         "Handing the request to the ChatGPT chat surface · no model call"))
@@ -3208,13 +3220,7 @@ func runChatGPTHandoff(prompt: String, workspace: String) throws -> RunSummary {
     encoder.dateEncodingStrategy = .iso8601
     try encoder.encode(receipt).write(to: receiptURL, options: [.atomic])
     try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: receiptURL.path)
-
-    // A handoff is not a completed governed run, so it must not be reported as
-    // one. `handoff` keeps that boundary visible in the CLI and the app.
-    return RunSummary(status: "handoff", steps: [],
-        workflowBlocker: ChatGPTHandoff.notice(clipboardVerified: clipboardVerified,
-                                               applicationOpened: applicationOpened,
-                                               receiptPath: receiptURL.path))
+    return (receiptURL, clipboardVerified, applicationOpened)
 }
 
 /// Same resolver is used before dispatch, by the executor, and after return.
@@ -7066,6 +7072,264 @@ private func recordCompletionAttempt(store: CompletionFeedbackStore, scope: Comp
         recordExecutionFailure(ticket: ticket, model: model, effort: effort,
             reason: "completion_usage_ledger_unavailable: " + String(describing: error), source: source)
     }
+}
+
+/// The owner named a route for each part of one request ("1+1 GPT한테. 2+2
+/// Codex한테. 3+3 Claude한테. 4+4 Claudecode한테. 라우팅 시켜서 답변 받아와"): every
+/// part runs on the surface it names and comes back with its own receipt,
+/// followed by one OS-1 summary of all routes. Parts run one after another
+/// under one governance task; a ChatGPT part is handed off last, because OS-1
+/// cannot read ChatGPT's answer. See `RouteFanout`.
+func runRouteFanout(
+    _ plan: RouteFanout,
+    workspace: String,
+    codexSessionID: String?,
+    claudeSessionID: String?,
+    progress: Bool,
+    desktopReveal: DesktopRevealMode
+) async throws -> RunSummary {
+    let policy = try loadCurrentOwnerPolicy()
+    return try await OwnerPolicyContext.$snapshot.withValue(policy) {
+        try await runRouteFanoutWithOwnerPolicy(plan, workspace: workspace, codexSessionID: codexSessionID,
+            claudeSessionID: claudeSessionID, progress: progress, desktopReveal: desktopReveal)
+    }
+}
+
+struct RouteFanoutOutcome {
+    let index: Int
+    let target: RouteFanout.Target
+    var adopted: RunStepSummary?
+    var failure: String?
+    var handoffReceipt: String?
+}
+
+private func runRouteFanoutWithOwnerPolicy(
+    _ plan: RouteFanout,
+    workspace: String,
+    codexSessionID: String?,
+    claudeSessionID: String?,
+    progress: Bool,
+    desktopReveal: DesktopRevealMode
+) async throws -> RunSummary {
+    let started = Date()
+    let monitorID = UUID().uuidString.lowercased()
+    var anyAdopted = false
+    try? GovernanceActivityStore().begin(id: monitorID)
+    defer { try? GovernanceActivityStore().finish(id: monitorID, adopted: anyAdopted,
+        cancelled: ExecutionCancellation.isCancelled) }
+    let previousSelection = ClaudeChatLane.ownerSelected
+    defer { ClaudeChatLane.setExplicitSelection(previousSelection) }
+
+    var outcomes: [RouteFanoutOutcome] = []
+    var steps: [RunStepSummary] = []
+    var codexID = codexSessionID
+    var claudeID = claudeSessionID
+    var handoffIndices: [Int] = []
+    for (position, index) in plan.executionOrder.enumerated() {
+        let target = plan.targets[index]
+        if ExecutionCancellation.isCancelled { throw OS1Error.backendBlocked(.cancelled) }
+        guard let gateway = target.surface.gatewayPreference else { handoffIndices.append(index); continue }
+        RuntimeActivity.emit(.preparing, publicText: os1Tr(
+            "경로 \(position + 1)/\(plan.targets.count): \(routeFanoutLabel(target.surface))",
+            "Route \(position + 1)/\(plan.targets.count): \(routeFanoutLabel(target.surface))"))
+        var outcome = RouteFanoutOutcome(index: index, target: target)
+        // An explicit chat-lane name never turns into the full lane: a part the
+        // lane cannot answer is refused before any model is called.
+        if target.surface.forcesChatLane,
+           let reason = claudeChatLaneRefusal(objective: target.payload, hasSource: false) {
+            outcome.failure = reason
+            outcomes.append(outcome)
+            continue
+        }
+        ClaudeChatLane.setExplicitSelection(target.surface.forcesChatLane)
+        let fullLane = !target.surface.forcesChatLane
+        do {
+            let result = try await runTask(
+                prompt: target.payload, workspace: workspace, providerPreference: gateway, context: nil,
+                // Full lanes continue this conversation's native sessions; the
+                // chat lanes never resume one (they answer from the request).
+                codexSessionID: fullLane && gateway == "codex" ? codexID : nil,
+                claudeSessionID: fullLane && gateway == "claude" ? claudeID : nil,
+                codexCapacity: 100, claudeCapacity: 100, progress: progress, desktopReveal: desktopReveal,
+                monitorTaskIDOverride: monitorID)
+            var tagged = result.steps.filter { ["adopted", "control_verified"].contains($0.revasDisposition) }
+            for i in tagged.indices { tagged[i].workflowStage = "route \(target.surface.rawValue)" }
+            if result.status == "complete", let adopted = tagged.last, ["codex", "claude"].contains(adopted.provider),
+               adopted.exitCode == 0, adopted.nativeRecord?.isVerified == true {
+                steps.append(contentsOf: tagged)
+                outcome.adopted = adopted
+                anyAdopted = true
+                // OS-1 never ends a request another backend can run, so a dead
+                // backend's part comes back from the other one: shown, never
+                // counted as the route the owner named.
+                if adopted.provider != gateway {
+                    outcome.failure = os1Tr("\(gateway == "codex" ? "Codex" : "Claude")를 쓸 수 없어 \(adopted.provider == "codex" ? "Codex" : "Claude")가 대신 답했습니다",
+                                            "\(gateway == "codex" ? "Codex" : "Claude") was unavailable; \(adopted.provider == "codex" ? "Codex" : "Claude") answered instead")
+                }
+                if fullLane, adopted.provider == gateway {
+                    if gateway == "codex" { codexID = adopted.sessionID } else { claudeID = adopted.sessionID }
+                }
+            } else {
+                outcome.failure = result.workflowBlocker ?? os1Tr("검증된 답이 없습니다 (\(result.status)).",
+                                                                  "No verified answer (\(result.status)).")
+            }
+        } catch {
+            outcome.failure = String(describing: error)
+        }
+        outcomes.append(outcome)
+    }
+    ClaudeChatLane.setExplicitSelection(previousSelection)
+    if ExecutionCancellation.isCancelled { throw OS1Error.backendBlocked(.cancelled) }
+    if !handoffIndices.isEmpty {
+        let text = handoffIndices.map { plan.targets[$0].payload }.joined(separator: "\n")
+        do {
+            let handoff = try performChatGPTHandoff(prompt: text)
+            for index in handoffIndices {
+                outcomes.append(RouteFanoutOutcome(index: index, target: plan.targets[index], handoffReceipt: handoff.receipt.path))
+            }
+        } catch {
+            for index in handoffIndices {
+                outcomes.append(RouteFanoutOutcome(index: index, target: plan.targets[index], failure: String(describing: error)))
+            }
+        }
+    }
+    outcomes.sort { $0.index < $1.index }
+    let output = routeFanoutSummary(plan: plan, outcomes: outcomes)
+    guard anyAdopted || outcomes.contains(where: { $0.handoffReceipt != nil }) else {
+        throw OS1Error.message(output)
+    }
+    let operationID = UUID().uuidString.lowercased()
+    let receiptRoot = FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent("Library/Application Support/OS-1/control-receipts", isDirectory: true)
+    try FileManager.default.createDirectory(at: receiptRoot, withIntermediateDirectories: true)
+    let receiptURL = receiptRoot.appendingPathComponent("\(operationID).json")
+    let routes: [[String: Any]] = outcomes.map { outcome in
+        var route: [String: Any] = [
+            "index": outcome.index + 1,
+            "surface": outcome.target.surface.rawValue,
+            "payload_sha256": sha256Hex(Data(outcome.target.payload.utf8)),
+        ]
+        if let adopted = outcome.adopted {
+            route["provider"] = adopted.provider
+            route["session_id"] = adopted.sessionID
+            route["model"] = adopted.model ?? "provider-default"
+            route["result_sha256"] = sha256Hex(Data(adopted.output.utf8))
+        }
+        if let failure = outcome.failure { route["failure"] = String(failure.prefix(500)) }
+        if let handoff = outcome.handoffReceipt { route["handoff_receipt"] = handoff }
+        return route
+    }
+    let receipt: [String: Any] = [
+        "schema": 1,
+        "operation_id": operationID,
+        "operation": "route_fanout",
+        "checked_at": ISO8601DateFormatter().string(from: Date()),
+        "model_invoked": false,
+        "monitor_task_id": monitorID,
+        "routes": routes,
+        "result_sha256": sha256Hex(Data(output.utf8)),
+    ]
+    let receiptData = try JSONSerialization.data(withJSONObject: receipt, options: [.sortedKeys])
+    try receiptData.write(to: receiptURL, options: [.atomic])
+    try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: receiptURL.path)
+    guard (try? Data(contentsOf: receiptURL)) == receiptData else {
+        throw OS1Error.message("OS-1 경로 분배 영수증 검증에 실패했습니다.")
+    }
+    steps.append(RunStepSummary(
+        sequence: steps.count + 1,
+        provider: "local",
+        action: "route_fanout",
+        model: "os1-control",
+        effort: "none",
+        revasDisposition: "control_verified",
+        sessionID: operationID,
+        permissionProfile: "local_control",
+        exitCode: 0,
+        output: output,
+        stderr: "",
+        durationMS: Int64(Date().timeIntervalSince(started) * 1_000),
+        nativeRecord: NativeRecordEvidence(turnID: operationID, recordPath: receiptURL.path,
+                                           persistence: "verified", desktopVisibility: "control_only")
+    ))
+    return RunSummary(status: "complete", steps: steps, monitorTaskID: monitorID)
+}
+
+/// The route as the owner named it, plus whose usage it spends.
+func routeFanoutLabel(_ surface: ProviderSurface) -> String {
+    switch surface {
+    case .gptChat: return os1Tr("GPT 채팅 (OpenAI GPT · Codex 사용량)", "GPT chat (OpenAI GPT · Codex usage)")
+    case .codex: return os1Tr("Codex (OpenAI · Codex 사용량)", "Codex (OpenAI · Codex usage)")
+    case .claudeChat: return os1Tr("Claude 채팅 (Anthropic · Claude 한도)", "Claude chat (Anthropic · Claude limit)")
+    case .claude: return os1Tr("Claude Code (Anthropic · Claude 한도)", "Claude Code (Anthropic · Claude limit)")
+    case .chatgpt: return os1Tr("ChatGPT 앱 (넘김)", "ChatGPT app (handoff)")
+    case .auto: return os1Tr("자동", "Auto")
+    }
+}
+
+func routeFanoutSummary(plan: RouteFanout, outcomes: [RouteFanoutOutcome]) -> String {
+    // Answered on the route the owner named; a substitute answer is shown but not counted.
+    let answered = outcomes.filter { $0.adopted != nil && $0.failure == nil }.count
+    let executors = plan.targets.filter { $0.surface != .chatgpt }.count
+    var lines = [os1Tr("라우팅 결과 · 실행 경로 \(answered)/\(executors) 답변",
+                       "Routing result · \(answered)/\(executors) executed routes answered")]
+    for outcome in outcomes {
+        let head = "\(outcome.index + 1). \(routeFanoutLabel(outcome.target.surface)) — \(outcome.target.payload)"
+        if let adopted = outcome.adopted {
+            let answer = adopted.output.trimmingCharacters(in: .whitespacesAndNewlines)
+                .split(separator: "\n", omittingEmptySubsequences: true).first.map(String.init) ?? ""
+            let model = adopted.model.map { " · \($0)" } ?? ""
+            let substitute = outcome.failure.map { " (\($0))" } ?? ""
+            lines.append("\(head) → \(String(answer.prefix(200)))\(model)\(substitute)")
+        } else if outcome.handoffReceipt != nil {
+            lines.append(head + os1Tr(" → ChatGPT 앱으로 넘김(클립보드). OS-1은 ChatGPT의 답을 읽을 수 없습니다: OpenAI가 자동 접근을 막고 약관으로 금지합니다. 답은 ChatGPT 앱에서 확인하세요.",
+                                      " → handed to the ChatGPT app (clipboard). OS-1 cannot read ChatGPT's answer: OpenAI blocks and prohibits automated access. Read it in the ChatGPT app."))
+        } else {
+            lines.append(head + os1Tr(" → 실패: ", " → failed: ") + String((outcome.failure ?? "").prefix(300)))
+        }
+    }
+    if !plan.frame.isEmpty {
+        lines.append(os1Tr("전달하지 않은 앞뒤 말: ", "Not sent (framing): ") + plan.frame.joined(separator: " / "))
+    }
+    return lines.joined(separator: "\n")
+}
+
+func routeFanoutSummarySelfTest() throws {
+    guard let plan = RouteFanout.plan("1+1 GPT한테. 2+2 Codex한테. 3+3 ChatGPT한테. 4+4 Claudecode한테. 답변 받아와.") else {
+        throw OS1Error.message("Route fan-out summary: plan missing")
+    }
+    func step(_ provider: String, _ output: String) -> RunStepSummary {
+        RunStepSummary(sequence: 1, provider: provider, action: "agent_run", model: "m", effort: "max",
+            revasDisposition: "adopted", sessionID: UUID().uuidString.lowercased(), permissionProfile: "read_only",
+            exitCode: 0, output: output, stderr: "", durationMS: 1, nativeRecord: nil)
+    }
+    let outcomes = [
+        RouteFanoutOutcome(index: 0, target: plan.targets[0], adopted: step("codex", "2\n\nmore")),
+        RouteFanoutOutcome(index: 1, target: plan.targets[1], adopted: step("codex", "4")),
+        RouteFanoutOutcome(index: 2, target: plan.targets[2], handoffReceipt: "/tmp/receipt.json"),
+        RouteFanoutOutcome(index: 3, target: plan.targets[3], failure: "quota"),
+    ]
+    let text = routeFanoutSummary(plan: plan, outcomes: outcomes)
+    let lines = text.split(separator: "\n").map(String.init)
+    var substituted = outcomes
+    substituted[1] = RouteFanoutOutcome(index: 1, target: plan.targets[1], adopted: step("claude", "4"), failure: "substitute")
+    let substitutedLines = routeFanoutSummary(plan: plan, outcomes: substituted).split(separator: "\n").map(String.init)
+    let previous = ClaudeChatLane.ownerSelected
+    ClaudeChatLane.setExplicitSelection(true)
+    let selected = ClaudeChatLane.ownerSelected
+    ClaudeChatLane.setExplicitSelection(previous)
+    let checks: [(String, Bool)] = [
+        ("counts executed routes only", lines.first?.contains("2/3") == true),
+        ("first answer line only", lines.count > 1 && lines[1].hasSuffix("→ 2 · m") && lines[1].contains("GPT")),
+        ("codex answer", lines.count > 2 && lines[2].contains("Codex") && lines[2].contains("→ 4")),
+        ("handoff never claims an answer", lines.count > 3 && lines[3].contains("ChatGPT") && !lines[3].contains("→ 6")),
+        ("failure shown", lines.count > 4 && lines[4].contains("Claude Code") && lines[4].contains("quota")),
+        ("framing reported, not sent", text.contains("답변 받아와") || text.contains("Not sent")),
+        ("chat-lane selection settable", selected && ClaudeChatLane.ownerSelected == previous),
+        ("a substitute answer is shown, not counted", substitutedLines.first?.contains("1/3") == true
+            && substitutedLines.count > 2 && substitutedLines[2].contains("→ 4") && substitutedLines[2].hasSuffix("(substitute)")),
+    ]
+    let failed = checks.filter { !$0.1 }.map(\.0)
+    guard failed.isEmpty else { throw OS1Error.message("Route fan-out summary self-test failed: " + failed.joined(separator: "; ")) }
 }
 
 /// Execute one owner objective through bounded, independently adopted stages.
@@ -11330,6 +11594,8 @@ func selfTest() throws {
     print("OS-1 completion preflight, feedback wire, replay guard and adoption: \(completionChecks.count) checks OK")
     try ModelAvailability.selfTest()
     try ChatGPTHandoff.selfTest()
+    try RouteFanout.selfTest()
+    try routeFanoutSummarySelfTest()
     try providerSurfaceRoutingSelfTest()
     try backendHealthLabelSelfTest()
     try resultUsageSelfTest()
@@ -11665,6 +11931,22 @@ struct OS1Main {
                 }
                 guard codexCapacity + claudeCapacity > 0 else {
                     throw OS1Error.message("At least one backend capacity must be above zero")
+                }
+                // A request that names a route for each of its parts runs each
+                // part there ("1+1 GPT한테. 2+2 Codex한테. …"), instead of the
+                // whole sentence reaching the router as one request.
+                if surface == .auto, !requireReadOnly, let fanout = RouteFanout.plan(prompt) {
+                    let summary = try await runRouteFanout(fanout, workspace: workspace,
+                        codexSessionID: codexSessionID, claudeSessionID: claudeSessionID,
+                        progress: outputFormat == "text", desktopReveal: desktopReveal)
+                    if outputFormat == "json" {
+                        let encoder = JSONEncoder()
+                        encoder.outputFormatting = [.withoutEscapingSlashes]
+                        print(String(decoding: try encoder.encode(summary), as: UTF8.self))
+                    } else {
+                        printRunSummary(summary)
+                    }
+                    return
                 }
                 let sessionContext = try readSessionContext(contextPath)
                 let boundProjectID = try SessionHandoff.decode(sessionContext).taskContext?.project?.projectID

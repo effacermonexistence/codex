@@ -582,6 +582,43 @@ private func providerIntentSelfTest() throws {
           !stepRecordIsVerified(tamperedSourceStatusStep) else {
         throw RunnerError.message("OS-1 adopted-only UI barrier self-test failed.")
     }
+    // Build 295: one request routed to four surfaces (owner, 2026-10-02).
+    let fanoutID = "8eaa48c6-af59-4f4c-a2be-9a0ec3b6fc40"
+    let fanoutOutput = "라우팅 결과 · 실행 경로 4/4 답변"
+    let fanoutReceiptURL = receiptRoot.appendingPathComponent("route-fanout.json")
+    func fanoutReceipt(_ routes: [[String: Any]]) throws {
+        try JSONSerialization.data(withJSONObject: ["schema": 1, "operation_id": fanoutID, "operation": "route_fanout",
+            "model_invoked": false, "routes": routes, "result_sha256": appSHA256Hex(fanoutOutput)], options: [.sortedKeys])
+            .write(to: fanoutReceiptURL, options: [.atomic])
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: fanoutReceiptURL.path)
+    }
+    let fanoutStep = AppRunStep(sequence: 5, provider: "local", action: "route_fanout", model: "os1-control", effort: "none",
+        revasDisposition: "control_verified", sessionID: fanoutID, permissionProfile: "local_control", exitCode: 0,
+        output: fanoutOutput, stderr: "", durationMS: 1,
+        nativeRecord: AppNativeRecord(turnID: fanoutID, recordPath: fanoutReceiptURL.path, persistence: "verified",
+                                      desktopVisibility: "control_only"))
+    try fanoutReceipt(["gpt-chat", "codex", "claude-chat", "claude"].enumerated().map { index, surface in
+        ["index": index + 1, "surface": surface, "payload_sha256": String(repeating: "a", count: 64),
+         "result_sha256": String(repeating: "b", count: 64)] })
+    let fanoutVerified = stepRecordIsVerified(fanoutStep)
+    try fanoutReceipt([["index": 1, "surface": "gemini", "payload_sha256": String(repeating: "a", count: 64)]])
+    let unknownSurfaceRejected = !stepRecordIsVerified(fanoutStep)
+    try fanoutReceipt([])
+    let emptyRoutesRejected = !stepRecordIsVerified(fanoutStep)
+    var chatPart = review
+    chatPart.workflowStage = "route gpt-chat"
+    var fullPart = review
+    fullPart.workflowStage = "route codex"
+    let ownerFanout = "1+1 GPT한테. 2+2 Codex한테. 3+3 Claude한테. 4+4 Claudecode한테. 라우팅 시켜서 답변 받아와."
+    guard fanoutVerified, unknownSurfaceRejected, emptyRoutesRejected,
+          requestedProvider(for: ownerFanout, configured: .auto) == .auto,
+          requestedProvider(for: ownerFanout, configured: .claude) == .auto,
+          requestedProvider(for: "1+1 코덱스한테 시켜. 2+2 클로드한테 시켜.", configured: .auto) == .auto,
+          requestedProvider(for: "코덱스한테 말시켜봐", configured: .auto) == .codex,
+          requestedProvider(for: "이 버그를 고치고 테스트해", configured: .claude) == .claude,
+          isChatLaneRoutePart(chatPart), !isChatLaneRoutePart(fullPart), !isChatLaneRoutePart(review) else {
+        throw RunnerError.message("OS-1 route fan-out UI self-test failed.")
+    }
 
     let selectableDocument = timelineAttributedDocument(
         messages: [
@@ -3899,9 +3936,37 @@ private func stepRecordIsVerified(_ step: AppRunStep) -> Bool {
             (receipt["workspace"] as? String)?.isEmpty == false &&
             (receipt["workspace_manifest_sha256"] as? String)?.count == 64 &&
             receipt["model_invoked"] as? Bool == false
+    case "route_fanout":
+        // OS-1's summary of one request's parts, each run on the surface it
+        // named; every route answered carries its own native record above.
+        guard receipt["operation"] as? String == "route_fanout",
+              receipt["model_invoked"] as? Bool == false,
+              let routes = receipt["routes"] as? [[String: Any]], !routes.isEmpty else { return false }
+        return routes.allSatisfy { route in
+            (route["surface"] as? String).flatMap(ProviderSurface.init(rawValue:)) != nil &&
+                (route["payload_sha256"] as? String)?.count == 64 &&
+                (route["result_sha256"] == nil || (route["result_sha256"] as? String)?.count == 64)
+        }
     default:
         return false
     }
+}
+
+/// A request that names a route for each of its parts ("1+1 GPT한테. 2+2
+/// Codex한테. …") runs on auto, so the runtime can send every part where it
+/// was named; that holds on a conversation pinned to one tile as well, since
+/// the request is the more specific instruction. Anything else keeps the tile,
+/// or the one provider the request directs work to.
+private func requestedProvider(for request: String, configured: ProviderChoice) -> ProviderChoice {
+    if RouteFanout.plan(request) != nil { return .auto }
+    return configured == .auto ? (explicitlyRequestedProvider(in: request) ?? .auto) : configured
+}
+
+/// A route fan-out's GPT-chat or Claude-chat part answers on a fresh thread
+/// outside the workspace. It must not replace the conversation's own native
+/// session, which the next full-lane turn resumes.
+private func isChatLaneRoutePart(_ step: AppRunStep) -> Bool {
+    ["route gpt-chat", "route claude-chat"].contains(step.workflowStage ?? "")
 }
 
 /// Receipt wording is derived from evidence the runtime actually gathered, so
@@ -5578,9 +5643,7 @@ private final class SessionStore: ObservableObject {
         }
 
         let configuredProvider = sessions[index].provider
-        let provider = configuredProvider == .auto
-            ? (explicitlyRequestedProvider(in: request) ?? .auto)
-            : configuredProvider
+        let provider = requestedProvider(for: request, configured: configuredProvider)
         if sessions[index].messages.isEmpty {
             sessions[index].title = title(for: request)
         }
@@ -5680,7 +5743,7 @@ private final class SessionStore: ObservableObject {
             composer = ""; composerAttachments = []; save(); return
         }
         var item = PendingSubmission(sessionID: session.id, userMessageID: UUID(), request: text,
-            provider: session.provider == .auto ? (explicitlyRequestedProvider(in: text) ?? .auto) : session.provider,
+            provider: requestedProvider(for: text, configured: session.provider),
             workspace: session.workspace, codexCapacity: session.effectiveCodexCapacity, claudeCapacity: session.effectiveClaudeCapacity)
         item.configuredProvider = session.provider
         // A steer runs on the same surface the tile is set to, otherwise
@@ -6233,7 +6296,10 @@ private final class SessionStore: ObservableObject {
                     }
                     if submission.recoveryParentID == nil,
                        let provider = ProviderChoice(rawValue: step.provider) {
-                        recordNativeSession(provider, id: step.sessionID, conversationID: submission.sessionID)
+                        let bound = provider == .codex ? sessions[target].codexSessionID : sessions[target].claudeSessionID
+                        if !(isChatLaneRoutePart(step) && bound != nil) {
+                            recordNativeSession(provider, id: step.sessionID, conversationID: submission.sessionID)
+                        }
                     }
                 }
                 for step in visibleSteps {
@@ -7389,7 +7455,7 @@ private final class SessionStore: ObservableObject {
               let index = queuedSubmissions.firstIndex(where: { $0.id == id }) else { return false }
         queuedSubmissions[index].request = request
         if let preference = queuedSubmissions[index].configuredProvider {
-            queuedSubmissions[index].provider = preference == .auto ? (explicitlyRequestedProvider(in: request) ?? .auto) : preference
+            queuedSubmissions[index].provider = requestedProvider(for: request, configured: preference)
         }
         // An already visible, still undelivered request shows what the queue
         // now actually holds, keeping its identity and place in the transcript.

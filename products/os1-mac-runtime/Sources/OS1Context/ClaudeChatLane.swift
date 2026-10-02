@@ -102,6 +102,9 @@ public enum ClaudeChatLane {
     nonisolated(unsafe) private static var explicitSelection = false
     public static func selectExplicitly() { explicitSelection = true }
     public static var ownerSelected: Bool { explicitSelection }
+    /// A route fan-out (`RouteFanout`) runs its parts one after another in one
+    /// process; each part sets the lane its name selected before it starts.
+    public static func setExplicitSelection(_ selected: Bool) { explicitSelection = selected }
 }
 
 /// OpenAI's side of the chat-shaped lane (`--provider gpt-chat`, or the same

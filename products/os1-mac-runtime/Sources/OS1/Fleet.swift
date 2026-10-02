@@ -687,15 +687,22 @@ private func executeFleetAssignment(_ assignment: FleetAssignment, role: String,
         }
         let preference = ["codex", "claude"].contains(assignment.profile) ? assignment.profile : "auto"
         let mix = fleetCapacityMix(preference: preference)
-        run = try await (fleetRunsStaged(prompt) ? runWorkflowTask(
-            prompt: prompt, workspace: workspace, providerPreference: preference,
-            context: nil, codexSessionID: nil, claudeSessionID: nil,
-            codexCapacity: mix.codex, claudeCapacity: mix.claude, progress: false, desktopReveal: .never
-        ) : runTask(
-            prompt: prompt, workspace: workspace, providerPreference: preference,
-            context: nil, codexSessionID: nil, claudeSessionID: nil,
-            codexCapacity: mix.codex, claudeCapacity: mix.claude, progress: false, desktopReveal: .never
-        ))
+        // A job that names a route for each of its parts splits exactly as
+        // `os1 run` does (build 295), before staging or single-route dispatch.
+        if preference == "auto", let fanout = RouteFanout.plan(prompt) {
+            run = try await runRouteFanout(fanout, workspace: workspace, codexSessionID: nil,
+                                           claudeSessionID: nil, progress: false, desktopReveal: .never)
+        } else {
+            run = try await (fleetRunsStaged(prompt) ? runWorkflowTask(
+                prompt: prompt, workspace: workspace, providerPreference: preference,
+                context: nil, codexSessionID: nil, claudeSessionID: nil,
+                codexCapacity: mix.codex, claudeCapacity: mix.claude, progress: false, desktopReveal: .never
+            ) : runTask(
+                prompt: prompt, workspace: workspace, providerPreference: preference,
+                context: nil, codexSessionID: nil, claudeSessionID: nil,
+                codexCapacity: mix.codex, claudeCapacity: mix.claude, progress: false, desktopReveal: .never
+            ))
+        }
         guard run.status == "complete", !run.steps.isEmpty, run.steps.allSatisfy({ $0.exitCode == 0 }) else {
             throw OS1Error.message("Fleet governed execution has not completed")
         }
