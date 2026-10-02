@@ -19,7 +19,21 @@ public struct GovernanceAttempt: Codable, Equatable, Sendable {
     public var model: String
     public var effort: String
     public var observation: CompletionFeedbackObservation?
-    public var route: String { [provider, model, effort].joined(separator: " / ") }
+    /// Actual executed mode, not a request preference. Optional for existing
+    /// receipts; no chat mode is inferred from legacy model/backend records.
+    public var surface: String? = nil
+    public var route: String {
+        let resolved = ProviderSurface.resolveExecuted(rawSurface: surface, provider: provider)
+        // Only new explicit chat evidence introduces a new mode key. Full
+        // agent and historical keys retain their established identity.
+        let identity = resolved?.forcesChatLane == true ? resolved!.rawValue : provider
+        return [identity, model, effort].joined(separator: " / ")
+    }
+    public var displayRoute: String {
+        let name = ProviderSurface.resolveExecuted(rawSurface: surface, provider: provider)?.routeTitle
+            ?? (provider == "local" ? "OS-1" : provider)
+        return [name, model, effort].joined(separator: " / ")
+    }
 }
 
 public struct GovernanceTask: Codable, Equatable, Sendable {
@@ -47,6 +61,12 @@ public struct GovernanceTask: Codable, Equatable, Sendable {
     public var route: String {
         let routes = Set(attempts.map(\.route))
         return routes.count == 1 ? routes.first! : (routes.isEmpty ? "local / preparation / none" : "mixed / recovery / multiple")
+    }
+    public var displayRoute: String {
+        let routes = Set(attempts.map(\.displayRoute))
+        return routes.count == 1 ? routes.first! : (routes.isEmpty
+            ? os1Tr("OS-1 내부 준비", "OS-1 local preparation")
+            : os1Tr("여러 실행 경로 / 복구", "Multiple execution routes / recovery"))
     }
     public var tokens: Int? {
         guard !attempts.isEmpty else { return nil } // no provider call is not zero-priced measured work
@@ -353,8 +373,7 @@ public struct GovernanceSnapshot: Sendable {
     }
     public func routes(since: Date?, includeHistorical: Bool) -> [GovernanceRoute] {
         var rows: [String: GovernanceRoute] = [:]
-        for (_, o) in samples(since: since, includeHistorical: includeHistorical) {
-            let key = [o.provider, o.model, o.effort].joined(separator: " / ")
+        for (_, key, o) in routeSamples(since: since, includeHistorical: includeHistorical) {
             var row = rows[key] ?? GovernanceRoute(id: key)
             row.attempts += 1; row.adoptedAttempts += o.outcome == .adopted ? 1 : 0
             row.durationMS += o.durationMS
@@ -392,6 +411,20 @@ public struct GovernanceSnapshot: Sendable {
         return result
     }
 
+    /// Observation accounting still names the actual provider. Join its
+    /// immutable execution ID to the monitor's recorded mode to group new
+    /// chat evidence separately; historical ledger-only samples stay legacy.
+    private func routeSamples(since: Date?, includeHistorical: Bool)
+        -> [(scope: String, route: String, observation: CompletionFeedbackObservation)] {
+        let keys = Dictionary(tasks.flatMap(\.attempts).map { ($0.id, $0.route) },
+                              uniquingKeysWith: { first, _ in first })
+        return samples(since: since, includeHistorical: includeHistorical).map { scope, observation in
+            let id = observation.executionID + ":" + String(observation.sequence)
+            let route = keys[id] ?? [observation.provider, observation.model, observation.effort].joined(separator: " / ")
+            return (scope, route, observation)
+        }
+    }
+
     /// Equal-weight scope-standardized means, ratio of sums (not mean of percentages), never cross-provider comparisons or causal uplift.
     /// Legacy scopes bind initial requests, not necessarily every recovery prompt.
     /// Includes failures and retries in token/time costs. The completion delta
@@ -401,11 +434,11 @@ public struct GovernanceSnapshot: Sendable {
     /// of entering them as a free attempt. Unrelated route tasks cannot change
     /// any of these deltas.
     public func comparisons(baseline: String, since: Date?, includeHistorical: Bool) -> [GovernanceComparison] {
-        let grouped = Dictionary(grouping: samples(since: since, includeHistorical: includeHistorical), by: { $0.0 })
-        let provider = baseline.components(separatedBy: " / ").first
+        let grouped = Dictionary(grouping: routeSamples(since: since, includeHistorical: includeHistorical), by: { $0.scope })
+        let provider = ProviderSurface.providerForRouteKey(baseline)
         let routeRows = routes(since: since, includeHistorical: includeHistorical)
         let routeIDs = routeRows.map(\.id).filter {
-            $0 != baseline && $0.components(separatedBy: " / ").first == provider
+            $0 != baseline && provider != nil && ProviderSurface.providerForRouteKey($0) == provider
         }
         return routeIDs.compactMap { route in
             var tokenA: [Double] = [], tokenB: [Double] = [], adoptionDeltas: [Double] = [], timeA: [Double] = [], timeB: [Double] = []
@@ -414,7 +447,7 @@ public struct GovernanceSnapshot: Sendable {
             var count = 0, measured = 0, candidateN = 0, baselineN = 0
             for entries in grouped.values {
                 func select(_ key: String) -> [CompletionFeedbackObservation] {
-                    entries.map(\.1).filter { [$0.provider, $0.model, $0.effort].joined(separator: " / ") == key }
+                    entries.filter { $0.route == key }.map(\.observation)
                 }
                 let a = select(baseline), b = select(route)
                 guard !a.isEmpty, !b.isEmpty else { continue }
@@ -585,7 +618,7 @@ public struct GovernanceActivityStore: Sendable {
     public func attempt(id: String, executionID: String, sequence: Int, scope: CompletionFeedbackScope,
                         provider: String, model: String, effort: String, startedAt: Date,
                         observation: CompletionFeedbackObservation? = nil,
-                        ledgerScope: CompletionFeedbackScope? = nil) throws {
+                        ledgerScope: CompletionFeedbackScope? = nil, surface: String? = nil) throws {
         try scope.validate()
         try ledgerScope?.validate()
         try withLock(id) {
@@ -596,13 +629,19 @@ public struct GovernanceActivityStore: Sendable {
         var item = GovernanceAttempt(id: key, startedAt: startedAt, scope: scope.bindingSHA256,
             provider: provider, model: model, effort: effort, observation: observation)
         item.ledgerScope = ledgerScope?.bindingSHA256
+        if let surface,
+           ProviderSurface.resolveExecuted(rawSurface: surface, provider: provider)?.rawValue == surface {
+            item.surface = surface
+        }
         if let index = task.attempts.firstIndex(where: { $0.id == key }) {
             // Repeated completion notification is idempotent; a start may never erase usage.
             if observation != nil {
                 item.ledgerScope = item.ledgerScope ?? task.attempts[index].ledgerScope
+                item.surface = item.surface ?? task.attempts[index].surface
                 task.attempts[index] = item
-            } else if task.attempts[index].ledgerScope == nil {
-                task.attempts[index].ledgerScope = item.ledgerScope
+            } else {
+                if task.attempts[index].ledgerScope == nil { task.attempts[index].ledgerScope = item.ledgerScope }
+                if task.attempts[index].surface == nil { task.attempts[index].surface = item.surface }
             }
         } else { task.attempts.append(item) }
         try save(task)
@@ -687,6 +726,10 @@ public struct GovernanceActivityStore: Sendable {
                   ["local", "codex", "claude"].contains(a.provider),
                   a.model.wholeMatch(of: /^[A-Za-z0-9._-]{1,96}$/) != nil,
                   a.effort.wholeMatch(of: /^[A-Za-z0-9._-]{1,96}$/) != nil else { throw CompletionFeedbackError.invalid }
+            if let surface = a.surface,
+               ProviderSurface.resolveExecuted(rawSurface: surface, provider: a.provider)?.rawValue != surface {
+                throw CompletionFeedbackError.invalid
+            }
             if let o = a.observation {
                 try o.validate()
                 guard o.executionID + ":" + String(o.sequence) == a.id,

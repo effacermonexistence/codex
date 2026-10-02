@@ -7,14 +7,22 @@ public struct RuntimeActivity: Codable, Equatable, Sendable {
     public enum Phase: String, Codable, Sendable { case preparing, source, authorizing, routing, executing, verifying, syncing, recovering }
     public let phase: Phase
     public let provider: String?
+    /// Actual executed mode, recorded only after lane selection. Absence on
+    /// historical activity is unknown, never inferred from the model name.
+    public let surface: String?
     public let model: String?
     public let effort: String?
     public let timestamp: Date
     public let publicText: String?
     public let tool: String?
     public let nativeSessionID: String?
-    public init(_ phase: Phase, provider: String? = nil, model: String? = nil, effort: String? = nil, timestamp: Date = Date(), publicText: String? = nil, tool: String? = nil, nativeSessionID: String? = nil) {
+    public init(_ phase: Phase, provider: String? = nil, surface: String? = nil, model: String? = nil, effort: String? = nil, timestamp: Date = Date(), publicText: String? = nil, tool: String? = nil, nativeSessionID: String? = nil) {
         self.phase = phase; self.provider = provider; self.model = model; self.effort = effort; self.timestamp = timestamp
+        self.surface = surface.flatMap { raw in
+            guard let resolved = ProviderSurface.resolveExecuted(rawSurface: raw, provider: provider),
+                  resolved.rawValue == raw else { return nil }
+            return raw
+        }
         self.publicText = publicText; self.tool = tool
         self.nativeSessionID = nativeSessionID.flatMap { UUID(uuidString: $0)?.uuidString.lowercased() }
     }
@@ -41,15 +49,20 @@ public struct RuntimeActivity: Codable, Equatable, Sendable {
         default: return os1Tr("도구 작업 진행 중", "Tool work in progress")
         }
     }
-    public static func emit(_ phase: Phase, provider: String? = nil, model: String? = nil, effort: String? = nil, publicText: String? = nil, tool: String? = nil, nativeSessionID: String? = nil) {
+    public static func emit(_ phase: Phase, provider: String? = nil, surface: String? = nil, model: String? = nil, effort: String? = nil, publicText: String? = nil, tool: String? = nil, nativeSessionID: String? = nil) {
         guard let path = ProcessInfo.processInfo.environment["OS1_ACTIVITY_FILE"] else { return }
         let previous = (try? Data(contentsOf:URL(fileURLWithPath:path))).flatMap { try? JSONDecoder().decode(Self.self,from:$0) }
-        let retained = [.verifying, .syncing].contains(phase) ? previous?.publicText : nil
         let sameProvider = previous?.provider == provider
+        // GPT and Codex (or Claude and Claude Code) share a transport, but a
+        // lane change is still a route boundary. Never inherit the other
+        // lane's model, native session or surface into its new dispatch.
+        let sameRoute = sameProvider && (surface == nil || surface == previous?.surface)
+        let retained = sameRoute && [.verifying, .syncing].contains(phase) ? previous?.publicText : nil
         guard let data = try? JSONEncoder().encode(Self(phase, provider: provider,
-            model: model ?? (sameProvider ? previous?.model : nil), effort: effort ?? (sameProvider ? previous?.effort : nil),
+            surface: surface ?? (sameRoute ? previous?.surface : nil),
+            model: model ?? (sameRoute ? previous?.model : nil), effort: effort ?? (sameRoute ? previous?.effort : nil),
             publicText: publicText ?? retained, tool: tool,
-            nativeSessionID: nativeSessionID ?? (sameProvider ? previous?.nativeSessionID : nil))) else { return }
+            nativeSessionID: nativeSessionID ?? (sameRoute ? previous?.nativeSessionID : nil))) else { return }
         // Best-effort display telemetry must not fail or change execution.
         try? data.write(to: URL(fileURLWithPath: path), options: .atomic)
         if let journal = ProcessInfo.processInfo.environment["OS1_EVENT_JOURNAL"] {

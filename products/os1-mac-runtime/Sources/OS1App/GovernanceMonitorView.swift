@@ -180,7 +180,9 @@ struct GovernanceMonitorView: View {
     private func decimal(_ n: Double?) -> String { n.map { String(format: "%.2f", $0) } ?? "—" }
     private func delta(_ n: Double?) -> String { n.map { String(format: "%+.1f%%", $0 * 100) } ?? "—" }
     private func percentagePoints(_ n: Double?) -> String { n.map { String(format: "%+.1fpp", $0 * 100) } ?? "—" }
-    private func short(_ route: String) -> String { route.replacingOccurrences(of: " / ", with: " · ") }
+    private func short(_ route: String) -> String {
+        ProviderSurface.displayRouteKey(route).replacingOccurrences(of: " / ", with: " · ")
+    }
     private func compactTokenAxis(_ value: Double) -> String {
         let magnitude = abs(value)
         let scaled: Double
@@ -386,7 +388,7 @@ struct GovernanceMonitorView: View {
             Image(systemName: "waveform.path.ecg").font(.system(size: 24)).foregroundStyle(green)
             VStack(alignment: .leading, spacing: 4) {
                 Text("RCC Governance").font(.system(size: 24, weight: .semibold))
-                Text("ACTIVITY MONITOR  /  CODEX + CLAUDE CODE").font(.system(size: 10, weight: .medium, design: .monospaced)).tracking(1.1).foregroundStyle(muted)
+                Text("ACTIVITY MONITOR  /  OPENAI + ANTHROPIC").font(.system(size: 10, weight: .medium, design: .monospaced)).tracking(1.1).foregroundStyle(muted)
             }
             Spacer()
             if !preview { heartbeatTrace(width: 72, height: 18) }
@@ -439,7 +441,7 @@ struct GovernanceMonitorView: View {
                 Spacer()
                 if section != .accounts {
                     Picker("기간", selection: $window) { ForEach(["전체", "24시간", "7일"], id: \.self) { Text($0) } }.frame(width: 155)
-                    Picker("백엔드", selection: $provider) { Text("전체").tag("전체"); Text("Codex").tag("codex"); Text("Claude Code").tag("claude") }.frame(width: 190)
+                    Picker("제공자", selection: $provider) { Text("전체").tag("전체"); Text("OpenAI").tag("codex"); Text("Anthropic").tag("claude") }.frame(width: 190)
                 }
             }
             if section != .accounts, !rows.isEmpty {
@@ -779,7 +781,7 @@ struct GovernanceMonitorView: View {
         HStack(spacing: 12) {
             tableText("시간", width: 72)
             tableText("작업", width: 105)
-            tableText("백엔드", width: 82)
+            tableText("실행 경로", width: 82)
             tableText("모델", width: 168)
             tableText("추론", width: 70)
             tableText("상태", width: 96)
@@ -799,7 +801,8 @@ struct GovernanceMonitorView: View {
             HStack(spacing: 12) {
                 tableText(task.startedAt.formatted(date: .omitted, time: .shortened), width: 72)
                 tableText(String(task.id.prefix(8)), width: 105)
-                tableText(attempt?.provider == "claude" ? "Claude" : (attempt?.provider == "codex" ? "Codex" : "Local"), width: 82)
+                tableText(ProviderSurface.resolveExecuted(rawSurface: attempt?.surface, provider: attempt?.provider)?.displayName ?? "OS-1", width: 82)
+                    .help(attempt?.displayRoute ?? task.displayRoute)
                 tableText(attempt?.model ?? "—", width: 168)
                 tableText(attempt?.effort ?? "—", width: 70)
                 HStack(spacing: 5) {
@@ -843,7 +846,7 @@ struct GovernanceMonitorView: View {
             }
             ForEach(task.attempts, id: \.id) { attempt in
                 HStack(spacing: 12) {
-                    Text(short(attempt.route)).frame(maxWidth: .infinity, alignment: .leading)
+                    Text(short(attempt.displayRoute)).frame(maxWidth: .infinity, alignment: .leading)
                     Text(attempt.observation?.outcome.rawValue ?? "진행 중")
                     Text(attempt.observation.flatMap(GovernanceSnapshot.tokens).map { "\(num($0)) tok" } ?? "토큰 미측정")
                     Text(attempt.observation.map { String(format: "%.1fs", Double($0.durationMS) / 1000) } ?? "—")
@@ -903,7 +906,7 @@ struct GovernanceMonitorView: View {
                                               comparable: trend.secondsComparable,
                                               format: { String(format: "%.0fs", $0) }, lowerIsBetter: true)
                     GridRow {
-                        Text(trend.provider == "claude" ? "Claude" : "Codex")
+                        Text(trend.provider == "claude" ? "Anthropic" : "OpenAI")
                             .foregroundStyle(trend.provider == "claude" ? pink : green)
                         Text(completion.0).foregroundStyle(completion.1)
                         Text(tokens.0).foregroundStyle(tokens.1)
@@ -1123,10 +1126,10 @@ struct GovernanceMonitorView: View {
                     DisclosureGroup {
                         VStack(alignment: .leading, spacing: 5) {
                             Text("작업 ID: \(task.id)")
-                            Text("경로: \(short(task.route)) · 시도 \(task.attempts.count)회 · 총토큰 \(task.tokens.map(num) ?? "미측정")")
+                            Text("경로: \(short(task.displayRoute)) · 시도 \(task.attempts.count)회 · 총토큰 \(task.tokens.map(num) ?? "미측정")")
                             Text("시작 \(task.startedAt.formatted()) · 종료 \(task.endedAt?.formatted() ?? "대기")")
                             ForEach(task.attempts, id: \.id) { attempt in
-                                Text("\(short(attempt.route)) · \(attempt.observation?.outcome.rawValue ?? "진행 중") · 토큰 \(attempt.observation.flatMap(GovernanceSnapshot.tokens).map(num) ?? "미측정")")
+                                Text("\(short(attempt.displayRoute)) · \(attempt.observation?.outcome.rawValue ?? "진행 중") · 토큰 \(attempt.observation.flatMap(GovernanceSnapshot.tokens).map(num) ?? "미측정")")
                             }
                         }.font(.system(size: 10, design: .monospaced)).foregroundStyle(muted).textSelection(.enabled)
                     } label: {

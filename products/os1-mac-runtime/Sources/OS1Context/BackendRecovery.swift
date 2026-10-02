@@ -123,9 +123,12 @@ public struct BackendFailureNotice: Codable, Equatable, Sendable {
     /// OS-1's own preflight diagnosis (why no backend ran, what repair it
     /// attempted). Shown as a system line, never as backend output.
     public let diagnosis: String?
+    /// Actual lane at the failure boundary, when the executor recorded one.
+    /// Historical notices without it establish only the backend.
+    public let surface: String?
     public init(provider: String, sessionID: String?, blocker: BackendBlocker, dispatchStage: BackendDispatchStage,
                 source: SourceReference? = nil, permissionProfile: String? = nil, deliveryID: String? = nil,
-                publicProgress: String? = nil, diagnosis: String? = nil) {
+                publicProgress: String? = nil, diagnosis: String? = nil, surface: String? = nil) {
         self.provider = provider
         self.sessionID = sessionID.flatMap { UUID(uuidString: $0)?.uuidString.lowercased() }
         self.blocker = blocker; self.dispatchStage = dispatchStage
@@ -134,6 +137,11 @@ public struct BackendFailureNotice: Codable, Equatable, Sendable {
         self.deliveryID = deliveryID
         self.publicProgress = publicProgress.map { String($0.suffix(24_000)) }
         self.diagnosis = diagnosis.map { String($0.prefix(4_000)) }
+        self.surface = surface.flatMap { raw in
+            guard let resolved = ProviderSurface.resolveExecuted(rawSurface: raw, provider: provider),
+                  resolved.rawValue == raw else { return nil }
+            return raw
+        }
     }
     /// A lane OS-1 signed as read-only had no mutation authority, so its
     /// effects cannot be uncertain: there is nothing to read back. An unknown

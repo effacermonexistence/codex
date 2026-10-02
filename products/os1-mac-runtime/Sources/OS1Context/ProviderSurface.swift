@@ -137,31 +137,110 @@ public enum ProviderSurface: String, Codable, Sendable, CaseIterable {
         }
     }
 
+    /// The selected/executed surface and its vendor are the route identity.
+    /// Transport, model and quota are separate facts, not name suffixes.
+    public var displayName: String {
+        switch self {
+        case .auto: return os1Tr("자동", "Auto")
+        case .codex: return "Codex"
+        case .gptChat: return "GPT"
+        case .chatgpt: return "ChatGPT"
+        case .claude: return "Claude Code"
+        case .claudeChat: return "Claude"
+        }
+    }
+
+    public var providerName: String? {
+        switch backend {
+        case .openAI: return "OpenAI"
+        case .anthropic: return "Anthropic"
+        case nil: return nil
+        }
+    }
+
+    public var routeTitle: String {
+        providerName.map { "\(displayName) (\($0))" } ?? displayName
+    }
+
+    /// These are OS-1 execution modes, not four independent transports.
+    /// Keep the bounded lanes' actual executor visible without renaming GPT
+    /// to Codex or Claude to Claude Code in the primary route identity.
+    public var executionLine: String {
+        switch self {
+        case .auto:
+            return os1Tr("실행 방식: 아직 선택 전", "Execution: not selected yet")
+        case .codex:
+            return os1Tr("실행 방식: Codex 에이전트", "Execution: Codex agent")
+        case .gptChat:
+            return os1Tr("실행 방식: 도구 없는 GPT 채팅 · 실제 실행기: Codex · ChatGPT 서비스 아님",
+                         "Execution: tool-free GPT chat · Executor: Codex · not the ChatGPT service")
+        case .chatgpt:
+            return os1Tr("실행 방식: ChatGPT 앱으로 넘김 · OS-1은 실행하지 않음",
+                         "Execution: handoff to the ChatGPT app · OS-1 does not execute")
+        case .claude:
+            return os1Tr("실행 방식: Claude Code 에이전트", "Execution: Claude Code agent")
+        case .claudeChat:
+            return os1Tr("실행 방식: 도구 없는 Claude 채팅 · 실제 실행기: Claude Code · Claude 웹 채팅 아님",
+                         "Execution: tool-free Claude chat · Executor: Claude Code · not Claude web chat")
+        }
+    }
+
+    /// Resolve an actual execution record, never a requested route or a model
+    /// name. A failed/fallback request cannot relabel another vendor's result.
+    /// Legacy records establish only the recorded executor; they do not prove
+    /// a bounded chat lane, so use its ordinary executor identity.
+    public static func resolveExecuted(rawSurface: String?, provider: String?) -> ProviderSurface? {
+        let provider = provider?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let fallback: ProviderSurface
+        switch provider {
+        case "codex": fallback = .codex
+        case "claude": fallback = .claude
+        default: return nil
+        }
+        guard let rawSurface,
+              let surface = ProviderSurface(rawValue: rawSurface), surface != .auto,
+              surface.isExecutor, surface.gatewayPreference == provider else { return fallback }
+        return surface
+    }
+
+    /// Content-free governance keys retain stable wire values while visible
+    /// rows use the same surface names as route receipts.
+    public static func displayRouteKey(_ route: String) -> String {
+        var parts = route.components(separatedBy: " / ")
+        guard let first = parts.first, let surface = ProviderSurface(rawValue: first),
+              surface != .auto, surface.isExecutor else { return route }
+        parts[0] = surface.routeTitle
+        return parts.joined(separator: " / ")
+    }
+
+    /// Comparisons may separate modes but must keep real-provider token
+    /// accounting boundaries. Unknown or mixed keys have no provider.
+    public static func providerForRouteKey(_ route: String) -> String? {
+        guard let first = route.components(separatedBy: " / ").first,
+              let surface = ProviderSurface(rawValue: first), surface != .auto,
+              surface.isExecutor else { return nil }
+        return surface.gatewayPreference
+    }
+
     /// Short label for the rail tile when a non-default surface is selected,
     /// so the choice is visible on the tile rather than hidden in a menu.
     public var railBadge: String? {
         switch self {
         case .auto, .codex, .claude: return nil
-        case .chatgpt: return "ChatGPT"
-        case .gptChat: return os1Tr("GPT 채팅", "GPT chat")
-        case .claudeChat: return os1Tr("채팅", "chat")
+        case .chatgpt, .gptChat, .claudeChat: return displayName
         }
     }
 
-    /// Menu label: what the surface does, not merely its name.
+    /// Menu identity uses the same vocabulary as route and answer receipts.
+    /// Execution details and metering appear on their own lines.
     public var choiceTitle: String {
         switch self {
-        case .auto: return os1Tr("자동", "Auto")
-        case .codex: return os1Tr("Codex — OS-1이 실행", "Codex — OS-1 executes")
-        case .gptChat: return os1Tr("GPT 채팅 — 읽기 전용, 저비용", "GPT chat — read-only, far cheaper")
-        case .chatgpt: return os1Tr("ChatGPT — 앱으로 넘김", "ChatGPT — hand to the app")
-        case .claude: return os1Tr("Claude Code — 전체 레인", "Claude Code — full lane")
-        case .claudeChat: return os1Tr("Claude 채팅 — 읽기 전용, 저비용",
-                                       "Claude chat — read-only, far cheaper")
+        case .chatgpt: return os1Tr("\(routeTitle) — 앱으로 넘김", "\(routeTitle) — app handoff")
+        default: return routeTitle
         }
     }
 
-    /// One line naming whose usage the surface spends, for the route notice.
+    /// Separate metering detail; never use this line as a route identity.
     /// Never claims a separate pool where the pool is shared.
     public var usageLine: String {
         switch self {
@@ -169,14 +248,14 @@ public enum ProviderSurface: String, Codable, Sendable, CaseIterable {
                                 "RCC chooses among the backends that can actually run.")
         case .codex: return os1Tr("Codex 사용량을 씁니다(ChatGPT 채팅 한도와 별개).",
                                   "Spends Codex usage, separate from the ChatGPT chat allowance.")
-        case .gptChat: return os1Tr("Codex 사용량을 쓰지만 도구·지침·워크스페이스를 빼서 훨씬 적게 씁니다(ChatGPT 채팅 한도와 별개).",
-                                    "Spends Codex usage with tools, instructions and the workspace left out, so it costs far less (separate from the ChatGPT chat allowance).")
+        case .gptChat: return os1Tr("사용량: Codex와 같은 OpenAI Codex 사용량(ChatGPT 채팅 한도와 별개).",
+                                    "Usage: the same OpenAI Codex usage as Codex, separate from the ChatGPT chat allowance.")
         case .chatgpt: return os1Tr("OS-1이 실행하지 않고 로그인된 ChatGPT 앱으로 넘깁니다. 답은 앱에서 직접 받습니다.",
                                     "OS-1 does not run this; it hands the request to the signed-in ChatGPT app, where the answer arrives.")
         case .claude: return os1Tr("Claude 구독 한도를 씁니다(Claude 채팅과 같은 한도).",
                                    "Spends the Anthropic subscription limit, the same limit Claude chat uses.")
-        case .claudeChat: return os1Tr("같은 Claude 구독 한도를 쓰지만 지침·도구·워크스페이스를 빼서 훨씬 적게 씁니다.",
-                                       "Spends the same Anthropic limit with instructions, tools and the workspace left out, so it costs far less.")
+        case .claudeChat: return os1Tr("사용량: Claude Code와 같은 Anthropic 구독 한도.",
+                                       "Usage: the same Anthropic subscription limit as Claude Code.")
         }
     }
 }

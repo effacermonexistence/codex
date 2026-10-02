@@ -7,6 +7,7 @@ import OS1Context
 /// must run on the surface it names; a sentence about routing, work on this
 /// machine, or a refused name must never split.
 func runRouteFanoutFixtures() throws {
+    try runProviderSurfacePresentationFixtures()
     try RouteFanout.selfTest()
     var count = 0
     func check(_ value: Bool, _ message: String) {

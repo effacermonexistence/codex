@@ -800,6 +800,8 @@ struct RunStepSummary: Codable {
     let stderr: String
     let durationMS: Int64
     let nativeRecord: NativeRecordEvidence?
+    /// Actual executed lane, distinct from a requested fan-out target. Legacy records omit it.
+    var surface: String? = nil
     var workflowStage: String? = nil
     var verifiedPreviewDelivery: VerifiedPreviewDelivery? = nil
     var ownerPolicySourceSHA256: String? = OwnerPolicyContext.snapshot?.sourceSHA256
@@ -816,6 +818,7 @@ struct RunStepSummary: Codable {
         case durationMS = "duration_ms"
         case nativeRecord = "native_record"
         case verifiedPreviewDelivery = "verified_preview_delivery"
+        case surface
         case workflowStage = "workflow_stage"
         case ownerPolicySourceSHA256 = "owner_policy_source_sha256"
         case ownerPolicyProjectionSHA256 = "owner_policy_projection_sha256"
@@ -841,6 +844,7 @@ struct ProviderExecution {
     let artifact: Artifact
     let sessionID: String
     let nativeRecord: NativeRecordEvidence
+    var surface: String? = nil
     var driftApplication: DriftApplication? = nil
 
     /// The same execution with OS-1's own completion note appended to the
@@ -853,7 +857,7 @@ struct ProviderExecution {
             output: a.output.trimmingCharacters(in: .whitespacesAndNewlines) + "\n\n" + note, stderr: a.stderr,
             durationMS: a.durationMS, workspaceBeforeHash: a.workspaceBeforeHash, workspaceAfterHash: a.workspaceAfterHash,
             nativeRecord: a.nativeRecord)
-        return ProviderExecution(artifact: artifact, sessionID: sessionID, nativeRecord: nativeRecord, driftApplication: driftApplication)
+        return ProviderExecution(artifact: artifact, sessionID: sessionID, nativeRecord: nativeRecord, surface: surface, driftApplication: driftApplication)
     }
 }
 
@@ -3063,6 +3067,18 @@ func codexChatLane(provider: String, permission: String, hasSource: Bool, object
     provider == "codex" && claudeChatLane(provider: "claude", permission: permission, hasSource: hasSource, objective: objective)
 }
 
+/// Frozen from the same predicates as the executor, never from a model name,
+/// a requested fan-out target or the currently selected UI tile.
+func executedProviderSurface(provider: String, permission: String, hasSource: Bool, objective: String) -> ProviderSurface? {
+    switch provider {
+    case "codex":
+        return codexChatLane(provider: provider, permission: permission, hasSource: hasSource, objective: objective) ? .gptChat : .codex
+    case "claude":
+        return claudeChatLane(provider: provider, permission: permission, hasSource: hasSource, objective: objective) ? .claudeChat : .claude
+    default: return nil
+    }
+}
+
 /// Why an explicitly selected Claude chat lane cannot take this request.
 /// Evaluated before dispatch from the same predicates the lane itself uses.
 func claudeChatLaneRefusal(objective: String, hasSource: Bool) -> String? {
@@ -3131,6 +3147,12 @@ func providerSurfaceRoutingSelfTest() throws {
     checks.append(("chatgpt has no gateway route", ProviderSurface.chatgpt.gatewayPreference == nil))
     checks.append(("claude-chat routes as claude", ProviderSurface.claudeChat.gatewayPreference == "claude"))
     checks.append(("gpt-chat routes as codex", ProviderSurface.gptChat.gatewayPreference == "codex"))
+    checks.append(("executed surface follows actual bounded lane, not requested backend",
+        executedProviderSurface(provider: "codex", permission: "read_only", hasSource: false, objective: translate) == .gptChat
+        && executedProviderSurface(provider: "claude", permission: "read_only", hasSource: false, objective: translate) == .claudeChat
+        && executedProviderSurface(provider: "codex", permission: "workspace_write", hasSource: false, objective: translate) == .codex
+        && executedProviderSurface(provider: "claude", permission: "read_only", hasSource: true, objective: translate) == .claude
+        && executedProviderSurface(provider: "local", permission: "read_only", hasSource: false, objective: translate) == nil))
     checks.append(("a Codex text operation runs as GPT chat",
         codexChatLane(provider: "codex", permission: "read_only", hasSource: false, objective: translate)
         && !claudeChatLane(provider: "codex", permission: "read_only", hasSource: false, objective: translate)))
@@ -5985,7 +6007,7 @@ func claudeTranscriptContains(_ url: URL, assistantText: String) -> Bool {
 
 private func interruptedExecution(ticket: Ticket, model: String?, effort: String, contract: ExecutorContract,
                                   sessionID: String, publicProgress: String, beforeHash: String,
-                                  workspace: String, started: Date, cause: Error) -> RejectedProviderExecution {
+                                  workspace: String, started: Date, cause: Error, surface: String? = nil) -> RejectedProviderExecution {
     let record = NativeRecordEvidence(turnID: nil, recordPath: nil,
         persistence: "interrupted_unverified", desktopVisibility: "external_app_not_opened")
     let artifact = Artifact(provider: ticket.provider, action: ticket.action, permissionProfile: ticket.permissionProfile,
@@ -5993,7 +6015,7 @@ private func interruptedExecution(ticket: Ticket, model: String?, effort: String
         executorContractSHA256: contract.sha256, exitCode: 69, output: String(publicProgress.suffix(24_000)), stderr: "",
         durationMS: Int64(Date().timeIntervalSince(started) * 1_000), workspaceBeforeHash: beforeHash,
         workspaceAfterHash: observedStateHash(workspace), nativeRecord: record)
-    return RejectedProviderExecution(execution: ProviderExecution(artifact: artifact, sessionID: sessionID, nativeRecord: record), cause: cause)
+    return RejectedProviderExecution(execution: ProviderExecution(artifact: artifact, sessionID: sessionID, nativeRecord: record, surface: surface), cause: cause)
 }
 
 private func driftScope(prompt: String, workspace: String, evidence: R2EvidenceBundle?, contract: ExecutorContract) -> DriftScope {
@@ -6042,6 +6064,8 @@ private func execute(
     AttemptLatencyTrace.mark("execute_entered")
     let started = Date()
     let lockedObjective = objectivePrompt ?? prompt
+    let executedSurface = executedProviderSurface(provider: ticket.provider, permission: ticket.permissionProfile,
+        hasSource: preloadedR2Evidence != nil, objective: lockedObjective)
     let executionWorkspace = try providerExecutionWorkspace(provider: ticket.provider,
         permission: ticket.permissionProfile, hasSource: preloadedR2Evidence != nil, workspace: workspace,
         objective: lockedObjective)
@@ -6088,8 +6112,9 @@ private func execute(
         // thread (resuming a full Codex thread would reload what the lane drops).
         let gptChat = codexChatLane(provider: ticket.provider, permission: ticket.permissionProfile,
                                     hasSource: hasPreloadedR2Evidence, objective: lockedObjective)
+        RuntimeActivity.emit(.preparing, provider: "codex", surface: executedSurface?.rawValue, model: model, effort: effort)
         if gptChat {
-            RuntimeActivity.emit(.preparing, provider: "codex", model: model, effort: effort,
+            RuntimeActivity.emit(.preparing, provider: "codex", surface: executedSurface?.rawValue, model: model, effort: effort,
                 publicText: os1Tr("GPT 채팅 모드로 실행합니다 · 코딩 도구·지침 없이 모델만 사용해 토큰을 아낍니다.",
                                   "Running GPT in chat mode · the model alone, without coding tools or instructions, to save tokens."))
         }
@@ -6150,7 +6175,7 @@ private func execute(
             // No alternate turn is dispatched after an ambiguous failure.
             throw interruptedExecution(ticket: ticket, model: model, effort: effort, contract: executorContract,
                 sessionID: actualSessionID, publicProgress: appServer.interruptedPublicProgress, beforeHash: workspaceBeforeHash,
-                workspace: executionWorkspace, started: started, cause: error)
+                workspace: executionWorkspace, started: started, cause: error, surface: executedSurface?.rawValue)
         }
         // Account for this exact native turn before any quality guard rejects
         // it. Never hide a second paid repair inside one signed route ticket.
@@ -6245,8 +6270,9 @@ private func execute(
         // objective that needs nothing from this machine.
         let chatLane = claudeChatLane(provider: ticket.provider, permission: ticket.permissionProfile,
                                       hasSource: hasPreloadedR2Evidence, objective: lockedObjective)
+        RuntimeActivity.emit(.preparing, provider: "claude", surface: executedSurface?.rawValue, model: model, effort: effort)
         if chatLane {
-            RuntimeActivity.emit(.preparing, provider: "claude", model: model, effort: effort,
+            RuntimeActivity.emit(.preparing, provider: "claude", surface: executedSurface?.rawValue, model: model, effort: effort,
                 publicText: os1Tr("Claude 대화 모드로 실행합니다 · 코딩 도구·지침 없이 모델만 사용해 토큰을 아낍니다.",
                                   "Running Claude in chat mode · the model alone, without coding tools or instructions, to save tokens."))
         }
@@ -6336,7 +6362,7 @@ private func execute(
             if let result = stream.result { onUsage?(CompletionUsageParser.parseClaudeResult(result)) }
             throw interruptedExecution(ticket: ticket, model: model, effort: effort, contract: executorContract,
                 sessionID: activeSessionID, publicProgress: stream.text, beforeHash: workspaceBeforeHash,
-                workspace: executionWorkspace, started: started, cause: error)
+                workspace: executionWorkspace, started: started, cause: error, surface: executedSurface?.rawValue)
         }
         stream.finishClaude()
         AttemptLatencyTrace.mark("provider_exited")
@@ -6350,7 +6376,7 @@ private func execute(
             let progress = object?["session_id"] as? String == activeSessionID ? (object?["result"] as? String ?? stream.text) : stream.text
             var rejection = interruptedExecution(ticket: ticket, model: model, effort: effort, contract: executorContract,
                 sessionID: activeSessionID, publicProgress: progress, beforeHash: workspaceBeforeHash,
-                workspace: executionWorkspace, started: started, cause: error)
+                workspace: executionWorkspace, started: started, cause: error, surface: executedSurface?.rawValue)
             rejection.quotaRejectedBeforeExecution = backendBlocker(error) == .quotaExhausted &&
                 stream.claudeQuotaRejectedBeforeExecution(sessionID: activeSessionID)
             if backendBlocker(error) == .quotaExhausted, var scoped = object {
@@ -6439,6 +6465,7 @@ private func execute(
         ),
         sessionID: sessionID,
         nativeRecord: nativeRecord,
+        surface: executedSurface?.rawValue,
         driftApplication: driftApplication
     )
     AttemptLatencyTrace.mark("candidate_built")
@@ -6748,7 +6775,9 @@ func runLocalTask(
         )
         try validateLocalRoute(decision, codexModels: codexCatalog.models)
         let ticket = localTicket(decision, sequence: attempt)
-        RuntimeActivity.emit(.preparing, provider: decision.provider, model: decision.model, effort: decision.effort)
+        RuntimeActivity.emit(.preparing, provider: decision.provider,
+            surface: executedProviderSurface(provider: decision.provider, permission: decision.permissionProfile,
+                hasSource: r2Evidence != nil, objective: prompt)?.rawValue, model: decision.model, effort: decision.effort)
         let observedWorkspace = try providerExecutionWorkspace(provider: ticket.provider,
             permission: ticket.permissionProfile, hasSource: r2Evidence != nil, workspace: workspace,
             objective: prompt)
@@ -6819,7 +6848,7 @@ func runLocalTask(
         }
         let artifact = execution.artifact
         let afterHash = workspaceHash(observedWorkspace)
-        RuntimeActivity.emit(.verifying, provider: decision.provider, model: decision.model, effort: decision.effort)
+        RuntimeActivity.emit(.verifying, provider: decision.provider, surface: execution.surface, model: decision.model, effort: decision.effort)
         let verification: LocalVerification = try privateCoreCall(
             "verify",
             request: LocalVerifyRequest(
@@ -6870,7 +6899,8 @@ func runLocalTask(
             output: artifact.output,
             stderr: artifact.stderr,
             durationMS: artifact.durationMS,
-            nativeRecord: adoptedRecord
+            nativeRecord: adoptedRecord,
+            surface: execution.surface
         ))
         if verification.outcome == "pass" {
             if decision.provider != "local" {
@@ -7052,7 +7082,8 @@ func completionFailureOutcome(_ reason: String?) -> CompletionOutcome {
 private func recordCompletionAttempt(store: CompletionFeedbackStore, scope: CompletionFeedbackScope,
                                      ticket: Ticket, model: String, effort: String,
                                      outcome: CompletionOutcome, usage: CompletionMeasuredUsage?,
-                                     startedAt: Date, source: SourceReference?, monitorTaskID: String, monitorScope: CompletionFeedbackScope) {
+                                     startedAt: Date, source: SourceReference?, monitorTaskID: String, monitorScope: CompletionFeedbackScope,
+                                     surface: String? = nil) {
     AttemptLatencyTrace.mark("recorded")
     AttemptLatencyTrace.finish(executionID: ticket.executionID, sequence: ticket.sequence, provider: ticket.provider)
     let observation = CompletionFeedbackObservation(
@@ -7063,7 +7094,7 @@ private func recordCompletionAttempt(store: CompletionFeedbackStore, scope: Comp
             durationMS: min(3_600_000, max(0, Int(Date().timeIntervalSince(startedAt) * 1_000))))
     try? GovernanceActivityStore().attempt(id: monitorTaskID, executionID: ticket.executionID,
         sequence: ticket.sequence, scope: monitorScope, provider: ticket.provider, model: model, effort: effort,
-        startedAt: startedAt, observation: observation, ledgerScope: scope)
+        startedAt: startedAt, observation: observation, ledgerScope: scope, surface: surface)
     do {
         try store.record(scope: scope, observation: observation)
     } catch {
@@ -7093,6 +7124,12 @@ func runRouteFanout(
         try await runRouteFanoutWithOwnerPolicy(plan, workspace: workspace, codexSessionID: codexSessionID,
             claudeSessionID: claudeSessionID, progress: progress, desktopReveal: desktopReveal)
     }
+}
+
+/// A bounded chat session must never replace the conversation's agent
+/// session, including an automatic chat lane on a requested full route.
+func routeFanoutContinuesSession(requested: ProviderSurface, actual: ProviderSurface?, provider: String) -> Bool {
+    !requested.forcesChatLane && requested.gatewayPreference == provider && actual?.forcesChatLane == false
 }
 
 struct RouteFanoutOutcome {
@@ -7162,11 +7199,16 @@ private func runRouteFanoutWithOwnerPolicy(
                 // OS-1 never ends a request another backend can run, so a dead
                 // backend's part comes back from the other one: shown, never
                 // counted as the route the owner named.
-                if adopted.provider != gateway {
-                    outcome.failure = os1Tr("\(gateway == "codex" ? "Codex" : "Claude")를 쓸 수 없어 \(adopted.provider == "codex" ? "Codex" : "Claude")가 대신 답했습니다",
-                                            "\(gateway == "codex" ? "Codex" : "Claude") was unavailable; \(adopted.provider == "codex" ? "Codex" : "Claude") answered instead")
+                let actualSurface = ProviderSurface.resolveExecuted(rawSurface: adopted.surface, provider: adopted.provider)
+                if actualSurface != target.surface {
+                    let actualLabel = actualSurface?.routeTitle ?? adopted.provider
+                    outcome.failure = adopted.provider != gateway
+                        ? os1Tr("\(target.surface.routeTitle)를 쓸 수 없어 \(actualLabel)가 대신 답했습니다",
+                                "\(target.surface.routeTitle) was unavailable; \(actualLabel) answered instead")
+                        : os1Tr("요청: \(target.surface.routeTitle) · 실제 실행: \(actualLabel)",
+                                "Requested: \(target.surface.routeTitle) · actually ran: \(actualLabel)")
                 }
-                if fullLane, adopted.provider == gateway {
+                if routeFanoutContinuesSession(requested: target.surface, actual: actualSurface, provider: adopted.provider) {
                     if gateway == "codex" { codexID = adopted.sessionID } else { claudeID = adopted.sessionID }
                 }
             } else {
@@ -7211,6 +7253,7 @@ private func runRouteFanoutWithOwnerPolicy(
         ]
         if let adopted = outcome.adopted {
             route["provider"] = adopted.provider
+            route["executed_surface"] = adopted.surface
             route["session_id"] = adopted.sessionID
             route["model"] = adopted.model ?? "provider-default"
             route["result_sha256"] = sha256Hex(Data(adopted.output.utf8))
@@ -7254,21 +7297,15 @@ private func runRouteFanoutWithOwnerPolicy(
     return RunSummary(status: "complete", steps: steps, monitorTaskID: monitorID)
 }
 
-/// The route as the owner named it, plus whose usage it spends.
-func routeFanoutLabel(_ surface: ProviderSurface) -> String {
-    switch surface {
-    case .gptChat: return os1Tr("GPT 채팅 (OpenAI GPT · Codex 사용량)", "GPT chat (OpenAI GPT · Codex usage)")
-    case .codex: return os1Tr("Codex (OpenAI · Codex 사용량)", "Codex (OpenAI · Codex usage)")
-    case .claudeChat: return os1Tr("Claude 채팅 (Anthropic · Claude 한도)", "Claude chat (Anthropic · Claude limit)")
-    case .claude: return os1Tr("Claude Code (Anthropic · Claude 한도)", "Claude Code (Anthropic · Claude limit)")
-    case .chatgpt: return os1Tr("ChatGPT 앱 (넘김)", "ChatGPT app (handoff)")
-    case .auto: return os1Tr("자동", "Auto")
-    }
-}
+/// Destination identity only; usage and transport belong in separate details.
+func routeFanoutLabel(_ surface: ProviderSurface) -> String { surface.routeTitle }
 
 func routeFanoutSummary(plan: RouteFanout, outcomes: [RouteFanoutOutcome]) -> String {
     // Answered on the route the owner named; a substitute answer is shown but not counted.
-    let answered = outcomes.filter { $0.adopted != nil && $0.failure == nil }.count
+    let answered = outcomes.filter {
+        guard let adopted = $0.adopted, $0.failure == nil else { return false }
+        return ProviderSurface.resolveExecuted(rawSurface: adopted.surface, provider: adopted.provider) == $0.target.surface
+    }.count
     let executors = plan.targets.filter { $0.surface != .chatgpt }.count
     var lines = [os1Tr("라우팅 결과 · 실행 경로 \(answered)/\(executors) 답변",
                        "Routing result · \(answered)/\(executors) executed routes answered")]
@@ -7279,7 +7316,11 @@ func routeFanoutSummary(plan: RouteFanout, outcomes: [RouteFanoutOutcome]) -> St
                 .split(separator: "\n", omittingEmptySubsequences: true).first.map(String.init) ?? ""
             let model = adopted.model.map { " · \($0)" } ?? ""
             let substitute = outcome.failure.map { " (\($0))" } ?? ""
-            lines.append("\(head) → \(String(answer.prefix(200)))\(model)\(substitute)")
+            let actual = ProviderSurface.resolveExecuted(rawSurface: adopted.surface, provider: adopted.provider)
+            let actualLine = actual == outcome.target.surface ? "" : os1Tr(
+                " [실제 실행: \(actual?.routeTitle ?? adopted.provider)]",
+                " [actually ran: \(actual?.routeTitle ?? adopted.provider)]")
+            lines.append("\(head)\(actualLine) → \(String(answer.prefix(200)))\(model)\(substitute)")
         } else if outcome.handoffReceipt != nil {
             lines.append(head + os1Tr(" → ChatGPT 앱으로 넘김(클립보드). OS-1은 ChatGPT의 답을 읽을 수 없습니다: OpenAI가 자동 접근을 막고 약관으로 금지합니다. 답은 ChatGPT 앱에서 확인하세요.",
                                       " → handed to the ChatGPT app (clipboard). OS-1 cannot read ChatGPT's answer: OpenAI blocks and prohibits automated access. Read it in the ChatGPT app."))
@@ -7297,13 +7338,13 @@ func routeFanoutSummarySelfTest() throws {
     guard let plan = RouteFanout.plan("1+1 GPT한테. 2+2 Codex한테. 3+3 ChatGPT한테. 4+4 Claudecode한테. 답변 받아와.") else {
         throw OS1Error.message("Route fan-out summary: plan missing")
     }
-    func step(_ provider: String, _ output: String) -> RunStepSummary {
+    func step(_ provider: String, _ output: String, surface: ProviderSurface? = nil) -> RunStepSummary {
         RunStepSummary(sequence: 1, provider: provider, action: "agent_run", model: "m", effort: "max",
             revasDisposition: "adopted", sessionID: UUID().uuidString.lowercased(), permissionProfile: "read_only",
-            exitCode: 0, output: output, stderr: "", durationMS: 1, nativeRecord: nil)
+            exitCode: 0, output: output, stderr: "", durationMS: 1, nativeRecord: nil, surface: surface?.rawValue)
     }
     let outcomes = [
-        RouteFanoutOutcome(index: 0, target: plan.targets[0], adopted: step("codex", "2\n\nmore")),
+        RouteFanoutOutcome(index: 0, target: plan.targets[0], adopted: step("codex", "2\n\nmore", surface: .gptChat)),
         RouteFanoutOutcome(index: 1, target: plan.targets[1], adopted: step("codex", "4")),
         RouteFanoutOutcome(index: 2, target: plan.targets[2], handoffReceipt: "/tmp/receipt.json"),
         RouteFanoutOutcome(index: 3, target: plan.targets[3], failure: "quota"),
@@ -7317,7 +7358,50 @@ func routeFanoutSummarySelfTest() throws {
     ClaudeChatLane.setExplicitSelection(true)
     let selected = ClaudeChatLane.ownerSelected
     ClaudeChatLane.setExplicitSelection(previous)
+    guard let fourPlan = RouteFanout.plan("1+1 GPT한테. 2+2 Codex한테. 3+3 Claude한테. 4+4 Claudecode한테. 답변 받아와.") else {
+        throw OS1Error.message("Four route labels: plan missing")
+    }
+    let fourOutcomes = fourPlan.targets.enumerated().map { index, target in
+        RouteFanoutOutcome(index: index, target: target,
+            adopted: step(target.surface.gatewayPreference!, String((index + 1) * 2), surface: target.surface))
+    }
+    let fourText = routeFanoutSummary(plan: fourPlan, outcomes: fourOutcomes)
+    var changedLane = fourOutcomes
+    changedLane[1].adopted = step("codex", "4", surface: .gptChat)
+    let changedText = routeFanoutSummary(plan: fourPlan, outcomes: changedLane)
+    let encoded = try JSONEncoder().encode(fourOutcomes[0].adopted!)
+    let roundTrip = try JSONDecoder().decode(RunStepSummary.self, from: encoded)
+    var legacyObject = try JSONSerialization.jsonObject(with: encoded) as! [String: Any]
+    legacyObject.removeValue(forKey: "surface")
+    let legacy = try JSONDecoder().decode(RunStepSummary.self, from: JSONSerialization.data(withJSONObject: legacyObject))
+    let metadataRoot = FileManager.default.temporaryDirectory.appendingPathComponent("os1-route-custody-\(UUID())")
+    try FileManager.default.createDirectory(at: metadataRoot, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: metadataRoot) }
+    let ticket = Ticket(executionID: UUID().uuidString.lowercased(), sequence: 1, provider: "codex",
+        action: "agent_run", permissionProfile: "read_only", expiresAt: "", nonce: "", signature: "")
+    let interrupted = interruptedExecution(ticket: ticket, model: "m", effort: "max",
+        contract: ExecutorContract(version: "fixture", sha256: "fixture", directives: []),
+        sessionID: UUID().uuidString.lowercased(), publicProgress: "partial answer", beforeHash: "fixture",
+        workspace: metadataRoot.path, started: Date(), cause: OS1Error.message("fixture interruption"), surface: "gpt-chat")
     let checks: [(String, Bool)] = [
+        ("interrupted and appended candidates retain their actual lane", interrupted.execution.surface == "gpt-chat"
+            && interrupted.execution.appendingOutput("saved").surface == "gpt-chat"),
+        ("only actual full-lane sessions continue the bound agent conversation",
+            routeFanoutContinuesSession(requested: .codex, actual: .codex, provider: "codex")
+            && !routeFanoutContinuesSession(requested: .codex, actual: .gptChat, provider: "codex")
+            && !routeFanoutContinuesSession(requested: .claude, actual: .claudeChat, provider: "claude")
+            && !routeFanoutContinuesSession(requested: .gptChat, actual: .gptChat, provider: "codex")
+            && !routeFanoutContinuesSession(requested: .codex, actual: .claude, provider: "claude")
+            && !routeFanoutContinuesSession(requested: .codex, actual: nil, provider: "codex")),
+        ("four owner-facing identities have no quota suffix", fourText.contains("4/4")
+            && fourPlan.targets.allSatisfy { fourText.contains($0.surface.routeTitle) }
+            && !fourText.contains("usage") && !fourText.contains("limit")
+            && !fourText.contains("사용량") && !fourText.contains("한도")),
+        ("same-backend lane change is visible and not counted", changedText.contains("3/4")
+            && changedText.contains(os1Tr("실제 실행", "actually ran")) && changedText.contains(ProviderSurface.gptChat.routeTitle)),
+        ("surface survives delivery custody round trip", roundTrip.surface == ProviderSurface.gptChat.rawValue),
+        ("legacy delivery summaries remain readable without inferring chat", legacy.surface == nil
+            && ProviderSurface.resolveExecuted(rawSurface: legacy.surface, provider: legacy.provider) == .codex),
         ("counts executed routes only", lines.first?.contains("2/3") == true),
         ("first answer line only", lines.count > 1 && lines[1].hasSuffix("→ 2 · m") && lines[1].contains("GPT")),
         ("codex answer", lines.count > 2 && lines[2].contains("Codex") && lines[2].contains("→ 4")),
@@ -8343,9 +8427,11 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
         }
         let attemptTimeout = min(config.executionTimeoutSeconds, max(1, Int(deadline.timeIntervalSinceNow) - 1))
         AttemptLatencyTrace.mark("lease")
-        RuntimeActivity.emit(.preparing, provider: ticket.provider, model: model, effort: effort)
+        let attemptSurface = executedProviderSurface(provider: ticket.provider, permission: ticket.permissionProfile,
+            hasSource: r2Evidence != nil, objective: prompt)
+        RuntimeActivity.emit(.preparing, provider: ticket.provider, surface: attemptSurface?.rawValue, model: model, effort: effort)
         if progress {
-            print("OS-1 step \(step): \(ticket.provider) / \(ticket.action) / \(effort) / \(ticket.permissionProfile)")
+            print("OS-1 step \(step): \(attemptSurface?.routeTitle ?? ticket.provider) / \(ticket.action) / \(effort) / \(ticket.permissionProfile)")
         }
         let observedWorkspace = try providerExecutionWorkspace(provider: ticket.provider,
             permission: ticket.permissionProfile, hasSource: r2Evidence != nil, workspace: canonicalWorkspace,
@@ -8362,7 +8448,7 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
             assembledInputSHA256: attemptInputSHA256)
         try? GovernanceActivityStore().attempt(id: monitorTaskID, executionID: ticket.executionID,
             sequence: ticket.sequence, scope: monitorScope, provider: ticket.provider, model: model,
-            effort: effort, startedAt: attemptStartedAt, ledgerScope: feedbackScope)
+            effort: effort, startedAt: attemptStartedAt, ledgerScope: feedbackScope, surface: attemptSurface?.rawValue)
         var attemptUsage: CompletionMeasuredUsage?
         var attemptFailure: String?
         var attemptRecorded = false
@@ -8374,7 +8460,7 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
             if !attemptRecorded {
                 recordCompletionAttempt(store: feedbackStore, scope: feedbackScope, ticket: ticket,
                     model: model, effort: effort, outcome: .verificationUnavailable,
-                    usage: attemptUsage, startedAt: attemptStartedAt, source: sourceContext, monitorTaskID: monitorTaskID, monitorScope: monitorScope)
+                    usage: attemptUsage, startedAt: attemptStartedAt, source: sourceContext, monitorTaskID: monitorTaskID, monitorScope: monitorScope, surface: attemptSurface?.rawValue)
             }
         }
         var execution: ProviderExecution
@@ -8434,7 +8520,7 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
                         // runtime still cannot turn an uncertain write into Retry.
                         lastFailureNotice = BackendFailureNotice(provider: ticket.provider, sessionID: sessionID,
                             blocker: ticket.permissionProfile == "workspace_write" ? .effectsUncertain : .unclassified,
-                            dispatchStage: .dispatched, source: sourceContext, permissionProfile: ticket.permissionProfile)
+                            dispatchStage: .dispatched, source: sourceContext, permissionProfile: ticket.permissionProfile, surface: attemptSurface?.rawValue)
                         lastFailureNotice?.emit()
                     },
                     onInstructions: { instructions in
@@ -8471,11 +8557,11 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
                         blocker: BackendRecovery.classifiedBlocker(.quotaExhausted, permission: ticket.permissionProfile,
                             stage: dispatchStage, workspaceChanged: observedStateHash(observedWorkspace) != beforeHash),
                         dispatchStage: dispatchStage, source: sourceContext, permissionProfile: ticket.permissionProfile,
-                        publicProgress: (error as? RejectedProviderExecution)?.execution.artifact.output)
+                        publicProgress: (error as? RejectedProviderExecution)?.execution.artifact.output, surface: attemptSurface?.rawValue)
                     lastFailureNotice?.emit()
                     recordCompletionAttempt(store: feedbackStore, scope: feedbackScope, ticket: ticket,
                         model: model, effort: effort, outcome: .quotaExhausted, usage: attemptUsage,
-                        startedAt: attemptStartedAt, source: sourceContext, monitorTaskID: monitorTaskID, monitorScope: monitorScope)
+                        startedAt: attemptStartedAt, source: sourceContext, monitorTaskID: monitorTaskID, monitorScope: monitorScope, surface: attemptSurface?.rawValue)
                     attemptRecorded = true
                     failedCandidates.insert(candidateKey)
                     let quotaLimit = BackendRecovery.quotaAttemptLimit(requested: providerPreference,
@@ -8544,11 +8630,11 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
                         codexCatalog = remaining
                         lastFailureNotice = BackendFailureNotice(provider: ticket.provider, sessionID: interruptedSessionID,
                             blocker: .contextOverflow, dispatchStage: dispatchStage, source: sourceContext,
-                            permissionProfile: ticket.permissionProfile)
+                            permissionProfile: ticket.permissionProfile, surface: attemptSurface?.rawValue)
                         lastFailureNotice?.emit()
                         recordCompletionAttempt(store: feedbackStore, scope: feedbackScope, ticket: ticket,
                             model: model, effort: effort, outcome: .capabilityFailure, usage: attemptUsage,
-                            startedAt: attemptStartedAt, source: sourceContext, monitorTaskID: monitorTaskID, monitorScope: monitorScope)
+                            startedAt: attemptStartedAt, source: sourceContext, monitorTaskID: monitorTaskID, monitorScope: monitorScope, surface: attemptSurface?.rawValue)
                         attemptRecorded = true
                         failedCandidates.insert(candidateKey)
                         recordBackendCheckpoint(BackendRecoveryCheckpoint(executionID: ticket.executionID,
@@ -8612,7 +8698,7 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
                 }
                 lastFailureNotice = BackendFailureNotice(provider: ticket.provider, sessionID: interruptedSessionID,
                     blocker: safeBlocker, dispatchStage: dispatchStage, source: sourceContext, permissionProfile: ticket.permissionProfile,
-                    publicProgress: (error as? RejectedProviderExecution)?.execution.artifact.output)
+                    publicProgress: (error as? RejectedProviderExecution)?.execution.artifact.output, surface: attemptSurface?.rawValue)
                 if safeBlocker.requiresReconciliation, terminalPermissionFailure == nil {
                     terminalPermissionFailure = .backendBlocked(safeBlocker)
                 }
@@ -8658,7 +8744,7 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
             lastFailureNotice = BackendFailureNotice(provider: ticket.provider, sessionID: execution.sessionID,
                 blocker: ticket.permissionProfile == "workspace_write" ? .effectsUncertain : .unclassified,
                 dispatchStage: dispatchStage, source: sourceContext, permissionProfile: ticket.permissionProfile,
-                publicProgress: execution.artifact.output)
+                publicProgress: execution.artifact.output, surface: attemptSurface?.rawValue)
         }
         // OS-1 finishes its own repair. A backend's job ends when the source
         // is changed and builds; the mechanical tail (version bump, signed
@@ -8718,7 +8804,7 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
         AttemptLatencyTrace.mark("artifact_ready")
         let artifactData = try JSONEncoder().encode(artifact)
         let resultHash = sha256Hex(artifactData)
-        RuntimeActivity.emit(.verifying, provider: ticket.provider, model: model, effort: effort)
+        RuntimeActivity.emit(.verifying, provider: ticket.provider, surface: execution.surface, model: model, effort: effort)
         let artifactRef = "r2://os1-private-results/\(ticket.executionID)/\(ticket.sequence)/\(resultHash).json"
         // The artifact upload keeps the v1 signature; the result also signs the
         // step's measured tokens (v2) so route learning can charge them.
@@ -8741,7 +8827,7 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
             model: model, effort: effort, revasDisposition: "verification_pending", sessionID: execution.sessionID,
             permissionProfile: ticket.permissionProfile, exitCode: artifact.exitCode, output: artifact.output,
             stderr: artifact.stderr, durationMS: artifact.durationMS, nativeRecord: execution.nativeRecord,
-            verifiedPreviewDelivery: verifiedPreviewDelivery)
+            surface: execution.surface, verifiedPreviewDelivery: verifiedPreviewDelivery)
         var delivery = DeliveryRecord(id: "\(ticket.executionID)-\(ticket.sequence)", apiURL: config.apiURL, deviceID: id,
             resultSHA256: resultHash, artifact: artifactData, upload: try JSONEncoder().encode(upload),
             submission: try JSONEncoder().encode(submission), step: try JSONEncoder().encode(pendingStep),
@@ -8753,7 +8839,7 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
         lastFailureNotice = BackendFailureNotice(provider: ticket.provider, sessionID: execution.sessionID,
             blocker: lastFailureNotice?.blocker ?? (ticket.permissionProfile == "workspace_write" && dispatchStage == .dispatched ? .effectsUncertain : .unclassified),
             dispatchStage: dispatchStage, source: sourceContext, permissionProfile: ticket.permissionProfile,
-            deliveryID: delivery.id, publicProgress: lastFailureNotice?.publicProgress)
+            deliveryID: delivery.id, publicProgress: lastFailureNotice?.publicProgress, surface: attemptSurface?.rawValue)
         do {
             let uploaded: [String: String] = try await client.deliver("/v1/artifacts", body: upload, as: [String: String].self)
             guard uploaded["artifact_ref"] == artifactRef else { throw OS1Error.message("Artifact upload binding failed") }
@@ -8770,7 +8856,7 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
                 blocker: terminalPermissionFailure.flatMap { backendBlocker($0) } ?? .deliveryPending,
                 dispatchStage: dispatchStage, source: sourceContext,
                 permissionProfile: ticket.permissionProfile, deliveryID: delivery.id,
-                publicProgress: lastFailureNotice?.publicProgress)
+                publicProgress: lastFailureNotice?.publicProgress, surface: attemptSurface?.rawValue)
             throw terminalPermissionFailure ?? OS1Error.backendBlocked(.deliveryPending)
         }
         if let failure = terminalPermissionFailure {
@@ -8778,7 +8864,7 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
             // into a completion, generic write-uncertainty or steering retry.
             recordCompletionAttempt(store: feedbackStore, scope: feedbackScope, ticket: ticket,
                 model: model, effort: effort, outcome: completionFailureOutcome(attemptFailure),
-                usage: attemptUsage, startedAt: attemptStartedAt, source: sourceContext, monitorTaskID: monitorTaskID, monitorScope: monitorScope)
+                usage: attemptUsage, startedAt: attemptStartedAt, source: sourceContext, monitorTaskID: monitorTaskID, monitorScope: monitorScope, surface: attemptSurface?.rawValue)
             attemptRecorded = true
             recordExecutionFailure(ticket: ticket, model: model, effort: effort,
                 reason: "terminal_backend_blocker_no_model_retry", source: sourceContext)
@@ -8797,7 +8883,7 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
                 reason: "locally_rejected_candidate_retry_with_diagnostic", source: sourceContext)
             recordCompletionAttempt(store: feedbackStore, scope: feedbackScope, ticket: ticket,
                 model: model, effort: effort, outcome: completionFailureOutcome(attemptFailure),
-                usage: attemptUsage, startedAt: attemptStartedAt, source: sourceContext, monitorTaskID: monitorTaskID, monitorScope: monitorScope)
+                usage: attemptUsage, startedAt: attemptStartedAt, source: sourceContext, monitorTaskID: monitorTaskID, monitorScope: monitorScope, surface: attemptSurface?.rawValue)
             attemptRecorded = true
             continuation = BackendContinuation(provider: ticket.provider, nativeSessionID: execution.sessionID,
                 blocker: .incomplete, publicProgress: artifact.output, diagnostic: diagnostic)
@@ -8828,7 +8914,7 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
                 reason: "verifier_completed_locally_rejected_candidate", source: sourceContext)
             recordCompletionAttempt(store: feedbackStore, scope: feedbackScope, ticket: ticket,
                 model: model, effort: effort, outcome: completionFailureOutcome(attemptFailure),
-                usage: attemptUsage, startedAt: attemptStartedAt, source: sourceContext, monitorTaskID: monitorTaskID, monitorScope: monitorScope)
+                usage: attemptUsage, startedAt: attemptStartedAt, source: sourceContext, monitorTaskID: monitorTaskID, monitorScope: monitorScope, surface: attemptSurface?.rawValue)
             attemptRecorded = true
             // A self-repair that did not pass staging is reported with its
             // exact diagnostic, never as a generic verdict mismatch.
@@ -8842,7 +8928,7 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
         recordCompletionAttempt(store: feedbackStore, scope: feedbackScope, ticket: ticket,
             model: model, effort: effort,
             outcome: revasDisposition == "adopted" ? .adopted : completionFailureOutcome(attemptFailure),
-            usage: attemptUsage, startedAt: attemptStartedAt, source: sourceContext, monitorTaskID: monitorTaskID, monitorScope: monitorScope)
+            usage: attemptUsage, startedAt: attemptStartedAt, source: sourceContext, monitorTaskID: monitorTaskID, monitorScope: monitorScope, surface: attemptSurface?.rawValue)
         attemptRecorded = true
         if revasDisposition != "adopted",
            ExecutionSteering.currentSubmission.map({ !ExecutionSteering().inputs($0).isEmpty }) == true {
@@ -8861,7 +8947,7 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
                 dispatchStage: dispatchStage, source: sourceContext,
                 permissionProfile: ticket.permissionProfile, deliveryID: delivery.id,
                 publicProgress: artifact.output,
-                diagnosis: "backend_exit=\(artifact.exitCode); native_persistence=\(execution.nativeRecord.persistence); remote_status=\(route.status); adoption=\(revasDisposition)")
+                diagnosis: "backend_exit=\(artifact.exitCode); native_persistence=\(execution.nativeRecord.persistence); remote_status=\(route.status); adoption=\(revasDisposition)", surface: attemptSurface?.rawValue)
             recordExecutionFailure(ticket: ticket, model: model, effort: effort,
                 reason: "remote_verification_not_adopted_no_write_replay", source: sourceContext)
             throw OS1Error.backendBlocked(blocker)
@@ -8902,7 +8988,7 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
                 reason: revasDisposition == "retry" ? "remote_verifier_requested_retry" : "remote_verifier_rejected_result",
                 source: sourceContext)
         }
-        RuntimeActivity.emit(revasDisposition == "adopted" ? .syncing : .routing, provider: ticket.provider)
+        RuntimeActivity.emit(revasDisposition == "adopted" ? .syncing : .routing, provider: ticket.provider, surface: execution.surface)
         let adoptedRecord = revasDisposition == "adopted"
             ? publishAdoptedNativeRecord(
                 execution.nativeRecord,
@@ -8932,6 +9018,7 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
                 stderr: artifact.stderr,
                 durationMS: artifact.durationMS,
                 nativeRecord: adoptedRecord,
+                surface: execution.surface,
                 verifiedPreviewDelivery: verifiedPreviewDelivery
             ))
         }
@@ -8980,7 +9067,7 @@ func resumeDelivery(_ identifier: String) async throws -> RunSummary {
           submission.ticket.executionID + "-" + String(submission.ticket.sequence) == record.id,
           try Base64URL.decode(upload.artifactBase64) == record.artifact else { throw OS1Error.message("저장된 결과 무결성 확인 실패") }
     let client = APIClient(config: config, token: try githubToken(), deviceID: id)
-    RuntimeActivity.emit(.verifying, provider: step.provider, model: step.model, effort: step.effort, publicText: record.output)
+    RuntimeActivity.emit(.verifying, provider: step.provider, surface: step.surface, model: step.model, effort: step.effort, publicText: record.output)
     let route: RouteResponse
     do {
         if record.response == nil {
@@ -8994,7 +9081,7 @@ func resumeDelivery(_ identifier: String) async throws -> RunSummary {
         try box.save(record)
     } catch {
         BackendFailureNotice(provider: step.provider, sessionID: step.sessionID, blocker: .deliveryPending,
-            dispatchStage: .dispatched, source: record.source, permissionProfile: step.permissionProfile, deliveryID: record.id).emit()
+            dispatchStage: .dispatched, source: record.source, permissionProfile: step.permissionProfile, deliveryID: record.id, surface: step.surface).emit()
         throw error
     }
     guard route.status == "complete", step.exitCode == 0, !step.output.isEmpty,
@@ -9024,7 +9111,8 @@ func resumeDelivery(_ identifier: String) async throws -> RunSummary {
     return RunSummary(status: "complete", steps: [RunStepSummary(sequence: step.sequence, provider: step.provider,
         action: step.action, model: step.model, effort: step.effort, revasDisposition: "adopted", sessionID: step.sessionID,
         permissionProfile: step.permissionProfile, exitCode: step.exitCode, output: step.output, stderr: step.stderr,
-        durationMS: step.durationMS, nativeRecord: native)], sourceContext: record.source)
+        durationMS: step.durationMS, nativeRecord: native, surface: step.surface,
+        workflowStage: step.workflowStage, verifiedPreviewDelivery: step.verifiedPreviewDelivery)], sourceContext: record.source)
 }
 
 func printRunSummary(_ summary: RunSummary) {
@@ -9035,7 +9123,9 @@ func printRunSummary(_ summary: RunSummary) {
         let verificationLabel = step.revasDisposition == "control_verified"
             ? "OS-1 control verified"
             : "REVAS adopted"
-        print("\n[\(step.provider.uppercased()) · \(step.action) · \(step.model ?? "provider-default") · \(step.effort) · \(verificationLabel) · \(step.permissionProfile) · \(step.sessionID)\(step.reviewedDraft.map { " · reviewed draft: " + $0 } ?? "")]")
+        let route = ProviderSurface.resolveExecuted(rawSurface: step.surface, provider: step.provider)?.routeTitle
+            ?? (step.provider == "local" ? "OS-1" : step.provider)
+        print("\n[\(route) · \(step.action) · \(step.model ?? "provider-default") · \(step.effort) · \(verificationLabel) · \(step.permissionProfile) · \(step.sessionID)\(step.reviewedDraft.map { " · reviewed draft: " + $0 } ?? "")]")
         if let record = step.nativeRecord {
             print("native record: \(record.persistence)"
                 + (record.recordPath.map { " · \($0)" } ?? "")
