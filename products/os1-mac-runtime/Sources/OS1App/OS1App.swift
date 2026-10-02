@@ -95,6 +95,7 @@ private func providerDisplayName(_ provider: String?, surface: String? = nil) ->
 private struct ExecutionRoutePresentation: Equatable {
     let executionLine: String
     let modelLine: String?
+    let reasoningLine: String?
     let detail: String
 
     init(activity: RuntimeActivity?) {
@@ -119,9 +120,25 @@ private struct ExecutionRoutePresentation: Equatable {
             detail = os1Tr("기록된 실행 백엔드와 모델 이름을 따로 표시합니다.", "The recorded backend and model are shown separately.")
         }
         modelLine = activity?.model.flatMap { $0.isEmpty ? nil : os1Tr("모델: \($0)", "Model: \($0)") }
+        // Display the recorded effort, never infer it from the model, provider
+        // preference or another conversation. A missing value is not "none".
+        if let activity {
+            let effort = activity.effort?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let value: String
+            if let effort, !effort.isEmpty {
+                value = effort
+            } else if provider == nil || provider == "" || provider == "routing" {
+                value = os1Tr("아직 선택 전", "not selected yet")
+            } else {
+                value = os1Tr("기록 없음", "not recorded")
+            }
+            reasoningLine = os1Tr("추론: \(value)", "Reasoning: \(value)")
+        } else {
+            reasoningLine = nil
+        }
     }
 
-    var governanceLine: String { modelLine.map { "\(executionLine) · \($0)" } ?? executionLine }
+    var governanceLine: String { [executionLine, modelLine, reasoningLine].compactMap { $0 }.joined(separator: " · ") }
 }
 
 /// Backend records created by OS-1 contain a bounded execution envelope. The
@@ -1013,7 +1030,8 @@ private func parallelInteractionSelfTest() async throws {
         let name = submission.request
         started[name] = Date(); contexts[name] = context
         current += 1; peak = max(peak, current)
-        onActivity(RuntimeActivity(.executing, provider: name == "A1" ? "claude" : "codex"))
+        onActivity(RuntimeActivity(.executing, provider: name == "A1" ? "claude" : "codex",
+            model: "fixture", effort: name == "A1" ? "max" : "ultra"))
         let pid = try await Task.detached { () throws -> Int32 in
             let child = Process(); child.executableURL = URL(fileURLWithPath: "/bin/sleep")
             child.arguments = [name == "A1" ? "1.2" : "0.6"]
@@ -1039,8 +1057,13 @@ private func parallelInteractionSelfTest() async throws {
     try check(store.activeRuns.count == 2 && store.queuedSubmissions.count == 1, "A2 must queue while B1 starts")
     try await Task.sleep(for: .milliseconds(180))
     try check(store.pendingProvider == .codex, "selected B activity leaked A provider")
+    try check(ExecutionRoutePresentation(activity: store.activeRuns[b]?.activity).reasoningLine == "추론: ultra",
+        "B must display its own reasoning effort from the activity callback")
     store.select(a)
     try check(store.pendingProvider == .claude, "switch must restore A activity")
+    try check(ExecutionRoutePresentation(activity: store.activeRuns[a]?.activity).reasoningLine == "추론: max"
+        && ExecutionRoutePresentation(activity: store.activeRuns[b]?.activity).reasoningLine == "추론: ultra",
+        "switching conversations must preserve both selected and background reasoning modes")
     store.createSession(); let idle = store.selectedSessionID!
     store.composer = "preserve unsent draft"
     let idleStatus = store.statusText
@@ -8409,6 +8432,7 @@ private func renderComposerPreview(to output: URL) throws {
 
 @MainActor
 private func codexShellSelfTest() throws {
+    try reasoningVisibilitySelfTest()
     var checks = 0
     func check(_ condition: Bool, _ name: String) throws {
         guard condition else { throw RunnerError.message("Shell regression: " + name) }
@@ -8587,6 +8611,80 @@ private func codexShellSelfTest() throws {
 }
 
 @MainActor
+private func reasoningVisibilitySelfTest() throws {
+    var checks = 0
+    func check(_ value: Bool, _ label: String) throws {
+        guard value else { throw RunnerError.message("Reasoning visibility: " + label) }
+        checks += 1
+    }
+    let previousLanguage = ProcessInfo.processInfo.environment["OS1_INTERFACE_LANGUAGE"]
+    defer {
+        if let previousLanguage { setenv("OS1_INTERFACE_LANGUAGE", previousLanguage, 1) }
+        else { unsetenv("OS1_INTERFACE_LANGUAGE") }
+        OS1Localization.invalidate()
+    }
+    let efforts = ["low", "medium", "high", "xhigh", "max", "ultra", "none"]
+    // The production sidebar is 256pt with 10pt padding on both sides.
+    let rowWidth = Theme.sidebarWidth - 20
+    func pixels(effort: String, selected: Bool) throws -> [UInt8] {
+        let content = SessionRow(session: ConversationSession(title: "Reasoning fixture", workspace: "/tmp"),
+            selected: selected, activity: RuntimeActivity(.executing, provider: "codex", model: "gpt-6.1-sol", effort: effort),
+            previewTime: Date(timeIntervalSinceReferenceDate: 1_004), action: {})
+            .frame(width: rowWidth, height: 132, alignment: .top)
+            .background(Theme.background).environment(\.colorScheme, .dark)
+        let view = NSHostingView(rootView: content)
+        view.frame = NSRect(x: 0, y: 0, width: rowWidth, height: 132)
+        view.layoutSubtreeIfNeeded()
+        guard let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { throw SourceContextError.invalid }
+        view.cacheDisplay(in: view.bounds, to: bitmap)
+        guard let data = bitmap.bitmapData else { throw SourceContextError.invalid }
+        return Array(UnsafeBufferPointer(start: data, count: bitmap.bytesPerRow * bitmap.pixelsHigh))
+    }
+    for language in ["ko", "en"] {
+        setenv("OS1_INTERFACE_LANGUAGE", language, 1); OS1Localization.invalidate()
+        for surface in [ProviderSurface.codex, .gptChat, .claude, .claudeChat] {
+            for effort in efforts {
+                let activity = RuntimeActivity(.executing, provider: surface.backend!.rawValue,
+                    surface: surface.rawValue, model: "fixture-model", effort: effort)
+                let decoded = try JSONDecoder().decode(RuntimeActivity.self, from: JSONEncoder().encode(activity))
+                let route = ExecutionRoutePresentation(activity: decoded)
+                let expected = os1Tr("추론: \(effort)", "Reasoning: \(effort)")
+                try check(route.reasoningLine == expected, "\(language)/\(surface.rawValue)/\(effort) survives activity decoding")
+                try check(route.governanceLine.components(separatedBy: expected).count == 2,
+                    "the shared route summary includes reasoning exactly once")
+                let textWidth = (expected as NSString).size(withAttributes: [.font: NSFont.systemFont(ofSize: 10, weight: .medium)]).width
+                try check(textWidth <= rowWidth - 26, "\(expected) fits the real sidebar content width")
+            }
+        }
+        try check(ExecutionRoutePresentation(activity: nil).reasoningLine == nil, "idle rows have no invented reasoning mode")
+        try check(ExecutionRoutePresentation(activity: RuntimeActivity(.routing)).reasoningLine
+            == os1Tr("추론: 아직 선택 전", "Reasoning: not selected yet"), "pending selection is explicit")
+        for effort in [nil, "", " \n"] as [String?] {
+            try check(ExecutionRoutePresentation(activity: RuntimeActivity(.executing, provider: "codex", effort: effort)).reasoningLine
+                == os1Tr("추론: 기록 없음", "Reasoning: not recorded"), "missing or blank legacy effort is not a selected mode")
+        }
+        try check(ExecutionRoutePresentation(activity: RuntimeActivity(.executing, provider: "claude", effort: " max \n")).reasoningLine
+            == os1Tr("추론: max", "Reasoning: max"), "recorded effort is whitespace-normalized")
+        try check(ExecutionRoutePresentation(activity: RuntimeActivity(.executing, provider: "local", effort: "none")).reasoningLine
+            == os1Tr("추론: none", "Reasoning: none"), "an explicit none remains distinct from missing")
+        // Changing only effort must alter real SessionRow pixels in selected
+        // AND background rows. A formatter-only fix cannot pass this check.
+        for selected in [false, true] {
+            let baseline = try pixels(effort: "low", selected: selected)
+            let repeated = try pixels(effort: "low", selected: selected)
+            try check(baseline == repeated, "identical row fixtures have stable pixels")
+            for effort in efforts.dropFirst() {
+                let rendered = try pixels(effort: effort, selected: selected)
+                let changed = zip(baseline, rendered).filter { $0 != $1 }.count
+                try check(baseline.count == rendered.count && changed > 10,
+                    "\(language)/selected=\(selected)/\(effort) must change the displayed reasoning pixels")
+            }
+        }
+    }
+    print("Reasoning visibility: \(checks) checks passed; production SessionRow pixels at \(Int(rowWidth))pt; model calls 0; live state writes 0")
+}
+
+@MainActor
 private func renderShellPreview(to output: URL) throws {
     try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
     let root = FileManager.default.temporaryDirectory.appendingPathComponent("os1-shell-preview-" + UUID().uuidString)
@@ -8608,7 +8706,7 @@ private func renderShellPreview(to output: URL) throws {
         ChatMessage(role: .assistant, text: "대기 메시지는 **입력창 위**에서 관리합니다.\n\n- 순서를 바꾸거나 내용을 편집할 수 있습니다.\n- 현재 작업에 반영하거나 대기를 취소할 수 있습니다.\n- 실행하기 전에는 보낸 대화에 중복 표시하지 않습니다.\n\n```text\n현재 작업 → 대기 메시지 → 다음 작업\n```", provider: "codex")
     ]
     store.activeRuns[id] = .init(submissionID: UUID(), started: Date().addingTimeInterval(-16),
-        activity: RuntimeActivity(.executing, provider: "codex"), provider: .codex, handedRevision: 0)
+        activity: RuntimeActivity(.executing, provider: "codex", model: "gpt-6.1-sol", effort: "ultra"), provider: .codex, handedRevision: 0)
     for request in ["그다음 수정안을 확인해 줘.", "확인한 결과와 변경 파일을 정리해 줘."] {
         store.composer = request; store.send()
     }
@@ -8907,17 +9005,20 @@ private struct OS1DesktopApp: App {
                     try data.write(to: output.appendingPathComponent("activity-\(index).png"))
                     let rowContent = VStack(spacing: 4) {
                         SessionRow(session: ConversationSession(title: "연구 자료 분석", workspace: "/tmp"), selected: true,
-                            activity: RuntimeActivity(.executing, provider: "claude", model: "claude-fixture"), queuedCount: 1,
+                            activity: RuntimeActivity(.executing, provider: "claude", model: "claude-fixture", effort: "max"), queuedCount: 1,
                             previewTime: started.addingTimeInterval(elapsed), action: {})
                         SessionRow(session: ConversationSession(title: "자동화 복원 검토", workspace: "/tmp"), selected: false,
-                            activity: RuntimeActivity(.executing, provider: "codex", model: "gpt-5.6-luna"),
+                            activity: RuntimeActivity(.executing, provider: "codex", model: "gpt-6.1-sol", effort: "ultra"),
                             previewTime: started.addingTimeInterval(elapsed), action: {})
                         SessionRow(session: ConversationSession(title: "새 라우팅 요청", workspace: "/tmp"), selected: false,
                             activity: RuntimeActivity(.routing), previewTime: started.addingTimeInterval(elapsed), action: {})
+                        SessionRow(session: ConversationSession(title: "추론 기록이 없는 실행", workspace: "/tmp"), selected: false,
+                            activity: RuntimeActivity(.executing, provider: "codex", model: "fixture"),
+                            previewTime: started.addingTimeInterval(elapsed), action: {})
                         SessionRow(session: ConversationSession(title: "완료한 대화", workspace: "/tmp"), selected: false, action: {})
-                    }.frame(width: 290, height: 330).background(Theme.background).environment(\.colorScheme, .dark)
+                    }.frame(width: Theme.sidebarWidth - 20, height: 480).background(Theme.background).environment(\.colorScheme, .dark)
                     let rows = NSHostingView(rootView: rowContent)
-                    rows.frame = NSRect(x: 0, y: 0, width: 290, height: 330); rows.layoutSubtreeIfNeeded()
+                    rows.frame = NSRect(x: 0, y: 0, width: Theme.sidebarWidth - 20, height: 480); rows.layoutSubtreeIfNeeded()
                     guard let rowBitmap = rows.bitmapImageRepForCachingDisplay(in: rows.bounds) else { throw SourceContextError.invalid }
                     rows.cacheDisplay(in: rows.bounds, to: rowBitmap)
                     guard let rowPNG = rowBitmap.representation(using: .png, properties: [:]) else { throw SourceContextError.invalid }
@@ -9109,6 +9210,7 @@ private struct OS1DesktopApp: App {
         }
         if CommandLine.arguments.contains("--self-test") {
             do {
+                try reasoningVisibilitySelfTest()
                 try governanceActivityStripSelfTest()
                 try nativeProvenanceSelfTest()
                 try savedFailurePreviewSelfTest()
@@ -9589,8 +9691,7 @@ private struct RootView: View {
                 .accessibilityHidden(profileNavigation.governanceOpen)
                 if profileNavigation.governanceOpen {
                     GovernanceMonitorView(active: store.activeRuns.values.map { run in
-                        let route = ExecutionRoutePresentation(activity: run.activity)
-                        return run.activity.effort.map { route.governanceLine + " · " + os1Tr("추론: \($0)", "Reasoning: \($0)") } ?? route.governanceLine
+                        ExecutionRoutePresentation(activity: run.activity).governanceLine
                     }.sorted(), queued: store.queuedSubmissions.count, onClose: { profileNavigation.governanceOpen = false })
                     .onExitCommand { profileNavigation.governanceOpen = false }
                 }
@@ -11337,6 +11438,13 @@ private struct SessionRow: View {
                             .lineLimit(1)
                             .help(route.detail)
                     }
+                    if let reasoningLine = route.reasoningLine {
+                        Text(reasoningLine)
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundStyle(Theme.text)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .accessibilityIdentifier("os1.session.reasoning")
+                    }
                 }
             }
             .padding(.horizontal, 13)
@@ -11395,10 +11503,6 @@ private struct SessionExecutionBadge: View {
             ?? (activity.provider == ProviderChoice.claude.rawValue ? session.claudeSessionID : nil)
     }
 
-    private var providerTitle: String {
-        providerDisplayName(activity.provider, surface: activity.surface)
-    }
-
     var body: some View {
         HStack(spacing: compact ? 5 : 7) {
             Circle().fill(Theme.green).frame(width: compact ? 5 : 6, height: compact ? 5 : 6)
@@ -11412,8 +11516,9 @@ private struct SessionExecutionBadge: View {
                     if let modelLine = route.modelLine {
                         Text(modelLine).font(.system(size: compact ? 9 : 10)).foregroundStyle(Theme.muted)
                     }
-                    if let effort = activity.effort, !effort.isEmpty {
-                        Text(os1Tr("추론: \(effort)", "Reasoning: \(effort)")).font(.system(size: compact ? 9 : 10)).foregroundStyle(Theme.muted)
+                    if let reasoningLine = route.reasoningLine {
+                        Text(reasoningLine).font(.system(size: compact ? 9 : 10)).foregroundStyle(Theme.muted)
+                            .fixedSize()
                     }
                 }
                 .help(route.detail)
@@ -11437,7 +11542,7 @@ private struct SessionExecutionBadge: View {
         .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous).stroke(Theme.green.opacity(0.24)))
         .help("실행 중인 백엔드 세션과 OS-1 공개 수렴 단계를 표시합니다. 모델 내부 수렴값은 노출되지 않습니다.")
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("실행 세션 \(providerTitle), 수렴 단계 \(activity.convergenceLabel)")
+        .accessibilityLabel("실행 세션 \(ExecutionRoutePresentation(activity: activity).governanceLine), 수렴 단계 \(activity.convergenceLabel)")
     }
 }
 
@@ -11556,6 +11661,7 @@ private struct ConversationHeader: View {
                 Spacer(minLength: 8)
                 if let activity = store.activeRuns[session.id]?.activity {
                     SessionExecutionBadge(session: session, activity: activity, compact: true)
+                        .layoutPriority(1)
                 }
                 Menu {
                     Button(session.pinnedAt == nil ? "상단에 고정" : "고정 해제") { store.togglePin(session.id) }
@@ -12604,7 +12710,9 @@ private struct RunActivityBanner: View {
                         Text(stopping ? "작업 중지 확인 중" : activity.label).font(.system(size: 11))
                         Text(route.executionLine).font(.system(size: 10, weight: .medium)).foregroundStyle(Theme.pink).help(route.detail)
                         if let modelLine = route.modelLine { Text(modelLine).font(.system(size: 10)).foregroundStyle(Theme.muted).help(route.detail) }
-                        if let effort = activity.effort { Text(os1Tr("추론: \(effort)", "Reasoning: \(effort)")).font(.system(size: 10)).foregroundStyle(Theme.muted) }
+                        if let reasoningLine = route.reasoningLine {
+                            Text(reasoningLine).font(.system(size: 10)).foregroundStyle(Theme.muted).fixedSize()
+                        }
                         if let tool = activity.toolProgressLabel { Text(tool).font(.system(size: 10)).foregroundStyle(Theme.muted) }
                     }
                     if activity.toolProgressLabel != nil && quiet < 30 {

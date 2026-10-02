@@ -67,21 +67,24 @@ func runProviderSurfacePresentationFixtures() throws {
     check(try activity().surface == "gpt-chat", "actual lane reaches the progress file")
     RuntimeActivity.emit(.executing, provider: "codex", tool: "commandExecution")
     let streamed = try activity()
-    check(streamed.surface == "gpt-chat" && streamed.model == "gpt-6-astra" && streamed.nativeSessionID == session,
+    check(streamed.surface == "gpt-chat" && streamed.model == "gpt-6-astra" && streamed.effort == "high" && streamed.nativeSessionID == session,
           "stream events retain matched route evidence")
     RuntimeActivity.emit(.verifying, provider: "codex")
-    check(try activity().surface == "gpt-chat", "verification retains the actual mode")
+    let verifying = try activity()
+    check(verifying.surface == "gpt-chat" && verifying.effort == "high", "verification retains the actual mode and reasoning")
     RuntimeActivity.emit(.syncing, provider: "codex")
-    check(try activity().surface == "gpt-chat", "sync retains the actual mode")
+    let syncing = try activity()
+    check(syncing.surface == "gpt-chat" && syncing.effort == "high", "sync retains the actual mode and reasoning")
     RuntimeActivity.emit(.executing, provider: "codex", surface: "codex")
     let nextLane = try activity()
     check(nextLane.surface == "codex" && nextLane.model == nil && nextLane.effort == nil && nextLane.nativeSessionID == nil,
           "GPT to Codex does not inherit the previous lane's model or session")
     RuntimeActivity.emit(.executing, provider: "claude", surface: "claude-chat", model: "claude-sonnet-5-5", nativeSessionID: session)
-    check(try activity().surface == "claude-chat", "provider switch records the new executed mode")
+    let switched = try activity()
+    check(switched.surface == "claude-chat" && switched.effort == nil, "provider switch records the new mode without stale reasoning")
     RuntimeActivity.emit(.routing)
     let cleared = try activity()
-    check(cleared.surface == nil && cleared.provider == nil && cleared.model == nil && cleared.nativeSessionID == nil,
+    check(cleared.surface == nil && cleared.provider == nil && cleared.model == nil && cleared.effort == nil && cleared.nativeSessionID == nil,
           "unselected routing cannot leak the previous route")
     RuntimeActivity.emit(.executing, provider: "codex", model: "gpt-6-astra")
     check(try activity().surface == nil, "a GPT model does not prove GPT chat execution")
@@ -94,7 +97,8 @@ func runProviderSurfacePresentationFixtures() throws {
     let events = try String(contentsOf: journalURL, encoding: .utf8).split(separator: "\n")
         .map { try JSONDecoder().decode(RuntimeActivity.self, from: Data($0.utf8)) }
     check(events.count == 8 && events.first?.surface == "gpt-chat" && events[4].surface == "codex"
-          && events[5].surface == "claude-chat" && events.last?.surface == nil,
+          && events[5].surface == "claude-chat" && events.last?.surface == nil
+          && events.prefix(4).allSatisfy { $0.effort == "high" } && events.dropFirst(4).allSatisfy { $0.effort == nil },
           "persistent journal preserves each executed mode and route reset")
 
     let notice = BackendFailureNotice(provider: "codex", sessionID: session, blocker: .timeout,
