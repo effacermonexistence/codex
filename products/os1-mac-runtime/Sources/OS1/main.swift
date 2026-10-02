@@ -806,9 +806,13 @@ struct RunStepSummary: Codable {
     var ownerPolicyProjectionSHA256: String? = OwnerPolicyContext.snapshot?.projectionSHA256
     /// On a review's answer: the draft it checked ("codex · gpt-6-astra · high").
     var reviewedDraft: String? = nil
+    /// The lane that actually ran (`ProviderSurface` raw value): "gpt-chat" or
+    /// "codex" under the provider "codex", "claude-chat" or "claude" under
+    /// "claude". The answer is labeled with it, so GPT never reads as Codex.
+    var surface: String? = nil
 
     enum CodingKeys: String, CodingKey {
-        case sequence, provider, action, model, effort, output, stderr
+        case sequence, provider, action, model, effort, output, stderr, surface
         case revasDisposition = "revas_disposition"
         case sessionID = "session_id"
         case permissionProfile = "permission_profile"
@@ -842,6 +846,8 @@ struct ProviderExecution {
     let sessionID: String
     let nativeRecord: NativeRecordEvidence
     var driftApplication: DriftApplication? = nil
+    /// The lane the executor ran, decided once in `execute` (`executedSurface`).
+    var surface: ProviderSurface? = nil
 
     /// The same execution with OS-1's own completion note appended to the
     /// answer, before the artifact is hashed and delivered.
@@ -853,7 +859,8 @@ struct ProviderExecution {
             output: a.output.trimmingCharacters(in: .whitespacesAndNewlines) + "\n\n" + note, stderr: a.stderr,
             durationMS: a.durationMS, workspaceBeforeHash: a.workspaceBeforeHash, workspaceAfterHash: a.workspaceAfterHash,
             nativeRecord: a.nativeRecord)
-        return ProviderExecution(artifact: artifact, sessionID: sessionID, nativeRecord: nativeRecord, driftApplication: driftApplication)
+        return ProviderExecution(artifact: artifact, sessionID: sessionID, nativeRecord: nativeRecord,
+                                 driftApplication: driftApplication, surface: surface)
     }
 }
 
@@ -3061,6 +3068,21 @@ func claudeChatLane(provider: String, permission: String, hasSource: Bool, objec
 /// workspace). The predicate is shared so the two lanes cannot drift apart.
 func codexChatLane(provider: String, permission: String, hasSource: Bool, objective: String) -> Bool {
     provider == "codex" && claudeChatLane(provider: "claude", permission: permission, hasSource: hasSource, objective: objective)
+}
+
+/// The lane a ticket runs on, from the same predicates the executor and the
+/// workspace resolver use: the route the owner is shown is the one that ran.
+func executedSurface(provider: String, permission: String, hasSource: Bool, objective: String) -> ProviderSurface? {
+    switch provider {
+    case "codex":
+        return codexChatLane(provider: provider, permission: permission, hasSource: hasSource, objective: objective)
+            ? .gptChat : .codex
+    case "claude":
+        return claudeChatLane(provider: provider, permission: permission, hasSource: hasSource, objective: objective)
+            ? .claudeChat : .claude
+    default:
+        return nil
+    }
 }
 
 /// Why an explicitly selected Claude chat lane cannot take this request.
@@ -6055,6 +6077,8 @@ private func execute(
     let nativeRecord: NativeRecordEvidence
     var validateCandidate: (() throws -> Void)?
     let hasPreloadedR2Evidence = preloadedR2Evidence != nil
+    let surface = executedSurface(provider: ticket.provider, permission: ticket.permissionProfile,
+                                  hasSource: hasPreloadedR2Evidence, objective: lockedObjective)
     let evidenceDirective = sourceExecutionDirective(preloadedR2Evidence, required: sourceUseRequired)
     let readinessDirective = asksRecoveryReadiness(lockedObjective) ? """
 
@@ -6086,12 +6110,12 @@ private func execute(
         let deadline = Date().addingTimeInterval(TimeInterval(timeout))
         // GPT chat: the model alone, in the empty answer workspace, on a fresh
         // thread (resuming a full Codex thread would reload what the lane drops).
-        let gptChat = codexChatLane(provider: ticket.provider, permission: ticket.permissionProfile,
-                                    hasSource: hasPreloadedR2Evidence, objective: lockedObjective)
+        let gptChat = surface == .gptChat
         if gptChat {
             RuntimeActivity.emit(.preparing, provider: "codex", model: model, effort: effort,
                 publicText: os1Tr("GPT 채팅 모드로 실행합니다 · 코딩 도구·지침 없이 모델만 사용해 토큰을 아낍니다.",
-                                  "Running GPT in chat mode · the model alone, without coding tools or instructions, to save tokens."))
+                                  "Running GPT in chat mode · the model alone, without coding tools or instructions, to save tokens."),
+                surface: surface?.rawValue)
         }
         let codexWorkspace = gptChat ? executionWorkspace : workspace
         let expectedSessionID = gptChat ? nil : try normalizedSessionID(providerSessionID)
@@ -6243,12 +6267,12 @@ private func execute(
         let sourceOnly = hasPreloadedR2Evidence && ticket.permissionProfile == "read_only"
         // Same customization-free shape as a source-only answer, chosen for an
         // objective that needs nothing from this machine.
-        let chatLane = claudeChatLane(provider: ticket.provider, permission: ticket.permissionProfile,
-                                      hasSource: hasPreloadedR2Evidence, objective: lockedObjective)
+        let chatLane = surface == .claudeChat
         if chatLane {
             RuntimeActivity.emit(.preparing, provider: "claude", model: model, effort: effort,
                 publicText: os1Tr("Claude 대화 모드로 실행합니다 · 코딩 도구·지침 없이 모델만 사용해 토큰을 아낍니다.",
-                                  "Running Claude in chat mode · the model alone, without coding tools or instructions, to save tokens."))
+                                  "Running Claude in chat mode · the model alone, without coding tools or instructions, to save tokens."),
+                surface: surface?.rawValue)
         }
         let projectlessRead = ticket.permissionProfile == "read_only" &&
             workspace == FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL.path
@@ -6439,7 +6463,8 @@ private func execute(
         ),
         sessionID: sessionID,
         nativeRecord: nativeRecord,
-        driftApplication: driftApplication
+        driftApplication: driftApplication,
+        surface: surface
     )
     AttemptLatencyTrace.mark("candidate_built")
     do { try validateCandidate?() }
@@ -6870,7 +6895,8 @@ func runLocalTask(
             output: artifact.output,
             stderr: artifact.stderr,
             durationMS: artifact.durationMS,
-            nativeRecord: adoptedRecord
+            nativeRecord: adoptedRecord,
+            surface: execution.surface?.rawValue
         ))
         if verification.outcome == "pass" {
             if decision.provider != "local" {
@@ -7130,8 +7156,8 @@ private func runRouteFanoutWithOwnerPolicy(
         if ExecutionCancellation.isCancelled { throw OS1Error.backendBlocked(.cancelled) }
         guard let gateway = target.surface.gatewayPreference else { handoffIndices.append(index); continue }
         RuntimeActivity.emit(.preparing, publicText: os1Tr(
-            "경로 \(position + 1)/\(plan.targets.count): \(routeFanoutLabel(target.surface))",
-            "Route \(position + 1)/\(plan.targets.count): \(routeFanoutLabel(target.surface))"))
+            "경로 \(position + 1)/\(plan.targets.count): \(target.surface.routeLabel)",
+            "Route \(position + 1)/\(plan.targets.count): \(target.surface.routeLabel)"))
         var outcome = RouteFanoutOutcome(index: index, target: target)
         // An explicit chat-lane name never turns into the full lane: a part the
         // lane cannot answer is refused before any model is called.
@@ -7160,11 +7186,11 @@ private func runRouteFanoutWithOwnerPolicy(
                 outcome.adopted = adopted
                 anyAdopted = true
                 // OS-1 never ends a request another backend can run, so a dead
-                // backend's part comes back from the other one: shown, never
-                // counted as the route the owner named.
-                if adopted.provider != gateway {
-                    outcome.failure = os1Tr("\(gateway == "codex" ? "Codex" : "Claude")를 쓸 수 없어 \(adopted.provider == "codex" ? "Codex" : "Claude")가 대신 답했습니다",
-                                            "\(gateway == "codex" ? "Codex" : "Claude") was unavailable; \(adopted.provider == "codex" ? "Codex" : "Claude") answered instead")
+                // backend's part comes back from the other one, and a part can
+                // run on the account's other lane: shown with the route that
+                // actually ran, never counted as the route the owner named.
+                if let mismatch = routeFanoutMismatch(requested: target.surface, answered: adopted) {
+                    outcome.failure = mismatch
                 }
                 if fullLane, adopted.provider == gateway {
                     if gateway == "codex" { codexID = adopted.sessionID } else { claudeID = adopted.sessionID }
@@ -7254,16 +7280,24 @@ private func runRouteFanoutWithOwnerPolicy(
     return RunSummary(status: "complete", steps: steps, monitorTaskID: monitorID)
 }
 
-/// The route as the owner named it, plus whose usage it spends.
-func routeFanoutLabel(_ surface: ProviderSurface) -> String {
-    switch surface {
-    case .gptChat: return os1Tr("GPT 채팅 (OpenAI GPT · Codex 사용량)", "GPT chat (OpenAI GPT · Codex usage)")
-    case .codex: return os1Tr("Codex (OpenAI · Codex 사용량)", "Codex (OpenAI · Codex usage)")
-    case .claudeChat: return os1Tr("Claude 채팅 (Anthropic · Claude 한도)", "Claude chat (Anthropic · Claude limit)")
-    case .claude: return os1Tr("Claude Code (Anthropic · Claude 한도)", "Claude Code (Anthropic · Claude limit)")
-    case .chatgpt: return os1Tr("ChatGPT 앱 (넘김)", "ChatGPT app (handoff)")
-    case .auto: return os1Tr("자동", "Auto")
+/// Why a part's answer did not come from the route the owner named, or nil
+/// when it did. Both routes are named, so a substitute never reads as the
+/// route that was asked. Each route is named by its destination alone
+/// (`ProviderSurface.routeLabel`); usage wording next to the name made GPT read
+/// as Codex and both Claude routes read alike (owner, 2026-10-02).
+func routeFanoutMismatch(requested: ProviderSurface, answered: RunStepSummary) -> String? {
+    let actual = ProviderSurface.executed(answered.surface, provider: answered.provider)
+    // A record without its lane can only name the company that answered.
+    let actualName = actual?.routeLabel ?? (answered.provider == "codex" ? "OpenAI" : "Anthropic")
+    if answered.provider != requested.gatewayPreference {
+        return os1Tr("요청한 \(requested.routeLabel)를 쓸 수 없어 대신 실행: \(actualName)",
+                     "\(requested.routeLabel) was unavailable; answered instead by \(actualName)")
     }
+    if let actual, actual != requested {
+        return os1Tr("요청한 경로 \(requested.routeLabel) · 실제 실행 \(actual.routeLabel)",
+                     "requested \(requested.routeLabel) · ran on \(actual.routeLabel)")
+    }
+    return nil
 }
 
 func routeFanoutSummary(plan: RouteFanout, outcomes: [RouteFanoutOutcome]) -> String {
@@ -7273,7 +7307,7 @@ func routeFanoutSummary(plan: RouteFanout, outcomes: [RouteFanoutOutcome]) -> St
     var lines = [os1Tr("라우팅 결과 · 실행 경로 \(answered)/\(executors) 답변",
                        "Routing result · \(answered)/\(executors) executed routes answered")]
     for outcome in outcomes {
-        let head = "\(outcome.index + 1). \(routeFanoutLabel(outcome.target.surface)) — \(outcome.target.payload)"
+        let head = "\(outcome.index + 1). \(outcome.target.surface.routeLabel) — \(outcome.target.payload)"
         if let adopted = outcome.adopted {
             let answer = adopted.output.trimmingCharacters(in: .whitespacesAndNewlines)
                 .split(separator: "\n", omittingEmptySubsequences: true).first.map(String.init) ?? ""
@@ -7297,14 +7331,14 @@ func routeFanoutSummarySelfTest() throws {
     guard let plan = RouteFanout.plan("1+1 GPT한테. 2+2 Codex한테. 3+3 ChatGPT한테. 4+4 Claudecode한테. 답변 받아와.") else {
         throw OS1Error.message("Route fan-out summary: plan missing")
     }
-    func step(_ provider: String, _ output: String) -> RunStepSummary {
-        RunStepSummary(sequence: 1, provider: provider, action: "agent_run", model: "m", effort: "max",
+    func step(_ provider: String, _ output: String, _ surface: ProviderSurface? = nil, model: String = "m") -> RunStepSummary {
+        RunStepSummary(sequence: 1, provider: provider, action: "agent_run", model: model, effort: "max",
             revasDisposition: "adopted", sessionID: UUID().uuidString.lowercased(), permissionProfile: "read_only",
-            exitCode: 0, output: output, stderr: "", durationMS: 1, nativeRecord: nil)
+            exitCode: 0, output: output, stderr: "", durationMS: 1, nativeRecord: nil, surface: surface?.rawValue)
     }
     let outcomes = [
-        RouteFanoutOutcome(index: 0, target: plan.targets[0], adopted: step("codex", "2\n\nmore")),
-        RouteFanoutOutcome(index: 1, target: plan.targets[1], adopted: step("codex", "4")),
+        RouteFanoutOutcome(index: 0, target: plan.targets[0], adopted: step("codex", "2\n\nmore", .gptChat)),
+        RouteFanoutOutcome(index: 1, target: plan.targets[1], adopted: step("codex", "4", .codex)),
         RouteFanoutOutcome(index: 2, target: plan.targets[2], handoffReceipt: "/tmp/receipt.json"),
         RouteFanoutOutcome(index: 3, target: plan.targets[3], failure: "quota"),
     ]
@@ -7317,6 +7351,22 @@ func routeFanoutSummarySelfTest() throws {
     ClaudeChatLane.setExplicitSelection(true)
     let selected = ClaudeChatLane.ownerSelected
     ClaudeChatLane.setExplicitSelection(previous)
+    // The owner's own request (2026-10-02): each line names only the route the
+    // part went to, the way the owner named it.
+    let owner = "자 내가 하나만 요청해볼게. 1+1 GPT한테. 2+2 Codex한테. 3+3 Claude한테. 4+4 Claudecode한테. 라우팅 시켜서 답변 받아와."
+    let ownerLines: [String] = RouteFanout.plan(owner).map { ownerPlan in
+        let answers: [(String, String, ProviderSurface, String)] = [("codex", "2", .gptChat, "gpt-6-astra"),
+            ("codex", "4", .codex, "gpt-6-astra"), ("claude", "6", .claudeChat, "claude-sonnet-5-5"),
+            ("claude", "8", .claude, "claude-sonnet-5-5")]
+        let routed = answers.enumerated().map { index, answer in
+            RouteFanoutOutcome(index: index, target: ownerPlan.targets[index],
+                               adopted: step(answer.0, answer.1, answer.2, model: answer.3))
+        }
+        return routeFanoutSummary(plan: ownerPlan, outcomes: routed).split(separator: "\n").map(String.init)
+    } ?? []
+    let usageWords = ["usage", "limit", "사용량", "한도"]
+    let gptAsCodex = routeFanoutMismatch(requested: .gptChat, answered: step("codex", "2", .codex)) ?? ""
+    let codexAsClaude = routeFanoutMismatch(requested: .codex, answered: step("claude", "4", .claude)) ?? ""
     let checks: [(String, Bool)] = [
         ("counts executed routes only", lines.first?.contains("2/3") == true),
         ("first answer line only", lines.count > 1 && lines[1].hasSuffix("→ 2 · m") && lines[1].contains("GPT")),
@@ -7327,6 +7377,18 @@ func routeFanoutSummarySelfTest() throws {
         ("chat-lane selection settable", selected && ClaudeChatLane.ownerSelected == previous),
         ("a substitute answer is shown, not counted", substitutedLines.first?.contains("1/3") == true
             && substitutedLines.count > 2 && substitutedLines[2].contains("→ 4") && substitutedLines[2].hasSuffix("(substitute)")),
+        ("owner request: four routes answered", ownerLines.count == 6 && ownerLines[0].contains("4/4")),
+        ("owner request: each route named alone", ownerLines.count == 6
+            && ownerLines[1].hasPrefix("1. OpenAI GPT — 1+1 → 2") && !ownerLines[1].contains("Codex")
+            && ownerLines[2].hasPrefix("2. OpenAI Codex — 2+2 → 4")
+            && ownerLines[3].hasPrefix("3. Anthropic Claude — 3+3 → 6") && !ownerLines[3].contains("Claude Code")
+            && ownerLines[4].hasPrefix("4. Claude Code — 4+4 → 8")),
+        ("no usage or limit wording in a route", ownerLines.allSatisfy { line in
+            usageWords.allSatisfy { !line.lowercased().contains($0) } }),
+        ("same route, no mismatch", routeFanoutMismatch(requested: .claudeChat, answered: step("claude", "6", .claudeChat)) == nil
+            && routeFanoutMismatch(requested: .gptChat, answered: step("codex", "2")) == nil),
+        ("another lane of the same account is named", gptAsCodex.contains("OpenAI GPT") && gptAsCodex.contains("OpenAI Codex")),
+        ("another account is named", codexAsClaude.contains("OpenAI Codex") && codexAsClaude.contains("Claude Code")),
     ]
     let failed = checks.filter { !$0.1 }.map(\.0)
     guard failed.isEmpty else { throw OS1Error.message("Route fan-out summary self-test failed: " + failed.joined(separator: "; ")) }
@@ -8343,7 +8405,9 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
         }
         let attemptTimeout = min(config.executionTimeoutSeconds, max(1, Int(deadline.timeIntervalSinceNow) - 1))
         AttemptLatencyTrace.mark("lease")
-        RuntimeActivity.emit(.preparing, provider: ticket.provider, model: model, effort: effort)
+        RuntimeActivity.emit(.preparing, provider: ticket.provider, model: model, effort: effort,
+            surface: executedSurface(provider: ticket.provider, permission: ticket.permissionProfile,
+                                     hasSource: r2Evidence != nil, objective: prompt)?.rawValue)
         if progress {
             print("OS-1 step \(step): \(ticket.provider) / \(ticket.action) / \(effort) / \(ticket.permissionProfile)")
         }
@@ -8741,7 +8805,7 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
             model: model, effort: effort, revasDisposition: "verification_pending", sessionID: execution.sessionID,
             permissionProfile: ticket.permissionProfile, exitCode: artifact.exitCode, output: artifact.output,
             stderr: artifact.stderr, durationMS: artifact.durationMS, nativeRecord: execution.nativeRecord,
-            verifiedPreviewDelivery: verifiedPreviewDelivery)
+            verifiedPreviewDelivery: verifiedPreviewDelivery, surface: execution.surface?.rawValue)
         var delivery = DeliveryRecord(id: "\(ticket.executionID)-\(ticket.sequence)", apiURL: config.apiURL, deviceID: id,
             resultSHA256: resultHash, artifact: artifactData, upload: try JSONEncoder().encode(upload),
             submission: try JSONEncoder().encode(submission), step: try JSONEncoder().encode(pendingStep),
@@ -8932,7 +8996,8 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
                 stderr: artifact.stderr,
                 durationMS: artifact.durationMS,
                 nativeRecord: adoptedRecord,
-                verifiedPreviewDelivery: verifiedPreviewDelivery
+                verifiedPreviewDelivery: verifiedPreviewDelivery,
+                surface: execution.surface?.rawValue
             ))
         }
         if route.status == "failed" {
@@ -9024,7 +9089,7 @@ func resumeDelivery(_ identifier: String) async throws -> RunSummary {
     return RunSummary(status: "complete", steps: [RunStepSummary(sequence: step.sequence, provider: step.provider,
         action: step.action, model: step.model, effort: step.effort, revasDisposition: "adopted", sessionID: step.sessionID,
         permissionProfile: step.permissionProfile, exitCode: step.exitCode, output: step.output, stderr: step.stderr,
-        durationMS: step.durationMS, nativeRecord: native)], sourceContext: record.source)
+        durationMS: step.durationMS, nativeRecord: native, surface: step.surface)], sourceContext: record.source)
 }
 
 func printRunSummary(_ summary: RunSummary) {

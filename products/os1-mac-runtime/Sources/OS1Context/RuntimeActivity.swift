@@ -13,10 +13,15 @@ public struct RuntimeActivity: Codable, Equatable, Sendable {
     public let publicText: String?
     public let tool: String?
     public let nativeSessionID: String?
-    public init(_ phase: Phase, provider: String? = nil, model: String? = nil, effort: String? = nil, timestamp: Date = Date(), publicText: String? = nil, tool: String? = nil, nativeSessionID: String? = nil) {
+    /// The lane the provider runs on (a `ProviderSurface` raw value). GPT chat
+    /// and Codex share the provider "codex", Claude chat and Claude Code share
+    /// "claude", so the provider alone cannot say which route is answering.
+    public let surface: String?
+    public init(_ phase: Phase, provider: String? = nil, model: String? = nil, effort: String? = nil, timestamp: Date = Date(), publicText: String? = nil, tool: String? = nil, nativeSessionID: String? = nil, surface: String? = nil) {
         self.phase = phase; self.provider = provider; self.model = model; self.effort = effort; self.timestamp = timestamp
         self.publicText = publicText; self.tool = tool
         self.nativeSessionID = nativeSessionID.flatMap { UUID(uuidString: $0)?.uuidString.lowercased() }
+        self.surface = surface
     }
     public var label: String {
         switch phase {
@@ -41,7 +46,7 @@ public struct RuntimeActivity: Codable, Equatable, Sendable {
         default: return os1Tr("도구 작업 진행 중", "Tool work in progress")
         }
     }
-    public static func emit(_ phase: Phase, provider: String? = nil, model: String? = nil, effort: String? = nil, publicText: String? = nil, tool: String? = nil, nativeSessionID: String? = nil) {
+    public static func emit(_ phase: Phase, provider: String? = nil, model: String? = nil, effort: String? = nil, publicText: String? = nil, tool: String? = nil, nativeSessionID: String? = nil, surface: String? = nil) {
         guard let path = ProcessInfo.processInfo.environment["OS1_ACTIVITY_FILE"] else { return }
         let previous = (try? Data(contentsOf:URL(fileURLWithPath:path))).flatMap { try? JSONDecoder().decode(Self.self,from:$0) }
         let retained = [.verifying, .syncing].contains(phase) ? previous?.publicText : nil
@@ -49,7 +54,8 @@ public struct RuntimeActivity: Codable, Equatable, Sendable {
         guard let data = try? JSONEncoder().encode(Self(phase, provider: provider,
             model: model ?? (sameProvider ? previous?.model : nil), effort: effort ?? (sameProvider ? previous?.effort : nil),
             publicText: publicText ?? retained, tool: tool,
-            nativeSessionID: nativeSessionID ?? (sameProvider ? previous?.nativeSessionID : nil))) else { return }
+            nativeSessionID: nativeSessionID ?? (sameProvider ? previous?.nativeSessionID : nil),
+            surface: surface ?? (sameProvider ? previous?.surface : nil))) else { return }
         // Best-effort display telemetry must not fail or change execution.
         try? data.write(to: URL(fileURLWithPath: path), options: .atomic)
         if let journal = ProcessInfo.processInfo.environment["OS1_EVENT_JOURNAL"] {

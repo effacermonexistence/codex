@@ -148,6 +148,45 @@ public enum ProviderSurface: String, Codable, Sendable, CaseIterable {
         }
     }
 
+    /// The route as the owner names it, and nothing else: "GPT", "Codex",
+    /// "Claude", "Claude Code". Whose usage a surface spends is `usageLine`,
+    /// never part of the name: "GPT chat (OpenAI GPT · Codex usage)" read as
+    /// Codex, and two Claude routes that both ended in "Claude limit" left the
+    /// owner unable to tell where a request went (owner, 2026-10-02).
+    public var routeName: String {
+        switch self {
+        case .auto: return os1Tr("자동", "Auto")
+        case .gptChat: return "GPT"
+        case .codex: return "Codex"
+        case .claudeChat: return "Claude"
+        case .claude: return "Claude Code"
+        case .chatgpt: return "ChatGPT"
+        }
+    }
+
+    /// The destination with its company where the name alone does not carry
+    /// it, in the owner's own words: "OpenAI GPT", "OpenAI Codex",
+    /// "Anthropic Claude", "Claude Code".
+    public var routeLabel: String {
+        switch self {
+        case .auto: return os1Tr("자동", "Auto")
+        case .gptChat: return "OpenAI GPT"
+        case .codex: return "OpenAI Codex"
+        case .claudeChat: return "Anthropic Claude"
+        case .claude: return "Claude Code"
+        case .chatgpt: return os1Tr("ChatGPT 앱(넘김)", "ChatGPT app (handoff)")
+        }
+    }
+
+    /// The surface a recorded step or activity actually ran on. Nil when the
+    /// record does not say (older records) or names a surface of another
+    /// provider, so a stored value can never relabel Claude as GPT.
+    public static func executed(_ raw: String?, provider: String?) -> ProviderSurface? {
+        guard let raw, let surface = ProviderSurface(rawValue: raw), surface != .auto, surface.isExecutor,
+              surface.gatewayPreference == provider?.lowercased() else { return nil }
+        return surface
+    }
+
     /// Menu label: what the surface does, not merely its name.
     public var choiceTitle: String {
         switch self {
@@ -370,6 +409,24 @@ public enum ChatGPTHandoff {
         checks.append(ProviderSurface.chatgpt.railBadge != nil && ProviderSurface.claudeChat.railBadge != nil
                       && ProviderSurface.gptChat.railBadge != nil)
         checks.append(ProviderSurface.allCases.allSatisfy { !$0.choiceTitle.isEmpty })
+        // A route is named by its destination alone: four distinct names, no
+        // usage or limit wording, GPT never called Codex and Claude chat
+        // never called Claude Code.
+        let executors: [ProviderSurface] = [.gptChat, .codex, .claudeChat, .claude]
+        checks.append(executors.map(\.routeName) == ["GPT", "Codex", "Claude", "Claude Code"])
+        checks.append(executors.map(\.routeLabel) == ["OpenAI GPT", "OpenAI Codex", "Anthropic Claude", "Claude Code"])
+        checks.append(executors.allSatisfy { surface in
+            ["usage", "limit", "사용량", "한도"].allSatisfy { !surface.routeLabel.lowercased().contains($0) } })
+        checks.append(!ProviderSurface.gptChat.routeLabel.contains("Codex")
+                      && !ProviderSurface.claudeChat.routeLabel.contains("Code"))
+        // A recorded lane is believed only for its own provider.
+        checks.append(ProviderSurface.executed("gpt-chat", provider: "codex") == .gptChat)
+        checks.append(ProviderSurface.executed("claude-chat", provider: "claude") == .claudeChat)
+        checks.append(ProviderSurface.executed("claude", provider: "CLAUDE") == .claude)
+        checks.append(ProviderSurface.executed("gpt-chat", provider: "claude") == nil)
+        checks.append(ProviderSurface.executed("chatgpt", provider: nil) == nil)
+        checks.append(ProviderSurface.executed("auto", provider: "auto") == nil)
+        checks.append(ProviderSurface.executed(nil, provider: "codex") == nil)
         guard checks.allSatisfy({ $0 }) else { throw ProviderSurfaceError.regression }
         print("OS-1 provider surfaces: \(checks.count) checks OK")
     }

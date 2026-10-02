@@ -86,9 +86,23 @@ private func providerDisplayName(_ provider: String?) -> String {
     provider == "local" ? "OS-1" : (provider ?? "OS-1").uppercased()
 }
 
-/// The executor that ran and the model it ran are separate facts: a `gpt-*`
-/// model under Codex must never read like a ChatGPT/GPT route (owner report
-/// 2026-09-23: "코덱스의 라우팅인지 GPT의 라우팅인지 구분이 안가").
+/// Who answered, named by the route that ran: "GPT", "CODEX", "CLAUDE",
+/// "CLAUDE CODE". Through build 295 every GPT answer read CODEX and every Claude
+/// chat answer read CLAUDE like Claude Code, so the owner could not see where
+/// a request had gone (owner, 2026-10-02). A message recorded before the lane
+/// was kept shows its provider, as before.
+private func speakerName(provider: String?, surface: String?) -> String {
+    ProviderSurface.executed(surface, provider: provider)?.routeName.uppercased() ?? providerDisplayName(provider)
+}
+
+private func messageSpeakerName(_ message: ChatMessage) -> String {
+    speakerName(provider: message.provider, surface: message.surface)
+}
+
+/// The route that ran and the model it ran are separate facts: a `gpt-*`
+/// model under Codex must never read like the GPT route, and the GPT route
+/// never like Codex (owner reports 2026-09-23: "코덱스의 라우팅인지 GPT의
+/// 라우팅인지 구분이 안가", and 2026-10-02).
 private struct ExecutionRoutePresentation: Equatable {
     let executionLine: String
     let modelLine: String?
@@ -100,14 +114,28 @@ private struct ExecutionRoutePresentation: Equatable {
         case _ where activity == nil:
             executionLine = os1Tr("라우팅 결과: 실행 기록 없음", "Route: no execution recorded")
             detail = os1Tr("이 대화에는 현재 실행 백엔드 기록이 없습니다.", "This conversation has no running backend record.")
-        case "codex":
-            executionLine = os1Tr("라우팅 결과: Codex 실행 · OpenAI Codex 한도", "Route: Codex · OpenAI Codex usage")
-            detail = os1Tr("Codex가 실제 실행 경로이고 Codex 사용량을 씁니다(ChatGPT 채팅 한도와 별개). gpt-*는 모델 이름이며 ChatGPT 경로를 뜻하지 않습니다.",
-                           "Codex is the executor and uses Codex usage (separate from ChatGPT chat limits). gpt-* is the model name, not a ChatGPT route.")
-        case "claude":
-            executionLine = os1Tr("라우팅 결과: Claude Code 실행 · Anthropic 한도", "Route: Claude Code · Anthropic usage")
-            detail = os1Tr("Claude Code가 실제 실행 경로이고 Claude 채팅과 같은 Anthropic 한도를 씁니다. 모델 이름은 따로 표시합니다.",
-                           "Claude Code is the executor and shares the Anthropic plan limit with Claude chat. The model name is shown separately.")
+        case "codex", "claude":
+            // The lane the runtime reports; without one, the provider's own
+            // agent, which is what runs unless a chat lane reports itself.
+            // Only the destination is named: usage beside it made GPT read as
+            // Codex (owner, 2026-10-02).
+            let route = ProviderSurface.executed(activity?.surface, provider: provider)
+                ?? (provider == "codex" ? .codex : .claude)
+            executionLine = os1Tr("라우팅 결과: \(route.routeLabel)", "Route: \(route.routeLabel)")
+            switch route {
+            case .gptChat:
+                detail = os1Tr("OpenAI GPT 채팅 경로입니다. 코딩 도구 없이 모델이 요청에만 답합니다. 모델 이름은 따로 표시합니다.",
+                               "The OpenAI GPT chat route: the model answers the request alone, without coding tools. The model name is shown separately.")
+            case .claudeChat:
+                detail = os1Tr("Anthropic Claude 채팅 경로입니다. 코딩 도구 없이 모델이 요청에만 답합니다. 모델 이름은 따로 표시합니다.",
+                               "The Anthropic Claude chat route: the model answers the request alone, without coding tools. The model name is shown separately.")
+            case .claude:
+                detail = os1Tr("Claude Code 에이전트가 실행합니다. 모델 이름은 따로 표시합니다.",
+                               "The Claude Code agent runs this. The model name is shown separately.")
+            default:
+                detail = os1Tr("OpenAI Codex 에이전트가 실행합니다. gpt-*는 모델 이름이며 GPT 채팅 경로를 뜻하지 않습니다.",
+                               "The OpenAI Codex agent runs this. gpt-* is the model name, not the GPT chat route.")
+            }
         case "local":
             executionLine = os1Tr("라우팅 결과: OS-1 내부 처리", "Route: handled inside OS-1")
             detail = os1Tr("외부 Codex·Claude Code 실행 없이 OS-1이 처리했습니다.", "OS-1 handled this without a Codex or Claude Code run.")
@@ -610,6 +638,38 @@ private func providerIntentSelfTest() throws {
     var fullPart = review
     fullPart.workflowStage = "route codex"
     let ownerFanout = "1+1 GPT한테. 2+2 Codex한테. 3+3 Claude한테. 4+4 Claudecode한테. 라우팅 시켜서 답변 받아와."
+    // Each answer is headed by the route that ran it (owner, 2026-10-02).
+    let routeAnswers = [ChatMessage(role: .assistant, text: "2", provider: "codex", surface: "gpt-chat"),
+                        ChatMessage(role: .assistant, text: "4", provider: "codex", surface: "codex"),
+                        ChatMessage(role: .assistant, text: "6", provider: "claude", surface: "claude-chat"),
+                        ChatMessage(role: .assistant, text: "8", provider: "claude", surface: "claude")]
+    let legacyAnswer = ChatMessage(role: .assistant, text: "x", provider: "claude")
+    let forgedAnswer = ChatMessage(role: .assistant, text: "x", provider: "claude", surface: "gpt-chat")
+    let routeTranscript = timelineAttributedDocument(messages: [ChatMessage(role: .user, text: ownerFanout)] + routeAnswers,
+        queuedSubmissions: [], isRunning: false, workspace: "/tmp", expandAll: true).string
+    let headers = ["GPT", "CODEX", "CLAUDE", "CLAUDE CODE"]
+    var headerCursor = routeTranscript.startIndex
+    var headersInOrder = true
+    for (header, answer) in zip(headers, ["2", "4", "6", "8"]) {
+        guard let range = routeTranscript.range(of: header + "\n\n" + answer, range: headerCursor..<routeTranscript.endIndex) else {
+            headersInOrder = false
+            break
+        }
+        headerCursor = range.upperBound
+    }
+    let storedAnswer = try JSONDecoder().decode(ChatMessage.self, from: JSONEncoder().encode(routeAnswers[0]))
+    let savedBeforeLanes = try JSONDecoder().decode(ChatMessage.self, from: Data(
+        #"{"id":"8eaa48c6-af59-4f4c-a2be-9a0ec3b6fc41","role":"assistant","text":"x","provider":"codex","timestamp":0}"#.utf8))
+    let laneStep = try JSONDecoder().decode(AppRunStep.self, from: Data(#"{"sequence":1,"provider":"codex","action":"agent_run","model":"gpt-6-astra","effort":"max","revas_disposition":"adopted","session_id":"8eaa48c6-af59-4f4c-a2be-9a0ec3b6fc42","permission_profile":"read_only","exit_code":0,"output":"2","stderr":"","duration_ms":1,"surface":"gpt-chat"}"#.utf8))
+    guard routeAnswers.map(messageSpeakerName) == headers, headersInOrder,
+          messageSpeakerName(legacyAnswer) == "CLAUDE", messageSpeakerName(forgedAnswer) == "CLAUDE",
+          storedAnswer.surface == "gpt-chat", savedBeforeLanes.surface == nil, messageSpeakerName(savedBeforeLanes) == "CODEX",
+          laneStep.surface == "gpt-chat", backendTierLabel(action: laneStep.action, provider: laneStep.provider,
+                                                           surface: laneStep.surface).contains("OpenAI GPT"),
+          try SessionHandoff.decode(sessionHandoff(ConversationSession(workspace: "/tmp", messages: routeAnswers)))
+              .transcript.contains("GPT:\n2") else {
+        throw RunnerError.message("OS-1 route label UI self-test failed.")
+    }
     guard fanoutVerified, unknownSurfaceRejected, emptyRoutesRejected,
           requestedProvider(for: ownerFanout, configured: .auto) == .auto,
           requestedProvider(for: ownerFanout, configured: .claude) == .auto,
@@ -3487,6 +3547,9 @@ private struct ChatMessage: Codable, Identifiable, Equatable, Sendable {
     /// the bubble can show whether OS-1 is still handing it over or the run
     /// actually received it. Absent on every ordinary message.
     var steeringDelivery: SteeringDeliveryState? = nil
+    /// The lane that answered (`ProviderSurface` raw value), so the header says
+    /// GPT, Codex, Claude or Claude Code. Absent on messages saved before it.
+    var surface: String? = nil
 
     init(
         id: UUID = UUID(),
@@ -3496,7 +3559,8 @@ private struct ChatMessage: Codable, Identifiable, Equatable, Sendable {
         permissionProfile: String? = nil,
         timestamp: Date = Date(),
         nativeRecordVerified: Bool? = nil,
-        nativeIngestedID: String? = nil
+        nativeIngestedID: String? = nil,
+        surface: String? = nil
     ) {
         self.id = id
         self.role = role
@@ -3506,6 +3570,7 @@ private struct ChatMessage: Codable, Identifiable, Equatable, Sendable {
         self.timestamp = timestamp
         self.nativeRecordVerified = nativeRecordVerified
         self.nativeIngestedID = nativeIngestedID
+        self.surface = surface
     }
 }
 
@@ -3661,13 +3726,13 @@ private func sessionHandoff(_ session: ConversationSession, before userMessageID
     // Retain all available turns up to the transport's UTF-8 byte budget,
     // instead of discarding a decision solely because it is 17 messages old.
     let text = bounded.filter { $0.nativeManagedTurnID == nil && ($0.role == .user || $0.role == .assistant) }.map { message in
-        var speaker = message.role == .user ? "USER" : providerDisplayName(message.provider)
+        var speaker = message.role == .user ? "USER" : messageSpeakerName(message)
         if message.nativeIngestedID != nil { speaker += " [native session, outside OS-1]" }
         var content = message.text
         if message.role == .assistant, message.nativeRecordVerified == false {
             content = "[UNVERIFIED BACKEND OUTPUT — saved locally, not adopted or completed]\n" + content
         }
-        for marker in ["USER", "OS-1", "CLAUDE", "CODEX"] {
+        for marker in ["USER", "OS-1", "CLAUDE", "CODEX", "GPT", "CLAUDE CODE"] {
             content = content.replacingOccurrences(of: "\n\n\(marker):\n", with: "\n\n[quoted \(marker)]:\n")
         }
         return "\(speaker):\n\(content)"
@@ -3808,9 +3873,11 @@ private struct AppRunStep: Decodable, Sendable {
     var verifiedPreviewDelivery: VerifiedPreviewDelivery? = nil
     /// On a review's answer: the draft it checked against the code.
     var reviewedDraft: String? = nil
+    /// The lane that actually ran ("gpt-chat", "codex", "claude-chat", "claude").
+    var surface: String? = nil
 
     enum CodingKeys: String, CodingKey {
-        case sequence, provider, action, model, effort, output, stderr
+        case sequence, provider, action, model, effort, output, stderr, surface
         case revasDisposition = "revas_disposition"
         case sessionID = "session_id"
         case permissionProfile = "permission_profile"
@@ -4434,11 +4501,11 @@ private enum RunnerError: LocalizedError {
     }
 }
 
-private func backendTierLabel(action: String, provider: String) -> String {
+private func backendTierLabel(action: String, provider: String, surface: String? = nil) -> String {
     if provider == "local" || action == "deterministic_compute" || action == "os1_exact" {
         return "OS-1"
     }
-    let engine = provider == "codex" ? "Codex" : "Claude"
+    let engine = ProviderSurface.executed(surface, provider: provider)?.routeLabel ?? (provider == "codex" ? "Codex" : "Claude")
     switch action {
     case "agent_run_efficient": return "Efficient \(engine) backend"
     case "agent_run_deep": return "Deep \(engine) backend"
@@ -6235,11 +6302,11 @@ private final class SessionStore: ObservableObject {
                             }
                             sessions[target].messages.append(ChatMessage(role: .assistant,
                                 text: step.output, provider: step.provider,
-                                permissionProfile: step.permissionProfile))
+                                permissionProfile: step.permissionProfile, surface: step.surface))
                             sessions[target].messages.append(ChatMessage(role: .receipt,
-                                text: "workflow \(step.workflowStage ?? "stage") · \(step.provider) · \(nativeRecordReceipt(step)) · 중간 단계 보존, 원래 작업 미완료",
+                                text: "workflow \(step.workflowStage ?? "stage") · \(speakerName(provider: step.provider, surface: step.surface)) · \(nativeRecordReceipt(step)) · 중간 단계 보존, 원래 작업 미완료",
                                 provider: step.provider, permissionProfile: step.permissionProfile,
-                                nativeRecordVerified: true))
+                                nativeRecordVerified: true, surface: step.surface))
                         }
                         sessions[target].updatedAt = Date()
                         appendTaskEvent(conversationID: submission.sessionID, kind: "workflow_blocked",
@@ -6315,17 +6382,19 @@ private final class SessionStore: ObservableObject {
                             ? (visibleError.isEmpty ? "The engine finished without text output." : visibleError)
                             : visibleOutput,
                         provider: step.provider,
-                        permissionProfile: step.permissionProfile
+                        permissionProfile: step.permissionProfile,
+                        surface: step.surface
                     ))
                     sessions[target].messages.append(ChatMessage(
                         role: .receipt,
-                        text: "\(backendTierLabel(action: step.action, provider: step.provider)) · \(step.model ?? "provider default") · \(step.effort) reasoning · \(step.revasDisposition == "control_verified" ? "OS-1 control verified" : "REVAS adopted") · \(step.reviewedDraft.map { os1Tr("\($0) 초안을 코드와 대조해 검토", "checked the \($0) draft against the code") + " · " } ?? "")\(nativeRecordReceipt(step)) · \(step.workflowStage.map { "workflow \($0) · " } ?? "")step \(step.sequence) · \(step.durationMS / 1_000)s · exit \(step.exitCode)" +
+                        text: "\(backendTierLabel(action: step.action, provider: step.provider, surface: step.surface)) · \(step.model ?? "provider default") · \(step.effort) reasoning · \(step.revasDisposition == "control_verified" ? "OS-1 control verified" : "REVAS adopted") · \(step.reviewedDraft.map { os1Tr("\($0) 초안을 코드와 대조해 검토", "checked the \($0) draft against the code") + " · " } ?? "")\(nativeRecordReceipt(step)) · \(step.workflowStage.map { "workflow \($0) · " } ?? "")step \(step.sequence) · \(step.durationMS / 1_000)s · exit \(step.exitCode)" +
                             (step.provider != "local" && summary.sourceContext != nil
                                 ? " · source snapshot delivered: \(summary.sourceContext!.sha256)" : ""),
                         provider: step.provider,
                         permissionProfile: step.permissionProfile,
                         nativeRecordVerified: stepRecordIsVerified(step) &&
-                            (step.revasDisposition == "adopted" || step.provider == "local")
+                            (step.revasDisposition == "adopted" || step.provider == "local"),
+                        surface: step.surface
                     ))
                 }
                 sessions[target].updatedAt = Date()
@@ -8115,8 +8184,21 @@ private func codexShellSelfTest() throws {
     try check(codexRoute.modelLine?.contains("gpt-5.6-luna") == true && codexRoute.governanceLine.contains("gpt-5.6-luna"), "the GPT model name stays beside the Codex executor")
     let claudeRoute = ExecutionRoutePresentation(activity: RuntimeActivity(.executing, provider: "claude", model: "claude-fixture"))
     try check(claudeRoute.executionLine.contains("Claude Code"), "Claude Code executor is explicit")
-    try check(codexRoute.executionLine.contains("OpenAI") && claudeRoute.executionLine.contains("Anthropic")
-              && !codexRoute.executionLine.contains("ChatGPT"), "the route names whose usage it spends, and never claims ChatGPT")
+    try check(codexRoute.executionLine.contains("OpenAI Codex") && !codexRoute.executionLine.contains("ChatGPT"),
+              "the Codex route names its company and never claims ChatGPT")
+    // Each lane reports itself; the route names only the destination.
+    let gptLane = ExecutionRoutePresentation(activity: RuntimeActivity(.executing, provider: "codex", model: "gpt-6-astra", surface: "gpt-chat"))
+    let claudeChatLane = ExecutionRoutePresentation(activity: RuntimeActivity(.executing, provider: "claude", model: "claude-fixture", surface: "claude-chat"))
+    let claudeCodeLane = ExecutionRoutePresentation(activity: RuntimeActivity(.executing, provider: "claude", model: "claude-fixture", surface: "claude"))
+    let forgedLane = ExecutionRoutePresentation(activity: RuntimeActivity(.executing, provider: "claude", surface: "gpt-chat"))
+    try check(gptLane.executionLine.contains("OpenAI GPT") && !gptLane.executionLine.contains("Codex"), "the GPT lane never reads as Codex")
+    try check(claudeChatLane.executionLine.contains("Anthropic Claude") && !claudeChatLane.executionLine.contains("Claude Code"),
+              "the Claude chat lane never reads as Claude Code")
+    try check(claudeCodeLane.executionLine.contains("Claude Code") && forgedLane.executionLine.contains("Claude Code"),
+              "Claude Code is named, and another provider's lane is not believed")
+    try check([codexRoute, claudeRoute, gptLane, claudeChatLane, claudeCodeLane].allSatisfy { route in
+        ["usage", "limit", "사용량", "한도"].allSatisfy { !route.executionLine.lowercased().contains($0) } },
+              "no route names usage or limits")
     let pendingRoute = ExecutionRoutePresentation(activity: RuntimeActivity(.routing))
     try check(pendingRoute.modelLine == nil && !pendingRoute.executionLine.contains("Codex") && !pendingRoute.executionLine.contains("Claude"),
               "unresolved routing never impersonates an executor")
@@ -11093,7 +11175,7 @@ private struct SessionExecutionBadge: View {
     }
 
     private var providerTitle: String {
-        providerDisplayName(activity.provider)
+        speakerName(provider: activity.provider, surface: activity.surface)
     }
 
     var body: some View {
@@ -11582,7 +11664,7 @@ private func timelineAttributedDocument(
                 )
             }
         case .assistant:
-            let provider = providerDisplayName(message.provider)
+            let provider = messageSpeakerName(message)
             let providerColor = message.provider == "local"
                 ? TimelinePalette.green
                 : (message.provider == "claude" ? TimelinePalette.claude : TimelinePalette.codex)
@@ -11639,7 +11721,7 @@ private func timelineAttributedDocument(
 
 private func completeTranscriptText(_ messages: [ChatMessage]) -> String {
     messages.map { message in
-        let title = message.role == .user ? "USER" : message.role == .receipt ? "실행 기록 (정확성 보증 아님)" : providerDisplayName(message.provider)
+        let title = message.role == .user ? "USER" : message.role == .receipt ? "실행 기록 (정확성 보증 아님)" : messageSpeakerName(message)
         return "\(title)\n\(message.text)"
     }.joined(separator: "\n\n")
 }
