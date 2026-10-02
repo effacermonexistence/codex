@@ -654,21 +654,21 @@ struct OS1SourceWatch: Equatable {
 /// Finish an OS-1 source change made by a task that was not bound to OS-1.
 /// Never waits for another writer: its build would include this change.
 func finishUnboundOS1Change(_ watch: OS1SourceWatch, objective: String, startedAt: Date) -> String {
-    // Another HOME task still holds the shared lease, so the change may be
-    // its own — the watch sees the tree, not who wrote it. Stay silent: the
-    // last task to finish (or the next repair) completes it. On 2026-10-02 a
-    // domain-name answer said "this task changed OS-1's source" while another
-    // conversation's repair was editing it.
-    guard let lease = try? tryAcquireOS1SourceWriteLease(root: watch.root) else { return "" }
+    // The watch sees the tree, not who wrote it: another HOME task running
+    // at the same time may have made the change. Say so instead of claiming
+    // it (2026-10-02, a domain-name answer said "this task changed OS-1's
+    // source" while another conversation's repair was editing it).
+    let busy = os1Tr("OS-1 자체 수리 대기: 이 작업이 진행되는 동안 OS-1 소스(\(watch.root))가 바뀌었습니다. 이 작업이 바꾼 것인지 같은 시간에 돈 다른 작업이 바꾼 것인지는 구분하지 않았습니다. 다른 작업이 같은 소스를 쓰고 있어 지금 빌드하지 않았고, 변경은 작업 트리에 그대로 두어 다음 자체 수리 빌드에 함께 빌드·설치됩니다.",
+        "OS-1 self-repair pending: OS-1's source (\(watch.root)) changed while this task ran — by this task or by another one running at the same time. Another task is using the same source, so it was not built now; the change stays in the working tree and is built and installed with the next repair.")
+    guard let lease = try? tryAcquireOS1SourceWriteLease(root: watch.root) else { return busy }
     defer { withExtendedLifetime(lease) {} }
-    // Commits OS-1 itself made meanwhile belong to another repair, which
-    // builds what it changed; this task did not, so it says nothing.
+    // Commits OS-1 itself made meanwhile belong to another repair.
     if let start = watch.head, let head = gitHead(watch.root), head != start, let git = try? findExecutable("git"),
        let log = try? commandOutput(git, ["-C", watch.root, "log", "--format=%s", "\(start)..\(head)"], timeout: 20), log.0 == 0,
        String(decoding: log.1, as: UTF8.self).split(separator: "\n").contains(where: {
            $0.hasPrefix("os1: self-repair build") || $0.hasPrefix("OS-1 build")
        }) {
-        return ""
+        return busy
     }
     switch completeOS1SelfRepair(root: watch.root, objective: objective, startedAt: startedAt, startHead: watch.head) {
     case .notApplicable: return ""
