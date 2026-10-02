@@ -432,6 +432,60 @@ func runTaskContextFixtures(root: URL) throws {
     try check(NativeIngestion.newRecords(records, after: nil, sentByOS1: held, seen: []).records.map(\.id) == ["u2"],
               "an adopted output OS1 already holds is skipped by digest even without a seen id")
 
+    // A poll during generation must not consume the answer's ordinal. The
+    // backend later completes the same record, rather than appending a new ID.
+    try check(first1.nextCursor == "3", "cursor stops before an in-progress answer")
+    let pendingAgain = NativeIngestion.newRecords(records, after: first1.nextCursor, sentByOS1: sent, seen: ["a1", "u2"])
+    try check(pendingAgain.records.isEmpty && pendingAgain.nextCursor == "3",
+              "repeated polls neither import partial text nor advance its cursor")
+    let completedAnswer = NativeRecord(id: "a2", ordinal: 4, role: "assistant", text: "완성된 답변입니다.", complete: true)
+    let completedRecords = Array(records.dropLast()) + [completedAnswer]
+    let finished = NativeIngestion.newRecords(completedRecords, after: pendingAgain.nextCursor, sentByOS1: sent, seen: ["a1", "u2"])
+    try check(finished.records == [completedAnswer], "the completed answer is imported with its original ID and ordinal")
+    try check(finished.nextCursor == "4", "cursor advances only after answer completion")
+    let repeated = NativeIngestion.newRecords(completedRecords, after: finished.nextCursor, sentByOS1: sent, seen: ["a1", "u2", "a2"])
+    try check(repeated.records.isEmpty && repeated.nextCursor == "4", "completed answer is not imported twice")
+
+    do {
+        let before = NativeRecord(id: "before", ordinal: 10, role: "user", text: "external question", complete: true)
+        let partial = NativeRecord(id: "pending", ordinal: 20, role: "assistant", text: "draft", complete: false)
+        let later = NativeRecord(id: "later", ordinal: 30, role: "user", text: "later question", complete: true)
+        // Sorting and sparse ordinals must not let a later complete record
+        // push the cursor past an earlier unfinished one.
+        let stream = [later, partial, before]
+        let first = NativeIngestion.newRecords(stream, after: nil, sentByOS1: [], seen: [])
+        try check(first.records == [before] && first.nextCursor == "10", "ingestion returns only the completed prefix in ordinal order")
+        try check(NativeIngestion.consumedCursor(stream, after: nil) == first.nextCursor,
+                  "normal ingestion and consumed cursor share the incomplete-record boundary")
+        let onlyPartial = NativeIngestion.newRecords([partial], after: nil, sentByOS1: [], seen: [])
+        try check(onlyPartial.records.isEmpty && onlyPartial.nextCursor == nil, "an initial partial record leaves the cursor unset")
+        let withCursor = NativeIngestion.newRecords([later, partial], after: "10", sentByOS1: [], seen: [])
+        try check(withCursor.records.isEmpty && withCursor.nextCursor == "10", "an incomplete first unseen record preserves the existing cursor")
+        let empty = NativeIngestion.newRecords([], after: "10", sentByOS1: [], seen: [])
+        try check(empty.records.isEmpty && empty.nextCursor == "10", "an empty poll preserves the existing cursor")
+        let complete = NativeRecord(id: partial.id, ordinal: partial.ordinal, role: partial.role, text: "final answer", complete: true)
+        let resumed = NativeIngestion.newRecords([later, complete, before], after: first.nextCursor, sentByOS1: [], seen: [before.id])
+        try check(resumed.records == [complete, later] && resumed.nextCursor == "30",
+                  "completion releases the pending answer and later records in order")
+    }
+
+    do {
+        // Completed records excluded by dedupe, ownership or dispatch wrappers
+        // still consume their ordinals; none may consume a partial record.
+        let filtered = [
+            NativeRecord(id: "seen", ordinal: 1, role: "assistant", text: "already seen", complete: true),
+            NativeRecord(id: "sent", ordinal: 2, role: "user", text: "already sent", complete: true),
+            NativeRecord(id: "owned", ordinal: 3, role: "assistant", text: "own intermediate answer", complete: true, turnID: "owned"),
+            NativeRecord(id: "control", ordinal: 4, role: "user", text: "Continue the same user-selected work session.", complete: true),
+            NativeRecord(id: "partial", ordinal: 5, role: "assistant", text: "already sent", complete: false, turnID: "owned"),
+            NativeRecord(id: "after-partial", ordinal: 6, role: "user", text: "external work", complete: true),
+        ]
+        let skipped = NativeIngestion.newRecords(filtered, after: nil, sentByOS1: [NativeIngestion.digestOf("already sent")],
+                                                 seen: ["seen", "partial"], ownedTurnIDs: ["owned"])
+        try check(skipped.records.isEmpty && skipped.nextCursor == "4", "completed filtered records advance, but even a filtered partial remains pending")
+        try check(NativeIngestion.consumedCursor(filtered, after: nil) == "4", "consumed cursor also stops before a filtered partial")
+    }
+
     let originalRequest = "바다와 호수의 차이를 설명해."
     let legacyHints = "\nVerified local directory candidates from the existing project registry (not a write grant or an active-release claim):\n- /tmp/example-project\nInspect relevant exact paths first. Do not run recursive Glob/Grep over HOME. Preserve the user's selected workspace and verify which project/release is actually active before changes.\n"
     let legacyRecord = NativeRecord(id: "legacy-hint", ordinal: 1, role: "user", text: originalRequest + legacyHints, complete: true)
