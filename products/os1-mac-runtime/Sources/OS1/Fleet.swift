@@ -746,6 +746,15 @@ func fleetRunsStaged(_ prompt: String) -> Bool {
 /// A failed job still returns what its backend produced when only adoption
 /// failed (the answer the app shows): the caller must not lose a correct
 /// answer to a verifier disagreement. Bounded; never a success claim.
+/// A job whose agent process ended while it ran. Never re-executed.
+func fleetInterruptedResult(jobID: String) -> [String: String] {
+    [
+        "error": "Fleet job interrupted: the OS-1 fleet agent ended while it ran (crash, restart or update). It was not re-executed.",
+        "job_id": jobID,
+        "partial_work": "Inspect this job's native records and checkout (~/.os1/fleet/jobs/\(jobID)/repository) before resuming remaining work.",
+    ]
+}
+
 func fleetFailureResult(error: Error, jobID: String, notice: BackendFailureNotice?) -> [String: String] {
     var result = [
         "error": String(String(describing: error).prefix(8_000)),
@@ -839,8 +848,20 @@ func runFleetAgent(role: String, once: Bool) async throws {
                     throw OS1Error.message("Fleet active job belongs to another device")
                 }
                 if work.phase == "running" {
-                    // A process crash is not permission to repeat external writes.
-                    throw OS1Error.message("Fleet job \(work.assignment.jobID) was interrupted; native execution reconciliation is required. Preserved state prevents duplicate execution.")
+                    // This loop runs each job inline, so a "running" record here
+                    // was left by an agent process that ended mid-job (crash,
+                    // restart, update). A crash is not permission to repeat
+                    // external writes: report the job interrupted with its
+                    // preserved checkout and free the agent. Until 2026-10-02
+                    // this threw on every pass, and job bf14bb2a kept the fleet
+                    // from claiming anything — and every staged OS-1 build from
+                    // installing, since the fleet stayed busy — for 3.5 hours.
+                    work.result = String(decoding: try JSONEncoder().encode(
+                        fleetInterruptedResult(jobID: work.assignment.jobID)), as: UTF8.self)
+                    work.outcome = "failed"
+                    work.phase = "delivery_pending"
+                    try fleetPersist(work, at: activeFile)
+                    fputs("OS-1 fleet: job \(work.assignment.jobID) was interrupted by an agent restart; reported as failed without re-execution\n", stderr)
                 }
                 if work.phase == "claimed" {
                     guard work.assignment.expiresAtMs > fleetNowMs() else {
@@ -1444,6 +1465,13 @@ func fleetSelfTest() throws {
         invalid.exoAPIURL = address
         try check((try? EXOConfiguration(runtimeConfig: invalid)) == nil, "non-loopback or credential URL accepted")
     }
+    // An interrupted job is reported with the failure result's own keys, so
+    // fleet-result readers parse it, and it names its preserved checkout.
+    let interrupted = fleetInterruptedResult(jobID: "job-1")
+    try check(Set(interrupted.keys) == ["error", "job_id", "partial_work"] && interrupted["job_id"] == "job-1"
+              && interrupted["error"]?.contains("not re-executed") == true
+              && interrupted["partial_work"]?.contains("~/.os1/fleet/jobs/job-1/repository") == true,
+              "interrupted job result lost its shape")
     // A job refused only adoption returns its backend's answer, labelled.
     let refused = BackendFailureNotice(provider: "claude", sessionID: nil, blocker: .verificationRejected,
         dispatchStage: .dispatched, permissionProfile: "workspace_write", publicProgress: "  응, 가능함.  ")

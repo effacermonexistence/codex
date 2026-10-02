@@ -177,6 +177,50 @@ public enum ClaudeChatLane {
                 : lower.contains(term)
         }
     }
+    /// A request for information, phrased as an order ("…후보 좀 줘봐",
+    /// "예시 좀 줘봐", "다른 거 알려줘"): the answer is the deliverable and nothing
+    /// on this machine changes, so it runs where `readOnlyQuestion` runs.
+    /// Owner, 2026-10-02, the domain-naming conversation: "아니 일단 가능한 도메인
+    /// 주소를 다 줘봐 …", "다른 거 좀 줘봐 …", "그럼 도메인으로 쓸 수 있는 거 예시 좀
+    /// 줘봐." each ran as a write-authorized agent in HOME behind the OS-1
+    /// source lock. Only a give/tell/show/recommend verb whose object is
+    /// information qualifies; the same exclusions as `readOnlyQuestion` keep
+    /// "R2에서 QMGR 자료 가져와봐", "스키마 좀 짜봐", purchases and anything on
+    /// this machine on the write lane.
+    public static func readOnlyInformationRequest(_ prompt: String) -> Bool {
+        let value = prompt.precomposedStringWithCanonicalMapping.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty, value.count <= 400, !value.contains("!") else { return false }
+        let lower = value.lowercased()
+        guard lower.range(of: informationVerb, options: .regularExpression) != nil,
+              informationObjects.contains(where: lower.contains) else { return false }
+        // The verb is the request itself; judge the rest for work.
+        let rest = lower.replacingOccurrences(of: informationVerb, with: " ", options: .regularExpression)
+        guard !asksForWork(rest), ScopeResolution.resolve(value).scope != .workspaceWrite,
+              !projectTerms.contains(where: lower.contains), !localWorkTerms.contains(where: lower.contains),
+              !externalSystems.contains(where: lower.contains), !orderTerms.contains(where: rest.contains),
+              !failureComplaints.contains(where: lower.contains),
+              lower.range(of: #"(?:^|\s)(?:~|\.{1,2})?/[^\s]|\b(?:localhost|127\.0\.0\.1)\b"#, options: .regularExpression) == nil,
+              // A file name is this machine's material; a domain is not.
+              lower.range(of: #"[a-z0-9_\-]\.(?:md|txt|swift|py|js|ts|tsx|json|ya?ml|sh|png|jpe?g|gif|pdf|csv|html?|css|log|plist|toml|zip|mov|mp4|docx?|xlsx?|pptx?|key)(?![a-z])"#, options: .regularExpression) == nil
+        else { return false }
+        return !technicalTerms.contains { term in
+            term.unicodeScalars.allSatisfy(\.isASCII)
+                ? lower.range(of: "\\b\(NSRegularExpression.escapedPattern(for: term))\\b", options: .regularExpression) != nil
+                : lower.contains(term)
+        }
+    }
+    /// Give, tell, show or recommend, in the owner's endings.
+    static let informationVerb = #"(?:줘|주)\s*봐|알려\s*(?:줘|주세요|줄래)|보여\s*(?:줘|주세요)|추천\s*(?:해\s*)?(?:줘|주세요|해봐)|말해\s*(?:줘|봐)|골라\s*(?:줘|봐)"#
+    /// What the owner asks to be given when the answer is information.
+    static let informationObjects = [
+        "후보", "예시", "예를", "목록", "리스트", "다른 거", "다른거", "다른 걸", "다른것", "이름", "도메인", "주소", "닷컴",
+        "뜻", "의미", "차이", "가격", "비용", "회사", "사례", "종류", "아이디어", "추천", "방법", "장단점", "비교",
+        "suggestion", "example", "option", "name", "domain", "idea",
+    ]
+    /// Either kind of read-only answer: a question, or a request for information.
+    public static func readOnlyAnswer(_ prompt: String) -> Bool {
+        readOnlyQuestion(prompt) || readOnlyInformationRequest(prompt)
+    }
     /// This machine's work: files, code, builds, runs, deployments.
     static let localWorkTerms = [
         "저장소", "레포", "리포지", "코드", "파일", "폴더", "디렉터리", "디렉토리", "소스", "로그", "커밋", "브랜치", "빌드",

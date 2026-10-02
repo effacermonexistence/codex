@@ -4109,12 +4109,12 @@ private func lastAnswerWasBoundedChat(_ session: ConversationSession) -> Bool {
 }
 
 /// The conversation's latest turn was a question answered read-only
-/// (`ClaudeChatLane.readOnlyQuestion`, 2026-10-02): a side question in the
+/// (`ClaudeChatLane.readOnlyAnswer`, 2026-10-02): a side question in the
 /// conversation's work, not a read-only work objective, so the order that
 /// follows ("…이걸로 하자", "해") keeps its sessions, decisions and prohibitions.
 private func lastTurnWasReadOnlyQuestion(_ session: ConversationSession) -> Bool {
     guard let objective = session.taskContext?.objective, objective.scope == .readOnly else { return false }
-    return ClaudeChatLane.readOnlyQuestion(objective.requestText)
+    return ClaudeChatLane.readOnlyAnswer(objective.requestText)
 }
 
 /// A route fan-out's GPT-chat or Claude-chat part answers on a fresh thread
@@ -6127,6 +6127,12 @@ private final class SessionStore: ObservableObject {
         }
         let request = composedRequest(from: composer)
         guard !request.isEmpty, let index = selectedIndex else { return }
+        // Only symbols ("\\", "\\\\\\"): a stray key starts nothing.
+        if ComposerInput.isSymbolsOnly(request) {
+            composer = ""
+            statusText = os1Tr("기호만 입력돼 보내지 않았습니다.", "Only symbols were typed; nothing was sent.")
+            return
+        }
         // Ordinary Send always queues while a turn is running, like Codex's
         // queue: the owner steers a live turn only through an explicit
         // action, either the dedicated steer control or phrasing that is

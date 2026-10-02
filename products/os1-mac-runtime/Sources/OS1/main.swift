@@ -7956,10 +7956,11 @@ func runTaskWithOwnerPolicy(
         && ClaudeChatLane.selfContainedTextOperation(prompt)
         && !promptRequiresShellCapability(prompt)) || ownerSelectedChatLane || conversationalQuestion
     // A question that changes nothing ("…대기업 웹페이지 문법을 따라야 되는데?")
-    // runs on the read-only agent: web lookups and read tools, no write
-    // authority, no OS-1 source lock (2026-10-02; it ran write-authorized).
+    // or a request for information ("…후보 좀 줘봐") runs on the read-only
+    // agent: web lookups and read tools, no write authority, no OS-1 source
+    // lock (2026-10-02; every such turn ran write-authorized in HOME).
     let readOnlyQuestion = workflowStage == nil && !requireReadOnly && attachedSource == nil
-        && ClaudeChatLane.readOnlyQuestion(prompt) && !promptRequiresShellCapability(prompt)
+        && ClaudeChatLane.readOnlyAnswer(prompt) && !promptRequiresShellCapability(prompt)
     // A review (ReviewPass) reads the code and changes nothing: it asks for a
     // read-only ticket, so Claude runs with its read-only tool set.
     let resolvedScope = selfContainedText || readOnlyReview || readOnlyQuestion
@@ -8330,6 +8331,11 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
     // Website work only: the cards steered plain questions into building pages.
     if resolvedScope == .workspaceWrite, WebsiteDelivery.relevant(request: objectiveRequest, context: context) {
         workspaceContext += "\n" + ManagedPreview.capabilityCard + "\n" + WebsiteDelivery.capabilityCard
+    }
+    // Buying, paying, signing up: the owner completes them; the backend checks
+    // and hands over the checkout link instead of driving a browser (2026-10-02).
+    if OwnerAuthorityActions.relevant(request: objectiveRequest, context: context) {
+        workspaceContext += "\n" + OwnerAuthorityActions.capabilityCard
     }
     if let target = previewDeploymentTarget { workspaceContext += "\n" + target.contract }
     if let validation = TaskWorkflow.validationContract(ownerRequest: objectiveRequest, scope: resolvedScope) {

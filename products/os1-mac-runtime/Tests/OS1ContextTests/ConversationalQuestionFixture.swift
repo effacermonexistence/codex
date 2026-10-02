@@ -80,5 +80,50 @@ func runConversationalQuestionFixtures() throws {
     ] {
         check(!ClaudeChatLane.readOnlyQuestion(request), "write lane keeps: \(request.prefix(40))")
     }
+    // 2026-10-02 (build 301): a request for information phrased as an order
+    // runs read-only too; the owner's domain turns, then work it must not take.
+    for request in [
+        "아니 일단 가능한 도메인 주소를 다 줘봐 인마.최대한 간단하고 단순해야 돼.그럼 무조건 닷컴으로끝나야 돼.",
+        "쓰고 있으면 다른 거 하자. 다른 거 좀 줘봐. 짧고 단순한 거. 근데 무조건 닷컴이어야 돼.",
+        "그럼 도메인으로 쓸 수 있는 거 예시 좀 줘봐.",
+        "다른 후보 좀 알려줘",
+        "이름 추천해줘",
+    ] {
+        check(ClaudeChatLane.readOnlyInformationRequest(request) && ClaudeChatLane.readOnlyAnswer(request),
+              "read-only information request: \(request.prefix(40))")
+    }
+    for request in [
+        "아니 그게 아니라 뭐 스퀘어스페이스나 고데리 닷컴 가서 하나 사자고, 씨발.",
+        "usungcorp.com이걸로 하자.",
+        "아 씨발놈아 해라고.",
+        "야 R2에서 QMGR 자료 가져와봐",
+        "야 QMGR 통합하려고 하거든? 스키나 좀 짜봐",
+        "야 그 QM이랑 GR 통합하게 스키마 좀 줘봐",
+        "앞으로 어떻게 진행해서 스키마 뽑아야 할지 좀 줘봐 objective function은 결론적으로 qm이랑 주암을 통합하는거야",
+        "인스타그램 오토매이션 세팅 해야 되거든? 준비 좀 해봐",
+        "여기서 리즈닝 모드 선택되는지 안 보이거든. 리즈닝 모드도 다 보이게 해 줘.",
+        "그거 설명 좀 해봐 어디까지 됐는데",
+        "README.md 예시 좀 보여줘",
+        "~/Desktop 파일 목록 보여줘",
+        "http://127.0.0.1:4173/ 예시 좀 보여줘",
+        "OS1 라우팅 후보 좀 알려줘",
+        "다른 거 좀 줘봐! 빨리!",
+        "그 파일 다른 거 좀 줘봐",
+    ] {
+        check(!ClaudeChatLane.readOnlyInformationRequest(request), "write lane keeps: \(request.prefix(40))")
+    }
+    // The checkout card rides on purchase turns and their short follow-ups.
+    let purchaseContext = "assistant: usungcorp.com 구매는 Squarespace에서 결제하면 됩니다."
+    check(OwnerAuthorityActions.relevant(request: "스퀘어스페이스나 고데리 닷컴 가서 하나 사자고", context: nil), "purchase request gets the checkout card")
+    check(OwnerAuthorityActions.relevant(request: "아 씨발놈아 해라고.", context: purchaseContext), "short follow-up of a purchase gets the card")
+    check(!OwnerAuthorityActions.relevant(request: "아 씨발놈아 해라고.", context: "assistant: 빌드 304를 설치했습니다."), "no card without a purchase in play")
+    check(!OwnerAuthorityActions.relevant(request: String(repeating: "이 함수 고쳐 ", count: 20), context: purchaseContext), "a long unrelated order gets no card")
+    // A stray key is not a request; Korean, emoji, letters and digits are.
+    for noise in ["\\", "\\\\\\", "'''''", "\"\"''\"\"", "  ==\\ "] {
+        check(ComposerInput.isSymbolsOnly(noise), "symbols only: \(noise)")
+    }
+    for text in ["ㅋ", "ㅇㅇ", "👍", "1", "qqq=\\\\", "?", "!!", "??\\", "", "   "] {
+        check(!ComposerInput.isSymbolsOnly(text), "sendable: \(text)")
+    }
     print("Conversational question: \(count) checks passed; owner's side questions take the chat lane, read-only questions the read-only agent, lookups and work keep the agent")
 }
