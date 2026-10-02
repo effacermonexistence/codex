@@ -95,6 +95,33 @@ func runSelfUpdateFixtures() throws {
     check(SelfUpdate.decision(intent: variant { $0.state = "applying"; $0.lastAttemptAt = now.addingTimeInterval(-60) }, installedBuild: 125, busy: false, now: now) == .applying, "in-progress apply is not duplicated")
     check(SelfUpdate.decision(intent: variant { $0.state = "applying"; $0.lastAttemptAt = now.addingTimeInterval(-SelfUpdate.applyingStaleAfter - 1) }, installedBuild: 125, busy: false, now: now) == .apply, "a stuck apply mark is retried")
 
+    // Install hold (2026-10-02: build 298 "이거는 지워" waited behind five
+    // back-to-back tasks and never reached the screen). A newer build waiting
+    // for running work holds new work until it installs, bounded.
+    check(SelfUpdate.holdsNewWork(intent: intentA, installedBuild: 125, since: nil, now: now), "a newer staged build holds new work")
+    check(SelfUpdate.holdsNewWork(intent: intentA, installedBuild: 125, since: now.addingTimeInterval(-60), now: now), "the hold lasts while work drains")
+    check(!SelfUpdate.holdsNewWork(intent: intentA, installedBuild: 125, since: now.addingTimeInterval(-SelfUpdate.holdNewWorkLimit), now: now),
+          "a hung run cannot freeze OS-1: the hold ends at the limit")
+    check(SelfUpdate.holdsNewWork(intent: variant { $0.state = "applying"; $0.lastAttemptAt = now.addingTimeInterval(-30) }, installedBuild: 125, since: nil, now: now),
+          "nothing new starts while the installer runs")
+    check(!SelfUpdate.holdsNewWork(intent: intentA, installedBuild: 126, since: nil, now: now), "an installed build holds nothing")
+    check(!SelfUpdate.holdsNewWork(intent: variant { $0.applyAttempts = SelfUpdate.maximumApplyAttempts }, installedBuild: 125, since: nil, now: now),
+          "an exhausted install holds nothing")
+    check(!SelfUpdate.holdsNewWork(intent: intentA, installedBuild: 125, since: nil, now: now.addingTimeInterval(SelfUpdate.intentMaxAge + 1)),
+          "a stale intent holds nothing")
+    check(SelfUpdate.activeHold(home: home, now: now) == nil, "no marker, no hold")
+    try SelfUpdate.saveHold(SelfUpdate.Hold(build: 126, since: now), home: home)
+    check((try FileManager.default.attributesOfItem(atPath: SelfUpdate.holdURL(home: home).path)[.posixPermissions] as? NSNumber)?.intValue == 0o600,
+          "hold marker is private")
+    check(SelfUpdate.activeHold(home: home, now: now.addingTimeInterval(60))?.build == 126, "the fleet sees the hold")
+    check(SelfUpdate.activeHold(home: home, now: now.addingTimeInterval(SelfUpdate.holdNewWorkLimit)) == nil,
+          "a marker left by a crashed app expires at the limit")
+    try JSONSerialization.data(withJSONObject: ["build": 126, "since": "2026-09-19T06:00:00Z", "expiresAt": "2099-01-01T00:00:00Z"])
+        .write(to: SelfUpdate.holdURL(home: home))
+    check(SelfUpdate.activeHold(home: home, now: now) == nil, "a marker claiming more than the limit holds nothing")
+    SelfUpdate.clearHold(home: home)
+    check(SelfUpdate.activeHold(home: home, now: now) == nil, "cleared hold")
+
     // Outcomes: private, ordered, reported once.
     let success = SelfUpdate.Outcome(id: "one", intent: intentA, success: true, receiptPath: "/tmp/r.json", error: nil,
         summary: SelfUpdate.summary(success: true, intent: intentA, checks: Array(repeating: "x: PASS", count: 9), sessionsBefore: 83, sessionsAfter: 83, receiptPath: "/tmp/r.json", error: nil),

@@ -1371,6 +1371,55 @@ private func parallelInteractionSelfTest() async throws {
     print("Parallel sessions: \(checks) checks passed; real child-process overlap, per-session FIFO/context/status, explicit retry, four-session limit, paused restart/cancellation")
 }
 
+/// A staged build that waits for running work holds new work, so it installs
+/// instead of waiting behind every new request (2026-10-02: build 298, "이거는
+/// 지워", waited behind five back-to-back tasks). Fixture runs only.
+@MainActor
+private func selfUpdateHoldSelfTest() async throws {
+    var checks = 0
+    func check(_ value: @autoclosure () -> Bool, _ message: String) throws {
+        if !value() { throw RunnerError.message("Self-update hold: " + message) }
+        checks += 1
+    }
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("os1-update-hold-" + UUID().uuidString)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    var started: [String] = []
+    let store = SessionStore(storageRoot: root, runOperation: { submission, _, _, _, _ in
+        started.append(submission.request)
+        try await Task.sleep(for: .milliseconds(300))
+        return AppRunSummary(status: "complete", steps: [AppRunStep(sequence: 1, provider: "codex", action: "test",
+            model: "fixture", effort: "low", revasDisposition: "adopted", sessionID: UUID().uuidString,
+            permissionProfile: "read_only", exitCode: 0, output: "answer " + submission.request, stderr: "", durationMS: 300,
+            nativeRecord: nil)])
+    })
+    let markerBefore = FileManager.default.fileExists(atPath: SelfUpdate.holdURL().path)
+    store.composer = "running"; store.send()
+    let startDeadline = Date().addingTimeInterval(3)
+    while started.isEmpty && Date() < startDeadline { try await Task.sleep(for: .milliseconds(20)) }
+    try check(store.activeRuns.count == 1 && started == ["running"], "work started before the build was staged runs")
+    store.selfUpdateHold = SelfUpdate.Hold(build: 999, since: Date())
+    store.createSession(); store.composer = "new request"; store.send()
+    try check(store.activeRuns.count == 1 && store.queuedSubmissions.map(\.request) == ["new request"],
+              "a new request waits in the queue while a staged build holds new work")
+    let deadline = Date().addingTimeInterval(10)
+    while !store.activeRuns.isEmpty && Date() < deadline { try await Task.sleep(for: .milliseconds(50)) }
+    try await Task.sleep(for: .milliseconds(200))
+    try check(store.activeRuns.isEmpty && started == ["running"] && store.queuedSubmissions.count == 1,
+              "the running work drains and nothing new starts, so the build can install")
+    store.retrySelectedFailure()
+    try check(store.activeRuns.isEmpty && started == ["running"], "a retry does not start work during the hold")
+    store.endSelfUpdateHold()
+    while store.queuedSubmissions.count + store.activeRuns.count > 0 && Date() < deadline {
+        try await Task.sleep(for: .milliseconds(50))
+    }
+    try check(started == ["running", "new request"] && store.queuedSubmissions.isEmpty,
+              "what waited runs, in order, once the hold ends")
+    try check(FileManager.default.fileExists(atPath: SelfUpdate.holdURL().path) == markerBefore,
+              "a fixture store never touches the real fleet marker")
+    print("Self-update hold: \(checks) checks passed; new work waits, running work drains, the queue resumes after the hold; model calls 0")
+}
+
 /// Exercise the actual manager, not a stand-alone Array FIFO. Runner gates
 /// make edit/completion races reproducible without model tokens or live writes.
 /// Global admission cap visibility and fairness (2026-09-23 incident): with
@@ -6012,7 +6061,7 @@ private final class SessionStore: ObservableObject {
         }
         if isSessionRunning(submission.sessionID) || activeRuns.count >= maximumConcurrentSessions ||
             sessions[index].lastFailure != nil || sessions[index].lastBackendFailure != nil ||
-            sessions[index].queuePaused == true ||
+            sessions[index].queuePaused == true || selfUpdateHold != nil ||
             queuedSubmissions.contains(where: { $0.sessionID == submission.sessionID }) {
             queuedSubmissions.append(submission)
             acknowledgeFailureHold(sessionIndex: index)
@@ -6026,6 +6075,11 @@ private final class SessionStore: ObservableObject {
             statusText = submission.amendedRequest == nil
                 ? "대기열에 추가됨 · 이 대화 \(selectedSessionQueueCount)개 대기"
                 : "정정 보존됨 · 현재 턴이 입력을 받으면 전달하며, 불가능하면 같은 목표의 후속 작업으로 이어갑니다"
+            if let hold = selfUpdateHold, submission.amendedRequest == nil {
+                statusText = os1Tr("대기열에 추가됨 · OS-1 업데이트(build \(hold.build))를 설치한 뒤 바로 실행합니다",
+                                   "Queued · runs right after the OS-1 update (build \(hold.build)) installs")
+                sessionStatuses[submission.sessionID] = statusText
+            }
             save()
             runNextQueuedSubmissionIfNeeded()
             return
@@ -6330,7 +6384,10 @@ private final class SessionStore: ObservableObject {
     }
 
     private func start(_ submission: PendingSubmission) {
+        // A staged build waiting for running work starts nothing new; callers
+        // already treat "not started" like a full concurrency limit.
         guard !isSessionRunning(submission.sessionID), activeRuns.count < maximumConcurrentSessions,
+              selfUpdateHold == nil,
               let index = sessions.firstIndex(where: { $0.id == submission.sessionID }) else {
             return
         }
@@ -6836,7 +6893,9 @@ private final class SessionStore: ObservableObject {
                     queuedSubmissions[queuedFollowUp].startNextRequested = nil
                     queuedSubmissions[queuedFollowUp].replacesSubmissionID = nil
                     save()
-                } else {
+                } else if selfUpdateHold == nil {
+                    // Under an install hold nothing starts: the verified
+                    // failure stays held unchanged and resumes on retry.
                     original.prepareVerifiedNoEffectsResume(build: installedBuildNumber)
                     sessions[target].lastFailure = original
                     start(original)
@@ -7038,7 +7097,10 @@ private final class SessionStore: ObservableObject {
     private func runNextQueuedSubmissionIfNeeded() {
         // A queued turn in A must not block ready work in B. Within A the
         // first queued turn is the only eligible one, and context is built now.
-        while activeRuns.count < maximumConcurrentSessions,
+        // While a staged build waits for running work, the queue keeps its
+        // order and runs after the install (`endSelfUpdateHold` resumes it if
+        // the install is abandoned).
+        while activeRuns.count < maximumConcurrentSessions, selfUpdateHold == nil,
               let index = queuedSubmissions.firstIndex(where: { next in
                   queueEligible(next) &&
                   !queuedSubmissions.prefix(while: { $0.id != next.id }).contains(where: { $0.sessionID == next.sessionID })
@@ -7333,7 +7395,8 @@ private final class SessionStore: ObservableObject {
     /// rerun a failed model. One preflight-only preparation retry per identity;
     /// no automatic mutation, login, remote-source substitution or UI reveal.
     func resumeRegisteredSourcePreparations(root: URL = RegisteredProjectSource.defaultRoot) {
-        for session in sessions {
+        // One retry per identity: never spend it while a staged build holds new work.
+        for session in sessions where selfUpdateHold == nil {
             guard activeRuns.count < maximumConcurrentSessions,
                   !isSessionRunning(session.id), session.lastBackendFailure == nil,
                   let pending = session.taskContext?.sourcePreparation, pending.canLookForRegistration,
@@ -7393,7 +7456,9 @@ private final class SessionStore: ObservableObject {
             return
         }
         let identity = ISO8601DateFormatter().string(from: health.checkedAt)
-        for session in waiting {
+        // The replay budget is one per observed recovery: keep it for after
+        // the install while a staged build holds new work.
+        for session in waiting where selfUpdateHold == nil {
             guard activeRuns.count < maximumConcurrentSessions,
                   let failed = session.lastFailure, failed.backendRecoveryIdentity != identity,
                   !FileManager.default.fileExists(atPath: ExecutionCancellation.url(submissionID: failed.id).path),
@@ -7416,18 +7481,71 @@ private final class SessionStore: ObservableObject {
     private var selfUpdateRootsCachedAt: Date?
     private var selfUpdateLaunchedAt: Date?
     var installedBuildNumber: Int { SelfUpdate.installedBuild() }
+    /// A staged build that waits only for running work holds back new work
+    /// (`SelfUpdate.holdsNewWork`): nothing new starts, so the running work
+    /// drains and the build installs instead of waiting behind every new request.
+    @Published fileprivate(set) var selfUpdateHold: SelfUpdate.Hold?
+    /// The build whose hold ran out (`holdNewWorkLimit`): it is not held again
+    /// and waits for a natural idle, so a hung run cannot freeze OS-1.
+    private var selfUpdateHoldSpentBuild: Int?
+    private func updateSelfUpdateHold(_ pending: (root: String, intent: SelfUpdate.Intent)?, fleetBusy: Bool, now: Date) {
+        let previous = selfUpdateHold
+        guard let pending, selfUpdateHoldSpentBuild != pending.intent.build else { endSelfUpdateHold(); return }
+        let since = previous?.build == pending.intent.build ? previous?.since : nil
+        guard SelfUpdate.holdsNewWork(intent: pending.intent, installedBuild: installedBuildNumber, since: since, now: now) else {
+            if let since, now.timeIntervalSince(since) >= SelfUpdate.holdNewWorkLimit {
+                selfUpdateHoldSpentBuild = pending.intent.build
+            }
+            endSelfUpdateHold(); return
+        }
+        guard previous?.build != pending.intent.build else { return }
+        let hold = SelfUpdate.Hold(build: pending.intent.build, since: since ?? now)
+        selfUpdateHold = hold
+        try? SelfUpdate.saveHold(hold)
+        // Nothing running: the build installs on this tick, no wait to announce.
+        let running = Set(activeRuns.keys).union(inFlightSubmissions.keys).count + (fleetBusy ? 1 : 0)
+        guard running > 0 else { return }
+        let status = os1Tr(
+            "OS-1 업데이트 설치 대기 · build \(hold.build) · 진행 중인 작업 \(running)개가 끝나면 바로 설치합니다 · 새 요청은 대기열에 보관했다가 설치 후 실행합니다",
+            "OS-1 update waiting · build \(hold.build) · installs as soon as \(running) running task(s) finish · new requests wait in the queue and run after the install")
+        statusText = status
+        // Said where the change was asked for: the fix is built but not on
+        // screen yet, and why.
+        if let id = pending.intent.conversationID.flatMap(UUID.init(uuidString:)),
+           let index = sessions.firstIndex(where: { $0.id == id }) {
+            sessionStatuses[id] = status
+            sessions[index].messages.append(ChatMessage(role: .system, text: status))
+            sessions[index].updatedAt = now
+            appendTaskEvent(conversationID: id, kind: "self_update_hold",
+                summary: "Build \(hold.build) staged while work runs; new work waits so it installs when the running work ends")
+            save()
+        }
+    }
+    fileprivate func endSelfUpdateHold() {
+        // A marker left by the previous app (it quit into the new build, or
+        // crashed) is cleared here too, so the fleet never waits on it. Live
+        // store only: a fixture store must never touch the real marker.
+        if customStorageRoot == nil, FileManager.default.fileExists(atPath: SelfUpdate.holdURL().path) { SelfUpdate.clearHold() }
+        guard selfUpdateHold != nil else { return }
+        selfUpdateHold = nil
+        // What waited for the build runs now (the install may have been
+        // abandoned, exhausted or superseded).
+        runNextQueuedSubmissionIfNeeded()
+    }
     func applyPendingSelfUpdate(now: Date = Date()) {
         guard customStorageRoot == nil, SelfUpdate.isInstalledApp(Bundle.main.bundleURL) else { return }
         if selfUpdateRootsCachedAt.map({ now.timeIntervalSince($0) > 60 }) ?? true {
             selfUpdateRoots = LocalProjectWorkspace.candidates(projectID: "os1-clodex")
             selfUpdateRootsCachedAt = now
         }
-        guard let pending = SelfUpdate.pendingIntents(roots: selfUpdateRoots).first else { return }
+        let pending = SelfUpdate.pendingIntents(roots: selfUpdateRoots).first
         // A running fleet job counts as busy: the installer would refuse
         // mid-job anyway, and refusals must not burn the apply budget.
         let fleetRoot = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".os1/fleet")
         let fleetBusy = FileManager.default.fileExists(atPath: fleetRoot.appendingPathComponent("main-agent-active.json").path) ||
             FileManager.default.fileExists(atPath: fleetRoot.appendingPathComponent("main-agent-claim.json").path)
+        updateSelfUpdateHold(pending, fleetBusy: fleetBusy, now: now)
+        guard let pending else { return }
         let busy = !activeRuns.isEmpty || !inFlightSubmissions.isEmpty || isStopping || fleetBusy
         switch SelfUpdate.decision(intent: pending.intent, installedBuild: installedBuildNumber, busy: busy, now: now) {
         case .apply:
@@ -7493,6 +7611,11 @@ private final class SessionStore: ObservableObject {
         return envelope.sessions.contains { $0.messages.contains { $0.text == summary } }
     }
     func retrySelectedFailure() {
+        if let hold = selfUpdateHold {
+            statusText = os1Tr("OS-1 업데이트(build \(hold.build)) 설치를 기다리는 중입니다 · 설치 후 다시 시도하세요",
+                               "Waiting to install the OS-1 update (build \(hold.build)) · retry after it installs")
+            return
+        }
         guard !isRunning, let failed = selectedSession?.lastFailure,
               activeRuns.count < maximumConcurrentSessions else { return }
         if failed.savedResultNeedsReview == true { reconcileSelectedFailure(); return }
@@ -7569,10 +7692,12 @@ private final class SessionStore: ObservableObject {
             if !disk.showCodex, surface == .codex { surface = .auto }
             if disk.parallelRuns > previousParallelRuns { runNextQueuedSubmissionIfNeeded() }
         }
+        // First, so a staged build's hold is in force before anything below
+        // can start work in this tick.
+        applyPendingSelfUpdate()
         resumeRegisteredSourcePreparations()
         resumeBackendRecoveries()
         reportSelfUpdateOutcomes()
-        applyPendingSelfUpdate()
         releaseRestartHolds()
         resumeStaleReconciliations()
     }
@@ -7607,8 +7732,8 @@ private final class SessionStore: ObservableObject {
         // build143 installed, every held failure was re-examined in the same
         // tick: seven Claude processes at once, all hitting an expired
         // session together. Paced, the first one repairs the backend and the
-        // rest follow on a live session.
-        guard activeRuns.isEmpty else { return }
+        // rest follow on a live session. A staged build installs first.
+        guard activeRuns.isEmpty, selfUpdateHold == nil else { return }
         for session in sessions {
             guard !isSessionRunning(session.id),
                   session.lastBackendFailure?.requiresReadback == true,
@@ -8834,7 +8959,10 @@ private struct OS1DesktopApp: App {
         }
         if CommandLine.arguments.contains("--self-test-parallel") {
             Task { @MainActor in
-                do { try await parallelInteractionSelfTest(); try await slotWaitVisibilitySelfTest(); exit(EXIT_SUCCESS) }
+                do {
+                    try await parallelInteractionSelfTest(); try await slotWaitVisibilitySelfTest()
+                    try await selfUpdateHoldSelfTest(); exit(EXIT_SUCCESS)
+                }
                 catch { fputs("\(error.localizedDescription)\n", stderr); exit(EXIT_FAILURE) }
             }
             NSApplication.shared.run()

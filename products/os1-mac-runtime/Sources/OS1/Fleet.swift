@@ -817,7 +817,10 @@ func runFleetAgent(role: String, once: Bool) async throws {
             var active: FleetAgentWork?
             if FileManager.default.fileExists(atPath: activeFile.path) {
                 active = try JSONDecoder().decode(FleetAgentWork.self, from: Data(contentsOf: activeFile))
-            } else {
+            } else if SelfUpdate.activeHold() == nil {
+                // A staged OS-1 build waits only for running work: claim nothing
+                // new until it installs (`SelfUpdate.holdsNewWork`). A queued job
+                // keeps its start window and runs in the new build.
                 let nonce: String
                 if FileManager.default.fileExists(atPath: claimFile.path) {
                     nonce = try JSONDecoder().decode(String.self, from: Data(contentsOf: claimFile))
