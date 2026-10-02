@@ -69,13 +69,13 @@ class SlidingWindowLimiter:
         """
         with self._lock:
             targets = list(self._hits) if key is None else [key]
-            for target in list(self._hits):
+            for target in targets:
                 self._hits.pop(target, None)
 
     def _live_hits(self, key: Hashable, now: float) -> Deque[float]:
         """Return the hit history of ``key`` after dropping expired hits."""
         hits = self._hits.setdefault(key, deque())
         cutoff = now - self.window_seconds
-        while hits and hits[0] < cutoff:
+        while hits and hits[0] <= cutoff:
             hits.popleft()
         return hits
