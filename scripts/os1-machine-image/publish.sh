@@ -58,12 +58,22 @@ trap cleanup EXIT
 rmdir "$task_out"
 "$task_node" "$task_script_dir/build.mjs" --out "$task_out" --repository-commit "$task_commit" --source-role "$task_source_role"
 
-task_put() {
-  CI=true WRANGLER_SEND_METRICS=false "$task_wrangler" r2 object put "$task_bucket/$1" --remote --file "$2" >/dev/null
+# R2 requests from this network drop now and then ("fetch failed"): retry.
+task_r2() {
+  local task_verb="$1" task_key="$2" task_file="$3" task_attempt
+  for task_attempt in 1 2 3 4 5 6; do
+    if CI=true WRANGLER_SEND_METRICS=false "$task_wrangler" r2 object "$task_verb" "$task_bucket/$task_key" \
+      --remote --file "$task_file" >/dev/null 2>"$task_out/r2.err"; then
+      return 0
+    fi
+    echo "  $task_verb $task_key: attempt $task_attempt failed, retrying" >&2
+    sleep $((task_attempt * 5))
+  done
+  tail -3 "$task_out/r2.err" >&2
+  task_fail "$task_verb of $task_key failed 6 times"
 }
-task_get() {
-  CI=true WRANGLER_SEND_METRICS=false "$task_wrangler" r2 object get "$task_bucket/$1" --remote --file "$2" >/dev/null
-}
+task_put() { task_r2 put "$1" "$2"; }
+task_get() { task_r2 get "$1" "$2"; }
 task_plan_value() {
   /usr/bin/plutil -extract "$1" raw -o - "$task_out/upload-plan.json"
 }

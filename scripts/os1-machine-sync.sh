@@ -54,14 +54,19 @@ task_r2_get() {
     cp "$OS1_MACHINE_SYNC_TEST_BUCKET_DIR/$task_key" "$task_destination"
     return
   fi
-  if CI=true WRANGLER_SEND_METRICS=false "$task_wrangler" r2 object get \
-    "$task_bucket/$task_key" --remote --file "$task_destination" >/dev/null 2>"$task_tmp/wrangler.err"; then
-    return 0
-  fi
-  if CI=true WRANGLER_SEND_METRICS=false "$task_wrangler" r2 object get \
-    "$task_bucket/$task_key" --remote --profile pro-mdm --file "$task_destination" >/dev/null 2>>"$task_tmp/wrangler.err"; then
-    return 0
-  fi
+  # Large R2 transfers drop now and then ("fetch failed"): retry with backoff.
+  local task_attempt
+  for task_attempt in 1 2 3 4 5 6; do
+    if CI=true WRANGLER_SEND_METRICS=false "$task_wrangler" r2 object get \
+      "$task_bucket/$task_key" --remote --file "$task_destination" >/dev/null 2>"$task_tmp/wrangler.err"; then
+      return 0
+    fi
+    if CI=true WRANGLER_SEND_METRICS=false "$task_wrangler" r2 object get \
+      "$task_bucket/$task_key" --remote --profile pro-mdm --file "$task_destination" >/dev/null 2>>"$task_tmp/wrangler.err"; then
+      return 0
+    fi
+    sleep $((task_attempt * 3))
+  done
   echo "R2 download failed for $task_key. Wrangler said:" >&2
   tail -5 "$task_tmp/wrangler.err" >&2
   task_fail "R2 download failed (if Wrangler is signed out on this Mac, run: wrangler login)"

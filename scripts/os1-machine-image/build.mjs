@@ -20,7 +20,7 @@ import { fileURLToPath } from 'node:url';
 export const PRODUCT = 'os1-machine-image';
 export const BUCKET = 'omar-private-archive';
 export const REPOSITORY = 'effacermonexistence/codex';
-const PART_BYTES = 15 * 1024 * 1024; // wrangler r2 object put: 16 MiB uploaded, 24/30/90/200 MiB failed (2026-10-02)
+const PART_BYTES = 8 * 1024 * 1024; // R2 puts above ~16 MiB often fail from this network; small parts + retries
 const NODE_DIR = '.local/share/node-v24.20.0';
 const SUPPORT = 'Library/Application Support/OS-1';
 const FLEET_PLIST = 'Library/LaunchAgents/com.os1.fleet-agent.plist';
