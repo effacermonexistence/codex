@@ -619,6 +619,20 @@ private func providerIntentSelfTest() throws {
           isChatLaneRoutePart(chatPart), !isChatLaneRoutePart(fullPart), !isChatLaneRoutePart(review) else {
         throw RunnerError.message("OS-1 route fan-out UI self-test failed.")
     }
+    // A side question answered on a chat lane is not a read-only work task:
+    // the next edit continues the conversation's work (2026-10-02).
+    var sideChat = ConversationSession(workspace: "/tmp")
+    sideChat.messages = [ChatMessage(role: .assistant, text: "작업 결과", provider: "codex", executionSurface: "codex"),
+                         ChatMessage(role: .user, text: "co가 무슨 뜻이야?"),
+                         ChatMessage(role: .assistant, text: "company의 약자", provider: "codex", executionSurface: "gpt-chat")]
+    var workTurn = sideChat
+    workTurn.messages.append(ChatMessage(role: .assistant, text: "수정 완료", provider: "claude", executionSurface: "claude"))
+    var fanoutTurn = sideChat
+    fanoutTurn.messages.append(ChatMessage(role: .assistant, text: "Routing result", provider: "local"))
+    guard lastAnswerWasBoundedChat(sideChat), !lastAnswerWasBoundedChat(workTurn), !lastAnswerWasBoundedChat(fanoutTurn),
+          !lastAnswerWasBoundedChat(ConversationSession(workspace: "/tmp")) else {
+        throw RunnerError.message("OS-1 side-question continuity self-test failed.")
+    }
 
     let surfaceMessages = try [ProviderSurface.gptChat, .codex, .claudeChat, .claude].map { surface -> ChatMessage in
         let message = ChatMessage(role: .assistant, text: "route answer", provider: surface.backend!.rawValue,
@@ -4071,6 +4085,13 @@ private func requestedProvider(for request: String, configured: ProviderChoice) 
     return configured == .auto ? (explicitlyRequestedProvider(in: request) ?? .auto) : configured
 }
 
+/// The conversation's latest answer came from a bounded chat lane (GPT or
+/// Claude chat, no tools): a side question, not a read-only work objective.
+private func lastAnswerWasBoundedChat(_ session: ConversationSession) -> Bool {
+    guard let last = session.messages.last(where: { $0.role == .assistant }) else { return false }
+    return last.executionSurface.flatMap(ProviderSurface.init(rawValue:))?.forcesChatLane == true
+}
+
 /// A route fan-out's GPT-chat or Claude-chat part answers on a fresh thread
 /// outside the workspace. It must not replace the conversation's own native
 /// session, which the next full-lane turn resumes.
@@ -5520,10 +5541,13 @@ private final class SessionStore: ObservableObject {
     // A failed, runtime-enforced read cannot have performed the previous write.
     // Only a NEW explicit owner edit may leave that hold; never replay an old
     // action, infer safety from output prose, or promote an unknown permission.
+    // A side question answered on a bounded chat lane ("co가 무슨 뜻이야?") is
+    // not a completed read-only task: the edit that follows continues the
+    // conversation's work, its sessions, decisions and prohibitions.
     private func isNewEditAfterReadOnlyTask(_ next: PendingSubmission, session: ConversationSession) -> Bool {
         session.taskContext?.objective.scope == .readOnly &&
         ScopeResolution.resolve(next.request).scope == .workspaceWrite &&
-        ((session.lastFailure == nil && session.lastBackendFailure == nil) ||
+        ((session.lastFailure == nil && session.lastBackendFailure == nil && !lastAnswerWasBoundedChat(session)) ||
          (session.lastFailure != nil && session.lastBackendFailure?.permissionProfile == "read_only"))
     }
 

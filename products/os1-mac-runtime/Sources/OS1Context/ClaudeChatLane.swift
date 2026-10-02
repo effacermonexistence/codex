@@ -86,6 +86,75 @@ public enum ClaudeChatLane {
         return payload.count >= 4
     }
 
+    /// Words that make a question depend on the outside world as it is now,
+    /// which only a tool can check: prices, dates, availability, news,
+    /// releases, anything addressed by a name or a link.
+    static let lookupTerms = [
+        "조회", "검색", "찾아", "알아봐", "확인", "최신", "최근", "요즘", "오늘", "어제", "내일", "올해", "작년", "이번",
+        "지금", "현재", "뉴스", "가격", "얼마", "비싸", "시세", "날씨", "환율", "주가", "구매", "구입", "판매", "등록",
+        "출시", "발표", "버전", "업데이트", "사이트", "링크", "주소", "도메인", "닷컴",
+        "search", "look up", "lookup", "latest", "recent", "today", "current", "now", "price", "cost", "news",
+        "weather", "buy", "purchase", "available", "registered", "release", "version", "update", "link", "website",
+        "url", "domain",
+    ]
+    /// Code, systems and OS-1's own behaviour: questions about them belong to
+    /// the agent that can read the code and the logs.
+    static let technicalTerms = [
+        "함수", "변수", "클래스", "메서드", "에러", "오류", "버그", "서버", "데이터베이스", "라우팅", "쿼터", "토큰", "모델",
+        "api", "sdk", "error", "bug", "server", "database", "function", "class", "method", "routing", "quota", "token",
+        "model",
+    ]
+    /// The question is asked in words: a question mark or an interrogative.
+    static let interrogatives = [
+        "뭐", "무엇", "무슨", "뜻", "의미", "왜", "어떻게", "어때", "어떤", "언제", "누구", "누가", "어디", "어느", "차이",
+        "what", "why", "how", "who", "when", "where", "which", "meaning", "mean", "difference",
+    ]
+
+    /// A short question the model answers from the conversation and its own
+    /// knowledge: what a word means, why, which is better. Owner, 2026-10-02:
+    /// "co가 무슨 뜻이야?" ran on the full Codex agent; "이렇게 간단한 채팅이면
+    /// 쿼터 안 쓰는 걸로 라우팅해야 정상 아님?". Such a question takes the chat
+    /// lane — the same model without the agent's tools and instructions, a
+    /// small fraction of the tokens. Anything that may need the machine, the
+    /// web or current facts (a name with a dot, a number, a price, a date, a
+    /// release, code, OS-1 itself) keeps the agent: missing a lookup costs
+    /// correctness, a full lane only costs tokens.
+    public static func conversationalQuestion(_ prompt: String) -> Bool {
+        let value = prompt.precomposedStringWithCanonicalMapping.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty, value.count <= 200, !value.contains("\n"),
+              !needsWorkspaceMaterial(value),
+              !value.unicodeScalars.contains(where: { CharacterSet.decimalDigits.contains($0) }),
+              // A dotted name right before a Korean particle ("README.md는",
+              // "usung.com은") escapes the word-boundary pattern above.
+              value.range(of: #"[A-Za-z0-9_\-]\.[A-Za-z]{1,6}(?![A-Za-z])"#, options: .regularExpression) == nil
+        else { return false }
+        let lower = value.lowercased()
+        func mentions(_ terms: [String]) -> Bool {
+            terms.contains { term in
+                term.unicodeScalars.allSatisfy(\.isASCII)
+                    ? lower.range(of: "\\b\(NSRegularExpression.escapedPattern(for: term))\\b", options: .regularExpression) != nil
+                    : lower.contains(term)
+            }
+        }
+        guard !mentions(lookupTerms), !mentions(technicalTerms), !mentions(workVerbs), !mentions(statusQuestions) else { return false }
+        // A question, not an order that happens to contain "왜" or "where":
+        // asked with "?", no "!", and no command ending (…봐, …줘, …해, …라, …자,
+        // "빼", "가져와" — "생각해?" asked with "?" is still a question). Replayed over the owner's 369 messages (2026-10-02),
+        // the looser test also took "Continue from where you left off." and
+        // "…다 빼! …왜 넣어!".
+        guard lower.contains("?"), !lower.contains("!"),
+              lower.range(of: #"(?:봐|줘|해|라|자|빼|가져와|와봐)(?=[\s.,~]|$)"#, options: .regularExpression) == nil
+        else { return false }
+        return mentions(interrogatives) || lower.range(of: #"(?:니|나|까|냐|가|지|야|어|요)\?"#, options: .regularExpression) != nil
+    }
+    /// English work verbs: "Continue from where you left off." is an order.
+    static let workVerbs = ["continue", "resume", "proceed", "go on", "keep going", "fix", "make", "build", "create",
+                            "write", "add", "remove", "delete", "change", "run", "start", "do it", "finish"]
+    /// "Did you do it" is a question about real state, which only the agent
+    /// that can look at it should answer.
+    static let statusQuestions = ["올린", "올렸", "보낸", "보냈", "만든", "만들었", "끝난", "끝났", "다 한", "다했", "한거야",
+                                  "된거야", "했는지", "됐는지", "됐나", "했나", "뭐하는", "어디까지"]
+
     /// The chat lane's own arguments: every customization off, no tools, and a
     /// workspace the turn never reads. Kept next to the rule that selects it so
     /// the two cannot drift apart.

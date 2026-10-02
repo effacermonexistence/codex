@@ -3054,6 +3054,7 @@ private func sourceAnswerWorkspace() throws -> String {
 func claudeChatLane(provider: String, permission: String, hasSource: Bool, objective: String) -> Bool {
     provider == "claude" && permission == "read_only" && !hasSource
         && (ClaudeChatLane.selfContainedTextOperation(objective)
+            || ClaudeChatLane.conversationalQuestion(objective)
             || (ClaudeChatLane.ownerSelected && !ClaudeChatLane.namesMachineMaterial(objective)))
         && !promptRequiresShellCapability(objective)
         && RequestNamedPaths.extract(objective).isEmpty
@@ -3113,6 +3114,17 @@ func providerSurfaceRoutingSelfTest() throws {
     checks.append(("auto trigger keeps an action request on the full lane",
         !claudeChatLane(provider: "claude", permission: "read_only", hasSource: false,
                         objective: "그럼 실제로 해봐 다 되는지")))
+    // A short conversational question takes the lane by itself (owner,
+    // 2026-10-02: "이렇게 간단한 채팅이면 쿼터 안 쓰는 걸로 라우팅해야 정상 아님?").
+    let sideQuestion = "아니 유성 코는 무슨 뜻인데 도대체?"
+    checks.append(("a conversational question takes the Claude chat lane",
+        claudeChatLane(provider: "claude", permission: "read_only", hasSource: false, objective: sideQuestion)))
+    checks.append(("and the GPT chat lane",
+        codexChatLane(provider: "codex", permission: "read_only", hasSource: false, objective: sideQuestion)))
+    checks.append(("a question that may need a lookup keeps the agent",
+        !claudeChatLane(provider: "claude", permission: "read_only", hasSource: false, objective: "usungco.com 등록돼 있어?")))
+    checks.append(("a conversational question with an attached source keeps the agent",
+        !claudeChatLane(provider: "claude", permission: "read_only", hasSource: true, objective: sideQuestion)))
 
     // The refusal is what stops an explicit chat-lane choice from becoming the
     // full lane. Each structural condition is named before dispatch.
@@ -7935,9 +7947,14 @@ func runTaskWithOwnerPolicy(
     let ownerSelectedChatLane = workflowStage == nil && !requireReadOnly
         && ClaudeChatLane.ownerSelected
         && claudeChatLaneRefusal(objective: prompt, hasSource: attachedSource != nil) == nil
+    // A short conversational question ("co가 무슨 뜻이야?") is the same kind of
+    // statement: the answer comes from the conversation and the model, so it
+    // asks for the bounded chat lane too. Not with an attached source.
+    let conversationalQuestion = workflowStage == nil && !requireReadOnly && attachedSource == nil
+        && ClaudeChatLane.conversationalQuestion(prompt) && !promptRequiresShellCapability(prompt)
     let selfContainedText = (workflowStage == nil && !requireReadOnly
         && ClaudeChatLane.selfContainedTextOperation(prompt)
-        && !promptRequiresShellCapability(prompt)) || ownerSelectedChatLane
+        && !promptRequiresShellCapability(prompt)) || ownerSelectedChatLane || conversationalQuestion
     // A review (ReviewPass) reads the code and changes nothing: it asks for a
     // read-only ticket, so Claude runs with its read-only tool set.
     let resolvedScope = selfContainedText || readOnlyReview
