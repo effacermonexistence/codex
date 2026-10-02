@@ -1070,6 +1070,7 @@ public struct NativeRecord: Equatable, Sendable {
 
 /// Reads native transcripts forward from a cursor, skips what OS1 itself sent,
 /// and never promotes partial or cancelled output to a completed statement.
+/// Only consumes the complete prefix so a generating record can be revisited.
 public enum NativeIngestion {
     public static func newRecords(_ all: [NativeRecord], after cursor: String?, sentByOS1 digests: Set<String>,
                                   seen: Set<String>, ownedTurnIDs: Set<String> = []) -> (records: [NativeRecord], nextCursor: String?) {
@@ -1077,10 +1078,11 @@ public enum NativeIngestion {
         var out: [NativeRecord] = []
         var last = start
         for record in all.sorted(by: { $0.ordinal < $1.ordinal }) where record.ordinal > start {
+            // A generating record can become complete at the same ordinal.
+            // Stop before it (and every later record) so the next poll retries
+            // it instead of permanently excluding it behind the cursor.
+            guard record.complete else { break }
             last = max(last, record.ordinal)
-            // Partial or cancelled output is never promoted to a completed
-            // statement; like every other filtered record it is just skipped.
-            guard record.complete else { continue }
             // Intermediate answers of our own completed turn remain in the
             // native record/journal, not a new external task after its final.
             if let turn = record.turnID, ownedTurnIDs.contains(turn) { continue }

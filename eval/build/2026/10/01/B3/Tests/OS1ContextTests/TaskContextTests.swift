@@ -432,6 +432,76 @@ func runTaskContextFixtures(root: URL) throws {
     try check(NativeIngestion.newRecords(records, after: nil, sentByOS1: held, seen: []).records.map(\.id) == ["u2"],
               "an adopted output OS1 already holds is skipped by digest even without a seen id")
 
+    // A generating answer keeps its native id/ordinal when it becomes final.
+    // Persist the actual cursor and seen ids between polls, as the sync caller does.
+    do {
+        var seen = Set(["a1"])
+        seen.formUnion(first1.records.map(\.id))
+        try check(first1.nextCursor == "3", "cursor must stop before the generating answer")
+        let generating = NativeIngestion.newRecords(records, after: first1.nextCursor, sentByOS1: sent, seen: seen)
+        seen.formUnion(generating.records.map(\.id))
+        try check(generating.records.isEmpty && generating.nextCursor == first1.nextCursor,
+            "another poll during generation must preserve the cursor")
+
+        let finalAnswer = NativeRecord(id: "a2", ordinal: 4, role: "assistant", text: "완성된 답변입니다.", complete: true)
+        let completed = Array(records.prefix(3)) + [finalAnswer]
+        let finished = NativeIngestion.newRecords(completed, after: generating.nextCursor, sentByOS1: sent, seen: seen)
+        seen.formUnion(finished.records.map(\.id))
+        try check(finished.records == [finalAnswer] && finished.nextCursor == "4",
+            "the same native record must be imported after generation completes")
+        let replay = NativeIngestion.newRecords(completed, after: finished.nextCursor, sentByOS1: sent, seen: seen)
+        try check(replay.records.isEmpty && replay.nextCursor == finished.nextCursor,
+            "a completed answer must be imported exactly once across subsequent polls")
+    }
+
+    // An incomplete record is a barrier, including when later complete records
+    // appear first in an unsorted snapshot. Neither output nor cursor may cross it.
+    do {
+        let prefix = NativeRecord(id: "prefix", ordinal: 10, role: "user", text: "native request", complete: true)
+        let partial = NativeRecord(id: "pending", ordinal: 20, role: "assistant", text: "generating", complete: false)
+        let tail = NativeRecord(id: "tail", ordinal: 30, role: "user", text: "later native request", complete: true)
+        let unsorted = [tail, partial, prefix]
+        let first = NativeIngestion.newRecords(unsorted, after: nil, sentByOS1: [], seen: [])
+        try check(first.records == [prefix] && first.nextCursor == "10",
+            "unsorted input must consume only the complete ordinal prefix")
+        try check(first.nextCursor == NativeIngestion.consumedCursor(unsorted, after: nil),
+            "ingestion and consumedCursor must agree on the complete prefix")
+
+        let cursors: [String?] = [nil, first.nextCursor]
+        for cursor in cursors {
+            let blocked = NativeIngestion.newRecords([tail, partial], after: cursor, sentByOS1: [], seen: [prefix.id])
+            try check(blocked.records.isEmpty && blocked.nextCursor == cursor,
+                "an immediately incomplete record must preserve a nil or existing cursor")
+            try check(blocked.nextCursor == NativeIngestion.consumedCursor([tail, partial], after: cursor),
+                "both cursor paths must stop at the same immediate barrier")
+        }
+
+        let final = NativeRecord(id: partial.id, ordinal: partial.ordinal, role: partial.role, text: "final", complete: true)
+        let resumed = NativeIngestion.newRecords([tail, final, prefix], after: first.nextCursor,
+            sentByOS1: [], seen: Set(first.records.map(\.id)))
+        try check(resumed.records == [final, tail] && resumed.nextCursor == "30",
+            "after the barrier completes, deferred records must be imported in ordinal order")
+        try check(resumed.nextCursor == NativeIngestion.consumedCursor([tail, final, prefix], after: first.nextCursor),
+            "both cursor paths must advance through a newly completed prefix")
+    }
+
+    // Completed records filtered by provenance/deduplication are consumed;
+    // unlike generating output, they must not stall later synchronization.
+    do {
+        let filtered = [
+            NativeRecord(id: "held", ordinal: 1, role: "assistant", text: "already adopted", complete: true),
+            NativeRecord(id: "seen", ordinal: 2, role: "assistant", text: "already imported", complete: true),
+            NativeRecord(id: "owned", ordinal: 3, role: "assistant", text: "own intermediate", complete: true, turnID: "our-turn"),
+            NativeRecord(id: "control", ordinal: 4, role: "user", text: "Continue the same user-selected work session.\nOS-1 dispatch", complete: true),
+        ]
+        let consumed = NativeIngestion.newRecords(filtered, after: nil,
+            sentByOS1: [NativeIngestion.digestOf("already adopted")], seen: ["seen"], ownedTurnIDs: ["our-turn"])
+        try check(consumed.records.isEmpty && consumed.nextCursor == "4",
+            "completed digest, seen, owned-turn and control records must all advance the cursor")
+        try check(consumed.nextCursor == NativeIngestion.consumedCursor(filtered, after: nil),
+            "filtered completed records must retain consumedCursor prefix semantics")
+    }
+
     let originalRequest = "바다와 호수의 차이를 설명해."
     let legacyHints = "\nVerified local directory candidates from the existing project registry (not a write grant or an active-release claim):\n- /tmp/example-project\nInspect relevant exact paths first. Do not run recursive Glob/Grep over HOME. Preserve the user's selected workspace and verify which project/release is actually active before changes.\n"
     let legacyRecord = NativeRecord(id: "legacy-hint", ordinal: 1, role: "user", text: originalRequest + legacyHints, complete: true)
