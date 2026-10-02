@@ -47,5 +47,38 @@ func runConversationalQuestionFixtures() throws {
         check(!ClaudeChatLane.conversationalQuestion(request), "agent keeps: \(request.prefix(40))")
     }
     check(!ClaudeChatLane.conversationalQuestion(String(repeating: "왜 그래? ", count: 40)), "a long message keeps the agent")
-    print("Conversational question: \(count) checks passed; owner's side questions take the chat lane, lookups and work keep the agent")
+    // 2026-10-02: a question that changes nothing runs on the read-only agent
+    // (web lookups, no write authority, no OS-1 source lock); the domain
+    // conversation's questions ran write-authorized and waited behind a repair.
+    for question in [
+        "아니 유성 코는 무슨 뜻인데 도대체?",
+        "아니 그런 회사가 어딨어? 아니 대기업 중에 마지막에 CO를 붙이는 그런 회사가 있다고?\\",
+        "일단은 글로벌해야 되고 대기업 웹페이지 문법을 따라야 되는데?\\",
+        "별로 마음에 안 드는데 다른 거 없을까?",
+        "usung.com 얼마야?",
+        "그래서 챕터를 다 올린거야?",
+        "README.md 무슨 내용이야?",
+    ] {
+        check(ClaudeChatLane.readOnlyQuestion(question), "read-only question: \(question.prefix(40))")
+    }
+    for request in [
+        "아니 그게 아니라 뭐 스퀘어스페이스나 고데리 닷컴 가서 하나 사자고, 씨발.",
+        "u-sung.com야 너 비싸다. 이걸로 하자. 왜 이렇게 비싸?",
+        "그럼 도메인으로 쓸 수 있는 거 예시 좀 줘봐.",
+        "usungcorp.com이걸로 하자.",
+        "아 씨발놈아 해라고.",
+        "[https://omaragi.com/history?benchmark=abcd-v3](https://omaragi.com/history?benchmark=abcd-v3) 야 이것도 날려 쓰잘데기 없는 페이지잖아",
+        "야 너 R2 연결되있지? 그 QM이랑 주야를 가져와봐QM이랑 GR 자료 가져가 보라고",
+        "야 너 R2 연결 된거야?",
+        "야 이거 봐봐. 라우팅이 다 왜 코덱스로 되냐?",
+        "도대체 여기에 대해서 아스트라로 왜 라우팅이 됐는데?",
+        "이 버그 왜 생겨?",
+        "왜 그래프가 안 나와?",
+        "이 파일 고쳐줄 수 있어?",
+        "빌드 다 됐어?",
+        String(repeating: "이거 맞지? ", count: 60),
+    ] {
+        check(!ClaudeChatLane.readOnlyQuestion(request), "write lane keeps: \(request.prefix(40))")
+    }
+    print("Conversational question: \(count) checks passed; owner's side questions take the chat lane, read-only questions the read-only agent, lookups and work keep the agent")
 }

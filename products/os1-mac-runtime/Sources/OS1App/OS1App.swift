@@ -633,6 +633,22 @@ private func providerIntentSelfTest() throws {
           !lastAnswerWasBoundedChat(ConversationSession(workspace: "/tmp")) else {
         throw RunnerError.message("OS-1 side-question continuity self-test failed.")
     }
+    // A question answered on the read-only agent is a side question too
+    // (2026-10-02); a read-only work objective and a write turn are not.
+    func objectiveSession(_ request: String, scope: TaskContext.Scope) -> ConversationSession {
+        var session = ConversationSession(workspace: "/tmp")
+        var context = TaskContext.migrated(conversationID: UUID(), request: request, workspace: "/tmp", sourceContext: nil,
+                                           codexSessionID: nil, claudeSessionID: nil)
+        context.setObjective(TaskContext.Objective(requestText: request, scope: scope))
+        session.taskContext = context
+        return session
+    }
+    guard lastTurnWasReadOnlyQuestion(objectiveSession("일단은 글로벌해야 되고 대기업 웹페이지 문법을 따라야 되는데?", scope: .readOnly)),
+          !lastTurnWasReadOnlyQuestion(objectiveSession("README를 읽고 핵심만 정리해. 파일은 수정하지 마.", scope: .readOnly)),
+          !lastTurnWasReadOnlyQuestion(objectiveSession("별로 마음에 안 드는데 다른 거 없을까?", scope: .workspaceWrite)),
+          !lastTurnWasReadOnlyQuestion(ConversationSession(workspace: "/tmp")) else {
+        throw RunnerError.message("OS-1 read-only question continuity self-test failed.")
+    }
 
     let surfaceMessages = try [ProviderSurface.gptChat, .codex, .claudeChat, .claude].map { surface -> ChatMessage in
         let message = ChatMessage(role: .assistant, text: "route answer", provider: surface.backend!.rawValue,
@@ -4092,6 +4108,15 @@ private func lastAnswerWasBoundedChat(_ session: ConversationSession) -> Bool {
     return last.executionSurface.flatMap(ProviderSurface.init(rawValue:))?.forcesChatLane == true
 }
 
+/// The conversation's latest turn was a question answered read-only
+/// (`ClaudeChatLane.readOnlyQuestion`, 2026-10-02): a side question in the
+/// conversation's work, not a read-only work objective, so the order that
+/// follows ("…이걸로 하자", "해") keeps its sessions, decisions and prohibitions.
+private func lastTurnWasReadOnlyQuestion(_ session: ConversationSession) -> Bool {
+    guard let objective = session.taskContext?.objective, objective.scope == .readOnly else { return false }
+    return ClaudeChatLane.readOnlyQuestion(objective.requestText)
+}
+
 /// A route fan-out's GPT-chat or Claude-chat part answers on a fresh thread
 /// outside the workspace. It must not replace the conversation's own native
 /// session, which the next full-lane turn resumes.
@@ -5547,7 +5572,8 @@ private final class SessionStore: ObservableObject {
     private func isNewEditAfterReadOnlyTask(_ next: PendingSubmission, session: ConversationSession) -> Bool {
         session.taskContext?.objective.scope == .readOnly &&
         ScopeResolution.resolve(next.request).scope == .workspaceWrite &&
-        ((session.lastFailure == nil && session.lastBackendFailure == nil && !lastAnswerWasBoundedChat(session)) ||
+        ((session.lastFailure == nil && session.lastBackendFailure == nil && !lastAnswerWasBoundedChat(session)
+          && !lastTurnWasReadOnlyQuestion(session)) ||
          (session.lastFailure != nil && session.lastBackendFailure?.permissionProfile == "read_only"))
     }
 

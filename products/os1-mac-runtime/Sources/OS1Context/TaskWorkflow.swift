@@ -111,9 +111,10 @@ public enum TaskWorkflow: String, Codable, Sendable, CaseIterable {
     /// filters models through a fixed name ladder — that ladder put Claude
     /// Fable above Opus 5.5, which beats it on every published benchmark at
     /// 40 % of the price. A stage keeps its effort preference
-    /// (`preferredEfforts`); the router's quality floor admits only models
-    /// within measurement noise of the best one available. Every observed
-    /// model of every provider stays a candidate.
+    /// (`preferredEfforts`); the router's quality floor admits each
+    /// provider's best available model (RCC v54), and the conversation's
+    /// capacity mix picks the provider. Every observed model of every
+    /// provider stays a candidate.
     public func preferredModelsByProvider(_ inventories: [[String]]) -> Set<String> {
         Set(inventories.joined())
     }

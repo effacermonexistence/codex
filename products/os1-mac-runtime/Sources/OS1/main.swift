@@ -7955,9 +7955,14 @@ func runTaskWithOwnerPolicy(
     let selfContainedText = (workflowStage == nil && !requireReadOnly
         && ClaudeChatLane.selfContainedTextOperation(prompt)
         && !promptRequiresShellCapability(prompt)) || ownerSelectedChatLane || conversationalQuestion
+    // A question that changes nothing ("…대기업 웹페이지 문법을 따라야 되는데?")
+    // runs on the read-only agent: web lookups and read tools, no write
+    // authority, no OS-1 source lock (2026-10-02; it ran write-authorized).
+    let readOnlyQuestion = workflowStage == nil && !requireReadOnly && attachedSource == nil
+        && ClaudeChatLane.readOnlyQuestion(prompt) && !promptRequiresShellCapability(prompt)
     // A review (ReviewPass) reads the code and changes nothing: it asks for a
     // read-only ticket, so Claude runs with its read-only tool set.
-    let resolvedScope = selfContainedText || readOnlyReview
+    let resolvedScope = selfContainedText || readOnlyReview || readOnlyQuestion
         ? TaskContext.Scope.readOnly
         : ScopeResolution.delegationScope(internalReadOnly: internalReadOnly)
     if taskState.objective.requestText != objectiveRequest || taskState.objective.kind != kind || taskState.objective.scope != resolvedScope {
@@ -8322,7 +8327,10 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
             os1Executable: currentOS1Executable())
     }
     let sourcePayload = try retainedSourcePayload(taskContext, primary: sourceContext, evidence: r2Evidence)
-    if resolvedScope == .workspaceWrite { workspaceContext += "\n" + ManagedPreview.capabilityCard + "\n" + WebsiteDelivery.capabilityCard }
+    // Website work only: the cards steered plain questions into building pages.
+    if resolvedScope == .workspaceWrite, WebsiteDelivery.relevant(request: objectiveRequest, context: context) {
+        workspaceContext += "\n" + ManagedPreview.capabilityCard + "\n" + WebsiteDelivery.capabilityCard
+    }
     if let target = previewDeploymentTarget { workspaceContext += "\n" + target.contract }
     if let validation = TaskWorkflow.validationContract(ownerRequest: objectiveRequest, scope: resolvedScope) {
         workspaceContext += "\n" + validation
@@ -8371,8 +8379,9 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
     // policy's own: since then no ticket has been read-only, so a translation
     // ran Claude with bypassPermissions and the whole coding agent. Ask for
     // read-only where the request provably needs nothing here — its own text to
-    // translate or summarize — and leave every other run exactly as it was.
-    inputContext.executionPermissionProfile = selfContainedText || readOnlyReview ? "read_only" : "workspace_write"
+    // translate or summarize, a review, or a question that changes nothing
+    // (`readOnlyQuestion`) — and leave every other run exactly as it was.
+    inputContext.executionPermissionProfile = resolvedScope == .readOnly ? "read_only" : "workspace_write"
     inputContext.availableClaudeModels = claudeCatalog
     if feedbackSupported {
         inputContext.completionFeedback = try ((try? feedbackStore.load(scope: feedbackScope)) ??

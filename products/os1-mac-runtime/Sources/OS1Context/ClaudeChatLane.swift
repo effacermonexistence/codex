@@ -147,6 +147,61 @@ public enum ClaudeChatLane {
         else { return false }
         return mentions(interrogatives) || lower.range(of: #"(?:니|나|까|냐|가|지|야|어|요)\?"#, options: .regularExpression) != nil
     }
+    /// A question that changes nothing, asked in a conversation: it may need the
+    /// web ("대기업 중에 마지막에 CO를 붙이는 그런 회사가 있다고?", a price, a domain),
+    /// so it keeps the agent, but the read-only one — the same model with web
+    /// lookups and read tools, no write authority, no OS-1 source lock and, in
+    /// HOME, no coding-agent customizations. Owner, 2026-10-02, a domain-naming
+    /// conversation: every such question ran as a write-authorized agent
+    /// carrying website-building instructions, the first two waited 499 s and
+    /// 873 s behind an OS-1 repair's source lock, and the turns took 29–117 s.
+    /// Anything that orders, edits, names OS-1, a backend, code or this
+    /// machine's work, or complains that something does not work keeps the
+    /// write lane: a complaint asked as a question is usually a repair request.
+    public static func readOnlyQuestion(_ prompt: String) -> Bool {
+        let value = prompt.precomposedStringWithCanonicalMapping.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty, value.count <= 400 else { return false }
+        let lower = value.lowercased()
+        // A "?" inside a link ("…/history?benchmark=…") does not ask anything.
+        let spoken = lower.replacingOccurrences(of: #"https?://\S+"#, with: " ", options: .regularExpression)
+        guard spoken.contains("?") || spoken.contains("？"), !spoken.contains("!"), !asksForWork(value),
+              ScopeResolution.resolve(value).scope != .workspaceWrite,
+              !projectTerms.contains(where: lower.contains), !localWorkTerms.contains(where: lower.contains),
+              !externalSystems.contains(where: lower.contains), !orderTerms.contains(where: lower.contains),
+              !failureComplaints.contains(where: lower.contains),
+              spoken.range(of: #"(?:봐|줘|해|라|자|빼|가져와|와봐)(?=[\s.,~]|$)"#, options: .regularExpression) == nil
+        else { return false }
+        return !technicalTerms.contains { term in
+            term.unicodeScalars.allSatisfy(\.isASCII)
+                ? lower.range(of: "\\b\(NSRegularExpression.escapedPattern(for: term))\\b", options: .regularExpression) != nil
+                : lower.contains(term)
+        }
+    }
+    /// This machine's work: files, code, builds, runs, deployments.
+    static let localWorkTerms = [
+        "저장소", "레포", "리포지", "코드", "파일", "폴더", "디렉터리", "디렉토리", "소스", "로그", "커밋", "브랜치", "빌드",
+        "테스트", "스크립트", "설정", "환경변수", "터미널", "명령", "프로젝트", "패치", "실행", "설치", "배포",
+        "repo", "codebase", "file", "folder", "directory", "source code", "commit", "branch", "diff", "build",
+        "script", "config", "terminal", "command", "workspace", "install", "deploy",
+    ]
+    /// Services OS-1 operates through a shell or a connector.
+    static let externalSystems = [
+        "r2", "github", "깃허브", "기터브", "기탑", "cloudflare", "클라우드플레어", "railway", "레일웨이", "wrangler",
+        "gmail", "지메일", "slack", "슬랙", "manychat", "매니챗",
+    ]
+    /// Orders the endings above miss: "이것도 날려", "가져와봐QM…", "보라고",
+    /// buying and sending.
+    static let orderTerms = [
+        "날려", "가져와", "가져 와", "가져가", "보라고", "하라고", "해라고", "라니까", "사자", "사줘", "구매", "결제",
+        "주문", "보내", "띄워", "옮겨", "찾아와", "알아와", "뽑아", "정리해", "써줘", "써 줘", "적어", "예약", "취소",
+    ]
+    /// "…안 돼?", "왜 멈췄어?": a report that something is broken.
+    static let failureComplaints = [
+        "안 돼", "안돼", "안 되", "안되", "안 나와", "안나와", "안 보여", "안보여", "안 떠", "안떠", "안 고쳐", "안고쳐",
+        "멈춰", "멈췄", "멈추", "깨져", "깨졌", "느려", "오래 걸", "실패", "틀렸", "틀려", "잘못",
+        "doesn't work", "does not work", "not working", "broken", "failed",
+    ]
+
     /// English work verbs: "Continue from where you left off." is an order.
     static let workVerbs = ["continue", "resume", "proceed", "go on", "keep going", "fix", "make", "build", "create",
                             "write", "add", "remove", "delete", "change", "run", "start", "do it", "finish"]

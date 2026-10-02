@@ -13,6 +13,33 @@ public enum WebsiteDelivery {
     {"workspace":"absolute project directory","projectID":"Railway project ID","serviceID":"service ID","environmentID":"environment ID","deploymentID":"successful deployment ID","url":"https://assigned-domain/","proofPath":"/os1-delivery-proof.txt","proofSHA256":"sha256 of a unique non-secret proof file served with this build"}
     The proof file must identify this delivery without containing any secret or private source. Verify its public bytes. In the final response include a clickable public URL and a standalone line OS1_RAILWAY_RECEIPT: /absolute/path/to/receipt.json. OS1 independently checks Railway status and public proof bytes before accepting this delivery. A receipt alone is not success. If deployment was not requested, do not deploy or emit a deployment receipt.
     """
+    /// Whether a turn is website work at all, so it needs this card and the
+    /// preview card. Both were attached to every write-scope turn (~3.5 KB),
+    /// and a plain question that mentions a web page read them as its task:
+    /// "일단은 글로벌해야 되고 대기업 웹페이지 문법을 따라야 되는데?" (2026-10-02,
+    /// a domain-naming conversation) ran Claude Opus with headless Chrome for
+    /// fifteen minutes building a page nobody asked for. A turn qualifies when
+    /// it asks to build, change, preview or ship a site — in its own words, or
+    /// as a short follow-up ("다 로컬에 만들고 올려") in a conversation about one —
+    /// or names a preview endpoint or Railway.
+    public static func relevant(request: String, context: String? = nil) -> Bool {
+        let value = request.precomposedStringWithCanonicalMapping.lowercased()
+        if PreviewTargetBinding.isRailwayRequest(value) || !PreviewTargetBinding.endpoints(in: value).isEmpty
+            || value.contains("os1_preview_url") || value.contains("preview-start") {
+            return true
+        }
+        func matches(_ text: String, _ pattern: String) -> Bool {
+            text.range(of: pattern, options: .regularExpression) != nil
+        }
+        guard matches(value, buildPattern) else { return false }
+        if matches(value, sitePattern) { return true }
+        guard let context, !context.isEmpty else { return false }
+        let recent = String(context.precomposedStringWithCanonicalMapping.lowercased().suffix(3_000))
+        return matches(recent, sitePattern)
+    }
+    static let sitePattern = #"web ?site|web ?page|landing ?page|home ?page|front-?end|\bhtml\b|\bcss\b|웹 ?사이트|사이트|홈페이지|웹 ?페이지|랜딩 ?페이지|페이지|프론트"#
+    static let buildPattern = #"만들|만드|구현|고쳐|고치|수정|바꿔|바꾸|변경|추가|디자인|배포|올려|올리|띄워|클론|복제|복사|\b(?:build|create|make|implement|fix|deploy|redesign|update|change|publish|ship|launch|clone|copy)\b"#
+
     public struct Receipt: Codable, Sendable {
         public let workspace: String
         public let projectID: String
