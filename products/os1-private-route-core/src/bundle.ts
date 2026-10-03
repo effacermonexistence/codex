@@ -129,18 +129,37 @@ async function sha256Hex(bytes: ArrayBuffer): Promise<string> {
   return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
+type VerifiedBundle = { size: number; bundle: PolicyBundle };
+const verifiedBundles = new WeakMap<R2Bucket, Map<string, Promise<VerifiedBundle>>>();
+
+/** Hash-addressed policy is immutable. Reuse verified bytes per binding/hash;
+ * never cache a denial or cross a namespace/identity/size boundary. Returning a
+ * clone prevents a caller from mutating the authoritative cached object. */
 export async function loadPolicyBundle(env: Env, persistedSha256?: string): Promise<PolicyBundle> {
   const expectedSha256 = persistedSha256 ?? env.POLICY_BUNDLE_SHA256;
   const key = persistedSha256 === undefined ? env.POLICY_BUNDLE_KEY : `os1/policies/${persistedSha256}.json`;
   const keyMatch = key.match(POLICY_KEY);
+  const maximum = positiveInteger(env.MAX_POLICY_BUNDLE_BYTES);
   if (!keyMatch || keyMatch[1] !== expectedSha256 || !SHA256.test(expectedSha256)) {
     throw new Error("invalid policy configuration");
   }
-  const object = await env.POLICY_BUNDLES.get(key);
-  const maximum = positiveInteger(env.MAX_POLICY_BUNDLE_BYTES);
-  if (!object || object.size < 2 || object.size > maximum) throw new Error("policy bundle unavailable");
-  const bytes = await object.arrayBuffer();
-  if (await sha256Hex(bytes) !== expectedSha256) throw new Error("policy bundle integrity failure");
-  const serialized = new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(bytes);
-  return parsePolicyBundle(serialized);
+  let entries = verifiedBundles.get(env.POLICY_BUNDLES);
+  if (!entries) { entries = new Map(); verifiedBundles.set(env.POLICY_BUNDLES, entries); }
+  let pending = entries.get(expectedSha256);
+  if (!pending) {
+    if (entries.size >= 8) entries.delete(entries.keys().next().value!);
+    pending = (async () => {
+      const object = await env.POLICY_BUNDLES.get(key);
+      if (!object || object.size < 2 || object.size > maximum) throw new Error("policy bundle unavailable");
+      const bytes = await object.arrayBuffer();
+      if (await sha256Hex(bytes) !== expectedSha256) throw new Error("policy bundle integrity failure");
+      const serialized = new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(bytes);
+      return { size: bytes.byteLength, bundle: parsePolicyBundle(serialized) };
+    })();
+    entries.set(expectedSha256, pending);
+    pending.catch(() => { if (entries!.get(expectedSha256) === pending) entries!.delete(expectedSha256); });
+  }
+  const verified = await pending;
+  if (verified.size > maximum) throw new Error("policy bundle unavailable");
+  return structuredClone(verified.bundle);
 }

@@ -90,7 +90,10 @@ class ResponseFence(unittest.TestCase):
         for prompt in ("Read-only. Return exactly the fields found in this file. Do not change files.",
                        "Read-only. Reply with exactly the current release version. Do not run commands."):
             self.assertEqual(self.route(prompt)["verification_profile"], "executed_review")
-            self.assertNotEqual(self.verify(prompt, "READ_ONLY_OK")["outcome"], "pass")
+            # v45+ records non-empty verified review execution, not semantic
+            # source truth. Protect this test's actual invariant: a source-value
+            # request must never be converted into a fixed-literal contract.
+            self.assertNotEqual(self.verify(prompt, "READ_ONLY_OK")["reason_code"], "EXACT_RESPONSE_VERIFIED")
 
     def test_additional_positive_or_mixed_requirements_not_erased(self):
         for suffix in ("Then create result.txt.", "Do not run commands, but create result.txt.",

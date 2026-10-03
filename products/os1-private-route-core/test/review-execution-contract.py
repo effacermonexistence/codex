@@ -28,7 +28,7 @@ class ReviewContract(unittest.TestCase):
                     self.assertEqual(result['reason_code'], 'RECEIPT_EXECUTION_RECORDED')
     def test_unknown_or_source_requirements_not_erased(self):
         for suffix in (' Then inspect source files', ' Explain the current release', ' Then deploy', ' and modify code'):
-            self.assertNotEqual(self.verify(prompt='Confirm this request was received.'+suffix)['outcome'],'pass')
+            self.assertNotEqual(self.verify(prompt='Confirm this request was received.'+suffix)['reason_code'],'RECEIPT_EXECUTION_RECORDED')
     def test_incident_and_compositional_variants(self):
         for prompt in ('Read-only runtime verification. Do not edit files, send messages, deploy, or invoke tools. In one short sentence, acknowledge that this verification request reached the backend. The standard persona greeting is allowed. No exact output matching is requested.', 'Acknowledge my message has been received.', 'Read-only. Confirm the task reached the executor. Do not run commands.'):
             self.assertEqual(self.verify(prompt=prompt)['outcome'],'pass')

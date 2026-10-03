@@ -24,6 +24,30 @@ const bundle = {
 };
 
 describe("private policy bundle", () => {
+  it("single-flights immutable reads, returns independent clones, retains size/namespace boundaries", async () => {
+    const bytes = new TextEncoder().encode(JSON.stringify(bundle));
+    const sha = createHash("sha256").update(bytes).digest("hex");
+    let gets = 0;
+    const binding = { get: async () => { gets++; await new Promise(r => setTimeout(r, 5)); return { size: bytes.length, arrayBuffer: async () => bytes.buffer }; } };
+    const env = { POLICY_BUNDLE_KEY: `os1/policies/${sha}.json`, POLICY_BUNDLE_SHA256: sha,
+      MAX_POLICY_BUNDLE_BYTES: "65536", POLICY_BUNDLES: binding } as unknown as Env;
+    const [a,b] = await Promise.all([loadPolicyBundle(env),loadPolicyBundle(env)]);
+    expect(gets).toBe(1); a.policy_version = "mutated-caller";
+    expect(b.policy_version).toBe(bundle.policy_version);
+    expect((await loadPolicyBundle(env)).policy_version).toBe(bundle.policy_version);
+    expect(gets).toBe(1);
+    await expect(loadPolicyBundle({...env, MAX_POLICY_BUNDLE_BYTES: "2"} as Env)).rejects.toThrow("unavailable");
+    await expect(loadPolicyBundle({...env, POLICY_BUNDLES: {get: async () => null}} as unknown as Env)).rejects.toThrow("unavailable");
+  });
+  it("failed integrity does not poison a later valid acquisition", async () => {
+    const bytes = new TextEncoder().encode(JSON.stringify(bundle));
+    const sha = createHash("sha256").update(bytes).digest("hex"); let bad = true, gets = 0;
+    const env = { POLICY_BUNDLE_KEY: `os1/policies/${sha}.json`, POLICY_BUNDLE_SHA256: sha,
+      MAX_POLICY_BUNDLE_BYTES: "65536", POLICY_BUNDLES: {get: async () => {gets++; return {size: bytes.length,
+        arrayBuffer: async () => bad ? new TextEncoder().encode("wrong content").buffer : bytes.buffer};}} } as unknown as Env;
+    await expect(loadPolicyBundle(env)).rejects.toThrow("integrity"); bad=false;
+    expect((await loadPolicyBundle(env)).policy_version).toBe(bundle.policy_version); expect(gets).toBe(2);
+  });
   it("loads the persisted immutable policy during rollover and rejects substitution", async () => {
     const bytes = new TextEncoder().encode(JSON.stringify(bundle));
     const priorSha = createHash("sha256").update(bytes).digest("hex");

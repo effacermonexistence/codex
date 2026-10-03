@@ -826,10 +826,10 @@ public struct ScopeResolution: Equatable, Sendable {
 
     // A shared trailing negation applies to the entire bounded action list,
     // not just its final item (e.g. "파일 수정, 테스트 실행, 배포는 하지 마").
-    private static let prohibitedListAction = #"(?:(?:파일|코드)\s*(?:수정|변경|편집|작성|삭제)|(?:도구|툴)\s*(?:호출|사용)|(?:명령|테스트|빌드)\s*(?:실행|수행)?|(?:고객|인증)\s*(?:데이터|정보)\s*(?:접근|조회|변경|삭제)|설치|배포|복원|복구|삭제|업로드|리셋|초기화)"#
+    private static let prohibitedListAction = #"(?:(?:파일|코드)\s*(?:수정|변경|편집|작성|삭제)|(?:도구|툴)\s*(?:호출|사용)|(?:명령|테스트|빌드)\s*(?:실행|수행)?|(?:고객|인증)\s*(?:데이터|정보)\s*(?:접근|조회|변경|삭제)|웹(?:\s*(?:검색|접근|조회))?|브라우저(?:\s*(?:사용|조작))?|구매|결제|외부\s*(?:전송|송신|접근|연결)|서브\s*에이전트|하위\s*에이전트|설치|배포|복원|복구|삭제|업로드|리셋|초기화)"#
     public static let enumeratedProhibitionPattern = prohibitedListAction +
-        #"(?:\s*(?:[,·/]|및|또는|이나|나|과|와)\s*"# + prohibitedListAction +
-        #"){1,8}\s*(?:(?:은|는|을|를)?\s*하지\s*마(?:세요|십시오)?|없이)[.!]?"#
+        #"(?:\s*(?:[,·ㆍ/]|및|또는|이나|나|과|와)\s*"# + prohibitedListAction +
+        #"){0,12}\s*(?:(?:은|는|을|를)?\s*하지\s*마(?:세요|십시오)?|금지|없이)[.!]?"#
 
     // Relative scope fences constrain a separately authorized edit. Consume
     // only complete bounded clauses, not "... but change ..." or filenames.
@@ -990,7 +990,10 @@ public struct ScopeResolution: Equatable, Sendable {
                     for (word, prohibition) in [("테스트", "do not run tests"), ("빌드", "do not build"),
                         ("설치", "do not install"), ("배포", "do not deploy"), ("복원", "do not restore"),
                         ("복구", "do not restore"), ("삭제", "do not delete"), ("업로드", "do not upload"),
-                        ("리셋", "do not reset"), ("초기화", "do not reset")] where clause.contains(word) {
+                        ("리셋", "do not reset"), ("초기화", "do not reset"),
+                        ("웹", "do not use web"), ("브라우저", "do not use browser"), ("구매", "do not purchase"),
+                        ("결제", "do not pay"), ("외부 전송", "do not transmit externally"),
+                        ("서브에이전트", "do not use subagents")] where clause.contains(word) {
                         if !prohibitions.contains(prohibition) { prohibitions.append(prohibition) }
                     }
                 }

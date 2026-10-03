@@ -15,6 +15,17 @@ func runRuntimeActivityObserverFixtures() throws {
     func check(_ value: Bool, _ message: String) throws {
         if !value { throw NSError(domain: "ActivityRelayFixture", code: 1, userInfo: [NSLocalizedDescriptionKey: message]) }
     }
+    for delimiter in ["·", "ㆍ", ",", "/"] {
+        for tail in ["금지", "없이", "하지 마", "는 하지 마세요"] {
+            let list = ["파일 변경", "웹", "브라우저", "구매", "외부 전송", "서브에이전트"].joined(separator: delimiter)
+            let prompt = "선택된 폴더의 result.txt를 읽고 그대로 답해. " + list + " " + tail + "."
+            let scope = ScopeResolution.resolve(prompt)
+            try check(scope.scope == .readOnly && scope.prohibitions.contains("do not modify files"), "negation list grants write authority")
+        }
+    }
+    for prompt in ["app.py를 고쳐. 웹·구매·외부 전송 금지.", "app.py를 수정해. 브라우저·결제·서브에이전트 금지."] {
+        try check(ScopeResolution.resolve(prompt).scope == .workspaceWrite, "prohibition list erased an authorized edit")
+    }
     let root = FileManager.default.temporaryDirectory.appendingPathComponent("os1-relay-\(UUID().uuidString)")
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: root) }

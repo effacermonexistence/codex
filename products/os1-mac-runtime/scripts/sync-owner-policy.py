@@ -30,7 +30,9 @@ def latest_note(index):
     if len(candidates)!=1: raise ValueError('Canonical note tie requires resolution')
     return next(iter(candidates))
 
-INDEX_SCRIPT = 'with timeout of 15 seconds\n tell application "Notes"\n set epoch to current date\n set year of epoch to 1970\n set month of epoch to January\n set day of epoch to 1\n set time of epoch to 0\n set rows to ""\n repeat with n in (every note whose name contains "RCC ENGINE v26")\n set rows to rows & (id of n) & tab & ((modification date of n) - epoch) & linefeed\n end repeat\n return rows\n end tell\nend timeout'
+# Bulk property reads: two Apple Events for the matching list instead of
+# N lazy note-property roundtrips. Same live index, tie and capture-race gates.
+INDEX_SCRIPT = 'with timeout of 15 seconds\n tell application "Notes"\n set noteIDs to id of (every note whose name contains "RCC ENGINE v26")\n set noteDates to modification date of (every note whose name contains "RCC ENGINE v26")\n set verifyIDs to id of (every note whose name contains "RCC ENGINE v26")\n if noteIDs is not equal to verifyIDs then error "Canonical index changed during bulk read"\n end tell\n set epoch to current date\n set year of epoch to 1970\n set month of epoch to January\n set day of epoch to 1\n set time of epoch to 0\n set rows to ""\n repeat with i from 1 to count of noteIDs\n set rows to rows & (item i of noteIDs) & tab & ((item i of noteDates) - epoch) & linefeed\n end repeat\n return rows\nend timeout'
 
 # An unchanged, recently certified snapshot is not rewritten. The Swift
 # loader accepts a certification up to 24 h old; re-certify hourly.
