@@ -1,11 +1,56 @@
+import CryptoKit
 import Foundation
 
 /// Talks to the OS-1 Checkout helper over its user-only socket. The MCP server
 /// a backend uses and the run that collects receipts both go through here;
 /// neither can press a purchase button, only ask the helper to.
 public enum CheckoutBrokerClient {
+    /// The helper as shipped, nested in the installed OS-1 app.
     public static func helperURL(home: URL = FileManager.default.homeDirectoryForCurrentUser) -> URL {
         SelfUpdate.installedAppURL(home: home).appendingPathComponent("Contents/Helpers/\(BrowserCheckout.helperBundleName)")
+    }
+
+    /// The copy that runs. macOS attributes an app nested in another app's
+    /// bundle to the outer app (tccd, 2026-10-02: "Policy disallows prompt for
+    /// com.omaragi.os1" for the nested helper), which would put the browser
+    /// permission on OS-1 itself — and so on every backend it starts. Outside
+    /// the bundle the helper is its own TCC identity.
+    public static func runningHelperURL(home: URL = FileManager.default.homeDirectoryForCurrentUser) -> URL {
+        BrowserCheckout.directory(home: home).appendingPathComponent(BrowserCheckout.helperBundleName)
+    }
+
+    /// Copies the signed helper out of the installed app when the copy is
+    /// missing or differs (a new build), signature intact.
+    public static func prepareRunningHelper(home: URL = FileManager.default.homeDirectoryForCurrentUser) throws -> URL {
+        let source = helperURL(home: home)
+        let target = runningHelperURL(home: home)
+        let executable = "Contents/MacOS/OS1Checkout"
+        guard let shipped = digest(source.appendingPathComponent(executable)) else {
+            throw BrowserCheckout.BrokerError(code: "helper_not_installed",
+                                              message: "OS-1 Checkout is not installed in \(source.path).")
+        }
+        let shippedInfo = try? Data(contentsOf: source.appendingPathComponent("Contents/Info.plist"))
+        let runningInfo = try? Data(contentsOf: target.appendingPathComponent("Contents/Info.plist"))
+        if digest(target.appendingPathComponent(executable)) == shipped && shippedInfo == runningInfo { return target }
+        try FileManager.default.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true,
+                                                attributes: [.posixPermissions: 0o700])
+        if FileManager.default.fileExists(atPath: target.path) { try FileManager.default.removeItem(at: target) }
+        let copy = Process()
+        copy.executableURL = URL(fileURLWithPath: "/usr/bin/ditto")
+        copy.arguments = [source.path, target.path]
+        copy.standardOutput = FileHandle.nullDevice
+        copy.standardError = FileHandle.nullDevice
+        try copy.run()
+        copy.waitUntilExit()
+        guard copy.terminationStatus == 0, digest(target.appendingPathComponent(executable)) == shipped else {
+            throw BrowserCheckout.BrokerError(code: "helper_copy_failed", message: "OS-1 Checkout could not be prepared in \(target.path).")
+        }
+        return target
+    }
+
+    static func digest(_ file: URL) -> String? {
+        guard let data = try? Data(contentsOf: file, options: .mappedIfSafe) else { return nil }
+        return SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
 
     /// One request, one response line. With `launch`, a missing helper is
@@ -86,11 +131,7 @@ public enum CheckoutBrokerClient {
     }
 
     static func launchHelper() throws {
-        let helper = helperURL()
-        guard FileManager.default.fileExists(atPath: helper.appendingPathComponent("Contents/MacOS/OS1Checkout").path) else {
-            throw BrowserCheckout.BrokerError(code: "helper_not_installed",
-                                              message: "OS-1 Checkout is not installed in \(helper.path).")
-        }
+        let helper = try prepareRunningHelper()
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/open")
         // -g: do not bring it forward; -j: launch hidden. LaunchServices makes

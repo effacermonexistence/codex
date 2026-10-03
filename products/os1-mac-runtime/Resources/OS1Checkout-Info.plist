@@ -24,6 +24,10 @@
 	<string>13.0</string>
 	<key>LSUIElement</key>
 	<true/>
+	<key>NSSupportsAutomaticTermination</key>
+	<false/>
+	<key>NSSupportsSuddenTermination</key>
+	<false/>
 	<key>NSAppleEventsUsageDescription</key>
 	<string>OS-1이 결제 화면을 열고, 직접 승인하신 구매 버튼만 누르기 위해 Safari와 Chrome을 제어합니다.</string>
 </dict>

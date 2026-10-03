@@ -636,6 +636,12 @@ if CommandLine.arguments.contains("--self-test") { exit(checkoutSelfTest() ? 0 :
 
 let application = NSApplication.shared
 application.setActivationPolicy(.accessory)
+// A windowless accessory app is fair game for AppKit's automatic and sudden
+// termination; the helper waits on the owner's Automation and Touch ID
+// prompts, so it ends only through its own idle timer (2026-10-02: it was
+// terminated while the first Automation prompt was on screen).
+ProcessInfo.processInfo.disableAutomaticTermination("OS-1 Checkout serves purchase approvals")
+ProcessInfo.processInfo.disableSuddenTermination()
 let broker = CheckoutBroker(scripts: BrowserScripts())
 do {
     try SocketServer.start(path: BrowserCheckout.socketURL().path) { data in broker.queue.sync { broker.handle(data) } }

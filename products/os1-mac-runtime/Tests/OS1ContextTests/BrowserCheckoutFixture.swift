@@ -158,5 +158,29 @@ func runBrowserCheckoutFixtures() throws {
     check(["purchase_request_approval", "purchase_confirm", "Touch ID", "owner-only", "checkout_status", "Never type card numbers"]
           .allSatisfy(card.contains), "the checkout card names the approval flow and the owner-only fields")
     check(OwnerAuthorityActions.capabilityCard.contains("checkout or cart"), "the link card stays for turns without tools")
+    // The helper runs from a copy outside the OS-1 bundle (macOS attributes a
+    // nested app to its host): copied when missing or changed, kept otherwise.
+    let home = FileManager.default.temporaryDirectory.appendingPathComponent("os1-checkout-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: home) }
+    let shipped = CheckoutBrokerClient.helperURL(home: home)
+    try FileManager.default.createDirectory(at: shipped.appendingPathComponent("Contents/MacOS"), withIntermediateDirectories: true)
+    try Data("v1".utf8).write(to: shipped.appendingPathComponent("Contents/MacOS/OS1Checkout"))
+    try Data("<plist>1</plist>".utf8).write(to: shipped.appendingPathComponent("Contents/Info.plist"))
+    let running = try CheckoutBrokerClient.prepareRunningHelper(home: home)
+    check(running.standardizedFileURL.path == CheckoutBrokerClient.runningHelperURL(home: home).standardizedFileURL.path
+          && !running.path.contains("OS-1 CLODEX.app") && running.path.hasSuffix("checkout/OS-1 Checkout.app"),
+          "the running helper lives outside the OS-1 bundle")
+    check((try? Data(contentsOf: running.appendingPathComponent("Contents/MacOS/OS1Checkout"))) == Data("v1".utf8), "the helper was copied")
+    let marker = running.appendingPathComponent("Contents/marker")
+    try Data().write(to: marker)
+    _ = try CheckoutBrokerClient.prepareRunningHelper(home: home)
+    check(FileManager.default.fileExists(atPath: marker.path), "an unchanged helper is not copied again")
+    try Data("v2".utf8).write(to: shipped.appendingPathComponent("Contents/MacOS/OS1Checkout"))
+    _ = try CheckoutBrokerClient.prepareRunningHelper(home: home)
+    check(!FileManager.default.fileExists(atPath: marker.path)
+          && (try? Data(contentsOf: running.appendingPathComponent("Contents/MacOS/OS1Checkout"))) == Data("v2".utf8),
+          "a new build replaces the copy")
+    let missing = FileManager.default.temporaryDirectory.appendingPathComponent("os1-checkout-missing-\(UUID().uuidString)")
+    check((try? CheckoutBrokerClient.prepareRunningHelper(home: missing)) == nil, "no installed helper, no copy")
     print("Browser checkout fixtures: \(count) checks")
 }
