@@ -7824,7 +7824,7 @@ func runTask(
     // A refused policy still stops the run before any routing or model call.
     AttemptLatencyTrace.begin()
     let preflight = (try? RuntimeConfig.load()).map {
-        PreflightInventory.start(workspace: URL(fileURLWithPath: workspace).standardizedFileURL.path,
+        PreflightInventory.start(workspace: LocalProjectWorkspace.executionPath(workspace),
                                  config: $0, showCodex: OS1Settings.load().showCodex, prepareGateway: true)
     }
     let policy = try loadCurrentOwnerPolicy()
@@ -8320,7 +8320,11 @@ func runTaskWithOwnerPolicy(
         // it, and never treat its absence as a failure to repair.
         codexCatalog = ActiveCodexCatalog(models: [], source: BackendHealth.disabledCatalogSource)
     }
-    let claudeCatalogs = await claudeProbe.value
+    var claudeInventoryDeferred = ModelAvailability.deferAlternateInventory(preference: providerPreference,
+        codexReady: !codexCatalog.models.isEmpty, workflow: workflowStage != nil)
+    let claudeCatalogs = claudeInventoryDeferred
+        ? (configured: [ClaudeModelCapability](), routable: [ClaudeModelCapability]()) : await claudeProbe.value
+    AttemptLatencyTrace.mark("required_inventory_ready")
     var observedClaudeCatalog = claudeCatalogs.routable
     let claudeLimitedOnly = !claudeCatalogs.configured.isEmpty && claudeCatalogs.routable.isEmpty
     // Owner's rule: a dead-backend preflight is a repair trigger, not a dead
@@ -8343,7 +8347,8 @@ func runTaskWithOwnerPolicy(
                                  dispatchStage: .notDispatched, diagnosis: diagnosis).emit()
             throw OS1Error.message(diagnosis)
         }
-    } else {
+    } else if !claudeInventoryDeferred {
+        // Never persist unobserved alternative health as disconnected.
         try? observedBackendHealth(claudeCatalog: observedClaudeCatalog, codexCatalog: codexCatalog,
                                    workspace: canonicalWorkspace, claudeLimitedOnly: claudeLimitedOnly).save()
     }
@@ -8373,7 +8378,7 @@ func runTaskWithOwnerPolicy(
         }
     }
     var claudeCatalog = observedClaudeCatalog
-    let hasClaudeExecutable = !claudeCatalog.isEmpty
+    var hasClaudeExecutable = !claudeCatalog.isEmpty
     let repairedContext = repairedSource ? (context ?? "") + """
 
 
@@ -8476,7 +8481,7 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
         routedPreference = "codex"
         burnNotice = notice
     }
-    let request = StartExecutionRequest(
+    var request = StartExecutionRequest(
         task: routingTask,
         providerPreference: try executableProviderPreference(requested: routedPreference,
             prompt: requireReadOnly ? routingTask : prompt, codexAvailable: !codexCatalog.models.isEmpty,
@@ -8549,6 +8554,22 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
             return finishedRun(adopted)
         }
         if route.status == "failed" {
+            if steps.isEmpty && claudeInventoryDeferred {
+                // The selected plan failed before any native execution. Gather
+                // actual alternate evidence rather than declaring no route.
+                claudeInventoryDeferred = false
+                claudeCatalog = await claudeProbe.value.routable
+                hasClaudeExecutable = !claudeCatalog.isEmpty
+                if hasClaudeExecutable {
+                    inputContext.availableClaudeModels = claudeCatalog
+                    request = StartExecutionRequest(task: request.task, providerPreference: request.providerPreference,
+                        capacityPlan: request.capacityPlan, executorContractVersion: request.executorContractVersion,
+                        executorContractSHA256: request.executorContractSHA256, availableCodexModels: request.availableCodexModels,
+                        executionContext: inputContext)
+                    route = try await client.post("/v1/executions", body: request, as: RouteResponse.self)
+                    continue
+                }
+            }
             if steps.isEmpty {
                 throw OS1Error.message("현재 모델·reasoning·권한 조합을 충족하는 실행 경로가 없어 모델 호출 전에 중단했습니다. 요청과 자료는 보존했습니다.")
             }
@@ -8710,6 +8731,14 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
                     }
                 )
             } catch {
+                if claudeInventoryDeferred {
+                    // Actual selected-backend failure: restore fresh fallback
+                    // evidence before quota/recovery decisions below.
+                    claudeInventoryDeferred = false
+                    claudeCatalog = await claudeProbe.value.routable
+                    hasClaudeExecutable = !claudeCatalog.isEmpty
+                    AttemptLatencyTrace.mark("fallback_inventory_ready")
+                }
                 let reason = String(describing: error)
                 attemptFailure = reason
                 lastLocalFailure = reason

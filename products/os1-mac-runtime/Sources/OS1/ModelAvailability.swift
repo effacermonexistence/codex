@@ -66,10 +66,23 @@ enum ModelAvailability {
             excludingModelLimited(["fable", "opus", "sonnet", "claude-fable-5-1[1m]"].map {
                 ClaudeModelCapability(model: $0, supportedEfforts: ["low"]) }, limited: ["fable"]).map(\.model) == ["opus", "sonnet"],
             excludingModelLimited([ClaudeModelCapability(model: "opus", supportedEfforts: ["xhigh"])], limited: []).count == 1,
-        ] + inventoryCacheChecks(claudeRows([sonnet]))
+        ] + inventoryCacheChecks(claudeRows([sonnet])) + [
+            deferAlternateInventory(preference: "codex", codexReady: true, workflow: false),
+            !deferAlternateInventory(preference: "auto", codexReady: true, workflow: false),
+            !deferAlternateInventory(preference: "claude", codexReady: true, workflow: false),
+            !deferAlternateInventory(preference: "codex", codexReady: false, workflow: false),
+            !deferAlternateInventory(preference: "codex", codexReady: true, workflow: true),
+        ]
         guard checks.allSatisfy({ $0 }) else { throw OS1Error.message("Model availability regression failed") }
         print("OS-1 account model metadata: \(checks.count) checks OK")
     }
+    /// A healthy explicitly selected Codex route does not depend on the other
+    /// provider's SDK startup. Auto/workflows or an unavailable selection still
+    /// require both inventories. Deferred data is unknown, never a health failure.
+    static func deferAlternateInventory(preference: String, codexReady: Bool, workflow: Bool) -> Bool {
+        preference == "codex" && codexReady && !workflow
+    }
+
     /// The per-run inventory reuse: same workspace and fresh only.
     static func inventoryCacheChecks(_ rows: [NativeClaudeModel]) -> [Bool] {
         let cache = ClaudeInventoryCache()

@@ -1,4 +1,4 @@
-# Build 310 — native output relay
+# Build 311 — native output relay
 
 Scope: OS-1-added transport/render latency, not provider inference time. No permission, billing, domain/DNS, Handy, session-reset or final-adoption changes.
 
@@ -10,6 +10,7 @@ Changes:
 - Cache immutable transcript history by the complete render input, session, expansion and waiting state. Re-render/replace only the live suffix. Final/history/source disclosures still use the existing rich renderer.
 - Consume Claude public results once by bound session and result count; a retained final must not mask a later steered turn. Wrong-session/error payloads do not enter the public final relay.
 - Ordinary deep code explanations no longer silently add a paid Claude reviewer. Explicit cross-model review remains available; historical measured review cases remain historical evidence, not universal necessity.
+- Healthy explicitly selected Codex does not await the unselected Claude SDK. Auto/workflow/unavailable selections await both. Unknown health is not saved as disconnected. Selected-plan/execution failure gathers fresh alternate data before recovery.
 - Parallelize independent gateway registration and capability probes, retaining both checks.
 - Add local source/receipt/applied/AppKit-draw timestamps with no text, prompt, credentials or commands in the diagnostic log. Receipt time is not provider-internal generation time.
 
