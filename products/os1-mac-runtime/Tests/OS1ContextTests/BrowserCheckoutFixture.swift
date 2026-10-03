@@ -150,8 +150,12 @@ func runBrowserCheckoutFixtures() throws {
     check(BrowserCheckout.classifyScriptError(number: -600, message: "") == .browserNotRunning, "-600 is not running")
     check(BrowserCheckout.classifyScriptError(number: -1712, message: "AppleEvent timed out.") == .timedOut,
           "-1712 is a timeout (the owner's pending Automation prompt before the first answer)")
-    check(BrowserCheckout.Browser.allCases.allSatisfy { BrowserCheckout.appleScriptSource($0).components(separatedBy: "with timeout of 30 seconds").count == 4 },
-          "every browser call gives up after 30 seconds instead of blocking the helper")
+    check(BrowserCheckout.Browser.allCases.allSatisfy {
+              let source = BrowserCheckout.appleScriptSource($0)
+              return source.components(separatedBy: "with timeout of 30 seconds").count == 3
+                  && source.components(separatedBy: "with timeout of \(Int(BrowserCheckout.automationAnswerWait)) seconds").count == 2
+                  && source.range(of: "on os1Open(theURL)\n    with timeout of \(Int(BrowserCheckout.automationAnswerWait)) seconds") != nil
+          }, "the open event waits for the owner's Automation answer; page calls give up after 30 seconds")
     check(BrowserCheckout.automationPromptStep(.chrome).contains("Google Chrome") && BrowserCheckout.automationPromptStep(.safari).contains("허용"),
           "the pending-prompt step names the browser and the button")
     check([0: BrowserCheckout.AutomationState.granted, -1743: .denied, -1744: .notAnswered, -600: .browserNotRunning, -50: .unknown]

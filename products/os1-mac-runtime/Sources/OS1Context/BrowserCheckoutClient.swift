@@ -184,12 +184,25 @@ public enum CheckoutBrokerClient {
 
     static func launchHelper() throws {
         let helper = try prepareRunningHelper()
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/open")
         // -g: do not bring it forward; -j: launch hidden. LaunchServices makes
         // it its own responsible process, so the Apple Events permission the
         // owner grants it is not inherited by backends.
-        process.arguments = ["-g", "-j", helper.path]
+        try openWithLaunchServices(["-g", "-j", helper.path])
+    }
+
+    /// Brings the running helper to the front, only for a macOS panel the owner
+    /// must answer (the Automation alert of a browser's first open, the Touch
+    /// ID approval): macOS shows those only for the app in front (2026-10-02:
+    /// the hidden helper's alert never appeared). The helper hides again after
+    /// the answer.
+    public static func bringHelperForward() {
+        try? openWithLaunchServices([runningHelperURL().path])
+    }
+
+    private static func openWithLaunchServices(_ arguments: [String]) throws {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+        process.arguments = arguments
         process.standardOutput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice
         try process.run()

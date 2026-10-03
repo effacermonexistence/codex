@@ -324,9 +324,12 @@ public enum BrowserCheckout {
         "시스템 설정 → 개인정보 보호 및 보안 → 자동화에서 ‘OS-1 Checkout’ 아래 ‘\(browser.applicationName)’을 켜 주세요."
     }
 
-    /// How long the first browser_open waits, after its Apple Event gave up,
-    /// for the owner to answer macOS's Automation prompt (still on screen).
-    public static let automationAnswerWait: TimeInterval = 120
+    /// How long a browser's open event waits for the owner to answer macOS's
+    /// Automation alert. macOS shows that alert only while the asking app is in
+    /// front and withdraws it when the event gives up (2026-10-02: the alert
+    /// stayed hidden behind the background helper, then vanished at 30 s), so
+    /// the event itself waits and the client brings the helper forward.
+    public static let automationAnswerWait: TimeInterval = 150
 
     /// The owner's Automation answer for one browser, as the helper reads it
     /// from AEDeterminePermissionToAutomateTarget without asking (no prompt).
@@ -365,7 +368,7 @@ public enum BrowserCheckout {
         case .safari:
             return """
             on os1Open(theURL)
-                with timeout of 30 seconds
+                with timeout of \(Int(automationAnswerWait)) seconds
                     tell application "Safari"
                         make new document with properties {URL:theURL}
                         return (id of front window) as text
@@ -391,7 +394,7 @@ public enum BrowserCheckout {
         case .chrome:
             return """
             on os1Open(theURL)
-                with timeout of 30 seconds
+                with timeout of \(Int(automationAnswerWait)) seconds
                     tell application "Google Chrome"
                         set w to make new window
                         set URL of active tab of w to theURL

@@ -104,9 +104,10 @@ allowed = {
     'Sources/OS1/CodexDesktopTransport.swift': {
         'URL(fileURLWithPath: "/usr/bin/open"),',
     },
-    # OS-1 Checkout helper launch on a purchase turn: `open -g -j` (not
-    # brought forward, hidden), through LaunchServices so the helper is its
-    # own responsible process (build 303).
+    # OS-1 Checkout helper on a purchase turn, one LaunchServices call: the
+    # launch is `open -g -j` (hidden, its own responsible process, build 303);
+    # bringHelperForward opens it in front only for a macOS panel the owner
+    # must answer (Automation alert, Touch ID), pinned in section 9 (build 306).
     'Sources/OS1Context/BrowserCheckoutClient.swift': {
         'process.executableURL = URL(fileURLWithPath: "/usr/bin/open")',
     },
@@ -146,6 +147,22 @@ check('func revealInCodexDesktop(threadID: String) throws {' in main, 'explicit 
 check('func revealInClaudeDesktop(' in main, 'explicit Claude reveal preserved')
 check('Button("Open in Codex Desktop") { store.openInCodexDesktop() }' in app, 'owner control preserved')
 check('Button("Open in Claude Desktop") { store.openInClaudeDesktop() }' in app, 'owner control preserved')
+
+# 9. The checkout helper comes forward only while the owner must answer a
+# macOS panel: macOS shows the Automation alert and the Touch ID panel only for
+# the app in front. One call site, behind needsOwnerAttention (request_approval,
+# or a browser's open before its Automation answer); the helper hides again.
+mcp = swift_sources['Sources/OS1/BrowserMCP.swift']
+helper = swift_sources['Sources/OS1Checkout/main.swift']
+client = swift_sources['Sources/OS1Context/BrowserCheckoutClient.swift']
+check(sum(source.count('bringHelperForward()') for name, source in swift_sources.items()
+          if name != 'Sources/OS1Context/BrowserCheckoutClient.swift') == 1,
+      'the checkout helper is brought forward from exactly one call site')
+check('if needsOwnerAttention(op: request.op' in mcp and 'CheckoutBrokerClient.bringHelperForward()' in mcp,
+      'the one call site is gated on the owner having to answer a panel')
+check(client.count('/usr/bin/open') == 1, 'the checkout client has one LaunchServices call')
+check('NSApp.hide(nil)' in helper and helper.count('stepBack()') >= 3,
+      'the helper gives the front back after each panel')
 
 print(f'Backend window focus: {checks} structural checks PASS '
       '(running owner never reopened, reveal gated on explicit intent, no always-on-top, '

@@ -81,6 +81,10 @@ enum BrowserMCP {
             return (#"{"code":"unknown_tool"}"#, true)
         }
         let timeout = timeout(for: request.op)
+        if needsOwnerAttention(op: request.op, browser: request.args["browser"],
+                               status: request.op == "open" ? helperStatus() : nil) {
+            CheckoutBrokerClient.bringHelperForward()
+        }
         do {
             let response = try CheckoutBrokerClient.send(request, timeout: timeout)
             if response.ok { return (response.result ?? "{}", false) }
@@ -93,15 +97,47 @@ enum BrowserMCP {
     }
 
     /// Socket timeout per helper op. request_approval waits for the owner's
-    /// Touch ID (up to 3 minutes); open may wait for macOS's Automation
-    /// prompt: 30 s Apple Event + the answer wait + a second open + the load.
+    /// Touch ID (up to 3 minutes); open may wait for macOS's Automation alert:
+    /// the open event's answer wait + a second open + the load.
     static func timeout(for op: String) -> TimeInterval {
         switch op {
         case "request_approval": return 210
-        case "open": return 30 + BrowserCheckout.automationAnswerWait + 30 + 20 + 40
+        case "open": return BrowserCheckout.automationAnswerWait + 30 + 20 + 30
         case "status": return 10
         default: return 90
         }
+    }
+
+    /// Whether the owner must answer a macOS panel during this op: the
+    /// Automation alert of a browser's first open, or the Touch ID approval.
+    static func needsOwnerAttention(op: String, browser: String?, status: [String: Any]?) -> Bool {
+        switch op {
+        case "request_approval":
+            return true
+        case "open":
+            guard let status, let browsers = status["browsers"] as? [[String: Any]] else { return true }
+            let wanted = (browser ?? "auto").lowercased()
+            let name: String
+            switch wanted {
+            case "safari": name = "safari"
+            case "chrome", "google chrome": name = "chrome"
+            default:
+                let fallback = status["default_browser"] as? String ?? "safari"
+                name = fallback == "chrome" ? "chrome" : "safari"
+            }
+            let entry = browsers.first { $0["browser"] as? String == name }
+            return entry?["automation"] as? String != "granted"
+        default:
+            return false
+        }
+    }
+
+    /// The helper's status (never raises a prompt).
+    static func helperStatus() -> [String: Any]? {
+        guard let response = try? CheckoutBrokerClient.send(BrowserCheckout.BrokerRequest(op: "status"), timeout: 10),
+              response.ok, let text = response.result,
+              let object = try? JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any] else { return nil }
+        return object
     }
 
     static func encodeError(_ error: BrowserCheckout.BrokerError) -> String {
@@ -177,8 +213,20 @@ func browserMCPSelfTest() throws {
     // The first open may wait for the owner's macOS prompt; every op must end
     // before Codex's 300 s tool timeout reports it as hung.
     let longest = BrowserMCP.operations.values.map(BrowserMCP.timeout(for:)).max() ?? 0
-    guard BrowserMCP.timeout(for: "open") > 30 + BrowserCheckout.automationAnswerWait + 30, longest < 300 else {
+    guard BrowserMCP.timeout(for: "open") > BrowserCheckout.automationAnswerWait + 30 + 20, longest < 300 else {
         throw OS1Error.message("Browser MCP timeout self-test failed")
+    }
+    // The helper comes forward only for a panel the owner must answer.
+    let granted: [String: Any] = ["default_browser": "safari", "browsers": [
+        ["browser": "safari", "automation": "granted"], ["browser": "chrome", "automation": "not_answered"]]]
+    guard BrowserMCP.needsOwnerAttention(op: "request_approval", browser: nil, status: nil),
+          !BrowserMCP.needsOwnerAttention(op: "open", browser: "safari", status: granted),
+          !BrowserMCP.needsOwnerAttention(op: "open", browser: "auto", status: granted),
+          BrowserMCP.needsOwnerAttention(op: "open", browser: "chrome", status: granted),
+          BrowserMCP.needsOwnerAttention(op: "open", browser: "safari", status: nil),
+          !BrowserMCP.needsOwnerAttention(op: "snapshot", browser: nil, status: nil),
+          !BrowserMCP.needsOwnerAttention(op: "click", browser: nil, status: nil) else {
+        throw OS1Error.message("Browser MCP owner-attention self-test failed")
     }
     let claude = CheckoutTurn.claudeMCPArguments(os1Executable: "/x/os1", executionID: "abc")
     let codex = CheckoutTurn.codexConfigOverrides(os1Executable: "/x/os1", executionID: "abc")

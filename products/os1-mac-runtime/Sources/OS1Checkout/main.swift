@@ -171,7 +171,9 @@ final class CheckoutBroker: @unchecked Sendable {
         let args = request.args
         switch request.op {
         case "status": return try json(status())
-        case "open": return try open(url: args["url"] ?? "", browserName: args["browser"] ?? "auto")
+        case "open":
+            defer { stepBack() }  // the client may have brought the helper forward for the Automation alert
+            return try open(url: args["url"] ?? "", browserName: args["browser"] ?? "auto")
         case "snapshot":
             let session = try session(args)
             return try json(present(try snapshot(session)))
@@ -181,8 +183,10 @@ final class CheckoutBroker: @unchecked Sendable {
         case "check": return try check(try session(args), ref: try required(args, "ref"), value: args["value"] ?? "true")
         case "wait":
             return try wait(try session(args), seconds: min(max(Double(args["seconds"] ?? "3") ?? 3, 0.5), 20), text: args["text"])
-        case "request_approval": return try requestApproval(try session(args), args: args, terms: request.list?["terms_refs"] ?? [],
-                                                             executionID: request.executionID)
+        case "request_approval":
+            defer { stepBack() }  // every exit, also a refused request before the Touch ID panel
+            return try requestApproval(try session(args), args: args, terms: request.list?["terms_refs"] ?? [],
+                                       executionID: request.executionID)
         case "confirm": return try confirm(try session(args), approvalID: try required(args, "approval_id"), executionID: request.executionID)
         case "receipts":
             let id = request.executionID
@@ -269,34 +273,28 @@ final class CheckoutBroker: @unchecked Sendable {
     }
 
     /// Opens the checkout window. The first call to a browser makes macOS ask
-    /// the owner; the Apple Event gives up after 30 seconds but the prompt
-    /// stays, so wait for the owner's answer (read from tccd, no new prompt)
-    /// and open once more when it is Allow.
+    /// the owner; the alert shows only while this helper is in front (the
+    /// client brings it forward) and only while the event waits, so os1Open
+    /// waits `automationAnswerWait`. The open op then gives the front back.
     private func openWindow(_ browser: Browser, _ url: String) throws -> String {
-        switch runScript(browser, "os1Open", [url]) {
+        let first = runScript(browser, "os1Open", [url])
+        switch first {
         case .success(let windowID):
             return windowID
         case .failure(let error) where error.code == "automation_permission_pending":
-            let deadline = Date().addingTimeInterval(BrowserCheckout.automationAnswerWait)
-            var state = automationState(browser)
-            while [.notAnswered, .browserNotRunning].contains(state) && Date() < deadline {
-                Thread.sleep(forTimeInterval: 1)
-                state = automationState(browser)
-            }
-            switch state {
-            case .granted:
-                writeAudit(["event": "automation_allowed", "browser": browser.rawValue])
-                return try runScript(browser, "os1Open", [url]).get()
-            case .denied:
-                throw BrokerError(code: "automation_permission_missing",
-                                  message: "The owner did not allow OS-1 Checkout to control \(browser.applicationName).",
-                                  ownerStep: BrowserCheckout.automationSetupStep(browser))
-            case .notAnswered, .browserNotRunning, .unknown:
-                throw error
-            }
+            // Allowed just as the event gave up: the next one goes through.
+            guard automationState(browser) == .granted else { throw error }
+            writeAudit(["event": "automation_allowed", "browser": browser.rawValue])
+            return try runScript(browser, "os1Open", [url]).get()
         case .failure(let error):
             throw error
         }
+    }
+
+    /// Gives the front back once the owner answered a macOS panel; a
+    /// windowless helper in front would swallow the owner's typing.
+    private func stepBack() {
+        DispatchQueue.main.async { MainActor.assumeIsolated { if NSApp.isActive { NSApp.hide(nil) } } }
     }
 
     private func click(_ session: Session, ref: String) throws -> String {
