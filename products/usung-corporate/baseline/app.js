@@ -1,0 +1,118 @@
+const $ = (selector) => document.querySelector(selector);
+const $$ = (selector) => [...document.querySelectorAll(selector)];
+const reduced = matchMedia('(prefers-reduced-motion: reduce)');
+const header = $('[data-header]');
+const menuButton = $('.menu-button');
+const mobileMenu = $('.mobile-menu');
+let menuOpen = false;
+const setMenu = (open, restoreFocus = true) => {
+  menuOpen = open;
+  menuButton.setAttribute('aria-expanded', String(open));
+  mobileMenu.classList.toggle('is-open', open);
+  mobileMenu.inert = !open;
+  mobileMenu.setAttribute('aria-hidden', String(!open));
+  $('main').inert = open;
+  $('.site-footer').inert = open;
+  $('.desktop-nav').inert = open;
+  $('.brand').inert = open;
+  document.body.classList.toggle('overlay-open', open);
+  if(open) mobileMenu.querySelector('a').focus();
+  else if(restoreFocus) menuButton.focus();
+  updateVideos();
+};
+menuButton.addEventListener('click',()=>setMenu(!menuOpen));
+mobileMenu.querySelectorAll('a').forEach(link=>link.addEventListener('click',()=>setMenu(false)));
+document.addEventListener('keydown',event=>{
+  if(!menuOpen) return;
+  if(event.key==='Escape') { event.preventDefault(); setMenu(false); }
+  if(event.key==='Tab') {
+    const controls=[menuButton,...mobileMenu.querySelectorAll('a')];
+    const index=controls.indexOf(document.activeElement);
+    event.preventDefault(); controls[(index+(event.shiftKey?-1:1)+controls.length)%controls.length].focus();
+  }
+});
+matchMedia('(min-width: 901px)').addEventListener('change',()=>{if(menuOpen)setMenu(false)});
+
+const futureSteps = $$('[data-future-step]');
+const futureImages = $$('[data-future-image]');
+let scheduled=false;
+const updateScrollUI = () => {
+  scheduled=false;
+  const max=document.documentElement.scrollHeight-innerHeight;
+  $('.page-progress span').style.transform=`scaleX(${max>0?Math.min(1,Math.max(0,scrollY/max)):0})`;
+  header.classList.toggle('is-scrolled',scrollY>40);
+  // All steps participate on every update: reverse scrolling cannot reuse a stale observer entry.
+  let nearest=0,distance=Infinity;
+  futureSteps.forEach((step,index)=>{
+    const r=step.getBoundingClientRect();const d=Math.abs(r.top+r.height/2-innerHeight*.6);
+    if(d<distance){distance=d;nearest=index;}
+  });
+  futureImages.forEach((img,index)=>img.classList.toggle('is-active',index===nearest));
+};
+const schedule=()=>{if(!scheduled){scheduled=true;requestAnimationFrame(updateScrollUI)}};
+addEventListener('scroll',schedule,{passive:true});addEventListener('resize',schedule);updateScrollUI();
+if('IntersectionObserver' in window){
+  const observer=new IntersectionObserver(entries=>entries.forEach(entry=>{if(entry.isIntersecting){entry.target.classList.add('is-visible');observer.unobserve(entry.target)}}),{threshold:.06});
+  $$('.reveal').forEach(el=>observer.observe(el));
+  document.documentElement.classList.add('motion-ready');
+}
+
+let userPaused=false;
+const videos=$$('video');
+const visibleVideos=new Set();
+const updateVideos=()=>{
+  const blocked=userPaused||reduced.matches||document.hidden||!!$('dialog[open]')||menuOpen;
+  videos.forEach(video=>{
+    if(!blocked&&visibleVideos.has(video)) video.play().catch(()=>{});
+    else video.pause();
+  });
+  const paused=userPaused||reduced.matches;
+  $('.motion-toggle').setAttribute('aria-pressed',String(paused));
+  $('.motion-toggle').innerHTML=paused?'영상 재생 <span aria-hidden="true">▷</span>':'영상 일시정지 <span aria-hidden="true">Ⅱ</span>';
+};
+if('IntersectionObserver' in window){
+ const observer=new IntersectionObserver(entries=>{entries.forEach(e=>e.isIntersecting?visibleVideos.add(e.target):visibleVideos.delete(e.target));updateVideos();},{threshold:.1});videos.forEach(v=>observer.observe(v));
+}
+$('.motion-toggle').addEventListener('click',()=>{if(reduced.matches) {userPaused=true;$('.motion-toggle').textContent='동작 줄이기 설정 적용 중';return;}userPaused=!userPaused;updateVideos()});
+reduced.addEventListener('change',updateVideos);document.addEventListener('visibilitychange',updateVideos);updateVideos();
+menuButton.addEventListener('click',updateVideos);
+
+$$('[data-filter]').forEach(button=>button.addEventListener('click',()=>{
+  const filter=button.dataset.filter;
+  $$('[data-filter]').forEach(el=>el.setAttribute('aria-pressed',String(el===button)));
+  let count=0;$$('[data-category]').forEach(card=>{card.hidden=filter!=='all'&&card.dataset.category!==filter;if(!card.hidden){count++;card.classList.add('is-visible')}});
+  $('.cards-grid').classList.toggle('is-filtered',filter!=='all');
+  $('.project-count').textContent=`${count}개의 레퍼런스 프로젝트`;schedule();
+}));
+const projects=[
+ {title:'COASTAL ARCHITECTURE',image:'suffolk-naples.jpg',source:'SUFFOLK · VISUAL REFERENCE',description:'대형 해안 건축의 수평적 스케일과 재료감을 보여주는 레퍼런스입니다. U-SUNG의 실제 시공 실적이 아닌, 이번 데모의 프로젝트 표현 방향입니다.',url:'https://suffolk.com/project/naples-beach-club-a-four-seasons-resort/'},
+ {title:'SPACES FOR PEOPLE',image:'turner-project.jpg',source:'TURNER · VISUAL REFERENCE',description:'자연광, 색채, 사용자의 동선이 만나는 실내 공간. 건물의 규모뿐 아니라 공간 안에서의 경험을 보여주는 Turner 이미지 레퍼런스입니다.',url:'https://www.turnerconstruction.com/projects'},
+ {title:'CONNECTED CONSTRUCTION',image:'turner-innovation.jpg',source:'TURNER · INNOVATION REFERENCE',description:'디지털 도구와 실제 현장의 연결을 표현합니다. 기술 단독의 이미지가 아니라 사람과 협업, 현장 계획이 함께 보이는 방향을 선택했습니다.',url:'https://www.turnerconstruction.com/commitments/innovation'}
+];
+let dialogTrigger=null;
+const openDialog=(dialog,trigger)=>{dialogTrigger=trigger;dialog.showModal();document.body.classList.add('overlay-open');updateVideos()};
+$$('dialog').forEach(dialog=>{
+ dialog.querySelector('.dialog-close').addEventListener('click',()=>dialog.close());
+ dialog.addEventListener('click',event=>{if(event.target===dialog){const r=dialog.getBoundingClientRect();if(event.clientX<r.left||event.clientX>r.right||event.clientY<r.top||event.clientY>r.bottom)dialog.close()}});
+ dialog.addEventListener('close',()=>{if(dialog.id==='film-dialog')$('.film-container').replaceChildren();document.body.classList.remove('overlay-open');dialogTrigger?.focus();updateVideos()});
+});
+$$('[data-project]').forEach(button=>button.addEventListener('click',()=>{
+ const p=projects[Number(button.dataset.project)];
+ $('#project-dialog-title').textContent=p.title;$('#project-dialog-image').src=`assets/media/${p.image}`;$('#project-dialog-image').alt=p.title;
+ $('#project-dialog-source').textContent=p.source;$('#project-dialog-description').textContent=p.description;$('#project-dialog-link').href=p.url;
+ openDialog($('#project-dialog'),button);
+}));
+$('.film-open').addEventListener('click',event=>{
+ const frame=document.createElement('iframe');frame.src='https://www.youtube-nocookie.com/embed/6RIExTOxXkU?autoplay=1';frame.title='Built Robotics — RPD 35 field film';frame.allow='autoplay; encrypted-media; picture-in-picture';frame.allowFullscreen=true;
+ $('.film-container').replaceChildren(frame);openDialog($('#film-dialog'),event.currentTarget);
+});
+$('.contact-open').addEventListener('click',event=>openDialog($('#contact-dialog'),event.currentTarget));
+$('#brief-form').addEventListener('submit',event=>{
+ event.preventDefault();const values=Object.fromEntries(new FormData(event.currentTarget));
+ const text=`U-SUNG — PROJECT BRIEF\n\n이름 / 회사: ${values.name}\n이메일: ${values.email}\n관심 분야: ${values.sector}\n\n${values.message}\n\n로컬 데모에서 작성한 브리프입니다. 전송되지 않았습니다.\n`;
+ const url=URL.createObjectURL(new Blob([text],{type:'text/plain;charset=utf-8'}));
+ const link=document.createElement('a');link.href=url;link.download='U-SUNG-project-brief.txt';link.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
+ $('#brief-status').textContent='브리프 파일을 만들었습니다. 외부로 전송하거나 이 브라우저에 저장하지 않았습니다.';
+});
+const review=new URLSearchParams(location.search).get('review');
+if(review) addEventListener('load',()=>{document.getElementById(review)?.scrollIntoView();schedule()},{once:true});

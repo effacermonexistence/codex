@@ -1,0 +1,62 @@
+[
+  {
+    "path": "assets/media/built-rpd.jpg",
+    "bytes": 749393,
+    "sha256": "7ec087d5f54254ad5b67e4404dc308026ede60d9452fee625a2f06ce63114a87"
+  },
+  {
+    "path": "assets/media/built-sundown.jpg",
+    "bytes": 729662,
+    "sha256": "2b7ad90b11c964e4770b0f4a5a2623e33e764ff679c564cbb8d9f4c0c8788b4a"
+  },
+  {
+    "path": "assets/media/built-sunrise.jpg",
+    "bytes": 723259,
+    "sha256": "51124b57542c4eed9761f66ce5f79d7fa4f7bba8afd1ca8e46a4ad08ed6ba01b"
+  },
+  {
+    "path": "assets/media/built-trenching.jpg",
+    "bytes": 948528,
+    "sha256": "4ca60832f971b10a811e984acdbf269cea8a9aa12cc86c20facab0389d7d2f34"
+  },
+  {
+    "path": "assets/media/suffolk-hero.mp4",
+    "bytes": 7550305,
+    "sha256": "c8c77ece9cfc894d6ddd1309da9fd9bd11f1a1c3c2f5b5734b0c4d25e710a335"
+  },
+  {
+    "path": "assets/media/suffolk-naples.jpg",
+    "bytes": 497202,
+    "sha256": "2a18b8507d87814098d8e7e69fa8d35738d2db0d7209a748b9e8bc6e89461aae"
+  },
+  {
+    "path": "assets/media/suffolk-project.jpg",
+    "bytes": 774177,
+    "sha256": "2c3d98ee6222152972d78b970b472e5cbde9f9a5f4ef7c8e58bccbbc9bffeeb9"
+  },
+  {
+    "path": "assets/media/suffolk-robotics.jpg",
+    "bytes": 343388,
+    "sha256": "c3fe773c4d1177d09af8db3dd7a4aea1682f1e54b1597d26c96699d2f4cbc7e4"
+  },
+  {
+    "path": "assets/media/turner-hero.jpg",
+    "bytes": 458409,
+    "sha256": "0554b9a4a78b852896cdf29217505c9614fb972b78dd41146c74587cd2745417"
+  },
+  {
+    "path": "assets/media/turner-hero.mp4",
+    "bytes": 2538297,
+    "sha256": "a277360b6b6ed832a0ce4f6a141f13be7849fc5079b46898d10634b59bb9e85e"
+  },
+  {
+    "path": "assets/media/turner-innovation.jpg",
+    "bytes": 903913,
+    "sha256": "293477428b7f51e20f09850449d9dcfc9042c6a7c9fc037ca590e9fd415b7449"
+  },
+  {
+    "path": "assets/media/turner-project.jpg",
+    "bytes": 508370,
+    "sha256": "de3812b3e8b2f985645086c721c800d27b2791c5935035074c8fcf787a86788b"
+  }
+]

@@ -1,0 +1,201 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="U-SUNG construction and physical AI visual demo" />
+    <title>U-SUNG — Build Beyond</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700&family=Noto+Sans+KR:wght@400;500;600;700&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="styles.css" />
+    <script src="app.js" defer></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#build">본문으로 이동</a>
+    <div class="page-progress" aria-hidden="true"><span></span></div>
+
+    <header class="site-header" data-header>
+      <a class="brand" href="#top" aria-label="U-SUNG home">
+        <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+        <span class="brand-name">U-SUNG</span>
+      </a>
+      <nav class="desktop-nav" aria-label="주요 메뉴">
+        <a href="#build">BUILD</a>
+        <a href="#projects">PROJECTS</a>
+        <a href="#system">SYSTEM</a>
+        <a href="#future">FUTURE</a>
+        <a href="#contact">CONTACT</a>
+      </nav>
+      <button class="menu-button" type="button" aria-expanded="false" aria-controls="mobile-menu">
+        <span>MENU</span><i></i>
+      </button>
+    </header>
+
+    <nav class="mobile-menu" id="mobile-menu" inert aria-hidden="true" aria-label="모바일 메뉴">
+      <a href="#build">BUILD</a>
+      <a href="#projects">PROJECTS</a>
+        <a href="#system">SYSTEM</a>
+      <a href="#future">FUTURE</a>
+      <a href="#contact">CONTACT</a>
+    </nav>
+
+    <main id="top">
+      <section class="hero" aria-labelledby="hero-title">
+        <video class="hero-media" muted loop playsinline preload="metadata" poster="assets/media/suffolk-project.jpg" aria-hidden="true">
+          <source src="assets/media/suffolk-hero.mp4" type="video/mp4" />
+        </video>
+        <div class="hero-shade"></div>
+        <button class="motion-toggle" type="button" aria-pressed="false">영상 일시정지 <span aria-hidden="true">Ⅱ</span></button>
+        <div class="hero-grid" aria-hidden="true"></div>
+        <div class="hero-content">
+          <p class="eyebrow reveal"><span class="signal-dot"></span> U-SUNG CONSTRUCTION</p>
+          <h1 id="hero-title" class="hero-title reveal"><span>BUILD</span><span>BEYOND.</span></h1>
+          <div class="hero-bottom reveal">
+            <p>도시를 짓는 기술에서<br />도시를 움직이는 지능으로.</p>
+            <a class="round-link" href="#build" aria-label="U-SUNG 소개 보기"><span>EXPLORE</span><b aria-hidden="true">↘</b></a>
+          </div>
+        </div>
+        <div class="scroll-cue" aria-hidden="true"><span>SCROLL</span><i></i></div>
+      </section>
+
+      <section class="manifesto" id="build">
+        <div class="section-index">01 / FOUNDATION</div>
+        <p class="manifesto-copy reveal">우리는 구조물을 넘어<br /><em>더 나은 실행 방식</em>을 건설합니다.</p>
+        <div class="manifesto-note reveal">
+          <span>U-SUNG CONSTRUCTION</span>
+          <p>현장의 정밀함, 엔지니어링의 규율, 그리고 축적된 실행력을 하나의 건설 시스템으로 연결합니다.</p>
+        </div>
+      </section>
+
+      <section class="project-frame project-frame--wide" aria-label="건설 역량">
+        <img src="assets/media/suffolk-project.jpg" alt="대형 교육 시설 건축 전경" loading="lazy" />
+        <div class="image-wash"></div>
+        <div class="project-copy reveal">
+          <p class="eyebrow">INSTITUTIONAL SCALE</p>
+          <h2>규모를<br />신뢰로 바꾸다.</h2>
+          <div class="project-meta"><span>BUILDING</span><span>INFRASTRUCTURE</span><span>DELIVERY</span></div>
+        </div>
+      </section>
+
+      <section class="capabilities" id="system">
+        <div class="cap-intro">
+          <div class="section-index">02 / THE U-SUNG SYSTEM</div>
+          <h2 class="reveal">ONE SYSTEM.<br />EVERY STAGE.</h2>
+          <p class="reveal">계획부터 현장, 데이터에서 운영까지. 분리된 공정을 하나의 책임 있는 흐름으로 통합합니다.</p>
+        </div>
+        <ol class="cap-list"><li class="reveal"><details open><summary><span>01</span><div><h3>BUILD</h3><p>복잡한 조건을 현장의 실행 순서로 바꿉니다.</p></div><b aria-hidden="true">+</b></summary><div class="cap-detail"><span>시공 계획 · 공정 관리 · 품질 점검</span><p>계획, 인력, 장비의 접점을 맞추는 건설 실행 흐름을 제안합니다.</p></div></details></li><li class="reveal"><details><summary><span>02</span><div><h3>ENGINEER</h3><p>도면에서 현장까지, 같은 기준으로 연결합니다.</p></div><b aria-hidden="true">+</b></summary><div class="cap-detail"><span>설계 조율 · BIM · 시공성 검토</span><p>디지털 모델과 현장 정보를 함께 검토해 공정 사이의 간섭과 변경을 일찍 발견하는 방향입니다.</p></div></details></li><li class="reveal"><details><summary><span>03</span><div><h3>INTEGRATE</h3><p>사람·장비·데이터를 하나의 흐름으로.</p></div><b aria-hidden="true">+</b></summary><div class="cap-detail"><span>공정 연계 · 데이터 기록 · 운영 인계</span><p>분리된 작업 기록을 연결하고, 의사결정의 근거가 다음 단계까지 이어지도록 설계합니다.</p></div></details></li><li class="reveal"><details><summary><span>04</span><div><h3>ADVANCE</h3><p>새로운 기술은 실제 현장으로 증명합니다.</p></div><b aria-hidden="true">+</b></summary><div class="cap-detail"><span>현장 자동화 · 로보틱스 · Physical AI</span><p>실제 장비와 검증 가능한 결과를 중심으로 스마트 건설의 다음 가능성을 탐색합니다.</p></div></details></li></ol>
+      </section>
+
+      <section class="cinematic-break" aria-label="대규모 시공 현장">
+        <video muted loop playsinline preload="metadata" poster="assets/media/turner-hero.jpg" aria-hidden="true">
+          <source src="assets/media/turner-hero.mp4" type="video/mp4" />
+        </video>
+        <div class="cinematic-overlay"></div>
+        <div class="cinematic-copy reveal">
+          <span>BUILT FOR COMPLEXITY</span>
+          <h2>현장은 크고,<br />기준은 더 높아야 합니다.</h2>
+        </div>
+      </section>
+
+      <section class="source-sequence" aria-labelledby="source-sequence-title">
+        <div class="source-sequence-head">
+          <div class="section-index">02A / ONE CONSTRUCTION LANGUAGE</div>
+          <div>
+            <p class="eyebrow">PROJECT SCALE · DELIVERY · FIELD INTELLIGENCE</p>
+            <h2 id="source-sequence-title" class="reveal">하나의 현장은<br /><em>하나의 언어</em>로 움직입니다.</h2>
+            <p class="source-sequence-intro reveal">이번 데모의 이미지 언어는 대형 건축의 스케일, 현장 실행의 신뢰, 실제 장비의 지능을 하나의 흐름으로 묶습니다.</p>
+          </div>
+        </div>
+        <div class="source-sequence-grid">
+          <article class="source-sequence-card reveal">
+            <img src="assets/media/suffolk-naples.jpg" alt="Suffolk 레퍼런스: 해안 인접 대형 건축 프로젝트" loading="lazy" />
+            <div class="source-sequence-copy"><span>01 / BUILDING GRAMMAR</span><h3>프로젝트의<br />첫 인상</h3><p>큰 이미지와 절제된 여백으로 시공의 규모를 먼저 보여줍니다.</p><small>SUFFOLK · VISUAL REFERENCE</small></div>
+          </article>
+          <article class="source-sequence-card source-sequence-card--offset reveal">
+            <img src="assets/media/turner-hero.jpg" alt="Turner 레퍼런스: 대형 건설 현장과 구조물" loading="lazy" />
+            <div class="source-sequence-copy"><span>02 / DELIVERY AT SCALE</span><h3>복잡한 현장을<br />끝까지</h3><p>사람, 공정, 구조가 만나는 대형 현장의 책임감을 이어갑니다.</p><small>TURNER · VISUAL REFERENCE</small></div>
+          </article>
+          <article class="source-sequence-card reveal">
+            <img src="assets/media/built-rpd.jpg" alt="Built Robotics 레퍼런스: 태양광 현장의 자율 파일 드라이버" loading="lazy" />
+            <div class="source-sequence-copy"><span>03 / FIELD INTELLIGENCE</span><h3>실제 장비가<br />답하는 미래</h3><p>Physical AI는 화면 속 개념이 아니라 현장 조건 안에서 작동해야 합니다.</p><small>BUILT ROBOTICS · VISUAL REFERENCE</small></div>
+          </article>
+        </div>
+        <p class="source-sequence-note">세 출처의 실제 참고 이미지를 데모 자산으로 사용했습니다. U-SUNG의 실제 프로젝트·실적을 주장하는 섹션이 아닙니다.</p>
+      </section>
+
+      <section class="project-cards" id="projects" aria-labelledby="scope-title">
+        <div class="cards-head">
+          <div class="section-index">03 / CAPABILITY</div>
+          <h2 id="scope-title" class="reveal">FROM GROUND<br />TO SKYLINE.</h2>
+        </div>
+        <div class="project-toolbar"><p>건축에서 현장의 지능까지.</p><div class="project-filters" role="group" aria-label="프로젝트 분야"><button type="button" data-filter="all" aria-pressed="true">ALL</button><button type="button" data-filter="building" aria-pressed="false">BUILDING</button><button type="button" data-filter="technology" aria-pressed="false">TECHNOLOGY</button></div></div>
+        <p class="project-count" role="status">3개의 레퍼런스 프로젝트</p>
+        <div class="cards-grid">
+          <article class="project-card project-card--tall reveal" data-category="building">
+            <img src="assets/media/suffolk-naples.jpg" alt="해안 인접 대형 건축 프로젝트" loading="lazy" />
+            <div class="card-label"><span>01</span><h3><button type="button" class="project-open" data-project="0">COMMERCIAL<span aria-hidden="true"> ↗</span></button></h3><p>복합 조건을 조율하는 통합 실행</p></div>
+          </article>
+          <article class="project-card reveal" data-category="building">
+            <img src="assets/media/turner-project.jpg" alt="Turner 레퍼런스: 자연광과 색채를 활용한 실내 공간" loading="lazy" />
+            <div class="card-label"><span>02</span><h3><button type="button" class="project-open" data-project="1">HUMAN SPACES<span aria-hidden="true"> ↗</span></button></h3><p>사람의 일상을 위한 공간의 완성도</p></div>
+          </article>
+          <article class="project-card reveal" data-category="technology">
+            <img src="assets/media/turner-innovation.jpg" alt="건설 기술 협업 현장" loading="lazy" />
+            <div class="card-label"><span>03</span><h3><button type="button" class="project-open" data-project="2">ENGINEERING<span aria-hidden="true"> ↗</span></button></h3><p>현장과 기술을 연결하는 실행 설계</p></div>
+          </article>
+        </div>
+      </section>
+
+      <section class="future" id="future">
+        <div class="future-sticky">
+          <img class="future-image is-active" data-future-image="0" src="assets/media/built-sundown.jpg" alt="석양 속 자율 건설 장비" />
+          <img class="future-image" data-future-image="1" src="assets/media/built-rpd.jpg" alt="태양광 현장에서 작업하는 자율 파일 드라이버" loading="lazy" />
+          <img class="future-image" data-future-image="2" src="assets/media/built-trenching.jpg" alt="건설 현장을 자율 주행하는 굴착기" loading="lazy" />
+          <div class="future-shade"></div>
+          <div class="future-title"><p>U-SUNG × OmarAGI <span class="concept-label">FUTURE CONCEPT</span></p><h2>PHYSICAL AI<br />MEETS THE FIELD.</h2></div>
+        </div>
+        <div class="future-steps">
+          <article class="future-step" data-future-step="0"><span>01 / SEE</span><h3>현장을 읽는<br />기계 지능</h3><p>센서와 비전이 실제 작업 환경을 인식하고, 데이터가 다음 행동의 근거가 됩니다.</p></article>
+          <article class="future-step" data-future-step="1"><span>02 / DECIDE</span><h3>판단을 검증하는<br />신뢰 레이어</h3><p>경로·증거·실패 복구를 추적하는 OmarAGI 신뢰 레이어를 현장 실행에 연결하는 미래 방향을 제안합니다.</p></article>
+          <article class="future-step" data-future-step="2"><span>03 / ACT</span><h3>실제 장비로<br />완성되는 실행</h3><p>계획이 기계의 정밀한 동작으로 이어지고, 결과는 다시 운영 데이터로 축적됩니다.</p></article>
+        </div>
+      </section>
+
+      <section class="technology-band">
+        <div class="tech-visual reveal">
+          <img src="assets/media/suffolk-robotics.jpg" alt="건설 현장에서 활용되는 로봇 기술" loading="lazy" />
+          <span>REAL-WORLD TECHNOLOGY</span>
+        </div>
+        <div class="tech-copy reveal">
+          <p class="eyebrow">SMART CONSTRUCTION</p>
+          <h2>기술은 보여주기 위한 것이 아니라,<br />현장을 더 정확하게 움직이기 위해 존재합니다.</h2>
+          <button type="button" class="film-open">WATCH THE FIELD FILM <span aria-hidden="true">↗</span></button>
+        </div>
+      </section>
+
+      <section class="closing" id="contact">
+        <img src="assets/media/built-sunrise.jpg" alt="새벽의 대규모 스마트 건설 현장" loading="lazy" />
+        <div class="closing-shade"></div>
+        <div class="closing-content reveal">
+          <p>THE NEXT SITE STARTS HERE</p>
+          <h2>LET'S BUILD<br />WHAT'S NEXT.</h2>
+          <button type="button" class="contact-link contact-open">START A CONVERSATION <span aria-hidden="true">↗</span></button>
+        </div>
+      </section>
+    </main>
+
+    <dialog class="detail-dialog" id="project-dialog" aria-labelledby="project-dialog-title">
+      <button type="button" class="dialog-close" aria-label="프로젝트 닫기">CLOSE ×</button>
+      <img id="project-dialog-image" alt="" />
+      <div class="dialog-copy"><p class="eyebrow" id="project-dialog-source"></p><h2 id="project-dialog-title"></h2><p id="project-dialog-description"></p><a id="project-dialog-link" target="_blank" rel="noreferrer">EXPLORE REFERENCE ↗</a></div>
+    </dialog>
+    <dialog class="film-dialog" id="film-dialog" aria-labelledby="film-title"><button type="button" class="dialog-close" aria-label="영상 닫기">CLOSE ×</button><h2 id="film-title">PHYSICAL AI. REAL FIELD.</h2><div class="film-container"></div><a href="https://www.youtube.com/watch?v=6RIExTOxXkU" target="_blank" rel="noreferrer">영상이 재생되지 않으면 YouTube에서 보기 ↗</a></dialog>
+    <dialog class="contact-dialog" id="contact-dialog" aria-labelledby="contact-title"><button type="button" class="dialog-close" aria-label="문의 닫기">CLOSE ×</button><p class="eyebrow">START SOMETHING THAT MATTERS</p><h2 id="contact-title">다음 현장을<br />함께 그려봅니다.</h2><form id="brief-form"><label>이름 / 회사<input name="name" required maxlength="100" autocomplete="organization" placeholder="담당자 또는 회사명" /></label><label>이메일<input type="email" name="email" required maxlength="180" autocomplete="email" placeholder="name@company.com" /></label><label>관심 분야<select name="sector"><option>건축 · 엔지니어링</option><option>스마트 건설 · Physical AI</option><option>기술 협력</option></select></label><label>프로젝트 이야기<textarea name="message" required maxlength="3000" rows="3" placeholder="어떤 현장을 준비하고 계신가요?"></textarea></label><button type="submit" class="brief-submit">브리프 다운로드 <span aria-hidden="true">↗</span></button><p class="form-note" id="brief-status" role="status">데모에서는 입력 내용을 파일로만 내려받습니다. 서버로 전송하지 않습니다.</p></form></dialog>
+    <footer class="site-footer">
+      <a class="brand brand--footer" href="#top"><span class="brand-mark"><i></i><i></i><i></i></span><span class="brand-name">U-SUNG</span></a>
+      <p>CONSTRUCTION · ENGINEERING · PHYSICAL AI</p>
+      <div><span>VISUAL DEMO · REFERENCE IMAGERY</span><span>© 2026 U-SUNG DEMO</span></div>
+    </footer>
+  </body>
+</html>
