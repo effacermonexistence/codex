@@ -234,5 +234,34 @@ func runBrowserCheckoutFixtures() throws {
           "a new build replaces the copy")
     let missing = FileManager.default.temporaryDirectory.appendingPathComponent("os1-checkout-missing-\(UUID().uuidString)")
     check((try? CheckoutBrokerClient.prepareRunningHelper(home: missing)) == nil, "no installed helper, no copy")
+    let consentRoot = FileManager.default.temporaryDirectory.appendingPathComponent("os1-native-consent-\(UUID())")
+    defer { try? FileManager.default.removeItem(at: consentRoot) }
+    let submission = UUID(), thread = "native-thread"
+    let params: [String: Any] = ["serverName": "cua_repl", "threadId": thread,
+        "mode": "openai/form", "message": "Allow Computer Use to use \"Safari\"?",
+        "_meta": ["connector_id": "computer-use", "codex_approval_kind": "mcp_tool_call"]]
+    let consent = NativeAppApproval.request(params: params, submission: submission, thread: thread,
+        deadline: Date().addingTimeInterval(60))!
+    try NativeAppApproval.publish(consent, root: consentRoot)
+    check(NativeAppApproval.decision(consent, root: consentRoot) == nil, "native permission is never auto-approved")
+    check(NativeAppApproval.pending(submissions: [submission], root: consentRoot)?.id == consent.id,
+          "GUI receives only its active native submission")
+    check(NativeAppApproval.pending(submissions: [UUID()], root: consentRoot) == nil,
+          "another conversation cannot receive this permission")
+    try NativeAppApproval.respond(consent, approved: true, root: consentRoot)
+    check(NativeAppApproval.decision(consent, root: consentRoot) == true, "real owner response reaches native caller")
+    check(NativeAppApproval.rpcResult(approved: true)["action"] as? String == "accept",
+          "native MCP receives its supported accept response")
+    check((NativeAppApproval.rpcResult(approved: true)["_meta"] as? [String: String])?["persist"] == "session",
+          "no global or permanent permission expansion")
+    var invalidConsent = params; invalidConsent["threadId"] = "other-thread"
+    check(NativeAppApproval.request(params: invalidConsent, submission: submission, thread: thread, deadline: Date().addingTimeInterval(30)) == nil,
+          "wrong native thread rejected")
+    invalidConsent = params; invalidConsent["serverName"] = "unknown"
+    check(NativeAppApproval.request(params: invalidConsent, submission: submission, thread: thread, deadline: Date().addingTimeInterval(30)) == nil,
+          "unknown requester cannot obtain browser consent")
+    invalidConsent = params; invalidConsent["mode"] = "url"
+    check(NativeAppApproval.request(params: invalidConsent, submission: submission, thread: thread, deadline: Date().addingTimeInterval(30)) == nil,
+          "credential URL flows are not impersonated by approval")
     print("Browser checkout fixtures: \(count) checks")
 }

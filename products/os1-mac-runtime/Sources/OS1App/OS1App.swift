@@ -5227,6 +5227,7 @@ private final class SessionStore: ObservableObject {
     private var editingQueueIDs = Set<UUID>()
     @Published var statusText = "Ready"
     @Published var alertMessage: String?
+    @Published var nativeAppApproval: NativeAppApproval.Request?
     @Published var showArchived = false
     var activeActivity: RuntimeActivity { selectedSessionID.flatMap { activeRuns[$0]?.activity } ?? RuntimeActivity(.preparing) }
     var runStartedAt: Date? { selectedSessionID.flatMap { activeRuns[$0]?.started } }
@@ -7850,6 +7851,11 @@ private final class SessionStore: ObservableObject {
         // Live store only: a fixture store must never adopt the real machine's
         // recovery state or self-update receipts.
         guard customStorageRoot == nil else { return }
+        let submissions = Set(activeRuns.values.map(\.submissionID))
+        if nativeAppApproval.map({ !submissions.contains($0.submissionID) || $0.expiresAt <= Date() }) == true {
+            nativeAppApproval = nil
+        }
+        if nativeAppApproval == nil { nativeAppApproval = NativeAppApproval.pending(submissions: submissions) }
         // settings.json is the source of truth for every OS-1 process; a
         // change made outside this app (CLI, another session) must reach the
         // rail without a restart.
@@ -10301,6 +10307,18 @@ private struct RootView: View {
             Button("OK", role: .cancel) { store.alertMessage = nil }
         } message: {
             Text(store.alertMessage ?? "")
+        }
+        .alert(item: $store.nativeAppApproval) { request in
+            Alert(title: Text("네이티브 에이전트 사용 승인"),
+                message: Text(request.message + "\n현재 네이티브 실행에만 적용됩니다. 결제·약관·비밀번호 입력 승인이 아닙니다."),
+                primaryButton: .default(Text("이 실행에만 허용")) {
+                    if store.activeRuns.values.contains(where: { $0.submissionID == request.submissionID }) {
+                        try? NativeAppApproval.respond(request, approved: true)
+                    }
+                },
+                secondaryButton: .cancel(Text("거절")) {
+                    try? NativeAppApproval.respond(request, approved: false)
+                })
         }
     }
 }

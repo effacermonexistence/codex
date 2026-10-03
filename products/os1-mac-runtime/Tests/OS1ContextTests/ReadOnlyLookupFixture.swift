@@ -39,6 +39,12 @@ func runReadOnlyLookupFixtures() throws {
           && ReadOnlyLookup.capabilityCard.contains("404"), "the card names the .com registry and what 404 means")
     check(ReadOnlyLookup.capabilityCard.contains("*.up.railway.app"),
           "a company domain is a registrable name, not a free platform subdomain")
+    check(ReadOnlyLookup.capabilityCard.contains("Never rename, remove or replace")
+          && ReadOnlyLookup.capabilityCard.contains("explicit owner request"),
+          "domain registration cannot authorize replacing an existing service URL")
+    check(ReadOnlyLookup.capabilityCard.contains("native agent's existing tools")
+          && !ReadOnlyLookup.capabilityCard.contains("give the checkout link)"),
+          "registration preparation uses native execution, not a mandatory link-only handoff")
 
     let settings = try JSONSerialization.jsonObject(with: Data(ClaudeReadOnlyShell.sandboxSettings.utf8)) as? [String: Any]
     let sandbox = settings?["sandbox"] as? [String: Any]

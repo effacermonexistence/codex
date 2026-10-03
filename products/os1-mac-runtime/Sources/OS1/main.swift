@@ -5027,6 +5027,10 @@ final class CodexAppServerClient: @unchecked Sendable {
     /// turn starts, and its reply is ignored like any non-turn message.
     private(set) var pendingThreadName: (threadID: String, name: String)?
     private var activeTurn: (thread: String, turn: String)?
+    private var approvalThread: String?
+    private var approvalScopeAllowsTools = false
+    private var approvalDeadline = Date.distantPast
+    private var nativeApprovedApps = Set<String>()
     private var steeringRequests: [Int: SteeringInput] = [:]
     private let steering: ExecutionSteering
     private let steeringSubmission: UUID?
@@ -5283,6 +5287,11 @@ final class CodexAppServerClient: @unchecked Sendable {
         onDispatch: (() -> Void)? = nil,
         onStarted: (() -> Void)? = nil
     ) throws -> CodexTurnOutput {
+        approvalThread = threadID
+        approvalScopeAllowsTools = permissionProfile == "workspace_write"
+        approvalDeadline = deadline
+        nativeApprovedApps.removeAll()
+        defer { approvalThread = nil; approvalScopeAllowsTools = false; nativeApprovedApps.removeAll() }
         let sandboxPolicy: [String: Any]
         switch permissionProfile {
         case "read_only":
@@ -5520,6 +5529,31 @@ final class CodexAppServerClient: @unchecked Sendable {
 
     private func rejectServerRequest(_ message: [String: Any], method: String) throws {
         guard let id = message["id"] else { return }
+        if method == "mcpServer/elicitation/request", let params = message["params"] as? [String: Any] {
+            NativeAppApproval.observe(params: params)
+        }
+        if method == "mcpServer/elicitation/request", approvalScopeAllowsTools,
+           let submission = steeringSubmission, let thread = approvalThread,
+           let params = message["params"] as? [String: Any],
+           let approval = NativeAppApproval.request(params: params, submission: submission,
+               thread: thread, deadline: approvalDeadline) {
+            if let app = approval.appIdentifier, nativeApprovedApps.contains(app) {
+                try send(["jsonrpc": "2.0", "id": id, "result": NativeAppApproval.rpcResult(approved: true)])
+                return
+            }
+            try NativeAppApproval.publish(approval)
+            defer { NativeAppApproval.remove(approval) }
+            RuntimeActivity.emit(.executing, provider: "codex", publicText:
+                "네이티브 Computer Use 승인 요청 · OS-1 창에서 이 실행에만 허용하거나 거절해 주세요. " + approval.message)
+            var approved = false
+            while Date() < approval.expiresAt && !ExecutionCancellation.isCancelled {
+                if let answer = NativeAppApproval.decision(approval) { approved = answer; break }
+                Thread.sleep(forTimeInterval: 0.1)
+            }
+            if approved, let app = approval.appIdentifier { nativeApprovedApps.insert(app) }
+            try send(["jsonrpc": "2.0", "id": id, "result": NativeAppApproval.rpcResult(approved: approved)])
+            return
+        }
         if method.hasSuffix("requestApproval"),
            let params = message["params"] as? [String: Any],
            let turnID = params["turnId"] as? String {
