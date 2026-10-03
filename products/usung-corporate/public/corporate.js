@@ -1,37 +1,7 @@
 (() => {
-const toggle = document.querySelector('.corp-menu-toggle');
-const navigation = document.querySelector('.corp-nav');
 const header = document.querySelector('.corp-header');
 const reduced = matchMedia('(prefers-reduced-motion: reduce)');
-let menuOpen = false;
 let userPaused = false;
-const setOpen = (open, restoreFocus = false) => {
-  menuOpen = open;
-  toggle.setAttribute('aria-expanded', String(open));
-  toggle.setAttribute('aria-label', open ? '사업 메뉴 닫기' : '사업 메뉴 열기');
-  navigation.classList.toggle('is-open', open);
-  header.classList.toggle('menu-open', open);
-  document.querySelector('main').inert = open;
-  const footer = document.querySelector('.corp-footer') || document.querySelector('.site-footer');
-  if (footer) footer.inert = open;
-  if (open) navigation.querySelector('a').focus();
-  else if (restoreFocus) toggle.focus();
-  updateMedia();
-};
-toggle.addEventListener('click', () => setOpen(!menuOpen));
-navigation.querySelectorAll('a').forEach(link => link.addEventListener('click', () => setOpen(false)));
-document.addEventListener('click', event => { if (menuOpen && !event.target.closest('.corp-header')) setOpen(false); });
-document.addEventListener('keydown', event => {
-  if (!menuOpen) return;
-  if (event.key === 'Escape') { event.preventDefault(); setOpen(false, true); }
-  if (event.key === 'Tab') {
-    const items = [document.querySelector('.corp-brand'), toggle, ...navigation.querySelectorAll('a')];
-    const current = items.indexOf(document.activeElement);
-    event.preventDefault();
-    items[(current + (event.shiftKey ? -1 : 1) + items.length) % items.length].focus();
-  }
-});
-matchMedia('(min-width: 761px)').addEventListener('change', () => { if (menuOpen) setOpen(false); });
 let scrollPending = false;
 const updateScroll = () => {
   scrollPending = false;
@@ -45,7 +15,7 @@ const videos = [...document.querySelectorAll('.corp-page video')];
 const visibleVideos = new Set();
 const motionButton = document.querySelector('.corp-motion');
 function updateMedia() {
-  const blocked = userPaused || reduced.matches || document.hidden || menuOpen;
+  const blocked = userPaused || reduced.matches || document.hidden;
   videos.forEach(video => { if (!blocked && visibleVideos.has(video)) video.play().catch(() => {}); else video.pause(); });
   if (motionButton) {
     const paused = userPaused || reduced.matches;
