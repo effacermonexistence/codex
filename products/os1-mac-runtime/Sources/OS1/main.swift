@@ -6396,6 +6396,7 @@ private func execute(
         }
         let stream = ExecutionStream()
         var revision = 0
+        var relayedResultCount = 0
         let raw: (Int32, Data, Data)
         do { raw = try commandOutput(
             claude,
@@ -6409,10 +6410,8 @@ private func execute(
             onOutput: { bytes in
                 stream.ingestClaude(bytes)
                 steerDriver?.observe(resultCount: stream.resultCount, turnOpen: stream.turnOpen)
-                if let data = stream.result,
-                   let result = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                   result["session_id"] as? String == activeSessionID,
-                   result["is_error"] as? Bool != true, let text = result["result"] as? String, !text.isEmpty {
+                if let text = stream.takeClaudePublicFinal(sessionID: activeSessionID, after: &relayedResultCount) {
+                    revision = stream.eventCount
                     AttemptLatencyTrace.markOnce("native_output_received")
                     RuntimeActivity.emit(.verifying, provider: "claude", model: model, effort: effort, publicText: text)
                     AttemptLatencyTrace.markOnce("native_output_published")
@@ -6433,6 +6432,11 @@ private func execute(
                 workspace: executionWorkspace, started: started, cause: error, surface: executedSurface?.rawValue)
         }
         stream.finishClaude()
+        if let text = stream.takeClaudePublicFinal(sessionID: activeSessionID, after: &relayedResultCount) {
+            AttemptLatencyTrace.markOnce("native_output_received")
+            RuntimeActivity.emit(.verifying, provider: "claude", model: model, effort: effort, publicText: text)
+            AttemptLatencyTrace.markOnce("native_output_published")
+        }
         AttemptLatencyTrace.mark("provider_exited")
         let resultData = stream.result ?? raw.1
         onUsage?(CompletionUsageParser.parseClaudeResult(resultData))

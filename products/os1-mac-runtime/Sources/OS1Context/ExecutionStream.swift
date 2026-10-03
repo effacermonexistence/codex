@@ -39,6 +39,16 @@ public final class ExecutionStream {
     public private(set) var turnOpen = false
     public var text: String { String(items.map(\.1).joined(separator: "\n\n").suffix(24_000)) }
     public init() {}
+    /// Consume each bound successful public result once. A retained result from
+    /// the previous steered turn must not mask a later turn's text deltas.
+    public func takeClaudePublicFinal(sessionID: String, after cursor: inout Int) -> String? {
+        guard resultCount > cursor else { return nil }
+        cursor = resultCount
+        guard let result, let object = try? JSONSerialization.jsonObject(with: result) as? [String: Any],
+              object["session_id"] as? String == sessionID, object["is_error"] as? Bool == false,
+              let text = object["result"] as? String, !text.isEmpty else { return nil }
+        return text
+    }
     private func update(_ id: String, text: String, append: Bool) {
         guard !id.isEmpty, !text.isEmpty else { return }
         if let i = items.firstIndex(where: { $0.0 == id }) {

@@ -58,6 +58,22 @@ func runRuntimeActivityObserverFixtures() throws {
     try check(childCapture.snapshot().last?.0.publicText == "NATIVE_FINAL_PENDING", "Claude pending output changed")
     try check(!ReviewPass.applies(request: "코드 기준으로 실행 흐름을 설명해봐"), "ordinary explain silently starts paid reviewer")
     try check(ReviewPass.applies(request: "코드 기준으로 실행 흐름을 설명해봐. 교차 검토해."), "explicit review no longer available")
+    let stream = ExecutionStream(), session = UUID().uuidString.lowercased()
+    var cursor = 0
+    func result(_ text: String, sessionID: String, error: Bool) throws {
+        let data = try JSONSerialization.data(withJSONObject: ["type": "result", "session_id": sessionID,
+            "is_error": error, "result": text])
+        stream.ingestClaude(data + Data([10]))
+    }
+    try result("first exact final", sessionID: session, error: false)
+    try check(stream.takeClaudePublicFinal(sessionID: session, after: &cursor) == "first exact final", "bound native final missing")
+    try check(stream.takeClaudePublicFinal(sessionID: session, after: &cursor) == nil, "old final repeated during next turn")
+    try result("private wrong-session result", sessionID: UUID().uuidString, error: false)
+    try check(stream.takeClaudePublicFinal(sessionID: session, after: &cursor) == nil, "wrong-session result displayed")
+    try result("error diagnostic", sessionID: session, error: true)
+    try check(stream.takeClaudePublicFinal(sessionID: session, after: &cursor) == nil, "error payload displayed as final")
+    try result("second exact final", sessionID: session, error: false)
+    try check(stream.takeClaudePublicFinal(sessionID: session, after: &cursor) == "second exact final", "later steered final hidden")
     try check(!ReviewPass.applies(request: "코드를 설명해봐. 교차 검토하지 마."), "negated review starts reviewer")
     print("OS-1 public relay: 30 atomic updates, max \(String(format: "%.2f", samples.max() ?? 0)) ms; pre-exit delivery, exact text, malformed/oversize/exit races, explicit review OK")
 }
