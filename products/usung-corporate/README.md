@@ -22,7 +22,7 @@ Shared corporate navigation appears on all four routes. `src/pages.mjs` holds th
 
 ## Existing site preservation
 
-`baseline/` preserves the HTML, stylesheet, and script retrieved from the company’s production site on 2026-10-03. `baseline/assets.json` records the original media hashes. Existing construction imagery retains the reference labels and source links from the original page; it is not used to claim new company projects. The corporate home uses full-frame construction video. The AI visual is an animated, locally rendered Canvas point sculpture. Physical AI uses the existing field imagery with keyboard-accessible phase tabs. Shared typography, cream/black surfaces and orange accents follow the original construction experience.
+`baseline/` preserves the HTML, stylesheet, and script retrieved from the company’s production site on 2026-10-03. `baseline/assets.json` records the original media hashes. Existing construction imagery retains the reference labels and source links from the original page; it is not used to claim new company projects. The corporate home uses full-frame construction video. The AI page uses acquired Contextual AI artwork with a Mistral-style typographic composition and keyboard-accessible capability tabs. Physical AI uses acquired Dexterity and Field AI footage. Runway and Luma are excluded by the owner. Reference media is labeled and linked to its source; third-party performance statistics and testimonials are not represented as U-SUNG results. Shared typography, cream/black surfaces and orange accents follow the original construction experience.
 
 The original construction contact dialog retains its brief-download behavior. The new corporate contact links open an email to the company’s published address.
 
@@ -36,3 +36,7 @@ The original construction contact dialog retains its brief-download behavior. Th
 
 Build root: `/products/usung-corporate`. Health endpoint: `/health`.
 Previous deployment (recovery baseline): `62b8e0e4-9032-4cdb-af88-a1f7daae8ae3`.
+
+## Approved references (2026-10-03)
+
+`references.json` records source pages, exact acquired asset URLs, original hashes, served hashes and media transformations. Originals are retained in the task research output. Videos preserve source footage and aspect ratio, are limited to up to 14 seconds and optimized for web playback. Posters are exact video frames. No AI-generated bitmap, video, or procedural sculpture is used. Diagram geometry is preserved while the source-company title is adapted to U-SUNG × OmarAGI.

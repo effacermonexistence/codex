@@ -2,7 +2,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { nav, footer, home, ai, physical } from './src/pages.mjs';
 
-const assetVersion = createHash('sha256').update(await readFile(new URL('./public/corporate.css', import.meta.url))).update(await readFile(new URL('./public/corporate.js', import.meta.url))).digest('hex').slice(0, 12);
+const assetVersion = createHash('sha256').update(await readFile(new URL('./public/corporate.css', import.meta.url))).update(await readFile(new URL('./public/corporate.js', import.meta.url))).update(await readFile(new URL('./src/pages.mjs', import.meta.url))).update(await readFile(new URL('./references.json', import.meta.url))).digest('hex').slice(0, 12);
 const head = (title, description, route = '/') => `<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${title}</title><meta name="description" content="${description}"><meta name="theme-color" content="#090a0a"><link rel="canonical" href="https://usungcorp.com${route}"><meta property="og:title" content="${title}"><meta property="og:description" content="${description}"><meta property="og:type" content="website"><meta property="og:url" content="https://usungcorp.com${route}"><link rel="icon" href="/favicon.svg?v=20261003-q2" type="image/svg+xml"><link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Noto+Sans+KR:wght@400;500;600;700;800&display=swap" rel="stylesheet"><link rel="stylesheet" href="/corporate.css?v=20261003-q2"><script src="/corporate.js?v=20261003-q2" defer></script></head>`;
 for (const page of [
   { directory: '', active: '', title: 'U-SUNG — Build What’s Next.', description: '유성건설 주식회사. AI·AX, 스마트 건설, Physical AI. 현장의 경험과 신뢰할 수 있는 지능을 연결합니다.', content: home },
@@ -12,7 +12,7 @@ for (const page of [
   const directory = new URL(`./public/${page.directory}/`, import.meta.url);
   await mkdir(directory, { recursive: true });
   const route = page.directory ? `/${page.directory}/` : '/';
-  await writeFile(new URL('index.html', directory), `<!doctype html><html lang="ko">${head(page.title, page.description, route)}<body class="corp-page"><a class="corp-skip" href="#main-content">본문으로 이동</a>${nav(page.active)}${page.content}${footer}</body></html>`.replaceAll('20261003-q2', assetVersion));
+  await writeFile(new URL('index.html', directory), `<!doctype html><html lang="ko">${head(page.title, page.description, route)}<body class="corp-page"><a class="corp-skip" href="#main-content">본문으로 이동</a>${nav(page.active)}${page.content}${footer}</body></html>`.replaceAll('20261003-q2', assetVersion).replace(/(src|poster)="(\/assets\/references\/[^"]+)"/g, (_, attr, url) => `${attr}="${url}?v=${assetVersion}"`));
 }
 
 let original = await readFile(new URL('./baseline/index.html', import.meta.url), 'utf8');
