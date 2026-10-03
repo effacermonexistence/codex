@@ -316,8 +316,44 @@ public enum BrowserCheckout {
         }
     }
 
+    public static func automationPromptStep(_ browser: Browser) -> String {
+        "화면의 ‘OS-1 Checkout이(가) \(browser.applicationName)을(를) 제어하려고 합니다’ 창에서 허용을 눌러 주세요. 안 보이면 시스템 설정 → 개인정보 보호 및 보안 → 자동화 → OS-1 Checkout에서 \(browser.applicationName)을(를) 켜 주세요."
+    }
+
     public static func automationSetupStep(_ browser: Browser) -> String {
         "시스템 설정 → 개인정보 보호 및 보안 → 자동화에서 ‘OS-1 Checkout’ 아래 ‘\(browser.applicationName)’을 켜 주세요."
+    }
+
+    /// How long the first browser_open waits, after its Apple Event gave up,
+    /// for the owner to answer macOS's Automation prompt (still on screen).
+    public static let automationAnswerWait: TimeInterval = 120
+
+    /// The owner's Automation answer for one browser, as the helper reads it
+    /// from AEDeterminePermissionToAutomateTarget without asking (no prompt).
+    public enum AutomationState: String, Codable, Sendable {
+        case granted, denied
+        case notAnswered = "not_answered"
+        case browserNotRunning = "browser_not_running"
+        case unknown
+    }
+
+    public static func automationState(osStatus: Int) -> AutomationState {
+        switch osStatus {
+        case 0: return .granted
+        case -1743: return .denied  // errAEEventNotPermitted
+        case -1744: return .notAnswered  // errAEEventWouldRequireUserConsent
+        case -600: return .browserNotRunning  // procNotFound
+        default: return .unknown
+        }
+    }
+
+    /// What the owner does for that state; nil when nothing is needed yet.
+    public static func automationOwnerStep(_ state: AutomationState, _ browser: Browser) -> String? {
+        switch state {
+        case .denied: return automationSetupStep(browser)
+        case .notAnswered: return automationPromptStep(browser)
+        case .granted, .browserNotRunning, .unknown: return nil
+        }
     }
 
     // MARK: Browser scripts
@@ -329,41 +365,53 @@ public enum BrowserCheckout {
         case .safari:
             return """
             on os1Open(theURL)
-                tell application "Safari"
-                    make new document with properties {URL:theURL}
-                    return (id of front window) as text
-                end tell
+                with timeout of 30 seconds
+                    tell application "Safari"
+                        make new document with properties {URL:theURL}
+                        return (id of front window) as text
+                    end tell
+                end timeout
             end os1Open
             on os1Eval(windowID, js)
-                tell application "Safari"
-                    return do JavaScript js in current tab of (first window whose id is (windowID as integer))
-                end tell
+                with timeout of 30 seconds
+                    tell application "Safari"
+                        return do JavaScript js in current tab of (first window whose id is (windowID as integer))
+                    end tell
+                end timeout
             end os1Eval
             on os1Close(windowID)
-                tell application "Safari"
-                    close (first window whose id is (windowID as integer))
-                end tell
+                with timeout of 30 seconds
+                    tell application "Safari"
+                        close (first window whose id is (windowID as integer))
+                    end tell
+                end timeout
                 return "closed"
             end os1Close
             """
         case .chrome:
             return """
             on os1Open(theURL)
-                tell application "Google Chrome"
-                    set w to make new window
-                    set URL of active tab of w to theURL
-                    return ((id of w) as text)
-                end tell
+                with timeout of 30 seconds
+                    tell application "Google Chrome"
+                        set w to make new window
+                        set URL of active tab of w to theURL
+                        return ((id of w) as text)
+                    end tell
+                end timeout
             end os1Open
             on os1Eval(windowID, js)
-                tell application "Google Chrome"
-                    return execute (active tab of (first window whose id is (windowID as integer))) javascript js
-                end tell
+                with timeout of 30 seconds
+                    tell application "Google Chrome"
+                        return execute (active tab of (first window whose id is (windowID as integer))) javascript js
+                    end tell
+                end timeout
             end os1Eval
             on os1Close(windowID)
-                tell application "Google Chrome"
-                    close (first window whose id is (windowID as integer))
-                end tell
+                with timeout of 30 seconds
+                    tell application "Google Chrome"
+                        close (first window whose id is (windowID as integer))
+                    end tell
+                end timeout
                 return "closed"
             end os1Close
             """
@@ -375,6 +423,9 @@ public enum BrowserCheckout {
         case javaScriptDisabled = "javascript_from_apple_events_off"
         case browserNotRunning = "browser_not_running"
         case windowGone = "window_closed"
+        /// errAETimeout: before the first success this is the Automation
+        /// prompt waiting for the owner.
+        case timedOut = "apple_event_timeout"
         case other = "browser_script_failed"
     }
 
@@ -389,6 +440,7 @@ public enum BrowserCheckout {
         }
         if number == -600 || number == -609 { return .browserNotRunning }
         if number == -1728 || number == -1719 { return .windowGone }
+        if number == -1712 { return .timedOut }
         return .other
     }
 

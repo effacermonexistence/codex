@@ -18,6 +18,9 @@ typealias BrokerError = BrowserCheckout.BrokerError
 @MainActor
 final class BrowserScripts {
     private var compiled: [Browser: NSAppleScript] = [:]
+    /// Browsers that answered at least once: a later timeout is the page,
+    /// an earlier one the owner's pending Automation prompt.
+    private var answered: Set<Browser> = []
 
     func call(_ browser: Browser, _ handler: String, _ parameters: [String]) -> Result<String, BrokerError> {
         let script: NSAppleScript
@@ -29,7 +32,7 @@ final class BrowserScripts {
             }
             var compileError: NSDictionary?
             guard made.compileAndReturnError(&compileError) else {
-                return .failure(Self.failure(browser, compileError))
+                return .failure(Self.failure(browser, compileError, answeredBefore: false))
             }
             compiled[browser] = made
             script = made
@@ -46,11 +49,12 @@ final class BrowserScripts {
         event.setParam(list, forKeyword: 0x2D2D_2D2D)
         var errorInfo: NSDictionary?
         let result = script.executeAppleEvent(event, error: &errorInfo)
-        if let errorInfo { return .failure(Self.failure(browser, errorInfo)) }
+        if let errorInfo { return .failure(Self.failure(browser, errorInfo, answeredBefore: answered.contains(browser))) }
+        answered.insert(browser)
         return .success(result.stringValue ?? "")
     }
 
-    private static func failure(_ browser: Browser, _ info: NSDictionary?) -> BrokerError {
+    private static func failure(_ browser: Browser, _ info: NSDictionary?, answeredBefore: Bool) -> BrokerError {
         let number = (info?[NSAppleScript.errorNumber] as? NSNumber)?.intValue ?? 0
         let message = (info?[NSAppleScript.errorMessage] as? String) ?? (info?[NSAppleScript.errorBriefMessage] as? String) ?? ""
         switch BrowserCheckout.classifyScriptError(number: number, message: message) {
@@ -66,6 +70,12 @@ final class BrowserScripts {
             return BrokerError(code: "browser_not_running", message: "\(browser.applicationName) is not running (\(number)).")
         case .windowGone:
             return BrokerError(code: "window_closed", message: "The checkout window was closed.")
+        case .timedOut where !answeredBefore:
+            return BrokerError(code: "automation_permission_pending",
+                               message: "macOS is asking the owner whether OS-1 Checkout may control \(browser.applicationName).",
+                               ownerStep: BrowserCheckout.automationPromptStep(browser))
+        case .timedOut:
+            return BrokerError(code: "browser_timeout", message: "\(browser.applicationName) did not answer within 30 seconds.")
         case .other:
             return BrokerError(code: "browser_script_failed", message: "\(browser.applicationName): \(message) (\(number))")
         }
@@ -190,11 +200,15 @@ final class CheckoutBroker: @unchecked Sendable {
 
     private func status() -> [String: Any] {
         let installed = Browser.allCases.map { browser -> [String: Any] in
-            [
+            let automation = automationState(browser)
+            var entry: [String: Any] = [
                 "browser": browser.rawValue,
                 "installed": NSWorkspace.shared.urlForApplication(withBundleIdentifier: browser.bundleIdentifier) != nil,
                 "running": !NSRunningApplication.runningApplications(withBundleIdentifier: browser.bundleIdentifier).isEmpty,
+                "automation": automation.rawValue,
             ]
+            if let step = BrowserCheckout.automationOwnerStep(automation, browser) { entry["owner_step"] = step }
+            return entry
         }
         let biometric = LAContext().canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: nil)
         let owner = LAContext().canEvaluatePolicy(.deviceOwnerAuthentication, error: nil)
@@ -205,6 +219,15 @@ final class CheckoutBroker: @unchecked Sendable {
             "open_sessions": lock.withLock { sessions.count },
             "setup_once": Browser.allCases.map { BrowserCheckout.javaScriptSetupStep($0) },
         ]
+    }
+
+    /// The owner's Automation answer for `browser`, read from tccd's record
+    /// without asking: status never raises a prompt. A browser that is not
+    /// running cannot be checked (the first open asks).
+    private func automationState(_ browser: Browser) -> BrowserCheckout.AutomationState {
+        guard let address = NSAppleEventDescriptor(bundleIdentifier: browser.bundleIdentifier).aeDesc else { return .unknown }
+        let status = AEDeterminePermissionToAutomateTarget(address, AEEventClass(typeWildCard), AEEventID(typeWildCard), false)
+        return BrowserCheckout.automationState(osStatus: Int(status))
     }
 
     private func defaultBrowser() -> Browser? {
@@ -228,12 +251,52 @@ final class CheckoutBroker: @unchecked Sendable {
         guard NSWorkspace.shared.urlForApplication(withBundleIdentifier: browser.bundleIdentifier) != nil else {
             throw BrokerError(code: "browser_not_installed", message: "\(browser.applicationName) is not installed.")
         }
-        let windowID = try runScript(browser, "os1Open", [target.absoluteString]).get()
+        let windowID = try openWindow(browser, target.absoluteString)
         let session = Session(id: UUID().uuidString, browser: browser, windowID: windowID)
         lock.withLock { sessions[session.id] = session }
         writeAudit(["event": "open", "session": session.id, "browser": browser.rawValue, "host": host])
-        let page = try waitForLoad(session, timeout: 20)
+        let page: BrowserCheckout.Snapshot
+        do {
+            page = try waitForLoad(session, timeout: 20)
+        } catch let error as BrokerError where error.code == "javascript_from_apple_events_off" {
+            // Nothing on the page can be read until the owner turns the setting
+            // on; close this window instead of leaving one behind per retry.
+            _ = runScript(browser, "os1Close", [windowID])
+            _ = lock.withLock { sessions.removeValue(forKey: session.id) }
+            throw error
+        }
         return try json(["session": session.id, "browser": browser.rawValue, "url": page.url, "title": page.title])
+    }
+
+    /// Opens the checkout window. The first call to a browser makes macOS ask
+    /// the owner; the Apple Event gives up after 30 seconds but the prompt
+    /// stays, so wait for the owner's answer (read from tccd, no new prompt)
+    /// and open once more when it is Allow.
+    private func openWindow(_ browser: Browser, _ url: String) throws -> String {
+        switch runScript(browser, "os1Open", [url]) {
+        case .success(let windowID):
+            return windowID
+        case .failure(let error) where error.code == "automation_permission_pending":
+            let deadline = Date().addingTimeInterval(BrowserCheckout.automationAnswerWait)
+            var state = automationState(browser)
+            while [.notAnswered, .browserNotRunning].contains(state) && Date() < deadline {
+                Thread.sleep(forTimeInterval: 1)
+                state = automationState(browser)
+            }
+            switch state {
+            case .granted:
+                writeAudit(["event": "automation_allowed", "browser": browser.rawValue])
+                return try runScript(browser, "os1Open", [url]).get()
+            case .denied:
+                throw BrokerError(code: "automation_permission_missing",
+                                  message: "The owner did not allow OS-1 Checkout to control \(browser.applicationName).",
+                                  ownerStep: BrowserCheckout.automationSetupStep(browser))
+            case .notAnswered, .browserNotRunning, .unknown:
+                throw error
+            }
+        case .failure(let error):
+            throw error
+        }
     }
 
     private func click(_ session: Session, ref: String) throws -> String {
@@ -559,7 +622,7 @@ enum SocketServer {
         }
         guard bound == 0 else { throw BrokerError(code: "socket", message: "bind() failed: \(errno)") }
         chmod(path, 0o600)
-        guard listen(listener, 16) == 0 else { throw BrokerError(code: "socket", message: "listen() failed: \(errno)") }
+        guard listen(listener, SOMAXCONN) == 0 else { throw BrokerError(code: "socket", message: "listen() failed: \(errno)") }
         Thread.detachNewThread {
             while true {
                 let client = accept(listener, nil, nil)
@@ -570,6 +633,8 @@ enum SocketServer {
                 var uid: uid_t = 0
                 var gid: gid_t = 0
                 guard getpeereid(client, &uid, &gid) == 0, uid == getuid() else { close(client); continue }
+                var noSigPipe: Int32 = 1
+                setsockopt(client, SOL_SOCKET, SO_NOSIGPIPE, &noSigPipe, socklen_t(MemoryLayout<Int32>.size))
                 DispatchQueue.global().async { serve(client, handler) }
             }
         }
@@ -634,6 +699,10 @@ func checkoutSelfTest() -> Bool {
 
 if CommandLine.arguments.contains("--self-test") { exit(checkoutSelfTest() ? 0 : 1) }
 
+// A client that stopped waiting (a timed-out tool call) closes its socket;
+// the late reply must fail with EPIPE, not kill the helper (2026-10-02:
+// launchd reported signal 13 and every retry raised a new Automation prompt).
+signal(SIGPIPE, SIG_IGN)
 let application = NSApplication.shared
 application.setActivationPolicy(.accessory)
 // A windowless accessory app is fair game for AppKit's automatic and sudden
@@ -644,7 +713,14 @@ ProcessInfo.processInfo.disableAutomaticTermination("OS-1 Checkout serves purcha
 ProcessInfo.processInfo.disableSuddenTermination()
 let broker = CheckoutBroker(scripts: BrowserScripts())
 do {
-    try SocketServer.start(path: BrowserCheckout.socketURL().path) { data in broker.queue.sync { broker.handle(data) } }
+    try SocketServer.start(path: BrowserCheckout.socketURL().path) { data in
+        // Status reads no page: it answers even while a browser call waits on
+        // the owner (an Automation prompt, the Touch ID panel).
+        if let request = try? JSONDecoder().decode(BrowserCheckout.BrokerRequest.self, from: data), request.op == "status" {
+            return broker.handle(data)
+        }
+        return broker.queue.sync { broker.handle(data) }
+    }
 } catch {
     FileHandle.standardError.write(Data("OS-1 Checkout could not start: \(error)\n".utf8))
     exit(1)

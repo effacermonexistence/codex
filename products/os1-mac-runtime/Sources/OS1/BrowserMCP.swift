@@ -80,7 +80,7 @@ enum BrowserMCP {
         guard let request = brokerRequest(tool: name, arguments: arguments, executionID: executionID) else {
             return (#"{"code":"unknown_tool"}"#, true)
         }
-        let timeout: TimeInterval = request.op == "request_approval" ? 210 : 90
+        let timeout = timeout(for: request.op)
         do {
             let response = try CheckoutBrokerClient.send(request, timeout: timeout)
             if response.ok { return (response.result ?? "{}", false) }
@@ -89,6 +89,18 @@ enum BrowserMCP {
             return (encodeError(error), true)
         } catch {
             return (encodeError(BrowserCheckout.BrokerError(code: "helper_unavailable", message: "\(error)")), true)
+        }
+    }
+
+    /// Socket timeout per helper op. request_approval waits for the owner's
+    /// Touch ID (up to 3 minutes); open may wait for macOS's Automation
+    /// prompt: 30 s Apple Event + the answer wait + a second open + the load.
+    static func timeout(for op: String) -> TimeInterval {
+        switch op {
+        case "request_approval": return 210
+        case "open": return 30 + BrowserCheckout.automationAnswerWait + 30 + 20 + 40
+        case "status": return 10
+        default: return 90
         }
     }
 
@@ -161,6 +173,12 @@ func browserMCPSelfTest() throws {
           check.args["value"] == "false", check.args["checked"] == nil,
           BrowserMCP.brokerRequest(tool: "browser_eval", arguments: [:], executionID: nil) == nil else {
         throw OS1Error.message("Browser MCP request mapping self-test failed")
+    }
+    // The first open may wait for the owner's macOS prompt; every op must end
+    // before Codex's 300 s tool timeout reports it as hung.
+    let longest = BrowserMCP.operations.values.map(BrowserMCP.timeout(for:)).max() ?? 0
+    guard BrowserMCP.timeout(for: "open") > 30 + BrowserCheckout.automationAnswerWait + 30, longest < 300 else {
+        throw OS1Error.message("Browser MCP timeout self-test failed")
     }
     let claude = CheckoutTurn.claudeMCPArguments(os1Executable: "/x/os1", executionID: "abc")
     let codex = CheckoutTurn.codexConfigOverrides(os1Executable: "/x/os1", executionID: "abc")

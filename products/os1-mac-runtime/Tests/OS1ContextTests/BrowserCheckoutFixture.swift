@@ -148,6 +148,19 @@ func runBrowserCheckoutFixtures() throws {
     check(BrowserCheckout.classifyScriptError(number: 12, message: "Executing JavaScript through AppleScript is turned off. To turn it on, from the menu bar, go to View > Developer > Allow JavaScript from Apple Events.") == .javaScriptDisabled,
           "Chrome's JavaScript switch")
     check(BrowserCheckout.classifyScriptError(number: -600, message: "") == .browserNotRunning, "-600 is not running")
+    check(BrowserCheckout.classifyScriptError(number: -1712, message: "AppleEvent timed out.") == .timedOut,
+          "-1712 is a timeout (the owner's pending Automation prompt before the first answer)")
+    check(BrowserCheckout.Browser.allCases.allSatisfy { BrowserCheckout.appleScriptSource($0).components(separatedBy: "with timeout of 30 seconds").count == 4 },
+          "every browser call gives up after 30 seconds instead of blocking the helper")
+    check(BrowserCheckout.automationPromptStep(.chrome).contains("Google Chrome") && BrowserCheckout.automationPromptStep(.safari).contains("허용"),
+          "the pending-prompt step names the browser and the button")
+    check([0: BrowserCheckout.AutomationState.granted, -1743: .denied, -1744: .notAnswered, -600: .browserNotRunning, -50: .unknown]
+          .allSatisfy { BrowserCheckout.automationState(osStatus: $0.key) == $0.value },
+          "status reads the owner's Automation answer: granted / denied / not answered / browser not running")
+    check(BrowserCheckout.automationOwnerStep(.denied, .safari)?.contains("시스템 설정") == true
+          && BrowserCheckout.automationOwnerStep(.notAnswered, .chrome)?.contains("허용") == true
+          && BrowserCheckout.automationOwnerStep(.granted, .safari) == nil,
+          "a denied browser points to System Settings, an unanswered one to the prompt, a granted one needs nothing")
     let script = BrowserCheckout.pageScript(command: ["op": "click", "ref": "e10\"); alert(1); (\""])
     check(!script.contains("__OS1_CMD__") && script.contains(#""op":"click""#) && script.contains(#"\"); alert(1); (\""#),
           "the command is a JSON literal, quotes escaped")
@@ -157,6 +170,8 @@ func runBrowserCheckoutFixtures() throws {
     let card = OwnerAuthorityActions.checkoutToolsCard
     check(["purchase_request_approval", "purchase_confirm", "Touch ID", "owner-only", "checkout_status", "Never type card numbers"]
           .allSatisfy(card.contains), "the checkout card names the approval flow and the owner-only fields")
+    check(card.contains("macOS's prompt") && BrowserCheckout.automationAnswerWait >= 60,
+          "the backend knows the first open may wait for the owner's Automation answer")
     check(OwnerAuthorityActions.capabilityCard.contains("checkout or cart"), "the link card stays for turns without tools")
     // The helper runs from a copy outside the OS-1 bundle (macOS attributes a
     // nested app to its host): copied when missing or changed, kept otherwise.
@@ -164,19 +179,33 @@ func runBrowserCheckoutFixtures() throws {
     defer { try? FileManager.default.removeItem(at: home) }
     let shipped = CheckoutBrokerClient.helperURL(home: home)
     try FileManager.default.createDirectory(at: shipped.appendingPathComponent("Contents/MacOS"), withIntermediateDirectories: true)
-    try Data("v1".utf8).write(to: shipped.appendingPathComponent("Contents/MacOS/OS1Checkout"))
+    let shippedExecutable = shipped.appendingPathComponent("Contents/MacOS/OS1Checkout")
+    try FileManager.default.copyItem(at: URL(fileURLWithPath: "/bin/sleep"), to: shippedExecutable)  // a runnable "v1"
+    let v1 = try Data(contentsOf: shippedExecutable)
     try Data("<plist>1</plist>".utf8).write(to: shipped.appendingPathComponent("Contents/Info.plist"))
     let running = try CheckoutBrokerClient.prepareRunningHelper(home: home)
     check(running.standardizedFileURL.path == CheckoutBrokerClient.runningHelperURL(home: home).standardizedFileURL.path
           && !running.path.contains("OS-1 CLODEX.app") && running.path.hasSuffix("checkout/OS-1 Checkout.app"),
           "the running helper lives outside the OS-1 bundle")
-    check((try? Data(contentsOf: running.appendingPathComponent("Contents/MacOS/OS1Checkout"))) == Data("v1".utf8), "the helper was copied")
+    check((try? Data(contentsOf: running.appendingPathComponent("Contents/MacOS/OS1Checkout"))) == v1, "the helper was copied")
     let marker = running.appendingPathComponent("Contents/marker")
     try Data().write(to: marker)
     _ = try CheckoutBrokerClient.prepareRunningHelper(home: home)
     check(FileManager.default.fileExists(atPath: marker.path), "an unchanged helper is not copied again")
-    try Data("v2".utf8).write(to: shipped.appendingPathComponent("Contents/MacOS/OS1Checkout"))
+    // An update stops the previous build's helper before replacing its copy;
+    // otherwise the old process keeps answering every checkout.
+    let previous = Process()
+    previous.executableURL = running.appendingPathComponent("Contents/MacOS/OS1Checkout")
+    previous.arguments = ["30"]
+    previous.standardOutput = FileHandle.nullDevice
+    previous.standardError = FileHandle.nullDevice
+    try previous.run()
+    check(CheckoutBrokerClient.helperProcesses(executable: previous.executableURL!.path) == [previous.processIdentifier],
+          "the helper running from the copy is found by its path")
+    try Data("v2".utf8).write(to: shippedExecutable)
     _ = try CheckoutBrokerClient.prepareRunningHelper(home: home)
+    previous.waitUntilExit()
+    check(previous.terminationReason == .uncaughtSignal, "the previous build's helper was stopped before the copy changed")
     check(!FileManager.default.fileExists(atPath: marker.path)
           && (try? Data(contentsOf: running.appendingPathComponent("Contents/MacOS/OS1Checkout"))) == Data("v2".utf8),
           "a new build replaces the copy")

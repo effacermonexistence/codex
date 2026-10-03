@@ -20,7 +20,10 @@ public enum CheckoutBrokerClient {
     }
 
     /// Copies the signed helper out of the installed app when the copy is
-    /// missing or differs (a new build), signature intact.
+    /// missing or differs (a new build), signature intact. A helper still
+    /// running from the old copy is stopped first: a client only launches the
+    /// helper when it cannot connect, so an old build that keeps answering
+    /// would otherwise serve every checkout after an update.
     public static func prepareRunningHelper(home: URL = FileManager.default.homeDirectoryForCurrentUser) throws -> URL {
         let source = helperURL(home: home)
         let target = runningHelperURL(home: home)
@@ -32,6 +35,7 @@ public enum CheckoutBrokerClient {
         let shippedInfo = try? Data(contentsOf: source.appendingPathComponent("Contents/Info.plist"))
         let runningInfo = try? Data(contentsOf: target.appendingPathComponent("Contents/Info.plist"))
         if digest(target.appendingPathComponent(executable)) == shipped && shippedInfo == runningInfo { return target }
+        stopHelpers(executable: target.appendingPathComponent(executable).path)
         try FileManager.default.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true,
                                                 attributes: [.posixPermissions: 0o700])
         if FileManager.default.fileExists(atPath: target.path) { try FileManager.default.removeItem(at: target) }
@@ -48,6 +52,51 @@ public enum CheckoutBrokerClient {
         return target
     }
 
+    /// Processes whose executable is `executable` (the running copy), by path.
+    public static func helperProcesses(executable: String) -> [pid_t] {
+        let wanted = canonicalPath(executable)
+        let capacity = proc_listallpids(nil, 0)
+        guard capacity > 0 else { return [] }
+        var pids = [pid_t](repeating: 0, count: Int(capacity) + 64)
+        let count = proc_listallpids(&pids, Int32(pids.count * MemoryLayout<pid_t>.size))
+        guard count > 0 else { return [] }
+        var path = [CChar](repeating: 0, count: 4 * Int(MAXPATHLEN))
+        return pids.prefix(Int(count)).filter { pid in
+            guard pid > 0, pid != getpid(), proc_pidpath(pid, &path, UInt32(path.count)) > 0 else { return false }
+            return canonicalPath(String(cString: path)) == wanted
+        }
+    }
+
+    /// Ends helpers running from `executable`: SIGTERM, then SIGKILL after `timeout`.
+    static func stopHelpers(executable: String, timeout: TimeInterval = 3) {
+        let pids = helperProcesses(executable: executable)
+        guard !pids.isEmpty else { return }
+        for pid in pids { kill(pid, SIGTERM) }
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline && pids.contains(where: { kill($0, 0) == 0 }) { Thread.sleep(forTimeInterval: 0.05) }
+        for pid in pids where kill(pid, 0) == 0 { kill(pid, SIGKILL) }
+    }
+
+    /// realpath(3): /var → /private/var, as the kernel reports executables.
+    static func canonicalPath(_ path: String) -> String {
+        guard let resolved = realpath(path, nil) else { return path }
+        defer { free(resolved) }
+        return String(cString: resolved)
+    }
+
+    private static let refreshLock = NSLock()
+    nonisolated(unsafe) private static var refreshed = false
+
+    /// Once per client process, before its first launching request: bring the
+    /// running copy (and any helper serving from it) to the installed build.
+    static func refreshRunningHelperOnce() {
+        let first = refreshLock.withLock { () -> Bool in
+            defer { refreshed = true }
+            return !refreshed
+        }
+        if first { _ = try? prepareRunningHelper() }
+    }
+
     static func digest(_ file: URL) -> String? {
         guard let data = try? Data(contentsOf: file, options: .mappedIfSafe) else { return nil }
         return SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
@@ -57,6 +106,7 @@ public enum CheckoutBrokerClient {
     /// started through LaunchServices (its own responsible process) first.
     public static func send(_ request: BrowserCheckout.BrokerRequest, timeout: TimeInterval = 60,
                             launch: Bool = true) throws -> BrowserCheckout.BrokerResponse {
+        if launch { refreshRunningHelperOnce() }
         let path = BrowserCheckout.socketURL().path
         var fd = connectSocket(path)
         if fd == nil && launch {
@@ -72,6 +122,8 @@ public enum CheckoutBrokerClient {
                                               message: "OS-1 Checkout is not running and could not be started.")
         }
         defer { close(socketFD) }
+        var noSigPipe: Int32 = 1
+        setsockopt(socketFD, SOL_SOCKET, SO_NOSIGPIPE, &noSigPipe, socklen_t(MemoryLayout<Int32>.size))
         var interval = timeval(tv_sec: Int(timeout), tv_usec: 0)
         setsockopt(socketFD, SOL_SOCKET, SO_RCVTIMEO, &interval, socklen_t(MemoryLayout<timeval>.size))
         setsockopt(socketFD, SOL_SOCKET, SO_SNDTIMEO, &interval, socklen_t(MemoryLayout<timeval>.size))
