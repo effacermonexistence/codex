@@ -75,5 +75,9 @@ func runRuntimeActivityObserverFixtures() throws {
     try result("second exact final", sessionID: session, error: false)
     try check(stream.takeClaudePublicFinal(sessionID: session, after: &cursor) == "second exact final", "later steered final hidden")
     try check(!ReviewPass.applies(request: "코드를 설명해봐. 교차 검토하지 마."), "negated review starts reviewer")
+    try check(!ReviewPass.applies(request: "코드에서 교차 검토 단계가 어떻게 도는지 설명해봐."), "review mention treated as authorization")
+    try check(!ReviewPass.applies(request: "Explain why the code cross-check step is slow."), "English review mention starts reviewer")
+    try check(ReviewPass.applies(request: "Explain the code path. Please cross-check it."), "explicit English review lost")
+
     print("OS-1 public relay: 30 atomic updates, max \(String(format: "%.2f", samples.max() ?? 0)) ms; pre-exit delivery, exact text, malformed/oversize/exit races, explicit review OK")
 }

@@ -17,10 +17,14 @@ public enum ReviewPass {
         // A second paid provider turn is not output transport. Only an explicit
         // cross-model review request authorizes it; ordinary code explanations
         // keep their native answer and one provider call.
-        let review = request.precomposedStringWithCanonicalMapping.lowercased()
+        let review = OwnerIntentText.authorityText(request).precomposedStringWithCanonicalMapping.lowercased()
         guard !["교차 검토하지", "교차검토하지", "교차 검증하지", "교차검증하지", "do not cross", "don't cross", "without review"].contains(where: review.contains) else { return false }
-        guard ["교차 검토", "교차검토", "교차 검증", "교차검증", "cross-check", "cross check",
-               "cross-model review", "다른 모델로 검토", "claude로 검토", "클로드로 검토"].contains(where: review.contains) else { return false }
+        let directRequests = [
+            #"(?:교차\s*(?:검토|검증)|다른 모델로\s*검토|(?:claude|클로드)로\s*검토)(?:를|도|까지)?\s*(?:해(?:줘|주세요|라|봐)?|해\s*줘|하라|부탁해)(?=[\s.!?]|$)"#,
+            #"(?:^|[.!?;]\s*|\band\s+)(?:please\s+)?(?:cross-check|cross check)\b"#,
+            #"(?:^|[.!?;]\s*|\band\s+)(?:please\s+)?(?:add|perform|include|run|use|request)\s+(?:a\s+)?cross-model review\b"#,
+        ]
+        guard directRequests.contains(where: { review.range(of: $0, options: .regularExpression) != nil }) else { return false }
         guard TaskContext.ObjectiveKind.classify(request) == .explain,
               !HumanOutputContract.wantsBrevity(request) else { return false }
         let text = request.precomposedStringWithCanonicalMapping.lowercased()
