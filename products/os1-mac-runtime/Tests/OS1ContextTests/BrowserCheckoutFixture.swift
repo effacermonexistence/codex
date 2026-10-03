@@ -170,7 +170,26 @@ func runBrowserCheckoutFixtures() throws {
           "the command is a JSON literal, quotes escaped")
     check(!BrowserCheckout.pageAgentReturnsFieldValues, "the page agent never returns a field's value")
 
-    // The cards: tools on a write turn, the link handoff otherwise.
+    // Native tools by default, legacy helper only with explicit selection.
+    check(NativeAgentTools.codexAppServerArguments() == ["app-server"],
+          "native startup inherits configured servers without silent disables")
+    check(NativeAgentTools.codexAppServerArguments(overrides: ["features.shell_tool=false"])
+          == ["app-server", "-c", "features.shell_tool=false"],
+          "explicit bounded-lane overrides are preserved")
+    check(!CheckoutTurn.explicitlyRequested("도메인을 찾아서 장바구니까지 진행해", workspaceWrite: true),
+          "ordinary browser work does not require the OS-1 helper")
+    check(!CheckoutTurn.explicitlyRequested("OS-1 Checkout 코드 연결을 고쳐", workspaceWrite: true),
+          "mentioning helper source is not a request to use it")
+    check(CheckoutTurn.explicitlyRequested("OS-1 Checkout으로 로컬 테스트를 진행해", workspaceWrite: true),
+          "explicit legacy helper remains available")
+    check(!CheckoutTurn.explicitlyRequested("OS-1 Checkout 쓰지 말고 네이티브 도구로 해", workspaceWrite: true),
+          "an explicit rejection cannot attach the legacy helper")
+    check(!CheckoutTurn.explicitlyRequested("OS-1 Checkout 상태 확인", workspaceWrite: false),
+          "read-only scope cannot enable the write helper")
+    check(OwnerAuthorityActions.capabilityCard.contains("existing tools")
+          && OwnerAuthorityActions.capabilityCard.contains("completed by the owner")
+          && !OwnerAuthorityActions.capabilityCard.contains("Do not drive a browser"),
+          "native execution is allowed without weakening owner-only commitment")
     let card = OwnerAuthorityActions.checkoutToolsCard
     check(["purchase_request_approval", "purchase_confirm", "Touch ID", "owner-only", "checkout_status", "Never type card numbers"]
           .allSatisfy(card.contains), "the checkout card names the approval flow and the owner-only fields")

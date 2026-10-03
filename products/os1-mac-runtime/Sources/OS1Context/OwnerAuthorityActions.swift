@@ -1,16 +1,20 @@
 import Foundation
 
-/// Steps only the owner completes: buying, paying, subscribing, signing up,
-/// accepting terms, sending money. Owner, 2026-10-02, a domain-naming
-/// conversation: "스퀘어스페이스나 고데리 닷컴 가서 하나 사자고" and, after
-/// choosing, "해라고" — both turns tried to drive Chrome through Computer Use
-/// (not approved on this Mac) for 3 and 6 minutes and ended on the missing
-/// permission instead of on the checkout. The backend gets this card on such
-/// turns, so the answer is the checked price and the one link the owner pays
-/// at, as Claude Code stops at the payment confirmation.
+/// Native agents own execution. OS-1 supplies the objective, permission
+/// boundary and result custody, not a mandatory replacement browser driver.
+public enum NativeAgentTools {
+    /// Inherit the native client's configured servers/plugins. A startup
+    /// optimization must not silently disable a capability for every task.
+    public static func codexAppServerArguments(overrides: [String] = []) -> [String] {
+        ["app-server"] + overrides.flatMap { ["-c", $0] }
+    }
+}
+
+/// Owner-only commitments remain owner-only, whichever native tool executes
+/// the preceding work. The optional legacy checkout helper is not the default.
 public enum OwnerAuthorityActions {
     public static let capabilityCard = """
-    OS-1 owner-authority steps: purchases, payments, subscriptions, account sign-ups, accepting terms and sending money are completed by the owner, never by OS-1. When a request reaches one of them, first do everything that needs no owner login (availability, the exact first-year and renewal price, the seller, what is included), then give one direct link that opens the checkout or cart for the chosen item, its price, and the one thing the owner does there. Do not drive a browser, Computer Use or a payment form for these steps, and do not report a missing browser or Computer Use permission as the result. When the owner has already chosen ("이걸로 하자", "해", "사"), go straight to that link and price.
+    OS-1 routes this task to the native agent: use its existing tools, configured MCP servers and plugins for permitted research, browser navigation and checkout preparation. Respect the signed permission profile; tool availability is not authorization. Do not build a parallel browser executor or require OS-1 Checkout/Apple Events settings as a universal prerequisite. First inspect the native tools actually available, then execute the permitted steps directly rather than only sending a link. Purchases, payments, subscriptions, account sign-ups, accepting binding terms and sending money are completed by the owner; stop before that final commitment and hand off through the native approval/user-input mechanism. Never type card numbers, security codes, passwords or one-time codes. If login, 2FA or a CAPTCHA requires the owner, expose the actual page and request only that owner step. Verify the item, seller, period, exact first-year and renewal price, and checkout or cart state from real tool results. Report only actual execution, approvals and receipts. If a native capability is genuinely unavailable, identify that exact tool/connection boundary and provide the checked checkout link; do not claim that a model name automatically includes another product's tools. The OS-1 checkout helper is optional and must be explicitly requested, not substituted for the native agent's execution environment.
     """
 
     /// A write turn carries the OS-1 checkout tools (MCP server os1-checkout):

@@ -225,6 +225,21 @@ public enum CheckoutTurn {
         set { lock.withLock { value = newValue } }
     }
 
+    /// The owner can still select the legacy, Touch-ID-gated helper. Ordinary
+    /// purchase requests use the native agent's existing tool environment.
+    /// Do not inherit this choice from assistant text or stale conversation.
+    public static func explicitlyRequested(_ request: String, workspaceWrite: Bool) -> Bool {
+        guard workspaceWrite else { return false }
+        let value = request.precomposedStringWithCanonicalMapping.lowercased()
+        let names = ["os-1 checkout", "os1 checkout", "os1-checkout", "os-1 체크아웃", "os1 체크아웃"]
+        let optOut = ["쓰지 마", "쓰지마", "사용하지", "하지 마", "하지마", "제외", "중단", "do not", "don't", "without", "disable"]
+        let useRequested = names.contains { name in
+            [name + "으로", name + "을 사용", name + "를 사용", "use " + name,
+             "use the " + name, "using " + name, "via " + name].contains(where: value.contains)
+        }
+        return useRequested && !optOut.contains(where: value.contains)
+    }
+
     /// Claude: `--mcp-config` with the checkout server, keyed to this execution.
     public static func claudeMCPArguments(os1Executable: String, executionID: String) -> [String] {
         let config: [String: Any] = ["mcpServers": [BrowserCheckout.mcpServerName: [

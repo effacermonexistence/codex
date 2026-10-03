@@ -5043,12 +5043,9 @@ final class CodexAppServerClient: @unchecked Sendable {
         stderrHandle = try FileHandle(forWritingTo: temporary)
 
         process.executableURL = URL(fileURLWithPath: executable)
-        // OS-1 does not need the user's unrelated Cloudflare MCP to create a
-        // native Codex thread. When that MCP is logged out, app-server startup
-        // otherwise waits through repeated OAuth transport failures before a
-        // simple turn can begin.
-        process.arguments = ["app-server", "-c", "mcp_servers.cloudflare-api.enabled=false"]
-            + configOverrides.flatMap { ["-c", $0] }
+        // Full agent turns inherit native MCP/plugin configuration. Explicit
+        // chat/source-only overrides stay local to those bounded lanes.
+        process.arguments = NativeAgentTools.codexAppServerArguments(overrides: configOverrides)
         // The account the owner chose owns this run's CODEX_HOME; the default
         // account adds nothing, so the app server starts exactly as before.
         process.environment = ProviderExecutionEnvironment
@@ -8342,13 +8339,11 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
     if resolvedScope == .workspaceWrite, WebsiteDelivery.relevant(request: objectiveRequest, context: context) {
         workspaceContext += "\n" + ManagedPreview.capabilityCard + "\n" + WebsiteDelivery.capabilityCard
     }
-    // Buying, paying, signing up: the owner approves them. With a write ticket
-    // the backend gets the OS-1 checkout tools and drives the checkout in the
-    // owner's Safari or Chrome up to the owner's Touch ID approval (2026-10-02
-    // owner: "승인 버튼만 눌러주면 되게 … 사파리나 크롬 둘 다"); otherwise it
-    // checks the price and hands over the checkout link.
-    let ownerAuthorityTurn = OwnerAuthorityActions.relevant(request: objectiveRequest, context: context)
-    CheckoutTurn.enabled = ownerAuthorityTurn && resolvedScope == .workspaceWrite
+    // Native-first execution; owner-only commitments are unchanged. The
+    // legacy browser helper is attached only when explicitly selected.
+    CheckoutTurn.enabled = CheckoutTurn.explicitlyRequested(
+        objectiveRequest, workspaceWrite: resolvedScope == .workspaceWrite)
+    let ownerAuthorityTurn = CheckoutTurn.enabled || OwnerAuthorityActions.relevant(request: objectiveRequest, context: context)
     if ownerAuthorityTurn {
         workspaceContext += "\n" + (CheckoutTurn.enabled ? OwnerAuthorityActions.checkoutToolsCard : OwnerAuthorityActions.capabilityCard)
     }
