@@ -1,4 +1,5 @@
 (() => {
+const t = (...args) => window.UsungI18n?.t(...args) ?? args[0];
 const header = document.querySelector('.corp-header');
 const reduced = matchMedia('(prefers-reduced-motion: reduce)');
 let userPaused = false;
@@ -20,8 +21,8 @@ function updateMedia() {
   if (motionButton) {
     const paused = userPaused || reduced.matches;
     motionButton.setAttribute('aria-pressed', String(paused));
-    motionButton.setAttribute('aria-label', paused ? '배경 움직임 재생' : '배경 움직임 일시정지');
-    motionButton.querySelector('span').textContent = paused ? 'PLAY MOTION' : 'PAUSE MOTION';
+    motionButton.setAttribute('aria-label', t(paused ? '배경 움직임 재생' : '배경 움직임 일시정지'));
+    motionButton.querySelector('span').textContent = t(paused ? 'PLAY MOTION' : 'PAUSE MOTION');
     motionButton.querySelector('i').textContent = paused ? '▷' : 'Ⅱ';
   }
 }

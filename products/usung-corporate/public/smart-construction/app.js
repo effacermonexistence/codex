@@ -1,3 +1,4 @@
+const t = (...args) => window.UsungI18n.t(...args);
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
 const reduced = matchMedia('(prefers-reduced-motion: reduce)');
@@ -68,12 +69,12 @@ const updateVideos=()=>{
   });
   const paused=userPaused||reduced.matches;
   $('.motion-toggle').setAttribute('aria-pressed',String(paused));
-  $('.motion-toggle').innerHTML=paused?'영상 재생 <span aria-hidden="true">▷</span>':'영상 일시정지 <span aria-hidden="true">Ⅱ</span>';
+  $('.motion-toggle').innerHTML=t(paused ? '영상 재생' : '영상 일시정지') + (paused ? ' <span aria-hidden="true">▷</span>' : ' <span aria-hidden="true">Ⅱ</span>');
 };
 if('IntersectionObserver' in window){
  const observer=new IntersectionObserver(entries=>{entries.forEach(e=>e.isIntersecting?visibleVideos.add(e.target):visibleVideos.delete(e.target));updateVideos();},{threshold:.1});videos.forEach(v=>observer.observe(v));
 }
-$('.motion-toggle').addEventListener('click',()=>{if(reduced.matches) {userPaused=true;$('.motion-toggle').textContent='동작 줄이기 설정 적용 중';return;}userPaused=!userPaused;updateVideos()});
+$('.motion-toggle').addEventListener('click',()=>{if(reduced.matches) {userPaused=true;$('.motion-toggle').textContent=t('동작 줄이기 설정 적용 중');return;}userPaused=!userPaused;updateVideos()});
 reduced.addEventListener('change',updateVideos);document.addEventListener('visibilitychange',updateVideos);updateVideos();
 menuButton.addEventListener('click',updateVideos);
 
@@ -82,7 +83,7 @@ $$('[data-filter]').forEach(button=>button.addEventListener('click',()=>{
   $$('[data-filter]').forEach(el=>el.setAttribute('aria-pressed',String(el===button)));
   let count=0;$$('[data-category]').forEach(card=>{card.hidden=filter!=='all'&&card.dataset.category!==filter;if(!card.hidden){count++;card.classList.add('is-visible')}});
   $('.cards-grid').classList.toggle('is-filtered',filter!=='all');
-  $('.project-count').textContent=`${count}개의 레퍼런스 프로젝트`;schedule();
+  $('.project-count').textContent=t('{count}개의 레퍼런스 프로젝트', { count });schedule();
 }));
 const projects=[
  {title:'COASTAL ARCHITECTURE',image:'suffolk-naples.jpg',source:'SUFFOLK · VISUAL REFERENCE',description:'대형 해안 건축의 수평적 스케일과 재료감을 보여주는 레퍼런스입니다. U-SUNG의 실제 시공 실적이 아닌, 이번 데모의 프로젝트 표현 방향입니다.',url:'https://suffolk.com/project/naples-beach-club-a-four-seasons-resort/'},
@@ -91,28 +92,28 @@ const projects=[
 ];
 let dialogTrigger=null;
 const openDialog=(dialog,trigger)=>{dialogTrigger=trigger;dialog.showModal();document.body.classList.add('overlay-open');updateVideos()};
-$$('dialog').forEach(dialog=>{
+$$('dialog:not(.corp-language-dialog)').forEach(dialog=>{
  dialog.querySelector('.dialog-close').addEventListener('click',()=>dialog.close());
  dialog.addEventListener('click',event=>{if(event.target===dialog){const r=dialog.getBoundingClientRect();if(event.clientX<r.left||event.clientX>r.right||event.clientY<r.top||event.clientY>r.bottom)dialog.close()}});
  dialog.addEventListener('close',()=>{if(dialog.id==='film-dialog')$('.film-container').replaceChildren();document.body.classList.remove('overlay-open');dialogTrigger?.focus();updateVideos()});
 });
 $$('[data-project]').forEach(button=>button.addEventListener('click',()=>{
  const p=projects[Number(button.dataset.project)];
- $('#project-dialog-title').textContent=p.title;$('#project-dialog-image').src=`/assets/media/${p.image}`;$('#project-dialog-image').alt=p.title;
- $('#project-dialog-source').textContent=p.source;$('#project-dialog-description').textContent=p.description;$('#project-dialog-link').href=p.url;
+ $('#project-dialog-title').textContent=t(p.title);$('#project-dialog-image').src=`/assets/media/${p.image}`;$('#project-dialog-image').alt=t(p.title);
+ $('#project-dialog-source').textContent=t(p.source);$('#project-dialog-description').textContent=t(p.description);$('#project-dialog-link').href=p.url;
  openDialog($('#project-dialog'),button);
 }));
 $('.film-open').addEventListener('click',event=>{
- const frame=document.createElement('iframe');frame.src='https://www.youtube-nocookie.com/embed/6RIExTOxXkU?autoplay=1';frame.title='Built Robotics — RPD 35 field film';frame.allow='autoplay; encrypted-media; picture-in-picture';frame.allowFullscreen=true;
+ const frame=document.createElement('iframe');frame.src='https://www.youtube-nocookie.com/embed/6RIExTOxXkU?autoplay=1';frame.title=t('Built Robotics — RPD 35 field film');frame.allow='autoplay; encrypted-media; picture-in-picture';frame.allowFullscreen=true;
  $('.film-container').replaceChildren(frame);openDialog($('#film-dialog'),event.currentTarget);
 });
 $('.contact-open').addEventListener('click',event=>openDialog($('#contact-dialog'),event.currentTarget));
 $('#brief-form').addEventListener('submit',event=>{
  event.preventDefault();const values=Object.fromEntries(new FormData(event.currentTarget));
- const text=`U-SUNG — PROJECT BRIEF\n\n이름 / 회사: ${values.name}\n이메일: ${values.email}\n관심 분야: ${values.sector}\n\n${values.message}\n\n로컬 데모에서 작성한 브리프입니다. 전송되지 않았습니다.\n`;
+ const text=`${t('U-SUNG — PROJECT BRIEF')}\n\n${t('이름 / 회사')}: ${values.name}\n${t('이메일')}: ${values.email}\n${t('관심 분야')}: ${values.sector}\n\n${values.message}\n\n${t('로컬 데모에서 작성한 브리프입니다. 전송되지 않았습니다.')}\n`;
  const url=URL.createObjectURL(new Blob([text],{type:'text/plain;charset=utf-8'}));
  const link=document.createElement('a');link.href=url;link.download='U-SUNG-project-brief.txt';link.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
- $('#brief-status').textContent='브리프 파일을 만들었습니다. 외부로 전송하거나 이 브라우저에 저장하지 않았습니다.';
+ $('#brief-status').textContent=t('브리프 파일을 만들었습니다. 외부로 전송하거나 이 브라우저에 저장하지 않았습니다.');
 });
 const review=new URLSearchParams(location.search).get('review');
 if(review) addEventListener('load',()=>{document.getElementById(review)?.scrollIntoView();schedule()},{once:true});

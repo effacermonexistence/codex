@@ -237,6 +237,42 @@ body:has(.corp-main-landing) .corp-header.is-scrolled{background:#eeede7f5}
 .corp-main-landing .corp-card-bottom h3{font-size:clamp(27px,3vw,45px);margin:13px 0 0}
 .corp-main-landing .corp-card-bottom p{display:none}
 .corp-main-landing .corp-card-link{margin-top:24px;padding-top:13px;font-size:10px}
+.corp-header-actions{display:flex;align-items:center;gap:25px;flex-shrink:0;direction:ltr}
+.corp-header-contact{margin-left:0}
+.corp-language{display:flex;align-items:center}
+.corp-language-button{display:flex;align-items:center;gap:8px;color:inherit;background:none;border:0;padding:12px 0;font:500 10px var(--corp-font);cursor:pointer;min-width:44px;min-height:44px}
+.corp-language-button svg{width:17px;height:17px}
+.corp-language-button:focus-visible,.corp-language-close:focus-visible{outline:2px solid currentColor;outline-offset:3px}
+.corp-language-dialog{position:fixed;inset:0 0 0 auto;margin:0;width:min(520px,100%);max-width:100%;height:100dvh;max-height:100dvh;border:0;padding:0;background:#eeede7;color:#151616;box-shadow:-15px 0 80px #0002;font-family:var(--corp-font);direction:ltr}
+.corp-language-dialog::backdrop{background:#080a0c80;backdrop-filter:blur(5px)}
+.corp-language-panel{padding:28px 36px 35px;min-height:100%;overflow:visible}
+.corp-language-heading{display:flex;align-items:center;justify-content:space-between;gap:20px}
+.corp-language-eyebrow{font-size:9px;letter-spacing:.14em;color:#6d7069}
+.corp-language-close{display:grid;place-items:center;border:0;background:none;color:inherit;width:44px;height:44px;cursor:pointer}
+.corp-language-close svg{width:23px;height:23px}
+.corp-language-dialog h2{font-weight:500;font-size:34px;line-height:1.2;letter-spacing:-.045em;margin:27px 0 27px}
+.corp-language-search{display:flex;align-items:center;gap:12px;border-bottom:1px solid #15161655;padding-bottom:12px;margin-bottom:22px}
+.corp-language-search svg{width:19px;height:19px;flex-shrink:0;color:#72756d}
+.corp-language-search input{width:100%;border:0;outline:0;background:transparent;color:#151616;font:400 13px var(--corp-font);border-radius:0;min-height:28px}
+.corp-language-search:focus-within{border-bottom-color:#151616}
+.corp-language-list{list-style:none;margin:0;padding:0;display:grid;grid-template-columns:1fr 1fr;gap:0 25px}
+.corp-language-list li[hidden]{display:none}
+.corp-language-list a{display:grid;grid-template-columns:1fr 20px;gap:5px 9px;align-content:center;min-height:77px;text-decoration:none;color:#151616;border-bottom:1px solid #15161618;padding:14px 0}
+.corp-language-list a>span{font-size:16px;font-weight:500;line-height:1.35;text-align:start}
+.corp-language-list small{font-size:10px;color:#75786f;line-height:1.3;grid-column:1}
+.corp-language-list svg{width:16px;height:16px;grid-column:2;grid-row:1/3;align-self:center;visibility:hidden}
+.corp-language-list a[aria-current] svg{visibility:visible}
+.corp-language-list a:hover>span{text-decoration:underline;text-underline-offset:5px}
+.corp-language-list a:focus-visible{outline:2px solid #151616;outline-offset:4px}
+.corp-language-empty{font-size:13px;color:#75786f;margin:25px 0}
+body.language-open{overflow:hidden}
+html[dir=rtl] .corp-header,html[dir=rtl] .site-header{direction:ltr}
+html[dir=rtl] .corp-intro-main,html[dir=rtl] .ref-statement-grid,html[dir=rtl] .ref-panel-description,html[dir=rtl] .ref-world-layout,html[dir=rtl] .ref-usecases,html[dir=rtl] .corp-main-intro{direction:rtl;text-align:right}
+html:not([lang=ko]) :is(.corp-intro h2,.ref-statement h2,.ref-world-layout h2){font-size:clamp(28px,3.35vw,57px);line-height:1.22;word-break:normal;overflow-wrap:break-word}
+html:not([lang=ko]) :is(.corp-main-heading h1,.ref-ai-hero h1,.ref-physical-hero h1,.corp-contact h2,.ref-platform-heading h2,.ref-applications h2,.ref-motion-heading h2){overflow-wrap:break-word;hyphens:auto}
+html:not([lang=en]):not([lang=ko]) .corp-main-heading h1{font-size:clamp(56px,6.3vw,105px)}
+html:not([lang=en]):not([lang=ko]) :is(.ref-ai-hero h1,.ref-physical-hero h1){font-size:clamp(50px,6.3vw,100px)}
+html:not([lang=en]):not([lang=ko]) .corp-contact h2{font-size:clamp(70px,10vw,175px)}
 @media(max-width:1000px){.corp-nav-inner{gap:20px}.corp-nav{gap:22px}.corp-header-contact{margin-left:5px;gap:12px}.corp-main-heading h1{font-size:9.5vw}.corp-main-intro>p{font-size:16px}}
 @media(max-width:760px){
  .corp-header{height:94px}
@@ -270,4 +306,35 @@ body:has(.corp-main-landing) .corp-header.is-scrolled{background:#eeede7f5}
  .corp-main-landing .corp-card-bottom h3{font-size:35px;margin-top:10px}
  .corp-main-landing .corp-card-link{margin-top:17px;padding-top:10px;font-size:9px}
  .corp-main-landing .corp-source-ai-card>img{width:90%;height:150%;left:27%;top:-45%;object-position:100% 50%}
+}
+@media(max-width:1000px){.corp-header-actions{gap:18px}.corp-nav-inner{gap:18px}.corp-nav{gap:20px}.corp-header-contact{margin-left:0}}
+@media(max-width:760px){
+ .corp-header-actions{margin-left:auto;gap:19px}
+ .corp-header-contact{margin-left:0;font-size:10px;gap:10px}
+ .corp-language-button{font-size:10px;gap:6px}
+ .corp-language-button svg{width:16px;height:16px}
+ .corp-nav>a{font-size:10px;line-height:1.2;text-align:center;white-space:normal}
+ .corp-language-panel{padding:19px 24px 28px}
+ .corp-language-dialog h2{font-size:30px;margin:25px 0}
+ .corp-language-list{gap:0 24px}
+ .corp-language-list a>span{font-size:15px}
+ html:not([lang=en]):not([lang=ko]) .corp-main-heading h1{font-size:clamp(40px,9.6vw,68px)}
+ html:not([lang=en]):not([lang=ko]) :is(.ref-ai-hero h1,.ref-physical-hero h1){font-size:clamp(43px,10vw,65px)}
+ html:not([lang=ko]) :is(.corp-intro h2,.ref-statement h2,.ref-world-layout h2){font-size:28px;line-height:1.22}
+}
+html:not([lang=en]):not([lang=ko]) .corp-construction .hero-title{font-size:clamp(65px,10vw,155px);line-height:.96;overflow-wrap:break-word;hyphens:auto}
+html:not([lang=ko]) .corp-construction .manifesto-copy{font-size:clamp(35px,4.8vw,75px);line-height:1.18;overflow-wrap:break-word}
+html:not([lang=ko]) .corp-construction :is(.system-heading h2,.future-heading h2,.contact-section h2){overflow-wrap:break-word;hyphens:auto}
+html[dir=rtl] .corp-language-dialog :is(h2,input){direction:rtl;text-align:right}
+html[dir=rtl] .corp-construction :is(.manifesto-copy,.manifesto-note,.system-heading,.system-card,.future-step,.dialog-copy){text-align:right}
+@media(max-width:760px){
+ html:not([lang=en]):not([lang=ko]) .corp-construction .hero-title{font-size:clamp(48px,13vw,90px)}
+ html:not([lang=ko]) .corp-construction .manifesto-copy{font-size:9vw}
+}
+
+.corp-language-search input:focus-visible{outline:none}
+
+@media(max-width:760px){
+ html:not([lang=en]):not([lang=ko]) .corp-main-landing .corp-business-card{height:240px;min-height:240px}
+ html:not([lang=en]):not([lang=ko]) .corp-main-landing .corp-card-bottom h3{font-size:clamp(25px,7.2vw,30px);line-height:1.08}
 }

@@ -1,0 +1,2156 @@
+[
+  {
+    "id": "000",
+    "source": "U-SUNG — Build What’s Next.",
+    "en": "U-SUNG — Build What’s Next.",
+    "fixed": true
+  },
+  {
+    "id": "001",
+    "source": "유성건설 주식회사. AI·AX, 스마트 건설, Physical AI. 현장의 경험과 신뢰할 수 있는 지능을 연결합니다.",
+    "en": "U-SUNG Corporation. AI & AX, Smart Construction and Physical AI. Connecting field experience with reliable intelligence.",
+    "fixed": false
+  },
+  {
+    "id": "002",
+    "source": "본문으로 이동",
+    "en": "Skip to content",
+    "fixed": false
+  },
+  {
+    "id": "003",
+    "source": "유성 메인",
+    "en": "U-SUNG home",
+    "fixed": false
+  },
+  {
+    "id": "004",
+    "source": "U-SUNG",
+    "en": "U-SUNG",
+    "fixed": true
+  },
+  {
+    "id": "005",
+    "source": "유성 사업 메뉴",
+    "en": "U-SUNG businesses",
+    "fixed": false
+  },
+  {
+    "id": "006",
+    "source": "메인",
+    "en": "Home",
+    "fixed": false
+  },
+  {
+    "id": "007",
+    "source": "AI",
+    "en": "AI",
+    "fixed": true
+  },
+  {
+    "id": "008",
+    "source": "스마트 건설",
+    "en": "Smart Construction",
+    "fixed": false
+  },
+  {
+    "id": "009",
+    "source": "Physical AI",
+    "en": "Physical AI",
+    "fixed": true
+  },
+  {
+    "id": "010",
+    "source": "프로젝트 문의",
+    "en": "Contact",
+    "fixed": false
+  },
+  {
+    "id": "011",
+    "source": "U-SUNG CORPORATION / EST. 2007",
+    "en": "U-SUNG CORPORATION / EST. 2007",
+    "fixed": true
+  },
+  {
+    "id": "012",
+    "source": "BUILD",
+    "en": "BUILD",
+    "fixed": false
+  },
+  {
+    "id": "013",
+    "source": "WHAT’S NEXT.",
+    "en": "WHAT’S NEXT.",
+    "fixed": false
+  },
+  {
+    "id": "014",
+    "source": "현장을 짓는 경험.",
+    "en": "Experience that builds.",
+    "fixed": false
+  },
+  {
+    "id": "015",
+    "source": "미래를 여는 지능.",
+    "en": "Intelligence that opens the future.",
+    "fixed": false
+  },
+  {
+    "id": "016",
+    "source": "유성 소개",
+    "en": "About U-SUNG",
+    "fixed": false
+  },
+  {
+    "id": "017",
+    "source": "EXPLORE OUR BUSINESSES",
+    "en": "EXPLORE OUR BUSINESSES",
+    "fixed": false
+  },
+  {
+    "id": "018",
+    "source": "AI · SMART CONSTRUCTION · PHYSICAL AI",
+    "en": "AI · SMART CONSTRUCTION · PHYSICAL AI",
+    "fixed": false
+  },
+  {
+    "id": "019",
+    "source": "투명한 입체 구조의 AI 시각물",
+    "en": "A transparent, dimensional visualization of AI",
+    "fixed": false
+  },
+  {
+    "id": "020",
+    "source": "01 / INTELLIGENCE",
+    "en": "01 / INTELLIGENCE",
+    "fixed": false
+  },
+  {
+    "id": "021",
+    "source": "AI & AX",
+    "en": "AI & AX",
+    "fixed": true
+  },
+  {
+    "id": "022",
+    "source": "Intelligence.",
+    "en": "Intelligence.",
+    "fixed": false
+  },
+  {
+    "id": "023",
+    "source": "신뢰할 수 있는 판단.",
+    "en": "Decisions you can trust.",
+    "fixed": false
+  },
+  {
+    "id": "024",
+    "source": "업무를 바꾸는 실행.",
+    "en": "Execution that transforms work.",
+    "fixed": false
+  },
+  {
+    "id": "025",
+    "source": "AI 사업 살펴보기",
+    "en": "Explore AI",
+    "fixed": false
+  },
+  {
+    "id": "026",
+    "source": "유리와 금속 구조가 어우러진 현대 건축",
+    "en": "Modern architecture in glass and metal",
+    "fixed": false
+  },
+  {
+    "id": "027",
+    "source": "02 / SMART CONSTRUCTION",
+    "en": "02 / SMART CONSTRUCTION",
+    "fixed": false
+  },
+  {
+    "id": "028",
+    "source": "Build beyond.",
+    "en": "Build beyond.",
+    "fixed": false
+  },
+  {
+    "id": "029",
+    "source": "현장을 이해하는 경험.",
+    "en": "Experience that understands the field.",
+    "fixed": false
+  },
+  {
+    "id": "030",
+    "source": "기술로 넓어지는 건설.",
+    "en": "Construction expanded by technology.",
+    "fixed": false
+  },
+  {
+    "id": "031",
+    "source": "스마트 건설 살펴보기",
+    "en": "Explore Smart Construction",
+    "fixed": false
+  },
+  {
+    "id": "032",
+    "source": "03 / PHYSICAL AI",
+    "en": "03 / PHYSICAL AI",
+    "fixed": false
+  },
+  {
+    "id": "033",
+    "source": "Into the real.",
+    "en": "Into the real.",
+    "fixed": false
+  },
+  {
+    "id": "034",
+    "source": "지능의 가능성이",
+    "en": "The potential of intelligence,",
+    "fixed": false
+  },
+  {
+    "id": "035",
+    "source": "현장의 움직임으로.",
+    "en": "in motion in the real world.",
+    "fixed": false
+  },
+  {
+    "id": "036",
+    "source": "Physical AI 살펴보기",
+    "en": "Explore Physical AI",
+    "fixed": false
+  },
+  {
+    "id": "037",
+    "source": "01 / THE NEXT U-SUNG",
+    "en": "01 / THE NEXT U-SUNG",
+    "fixed": true
+  },
+  {
+    "id": "038",
+    "source": "현실을 짓는 경험.",
+    "en": "Experience that builds the real world.",
+    "fixed": false
+  },
+  {
+    "id": "039",
+    "source": "가능성을 여는 지능.",
+    "en": "Intelligence that opens possibilities.",
+    "fixed": false
+  },
+  {
+    "id": "040",
+    "source": "2007년부터 쌓아온 건설의 실행력.",
+    "en": "Construction expertise built since 2007.",
+    "fixed": false
+  },
+  {
+    "id": "041",
+    "source": "이제 AI, 스마트 건설, Physical AI로",
+    "en": "Through AI, Smart Construction and Physical AI,",
+    "fixed": false
+  },
+  {
+    "id": "042",
+    "source": "유성의 다음을 만들어갑니다.",
+    "en": "we are shaping what comes next for U-SUNG.",
+    "fixed": false
+  },
+  {
+    "id": "043",
+    "source": "ESTABLISHED",
+    "en": "ESTABLISHED",
+    "fixed": false
+  },
+  {
+    "id": "044",
+    "source": "BUSAN",
+    "en": "BUSAN",
+    "fixed": false
+  },
+  {
+    "id": "045",
+    "source": "BASED IN KOREA",
+    "en": "BASED IN KOREA",
+    "fixed": false
+  },
+  {
+    "id": "046",
+    "source": "저녁의 건설 현장과 자율 장비",
+    "en": "A construction site and autonomous equipment at dusk",
+    "fixed": false
+  },
+  {
+    "id": "047",
+    "source": "U-SUNG × OmarAGI",
+    "en": "U-SUNG × OmarAGI",
+    "fixed": true
+  },
+  {
+    "id": "048",
+    "source": "FROM",
+    "en": "FROM",
+    "fixed": false
+  },
+  {
+    "id": "049",
+    "source": "INTELLIGENCE",
+    "en": "INTELLIGENCE",
+    "fixed": false
+  },
+  {
+    "id": "050",
+    "source": "TO IMPACT.",
+    "en": "TO IMPACT.",
+    "fixed": false
+  },
+  {
+    "id": "051",
+    "source": "AI의 판단을 검증하고,",
+    "en": "Verifying AI decisions,",
+    "fixed": false
+  },
+  {
+    "id": "052",
+    "source": "업무와 현장의 실행으로 연결합니다.",
+    "en": "connecting them to execution at work and in the field.",
+    "fixed": false
+  },
+  {
+    "id": "053",
+    "source": "AI 신뢰·실행 인프라",
+    "en": "AI reliability & execution infrastructure",
+    "fixed": false
+  },
+  {
+    "id": "054",
+    "source": "LET’S BUILD TOGETHER",
+    "en": "LET’S BUILD TOGETHER",
+    "fixed": false
+  },
+  {
+    "id": "055",
+    "source": "BUSAN, KOREA / OPEN TO WHAT’S NEXT",
+    "en": "BUSAN, KOREA / OPEN TO WHAT’S NEXT",
+    "fixed": false
+  },
+  {
+    "id": "056",
+    "source": "WHAT’S",
+    "en": "WHAT’S",
+    "fixed": false
+  },
+  {
+    "id": "057",
+    "source": "NEXT?",
+    "en": "NEXT?",
+    "fixed": false
+  },
+  {
+    "id": "058",
+    "source": "AI 도입에서 새로운 현장의 구상까지.",
+    "en": "From adopting AI to imagining the next site.",
+    "fixed": false
+  },
+  {
+    "id": "059",
+    "source": "다음 가능성을 함께 이야기합니다.",
+    "en": "Let’s explore the possibilities together.",
+    "fixed": false
+  },
+  {
+    "id": "060",
+    "source": "qoengks12@hanmail.net",
+    "en": "qoengks12@hanmail.net",
+    "fixed": true
+  },
+  {
+    "id": "061",
+    "source": "CONSTRUCTION. INTELLIGENCE. BEYOND.",
+    "en": "CONSTRUCTION. INTELLIGENCE. BEYOND.",
+    "fixed": false
+  },
+  {
+    "id": "062",
+    "source": "유성건설 주식회사",
+    "en": "U-SUNG Corporation",
+    "fixed": false
+  },
+  {
+    "id": "063",
+    "source": "부산광역시 동구 중앙대로 373, 3층",
+    "en": "3F, 373 Jungang-daero, Dong-gu, Busan, Korea",
+    "fixed": false
+  },
+  {
+    "id": "064",
+    "source": "© 2026 U-SUNG. All rights reserved.",
+    "en": "© 2026 U-SUNG. All rights reserved.",
+    "fixed": true
+  },
+  {
+    "id": "065",
+    "source": "BACK TO TOP ↑",
+    "en": "BACK TO TOP ↑",
+    "fixed": false
+  },
+  {
+    "id": "066",
+    "source": "AI & AX — U-SUNG",
+    "en": "AI & AX — U-SUNG",
+    "fixed": true
+  },
+  {
+    "id": "067",
+    "source": "유성과 OmarAGI의 AI 신뢰·실행 인프라. 결과 검증, 에이전트 실행 제어, 운영과 거버넌스를 실제 업무에 연결합니다.",
+    "en": "AI reliability and execution infrastructure from U-SUNG and OmarAGI. Bringing output verification, agent control, operations and governance into real work.",
+    "fixed": false
+  },
+  {
+    "id": "068",
+    "source": "투명한 입체 구조로 표현한 AI 인프라",
+    "en": "AI infrastructure expressed through a transparent dimensional form",
+    "fixed": false
+  },
+  {
+    "id": "069",
+    "source": "U-SUNG AI / POWERED WITH OmarAGI",
+    "en": "U-SUNG AI / POWERED WITH OmarAGI",
+    "fixed": true
+  },
+  {
+    "id": "070",
+    "source": "AI.",
+    "en": "AI.",
+    "fixed": true
+  },
+  {
+    "id": "071",
+    "source": "BUILT FOR",
+    "en": "BUILT FOR",
+    "fixed": false
+  },
+  {
+    "id": "072",
+    "source": "REAL WORK.",
+    "en": "REAL WORK.",
+    "fixed": false
+  },
+  {
+    "id": "073",
+    "source": "AI의 판단에 근거를.",
+    "en": "Evidence behind AI decisions.",
+    "fixed": false
+  },
+  {
+    "id": "074",
+    "source": "업무의 실행에 신뢰를.",
+    "en": "Reliability behind execution.",
+    "fixed": false
+  },
+  {
+    "id": "075",
+    "source": "AI 인프라 살펴보기",
+    "en": "Explore AI infrastructure",
+    "fixed": false
+  },
+  {
+    "id": "076",
+    "source": "적용 분야 ↘",
+    "en": "Applications ↘",
+    "fixed": false
+  },
+  {
+    "id": "077",
+    "source": "MODEL-AGNOSTIC",
+    "en": "MODEL-AGNOSTIC",
+    "fixed": false
+  },
+  {
+    "id": "078",
+    "source": "VERIFY / CONTROL / OBSERVE",
+    "en": "VERIFY / CONTROL / OBSERVE",
+    "fixed": false
+  },
+  {
+    "id": "079",
+    "source": "VISUAL REFERENCE / CONTEXTUAL AI ↗",
+    "en": "VISUAL REFERENCE / CONTEXTUAL AI ↗",
+    "fixed": true
+  },
+  {
+    "id": "080",
+    "source": "01 / RELIABILITY, BY DESIGN",
+    "en": "01 / RELIABILITY, BY DESIGN",
+    "fixed": false
+  },
+  {
+    "id": "081",
+    "source": "지능이 업무가 되는 순간.",
+    "en": "When intelligence becomes work.",
+    "fixed": false
+  },
+  {
+    "id": "082",
+    "source": "그 사이에 신뢰를 설계합니다.",
+    "en": "We design trust into the connection.",
+    "fixed": false
+  },
+  {
+    "id": "083",
+    "source": "어떤 모델을 쓰든, 결과가 실제 업무에 연결되기까지.",
+    "en": "Whatever model you use, from its output to real-world adoption.",
+    "fixed": false
+  },
+  {
+    "id": "084",
+    "source": "유성의 현장·업무 적용 역량과 OmarAGI의 AI 신뢰·실행 인프라가 함께합니다.",
+    "en": "U-SUNG’s field and business expertise meets OmarAGI’s AI reliability and execution infrastructure.",
+    "fixed": false
+  },
+  {
+    "id": "085",
+    "source": "근거에 연결된 판단",
+    "en": "Decisions grounded in evidence",
+    "fixed": false
+  },
+  {
+    "id": "086",
+    "source": "조건에 따라 제어되는 실행",
+    "en": "Execution controlled by conditions",
+    "fixed": false
+  },
+  {
+    "id": "087",
+    "source": "기록으로 확인하는 운영",
+    "en": "Operations traceable through records",
+    "fixed": false
+  },
+  {
+    "id": "088",
+    "source": "02 / THE RELIABILITY LAYER",
+    "en": "02 / THE RELIABILITY LAYER",
+    "fixed": false
+  },
+  {
+    "id": "089",
+    "source": "ONE INFRASTRUCTURE. ANY MODEL.",
+    "en": "ONE INFRASTRUCTURE. ANY MODEL.",
+    "fixed": false
+  },
+  {
+    "id": "090",
+    "source": "TRUST IS",
+    "en": "TRUST IS",
+    "fixed": false
+  },
+  {
+    "id": "091",
+    "source": "BUILT IN.",
+    "en": "BUILT IN.",
+    "fixed": false
+  },
+  {
+    "id": "092",
+    "source": "모델과 데이터, 실제 업무 사이.",
+    "en": "Between models, data and real work.",
+    "fixed": false
+  },
+  {
+    "id": "093",
+    "source": "검증·제어·관찰을 하나의 흐름으로 연결합니다.",
+    "en": "Verification, control and observation in one connected workflow.",
+    "fixed": false
+  },
+  {
+    "id": "094",
+    "source": "AI 인프라 핵심 역량",
+    "en": "AI infrastructure capabilities",
+    "fixed": false
+  },
+  {
+    "id": "095",
+    "source": "01 / VERIFY",
+    "en": "01 / VERIFY",
+    "fixed": false
+  },
+  {
+    "id": "096",
+    "source": "판단을 검증합니다.",
+    "en": "Verify decisions.",
+    "fixed": false
+  },
+  {
+    "id": "097",
+    "source": "02 / CONTROL",
+    "en": "02 / CONTROL",
+    "fixed": false
+  },
+  {
+    "id": "098",
+    "source": "실행을 제어합니다.",
+    "en": "Control execution.",
+    "fixed": false
+  },
+  {
+    "id": "099",
+    "source": "03 / OBSERVE",
+    "en": "03 / OBSERVE",
+    "fixed": false
+  },
+  {
+    "id": "100",
+    "source": "운영을 관찰합니다.",
+    "en": "Observe operations.",
+    "fixed": false
+  },
+  {
+    "id": "101",
+    "source": "모델과 AI 애플리케이션 계층을 표현한 레퍼런스 도식",
+    "en": "Reference diagram of model and AI application layers",
+    "fixed": false
+  },
+  {
+    "id": "102",
+    "source": "근거가 확인된 결과.",
+    "en": "Results backed by evidence.",
+    "fixed": false
+  },
+  {
+    "id": "103",
+    "source": "출처와 근거를 연결하고 데이터의 일관성을 확인합니다. RAG와 에이전트의 결과가 업무에 채택되기 전 검증 조건을 설계합니다.",
+    "en": "Connect sources and evidence, and check data consistency. Set verification conditions before RAG and agent outputs are adopted in business workflows.",
+    "fixed": false
+  },
+  {
+    "id": "104",
+    "source": "GROUNDING / PROVENANCE / OUTPUT VALIDATION",
+    "en": "GROUNDING / PROVENANCE / OUTPUT VALIDATION",
+    "fixed": false
+  },
+  {
+    "id": "105",
+    "source": "AI 모델과 데이터 사이의 컨텍스트 계층을 표현한 레퍼런스 도식",
+    "en": "Reference diagram of the context layer between AI models and data",
+    "fixed": false
+  },
+  {
+    "id": "106",
+    "source": "판단에서 실행까지.",
+    "en": "From decision to execution.",
+    "fixed": false
+  },
+  {
+    "id": "107",
+    "source": "업무에 맞는 모델과 경로를 선택하고 에이전트의 실행 순서·승인 조건을 연결합니다. 결과를 채택하는 단계까지 워크플로를 제어합니다.",
+    "en": "Choose the right models and routes for each task. Connect agent sequencing and approval conditions, and control the workflow through output adoption.",
+    "fixed": false
+  },
+  {
+    "id": "108",
+    "source": "ROUTING / AGENT CONTROL / ADOPTION GATE",
+    "en": "ROUTING / AGENT CONTROL / ADOPTION GATE",
+    "fixed": false
+  },
+  {
+    "id": "109",
+    "source": "지식과 데이터를 연결하는 기반 계층의 레퍼런스 도식",
+    "en": "Reference diagram of the foundation connecting knowledge and data",
+    "fixed": false
+  },
+  {
+    "id": "110",
+    "source": "다시 확인할 수 있는 실행.",
+    "en": "Execution you can review.",
+    "fixed": false
+  },
+  {
+    "id": "111",
+    "source": "응답과 실행 기록을 연결하고 이상 징후와 실패를 추적합니다. 평가, 관찰, 감사가 이어지는 운영 구조를 설계합니다.",
+    "en": "Connect response and execution records, and trace anomalies and failures. Design operations that link evaluation, observability and auditing.",
+    "fixed": false
+  },
+  {
+    "id": "112",
+    "source": "OBSERVABILITY / EVALUATION / AUDIT LOGGING",
+    "en": "OBSERVABILITY / EVALUATION / AUDIT LOGGING",
+    "fixed": false
+  },
+  {
+    "id": "113",
+    "source": "DIAGRAM REFERENCE / CONTEXTUAL AI ↗",
+    "en": "DIAGRAM REFERENCE / CONTEXTUAL AI ↗",
+    "fixed": true
+  },
+  {
+    "id": "114",
+    "source": "03 / INTELLIGENCE, APPLIED",
+    "en": "03 / INTELLIGENCE, APPLIED",
+    "fixed": false
+  },
+  {
+    "id": "115",
+    "source": "FROM DOCUMENTS TO THE FIELD",
+    "en": "FROM DOCUMENTS TO THE FIELD",
+    "fixed": false
+  },
+  {
+    "id": "116",
+    "source": "REAL CONTEXT.",
+    "en": "REAL CONTEXT.",
+    "fixed": false
+  },
+  {
+    "id": "117",
+    "source": "문서와 지식",
+    "en": "Documents & knowledge",
+    "fixed": false
+  },
+  {
+    "id": "118",
+    "source": "계약서, 기술 문서, 현장 기록.",
+    "en": "Contracts, technical documents, field records.",
+    "fixed": false
+  },
+  {
+    "id": "119",
+    "source": "분산된 정보를 출처에 연결하고",
+    "en": "Connect distributed information to its sources,",
+    "fixed": false
+  },
+  {
+    "id": "120",
+    "source": "업무에 쓰이는 답변을 검증합니다.",
+    "en": "and verify answers used in everyday work.",
+    "fixed": false
+  },
+  {
+    "id": "121",
+    "source": "DOCUMENTS / RAG / SOURCE GROUNDING",
+    "en": "DOCUMENTS / RAG / SOURCE GROUNDING",
+    "fixed": false
+  },
+  {
+    "id": "122",
+    "source": "업무와 에이전트",
+    "en": "Workflows & agents",
+    "fixed": false
+  },
+  {
+    "id": "123",
+    "source": "다단계 업무와 AI 에이전트.",
+    "en": "Multistep tasks and AI agents.",
+    "fixed": false
+  },
+  {
+    "id": "124",
+    "source": "실행 순서와 승인 조건을 연결하고",
+    "en": "Connect execution order and approval conditions,",
+    "fixed": false
+  },
+  {
+    "id": "125",
+    "source": "결과를 다시 확인할 수 있게 합니다.",
+    "en": "and make the results possible to review.",
+    "fixed": false
+  },
+  {
+    "id": "126",
+    "source": "AGENTS / ROUTING / EXECUTION",
+    "en": "AGENTS / ROUTING / EXECUTION",
+    "fixed": false
+  },
+  {
+    "id": "127",
+    "source": "현장과 데이터",
+    "en": "Field & data",
+    "fixed": false
+  },
+  {
+    "id": "128",
+    "source": "센서, 공공 데이터, 운영 로그.",
+    "en": "Sensors, public data, operational logs.",
+    "fixed": false
+  },
+  {
+    "id": "129",
+    "source": "데이터의 정합성과 이상 징후를 살피고",
+    "en": "Check data consistency and anomalies,",
+    "fixed": false
+  },
+  {
+    "id": "130",
+    "source": "현장의 판단으로 연결합니다.",
+    "en": "and turn them into informed field decisions.",
+    "fixed": false
+  },
+  {
+    "id": "131",
+    "source": "DATA CONSISTENCY / ANOMALY DETECTION",
+    "en": "DATA CONSISTENCY / ANOMALY DETECTION",
+    "fixed": false
+  },
+  {
+    "id": "132",
+    "source": "DIGITAL INTELLIGENCE. PHYSICAL IMPACT.",
+    "en": "DIGITAL INTELLIGENCE. PHYSICAL IMPACT.",
+    "fixed": false
+  },
+  {
+    "id": "133",
+    "source": "지능의 다음은,",
+    "en": "What comes after intelligence?",
+    "fixed": false
+  },
+  {
+    "id": "134",
+    "source": "현장의 실행입니다.",
+    "en": "Execution in the field.",
+    "fixed": false
+  },
+  {
+    "id": "135",
+    "source": "AI의 신뢰·실행 인프라를 스마트 건설과 Physical AI로 연결합니다.",
+    "en": "Connect AI reliability and execution infrastructure to Smart Construction and Physical AI.",
+    "fixed": false
+  },
+  {
+    "id": "136",
+    "source": "유성 AI 페이지에 사용한 입체 시각물",
+    "en": "Dimensional visualization on the U-SUNG AI page",
+    "fixed": false
+  },
+  {
+    "id": "137",
+    "source": "Physical AI — U-SUNG",
+    "en": "Physical AI — U-SUNG",
+    "fixed": true
+  },
+  {
+    "id": "138",
+    "source": "현장 인식, 판단 검증, 실제 실행. 유성의 현장 경험과 AI 기술을 연결하는 Physical AI 사업.",
+    "en": "Field perception, verified decisions and real execution. Physical AI connecting U-SUNG’s field experience with AI technology.",
+    "fixed": false
+  },
+  {
+    "id": "139",
+    "source": "배경 움직임 일시정지",
+    "en": "Pause background motion",
+    "fixed": false
+  },
+  {
+    "id": "140",
+    "source": "PAUSE MOTION",
+    "en": "PAUSE MOTION",
+    "fixed": false
+  },
+  {
+    "id": "141",
+    "source": "U-SUNG / PHYSICAL AI",
+    "en": "U-SUNG / PHYSICAL AI",
+    "fixed": true
+  },
+  {
+    "id": "142",
+    "source": "INTELLIGENCE.",
+    "en": "INTELLIGENCE.",
+    "fixed": false
+  },
+  {
+    "id": "143",
+    "source": "IN THE",
+    "en": "IN THE",
+    "fixed": false
+  },
+  {
+    "id": "144",
+    "source": "REAL WORLD.",
+    "en": "REAL WORLD.",
+    "fixed": false
+  },
+  {
+    "id": "145",
+    "source": "현장을 읽고, 판단을 확인하고,",
+    "en": "Read the field. Verify the decision.",
+    "fixed": false
+  },
+  {
+    "id": "146",
+    "source": "실제 움직임으로 연결합니다.",
+    "en": "Connect it to real-world action.",
+    "fixed": false
+  },
+  {
+    "id": "147",
+    "source": "PERCEPTION / VERIFICATION / ACTION",
+    "en": "PERCEPTION / VERIFICATION / ACTION",
+    "fixed": false
+  },
+  {
+    "id": "148",
+    "source": "REFERENCE FOOTAGE / DEXTERITY ↗",
+    "en": "REFERENCE FOOTAGE / DEXTERITY ↗",
+    "fixed": true
+  },
+  {
+    "id": "149",
+    "source": "01 / FROM DIGITAL TO PHYSICAL",
+    "en": "01 / FROM DIGITAL TO PHYSICAL",
+    "fixed": false
+  },
+  {
+    "id": "150",
+    "source": "INTELLIGENCE MEETS THE FIELD",
+    "en": "INTELLIGENCE MEETS THE FIELD",
+    "fixed": false
+  },
+  {
+    "id": "151",
+    "source": "현장을 아는 경험에.",
+    "en": "Experience that knows the field.",
+    "fixed": false
+  },
+  {
+    "id": "152",
+    "source": "스스로 판단하는 기술을.",
+    "en": "Technology that can reason.",
+    "fixed": false
+  },
+  {
+    "id": "153",
+    "source": "유성의 건설 경험과 AI 기술을 연결합니다.",
+    "en": "Connecting U-SUNG’s construction experience with AI technology.",
+    "fixed": false
+  },
+  {
+    "id": "154",
+    "source": "센서·비전·현장 시스템에서 얻은 데이터를 바탕으로 Physical AI의 적용 방향을 구체화합니다.",
+    "en": "Using data from sensors, vision and field systems to define practical applications for Physical AI.",
+    "fixed": false
+  },
+  {
+    "id": "155",
+    "source": "현장을 읽는 인식",
+    "en": "Perception that reads the field",
+    "fixed": false
+  },
+  {
+    "id": "156",
+    "source": "행동에 앞서는 검증",
+    "en": "Verification before action",
+    "fixed": false
+  },
+  {
+    "id": "157",
+    "source": "기록으로 연결되는 실행",
+    "en": "Execution connected through records",
+    "fixed": false
+  },
+  {
+    "id": "158",
+    "source": "02 / SEE. DECIDE. ACT.",
+    "en": "02 / SEE. DECIDE. ACT.",
+    "fixed": false
+  },
+  {
+    "id": "159",
+    "source": "THE PATH TO REAL-WORLD ACTION",
+    "en": "THE PATH TO REAL-WORLD ACTION",
+    "fixed": false
+  },
+  {
+    "id": "160",
+    "source": "THE FIELD.",
+    "en": "THE FIELD.",
+    "fixed": false
+  },
+  {
+    "id": "161",
+    "source": "CONNECTED.",
+    "en": "CONNECTED.",
+    "fixed": false
+  },
+  {
+    "id": "162",
+    "source": "현실의 변화가 데이터가 되고,",
+    "en": "Changes in the real world become data.",
+    "fixed": false
+  },
+  {
+    "id": "163",
+    "source": "검증된 판단이 실행으로 이어집니다.",
+    "en": "Verified decisions become action.",
+    "fixed": false
+  },
+  {
+    "id": "164",
+    "source": "01 / PERCEPTION",
+    "en": "01 / PERCEPTION",
+    "fixed": false
+  },
+  {
+    "id": "165",
+    "source": "SEE.",
+    "en": "SEE.",
+    "fixed": false
+  },
+  {
+    "id": "166",
+    "source": "센서와 비전으로",
+    "en": "Through sensors and vision,",
+    "fixed": false
+  },
+  {
+    "id": "167",
+    "source": "작업 환경을 읽습니다.",
+    "en": "read the working environment.",
+    "fixed": false
+  },
+  {
+    "id": "168",
+    "source": "02 / VERIFICATION",
+    "en": "02 / VERIFICATION",
+    "fixed": false
+  },
+  {
+    "id": "169",
+    "source": "DECIDE.",
+    "en": "DECIDE.",
+    "fixed": false
+  },
+  {
+    "id": "170",
+    "source": "판단 근거와 실행 조건을",
+    "en": "Check evidence and execution conditions",
+    "fixed": false
+  },
+  {
+    "id": "171",
+    "source": "행동에 앞서 확인합니다.",
+    "en": "before taking action.",
+    "fixed": false
+  },
+  {
+    "id": "172",
+    "source": "03 / EXECUTION",
+    "en": "03 / EXECUTION",
+    "fixed": false
+  },
+  {
+    "id": "173",
+    "source": "ACT.",
+    "en": "ACT.",
+    "fixed": false
+  },
+  {
+    "id": "174",
+    "source": "현장 시스템에 연결하고",
+    "en": "Connect to field systems,",
+    "fixed": false
+  },
+  {
+    "id": "175",
+    "source": "작업 결과를 다시 살핍니다.",
+    "en": "and review the results.",
+    "fixed": false
+  },
+  {
+    "id": "176",
+    "source": "현장 인식부터 결과 확인까지, 하나의 실행 흐름.",
+    "en": "One execution workflow, from field perception to result verification.",
+    "fixed": false
+  },
+  {
+    "id": "177",
+    "source": "03 / A RELIABILITY LAYER FOR THE FIELD",
+    "en": "03 / A RELIABILITY LAYER FOR THE FIELD",
+    "fixed": false
+  },
+  {
+    "id": "178",
+    "source": "ANY MACHINE. ONE CONNECTED WORKFLOW.",
+    "en": "ANY MACHINE. ONE CONNECTED WORKFLOW.",
+    "fixed": false
+  },
+  {
+    "id": "179",
+    "source": "로봇의 현장 인식과 공간 데이터를 시각화한 Field AI 레퍼런스",
+    "en": "Field AI reference visualizing robot perception and spatial data",
+    "fixed": false
+  },
+  {
+    "id": "180",
+    "source": "VISUAL REFERENCE / FIELD AI ↗",
+    "en": "VISUAL REFERENCE / FIELD AI ↗",
+    "fixed": true
+  },
+  {
+    "id": "181",
+    "source": "현실은 변합니다.",
+    "en": "The world changes.",
+    "fixed": false
+  },
+  {
+    "id": "182",
+    "source": "판단은 검증합니다.",
+    "en": "Decisions are verified.",
+    "fixed": false
+  },
+  {
+    "id": "183",
+    "source": "현장의 불확실성을 데이터로 읽고, AI의 판단에 실행 조건을 연결합니다. 특정 모델이나 장비에 종속되지 않는 신뢰·실행 계층을 적용합니다.",
+    "en": "Read field uncertainty through data and connect AI decisions to execution conditions. Apply a reliability and execution layer independent of any specific model or machine.",
+    "fixed": false
+  },
+  {
+    "id": "184",
+    "source": "스마트 건설 적용",
+    "en": "Smart Construction applications",
+    "fixed": false
+  },
+  {
+    "id": "185",
+    "source": "THE FIRST CONNECTION / SMART CONSTRUCTION",
+    "en": "THE FIRST CONNECTION / SMART CONSTRUCTION",
+    "fixed": false
+  },
+  {
+    "id": "186",
+    "source": "건설의 경험에서 출발하는 Physical AI.",
+    "en": "Physical AI, starting with construction experience.",
+    "fixed": false
+  },
+  {
+    "id": "187",
+    "source": "실제 현장의 과제를 PoC와 실증으로 구체화합니다.",
+    "en": "Turn real field challenges into PoCs and validation projects.",
+    "fixed": false
+  },
+  {
+    "id": "188",
+    "source": "REFERENCE FOOTAGE / FIELD AI ↗",
+    "en": "REFERENCE FOOTAGE / FIELD AI ↗",
+    "fixed": true
+  },
+  {
+    "id": "189",
+    "source": "유성 스마트 건설. 건설 현장의 경험과 디지털 기술을 연결합니다.",
+    "en": "U-SUNG Smart Construction. Connecting construction experience with digital technology.",
+    "fixed": false
+  },
+  {
+    "id": "190",
+    "source": "스마트 건설 — U-SUNG · Build Beyond",
+    "en": "Smart Construction — U-SUNG · Build Beyond",
+    "fixed": true
+  },
+  {
+    "id": "191",
+    "source": "스마트 건설 페이지 처음으로",
+    "en": "Back to the top of Smart Construction",
+    "fixed": false
+  },
+  {
+    "id": "192",
+    "source": "주요 메뉴",
+    "en": "Main navigation",
+    "fixed": false
+  },
+  {
+    "id": "193",
+    "source": "PROJECTS",
+    "en": "PROJECTS",
+    "fixed": false
+  },
+  {
+    "id": "194",
+    "source": "SYSTEM",
+    "en": "SYSTEM",
+    "fixed": false
+  },
+  {
+    "id": "195",
+    "source": "FUTURE",
+    "en": "FUTURE",
+    "fixed": false
+  },
+  {
+    "id": "196",
+    "source": "CONTACT",
+    "en": "CONTACT",
+    "fixed": false
+  },
+  {
+    "id": "197",
+    "source": "MENU",
+    "en": "MENU",
+    "fixed": false
+  },
+  {
+    "id": "198",
+    "source": "모바일 메뉴",
+    "en": "Mobile navigation",
+    "fixed": false
+  },
+  {
+    "id": "199",
+    "source": "영상 일시정지",
+    "en": "Pause video",
+    "fixed": false
+  },
+  {
+    "id": "200",
+    "source": "U-SUNG CONSTRUCTION",
+    "en": "U-SUNG CONSTRUCTION",
+    "fixed": false
+  },
+  {
+    "id": "201",
+    "source": "BEYOND.",
+    "en": "BEYOND.",
+    "fixed": false
+  },
+  {
+    "id": "202",
+    "source": "도시를 짓는 기술에서",
+    "en": "From the technology that builds cities",
+    "fixed": false
+  },
+  {
+    "id": "203",
+    "source": "도시를 움직이는 지능으로.",
+    "en": "to the intelligence that moves them.",
+    "fixed": false
+  },
+  {
+    "id": "204",
+    "source": "U-SUNG 소개 보기",
+    "en": "Discover U-SUNG",
+    "fixed": false
+  },
+  {
+    "id": "205",
+    "source": "EXPLORE",
+    "en": "EXPLORE",
+    "fixed": false
+  },
+  {
+    "id": "206",
+    "source": "SCROLL",
+    "en": "SCROLL",
+    "fixed": false
+  },
+  {
+    "id": "207",
+    "source": "01 / FOUNDATION",
+    "en": "01 / FOUNDATION",
+    "fixed": false
+  },
+  {
+    "id": "208",
+    "source": "우리는 구조물을 넘어",
+    "en": "Beyond structures, we build",
+    "fixed": false
+  },
+  {
+    "id": "209",
+    "source": "더 나은 실행 방식",
+    "en": "better ways",
+    "fixed": false
+  },
+  {
+    "id": "210",
+    "source": "을 건설합니다.",
+    "en": "of working.",
+    "fixed": false
+  },
+  {
+    "id": "211",
+    "source": "현장의 정밀함, 엔지니어링의 규율, 그리고 축적된 실행력을 하나의 건설 시스템으로 연결합니다.",
+    "en": "Connecting field precision, engineering discipline and accumulated expertise in one construction system.",
+    "fixed": false
+  },
+  {
+    "id": "212",
+    "source": "건설 역량",
+    "en": "Construction capabilities",
+    "fixed": false
+  },
+  {
+    "id": "213",
+    "source": "대형 교육 시설 건축 전경",
+    "en": "Exterior of a large educational building",
+    "fixed": false
+  },
+  {
+    "id": "214",
+    "source": "INSTITUTIONAL SCALE",
+    "en": "INSTITUTIONAL SCALE",
+    "fixed": false
+  },
+  {
+    "id": "215",
+    "source": "규모를",
+    "en": "Turning scale",
+    "fixed": false
+  },
+  {
+    "id": "216",
+    "source": "신뢰로 바꾸다.",
+    "en": "into trust.",
+    "fixed": false
+  },
+  {
+    "id": "217",
+    "source": "BUILDING",
+    "en": "BUILDING",
+    "fixed": false
+  },
+  {
+    "id": "218",
+    "source": "INFRASTRUCTURE",
+    "en": "INFRASTRUCTURE",
+    "fixed": false
+  },
+  {
+    "id": "219",
+    "source": "DELIVERY",
+    "en": "DELIVERY",
+    "fixed": false
+  },
+  {
+    "id": "220",
+    "source": "02 / THE U-SUNG SYSTEM",
+    "en": "02 / THE U-SUNG SYSTEM",
+    "fixed": true
+  },
+  {
+    "id": "221",
+    "source": "ONE SYSTEM.",
+    "en": "ONE SYSTEM.",
+    "fixed": false
+  },
+  {
+    "id": "222",
+    "source": "EVERY STAGE.",
+    "en": "EVERY STAGE.",
+    "fixed": false
+  },
+  {
+    "id": "223",
+    "source": "계획부터 현장, 데이터에서 운영까지. 분리된 공정을 하나의 책임 있는 흐름으로 통합합니다.",
+    "en": "From planning to the field, data to operations. Separate processes become one accountable workflow.",
+    "fixed": false
+  },
+  {
+    "id": "224",
+    "source": "복잡한 조건을 현장의 실행 순서로 바꿉니다.",
+    "en": "Turn complex conditions into a clear sequence of field work.",
+    "fixed": false
+  },
+  {
+    "id": "225",
+    "source": "시공 계획 · 공정 관리 · 품질 점검",
+    "en": "Construction planning · Schedule management · Quality checks",
+    "fixed": false
+  },
+  {
+    "id": "226",
+    "source": "계획, 인력, 장비의 접점을 맞추는 건설 실행 흐름을 제안합니다.",
+    "en": "A construction workflow that brings planning, people and equipment together.",
+    "fixed": false
+  },
+  {
+    "id": "227",
+    "source": "ENGINEER",
+    "en": "ENGINEER",
+    "fixed": false
+  },
+  {
+    "id": "228",
+    "source": "도면에서 현장까지, 같은 기준으로 연결합니다.",
+    "en": "Consistent standards, from drawings to the field.",
+    "fixed": false
+  },
+  {
+    "id": "229",
+    "source": "설계 조율 · BIM · 시공성 검토",
+    "en": "Design coordination · BIM · Constructability reviews",
+    "fixed": false
+  },
+  {
+    "id": "230",
+    "source": "디지털 모델과 현장 정보를 함께 검토해 공정 사이의 간섭과 변경을 일찍 발견하는 방향입니다.",
+    "en": "Review digital models and field information together to identify conflicts and changes early.",
+    "fixed": false
+  },
+  {
+    "id": "231",
+    "source": "INTEGRATE",
+    "en": "INTEGRATE",
+    "fixed": false
+  },
+  {
+    "id": "232",
+    "source": "사람·장비·데이터를 하나의 흐름으로.",
+    "en": "People, equipment and data in one workflow.",
+    "fixed": false
+  },
+  {
+    "id": "233",
+    "source": "공정 연계 · 데이터 기록 · 운영 인계",
+    "en": "Process integration · Data records · Operational handover",
+    "fixed": false
+  },
+  {
+    "id": "234",
+    "source": "분리된 작업 기록을 연결하고, 의사결정의 근거가 다음 단계까지 이어지도록 설계합니다.",
+    "en": "Connect separate work records and carry the evidence behind decisions into the next stage.",
+    "fixed": false
+  },
+  {
+    "id": "235",
+    "source": "ADVANCE",
+    "en": "ADVANCE",
+    "fixed": false
+  },
+  {
+    "id": "236",
+    "source": "새로운 기술은 실제 현장으로 증명합니다.",
+    "en": "Prove new technology in the field.",
+    "fixed": false
+  },
+  {
+    "id": "237",
+    "source": "현장 자동화 · 로보틱스 · Physical AI",
+    "en": "Field automation · Robotics · Physical AI",
+    "fixed": false
+  },
+  {
+    "id": "238",
+    "source": "실제 장비와 검증 가능한 결과를 중심으로 스마트 건설의 다음 가능성을 탐색합니다.",
+    "en": "Explore what comes next for Smart Construction through real equipment and verifiable results.",
+    "fixed": false
+  },
+  {
+    "id": "239",
+    "source": "대규모 시공 현장",
+    "en": "Large-scale construction site",
+    "fixed": false
+  },
+  {
+    "id": "240",
+    "source": "BUILT FOR COMPLEXITY",
+    "en": "BUILT FOR COMPLEXITY",
+    "fixed": false
+  },
+  {
+    "id": "241",
+    "source": "현장은 크고,",
+    "en": "The site is large.",
+    "fixed": false
+  },
+  {
+    "id": "242",
+    "source": "기준은 더 높아야 합니다.",
+    "en": "The standards must be higher.",
+    "fixed": false
+  },
+  {
+    "id": "243",
+    "source": "02A / ONE CONSTRUCTION LANGUAGE",
+    "en": "02A / ONE CONSTRUCTION LANGUAGE",
+    "fixed": false
+  },
+  {
+    "id": "244",
+    "source": "PROJECT SCALE · DELIVERY · FIELD INTELLIGENCE",
+    "en": "PROJECT SCALE · DELIVERY · FIELD INTELLIGENCE",
+    "fixed": false
+  },
+  {
+    "id": "245",
+    "source": "하나의 현장은",
+    "en": "One site moves",
+    "fixed": false
+  },
+  {
+    "id": "246",
+    "source": "하나의 언어",
+    "en": "with one",
+    "fixed": false
+  },
+  {
+    "id": "247",
+    "source": "로 움직입니다.",
+    "en": "shared language.",
+    "fixed": false
+  },
+  {
+    "id": "248",
+    "source": "이번 데모의 이미지 언어는 대형 건축의 스케일, 현장 실행의 신뢰, 실제 장비의 지능을 하나의 흐름으로 묶습니다.",
+    "en": "The imagery in this demo connects architectural scale, trusted field execution and intelligent equipment in one visual narrative.",
+    "fixed": false
+  },
+  {
+    "id": "249",
+    "source": "Suffolk 레퍼런스: 해안 인접 대형 건축 프로젝트",
+    "en": "Suffolk reference: a large coastal architectural project",
+    "fixed": false
+  },
+  {
+    "id": "250",
+    "source": "01 / BUILDING GRAMMAR",
+    "en": "01 / BUILDING GRAMMAR",
+    "fixed": false
+  },
+  {
+    "id": "251",
+    "source": "프로젝트의",
+    "en": "A project’s",
+    "fixed": false
+  },
+  {
+    "id": "252",
+    "source": "첫 인상",
+    "en": "first impression",
+    "fixed": false
+  },
+  {
+    "id": "253",
+    "source": "큰 이미지와 절제된 여백으로 시공의 규모를 먼저 보여줍니다.",
+    "en": "Large imagery and restrained space communicate the scale of construction.",
+    "fixed": false
+  },
+  {
+    "id": "254",
+    "source": "SUFFOLK · VISUAL REFERENCE",
+    "en": "SUFFOLK · VISUAL REFERENCE",
+    "fixed": true
+  },
+  {
+    "id": "255",
+    "source": "Turner 레퍼런스: 대형 건설 현장과 구조물",
+    "en": "Turner reference: a large construction site and structures",
+    "fixed": false
+  },
+  {
+    "id": "256",
+    "source": "02 / DELIVERY AT SCALE",
+    "en": "02 / DELIVERY AT SCALE",
+    "fixed": false
+  },
+  {
+    "id": "257",
+    "source": "복잡한 현장을",
+    "en": "Complex sites.",
+    "fixed": false
+  },
+  {
+    "id": "258",
+    "source": "끝까지",
+    "en": "Delivered.",
+    "fixed": false
+  },
+  {
+    "id": "259",
+    "source": "사람, 공정, 구조가 만나는 대형 현장의 책임감을 이어갑니다.",
+    "en": "The responsibility of large sites where people, processes and structures meet.",
+    "fixed": false
+  },
+  {
+    "id": "260",
+    "source": "TURNER · VISUAL REFERENCE",
+    "en": "TURNER · VISUAL REFERENCE",
+    "fixed": true
+  },
+  {
+    "id": "261",
+    "source": "Built Robotics 레퍼런스: 태양광 현장의 자율 파일 드라이버",
+    "en": "Built Robotics reference: an autonomous pile driver on a solar site",
+    "fixed": false
+  },
+  {
+    "id": "262",
+    "source": "03 / FIELD INTELLIGENCE",
+    "en": "03 / FIELD INTELLIGENCE",
+    "fixed": false
+  },
+  {
+    "id": "263",
+    "source": "실제 장비가",
+    "en": "Real equipment.",
+    "fixed": false
+  },
+  {
+    "id": "264",
+    "source": "답하는 미래",
+    "en": "A tangible future.",
+    "fixed": false
+  },
+  {
+    "id": "265",
+    "source": "Physical AI는 화면 속 개념이 아니라 현장 조건 안에서 작동해야 합니다.",
+    "en": "Physical AI must work under field conditions.",
+    "fixed": false
+  },
+  {
+    "id": "266",
+    "source": "BUILT ROBOTICS · VISUAL REFERENCE",
+    "en": "BUILT ROBOTICS · VISUAL REFERENCE",
+    "fixed": true
+  },
+  {
+    "id": "267",
+    "source": "세 출처의 실제 참고 이미지를 데모 자산으로 사용했습니다. U-SUNG의 실제 프로젝트·실적을 주장하는 섹션이 아닙니다.",
+    "en": "Reference imagery from three sources is used in this demo. This section does not represent U-SUNG’s completed projects or track record.",
+    "fixed": false
+  },
+  {
+    "id": "268",
+    "source": "03 / CAPABILITY",
+    "en": "03 / CAPABILITY",
+    "fixed": false
+  },
+  {
+    "id": "269",
+    "source": "FROM GROUND",
+    "en": "FROM GROUND",
+    "fixed": false
+  },
+  {
+    "id": "270",
+    "source": "TO SKYLINE.",
+    "en": "TO SKYLINE.",
+    "fixed": false
+  },
+  {
+    "id": "271",
+    "source": "건축에서 현장의 지능까지.",
+    "en": "From architecture to field intelligence.",
+    "fixed": false
+  },
+  {
+    "id": "272",
+    "source": "프로젝트 분야",
+    "en": "Project categories",
+    "fixed": false
+  },
+  {
+    "id": "273",
+    "source": "ALL",
+    "en": "ALL",
+    "fixed": false
+  },
+  {
+    "id": "274",
+    "source": "TECHNOLOGY",
+    "en": "TECHNOLOGY",
+    "fixed": false
+  },
+  {
+    "id": "275",
+    "source": "3개의 레퍼런스 프로젝트",
+    "en": "3 reference projects",
+    "fixed": false
+  },
+  {
+    "id": "276",
+    "source": "해안 인접 대형 건축 프로젝트",
+    "en": "Large coastal architectural project",
+    "fixed": false
+  },
+  {
+    "id": "277",
+    "source": "COMMERCIAL",
+    "en": "COMMERCIAL",
+    "fixed": false
+  },
+  {
+    "id": "278",
+    "source": "복합 조건을 조율하는 통합 실행",
+    "en": "Integrated execution for complex conditions",
+    "fixed": false
+  },
+  {
+    "id": "279",
+    "source": "Turner 레퍼런스: 자연광과 색채를 활용한 실내 공간",
+    "en": "Turner reference: an interior using natural light and color",
+    "fixed": false
+  },
+  {
+    "id": "280",
+    "source": "HUMAN SPACES",
+    "en": "HUMAN SPACES",
+    "fixed": false
+  },
+  {
+    "id": "281",
+    "source": "사람의 일상을 위한 공간의 완성도",
+    "en": "Spaces shaped around everyday life",
+    "fixed": false
+  },
+  {
+    "id": "282",
+    "source": "건설 기술 협업 현장",
+    "en": "Construction technology collaboration",
+    "fixed": false
+  },
+  {
+    "id": "283",
+    "source": "ENGINEERING",
+    "en": "ENGINEERING",
+    "fixed": false
+  },
+  {
+    "id": "284",
+    "source": "현장과 기술을 연결하는 실행 설계",
+    "en": "Execution design connecting the field and technology",
+    "fixed": false
+  },
+  {
+    "id": "285",
+    "source": "석양 속 자율 건설 장비",
+    "en": "Autonomous construction equipment at sunset",
+    "fixed": false
+  },
+  {
+    "id": "286",
+    "source": "태양광 현장에서 작업하는 자율 파일 드라이버",
+    "en": "Autonomous pile driver working on a solar site",
+    "fixed": false
+  },
+  {
+    "id": "287",
+    "source": "건설 현장을 자율 주행하는 굴착기",
+    "en": "Excavator navigating a construction site autonomously",
+    "fixed": false
+  },
+  {
+    "id": "288",
+    "source": "FUTURE CONCEPT",
+    "en": "FUTURE CONCEPT",
+    "fixed": false
+  },
+  {
+    "id": "289",
+    "source": "PHYSICAL AI",
+    "en": "PHYSICAL AI",
+    "fixed": true
+  },
+  {
+    "id": "290",
+    "source": "MEETS THE FIELD.",
+    "en": "MEETS THE FIELD.",
+    "fixed": false
+  },
+  {
+    "id": "291",
+    "source": "01 / SEE",
+    "en": "01 / SEE",
+    "fixed": false
+  },
+  {
+    "id": "292",
+    "source": "현장을 읽는",
+    "en": "Machine intelligence",
+    "fixed": false
+  },
+  {
+    "id": "293",
+    "source": "기계 지능",
+    "en": "that reads the field",
+    "fixed": false
+  },
+  {
+    "id": "294",
+    "source": "센서와 비전이 실제 작업 환경을 인식하고, 데이터가 다음 행동의 근거가 됩니다.",
+    "en": "Sensors and vision perceive the real working environment. Data becomes the evidence for the next action.",
+    "fixed": false
+  },
+  {
+    "id": "295",
+    "source": "02 / DECIDE",
+    "en": "02 / DECIDE",
+    "fixed": false
+  },
+  {
+    "id": "296",
+    "source": "판단을 검증하는",
+    "en": "A reliability layer",
+    "fixed": false
+  },
+  {
+    "id": "297",
+    "source": "신뢰 레이어",
+    "en": "that verifies decisions",
+    "fixed": false
+  },
+  {
+    "id": "298",
+    "source": "경로·증거·실패 복구를 추적하는 OmarAGI 신뢰 레이어를 현장 실행에 연결하는 미래 방향을 제안합니다.",
+    "en": "A future direction connecting OmarAGI’s reliability layer to field execution, with traceable routes, evidence and failure recovery.",
+    "fixed": false
+  },
+  {
+    "id": "299",
+    "source": "03 / ACT",
+    "en": "03 / ACT",
+    "fixed": false
+  },
+  {
+    "id": "300",
+    "source": "실제 장비로",
+    "en": "Execution realized",
+    "fixed": false
+  },
+  {
+    "id": "301",
+    "source": "완성되는 실행",
+    "en": "through real equipment",
+    "fixed": false
+  },
+  {
+    "id": "302",
+    "source": "계획이 기계의 정밀한 동작으로 이어지고, 결과는 다시 운영 데이터로 축적됩니다.",
+    "en": "Plans become precise machine actions. Results return as operational data.",
+    "fixed": false
+  },
+  {
+    "id": "303",
+    "source": "건설 현장에서 활용되는 로봇 기술",
+    "en": "Robotics used on construction sites",
+    "fixed": false
+  },
+  {
+    "id": "304",
+    "source": "REAL-WORLD TECHNOLOGY",
+    "en": "REAL-WORLD TECHNOLOGY",
+    "fixed": false
+  },
+  {
+    "id": "305",
+    "source": "SMART CONSTRUCTION",
+    "en": "SMART CONSTRUCTION",
+    "fixed": false
+  },
+  {
+    "id": "306",
+    "source": "기술은 보여주기 위한 것이 아니라,",
+    "en": "Technology exists",
+    "fixed": false
+  },
+  {
+    "id": "307",
+    "source": "현장을 더 정확하게 움직이기 위해 존재합니다.",
+    "en": "to move the field with greater precision.",
+    "fixed": false
+  },
+  {
+    "id": "308",
+    "source": "WATCH THE FIELD FILM",
+    "en": "WATCH THE FIELD FILM",
+    "fixed": false
+  },
+  {
+    "id": "309",
+    "source": "새벽의 대규모 스마트 건설 현장",
+    "en": "Large smart construction site at dawn",
+    "fixed": false
+  },
+  {
+    "id": "310",
+    "source": "THE NEXT SITE STARTS HERE",
+    "en": "THE NEXT SITE STARTS HERE",
+    "fixed": false
+  },
+  {
+    "id": "311",
+    "source": "LET'S BUILD",
+    "en": "LET'S BUILD",
+    "fixed": false
+  },
+  {
+    "id": "312",
+    "source": "WHAT'S NEXT.",
+    "en": "WHAT'S NEXT.",
+    "fixed": false
+  },
+  {
+    "id": "313",
+    "source": "START A CONVERSATION",
+    "en": "START A CONVERSATION",
+    "fixed": false
+  },
+  {
+    "id": "314",
+    "source": "프로젝트 닫기",
+    "en": "Close project",
+    "fixed": false
+  },
+  {
+    "id": "315",
+    "source": "CLOSE ×",
+    "en": "CLOSE ×",
+    "fixed": false
+  },
+  {
+    "id": "316",
+    "source": "EXPLORE REFERENCE ↗",
+    "en": "EXPLORE REFERENCE ↗",
+    "fixed": false
+  },
+  {
+    "id": "317",
+    "source": "영상 닫기",
+    "en": "Close video",
+    "fixed": false
+  },
+  {
+    "id": "318",
+    "source": "PHYSICAL AI. REAL FIELD.",
+    "en": "PHYSICAL AI. REAL FIELD.",
+    "fixed": false
+  },
+  {
+    "id": "319",
+    "source": "영상이 재생되지 않으면 YouTube에서 보기 ↗",
+    "en": "If the video does not play, watch on YouTube ↗",
+    "fixed": false
+  },
+  {
+    "id": "320",
+    "source": "문의 닫기",
+    "en": "Close inquiry",
+    "fixed": false
+  },
+  {
+    "id": "321",
+    "source": "START SOMETHING THAT MATTERS",
+    "en": "START SOMETHING THAT MATTERS",
+    "fixed": false
+  },
+  {
+    "id": "322",
+    "source": "다음 현장을",
+    "en": "Imagine the next site.",
+    "fixed": false
+  },
+  {
+    "id": "323",
+    "source": "함께 그려봅니다.",
+    "en": "Together.",
+    "fixed": false
+  },
+  {
+    "id": "324",
+    "source": "이름 / 회사",
+    "en": "Name / Company",
+    "fixed": false
+  },
+  {
+    "id": "325",
+    "source": "담당자 또는 회사명",
+    "en": "Contact person or company name",
+    "fixed": false
+  },
+  {
+    "id": "326",
+    "source": "이메일",
+    "en": "Email",
+    "fixed": false
+  },
+  {
+    "id": "327",
+    "source": "name@company.com",
+    "en": "name@company.com",
+    "fixed": true
+  },
+  {
+    "id": "328",
+    "source": "관심 분야",
+    "en": "Area of interest",
+    "fixed": false
+  },
+  {
+    "id": "329",
+    "source": "건축 · 엔지니어링",
+    "en": "Architecture · Engineering",
+    "fixed": false
+  },
+  {
+    "id": "330",
+    "source": "스마트 건설 · Physical AI",
+    "en": "Smart Construction · Physical AI",
+    "fixed": false
+  },
+  {
+    "id": "331",
+    "source": "기술 협력",
+    "en": "Technology partnership",
+    "fixed": false
+  },
+  {
+    "id": "332",
+    "source": "프로젝트 이야기",
+    "en": "Your project",
+    "fixed": false
+  },
+  {
+    "id": "333",
+    "source": "어떤 현장을 준비하고 계신가요?",
+    "en": "What kind of site are you preparing?",
+    "fixed": false
+  },
+  {
+    "id": "334",
+    "source": "브리프 다운로드",
+    "en": "Download brief",
+    "fixed": false
+  },
+  {
+    "id": "335",
+    "source": "데모에서는 입력 내용을 파일로만 내려받습니다. 서버로 전송하지 않습니다.",
+    "en": "This demo downloads your input as a file. It is not sent to a server.",
+    "fixed": false
+  },
+  {
+    "id": "336",
+    "source": "CONSTRUCTION · ENGINEERING · PHYSICAL AI",
+    "en": "CONSTRUCTION · ENGINEERING · PHYSICAL AI",
+    "fixed": false
+  },
+  {
+    "id": "337",
+    "source": "VISUAL DEMO · REFERENCE IMAGERY",
+    "en": "VISUAL DEMO · REFERENCE IMAGERY",
+    "fixed": false
+  },
+  {
+    "id": "338",
+    "source": "© 2026 U-SUNG DEMO",
+    "en": "© 2026 U-SUNG DEMO",
+    "fixed": true
+  },
+  {
+    "id": "339",
+    "source": "Language",
+    "en": "Language",
+    "fixed": false
+  },
+  {
+    "id": "340",
+    "source": "Choose your language",
+    "en": "Choose your language",
+    "fixed": false
+  },
+  {
+    "id": "341",
+    "source": "Search languages",
+    "en": "Search languages",
+    "fixed": false
+  },
+  {
+    "id": "342",
+    "source": "Close language selector",
+    "en": "Close language selector",
+    "fixed": false
+  },
+  {
+    "id": "343",
+    "source": "No languages found",
+    "en": "No languages found",
+    "fixed": false
+  },
+  {
+    "id": "344",
+    "source": "배경 움직임 재생",
+    "en": "Play background motion",
+    "fixed": false
+  },
+  {
+    "id": "345",
+    "source": "PLAY MOTION",
+    "en": "PLAY MOTION",
+    "fixed": false
+  },
+  {
+    "id": "346",
+    "source": "영상 재생",
+    "en": "Play video",
+    "fixed": false
+  },
+  {
+    "id": "347",
+    "source": "동작 줄이기 설정 적용 중",
+    "en": "Reduced motion is enabled",
+    "fixed": false
+  },
+  {
+    "id": "348",
+    "source": "{count}개의 레퍼런스 프로젝트",
+    "en": "{count} reference projects",
+    "fixed": false
+  },
+  {
+    "id": "349",
+    "source": "대형 해안 건축의 수평적 스케일과 재료감을 보여주는 레퍼런스입니다. U-SUNG의 실제 시공 실적이 아닌, 이번 데모의 프로젝트 표현 방향입니다.",
+    "en": "A reference showing the horizontal scale and materials of large coastal architecture. It illustrates this demo’s visual direction and is not a completed U-SUNG project.",
+    "fixed": false
+  },
+  {
+    "id": "350",
+    "source": "자연광, 색채, 사용자의 동선이 만나는 실내 공간. 건물의 규모뿐 아니라 공간 안에서의 경험을 보여주는 Turner 이미지 레퍼런스입니다.",
+    "en": "An interior where natural light, color and the movement of people meet. This Turner reference illustrates the experience within a space as well as the scale of a building.",
+    "fixed": false
+  },
+  {
+    "id": "351",
+    "source": "디지털 도구와 실제 현장의 연결을 표현합니다. 기술 단독의 이미지가 아니라 사람과 협업, 현장 계획이 함께 보이는 방향을 선택했습니다.",
+    "en": "A connection between digital tools and real field work, bringing people, collaboration and site planning into view.",
+    "fixed": false
+  },
+  {
+    "id": "352",
+    "source": "로컬 데모에서 작성한 브리프입니다. 전송되지 않았습니다.",
+    "en": "This brief was created in the local demo. It has not been sent.",
+    "fixed": false
+  },
+  {
+    "id": "353",
+    "source": "브리프 파일을 만들었습니다. 외부로 전송하거나 이 브라우저에 저장하지 않았습니다.",
+    "en": "Your brief file is ready. It has not been sent or stored in this browser.",
+    "fixed": false
+  },
+  {
+    "id": "354",
+    "source": "COASTAL ARCHITECTURE",
+    "en": "COASTAL ARCHITECTURE",
+    "fixed": false
+  },
+  {
+    "id": "355",
+    "source": "SPACES FOR PEOPLE",
+    "en": "SPACES FOR PEOPLE",
+    "fixed": false
+  },
+  {
+    "id": "356",
+    "source": "CONNECTED CONSTRUCTION",
+    "en": "CONNECTED CONSTRUCTION",
+    "fixed": false
+  },
+  {
+    "id": "357",
+    "source": "U-SUNG — PROJECT BRIEF",
+    "en": "U-SUNG — PROJECT BRIEF",
+    "fixed": true
+  },
+  {
+    "id": "358",
+    "source": "Built Robotics — RPD 35 field film",
+    "en": "Built Robotics — RPD 35 field film",
+    "fixed": false
+  }
+]
