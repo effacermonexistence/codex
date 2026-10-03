@@ -22,7 +22,7 @@ Shared corporate navigation appears on all four routes. `src/pages.mjs` holds th
 
 ## Existing site preservation
 
-`baseline/` preserves the HTML, stylesheet, and script retrieved from the company’s production site on 2026-10-03. `baseline/assets.json` records the original media hashes. Existing construction imagery retains the reference labels and source links from the original page; it is not used to claim new company projects. New corporate illustrations are CSS artwork.
+`baseline/` preserves the HTML, stylesheet, and script retrieved from the company’s production site on 2026-10-03. `baseline/assets.json` records the original media hashes. Existing construction imagery retains the reference labels and source links from the original page; it is not used to claim new company projects. The corporate home uses full-frame construction video. The AI visual is an animated, locally rendered Canvas point sculpture. Physical AI uses the existing field imagery with keyboard-accessible phase tabs. Shared typography, cream/black surfaces and orange accents follow the original construction experience.
 
 The original construction contact dialog retains its brief-download behavior. The new corporate contact links open an email to the company’s published address.
 
