@@ -1035,9 +1035,15 @@ private func interactionSelfTest() throws {
     var env = ProcessInfo.processInfo.environment; env["OS1_ACTIVITY_FILE"] = activityURL.path
     process.environment = env
     try process.run()
-    var phases: [RuntimeActivity.Phase] = []
+    final class Phases: @unchecked Sendable {
+        let lock = NSLock()
+        var values: [RuntimeActivity.Phase] = []
+        func append(_ phase: RuntimeActivity.Phase) { lock.lock(); values.append(phase); lock.unlock() }
+        func read() -> [RuntimeActivity.Phase] { lock.lock(); defer { lock.unlock() }; return values }
+    }
+    let phases = Phases()
     OS1Runner.observeActivity(process, at: activityURL) { phases.append($0.phase) }
-    try check(process.terminationStatus == 0 && phases == [.source, .executing, .verifying], "real child-process activity observation")
+    try check(process.terminationStatus == 0 && phases.read() == [.source, .executing, .verifying], "real child-process activity observation")
 }
 
 private enum ComposerReturnAction: Equatable {
@@ -4941,16 +4947,23 @@ private enum OS1Runner {
         process.standardError = FileHandle.nullDevice
         try? process.run()
     }
-    static func observeActivity(_ process: Process, at url: URL, onActivity: (RuntimeActivity) -> Void) {
-        var lastActivity: RuntimeActivity?
-        func readLatest() {
-            if let data = try? Data(contentsOf: url), data.count <= 150_000,
-               let activity = try? JSONDecoder().decode(RuntimeActivity.self, from: data), activity != lastActivity {
-                lastActivity = activity; onActivity(activity)
+    static func observeActivity(_ process: Process, at url: URL, onActivity: @escaping @Sendable (RuntimeActivity) -> Void) {
+        let observer = RuntimeActivityObserver(url: url, receive: onActivity)
+        if observer.start() {
+            process.waitUntilExit()
+            observer.finish()
+        } else {
+            // An unavailable filesystem event source must not hide public output.
+            var lastActivity: RuntimeActivity?
+            func readLatest() {
+                if let data = try? Data(contentsOf: url), data.count <= 150_000,
+                   let activity = try? JSONDecoder().decode(RuntimeActivity.self, from: data), activity != lastActivity {
+                    lastActivity = activity; onActivity(activity)
+                }
             }
+            while process.isRunning { readLatest(); Thread.sleep(forTimeInterval: 0.1) }
+            process.waitUntilExit(); readLatest()
         }
-        while process.isRunning { readLatest(); Thread.sleep(forTimeInterval: 0.1) }
-        process.waitUntilExit(); readLatest()
     }
     static func run(
         workspace: String,
@@ -6689,6 +6702,7 @@ private final class SessionStore: ObservableObject {
                     { [weak self] activity in
                         Task { @MainActor in
                             guard let self, self.activeRuns[submission.sessionID]?.submissionID == submission.id else { return }
+                            ActivityDisplayTiming.receive(session: submission.sessionID, submission: submission.id, activity: activity)
                             self.activeRuns[submission.sessionID]?.activity = activity
                             self.activeRuns[submission.sessionID]?.provider = activity.provider.flatMap(ProviderChoice.init(rawValue:))
                             self.promoteQueuedCorrections(submission.sessionID)
@@ -9738,6 +9752,7 @@ private struct OS1DesktopApp: App {
                 try routeFanoutDetailsSelfTest()
                 try taskContextSelfTest()
                 try interactionSelfTest()
+                try transcriptLatencySelfTest()
                 try railSelectionSelfTest()
                 try sidebarSynchronizationSelfTest()
                 try backendRecoverySelfTest()
@@ -12589,6 +12604,38 @@ private func timelineAttributedDocument(
     return document.copy() as! NSAttributedString
 }
 
+private func transcriptLatencySelfTest() throws {
+    func check(_ ok: Bool, _ why: String) throws { if !ok { throw RunnerError.message("Transcript latency: " + why) } }
+    let messages = (0..<100).map { i in ChatMessage(role: .assistant,
+        text: "## History \(i)\n" + String(repeating: "Unchanged **native** text.\n", count: 40)) }
+    let session = UUID(), cache = TranscriptRenderCache()
+    var input = TranscriptRenderInput(sessionID: session, messages: messages, queued: [], isRunning: true, workspace: "/tmp")
+    var maxMS = 0.0
+    var originalPrefix: NSAttributedString?
+    for i in 0..<40 {
+        input.publicProgress = "## Native stream\n" + String(repeating: "unchanged public delta \(i)\n", count: i + 1)
+        let start = Date(), parts = cache.parts(input, expanded: [])
+        if i == 0 { originalPrefix = parts.prefix }
+        else {
+            try check(!parts.rebuilt && parts.prefix === originalPrefix, "history reparsed on live delta")
+            maxMS = max(maxMS, Date().timeIntervalSince(start) * 1000)
+        }
+        let joined = NSMutableAttributedString(attributedString: parts.prefix); joined.append(parts.tail)
+        let reference = timelineAttributedDocument(messages: messages, queuedSubmissions: [], isRunning: true,
+            workspace: "/tmp", publicProgress: input.publicProgress)
+        try check(joined.string == reference.string, "cached suffix changed transcript content")
+        try check(joined.attribute(.os1TimelineRole, at: joined.length - 2, effectiveRange: nil) as? String == "assistant", "suffix lost role")
+        try check(joined.string.contains("아직 검증되지 않은 출력"), "preview mislabeled as adopted")
+    }
+    try check(cache.prefixBuildCount == 1, "100-message history not cached")
+    _ = cache.parts(input, expanded: ["changed-code-disclosure"])
+    try check(cache.prefixBuildCount == 2, "expanded state not in cache identity")
+    input = TranscriptRenderInput(sessionID: session, messages: messages, queued: [], isRunning: false, workspace: "/tmp")
+    let finished = cache.parts(input, expanded: [])
+    try check(finished.rebuilt && finished.tail.length == 0, "pending suffix survived completion")
+    print("OS-1 transcript relay: 100-message history rendered once / 40 deltas; max warm suffix \(String(format: "%.2f", maxMS)) ms; content/role/pending/expansion/final boundaries OK")
+}
+
 private func completeTranscriptText(_ messages: [ChatMessage]) -> String {
     messages.map { message in
         let title = message.role == .user ? "USER" : message.role == .receipt ? "실행 기록 (정확성 보증 아님)" : providerDisplayName(message.provider, surface: message.executionSurface)
@@ -12611,6 +12658,8 @@ private final class ContinuousTranscriptTextView: NSTextView {
     override func performDragOperation(_ sender: any NSDraggingInfo) -> Bool { false }
 
     var completeTranscript = ""
+    var progressSession: UUID?
+    var progressText: String?
 
     override func menu(for event: NSEvent) -> NSMenu? {
         let menu = super.menu(for: event) ?? NSMenu()
@@ -12636,6 +12685,7 @@ private final class ContinuousTranscriptTextView: NSTextView {
     override func draw(_ dirtyRect: NSRect) {
         drawMessageBackgrounds(in: dirtyRect)
         super.draw(dirtyRect)
+        if let progressSession { ActivityDisplayTiming.didDraw(session: progressSession, text: progressText) }
     }
 
     override func copy(_ sender: Any?) {
@@ -12763,6 +12813,29 @@ private struct TranscriptRenderInput: Equatable {
     var waitingReason: String? = nil
 }
 
+/// Immutable history is keyed by all render-relevant input, not by time or
+/// session name. Only the live suffix changes on native text deltas.
+private final class TranscriptRenderCache {
+    private var input: TranscriptRenderInput?
+    private var expanded = Set<String>()
+    private var prefix = NSAttributedString(string: "")
+    private(set) var prefixBuildCount = 0
+
+    func parts(_ value: TranscriptRenderInput, expanded: Set<String>) -> (prefix: NSAttributedString, tail: NSAttributedString, rebuilt: Bool) {
+        var stable = value; stable.publicProgress = nil
+        let rebuilt = input != stable || self.expanded != expanded
+        if rebuilt {
+            prefix = timelineAttributedDocument(messages: value.messages, queuedSubmissions: value.queued,
+                isRunning: value.isRunning, workspace: value.workspace, expanded: expanded, waitingReason: value.waitingReason)
+            input = stable; self.expanded = expanded; prefixBuildCount += 1
+        }
+        let tail = timelineAttributedDocument(messages: [], queuedSubmissions: [], isRunning: value.isRunning,
+            workspace: value.workspace, publicProgress: value.publicProgress)
+        return (prefix, tail, rebuilt)
+    }
+    func invalidate() { input = nil }
+}
+
 private final class TranscriptClipView: NSClipView {
     override func scroll(to newOrigin: NSPoint) {
         super.scroll(to: newOrigin)
@@ -12789,6 +12862,7 @@ private struct ContinuousTranscriptView: NSViewRepresentable {
         var expanded = Set<String>()
         var content: ContinuousTranscriptView?
         var lastInput: TranscriptRenderInput?
+        let renderCache = TranscriptRenderCache()
 
         func textView(_ textView: NSTextView, clickedOnLink link: Any, at charIndex: Int) -> Bool {
             guard let url = link as? URL, url.scheme == "os1-detail", let content else { return false }
@@ -12800,6 +12874,7 @@ private struct ContinuousTranscriptView: NSViewRepresentable {
                 isRunning: content.isRunning, workspace: content.workspace, expanded: expanded, publicProgress: content.publicProgress,
                 waitingReason: content.waitingReason)
             textView.textStorage?.setAttributedString(document)
+            renderCache.invalidate(); lastInput = nil
             textView.needsDisplay = true
             if let origin { scroll?.contentView.scroll(to: origin) }
             return true
@@ -12869,29 +12944,33 @@ private struct ContinuousTranscriptView: NSViewRepresentable {
         // attributed strings would rewrite the text storage on every keystroke.
         guard context.coordinator.lastInput != input else { return }
         context.coordinator.lastInput = input
-        textView.completeTranscript = completeTranscriptText(messages)
-        let document = timelineAttributedDocument(
-            messages: messages,
-            queuedSubmissions: queuedSubmissions,
-            isRunning: isRunning,
-            workspace: workspace,
-            expanded: context.coordinator.expanded,
-            publicProgress: publicProgress,
-            waitingReason: waitingReason
-        )
-        guard !textView.attributedString().isEqual(to: document) else { return }
-
+        let renderStarted = Date()
+        let parts = context.coordinator.renderCache.parts(input, expanded: context.coordinator.expanded)
+        let rebuildBaseline = parts.rebuilt
+        if rebuildBaseline { textView.completeTranscript = completeTranscriptText(messages) }
+        let tail = parts.tail
+        let prefixLength = parts.prefix.length
+        let documentLength = prefixLength + tail.length
         let selection = textView.selectedRange()
         let distanceFromBottom = max(0, textView.bounds.height - scrollView.contentView.bounds.maxY)
         let firstMessages = !messages.isEmpty && (!context.coordinator.hasRenderedMessages || changingSession)
         let shouldFollowBottom = !context.coordinator.hasRendered || changingSession || firstMessages || distanceFromBottom < 80
-        textView.textStorage?.setAttributedString(document)
+        if rebuildBaseline || (textView.textStorage?.length ?? 0) < prefixLength {
+            let document = NSMutableAttributedString(attributedString: parts.prefix)
+            document.append(tail)
+            textView.textStorage?.setAttributedString(document)
+        } else if let storage = textView.textStorage {
+            storage.replaceCharacters(in: NSRange(location: prefixLength, length: storage.length - prefixLength), with: tail)
+        }
+        textView.progressSession = isRunning ? sessionID : nil
+        textView.progressText = publicProgress
         textView.needsDisplay = true
         if !changingSession, selection.location != NSNotFound {
-            let boundedLocation = min(selection.location, document.length)
-            let boundedLength = min(selection.length, document.length - boundedLocation)
+            let boundedLocation = min(selection.location, documentLength)
+            let boundedLength = min(selection.length, documentLength - boundedLocation)
             textView.setSelectedRange(NSRange(location: boundedLocation, length: boundedLength))
         }
+        ActivityDisplayTiming.applied(session: sessionID, text: publicProgress, started: renderStarted)
         context.coordinator.renderedSessionID = sessionID
         context.coordinator.hasRendered = true
         context.coordinator.hasRenderedMessages = !messages.isEmpty

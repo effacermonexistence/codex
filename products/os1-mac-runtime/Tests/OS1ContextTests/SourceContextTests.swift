@@ -169,6 +169,7 @@ final class SourceContextTests {
         try runWebsiteDeliveryRelevanceFixtures()
         try runReadOnlyLookupFixtures()
         try runBrowserCheckoutFixtures()
+        try runRuntimeActivityObserverFixtures()
         let taskRoot = FileManager.default.temporaryDirectory.appendingPathComponent("os1-task-context-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: taskRoot, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: taskRoot) }
@@ -427,16 +428,17 @@ final class SourceContextTests {
             XCTAssertTrue(!claude.contains("never less coverage") && claude.contains("do not pad")
                           && !claude.contains("meaningful headings") && claude.contains("JSON stages/depends_on"))
         }
-        // Build 289: only a deep explanation of code gets the cross-family
-        // review (measured on R3/H6); short answers and non-code questions keep
-        // the single answer that already held both references.
+        // Build 309: ordinary code explanations keep one native execution.
+        // The build 289 measured cross-family review is still available when
+        // explicitly requested, not silently added to the transport path.
         for deepCode in ["OS-1 셀프 업데이트가 스테이징부터 설치까지 어떤 순서로 도는지, 어디서 막힐 수 있는지 코드 기준으로 설명해봐. 파일 수정은 하지 마.",
                          "OS-1에서 백엔드 답변이 서버 검증·전달 단계에서 실패하면 사용자한테 어떻게 보이고 어떻게 복구되는지 코드 기준으로 설명해봐. 파일 수정은 하지 마.",
                          "OS-1 셀프 업데이트가 어떤 순서로 도는지 코드 기준으로 설명해봐.",
                          "products/os1-mac-runtime/Sources/OS1/Fleet.swift 에서 작업이 어떻게 배정되는지 설명해줘.",
                          "Explain how the self-update code stages and installs a build.",
                          "runTask 함수가 리뷰 단계를 어떻게 붙이는지 설명해봐.", "worker.py 가 검증을 어떻게 하는지 설명해봐."] {
-            precondition(ReviewPass.applies(request: deepCode), deepCode)
+            precondition(!ReviewPass.applies(request: deepCode), "Unrequested paid review: " + deepCode)
+            precondition(ReviewPass.applies(request: deepCode + " 교차 검토해."), deepCode)
         }
         for single in ["products/os1-mac-runtime/Sources/OS1Context/ABCDCarryPolicy.swift 의 certify 함수가 carry 인증서를 발급하는 조건을 짧게 설명해줘.",
                        "OS-1 레일에서 ChatGPT 타일 고르고 요청 보내면 실제로 어떻게 처리돼? 코드 기준으로 짧게 설명해. 파일 수정은 하지 마.",

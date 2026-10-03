@@ -26,6 +26,13 @@ enum AttemptLatencyTrace {
         }
     }
 
+    static func markOnce(_ name: String, at now: Date = Date()) {
+        lock.withLock {
+            guard let started, marks.count < 64, !marks.contains(where: { $0.name == name }) else { return }
+            marks.append((name, now.timeIntervalSince(started)))
+        }
+    }
+
     /// Returns the marks of the attempt that began last and clears them.
     static func take() -> [(name: String, seconds: TimeInterval)]? {
         lock.withLock {

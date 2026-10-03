@@ -1,7 +1,7 @@
 import Foundation
 
-/// A second model checks a finished code explanation against the source and
-/// returns the corrected answer.
+/// An explicitly requested second model checks a finished code explanation
+/// against the source. Ordinary routing keeps one native provider answer.
 ///
 /// Measured 2026-10-01 (blind pairwise judging, Codex and Claude judge
 /// families, both orders): on deep code-flow questions ("…어떤 순서로 도는지,
@@ -14,6 +14,13 @@ import Foundation
 /// single execution: there the single answer already held both references.
 public enum ReviewPass {
     public static func applies(request: String) -> Bool {
+        // A second paid provider turn is not output transport. Only an explicit
+        // cross-model review request authorizes it; ordinary code explanations
+        // keep their native answer and one provider call.
+        let review = request.precomposedStringWithCanonicalMapping.lowercased()
+        guard !["교차 검토하지", "교차검토하지", "교차 검증하지", "교차검증하지", "do not cross", "don't cross", "without review"].contains(where: review.contains) else { return false }
+        guard ["교차 검토", "교차검토", "교차 검증", "교차검증", "cross-check", "cross check",
+               "cross-model review", "다른 모델로 검토", "claude로 검토", "클로드로 검토"].contains(where: review.contains) else { return false }
         guard TaskContext.ObjectiveKind.classify(request) == .explain,
               !HumanOutputContract.wantsBrevity(request) else { return false }
         let text = request.precomposedStringWithCanonicalMapping.lowercased()

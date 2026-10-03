@@ -5477,7 +5477,9 @@ final class CodexAppServerClient: @unchecked Sendable {
             stream.ingestCodex(message, threadID: threadID, turnID: turnID)
             if stream.eventCount != revision {
                 revision = stream.eventCount
+                if !stream.text.isEmpty { AttemptLatencyTrace.markOnce("first_public_output_received") }
                 RuntimeActivity.emit(.executing, provider: "codex", publicText: stream.text, tool: stream.tool)
+                if !stream.text.isEmpty { AttemptLatencyTrace.markOnce("first_public_output_published") }
             }
             guard message["method"] as? String == "turn/completed",
                   let params = message["params"] as? [String: Any],
@@ -5497,6 +5499,11 @@ final class CodexAppServerClient: @unchecked Sendable {
             guard let text = final?["text"] as? String else {
                 throw OS1Error.message("Codex desktop turn returned no final answer")
             }
+            // Native final text is visible now, independently of persistence,
+            // upload and REVAS. This remains an explicitly unadopted preview.
+            AttemptLatencyTrace.mark("native_output_received")
+            RuntimeActivity.emit(.verifying, provider: "codex", publicText: text)
+            AttemptLatencyTrace.mark("native_output_published")
             return Data(text.utf8)
         }
     }
@@ -5752,6 +5759,9 @@ func runCodexDesktopTurn(executable: String, threadID: String, prompt: String, w
                 guard let final = (agents.last(where: { $0["phase"] as? String == "final_answer" }) ?? agents.last)?["text"] as? String else {
                     throw OS1Error.message("Desktop completed without a final answer")
                 }
+                AttemptLatencyTrace.mark("native_output_received")
+                RuntimeActivity.emit(.verifying, provider: "codex", publicText: final)
+                AttemptLatencyTrace.mark("native_output_published")
                 return CodexTurnOutput(turnID: turnID, output: Data(final.utf8))
             }
             if status == "failed" || status == "interrupted" { throw OS1Error.message("Desktop turn ended without completion") }
@@ -6399,10 +6409,19 @@ private func execute(
             onOutput: { bytes in
                 stream.ingestClaude(bytes)
                 steerDriver?.observe(resultCount: stream.resultCount, turnOpen: stream.turnOpen)
-                if stream.eventCount != revision {
+                if let data = stream.result,
+                   let result = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                   result["session_id"] as? String == activeSessionID,
+                   result["is_error"] as? Bool != true, let text = result["result"] as? String, !text.isEmpty {
+                    AttemptLatencyTrace.markOnce("native_output_received")
+                    RuntimeActivity.emit(.verifying, provider: "claude", model: model, effort: effort, publicText: text)
+                    AttemptLatencyTrace.markOnce("native_output_published")
+                } else if stream.eventCount != revision {
                     revision = stream.eventCount
+                    if !stream.text.isEmpty { AttemptLatencyTrace.markOnce("first_public_output_received") }
                     RuntimeActivity.emit(.executing, provider: "claude", model: model, effort: effort,
                         publicText: stream.text, tool: stream.tool)
+                    if !stream.text.isEmpty { AttemptLatencyTrace.markOnce("first_public_output_published") }
                 }
             },
             interactiveStdin: steerDriver.map { driver in { handle in driver.attach(handle) } }
@@ -7752,9 +7771,9 @@ struct PreflightInventory: Sendable {
             do {
                 let key = try SigningKey.loadOrCreate()
                 let client = APIClient(config: config, token: try githubToken(), deviceID: try deviceID())
+                async let feedback = client.supportsCompletionFeedback(requireModelAvailability: true)
                 try await register(client: client, key: key)
-                return PreparedGateway(client: client, key: key,
-                    feedbackSupported: await client.supportsCompletionFeedback(requireModelAvailability: true))
+                return PreparedGateway(client: client, key: key, feedbackSupported: await feedback)
             } catch { return nil }
         } : nil)
     }
@@ -8966,7 +8985,9 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
         AttemptLatencyTrace.mark("artifact_ready")
         let artifactData = try JSONEncoder().encode(artifact)
         let resultHash = sha256Hex(artifactData)
-        RuntimeActivity.emit(.verifying, provider: ticket.provider, surface: execution.surface, model: model, effort: effort)
+        RuntimeActivity.emit(.verifying, provider: ticket.provider, surface: execution.surface, model: model, effort: effort,
+            publicText: artifact.output)
+        AttemptLatencyTrace.mark("artifact_output_published")
         let artifactRef = "r2://os1-private-results/\(ticket.executionID)/\(ticket.sequence)/\(resultHash).json"
         // The artifact upload keeps the v1 signature; the result also signs the
         // step's measured tokens (v2) so route learning can charge them.
