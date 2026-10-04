@@ -46,7 +46,7 @@ original = original.replace('</head>', `<meta name="theme-color" content="#FFFFF
 original = original.replace('<body>', `<body class="corp-construction">${nav('construction')}`);
 original = original.replace('aria-label="U-SUNG home"', 'aria-label="스마트 건설 페이지 처음으로"');
 original = original.replace('<span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>\n        <span class="brand-name">U-SUNG</span>', `${brandLogo('construction-header')}<span class="brand-name usung-section-name">SMART CONSTRUCTION</span>`);
-original = original.replace('<a class="brand brand--footer" href="#top"><span class="brand-mark"><i></i><i></i><i></i></span><span class="brand-name">U-SUNG</span></a>', `<a class="brand brand--footer" href="#top" aria-label="유성 메인">${brandLogo('construction-footer')}</a>`);
+original = original.replace('<a class="brand brand--footer" href="#top"><span class="brand-mark"><i></i><i></i><i></i></span><span class="brand-name">U-SUNG</span></a>', `<a class="brand brand--footer" href="#top" aria-label="유성 메인">${brandLogo('construction-footer', { accent: false })}</a>`);
 pageSources.push({ route: '/smart-construction/', directory: 'smart-construction', html: original.replaceAll('20261003-q2', assetVersion) });
 let legacyJs = await readFile(new URL('./baseline/app.js', import.meta.url), 'utf8');
 legacyJs = legacyJs.replace('`assets/media/${p.image}`', '`/assets/media/${p.image}`');
