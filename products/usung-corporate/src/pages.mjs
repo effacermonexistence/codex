@@ -6,7 +6,11 @@ const motionButton = `<button class="corp-motion" type="button" aria-pressed="fa
 export const home = `<main id="main-content">
 <section class="corp-main-landing corp-light" aria-label="유성 메인">
 <div class="corp-main-heading"><div><p class="corp-eyebrow">U-SUNG CORPORATION / EST. 2007</p><h1>BUILD<br><span>WHAT’S NEXT.</span></h1></div><div class="corp-main-intro"><p>현장을 짓는 경험.<br>미래를 여는 지능.</p></div></div>
-
+<div class="corp-main-business" id="business"><div class="corp-main-business-label"><span>EXPLORE OUR BUSINESSES</span><span>AI · SMART CONSTRUCTION · PHYSICAL AI</span></div><div class="corp-business-grid">
+<a class="corp-business-card corp-ai-card corp-source-ai-card" href="/ai/"><img src="/assets/generated/ai-glass-extended-v1.png" alt="투명한 입체 구조의 AI 시각물" loading="lazy" width="1536" height="1024"><div class="corp-card-shade"></div><div class="corp-card-top"><span>01 / INTELLIGENCE</span></div><div class="corp-card-bottom"><span>AI & AX</span><h3>Intelligence.</h3><p>신뢰할 수 있는 판단.<br>업무를 바꾸는 실행.</p></div></a>
+<a class="corp-business-card" href="/smart-construction/"><img src="/assets/media/suffolk-project.jpg" alt="유리와 금속 구조가 어우러진 현대 건축" loading="lazy"><div class="corp-card-shade"></div><div class="corp-card-top"><span>02 / SMART CONSTRUCTION</span></div><div class="corp-card-bottom"><span>스마트 건설</span><h3>Build beyond.</h3><p>현장을 이해하는 경험.<br>기술로 넓어지는 건설.</p></div></a>
+<a class="corp-business-card" href="/physical-ai/"><video muted loop playsinline preload="none" poster="/assets/references/dexterity-hero-poster.jpg" aria-hidden="true"><source src="/assets/references/dexterity-hero.mp4" type="video/mp4"></video><div class="corp-card-shade"></div><div class="corp-card-top"><span>03 / PHYSICAL AI</span></div><div class="corp-card-bottom"><span>Physical AI</span><h3>Into the real.</h3><p>지능의 가능성이<br>현장의 움직임으로.</p></div></a>
+</div></div>
 </section>
 <section class="corp-intro corp-light" id="company"><span class="corp-eyebrow">01 / THE NEXT U-SUNG</span><div class="corp-intro-main"><h2>현실을 짓는 경험.<br><em>가능성을 여는 지능.</em></h2><div class="corp-intro-bottom"><p>2007년부터 쌓아온 건설의 실행력.<br>이제 AI, 스마트 건설, Physical AI로<br>유성의 다음을 만들어갑니다.</p><div class="corp-company-facts"><span><b>2007</b>ESTABLISHED</span><span><b>BUSAN</b>BASED IN KOREA</span></div></div></div></section>
 

@@ -537,7 +537,7 @@ body:is(.corp-page,.corp-construction) .corp-nav{background:var(--corp-paper);bo
 .ref-principles>span:before{content:none}
 .ref-platform-controls>button{grid-template-columns:1fr}
 .corp-main-landing{padding-bottom:72px;border-bottom:1px solid #15161620}
-.corp-main-heading{padding-bottom:0}
+.corp-main-heading{padding-bottom:32px}
 body:has(.corp-main-landing) .corp-intro{padding-top:80px}
 .corp-footer-bottom{grid-template-columns:1fr 1fr}
 .corp-construction section[id]{scroll-margin-top:54px}
