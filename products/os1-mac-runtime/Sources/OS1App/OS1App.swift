@@ -2081,6 +2081,122 @@ private func steeringVisibilitySelfTest() async throws {
     print("Steering visibility: \(checks) checks passed; model calls 0; immediate bubble/pending-vs-delivered/no-duplicate/restart")
 }
 
+/// build318 regression (owner, 2026-10-04: "지금 출력이 나오고 있는 중인데 그
+/// 위로 올라가"). A steered input drew above the output still streaming,
+/// because live output always drew after every message. It must sit after
+/// the output on screen when the owner sent it, with later output below it,
+/// on every steering path, through receipts, a trimmed stream and a fresh
+/// attempt, and leave nothing live behind once the run completes.
+@MainActor
+private func steeringPlacementSelfTest() async throws {
+    var checks = 0
+    func check(_ condition: Bool, _ message: String) throws {
+        guard condition else { throw RunnerError.message("Steering placement: " + message) }; checks += 1
+    }
+    func eventually(_ condition: () -> Bool) async throws {
+        let end = Date().addingTimeInterval(8)
+        while !condition(), Date() < end { try await Task.sleep(for: .milliseconds(10)) }
+        try check(condition(), "scheduler deadline")
+    }
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("os1-steer-placement-" + UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let mailbox = ExecutionSteering(root: root.appendingPathComponent("run-steering"))
+    var gates: [UUID: CheckedContinuation<Void, Never>] = [:]
+    let store = SessionStore(storageRoot: root, runOperation: { submission, _, _, _, _ in
+        await withCheckedContinuation { gates[submission.sessionID] = $0 }
+        return AppRunSummary(status: "complete", steps: [AppRunStep(sequence: 1, provider: "codex",
+            action: "fixture", model: "fixture", effort: "none", revasDisposition: "adopted",
+            sessionID: UUID().uuidString, permissionProfile: "workspace_write", exitCode: 0,
+            output: "FINAL_ANSWER_SENTINEL 정정을 반영한 답변", stderr: "", durationMS: 0, nativeRecord: nil)],
+            persistedCorrectionIDs: mailbox.persistedIDs(submission.id))
+    })
+    let id = store.selectedSessionID!
+    // Exactly what ConversationView hands the transcript.
+    func document() -> String {
+        let session = store.selectedSession!
+        return timelineAttributedDocument(messages: presentedMessages(session),
+            queuedSubmissions: store.queuedSubmissions.filter { $0.sessionID == id }, isRunning: store.isSessionRunning(id),
+            workspace: session.workspace, sourceStore: SourceContextStore(root: root),
+            publicProgress: store.activeRuns[id]?.activity.publicText,
+            progressAnchors: store.activeRuns[id]?.steeringAnchors ?? [:]).string
+    }
+    func ordered(_ markers: [String]) -> Bool {
+        let text = document() as NSString
+        let positions = markers.map { text.range(of: $0).location }
+        return !positions.contains(NSNotFound) && positions == positions.sorted() && Set(positions).count == positions.count
+    }
+    func occurrences(_ marker: String) -> Int { document().components(separatedBy: marker).count - 1 }
+    func stream(_ text: String) { store.activeRuns[id]?.activity = RuntimeActivity(.executing, provider: "codex", publicText: text) }
+
+    store.composer = "스티어링 위치를 확인하는 원래 작업. ORIGINAL_TASK_SENTINEL"; store.send()
+    try await eventually { gates[id] != nil }
+    let active = store.activeRuns[id]!
+    store.activeRuns[id]?.provider = .codex
+    try mailbox.open(submissionID: active.submissionID, threadID: "thread", turnID: "turn")
+    let before = "OUTPUT_BEFORE_FIRST_STEER 지금까지 나온 출력입니다. 타이포그래피를 원본 사이트 기준으로 맞추는 중입니다."
+    stream(before)
+    try await eventually { store.canSteerSelectedRun }
+
+    // The explicit steer action: the bubble follows the output on screen.
+    store.composer = "그 말이 아니라, STEER_ONE_SENTINEL 지금 반영해."; store.sendCorrectionToCurrentRun()
+    try check(mailbox.inputs(active.submissionID).count == 1, "explicit steer did not reach the run")
+    try check(ordered(["ORIGINAL_TASK_SENTINEL", "OUTPUT_BEFORE_FIRST_STEER", "STEER_ONE_SENTINEL"]),
+        "steered input drew above the output on screen when it was sent")
+    let between = before + "\n\nOUTPUT_BETWEEN_STEERS 정정 이후에 나온 출력입니다."
+    stream(between)
+    try check(ordered(["OUTPUT_BEFORE_FIRST_STEER", "STEER_ONE_SENTINEL", "OUTPUT_BETWEEN_STEERS"]),
+        "output after the steer drew above the steered input")
+    try check(occurrences("OUTPUT_BEFORE_FIRST_STEER") == 1, "output before the steer drawn twice")
+
+    // The queue's own arrow on a live turn: an unpressed request stays out of
+    // the transcript; once pressed it follows the latest output too.
+    let follow = "그 다음에 STEER_TWO_SENTINEL 모바일 화면도 맞춰줘."
+    store.composer = follow; store.send()
+    let queued = store.queuedSubmissions.first { $0.request == follow }!
+    try check(occurrences("STEER_TWO_SENTINEL") == 0, "an unpressed queue request entered the transcript")
+    store.advanceQueued(queued.id, ownerRequested: true)
+    try check(mailbox.inputs(active.submissionID).count == 2 && store.queuedSubmissions.isEmpty,
+        "the queue arrow did not steer the live turn")
+    let after = between + "\n\nOUTPUT_AFTER_SECOND_STEER 마지막으로 나온 출력입니다."
+    stream(after)
+    try check(ordered(["ORIGINAL_TASK_SENTINEL", "OUTPUT_BEFORE_FIRST_STEER", "STEER_ONE_SENTINEL",
+                       "OUTPUT_BETWEEN_STEERS", "STEER_TWO_SENTINEL", "OUTPUT_AFTER_SECOND_STEER"]),
+        "two steers did not interleave with the output in the order they happened")
+    try check(occurrences("OUTPUT_BETWEEN_STEERS") == 1 && occurrences("아직 검증되지 않은 출력") == 3,
+        "live output was repeated or lost its unverified label")
+
+    // Receipts promote the same rows and never move them.
+    let anchors = store.activeRuns[id]!.steeringAnchors
+    try check(anchors.count == 2, "steered inputs were not anchored once each")
+    for input in mailbox.inputs(active.submissionID) {
+        try mailbox.record(input, state: .sending, threadID: "thread", turnID: "turn")
+        try mailbox.record(input, state: .accepted, threadID: "thread", turnID: "turn")
+    }
+    try await eventually { store.selectedSession!.messages.filter { $0.steeringDelivery == .delivered }.count == 2 }
+    try check(store.activeRuns[id]!.steeringAnchors == anchors && ordered(["STEER_ONE_SENTINEL", "OUTPUT_BETWEEN_STEERS",
+        "STEER_TWO_SENTINEL", "OUTPUT_AFTER_SECOND_STEER"]), "a delivery receipt moved a steered input")
+
+    // The stream keeps only its last 24k characters: a trimmed head still
+    // leaves later output below the steers. A fresh attempt's stream came
+    // entirely after them.
+    stream(String(after.dropFirst(10)) + "\n\nOUTPUT_TRIMMED_HEAD_SENTINEL")
+    try check(ordered(["STEER_TWO_SENTINEL", "OUTPUT_AFTER_SECOND_STEER", "OUTPUT_TRIMMED_HEAD_SENTINEL"]) &&
+              occurrences("OUTPUT_BETWEEN_STEERS") == 1, "a trimmed live stream drew output above a steer or twice")
+    stream("NEW_ATTEMPT_SENTINEL 새 시도에서 나온 출력")
+    try check(ordered(["STEER_TWO_SENTINEL", "NEW_ATTEMPT_SENTINEL"]), "a fresh attempt drew above the steers")
+
+    // Completion: nothing live remains and the answer follows the steers.
+    for input in mailbox.inputs(active.submissionID) {
+        try mailbox.record(input, state: .persisted, threadID: "thread", turnID: "turn")
+    }
+    gates.removeValue(forKey: id)!.resume()
+    try await eventually { !store.isSessionRunning(id) }
+    try check(occurrences("아직 검증되지 않은 출력") == 0 && occurrences("OUTPUT_BETWEEN_STEERS") == 0,
+        "live output survived completion")
+    try check(ordered(["STEER_ONE_SENTINEL", "STEER_TWO_SENTINEL", "FINAL_ANSWER_SENTINEL"]), "the answer drew above the steers")
+    print("Steering placement: \(checks) checks passed; model calls 0; bubble-after-output/later-output-below/queue-arrow/receipts/trimmed/fresh-attempt/completion")
+}
+
 @MainActor
 private func replacementInteractionSelfTest() async throws {
     var checks = 0
@@ -5326,6 +5442,11 @@ private final class SessionStore: ObservableObject {
         var cancellationRequested = false
         var correctionRevision: Int? = nil
         var steeringReady = false
+        /// The live output on screen when each steered input appeared, keyed
+        /// by its message ID. The bubble sits after that output and the
+        /// output streamed later continues below it, in the order the owner
+        /// saw them. Live output only exists during the run, so neither does this.
+        var steeringAnchors: [UUID: String] = [:]
     }
     typealias RunOperation = @MainActor (PendingSubmission, String, String?, String?,
         @escaping @Sendable (RuntimeActivity) -> Void) async throws -> AppRunSummary
@@ -6468,8 +6589,18 @@ private final class SessionStore: ObservableObject {
             var message = ChatMessage(id: item.userMessageID, role: .user, text: item.request)
             message.steeringDelivery = .waiting
             sessions[index].messages.append(message)
+            anchorSteeringInput(item.userMessageID, conversationID: item.sessionID)
         }
         sessions[index].updatedAt = Date()
+    }
+    /// Pins a newly shown steered input after the live output already on
+    /// screen. Without it the bubble rendered above the output still
+    /// streaming, because live output always drew after every message.
+    /// The first position is kept: a later hand-off of the same row never
+    /// moves it.
+    private func anchorSteeringInput(_ messageID: UUID, conversationID: UUID) {
+        guard let active = activeRuns[conversationID], active.steeringAnchors[messageID] == nil else { return }
+        activeRuns[conversationID]?.steeringAnchors[messageID] = active.activity.publicText ?? ""
     }
     /// Mirrors the run's own receipts onto the visible bubbles so the owner can
     /// tell an input OS-1 is still handing over from one the run has taken.
@@ -6647,6 +6778,7 @@ private final class SessionStore: ObservableObject {
                 var message = ChatMessage(id: input.id, role: .user, text: text)
                 message.steeringDelivery = .pending
                 sessions[index].messages.append(message)
+                anchorSteeringInput(input.id, conversationID: id)
             }
             sessions[index].taskContext?.decideSemantic("User correction to current task: " + text)
             activeRuns[id]?.correctionRevision = sessions[index].taskContext?.latestSemanticRevision
@@ -9576,6 +9708,7 @@ private struct OS1DesktopApp: App {
                 do {
                     try await steeringInteractionSelfTest()
                     try await steeringVisibilitySelfTest()
+                    try await steeringPlacementSelfTest()
                     try await replacementInteractionSelfTest()
                     try await failureAcknowledgementSelfTest()
                     exit(EXIT_SUCCESS)
@@ -12334,7 +12467,8 @@ private struct ConversationView: View {
                         isRunning: store.isSessionRunning(session.id),
                         queuedSubmissions: store.queuedSubmissions.filter { $0.sessionID == session.id },
                         publicProgress: store.activeRuns[session.id]?.activity.publicText,
-                        waitingReason: store.waitingBubbleReason(session.id)
+                        waitingReason: store.waitingBubbleReason(session.id),
+                        progressAnchors: store.activeRuns[session.id]?.steeringAnchors ?? [:]
                     )
                 }
                 ComposerView(store: store, session: session)
@@ -12639,6 +12773,28 @@ private func assistantDisplayText(messages: [ChatMessage], index: Int, expanded:
     return content
 }
 
+/// The part of the live output `progress` produced after `anchor`, the live
+/// output that was on screen when the owner steered. The stream only appends,
+/// except that it keeps its last 24k characters, so a trimmed head is found
+/// again by the anchor's tail. A stream that no longer contains the anchor (a
+/// fresh attempt) was produced entirely after it.
+private func liveProgress(after anchor: String?, in progress: String) -> Substring {
+    guard let anchor, !anchor.isEmpty else { return progress[...] }
+    if progress.hasPrefix(anchor) { return progress.dropFirst(anchor.count).drop(while: \.isWhitespace) }
+    let tail = String(anchor.suffix(64))
+    if tail.count >= 16, let found = progress.range(of: tail) {
+        return progress[found.upperBound...].drop(while: \.isWhitespace)
+    }
+    return progress[...]
+}
+
+/// The anchor of the last steered input in `messages`: the live output
+/// shown above it. Output after it belongs below that bubble.
+private func latestSteeringAnchor(_ messages: [ChatMessage], _ anchors: [UUID: String]) -> String? {
+    guard !anchors.isEmpty else { return nil }
+    return messages.last(where: { anchors[$0.id] != nil }).flatMap { anchors[$0.id] }
+}
+
 private func timelineAttributedDocument(
     messages: [ChatMessage],
     queuedSubmissions: [PendingSubmission],
@@ -12648,7 +12804,9 @@ private func timelineAttributedDocument(
     expandAll: Bool = false,
     sourceStore: SourceContextStore = SourceContextStore(),
     publicProgress: String? = nil,
-    waitingReason: String? = nil
+    waitingReason: String? = nil,
+    progressAnchors: [UUID: String] = [:],
+    progressFollows: String? = nil
 ) -> NSAttributedString {
     let document = NSMutableAttributedString()
     let queuedMessageIDs = Set(queuedSubmissions.map(\.userMessageID))
@@ -12698,7 +12856,20 @@ private func timelineAttributedDocument(
         document.addAttribute(.paragraphStyle, value: finalStyle, range: lastParagraph)
     }
 
+    func appendLiveProgress(_ text: Substring, key: String) {
+        guard !text.isEmpty else { return }
+        appendBlock(role: "assistant", components: [("진행 중 · 아직 검증되지 않은 출력\n\n", NSFont.systemFont(ofSize: 11), TimelinePalette.muted)],
+            richContent: TranscriptMarkdown.render(String(text), key: key))
+    }
+
+    // While the run is live, a steered input sits after the output that was
+    // on screen when the owner sent it; only later output follows it.
+    var steeredAfter = progressFollows
     for (index, message) in messages.enumerated() {
+        if isRunning, let anchor = progressAnchors[message.id] {
+            appendLiveProgress(liveProgress(after: steeredAfter, in: anchor), key: "live-progress-" + message.id.uuidString)
+            steeredAfter = anchor
+        }
         switch message.role {
         case .user:
             // Codex-style convergence: text owns the user bubble while image
@@ -12773,9 +12944,8 @@ private func timelineAttributedDocument(
     // Pending requests belong to ConversationQueueView, not the sent transcript.
 
     if isRunning {
-        if let publicProgress, !publicProgress.isEmpty {
-            appendBlock(role: "assistant", components: [("진행 중 · 아직 검증되지 않은 출력\n\n", NSFont.systemFont(ofSize: 11), TimelinePalette.muted)],
-                richContent: TranscriptMarkdown.render(publicProgress, key: "live-progress"))
+        if let publicProgress {
+            appendLiveProgress(liveProgress(after: steeredAfter, in: publicProgress), key: "live-progress")
         }
         // Activity and elapsed time have one owner: RunActivityBanner.
 
@@ -12810,6 +12980,32 @@ private func transcriptLatencySelfTest() throws {
     try check(cache.prefixBuildCount == 1, "100-message history not cached")
     _ = cache.parts(input, expanded: ["changed-code-disclosure"])
     try check(cache.prefixBuildCount == 2, "expanded state not in cache identity")
+    // A steered input sits after the output on screen when it was sent. The
+    // output above it joins the cached history; only what streams after it
+    // stays the live suffix, so deltas still never reparse the history.
+    let shown = "## Native stream\nOUTPUT_BEFORE_STEER " + String(repeating: "앞선 출력 ", count: 30)
+    var steer = ChatMessage(role: .user, text: "STEER_INPUT_SENTINEL"); steer.steeringDelivery = .pending
+    var steered = TranscriptRenderInput(sessionID: session, messages: Array(messages.prefix(3)) + [steer], queued: [],
+        isRunning: true, workspace: "/tmp", progressAnchors: [steer.id: shown])
+    let steeredCache = TranscriptRenderCache()
+    var steeredPrefix: NSAttributedString?
+    for i in 0..<12 {
+        steered.publicProgress = shown + "\n\n" + String(repeating: "OUTPUT_AFTER_STEER \(i)\n", count: i)
+        let parts = steeredCache.parts(steered, expanded: [])
+        if i == 0 { steeredPrefix = parts.prefix }
+        else { try check(!parts.rebuilt && parts.prefix === steeredPrefix, "history reparsed on a delta after steering") }
+        let joined = NSMutableAttributedString(attributedString: parts.prefix); joined.append(parts.tail)
+        let reference = timelineAttributedDocument(messages: steered.messages, queuedSubmissions: [], isRunning: true,
+            workspace: "/tmp", publicProgress: steered.publicProgress, progressAnchors: steered.progressAnchors)
+        try check(joined.string == reference.string, "cached suffix changed the steered transcript")
+        let text = joined.string as NSString
+        let earlier = text.range(of: "OUTPUT_BEFORE_STEER").location, bubble = text.range(of: "STEER_INPUT_SENTINEL").location
+        try check(earlier != NSNotFound && bubble != NSNotFound && earlier < bubble, "steered input drew above the output it followed")
+        try check(joined.string.components(separatedBy: "OUTPUT_BEFORE_STEER").count == 2, "output before the steer drawn twice")
+        let later = text.range(of: "OUTPUT_AFTER_STEER").location
+        try check(i == 0 ? parts.tail.length == 0 : later != NSNotFound && later > bubble,
+            "output after the steer drew above the steered input")
+    }
     input = TranscriptRenderInput(sessionID: session, messages: messages, queued: [], isRunning: false, workspace: "/tmp")
     let finished = cache.parts(input, expanded: [])
     try check(finished.rebuilt && finished.tail.length == 0, "pending suffix survived completion")
@@ -12991,6 +13187,9 @@ private struct TranscriptRenderInput: Equatable {
     /// the reason it waits changes (slot freed, hold released) without any
     /// message edit.
     var waitingReason: String? = nil
+    /// Live output on screen when each steered input appeared. Fixed once
+    /// set, so it belongs to the cached history, not the live suffix.
+    var progressAnchors: [UUID: String] = [:]
 }
 
 /// Immutable history is keyed by all render-relevant input, not by time or
@@ -13006,11 +13205,15 @@ private final class TranscriptRenderCache {
         let rebuilt = input != stable || self.expanded != expanded
         if rebuilt {
             prefix = timelineAttributedDocument(messages: value.messages, queuedSubmissions: value.queued,
-                isRunning: value.isRunning, workspace: value.workspace, expanded: expanded, waitingReason: value.waitingReason)
+                isRunning: value.isRunning, workspace: value.workspace, expanded: expanded, waitingReason: value.waitingReason,
+                progressAnchors: value.progressAnchors)
             input = stable; self.expanded = expanded; prefixBuildCount += 1
         }
+        // Output already drawn above the latest steered input stays there;
+        // the suffix holds only what streamed after it.
         let tail = timelineAttributedDocument(messages: [], queuedSubmissions: [], isRunning: value.isRunning,
-            workspace: value.workspace, publicProgress: value.publicProgress)
+            workspace: value.workspace, publicProgress: value.publicProgress,
+            progressFollows: value.isRunning ? latestSteeringAnchor(value.messages, value.progressAnchors) : nil)
         return (prefix, tail, rebuilt)
     }
     func invalidate() { input = nil }
@@ -13034,6 +13237,7 @@ private struct ContinuousTranscriptView: NSViewRepresentable {
     let workspace: String
     var publicProgress: String? = nil
     var waitingReason: String? = nil
+    var progressAnchors: [UUID: String] = [:]
 
     final class Coordinator: NSObject, NSTextViewDelegate {
         var renderedSessionID: UUID?
@@ -13052,7 +13256,7 @@ private struct ContinuousTranscriptView: NSViewRepresentable {
             let origin = scroll?.contentView.bounds.origin
             let document = timelineAttributedDocument(messages: content.messages, queuedSubmissions: content.queuedSubmissions,
                 isRunning: content.isRunning, workspace: content.workspace, expanded: expanded, publicProgress: content.publicProgress,
-                waitingReason: content.waitingReason)
+                waitingReason: content.waitingReason, progressAnchors: content.progressAnchors)
             textView.textStorage?.setAttributedString(document)
             renderCache.invalidate(); lastInput = nil
             textView.needsDisplay = true
@@ -13119,7 +13323,7 @@ private struct ContinuousTranscriptView: NSViewRepresentable {
         context.coordinator.content = self
         let input = TranscriptRenderInput(sessionID: sessionID, messages: messages,
             queued: queuedSubmissions, isRunning: isRunning, workspace: workspace, publicProgress: publicProgress,
-            waitingReason: waitingReason)
+            waitingReason: waitingReason, progressAnchors: progressAnchors)
         // Math attachments have object identity. Comparing freshly rendered
         // attributed strings would rewrite the text storage on every keystroke.
         guard context.coordinator.lastInput != input else { return }
@@ -13171,6 +13375,7 @@ private struct MessageTimeline: View {
     let queuedSubmissions: [PendingSubmission]
     var publicProgress: String? = nil
     var waitingReason: String? = nil
+    var progressAnchors: [UUID: String] = [:]
 
     var body: some View {
         ContinuousTranscriptView(
@@ -13180,7 +13385,8 @@ private struct MessageTimeline: View {
             isRunning: isRunning,
             workspace: session.workspace,
             publicProgress: publicProgress,
-            waitingReason: waitingReason
+            waitingReason: waitingReason,
+            progressAnchors: progressAnchors
         )
     }
 }
