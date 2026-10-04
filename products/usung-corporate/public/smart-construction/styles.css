@@ -270,7 +270,7 @@ html { scroll-padding-top: 90px; }
 .cap-list summary b { font-size: 25px; font-weight: 400; transition: transform .25s; }
 .cap-list details[open] summary b { transform: rotate(45deg); }
 .cap-detail { padding: 0 25px 30px 48px; }
-.cap-detail > span { display: block; color: #c64218; font-size: 11px; margin-bottom: 16px; }
+.cap-detail > span { display: block; color: var(--signal); font-size: 11px; margin-bottom: 16px; }
 .cap-detail p { line-height: 1.9; max-width: 450px; }
 .project-toolbar { display: flex; justify-content: space-between; align-items: center; gap: 20px; border-top: 1px solid var(--line); padding: 24px 0; }
 .project-toolbar p { font-size: 13px; color: #b8b9b3; }

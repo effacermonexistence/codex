@@ -18,7 +18,8 @@
     empty.hidden = true;
     dialog.showModal();
     document.body.classList.add('language-open');
-    search.focus();
+    // Keep the phone keyboard closed until the visitor chooses to search.
+    (matchMedia('(max-width: 760px)').matches ? dialog.querySelector('.corp-language-close') : search).focus();
   });
   dialog.querySelector('.corp-language-close').addEventListener('click', () => dialog.close());
   dialog.addEventListener('click', event => {
