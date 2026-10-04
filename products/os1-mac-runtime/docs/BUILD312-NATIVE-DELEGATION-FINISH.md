@@ -15,3 +15,13 @@ Private source was acquired from R2 archive e2b281f2e206f2b05e2f3ebb55d86610c40d
 A preliminary rollout omitted a prior capability identity; it was immediately rolled back to the confirmed v56 deployment before completing the full compatibility map and 140-case worker harness. Final runtime/version/backup/timing/GUI adoption receipts are separate; do not infer successful deployment or subsecond startup merely from this document.
 
 Method: cached failed output -> deterministic classifier/verifier reproduction -> smallest source-specific repair -> counterexamples and old-policy compatibility -> deployment/GUI/runtime observation. Research inspected: ReAct (https://arxiv.org/abs/2210.03629), intrinsic-self-correction limits (https://arxiv.org/abs/2310.01798), abstract scope; native streaming protocol https://developers.openai.com/siwc/token-sharing-open-source/codex-app-server. No model call merely to pad an existing answer.
+
+## Installed build312 live observation
+
+Both actual Codex and Auto-selected Claude executions reached remote `complete`, GUI `REVAS adopted` and verified native persistence in one provider attempt. Each OS-1 output matched its actual native final. Claude's own final included explanation after the marker; this is output-preservation evidence, not exact-marker-only semantic proof. Actual source-to-AppKit-draw maximums were 58.003 ms (Codex) and 52.970 ms (Claude). Native-final publication delta was 1 ms and 0 ms respectively. Existing 209 baseline sessions survived; the installed runtime retained 210 sessions. Existing queued work was not replayed.
+
+Predispatch took 2549 ms (Codex) and 2098 ms (Auto/Claude), separately from provider work and relay/render. Those measurements do not meet a global 1000 ms startup target. No auth, source freshness, lease, permissions or final-adoption gate was removed to manufacture a subsecond result.
+
+## Server-only capability roundtrip repair
+
+The private capability endpoint previously fetched the same pinned adapter response twice to check feedback and model metadata. It now obtains both from one fresh validated response and seeds only the existing 60-second per-binding/per-policy learning-schema cache. Capability checks themselves remain fresh; failure is not cached. Actual route/model validation remains independent and mandatory. No runtime rebuild or new policy identity is needed for this transport-only repair. Added call-count, expiry, old-schema, wrong-policy, expanded-response, failed-probe and binding-isolation regressions; TypeScript check, 38 unit tests and 6/6 workerd integration checks pass. Deployment and post-change timings require separate runtime receipts.

@@ -1,7 +1,7 @@
 import { DurableObject } from "cloudflare:workers";
 import { appendCompletionObservation, completionFeedbackMatchesTask, validCompletionFeedback, validExecutionContext,
   type CompletionObservation, type ExecutionContext } from "./execution-context";
-import { routeLearningSchema, supportsCompletionFeedback } from "./capabilities";
+import { completionCapabilityState, routeLearningSchema } from "./capabilities";
 import {
   exportLearningRows, LEARNING_CLASSES, routeSeed, updateLearning, usageComponents, validLearningObservation, validStepUsage, weightedTokens,
   type LearningObservation, type LearningRow, type StepUsage, type StoredLearning,
@@ -398,10 +398,9 @@ export default {
     try {
       if (request.method === "GET" && new URL(request.url).pathname === "/capabilities") {
         const bundle = await loadPolicyBundle(env);
-        const supported = await supportsCompletionFeedback(env.RCC_V26, bundle.rcc.policy_sha256);
-        const models = supported && await supportsCompletionFeedback(env.RCC_V26, bundle.rcc.policy_sha256, true);
-        return Response.json({ completion_feedback_schema: supported ? 1 : null,
-          ...(models ? { model_availability_schema: 1 } : {}) }, {
+        const supported = await completionCapabilityState(env.RCC_V26, bundle.rcc.policy_sha256);
+        return Response.json({ completion_feedback_schema: supported.feedback ? 1 : null,
+          ...(supported.modelAvailability ? { model_availability_schema: 1 } : {}) }, {
           headers: { "cache-control": "no-store" },
         });
       }

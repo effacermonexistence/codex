@@ -30,6 +30,23 @@ export async function supportsCompletionFeedback(binding: Fetcher, expectedPolic
 
 const learningSupport = new WeakMap<Fetcher, Map<string, { schema: 0 | 1 | 2 | 3; expires: number }>>();
 
+/** One fresh pinned-policy response certifies the advertised schemas together.
+ * Seed only the existing short-lived learning metadata cache, never credentials,
+ * authorization, route decisions or an unsuccessful probe. The actual route
+ * still validates the pinned adapter and every model tuple independently. */
+export async function completionCapabilityState(binding: Fetcher, expectedPolicy: string, nowMs = Date.now()): Promise<{
+  feedback: boolean; modelAvailability: boolean;
+}> {
+  const value = await capabilities(binding, expectedPolicy);
+  if (value === undefined) return { feedback: false, modelAvailability: false };
+  const schema = value.route_learning_schema === 3 ? 3 : value.route_learning_schema === 2 ? 2 :
+    value.route_learning_schema === 1 ? 1 : 0;
+  const entries = learningSupport.get(binding) ?? new Map();
+  entries.set(expectedPolicy, { schema, expires: nowMs + 60_000 });
+  learningSupport.set(binding, entries);
+  return { feedback: true, modelAvailability: value.model_availability_schema === 1 };
+}
+
 /**
  * Which route-learning rows the pinned adapter reads: 0 none, 1 outcome and
  * time (v37), 2 also tokens (v38), 3 also the billed token components (v47).
