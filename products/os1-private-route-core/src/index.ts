@@ -1,7 +1,7 @@
 import { DurableObject } from "cloudflare:workers";
 import { appendCompletionObservation, completionFeedbackMatchesTask, validCompletionFeedback, validExecutionContext,
   type CompletionObservation, type ExecutionContext } from "./execution-context";
-import { completionCapabilityState, routeLearningSchema } from "./capabilities";
+import { capabilityCacheScope, completionCapabilityState, routeLearningSchema } from "./capabilities";
 import { RouteStageTiming } from "./stage-timing";
 import type { StartupContract } from "../../os1-route-core/src/contracts";
 import {
@@ -573,7 +573,8 @@ export default {
         stage.current = "policy";
         const bundle = await loadPolicyBundle(env);
         stage.current = "capabilities_probe";
-        const supported = await completionCapabilityState(env.RCC_V26, bundle.rcc.policy_sha256);
+        const supported = await completionCapabilityState(env.RCC_V26, bundle.rcc.policy_sha256, Date.now(), false,
+          capabilityCacheScope(env, bundle.rcc.policy_sha256));
         return Response.json({ completion_feedback_schema: supported.feedback ? 1 : null,
           ...(supported.modelAvailability ? { model_availability_schema: 1 } : {}) }, {
           headers: { "cache-control": "no-store" },
@@ -624,7 +625,8 @@ export default {
               const contract = policy.executor_contracts.find(candidate => candidate.version === task.executor_contract_version && candidate.sha256 === task.executor_contract_sha256);
               if (!contract) throw new Error("denied");
               const supported = await stage.measureParallel("capabilities_probe", () =>
-                completionCapabilityState(env.RCC_V26, policy.rcc.policy_sha256, Date.now(), true));
+                completionCapabilityState(env.RCC_V26, policy.rcc.policy_sha256, Date.now(), true,
+                  capabilityCacheScope(env, policy.rcc.policy_sha256)));
               if (!supported.feedback || !supported.modelAvailability) throw new Error("denied");
               return { policy, contract };
             })(),
@@ -718,7 +720,8 @@ export default {
         if (bundle.rcc.policy_sha256 !== snapshot.rcc_policy_sha256) throw new Error("policy changed during execution");
         if (critical) {
           stage.current = "capabilities_probe";
-          const supported = await completionCapabilityState(env.RCC_V26, bundle.rcc.policy_sha256, Date.now(), true);
+          const supported = await completionCapabilityState(env.RCC_V26, bundle.rcc.policy_sha256, Date.now(), true,
+            capabilityCacheScope(env, bundle.rcc.policy_sha256));
           if (!supported.feedback || !supported.modelAvailability) throw new Error("denied");
         }
         const context: RouteContext = { task: snapshot.task, provider_preference: snapshot.provider_preference,
