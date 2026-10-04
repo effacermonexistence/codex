@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { nav, footer, home, ai, physical } from './src/pages.mjs';
 import { languages, languageSelector } from './src/languages.mjs';
@@ -11,10 +11,18 @@ const brandFavicon = await readFile(new URL('./public/assets/brand/usung-icon-wh
 const pngFavicon = await readFile(new URL('./public/favicon.png', import.meta.url));
 
 const assetVersion = createHash('sha256').update(await readFile(new URL('./public/corporate.css', import.meta.url))).update(await readFile(new URL('./public/corporate.js', import.meta.url))).update(await readFile(new URL('./public/locale.js', import.meta.url))).update(await readFile(new URL('./src/pages.mjs', import.meta.url))).update(await readFile(new URL('./src/languages.mjs', import.meta.url))).update(await readFile(new URL('./references.json', import.meta.url))).update(await readFile(new URL('./build.mjs', import.meta.url))).update(await readFile(new URL('./baseline/app.js', import.meta.url))).update(constructionStyles).update(brandSource).update(brandFavicon).update(pngFavicon).digest('hex').slice(0, 12);
+// Change the pathname when the icon changes; Safari can retain icons across query changes.
+const iconVersion = createHash('sha256').update(pngFavicon).digest('hex').slice(0, 12);
+const iconHref = file => `/assets/brand/icons/usung-u-${iconVersion}-${file}`;
+await mkdir(new URL('./public/assets/brand/icons/', import.meta.url), { recursive: true });
+for (const file of ['favicon-32.png', 'favicon.png', 'favicon.ico', 'apple-touch-icon.png', 'icon-192.png', 'icon-512.png']) {
+  await copyFile(new URL(`./public/${file}`, import.meta.url), new URL(`./public${iconHref(file)}`, import.meta.url));
+}
+const iconLinks = `<link rel="icon" href="${iconHref('favicon-32.png')}" type="image/png" sizes="32x32"><link rel="icon" href="${iconHref('favicon.png')}" type="image/png" sizes="48x48"><link rel="shortcut icon" href="${iconHref('favicon.ico')}" type="image/x-icon"><link rel="apple-touch-icon" href="${iconHref('apple-touch-icon.png')}" sizes="180x180"><link rel="manifest" href="/site.webmanifest?v=20261003-q2">`;
 const pageSources = [];
 // Remove decorative direction glyphs after translation; keep dictionary keys intact.
 const withoutDecorativeArrows = html => html.replace(/<script\b[\s\S]*?<\/script>|<style\b[\s\S]*?<\/style>|<[^>]+>|[^<]+/gi, token => token.startsWith('<') ? token : token.replace(/[↗↘→↑]/g, ''));
-const head = (title, description, route = '/') => `<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><title>${title}</title><meta name="description" content="${description}"><meta name="theme-color" content="#FFFFFF"><link rel="canonical" href="https://usungcorp.com${route}"><meta property="og:title" content="${title}"><meta property="og:description" content="${description}"><meta property="og:type" content="website"><meta property="og:url" content="https://usungcorp.com${route}"><link rel="icon" href="/favicon-32.png?v=20261003-q2" type="image/png" sizes="32x32"><link rel="icon" href="/favicon.png?v=20261003-q2" type="image/png" sizes="48x48"><link rel="apple-touch-icon" href="/apple-touch-icon.png?v=20261003-q2" sizes="180x180"><link rel="manifest" href="/site.webmanifest?v=20261003-q2"><meta name="application-name" content="USUNG"><meta name="apple-mobile-web-app-title" content="USUNG"><link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Noto+Sans+KR:wght@400;500;600;700;800&display=swap" rel="stylesheet"><link rel="stylesheet" href="/corporate.css?v=20261003-q2"><script src="/corporate.js?v=20261003-q2" defer></script></head>`;
+const head = (title, description, route = '/') => `<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><title>${title}</title><meta name="description" content="${description}"><meta name="theme-color" content="#FFFFFF"><link rel="canonical" href="https://usungcorp.com${route}"><meta property="og:title" content="${title}"><meta property="og:description" content="${description}"><meta property="og:type" content="website"><meta property="og:url" content="https://usungcorp.com${route}">${iconLinks}<meta name="application-name" content="USUNG"><meta name="apple-mobile-web-app-title" content="USUNG"><link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Noto+Sans+KR:wght@400;500;600;700;800&display=swap" rel="stylesheet"><link rel="stylesheet" href="/corporate.css?v=20261003-q2"><script src="/corporate.js?v=20261003-q2" defer></script></head>`;
 for (const page of [
   { directory: '', active: '', title: 'U-SUNG — Build What’s Next.', description: '유성건설 주식회사. AI·AX, 스마트 건설, Physical AI. 현장의 경험과 신뢰할 수 있는 지능을 연결합니다.', content: home },
   { directory: 'ai', active: 'ai', title: 'AI & AX — U-SUNG', description: '유성과 OmarAGI의 AI 신뢰·실행 인프라. 결과 검증, 에이전트 실행 제어, 운영과 거버넌스를 실제 업무에 연결합니다.', content: ai },
@@ -32,7 +40,7 @@ original = original.replace('content="U-SUNG construction and physical AI visual
 original = original.replace('href="styles.css"', `href="/smart-construction/styles.css?v=${assetVersion}"`);
 original = original.replace('src="app.js"', `src="/smart-construction/app.js?v=${assetVersion}"`);
 original = original.replaceAll('"assets/media/', '"/assets/media/');
-original = original.replace('</head>', '<meta name="theme-color" content="#FFFFFF"><link rel="canonical" href="https://usungcorp.com/smart-construction/"><link rel="icon" href="/favicon-32.png?v=20261003-q2" type="image/png" sizes="32x32"><link rel="icon" href="/favicon.png?v=20261003-q2" type="image/png" sizes="48x48"><link rel="apple-touch-icon" href="/apple-touch-icon.png?v=20261003-q2" sizes="180x180"><link rel="manifest" href="/site.webmanifest?v=20261003-q2"><meta name="application-name" content="USUNG"><meta name="apple-mobile-web-app-title" content="USUNG"><link rel="stylesheet" href="/corporate.css?v=20261003-q2"><script src="/corporate.js?v=20261003-q2" defer></script></head>');
+original = original.replace('</head>', `<meta name="theme-color" content="#FFFFFF"><link rel="canonical" href="https://usungcorp.com/smart-construction/">${iconLinks}<meta name="application-name" content="USUNG"><meta name="apple-mobile-web-app-title" content="USUNG"><link rel="stylesheet" href="/corporate.css?v=20261003-q2"><script src="/corporate.js?v=20261003-q2" defer></script></head>`);
 original = original.replace('<body>', `<body class="corp-construction">${nav('construction')}`);
 original = original.replace('aria-label="U-SUNG home"', 'aria-label="스마트 건설 페이지 처음으로"');
 original = original.replace('<span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>\n        <span class="brand-name">U-SUNG</span>', `${brandLogo('construction-header')}<span class="brand-name usung-section-name">SMART CONSTRUCTION</span>`);
@@ -69,7 +77,7 @@ for (const language of languages) {
 }
 await writeFile(new URL('./public/favicon.svg', import.meta.url), brandFavicon);
 const manifest = JSON.parse(await readFile(new URL('./public/site.webmanifest', import.meta.url), 'utf8'));
-manifest.icons = manifest.icons.map(icon => ({ ...icon, src: `${icon.src.split('?')[0]}?v=${assetVersion}` }));
+manifest.icons = [192, 512].map(size => ({ src: iconHref(`icon-${size}.png`), sizes: `${size}x${size}`, type: 'image/png', purpose: 'any' }));
 await writeFile(new URL('./public/site.webmanifest', import.meta.url), JSON.stringify(manifest, null, 2) + '\n');
 await writeFile(new URL('./public/robots.txt', import.meta.url), 'User-agent: *\nAllow: /\nSitemap: https://usungcorp.com/sitemap.xml\n');
 await writeFile(new URL('./public/sitemap.xml', import.meta.url), '<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">' + ['/', '/ai/', '/smart-construction/', '/physical-ai/'].map(route => `<url><loc>https://usungcorp.com${route}</loc></url>`).join('') + '</urlset>');

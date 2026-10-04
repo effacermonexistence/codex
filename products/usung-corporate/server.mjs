@@ -14,7 +14,7 @@ const server = createServer(async (req, res) => {
   let pathname, url;
   try { url = new URL(req.url, 'http://localhost'); pathname = decodeURIComponent(url.pathname); }
   catch { res.writeHead(400); res.end(); return; }
-  if (pathname === '/health') { res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); res.end(req.method === 'HEAD' ? '' : JSON.stringify({ status: 'ok', site: 'usung-corporate', release: '2026-10-03-white-u-favicon-v13', languages: languageCodes.size })); return; }
+  if (pathname === '/health') { res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); res.end(req.method === 'HEAD' ? '' : JSON.stringify({ status: 'ok', site: 'usung-corporate', release: '2026-10-04-u-favicon-path-v14', languages: languageCodes.size })); return; }
   if (['/ai', '/smart-construction', '/physical-ai'].includes(pathname)) { res.writeHead(308, { Location: pathname + '/' + url.search }); res.end(); return; }
   const cookieLanguage = /(?:^|;\s*)usung_lang=([^;]*)/.exec(req.headers.cookie || '')?.[1];
   const requestedLanguage = url.searchParams.get('lang');
@@ -31,7 +31,8 @@ const server = createServer(async (req, res) => {
     const info = await stat(file);
     if (!info.isFile()) throw new Error('not a file');
     res.setHeader('Content-Type', types[path.extname(file)] || 'application/octet-stream');
-    res.setHeader('Cache-Control', file.endsWith('.html') ? 'private, no-cache' : 'public, max-age=3600');
+    const isIcon = pathname.startsWith('/assets/brand/icons/') || /^\/(?:favicon(?:-32)?\.(?:png|ico|svg)|apple-touch-icon\.png|icon-(?:192|512)\.png|site\.webmanifest)$/.test(pathname);
+    res.setHeader('Cache-Control', isIcon ? 'no-store' : file.endsWith('.html') ? 'private, no-cache' : 'public, max-age=3600');
     res.setHeader('Accept-Ranges', 'bytes');
     let start = 0, end = info.size - 1, status = 200;
     if (req.headers.range) {
