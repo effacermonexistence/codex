@@ -68,6 +68,9 @@ for (const language of languages) {
   }
 }
 await writeFile(new URL('./public/favicon.svg', import.meta.url), brandFavicon);
+const manifest = JSON.parse(await readFile(new URL('./public/site.webmanifest', import.meta.url), 'utf8'));
+manifest.icons = manifest.icons.map(icon => ({ ...icon, src: `${icon.src.split('?')[0]}?v=${assetVersion}` }));
+await writeFile(new URL('./public/site.webmanifest', import.meta.url), JSON.stringify(manifest, null, 2) + '\n');
 await writeFile(new URL('./public/robots.txt', import.meta.url), 'User-agent: *\nAllow: /\nSitemap: https://usungcorp.com/sitemap.xml\n');
 await writeFile(new URL('./public/sitemap.xml', import.meta.url), '<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">' + ['/', '/ai/', '/smart-construction/', '/physical-ai/'].map(route => `<url><loc>https://usungcorp.com${route}</loc></url>`).join('') + '</urlset>');
 console.log(`Built all four corporate pages in ${languages.length} languages. Default: English.`);
