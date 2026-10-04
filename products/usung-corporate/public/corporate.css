@@ -527,3 +527,27 @@ html[dir=rtl] .corp-construction :is(.manifesto-copy,.manifesto-note,.system-hea
  .corp-construction .hero-content{padding-top:132px}
  .corp-construction .hero-title{font-size:80px}
 }
+
+/* One consistent light navigation, with content reached by natural scrolling. */
+body:is(.corp-page,.corp-construction) .corp-header,
+body:is(.corp-page,.corp-construction) .corp-header.is-scrolled{
+ background:var(--corp-paper);color:var(--corp-ink);border-bottom-color:#15161620;backdrop-filter:none;-webkit-backdrop-filter:none
+}
+body:is(.corp-page,.corp-construction) .corp-nav{background:var(--corp-paper);border-top-color:#15161618;backdrop-filter:none;-webkit-backdrop-filter:none}
+.ref-principles>span:before{content:none}
+.ref-platform-controls>button{grid-template-columns:1fr}
+.corp-main-landing{padding-bottom:72px;border-bottom:1px solid #15161620}
+.corp-main-heading{padding-bottom:0}
+body:has(.corp-main-landing) .corp-intro{padding-top:80px}
+.corp-footer-bottom{grid-template-columns:1fr 1fr}
+.corp-construction section[id]{scroll-margin-top:54px}
+.corp-construction .hero-content{padding-top:110px}
+.corp-construction .motion-toggle{top:24px}
+@media(max-width:760px){
+ .corp-main-landing{padding-bottom:56px}
+ body:has(.corp-main-landing) .corp-intro{padding-top:56px}
+ .corp-footer-bottom{grid-template-columns:1fr}
+ .corp-construction section[id]{scroll-margin-top:var(--mobile-header)}
+ .corp-construction .hero-content{padding-top:104px}
+ .corp-construction .motion-toggle{top:20px}
+}

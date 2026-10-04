@@ -11,6 +11,8 @@ const brandFavicon = await readFile(new URL('./public/assets/brand/usung-u-symbo
 
 const assetVersion = createHash('sha256').update(await readFile(new URL('./public/corporate.css', import.meta.url))).update(await readFile(new URL('./public/corporate.js', import.meta.url))).update(await readFile(new URL('./public/locale.js', import.meta.url))).update(await readFile(new URL('./src/pages.mjs', import.meta.url))).update(await readFile(new URL('./src/languages.mjs', import.meta.url))).update(await readFile(new URL('./references.json', import.meta.url))).update(await readFile(new URL('./build.mjs', import.meta.url))).update(await readFile(new URL('./baseline/app.js', import.meta.url))).update(constructionStyles).update(brandSource).update(brandFavicon).digest('hex').slice(0, 12);
 const pageSources = [];
+// Remove decorative direction glyphs after translation; keep dictionary keys intact.
+const withoutDecorativeArrows = html => html.replace(/<script\b[\s\S]*?<\/script>|<style\b[\s\S]*?<\/style>|<[^>]+>|[^<]+/gi, token => token.startsWith('<') ? token : token.replace(/[↗↘→↑]/g, ''));
 const head = (title, description, route = '/') => `<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><title>${title}</title><meta name="description" content="${description}"><meta name="theme-color" content="#090a0a"><link rel="canonical" href="https://usungcorp.com${route}"><meta property="og:title" content="${title}"><meta property="og:description" content="${description}"><meta property="og:type" content="website"><meta property="og:url" content="https://usungcorp.com${route}"><link rel="icon" href="/favicon.svg?v=20261003-q2" type="image/svg+xml"><link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Noto+Sans+KR:wght@400;500;600;700;800&display=swap" rel="stylesheet"><link rel="stylesheet" href="/corporate.css?v=20261003-q2"><script src="/corporate.js?v=20261003-q2" defer></script></head>`;
 for (const page of [
   { directory: '', active: '', title: 'U-SUNG — Build What’s Next.', description: '유성건설 주식회사. AI·AX, 스마트 건설, Physical AI. 현장의 경험과 신뢰할 수 있는 지능을 연결합니다.', content: home },
@@ -55,6 +57,7 @@ for (const language of languages) {
     let html = localizeHtml(page.html, dictionary, language.code);
     html = html.replaceAll('U-SUNG', 'USUNG');
     html = html.replace('<usung-language></usung-language>', languageSelector(page.route, language.code, dictionary));
+    html = withoutDecorativeArrows(html);
     html = html.replace(/href="(\/(?:ai\/|smart-construction\/|physical-ai\/)?)(#[^"]*)?"/g, (_, route, hash = '') => `href="${route}?lang=${language.code}${hash}"`);
     html = html.replace('src="/locale.js"', `src="/locale.js?v=${assetVersion}"`);
     const directory = new URL(`./public/locales/${language.code}/${page.directory}/`, import.meta.url);

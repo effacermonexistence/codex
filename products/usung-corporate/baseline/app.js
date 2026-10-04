@@ -1,38 +1,6 @@
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
 const reduced = matchMedia('(prefers-reduced-motion: reduce)');
-const header = $('[data-header]');
-const menuButton = $('.menu-button');
-const mobileMenu = $('.mobile-menu');
-let menuOpen = false;
-const setMenu = (open, restoreFocus = true) => {
-  menuOpen = open;
-  menuButton.setAttribute('aria-expanded', String(open));
-  mobileMenu.classList.toggle('is-open', open);
-  mobileMenu.inert = !open;
-  mobileMenu.setAttribute('aria-hidden', String(!open));
-  $('main').inert = open;
-  $('.site-footer').inert = open;
-  $('.desktop-nav').inert = open;
-  $('.brand').inert = open;
-  document.body.classList.toggle('overlay-open', open);
-  if(open) mobileMenu.querySelector('a').focus();
-  else if(restoreFocus) menuButton.focus();
-  updateVideos();
-};
-menuButton.addEventListener('click',()=>setMenu(!menuOpen));
-mobileMenu.querySelectorAll('a').forEach(link=>link.addEventListener('click',()=>setMenu(false)));
-document.addEventListener('keydown',event=>{
-  if(!menuOpen) return;
-  if(event.key==='Escape') { event.preventDefault(); setMenu(false); }
-  if(event.key==='Tab') {
-    const controls=[menuButton,...mobileMenu.querySelectorAll('a')];
-    const index=controls.indexOf(document.activeElement);
-    event.preventDefault(); controls[(index+(event.shiftKey?-1:1)+controls.length)%controls.length].focus();
-  }
-});
-matchMedia('(min-width: 901px)').addEventListener('change',()=>{if(menuOpen)setMenu(false)});
-
 const futureSteps = $$('[data-future-step]');
 const futureImages = $$('[data-future-image]');
 let scheduled=false;
@@ -40,7 +8,6 @@ const updateScrollUI = () => {
   scheduled=false;
   const max=document.documentElement.scrollHeight-innerHeight;
   $('.page-progress span').style.transform=`scaleX(${max>0?Math.min(1,Math.max(0,scrollY/max)):0})`;
-  header.classList.toggle('is-scrolled',scrollY>40);
   // All steps participate on every update: reverse scrolling cannot reuse a stale observer entry.
   let nearest=0,distance=Infinity;
   futureSteps.forEach((step,index)=>{
@@ -61,7 +28,7 @@ let userPaused=false;
 const videos=$$('video');
 const visibleVideos=new Set();
 const updateVideos=()=>{
-  const blocked=userPaused||reduced.matches||document.hidden||!!$('dialog[open]')||menuOpen;
+  const blocked=userPaused||reduced.matches||document.hidden||!!$('dialog[open]');
   videos.forEach(video=>{
     if(!blocked&&visibleVideos.has(video)) video.play().catch(()=>{});
     else video.pause();
@@ -75,7 +42,6 @@ if('IntersectionObserver' in window){
 }
 $('.motion-toggle').addEventListener('click',()=>{if(reduced.matches) {userPaused=true;$('.motion-toggle').textContent='동작 줄이기 설정 적용 중';return;}userPaused=!userPaused;updateVideos()});
 reduced.addEventListener('change',updateVideos);document.addEventListener('visibilitychange',updateVideos);updateVideos();
-menuButton.addEventListener('click',updateVideos);
 
 $$('[data-filter]').forEach(button=>button.addEventListener('click',()=>{
   const filter=button.dataset.filter;
@@ -94,7 +60,7 @@ const openDialog=(dialog,trigger)=>{dialogTrigger=trigger;dialog.showModal();doc
 $$('dialog').forEach(dialog=>{
  dialog.querySelector('.dialog-close').addEventListener('click',()=>dialog.close());
  dialog.addEventListener('click',event=>{if(event.target===dialog){const r=dialog.getBoundingClientRect();if(event.clientX<r.left||event.clientX>r.right||event.clientY<r.top||event.clientY>r.bottom)dialog.close()}});
- dialog.addEventListener('close',()=>{if(dialog.id==='film-dialog')$('.film-container').replaceChildren();document.body.classList.remove('overlay-open');dialogTrigger?.focus();updateVideos()});
+ dialog.addEventListener('close',()=>{document.body.classList.remove('overlay-open');dialogTrigger?.focus();updateVideos()});
 });
 $$('[data-project]').forEach(button=>button.addEventListener('click',()=>{
  const p=projects[Number(button.dataset.project)];
@@ -102,10 +68,6 @@ $$('[data-project]').forEach(button=>button.addEventListener('click',()=>{
  $('#project-dialog-source').textContent=p.source;$('#project-dialog-description').textContent=p.description;$('#project-dialog-link').href=p.url;
  openDialog($('#project-dialog'),button);
 }));
-$('.film-open').addEventListener('click',event=>{
- const frame=document.createElement('iframe');frame.src='https://www.youtube-nocookie.com/embed/6RIExTOxXkU?autoplay=1';frame.title='Built Robotics — RPD 35 field film';frame.allow='autoplay; encrypted-media; picture-in-picture';frame.allowFullscreen=true;
- $('.film-container').replaceChildren(frame);openDialog($('#film-dialog'),event.currentTarget);
-});
 $('.contact-open').addEventListener('click',event=>openDialog($('#contact-dialog'),event.currentTarget));
 $('#brief-form').addEventListener('submit',event=>{
  event.preventDefault();const values=Object.fromEntries(new FormData(event.currentTarget));

@@ -15,31 +15,6 @@
     <a class="skip-link" href="#build">본문으로 이동</a>
     <div class="page-progress" aria-hidden="true"><span></span></div>
 
-    <header class="site-header" data-header>
-      <a class="brand" href="#top" aria-label="U-SUNG home">
-        <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
-        <span class="brand-name">U-SUNG</span>
-      </a>
-      <nav class="desktop-nav" aria-label="주요 메뉴">
-        <a href="#build">BUILD</a>
-        <a href="#projects">PROJECTS</a>
-        <a href="#system">SYSTEM</a>
-        <a href="#future">FUTURE</a>
-        <a href="#contact">CONTACT</a>
-      </nav>
-      <button class="menu-button" type="button" aria-expanded="false" aria-controls="mobile-menu">
-        <span>MENU</span><i></i>
-      </button>
-    </header>
-
-    <nav class="mobile-menu" id="mobile-menu" inert aria-hidden="true" aria-label="모바일 메뉴">
-      <a href="#build">BUILD</a>
-      <a href="#projects">PROJECTS</a>
-        <a href="#system">SYSTEM</a>
-      <a href="#future">FUTURE</a>
-      <a href="#contact">CONTACT</a>
-    </nav>
-
     <main id="top">
       <section class="hero" aria-labelledby="hero-title">
         <video class="hero-media" muted loop playsinline preload="metadata" poster="assets/media/suffolk-project.jpg" aria-hidden="true">
@@ -53,7 +28,6 @@
           <h1 id="hero-title" class="hero-title reveal"><span>BUILD</span><span>BEYOND.</span></h1>
           <div class="hero-bottom reveal">
             <p>도시를 짓는 기술에서<br />도시를 움직이는 지능으로.</p>
-            <a class="round-link" href="#build" aria-label="U-SUNG 소개 보기"><span>EXPLORE</span><b aria-hidden="true">↘</b></a>
           </div>
         </div>
         <div class="scroll-cue" aria-hidden="true"><span>SCROLL</span><i></i></div>
@@ -134,15 +108,15 @@
         <div class="cards-grid">
           <article class="project-card project-card--tall reveal" data-category="building">
             <img src="assets/media/suffolk-naples.jpg" alt="해안 인접 대형 건축 프로젝트" loading="lazy" />
-            <div class="card-label"><span>01</span><h3><button type="button" class="project-open" data-project="0">COMMERCIAL<span aria-hidden="true"> ↗</span></button></h3><p>복합 조건을 조율하는 통합 실행</p></div>
+            <div class="card-label"><span>01</span><h3><button type="button" class="project-open" data-project="0">COMMERCIAL</button></h3><p>복합 조건을 조율하는 통합 실행</p></div>
           </article>
           <article class="project-card reveal" data-category="building">
             <img src="assets/media/turner-project.jpg" alt="Turner 레퍼런스: 자연광과 색채를 활용한 실내 공간" loading="lazy" />
-            <div class="card-label"><span>02</span><h3><button type="button" class="project-open" data-project="1">HUMAN SPACES<span aria-hidden="true"> ↗</span></button></h3><p>사람의 일상을 위한 공간의 완성도</p></div>
+            <div class="card-label"><span>02</span><h3><button type="button" class="project-open" data-project="1">HUMAN SPACES</button></h3><p>사람의 일상을 위한 공간의 완성도</p></div>
           </article>
           <article class="project-card reveal" data-category="technology">
             <img src="assets/media/turner-innovation.jpg" alt="건설 기술 협업 현장" loading="lazy" />
-            <div class="card-label"><span>03</span><h3><button type="button" class="project-open" data-project="2">ENGINEERING<span aria-hidden="true"> ↗</span></button></h3><p>현장과 기술을 연결하는 실행 설계</p></div>
+            <div class="card-label"><span>03</span><h3><button type="button" class="project-open" data-project="2">ENGINEERING</button></h3><p>현장과 기술을 연결하는 실행 설계</p></div>
           </article>
         </div>
       </section>
@@ -170,7 +144,6 @@
         <div class="tech-copy reveal">
           <p class="eyebrow">SMART CONSTRUCTION</p>
           <h2>기술은 보여주기 위한 것이 아니라,<br />현장을 더 정확하게 움직이기 위해 존재합니다.</h2>
-          <button type="button" class="film-open">WATCH THE FIELD FILM <span aria-hidden="true">↗</span></button>
         </div>
       </section>
 
@@ -180,7 +153,7 @@
         <div class="closing-content reveal">
           <p>THE NEXT SITE STARTS HERE</p>
           <h2>LET'S BUILD<br />WHAT'S NEXT.</h2>
-          <button type="button" class="contact-link contact-open">START A CONVERSATION <span aria-hidden="true">↗</span></button>
+          <button type="button" class="contact-link contact-open">START A CONVERSATION </button>
         </div>
       </section>
     </main>
@@ -190,8 +163,7 @@
       <img id="project-dialog-image" alt="" />
       <div class="dialog-copy"><p class="eyebrow" id="project-dialog-source"></p><h2 id="project-dialog-title"></h2><p id="project-dialog-description"></p><a id="project-dialog-link" target="_blank" rel="noreferrer">EXPLORE REFERENCE ↗</a></div>
     </dialog>
-    <dialog class="film-dialog" id="film-dialog" aria-labelledby="film-title"><button type="button" class="dialog-close" aria-label="영상 닫기">CLOSE ×</button><h2 id="film-title">PHYSICAL AI. REAL FIELD.</h2><div class="film-container"></div><a href="https://www.youtube.com/watch?v=6RIExTOxXkU" target="_blank" rel="noreferrer">영상이 재생되지 않으면 YouTube에서 보기 ↗</a></dialog>
-    <dialog class="contact-dialog" id="contact-dialog" aria-labelledby="contact-title"><button type="button" class="dialog-close" aria-label="문의 닫기">CLOSE ×</button><p class="eyebrow">START SOMETHING THAT MATTERS</p><h2 id="contact-title">다음 현장을<br />함께 그려봅니다.</h2><form id="brief-form"><label>이름 / 회사<input name="name" required maxlength="100" autocomplete="organization" placeholder="담당자 또는 회사명" /></label><label>이메일<input type="email" name="email" required maxlength="180" autocomplete="email" placeholder="name@company.com" /></label><label>관심 분야<select name="sector"><option>건축 · 엔지니어링</option><option>스마트 건설 · Physical AI</option><option>기술 협력</option></select></label><label>프로젝트 이야기<textarea name="message" required maxlength="3000" rows="3" placeholder="어떤 현장을 준비하고 계신가요?"></textarea></label><button type="submit" class="brief-submit">브리프 다운로드 <span aria-hidden="true">↗</span></button><p class="form-note" id="brief-status" role="status">데모에서는 입력 내용을 파일로만 내려받습니다. 서버로 전송하지 않습니다.</p></form></dialog>
+    <dialog class="contact-dialog" id="contact-dialog" aria-labelledby="contact-title"><button type="button" class="dialog-close" aria-label="문의 닫기">CLOSE ×</button><p class="eyebrow">START SOMETHING THAT MATTERS</p><h2 id="contact-title">다음 현장을<br />함께 그려봅니다.</h2><form id="brief-form"><label>이름 / 회사<input name="name" required maxlength="100" autocomplete="organization" placeholder="담당자 또는 회사명" /></label><label>이메일<input type="email" name="email" required maxlength="180" autocomplete="email" placeholder="name@company.com" /></label><label>관심 분야<select name="sector"><option>건축 · 엔지니어링</option><option>스마트 건설 · Physical AI</option><option>기술 협력</option></select></label><label>프로젝트 이야기<textarea name="message" required maxlength="3000" rows="3" placeholder="어떤 현장을 준비하고 계신가요?"></textarea></label><button type="submit" class="brief-submit">브리프 다운로드 </button><p class="form-note" id="brief-status" role="status">데모에서는 입력 내용을 파일로만 내려받습니다. 서버로 전송하지 않습니다.</p></form></dialog>
     <footer class="site-footer">
       <a class="brand brand--footer" href="#top"><span class="brand-mark"><i></i><i></i><i></i></span><span class="brand-name">U-SUNG</span></a>
       <p>CONSTRUCTION · ENGINEERING · PHYSICAL AI</p>
