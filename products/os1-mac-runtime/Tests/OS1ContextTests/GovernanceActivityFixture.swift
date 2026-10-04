@@ -22,6 +22,16 @@ func runGovernanceActivityFixtures() throws {
     }
     var checks = 0
     func check(_ value: @autoclosure () -> Bool, _ label: String) { precondition(value(), label); checks += 1 }
+    check(!OwnerRetry.isRetry("다시 읽고 그대로 답해"), "neutral repeat is not a quality failure")
+    check(!OwnerRetry.isRetry("Run again with Claude Code and return the same output"), "provider comparison is not a failure verdict")
+    check(!OwnerRetry.isRetry("잠깐, 이제 다른 자료를 읽어"), "steering pause does not establish failed delivery")
+    check(!OwnerRetry.isRetry("Actually, use the other provider instead"), "neutral amendment is not quality rejection")
+    check(!OwnerRetry.isRetry("배포가 안 되면 실행하지 마"), "conditional failure is not an observed failure")
+    check(!OwnerRetry.isRetry("Print \"not working\""), "quoted literal must not become owner feedback")
+    check(!OwnerRetry.isRetry("If it is not working, show the diagnostic"), "hypothetical English failure is not a verdict")
+    check(OwnerRetry.isRetry("아직 안 고쳐졌는데?"), "explicit failure remains chargeable")
+    check(OwnerRetry.isRetry("still not fixed"), "explicit English failure remains chargeable")
+    check(OwnerRetry.isRetry("그게 아니라 레일 말이야"), "explicit referent correction remains chargeable")
     func rejects(_ label: String, _ body: () throws -> Void) { do { try body(); fatalError(label) } catch { checks += 1 } }
     func add(_ id: String, _ remote: String, _ seq: Int, _ model: String, _ outcome: CompletionOutcome,
              _ measured: CompletionMeasuredUsage?, provider: String = "codex", bound: CompletionFeedbackScope? = nil) throws -> CompletionFeedbackObservation {

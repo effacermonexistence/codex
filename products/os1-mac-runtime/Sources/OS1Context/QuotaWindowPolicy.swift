@@ -47,17 +47,26 @@ public enum OwnerRetry {
     /// How long after a completion a follow-up still counts as "had to ask again".
     public static let window: TimeInterval = 45 * 60
 
+    // A neutral repeat, identical-output instruction or provider comparison is
+    // not an owner quality verdict. Only explicit failure/correction language
+    // may charge the preceding delivery as a retry. This remains a bounded
+    // language detector, not independently verified task correctness.
     static let markers = [
-        "다시", "아직", "안 됐", "안됐", "안 돼", "안돼", "안 되", "안되", "안 고쳐", "안고쳐", "여전히", "그대로",
-        "제대로", "또 ", "똑같", "안 나와", "안나와", "안 보여", "안보여", "안 됨", "안됨",
-        "not fixed", "still ", "again", "didn't work", "did not work", "doesn't work", "does not work",
-        "not working", "same problem", "no change", "nothing changed",
+        "안 됐", "안됐", "안 돼", "안돼", "안 되", "안되", "안 고쳐", "안고쳐",
+        "안 나와", "안나와", "안 보여", "안보여", "안 됨", "안됨", "아직 안 끝", "아직 미완료",
+        "not fixed", "didn't work", "did not work", "doesn't work", "does not work",
+        "not working", "same problem", "nothing changed", "still incomplete", "not finished",
     ]
 
     public static func isRetry(_ text: String) -> Bool {
         let value = text.precomposedStringWithCanonicalMapping.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard !value.isEmpty, !value.hasPrefix(">"), !value.contains("```") else { return false }
-        if ExecutionSteering.isDirectCorrection(value) { return true }
+        guard !value.isEmpty, !value.hasPrefix(">"), !value.contains("```"), !value.contains("◉"),
+              !["\"", "“", "”", "‘", "’"].contains(where: value.contains),
+              !["if ", "unless ", "되면", "으면", "다면", "경우에는"].contains(where: value.contains) else { return false }
+        // Steering recognises "actually", "instead" and "잠깐" as amendments;
+        // they do not themselves establish failure of the previous task.
+        if ["그 말이 아니라", "그게 아니라", "아니 그게 아니라", "아니, 그게 아니라", "정정:",
+            "correction:"].contains(where: { value.hasPrefix($0) }) { return true }
         return markers.contains { value.contains($0) }
     }
 }

@@ -193,6 +193,9 @@ public struct CompletionFeedbackObservation: Codable, Equatable, Sendable {
     public var inputTokens: Int?
     public var outputTokens: Int?
     public var cacheTokens: Int?
+    /// Cache creation is a measured subset of cached input, not a cache read.
+    /// Nil on legacy/unmeasured records; never reconstruct it as zero.
+    public var cacheWriteTokens: Int?
     public let durationMS: Int
     public var usageResource: CompletionUsageResourceMetadata?
 
@@ -202,6 +205,7 @@ public struct CompletionFeedbackObservation: Codable, Equatable, Sendable {
         case inputTokens = "input_tokens"
         case outputTokens = "output_tokens"
         case cacheTokens = "cache_tokens"
+        case cacheWriteTokens = "cache_write_tokens"
         case durationMS = "duration_ms"
         case usageResource = "usage_resource"
     }
@@ -225,6 +229,7 @@ public struct CompletionFeedbackObservation: Codable, Equatable, Sendable {
         self.inputTokens = usage?.inputTokens
         self.outputTokens = usage?.outputTokens
         self.cacheTokens = usage?.cacheTokens
+        self.cacheWriteTokens = usage?.cacheWriteTokens
         self.durationMS = durationMS
         self.usageResource = usage?.resource
     }
@@ -237,7 +242,8 @@ public struct CompletionFeedbackObservation: Codable, Equatable, Sendable {
               model.wholeMatch(of: safeIdentifier) != nil,
               effort.wholeMatch(of: safeIdentifier) != nil,
               (0...3_600_000).contains(durationMS),
-              [inputTokens, outputTokens, cacheTokens].allSatisfy({ $0.map { (0...2_000_000_000).contains($0) } ?? true }),
+              [inputTokens, outputTokens, cacheTokens, cacheWriteTokens].allSatisfy({ $0.map { (0...2_000_000_000).contains($0) } ?? true }),
+              cacheWriteTokens.map({ write in cacheTokens.map({ write <= $0 }) ?? false }) ?? true,
               usageResource.map({
                   $0.byteCount > 0 && $0.byteCount <= 64_000_000 &&
                       CompletionFeedbackScope.isDigest($0.sha256) &&
@@ -261,6 +267,8 @@ public struct CompletionFeedbackObservation: Codable, Equatable, Sendable {
         else { try values.encodeNil(forKey: .outputTokens) }
         if let cacheTokens { try values.encode(cacheTokens, forKey: .cacheTokens) }
         else { try values.encodeNil(forKey: .cacheTokens) }
+        // Omit rather than null on old records, preserving the legacy wire shape.
+        if let cacheWriteTokens { try values.encode(cacheWriteTokens, forKey: .cacheWriteTokens) }
         try values.encode(durationMS, forKey: .durationMS)
         if let usageResource { try values.encode(usageResource, forKey: .usageResource) }
         else { try values.encodeNil(forKey: .usageResource) }
@@ -306,7 +314,8 @@ public struct CompletionFeedbackLedger: Codable, Equatable, Sendable {
         var revised = CompletionFeedbackObservation(executionID: old.executionID, sequence: old.sequence, provider: old.provider,
             model: old.model, effort: old.effort, outcome: outcome, usage: nil, durationMS: old.durationMS)
         revised.inputTokens = old.inputTokens; revised.outputTokens = old.outputTokens
-        revised.cacheTokens = old.cacheTokens; revised.usageResource = old.usageResource
+        revised.cacheTokens = old.cacheTokens; revised.cacheWriteTokens = old.cacheWriteTokens
+        revised.usageResource = old.usageResource
         observations[index] = revised
         try validate()
         return true

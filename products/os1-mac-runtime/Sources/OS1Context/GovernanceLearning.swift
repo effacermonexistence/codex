@@ -1,12 +1,12 @@
 import Foundation
 
-/// What the routing loop has learned, in the units the server ledger learns
-/// in (owner order 2026-09-24: every task's completion and tokens recorded,
-/// routing improving toward fewer tokens, more finished tasks and less time).
+/// Measured local operational-route statistics. The server may rank routes
+/// using its separate heuristic; that heuristic is not a raw token measure.
 ///
-/// Read-only projection of the governance records. Tokens are weighted to
-/// input-token equivalents — fresh input + 0.1 × cache reads + 5 × output —
-/// the same conversion the route core applies before ranking routes.
+/// Read-only projection of operational adoption receipts. Token figures are
+/// the measured normalized input + output counts, including input cache tokens
+/// once. They are not billed dollars, price-weighted units, objective accuracy,
+/// or evidence that a routing change caused an improvement.
 public struct GovernanceLearningRoute: Identifiable, Equatable, Sendable {
     public let id: String
     public let provider: String
@@ -18,14 +18,18 @@ public struct GovernanceLearningRoute: Identifiable, Equatable, Sendable {
     public let attempts: Int
     public let adopted: Int
     public let measuredAttempts: Int
-    /// Geometric mean over measured attempts, failures included.
+    /// Arithmetic mean over every counted attempt, failures included. Missing
+    /// usage on even one counted attempt leaves this unmeasured.
     public let tokensPerAttempt: Double?
+    /// Total duration of every counted attempt per adopted receipt, including
+    /// failures/retries. Retained API name; not a success-only geometric mean.
     public let meanSecondsCompleted: Double?
 
     public var completionRate: Double { attempts > 0 ? Double(adopted) / Double(attempts) : 0 }
-    /// Tokens it takes this route to produce one verified result.
+    /// All measured counted-attempt tokens per adopted receipt. Adoption is
+    /// operational execution/delivery evidence, not an objective-quality verdict.
     public var tokensPerCompletion: Double? {
-        guard let tokensPerAttempt, adopted > 0 else { return nil }
+        guard let tokensPerAttempt, measuredAttempts == attempts, attempts > 0, adopted > 0 else { return nil }
         return tokensPerAttempt / completionRate
     }
 }
@@ -33,9 +37,9 @@ public struct GovernanceLearningRoute: Identifiable, Equatable, Sendable {
 public struct GovernanceLearningWindow: Equatable, Sendable {
     public let attempts: Int
     public let adopted: Int
-    /// Verified results whose attempt had trustworthy token accounting.
+    /// Adopted receipts whose attempt had trustworthy token accounting.
     public let measuredCompletions: Int
-    /// Verified results with a recorded duration.
+    /// Adopted receipts with a recorded positive duration.
     public let timedCompletions: Int
     public let tokensPerCompletion: Double?
     public let secondsPerCompletion: Double?
@@ -43,16 +47,23 @@ public struct GovernanceLearningWindow: Equatable, Sendable {
 }
 
 /// One backend's last `days` against the `days` before. A week-over-week
-/// change is only a comparison when both weeks hold enough of the same kind
-/// of evidence; otherwise the view shows the recent value alone.
+/// change is descriptive and unpaired even with enough observations: model,
+/// task, effort and context mixes may differ. Otherwise the view shows the
+/// recent value alone. No adaptive weekly look is a causal uplift proof.
 public struct GovernanceLearningTrend: Equatable, Sendable {
     public let provider: String?
     public let recent: GovernanceLearningWindow
     public let previous: GovernanceLearningWindow
 
     public var completionComparable: Bool { Self.enough(recent.attempts, previous.attempts) }
-    public var tokensComparable: Bool { Self.enough(recent.measuredCompletions, previous.measuredCompletions) }
-    public var secondsComparable: Bool { Self.enough(recent.timedCompletions, previous.timedCompletions) }
+    public var tokensComparable: Bool {
+        Self.enough(recent.measuredCompletions, previous.measuredCompletions) &&
+        recent.tokensPerCompletion != nil && previous.tokensPerCompletion != nil
+    }
+    public var secondsComparable: Bool {
+        Self.enough(recent.timedCompletions, previous.timedCompletions) &&
+        recent.secondsPerCompletion != nil && previous.secondsPerCompletion != nil
+    }
 
     static func enough(_ recent: Int, _ previous: Int) -> Bool {
         recent >= GovernanceLearning.minimumTrendSamples && previous >= GovernanceLearning.minimumTrendSamples
@@ -60,23 +71,27 @@ public struct GovernanceLearningTrend: Equatable, Sendable {
 }
 
 public enum GovernanceLearning {
-    public static let cacheReadWeight = 0.1
-    public static let outputWeight = 5.0
     /// Fewest samples per week before a week-over-week change is shown.
     public static let minimumTrendSamples = 10
     static let routeOutcomes: Set<String> = ["adopted", "quality_failure", "timeout", "capability_failure"]
 
-    /// Input-token equivalents of one attempt, or nil when its usage is not
-    /// trustworthy (the same accounting rule as the token totals elsewhere).
-    public static func weightedTokens(_ observation: CompletionFeedbackObservation) -> Double? {
-        guard GovernanceSnapshot.tokens(observation) != nil,
+    /// Raw normalized input + output of one attempt. Cache is already part of
+    /// normalized input and must not be added or discounted again. A recorded
+    /// zero remains zero; absent/untrusted usage remains nil.
+    public static func measuredTokens(_ observation: CompletionFeedbackObservation) -> Int? {
+        guard let resource = observation.usageResource,
+              (observation.provider == "codex" && resource.format == .codexRolloutJSONL && resource.accountingVersion == 2) ||
+              (observation.provider == "claude" && [.claudeJSONL, .claudeResultJSON].contains(resource.format) && resource.accountingVersion == 1),
               let input = observation.inputTokens, let output = observation.outputTokens,
               input >= 0, output >= 0 else { return nil }
-        let cache = min(max(observation.cacheTokens ?? 0, 0), input)
-        let weighted = Double(input - cache) + cacheReadWeight * Double(cache) + outputWeight * Double(output)
-        // An attempt that spent nothing never reached inference: unmeasured,
-        // not a one-token attempt that drags the route's average to zero.
-        return weighted > 0 ? weighted : nil
+        let sum = input.addingReportingOverflow(output)
+        return sum.overflow ? nil : sum.partialValue
+    }
+
+    /// Source compatibility only. This is now raw tokens, never a price model.
+    @available(*, deprecated, message: "Use measuredTokens; token counts are not price-weighted equivalents")
+    public static func weightedTokens(_ observation: CompletionFeedbackObservation) -> Double? {
+        measuredTokens(observation).map(Double.init)
     }
 
     static func counted(_ attempt: GovernanceAttempt) -> CompletionFeedbackObservation? {
@@ -87,7 +102,7 @@ public enum GovernanceLearning {
 
     public static func routes(_ snapshot: GovernanceSnapshot, since: Date? = nil,
                               provider: String? = nil) -> [GovernanceLearningRoute] {
-        struct Totals { var attempts = 0, adopted = 0, measured = 0; var logTokens = 0.0; var logSeconds = 0.0, timed = 0 }
+        struct Totals { var attempts = 0, adopted = 0, measured = 0; var tokens = 0.0; var seconds = 0.0, timed = 0 }
         var totals: [String: (String, String, String, Totals)] = [:]
         for task in snapshot.selectedTasks(since: since) {
             for attempt in task.attempts {
@@ -96,14 +111,14 @@ public enum GovernanceLearning {
                 entry.3.attempts += 1
                 if observation.outcome.rawValue == "adopted" {
                     entry.3.adopted += 1
-                    let ms = observation.durationMS
-                    if ms > 0 {
-                        entry.3.logSeconds += log(max(1, Double(ms) / 1000)); entry.3.timed += 1
-                    }
                 }
-                if let tokens = weightedTokens(observation) {
+                let ms = observation.durationMS
+                if ms > 0 {
+                    entry.3.seconds += Double(ms) / 1000; entry.3.timed += 1
+                }
+                if let tokens = measuredTokens(observation) {
                     entry.3.measured += 1
-                    entry.3.logTokens += log(max(1, tokens))
+                    entry.3.tokens += Double(tokens)
                 }
                 totals[attempt.route] = entry
             }
@@ -113,8 +128,8 @@ public enum GovernanceLearning {
             return GovernanceLearningRoute(
                 id: id, provider: entry.0, model: entry.1, effort: entry.2,
                 attempts: t.attempts, adopted: t.adopted, measuredAttempts: t.measured,
-                tokensPerAttempt: t.measured > 0 ? exp(t.logTokens / Double(t.measured)) : nil,
-                meanSecondsCompleted: t.timed > 0 ? exp(t.logSeconds / Double(t.timed)) : nil)
+                tokensPerAttempt: t.attempts > 0 && t.measured == t.attempts ? t.tokens / Double(t.attempts) : nil,
+                meanSecondsCompleted: t.adopted > 0 && t.timed == t.attempts ? t.seconds / Double(t.adopted) : nil)
         }
         .sorted { lhs, rhs in
             if lhs.provider != rhs.provider { return lhs.provider < rhs.provider }
@@ -127,8 +142,8 @@ public enum GovernanceLearning {
         }
     }
 
-    /// The most efficient measured route per provider: fewest tokens per
-    /// verified result among routes with enough attempts to mean something.
+    /// Lowest observed token cost per adoption among fully measured eligible
+    /// routes. This descriptive leader is not a held-out quality or uplift claim.
     public static func leaders(_ routes: [GovernanceLearningRoute], minimumAttempts: Int = 3) -> [String: String] {
         var best: [String: GovernanceLearningRoute] = [:]
         for route in routes where route.attempts >= minimumAttempts {
@@ -142,25 +157,28 @@ public enum GovernanceLearning {
     static func window(_ snapshot: GovernanceSnapshot, from start: Date, to end: Date,
                        provider: String? = nil) -> GovernanceLearningWindow {
         var attempts = 0, adopted = 0, measuredAdopted = 0, timed = 0
-        var tokens = 0.0, measured = false, seconds = 0.0
+        var tokens = 0.0, measuredAttempts = 0, seconds = 0.0, timedAttempts = 0
         for task in snapshot.tasks where task.startedAt >= start && task.startedAt < end {
             for attempt in task.attempts {
                 guard let observation = counted(attempt), provider == nil || attempt.provider == provider else { continue }
                 attempts += 1
                 let success = observation.outcome.rawValue == "adopted"
                 if success { adopted += 1 }
-                if let value = weightedTokens(observation) {
-                    tokens += value; measured = true
+                if let value = measuredTokens(observation) {
+                    tokens += Double(value); measuredAttempts += 1
                     if success { measuredAdopted += 1 }
                 }
-                if success, observation.durationMS > 0 { seconds += Double(observation.durationMS) / 1000; timed += 1 }
+                if observation.durationMS > 0 {
+                    seconds += Double(observation.durationMS) / 1000; timedAttempts += 1
+                    if success { timed += 1 }
+                }
             }
         }
         return GovernanceLearningWindow(
             attempts: attempts, adopted: adopted, measuredCompletions: measuredAdopted, timedCompletions: timed,
-            // Every measured attempt's tokens, failures included, per verified result.
-            tokensPerCompletion: measured && measuredAdopted > 0 ? tokens / Double(measuredAdopted) : nil,
-            secondsPerCompletion: timed > 0 ? seconds / Double(timed) : nil)
+            // A failed unknown cost/time cannot become a free attempt.
+            tokensPerCompletion: attempts > 0 && measuredAttempts == attempts && adopted > 0 ? tokens / Double(adopted) : nil,
+            secondsPerCompletion: attempts > 0 && timedAttempts == attempts && adopted > 0 ? seconds / Double(adopted) : nil)
     }
 
     /// The last `days` against the `days` before: is routing getting better?

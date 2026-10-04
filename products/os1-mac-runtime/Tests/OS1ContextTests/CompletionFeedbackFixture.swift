@@ -27,6 +27,7 @@ func runCompletionFeedbackFixtures() throws {
     precondition(claudeUsage?.inputTokens == 155)
     precondition(claudeUsage?.outputTokens == 17)
     precondition(claudeUsage?.cacheTokens == 150)
+    precondition(claudeUsage?.cacheWriteTokens == 100)
     precondition(claudeUsage?.resource.usageRecordCount == 2)
 
     let claudeResult = Data("""
@@ -36,6 +37,7 @@ func runCompletionFeedbackFixtures() throws {
     precondition(resultUsage?.inputTokens == 50)
     precondition(resultUsage?.outputTokens == 9)
     precondition(resultUsage?.cacheTokens == 48)
+    precondition(resultUsage?.cacheWriteTokens == 40)
     precondition(resultUsage?.resource.format == .claudeResultJSON)
 
     let unknown = Data("""
@@ -45,6 +47,7 @@ func runCompletionFeedbackFixtures() throws {
     precondition(unknownUsage?.inputTokens == nil)
     precondition(unknownUsage?.outputTokens == 5)
     precondition(unknownUsage?.cacheTokens == nil)
+    precondition(unknownUsage?.cacheWriteTokens == nil)
     precondition(CompletionUsageParser.parse(Data("{\"type\":\"user\"}".utf8), format: .claudeJSONL) == nil)
 
     let codex = Data("""
@@ -150,6 +153,33 @@ func runCompletionFeedbackFixtures() throws {
         usage: claudeUsage,
         durationMS: 1_234
     )
+    precondition(first.cacheWriteTokens == 100, "Measured cache creation must survive local observation construction")
+    let firstData = try JSONEncoder().encode(first)
+    let firstObject = try JSONSerialization.jsonObject(with: firstData) as! [String: Any]
+    precondition(firstObject["cache_write_tokens"] as? Int == 100)
+    let firstRoundTrip = try JSONDecoder().decode(CompletionFeedbackObservation.self, from: firstData)
+    precondition(firstRoundTrip == first)
+    var legacyWithoutWrites = firstObject
+    legacyWithoutWrites.removeValue(forKey: "cache_write_tokens")
+    let legacyWithoutWritesData = try JSONSerialization.data(withJSONObject: legacyWithoutWrites)
+    let legacyWithoutWritesObservation = try JSONDecoder().decode(CompletionFeedbackObservation.self, from: legacyWithoutWritesData)
+    precondition(legacyWithoutWritesObservation.cacheWriteTokens == nil, "Missing historical creation count stays unknown, not zero")
+    try legacyWithoutWritesObservation.validate()
+    let legacyReencoded = try JSONSerialization.jsonObject(with: JSONEncoder().encode(legacyWithoutWritesObservation)) as! [String: Any]
+    precondition(legacyReencoded["cache_write_tokens"] == nil, "Legacy wire shape must omit the absent field")
+    func rejectsInvalidWrite(_ observation: CompletionFeedbackObservation) -> Bool {
+        do { try observation.validate(); return false } catch { return true }
+    }
+    var invalidWrite = first
+    invalidWrite.cacheWriteTokens = -1
+    precondition(rejectsInvalidWrite(invalidWrite))
+    invalidWrite.cacheWriteTokens = 151
+    precondition(rejectsInvalidWrite(invalidWrite), "Creation cannot exceed all cached input")
+    invalidWrite.cacheWriteTokens = 2_000_000_001
+    precondition(rejectsInvalidWrite(invalidWrite))
+    invalidWrite.cacheWriteTokens = 100
+    invalidWrite.cacheTokens = nil
+    precondition(rejectsInvalidWrite(invalidWrite), "A cache subset requires a measured enclosing cache count")
     let insertedFirst = try store.record(scope: scope, observation: first)
     precondition(insertedFirst)
     let duplicate = CompletionFeedbackObservation(
@@ -191,11 +221,16 @@ func runCompletionFeedbackFixtures() throws {
     precondition(publicText.contains("\"output_tokens\":null"))
     precondition(!publicText.contains("execution_id"))
     precondition(!publicText.contains("cache_tokens"))
+    precondition(!publicText.contains("cache_write_tokens"), "The existing server feedback contract must not gain a key")
     precondition(!publicText.contains("source_sha256"))
     precondition(!publicText.contains("assembled_input_sha256"))
     precondition(!publicText.contains("executor_contract_sha256"))
 
     var localLedger = ledger
+    let revisedWithWrites = try localLedger.revise(executionID: execution, sequence: 1, outcome: .adopted)
+    precondition(revisedWithWrites)
+    precondition(localLedger.observations.first?.cacheWriteTokens == 100, "Outcome revision must preserve measured creation")
+    precondition(localLedger.observations.first?.usageResource == first.usageResource)
     let localObservation = CompletionFeedbackObservation(
         executionID: UUID().uuidString,
         sequence: 1,
