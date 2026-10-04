@@ -39,6 +39,62 @@ const logicalSupport = new Map<LogicalScope, LogicalReceipt>();
 const VERSION = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const SERVICE = /^[a-z0-9][a-z0-9-]{0,62}$/;
 const POLICY = /^[0-9a-f]{64}$/;
+const EDGE_CACHE_NAME = "os1-private-capability-v1";
+type EdgeReceipt = { format: 1; version_id: string; service_id: string; policy_sha256: string;
+  completion_feedback_schema: 1; model_availability_schema: 1; route_learning_schema: LearningSchema;
+  checked_at: number; expires_at: number };
+
+function scopeIdentity(scope: LogicalScope): { version: string; service: string; policy: string } | undefined {
+  const parts = scope.split("|");
+  return parts.length === 3 && VERSION.test(parts[0]!) && SERVICE.test(parts[1]!) && POLICY.test(parts[2]!) ?
+    { version: parts[0]!, service: parts[1]!, policy: parts[2]! } : undefined;
+}
+function edgeKey(scope: LogicalScope): Request | undefined {
+  const identity = scopeIdentity(scope);
+  return identity ? new Request(`https://os1-capability.invalid/v1/${identity.version}/${identity.service}/${identity.policy}`, { method: "GET" }) : undefined;
+}
+async function edgeHandle(): Promise<Cache | undefined> {
+  // Obtain a handle in THIS request's I/O context. Never retain Cache/Response/
+  // Request/Fetcher/stub objects or in-flight promises in module-global state.
+  try { return typeof caches === "undefined" ? undefined : await caches.open(EDGE_CACHE_NAME); }
+  catch { return undefined; }
+}
+async function evictEdge(scope: LogicalScope): Promise<void> {
+  const key = edgeKey(scope); if (!key) return;
+  try { const cache = await edgeHandle(); if (cache) await cache.delete(key); } catch { /* Metadata cache is disposable. */ }
+}
+async function readEdge(scope: LogicalScope, nowMs: number): Promise<LogicalReceipt | undefined> {
+  const identity = scopeIdentity(scope), key = edgeKey(scope); if (!identity || !key) return undefined;
+  try {
+    const cache = await edgeHandle(); if (!cache) return undefined;
+    const response = await cache.match(key); if (!response) return undefined;
+    const value = await readBoundedJson(response, 1_024);
+    if (response.status !== 200 || typeof value !== "object" || value === null || Array.isArray(value)) throw new Error("invalid metadata");
+    const v = value as Record<string, unknown>;
+    if (Object.keys(v).sort().join() !== "checked_at,completion_feedback_schema,expires_at,format,model_availability_schema,policy_sha256,route_learning_schema,service_id,version_id" ||
+      v.format !== 1 || v.version_id !== identity.version || v.service_id !== identity.service || v.policy_sha256 !== identity.policy ||
+      v.completion_feedback_schema !== 1 || v.model_availability_schema !== 1 || ![0, 1, 2, 3].includes(v.route_learning_schema as number) ||
+      !Number.isSafeInteger(v.checked_at) || !Number.isSafeInteger(v.expires_at) || (v.checked_at as number) < 0 ||
+      (v.expires_at as number) <= (v.checked_at as number) || (v.expires_at as number) > (v.checked_at as number) + 60_000 ||
+      nowMs < (v.checked_at as number) || nowMs >= (v.expires_at as number)) throw new Error("invalid metadata");
+    return { verifiedAt: v.checked_at as number, expires: v.expires_at as number, learningSchema: v.route_learning_schema as LearningSchema };
+  } catch { await evictEdge(scope); return undefined; }
+}
+async function publishEdge(scope: LogicalScope, receipt: LogicalReceipt): Promise<void> {
+  const identity = scopeIdentity(scope), key = edgeKey(scope); if (!identity || !key) return;
+  const value: EdgeReceipt = { format: 1, version_id: identity.version, service_id: identity.service, policy_sha256: identity.policy,
+    completion_feedback_schema: 1, model_availability_schema: 1, route_learning_schema: receipt.learningSchema,
+    checked_at: receipt.verifiedAt, expires_at: receipt.expires };
+  try {
+    const cache = await edgeHandle(); if (!cache) return;
+    await cache.put(key, Response.json(value, { headers: { "cache-control": "max-age=60" } }));
+  } catch { /* A put failure never downgrades the freshly verified GET result. */ }
+}
+
+function retainLogical(scope: LogicalScope, receipt: LogicalReceipt): void {
+  if (!logicalSupport.has(scope) && logicalSupport.size >= 64) logicalSupport.delete(logicalSupport.keys().next().value!);
+  logicalSupport.set(scope, receipt);
+}
 
 /** Version metadata is supplied by the Cloudflare runtime, not a request or
  * caller label. Code/config changes receive a different version. Invalid or
@@ -70,10 +126,19 @@ export async function completionCapabilityState(binding: Fetcher, expectedPolicy
     const receipt = logicalSupport.get(logicalScope);
     if (allowCached && receipt && nowMs >= receipt.verifiedAt && nowMs < receipt.expires) {
       seedLearning(binding, expectedPolicy, receipt.learningSchema, receipt.expires);
-      console.log(JSON.stringify({ event: "capability_positive_cache_hit", hit: true, age_ms: nowMs - receipt.verifiedAt }));
+      console.log(JSON.stringify({ event: "capability_positive_cache_hit", hit: true, cache: "memory", age_ms: nowMs - receipt.verifiedAt }));
       return { feedback: true, modelAvailability: true };
     }
     if (receipt && (nowMs < receipt.verifiedAt || nowMs >= receipt.expires)) logicalSupport.delete(logicalScope);
+    if (allowCached) {
+      const edge = await readEdge(logicalScope, nowMs);
+      if (edge) {
+        retainLogical(logicalScope, edge);
+        seedLearning(binding, expectedPolicy, edge.learningSchema, edge.expires);
+        console.log(JSON.stringify({ event: "capability_positive_cache_hit", hit: true, cache: "edge", age_ms: nowMs - edge.verifiedAt }));
+        return { feedback: true, modelAvailability: true };
+      }
+    }
     if (allowCached) console.log(JSON.stringify({ event: "capability_positive_cache_hit", hit: false }));
   } else {
     const cached = startupSupport.get(binding)?.get(expectedPolicy);
@@ -88,6 +153,7 @@ export async function completionCapabilityState(binding: Fetcher, expectedPolicy
   if (value === undefined) {
     startupSupport.get(binding)?.delete(expectedPolicy);
     if (logicalScope) logicalSupport.delete(logicalScope);
+    if (logicalScope) await evictEdge(logicalScope);
     return { feedback: false, modelAvailability: false };
   }
   const schema = value.route_learning_schema === 3 ? 3 : value.route_learning_schema === 2 ? 2 :
@@ -99,12 +165,14 @@ export async function completionCapabilityState(binding: Fetcher, expectedPolicy
     positives.set(expectedPolicy, { verifiedAt: nowMs, expires: nowMs + 60_000 });
     startupSupport.set(binding, positives);
     if (logicalScope) {
-      if (!logicalSupport.has(logicalScope) && logicalSupport.size >= 64) logicalSupport.delete(logicalSupport.keys().next().value!);
-      logicalSupport.set(logicalScope, { verifiedAt: nowMs, expires: nowMs + 60_000, learningSchema: schema });
+      const receipt: LogicalReceipt = { verifiedAt: nowMs, expires: nowMs + 60_000, learningSchema: schema };
+      retainLogical(logicalScope, receipt);
+      await publishEdge(logicalScope, receipt);
     }
   } else {
     startupSupport.get(binding)?.delete(expectedPolicy);
     if (logicalScope) logicalSupport.delete(logicalScope);
+    if (logicalScope) await evictEdge(logicalScope);
   }
   return { feedback: true, modelAvailability: value.model_availability_schema === 1 };
 }
