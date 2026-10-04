@@ -3,10 +3,13 @@ import { createHash } from 'node:crypto';
 import { nav, footer, home, ai, physical } from './src/pages.mjs';
 import { languages, languageSelector } from './src/languages.mjs';
 import { loadDictionary, localizeHtml } from './src/localize.mjs';
+import { brandLogo } from './src/brand.mjs';
 
 const constructionStyles = await readFile(new URL('./baseline/styles.css', import.meta.url));
+const brandSource = await readFile(new URL('./src/brand.mjs', import.meta.url));
+const brandFavicon = await readFile(new URL('./public/assets/brand/usung-u-symbol.svg', import.meta.url));
 
-const assetVersion = createHash('sha256').update(await readFile(new URL('./public/corporate.css', import.meta.url))).update(await readFile(new URL('./public/corporate.js', import.meta.url))).update(await readFile(new URL('./public/locale.js', import.meta.url))).update(await readFile(new URL('./src/pages.mjs', import.meta.url))).update(await readFile(new URL('./src/languages.mjs', import.meta.url))).update(await readFile(new URL('./references.json', import.meta.url))).update(await readFile(new URL('./build.mjs', import.meta.url))).update(await readFile(new URL('./baseline/app.js', import.meta.url))).update(constructionStyles).digest('hex').slice(0, 12);
+const assetVersion = createHash('sha256').update(await readFile(new URL('./public/corporate.css', import.meta.url))).update(await readFile(new URL('./public/corporate.js', import.meta.url))).update(await readFile(new URL('./public/locale.js', import.meta.url))).update(await readFile(new URL('./src/pages.mjs', import.meta.url))).update(await readFile(new URL('./src/languages.mjs', import.meta.url))).update(await readFile(new URL('./references.json', import.meta.url))).update(await readFile(new URL('./build.mjs', import.meta.url))).update(await readFile(new URL('./baseline/app.js', import.meta.url))).update(constructionStyles).update(brandSource).update(brandFavicon).digest('hex').slice(0, 12);
 const pageSources = [];
 const head = (title, description, route = '/') => `<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${title}</title><meta name="description" content="${description}"><meta name="theme-color" content="#090a0a"><link rel="canonical" href="https://usungcorp.com${route}"><meta property="og:title" content="${title}"><meta property="og:description" content="${description}"><meta property="og:type" content="website"><meta property="og:url" content="https://usungcorp.com${route}"><link rel="icon" href="/favicon.svg?v=20261003-q2" type="image/svg+xml"><link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Noto+Sans+KR:wght@400;500;600;700;800&display=swap" rel="stylesheet"><link rel="stylesheet" href="/corporate.css?v=20261003-q2"><script src="/corporate.js?v=20261003-q2" defer></script></head>`;
 for (const page of [
@@ -29,6 +32,8 @@ original = original.replaceAll('"assets/media/', '"/assets/media/');
 original = original.replace('</head>', '<link rel="canonical" href="https://usungcorp.com/smart-construction/"><link rel="icon" href="/favicon.svg?v=20261003-q2" type="image/svg+xml"><link rel="stylesheet" href="/corporate.css?v=20261003-q2"><script src="/corporate.js?v=20261003-q2" defer></script></head>');
 original = original.replace('<body>', `<body class="corp-construction">${nav('construction')}`);
 original = original.replace('aria-label="U-SUNG home"', 'aria-label="스마트 건설 페이지 처음으로"');
+original = original.replace('<span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>\n        <span class="brand-name">U-SUNG</span>', `${brandLogo('construction-header')}<span class="brand-name usung-section-name">SMART CONSTRUCTION</span>`);
+original = original.replace('<a class="brand brand--footer" href="#top"><span class="brand-mark"><i></i><i></i><i></i></span><span class="brand-name">U-SUNG</span></a>', `<a class="brand brand--footer" href="#top" aria-label="유성 메인">${brandLogo('construction-footer')}</a>`);
 pageSources.push({ route: '/smart-construction/', directory: 'smart-construction', html: original.replaceAll('20261003-q2', assetVersion) });
 let legacyJs = await readFile(new URL('./baseline/app.js', import.meta.url), 'utf8');
 legacyJs = legacyJs.replace('`assets/media/${p.image}`', '`/assets/media/${p.image}`');
@@ -48,6 +53,7 @@ for (const language of languages) {
   const dictionary = await loadDictionary(language.code);
   for (const page of pageSources) {
     let html = localizeHtml(page.html, dictionary, language.code);
+    html = html.replaceAll('U-SUNG', 'USUNG');
     html = html.replace('<usung-language></usung-language>', languageSelector(page.route, language.code, dictionary));
     html = html.replace(/href="(\/(?:ai\/|smart-construction\/|physical-ai\/)?)(#[^"]*)?"/g, (_, route, hash = '') => `href="${route}?lang=${language.code}${hash}"`);
     html = html.replace('src="/locale.js"', `src="/locale.js?v=${assetVersion}"`);
@@ -57,7 +63,7 @@ for (const language of languages) {
     if (language.code === 'en') await writeFile(new URL(`./public/${page.directory}/index.html`, import.meta.url), html);
   }
 }
-await writeFile(new URL('./public/favicon.svg', import.meta.url), '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40"><rect width="40" height="40" rx="7" fill="#090a0a"/><g fill="#eeede7" transform="skewX(-17)"><path d="M15 19h6v14h-6zM24 10h6v23h-6zM33 16h6v17h-6z"/></g></svg>');
+await writeFile(new URL('./public/favicon.svg', import.meta.url), brandFavicon);
 await writeFile(new URL('./public/robots.txt', import.meta.url), 'User-agent: *\nAllow: /\nSitemap: https://usungcorp.com/sitemap.xml\n');
 await writeFile(new URL('./public/sitemap.xml', import.meta.url), '<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">' + ['/', '/ai/', '/smart-construction/', '/physical-ai/'].map(route => `<url><loc>https://usungcorp.com${route}</loc></url>`).join('') + '</urlset>');
 console.log(`Built all four corporate pages in ${languages.length} languages. Default: English.`);

@@ -357,3 +357,17 @@ html[dir=rtl] .corp-construction :is(.manifesto-copy,.manifesto-note,.system-hea
 @media(max-width:760px){
  .corp-main-landing .corp-source-ai-card>img{inset:10px 16px auto;width:calc(100% - 32px);height:55%;object-position:center}
 }
+/* Approved USUNG wordmark: original option 01 letterforms, option 02 U accent. */
+.usung-wordmark{display:block;height:auto;flex-shrink:0}
+.corp-brand .usung-wordmark{width:118px}
+.corp-footer-logo .usung-wordmark{width:clamp(180px,20vw,280px)}
+.corp-construction .site-header .usung-wordmark{width:94px}
+.corp-construction .site-header .brand-name.usung-section-name{font-size:8px;font-weight:500;letter-spacing:.08em;white-space:nowrap;opacity:.65}
+.corp-construction .site-header .brand-name.usung-section-name:after{content:none}
+.corp-construction .brand--footer .usung-wordmark{width:180px}
+@media(max-width:760px){
+ .corp-brand .usung-wordmark{width:104px}
+ .corp-construction .site-header .usung-wordmark{width:82px}
+ .corp-construction .site-header .usung-section-name{display:none}
+ .corp-footer-logo .usung-wordmark{width:210px}
+}
