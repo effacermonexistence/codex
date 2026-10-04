@@ -1,0 +1,11 @@
+# Build315 — fresh single-query Notes policy certificate
+
+Build314's installed GUI tests verified both native backends and final server adoption, but GUI-origin dispatch remained 3074/3208 ms. Fresh policy synchronization alone took 979/1425 ms. These measurements are retained as partial results, not relabeled as sub-one-second completion.
+
+The owner-policy helper now asks the live Notes API one bounded predicate query: the cached canonical note at its unchanged stored date, or another eligible note at/after the cached whole-second lower bound. Acceptance requires the exact cached ID and unchanged returned date, exactly one correctly typed API result, no competing newer/tied note, and the existing cached SHA/path/symlink checks. Invalid IDs/dates, malformed/empty/duplicate serialization, changed or missing note, newer/tied competitor, or any uncertain certificate use the original full-index/body-capture/recheck path or its existing fail-closed error. This is not database-only inference, a TTL freshness waiver, source-authority mutation, or removal of the fallback.
+
+Regression coverage: 28 tests, retaining all 17 original cases, including the 0.9995-second boundary, same-second competition, malformed/empty serialized results, duplicates, missing/changed note, cache tamper, grammar and identity checks, and original fallback. Integrated read-only local measurement: one fresh Notes API query, 286.89 ms total, same verified source SHA, no model calls or Notes writes. That helper result is not proof of whole-app startup latency.
+
+Build314's independent diagnostics also found that per-binding positive capability metadata caches were not reliably reused in live consecutive requests: two local-only runs within six seconds still spent 650/1075 ms in the pinned capability probe. Build315 does not conceal that remaining remote cost or change the signed startup contract, model/effort floor, quota, lease, source-bound route or final-adoption gates. No further protocol surgery is included.
+
+Managed release/install hashes, exact source commit and R2 manifest, installed GUI-origin timings, unchanged native final text and two-provider adoption are separate delivery gates. Preserve cold/warm time origins and negative/partial results. Do not infer the full startup target is achieved from these source tests or the helper measurement.

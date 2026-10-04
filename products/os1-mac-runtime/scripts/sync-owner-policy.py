@@ -34,6 +34,51 @@ def latest_note(index):
 # N lazy note-property roundtrips. Same live index, tie and capture-race gates.
 INDEX_SCRIPT = 'with timeout of 15 seconds\n tell application "Notes"\n set noteIDs to id of (every note whose name contains "RCC ENGINE v26")\n set noteDates to modification date of (every note whose name contains "RCC ENGINE v26")\n set verifyIDs to id of (every note whose name contains "RCC ENGINE v26")\n if noteIDs is not equal to verifyIDs then error "Canonical index changed during bulk read"\n end tell\n set epoch to current date\n set year of epoch to 1970\n set month of epoch to January\n set day of epoch to 1\n set time of epoch to 0\n set rows to ""\n repeat with i from 1 to count of noteIDs\n set rows to rows & (item i of noteIDs) & tab & ((item i of noteDates) - epoch) & linefeed\n end repeat\n return rows\nend timeout'
 
+def cached_latest_script(note, modified):
+    # Optimization only: unsupported identities/clocks use the original index.
+    # Strict interpolation grammar; never quote or coerce arbitrary pointer data.
+    if not isinstance(note, str) or re.fullmatch(
+        r'x-coredata://[0-9A-Fa-f]{8}(?:-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12}/ICNote/p[0-9]{1,20}', note) is None:
+        return None
+    if not isinstance(modified, str) or re.fullmatch(r'[0-9]{1,12}', modified) is None:
+        return None
+    stamp = int(modified)
+    if str(stamp) != modified or not math.isfinite(float(stamp)):
+        return None
+    # Same AppleScript epoch arithmetic and whole-second frame as INDEX_SCRIPT.
+    # Exactly [note] proves its membership/time bucket and absence of another
+    # matching note at or above that bucket. Same-second edits were already
+    # invisible to the original cached ID/integer-time comparison.
+    return '''with timeout of 15 seconds
+ set epoch to current date
+ set year of epoch to 1970
+ set month of epoch to January
+ set day of epoch to 1
+ set time of epoch to 0
+ set cachedID to "'''+note+'''"
+ set lowerDate to epoch + '''+modified+'''
+ set upperDate to lowerDate + 1
+ tell application "Notes"
+  set noteIDs to id of (every note whose name contains "RCC ENGINE v26" and ((id is cachedID and modification date is greater than or equal to lowerDate and modification date is less than upperDate) or (id is not cachedID and modification date is greater than or equal to lowerDate)))
+ end tell
+ if class of noteIDs is not list then error "Unsupported canonical note ID list"
+ if (count of noteIDs) is not 1 then return ""
+ if class of (item 1 of noteIDs) is not text then error "Unsupported canonical note identity"
+ if item 1 of noteIDs is cachedID then return cachedID
+ return ""
+end timeout'''
+
+def verified_cached_source(ROOT, old):
+    digest=old.get('sourceSHA256', '')
+    if not isinstance(digest, str) or len(digest)!=64 or any(c not in '0123456789abcdef' for c in digest) or old.get('sourceFile')!=digest+'.txt':
+        raise ValueError('Invalid cached source path')
+    path=ROOT/old['sourceFile']
+    if path.is_symlink() or path.stat().st_size>4_000_000:
+        raise ValueError('Invalid cached source')
+    source=path.read_text()
+    if sha(source)!=digest: raise ValueError('Cached source integrity failure')
+    return source
+
 # An unchanged, recently certified snapshot is not rewritten. The Swift
 # loader accepts a certification up to 24 h old; re-certify hourly.
 RECERTIFY_SECONDS = 3600
@@ -47,22 +92,30 @@ def refresh(root, run_osa=osa, now=time.time):
         return refresh_locked(root, run_osa, now)
 
 def refresh_locked(ROOT, run_osa, now=time.time):
-    note,modified=latest_note(run_osa(INDEX_SCRIPT))
     active=ROOT/'active.json'
     if active.is_symlink(): raise ValueError('Policy pointer must not be a symlink')
     old=json.loads(active.read_text()) if active.exists() else {}
+    if not isinstance(old, dict): raise ValueError('Invalid policy pointer')
+    source = verified_cached_source(ROOT, old) if old else None
+    script = cached_latest_script(old.get('sourceID'), old.get('sourceModified'))
+    certified = False
+    if script is not None and source is not None:
+        try:
+            returned = run_osa(script)
+            # No deduplication, inferred type conversion, whitespace repair,
+            # TTL or database proxy. Every promotion has a fresh Notes query.
+            certified = isinstance(returned, str) and returned.splitlines() == [old['sourceID']]
+        except (ValueError, OSError, subprocess.SubprocessError):
+            certified = False
+    if certified:
+        note,modified=old['sourceID'],old['sourceModified']
+    else:
+        note,modified=latest_note(run_osa(INDEX_SCRIPT))
     cached = old.get('sourceID')==note and old.get('sourceModified')==modified
     if cached:
-        digest=old.get('sourceSHA256', '')
-        if len(digest)!=64 or any(c not in '0123456789abcdef' for c in digest) or old.get('sourceFile')!=digest+'.txt':
-            raise ValueError('Invalid cached source path')
-        path=ROOT/old['sourceFile']
-        if path.is_symlink() or path.stat().st_size>4_000_000: raise ValueError('Invalid cached source')
-        source=path.read_text()
-        if sha(source)!=digest: raise ValueError('Cached source integrity failure')
-        # The index read above is the certification: the newest note still
-        # carries the cached identity and time. Nothing was captured, so a
-        # second index read has no capture window to guard (≈0.9 s per run).
+        if source is None: source=verified_cached_source(ROOT, old)
+        # A live predicate or complete index certified the same identity/time.
+        # Nothing was captured; full capture below retains its second index.
     else:
         source=run_osa('with timeout of 20 seconds\n tell application "Notes" to get plaintext of note id "'+note+'"\nend timeout')+'\n'
         # A concurrent edit/newer note must never be certified with the old timestamp.
