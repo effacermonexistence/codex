@@ -348,3 +348,12 @@ html[dir=rtl] .corp-construction :is(.manifesto-copy,.manifesto-note,.system-hea
  .ref-ai-art{order:2;flex-shrink:0;position:relative;inset:auto;width:calc(100% - 40px);height:auto;aspect-ratio:3/2;margin:0 20px 20px;opacity:1}
  .ref-ai-art>img{display:block;width:100%;height:auto;object-fit:contain}
 }
+/* Keep the connected glass silhouette inside every remaining image frame. */
+.ref-ai-bridge figure{height:auto;aspect-ratio:3/2}
+.ref-ai-bridge figure>img{display:block;object-fit:contain;transform:none}
+.ref-ai-bridge figure>.ref-credit{bottom:-24px}
+.corp-main-landing .corp-source-ai-card>img{inset:12px 16px auto;width:calc(100% - 32px);height:64%;object-position:center;transform:none}
+.corp-main-landing .corp-source-ai-card:hover>img{transform:none}
+@media(max-width:760px){
+ .corp-main-landing .corp-source-ai-card>img{inset:10px 16px auto;width:calc(100% - 32px);height:55%;object-position:center}
+}

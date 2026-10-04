@@ -179,7 +179,7 @@
       "acquisition": "Built-in image_gen edit, explicitly requested by the user",
       "editScope": "Outpaint the cropped right-side glass ribbons; complete the silhouette at top and bottom; preserve the source form, materials and palette as closely as possible.",
       "used": true,
-      "usedOn": "AI page hero only",
+      "usedOn": "AI page hero, AI page field bridge, and main page Intelligence business card",
       "servedTransformation": "Unmodified generated transparent PNG",
       "servedBytes": 2233287,
       "servedSha256": "0089f0cde4a3df2a65ea81a41e9f76334adec20f4fb51406e7693434e43740c6",
