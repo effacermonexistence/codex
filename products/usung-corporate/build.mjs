@@ -15,7 +15,7 @@ for (const page of [
   const directory = new URL(`./public/${page.directory}/`, import.meta.url);
   await mkdir(directory, { recursive: true });
   const route = page.directory ? `/${page.directory}/` : '/';
-  pageSources.push({ route, directory: page.directory, html: `<!doctype html><html lang="ko">${head(page.title, page.description, route)}<body class="corp-page"><a class="corp-skip" href="#main-content">본문으로 이동</a>${nav(page.active)}${page.content}${footer}</body></html>`.replaceAll('20261003-q2', assetVersion).replace(/(src|poster)="(\/assets\/references\/[^"]+)"/g, (_, attr, url) => `${attr}="${url}?v=${assetVersion}"`) });
+  pageSources.push({ route, directory: page.directory, html: `<!doctype html><html lang="ko">${head(page.title, page.description, route)}<body class="corp-page"><a class="corp-skip" href="#main-content">본문으로 이동</a>${nav(page.active)}${page.content}${footer}</body></html>`.replaceAll('20261003-q2', assetVersion).replace(/(src|poster)="(\/assets\/(?:references|generated)\/[^"]+)"/g, (_, attr, url) => `${attr}="${url}?v=${assetVersion}"`) });
 }
 
 let original = await readFile(new URL('./baseline/index.html', import.meta.url), 'utf8');

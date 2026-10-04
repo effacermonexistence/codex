@@ -21,7 +21,7 @@ const sourceVideo = (name, cls = '', preload = 'none') => `<video class="${cls}"
 const chipLink = (href, text) => `<a class="ref-pill" href="${href}">${text}<span aria-hidden="true">↗</span></a>`;
 export const ai = `<main id="main-content">
 <section class="ref-ai-hero">
- <div class="ref-ai-art"><img src="/assets/references/contextual-glass.webp" alt="투명한 입체 구조로 표현한 AI 인프라" fetchpriority="high" width="1920" height="2530"></div>
+ <div class="ref-ai-art"><img src="/assets/generated/ai-glass-extended-v1.png" alt="투명한 입체 구조로 표현한 AI 인프라" fetchpriority="high" width="1536" height="1024"></div>
  <div class="ref-ai-hero-copy"><p class="corp-eyebrow">U-SUNG AI / POWERED WITH OmarAGI</p><h1>AI.<br>BUILT FOR<br><span>REAL WORK.</span></h1><p class="ref-hero-description">AI의 판단에 근거를.<br>업무의 실행에 신뢰를.</p><div class="ref-hero-actions">${chipLink('#platform','AI 인프라 살펴보기')}<a class="ref-text-link" href="#applications">적용 분야 ↘</a></div></div>
  <div class="ref-hero-strip"><span>MODEL-AGNOSTIC</span><span>VERIFY / CONTROL / OBSERVE</span>${sourceCredit('https://contextual.ai/','CONTEXTUAL AI')}</div>
 </section>

@@ -4,7 +4,7 @@
     "Runway",
     "Luma"
   ],
-  "generatedImageOrVideo": false,
+  "generatedImageOrVideo": true,
   "layoutReferences": [
     "https://mistral.ai/",
     "https://contextual.ai/",
@@ -37,7 +37,7 @@
       "sha256": "9f128f0cf4acb0756c5432602e43d5cad729dd75c513605a5dc160da65091880",
       "acquisition": "browser pageAssets bundle",
       "used": true,
-      "servedTransformation": "original geometry and artwork; source-company title replaced with native SVG label for U-SUNG \u00d7 OmarAGI",
+      "servedTransformation": "original geometry and artwork; source-company title replaced with native SVG label for U-SUNG × OmarAGI",
       "servedBytes": 719719,
       "servedSha256": "2941e0d22c95f3f32b6a2cd5417e2d09c6393fa8b1cb256d08866461323cf1c4"
     },
@@ -49,7 +49,7 @@
       "sha256": "59b9f558279eb8f41b1cf4655258cdf31755e8c57761286f56e9048216853a5f",
       "acquisition": "browser pageAssets bundle",
       "used": true,
-      "servedTransformation": "original geometry and artwork; source-company title replaced with native SVG label for U-SUNG \u00d7 OmarAGI",
+      "servedTransformation": "original geometry and artwork; source-company title replaced with native SVG label for U-SUNG × OmarAGI",
       "servedBytes": 719719,
       "servedSha256": "b4c56b58f08372a4f2e89a101bbef3d2d19d199e805da538fa37b91f1de409c1"
     },
@@ -61,7 +61,7 @@
       "sha256": "91385ce92caf99147fb051241ebc8012b607986a551dd4ceb34f249d2871d3f1",
       "acquisition": "browser pageAssets bundle",
       "used": true,
-      "servedTransformation": "original geometry and artwork; source-company title replaced with native SVG label for U-SUNG \u00d7 OmarAGI",
+      "servedTransformation": "original geometry and artwork; source-company title replaced with native SVG label for U-SUNG × OmarAGI",
       "servedBytes": 719719,
       "servedSha256": "63c5446ecb23ed77e49ebdbbdcca29a8ad0f41c7d3b13983fd3103b4c796321f"
     },
@@ -171,6 +171,24 @@
       "poster": "field-robots-poster.jpg",
       "servedBytes": 1904603,
       "servedSha256": "44dc0a3811e346989e74f1dfff29f10fb8709d395566135271ecaa2061ea8147"
+    },
+    {
+      "file": "generated/ai-glass-extended-v1.png",
+      "sourcePage": "https://contextual.ai/",
+      "derivedFrom": "contextual-glass.webp",
+      "acquisition": "Built-in image_gen edit, explicitly requested by the user",
+      "editScope": "Outpaint the cropped right-side glass ribbons; complete the silhouette at top and bottom; preserve the source form, materials and palette as closely as possible.",
+      "used": true,
+      "usedOn": "AI page hero only",
+      "servedTransformation": "Unmodified generated transparent PNG",
+      "servedBytes": 2233287,
+      "servedSha256": "0089f0cde4a3df2a65ea81a41e9f76334adec20f4fb51406e7693434e43740c6",
+      "dimensions": [
+        1536,
+        1024
+      ],
+      "generatedAtUTC": "2026-10-04T00:13:15.460332+00:00",
+      "generationPrompt": "Use case: precise-object-edit / right-side outpainting. Asset type: high-resolution transparent website hero artwork. Image 1 is the EDIT TARGET: the existing iridescent glass ribbon sculpture currently used on the U-SUNG AI landing page. Extend the image canvas substantially to the RIGHT to reconstruct the missing continuation of the existing glass ribbons. Keep the existing left and central glass geometry, their overlapping broad rounded bands, camera angle, softly milky clear glass faces, and thin blue/violet/occasional warm rainbow edge reflections as closely as possible. Continue the curves already entering the right crop until the same sculpture has a complete, natural, rounded right silhouette; do not add unrelated extra loops, do not replace it with a different sculpture. Outpaint a small amount at top and bottom if needed to finish curves currently touching those edges, so the completed object has a little breathing room and no abrupt rectangular crop. Composition: a broad approximately 3:2 landscape canvas, the existing reference artwork retained toward the left of the expanded object, newly reconstructed continuation on the right, complete interwoven glass structure visible with a modest transparent margin around the final silhouette. The source's empty black-looking areas are TRANSPARENT, not black material: preserve real alpha transparency both outside and through openings of the glass sculpture. Return a genuinely transparent PNG at high resolution, ideally about 3000 pixels wide. No background, no gradient backdrop, no shadow rectangle, no text, no logos, no interface, no watermark. This is an extension of the supplied image, not a brand-new concept."
     }
   ],
   "layoutImplementation": "HTML/CSS adapted from approved reference compositions; acquired graphic and footage files used directly"
