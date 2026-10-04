@@ -4,7 +4,9 @@ import { nav, footer, home, ai, physical } from './src/pages.mjs';
 import { languages, languageSelector } from './src/languages.mjs';
 import { loadDictionary, localizeHtml } from './src/localize.mjs';
 
-const assetVersion = createHash('sha256').update(await readFile(new URL('./public/corporate.css', import.meta.url))).update(await readFile(new URL('./public/corporate.js', import.meta.url))).update(await readFile(new URL('./public/locale.js', import.meta.url))).update(await readFile(new URL('./src/pages.mjs', import.meta.url))).update(await readFile(new URL('./src/languages.mjs', import.meta.url))).update(await readFile(new URL('./references.json', import.meta.url))).update(await readFile(new URL('./build.mjs', import.meta.url))).update(await readFile(new URL('./baseline/app.js', import.meta.url))).digest('hex').slice(0, 12);
+const constructionStyles = await readFile(new URL('./baseline/styles.css', import.meta.url));
+
+const assetVersion = createHash('sha256').update(await readFile(new URL('./public/corporate.css', import.meta.url))).update(await readFile(new URL('./public/corporate.js', import.meta.url))).update(await readFile(new URL('./public/locale.js', import.meta.url))).update(await readFile(new URL('./src/pages.mjs', import.meta.url))).update(await readFile(new URL('./src/languages.mjs', import.meta.url))).update(await readFile(new URL('./references.json', import.meta.url))).update(await readFile(new URL('./build.mjs', import.meta.url))).update(await readFile(new URL('./baseline/app.js', import.meta.url))).update(constructionStyles).digest('hex').slice(0, 12);
 const pageSources = [];
 const head = (title, description, route = '/') => `<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${title}</title><meta name="description" content="${description}"><meta name="theme-color" content="#090a0a"><link rel="canonical" href="https://usungcorp.com${route}"><meta property="og:title" content="${title}"><meta property="og:description" content="${description}"><meta property="og:type" content="website"><meta property="og:url" content="https://usungcorp.com${route}"><link rel="icon" href="/favicon.svg?v=20261003-q2" type="image/svg+xml"><link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Noto+Sans+KR:wght@400;500;600;700;800&display=swap" rel="stylesheet"><link rel="stylesheet" href="/corporate.css?v=20261003-q2"><script src="/corporate.js?v=20261003-q2" defer></script></head>`;
 for (const page of [
@@ -21,7 +23,7 @@ for (const page of [
 let original = await readFile(new URL('./baseline/index.html', import.meta.url), 'utf8');
 original = original.replace('<title>U-SUNG — Build Beyond</title>', '<title>스마트 건설 — U-SUNG · Build Beyond</title>');
 original = original.replace('content="U-SUNG construction and physical AI visual demo"', 'content="유성 스마트 건설. 건설 현장의 경험과 디지털 기술을 연결합니다."');
-original = original.replace('href="styles.css"', 'href="/smart-construction/styles.css"');
+original = original.replace('href="styles.css"', `href="/smart-construction/styles.css?v=${assetVersion}"`);
 original = original.replace('src="app.js"', `src="/smart-construction/app.js?v=${assetVersion}"`);
 original = original.replaceAll('"assets/media/', '"/assets/media/');
 original = original.replace('</head>', '<link rel="canonical" href="https://usungcorp.com/smart-construction/"><link rel="icon" href="/favicon.svg?v=20261003-q2" type="image/svg+xml"><link rel="stylesheet" href="/corporate.css?v=20261003-q2"><script src="/corporate.js?v=20261003-q2" defer></script></head>');
@@ -41,6 +43,7 @@ legacyJs = legacyJs.replace("frame.title='Built Robotics — RPD 35 field film'"
 legacyJs = legacyJs.replace("const text=`U-SUNG — PROJECT BRIEF\\n\\n이름 / 회사: ${values.name}\\n이메일: ${values.email}\\n관심 분야: ${values.sector}\\n\\n${values.message}\\n\\n로컬 데모에서 작성한 브리프입니다. 전송되지 않았습니다.\\n`;", "const text=`${t('U-SUNG — PROJECT BRIEF')}\\n\\n${t('이름 / 회사')}: ${values.name}\\n${t('이메일')}: ${values.email}\\n${t('관심 분야')}: ${values.sector}\\n\\n${values.message}\\n\\n${t('로컬 데모에서 작성한 브리프입니다. 전송되지 않았습니다.')}\\n`;");
 legacyJs = legacyJs.replace("textContent='브리프 파일을 만들었습니다. 외부로 전송하거나 이 브라우저에 저장하지 않았습니다.'", "textContent=t('브리프 파일을 만들었습니다. 외부로 전송하거나 이 브라우저에 저장하지 않았습니다.')");
 await writeFile(new URL('./public/smart-construction/app.js', import.meta.url), legacyJs);
+await writeFile(new URL('./public/smart-construction/styles.css', import.meta.url), constructionStyles);
 for (const language of languages) {
   const dictionary = await loadDictionary(language.code);
   for (const page of pageSources) {
