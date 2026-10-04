@@ -555,3 +555,9 @@ body:has(.corp-main-landing) .corp-intro{padding-top:80px}
  .corp-construction .hero-content{padding-top:104px}
  .corp-construction .motion-toggle{top:20px}
 }
+
+/* Approved USUNG mark replaces source-company branding in reference labels. */
+.ref-usung-credit{display:inline-flex!important;align-items:center;justify-content:flex-end;gap:10px}
+.ref-usung-credit .usung-wordmark,.usung-reference-label .usung-wordmark{width:62px;height:auto;display:inline-block;vertical-align:middle}
+.usung-reference-label{display:flex;align-items:center;gap:10px}
+@media(max-width:760px){.ref-hero-strip .ref-usung-credit{justify-content:flex-start}}

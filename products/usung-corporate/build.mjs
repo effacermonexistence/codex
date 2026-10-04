@@ -33,7 +33,7 @@ for (const page of [
   const directory = new URL(`./public/${page.directory}/`, import.meta.url);
   await mkdir(directory, { recursive: true });
   const route = page.directory ? `/${page.directory}/` : '/';
-  pageSources.push({ route, directory: page.directory, html: `<!doctype html><html lang="ko">${head(page.title, page.description, route)}<body class="corp-page"><a class="corp-skip" href="#main-content">본문으로 이동</a>${nav(page.active)}${page.content}${footer}</body></html>`.replaceAll('20261003-q2', assetVersion).replace(/(src|poster)="(\/assets\/(?:references|generated)\/[^"]+)"/g, (_, attr, url) => `${attr}="${url}?v=${assetVersion}"`) });
+  pageSources.push({ route, directory: page.directory, html: `<!doctype html><html lang="ko">${head(page.title, page.description, route)}<body class="corp-page"><a class="corp-skip" href="#main-content">본문으로 이동</a>${nav(page.active)}${page.content}${footer}</body></html>`.replaceAll('20261003-q2', assetVersion).replace(/(src|poster)="(\/assets\/(?:references|generated|media)\/[^"]+)"/g, (_, attr, url) => `${attr}="${url}?v=${assetVersion}"`) });
 }
 
 let original = await readFile(new URL('./baseline/index.html', import.meta.url), 'utf8');
@@ -42,6 +42,7 @@ original = original.replace('content="U-SUNG construction and physical AI visual
 original = original.replace('href="styles.css"', `href="/smart-construction/styles.css?v=${assetVersion}"`);
 original = original.replace('src="app.js"', `src="/smart-construction/app.js?v=${assetVersion}"`);
 original = original.replaceAll('"assets/media/', '"/assets/media/');
+original = original.replace(/<small>(?:SUFFOLK|TURNER|BUILT ROBOTICS) · VISUAL REFERENCE<\/small>/g, (_match, offset) => `<small class="usung-reference-label">${brandLogo('construction-reference-' + offset)}<span>VISUAL REFERENCE</span></small>`);
 original = original.replace('</head>', `<meta name="theme-color" content="#FFFFFF"><link rel="canonical" href="https://usungcorp.com/smart-construction/">${iconLinks}<meta name="application-name" content="USUNG"><meta name="apple-mobile-web-app-title" content="USUNG"><link rel="stylesheet" href="/corporate.css?v=20261003-q2"><script src="/corporate.js?v=20261003-q2" defer></script></head>`);
 original = original.replace('<body>', `<body class="corp-construction">${nav('construction')}`);
 original = original.replace('aria-label="U-SUNG home"', 'aria-label="스마트 건설 페이지 처음으로"');
@@ -55,7 +56,7 @@ legacyJs = legacyJs.replace("$$('dialog')", () => "$$('dialog:not(.corp-language
 legacyJs = legacyJs.replace("paused?'영상 재생 <span aria-hidden=\"true\">▷</span>':'영상 일시정지 <span aria-hidden=\"true\">Ⅱ</span>'", "t(paused ? '영상 재생' : '영상 일시정지') + (paused ? ' <span aria-hidden=\"true\">▷</span>' : ' <span aria-hidden=\"true\">Ⅱ</span>')");
 legacyJs = legacyJs.replace("textContent='동작 줄이기 설정 적용 중'", "textContent=t('동작 줄이기 설정 적용 중')");
 legacyJs = legacyJs.replace('`${count}개의 레퍼런스 프로젝트`', "t('{count}개의 레퍼런스 프로젝트', { count })");
-for (const field of ['title', 'source', 'description']) legacyJs = legacyJs.replaceAll(`textContent=p.${field}`, `textContent=t(p.${field})`);
+for (const field of ['title', 'source', 'description']) legacyJs = legacyJs.replaceAll(`textContent=p.${field}`, `textContent=t(p.${field})${field === 'description' ? '.replace(/\\bTurner\\s*/gi, \"\")' : ''}`);
 legacyJs = legacyJs.replace("$('#project-dialog-image').alt=p.title", "$('#project-dialog-image').alt=t(p.title)");
 legacyJs = legacyJs.replace("frame.title='Built Robotics — RPD 35 field film'", "frame.title=t('Built Robotics — RPD 35 field film')");
 legacyJs = legacyJs.replace("const text=`U-SUNG — PROJECT BRIEF\\n\\n이름 / 회사: ${values.name}\\n이메일: ${values.email}\\n관심 분야: ${values.sector}\\n\\n${values.message}\\n\\n로컬 데모에서 작성한 브리프입니다. 전송되지 않았습니다.\\n`;", "const text=`${t('U-SUNG — PROJECT BRIEF')}\\n\\n${t('이름 / 회사')}: ${values.name}\\n${t('이메일')}: ${values.email}\\n${t('관심 분야')}: ${values.sector}\\n\\n${values.message}\\n\\n${t('로컬 데모에서 작성한 브리프입니다. 전송되지 않았습니다.')}\\n`;");
@@ -67,6 +68,7 @@ for (const language of languages) {
   for (const page of pageSources) {
     let html = localizeHtml(page.html, dictionary, language.code);
     html = html.replaceAll('U-SUNG', 'USUNG');
+    html = html.replace(/\balt="([^"]*)"/g, (tag, value) => `alt="${value.replace(/\b(?:Suffolk|Turner|Built Robotics|Field AI)\s*/gi, '')}"`);
     html = html.replace('<usung-language></usung-language>', languageSelector(page.route, language.code, dictionary));
     html = withTypographicApostrophes(withoutDecorativeArrows(html));
     html = html.replace(/href="(\/(?:ai\/|smart-construction\/|physical-ai\/)?)(#[^"]*)?"/g, (_, route, hash = '') => `href="${route}?lang=${language.code}${hash}"`);

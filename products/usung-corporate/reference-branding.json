@@ -1,0 +1,189 @@
+{
+  "revision": "2026-10-04-usung-reference-branding-v22",
+  "scope": "Currently displayed reference media on Home, AI, Smart Construction and Physical AI, including video playback and posters",
+  "approvedMark": "public/assets/brand/usung-wordmark.svg",
+  "photoEditor": "Built-in imagegen",
+  "videoEditor": "Native frame compositing with outlined vector logo; edited video-derived posters",
+  "assets": [
+    {
+      "source": "assets/media/built-rpd.jpg",
+      "served": "assets/media/usung-autonomous-piling-v22.jpg",
+      "servedBytes": 364202,
+      "servedSha256": "7e4e4ada01f984bf7cb93ba6f910b90f8bc2efc575435f78b8c360809f99ab63",
+      "transformation": "Built-in imagegen targeted brand replacement; scene retained; web JPEG export",
+      "editor": "built-in imagegen"
+    },
+    {
+      "source": "assets/media/built-sundown.jpg",
+      "served": "assets/media/usung-site-dusk-v22.jpg",
+      "servedBytes": 348130,
+      "servedSha256": "eca5e41fdd4ad0e9393403399e4771cf98e318e986ad822272a520f4bf466570",
+      "transformation": "Built-in imagegen targeted brand replacement; scene retained; web JPEG export",
+      "editor": "built-in imagegen"
+    },
+    {
+      "source": "assets/media/built-sunrise.jpg",
+      "served": "assets/media/usung-site-dawn-v22.jpg",
+      "servedBytes": 348401,
+      "servedSha256": "939e83e60f9b8ddfb11b36447fa2808feddacce9a752351293110549913383b2",
+      "transformation": "Built-in imagegen targeted brand replacement; scene retained; web JPEG export",
+      "editor": "built-in imagegen"
+    },
+    {
+      "source": "assets/media/built-trenching.jpg",
+      "served": "assets/media/usung-autonomous-excavation-v22.jpg",
+      "servedBytes": 431406,
+      "servedSha256": "24c063c993ffe77b9823297608ae18ac49888d9113bb7a99bf3a344ac284c314",
+      "transformation": "Built-in imagegen targeted brand replacement; scene retained; web JPEG export",
+      "editor": "built-in imagegen"
+    },
+    {
+      "source": "assets/media/suffolk-naples.jpg",
+      "served": "assets/media/usung-field-team-v22.jpg",
+      "servedBytes": 237696,
+      "servedSha256": "6fbec2072c38dce672147787a3435ff93776b50610a9856b4ca99f524e3f23b3",
+      "transformation": "Built-in imagegen targeted brand replacement; scene retained; web JPEG export",
+      "editor": "built-in imagegen"
+    },
+    {
+      "source": "assets/media/suffolk-robotics.jpg",
+      "served": "assets/media/usung-site-robot-v22.jpg",
+      "servedBytes": 203407,
+      "servedSha256": "6713e4efa02391e0f0bc8e69531e142d459ce6418c10e7949081ab8e56de4958",
+      "transformation": "Built-in imagegen targeted brand replacement; scene retained; web JPEG export",
+      "editor": "built-in imagegen"
+    },
+    {
+      "source": "assets/media/suffolk-hero.mp4",
+      "served": "assets/media/usung-construction-film-v22.mp4",
+      "servedBytes": 10936479,
+      "servedSha256": "04de2ba906bcbef5bf9700f3fd1232ef72db4bb9cc8ee2e50aa6c1d584711e4b",
+      "transformation": "Native video compositing of approved vector brand on observed logo regions; motion tracked or constrained to source surfaces; original frame count, aspect ratio, frame rate and scenes retained; H264 re-encode, no audio"
+    },
+    {
+      "source": "assets/media/turner-hero.mp4",
+      "served": "assets/media/usung-delivery-film-v22.mp4",
+      "servedBytes": 6040494,
+      "servedSha256": "67d2f4f6135e90b790930f8e915a97a2924b93af32dbae29d1b7d30b7ff2891f",
+      "transformation": "Native video compositing of approved vector brand on observed logo regions; motion tracked or constrained to source surfaces; original frame count, aspect ratio, frame rate and scenes retained; H264 re-encode, no audio"
+    },
+    {
+      "source": "assets/references/dexterity-hero.mp4",
+      "served": "assets/references/usung-physical-hero-v22.mp4",
+      "servedBytes": 4569451,
+      "servedSha256": "f2912728b0064f0be8046e9505c185e2f58f2aa855a12f9ff5fbe0822a248a33",
+      "transformation": "Native video compositing of approved vector brand on observed logo regions; motion tracked or constrained to source surfaces; original frame count, aspect ratio, frame rate and scenes retained; H264 re-encode, no audio"
+    },
+    {
+      "source": "assets/references/dexterity-hero-poster.jpg",
+      "served": "assets/references/usung-physical-hero-v22-poster.jpg",
+      "servedBytes": 317385,
+      "servedSha256": "a1f0dd72eab7b22e6cc0d8c556ff28cda3d4b7a3d9b283d95749bb3664737f66",
+      "transformation": "Frame at 1 second from rebranded video"
+    },
+    {
+      "source": "assets/references/dexterity-perception.mp4",
+      "served": "assets/references/usung-perception-v22.mp4",
+      "servedBytes": 2974255,
+      "servedSha256": "386bf5031641dd7ecc48e14acce1b041a30e24521716afd5bc85b4d9f09d826b",
+      "transformation": "Native video compositing of approved vector brand on observed logo regions; motion tracked or constrained to source surfaces; original frame count, aspect ratio, frame rate and scenes retained; H264 re-encode, no audio"
+    },
+    {
+      "source": "assets/references/dexterity-perception-poster.jpg",
+      "served": "assets/references/usung-perception-v22-poster.jpg",
+      "servedBytes": 156511,
+      "servedSha256": "3715c74433ead2041a4dcec15479f5b48fb97629f9f8ffe514527bd1f58dd203",
+      "transformation": "Frame at 1 second from rebranded video"
+    },
+    {
+      "source": "assets/references/dexterity-coordination.mp4",
+      "served": "assets/references/usung-coordination-v22.mp4",
+      "servedBytes": 2867762,
+      "servedSha256": "efa891d844e3eb1fe37cf49becb61a7d2a0c820e7876c65480d1352acca693b1",
+      "transformation": "Native video compositing of approved vector brand on observed logo regions; motion tracked or constrained to source surfaces; original frame count, aspect ratio, frame rate and scenes retained; H264 re-encode, no audio"
+    },
+    {
+      "source": "assets/references/dexterity-coordination-poster.jpg",
+      "served": "assets/references/usung-coordination-v22-poster.jpg",
+      "servedBytes": 119205,
+      "servedSha256": "8e432e233a85ce32ca3c7960b4dbdbb97db36cc91cb058cef88367b1c1c72b40",
+      "transformation": "Frame at 1 second from rebranded video"
+    },
+    {
+      "source": "assets/references/field-robots.mp4",
+      "served": "assets/references/usung-field-robots-v22.mp4",
+      "servedBytes": 3266952,
+      "servedSha256": "588e68abea0f10d567a865103e2e5ff8ae8889689ecc3a0b02063058160a9e09",
+      "transformation": "Native video compositing of approved vector brand on observed logo regions; motion tracked or constrained to source surfaces; original frame count, aspect ratio, frame rate and scenes retained; H264 re-encode, no audio"
+    },
+    {
+      "source": "assets/references/field-robots-poster.jpg",
+      "served": "assets/references/usung-field-robots-v22-poster.jpg",
+      "servedBytes": 140513,
+      "servedSha256": "ddce007c3fb400ff3134883f28d0e7322cb946717797d427ae42ba2f431f8582",
+      "transformation": "Frame at 1 second from rebranded video"
+    },
+    {
+      "source": "assets/references/contextual-intelligence.svg",
+      "served": "assets/references/contextual-intelligence.svg",
+      "servedBytes": 724513,
+      "servedSha256": "0b343f5a6f6689892db71dc8892d0bf291f3b152462518eb2a42f09b380b93a6",
+      "transformation": "Approved outlined USUNG wordmark inserted in native SVG; original diagram geometry retained"
+    },
+    {
+      "source": "assets/references/contextual-context.svg",
+      "served": "assets/references/contextual-context.svg",
+      "servedBytes": 724503,
+      "servedSha256": "67cec7f400f1d963be426b06ca64211bf2a0ef49690b73adefdfec57b8da0e88",
+      "transformation": "Approved outlined USUNG wordmark inserted in native SVG; original diagram geometry retained"
+    },
+    {
+      "source": "assets/references/contextual-data.svg",
+      "served": "assets/references/contextual-data.svg",
+      "servedBytes": 724497,
+      "servedSha256": "fb2b2507e56e07bc35df96fc05df41c29bab3911e4972a8d2918741fbb2320c3",
+      "transformation": "Approved outlined USUNG wordmark inserted in native SVG; original diagram geometry retained"
+    }
+  ],
+  "unchangedAssets": [
+    "AI glass artwork",
+    "architecture, interior and workshop images with no observed company mark",
+    "Field world model",
+    "Precision robot footage showing technical and safety labels"
+  ],
+  "sourceProvenance": "Original provenance retained in references.json and baseline/assets.json",
+  "photoPromptSet": {
+    "mode": "Built-in imagegen; edits from original photograph and approved native wordmark reference; opaque output",
+    "template": "TARGETED EDIT OF FIRST ATTACHED PHOTOGRAPH ONLY. Second image is the approved vector-derived brand decal reference, not a scene. {targetInstruction} Use the exact spelling USUNG and approved letterforms. Retain its small #FF0F6F square at the upper right of the FIRST U. On dark equipment use ivory letters; on white helmets use black letters. Perspective, illumination, softness and weathering must match the original surface, at the same modest size as original marks. Preserve the original photo composition, crop, aspect ratio, camera position, subjects, hardware, background, lighting and colors. Do not add a corner watermark, giant wordmark, extra subjects, signs or decorative content. Output one complete edited photograph, not a collage. This is a brand styling concept for a company website.",
+    "targets": [
+      {
+        "source": "built-rpd.jpg",
+        "targetInstruction": "Replace the large white B on the dark right body panel and the small circular brand mark next to the cab with the approved USUNG branding. Leave safety labels and technical markings intact."
+      },
+      {
+        "source": "built-sundown.jpg",
+        "targetInstruction": "Replace the large white B on the smaller excavator at the right and any small brand emblem on the machines with the approved USUNG branding. Keep both machines, twilight sky, blue work lights and geometry."
+      },
+      {
+        "source": "built-sunrise.jpg",
+        "targetInstruction": "Remove the small brand/company markings on either machine. Place one small approved USUNG decal on an existing flat dark body panel of the large right excavator; no floating logo or new sign. Leave technical lettering and warnings intact."
+      },
+      {
+        "source": "built-trenching.jpg",
+        "targetInstruction": "Replace both the BUILT ROBOTICS lettering on the upper black housing and CAT logo on the lower black rear panel with small elegant USUNG decals. Both locations must be edited; preserve entire distant desert, machine and photo."
+      },
+      {
+        "source": "suffolk-naples.jpg",
+        "targetInstruction": "Replace the SUFFOLK logos on BOTH white helmets and the small SUFFOLK company badge on the man's safety vest with the approved USUNG logo, black text with its exact hot pink corner on first U. Remove other company insignia on helmets if any. Preserve people's exact faces, pose, outfits, tablet, straps and real texture."
+      },
+      {
+        "source": "suffolk-robotics.jpg",
+        "targetInstruction": "Replace the gear emblem and entire RUGGED ROBOTICS two-line wordmark on the robot front black panel with one exact USUNG logo, off-white lettering with pink corner on first U. Keep the robot and orange lit trim identical."
+      }
+    ],
+    "followup": {
+      "source": "built-sunrise.jpg",
+      "prompt": "Precise tiny edit to the attached photo: remove the remaining small white letter B / old company badge at the extreme left edge of the photo, on the front lower horizontal black bumper/body of the left machine (about x=0 to 10, y=775 at 1536x1024). Fill that tiny clipped badge with matching dark painted metal. Preserve ALL other pixels/scene details, composition, machines, lighting, USUNG decal on the right machine, sky, crop and aspect ratio. Do not redesign or add anything."
+    }
+  }
+}

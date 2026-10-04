@@ -1,4 +1,4 @@
-# U-SUNG corporate website
+# USUNG corporate website
 
 Corporate home for 유성건설 주식회사, with AI, Smart Construction and Physical AI divisions.
 
@@ -24,7 +24,7 @@ The main landing page is a separate company overview with direct entry cards for
 
 ## Existing site preservation
 
-`baseline/` preserves the HTML, stylesheet, and script retrieved from the company’s production site on 2026-10-03. `baseline/assets.json` records the original media hashes. Existing construction imagery retains the reference labels and source links from the original page; it is not used to claim new company projects. The corporate home uses full-frame construction video. The AI page uses acquired Contextual AI artwork with a Mistral-style typographic composition and keyboard-accessible capability tabs. Physical AI uses acquired Dexterity and Field AI footage. Runway and Luma are excluded by the owner. Reference media is labeled and linked to its source; third-party performance statistics and testimonials are not represented as U-SUNG results. Shared typography, cream/black surfaces and orange accents follow the original construction experience.
+`baseline/` preserves the construction experience retrieved from the company’s production site on 2026-10-03. Its HTML and script receive scoped asset and branding updates; `baseline/assets.json` retains original acquisition hashes. Reference project descriptions and source links remain available without claiming new company projects. The corporate home has three division media cards. The AI page uses acquired artwork and keyboard-accessible capability tabs; Physical AI uses acquired robotics footage. Runway and Luma are excluded by the owner. Source provenance is recorded in `references.json`. Headers use the same paper surface, black lettering and #FF0F6F accent across all four routes.
 
 The original construction contact dialog retains its brief-download behavior. The new corporate contact links open an email to the company’s published address.
 
@@ -41,4 +41,8 @@ Previous deployment (recovery baseline): `62b8e0e4-9032-4cdb-af88-a1f7daae8ae3`.
 
 ## Approved references (2026-10-03)
 
-`references.json` records source pages, exact acquired asset URLs, original hashes, served hashes and media transformations. Originals are retained in the task research output. Videos preserve source footage and aspect ratio, are limited to up to 14 seconds and optimized for web playback. Posters are exact video frames. No AI-generated bitmap, video, or procedural sculpture is used. Diagram geometry is preserved while the source-company title is adapted to U-SUNG × OmarAGI.
+`references.json` records source pages, acquired asset URLs, original hashes, served hashes and media transformations. Originals are retained alongside the adapted assets. Existing scenes and aspect ratios are preserved. Posters are frames from the corresponding served videos. The previously approved glass artwork was extended using imagegen.
+
+## Reference branding (2026-10-04)
+
+Visible source-company marks are adapted to the approved USUNG wordmark or U symbol. Six photographs receive targeted built-in imagegen edits. Six videos receive native vector compositing on the observed logo regions, retaining scene sequence, frame count, dimensions and frame rate. Four posters are regenerated from these videos. Three native SVG diagrams receive the outlined USUNG mark. Reference labels display the approved wordmark. `reference-branding.json` records the 19 transformed assets, served checksums and photo-edit prompt set. Images and footage with no observed source-company mark remain unchanged.
