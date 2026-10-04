@@ -1,11 +1,13 @@
 import { createServer } from 'node:http';
 import { createReadStream } from 'node:fs';
-import { stat } from 'node:fs/promises';
+import { readFile, stat } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { languageCodes } from './src/languages.mjs';
 
 const root = fileURLToPath(new URL('./public/', import.meta.url));
+const faviconRevision = createHash('sha256').update(await readFile(path.join(root, 'favicon.png'))).digest('hex').slice(0, 12);
 const types = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.ico': 'image/x-icon', '.webmanifest': 'application/manifest+json', '.svg': 'image/svg+xml', '.jpg': 'image/jpeg', '.mp4': 'video/mp4', '.webp': 'image/webp', '.png': 'image/png', '.xml': 'application/xml; charset=utf-8', '.txt': 'text/plain; charset=utf-8' };
 const server = createServer(async (req, res) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');
@@ -14,16 +16,26 @@ const server = createServer(async (req, res) => {
   let pathname, url;
   try { url = new URL(req.url, 'http://localhost'); pathname = decodeURIComponent(url.pathname); }
   catch { res.writeHead(400); res.end(); return; }
-  if (pathname === '/health') { res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); res.end(req.method === 'HEAD' ? '' : JSON.stringify({ status: 'ok', site: 'usung-corporate', release: '2026-10-04-white-u-png-favicon-v15', languages: languageCodes.size })); return; }
+  if (pathname === '/health') { res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); res.end(req.method === 'HEAD' ? '' : JSON.stringify({ status: 'ok', site: 'usung-corporate', release: '2026-10-04-safari-u-favicon-v16', languages: languageCodes.size })); return; }
   if (['/ai', '/smart-construction', '/physical-ai'].includes(pathname)) { res.writeHead(308, { Location: pathname + '/' + url.search }); res.end(); return; }
   const cookieLanguage = /(?:^|;\s*)usung_lang=([^;]*)/.exec(req.headers.cookie || '')?.[1];
   const requestedLanguage = url.searchParams.get('lang');
   const language = languageCodes.has(requestedLanguage) ? requestedLanguage : languageCodes.has(cookieLanguage) ? cookieLanguage : 'en';
   const isPage = ['/', '/ai/', '/smart-construction/', '/physical-ai/'].includes(pathname);
   if (isPage) {
-    res.setHeader('Vary', 'Cookie');
+    res.setHeader('Vary', 'Cookie, User-Agent');
     res.setHeader('Content-Language', language);
     if (languageCodes.has(requestedLanguage)) res.setHeader('Set-Cookie', `usung_lang=${language}; Path=/; Max-Age=31536000; SameSite=Lax${process.env.NODE_ENV === 'production' ? '; Secure' : ''}`);
+  }
+  // Safari can retain a different old icon for each previously visited page URL.
+  // Give the four pages a fresh URL for this icon revision without changing routes.
+  const agent = req.headers['user-agent'] || '';
+  const isSafari = /Safari\//.test(agent) && !/(?:Chrome|Chromium|CriOS|Edg|OPR|FxiOS)\//.test(agent);
+  if (isPage && isSafari && url.searchParams.get('icon') !== faviconRevision) {
+    url.searchParams.set('icon', faviconRevision);
+    res.writeHead(302, { Location: pathname + url.search, 'Cache-Control': 'no-store' });
+    res.end();
+    return;
   }
   const file = path.resolve(root, isPage ? `./locales/${language}${pathname}index.html` : '.' + pathname, !isPage && pathname.endsWith('/') ? 'index.html' : '');
   if (!file.startsWith(root)) { res.writeHead(403); res.end(); return; }
