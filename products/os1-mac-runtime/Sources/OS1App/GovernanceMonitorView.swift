@@ -229,8 +229,8 @@ struct GovernanceMonitorView: View {
         if item.completionEfficiencyDelta != nil {
             return "채택/1M tok · 실측 \(item.measuredScopes)묶음 · 실패·재시도 포함"
         }
-        if item.tokenSavings == nil { return "채택/1M tok · 실측 묶음 없음" }
-        return "채택/1M tok · 실측 \(item.measuredScopes)묶음 · 기준 채택 \(item.measuredBaselineCompletions)건이라 정의 불가"
+        if item.measuredScopes == 0 { return "채택/1M tok · 완전 계측 묶음 없음" }
+        return "실측 \(item.measuredScopes)묶음 · 0 토큰 분모 또는 기준 채택 0이면 상대 효율 정의 불가"
     }
     private var tokenDeltaPoints: [GovernanceChartPoint] {
         deltaHistory.points.compactMap { point in
