@@ -6,7 +6,7 @@ import path from 'node:path';
 import { languageCodes } from './src/languages.mjs';
 
 const root = fileURLToPath(new URL('./public/', import.meta.url));
-const types = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.svg': 'image/svg+xml', '.jpg': 'image/jpeg', '.mp4': 'video/mp4', '.webp': 'image/webp', '.png': 'image/png', '.xml': 'application/xml; charset=utf-8', '.txt': 'text/plain; charset=utf-8' };
+const types = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.ico': 'image/x-icon', '.webmanifest': 'application/manifest+json', '.svg': 'image/svg+xml', '.jpg': 'image/jpeg', '.mp4': 'video/mp4', '.webp': 'image/webp', '.png': 'image/png', '.xml': 'application/xml; charset=utf-8', '.txt': 'text/plain; charset=utf-8' };
 const server = createServer(async (req, res) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
@@ -14,7 +14,7 @@ const server = createServer(async (req, res) => {
   let pathname, url;
   try { url = new URL(req.url, 'http://localhost'); pathname = decodeURIComponent(url.pathname); }
   catch { res.writeHead(400); res.end(); return; }
-  if (pathname === '/health') { res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); res.end(req.method === 'HEAD' ? '' : JSON.stringify({ status: 'ok', site: 'usung-corporate', release: '2026-10-03-minimal-navigation-v11', languages: languageCodes.size })); return; }
+  if (pathname === '/health') { res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); res.end(req.method === 'HEAD' ? '' : JSON.stringify({ status: 'ok', site: 'usung-corporate', release: '2026-10-03-white-png-favicon-v12', languages: languageCodes.size })); return; }
   if (['/ai', '/smart-construction', '/physical-ai'].includes(pathname)) { res.writeHead(308, { Location: pathname + '/' + url.search }); res.end(); return; }
   const cookieLanguage = /(?:^|;\s*)usung_lang=([^;]*)/.exec(req.headers.cookie || '')?.[1];
   const requestedLanguage = url.searchParams.get('lang');
