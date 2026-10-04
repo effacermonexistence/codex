@@ -18,7 +18,7 @@ await mkdir(new URL('./public/assets/brand/icons/', import.meta.url), { recursiv
 for (const file of ['favicon-32.png', 'favicon.png', 'favicon.ico', 'apple-touch-icon.png', 'icon-192.png', 'icon-512.png']) {
   await copyFile(new URL(`./public/${file}`, import.meta.url), new URL(`./public${iconHref(file)}`, import.meta.url));
 }
-const iconLinks = `<link rel="icon" href="${iconHref('favicon-32.png')}" type="image/png" sizes="32x32"><link rel="icon" href="${iconHref('favicon.png')}" type="image/png" sizes="48x48"><link rel="shortcut icon" href="${iconHref('favicon.ico')}" type="image/x-icon"><link rel="apple-touch-icon" href="${iconHref('apple-touch-icon.png')}" sizes="180x180"><link rel="manifest" href="/site.webmanifest?v=20261003-q2">`;
+const iconLinks = `<link rel="icon" href="${iconHref('favicon-32.png')}" type="image/png" sizes="32x32"><link rel="icon" href="${iconHref('favicon.png')}" type="image/png" sizes="48x48"><link rel="apple-touch-icon" href="${iconHref('apple-touch-icon.png')}" sizes="180x180"><link rel="manifest" href="/site.webmanifest?v=20261003-q2">`;
 const pageSources = [];
 // Remove decorative direction glyphs after translation; keep dictionary keys intact.
 const withoutDecorativeArrows = html => html.replace(/<script\b[\s\S]*?<\/script>|<style\b[\s\S]*?<\/style>|<[^>]+>|[^<]+/gi, token => token.startsWith('<') ? token : token.replace(/[↗↘→↑]/g, ''));
