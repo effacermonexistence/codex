@@ -89,7 +89,7 @@ func selfRepairCommand(_ arguments: [String]) async throws -> Bool {
 /// Shared with the runtime hook in main.swift.
 let selfRepairFailurePrefixText = "OS-1 self-repair could not complete: "
 
-let os1RuntimeVersionString = "OS-1 Runtime 0.9.252 (steer-placement-build318)"
+let os1RuntimeVersionString = "OS-1 Runtime 0.9.253 (self-repair-build319)"
 
 func os1SourceWriteLeaseURL(root: String) throws -> URL {
     let directory = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".os1/self-update", isDirectory: true)
