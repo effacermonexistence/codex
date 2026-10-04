@@ -16,7 +16,9 @@ public struct RuntimeActivity: Codable, Equatable, Sendable {
     public let publicText: String?
     public let tool: String?
     public let nativeSessionID: String?
-    public init(_ phase: Phase, provider: String? = nil, surface: String? = nil, model: String? = nil, effort: String? = nil, timestamp: Date = Date(), publicText: String? = nil, tool: String? = nil, nativeSessionID: String? = nil) {
+    /// Native lifecycle metadata, not generated assistant prose or a verdict.
+    public let progress: NativeExecutionProgress?
+    public init(_ phase: Phase, provider: String? = nil, surface: String? = nil, model: String? = nil, effort: String? = nil, timestamp: Date = Date(), publicText: String? = nil, tool: String? = nil, nativeSessionID: String? = nil, progress: NativeExecutionProgress? = nil) {
         self.phase = phase; self.timestamp = timestamp
         // A source lease is acquired before dispatch. Never carry an earlier
         // turn's executed route or native session into this pre-backend wait.
@@ -30,10 +32,11 @@ public struct RuntimeActivity: Codable, Equatable, Sendable {
         }
         self.publicText = publicText; self.tool = phase == .waitingForSource ? nil : tool
         self.nativeSessionID = (phase == .waitingForSource ? nil : nativeSessionID).flatMap { UUID(uuidString: $0)?.uuidString.lowercased() }
+        self.progress = phase == .waitingForSource ? nil : progress.flatMap { $0.isValid ? $0 : nil }
     }
 
     private enum CodingKeys: String, CodingKey {
-        case phase, provider, surface, model, effort, timestamp, publicText, tool, nativeSessionID, waitingReason
+        case phase, provider, surface, model, effort, timestamp, publicText, tool, nativeSessionID, waitingReason, progress
     }
 
     public init(from decoder: Decoder) throws {
@@ -55,7 +58,10 @@ public struct RuntimeActivity: Codable, Equatable, Sendable {
             effort: try values.decodeIfPresent(String.self, forKey: .effort),
             timestamp: try values.decode(Date.self, forKey: .timestamp), publicText: publicText,
             tool: try values.decodeIfPresent(String.self, forKey: .tool),
-            nativeSessionID: try values.decodeIfPresent(String.self, forKey: .nativeSessionID))
+            nativeSessionID: try values.decodeIfPresent(String.self, forKey: .nativeSessionID),
+            // Optional telemetry must never suppress valid public prose when
+            // an older/unknown/malformed progress schema is encountered.
+            progress: try? values.decode(NativeExecutionProgress.self, forKey: .progress))
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -73,6 +79,7 @@ public struct RuntimeActivity: Codable, Equatable, Sendable {
         try values.encodeIfPresent(publicText, forKey: .publicText)
         try values.encodeIfPresent(tool, forKey: .tool)
         try values.encodeIfPresent(nativeSessionID, forKey: .nativeSessionID)
+        try values.encodeIfPresent(progress, forKey: .progress)
     }
     public var label: String {
         switch phase {
@@ -92,13 +99,16 @@ public struct RuntimeActivity: Codable, Equatable, Sendable {
     public var toolProgressLabel: String? {
         guard let tool, !tool.isEmpty else { return nil }
         switch tool {
-        case "commandExecution": return os1Tr("명령 실행·결과 확인 중", "Executing commands and checking results")
+        case "commandExecution", "Bash": return os1Tr("셸 명령 도구 요청 관측", "Shell tool request observed")
         case "webSearch": return os1Tr("웹 자료 확인 중", "Checking web sources")
-        case "fileChange": return os1Tr("파일 변경 처리 중", "Processing file changes")
+        case "fileChange", "Write", "Edit", "MultiEdit", "NotebookEdit": return os1Tr("파일 변경 도구 요청 관측", "File change tool request observed")
+        case "Read", "Glob", "Grep": return os1Tr("파일 탐색·읽기 도구 요청 관측", "File inspection tool request observed")
+        case "WebSearch", "WebFetch": return os1Tr("웹 자료 도구 요청 관측", "Web source tool request observed")
+        case "Agent", "Task": return os1Tr("하위 에이전트 도구 요청 관측", "Subagent tool request observed")
         default: return os1Tr("도구 작업 진행 중", "Tool work in progress")
         }
     }
-    public static func emit(_ phase: Phase, provider: String? = nil, surface: String? = nil, model: String? = nil, effort: String? = nil, publicText: String? = nil, tool: String? = nil, nativeSessionID: String? = nil) {
+    public static func emit(_ phase: Phase, provider: String? = nil, surface: String? = nil, model: String? = nil, effort: String? = nil, publicText: String? = nil, tool: String? = nil, nativeSessionID: String? = nil, progress: NativeExecutionProgress? = nil) {
         guard let path = ProcessInfo.processInfo.environment["OS1_ACTIVITY_FILE"] else { return }
         let previous = (try? Data(contentsOf:URL(fileURLWithPath:path))).flatMap { try? JSONDecoder().decode(Self.self,from:$0) }
         let sameProvider = previous?.provider == provider
@@ -112,7 +122,8 @@ public struct RuntimeActivity: Codable, Equatable, Sendable {
             surface: surface ?? (sameRoute ? previous?.surface : nil),
             model: model ?? (sameRoute ? previous?.model : nil), effort: effort ?? (sameRoute ? previous?.effort : nil),
             publicText: publicText ?? retained, tool: tool,
-            nativeSessionID: nativeSessionID ?? (sameRoute ? previous?.nativeSessionID : nil))) else { return }
+            nativeSessionID: nativeSessionID ?? (sameRoute ? previous?.nativeSessionID : nil),
+            progress: progress)) else { return }
         // Best-effort display telemetry must not fail or change execution.
         try? data.write(to: URL(fileURLWithPath: path), options: .atomic)
         if let journal = ProcessInfo.processInfo.environment["OS1_EVENT_JOURNAL"] {

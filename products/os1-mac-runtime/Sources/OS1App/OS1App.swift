@@ -9432,6 +9432,10 @@ private struct OS1DesktopApp: App {
             do { try boundNativeLookupSelfTest(); exit(EXIT_SUCCESS) }
             catch { fputs("\(error.localizedDescription)\n", stderr); exit(EXIT_FAILURE) }
         }
+        if CommandLine.arguments.contains("--self-test-native-progress") {
+            do { try nativeProgressPresentationSelfTest(); exit(EXIT_SUCCESS) }
+            catch { fputs("\(error.localizedDescription)\n", stderr); exit(EXIT_FAILURE) }
+        }
         if let flag = CommandLine.arguments.firstIndex(of: "--benchmark-bound-native") {
             do {
                 guard CommandLine.arguments.count == flag + 2,
@@ -9922,6 +9926,7 @@ private struct OS1DesktopApp: App {
                 try governanceActivityStripSelfTest()
                 try nativeProvenanceSelfTest()
                 try boundNativeLookupSelfTest()
+                try nativeProgressPresentationSelfTest()
                 try savedFailurePreviewSelfTest()
                 try providerIntentSelfTest()
                 try routeFanoutDetailsSelfTest()
@@ -13483,6 +13488,147 @@ private struct VoiceDictationControl: View {
     }
 }
 
+/// Lifecycle metadata is NOT assistant speech or a task-success verdict.
+/// No model text, tool input/result, reasoning or raw errors enter this model.
+private struct NativeProgressPresentation {
+    struct Row: Identifiable {
+        let id: String
+        let receivedAt: Date
+        let label: String
+    }
+    let counts: String?
+    let rows: [Row]
+    let receivedAt: Date
+    let typed: Bool
+    static func safeTool(_ raw: String?) -> String? {
+        guard let raw, NativeExecutionProgress.safeToolName(raw) else { return nil }
+        return raw
+    }
+    static func kindLabel(_ raw: String) -> String {
+        switch raw {
+        case "ready": return "네이티브 준비 신호"
+        case "responseStarted": return "응답 시작 신호"
+        case "toolStarted": return "도구 요청"
+        case "toolReturned": return "도구 반환"
+        case "toolFailed": return "도구 오류 반환 신호"
+        case "toolWorking": return "도구 작업 신호"
+        case "responseBoundary": return "응답 경계 신호"
+        case "retrying": return "재시도 신호 수신"
+        case "processing": return "모델 생성 신호 수신"
+        default: return "네이티브 실행 신호"
+        }
+    }
+    init(activity: RuntimeActivity) {
+        if let progress = activity.progress, progress.isValid {
+            typed = true; receivedAt = progress.observedAt
+            counts = "요청 \(progress.toolsRequested) · 반환 \(progress.toolsReturned) · 미반환 \(progress.activeTools)"
+            rows = progress.events.suffix(12).map { event in
+                let tool = Self.safeTool(event.tool).map { " · " + $0 } ?? ""
+                let scope = event.scope == "main" ? "" : " · 하위 실행"
+                return Row(id: "\(event.sequence)|\(event.scope)|\(event.kind.rawValue)", receivedAt: event.observedAt,
+                    label: Self.kindLabel(event.kind.rawValue) + tool + scope)
+            }
+        } else {
+            typed = false; receivedAt = activity.timestamp; counts = nil
+            if let tool = Self.safeTool(activity.tool) {
+                rows = [Row(id: "legacy", receivedAt: activity.timestamp, label: "관측된 도구 신호 · " + tool)]
+            } else { rows = [] }
+        }
+    }
+}
+
+private struct NativeProgressPanel: View {
+    let activity: RuntimeActivity
+    @State private var expanded = false
+    private func eventRows(_ rows: [NativeProgressPresentation.Row]) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            ForEach(rows) { row in
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(row.receivedAt.formatted(date: .omitted, time: .standard))
+                        .font(.system(size: 9, design: .monospaced)).foregroundStyle(Theme.muted)
+                    Text(row.label).font(.system(size: 10)).foregroundStyle(Theme.text)
+                    Spacer(minLength: 0)
+                }
+            }
+        }.frame(maxWidth: .infinity, alignment: .leading)
+    }
+    var body: some View {
+        let presentation = NativeProgressPresentation(activity: activity)
+        return TimelineView(.periodic(from: .now, by: 1)) { context in
+            VStack(alignment: .leading, spacing: 6) {
+                HStack {
+                    Text("실제 백엔드 진행 신호").font(.system(size: 11, weight: .semibold))
+                    Spacer()
+                    Text("최근 수신 \(max(0, Int(context.date.timeIntervalSince(presentation.receivedAt))))초 전")
+                        .font(.system(size: 9, design: .monospaced)).foregroundStyle(Theme.muted)
+                }
+                if let counts = presentation.counts {
+                    Text(counts).font(.system(size: 10, design: .monospaced)).foregroundStyle(Theme.pink)
+                } else {
+                    Text("기존 실행: 도구 이름·수신 시각만 관측 · 누적 횟수/반환 상태 미계측")
+                        .font(.system(size: 9)).foregroundStyle(Theme.muted)
+                }
+                if presentation.rows.isEmpty {
+                    Text(activity.phase == .waitingForSource ? "네이티브 실행 전 소스 접근 대기" : "현재 단계 · " + activity.label + " · 공개 응답/도구 신호를 기다립니다")
+                        .font(.system(size: 10)).foregroundStyle(Theme.muted)
+                } else {
+                    eventRows(Array(presentation.rows.suffix(4)))
+                    if presentation.rows.count > 4 {
+                        DisclosureGroup("최근 \(presentation.rows.count)개 신호", isExpanded: $expanded) {
+                            ScrollView(.vertical) { eventRows(presentation.rows) }.frame(maxHeight: 132)
+                        }.font(.system(size: 9)).foregroundStyle(Theme.muted)
+                    }
+                }
+                Text("수신된 상태 신호입니다 · 도구 반환/응답 경계는 과제 완료가 아닙니다 · 비공개 사고·인수·결과는 표시하지 않습니다")
+                    .font(.system(size: 8)).foregroundStyle(Theme.muted).fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(10).background(Theme.panelRaised.opacity(0.75), in: RoundedRectangle(cornerRadius: 9))
+            .accessibilityIdentifier("os1.native-progress")
+        }
+    }
+}
+
+private func nativeProgressPresentationSelfTest() throws {
+    var checks = 0
+    func check(_ value: Bool, _ label: String) throws {
+        guard value else { throw RunnerError.message("Native progress presentation: " + label) }; checks += 1
+    }
+    let stamp = Date(timeIntervalSince1970: 1_800_000_000)
+    let events = (17...28).map { i in
+        NativeExecutionProgress.Event(sequence: i, kind: i == 28 ? .toolReturned : .processing,
+            tool: i == 28 ? "Bash" : "Read", scope: "main", observedAt: stamp.addingTimeInterval(Double(i)))
+    }
+    let progress = NativeExecutionProgress(sequence: 28, kind: .toolReturned, tool: "Bash", scope: "main",
+        toolsRequested: 2, toolsReturned: 1, activeTools: 1, observedAt: stamp.addingTimeInterval(28), events: events)
+    let activity = RuntimeActivity(.executing, provider: "claude", timestamp: stamp.addingTimeInterval(90),
+        publicText: "PRIVATE_PROMPT THINKING TOOL_ARGS TOOL_RESULT", tool: "Bash", progress: progress)
+    let view = NativeProgressPresentation(activity: activity)
+    try check(view.typed && view.rows.count == 12, "bounded real lifecycle window")
+    try check(view.counts == "요청 2 · 반환 1 · 미반환 1", "request/returned not claimed running")
+    try check(view.receivedAt == progress.observedAt && view.rows.last?.receivedAt == progress.observedAt,
+        "phase/poll timestamp substituted for receipt timestamp")
+    try check(view.rows.last?.label == "도구 반환 · Bash", "return called success")
+    try check(!view.rows.map(\.label).joined().contains("PRIVATE") && !view.rows.map(\.label).joined().contains("완료"),
+        "private content or completion invented")
+    let same = NativeProgressPresentation(activity: activity)
+    try check(same.receivedAt == view.receivedAt && same.rows.map(\.id) == view.rows.map(\.id),
+        "poll generated independent observations")
+    let legacy = NativeProgressPresentation(activity: RuntimeActivity(.executing, provider: "claude", timestamp: stamp, tool: "Edit"))
+    try check(!legacy.typed && legacy.counts == nil && legacy.receivedAt == stamp,
+        "legacy counts/timing invented")
+    try check(legacy.rows.map(\.label) == ["관측된 도구 신호 · Edit"], "legacy request called running or returned")
+    let absent = NativeProgressPresentation(activity: RuntimeActivity(.executing, provider: "claude", timestamp: stamp))
+    try check(absent.rows.isEmpty && absent.counts == nil, "fake greeting/event for absent telemetry")
+    let waiting = NativeProgressPresentation(activity: RuntimeActivity(.waitingForSource, provider: "claude", tool: "Bash", progress: progress))
+    try check(waiting.rows.isEmpty && waiting.counts == nil, "source wait inherited native work")
+    try check(NativeProgressPresentation.safeTool("Bash --password secret") == nil,
+        "tool argument used as tool name")
+    try check(NativeProgressPresentation.kindLabel("processing") == "모델 생성 신호 수신" &&
+        NativeProgressPresentation.kindLabel("retrying") == "재시도 신호 수신" &&
+        NativeProgressPresentation.kindLabel("toolFailed") == "도구 오류 반환 신호", "liveness/retry/error invented prose")
+    print("Native progress presentation: \(checks) checks PASS; content-free receipt metadata/legacy/unknown/privacy; model calls 0")
+}
+
 private struct RunActivityBanner: View {
     let activity: RuntimeActivity
     let started: Date
@@ -13493,7 +13639,7 @@ private struct RunActivityBanner: View {
         TimelineView(.periodic(from: .now, by: reduceMotion ? 1 : 0.12)) { context in
             let now = previewTime ?? context.date
             let seconds = max(0, Int(now.timeIntervalSince(started)))
-            let quiet = max(0, Int(now.timeIntervalSince(activity.timestamp)))
+            let quiet = max(0, Int(now.timeIntervalSince(NativeProgressPresentation(activity: activity).receivedAt)))
             HStack(spacing: 8) {
                 HStack(alignment: .center, spacing: 3) {
                     ForEach(0..<4) { index in
@@ -13510,10 +13656,12 @@ private struct RunActivityBanner: View {
                         if let reasoningLine = route.reasoningLine {
                             Text(reasoningLine).font(.system(size: 10)).foregroundStyle(Theme.muted).fixedSize()
                         }
-                        if let tool = activity.toolProgressLabel { Text(tool).font(.system(size: 10)).foregroundStyle(Theme.muted) }
+                        if let tool = NativeProgressPresentation.safeTool(activity.tool) {
+                            Text("최근 도구 관측 · " + tool).font(.system(size: 10)).foregroundStyle(Theme.muted)
+                        }
                     }
                     if activity.toolProgressLabel != nil && quiet < 30 {
-                        Text("최근 실행 신호 \(quiet)초 전 · 결과 검증 전에는 완료로 표시하지 않습니다.")
+                        Text("최근 수신 신호 \(quiet)초 전 · 도구 실행/성공 여부는 별도입니다.")
                             .font(.system(size: 10)).foregroundStyle(Theme.muted)
                     }
                     if activity.phase == .waitingForSource {
@@ -13691,6 +13839,7 @@ private struct ComposerView: View {
         VStack(spacing: 8) {
             if store.isRunning, let started = store.runStartedAt {
                 RunActivityBanner(activity: store.activeActivity, started: started, stopping: store.isStopping)
+                NativeProgressPanel(activity: store.activeActivity)
             }
             if !store.isSessionRunning(session.id), session.lastFailure != nil {
                 if let failure = session.lastBackendFailure {

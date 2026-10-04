@@ -5597,7 +5597,7 @@ final class CodexAppServerClient: @unchecked Sendable {
             if stream.eventCount != revision {
                 revision = stream.eventCount
                 if !stream.text.isEmpty { AttemptLatencyTrace.markOnce("first_public_output_received") }
-                RuntimeActivity.emit(.executing, provider: "codex", publicText: stream.text, tool: stream.tool)
+                RuntimeActivity.emit(.executing, provider: "codex", publicText: stream.text, tool: stream.tool, progress: stream.progress)
                 if !stream.text.isEmpty { AttemptLatencyTrace.markOnce("first_public_output_published") }
             }
             guard message["method"] as? String == "turn/completed",
@@ -5834,6 +5834,8 @@ func runCodexDesktopTurn(executable: String, threadID: String, prompt: String, w
     defer { if let submission = ExecutionSteering.currentSubmission { mailbox.close(submission) } }
     defer { try? desktop.follow(threadID: threadID, following: false) }
     var previous = ""
+    let progressStream = ExecutionStream()
+    var progressRevision = 0
     // Desktop state changes (new items, a growing current item, status) are
     // activity: a working turn runs to the ceiling, a silent one stops at `idle`.
     var watchdog = ProviderActivityWatchdog(ceiling: deadline, idle: idleTimeout)
@@ -5868,9 +5870,15 @@ func runCodexDesktopTurn(executable: String, threadID: String, prompt: String, w
             if marker != observed { observed = marker; watchdog.observeActivity() }
             let agents = items.filter { $0["type"] as? String == "agentMessage" }
             let progress = agents.compactMap { $0["text"] as? String }.joined(separator: "\n\n")
-            if progress != previous {
+            // Desktop snapshots are provider state observations, not synthetic
+            // stream notifications. Unchanged polling creates no progress.
+            progressStream.ingestCodexTurnSnapshot(items: items,
+                status: current["status"] as? String ?? "", threadID: threadID, turnID: turnID)
+            if progress != previous || progressStream.eventCount != progressRevision {
                 previous = progress
-                RuntimeActivity.emit(.executing, provider: "codex", publicText: progress)
+                progressRevision = progressStream.eventCount
+                RuntimeActivity.emit(.executing, provider: "codex", publicText: progress,
+                    tool: progressStream.tool, progress: progressStream.progress)
             }
             if let blocker = codexTurnBlocker(current, approvalRejected: false) { throw OS1Error.backendBlocked(blocker) }
             let status = current["status"] as? String
@@ -6513,7 +6521,7 @@ private func execute(
             arguments.insert(contentsOf: CheckoutTurn.claudeMCPArguments(os1Executable: currentOS1Executable(),
                                                                          executionID: ticket.executionID), at: 1)
         }
-        let stream = ExecutionStream()
+        let stream = ExecutionStream(claudeSessionID: activeSessionID)
         var revision = 0
         var relayedResultCount = 0
         let raw: (Int32, Data, Data)
@@ -6532,13 +6540,13 @@ private func execute(
                 if let text = stream.takeClaudePublicFinal(sessionID: activeSessionID, after: &relayedResultCount) {
                     revision = stream.eventCount
                     AttemptLatencyTrace.markOnce("native_output_received")
-                    RuntimeActivity.emit(.verifying, provider: "claude", model: model, effort: effort, publicText: text)
+                    RuntimeActivity.emit(.verifying, provider: "claude", model: model, effort: effort, publicText: text, progress: stream.progress)
                     AttemptLatencyTrace.markOnce("native_output_published")
                 } else if stream.eventCount != revision {
                     revision = stream.eventCount
                     if !stream.text.isEmpty { AttemptLatencyTrace.markOnce("first_public_output_received") }
                     RuntimeActivity.emit(.executing, provider: "claude", model: model, effort: effort,
-                        publicText: stream.text, tool: stream.tool)
+                        publicText: stream.text, tool: stream.tool, progress: stream.progress)
                     if !stream.text.isEmpty { AttemptLatencyTrace.markOnce("first_public_output_published") }
                 }
             },
@@ -6553,7 +6561,7 @@ private func execute(
         stream.finishClaude()
         if let text = stream.takeClaudePublicFinal(sessionID: activeSessionID, after: &relayedResultCount) {
             AttemptLatencyTrace.markOnce("native_output_received")
-            RuntimeActivity.emit(.verifying, provider: "claude", model: model, effort: effort, publicText: text)
+            RuntimeActivity.emit(.verifying, provider: "claude", model: model, effort: effort, publicText: text, progress: stream.progress)
             AttemptLatencyTrace.markOnce("native_output_published")
         }
         AttemptLatencyTrace.mark("provider_exited")

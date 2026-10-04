@@ -15,6 +15,24 @@ func runRuntimeActivityObserverFixtures() throws {
     func check(_ value: Bool, _ message: String) throws {
         if !value { throw NSError(domain: "ActivityRelayFixture", code: 1, userInfo: [NSLocalizedDescriptionKey: message]) }
     }
+    let received = Date(timeIntervalSince1970: 1_700_000_000)
+    let progressEvent = NativeExecutionProgress.Event(sequence: 1, kind: .toolStarted, tool: "Bash", scope: "main", observedAt: received)
+    let progress = NativeExecutionProgress(sequence: 1, kind: .toolStarted, tool: "Bash", scope: "main",
+        toolsRequested: 1, toolsReturned: 0, activeTools: 1, observedAt: received, events: [progressEvent])
+    let typedActivity = RuntimeActivity(.executing, provider: "claude", timestamp: received,
+        publicText: "PUBLIC_TEXT_UNCHANGED", tool: "Bash", progress: progress)
+    let roundtrip = try JSONDecoder().decode(RuntimeActivity.self, from: JSONEncoder().encode(typedActivity))
+    try check(roundtrip == typedActivity, "native metadata/public prose roundtrip changed")
+    try check(RuntimeActivity(.waitingForSource, provider: "claude", progress: progress).progress == nil,
+              "pre-dispatch source wait inherited native progress")
+    var malformed = try JSONSerialization.jsonObject(with: JSONEncoder().encode(typedActivity)) as! [String: Any]
+    malformed["progress"] = ["kind": "untrusted_future_kind", "rawReasoning": "PRIVATE_THINKING_SENTINEL"]
+    let safe = try JSONDecoder().decode(RuntimeActivity.self, from: JSONSerialization.data(withJSONObject: malformed))
+    try check(safe.progress == nil && safe.publicText == "PUBLIC_TEXT_UNCHANGED", "bad optional metadata suppressed public prose")
+    try check(!String(decoding: JSONEncoder().encode(safe), as: UTF8.self).contains("PRIVATE_THINKING_SENTINEL"),
+              "quarantined metadata leaked private content")
+    try check(RuntimeActivity(.executing, tool: "Bash").toolProgressLabel != RuntimeActivity(.executing, tool: "Read").toolProgressLabel,
+              "Claude tools still collapse into one generic label")
     for delimiter in ["·", "ㆍ", ",", "/"] {
         for tail in ["금지", "없이", "하지 마", "는 하지 마세요"] {
             let list = ["파일 변경", "웹", "브라우저", "구매", "외부 전송", "서브에이전트"].joined(separator: delimiter)
