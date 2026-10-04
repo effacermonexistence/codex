@@ -317,6 +317,11 @@ export class RoutePoolState extends DurableObject<Env> {
     });
   }
 
+  /** Same-request activation only. No task row, decision, quota or model work. */
+  ready(): boolean {
+    return this.ctx.storage.sql.exec<{ ready: number }>("SELECT 1 AS ready").toArray()[0]?.ready === 1;
+  }
+
   begin(executionID: string, input: RouteBegin & { required_startup_contract: 1 }): "created" | "exists" {
     if (!UUID.test(executionID) || input.required_startup_contract !== 1) throw new Error("invalid pool execution");
     return this.ctx.storage.transactionSync(() => {
@@ -436,6 +441,7 @@ export class RoutePoolState extends DurableObject<Env> {
 function pooledRouteState(env: Env, executionID: string) {
   const pool = env.ROUTE_POOLS.getByName("startup-v1");
   return {
+    ready: () => pool.ready(),
     begin: (input: RouteBegin) => pool.begin(executionID, { ...input, required_startup_contract: 1 }),
     recordedDecision: (sequence: number, hash: string) => pool.recordedDecision(executionID, sequence, hash),
     snapshot: (sequence: number) => pool.snapshot(executionID, sequence),
@@ -580,7 +586,8 @@ export default {
       if (!record(body) || !exact(body, [...(body.task === undefined ? ["execution_id", "previous", "version"] : ["execution_id", "principal", "task", "version"]),
         ...(critical ? ["required_startup_contract"] : [])]) || (critical && body.required_startup_contract !== 1) ||
         body.version !== 3 || typeof body.execution_id !== "string" || !UUID.test(body.execution_id)) throw new Error("denied");
-      const state = critical ? pooledRouteState(env, body.execution_id) : env.ROUTES.getByName(body.execution_id);
+      const pooled = critical ? pooledRouteState(env, body.execution_id) : undefined;
+      const state = pooled ?? env.ROUTES.getByName(body.execution_id);
       if (record(body.task)) {
         stage.operation = "route";
         stage.current = "validate_start";
@@ -603,15 +610,38 @@ export default {
         if (!(await completionFeedbackMatchesTask(task.execution_context as ExecutionContext | undefined, task.content))) throw new Error("denied");
         stage.current = "budget";
         const budget = env.ROUTING_BUDGETS.getByName(await budgetObjectName(env, body.principal.subject));
-        if (!(await budget.consumeStart(positiveInteger(env.MAX_ROUTE_STARTS_PER_HOUR)))) throw new Error("denied");
-        stage.current = "policy";
-        const bundle = await loadPolicyBundle(env);
-        const executorContract = bundle.executor_contracts.find((contract) => contract.version === task.executor_contract_version && contract.sha256 === task.executor_contract_sha256);
-        if (!executorContract) throw new Error("denied");
+        let bundle: PolicyBundle;
+        let executorContract: PolicyBundle["executor_contracts"][number];
         if (critical) {
-          stage.current = "capabilities_probe";
-          const supported = await completionCapabilityState(env.RCC_V26, bundle.rcc.policy_sha256, Date.now(), true);
-          if (!supported.feedback || !supported.modelAvailability) throw new Error("denied");
+          stage.current = "startup_parallel";
+          // These three operations are independent. All settle before route or
+          // commit. Admission mutates its authoritative ledger exactly once;
+          // failed other reads do not retry or pretend to roll it back.
+          const gates = await Promise.allSettled([
+            stage.measureParallel("budget", () => budget.consumeStart(positiveInteger(env.MAX_ROUTE_STARTS_PER_HOUR))),
+            (async () => {
+              const policy = await stage.measureParallel("policy", () => loadPolicyBundle(env));
+              const contract = policy.executor_contracts.find(candidate => candidate.version === task.executor_contract_version && candidate.sha256 === task.executor_contract_sha256);
+              if (!contract) throw new Error("denied");
+              const supported = await stage.measureParallel("capabilities_probe", () =>
+                completionCapabilityState(env.RCC_V26, policy.rcc.policy_sha256, Date.now(), true));
+              if (!supported.feedback || !supported.modelAvailability) throw new Error("denied");
+              return { policy, contract };
+            })(),
+            stage.measureParallel("pool_ready", () => pooled!.ready()),
+          ]);
+          if (gates[0].status !== "fulfilled" || gates[0].value !== true || gates[1].status !== "fulfilled" ||
+            gates[2].status !== "fulfilled" || gates[2].value !== true) throw new Error("denied");
+          bundle = gates[1].value.policy;
+          executorContract = gates[1].value.contract;
+        } else {
+          // Original clients keep their original ordering and state namespace.
+          if (!(await budget.consumeStart(positiveInteger(env.MAX_ROUTE_STARTS_PER_HOUR)))) throw new Error("denied");
+          stage.current = "policy";
+          bundle = await loadPolicyBundle(env);
+          const contract = bundle.executor_contracts.find(candidate => candidate.version === task.executor_contract_version && candidate.sha256 === task.executor_contract_sha256);
+          if (!contract) throw new Error("denied");
+          executorContract = contract;
         }
         const context: RouteContext = {
           task: task.content, provider_preference: task.provider_preference as ProviderPreference,

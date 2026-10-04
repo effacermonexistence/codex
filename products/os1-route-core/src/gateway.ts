@@ -34,6 +34,7 @@ import { availableModelTuple, completionFeedbackMatchesTask } from "./execution-
 import { parseAttemptStart, verifyAttemptStart, type AttemptCommand } from "./attempt-contract";
 import type { BeginCommand, FinalizeCommand } from "./execution-state";
 import type { ClaimCommand } from "./ledger-model";
+import type { ExecutionPoolState } from "./execution-pool-state";
 
 export const PRIVATE_CORE_PROTOCOL_VERSION = 3;
 
@@ -88,9 +89,9 @@ async function privateDecision(
 }
 
 /** Signed V2 storage mode selects the fixed pool, never a request-selected name. */
-function executionLedger(env: Env, ticket: Ticket) {
+function executionLedger(env: Env, ticket: Ticket, preparedPool?: DurableObjectStub<ExecutionPoolState>) {
   const legacy = ticket.startup_contract ? undefined : env.EXECUTIONS.getByName(ticket.execution_id);
-  const pool = ticket.startup_contract ? env.EXECUTION_POOLS.getByName("startup-v1") : undefined;
+  const pool = ticket.startup_contract ? (preparedPool ?? env.EXECUTION_POOLS.getByName("startup-v1")) : undefined;
   return {
     begin: (command: BeginCommand) => pool ? pool.begin(command) : legacy!.begin(command),
     startAttempt: (command: AttemptCommand) => pool ? pool.startAttempt({ ...command, execution_id: ticket.execution_id }) : legacy!.startAttempt(command),
@@ -149,6 +150,14 @@ export async function startExecution(request: Request, env: Env): Promise<Respon
   );
   if (!(await completionFeedbackMatchesTask(execution_context, task))) reject();
   const executionId = crypto.randomUUID();
+  // Start the fixed pool's read-only connection while the private decision runs.
+  // Stubs are request-owned, never cached globally or reused across requests.
+  const preparedPool = required_startup_contract ? env.EXECUTION_POOLS.getByName("startup-v1") : undefined;
+  // Attach both outcomes now, so a denied/malformed decision cannot orphan a rejection.
+  // A failed activation is never retried here and can never authorize a begin.
+  const poolReady = preparedPool ? Promise.resolve().then(() => preparedPool.ready()).then(
+    ready => ({ ok: ready === true as boolean }), () => ({ ok: false }),
+  ) : undefined;
   const decision = await privateDecision(env, {
     version: PRIVATE_CORE_PROTOCOL_VERSION,
     execution_id: executionId,
@@ -173,8 +182,9 @@ export async function startExecution(request: Request, env: Env): Promise<Respon
     if (!startup || !availableModelTuple(execution_context, available_codex_models, decision.provider, startup.model, startup.effort) ||
       (execution_context?.execution_permission_profile !== undefined && decision.permission_profile !== execution_context.execution_permission_profile)) reject();
   }
+  if (poolReady && !(await poolReady).ok) reject();
   const ticket = await issueTicket(env, executionId, 1, decision, required_startup_contract ? executor_contract_sha256 : undefined);
-  const state = executionLedger(env, ticket);
+  const state = executionLedger(env, ticket, preparedPool);
   const created = await state.begin({
     execution_id: executionId,
     subject_hash: await sha256Hex(identity.subject),

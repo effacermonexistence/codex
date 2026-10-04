@@ -67,7 +67,7 @@ describe("critical startup contract and signed ticket mode", () => {
       AUTH_SERVICE: { fetch: async () => Response.json({ subject: "fixture", device_id: "fixture-device" }) },
       PRIVATE_ROUTE_CORE: { fetch: async (_: string, init: RequestInit) => { privateInput = JSON.parse(String(init.body)); return Response.json(response); } },
       EXECUTIONS: { getByName: () => ({ begin: async () => { oldBegins++; return "created"; } }) },
-      EXECUTION_POOLS: { getByName: (name: string) => { expect(name).toBe("startup-v1"); return { begin: async (b: any) => { expect(b.execution_id).toMatch(/^[-a-f0-9]{36}$/); begins++; return "created"; } }; } },
+      EXECUTION_POOLS: { getByName: (name: string) => { expect(name).toBe("startup-v1"); return { ready: async () => true, begin: async (b: any) => { expect(b.execution_id).toMatch(/^[-a-f0-9]{36}$/); begins++; return "created"; } }; } },
     } as unknown as Env;
     await expect(startExecution(request("/v1/executions", body), env)).rejects.toThrow(); expect(begins).toBe(0);
     response = { ...decision, startup_contract: { ...startup, executor_contract_sha256: "c".repeat(64) } };
@@ -84,6 +84,42 @@ describe("critical startup contract and signed ticket mode", () => {
     const legacy = parseTicket(await (await startExecution(request("/v1/executions", legacyBody), env)).json());
     expect(legacy.startup_contract).toBeUndefined(); expect(oldBegins).toBe(1); expect(begins).toBe(1);
     expect(privateInput.required_startup_contract).toBeUndefined();
+  });
+  it("overlaps read-only activation with routing, reuses that exact stub and never commits before both gates", async () => {
+    const k = await keys(); let gets = 0, readyCalls = 0, privateCalls = 0, begins = 0;
+    let releaseReady!: (value: true) => void, releaseDecision!: () => void;
+    const readyBarrier = new Promise<true>(resolve => { releaseReady = resolve; });
+    const decisionBarrier = new Promise<void>(resolve => { releaseDecision = resolve; });
+    const stub = { ready: () => { readyCalls++; return readyBarrier; }, begin: async () => { begins++; return "created"; } };
+    const env = { MAX_REQUEST_BYTES: "65536", SERVICE_RESPONSE_BYTES: "32768", TICKET_TTL_SECONDS: "300", DELIVERY_DENYLIST_JSON: "[]",
+      TICKET_SIGNING_KEY_PKCS8: k.privatePem, TICKET_VERIFYING_KEY_SPKI: k.publicPem,
+      AUTH_SERVICE: { fetch: async () => Response.json({ subject: "fixture", device_id: "fixture-device" }) },
+      PRIVATE_ROUTE_CORE: { fetch: async () => { privateCalls++; await decisionBarrier; return Response.json({ ...decision, startup_contract: startup }); } },
+      EXECUTION_POOLS: { getByName: () => { gets++; if (gets > 1) throw Error("second outgoing connection"); return stub; } },
+    } as unknown as Env;
+    let settled = false; const pending = startExecution(request("/v1/executions", body), env).then(r => { settled = true; return r; });
+    for (let n = 0; n < 30 && (!readyCalls || !privateCalls); n++) await new Promise(r => setTimeout(r, 0));
+    expect([gets, readyCalls, privateCalls, begins, settled]).toEqual([1,1,1,0,false]);
+    releaseDecision(); await new Promise(r => setTimeout(r, 0));
+    expect([begins, settled]).toEqual([0,false]);
+    releaseReady(true); expect((await pending).status).toBe(200);
+    expect([gets, readyCalls, begins]).toEqual([1,1,1]);
+  });
+  it("fails closed on activation failure and creates no execution for a denied/malformed decision", async () => {
+    const k = await keys(); let begins = 0, readyCalls = 0;
+    const base = { MAX_REQUEST_BYTES: "65536", SERVICE_RESPONSE_BYTES: "32768", TICKET_TTL_SECONDS: "300", DELIVERY_DENYLIST_JSON: "[]",
+      TICKET_SIGNING_KEY_PKCS8: k.privatePem, TICKET_VERIFYING_KEY_SPKI: k.publicPem,
+      AUTH_SERVICE: { fetch: async () => Response.json({ subject: "fixture", device_id: "fixture-device" }) },
+      EXECUTION_POOLS: { getByName: () => ({ ready: async () => { readyCalls++; throw Error("activation unavailable"); },
+        begin: async () => { begins++; return "created"; } }) },
+    };
+    for (const reply of [{ ...decision, startup_contract: startup }, { ...decision }, { status: "failed" }, { malformed: true }]) {
+      const env = { ...base, PRIVATE_ROUTE_CORE: { fetch: async () => Response.json(reply) } } as unknown as Env;
+      if (reply.status === "failed") expect((await startExecution(request("/v1/executions", body), env)).status).toBe(200);
+      else await expect(startExecution(request("/v1/executions", body), env)).rejects.toThrow();
+    }
+    await new Promise(r => setTimeout(r, 0));
+    expect([readyCalls, begins]).toEqual([4,0]);
   });
   it("keeps fresh identity/key proof and explicit pool ID on attempts; rejects stripped mode before ledger use", async () => {
     const k = await keys(); const device = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]) as CryptoKeyPair;

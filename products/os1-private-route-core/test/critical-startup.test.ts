@@ -33,7 +33,7 @@ function fixture(capability: unknown, capStatus = 200) {
     ROUTES: { getByName: () => { oldLookups++; return {}; } },
     ROUTE_POOLS: { getByName: (name: string) => {
       expect(name).toBe("startup-v1");
-      return { begin: async (id: string, value: any) => {
+      return { ready: async () => true, begin: async (id: string, value: any) => {
         expect(id).toBe(executionID); expect(value.required_startup_contract).toBe(1); persisted++; return "created";
       } };
     } },
@@ -150,5 +150,54 @@ describe("critical startup source-bound capability and typed pooled receipt", ()
     delete (snapshot as any).required_startup_contract;
     expect((await call(f.env, result)).status).toBe(400);
     expect(advances).toBe(1); // A non-critical stored row cannot gain a critical receipt.
+  });
+  it("activates independent admission, policy and pool in one request, then waits for every gate", async () => {
+    const f = fixture({ completion_feedback_schema: 1, model_availability_schema: 1,
+      route_learning_schema: 3, policy_sha256: bundle.rcc.policy_sha256 });
+    const started: string[] = [];
+    let releaseBudget!: (value: boolean) => void, releasePolicy!: (value: any) => void, releasePool!: (value: boolean) => void;
+    const budgetReady = new Promise<boolean>(resolve => { releaseBudget = resolve; });
+    const policyReady = new Promise<any>(resolve => { releasePolicy = resolve; });
+    const poolReady = new Promise<boolean>(resolve => { releasePool = resolve; });
+    let admissions = 0, poolLookups = 0;
+    const pool = { ready: async () => { started.push("pool"); return poolReady; },
+      begin: async () => { expect(started).toContain("budget-finished"); expect(started).toContain("pool-finished"); return "created"; } };
+    (f.env.ROUTE_POOLS as any).getByName = () => { poolLookups++; return pool; };
+    (f.env.ROUTING_BUDGETS as any).getByName = () => ({ consumeStart: async () => {
+      admissions++; started.push("budget"); return budgetReady;
+    }, learningRows: async () => [], record: async () => {} });
+    (f.env.POLICY_BUNDLES as any).get = async () => { started.push("policy"); return policyReady; };
+    const pending = call(f.env, input());
+    await vi.waitFor(() => expect(started.sort()).toEqual(["budget", "policy", "pool"]));
+    expect(f.counts().routes).toBe(0);
+    releasePolicy({ size: bytes.length, arrayBuffer: async () => bytes.buffer });
+    await vi.waitFor(() => expect(f.counts().caps).toBe(1));
+    // Policy/capability completion alone cannot dispatch past either unresolved gate.
+    expect(f.counts().routes).toBe(0);
+    started.push("budget-finished"); releaseBudget(true);
+    await Promise.resolve(); expect(f.counts().routes).toBe(0);
+    started.push("pool-finished"); releasePool(true);
+    expect((await pending).status).toBe(200);
+    expect(admissions).toBe(1); expect(poolLookups).toBe(1);
+    expect(f.counts().routes).toBe(1);
+  });
+  it("never routes after quota denial even while independent metadata and pool reads succeed", async () => {
+    const f = fixture({ completion_feedback_schema: 1, model_availability_schema: 1, policy_sha256: bundle.rcc.policy_sha256 });
+    let admissions = 0;
+    (f.env.ROUTING_BUDGETS as any).getByName = () => ({ consumeStart: async () => { admissions++; return false; } });
+    expect((await call(f.env, input())).status).toBe(400);
+    expect(admissions).toBe(1); expect(f.counts().routes).toBe(0); expect(f.counts().persisted).toBe(0);
+  });
+  it("settles simultaneous failures without replaying uncertain admission or beginning a route", async () => {
+    const f = fixture({ error: "unavailable" }, 404);
+    let admissions = 0, activations = 0;
+    (f.env.ROUTING_BUDGETS as any).getByName = () => ({ consumeStart: async () => {
+      admissions++; throw new Error("lost admission response");
+    } });
+    (f.env.ROUTE_POOLS as any).getByName = () => ({ ready: async () => { activations++; throw new Error("lost ready response"); },
+      begin: async () => { throw new Error("must not begin"); } });
+    expect((await call(f.env, input())).status).toBe(400);
+    expect(admissions).toBe(1); expect(activations).toBe(1);
+    expect(f.counts().routes).toBe(0); expect(f.counts().persisted).toBe(0);
   });
 });

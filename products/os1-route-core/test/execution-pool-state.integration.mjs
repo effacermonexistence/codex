@@ -27,6 +27,9 @@ const base={execution_id:'test',subject_hash:'a',device_id:'device',sequence:1,n
 const command={subject_hash:'a',device_id:'device',sequence:1,nonce:'nonce',now:t};
 const result={...command,result_hash:'hash',now:t+335_000};
 try {
+  equal(await call('ready',{}),true);
+  equal(await call('startAttempt',command),null);
+  equal(await call('permitsArtifact',result),false);
   equal(await call('begin',base),'created');
   equal(await call('startAttempt',{...command,device_id:'other'}),null);
   const lease=await call('startAttempt',command);

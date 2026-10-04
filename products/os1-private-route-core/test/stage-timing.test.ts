@@ -35,4 +35,18 @@ describe("bounded timing-only route diagnostics", () => {
     expect(result.total_ms).toBe(86_400_000);
     expect(result.stages).toEqual({ request: 0, parse: 86_400_000 });
   });
+  it("records concurrent gate spans separately instead of adding them as serial cost", async () => {
+    let now = 0;
+    const timing = new RouteStageTiming("route", () => now);
+    timing.current = "startup_parallel";
+    let releaseA!: () => void, releaseB!: () => void;
+    const a = timing.measureParallel("budget", () => new Promise<void>(resolve => { releaseA = resolve; }));
+    const b = timing.measureParallel("pool_ready", () => new Promise<void>(resolve => { releaseB = resolve; }));
+    now = 100; releaseA(); await a;
+    now = 150; releaseB(); await b;
+    const result = timing.finish();
+    expect(result.total_ms).toBe(150);
+    expect(result.stages.startup_parallel).toBe(150);
+    expect(result.parallel_spans).toEqual({ budget: 100, pool_ready: 150 });
+  });
 });

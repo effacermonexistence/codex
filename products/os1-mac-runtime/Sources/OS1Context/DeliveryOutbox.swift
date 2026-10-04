@@ -65,7 +65,14 @@ public struct DeliveryOutbox {
         let attrs = try FileManager.default.attributesOfItem(atPath: url.path)
         guard attrs[.type] as? FileAttributeType == .typeRegular,
               (attrs[.size] as? NSNumber)?.intValue ?? Int.max <= 8_000_000 else { throw CocoaError(.fileReadCorruptFile) }
-        let value = try JSONDecoder().decode(DeliveryRecord.self, from: Data(contentsOf: url))
+        return try verifiedSnapshot(id, bytes: Data(contentsOf: url))
+    }
+    /// Verify this exact captured byte snapshot, not a second path read.
+    /// Callers still enforce regular-file admission before capturing bytes.
+    public func verifiedSnapshot(_ id: String, bytes: Data) throws -> DeliveryRecord {
+        _ = try path(id)
+        guard bytes.count <= 8_000_000 else { throw CocoaError(.fileReadCorruptFile) }
+        let value = try JSONDecoder().decode(DeliveryRecord.self, from: bytes)
         let hash = SHA256.hash(data: value.artifact).map { String(format: "%02x", $0) }.joined()
         guard value.id == id, hash == value.resultSHA256 else { throw CocoaError(.fileReadCorruptFile) }
         return value

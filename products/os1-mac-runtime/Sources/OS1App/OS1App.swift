@@ -3144,6 +3144,7 @@ private struct NativeSessionSummary: Identifiable, Sendable {
     var isPinned = false
     var pinPosition: Int?
     var pinSyncNote: String?
+    var requiresExactIdentity = false
 
     var displayTitle: String {
         let value = (linkedTitle ?? title).trimmingCharacters(in: .whitespacesAndNewlines)
@@ -3219,6 +3220,72 @@ private enum NativeSessionReader {
         let lastActivityAt: Date?
         let isArchived: Bool
     }
+    static func canonicalExistingPath(_ url: URL) -> String {
+        guard let resolved = realpath(url.path, nil) else { return url.standardizedFileURL.path }
+        defer { free(resolved) }
+        return String(cString: resolved)
+    }
+
+    /// Send already has an exact binding. Browsing every backend conversation
+    /// here read ~150 MB of unrelated Claude history on each submission.
+    /// This lookup reads only matching canonical UUID files, never pin/browse
+    /// metadata, and binds Codex history to the selected native account home.
+    static func boundSession(for provider: ProviderChoice, including sessionID: String,
+                             accountHome: URL? = nil, knownSourcePath: String? = nil,
+                             readObserver: ((URL) -> Void)? = nil) throws -> NativeSessionSummary? {
+        guard provider != .auto, let uuid = UUID(uuidString: sessionID) else { return nil }
+        let id = uuid.uuidString.lowercased()
+        let home = accountHome ?? BackendAccounts.home(provider: provider.rawValue, in: BackendAccounts.load())
+        if provider == .codex {
+            guard let row = try CodexSessionIndex.row(path: home.appendingPathComponent("state_5.sqlite").path, id: id),
+                  row.id.lowercased() == id else { return nil }
+            return NativeSessionSummary(id: row.id, provider: .codex,
+                title: visibleBackendUserRequest(row.title).map(firstLine) ?? "Codex session",
+                workspace: row.cwd, workspaceLabel: nil,
+                updatedAt: Date(timeIntervalSince1970: Double(row.updatedAtMS) / 1_000),
+                sourcePath: home.appendingPathComponent("thread_history_1.sqlite").path,
+                linkedTitle: nil, requiresExactIdentity: true)
+        }
+        let projects = URL(fileURLWithPath: canonicalExistingPath(home.appendingPathComponent("projects", isDirectory: true)), isDirectory: true)
+        guard FileManager.default.fileExists(atPath: projects.path) else { return nil }
+        let directories = try FileManager.default.contentsOfDirectory(at: projects,
+            includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey], options: [.skipsHiddenFiles])
+        var candidates: [NativeSessionSummary] = []
+        for directory in directories {
+            guard let values = try? directory.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey]),
+                  values.isDirectory == true, values.isSymbolicLink != true else { continue }
+            let file = directory.appendingPathComponent(id + ".jsonl")
+            guard SidebarOrder.claudeConversationID(file: file, projectsRoot: projects)?.lowercased() == id,
+                  let attributes = try? file.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .contentModificationDateKey]),
+                  attributes.isRegularFile == true, attributes.isSymbolicLink != true else { continue }
+            readObserver?(file)
+            let records = try readJSONLines(file, maximumBytes: 768 * 1_024)
+            guard exactClaudeIdentity(records, id: id) else { continue }
+            let workspace = records.compactMap { $0["cwd"] as? String }.last ?? ""
+            let title = records.compactMap { record -> String? in
+                guard record["type"] as? String == "user", let message = record["message"] as? [String: Any] else { return nil }
+                return visibleBackendUserRequest(textContent(message["content"])).map(firstLine)
+            }.first ?? "Claude session"
+            let at = records.compactMap { ($0["timestamp"] as? String).flatMap(iso8601.date(from:)) }.max()
+                ?? attributes.contentModificationDate ?? .distantPast
+            candidates.append(NativeSessionSummary(id: id, provider: .claude, title: title,
+                workspace: workspace, workspaceLabel: nil, updatedAt: at, sourcePath: file.path,
+                linkedTitle: nil, requiresExactIdentity: true))
+        }
+        if candidates.count > 1 {
+            if let knownSourcePath, let exact = candidates.first(where: {
+                $0.sourcePath.map { canonicalExistingPath(URL(fileURLWithPath: $0)) } ==
+                    canonicalExistingPath(URL(fileURLWithPath: knownSourcePath))
+            }) { return exact }
+            throw RunnerError.message("동일한 Claude 세션 ID의 원본이 여러 개라 자동 선택하지 않았습니다.")
+        }
+        return candidates.first
+    }
+
+    private static func exactClaudeIdentity(_ records: [[String: Any]], id: String) -> Bool {
+        let identities = records.compactMap { $0["sessionId"] as? String }
+        return !identities.isEmpty && identities.allSatisfy { $0.lowercased() == id }
+    }
 
     static func sessions(
         for provider: ProviderChoice,
@@ -3259,7 +3326,7 @@ private enum NativeSessionReader {
 
     static func transcript(for session: NativeSessionSummary, forIngestion: Bool = false) throws -> [NativeSessionMessage] {
         switch session.provider {
-        case .codex: return try codexTranscript(sessionID: session.id, forIngestion: forIngestion)
+        case .codex: return try codexTranscript(sessionID: session.id, forIngestion: forIngestion, historyPath: session.sourcePath)
         case .claude: return try claudeTranscript(session: session, forIngestion: forIngestion)
         case .auto: return []
         }
@@ -3311,9 +3378,9 @@ private enum NativeSessionReader {
         )
     }
 
-    private static func codexTranscript(sessionID: String, forIngestion: Bool) throws -> [NativeSessionMessage] {
+    private static func codexTranscript(sessionID: String, forIngestion: Bool, historyPath: String? = nil) throws -> [NativeSessionMessage] {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
-        let path = "\(home)/.codex/thread_history_1.sqlite"
+        let path = historyPath ?? "\(home)/.codex/thread_history_1.sqlite"
         var database: OpaquePointer?
         guard sqlite3_open_v2(path, &database, SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX, nil) == SQLITE_OK,
               let database else {
@@ -3498,6 +3565,9 @@ private enum NativeSessionReader {
     private static func claudeTranscript(session: NativeSessionSummary, forIngestion: Bool) throws -> [NativeSessionMessage] {
         guard let sourcePath = session.sourcePath else { return [] }
         let records = try readJSONLines(URL(fileURLWithPath: sourcePath), maximumBytes: forIngestion ? nil : 4 * 1_024 * 1_024)
+        if session.requiresExactIdentity, !exactClaudeIdentity(records, id: session.id.lowercased()) {
+            throw RunnerError.message("Claude 원본의 세션 식별자가 바뀌어 다른 기록을 수집하지 않았습니다.")
+        }
         var result: [NativeSessionMessage] = []
         for (ordinal, record) in records.enumerated() {
             guard let type = record["type"] as? String, type == "user" || type == "assistant",
@@ -4850,6 +4920,81 @@ private func nativeProvenanceSelfTest() throws {
     altered.messages = [ChatMessage(role: .user, text: internalText + " THIS IS MY QUOTE", nativeIngestedID: rows[0].id)]
     try check(!repairManagedImports(&altered, records: rows), "matched ID with different bytes hidden")
     print("Native provenance: exact managed rows hidden from UI/copy/context; originals, external quote, restart and idempotency PASS; model calls 0")
+}
+
+private func boundNativeLookupSelfTest() throws {
+    var root = FileManager.default.temporaryDirectory.appendingPathComponent("os1-bound-native-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    root = URL(fileURLWithPath: NativeSessionReader.canonicalExistingPath(root), isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    var checks = 0
+    func check(_ value: Bool, _ label: String) throws {
+        guard value else { throw RunnerError.message("Bound native lookup: " + label) }; checks += 1
+    }
+    let id = UUID().uuidString.lowercased(), foreign = UUID().uuidString.lowercased()
+    let home = root.appendingPathComponent("claude-home")
+    let project = home.appendingPathComponent("projects/selected")
+    try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
+    let target = project.appendingPathComponent(id + ".jsonl")
+    func line(_ session: String, _ text: String, _ role: String = "user") throws -> Data {
+        var data = try JSONSerialization.data(withJSONObject: ["type": role, "sessionId": session,
+            "uuid": UUID().uuidString, "cwd": project.path,
+            "message": ["content": [["type": "text", "text": text]]]])
+        data.append(10); return data
+    }
+    let original = try line(id, "first external turn")
+    try original.write(to: target)
+    let irrelevant = project.appendingPathComponent(foreign + ".jsonl")
+    try Data(repeating: 88, count: 4_000_000).write(to: irrelevant)
+    var reads: [URL] = []
+    let selected = try NativeSessionReader.boundSession(for: .claude, including: id, accountHome: home,
+        readObserver: { reads.append($0) })
+    try check(selected?.sourcePath == target.path && reads == [target],
+        "unrelated file was read; selected=\(selected?.sourcePath ?? "nil") expected=\(target.path) readPaths=\(reads.map(\.path))")
+    let selectedTranscript = try NativeSessionReader.transcript(for: selected!, forIngestion: true)
+    try check(selectedTranscript.map(\.text) == ["first external turn"], "exact external turn absent")
+    try (original + line(id, "new external turn", "assistant")).write(to: target)
+    try check(try NativeSessionReader.transcript(for: selected!, forIngestion: true).map(\.text) ==
+        ["first external turn", "new external turn"], "new external turn was cached away")
+    try line(foreign, "wrong header").write(to: target)
+    try check(try NativeSessionReader.boundSession(for: .claude, including: id, accountHome: home) == nil,
+        "filename trusted over mismatched header")
+    var denied = false
+    do { _ = try NativeSessionReader.transcript(for: selected!, forIngestion: true) } catch { denied = true }
+    try check(denied, "fresh transcript identity not checked")
+    try original.write(to: target)
+    let duplicateDirectory = home.appendingPathComponent("projects/duplicate")
+    try FileManager.default.createDirectory(at: duplicateDirectory, withIntermediateDirectories: true)
+    let duplicate = duplicateDirectory.appendingPathComponent(id + ".jsonl")
+    try original.write(to: duplicate)
+    denied = false
+    do { _ = try NativeSessionReader.boundSession(for: .claude, including: id, accountHome: home) } catch { denied = true }
+    try check(denied, "duplicate should require known path")
+    try check(try NativeSessionReader.boundSession(for: .claude, including: id, accountHome: home,
+        knownSourcePath: target.path)?.sourcePath == target.path, "known source path not honored")
+    try check(try NativeSessionReader.boundSession(for: .claude, including: UUID().uuidString, accountHome: home) == nil,
+        "missing bound UUID fell back to other file")
+    try check(try NativeSessionReader.boundSession(for: .claude, including: id,
+        accountHome: root.appendingPathComponent("other-home")) == nil, "Claude home isolation")
+    let a = root.appendingPathComponent("codex-a"), b = root.appendingPathComponent("codex-b")
+    try FileManager.default.createDirectory(at: a, withIntermediateDirectories: true)
+    try FileManager.default.createDirectory(at: b, withIntermediateDirectories: true)
+    func index(_ directory: URL, _ thread: String) throws {
+        var db: OpaquePointer?
+        guard sqlite3_open(directory.appendingPathComponent("state_5.sqlite").path, &db) == SQLITE_OK, let db else {
+            throw RunnerError.message("fixture index create failed")
+        }
+        defer { sqlite3_close(db) }
+        let sql = "CREATE TABLE threads(id TEXT,name TEXT,title TEXT,first_user_message TEXT,cwd TEXT,recency_at_ms INTEGER,updated_at_ms INTEGER,updated_at INTEGER);INSERT INTO threads VALUES('\(thread)','fixture',NULL,NULL,'/fixture',1,1,1);"
+        guard sqlite3_exec(db, sql, nil, nil, nil) == SQLITE_OK else { throw RunnerError.message("fixture index failed") }
+    }
+    try index(a, id); try index(b, foreign)
+    let exact = try NativeSessionReader.boundSession(for: .codex, including: id, accountHome: a)
+    try check(exact?.id == id && exact?.sourcePath == a.appendingPathComponent("thread_history_1.sqlite").path,
+        "Codex exact ID/history-home binding")
+    try check(try NativeSessionReader.boundSession(for: .codex, including: id, accountHome: b) == nil,
+        "alternate CODEX_HOME leaked default catalogue")
+    print("Bound native lookup: \(checks) checks PASS; exact UUID/header/account home/new turns/unrelated files/duplicate path; model calls 0")
 }
 
 private enum RunnerError: LocalizedError {
@@ -7211,8 +7356,7 @@ private final class SessionStore: ObservableObject {
             var outcome: [NativeIngestionOutcome] = []
             for binding in bindings {
                 guard let provider = ProviderChoice(rawValue: binding.provider), provider != .auto,
-                      let summary = (try? NativeSessionReader.sessions(for: provider, including: binding.nativeSessionID))?
-                        .first(where: { $0.id.lowercased() == binding.nativeSessionID.lowercased() }),
+                      let summary = try? NativeSessionReader.boundSession(for: provider, including: binding.nativeSessionID),
                       let transcript = try? NativeSessionReader.transcript(for: summary, forIngestion: true) else { continue }
                 let all = transcript.enumerated().compactMap { item -> NativeRecord? in
                     guard item.element.role == .user || item.element.role == .assistant else { return nil }
@@ -9284,6 +9428,29 @@ private struct OS1DesktopApp: App {
     @StateObject private var store: SessionStore
 
     init() {
+        if CommandLine.arguments.contains("--self-test-bound-native") {
+            do { try boundNativeLookupSelfTest(); exit(EXIT_SUCCESS) }
+            catch { fputs("\(error.localizedDescription)\n", stderr); exit(EXIT_FAILURE) }
+        }
+        if let flag = CommandLine.arguments.firstIndex(of: "--benchmark-bound-native") {
+            do {
+                guard CommandLine.arguments.count == flag + 2,
+                      UUID(uuidString: CommandLine.arguments[flag + 1]) != nil else { throw SourceContextError.invalid }
+                let id = CommandLine.arguments[flag + 1].lowercased()
+                let start = Date()
+                let original = try NativeSessionReader.sessions(for: .claude, including: id).first { $0.id.lowercased() == id }
+                let browseMS = Int(Date().timeIntervalSince(start) * 1_000)
+                let exactStart = Date()
+                let selected = try NativeSessionReader.boundSession(for: .claude, including: id)
+                let lookupMS = Int(Date().timeIntervalSince(exactStart) * 1_000)
+                let transcript = try selected.map { try NativeSessionReader.transcript(for: $0, forIngestion: true) } ?? []
+                let receipt: [String: Any] = ["browse_ms": browseMS, "exact_lookup_ms": lookupMS,
+                    "same_source_path": original?.sourcePath == selected?.sourcePath,
+                    "native_record_count": transcript.count, "model_calls": 0, "writes": false]
+                print(String(decoding: try JSONSerialization.data(withJSONObject: receipt, options: [.sortedKeys]), as: UTF8.self))
+                exit(EXIT_SUCCESS)
+            } catch { fputs("\(error.localizedDescription)\n", stderr); exit(EXIT_FAILURE) }
+        }
         if CommandLine.arguments.contains("--self-test-profile") {
             Task { @MainActor in
                 do { try await profileMenuSelfTest(); exit(EXIT_SUCCESS) }
@@ -9754,6 +9921,7 @@ private struct OS1DesktopApp: App {
                 try reasoningVisibilitySelfTest()
                 try governanceActivityStripSelfTest()
                 try nativeProvenanceSelfTest()
+                try boundNativeLookupSelfTest()
                 try savedFailurePreviewSelfTest()
                 try providerIntentSelfTest()
                 try routeFanoutDetailsSelfTest()

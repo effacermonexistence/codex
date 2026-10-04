@@ -59,6 +59,13 @@ export class ExecutionPoolState extends DurableObject<Env> {
     });
   }
 
+  /** Request-owned connection activation only: no execution, nonce, lease, task or authority. */
+  ready(): true {
+    const row = this.ctx.storage.sql.exec<{ ready: number }>("SELECT 1 AS ready").one();
+    if (row.ready !== 1) throw new Error("pool activation failed");
+    return true;
+  }
+
   async startAttempt(command: AttemptCommand & PoolIdentity): Promise<AttemptLease | null> {
     identity(command);
     return this.ctx.storage.transactionSync(() => {

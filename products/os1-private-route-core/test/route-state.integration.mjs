@@ -119,6 +119,8 @@ const currentWorkerSource = `
 import { RouteState as ProductionRouteState, RoutePoolState as ProductionPoolState,
   RoutingBudgetState as ProductionBudgetState } from "./src/index.ts";
 export class RoutePoolState extends ProductionPoolState {
+  testReady() { return this.ready(); }
+  testCounts() { return ["pool_route", "pool_decisions", "pool_learned"].map(table => this.ctx.storage.sql.exec("SELECT COUNT(*) AS n FROM " + table).toArray()[0].n); }
   testBegin(id, input) { return this.begin(id, input); }
   testSnapshot(id, sequence) { return this.snapshot(id, sequence); }
   testAdvance(id, sequence, outcome, hash, next, context, current) { return this.advance(id, sequence, outcome, hash, next, context, current); }
@@ -151,7 +153,9 @@ export default {
       if (body.pool) {
         const pool = env.ROUTE_POOLS.getByName("startup-v1");
         let value;
-        if (body.op === "begin") value = await pool.testBegin(body.id, body.input);
+        if (body.op === "ready") value = await pool.testReady();
+        else if (body.op === "counts") value = await pool.testCounts();
+        else if (body.op === "begin") value = await pool.testBegin(body.id, body.input);
         else if (body.op === "snapshot") value = await pool.testSnapshot(body.id, body.sequence);
         else if (body.op === "advance") value = await pool.testAdvance(body.id, body.sequence, body.outcome, body.hash, body.next, body.executionContext, body.currentRun);
         else if (body.op === "claim") value = await pool.testClaim(body.id, body.sequence);
@@ -351,6 +355,9 @@ try {
   const poolA = "00000000-0000-4000-8000-000000000001";
   const poolB = "00000000-0000-4000-8000-000000000002";
   const poolInput = (label, id) => ({ ...beginInput(label, id, initialContext), required_startup_contract: 1 });
+  assert.deepEqual((await call(miniflare, { pool: true, op: "counts" })).value, [0, 0, 0]);
+  assert.equal((await call(miniflare, { pool: true, op: "ready" })).value, true);
+  assert.deepEqual((await call(miniflare, { pool: true, op: "counts" })).value, [0, 0, 0]);
   const starts = await Promise.all([
     call(miniflare, { pool: true, op: "begin", id: poolA, input: poolInput("pooled alpha", 11) }),
     call(miniflare, { pool: true, op: "begin", id: poolB, input: poolInput("pooled beta", 12) }),
@@ -393,11 +400,14 @@ try {
   await call(miniflare, { pool: true, op: "advance", id: poolA, sequence: 2, outcome: "pass", hash: hex("0") }, 409);
   await call(miniflare, { pool: true, op: "snapshot", id: poolA, sequence: 2 }, 409);
   assert.equal((await call(miniflare, { pool: true, op: "snapshot", id: poolB, sequence: 1 })).value.task, "pooled beta");
+  const countsBeforeReady = (await call(miniflare, { pool: true, op: "counts" })).value;
+  assert.equal((await call(miniflare, { pool: true, op: "ready" })).value, true);
+  assert.deepEqual((await call(miniflare, { pool: true, op: "counts" })).value, countsBeforeReady);
   await call(miniflare, { pool: true, op: "snapshot", id: "not-an-execution", sequence: 1 }, 409);
   // Old per-execution SQLite routes still exist and never resolve through pool.
   assert.equal((await call(miniflare, { op: "snapshot", name: "legacy", sequence: 2 })).value.task, "legacy task");
 
-  console.log("route-state workerd integration: 12/12 checks passed (6 legacy + 6 pooled groups)");
+  console.log("route-state workerd integration: 13/13 checks passed (6 legacy + 6 pooled + harmless readiness)");
 } finally {
   clearTimeout(watchdog);
   if (miniflare) await miniflare.dispose();
