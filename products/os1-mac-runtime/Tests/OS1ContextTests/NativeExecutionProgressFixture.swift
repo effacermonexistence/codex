@@ -121,5 +121,11 @@ func runNativeExecutionProgressFixtures() throws {
     let mixedCount = mixed.eventCount
     mixed.ingestClaude(try JSONSerialization.data(withJSONObject: ["type":"system", "subtype":"init", "session_id":other, "parent_tool_use_id":"codex-parent"]) + Data([10]))
     check(mixed.eventCount == mixedCount, "Codex request identity cannot authorize foreign Claude child metadata")
+    let longSnapshot = ExecutionStream()
+    let longItem: [String: Any] = ["id":"long-public", "type":"agentMessage", "text":String(repeating:"public",count:6000)]
+    longSnapshot.ingestCodexTurnSnapshot(items:[longItem],status:"inProgress",threadID:"t",turnID:"u")
+    let longCount = longSnapshot.eventCount
+    longSnapshot.ingestCodexTurnSnapshot(items:[longItem],status:"inProgress",threadID:"t",turnID:"u")
+    check(longSnapshot.eventCount == longCount, "unchanged oversized public text does not fabricate polling activity")
     print("Native progress: \(checks) deterministic metadata/privacy/lifecycle checks PASS; no provider calls")
 }

@@ -302,7 +302,7 @@ public final class ExecutionStream {
         for item in snapshot {
             guard let id = item["id"] as? String, Self.safeID(id), let type = item["type"] as? String else { continue }
             if type == "agentMessage", let text = item["text"] as? String,
-               items.first(where: { $0.0 == id })?.1 != text {
+               items.first(where: { $0.0 == id })?.1 != String(text.suffix(24_000)) {
                 update(id, text: text, append: false)
             }
             guard ["commandExecution", "fileChange", "mcpToolCall", "webSearch"].contains(type) else { continue }
