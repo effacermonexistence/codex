@@ -2,6 +2,8 @@ import { DurableObject } from "cloudflare:workers";
 import { appendCompletionObservation, completionFeedbackMatchesTask, validCompletionFeedback, validExecutionContext,
   type CompletionObservation, type ExecutionContext } from "./execution-context";
 import { completionCapabilityState, routeLearningSchema } from "./capabilities";
+import { RouteStageTiming } from "./stage-timing";
+import type { StartupContract } from "../../os1-route-core/src/contracts";
 import {
   exportLearningRows, LEARNING_CLASSES, routeSeed, updateLearning, usageComponents, validLearningObservation, validStepUsage, weightedTokens,
   type LearningObservation, type LearningRow, type StepUsage, type StoredLearning,
@@ -45,6 +47,7 @@ type RouteContext = {
 };
 type RouteLearning = { rows: LearningRow[]; seed: string; schema: 1 | 2 | 3 };
 type RouteSnapshot = RoutedStep & RouteContext & {
+  required_startup_contract?: 1;
   learning_object?: string;
   step_started_ms?: number;
   expected_model: string;
@@ -56,6 +59,14 @@ type RouteSnapshot = RoutedStep & RouteContext & {
   executor_contract_sha256: string;
   sequence: number;
 };
+type RouteBegin = RoutedStep & RouteContext & { policy_version: string; policy_sha256: string; rcc_policy_sha256: string;
+  executor_contract_version: string; executor_contract_sha256: string; execution_profiles: ExecutionProfiles;
+  learning_object?: string };
+
+function startupContract(model: string, effort: string, contract: string): StartupContract {
+  return { schema: 1, completion_feedback_schema: 1, model_availability_schema: 1,
+    executor_contract_sha256: contract, model, effort, state_storage: "pool_v1" };
+}
 
 function exact(value: Record<string, unknown>, keys: readonly string[]): boolean {
   const actual = Object.keys(value).sort();
@@ -281,6 +292,159 @@ export class RouteState extends DurableObject<Env> {
   }
 }
 
+/** New critical starts share one warm object, but never a route row or result.
+ * Legacy objects/tables are untouched. Every RPC names its execution explicitly. */
+export class RoutePoolState extends DurableObject<Env> {
+  constructor(ctx: DurableObjectState, env: Env) {
+    super(ctx, env);
+    ctx.blockConcurrencyWhile(async () => {
+      this.ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS pool_route (
+        execution_id TEXT PRIMARY KEY, required_startup_contract INTEGER NOT NULL CHECK(required_startup_contract=1),
+        provider TEXT NOT NULL, action TEXT NOT NULL, permission_profile TEXT NOT NULL, max_steps INTEGER NOT NULL,
+        provider_pinned INTEGER NOT NULL, route_id TEXT NOT NULL, verification_profile TEXT NOT NULL, task TEXT NOT NULL,
+        provider_preference TEXT NOT NULL, codex_capacity INTEGER NOT NULL, claude_capacity INTEGER NOT NULL,
+        codex_catalog_json TEXT NOT NULL, attempt INTEGER NOT NULL, sequence INTEGER NOT NULL,
+        complete INTEGER NOT NULL DEFAULT 0, policy_version TEXT NOT NULL, policy_sha256 TEXT NOT NULL,
+        rcc_policy_sha256 TEXT NOT NULL, executor_contract_version TEXT NOT NULL,
+        executor_contract_sha256 TEXT NOT NULL, execution_profiles_json TEXT NOT NULL,
+        verified_artifact_hash TEXT, execution_context_json TEXT, current_run_observations_json TEXT,
+        learning_object TEXT, step_started_ms INTEGER)`);
+      this.ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS pool_learned (
+        execution_id TEXT NOT NULL, sequence INTEGER NOT NULL, PRIMARY KEY(execution_id,sequence))`);
+      this.ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS pool_decisions (
+        execution_id TEXT NOT NULL, sequence INTEGER NOT NULL, artifact_hash TEXT NOT NULL,
+        response_json TEXT NOT NULL, PRIMARY KEY(execution_id,sequence))`);
+    });
+  }
+
+  begin(executionID: string, input: RouteBegin & { required_startup_contract: 1 }): "created" | "exists" {
+    if (!UUID.test(executionID) || input.required_startup_contract !== 1) throw new Error("invalid pool execution");
+    return this.ctx.storage.transactionSync(() => {
+      if (this.ctx.storage.sql.exec("SELECT 1 FROM pool_route WHERE execution_id=?", executionID).toArray()[0]) return "exists";
+      this.ctx.storage.sql.exec(
+        `INSERT INTO pool_route(execution_id,required_startup_contract,provider,action,permission_profile,max_steps,
+         provider_pinned,route_id,verification_profile,task,provider_preference,codex_capacity,claude_capacity,
+         codex_catalog_json,attempt,sequence,complete,policy_version,policy_sha256,rcc_policy_sha256,
+         executor_contract_version,executor_contract_sha256,execution_profiles_json,execution_context_json,
+         learning_object,step_started_ms) VALUES(?,1,?,?,?,?,?,?,?,?,?,?,?,?,?,1,0,?,?,?,?,?,?,?,?,?)`,
+        executionID, input.provider, input.action, input.permission_profile, input.max_steps, input.provider_pinned ? 1 : 0,
+        input.route_id, input.verification_profile, input.task, input.provider_preference,
+        input.capacity_plan.codex, input.capacity_plan.claude, JSON.stringify(input.available_codex_models), input.attempt,
+        input.policy_version, input.policy_sha256, input.rcc_policy_sha256, input.executor_contract_version,
+        input.executor_contract_sha256, JSON.stringify(input.execution_profiles),
+        input.execution_context ? JSON.stringify(input.execution_context) : null,
+        input.learning_object ?? null, Date.now());
+      return "created";
+    });
+  }
+
+  recordedDecision(executionID: string, sequence: number, hash: string): unknown | null {
+    if (!UUID.test(executionID)) throw new Error("invalid pool execution");
+    const row = this.ctx.storage.sql.exec<{ artifact_hash: string; response_json: string }>(
+      "SELECT * FROM pool_decisions WHERE execution_id=? AND sequence=?", executionID, sequence).toArray()[0];
+    if (!row) return null;
+    if (row.artifact_hash !== hash) throw new Error("result binding mismatch");
+    return JSON.parse(row.response_json);
+  }
+
+  snapshot(executionID: string, sequence: number): RouteSnapshot {
+    if (!UUID.test(executionID)) throw new Error("invalid pool execution");
+    const row = this.ctx.storage.sql.exec<Record<string, string | number>>(
+      "SELECT * FROM pool_route WHERE execution_id=?", executionID).toArray()[0];
+    if (!row || row.required_startup_contract !== 1 || row.complete === 1 || row.sequence !== sequence) throw new Error("invalid route state");
+    const provider = String(row.provider) as ExecutionProvider;
+    const action = String(row.action);
+    const profiles = parseExecutionProfiles(JSON.parse(String(row.execution_profiles_json)) as unknown);
+    const expected = executionProfileFor(profiles, provider, action);
+    const catalog = JSON.parse(String(row.codex_catalog_json)) as unknown;
+    const executionContext: unknown = row.execution_context_json ? JSON.parse(String(row.execution_context_json)) : undefined;
+    if (executionContext !== undefined && !validExecutionContext(executionContext)) throw new Error("invalid route context");
+    if (!validCatalog(catalog, Boolean((executionContext as ExecutionContext | undefined)?.completion_feedback))) throw new Error("invalid route state");
+    const currentRun: unknown = row.current_run_observations_json ? JSON.parse(String(row.current_run_observations_json)) : [];
+    if (!Array.isArray(currentRun) || currentRun.length > 4 || !validCompletionFeedback({ schema: 1,
+      objective_sha256: "0".repeat(64), observations: currentRun })) throw new Error("invalid current run observations");
+    return {
+      required_startup_contract: 1, provider, action, permission_profile: String(row.permission_profile) as PermissionProfile,
+      max_steps: Number(row.max_steps), provider_pinned: Number(row.provider_pinned) === 1,
+      route_id: String(row.route_id), verification_profile: String(row.verification_profile),
+      task: String(row.task), provider_preference: String(row.provider_preference) as ProviderPreference,
+      capacity_plan: { codex: Number(row.codex_capacity), claude: Number(row.claude_capacity) },
+      available_codex_models: catalog, attempt: Number(row.attempt), sequence: Number(row.sequence),
+      ...(executionContext ? { execution_context: executionContext as ExecutionContext } : {}),
+      current_run_observations: currentRun as CompletionObservation[],
+      ...(typeof row.learning_object === "string" ? { learning_object: row.learning_object } : {}),
+      ...(typeof row.step_started_ms === "number" ? { step_started_ms: row.step_started_ms } : {}),
+      expected_model: expected.model, expected_effort: expected.effort,
+      policy_version: String(row.policy_version), policy_sha256: String(row.policy_sha256),
+      rcc_policy_sha256: String(row.rcc_policy_sha256), executor_contract_version: String(row.executor_contract_version),
+      executor_contract_sha256: String(row.executor_contract_sha256),
+    };
+  }
+
+  advance(executionID: string, sequence: number, outcome: "pass" | "fail" | "retry", verifiedHash: string,
+    next?: RoutedStep, executionContext?: ExecutionContext, currentRun?: CompletionObservation[]):
+    | { status: "complete" } | { status: "failed" }
+    | { status: "step"; provider: ExecutionProvider; action: string; permission_profile: PermissionProfile; startup_contract: StartupContract } {
+    if (!UUID.test(executionID)) throw new Error("invalid pool execution");
+    return this.ctx.storage.transactionSync(() => {
+      const recorded = this.recordedDecision(executionID, sequence, verifiedHash);
+      if (recorded) return recorded as ReturnType<RoutePoolState["advance"]>;
+      const persist = <T>(value: T): T => {
+        this.ctx.storage.sql.exec("INSERT INTO pool_decisions VALUES(?,?,?,?)", executionID, sequence, verifiedHash, JSON.stringify(value));
+        return value;
+      };
+      const row = this.ctx.storage.sql.exec<{ max_steps: number; sequence: number; complete: number;
+        required_startup_contract: number; execution_profiles_json: string; executor_contract_sha256: string }>(
+        "SELECT max_steps,sequence,complete,required_startup_contract,execution_profiles_json,executor_contract_sha256 FROM pool_route WHERE execution_id=?",
+        executionID).toArray()[0];
+      if (!row || row.required_startup_contract !== 1 || row.complete === 1 || row.sequence !== sequence) throw new Error("invalid route state");
+      if (executionContext) this.ctx.storage.sql.exec(
+        "UPDATE pool_route SET execution_context_json=? WHERE execution_id=?", JSON.stringify(executionContext), executionID);
+      if (currentRun) this.ctx.storage.sql.exec(
+        "UPDATE pool_route SET current_run_observations_json=? WHERE execution_id=?", JSON.stringify(currentRun), executionID);
+      if (outcome === "pass") {
+        this.ctx.storage.sql.exec("UPDATE pool_route SET complete=1,verified_artifact_hash=? WHERE execution_id=?", verifiedHash, executionID);
+        return persist({ status: "complete" as const });
+      }
+      if (outcome === "fail" || sequence >= row.max_steps || !next) {
+        this.ctx.storage.sql.exec("UPDATE pool_route SET complete=1,verified_artifact_hash=? WHERE execution_id=?", verifiedHash, executionID);
+        return persist({ status: "failed" as const });
+      }
+      const profile = executionProfileFor(parseExecutionProfiles(JSON.parse(row.execution_profiles_json)), next.provider, next.action);
+      this.ctx.storage.sql.exec(
+        `UPDATE pool_route SET provider=?,action=?,permission_profile=?,provider_pinned=?,route_id=?,verification_profile=?,
+         attempt=?,sequence=?,verified_artifact_hash=?,step_started_ms=? WHERE execution_id=?`,
+        next.provider, next.action, next.permission_profile, next.provider_pinned ? 1 : 0, next.route_id, next.verification_profile,
+        sequence + 1, sequence + 1, verifiedHash, Date.now(), executionID);
+      return persist({ status: "step" as const, provider: next.provider, action: next.action, permission_profile: next.permission_profile,
+        startup_contract: startupContract(profile.model, profile.effort, row.executor_contract_sha256) });
+    });
+  }
+
+  claimLearning(executionID: string, sequence: number): boolean {
+    if (!UUID.test(executionID)) throw new Error("invalid pool execution");
+    return this.ctx.storage.transactionSync(() => {
+      if (!this.ctx.storage.sql.exec("SELECT 1 FROM pool_route WHERE execution_id=?", executionID).toArray()[0]) throw new Error("invalid pool execution");
+      if (this.ctx.storage.sql.exec("SELECT 1 FROM pool_learned WHERE execution_id=? AND sequence=?", executionID, sequence).toArray()[0]) return false;
+      this.ctx.storage.sql.exec("INSERT INTO pool_learned VALUES(?,?)", executionID, sequence);
+      return true;
+    });
+  }
+}
+
+/** Bind once in trusted request handling; all actual pool RPCs still carry ID. */
+function pooledRouteState(env: Env, executionID: string) {
+  const pool = env.ROUTE_POOLS.getByName("startup-v1");
+  return {
+    begin: (input: RouteBegin) => pool.begin(executionID, { ...input, required_startup_contract: 1 }),
+    recordedDecision: (sequence: number, hash: string) => pool.recordedDecision(executionID, sequence, hash),
+    snapshot: (sequence: number) => pool.snapshot(executionID, sequence),
+    advance: (sequence: number, outcome: "pass" | "fail" | "retry", hash: string, next?: RoutedStep,
+      context?: ExecutionContext, current?: CompletionObservation[]) => pool.advance(executionID, sequence, outcome, hash, next, context, current),
+    claimLearning: (sequence: number) => pool.claimLearning(executionID, sequence),
+  };
+}
+
 export class RoutingBudgetState extends DurableObject<Env> {
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -352,8 +516,9 @@ function positiveInteger(value: string): number {
   if (!Number.isSafeInteger(parsed) || parsed <= 0) throw new Error("invalid private configuration");
   return parsed;
 }
-function stepResponse(step: Pick<RoutedStep, "provider" | "action" | "permission_profile">): Response {
-  return Response.json({ status: "step", provider: step.provider, action: step.action, permission_profile: step.permission_profile });
+function stepResponse(step: Pick<RoutedStep, "provider" | "action" | "permission_profile"> & { startup_contract?: StartupContract }): Response {
+  return Response.json({ status: "step", provider: step.provider, action: step.action, permission_profile: step.permission_profile,
+    ...(step.startup_contract ? { startup_contract: step.startup_contract } : {}) });
 }
 async function evaluate(env: Env, body: unknown): Promise<{ outcome: "pass" | "fail" | "retry"; verified_artifact_hash: string; next_provider: ExecutionProvider }> {
   const value = await boundedBindingJson(env.RESULT_EVALUATOR, "evaluate", body);
@@ -394,23 +559,30 @@ async function recordLearning(env: Env, state: { claimLearning(sequence: number)
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
-    const stage = { current: "request" };
+    const path = new URL(request.url).pathname;
+    const stage = new RouteStageTiming(request.method === "GET" && path === "/capabilities" ? "capabilities" :
+      request.method === "POST" && path === "/decide" ? "decide" : "other");
     try {
-      if (request.method === "GET" && new URL(request.url).pathname === "/capabilities") {
+      if (request.method === "GET" && path === "/capabilities") {
+        stage.current = "policy";
         const bundle = await loadPolicyBundle(env);
+        stage.current = "capabilities_probe";
         const supported = await completionCapabilityState(env.RCC_V26, bundle.rcc.policy_sha256);
         return Response.json({ completion_feedback_schema: supported.feedback ? 1 : null,
           ...(supported.modelAvailability ? { model_availability_schema: 1 } : {}) }, {
           headers: { "cache-control": "no-store" },
         });
       }
-      if (request.method !== "POST" || new URL(request.url).pathname !== "/decide") throw new Error("denied");
+      if (request.method !== "POST" || path !== "/decide") throw new Error("denied");
       stage.current = "parse";
       const body = await request.json<unknown>();
-      if (!record(body) || !exact(body, body.task === undefined ? ["execution_id", "previous", "version"] : ["execution_id", "principal", "task", "version"]) ||
+      const critical = record(body) && body.required_startup_contract !== undefined;
+      if (!record(body) || !exact(body, [...(body.task === undefined ? ["execution_id", "previous", "version"] : ["execution_id", "principal", "task", "version"]),
+        ...(critical ? ["required_startup_contract"] : [])]) || (critical && body.required_startup_contract !== 1) ||
         body.version !== 3 || typeof body.execution_id !== "string" || !UUID.test(body.execution_id)) throw new Error("denied");
-      const state = env.ROUTES.getByName(body.execution_id);
+      const state = critical ? pooledRouteState(env, body.execution_id) : env.ROUTES.getByName(body.execution_id);
       if (record(body.task)) {
+        stage.operation = "route";
         stage.current = "validate_start";
         const task = body.task;
         if (!exact(task, ["available_codex_models", "capacity_plan", "content", "executor_contract_sha256", "executor_contract_version", "provider_preference", "trust",
@@ -426,6 +598,8 @@ export default {
         if (plan.codex < 0 || plan.codex > 100 || plan.claude < 0 || plan.claude > 100 || plan.codex + plan.claude === 0) throw new Error("denied");
         if (!record(body.principal) || !exact(body.principal, ["device_id", "subject"]) ||
           typeof body.principal.subject !== "string" || body.principal.subject.length < 1 || typeof body.principal.device_id !== "string") throw new Error("denied");
+        if (critical && (!validExecutionContext(task.execution_context) || !task.execution_context.completion_feedback ||
+          !Array.isArray(task.execution_context.available_claude_models))) throw new Error("denied");
         if (!(await completionFeedbackMatchesTask(task.execution_context as ExecutionContext | undefined, task.content))) throw new Error("denied");
         stage.current = "budget";
         const budget = env.ROUTING_BUDGETS.getByName(await budgetObjectName(env, body.principal.subject));
@@ -434,14 +608,20 @@ export default {
         const bundle = await loadPolicyBundle(env);
         const executorContract = bundle.executor_contracts.find((contract) => contract.version === task.executor_contract_version && contract.sha256 === task.executor_contract_sha256);
         if (!executorContract) throw new Error("denied");
+        if (critical) {
+          stage.current = "capabilities_probe";
+          const supported = await completionCapabilityState(env.RCC_V26, bundle.rcc.policy_sha256, Date.now(), true);
+          if (!supported.feedback || !supported.modelAvailability) throw new Error("denied");
+        }
         const context: RouteContext = {
           task: task.content, provider_preference: task.provider_preference as ProviderPreference,
           capacity_plan: plan, available_codex_models: task.available_codex_models, attempt: 1,
           ...(task.execution_context ? { execution_context: task.execution_context as ExecutionContext } : {}),
         };
-        stage.current = "learning";
+        stage.current = "learning_schema";
         const learningSchema = await routeLearningSchema(env.RCC_V26, bundle.rcc.policy_sha256);
         const learningObject = learningSchema > 0 ? await budgetObjectName(env, body.principal.subject) : undefined;
+        stage.current = "learning_rows";
         const learning = learningObject && learningSchema > 0 ?
           await learnedRoutes(budget, body.execution_id, 1, learningSchema as 1 | 2 | 3) : undefined;
         if (learning) console.log(JSON.stringify({ event: "route_learning_used", rows: learning.rows.length }));
@@ -455,8 +635,11 @@ export default {
           policy_sha256: env.POLICY_BUNDLE_SHA256, rcc_policy_sha256: bundle.rcc.policy_sha256,
           executor_contract_version: executorContract.version, executor_contract_sha256: executorContract.sha256,
           execution_profiles: bundle.execution_profiles, ...(learningObject ? { learning_object: learningObject } : {}) })) !== "created") throw new Error("denied");
-        return stepResponse(selected);
+        const profile = executionProfileFor(bundle.execution_profiles, selected.provider, selected.action);
+        return stepResponse({ ...selected, ...(critical ? { startup_contract:
+          startupContract(profile.model, profile.effort, executorContract.sha256) } : {}) });
       }
+      stage.operation = "result";
       stage.current = "validate_result";
       // Usage is optional: a client or gateway from before schema 2 sends none.
       if (!record(body.previous) || !exact(body.previous, body.previous.usage === undefined ?
@@ -465,9 +648,13 @@ export default {
         !Number.isSafeInteger(body.previous.sequence) || typeof body.previous.artifact_ref !== "string" || !ARTIFACT_REF.test(body.previous.artifact_ref) ||
         typeof body.previous.expected_artifact_hash !== "string" || !SHA256.test(body.previous.expected_artifact_hash)) throw new Error("denied");
       const sequence = body.previous.sequence as number;
+      stage.current = "result_lookup";
       const recorded = await state.recordedDecision(sequence, body.previous.expected_artifact_hash);
       if (recorded) return Response.json(recorded);
+      stage.current = "result_snapshot";
       const snapshot = await state.snapshot(sequence);
+      if (critical && snapshot.required_startup_contract !== 1) throw new Error("denied");
+      stage.current = "result_evaluate";
       const evaluated = await evaluate(env, {
         execution_id: body.execution_id, sequence, task: snapshot.task,
         expected_provider: snapshot.provider, expected_action: snapshot.action,
@@ -496,18 +683,27 @@ export default {
       if (evaluated.outcome === "retry" && sequence < snapshot.max_steps) {
         // Continue the policy already locked in trusted persisted state, not a
         // newer deployment's policy. The immutable bundle loader rechecks SHA.
+        stage.current = "retry_policy";
         const bundle = await loadPolicyBundle(env, snapshot.policy_sha256);
         if (bundle.rcc.policy_sha256 !== snapshot.rcc_policy_sha256) throw new Error("policy changed during execution");
+        if (critical) {
+          stage.current = "capabilities_probe";
+          const supported = await completionCapabilityState(env.RCC_V26, bundle.rcc.policy_sha256, Date.now(), true);
+          if (!supported.feedback || !supported.modelAvailability) throw new Error("denied");
+        }
         const context: RouteContext = { task: snapshot.task, provider_preference: snapshot.provider_preference,
           capacity_plan: snapshot.capacity_plan, available_codex_models: snapshot.available_codex_models,
           execution_context: executionContext, current_run_observations: currentRun, attempt: sequence + 1 };
         const retryProvider = evaluated.next_provider === "local" ? "" : evaluated.next_provider;
+        stage.current = "retry_learning";
         const retrySchema = snapshot.learning_object ? await routeLearningSchema(env.RCC_V26, bundle.rcc.policy_sha256) : 0;
         const learning = snapshot.learning_object && retrySchema > 0 ?
           await learnedRoutes(env.ROUTING_BUDGETS.getByName(snapshot.learning_object), body.execution_id, sequence + 1,
             retrySchema as 1 | 2 | 3) : undefined;
+        stage.current = "retry_route";
         next = await routeWithRcc(env, bundle, context, retryProvider, learning);
       }
+      stage.current = "result_persist";
       const decision = await state.advance(sequence, evaluated.outcome, evaluated.verified_artifact_hash, next, executionContext, currentRun);
       if (observation && snapshot.learning_object && LEARNING_CLASSES.has(snapshot.verification_profile)) {
         stage.current = "learning_record";
@@ -524,6 +720,8 @@ export default {
     } catch {
       console.error(JSON.stringify({ event: "private_route_denied", stage: stage.current }));
       return Response.json({ error: "denied" }, { status: 400 });
+    } finally {
+      console.log(JSON.stringify(stage.finish()));
     }
   },
 } satisfies ExportedHandler<Env>;

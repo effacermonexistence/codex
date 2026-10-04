@@ -16,12 +16,14 @@
   "durable_objects": {
     "bindings": [
       { "name": "EXECUTIONS", "class_name": "ExecutionState" },
+      { "name": "EXECUTION_POOLS", "class_name": "ExecutionPoolState" },
       { "name": "FLEETS", "class_name": "FleetState" }
     ]
   },
   "migrations": [
     { "tag": "v1", "new_sqlite_classes": ["ExecutionState"] },
-    { "tag": "v2", "new_sqlite_classes": ["FleetState"] }
+    { "tag": "v2", "new_sqlite_classes": ["FleetState"] },
+    { "tag": "v3", "new_sqlite_classes": ["ExecutionPoolState"] }
   ],
   "vars": {
     "MAX_REQUEST_BYTES": "65536",

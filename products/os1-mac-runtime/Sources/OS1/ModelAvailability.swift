@@ -1,5 +1,61 @@
 import Foundation
+import CoreFoundation
 import OS1Context
+
+/// One metadata reader owns all three reply IDs. Ordinary request() is not
+/// concurrent: it may consume and discard another request's response.
+struct CodexMetadataReplies {
+    static let methods = ["account/read", "model/list", "account/rateLimits/read"]
+    let expected: [Int: String]
+    private(set) var replies: [String: [String: Any]] = [:]
+    init(firstID: Int) {
+        expected = Dictionary(uniqueKeysWithValues: Self.methods.enumerated().map { (firstID + $0.offset, $0.element) })
+    }
+    var complete: Bool { replies.count == expected.count }
+    var requiredReceived: Bool { replies["account/read"] != nil && replies["model/list"] != nil }
+    mutating func receive(_ message: [String: Any]) throws -> Bool {
+        guard let number = message["id"] as? NSNumber,
+              CFGetTypeID(number) != CFBooleanGetTypeID(),
+              number.doubleValue == Double(number.intValue),
+              let method = expected[number.intValue] else { return false }
+        guard replies[method] == nil else { throw OS1Error.message("Duplicate native metadata response") }
+        guard message["result"] != nil || message["error"] != nil else {
+            throw OS1Error.message("Invalid native metadata response")
+        }
+        replies[method] = message
+        return true
+    }
+    func required(_ method: String) throws -> [String: Any] {
+        guard method == "account/read" || method == "model/list",
+              let reply = replies[method], reply["error"] == nil,
+              let body = reply["result"] as? [String: Any] else {
+            throw OS1Error.message("Required native metadata was unavailable")
+        }
+        return body
+    }
+    func verifiedAccount() throws -> [String: Any] {
+        let body = try required("account/read")
+        guard let account = body["account"] as? [String: Any] else {
+            throw OS1Error.message("Codex account is unavailable")
+        }
+        return account
+    }
+    var optionalRateLimits: [String: Any]? {
+        guard let reply = replies["account/rateLimits/read"], reply["error"] == nil else { return nil }
+        return reply["result"] as? [String: Any]
+    }
+}
+
+private final class MetadataCommandResult: @unchecked Sendable {
+    private let lock = NSLock()
+    private var result: Result<(Int32, Data, Data), Error>?
+    func store(_ value: Result<(Int32, Data, Data), Error>) { lock.lock(); result = value; lock.unlock() }
+    func value() throws -> (Int32, Data, Data) {
+        lock.lock(); defer { lock.unlock() }
+        guard let result else { throw OS1Error.message("Native metadata command did not finish") }
+        return try result.get()
+    }
+}
 
 /// Availability only. Neither model ranking nor permission authority lives here.
 struct ClaudeModelCapability: Codable, Equatable {
@@ -72,9 +128,55 @@ enum ModelAvailability {
             !deferAlternateInventory(preference: "claude", codexReady: true, workflow: false),
             !deferAlternateInventory(preference: "codex", codexReady: false, workflow: false),
             !deferAlternateInventory(preference: "codex", codexReady: true, workflow: true),
-        ]
+        ] + metadataReplyChecks()
         guard checks.allSatisfy({ $0 }) else { throw OS1Error.message("Model availability regression failed") }
         print("OS-1 account model metadata: \(checks.count) checks OK")
+    }
+    static func metadataReplyChecks() -> [Bool] {
+        var checks: [Bool] = []
+        func response(_ id: Int, _ body: [String: Any]) -> [String: Any] { ["id": id, "result": body] }
+        var ordered = CodexMetadataReplies(firstID: 10)
+        do {
+            _ = try ordered.receive(response(12, ["rateLimits": [:]]))
+            _ = try ordered.receive(response(11, ["data": []]))
+            checks.append(!ordered.requiredReceived && !ordered.complete)
+            _ = try ordered.receive(response(10, ["account": ["type": "chatgpt"]]))
+            checks.append(ordered.requiredReceived && ordered.complete)
+            checks.append((try ordered.required("account/read"))["account"] is [String: Any])
+            checks.append(ordered.optionalRateLimits != nil)
+            do { _ = try ordered.receive(response(10, [:])); checks.append(false) } catch { checks.append(true) }
+        } catch { checks.append(false) }
+        var missing = CodexMetadataReplies(firstID: 20)
+        do {
+            _ = try missing.receive(response(21, ["data": []]))
+            checks.append(!missing.requiredReceived && !missing.complete)
+            do { _ = try missing.required("account/read"); checks.append(false) } catch { checks.append(true) }
+            checks.append(try !missing.receive(response(99, [:])))
+            checks.append(try !missing.receive(["method": "metadata/notice", "params": [:]]))
+        } catch { checks.append(false) }
+        var denied = CodexMetadataReplies(firstID: 30)
+        do {
+            _ = try denied.receive(["id": 30, "error": ["code": -1]])
+            _ = try denied.receive(response(31, ["data": []]))
+            _ = try denied.receive(["id": 32, "error": ["code": -1]])
+            checks.append(denied.complete && denied.optionalRateLimits == nil)
+            do { _ = try denied.required("account/read"); checks.append(false) } catch { checks.append(true) }
+            do { _ = try denied.required("thread/start"); checks.append(false) } catch { checks.append(true) }
+        } catch { checks.append(false) }
+        var malformed = CodexMetadataReplies(firstID: 1)
+        do { checks.append(try !malformed.receive(["id": true, "result": [:]])) } catch { checks.append(false) }
+        do { _ = try malformed.receive(["id": 1]); checks.append(false) } catch { checks.append(true) }
+        var loggedOut = CodexMetadataReplies(firstID: 40)
+        do {
+            _ = try loggedOut.receive(response(40, ["account": NSNull()]))
+            _ = try loggedOut.receive(response(41, ["data": []]))
+            do { _ = try loggedOut.verifiedAccount(); checks.append(false) } catch { checks.append(true) }
+            var modelError = CodexMetadataReplies(firstID: 50)
+            _ = try modelError.receive(response(50, ["account": ["type": "chatgpt"]]))
+            _ = try modelError.receive(["id": 51, "error": ["code": -1]])
+            do { _ = try modelError.required("model/list"); checks.append(false) } catch { checks.append(true) }
+        } catch { checks.append(false) }
+        return checks
     }
     /// A healthy explicitly selected Codex route does not depend on the other
     /// provider's SDK startup. Auto/workflows or an unavailable selection still
@@ -182,20 +284,38 @@ enum ModelAvailability {
 
     private static func probeClaudeModels(workspace: String) throws -> [NativeClaudeModel] {
         let executable = try findExecutable("claude")
-        let auth = try commandOutput(executable, ["auth", "status", "--json"], timeout: 8,
-            currentDirectory: workspace, environmentOverrides: backendAccountEnvironment("claude"))
-        guard auth.0 == 0, let status = try JSONSerialization.jsonObject(with: auth.1) as? [String: Any],
-              status["loggedIn"] as? Bool == true else { throw OS1Error.message("Claude account is unavailable") }
         let id = UUID().uuidString
         let input = try JSONSerialization.data(withJSONObject: ["type": "control_request", "request_id": id,
             "request": ["subtype": "initialize"]]) + Data([10])
+        let accountEnvironment = backendAccountEnvironment("claude")
         // Native settings/availableModels remain active. No user message, no
         // tool grant, no MCP connection, no transcript and no inference call.
-        let output = try commandOutput(executable, ["--print", "--input-format", "stream-json",
-            "--output-format", "stream-json", "--verbose", "--strict-mcp-config", "--mcp-config",
-            "{\"mcpServers\":{}}", "--tools", "", "--no-session-persistence"], input: input,
-            timeout: 12, currentDirectory: workspace, isProvider: true,
-            environmentOverrides: backendAccountEnvironment("claude"))
+        // Independent unpaid probes share one pinned account environment and
+        // workspace. BOTH results are required before any model is returned.
+        let authResult = MetadataCommandResult(), modelResult = MetadataCommandResult()
+        let finished = DispatchGroup()
+        finished.enter()
+        DispatchQueue.global(qos: .userInitiated).async {
+            defer { finished.leave() }
+            authResult.store(Result { try commandOutput(executable, ["auth", "status", "--json"], timeout: 8,
+                currentDirectory: workspace, environmentOverrides: accountEnvironment) })
+        }
+        finished.enter()
+        DispatchQueue.global(qos: .userInitiated).async {
+            defer { finished.leave() }
+            modelResult.store(Result { try commandOutput(executable, ["--print", "--input-format", "stream-json",
+                "--output-format", "stream-json", "--verbose", "--strict-mcp-config", "--mcp-config",
+                "{\"mcpServers\":{}}", "--tools", "", "--no-session-persistence"], input: input,
+                timeout: 12, currentDirectory: workspace, isProvider: true,
+                environmentOverrides: accountEnvironment) })
+        }
+        finished.wait()
+        guard BackendAccounts.environment(provider: "claude", in: BackendAccounts.load()) == accountEnvironment else {
+            throw OS1Error.message("Claude account selection changed during inventory")
+        }
+        let auth = try authResult.value(), output = try modelResult.value()
+        guard auth.0 == 0, let status = try JSONSerialization.jsonObject(with: auth.1) as? [String: Any],
+              status["loggedIn"] as? Bool == true else { throw OS1Error.message("Claude account is unavailable") }
         guard output.0 == 0, output.1.count <= 2_000_000 else { throw OS1Error.message("Claude model metadata unavailable") }
         for line in output.1.split(separator: 10) {
             guard let message = try? JSONSerialization.jsonObject(with: Data(line)) as? [String: Any],
@@ -237,18 +357,23 @@ enum ModelAvailability {
     }
 
     static func codexCatalog(workspace: String, config: RuntimeConfig) throws -> ActiveCodexCatalog {
+        let accountEnvironment = backendAccountEnvironment("codex")
         let probe = try CodexAppServerClient(executable: findExecutable("codex"), workspace: workspace)
         defer { probe.close() }
         let deadline = Date().addingTimeInterval(12)
         try probe.initialize(deadline: deadline)
-        var catalog = executableCodexCatalog(ActiveCodexCatalog(models: try probe.models(deadline: deadline),
+        let metadata = try probe.catalogMetadata(deadline: deadline)
+        guard BackendAccounts.environment(provider: "codex", in: BackendAccounts.load()) == accountEnvironment else {
+            throw OS1Error.message("Codex account selection changed during inventory")
+        }
+        var catalog = executableCodexCatalog(ActiveCodexCatalog(models: metadata.models,
             source: "native account model/list"), config: config)
         // Exclusion reasons travel with the catalog so a later preflight can
         // say why no Codex model is available instead of a bare refusal.
         var notes: [String] = []
         var quotaResetsAt: Date?
         var quotaWindow: CodexQuotaWindow?
-        if let limits = try? probe.rateLimits(deadline: deadline) {
+        if let limits = metadata.rateLimits {
             // The longest unreset window: what the burn policy and the health
             // card show as "N% used, resets at".
             quotaWindow = CodexQuota.generalWindow(limits)

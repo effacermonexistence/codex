@@ -24,6 +24,11 @@ export type CodexModelCapability = {
   priority: number;
 };
 
+export type StartupContract = {
+  schema: 1; completion_feedback_schema: 1; model_availability_schema: 1;
+  executor_contract_sha256: string; model: string; effort: string; state_storage: "pool_v1";
+};
+
 export type TicketUnsigned = {
   execution_id: string;
   sequence: number;
@@ -32,6 +37,7 @@ export type TicketUnsigned = {
   permission_profile: PermissionProfile;
   expires_at: string;
   nonce: string;
+  startup_contract?: StartupContract;
 };
 
 export type Ticket = TicketUnsigned & { signature: string };
@@ -65,6 +71,7 @@ export type PrivateDecision =
       provider: Provider;
       action: Action;
       permission_profile: PermissionProfile;
+      startup_contract?: StartupContract;
     };
 
 export type EvaluatedResult = {
@@ -178,6 +185,25 @@ function boundedString(
   );
 }
 
+export function parseStartupContract(value: unknown): StartupContract {
+  if (!isRecord(value) || !hasExactKeys(value, ["schema", "completion_feedback_schema", "model_availability_schema",
+    "executor_contract_sha256", "model", "effort", "state_storage"]) || value.schema !== 1 ||
+    value.completion_feedback_schema !== 1 || value.model_availability_schema !== 1 || value.state_storage !== "pool_v1" ||
+    !boundedString(value.executor_contract_sha256, 64, 64, SHA256) ||
+    !boundedString(value.model, 1, 128, /^[A-Za-z0-9][A-Za-z0-9._:-]*$/) ||
+    !oneOf(value.effort, ["none", "low", "medium", "high", "xhigh", "max", "ultra"] as const)) reject();
+  return { schema: 1, completion_feedback_schema: 1, model_availability_schema: 1,
+    executor_contract_sha256: value.executor_contract_sha256, model: value.model,
+    effort: value.effort, state_storage: "pool_v1" };
+}
+
+function boundStartup(value: unknown, action: string): StartupContract {
+  const startup = parseStartupContract(value);
+  const profile = runtimeConfig.execution_profiles[action as keyof typeof runtimeConfig.execution_profiles];
+  if (!profile || profile.model !== startup.model || profile.effort !== startup.effort) reject();
+  return startup;
+}
+
 export function parseStartRequest(value: unknown): {
   task: string;
   provider_preference: ProviderPreference;
@@ -186,6 +212,7 @@ export function parseStartRequest(value: unknown): {
   executor_contract_sha256: string;
   available_codex_models: CodexModelCapability[];
   execution_context?: ExecutionContext;
+  required_startup_contract?: 1;
 } {
   const capacityAware = isRecord(value) && hasExactKeys(value, [
     "capacity_plan",
@@ -195,6 +222,7 @@ export function parseStartRequest(value: unknown): {
     "provider_preference",
     "task",
     ...(isRecord(value) && value.execution_context !== undefined ? ["execution_context"] : []),
+    ...(isRecord(value) && value.required_startup_contract !== undefined ? ["required_startup_contract"] : []),
   ]);
   const capacity = isRecord(value) ? value.capacity_plan : undefined;
   const availableModels = isRecord(value) ? value.available_codex_models : undefined;
@@ -228,6 +256,8 @@ export function parseStartRequest(value: unknown): {
   if (
     !isRecord(value) ||
     !capacityAware ||
+    (value.required_startup_contract !== undefined && (value.required_startup_contract !== 1 || !completionAware ||
+      !isRecord(value.execution_context) || !Array.isArray(value.execution_context.available_claude_models))) ||
     !boundedString(value.task, 1, 48_000) ||
     !oneOf(value.provider_preference, ["auto", ...BACKEND_PROVIDERS] as const) ||
     !boundedString(value.executor_contract_version, 8, 96, /^[A-Za-z0-9._-]+$/) ||
@@ -239,6 +269,7 @@ export function parseStartRequest(value: unknown): {
   }
   return {
     ...(value.execution_context !== undefined ? { execution_context: value.execution_context as ExecutionContext } : {}),
+    ...(value.required_startup_contract === 1 ? { required_startup_contract: 1 as const } : {}),
     task: value.task,
     provider_preference: value.provider_preference as ProviderPreference,
     capacity_plan: {
@@ -264,7 +295,7 @@ export function parseTicket(value: unknown): Ticket {
   ] as const;
   if (
     !isRecord(value) ||
-    !hasExactKeys(value, keys) ||
+    !hasExactKeys(value, [...keys, ...(value.startup_contract !== undefined ? ["startup_contract"] : [])]) ||
     !boundedString(value.execution_id, 36, 36, UUID) ||
     !Number.isSafeInteger(value.sequence) ||
     (value.sequence as number) < 1 ||
@@ -287,6 +318,7 @@ export function parseTicket(value: unknown): Ticket {
     expires_at: value.expires_at,
     nonce: value.nonce,
     signature: value.signature,
+    ...(value.startup_contract !== undefined ? { startup_contract: boundStartup(value.startup_contract, value.action) } : {}),
   };
 }
 
@@ -434,6 +466,7 @@ export function parsePrivateDecision(value: unknown): PrivateDecision {
       "provider",
       "action",
       "permission_profile",
+      ...(value.startup_contract !== undefined ? ["startup_contract"] : []),
     ]) ||
     !oneOf(value.provider, PROVIDERS) ||
     !oneOf(value.action, ACTIONS) || ACTION_PROVIDERS[value.action]?.provider !== value.provider ||
@@ -446,6 +479,7 @@ export function parsePrivateDecision(value: unknown): PrivateDecision {
     provider: value.provider,
     action: value.action,
     permission_profile: value.permission_profile,
+    ...(value.startup_contract !== undefined ? { startup_contract: boundStartup(value.startup_contract, value.action) } : {}),
   };
 }
 

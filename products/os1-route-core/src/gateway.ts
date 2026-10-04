@@ -30,8 +30,10 @@ import {
 import { assertTicketDeliveryHygiene, publicJson } from "./egress";
 import { reject } from "./errors";
 import { bindingJson, readBoundedJson } from "./io";
-import { completionFeedbackMatchesTask } from "./execution-context";
-import { parseAttemptStart, verifyAttemptStart } from "./attempt-contract";
+import { availableModelTuple, completionFeedbackMatchesTask } from "./execution-context";
+import { parseAttemptStart, verifyAttemptStart, type AttemptCommand } from "./attempt-contract";
+import type { BeginCommand, FinalizeCommand } from "./execution-state";
+import type { ClaimCommand } from "./ledger-model";
 
 export const PRIVATE_CORE_PROTOCOL_VERSION = 3;
 
@@ -85,11 +87,25 @@ async function privateDecision(
   );
 }
 
+/** Signed V2 storage mode selects the fixed pool, never a request-selected name. */
+function executionLedger(env: Env, ticket: Ticket) {
+  const legacy = ticket.startup_contract ? undefined : env.EXECUTIONS.getByName(ticket.execution_id);
+  const pool = ticket.startup_contract ? env.EXECUTION_POOLS.getByName("startup-v1") : undefined;
+  return {
+    begin: (command: BeginCommand) => pool ? pool.begin(command) : legacy!.begin(command),
+    startAttempt: (command: AttemptCommand) => pool ? pool.startAttempt({ ...command, execution_id: ticket.execution_id }) : legacy!.startAttempt(command),
+    permitsArtifact: (command: ClaimCommand) => pool ? pool.permitsArtifact({ ...command, execution_id: ticket.execution_id }) : legacy!.permitsArtifact(command),
+    claim: (command: ClaimCommand) => pool ? pool.claim({ ...command, execution_id: ticket.execution_id }) : legacy!.claim(command),
+    finalize: (command: FinalizeCommand) => pool ? pool.finalize({ ...command, execution_id: ticket.execution_id }) : legacy!.finalize(command),
+  };
+}
+
 function unsignedTicket(
   executionId: string,
   sequence: number,
   decision: Extract<PrivateDecision, { status: "step" }>,
   ttlSeconds: number,
+  requiredContractSHA?: string,
 ): TicketUnsigned {
   return {
     execution_id: executionId,
@@ -99,6 +115,7 @@ function unsignedTicket(
     permission_profile: decision.permission_profile,
     expires_at: new Date(Date.now() + ttlSeconds * 1_000).toISOString(),
     nonce: randomNonce(),
+    ...(requiredContractSHA ? { startup_contract: decision.startup_contract! } : {}),
   };
 }
 
@@ -107,13 +124,17 @@ async function issueTicket(
   executionId: string,
   sequence: number,
   decision: Extract<PrivateDecision, { status: "step" }>,
+  requiredContractSHA?: string,
 ): Promise<Ticket> {
+  if (requiredContractSHA ? (!decision.startup_contract || decision.startup_contract.executor_contract_sha256 !== requiredContractSHA)
+    : decision.startup_contract !== undefined) reject();
   const ticket = await signTicket(
     unsignedTicket(
       executionId,
       sequence,
       decision,
       positiveInteger(env.TICKET_TTL_SECONDS),
+      requiredContractSHA,
     ),
     env.TICKET_SIGNING_KEY_PKCS8,
   );
@@ -123,7 +144,7 @@ async function issueTicket(
 
 export async function startExecution(request: Request, env: Env): Promise<Response> {
   const identity = await authenticate(request, env);
-  const { task, provider_preference, capacity_plan, executor_contract_version, executor_contract_sha256, available_codex_models, execution_context } = parseStartRequest(
+  const { task, provider_preference, capacity_plan, executor_contract_version, executor_contract_sha256, available_codex_models, execution_context, required_startup_contract } = parseStartRequest(
     await readBoundedJson(request, positiveInteger(env.MAX_REQUEST_BYTES)),
   );
   if (!(await completionFeedbackMatchesTask(execution_context, task))) reject();
@@ -131,6 +152,7 @@ export async function startExecution(request: Request, env: Env): Promise<Respon
   const decision = await privateDecision(env, {
     version: PRIVATE_CORE_PROTOCOL_VERSION,
     execution_id: executionId,
+    ...(required_startup_contract ? { required_startup_contract } : {}),
     principal: { subject: identity.subject, device_id: identity.device_id },
     task: {
       trust: "untrusted_user_data",
@@ -146,8 +168,13 @@ export async function startExecution(request: Request, env: Env): Promise<Respon
   if (decision.status === "complete") return publicJson({ status: "complete" });
   if (decision.status === "failed") return publicJson({ status: "failed" });
 
-  const ticket = await issueTicket(env, executionId, 1, decision);
-  const state = env.EXECUTIONS.getByName(executionId);
+  if (required_startup_contract) {
+    const startup = decision.startup_contract;
+    if (!startup || !availableModelTuple(execution_context, available_codex_models, decision.provider, startup.model, startup.effort) ||
+      (execution_context?.execution_permission_profile !== undefined && decision.permission_profile !== execution_context.execution_permission_profile)) reject();
+  }
+  const ticket = await issueTicket(env, executionId, 1, decision, required_startup_contract ? executor_contract_sha256 : undefined);
+  const state = executionLedger(env, ticket);
   const created = await state.begin({
     execution_id: executionId,
     subject_hash: await sha256Hex(identity.subject),
@@ -221,7 +248,7 @@ export async function submitResult(request: Request, env: Env): Promise<Response
   const deviceKey = await verifiedDeviceKey(env, identity);
   if (!(await verifyDeviceResult(result, deviceKey))) reject();
 
-  const state = env.EXECUTIONS.getByName(result.ticket.execution_id);
+  const state = executionLedger(env, result.ticket);
   const claim = await state.claim({
     subject_hash: await sha256Hex(identity.subject),
     device_id: identity.device_id,
@@ -240,6 +267,7 @@ export async function submitResult(request: Request, env: Env): Promise<Response
   const decision = await privateDecision(env, {
     version: PRIVATE_CORE_PROTOCOL_VERSION,
     execution_id: result.ticket.execution_id,
+    ...(result.ticket.startup_contract ? { required_startup_contract: 1 } : {}),
     previous: {
       sequence: result.ticket.sequence,
       artifact_ref: result.artifact_ref,
@@ -261,6 +289,7 @@ export async function submitResult(request: Request, env: Env): Promise<Response
       result.ticket.execution_id,
       result.ticket.sequence + 1,
       decision,
+      result.ticket.startup_contract?.executor_contract_sha256,
     );
     response = ticket;
     next = {
@@ -301,7 +330,7 @@ export async function uploadArtifact(
   const deviceKey = await verifiedDeviceKey(env, identity);
   if (!(await verifyDeviceResult(result, deviceKey))) reject();
 
-  if (!(await env.EXECUTIONS.getByName(upload.ticket.execution_id).permitsArtifact({
+  if (!(await executionLedger(env, upload.ticket).permitsArtifact({
     subject_hash: await sha256Hex(identity.subject), device_id: identity.device_id,
     sequence: upload.ticket.sequence, nonce: upload.ticket.nonce,
     result_hash: upload.result_hash, now: Date.now(),
@@ -317,6 +346,15 @@ export async function uploadArtifact(
     ))
   ) {
     reject();
+  }
+  if (upload.ticket.startup_contract) {
+    let artifact: Record<string, unknown>;
+    try { artifact = JSON.parse(new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(bytes)); } catch { reject(); }
+    const contract = upload.ticket.startup_contract;
+    if (!artifact || typeof artifact !== "object" || Array.isArray(artifact) || artifact.schema !== 4 ||
+      artifact.provider !== upload.ticket.provider || artifact.action !== upload.ticket.action ||
+      artifact.permission_profile !== upload.ticket.permission_profile || artifact.model !== contract.model ||
+      artifact.effort !== contract.effort || artifact.executor_contract_sha256 !== contract.executor_contract_sha256) reject();
   }
   await env.RESULTS.put(resultArtifactKey(artifactRef), bytes, {
     httpMetadata: { contentType: "application/json; charset=utf-8" },
@@ -336,7 +374,7 @@ export async function acknowledgeAttempt(request: Request, env: Env): Promise<Re
   const value = parseAttemptStart(await readBoundedJson(request, positiveInteger(env.MAX_REQUEST_BYTES)));
   if (!(await verifyTicket(value.ticket, env.TICKET_VERIFYING_KEY_SPKI)) ||
       !(await verifyAttemptStart(value, await verifiedDeviceKey(env, identity)))) reject();
-  const lease = await env.EXECUTIONS.getByName(value.ticket.execution_id).startAttempt({
+  const lease = await executionLedger(env, value.ticket).startAttempt({
     subject_hash: await sha256Hex(identity.subject), device_id: identity.device_id,
     sequence: value.ticket.sequence, nonce: value.ticket.nonce, now: Date.now(),
   });

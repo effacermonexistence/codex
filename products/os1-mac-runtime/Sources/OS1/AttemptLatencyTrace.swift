@@ -13,6 +13,21 @@ enum AttemptLatencyTrace {
         lock.withLock { started = now; marks = [] }
     }
 
+    static func submissionOrigin(_ raw: String?, now: Date) -> Date {
+        guard let raw, let seconds = Double(raw), seconds.isFinite else { return now }
+        let supplied = Date(timeIntervalSince1970: seconds)
+        let age = now.timeIntervalSince(supplied)
+        return age >= 0 && age <= 86_400 ? supplied : now
+    }
+
+    /// Include GUI submission, native-record ingestion and process launch,
+    /// rather than resetting the clock after a hidden preparation stage.
+    /// Diagnostic clock only; this never authorizes a route or an action.
+    static func beginSubmission(at now: Date = Date()) {
+        begin(at: submissionOrigin(ProcessInfo.processInfo.environment["OS1_SUBMISSION_STARTED_AT"], now: now))
+        mark("runtime_entered", at: now)
+    }
+
     /// A later attempt of the same task starts its own trace; the first
     /// attempt keeps the task-level marks (policy, routing) before its lease.
     static func beginIfIdle(at now: Date = Date()) {
@@ -44,8 +59,14 @@ enum AttemptLatencyTrace {
     static func finish(executionID: String, sequence: Int, provider: String,
                        root: URL = FileManager.default.homeDirectoryForCurrentUser
                            .appendingPathComponent("Library/Application Support/OS-1/diagnostics", isDirectory: true)) {
-        guard let marks = take(), UUID(uuidString: executionID) != nil, (1...16).contains(sequence) else { return }
+        let snapshot = lock.withLock { () -> (Date, [(name: String, seconds: TimeInterval)])? in
+            guard let started else { return nil }
+            defer { self.started = nil; marks = [] }
+            return (started, marks)
+        }
+        guard let (started, marks) = snapshot, UUID(uuidString: executionID) != nil, (1...16).contains(sequence) else { return }
         let body: [String: Any] = ["schema": 1, "provider": provider, "sequence": sequence,
+            "started_at": started.timeIntervalSince1970,
             "marks": marks.map { ["name": $0.name, "ms": Int(($0.seconds * 1_000).rounded())] }]
         guard let data = try? JSONSerialization.data(withJSONObject: body, options: [.sortedKeys]) else { return }
         try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])

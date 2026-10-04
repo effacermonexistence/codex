@@ -3818,6 +3818,7 @@ private func sessionHandoff(_ session: ConversationSession, before userMessageID
 }
 
 private struct PendingSubmission: Identifiable, Codable, Equatable, Sendable {
+    var submittedAt: Date? = nil
     let id: UUID
     let sessionID: UUID
     let userMessageID: UUID
@@ -4979,6 +4980,7 @@ private enum OS1Runner {
         deliveryID: String? = nil,
         submissionID: UUID? = nil,
         conversationID: UUID? = nil,
+        submissionStartedAt: Date? = nil,
         onActivity: @escaping @Sendable (RuntimeActivity) -> Void = { _ in }
     ) async throws -> AppRunSummary {
         try await Task.detached(priority: .userInitiated) {
@@ -4996,6 +4998,7 @@ private enum OS1Runner {
                 deliveryID: deliveryID,
                 submissionID: submissionID,
                 conversationID: conversationID,
+                submissionStartedAt: submissionStartedAt,
                 onActivity: onActivity
             )
         }.value
@@ -5029,6 +5032,7 @@ private enum OS1Runner {
         deliveryID: String?,
         submissionID: UUID?,
         conversationID: UUID? = nil,
+        submissionStartedAt: Date? = nil,
         onActivity: @escaping @Sendable (RuntimeActivity) -> Void
     ) throws -> AppRunSummary {
         let fileManager = FileManager.default
@@ -5115,6 +5119,7 @@ private enum OS1Runner {
         let failureURL = temporary.appendingPathComponent("backend-failure.json")
         environment["OS1_FAILURE_FILE"] = failureURL.path
         if let submissionID { environment["OS1_SUBMISSION_ID"] = submissionID.uuidString }
+        if let submissionStartedAt { environment["OS1_SUBMISSION_STARTED_AT"] = String(submissionStartedAt.timeIntervalSince1970) }
         // A self-update staged by this task reports its install receipt back
         // into this conversation.
         if let conversationID { environment["OS1_CONVERSATION_ID"] = conversationID.uuidString }
@@ -5290,7 +5295,7 @@ private final class SessionStore: ObservableObject {
                 context: context, codexSessionID: codexID, claudeSessionID: claudeID,
                 codexCapacity: submission.codexCapacity, claudeCapacity: submission.claudeCapacity,
                 requireReadOnly: submission.readOnlyReconciliation == true, deliveryID: submission.deliveryID,
-                submissionID: submission.id, conversationID: submission.sessionID, onActivity: onActivity)
+                submissionID: submission.id, conversationID: submission.sessionID, submissionStartedAt: submission.submittedAt, onActivity: onActivity)
         }
         if storageRoot == nil {
             let monitor = FrontierNewsMonitor()
@@ -6132,6 +6137,7 @@ private final class SessionStore: ObservableObject {
     }
 
     func send() {
+        let submitTimestamp = Date()
         // Match the disabled primary button while permission/transcription is
         // pending. Recording's existing finish callback invokes send once idle.
         guard ![VoiceDictationPhase.authorizing, .finalizing, .transcribing].contains(voiceDictation.phase) else { return }
@@ -6198,6 +6204,7 @@ private final class SessionStore: ObservableObject {
             codexCapacity: sessions[index].effectiveCodexCapacity,
             claudeCapacity: sessions[index].effectiveClaudeCapacity
         )
+        submission.submittedAt = submitTimestamp
         submission.configuredProvider = configuredProvider
         // The tile is the account; the saved surface says which of its two ways
         // to spend it runs. `auto` has no tile, so the router decides.

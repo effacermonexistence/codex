@@ -51,7 +51,7 @@ function pemBytes(pem: string, label: string): Uint8Array {
 export function canonicalTicket(ticket: TicketUnsigned): Uint8Array {
   return encoder.encode(
     [
-      "os1-ticket-v1",
+      ticket.startup_contract ? "os1-ticket-v2" : "os1-ticket-v1",
       ticket.execution_id,
       String(ticket.sequence),
       ticket.provider,
@@ -59,6 +59,10 @@ export function canonicalTicket(ticket: TicketUnsigned): Uint8Array {
       ticket.permission_profile,
       ticket.expires_at,
       ticket.nonce,
+      ...(ticket.startup_contract ? [String(ticket.startup_contract.schema),
+        String(ticket.startup_contract.completion_feedback_schema), String(ticket.startup_contract.model_availability_schema),
+        ticket.startup_contract.executor_contract_sha256, ticket.startup_contract.model,
+        ticket.startup_contract.effort, ticket.startup_contract.state_storage] : []),
     ].join("\n"),
   );
 }

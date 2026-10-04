@@ -1,6 +1,7 @@
 import { opaqueError } from "./egress";
 import { RequestRejected, ResultServiceUnavailable, IdentityServiceUnavailable } from "./errors";
 import { ExecutionState } from "./execution-state";
+import { ExecutionPoolState } from "./execution-pool-state";
 import { FleetState } from "./fleet-state";
 import {
   fleetClaim,
@@ -20,7 +21,7 @@ import {
 import { releaseRequest } from "./releases";
 import { completionCapabilities } from "./capabilities";
 
-export { ExecutionState, FleetState };
+export { ExecutionState, ExecutionPoolState, FleetState };
 
 async function handleRequest(request: Request, env: Env): Promise<Response> {
   const requestId = crypto.randomUUID();

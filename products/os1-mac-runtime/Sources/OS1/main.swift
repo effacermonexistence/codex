@@ -496,6 +496,7 @@ struct Ticket: Codable {
     let expiresAt: String
     let nonce: String
     let signature: String
+    var startupContract: StartupContract? = nil
 
     enum CodingKeys: String, CodingKey {
         case executionID = "execution_id"
@@ -503,6 +504,7 @@ struct Ticket: Codable {
         case permissionProfile = "permission_profile"
         case expiresAt = "expires_at"
         case nonce, signature
+        case startupContract = "startup_contract"
     }
 }
 
@@ -691,6 +693,7 @@ struct StartExecutionRequest: Codable {
     let executorContractSHA256: String
     let availableCodexModels: [CodexModelCapability]
     var executionContext: ExecutionInputContext? = nil
+    var requiredStartupContract: Int? = 1
 
     enum CodingKeys: String, CodingKey {
         case task
@@ -700,6 +703,7 @@ struct StartExecutionRequest: Codable {
         case executorContractSHA256 = "executor_contract_sha256"
         case availableCodexModels = "available_codex_models"
         case executionContext = "execution_context"
+        case requiredStartupContract = "required_startup_contract"
     }
 }
 
@@ -1844,10 +1848,69 @@ func registrationBytes(deviceID: String, registeredAt: Int64, nonce: String, jwk
 }
 
 func ticketBytes(_ ticket: Ticket) -> Data {
-    Data([
-        "os1-ticket-v1", ticket.executionID, String(ticket.sequence), ticket.provider,
+    let fields = [
+        ticket.startupContract == nil ? "os1-ticket-v1" : "os1-ticket-v2", ticket.executionID, String(ticket.sequence), ticket.provider,
         ticket.action, ticket.permissionProfile, ticket.expiresAt, ticket.nonce,
-    ].joined(separator: "\n").utf8)
+    ] + (ticket.startupContract?.canonicalFields ?? [])
+    return Data(fields.joined(separator: "\n").utf8)
+}
+
+func startupContractSelfTest(config template: RuntimeConfig) throws {
+    // Deterministic in-memory fixture, not an installed key or credential.
+    let fixtureKey = try Curve25519.Signing.PrivateKey(rawRepresentation: Data(repeating: 42, count: 32))
+    let config = RuntimeConfig(apiURL: template.apiURL,
+        ticketVerifyingKeyRaw: Base64URL.encode(fixtureKey.publicKey.rawRepresentation),
+        maximumSteps: template.maximumSteps, executionTimeoutSeconds: template.executionTimeoutSeconds,
+        modelProfiles: template.modelProfiles, effortProfiles: template.effortProfiles,
+        executionProfiles: template.executionProfiles, executorContract: template.executorContract)
+    let startup = StartupContract(schema: 1, completionFeedbackSchema: 1, modelAvailabilitySchema: 1,
+        executorContractSHA256: config.executorContract.sha256, model: "gpt-current", effort: "high", stateStorage: "pool_v1")
+    func fixture(_ contract: StartupContract?, signed: Bool = true) throws -> Ticket {
+        var t = Ticket(executionID: "00000000-0000-4000-8000-000000000001", sequence: 1,
+            provider: "codex", action: "cx_test", permissionProfile: "read_only",
+            expiresAt: "2099-01-01T00:00:00.000Z", nonce: String(repeating: "a", count: 43), signature: "", startupContract: contract)
+        if signed {
+            t = Ticket(executionID: t.executionID, sequence: t.sequence, provider: t.provider, action: t.action,
+                permissionProfile: t.permissionProfile, expiresAt: t.expiresAt, nonce: t.nonce,
+                signature: Base64URL.encode(try fixtureKey.signature(for: ticketBytes(t))), startupContract: contract)
+        }
+        return t
+    }
+    func rejects(_ t: Ticket, critical: Bool = true) -> Bool {
+        do { try verifyTicket(t, config: config, requiresStartupContract: critical); return false } catch { return true }
+    }
+    let v1 = try fixture(nil), v2 = try fixture(startup)
+    let oldBytes = ["os1-ticket-v1", v1.executionID, "1", "codex", "cx_test", "read_only", v1.expiresAt, v1.nonce].joined(separator: "\n")
+    guard String(decoding: ticketBytes(v1), as: UTF8.self) == oldBytes else { throw OS1Error.message("v1 ticket bytes changed") }
+    try verifyTicket(v1, config: config)
+    try verifyTicket(v2, config: config, requiresStartupContract: true)
+    var stripped = v2; stripped.startupContract = nil
+    var altered = v2
+    altered.startupContract = StartupContract(schema: 1, completionFeedbackSchema: 1, modelAvailabilitySchema: 1,
+        executorContractSHA256: startup.executorContractSHA256, model: "other-model", effort: "high", stateStorage: "pool_v1")
+    let request = StartExecutionRequest(task: "fixture", providerPreference: "codex", capacityPlan: CapacityPlan(codex: 100, claude: 0),
+        executorContractVersion: config.executorContract.version, executorContractSHA256: config.executorContract.sha256, availableCodexModels: [])
+    let wire = try JSONSerialization.jsonObject(with: JSONEncoder().encode(request)) as? [String: Any]
+    let now = Date(timeIntervalSince1970: 100_000)
+    let wrongContracts = [
+        StartupContract(schema: 2, completionFeedbackSchema: 1, modelAvailabilitySchema: 1, executorContractSHA256: startup.executorContractSHA256, model: startup.model, effort: startup.effort, stateStorage: startup.stateStorage),
+        StartupContract(schema: 1, completionFeedbackSchema: 0, modelAvailabilitySchema: 1, executorContractSHA256: startup.executorContractSHA256, model: startup.model, effort: startup.effort, stateStorage: startup.stateStorage),
+        StartupContract(schema: 1, completionFeedbackSchema: 1, modelAvailabilitySchema: 0, executorContractSHA256: startup.executorContractSHA256, model: startup.model, effort: startup.effort, stateStorage: startup.stateStorage),
+        StartupContract(schema: 1, completionFeedbackSchema: 1, modelAvailabilitySchema: 1, executorContractSHA256: String(repeating: "f", count: 64), model: startup.model, effort: startup.effort, stateStorage: startup.stateStorage),
+        StartupContract(schema: 1, completionFeedbackSchema: 1, modelAvailabilitySchema: 1, executorContractSHA256: startup.executorContractSHA256, model: "other-model", effort: startup.effort, stateStorage: startup.stateStorage),
+        StartupContract(schema: 1, completionFeedbackSchema: 1, modelAvailabilitySchema: 1, executorContractSHA256: startup.executorContractSHA256, model: startup.model, effort: "low", stateStorage: startup.stateStorage),
+        StartupContract(schema: 1, completionFeedbackSchema: 1, modelAvailabilitySchema: 1, executorContractSHA256: startup.executorContractSHA256, model: startup.model, effort: startup.effort, stateStorage: "other"),
+    ]
+    let checks = [rejects(v1), rejects(stripped), rejects(altered),
+        try JSONDecoder().decode(Ticket.self, from: JSONEncoder().encode(v2)).startupContract == startup,
+        wire?["required_startup_contract"] as? Int == 1,
+        AttemptLatencyTrace.submissionOrigin("99990", now: now) == now.addingTimeInterval(-10),
+        AttemptLatencyTrace.submissionOrigin("100001", now: now) == now,
+        AttemptLatencyTrace.submissionOrigin("1", now: now) == now,
+        AttemptLatencyTrace.submissionOrigin("nan", now: now) == now,
+    ] + (try wrongContracts.map { rejects(try fixture($0)) })
+    guard checks.allSatisfy({ $0 }) else { throw OS1Error.message("Critical startup contract verification failed") }
+    print("OS-1 signed startup contract: \(checks.count) checks OK; v1 unchanged, v2 fail-closed")
 }
 
 func resultBytes(_ result: ResultSubmission) -> Data {
@@ -1877,7 +1940,7 @@ func deliverResult(_ client: APIClient, _ submission: ResultSubmission, v1Signat
     }
 }
 
-func verifyTicket(_ ticket: Ticket, config: RuntimeConfig) throws {
+func verifyTicket(_ ticket: Ticket, config: RuntimeConfig, requiresStartupContract: Bool = false) throws {
     let routedProfile = config.executionProfiles?[ticket.action]
     let validRoutedProfile = routedProfile.map { $0.provider == ticket.provider } ?? false
     let validLegacyProfile = config.executionProfiles == nil &&
@@ -1896,6 +1959,15 @@ func verifyTicket(_ ticket: Ticket, config: RuntimeConfig) throws {
     let key = try Curve25519.Signing.PublicKey(rawRepresentation: Base64URL.decode(config.ticketVerifyingKeyRaw))
     guard key.isValidSignature(try Base64URL.decode(ticket.signature), for: ticketBytes(ticket)) else {
         throw OS1Error.message("Server ticket signature rejected")
+    }
+    if requiresStartupContract && ticket.startupContract == nil {
+        throw OS1Error.message("Server did not acknowledge the required startup contract; no backend was called")
+    }
+    if let startup = ticket.startupContract {
+        guard startup.isValid, startup.executorContractSHA256 == config.executorContract.sha256,
+              let profile = routedProfile, startup.model == profile.model, startup.effort == profile.effort else {
+            throw OS1Error.message("Signed startup model or executor contract mismatch; no backend was called")
+        }
     }
 }
 
@@ -5111,6 +5183,53 @@ final class CodexAppServerClient: @unchecked Sendable {
         return ModelAvailability.codexRows(rows)
     }
 
+    /// Unpaid account/model/quota metadata only. One writer sends this fixed
+    /// whitelist, and one reader retains every reply ID despite reordering.
+    /// No thread, turn, approval grant, or inference is started by this batch.
+    func catalogMetadata(deadline: Date) throws -> (models: [CodexModelCapability], rateLimits: [String: Any]?) {
+        var collected = CodexMetadataReplies(firstID: nextRequestID)
+        nextRequestID += CodexMetadataReplies.methods.count
+        for id in collected.expected.keys.sorted() {
+            let method = collected.expected[id]!
+            let params: [String: Any] = method == "account/read" ? ["refreshToken": false]
+                : (method == "model/list" ? ["limit": 100, "includeHidden": false] : [:])
+            try send(["jsonrpc": "2.0", "id": id, "method": method, "params": params])
+        }
+        while !collected.complete {
+            let message: [String: Any]
+            do { message = try nextMessage(deadline: deadline) }
+            catch {
+                // Quota was optional before batching. Only its missing reply
+                // may retain that behavior; account/model/cancellation fail.
+                guard !ExecutionCancellation.isCancelled, collected.requiredReceived,
+                      case OS1Error.message(let text) = error,
+                      text == ProviderActivityWatchdog.timeoutText else { throw error }
+                break
+            }
+            if let method = message["method"] as? String, message["id"] != nil {
+                try rejectServerRequest(message, method: method)
+                continue
+            }
+            if try collected.receive(message) { continue }
+            if message["method"] != nil { deferredNotifications.append(message) }
+            else if message["id"] != nil { throw OS1Error.message("Unexpected native metadata response ID") }
+        }
+        _ = try collected.verifiedAccount()
+        var rows: [[String: Any]] = [], cursor: String?, seen = Set<String>()
+        var page = try collected.required("model/list")
+        while true {
+            guard let values = page["data"] as? [[String: Any]], rows.count + values.count <= 256 else {
+                throw OS1Error.message("Invalid Codex model inventory")
+            }
+            rows += values
+            cursor = page["nextCursor"] as? String
+            guard let cursor else { break }
+            guard seen.insert(cursor).inserted else { throw OS1Error.message("Repeated model-list cursor") }
+            page = try request("model/list", params: ["limit": 100, "includeHidden": false, "cursor": cursor], deadline: deadline)
+        }
+        return (ModelAvailability.codexRows(rows), collected.optionalRateLimits)
+    }
+
     // Metadata only: never starts/resumes a turn or acquires its writer.
     func moveSidebarThread(id: String, pinned: Bool, before: String?, deadline: Date) throws {
         let sections = try request("threadSection/list", params: [:], deadline: deadline)
@@ -7754,7 +7873,6 @@ func runWorkflowTaskWithOwnerPolicy(
 struct PreparedGateway: @unchecked Sendable {
     let client: APIClient
     let key: SigningKey
-    let feedbackSupported: Bool
 }
 
 struct PreflightInventory: Sendable {
@@ -7775,9 +7893,8 @@ struct PreflightInventory: Sendable {
             do {
                 let key = try SigningKey.loadOrCreate()
                 let client = APIClient(config: config, token: try githubToken(), deviceID: try deviceID())
-                async let feedback = client.supportsCompletionFeedback(requireModelAvailability: true)
                 try await register(client: client, key: key)
-                return PreparedGateway(client: client, key: key, feedbackSupported: await feedback)
+                return PreparedGateway(client: client, key: key)
             } catch { return nil }
         } : nil)
     }
@@ -7822,7 +7939,7 @@ func runTask(
 ) async throws -> RunSummary {
     // Inventories first: they overlap the policy refresh (≈1 s, 2026-09-24).
     // A refused policy still stops the run before any routing or model call.
-    AttemptLatencyTrace.begin()
+    AttemptLatencyTrace.beginSubmission()
     let preflight = (try? RuntimeConfig.load()).map {
         PreflightInventory.start(workspace: LocalProjectWorkspace.executionPath(workspace),
                                  config: $0, showCodex: OS1Settings.load().showCodex, prepareGateway: true)
@@ -8443,18 +8560,12 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
         objective: DriftScope.digest(prompt))
     var feedbackScope = instructionFeedbackScope(initialCorrections?.instructions ?? "", input: localPrompt,
         codexID: codexSessionID, claudeID: claudeSessionID)
-    // A probe answered during the policy refresh is reused; a miss is re-probed.
-    let feedbackSupported = prepared?.feedbackSupported == true && prepared?.client.config.apiURL == config.apiURL
-        ? true : await client.supportsCompletionFeedback(requireModelAvailability: true)
+    // Send a critical full-metadata protocol request. The server must certify
+    // capabilities on that same route and sign the model/contract ACK; an old
+    // strict parser rejects this field. No reduced-field or v1 fallback.
+    // This flag enables the required request envelope, not observed support.
+    let feedbackEnabledForRequiredContract = true
     if ExecutionCancellation.isCancelled { throw OS1Error.backendBlocked(.cancelled) }
-    guard feedbackSupported else {
-        throw OS1Error.message("라우팅 서버에서 사용자별 모델 확인을 \(1 + APIClient.capabilityRetryDelaysMS.count)회 시도했지만 확인되지 않았습니다(연결 실패, 서버 내부 지연 또는 미지원 서버). 모델을 임의 선택하지 않았으며 유료 호출은 하지 않았습니다.")
-    }
-    guard feedbackSupported || !codexCatalog.models.isEmpty else {
-        // Legacy servers require a nonempty Codex catalog even for Claude.
-        // Never fabricate an installed capability to satisfy that old schema.
-        throw OS1Error.message("현재 라우팅 서버는 Codex가 없는 실행 환경을 지원하지 않습니다. 서버 호환성 업데이트가 필요하며 유료 모델은 호출하지 않았습니다.")
-    }
     var inputContext = try executionInputContext(prompt: prompt, assembled: localPrompt,
         history: context, evidence: r2Evidence, config: config)
     // 438c757 asked for workspace_write on every run so delegated workflow
@@ -8466,7 +8577,7 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
     // (`readOnlyQuestion`) — and leave every other run exactly as it was.
     inputContext.executionPermissionProfile = resolvedScope == .readOnly ? "read_only" : "workspace_write"
     inputContext.availableClaudeModels = claudeCatalog
-    if feedbackSupported {
+    if feedbackEnabledForRequiredContract {
         inputContext.completionFeedback = try ((try? feedbackStore.load(scope: feedbackScope)) ??
             CompletionFeedbackLedger(scope: feedbackScope)).publicFeedback()
     }
@@ -8578,7 +8689,7 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
         }
         guard let ticket = route.ticket else { throw OS1Error.message("Invalid OS-1 route response") }
         try OwnerPolicyContext.snapshot?.verifyOriginal()
-        try verifyTicket(ticket, config: config)
+        try verifyTicket(ticket, config: config, requiresStartupContract: true)
         // The delegated capability envelope, including explicit internal review restrictions, is
         // the authority floor. Every ticket is checked, including retries and
         // read-only verify/other tasks; classification labels cannot widen it.
@@ -8803,7 +8914,7 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
                             completionFeedback: existing.completionFeedback, availableClaudeModels: existing.availableClaudeModels)
                     }
                     freshContext?.availableClaudeModels = claudeCatalog
-                    if feedbackSupported {
+                    if feedbackEnabledForRequiredContract {
                         freshContext?.completionFeedback = try feedbackStore.load(scope: feedbackScope)?.publicFeedback()
                     }
                     let next = StartExecutionRequest(task: request.task, providerPreference: nextPreference,
@@ -8860,7 +8971,7 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
                                 completionFeedback: existing.completionFeedback, availableClaudeModels: existing.availableClaudeModels)
                         }
                         freshContext?.availableClaudeModels = claudeCatalog
-                        if feedbackSupported {
+                        if feedbackEnabledForRequiredContract {
                             freshContext?.completionFeedback = try feedbackStore.load(scope: feedbackScope)?.publicFeedback()
                         }
                         let next = StartExecutionRequest(task: request.task, providerPreference: "codex",
@@ -9110,7 +9221,7 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
                     completionFeedback: existing.completionFeedback, availableClaudeModels: existing.availableClaudeModels)
             }
             freshContext?.availableClaudeModels = claudeCatalog
-            if feedbackSupported {
+            if feedbackEnabledForRequiredContract {
                 freshContext?.completionFeedback = try feedbackStore.load(scope: feedbackScope)?.publicFeedback()
             }
             let next = StartExecutionRequest(task: request.task, providerPreference: request.providerPreference,
@@ -9180,7 +9291,7 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
                     completionFeedback: existing.completionFeedback, availableClaudeModels: existing.availableClaudeModels)
             }
             recoveryContext?.availableClaudeModels = claudeCatalog
-            if feedbackSupported {
+            if feedbackEnabledForRequiredContract {
                 recoveryContext?.completionFeedback = try ((try? feedbackStore.load(scope: feedbackScope)) ??
                     CompletionFeedbackLedger(scope: feedbackScope)).publicFeedback()
             }
@@ -11272,6 +11383,7 @@ func selfTest() throws {
         throw OS1Error.message("Routed execution profile or public exact executor validation failed")
     }
     let modelCacheURL = transcriptRoot.appendingPathComponent("models-cache.json")
+    try startupContractSelfTest(config: routedConfig)
     try Data("""
     {"models":[
       {"slug":"gpt-current","visibility":"list","priority":2,"default_reasoning_level":"medium","supported_reasoning_levels":[{"effort":"low"},{"effort":"medium"},{"effort":"ultra"}],"upgrade":null},

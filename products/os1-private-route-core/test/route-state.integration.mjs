@@ -116,7 +116,15 @@ export default {
 };`;
 
 const currentWorkerSource = `
-import { RouteState as ProductionRouteState, RoutingBudgetState as ProductionBudgetState } from "./src/index.ts";
+import { RouteState as ProductionRouteState, RoutePoolState as ProductionPoolState,
+  RoutingBudgetState as ProductionBudgetState } from "./src/index.ts";
+export class RoutePoolState extends ProductionPoolState {
+  testBegin(id, input) { return this.begin(id, input); }
+  testSnapshot(id, sequence) { return this.snapshot(id, sequence); }
+  testAdvance(id, sequence, outcome, hash, next, context, current) { return this.advance(id, sequence, outcome, hash, next, context, current); }
+  testClaim(id, sequence) { return this.claimLearning(id, sequence); }
+  testRecorded(id, sequence, hash) { return this.recordedDecision(id, sequence, hash); }
+}
 export class RoutingBudgetState extends ProductionBudgetState {
   testObserve(observation) { this.observe(observation); return this.learningRows(); }
   testRows() { return this.learningRows(); }
@@ -140,6 +148,17 @@ export default {
   async fetch(request, env) {
     const body = await request.json();
     try {
+      if (body.pool) {
+        const pool = env.ROUTE_POOLS.getByName("startup-v1");
+        let value;
+        if (body.op === "begin") value = await pool.testBegin(body.id, body.input);
+        else if (body.op === "snapshot") value = await pool.testSnapshot(body.id, body.sequence);
+        else if (body.op === "advance") value = await pool.testAdvance(body.id, body.sequence, body.outcome, body.hash, body.next, body.executionContext, body.currentRun);
+        else if (body.op === "claim") value = await pool.testClaim(body.id, body.sequence);
+        else if (body.op === "recorded") value = await pool.testRecorded(body.id, body.sequence, body.hash);
+        else throw new Error("unknown pool operation");
+        return Response.json({ ok: true, value });
+      }
       const state = env.ROUTES.getByName(body.name);
       let value;
       if (body.op === "begin") value = await state.testBegin(body.input);
@@ -177,7 +196,9 @@ function options(source, persistencePath) {
     modules: [{ type: "ESModule", path: "index.mjs", contents: source }],
     durableObjects: { ROUTES: { className: "RouteState", useSQLite: true, unsafeUniqueKey: uniqueKey },
       ...(source.includes("RoutingBudgetState") ? { ROUTING_BUDGETS: { className: "RoutingBudgetState", useSQLite: true,
-        unsafeUniqueKey: uniqueKey + "-budget" } } : {}) },
+        unsafeUniqueKey: uniqueKey + "-budget" } } : {}),
+      ...(source.includes("RoutePoolState") ? { ROUTE_POOLS: { className: "RoutePoolState", useSQLite: true,
+        unsafeUniqueKey: uniqueKey + "-pool" } } : {}) },
     resourcePersistencePath: persistencePath,
     logRequests: false,
     telemetry: { enabled: false },
@@ -327,7 +348,56 @@ try {
   await call(miniflare, { op: "observe", name: "fixture:owner", observation: { ...outcome, task_class: "deterministic_exact" } }, 409);
   assert.deepEqual((await call(miniflare, { op: "rows", name: "fixture:other" })).value, []);
 
-  console.log("route-state workerd integration: 6/6 checks passed");
+  const poolA = "00000000-0000-4000-8000-000000000001";
+  const poolB = "00000000-0000-4000-8000-000000000002";
+  const poolInput = (label, id) => ({ ...beginInput(label, id, initialContext), required_startup_contract: 1 });
+  const starts = await Promise.all([
+    call(miniflare, { pool: true, op: "begin", id: poolA, input: poolInput("pooled alpha", 11) }),
+    call(miniflare, { pool: true, op: "begin", id: poolB, input: poolInput("pooled beta", 12) }),
+    call(miniflare, { pool: true, op: "begin", id: poolA, input: poolInput("must not replace alpha", 13) }),
+  ]);
+  assert.deepEqual(starts.map(result => result.value), ["created", "created", "exists"]);
+  assert.equal((await call(miniflare, { pool: true, op: "snapshot", id: poolA, sequence: 1 })).value.task, "pooled alpha");
+  const pooledNext = await call(miniflare, { pool: true, op: "advance", id: poolA, sequence: 1,
+    outcome: "retry", hash: verifiedHash, next: step("claude", "claude_medium", 14),
+    executionContext: firstContext, currentRun: [firstFailure] });
+  assert.deepEqual(pooledNext.value, { status: "step", provider: "claude", action: "claude_medium", permission_profile: "read_only",
+    startup_contract: { schema: 1, completion_feedback_schema: 1, model_availability_schema: 1,
+      executor_contract_sha256: hex("d"), model: "claude-test", effort: "medium", state_storage: "pool_v1" } });
+  const poolSecond = (await call(miniflare, { pool: true, op: "snapshot", id: poolA, sequence: 2 })).value;
+  assert.equal(poolSecond.required_startup_contract, 1);
+  assert.equal(poolSecond.policy_sha256, hex("b"));
+  assert.equal(poolSecond.rcc_policy_sha256, hex("c"));
+  assert.equal(poolSecond.executor_contract_sha256, hex("d"));
+  assert.deepEqual(poolSecond.current_run_observations, [firstFailure]);
+  const poolUntouched = (await call(miniflare, { pool: true, op: "snapshot", id: poolB, sequence: 1 })).value;
+  assert.equal(poolUntouched.task, "pooled beta");
+  assert.equal(poolUntouched.provider, "codex");
+  assert.deepEqual(poolUntouched.current_run_observations, []);
+  assert.deepEqual((await call(miniflare, { pool: true, op: "recorded", id: poolA, sequence: 1, hash: verifiedHash })).value, pooledNext.value);
+  assert.equal((await call(miniflare, { pool: true, op: "recorded", id: poolB, sequence: 1, hash: verifiedHash })).value, null);
+  await call(miniflare, { pool: true, op: "recorded", id: poolA, sequence: 1, hash: hex("0") }, 409);
+  assert.equal((await call(miniflare, { pool: true, op: "claim", id: poolA, sequence: 1 })).value, true);
+  assert.equal((await call(miniflare, { pool: true, op: "claim", id: poolB, sequence: 1 })).value, true);
+  assert.equal((await call(miniflare, { pool: true, op: "claim", id: poolA, sequence: 1 })).value, false);
+  // Invalid next profile must roll back all context writes, not affect either row.
+  await call(miniflare, { pool: true, op: "advance", id: poolA, sequence: 2, outcome: "retry", hash: hex("e"),
+    next: brokenNext, executionContext: secondContext, currentRun: [firstFailure, secondFailure] }, 409);
+  const pooledRollback = (await call(miniflare, { pool: true, op: "snapshot", id: poolA, sequence: 2 })).value;
+  assert.deepEqual(pooledRollback.execution_context, firstContext);
+  assert.deepEqual(pooledRollback.current_run_observations, [firstFailure]);
+  assert.deepEqual((await call(miniflare, { pool: true, op: "advance", id: poolA, sequence: 2,
+    outcome: "pass", hash: verifiedHash })).value, { status: "complete" });
+  assert.deepEqual((await call(miniflare, { pool: true, op: "advance", id: poolA, sequence: 2,
+    outcome: "pass", hash: verifiedHash })).value, { status: "complete" });
+  await call(miniflare, { pool: true, op: "advance", id: poolA, sequence: 2, outcome: "pass", hash: hex("0") }, 409);
+  await call(miniflare, { pool: true, op: "snapshot", id: poolA, sequence: 2 }, 409);
+  assert.equal((await call(miniflare, { pool: true, op: "snapshot", id: poolB, sequence: 1 })).value.task, "pooled beta");
+  await call(miniflare, { pool: true, op: "snapshot", id: "not-an-execution", sequence: 1 }, 409);
+  // Old per-execution SQLite routes still exist and never resolve through pool.
+  assert.equal((await call(miniflare, { op: "snapshot", name: "legacy", sequence: 2 })).value.task, "legacy task");
+
+  console.log("route-state workerd integration: 12/12 checks passed (6 legacy + 6 pooled groups)");
 } finally {
   clearTimeout(watchdog);
   if (miniflare) await miniflare.dispose();

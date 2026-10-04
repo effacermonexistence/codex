@@ -16,12 +16,14 @@
   "durable_objects": {
     "bindings": [
       { "name": "ROUTES", "class_name": "RouteState" },
+      { "name": "ROUTE_POOLS", "class_name": "RoutePoolState" },
       { "name": "ROUTING_BUDGETS", "class_name": "RoutingBudgetState" }
     ]
   },
   "migrations": [
     { "tag": "v1", "new_sqlite_classes": ["RouteState"] },
-    { "tag": "v2", "new_sqlite_classes": ["RoutingBudgetState"] }
+    { "tag": "v2", "new_sqlite_classes": ["RoutingBudgetState"] },
+    { "tag": "v3", "new_sqlite_classes": ["RoutePoolState"] }
   ],
   "vars": {
     "POLICY_BUNDLE_KEY": "os1/policies/e11806fbf3d13d8935f8609bbb0a2a5c57dea0392b8aa50d2de9678536f71dac.json",
