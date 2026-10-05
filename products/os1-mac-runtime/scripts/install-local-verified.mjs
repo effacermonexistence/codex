@@ -180,7 +180,8 @@ try {
       const copy = { ...found };
       if (copy.nativeManagedTurnID !== message.nativeManagedTurnID) {
         assert(typeof copy.nativeManagedTurnID === 'string' &&
-          (message.nativeIngestedID || (message.role === 'receipt' && message.text.includes('OS-1 외부 작업, 채택 판정 아님'))),
+          (message.nativeIngestedID || (message.role === 'receipt' &&
+            ['OS-1 외부 작업, 채택 판정 아님', 'outside OS-1, not an adoption verdict'].some(marker => message.text.includes(marker)))),
           'only proven managed imports may acquire a provenance marker');
         if (message.nativeManagedTurnID === undefined) delete copy.nativeManagedTurnID;
         else copy.nativeManagedTurnID = message.nativeManagedTurnID;

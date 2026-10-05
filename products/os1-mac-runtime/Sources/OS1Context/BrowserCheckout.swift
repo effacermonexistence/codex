@@ -238,11 +238,12 @@ public enum BrowserCheckout {
     public static func approvalReason(_ request: ApprovalRequest) -> String {
         var details = [request.merchant]
         if let period = request.period?.trimmingCharacters(in: .whitespaces), !period.isEmpty { details.append(period) }
-        details.append("결제 \(request.amount)")
-        if let renewal = request.renewal?.trimmingCharacters(in: .whitespaces), !renewal.isEmpty { details.append("갱신 \(renewal)") }
+        details.append(os1Tr("결제 \(request.amount)", "pay \(request.amount)"))
+        if let renewal = request.renewal?.trimmingCharacters(in: .whitespaces), !renewal.isEmpty { details.append(os1Tr("갱신 \(renewal)", "renews \(renewal)")) }
         if let payment = request.paymentMethod?.trimmingCharacters(in: .whitespaces), !payment.isEmpty { details.append(payment) }
-        let terms = request.termsRefs.isEmpty ? "" : " 및 약관 동의"
-        return "\(request.item) 구매(\(details.joined(separator: " · ")))\(terms)를 승인"
+        let terms = request.termsRefs.isEmpty ? "" : os1Tr(" 및 약관 동의", " and agreeing to the terms")
+        return os1Tr("\(request.item) 구매(\(details.joined(separator: " · ")))\(terms)를 승인",
+                     "approve buying \(request.item) (\(details.joined(separator: " · ")))\(terms)")
     }
 
     static let orderConfirmationPattern =
@@ -310,18 +311,22 @@ public enum BrowserCheckout {
     public static func javaScriptSetupStep(_ browser: Browser) -> String {
         switch browser {
         case .safari:
-            return "Safari 설정 → 고급에서 ‘웹 개발자용 기능 보기’를 켠 다음, 설정의 ‘개발자’ 탭(또는 메뉴 막대 ‘개발자용’)에서 ‘Apple 이벤트의 JavaScript 허용’을 켜 주세요."
+            return os1Tr("Safari 설정 → 고급에서 ‘웹 개발자용 기능 보기’를 켠 다음, 설정의 ‘개발자’ 탭(또는 메뉴 막대 ‘개발자용’)에서 ‘Apple 이벤트의 JavaScript 허용’을 켜 주세요.",
+                         "In Safari Settings → Advanced, turn on ‘Show features for web developers’, then turn on ‘Allow JavaScript from Apple Events’ in the ‘Developer’ tab of Settings (or the ‘Develop’ menu in the menu bar).")
         case .chrome:
-            return "Chrome 메뉴 막대 보기 → 개발자 → ‘Apple 이벤트의 JavaScript 허용’을 켜 주세요."
+            return os1Tr("Chrome 메뉴 막대 보기 → 개발자 → ‘Apple 이벤트의 JavaScript 허용’을 켜 주세요.",
+                         "In the Chrome menu bar, turn on View → Developer → ‘Allow JavaScript from Apple Events’.")
         }
     }
 
     public static func automationPromptStep(_ browser: Browser) -> String {
-        "화면의 ‘OS-1 Checkout이(가) \(browser.applicationName)을(를) 제어하려고 합니다’ 창에서 허용을 눌러 주세요. 안 보이면 시스템 설정 → 개인정보 보호 및 보안 → 자동화 → OS-1 Checkout에서 \(browser.applicationName)을(를) 켜 주세요."
+        os1Tr("화면의 ‘OS-1 Checkout이(가) \(browser.applicationName)을(를) 제어하려고 합니다’ 창에서 허용을 눌러 주세요. 안 보이면 시스템 설정 → 개인정보 보호 및 보안 → 자동화 → OS-1 Checkout에서 \(browser.applicationName)을(를) 켜 주세요.",
+              "Click Allow in the on-screen alert ‘OS-1 Checkout wants access to control \(browser.applicationName)’. If it does not appear, turn on \(browser.applicationName) in System Settings → Privacy & Security → Automation → OS-1 Checkout.")
     }
 
     public static func automationSetupStep(_ browser: Browser) -> String {
-        "시스템 설정 → 개인정보 보호 및 보안 → 자동화에서 ‘OS-1 Checkout’ 아래 ‘\(browser.applicationName)’을 켜 주세요."
+        os1Tr("시스템 설정 → 개인정보 보호 및 보안 → 자동화에서 ‘OS-1 Checkout’ 아래 ‘\(browser.applicationName)’을 켜 주세요.",
+              "In System Settings → Privacy & Security → Automation, turn on ‘\(browser.applicationName)’ under ‘OS-1 Checkout’.")
     }
 
     /// How long a browser's open event waits for the owner to answer macOS's

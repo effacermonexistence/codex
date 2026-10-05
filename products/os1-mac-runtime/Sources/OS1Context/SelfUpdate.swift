@@ -318,14 +318,17 @@ public enum SelfUpdate {
 
     public static func summary(success: Bool, intent: Intent, checks: [String], sessionsBefore: Int?, sessionsAfter: Int?,
                                receiptPath: String?, error: String?) -> String {
-        let commit = intent.sourceCommit.map { " · 소스 커밋 \(String($0.prefix(7)))" } ?? ""
+        let commit = intent.sourceCommit.map { os1Tr(" · 소스 커밋 \(String($0.prefix(7)))", " · source commit \(String($0.prefix(7)))") } ?? ""
         if success {
-            let sessions = (sessionsBefore != nil && sessionsAfter != nil) ? " · 세션 \(sessionsBefore!)→\(sessionsAfter!)" : ""
-            return "OS-1이 자기 자신을 build \(intent.build) (\(intent.version))로 교체했습니다 · 설치기 검사 \(checks.count)개 PASS\(sessions)\(commit)"
-                + (receiptPath.map { " · 영수증 \($0)" } ?? "")
+            let sessions = (sessionsBefore != nil && sessionsAfter != nil)
+                ? os1Tr(" · 세션 \(sessionsBefore!)→\(sessionsAfter!)", " · sessions \(sessionsBefore!)→\(sessionsAfter!)") : ""
+            return os1Tr("OS-1이 자기 자신을 build \(intent.build) (\(intent.version))로 교체했습니다 · 설치기 검사 \(checks.count)개 PASS\(sessions)\(commit)",
+                         "OS-1 replaced itself with build \(intent.build) (\(intent.version)) · \(checks.count) installer check(s) PASS\(sessions)\(commit)")
+                + (receiptPath.map { os1Tr(" · 영수증 \($0)", " · receipt \($0)") } ?? "")
         }
-        return "OS-1 자체 업데이트 build \(intent.build) (\(intent.version)) 설치 실패 · 이전 빌드를 유지합니다\(commit)"
-            + (error.map { " · 원인: \(String($0.suffix(300)))" } ?? "")
+        return os1Tr("OS-1 자체 업데이트 build \(intent.build) (\(intent.version)) 설치 실패 · 이전 빌드를 유지합니다\(commit)",
+                     "OS-1 self-update build \(intent.build) (\(intent.version)) failed to install · keeping the previous build\(commit)")
+            + (error.map { os1Tr(" · 원인: \(String($0.suffix(300)))", " · cause: \(String($0.suffix(300)))") } ?? "")
     }
 }
 

@@ -2639,22 +2639,22 @@ private enum ComposerPrimaryAction: String, CaseIterable {
     }
     var label: String {
         switch self {
-        case .send, .disabledSend: return "작업 보내기"
-        case .queue: return "대기열에 추가"
-        case .steer: return "현재 작업에 정정 전달"
-        case .stop: return "작업 중지"
-        case .stopping: return "작업 중지 확인 중"
-        case .finalizing: return "음성 입력 처리 중"
+        case .send, .disabledSend: return os1Tr("작업 보내기", "Send task")
+        case .queue: return os1Tr("대기열에 추가", "Add to queue")
+        case .steer: return os1Tr("현재 작업에 정정 전달", "Send correction to current task")
+        case .stop: return os1Tr("작업 중지", "Stop task")
+        case .stopping: return os1Tr("작업 중지 확인 중", "Confirming task stop")
+        case .finalizing: return os1Tr("음성 입력 처리 중", "Processing voice input")
         }
     }
     var help: String {
         switch self {
         case .send, .disabledSend: return "Send task"
         case .queue: return "Add this task to the queue"
-        case .steer: return "현재 턴에 정정 전달 · 같은 목표와 권한 유지"
-        case .stop: return "현재 대화의 작업 중지 · ⌘."
-        case .stopping: return "중지 확인을 기다립니다 · 입력과 대기열은 보존됩니다"
-        case .finalizing: return "음성 입력을 마무리하고 있습니다"
+        case .steer: return os1Tr("현재 턴에 정정 전달 · 같은 목표와 권한 유지", "Send a correction to the current turn · same goal and permissions")
+        case .stop: return os1Tr("현재 대화의 작업 중지 · ⌘.", "Stop this conversation's task · ⌘.")
+        case .stopping: return os1Tr("중지 확인을 기다립니다 · 입력과 대기열은 보존됩니다", "Waiting for stop confirmation · input and queue are preserved")
+        case .finalizing: return os1Tr("음성 입력을 마무리하고 있습니다", "Finishing voice input")
         }
     }
 }
@@ -2985,7 +2985,8 @@ private final class VoiceDictationController: ObservableObject {
         let locale = preferredDictationLocale()
         guard let recognizer = SFSpeechRecognizer(locale: locale),
               recognizer.isAvailable, recognizer.supportsOnDeviceRecognition else {
-            throw RunnerError.message("이 언어의 기기 내 받아쓰기를 사용할 수 없습니다. 로컬 Whisper 모델을 준비해 주세요. 녹음은 외부 서버로 보내지 않았습니다.")
+            throw RunnerError.message(os1Tr("이 언어의 기기 내 받아쓰기를 사용할 수 없습니다. 로컬 Whisper 모델을 준비해 주세요. 녹음은 외부 서버로 보내지 않았습니다.",
+                                            "On-device dictation isn't available for this language. Set up a local Whisper model. The recording was not sent to any external server."))
         }
 
         recognitionTask?.cancel()
@@ -3187,7 +3188,7 @@ private final class VoiceDictationController: ObservableObject {
             resetRecognition(cancelTask: true)
             phase = .idle; level = 0
             clearCallbacks()
-            failure?("직접 수정한 입력을 보존하고 받아쓰기를 멈췄습니다.")
+            failure?(os1Tr("직접 수정한 입력을 보존하고 받아쓰기를 멈췄습니다.", "Kept your edits and stopped dictation."))
             return
         }
         lastPublishedText = merged
@@ -3394,7 +3395,8 @@ private enum NativeSessionReader {
                 $0.sourcePath.map { canonicalExistingPath(URL(fileURLWithPath: $0)) } ==
                     canonicalExistingPath(URL(fileURLWithPath: knownSourcePath))
             }) { return exact }
-            throw RunnerError.message("동일한 Claude 세션 ID의 원본이 여러 개라 자동 선택하지 않았습니다.")
+            throw RunnerError.message(os1Tr("동일한 Claude 세션 ID의 원본이 여러 개라 자동 선택하지 않았습니다.",
+                                            "Several originals share this Claude session ID, so none was selected automatically."))
         }
         return candidates.first
     }
@@ -3436,7 +3438,7 @@ private enum NativeSessionReader {
             var value = session
             value.isPinned = pins[value.id]?.pinned ?? false
             value.pinPosition = pins[value.id]?.position
-            if pinReadback == nil { value.pinSyncNote = "백엔드 핀 상태 미확인" }
+            if pinReadback == nil { value.pinSyncNote = os1Tr("백엔드 핀 상태 미확인", "Backend pin state unverified") }
             return value
         }.sorted(by: sidebarNativeLess)
     }
@@ -3683,7 +3685,8 @@ private enum NativeSessionReader {
         guard let sourcePath = session.sourcePath else { return [] }
         let records = try readJSONLines(URL(fileURLWithPath: sourcePath), maximumBytes: forIngestion ? nil : 4 * 1_024 * 1_024)
         if session.requiresExactIdentity, !exactClaudeIdentity(records, id: session.id.lowercased()) {
-            throw RunnerError.message("Claude 원본의 세션 식별자가 바뀌어 다른 기록을 수집하지 않았습니다.")
+            throw RunnerError.message(os1Tr("Claude 원본의 세션 식별자가 바뀌어 다른 기록을 수집하지 않았습니다.",
+                                            "The Claude original's session ID changed, so a different session's record was not collected."))
         }
         var result: [NativeSessionMessage] = []
         for (ordinal, record) in records.enumerated() {
@@ -4364,7 +4367,7 @@ private func executionReceipt(_ step: AppRunStep, source: SourceReference? = nil
     guard step.action == "route_fanout", step.provider == "local", stepRecordIsVerified(step),
           let path = step.nativeRecord?.recordPath,
           let record = boundRouteFanoutRecord(path: URL(fileURLWithPath: path), id: step.sessionID, output: step.output) else { return control }
-    return routeFanoutDetails(record) + "\n\nOS-1 제어 기록\n" + control
+    return routeFanoutDetails(record) + os1Tr("\n\nOS-1 제어 기록\n", "\n\nOS-1 control record\n") + control
 }
 
 /// No prose or selected tile is execution authority. Read only the private,
@@ -4412,7 +4415,7 @@ private func routeFanoutDetails(_ record: RouteFanoutRecord, request: String? = 
             return target.surface.rawValue == $0.surface && appSHA256Hex(target.payload) == $0.payloadSHA256
         } ? plan : nil
     }
-    var lines = ["라우팅 경로 \(record.routes.count)개 · 요청 순서"]
+    var lines = [os1Tr("라우팅 경로 \(record.routes.count)개 · 요청 순서", "\(record.routes.count) route(s) · request order")]
     for route in record.routes.sorted(by: { $0.index < $1.index }) {
         let requestedSurface = ProviderSurface(rawValue: route.surface)!
         // Legacy requests are useful only when the exact payload digest binds
@@ -4421,42 +4424,47 @@ private func routeFanoutDetails(_ record: RouteFanoutRecord, request: String? = 
             $0.surface.rawValue == route.surface && appSHA256Hex($0.payload) == route.payloadSHA256
         })?.payload
         let payload = route.payload ?? legacyPayload
-        lines.append("\n\(route.index). 요청: \(requestedSurface.routeTitle)" + (payload.map { " — \($0)" } ?? " · 전달 내용 기록 없음"))
-        if let position = route.executionIndex { lines.append("   처리 순서: \(position)") }
+        lines.append(os1Tr("\n\(route.index). 요청: \(requestedSurface.routeTitle)", "\n\(route.index). Requested: \(requestedSurface.routeTitle)") + (payload.map { " — \($0)" } ?? os1Tr(" · 전달 내용 기록 없음", " · payload not recorded")))
+        if let position = route.executionIndex { lines.append(os1Tr("   처리 순서: \(position)", "   Processing order: \(position)")) }
         if let raw = route.executedSurface, let actual = ProviderSurface(rawValue: raw) {
-            lines.append("   실제 실행: \(actual.routeTitle) · \(actual.executionLine)")
+            lines.append(os1Tr("   실제 실행: \(actual.routeTitle) · \(actual.executionLine)", "   Actually ran: \(actual.routeTitle) · \(actual.executionLine)"))
         } else if route.provider != nil {
-            lines.append("   실제 실행 모드 기록 없음 · 백엔드: \(route.provider!)")
+            lines.append(os1Tr("   실제 실행 모드 기록 없음 · 백엔드: \(route.provider!)", "   Actual execution mode not recorded · backend: \(route.provider!)"))
         }
         if let failure = route.failure {
-            lines.append("   " + (route.resultSHA256 != nil ? "대체·변경 경로: " : "실패·거절: ") + failure)
+            lines.append("   " + (route.resultSHA256 != nil ? os1Tr("대체·변경 경로: ", "Substituted or changed route: ") : os1Tr("실패·거절: ", "Failed or rejected: ")) + failure)
         }
         if let handoff = route.handoffReceipt {
-            lines.append("   앱 전달만 · OS-1 백엔드 답변 미확인 · 전달 기록: \(URL(fileURLWithPath: handoff).lastPathComponent)")
+            lines.append(os1Tr("   앱 전달만 · OS-1 백엔드 답변 미확인 · 전달 기록: \(URL(fileURLWithPath: handoff).lastPathComponent)",
+                               "   Handed to the app only · OS-1 backend answer unverified · handoff record: \(URL(fileURLWithPath: handoff).lastPathComponent)"))
         }
         if let attempts = route.attempts, !attempts.isEmpty {
             for (index, attempt) in attempts.enumerated() {
                 let title = ProviderSurface.resolveExecuted(rawSurface: attempt.surface, provider: attempt.provider)?.routeTitle
                     ?? attempt.provider
                 let elapsed = String(format: "%.3f", Double(attempt.durationMS) / 1_000)
-                lines.append("   시도 \(index + 1): \(title) · \(attempt.model ?? "모델 기록 없음") · \(attempt.effort) reasoning · \(attempt.action) · 권한 \(attempt.permissionProfile) · \(attempt.revasDisposition) · step \(attempt.sequence) · \(elapsed)s · exit \(attempt.exitCode)")
+                lines.append(os1Tr("   시도 \(index + 1): \(title) · \(attempt.model ?? "모델 기록 없음") · \(attempt.effort) reasoning · \(attempt.action) · 권한 \(attempt.permissionProfile) · \(attempt.revasDisposition) · step \(attempt.sequence) · \(elapsed)s · exit \(attempt.exitCode)",
+                                   "   Attempt \(index + 1): \(title) · \(attempt.model ?? "model not recorded") · \(attempt.effort) reasoning · \(attempt.action) · permission \(attempt.permissionProfile) · \(attempt.revasDisposition) · step \(attempt.sequence) · \(elapsed)s · exit \(attempt.exitCode)"))
                 if let native = attempt.nativeRecord {
-                    let path = native.recordPath.map { URL(fileURLWithPath: $0).lastPathComponent } ?? "경로 기록 없음"
-                    lines.append("      원본 기록: \(native.isVerified ? "실행 당시 확인됨" : native.persistence) · \(path) · 세션 \(attempt.sessionID) · \(native.desktopVisibility)")
-                } else { lines.append("      원본 실행 기록 미확인 · 세션 \(attempt.sessionID)") }
-                if let draft = attempt.reviewedDraft { lines.append("      검토한 초안: \(draft)") }
+                    let path = native.recordPath.map { URL(fileURLWithPath: $0).lastPathComponent } ?? os1Tr("경로 기록 없음", "path not recorded")
+                    lines.append(os1Tr("      원본 기록: \(native.isVerified ? "실행 당시 확인됨" : native.persistence) · \(path) · 세션 \(attempt.sessionID) · \(native.desktopVisibility)",
+                                       "      Original record: \(native.isVerified ? "verified at run time" : native.persistence) · \(path) · session \(attempt.sessionID) · \(native.desktopVisibility)"))
+                } else { lines.append(os1Tr("      원본 실행 기록 미확인 · 세션 \(attempt.sessionID)", "      Original run record unverified · session \(attempt.sessionID)")) }
+                if let draft = attempt.reviewedDraft { lines.append(os1Tr("      검토한 초안: \(draft)", "      Reviewed draft: \(draft)")) }
             }
         } else if route.resultSHA256 != nil {
             // Schema 1 did not record these values. Old UI receipt prose
             // is conversational context, not new native execution evidence.
-            lines.append("   모델: \(route.model ?? "기록 없음") · 추론 강도·실행 시간·원본 기록: 기록 없음")
-            if let session = route.sessionID { lines.append("   세션: \(session)") }
+            lines.append(os1Tr("   모델: \(route.model ?? "기록 없음") · 추론 강도·실행 시간·원본 기록: 기록 없음",
+                               "   Model: \(route.model ?? "not recorded") · reasoning effort, run time and original record: not recorded"))
+            if let session = route.sessionID { lines.append(os1Tr("   세션: \(session)", "   Session: \(session)")) }
         } else if route.handoffReceipt == nil {
-            lines.append("   채택된 답변 없음 · 확인할 수 없는 호출·실행 값은 표시하지 않습니다")
+            lines.append(os1Tr("   채택된 답변 없음 · 확인할 수 없는 호출·실행 값은 표시하지 않습니다",
+                               "   No adopted answer · call and run values that can't be verified are not shown"))
         }
     }
     let frame = record.frame ?? requested?.frame ?? []
-    if !frame.isEmpty { lines.append("\n백엔드에 전달하지 않은 문구: " + frame.joined(separator: " / ")) }
+    if !frame.isEmpty { lines.append(os1Tr("\n백엔드에 전달하지 않은 문구: ", "\nWording not sent to the backend: ") + frame.joined(separator: " / ")) }
     return lines.joined(separator: "\n")
 }
 
@@ -4479,8 +4487,9 @@ private func historicalRouteFanoutDetails(messages: [ChatMessage], index: Int,
     }
     guard records.count == 1 else { return nil }
     let userIndex = messages[..<(index - 1)].lastIndex(where: { $0.role == .user })
-    let originalControl = receipt.text.components(separatedBy: "\n\nOS-1 제어 기록\n").last ?? receipt.text
-    return routeFanoutDetails(records[0], request: userIndex.map { messages[$0].text }) + "\n\nOS-1 제어 기록\n" + originalControl
+    let originalControl = (receipt.text.components(separatedBy: "\n\nOS-1 제어 기록\n").last ?? receipt.text)
+        .components(separatedBy: "\n\nOS-1 control record\n").last ?? receipt.text
+    return routeFanoutDetails(records[0], request: userIndex.map { messages[$0].text }) + os1Tr("\n\nOS-1 제어 기록\n", "\n\nOS-1 control record\n") + originalControl
 }
 
 @MainActor
@@ -4895,8 +4904,12 @@ private func savedResultReceipt(_ result: DeliveryRecord, id: UUID = UUID(), tim
     let verified = SavedResultEvidence.codexRecordVerified(result)
     let verdict = result.response.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }?["status"] as? String
     let review = reviewRequired || result.localRejection != nil || (verdict != nil && verdict != "complete")
-    let disposition = review ? "결과 검토 필요 · 과제 완료 판정 아님" : "서버 검증·전달 대기 · 과제 완료 판정 아님"
-    var parts = [verified ? "백엔드 실행 기록·답변 원본 확인됨" : "답변 원본 보존됨 · 백엔드 실행 기록 미확인", disposition]
+    let disposition = review
+        ? os1Tr("결과 검토 필요 · 과제 완료 판정 아님", "Result needs review · not judged task-complete")
+        : os1Tr("서버 검증·전달 대기 · 과제 완료 판정 아님", "Awaiting server verification and delivery · not judged task-complete")
+    var parts = [verified
+        ? os1Tr("백엔드 실행 기록·답변 원본 확인됨", "Backend run record and original answer verified")
+        : os1Tr("답변 원본 보존됨 · 백엔드 실행 기록 미확인", "Original answer preserved · backend run record unverified"), disposition]
     if let step {
         parts += [step.routeTitle, step.executionDetail, step.model ?? "provider default", step.effort + " reasoning",
                   "step \(step.sequence)", "\(step.durationMS / 1_000)s", "exit \(step.exitCode)"]
@@ -4920,7 +4933,8 @@ private func presentedMessages(_ session: ConversationSession) -> [ChatMessage] 
        messages[index + 2].role == .system, messages[index + 2].text == BackendBlocker.unclassified.message {
         let old = messages[index + 2]
         messages[index + 2] = ChatMessage(id: old.id, role: old.role,
-            text: "저장된 답변은 확인됐습니다. 다만 이 시도의 과제 완료 판정은 통과하지 못했습니다.", timestamp: old.timestamp)
+            text: os1Tr("저장된 답변은 확인됐습니다. 다만 이 시도의 과제 완료 판정은 통과하지 못했습니다.",
+                        "The saved answer was verified, but this attempt did not pass the task-completion check."), timestamp: old.timestamp)
     }
     return messages
 }
@@ -4943,6 +4957,11 @@ private struct NativeIngestionOutcome: Sendable {
     var managedRecords: [NativeRecord] = []
 }
 
+/// The tail of the receipt written when work done in a backend's own app is
+/// absorbed into a conversation, in either interface language; transcripts on
+/// disk keep whichever language wrote them.
+private let externalWorkReceiptMarkers = ["OS-1 외부 작업, 채택 판정 아님", "outside OS-1, not an adoption verdict"]
+
 /// Repair only exact native IDs AND bytes from independently owned turns.
 /// Preserve original messages; one projection serves UI, copy and handoff.
 @discardableResult
@@ -4962,7 +4981,7 @@ private func repairManagedImports(_ session: inout ConversationSession, records:
                 changed = true
             }
         } else {
-            if message.role == .receipt, message.text.contains("OS-1 외부 작업, 채택 판정 아님"),
+            if message.role == .receipt, externalWorkReceiptMarkers.contains(where: message.text.contains),
                !batch.isEmpty, batch.allSatisfy({ session.messages[$0].nativeManagedTurnID != nil }),
                message.nativeManagedTurnID == nil {
                 session.messages[i].nativeManagedTurnID = session.messages[batch[0]].nativeManagedTurnID
@@ -5159,11 +5178,13 @@ private enum OS1Runner {
             try process.run()
             let deadline = Date().addingTimeInterval(40)
             while process.isRunning && Date() < deadline { try await Task.sleep(for: .milliseconds(50)) }
-            if process.isRunning { process.terminate(); throw RunnerError.message("Codex 핀 변경 확인 시간이 초과됐습니다. 상태를 새로 확인하세요.") }
+            if process.isRunning { process.terminate(); throw RunnerError.message(os1Tr("Codex 핀 변경 확인 시간이 초과됐습니다. 상태를 새로 확인하세요.",
+                                                                                        "Timed out confirming the Codex pin change. Refresh to check its state.")) }
             process.waitUntilExit()
             let text = String(decoding: output.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
             guard process.terminationStatus == 0, text.contains("OS1_SIDEBAR_VERIFIED") else {
-                throw RunnerError.message("Codex 핀 변경을 확인하지 못했습니다. OS1에만 저장된 상태입니다.")
+                throw RunnerError.message(os1Tr("Codex 핀 변경을 확인하지 못했습니다. OS1에만 저장된 상태입니다.",
+                                                "Couldn't confirm the Codex pin change. It is saved in OS1 only."))
             }
         }.value
     }
@@ -5692,7 +5713,8 @@ private final class SessionStore: ObservableObject {
     func sidebarQueueStatus(_ sessionID: UUID) -> String {
         if let wait = globalSlotWait(sessionID) {
             let order = wait.mayStartFirst > 0 ? "\(wait.position)~\(wait.position + wait.mayStartFirst)" : "\(wait.position)"
-            return "슬롯 대기 · \(order)번째 · \(wait.running)/\(wait.limit) 사용 중"
+            return os1Tr("슬롯 대기 · \(order)번째 · \(wait.running)/\(wait.limit) 사용 중",
+                         "Waiting for a slot · #\(order) · \(wait.running)/\(wait.limit) in use")
         }
         return queueReason(sessionID)
     }
@@ -5701,19 +5723,23 @@ private final class SessionStore: ObservableObject {
     /// raised. Only shown while raising it is still possible.
     var parallelRunSettingHint: String {
         maximumConcurrentSessions < OS1Settings.parallelRunRange.upperBound
-            ? " · 설정(⌘,) 동시 실행에서 늘리면 대기 중인 대화가 바로 시작됩니다" : ""
+            ? os1Tr(" · 설정(⌘,) 동시 실행에서 늘리면 대기 중인 대화가 바로 시작됩니다",
+                    " · raise Parallel runs in Settings (⌘,) to start waiting conversations right away") : ""
     }
 
     func globalSlotWaitText(_ sessionID: UUID) -> String? {
         guard let wait = globalSlotWait(sessionID) else { return nil }
-        let base = "실행 슬롯 대기 · 동시 실행 \(wait.running)/\(wait.limit) 사용 중"
+        let base = os1Tr("실행 슬롯 대기 · 동시 실행 \(wait.running)/\(wait.limit) 사용 중",
+                         "Waiting for a run slot · \(wait.running)/\(wait.limit) parallel runs in use")
         guard wait.mayStartFirst > 0 else {
-            return base + " · 다른 작업이 끝나면 자동 시작" + (wait.position > 1 ? " · 대기 순서 \(wait.position)" : "")
+            return base + os1Tr(" · 다른 작업이 끝나면 자동 시작", " · starts automatically when another task finishes") + (wait.position > 1 ? os1Tr(" · 대기 순서 \(wait.position)", " · position \(wait.position) in line") : "")
                 + parallelRunSettingHint
         }
         // Not every freed slot is this request's: say which ones go first.
-        return base + " · 빈 슬롯 순서대로 자동 시작 · 대기 순서 \(wait.position)~\(wait.position + wait.mayStartFirst)"
-            + " · 앞선 대화의 다음 요청 \(wait.mayStartFirst)개는 그 대화의 작업이 끝나면 먼저 시작될 수 있습니다"
+        return base + os1Tr(" · 빈 슬롯 순서대로 자동 시작 · 대기 순서 \(wait.position)~\(wait.position + wait.mayStartFirst)",
+                            " · starts automatically as slots free up · position \(wait.position)~\(wait.position + wait.mayStartFirst) in line")
+            + os1Tr(" · 앞선 대화의 다음 요청 \(wait.mayStartFirst)개는 그 대화의 작업이 끝나면 먼저 시작될 수 있습니다",
+                    " · \(wait.mayStartFirst) next request(s) from earlier conversations may start first when their tasks finish")
             + parallelRunSettingHint
     }
 
@@ -5726,39 +5752,49 @@ private final class SessionStore: ObservableObject {
     }
 
     func queueReason(_ sessionID: UUID) -> String {
-        guard let session = sessions.first(where: { $0.id == sessionID }) else { return "대화 없음" }
+        guard let session = sessions.first(where: { $0.id == sessionID }) else { return os1Tr("대화 없음", "No conversation") }
         if let slot = globalSlotWaitText(sessionID) { return slot }
         if queuedSubmissions.contains(where: { $0.sessionID == sessionID && $0.startNextRequested == true }), isSessionRunning(sessionID) {
-            return "현재 실행 종료 확인 중 · 확인 후 선택한 요청을 시작합니다"
+            return os1Tr("현재 실행 종료 확인 중 · 확인 후 선택한 요청을 시작합니다",
+                         "Confirming the current run has ended · then starts the selected request")
         }
-        if session.queuePaused == true { return "대기열 일시정지 · 실행 중 작업은 계속됩니다" }
+        if session.queuePaused == true { return os1Tr("대기열 일시정지 · 실행 중 작업은 계속됩니다", "Queue paused · the running task continues") }
         if session.lastFailure != nil || session.lastBackendFailure != nil,
            session.lastBackendFailure?.blocker != .backendUnavailable, session.taskContext?.sourcePreparation == nil,
            queuedSubmissions.contains(where: { $0.sessionID == sessionID && $0.startNextRequested == true }) {
-            return "이전 실패 작업은 보존 · 다시 실행하지 않고 다음 요청을 이어서 실행합니다"
+            return os1Tr("이전 실패 작업은 보존 · 다시 실행하지 않고 다음 요청을 이어서 실행합니다",
+                         "Previous failed task preserved · the next request runs without re-running it")
         }
-        if session.lastBackendFailure?.requiresReadback == true { return "이전 작업의 변경 결과 확인 전 · 새 메시지나 화살표로 이어서 실행할 수 있습니다" }
-        if session.taskContext?.sourcePreparation != nil { return "검증 원본 확보 대기 · 뒤의 요청은 보존됩니다" }
-        if session.lastFailure != nil { return "이전 작업 실패 · 새 메시지나 화살표로 이어서 실행할 수 있습니다" }
+        if session.lastBackendFailure?.requiresReadback == true { return os1Tr("이전 작업의 변경 결과 확인 전 · 새 메시지나 화살표로 이어서 실행할 수 있습니다",
+                                                                               "Previous task's changes not yet verified · continue with a new message or the arrow") }
+        if session.taskContext?.sourcePreparation != nil { return os1Tr("검증 원본 확보 대기 · 뒤의 요청은 보존됩니다",
+                                                                        "Waiting to secure the verified source · later requests are preserved") }
+        if session.lastFailure != nil { return os1Tr("이전 작업 실패 · 새 메시지나 화살표로 이어서 실행할 수 있습니다",
+                                                     "Previous task failed · continue with a new message or the arrow") }
         let items = queuedSubmissions.filter { $0.sessionID == sessionID }
-        if items.contains(where: { pausedQueueIDs.contains($0.id) }) { return "앱 재시작 후 보존된 대기열 · 계속 실행을 눌러 주세요" }
-        if items.contains(where: { editingQueueIDs.contains($0.id) }) { return "대기 요청 편집 중 · 저장 또는 취소 후 계속됩니다" }
+        if items.contains(where: { pausedQueueIDs.contains($0.id) }) { return os1Tr("앱 재시작 후 보존된 대기열 · 계속 실행을 눌러 주세요",
+                                                                                    "Queue preserved after app restart · press Resume to continue") }
+        if items.contains(where: { editingQueueIDs.contains($0.id) }) { return os1Tr("대기 요청 편집 중 · 저장 또는 취소 후 계속됩니다",
+                                                                                     "Editing a queued request · continues after you save or cancel") }
         if let activity = sourceWaitingActivity(sessionID) {
-            return activity.publicText ?? "OS-1 소스 쓰기 대기 · 백엔드는 아직 시작하지 않았습니다"
+            return activity.publicText ?? os1Tr("OS-1 소스 쓰기 대기 · 백엔드는 아직 시작하지 않았습니다",
+                                                "Waiting to write to the OS-1 source · backend not started yet")
         }
         if isSessionRunning(sessionID) {
             let ahead = conversationsWaitingAhead(of: sessionID)
             // The slot this run frees is admitted in global order; say so
             // instead of promising the follow-up starts right after it.
             if activeRuns.count >= maximumConcurrentSessions, ahead > 0 {
-                return "현재 작업이 끝난 뒤 실행 슬롯 순서대로 시작 · 먼저 기다리는 대화 \(ahead)개 · 동시 실행 \(activeRuns.count)/\(maximumConcurrentSessions) 사용 중"
+                return os1Tr("현재 작업이 끝난 뒤 실행 슬롯 순서대로 시작 · 먼저 기다리는 대화 \(ahead)개 · 동시 실행 \(activeRuns.count)/\(maximumConcurrentSessions) 사용 중",
+                             "Starts in run-slot order after the current task ends · \(ahead) conversation(s) waiting ahead · \(activeRuns.count)/\(maximumConcurrentSessions) parallel runs in use")
             }
-            return "현재 작업이 끝나면 순서대로 자동 실행됩니다"
+            return os1Tr("현재 작업이 끝나면 순서대로 자동 실행됩니다", "Runs automatically in order when the current task ends")
         }
         if activeRuns.count >= maximumConcurrentSessions {
-            return "다른 작업의 실행 슬롯 대기 중 · 동시 실행 \(activeRuns.count)/\(maximumConcurrentSessions) 사용 중"
+            return os1Tr("다른 작업의 실행 슬롯 대기 중 · 동시 실행 \(activeRuns.count)/\(maximumConcurrentSessions) 사용 중",
+                         "Waiting for another task's run slot · \(activeRuns.count)/\(maximumConcurrentSessions) parallel runs in use")
         }
-        return "순서대로 실행 준비 중"
+        return os1Tr("순서대로 실행 준비 중", "Preparing to run in order")
     }
 
     func canResumeQueue(_ sessionID: UUID) -> Bool {
@@ -5975,8 +6011,8 @@ private final class SessionStore: ObservableObject {
             var row = value
             if let intent = sidebarIntents[SidebarOrder.key(provider: value.provider.rawValue, id: value.id)] {
                 row.isPinned = intent.pinned; row.pinPosition = intent.position
-                row.pinSyncNote = intent.status == "local_only" ? "OS1에만 저장 · Claude 앱 미반영" : "백엔드 반영 확인 중"
-                if intent.status == "failed" { row.pinSyncNote = "백엔드 미확인 · 다시 시도" }
+                row.pinSyncNote = intent.status == "local_only" ? os1Tr("OS1에만 저장 · Claude 앱 미반영", "Saved in OS1 only · not reflected in the Claude app") : os1Tr("백엔드 반영 확인 중", "Confirming backend sync")
+                if intent.status == "failed" { row.pinSyncNote = os1Tr("백엔드 미확인 · 다시 시도", "Backend unconfirmed · try again") }
             }
             if row.isPinned, let rank = nativePinnedOrders[row.provider.rawValue]?.firstIndex(of: row.id) { row.pinPosition = rank }
             return row
@@ -6263,9 +6299,10 @@ private final class SessionStore: ObservableObject {
             $0.isVisible && !($0 is NSPanel) && $0.canBecomeMain
         }), window.attachedSheet == nil else { return }
         let panel = NSOpenPanel()
-        panel.title = "작업에 사용할 파일 선택"
-        panel.prompt = "경로 추가"
-        panel.message = "파일은 자동 전송하지 않습니다. 선택한 경로를 입력창에서 확인한 후 보내세요."
+        panel.title = os1Tr("작업에 사용할 파일 선택", "Choose files for this task")
+        panel.prompt = os1Tr("경로 추가", "Add paths")
+        panel.message = os1Tr("파일은 자동 전송하지 않습니다. 선택한 경로를 입력창에서 확인한 후 보내세요.",
+                              "Files are not sent automatically. Check the selected paths in the input box before sending.")
         panel.canChooseDirectories = false
         panel.canChooseFiles = true
         panel.allowsMultipleSelection = true
@@ -6288,7 +6325,9 @@ private final class SessionStore: ObservableObject {
             added += 1
         }
         guard added > 0 else { return }
-        statusText = added == 1 ? "파일 1개를 첨부했습니다 · 전송 전 확인" : "파일 \(added)개를 첨부했습니다 · 전송 전 확인"
+        statusText = added == 1
+            ? os1Tr("파일 1개를 첨부했습니다 · 전송 전 확인", "Attached 1 file · review before sending")
+            : os1Tr("파일 \(added)개를 첨부했습니다 · 전송 전 확인", "Attached \(added) files · review before sending")
     }
 
     func removeAttachment(_ id: UUID) { composerAttachments.removeAll { $0.id == id } }
@@ -6357,11 +6396,12 @@ private final class SessionStore: ObservableObject {
 
     func importArchiveMirror() {
         let panel = NSOpenPanel()
-        panel.title = "검증된 R2 복구본 폴더 연결"
-        panel.message = "verification-report.json과 repos 폴더가 있는 복구본을 선택하세요. 원본은 유지하고 앱 전용 캐시에 복사합니다."
+        panel.title = os1Tr("검증된 R2 복구본 폴더 연결", "Attach verified R2 recovery folder")
+        panel.message = os1Tr("verification-report.json과 repos 폴더가 있는 복구본을 선택하세요. 원본은 유지하고 앱 전용 캐시에 복사합니다.",
+                              "Choose a recovery copy that has verification-report.json and a repos folder. The original stays in place and is copied into an app-only cache.")
         panel.canChooseDirectories = true; panel.canChooseFiles = false; panel.allowsMultipleSelection = false
         guard panel.runModal() == .OK, let source = panel.url else { return }
-        statusText = "자료 인덱스 연결 중"
+        statusText = os1Tr("자료 인덱스 연결 중", "Attaching source index")
         Task {
             do {
                 try await Task.detached {
@@ -6374,11 +6414,12 @@ private final class SessionStore: ObservableObject {
                           let value = try JSONSerialization.jsonObject(with: report) as? [String: Any],
                           value["bucket"] as? String == "omar-private-archive",
                           ["all_git_bundles_verified", "all_objects_present", "all_sha256_recorded", "all_sizes_match"]
-                            .allSatisfy({ value[$0] as? Bool == true }) else { throw RunnerError.message("검증 보고서가 유효하지 않습니다.") }
+                            .allSatisfy({ value[$0] as? Bool == true }) else { throw RunnerError.message(os1Tr("검증 보고서가 유효하지 않습니다.", "The verification report is not valid.")) }
                     let root = fm.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/OS-1/r2-mirrors")
                     try fm.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
                     let destination = root.appendingPathComponent(source.lastPathComponent)
-                    guard !fm.fileExists(atPath: destination.path) else { throw RunnerError.message("이미 연결된 복구본입니다. 기존 캐시를 덮어쓰지 않았습니다.") }
+                    guard !fm.fileExists(atPath: destination.path) else { throw RunnerError.message(os1Tr("이미 연결된 복구본입니다. 기존 캐시를 덮어쓰지 않았습니다.",
+                                                                                                          "This recovery copy is already attached. The existing cache was not overwritten.")) }
                     let stage = root.appendingPathComponent(".import-" + UUID().uuidString)
                     try fm.createDirectory(at: stage, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
                     defer { try? fm.removeItem(at: stage) }
@@ -6388,7 +6429,8 @@ private final class SessionStore: ObservableObject {
                     // Retrieval still verifies current remote manifest, object
                     // hash/size and actual repository commit before every use.
                 }.value
-                alertMessage = "자료 인덱스를 연결했습니다. 원본·인증 정보·운영 상태는 변경하지 않았습니다."
+                alertMessage = os1Tr("자료 인덱스를 연결했습니다. 원본·인증 정보·운영 상태는 변경하지 않았습니다.",
+                                     "Source index attached. The original, credentials and production state were not changed.")
             } catch { alertMessage = error.localizedDescription }
         }
     }
@@ -6459,7 +6501,7 @@ private final class SessionStore: ObservableObject {
             sessions[index].taskContext?.sources.removeAll()
             sessions[index].taskContext?.touch()
             sessions[index].messages.append(ChatMessage(role: .user, text: request))
-            sessions[index].messages.append(ChatMessage(role: .system, text: "이 대화의 자료 연결을 해제했습니다."))
+            sessions[index].messages.append(ChatMessage(role: .system, text: os1Tr("이 대화의 자료 연결을 해제했습니다.", "Detached the sources from this conversation.")))
             sessions[index].updatedAt = Date()
             composer = ""
             statusText = "Source detached"
@@ -6532,8 +6574,9 @@ private final class SessionStore: ObservableObject {
                 showAcceptedSteeringInput(submission)
             }
             statusText = submission.amendedRequest == nil
-                ? "대기열에 추가됨 · 이 대화 \(selectedSessionQueueCount)개 대기"
-                : "정정 보존됨 · 현재 턴이 입력을 받으면 전달하며, 불가능하면 같은 목표의 후속 작업으로 이어갑니다"
+                ? os1Tr("대기열에 추가됨 · 이 대화 \(selectedSessionQueueCount)개 대기", "Queued · \(selectedSessionQueueCount) waiting in this conversation")
+                : os1Tr("정정 보존됨 · 현재 턴이 입력을 받으면 전달하며, 불가능하면 같은 목표의 후속 작업으로 이어갑니다",
+                        "Correction kept · delivered when the current turn accepts input; otherwise it continues as a follow-up with the same goal")
             if let hold = selfUpdateHold, submission.amendedRequest == nil {
                 statusText = os1Tr("대기열에 추가됨 · OS-1 업데이트(build \(hold.build))를 설치한 뒤 바로 실행합니다",
                                    "Queued · runs right after the OS-1 update (build \(hold.build)) installs")
@@ -6702,24 +6745,26 @@ private final class SessionStore: ObservableObject {
         return session.lastBackendFailure?.requiresReadback == true || session.lastFailure?.savedResultNeedsReview == true
     }
     func queueActionLabel(_ item: PendingSubmission) -> String {
-        if canSteerQueued(item) { return "현재 작업에 반영" }
-        if activeRuns[item.sessionID]?.cancellationRequested == true { return "현재 실행 종료 확인 중" }
-        if !canAdvanceQueued(item) { return canReconcileQueued(item) ? "이전 변경 상태 확인 · 대기 요청 보존" : "이전 변경 상태 확인 필요" }
+        if canSteerQueued(item) { return os1Tr("현재 작업에 반영", "Apply to current task") }
+        if activeRuns[item.sessionID]?.cancellationRequested == true { return os1Tr("현재 실행 종료 확인 중", "Confirming the current run has ended") }
+        if !canAdvanceQueued(item) { return canReconcileQueued(item) ? os1Tr("이전 변경 상태 확인 · 대기 요청 보존", "Check previous changes · queued request kept") : os1Tr("이전 변경 상태 확인 필요", "Previous changes need checking") }
         if !isSessionRunning(item.sessionID),
            sessions.first(where: { $0.id == item.sessionID }).map({ $0.lastFailure != nil || $0.lastBackendFailure != nil }) == true {
-            return "이전 실패 작업은 다시 실행하지 않고 이 요청부터 시작"
+            return os1Tr("이전 실패 작업은 다시 실행하지 않고 이 요청부터 시작", "Start from this request without re-running the failed task")
         }
         if isSessionRunning(item.sessionID) {
             let ahead = conversationsWaitingAhead(of: item.sessionID)
             return activeRuns.count >= maximumConcurrentSessions && ahead > 0
-                ? "현재 작업을 중지하고 이 요청부터 시작 · 먼저 기다리는 대화 \(ahead)개 뒤에 실행 슬롯 대기"
-                : "현재 작업을 중지하고 이 요청부터 시작"
+                ? os1Tr("현재 작업을 중지하고 이 요청부터 시작 · 먼저 기다리는 대화 \(ahead)개 뒤에 실행 슬롯 대기",
+                        "Stop the current task and start from this request · waits for a run slot behind \(ahead) conversation(s)")
+                : os1Tr("현재 작업을 중지하고 이 요청부터 시작", "Stop the current task and start from this request")
         }
         // The arrow cannot bypass the global admission cap; say so instead of
         // promising a start that only happens when another task frees a slot.
         return activeRuns.count >= maximumConcurrentSessions
-            ? "실행 슬롯이 비면 이 요청부터 시작 · 동시 실행 \(activeRuns.count)/\(maximumConcurrentSessions) 사용 중"
-            : "이 요청부터 시작"
+            ? os1Tr("실행 슬롯이 비면 이 요청부터 시작 · 동시 실행 \(activeRuns.count)/\(maximumConcurrentSessions) 사용 중",
+                    "Start from this request when a run slot frees up · \(activeRuns.count)/\(maximumConcurrentSessions) parallel runs in use")
+            : os1Tr("이 요청부터 시작", "Start from this request")
     }
 
     /// Explicit queue action; native steering where possible, otherwise a
@@ -6739,7 +6784,8 @@ private final class SessionStore: ObservableObject {
         }
         guard canAdvanceQueued(item), let index = queuedSubmissions.firstIndex(where: { $0.id == id }),
               let sessionIndex = sessions.firstIndex(where: { $0.id == item.sessionID }) else {
-            sessionStatuses[item.sessionID] = "이전 변경 확인 필요 · 새 요청은 대기열에 보존했습니다"
+            sessionStatuses[item.sessionID] = os1Tr("이전 변경 확인 필요 · 새 요청은 대기열에 보존했습니다",
+                                                    "Previous changes need checking · the new request was kept in the queue")
             save(); return
         }
         let freshEdit = isNewEditAfterReadOnlyTask(item, session: sessions[sessionIndex])
@@ -6809,7 +6855,8 @@ private final class SessionStore: ObservableObject {
             sessions[index].updatedAt = Date()
             // Commit queue removal and its replacement user message together.
             queuedSubmissions.removeAll { $0.sessionID == id && $0.userMessageID == input.id }
-            sessionStatuses[id] = "정정 전달 확인 중 · 현재 작업에 연결했습니다"
+            sessionStatuses[id] = os1Tr("정정 전달 확인 중 · 현재 작업에 연결했습니다",
+                                        "Confirming correction delivery · attached to the current task")
             if selectedSessionID == id { statusText = sessionStatuses[id]! }
             appendTaskEvent(conversationID: id, kind: "correction_requested", summary: input.id.uuidString + " " + text)
             save()
@@ -6830,11 +6877,13 @@ private final class SessionStore: ObservableObject {
               let ids = inFlightSubmissions[id]?.correctionIDs, !ids.isEmpty else { return nil }
         let inputs = steeringMailbox.inputs(active.submissionID).filter { ids.contains($0.id) }
         let states = inputs.map { steeringMailbox.receipt($0)?.state }
-        if states.contains(where: { $0 == .rejected }) { return "정정 전달 거절됨 · 원문 보존 · 완료로 처리하지 않습니다" }
+        if states.contains(where: { $0 == .rejected }) { return os1Tr("정정 전달 거절됨 · 원문 보존 · 완료로 처리하지 않습니다",
+                                                                      "Correction rejected · original text kept · not treated as complete") }
         if states.count == ids.count && states.allSatisfy({ $0 == .accepted || $0 == .persisted }) {
-            return "현재 작업에 정정 전달됨 · 이미 실행된 변경은 되돌리지 않습니다"
+            return os1Tr("현재 작업에 정정 전달됨 · 이미 실행된 변경은 되돌리지 않습니다",
+                         "Correction delivered to the current task · changes already made are not undone")
         }
-        return "정정 전달 확인 중 · 현재 작업에 연결했습니다"
+        return os1Tr("정정 전달 확인 중 · 현재 작업에 연결했습니다", "Confirming correction delivery · attached to the current task")
     }
 
     func performPrimaryAction(now: Date = Date()) {
@@ -6869,7 +6918,7 @@ private final class SessionStore: ObservableObject {
                 let position = queuedSubmissions.firstIndex(where: { $0.sessionID == submission.sessionID }) ?? queuedSubmissions.count
                 queuedSubmissions.insert(submission, at: position)
             }
-            let text = sourceWaitingActivity(submission.sessionID)?.label ?? "OS-1 소스 접근 대기 중"
+            let text = sourceWaitingActivity(submission.sessionID)?.label ?? os1Tr("OS-1 소스 접근 대기 중", "Waiting for OS-1 source access")
             sessionStatuses[submission.sessionID] = text
             if selectedSessionID == submission.sessionID { statusText = text }
             save()
@@ -7063,7 +7112,8 @@ private final class SessionStore: ObservableObject {
                                 self.save()
                             }
                             if self.selectedSessionID == submission.sessionID {
-                                self.statusText = self.isStopping ? "작업 중지 확인 중 · 입력과 대기열은 보존됩니다" : activity.label
+                                self.statusText = self.isStopping ? os1Tr("작업 중지 확인 중 · 입력과 대기열은 보존됩니다",
+                                                                          "Confirming task stop · input and queue are preserved") : activity.label
                             }
                         }
                     }
@@ -7088,17 +7138,19 @@ private final class SessionStore: ObservableObject {
                         sessions[target].messages.append(ChatMessage(role: .assistant, text: visibleOutput, provider: step.provider, executionSurface: step.executedSurface?.rawValue,
                             permissionProfile: step.permissionProfile, nativeRecordVerified: false))
                         sessions[target].messages.append(ChatMessage(role: .receipt,
-                            text: "늦게 도착한 결과 · 이후 요청 또는 결정이 먼저 반영되어 채택하지 않음 · 기록은 보존됨",
+                            text: os1Tr("늦게 도착한 결과 · 이후 요청 또는 결정이 먼저 반영되어 채택하지 않음 · 기록은 보존됨",
+                                        "Late result · not adopted because a later request or decision took effect first · record kept"),
                             provider: step.provider, executionSurface: step.executedSurface?.rawValue, permissionProfile: step.permissionProfile, nativeRecordVerified: false))
                     }
                     sessions[target].updatedAt = Date()
                     appendTaskEvent(conversationID: submission.sessionID, kind: "late_result_preserved",
                         summary: "submission \(submission.id.uuidString.lowercased()) handed revision \(handedRevision ?? -1)")
-                    if currentSubmission { sessionStatuses[submission.sessionID] = "늦은 결과 보존 · 채택 안 함" }
+                    if currentSubmission { sessionStatuses[submission.sessionID] = os1Tr("늦은 결과 보존 · 채택 안 함", "Late result kept · not adopted") }
                     if !corrections.isEmpty {
                         sessions[target].lastFailure = inFlightSubmissions[submission.sessionID]
                         sessions[target].messages.append(ChatMessage(role: .system,
-                            text: "정정이 현재 작업에 전달됐는지 확인하지 못했습니다. 기존 결과와 정정을 보존했고 변경을 재실행하지 않았습니다."))
+                            text: os1Tr("정정이 현재 작업에 전달됐는지 확인하지 못했습니다. 기존 결과와 정정을 보존했고 변경을 재실행하지 않았습니다.",
+                                        "Couldn't confirm the correction reached the current task. The existing result and the correction were kept, and no changes were re-run.")))
                     }
                 } else {
                 if summary.status == "source_pending", let result = summary.taskContext,
@@ -7107,7 +7159,8 @@ private final class SessionStore: ObservableObject {
                     sessions[target].taskContext = sessions[target].taskContext?.adopting(result, handedRevision: handedRevision) ?? result
                     appendTaskEvent(conversationID: submission.sessionID, kind: "source_pending",
                         summary: "Original objective retained; " + result.sourcePreparation!.releaseID + " source not acquired; no model dispatched")
-                    throw RunnerError.message(summary.steps.first?.output ?? "운영 원본 확보 대기 중 · 준비 미완료")
+                    throw RunnerError.message(summary.steps.first?.output ?? os1Tr("운영 원본 확보 대기 중 · 준비 미완료",
+                                                                                   "Waiting to secure the production source · preparation incomplete"))
                 }
                 if summary.status != "complete" {
                     // A handoff is not a failed run: the request left for the
@@ -7142,14 +7195,16 @@ private final class SessionStore: ObservableObject {
                                 text: step.output, provider: step.provider, executionSurface: step.executedSurface?.rawValue,
                                 permissionProfile: step.permissionProfile))
                             sessions[target].messages.append(ChatMessage(role: .receipt,
-                                text: "workflow \(step.workflowStage ?? "stage") · \(step.routeTitle) · \(step.executionDetail) · \(nativeRecordReceipt(step)) · 중간 단계 보존, 원래 작업 미완료",
+                                text: os1Tr("workflow \(step.workflowStage ?? "stage") · \(step.routeTitle) · \(step.executionDetail) · \(nativeRecordReceipt(step)) · 중간 단계 보존, 원래 작업 미완료",
+                                            "workflow \(step.workflowStage ?? "stage") · \(step.routeTitle) · \(step.executionDetail) · \(nativeRecordReceipt(step)) · intermediate stage kept, original task incomplete"),
                                 provider: step.provider, executionSurface: step.executedSurface?.rawValue, permissionProfile: step.permissionProfile,
                                 nativeRecordVerified: true))
                         }
                         sessions[target].updatedAt = Date()
                         appendTaskEvent(conversationID: submission.sessionID, kind: "workflow_blocked",
                             summary: summary.workflowBlocker ?? "Stage verification failed")
-                        throw RunnerError.message(summary.workflowBlocker ?? "단계 검증 실패 · 이전 작업과 결과는 보존했습니다.")
+                        throw RunnerError.message(summary.workflowBlocker ?? os1Tr("단계 검증 실패 · 이전 작업과 결과는 보존했습니다.",
+                                                                                   "Stage verification failed · previous work and results were kept."))
                     }
                     throw RunnerError.message("OS-1 did not return a completed governed run.")
                 }
@@ -7236,7 +7291,8 @@ private final class SessionStore: ObservableObject {
                 sessions[target].updatedAt = Date()
                 if correctionsVerified {
                     sessions[target].messages.append(ChatMessage(role: .system,
-                        text: "정정 \(corrections.count)건의 현재 턴 전달과 백엔드 기록을 확인했습니다."))
+                        text: os1Tr("정정 \(corrections.count)건의 현재 턴 전달과 백엔드 기록을 확인했습니다.",
+                                    "Verified delivery of \(corrections.count) correction(s) to the current turn and the backend record.")))
                 }
                 let allVerified = !visibleSteps.isEmpty && visibleSteps.allSatisfy(stepRecordIsVerified)
                 sessionStatuses[submission.sessionID] = allVerified
@@ -7300,7 +7356,8 @@ private final class SessionStore: ObservableObject {
                             sessions[target].messages.append(ChatMessage(role: .assistant, text: progress,
                                 provider: notice.provider, executionSurface: notice.surface, permissionProfile: notice.permissionProfile, nativeRecordVerified: false))
                             sessions[target].messages.append(ChatMessage(role: .receipt,
-                                text: "중단 전 받은 내용 · 검증·완료 미확인 · OS1에 보존됨", provider: notice.provider,
+                                text: os1Tr("중단 전 받은 내용 · 검증·완료 미확인 · OS1에 보존됨",
+                                            "Received before the interruption · verification and completion unconfirmed · kept in OS1"), provider: notice.provider,
                                 executionSurface: notice.surface, permissionProfile: notice.permissionProfile, nativeRecordVerified: false))
                         }
                         if let deliveryID = notice.deliveryID,
@@ -7343,16 +7400,19 @@ private final class SessionStore: ObservableObject {
                         if let diagnosis = notice.diagnosis?.trimmingCharacters(in: .whitespacesAndNewlines), !diagnosis.isEmpty {
                             description = diagnosis
                         }
-                        holdStatus = BackendHealth.load(maxAge: 900)?.waitingStatus ?? "백엔드 복구 대기 · 복구 시 자동 재실행"
+                        holdStatus = BackendHealth.load(maxAge: 900)?.waitingStatus ?? os1Tr("백엔드 복구 대기 · 복구 시 자동 재실행",
+                                                                                             "Waiting for backend recovery · reruns automatically on recovery")
                     }
                     if case .backend(let notice)? = error as? RunnerError, notice.blocker == .verificationRejected,
                        sessions[target].lastFailure?.deliveryID != nil || notice.publicProgress?.isEmpty == false {
                         // The answer is on screen; only its adoption failed.
-                        holdStatus = "답변 도착 · 원격 검증 미채택 · 다음 메시지로 이어서 진행"
+                        holdStatus = os1Tr("답변 도착 · 원격 검증 미채택 · 다음 메시지로 이어서 진행",
+                                           "Answer arrived · not adopted by remote verification · continue with your next message")
                     }
                     sessions[target].messages.append(ChatMessage(
                         role: .system,
-                        text: description.isEmpty ? "OS-1 작업이 중단되었습니다. 다시 시도해 주세요." : description
+                        text: description.isEmpty ? os1Tr("OS-1 작업이 중단되었습니다. 다시 시도해 주세요.",
+                                                          "The OS-1 task stopped. Please try again.") : description
                     ))
                     sessions[target].updatedAt = Date()
                 }
@@ -7601,7 +7661,8 @@ private final class SessionStore: ObservableObject {
             let addedCount = ingestedCount - previousCount
             if addedCount > 0 {
                 sessions[index].messages.insert(ChatMessage(role: .receipt,
-                    text: "\(providerDisplayName(item.binding.provider)) 앱에서 직접 진행한 기록 \(addedCount)건을 이 대화에 흡수했습니다 · OS-1 외부 작업, 채택 판정 아님",
+                    text: os1Tr("\(providerDisplayName(item.binding.provider)) 앱에서 직접 진행한 기록 \(addedCount)건을 이 대화에 흡수했습니다 · OS-1 외부 작업, 채택 판정 아님",
+                                "Absorbed \(addedCount) record(s) of work done directly in the \(providerDisplayName(item.binding.provider)) app into this conversation · outside OS-1, not an adoption verdict"),
                     provider: item.binding.provider), at: insertionIndex)
                 insertionIndex += 1
             }
@@ -7676,7 +7737,8 @@ private final class SessionStore: ObservableObject {
             let nativeID = provider == .codex ? row.codexSessionID : row.claudeSessionID
             guard let nativeID else { continue }
             guard nativeOwnerIndices(provider, id: nativeID).count == 1 else {
-                sidebarSyncNotice = "같은 백엔드 기록에 여러 OS1 대화가 연결되어 핀 변경을 보류했습니다."
+                sidebarSyncNotice = os1Tr("같은 백엔드 기록에 여러 OS1 대화가 연결되어 핀 변경을 보류했습니다.",
+                                          "Several OS1 conversations are linked to the same backend record, so the pin change was held.")
                 continue
             }
             let nextID: String? = order.firstIndex(where: { $0.id == id }).flatMap { index in
@@ -7708,7 +7770,8 @@ private final class SessionStore: ObservableObject {
         guard let row = orderedNativeSessions.first(where: { $0.id == id }) else { return }
         let owners = nativeOwnerIndices(surface, id: id)
         guard owners.count <= 1 else {
-            sidebarSyncNotice = "같은 백엔드 기록에 여러 OS1 대화가 연결되어 핀 변경을 보류했습니다."
+            sidebarSyncNotice = os1Tr("같은 백엔드 기록에 여러 OS1 대화가 연결되어 핀 변경을 보류했습니다.",
+                                      "Several OS1 conversations are linked to the same backend record, so the pin change was held.")
             return
         }
         if let ownerIndex = owners.first {
@@ -7775,7 +7838,8 @@ private final class SessionStore: ObservableObject {
         let intent = SidebarPinIntent(pinned: pinned, position: position, status: provider == .claude ? "local_only" : "pending")
         sidebarIntents[key] = intent
         if provider == .claude {
-            sidebarSyncNotice = "OS1에 저장됨 · Claude 앱의 핀/순서 변경 연결은 아직 지원되지 않습니다."
+            sidebarSyncNotice = os1Tr("OS1에 저장됨 · Claude 앱의 핀/순서 변경 연결은 아직 지원되지 않습니다.",
+                                      "Saved in OS1 · syncing pin/order changes to the Claude app isn't supported yet.")
             return
         }
         guard customStorageRoot == nil || nativePinOperation != nil else { return }
@@ -7889,8 +7953,8 @@ private final class SessionStore: ObservableObject {
     }
     func promptRename(_ id: UUID) {
         guard let session = sessions.first(where: { $0.id == id }) else { return }
-        let alert = NSAlert(); alert.messageText = "대화 이름 변경"
-        alert.addButton(withTitle: "저장"); alert.addButton(withTitle: "취소")
+        let alert = NSAlert(); alert.messageText = os1Tr("대화 이름 변경", "Rename conversation")
+        alert.addButton(withTitle: os1Tr("저장", "Save")); alert.addButton(withTitle: os1Tr("취소", "Cancel"))
         let field = NSTextField(string: session.title); field.frame = NSRect(x: 0, y: 0, width: 350, height: 28)
         alert.accessoryView = field; alert.window.initialFirstResponder = field
         if alert.runModal() == .alertFirstButtonReturn { rename(id, title: field.stringValue) }
@@ -8079,7 +8143,8 @@ private final class SessionStore: ObservableObject {
             marked.state = "applying"; marked.lastAttemptAt = now
             try? SelfUpdate.save(marked, root: pending.root)
             selfUpdateLaunchedAt = now
-            let status = "OS-1 자체 업데이트 설치 중 · build \(pending.intent.build) · 잠시 후 새 빌드로 재시작합니다"
+            let status = os1Tr("OS-1 자체 업데이트 설치 중 · build \(pending.intent.build) · 잠시 후 새 빌드로 재시작합니다",
+                               "Installing the OS-1 self-update · build \(pending.intent.build) · restarting into the new build shortly")
             if let id = pending.intent.conversationID.flatMap(UUID.init(uuidString:)), sessions.contains(where: { $0.id == id }) {
                 sessionStatuses[id] = status
                 appendTaskEvent(conversationID: id, kind: "self_update",
@@ -8162,9 +8227,9 @@ private final class SessionStore: ObservableObject {
         do {
             try ExecutionCancellation.request(submissionID: active.submissionID)
             activeRuns[id]?.cancellationRequested = true
-            sessionStatuses[id] = "작업 중지 중 · 실행된 변경은 보존합니다"
+            sessionStatuses[id] = os1Tr("작업 중지 중 · 실행된 변경은 보존합니다", "Stopping the task · changes already made are kept")
             if selectedSessionID == id { statusText = sessionStatuses[id]! }
-        } catch { alertMessage = "작업 중지 요청을 저장하지 못했습니다." }
+        } catch { alertMessage = os1Tr("작업 중지 요청을 저장하지 못했습니다.", "Couldn't save the stop request.") }
     }
     func reconcileSelectedFailure() {
         if let hold = selfUpdateHold {
@@ -8520,7 +8585,7 @@ private final class SessionStore: ObservableObject {
             guard let index = parent.messages.firstIndex(where: { $0.id == boundary }) else { return nil }
             messages = Array(parent.messages[...index])
         } else { messages = [] }
-        var child = ConversationSession(title: String((parent.title + " · 포크").prefix(200)),
+        var child = ConversationSession(title: String((parent.title + os1Tr(" · 포크", " · fork")).prefix(200)),
             workspace: parent.workspace, provider: parent.provider, messages: messages,
             codexCapacity: parent.effectiveCodexCapacity, claudeCapacity: parent.effectiveClaudeCapacity)
         child.sourceContext = checkpoint.source
@@ -8537,7 +8602,8 @@ private final class SessionStore: ObservableObject {
         sessions.insert(child, at: 0)
         showArchived = false; search = ""; surface = .auto
         select(child.id)
-        statusText = "완료된 대화에서 분기됨 · 원본 작업과 대기열은 그대로 유지됩니다"
+        statusText = os1Tr("완료된 대화에서 분기됨 · 원본 작업과 대기열은 그대로 유지됩니다",
+                           "Forked from a completed conversation · the original task and queue stay as they are")
         save()
         return child.id
     }
@@ -8578,7 +8644,8 @@ private final class SessionStore: ObservableObject {
             envelope = SessionEnvelope(schema: lenient.schema, sessions: readable, queued: lenient.queued,
                 inFlight: lenient.inFlight, sidebarIntents: lenient.sidebarIntents, nativePinnedOrders: lenient.nativePinnedOrders)
             let lost = lenient.sessions.count - readable.count
-            alertMessage = "대화 \(lost)개를 읽지 못했습니다. 원본을 \(preserved.lastPathComponent)으로 보존했고, 읽지 못한 대화도 그대로 유지합니다(삭제하지 않음)."
+            alertMessage = os1Tr("대화 \(lost)개를 읽지 못했습니다. 원본을 \(preserved.lastPathComponent)으로 보존했고, 읽지 못한 대화도 그대로 유지합니다(삭제하지 않음).",
+                                 "Couldn't read \(lost) conversation(s). The original was preserved as \(preserved.lastPathComponent), and the unreadable conversations are kept as they are (not deleted).")
         } else { return }
         guard [1, 2, 3, 4].contains(envelope.schema) else { return }
         var provenanceRepaired = false
@@ -8596,8 +8663,10 @@ private final class SessionStore: ObservableObject {
             sidebarIntents[key]?.status = "failed" // crash means unknown, not an infinite spinner
         }
         if sidebarIntents.values.contains(where: { $0.status == "local_only" }) {
-            sidebarSyncNotice = "OS1에 저장됨 · Claude 앱의 핀/순서 변경 연결은 아직 지원되지 않습니다."
-        } else if !sidebarIntents.isEmpty { sidebarSyncNotice = "백엔드에 반영됐는지 확인되지 않은 핀 변경이 있습니다." }
+            sidebarSyncNotice = os1Tr("OS1에 저장됨 · Claude 앱의 핀/순서 변경 연결은 아직 지원되지 않습니다.",
+                                      "Saved in OS1 · syncing pin/order changes to the Claude app isn't supported yet.")
+        } else if !sidebarIntents.isEmpty { sidebarSyncNotice = os1Tr("백엔드에 반영됐는지 확인되지 않은 핀 변경이 있습니다.",
+                                                                      "Some pin changes haven't been confirmed on the backend.") }
         nativePinnedOrders = envelope.nativePinnedOrders ?? [:]
         // Persist waiting requests but never silently execute them on app launch.
         queuedSubmissions = (envelope.queued ?? []).filter { queued in sessions.contains { $0.id == queued.sessionID } }
@@ -8734,7 +8803,7 @@ private struct ComposerAttachmentStrip: View {
             }
         }
         .frame(height: 64)
-        .accessibilityLabel("첨부 \(store.composerAttachments.count)개")
+        .accessibilityLabel(os1Tr("첨부 \(store.composerAttachments.count)개", "\(store.composerAttachments.count) attachment(s)"))
     }
 }
 
@@ -8773,7 +8842,7 @@ private struct AttachmentChip: View {
                 .help(attachment.path)
             }
         }
-        .accessibilityLabel(attachment.isImage ? "이미지 첨부 \(attachment.name)" : "파일 첨부 \(attachment.name)")
+        .accessibilityLabel(attachment.isImage ? os1Tr("이미지 첨부 \(attachment.name)", "Image attachment \(attachment.name)") : os1Tr("파일 첨부 \(attachment.name)", "File attachment \(attachment.name)"))
     }
 
     private var removeButton: some View {
@@ -8781,7 +8850,7 @@ private struct AttachmentChip: View {
             Image(systemName: "xmark.circle.fill").font(.system(size: 14)).foregroundStyle(Theme.text)
                 .background(Circle().fill(Theme.background))
         }
-        .buttonStyle(.plain).help("첨부 제거").accessibilityLabel("첨부 제거")
+        .buttonStyle(.plain).help(os1Tr("첨부 제거", "Remove attachment")).accessibilityLabel(os1Tr("첨부 제거", "Remove attachment"))
     }
 }
 
@@ -9658,6 +9727,16 @@ private struct OS1DesktopApp: App {
     @StateObject private var store: SessionStore
 
     init() {
+        // Every self-test suite asserts the Korean wording; pin the language
+        // for all of them so the user's interface-language setting (English
+        // by default) cannot flip the expectations. Build133's install failed
+        // exactly here: only --self-test pinned it, --self-test-parallel ran
+        // in English and its "미완료" status assertion threw. First, so the
+        // suites dispatched just below are pinned too.
+        if CommandLine.arguments.contains(where: { $0.hasPrefix("--self-test") }) {
+            setenv("OS1_INTERFACE_LANGUAGE", "ko", 1)
+            OS1Localization.invalidate()
+        }
         if CommandLine.arguments.contains("--self-test-bound-native") {
             do { try boundNativeLookupSelfTest(); exit(EXIT_SUCCESS) }
             catch { fputs("\(error.localizedDescription)\n", stderr); exit(EXIT_FAILURE) }
@@ -9760,15 +9839,6 @@ private struct OS1DesktopApp: App {
                 fputs("Backend record audit failed: \(error.localizedDescription)\n", stderr)
                 exit(EXIT_FAILURE)
             }
-        }
-        // Every self-test suite asserts the Korean wording; pin the language
-        // for all of them so the user's interface-language setting (English
-        // by default) cannot flip the expectations. Build133's install failed
-        // exactly here: only --self-test pinned it, --self-test-parallel ran
-        // in English and its "미완료" status assertion threw.
-        if CommandLine.arguments.contains(where: { $0.hasPrefix("--self-test") }) {
-            setenv("OS1_INTERFACE_LANGUAGE", "ko", 1)
-            OS1Localization.invalidate()
         }
         if CommandLine.arguments.contains("--self-test-parallel") {
             Task { @MainActor in
@@ -10585,13 +10655,13 @@ private struct BrowserToggleBar: View {
         HStack {
             Spacer()
             Button(action: toggle) {
-                Label("브라우저", systemImage: "sidebar.right")
+                Label(os1Tr("브라우저", "Browser"), systemImage: "sidebar.right")
             }
             .buttonStyle(.plain)
             .foregroundStyle(Theme.pink)
-            .accessibilityLabel("오른쪽 브라우저 전환")
-            .accessibilityValue(visible ? "열림" : "닫힘")
-            .help("오른쪽 브라우저 열기/닫기")
+            .accessibilityLabel(os1Tr("오른쪽 브라우저 전환", "Toggle right-side browser"))
+            .accessibilityValue(visible ? os1Tr("열림", "Open") : os1Tr("닫힘", "Closed"))
+            .help(os1Tr("오른쪽 브라우저 열기/닫기", "Open or close the right-side browser"))
         }
         .padding(.horizontal, 14)
         .frame(height: RootChromeLayout.browserToggleHeight)
@@ -10693,7 +10763,8 @@ private struct RootView: View {
                 ZStack {
                     Theme.pink.opacity(0.06)
                     RoundedRectangle(cornerRadius: 22).stroke(Theme.pink, lineWidth: 2).padding(10)
-                    Label("여기에 놓으면 현재 대화에 첨부됩니다 · 이미지는 미리보기, 파일은 칩", systemImage: "tray.and.arrow.down.fill")
+                    Label(os1Tr("여기에 놓으면 현재 대화에 첨부됩니다 · 이미지는 미리보기, 파일은 칩",
+                                "Drop to attach to this conversation · images as previews, files as chips"), systemImage: "tray.and.arrow.down.fill")
                         .font(.system(size: 15, weight: .semibold)).foregroundStyle(Theme.text)
                         .padding(14).background(Theme.panelRaised, in: RoundedRectangle(cornerRadius: 12))
                 }
@@ -10736,14 +10807,15 @@ private struct RootView: View {
             Text(store.alertMessage ?? "")
         }
         .alert(item: $store.nativeAppApproval) { request in
-            Alert(title: Text("네이티브 에이전트 사용 승인"),
-                message: Text(request.message + "\n현재 네이티브 실행에만 적용됩니다. 결제·약관·비밀번호 입력 승인이 아닙니다."),
-                primaryButton: .default(Text("이 실행에만 허용")) {
+            Alert(title: Text(os1Tr("네이티브 에이전트 사용 승인", "Approve native agent use")),
+                message: Text(request.message + os1Tr("\n현재 네이티브 실행에만 적용됩니다. 결제·약관·비밀번호 입력 승인이 아닙니다.",
+                                                      "\nApplies only to the current native run. This does not approve payments, terms or password entry.")),
+                primaryButton: .default(Text(os1Tr("이 실행에만 허용", "Allow for this run only"))) {
                     if store.activeRuns.values.contains(where: { $0.submissionID == request.submissionID }) {
                         try? NativeAppApproval.respond(request, approved: true)
                     }
                 },
-                secondaryButton: .cancel(Text("거절")) {
+                secondaryButton: .cancel(Text(os1Tr("거절", "Deny"))) {
                     try? NativeAppApproval.respond(request, approved: false)
                 })
         }
@@ -10895,7 +10967,7 @@ private struct ProviderRail: View {
         .buttonStyle(.plain)
         .help("Clodex home")
         .accessibilityLabel("Clodex home")
-        .accessibilityValue(store.surface == .auto ? "선택됨" : "선택 안 됨")
+        .accessibilityValue(store.surface == .auto ? os1Tr("선택됨", "Selected") : os1Tr("선택 안 됨", "Not selected"))
         // Only OS-1 moves; Codex and Claude stay on the reference grid.
         .padding(.top, ProviderRailLayout.homeTopPadding)
     }
@@ -11076,7 +11148,7 @@ private struct BackendStatus: View {
         .accessibilityLabel((surfaceBadge ?? provider.title) + " routing selection")
         // The routed surface travels with the selection state: one account with
         // two ways to spend it, so "selected" alone does not say which one runs.
-        .accessibilityValue((selected ? "선택됨" : "선택 안 됨")
+        .accessibilityValue((selected ? os1Tr("선택됨", "Selected") : os1Tr("선택 안 됨", "Not selected"))
             + (surfaceBadge.map { " · " + $0 } ?? ""))
     }
 }
@@ -11743,13 +11815,13 @@ private struct NativeSessionBrowser: View {
                                 ) { store.selectNativeSession(session.id) }
                                 .id(session.id)
                                 .contextMenu {
-                                    Button(session.isPinned ? "고정 해제" : "상단에 고정") { store.toggleNativePin(session.id) }
+                                    Button(session.isPinned ? os1Tr("고정 해제", "Unpin") : os1Tr("상단에 고정", "Pin to top")) { store.toggleNativePin(session.id) }
                                     if session.isPinned {
-                                        Button("핀 순서 위로") { store.shiftNativePin(session.id, down: false) }
-                                        Button("핀 순서 아래로") { store.shiftNativePin(session.id, down: true) }
+                                        Button(os1Tr("핀 순서 위로", "Move pin up")) { store.shiftNativePin(session.id, down: false) }
+                                        Button(os1Tr("핀 순서 아래로", "Move pin down")) { store.shiftNativePin(session.id, down: true) }
                                     }
                                     if provider == .codex, session.pinSyncNote != nil {
-                                        Button("백엔드에 다시 반영") { store.retryNativePin(session.id) }
+                                        Button(os1Tr("백엔드에 다시 반영", "Retry backend sync")) { store.retryNativePin(session.id) }
                                     }
                                 }
                                 .onDrag { NSItemProvider(object: "\(provider.rawValue):\(session.id)" as NSString) }
@@ -11776,7 +11848,8 @@ private struct NativeSessionBrowser: View {
                     Text(notice).font(.system(size: 10)).foregroundStyle(Theme.pink)
                         .padding(12).frame(maxWidth: .infinity, alignment: .leading)
                 } else if provider == .claude {
-                    Text("Claude 앱의 핀 표시를 읽습니다. 앱 간 핀 변경·수동 순서는 아직 동기화되지 않습니다.")
+                    Text(os1Tr("Claude 앱의 핀 표시를 읽습니다. 앱 간 핀 변경·수동 순서는 아직 동기화되지 않습니다.",
+                               "Reads pin markers from the Claude app. Pin changes and manual order aren't synced between apps yet."))
                         .font(.system(size: 10)).foregroundStyle(Theme.muted).padding(12)
                 }
             }
@@ -11886,7 +11959,7 @@ private struct NativeTranscriptView: View {
                         if provider == .claude { store.openInClaudeDesktop() }
                         else { store.openInCodexDesktop() }
                     } label: {
-                        Label("Native app에서 열기", systemImage: "arrow.up.forward.square")
+                        Label(os1Tr("Native app에서 열기", "Open in native app"), systemImage: "arrow.up.forward.square")
                             .font(.system(size: 10, weight: .semibold))
                     }
                     .buttonStyle(.plain)
@@ -12071,7 +12144,7 @@ private struct SessionSidebar: View {
             .padding(.bottom, SidebarHeaderLayout.titleBottomGap)
 
             Button { store.createSession() } label: {
-                Label("새 작업", systemImage: "square.and.pencil")
+                Label(os1Tr("새 작업", "New task"), systemImage: "square.and.pencil")
                     .font(.system(size: 13))
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, 16)
@@ -12088,7 +12161,7 @@ private struct SessionSidebar: View {
 
             HStack(spacing: 8) {
                 Image(systemName: "magnifyingglass").foregroundStyle(Theme.muted)
-                TextField("작업 검색", text: $store.search)
+                TextField(os1Tr("작업 검색", "Search tasks"), text: $store.search)
                     .textFieldStyle(.plain)
                     .focused($searching)
             }
@@ -12104,14 +12177,14 @@ private struct SessionSidebar: View {
             .padding(.top, 12)
 
             HStack {
-                Text(store.showArchived ? "보관됨" : "작업")
+                Text(store.showArchived ? os1Tr("보관됨", "ARCHIVED") : os1Tr("작업", "TASKS"))
                     .font(.system(size: 10, weight: .bold))
                     .tracking(1.2)
                     .foregroundStyle(Theme.muted)
                 Spacer()
                 Button { store.showArchived.toggle() } label: {
                     Image(systemName: store.showArchived ? "tray.full.fill" : "archivebox")
-                }.buttonStyle(.plain).help(store.showArchived ? "현재 대화 보기" : "보관한 대화 보기")
+                }.buttonStyle(.plain).help(store.showArchived ? os1Tr("현재 대화 보기", "Show current conversations") : os1Tr("보관한 대화 보기", "Show archived conversations"))
                 Text("\(store.filteredSessions.count)")
                     .font(.system(size: 10, weight: .semibold))
                     .foregroundStyle(Theme.muted)
@@ -12124,7 +12197,7 @@ private struct SessionSidebar: View {
                 LazyVStack(spacing: 4) {
                     ForEach(store.filteredSessions) { session in
                         if session.id == store.filteredSessions.first?.id && session.pinnedAt != nil {
-                            Text("고정됨").font(.system(size: 9, weight: .bold)).foregroundStyle(Theme.muted)
+                            Text(os1Tr("고정됨", "PINNED")).font(.system(size: 9, weight: .bold)).foregroundStyle(Theme.muted)
                                 .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 13)
                         }
                         let queuedCount = store.queuedSubmissions.filter { $0.sessionID == session.id }.count
@@ -12139,18 +12212,18 @@ private struct SessionSidebar: View {
                             queueHelp: idleQueue ? store.queueReason(session.id) : nil
                         ) { store.select(session.id) }
                         .contextMenu {
-                            Button(session.pinnedAt == nil ? "상단에 고정" : "고정 해제") { store.togglePin(session.id) }
+                            Button(session.pinnedAt == nil ? os1Tr("상단에 고정", "Pin to top") : os1Tr("고정 해제", "Unpin")) { store.togglePin(session.id) }
                             if session.pinnedAt != nil {
-                                Button("핀 순서 위로") { store.shiftPinned(session.id, down: false) }
-                                Button("핀 순서 아래로") { store.shiftPinned(session.id, down: true) }
+                                Button(os1Tr("핀 순서 위로", "Move pin up")) { store.shiftPinned(session.id, down: false) }
+                                Button(os1Tr("핀 순서 아래로", "Move pin down")) { store.shiftPinned(session.id, down: true) }
                             }
-                            Button("이름 변경…") { store.promptRename(session.id) }
-                            Button("대화 전체 복사") { store.copyConversation(session.id) }
-                            Button("대화 내보내기…") { store.exportConversation(session.id) }
-                            Button("완료된 대화에서 포크") { store.forkSession(session.id) }
+                            Button(os1Tr("이름 변경…", "Rename…")) { store.promptRename(session.id) }
+                            Button(os1Tr("대화 전체 복사", "Copy entire conversation")) { store.copyConversation(session.id) }
+                            Button(os1Tr("대화 내보내기…", "Export conversation…")) { store.exportConversation(session.id) }
+                            Button(os1Tr("완료된 대화에서 포크", "Fork from completed conversation")) { store.forkSession(session.id) }
                                 .disabled(!store.canForkSession(session.id))
                             Divider()
-                            Button(session.archived == true ? "보관 해제" : "보관") { store.setArchived(session.id, session.archived != true) }
+                            Button(session.archived == true ? os1Tr("보관 해제", "Unarchive") : os1Tr("보관", "Archive")) { store.setArchived(session.id, session.archived != true) }
                                 .disabled(store.isSessionRunning(session.id) || store.queuedSubmissions.contains(where: { $0.sessionID == session.id }))
                         }
                         .onDrag { NSItemProvider(object: "os1:\(session.id.uuidString)" as NSString) }
@@ -12167,7 +12240,7 @@ private struct SessionSidebar: View {
 
             HStack {
                 Button { showMonitor.toggle() } label: {
-                    Label("제공자 상태", systemImage: "waveform.path.ecg")
+                    Label(os1Tr("제공자 상태", "Provider status"), systemImage: "waveform.path.ecg")
                         .font(.system(size: 11)).foregroundStyle(Theme.muted)
                 }.buttonStyle(.plain)
                     .popover(isPresented: $showMonitor) { FrontierMonitorView(store: store).frame(width: 300).padding(8).preferredColorScheme(.dark) }
@@ -12197,7 +12270,7 @@ private struct FrontierMonitorView: View {
     private var latest: FrontierNewsItem? { store.frontierNotice ?? store.frontierLatestActionableItem ?? store.frontierItems.first }
     private var availableCount: Int { store.frontierSourceStatuses.filter(\.available).count }
     private var checkedLabel: String {
-        guard let date = store.frontierMonitorLastUpdated else { return "첫 확인 대기" }
+        guard let date = store.frontierMonitorLastUpdated else { return os1Tr("첫 확인 대기", "awaiting first check") }
         return date.formatted(date: .omitted, time: .shortened)
     }
 
@@ -12217,16 +12290,16 @@ private struct FrontierMonitorView: View {
                         .foregroundStyle(store.frontierNotice == nil ? Theme.muted : Theme.pink)
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel("프론티어 뉴스 전체 보기")
-                .help("전체 뉴스·리셋 공지·출처 상태")
+                .accessibilityLabel(os1Tr("프론티어 뉴스 전체 보기", "Show all frontier news"))
+                .help(os1Tr("전체 뉴스·리셋 공지·출처 상태", "All news · reset notices · source status"))
                 Button { Task { await store.refreshFrontierSignals() } } label: {
                     Image(systemName: store.frontierMonitorIsChecking ? "clock" : "arrow.clockwise")
                         .font(.system(size: 10, weight: .semibold))
                 }
                 .buttonStyle(.plain)
                 .disabled(store.frontierMonitorIsChecking)
-                .help("공식 프론티어 상태 다시 확인")
-                .accessibilityLabel("프론티어 상태 다시 확인")
+                .help(os1Tr("공식 프론티어 상태 다시 확인", "Recheck official frontier status"))
+                .accessibilityLabel(os1Tr("프론티어 상태 다시 확인", "Recheck frontier status"))
             }
 
             if let latest {
@@ -12246,7 +12319,8 @@ private struct FrontierMonitorView: View {
                             .foregroundStyle(Theme.muted)
                             .lineLimit(2)
                         if let resetAt = latest.resetAt, resetAt > Date() {
-                            Text("원문에 명시된 리셋 시각 · \(resetAt.formatted(date: .abbreviated, time: .shortened))")
+                            Text(os1Tr("원문에 명시된 리셋 시각 · \(resetAt.formatted(date: .abbreviated, time: .shortened))",
+                                       "Reset time stated in the source · \(resetAt.formatted(date: .abbreviated, time: .shortened))"))
                                 .font(.system(size: 8, weight: .medium))
                                 .foregroundStyle(Theme.pink)
                         }
@@ -12254,22 +12328,24 @@ private struct FrontierMonitorView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .buttonStyle(.plain)
-                .help("공식 원문 열기")
-                .accessibilityLabel("최신 \(latest.provider.displayName) \(latest.kind.label) 공지: \(latest.title)")
+                .help(os1Tr("공식 원문 열기", "Open the official source"))
+                .accessibilityLabel(os1Tr("최신 \(latest.provider.displayName) \(latest.kind.label) 공지: \(latest.title)",
+                                          "Latest \(latest.provider.displayName) \(latest.kind.label) notice: \(latest.title)"))
             } else {
-                Text(store.frontierMonitorIsChecking ? "공식 원본 확인 중…" : "새 공식 사용량·상태 공지 없음")
+                Text(store.frontierMonitorIsChecking ? os1Tr("공식 원본 확인 중…", "Checking official sources…") : os1Tr("새 공식 사용량·상태 공지 없음", "No new official usage or status notices"))
                     .font(.system(size: 10))
                     .foregroundStyle(Theme.muted)
             }
 
             HStack(spacing: 5) {
-                Text("공식 원본 \(availableCount)/\(FrontierMonitorSource.firstParty.count)")
+                Text(os1Tr("공식 원본 \(availableCount)/\(FrontierMonitorSource.firstParty.count)", "Official sources \(availableCount)/\(FrontierMonitorSource.firstParty.count)"))
                 Text("·")
-                Text("최근 \(checkedLabel)")
+                Text(os1Tr("최근 \(checkedLabel)", "Last check: \(checkedLabel)"))
             }
             .font(.system(size: 8, weight: .medium))
             .foregroundStyle(Theme.muted.opacity(0.8))
-            Text("OS1 실행 중 5분마다 · 개인 계정 잔량과 별개")
+            Text(os1Tr("OS1 실행 중 5분마다 · 개인 계정 잔량과 별개",
+                       "Every 5 minutes while OS1 runs · separate from your account's remaining quota"))
                 .font(.system(size: 8)).foregroundStyle(Theme.muted)
         }
         .padding(.horizontal, 12)
@@ -12281,11 +12357,12 @@ private struct FrontierMonitorView: View {
         .popover(isPresented: $expanded, arrowEdge: .trailing) {
             VStack(alignment: .leading, spacing: 12) {
                 HStack {
-                    Text("프론티어 뉴스 · 리셋 알림").font(.headline)
+                    Text(os1Tr("프론티어 뉴스 · 리셋 알림", "Frontier news · reset alerts")).font(.headline)
                     Spacer()
                     Button { expanded = false } label: { Image(systemName: "xmark") }.buttonStyle(.plain)
                 }
-                Text("공식 공지입니다. 내 계정 적용 여부와 사용 기한은 원문에서 확인하세요. 시각이 불명확하면 기한을 추정하지 않습니다.")
+                Text(os1Tr("공식 공지입니다. 내 계정 적용 여부와 사용 기한은 원문에서 확인하세요. 시각이 불명확하면 기한을 추정하지 않습니다.",
+                           "These are official notices. Check the source to see whether they apply to your account and when they expire. If a time is unclear, no deadline is guessed."))
                     .font(.caption).foregroundStyle(Theme.muted)
                 ScrollView {
                     VStack(alignment: .leading, spacing: 14) {
@@ -12299,7 +12376,8 @@ private struct FrontierMonitorView: View {
                                 Link(destination: item.sourceURL) { Text(item.title).font(.system(size: 13, weight: .semibold)) }
                                 if !item.summary.isEmpty { Text(item.summary).font(.system(size: 12)).foregroundStyle(Theme.muted).lineLimit(5) }
                                 if let reset = item.resetAt {
-                                    Text("원문 리셋 시각: \(reset.formatted(date: .abbreviated, time: .shortened))\(reset < Date() ? " · 지난 시각" : "")")
+                                    Text(os1Tr("원문 리셋 시각: \(reset.formatted(date: .abbreviated, time: .shortened))\(reset < Date() ? " · 지난 시각" : "")",
+                                               "Source reset time: \(reset.formatted(date: .abbreviated, time: .shortened))\(reset < Date() ? " · past" : "")"))
                                         .font(.caption).foregroundStyle(Theme.pink)
                                 }
                                 Text(item.sourceURL.host ?? "").font(.caption2).foregroundStyle(Theme.muted)
@@ -12307,15 +12385,15 @@ private struct FrontierMonitorView: View {
                             .textSelection(.enabled)
                             Divider()
                         }
-                        if store.frontierItems.isEmpty { Text("조회된 뉴스가 없습니다. 아래 출처 상태를 확인하세요.") }
-                        Text("출처 상태").font(.headline)
+                        if store.frontierItems.isEmpty { Text(os1Tr("조회된 뉴스가 없습니다. 아래 출처 상태를 확인하세요.", "No news found. Check the source status below.")) }
+                        Text(os1Tr("출처 상태", "Source status")).font(.headline)
                         ForEach(store.frontierSourceStatuses, id: \.sourceID) { status in
                             HStack(alignment: .top) {
                                 Image(systemName: status.available ? "checkmark.circle" : "exclamationmark.triangle")
                                     .foregroundStyle(status.available ? Theme.green : Theme.pink)
                                 VStack(alignment: .leading) {
                                     Text(status.sourceID).font(.caption)
-                                    Text(status.message + (status.available ? "" : " · 기존 자료는 과거 조회 결과입니다"))
+                                    Text(status.message + (status.available ? "" : os1Tr(" · 기존 자료는 과거 조회 결과입니다", " · existing items are from an earlier check")))
                                         .font(.caption2).foregroundStyle(Theme.muted)
                                 }
                             }
@@ -12376,14 +12454,14 @@ private struct SessionRow: View {
                         .help(activity == nil ? (queueHelp ?? queueStatus ?? "") : "")
                     Spacer(minLength: 0)
                     if queuedCount > 0 {
-                        Text("대기 \(queuedCount)").font(.system(size: 10)).foregroundStyle(Theme.pink)
+                        Text(os1Tr("대기 \(queuedCount)", "\(queuedCount) queued")).font(.system(size: 10)).foregroundStyle(Theme.pink)
                     }
                 }
                 if let activity {
                     let route = ExecutionRoutePresentation(activity: activity)
                     HStack(spacing: 5) {
                         Text(route.executionLine)
-                        Text("· 수렴 단계 \(activity.convergenceLabel)")
+                        Text(os1Tr("· 수렴 단계 \(activity.convergenceLabel)", "· convergence stage: \(activity.convergenceLabel)"))
                         Spacer(minLength: 0)
                     }
                     .font(.system(size: 9, weight: .medium))
@@ -12430,7 +12508,7 @@ private struct SessionRow: View {
         }
         .buttonStyle(.plain)
         .onHover { isHovering = $0 }
-        .accessibilityValue(selected ? "선택됨" : "선택 안 됨")
+        .accessibilityValue(selected ? os1Tr("선택됨", "Selected") : os1Tr("선택 안 됨", "Not selected"))
     }
 }
 
@@ -12439,21 +12517,21 @@ private extension RuntimeActivity {
     /// model's private convergence value is not exposed by the runtime.
     var convergenceLabel: String {
         switch phase {
-        case .preparing: return "준비"
-        case .waitingForSource: return "소스 접근 대기"
-        case .source: return "자료"
-        case .authorizing: return "승인"
-        case .routing: return "라우팅"
-        case .executing: return "실행"
-        case .verifying: return "검증"
-        case .syncing: return "동기화"
-        case .recovering: return "복구"
+        case .preparing: return os1Tr("준비", "Preparation")
+        case .waitingForSource: return os1Tr("소스 접근 대기", "Waiting for source access")
+        case .source: return os1Tr("자료", "Sources")
+        case .authorizing: return os1Tr("승인", "Approval")
+        case .routing: return os1Tr("라우팅", "Routing")
+        case .executing: return os1Tr("실행", "Execution")
+        case .verifying: return os1Tr("검증", "Verification")
+        case .syncing: return os1Tr("동기화", "Sync")
+        case .recovering: return os1Tr("복구", "Recovery")
         }
     }
 
-    var executionBadgeTitle: String { phase == .waitingForSource ? "실행 대기" : "실행 세션" }
+    var executionBadgeTitle: String { phase == .waitingForSource ? os1Tr("실행 대기", "Waiting to run") : os1Tr("실행 세션", "Run session") }
     var backendConnectionLabel: String {
-        phase == .waitingForSource ? "백엔드 아직 시작하지 않음" : "백엔드 세션 연결 중"
+        phase == .waitingForSource ? os1Tr("백엔드 아직 시작하지 않음", "Backend not started yet") : os1Tr("백엔드 세션 연결 중", "Connecting backend session")
     }
 }
 
@@ -12491,7 +12569,7 @@ private struct SessionExecutionBadge: View {
                 }
                 .help(route.detail)
                 HStack(spacing: 5) {
-                    Text("수렴 단계 · \(activity.convergenceLabel)")
+                    Text(os1Tr("수렴 단계 · \(activity.convergenceLabel)", "Convergence stage · \(activity.convergenceLabel)"))
                     if let sessionID {
                         Text("· \(String(sessionID.prefix(8)))…")
                     } else {
@@ -12509,10 +12587,13 @@ private struct SessionExecutionBadge: View {
         .background(statusColor.opacity(0.08), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous).stroke(statusColor.opacity(0.24)))
         .help(activity.phase == .waitingForSource
-            ? "소스 수리·업데이트 대기 중이며 백엔드는 아직 시작하지 않았습니다. 요청은 보존됩니다."
-            : "실행 중인 백엔드 세션과 OS-1 공개 수렴 단계를 표시합니다. 모델 내부 수렴값은 노출되지 않습니다.")
+            ? os1Tr("소스 수리·업데이트 대기 중이며 백엔드는 아직 시작하지 않았습니다. 요청은 보존됩니다.",
+                    "Waiting for source repair or update; the backend hasn't started yet. The request is preserved.")
+            : os1Tr("실행 중인 백엔드 세션과 OS-1 공개 수렴 단계를 표시합니다. 모델 내부 수렴값은 노출되지 않습니다.",
+                    "Shows the running backend session and OS-1's public convergence stage. The model's internal convergence value isn't exposed."))
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(activity.executionBadgeTitle) \(ExecutionRoutePresentation(activity: activity).governanceLine), 수렴 단계 \(activity.convergenceLabel)")
+        .accessibilityLabel(os1Tr("\(activity.executionBadgeTitle) \(ExecutionRoutePresentation(activity: activity).governanceLine), 수렴 단계 \(activity.convergenceLabel)",
+                                  "\(activity.executionBadgeTitle) \(ExecutionRoutePresentation(activity: activity).governanceLine), convergence stage \(activity.convergenceLabel)"))
     }
 }
 
@@ -12529,7 +12610,7 @@ private struct RunningSessionIndicator: View {
                     Capsule().fill(Theme.pink).frame(width: 2,
                         height: reduceMotion ? 7 : 3 + 9 * (0.5 + 0.5 * sin(time * 5 - Double(index))))
                 }
-            }.frame(width: 13, height: 14).accessibilityLabel("작업 실행 중")
+            }.frame(width: 13, height: 14).accessibilityLabel(os1Tr("작업 실행 중", "Task running"))
         }
     }
 }
@@ -12609,13 +12690,14 @@ private struct ExecutionMenu: View {
 
         } label: {
             HStack(spacing: 5) {
-                Text(session.provider == .auto ? "자동" : (store.routedSurface(for: session.provider)?.routeTitle ?? session.provider.title))
+                Text(session.provider == .auto ? os1Tr("자동", "Auto") : (store.routedSurface(for: session.provider)?.routeTitle ?? session.provider.title))
                 Image(systemName: "chevron.down").font(.system(size: 8))
             }.font(.system(size: 11)).foregroundStyle(Theme.muted)
         }.menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
             .disabled(store.isRunning)
-            .help("RCC 모델·추론 자동 선택 · Codex \(session.effectiveCodexCapacity)% / Claude \(session.effectiveClaudeCapacity)%")
-            .accessibilityLabel("실행 모델 및 라우팅 설정")
+            .help(os1Tr("RCC 모델·추론 자동 선택 · Codex \(session.effectiveCodexCapacity)% / Claude \(session.effectiveClaudeCapacity)%",
+                        "RCC picks the model and reasoning automatically · Codex \(session.effectiveCodexCapacity)% / Claude \(session.effectiveClaudeCapacity)%"))
+            .accessibilityLabel(os1Tr("실행 모델 및 라우팅 설정", "Execution model and routing settings"))
     }
 }
 
@@ -12635,21 +12717,21 @@ private struct ConversationHeader: View {
                         .layoutPriority(1)
                 }
                 Menu {
-                    Button(session.pinnedAt == nil ? "상단에 고정" : "고정 해제") { store.togglePin(session.id) }
-                    Button("이름 변경…") { store.promptRename(session.id) }
-                    Button("대화 전체 복사") { store.copyConversation(session.id) }
-                    Button("대화 내보내기…") { store.exportConversation(session.id) }
-                    Button("완료된 대화에서 포크") { store.forkSession(session.id) }
+                    Button(session.pinnedAt == nil ? os1Tr("상단에 고정", "Pin to top") : os1Tr("고정 해제", "Unpin")) { store.togglePin(session.id) }
+                    Button(os1Tr("이름 변경…", "Rename…")) { store.promptRename(session.id) }
+                    Button(os1Tr("대화 전체 복사", "Copy entire conversation")) { store.copyConversation(session.id) }
+                    Button(os1Tr("대화 내보내기…", "Export conversation…")) { store.exportConversation(session.id) }
+                    Button(os1Tr("완료된 대화에서 포크", "Fork from completed conversation")) { store.forkSession(session.id) }
                         .disabled(!store.canForkSession(session.id))
                     if let origin = session.forkedFrom {
-                        Button("원본 대화로 이동") { store.select(origin.conversationID) }
+                        Button(os1Tr("원본 대화로 이동", "Go to original conversation")) { store.select(origin.conversationID) }
                             .disabled(!store.sessions.contains(where: { $0.id == origin.conversationID }))
                     }
                     Divider()
-                    Button(session.archived == true ? "보관 해제" : "보관") { store.setArchived(session.id, session.archived != true) }
+                    Button(session.archived == true ? os1Tr("보관 해제", "Unarchive") : os1Tr("보관", "Archive")) { store.setArchived(session.id, session.archived != true) }
                         .disabled(store.isSessionRunning(session.id) || store.queuedSubmissions.contains(where: { $0.sessionID == session.id }))
                 } label: { Image(systemName: "ellipsis").foregroundStyle(Theme.muted) }
-                    .menuStyle(.borderlessButton).fixedSize().help("대화 관리")
+                    .menuStyle(.borderlessButton).fixedSize().help(os1Tr("대화 관리", "Manage conversation"))
 
             } else {
                 Text(os1Tr("새 작업", "New task")).foregroundStyle(Theme.text)
@@ -12664,11 +12746,14 @@ private struct ConversationHeader: View {
 private struct WelcomeView: View {
     @ObservedObject var store: SessionStore
     let session: ConversationSession
-    private let suggestions = [
-        ("프로젝트 살펴보기", "folder", "이 프로젝트를 살펴보고 구조와 다음 작업을 설명해 줘."),
-        ("문제 수정하기", "wrench", "현재 문제의 원인을 확인하고 수정한 다음 결과를 검증해 줘."),
-        ("변경사항 검토", "text.magnifyingglass", "현재 프로젝트의 변경사항을 검토하고 문제를 찾아 줘.")
-    ]
+    private var suggestions: [(String, String, String)] { [
+        (os1Tr("프로젝트 살펴보기", "Explore the project"), "folder",
+         os1Tr("이 프로젝트를 살펴보고 구조와 다음 작업을 설명해 줘.", "Explore this project and explain its structure and next steps.")),
+        (os1Tr("문제 수정하기", "Fix a problem"), "wrench",
+         os1Tr("현재 문제의 원인을 확인하고 수정한 다음 결과를 검증해 줘.", "Find the cause of the current problem, fix it, then verify the result.")),
+        (os1Tr("변경사항 검토", "Review changes"), "text.magnifyingglass",
+         os1Tr("현재 프로젝트의 변경사항을 검토하고 문제를 찾아 줘.", "Review the current project's changes and find any problems."))
+    ] }
     var body: some View {
         VStack(spacing: 24) {
             Spacer()
@@ -12676,7 +12761,7 @@ private struct WelcomeView: View {
                 // The first request was received but has not started; showing
                 // the empty-chat prompt here read as "nothing was sent".
                 VStack(spacing: 10) {
-                    Text("요청을 받았습니다 · 아직 실행 전").font(.system(size: 20, weight: .medium)).foregroundStyle(Theme.text)
+                    Text(os1Tr("요청을 받았습니다 · 아직 실행 전", "Request received · not started yet")).font(.system(size: 20, weight: .medium)).foregroundStyle(Theme.text)
                     Text(store.queueReason(session.id)).font(.system(size: 13))
                         .foregroundStyle(store.globalSlotWait(session.id) != nil ? Theme.pink : Theme.muted)
                         .multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)
@@ -12772,7 +12857,7 @@ private func timelineAttachmentPreviews(
         // The image is the card. Repeating its filename beside the preview
         // adds clutter; document attachments still need a visible label.
         if !isImagePreview {
-            let kind = url.pathExtension.isEmpty ? "파일" : url.pathExtension.uppercased()
+            let kind = url.pathExtension.isEmpty ? os1Tr("파일", "File") : url.pathExtension.uppercased()
             result.append(NSAttributedString(
                 string: "  \(kind) · \(url.lastPathComponent)",
                 attributes: [
@@ -12813,11 +12898,11 @@ private func steeringDeliveryCaption(_ state: SteeringDeliveryState?, queueReaso
     guard let state else { return [] }
     let (text, color): (String, NSColor)
     switch state {
-    case .waiting: (text, color) = (queueReason.map { "백엔드 전달 전 · " + $0 } ?? "전달 대기 · 아직 백엔드에 전달되지 않았습니다", TimelinePalette.muted)
-    case .pending: (text, color) = ("전달 대기 · 현재 작업에 전달했고 수신 확인 중입니다", TimelinePalette.muted)
-    case .delivered: (text, color) = ("전달 완료 · 현재 작업이 입력을 받았습니다", TimelinePalette.green)
-    case .rejected: (text, color) = ("전달 거절됨 · 입력은 보존했습니다", TimelinePalette.pink)
-    case .undelivered: (text, color) = ("전달되지 않음 · 입력은 보존했습니다", TimelinePalette.muted)
+    case .waiting: (text, color) = (queueReason.map { os1Tr("백엔드 전달 전 · ", "Not yet sent to the backend · ") + $0 } ?? os1Tr("전달 대기 · 아직 백엔드에 전달되지 않았습니다", "Waiting to deliver · not yet sent to the backend"), TimelinePalette.muted)
+    case .pending: (text, color) = (os1Tr("전달 대기 · 현재 작업에 전달했고 수신 확인 중입니다", "Waiting for delivery · sent to the current task, confirming receipt"), TimelinePalette.muted)
+    case .delivered: (text, color) = (os1Tr("전달 완료 · 현재 작업이 입력을 받았습니다", "Delivered · the current task received the input"), TimelinePalette.green)
+    case .rejected: (text, color) = (os1Tr("전달 거절됨 · 입력은 보존했습니다", "Delivery rejected · input preserved"), TimelinePalette.pink)
+    case .undelivered: (text, color) = (os1Tr("전달되지 않음 · 입력은 보존했습니다", "Not delivered · input preserved"), TimelinePalette.muted)
     }
     return [("\u{2028}" + text, NSFont.systemFont(ofSize: 10, weight: .medium), color)]
 }
@@ -12857,13 +12942,13 @@ private func assistantDisplayText(messages: [ChatMessage], index: Int, expanded:
     let request = messages[..<index].last(where: { $0.role == .user })?.text.lowercased() ?? ""
     let originalRequested = ["원문 그대로", "원문 전체", "전체 원문", "verbatim"].contains(where: request.contains)
     for (suffix, label, text, initiallyOpen) in [
-        ("source", "자료 원문", answer.original, originalRequested),
-        ("evidence", "출처·검증 정보", answer.technical, false),
+        ("source", os1Tr("자료 원문", "Source text"), answer.original, originalRequested),
+        ("evidence", os1Tr("출처·검증 정보", "Sources and verification"), answer.technical, false),
     ] {
         let detailKey = "\(key)-\(suffix)"
         let open = expandAll || (initiallyOpen != expanded.contains(detailKey))
         content.append(NSAttributedString(string: "\u{2028}\u{2028}"))
-        content.append(TranscriptMarkdown.detailLink("\(label) · \(open ? "접기" : "펼쳐보기")", key: detailKey))
+        content.append(TranscriptMarkdown.detailLink("\(label) · \(open ? os1Tr("접기", "Collapse") : os1Tr("펼쳐보기", "Expand"))", key: detailKey))
         if open {
             content.append(NSAttributedString(string: "\u{2028}\u{2028}"))
             content.append(TranscriptMarkdown.render(text, key: detailKey, expanded: expanded, expandAll: expandAll))
@@ -12957,7 +13042,7 @@ private func timelineAttributedDocument(
 
     func appendLiveProgress(_ text: Substring, key: String) {
         guard !text.isEmpty else { return }
-        appendBlock(role: "assistant", components: [("진행 중 · 아직 검증되지 않은 출력\n\n", NSFont.systemFont(ofSize: 11), TimelinePalette.muted)],
+        appendBlock(role: "assistant", components: [(os1Tr("진행 중 · 아직 검증되지 않은 출력\n\n", "In progress · output not yet verified\n\n"), NSFont.systemFont(ofSize: 11), TimelinePalette.muted)],
             richContent: TranscriptMarkdown.render(String(text), key: key))
     }
 
@@ -13014,11 +13099,16 @@ private func timelineAttributedDocument(
         case .receipt:
             let key = "\(message.id.uuidString)-receipt"
             let show = expandAll || expanded.contains(key)
-            let status = message.nativeRecordVerified == true ? "실행 기록 확인됨" : "실행 기록 미확인"
+            // Pasted back, these lines are recognised as OS-1 output in both
+            // languages (OS1SelfOutput.lineMarkers, OS1ReceiptText.fingerprints).
+            let status = message.nativeRecordVerified == true
+                ? os1Tr("실행 기록 확인됨", "Execution record verified") : os1Tr("실행 기록 미확인", "Execution record unverified")
             let details = NSMutableAttributedString(attributedString: TranscriptMarkdown.detailLink(
-                "\(status) · \(show ? "세부 정보 접기" : "세부 정보 보기")", key: key))
+                "\(status) · \(show ? os1Tr("세부 정보 접기", "Hide details") : os1Tr("세부 정보 보기", "Show details"))", key: key))
             if show {
-                details.append(NSAttributedString(string: "\u{2028}백엔드 실행 기록의 확인 여부입니다. 답변의 정확성이나 과제 완수를 보증하지 않습니다.\u{2028}", attributes: [.font: NSFont.systemFont(ofSize: 11), .foregroundColor: TimelinePalette.muted]))
+                details.append(NSAttributedString(string: os1Tr("\u{2028}백엔드 실행 기록의 확인 여부입니다. 답변의 정확성이나 과제 완수를 보증하지 않습니다.\u{2028}",
+                                                                "\u{2028}Whether the backend's execution record was verified. It does not vouch for the answer's accuracy or the task's completion.\u{2028}"),
+                                                  attributes: [.font: NSFont.systemFont(ofSize: 11), .foregroundColor: TimelinePalette.muted]))
                 details.append(NSAttributedString(string: timelineNormalizedText(historicalRouteFanoutDetails(messages: messages, index: index, sourceStore: sourceStore) ?? message.text), attributes: [.font: NSFont.monospacedSystemFont(ofSize: 11, weight: .regular), .foregroundColor: TimelinePalette.muted]))
             }
             appendBlock(
@@ -13113,7 +13203,7 @@ private func transcriptLatencySelfTest() throws {
 
 private func completeTranscriptText(_ messages: [ChatMessage]) -> String {
     messages.map { message in
-        let title = message.role == .user ? "USER" : message.role == .receipt ? "실행 기록 (정확성 보증 아님)" : providerDisplayName(message.provider, surface: message.executionSurface)
+        let title = message.role == .user ? "USER" : message.role == .receipt ? os1Tr("실행 기록 (정확성 보증 아님)", "Execution record (no accuracy guarantee)") : providerDisplayName(message.provider, surface: message.executionSurface)
         return "\(title)\n\(message.text)"
     }.joined(separator: "\n\n")
 }
@@ -13139,7 +13229,8 @@ private final class ContinuousTranscriptTextView: NSTextView {
     override func menu(for event: NSEvent) -> NSMenu? {
         let menu = super.menu(for: event) ?? NSMenu()
         menu.addItem(.separator())
-        let item = NSMenuItem(title: "대화 전체 복사 (코드·실행 기록 포함)", action: #selector(copyCompleteTranscript), keyEquivalent: "")
+        let item = NSMenuItem(title: os1Tr("대화 전체 복사 (코드·실행 기록 포함)",
+                                           "Copy entire conversation (including code and execution records)"), action: #selector(copyCompleteTranscript), keyEquivalent: "")
         item.target = self
         menu.addItem(item)
         return menu
@@ -13812,32 +13903,33 @@ private struct NativeProgressPresentation {
     }
     static func kindLabel(_ raw: String) -> String {
         switch raw {
-        case "ready": return "네이티브 준비 신호"
-        case "responseStarted": return "응답 시작 신호"
-        case "toolStarted": return "도구 요청"
-        case "toolReturned": return "도구 반환"
-        case "toolFailed": return "도구 오류 반환 신호"
-        case "toolWorking": return "도구 작업 신호"
-        case "responseBoundary": return "응답 경계 신호"
-        case "retrying": return "재시도 신호 수신"
-        case "processing": return "모델 생성 신호 수신"
-        default: return "네이티브 실행 신호"
+        case "ready": return os1Tr("네이티브 준비 신호", "Native ready signal")
+        case "responseStarted": return os1Tr("응답 시작 신호", "Response started signal")
+        case "toolStarted": return os1Tr("도구 요청", "Tool requested")
+        case "toolReturned": return os1Tr("도구 반환", "Tool returned")
+        case "toolFailed": return os1Tr("도구 오류 반환 신호", "Tool error return signal")
+        case "toolWorking": return os1Tr("도구 작업 신호", "Tool working signal")
+        case "responseBoundary": return os1Tr("응답 경계 신호", "Response boundary signal")
+        case "retrying": return os1Tr("재시도 신호 수신", "Retry signal received")
+        case "processing": return os1Tr("모델 생성 신호 수신", "Model generation signal received")
+        default: return os1Tr("네이티브 실행 신호", "Native run signal")
         }
     }
     init(activity: RuntimeActivity) {
         if let progress = activity.progress, progress.isValid {
             typed = true; receivedAt = progress.observedAt
-            counts = "요청 \(progress.toolsRequested) · 반환 \(progress.toolsReturned) · 미반환 \(progress.activeTools)"
+            counts = os1Tr("요청 \(progress.toolsRequested) · 반환 \(progress.toolsReturned) · 미반환 \(progress.activeTools)",
+                           "Requested \(progress.toolsRequested) · returned \(progress.toolsReturned) · not returned \(progress.activeTools)")
             rows = progress.events.suffix(12).map { event in
                 let tool = Self.safeTool(event.tool).map { " · " + $0 } ?? ""
-                let scope = event.scope == "main" ? "" : " · 하위 실행"
+                let scope = event.scope == "main" ? "" : os1Tr(" · 하위 실행", " · subagent run")
                 return Row(id: "\(event.sequence)|\(event.scope)|\(event.kind.rawValue)", receivedAt: event.observedAt,
                     label: Self.kindLabel(event.kind.rawValue) + tool + scope, processing: event.kind == .processing)
             }
         } else {
             typed = false; receivedAt = activity.timestamp; counts = nil
             if let tool = Self.safeTool(activity.tool) {
-                rows = [Row(id: "legacy", receivedAt: activity.timestamp, label: "관측된 도구 신호 · " + tool)]
+                rows = [Row(id: "legacy", receivedAt: activity.timestamp, label: os1Tr("관측된 도구 신호 · ", "Observed tool signal · ") + tool)]
             } else { rows = [] }
         }
     }
@@ -14010,15 +14102,17 @@ private struct NativeProgressPanel: View {
             let thinking = NativeStepPresentation.thinking(activity, now: context.date)
             VStack(alignment: .leading, spacing: 6) {
                 HStack {
-                    Text("실제 백엔드 진행 신호").font(.system(size: 11, weight: .semibold))
+                    Text(os1Tr("실제 백엔드 진행 신호", "Live backend progress signals")).font(.system(size: 11, weight: .semibold))
                     Spacer()
-                    Text("최근 수신 \(max(0, Int(context.date.timeIntervalSince(presentation.receivedAt))))초 전")
+                    Text(os1Tr("최근 수신 \(max(0, Int(context.date.timeIntervalSince(presentation.receivedAt))))초 전",
+                               "Last received \(max(0, Int(context.date.timeIntervalSince(presentation.receivedAt))))s ago"))
                         .font(.system(size: 9, design: .monospaced)).foregroundStyle(Theme.muted)
                 }
                 if let counts = presentation.counts {
                     Text(counts).font(.system(size: 10, design: .monospaced)).foregroundStyle(Theme.pink)
                 } else {
-                    Text("기존 실행: 도구 이름·수신 시각만 관측 · 누적 횟수/반환 상태 미계측")
+                    Text(os1Tr("기존 실행: 도구 이름·수신 시각만 관측 · 누적 횟수/반환 상태 미계측",
+                               "Earlier run: only tool names and receipt times observed · cumulative counts/return state not measured"))
                         .font(.system(size: 9)).foregroundStyle(Theme.muted)
                 }
                 if let status = activity.progress?.backendStatus.flatMap(NativeStepPresentation.statusText) {
@@ -14029,7 +14123,7 @@ private struct NativeProgressPanel: View {
                 } else if !signals.isEmpty {
                     eventRows(signals)
                 } else if !thinking {
-                    Text(activity.phase == .waitingForSource ? "네이티브 실행 전 소스 접근 대기" : "현재 단계 · " + activity.label + " · 공개 응답/도구 신호를 기다립니다")
+                    Text(activity.phase == .waitingForSource ? os1Tr("네이티브 실행 전 소스 접근 대기", "Waiting for source access before the native run") : os1Tr("현재 단계 · ", "Current stage · ") + activity.label + os1Tr(" · 공개 응답/도구 신호를 기다립니다", " · waiting for public response/tool signals"))
                         .font(.system(size: 10)).foregroundStyle(Theme.muted)
                 }
                 if thinking {
@@ -14211,7 +14305,7 @@ private struct RunActivityBanner: View {
                 VStack(alignment: .leading, spacing: 3) {
                     HStack {
                         let route = ExecutionRoutePresentation(activity: activity)
-                        Text(stopping ? "작업 중지 확인 중" : activity.label).font(.system(size: 11))
+                        Text(stopping ? os1Tr("작업 중지 확인 중", "Confirming task stop") : activity.label).font(.system(size: 11))
                         Text(route.executionLine).font(.system(size: 10, weight: .medium)).foregroundStyle(Theme.pink).help(route.detail)
                         if let modelLine = route.modelLine { Text(modelLine).font(.system(size: 10)).foregroundStyle(Theme.muted).help(route.detail) }
                         if let reasoningLine = route.reasoningLine {
@@ -14222,23 +14316,27 @@ private struct RunActivityBanner: View {
                             Text(step).font(.system(size: 10)).foregroundStyle(Theme.muted)
                                 .lineLimit(1).truncationMode(.middle)
                         } else if let tool = NativeProgressPresentation.safeTool(activity.tool) {
-                            Text("최근 도구 관측 · " + tool).font(.system(size: 10)).foregroundStyle(Theme.muted)
+                            Text(os1Tr("최근 도구 관측 · ", "Latest observed tool · ") + tool).font(.system(size: 10)).foregroundStyle(Theme.muted)
                         }
                     }
                     if activity.toolProgressLabel != nil && quiet < 30 {
-                        Text("최근 수신 신호 \(quiet)초 전 · 도구 실행/성공 여부는 별도입니다.")
+                        Text(os1Tr("최근 수신 신호 \(quiet)초 전 · 도구 실행/성공 여부는 별도입니다.",
+                                   "Last signal received \(quiet)s ago · whether the tool ran or succeeded is separate."))
                             .font(.system(size: 10)).foregroundStyle(Theme.muted)
                     }
                     if activity.phase == .waitingForSource {
-                        Text("백엔드는 아직 시작하지 않았습니다 · 요청은 보존되며 소스 수리·업데이트가 끝나면 자동으로 이어갑니다.")
+                        Text(os1Tr("백엔드는 아직 시작하지 않았습니다 · 요청은 보존되며 소스 수리·업데이트가 끝나면 자동으로 이어갑니다.",
+                                   "The backend hasn't started yet · the request is preserved and continues automatically after the source repair or update."))
                             .font(.system(size: 10)).foregroundStyle(Theme.muted)
                     } else if quiet >= 30 {
-                        Text("마지막 단계 업데이트 \(quiet)초 전 · 실행은 열려 있지만 새 진행 신호를 기다리고 있습니다.")
+                        Text(os1Tr("마지막 단계 업데이트 \(quiet)초 전 · 실행은 열려 있지만 새 진행 신호를 기다리고 있습니다.",
+                                   "Last stage update \(quiet)s ago · the run is still open but waiting for a new progress signal."))
                             .font(.system(size: 10)).foregroundStyle(Theme.muted)
                     }
                 }
                 Spacer()
-                Text("\(seconds / 60):\(String(format: "%02d", seconds % 60)) 경과")
+                Text(os1Tr("\(seconds / 60):\(String(format: "%02d", seconds % 60)) 경과",
+                           "\(seconds / 60):\(String(format: "%02d", seconds % 60)) elapsed"))
                     .font(.system(size: 11, design: .monospaced)).foregroundStyle(Theme.muted)
             }
             .foregroundStyle(Theme.text).padding(.horizontal, 8).padding(.vertical, 5)
@@ -14258,15 +14356,16 @@ private struct QueueEditSheet: View {
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("대기 요청 편집").font(.headline)
-            Text("대기 순서와 입력 중인 초안은 그대로 유지됩니다. 현재 작업은 중단하지 않습니다.")
+            Text(os1Tr("대기 요청 편집", "Edit queued request")).font(.headline)
+            Text(os1Tr("대기 순서와 입력 중인 초안은 그대로 유지됩니다. 현재 작업은 중단하지 않습니다.",
+                       "Queue order and the draft you're typing stay as they are. The current task isn't interrupted."))
                 .font(.caption).foregroundStyle(Theme.muted)
             TextEditor(text: $text).font(.body).frame(minWidth: 440, minHeight: 140)
-                .accessibilityLabel("대기 요청 내용")
+                .accessibilityLabel(os1Tr("대기 요청 내용", "Queued request text"))
             HStack {
                 Spacer()
-                Button("취소") { dismiss() }.keyboardShortcut(.cancelAction)
-                Button("대기열에 저장") {
+                Button(os1Tr("취소", "Cancel")) { dismiss() }.keyboardShortcut(.cancelAction)
+                Button(os1Tr("대기열에 저장", "Save to queue")) {
                     if store.updateQueued(submission.id, request: text) { dismiss() }
                 }.keyboardShortcut(.defaultAction)
                     .disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
@@ -14284,20 +14383,20 @@ private struct ConversationQueueView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack {
-                Text(session.queuePaused == true ? "대기 메시지 \(items.count) · 일시정지" : "대기 메시지 \(items.count)")
+                Text(session.queuePaused == true ? os1Tr("대기 메시지 \(items.count) · 일시정지", "\(items.count) queued · paused") : os1Tr("대기 메시지 \(items.count)", "\(items.count) queued"))
                     .font(.system(size: 11, weight: .medium)).foregroundStyle(Theme.muted)
                     .accessibilityIdentifier("os1.queue.header")
                 Spacer()
                 Menu {
                     if store.canResumeQueue(session.id) {
-                        Button("대기열 계속 실행") { store.resumeQueue(session.id) }
+                        Button(os1Tr("대기열 계속 실행", "Resume queue")) { store.resumeQueue(session.id) }
                     } else if session.queuePaused != true {
-                        Button("대기열 일시정지") { store.pauseQueue(session.id) }
+                        Button(os1Tr("대기열 일시정지", "Pause queue")) { store.pauseQueue(session.id) }
                     }
                     Text(store.queueReason(session.id))
                 } label: { Image(systemName: "ellipsis").frame(width: 26, height: 22) }
                     .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
-                    .help(store.queueReason(session.id)).accessibilityLabel("대기열 옵션")
+                    .help(store.queueReason(session.id)).accessibilityLabel(os1Tr("대기열 옵션", "Queue options"))
             }
             if store.globalSlotWait(session.id) != nil ||
                 (store.activeRuns[session.id]?.cancellationRequested != true && session.lastFailure == nil) {
@@ -14312,8 +14411,9 @@ private struct ConversationQueueView: View {
             if store.globalSlotWait(session.id) == nil,
                store.activeRuns[session.id]?.cancellationRequested == true || session.lastFailure != nil {
                 Text(store.activeRuns[session.id]?.cancellationRequested == true
-                    ? "실행이 끝나는 대로 선택한 요청을 시작합니다"
-                    : "이전 작업은 보존되며 다시 실행하지 않습니다. 새 메시지를 보내거나 화살표를 누르면 이어서 실행하고, 다음 작업이 실제 상태를 먼저 확인합니다.")
+                    ? os1Tr("실행이 끝나는 대로 선택한 요청을 시작합니다", "Starts the selected request as soon as the run ends")
+                    : os1Tr("이전 작업은 보존되며 다시 실행하지 않습니다. 새 메시지를 보내거나 화살표를 누르면 이어서 실행하고, 다음 작업이 실제 상태를 먼저 확인합니다.",
+                            "The previous task is preserved and won't run again. Send a new message or press the arrow to continue; the next task checks the actual state first."))
                     .font(.system(size: 11)).foregroundStyle(Theme.muted)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -14328,22 +14428,23 @@ private struct ConversationQueueView: View {
                             }.buttonStyle(.plain)
                                 .disabled(!store.canSteerQueued(item) && !store.canAdvanceQueued(item) && !store.canReconcileQueued(item))
                                 .help(store.queueActionLabel(item))
-                                .accessibilityLabel("대기 요청 \(rank + 1) · \(store.queueActionLabel(item))")
+                                .accessibilityLabel(os1Tr("대기 요청 \(rank + 1) · \(store.queueActionLabel(item))",
+                                                          "Queued request \(rank + 1) · \(store.queueActionLabel(item))"))
                                 .accessibilityIdentifier("os1.queue.steer.\(item.id)")
                             Button {
                                 if store.beginQueueEdit(item.id) { editLease = item.id; editing = item }
                             } label: { Image(systemName: "pencil").frame(width: 26, height: 26) }
-                                .buttonStyle(.plain).help("대기 요청 편집 · 순서 유지")
-                                .accessibilityLabel("대기 요청 \(rank + 1) 편집")
+                                .buttonStyle(.plain).help(os1Tr("대기 요청 편집 · 순서 유지", "Edit queued request · keeps its place"))
+                                .accessibilityLabel(os1Tr("대기 요청 \(rank + 1) 편집", "Edit queued request \(rank + 1)"))
                             Button { store.removeQueued(item.id) } label: { Image(systemName: "xmark").frame(width: 26, height: 26) }
-                                .buttonStyle(.plain).help("이 대기 요청만 취소").accessibilityLabel("대기 요청 \(rank + 1) 취소")
+                                .buttonStyle(.plain).help(os1Tr("이 대기 요청만 취소", "Cancel only this queued request")).accessibilityLabel(os1Tr("대기 요청 \(rank + 1) 취소", "Cancel queued request \(rank + 1)"))
                         }.font(.system(size: 12)).padding(.horizontal, 6).padding(.vertical, 4)
                             .contentShape(Rectangle())
                             .contextMenu {
-                                Button("위로 이동") { store.shiftQueued(item.id, down: false) }.disabled(rank == 0)
-                                Button("아래로 이동") { store.shiftQueued(item.id, down: true) }.disabled(rank == items.count - 1)
-                                Button("다음 차례로 이동") { store.prioritizeQueued(item.id) }.disabled(rank == 0)
-                                Button("입력창으로 가져오기") { store.editQueued(item.id) }
+                                Button(os1Tr("위로 이동", "Move up")) { store.shiftQueued(item.id, down: false) }.disabled(rank == 0)
+                                Button(os1Tr("아래로 이동", "Move down")) { store.shiftQueued(item.id, down: true) }.disabled(rank == items.count - 1)
+                                Button(os1Tr("다음 차례로 이동", "Move to next")) { store.prioritizeQueued(item.id) }.disabled(rank == 0)
+                                Button(os1Tr("입력창으로 가져오기", "Move to composer")) { store.editQueued(item.id) }
                                     .disabled(!store.composer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                             }
                             .onDrag { NSItemProvider(object: "os1-queue:\(item.id.uuidString)" as NSString) }
@@ -14412,12 +14513,13 @@ private struct ComposerView: View {
                         .font(.system(size: 12)).foregroundStyle(Theme.muted)
                         .textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
                 }
-                Button(session.lastFailure?.savedResultNeedsReview == true ? "저장된 결과·현재 상태 검토 · 변경 재실행 없음" : session.lastFailure?.deliveryID != nil ? "저장된 결과 전달 · 모델 재실행 없음" : session.lastBackendFailure?.requiresReadback == true
-                    ? "현재 상태 확인 · 재실행하지 않음" : "OS-1에서 다시 확인하고 시도") { store.retrySelectedFailure() }
+                Button(session.lastFailure?.savedResultNeedsReview == true ? os1Tr("저장된 결과·현재 상태 검토 · 변경 재실행 없음", "Review saved result and current state · no changes re-run") : session.lastFailure?.deliveryID != nil ? os1Tr("저장된 결과 전달 · 모델 재실행 없음", "Deliver saved result · no model re-run") : session.lastBackendFailure?.requiresReadback == true
+                    ? os1Tr("현재 상태 확인 · 재실행하지 않음", "Check current state · no re-run") : os1Tr("OS-1에서 다시 확인하고 시도", "Recheck in OS-1 and retry")) { store.retrySelectedFailure() }
                     .font(.system(size: 12, weight: .medium))
                     .disabled(store.activeRuns.count >= store.maximumConcurrentSessions)
                     .help(store.activeRuns.count >= store.maximumConcurrentSessions
-                        ? "동시 실행 \(store.activeRuns.count)/\(store.maximumConcurrentSessions) 사용 중 · 다른 작업이 끝나면 누를 수 있습니다" : "")
+                        ? os1Tr("동시 실행 \(store.activeRuns.count)/\(store.maximumConcurrentSessions) 사용 중 · 다른 작업이 끝나면 누를 수 있습니다",
+                                "\(store.activeRuns.count)/\(store.maximumConcurrentSessions) parallel runs in use · available when another task finishes") : "")
             }
             if store.selectedSessionQueueCount > 0 || session.queuePaused == true {
                 ConversationQueueView(store: store, session: session)
@@ -14449,7 +14551,7 @@ private struct ComposerView: View {
                     .padding(.horizontal, 12).padding(.top, 10)
                     .overlay(alignment: .topLeading) {
                         if store.composer.isEmpty {
-                            Text(store.isRunning ? "다음 지시를 입력하세요…" : "작업을 요청하세요…")
+                            Text(store.isRunning ? os1Tr("다음 지시를 입력하세요…", "Type your next instruction…") : os1Tr("작업을 요청하세요…", "Request a task…"))
                                 .font(.system(size: 14)).foregroundStyle(Theme.muted)
                                 .padding(.leading, 17).padding(.top, 17).allowsHitTesting(false)
                         }
@@ -14457,12 +14559,13 @@ private struct ComposerView: View {
                 HStack(spacing: 12) {
                     Button { store.chooseContextFiles() } label: {
                         Image(systemName: "plus").frame(width: 24, height: 28)
-                    }.buttonStyle(.plain).help("파일 경로를 입력에 추가 · 전송 전 확인")
-                        .accessibilityLabel("파일 경로 추가")
+                    }.buttonStyle(.plain).help(os1Tr("파일 경로를 입력에 추가 · 전송 전 확인", "Add file paths to the input · review before sending"))
+                        .accessibilityLabel(os1Tr("파일 경로 추가", "Add file paths"))
                     ExecutionMenu(store: store, session: session)
                     if session.sourceContext != nil {
                         Image(systemName: "paperclip").foregroundStyle(Theme.pink)
-                            .help("검증 자료가 연결되어 있습니다. 원본과 해시는 실행 경로에서 유지됩니다.")
+                            .help(os1Tr("검증 자료가 연결되어 있습니다. 원본과 해시는 실행 경로에서 유지됩니다.",
+                                        "Verified source material is attached. The original and its hash are kept along the execution path."))
                     }
                     Spacer(minLength: 4)
                     VoiceDictationControl(controller: store.voiceDictation, start: store.toggleVoiceDictation,
@@ -14471,15 +14574,15 @@ private struct ComposerView: View {
                         Button { store.sendCorrectionToCurrentRun() } label: {
                             Image(systemName: "arrow.turn.up.right").frame(width: 28, height: 28)
                         }.buttonStyle(.plain).disabled(store.isStopping)
-                            .help(store.canSteerSelectedRun ? "현재 작업에 반영" : "현재 작업을 중지하고 추가 지시로 이어가기")
-                            .accessibilityLabel(store.canSteerSelectedRun ? "현재 작업에 반영" : "중지 후 추가 지시로 이어가기")
+                            .help(store.canSteerSelectedRun ? os1Tr("현재 작업에 반영", "Apply to current task") : os1Tr("현재 작업을 중지하고 추가 지시로 이어가기", "Stop the current task and continue with the new instruction"))
+                            .accessibilityLabel(store.canSteerSelectedRun ? os1Tr("현재 작업에 반영", "Apply to current task") : os1Tr("중지 후 추가 지시로 이어가기", "Stop and continue with the new instruction"))
                             .accessibilityIdentifier("os1.composer.steer")
                     }
                     ComposerPrimaryButton(action: store.primaryAction) { store.performPrimaryAction() }
                         .contextMenu {
-                            Button(store.canSteerSelectedRun ? "현재 작업에 반영" : "중지 후 추가 지시로 이어가기") { store.sendCorrectionToCurrentRun() }
+                            Button(store.canSteerSelectedRun ? os1Tr("현재 작업에 반영", "Apply to current task") : os1Tr("중지 후 추가 지시로 이어가기", "Stop and continue with the new instruction")) { store.sendCorrectionToCurrentRun() }
                                 .disabled(!store.isRunning || store.isStopping || store.composer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                            Button("현재 작업 중지 · ⌘.") { store.cancelSelectedRun() }.disabled(!store.isRunning || store.isStopping)
+                            Button(os1Tr("현재 작업 중지 · ⌘.", "Stop current task · ⌘.")) { store.cancelSelectedRun() }.disabled(!store.isRunning || store.isStopping)
                         }
                 }.font(.system(size: 13)).foregroundStyle(Theme.muted).padding(.horizontal, 12).padding(.bottom, 10)
             }
@@ -14491,7 +14594,8 @@ private struct ComposerView: View {
                     RoundedRectangle(cornerRadius: 18)
                         .fill(Theme.pink.opacity(0.08))
                         .overlay(
-                            Label("여기에 놓으면 첨부됩니다 · 이미지는 미리보기, 파일은 칩", systemImage: "tray.and.arrow.down")
+                            Label(os1Tr("여기에 놓으면 첨부됩니다 · 이미지는 미리보기, 파일은 칩",
+                                        "Drop to attach · images as previews, files as chips"), systemImage: "tray.and.arrow.down")
                                 .font(.system(size: 12, weight: .medium))
                                 .foregroundStyle(Theme.text)
                         )
@@ -14509,7 +14613,7 @@ private struct ComposerView: View {
                         .lineLimit(1).truncationMode(.middle)
                 }.buttonStyle(.plain).disabled(store.isRunning).help(session.workspace)
                 Spacer(minLength: 8)
-                Text(store.isRunning ? "↩ 대기열 · ⇧↩ 줄바꿈" : "↩ 보내기 · ⇧↩ 줄바꿈")
+                Text(store.isRunning ? os1Tr("↩ 대기열 · ⇧↩ 줄바꿈", "↩ queue · ⇧↩ new line") : os1Tr("↩ 보내기 · ⇧↩ 줄바꿈", "↩ send · ⇧↩ new line"))
             }.font(.system(size: 10)).foregroundStyle(Theme.muted).padding(.horizontal, 4)
         }
         .padding(.horizontal, 24).padding(.top, 8).padding(.bottom, 14)

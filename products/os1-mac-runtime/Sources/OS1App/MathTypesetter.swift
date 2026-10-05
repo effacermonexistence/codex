@@ -1,5 +1,6 @@
 import AppKit
 import SwiftMath
+import OS1Context
 
 extension NSAttributedString.Key {
     static let os1MathSource = NSAttributedString.Key("os1.math.source")
@@ -126,7 +127,8 @@ enum MathTypesetter {
 
     static func fallback(_ source: String) -> NSAttributedString {
         NSAttributedString(string: source, attributes: [.font: NSFont.monospacedSystemFont(ofSize: 13, weight: .regular),
-            .foregroundColor: NSColor.white, .toolTip: "지원되지 않는 수식 형식입니다. 원문을 그대로 보존했습니다."])
+            .foregroundColor: NSColor.white, .toolTip: os1Tr("지원되지 않는 수식 형식입니다. 원문을 그대로 보존했습니다.",
+                                                             "This math format is not supported. The original text is kept unchanged.")])
     }
 
     static func copyable(_ value: NSAttributedString) -> String {

@@ -84,7 +84,13 @@ public enum BackendAccounts {
     public static func defaultID(provider: String) -> String { provider + ".default" }
 
     public static func defaultLabel(provider: String) -> String {
-        provider == "claude" ? "기본 Claude 로그인" : "기본 Codex 로그인"
+        provider == "claude" ? os1Tr("기본 Claude 로그인", "Default Claude sign-in") : os1Tr("기본 Codex 로그인", "Default Codex sign-in")
+    }
+
+    /// The default label as either interface language wrote it. A stored copy
+    /// is still the default, so it is shown in the current language.
+    static func builtInDefaultLabels(provider: String) -> Set<String> {
+        provider == "claude" ? ["기본 Claude 로그인", "Default Claude sign-in"] : ["기본 Codex 로그인", "Default Codex sign-in"]
     }
 
     public static func accountsRoot(support: URL? = nil) -> URL {
@@ -116,7 +122,8 @@ public enum BackendAccounts {
             let stored = book.accounts.first { $0.id == id && $0.provider == provider }
             accounts.append(BackendAccount(
                 id: id, provider: provider,
-                label: stored.flatMap { validLabel($0.label) } ?? defaultLabel(provider: provider),
+                label: stored.flatMap { validLabel($0.label) }.flatMap { builtInDefaultLabels(provider: provider).contains($0) ? nil : $0 }
+                    ?? defaultLabel(provider: provider),
                 homePath: nil,
                 signedIn: stored?.signedIn ?? false,
                 signedInAs: stored?.signedInAs,
@@ -244,15 +251,16 @@ public enum BackendAccountError: Error, CustomStringConvertible, Equatable {
     public var description: String {
         switch self {
         case .credentialSeed(let name):
-            return "OS-1은 계정 자격 증명을 복사하지 않습니다(\(name))."
+            return os1Tr("OS-1은 계정 자격 증명을 복사하지 않습니다(\(name)).", "OS-1 does not copy account credentials (\(name)).")
         case .unknownProvider(let value):
-            return "지원하지 않는 백엔드입니다: \(value)"
+            return os1Tr("지원하지 않는 백엔드입니다: \(value)", "Unsupported backend: \(value)")
         case .unknownAccount(let value):
-            return "그런 계정이 없습니다: \(value)"
+            return os1Tr("그런 계정이 없습니다: \(value)", "No such account: \(value)")
         case .invalidLabel:
-            return "계정 이름은 1~\(BackendAccounts.labelLimit)자여야 하고 줄바꿈이나 제어문자를 쓸 수 없습니다."
+            return os1Tr("계정 이름은 1~\(BackendAccounts.labelLimit)자여야 하고 줄바꿈이나 제어문자를 쓸 수 없습니다.",
+                         "An account name must be 1–\(BackendAccounts.labelLimit) characters, with no line breaks or control characters.")
         case .defaultAccountRemoval:
-            return "기본 로그인은 삭제할 수 없습니다. 로그아웃만 가능합니다."
+            return os1Tr("기본 로그인은 삭제할 수 없습니다. 로그아웃만 가능합니다.", "The default sign-in cannot be removed; it can only be signed out.")
         }
     }
 }

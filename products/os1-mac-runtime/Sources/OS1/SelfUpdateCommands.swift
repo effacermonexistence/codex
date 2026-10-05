@@ -281,7 +281,8 @@ func stageSelfUpdateRelease(root: String) throws -> SelfUpdate.Intent {
         ("app-self-test-queue-fork", app + "/Contents/MacOS/OS1App", ["--self-test-queue-fork"]),
         ("app-self-test-parallel", app + "/Contents/MacOS/OS1App", ["--self-test-parallel"]),
     ] {
-        RuntimeActivity.emit(.verifying, publicText: "OS-1 자체 업데이트 build \(build) 검증 중 · \(label)")
+        RuntimeActivity.emit(.verifying, publicText: os1Tr("OS-1 자체 업데이트 build \(build) 검증 중 · \(label)",
+                                                           "Verifying the OS-1 self-update for build \(build) · \(label)"))
         let result = try commandOutput(executable, args, timeout: 600, currentDirectory: runtime, environmentOverrides: overrides)
         guard result.0 == 0 else { throw OS1Error.message("self-update stage: \(label) failed\n" + outputTail(result)) }
         checks.append("\(label): PASS")
@@ -291,7 +292,8 @@ func stageSelfUpdateRelease(root: String) throws -> SelfUpdate.Intent {
         stagedAppSHA256: try fileSHA256(app + "/Contents/MacOS/OS1App"), stagedCLISHA256: try fileSHA256(cli),
         conversationID: environment["OS1_CONVERSATION_ID"], submissionID: environment["OS1_SUBMISSION_ID"], checks: checks)
     try SelfUpdate.save(intent, root: root)
-    RuntimeActivity.emit(.verifying, publicText: "OS-1 자체 업데이트 build \(build) 준비 완료 · 이 작업이 끝나면 OS-1이 스스로 설치하고 영수증을 이 대화에 남깁니다")
+    RuntimeActivity.emit(.verifying, publicText: os1Tr("OS-1 자체 업데이트 build \(build) 준비 완료 · 이 작업이 끝나면 OS-1이 스스로 설치하고 영수증을 이 대화에 남깁니다",
+                                                       "The OS-1 self-update for build \(build) is ready · when this task ends, OS-1 installs it by itself and leaves the receipt in this conversation"))
     return intent
 }
 

@@ -22,7 +22,8 @@ import OS1Context
     }
     func open(_ text: String) {
         guard let url = BrowserNavigation.url(text) else {
-            error = "http:// 또는 https:// 주소를 입력하세요. 파일·스크립트 주소는 실행하지 않습니다."
+            error = os1Tr("http:// 또는 https:// 주소를 입력하세요. 파일·스크립트 주소는 실행하지 않습니다.",
+                          "Enter an http:// or https:// address. File and script addresses are not run.")
             return
         }
         address = url.absoluteString; error = nil
@@ -31,7 +32,7 @@ import OS1Context
     func webView(_ webView: WKWebView, decidePolicyFor action: WKNavigationAction,
                  decisionHandler: @escaping @MainActor @Sendable (WKNavigationActionPolicy) -> Void) {
         guard let url = action.request.url, BrowserNavigation.url(url.absoluteString) != nil else {
-            error = "이 탐색은 웹 주소가 아닙니다."; decisionHandler(.cancel); return
+            error = os1Tr("이 탐색은 웹 주소가 아닙니다.", "This navigation target is not a web address."); decisionHandler(.cancel); return
         }
         decisionHandler(.allow)
     }
@@ -54,7 +55,8 @@ import OS1Context
         if (failure as NSError).code != NSURLErrorCancelled { error = failure.localizedDescription }
     }
     func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
-        loading = false; error = "브라우저 프로세스가 종료됐습니다. 새로고침으로 다시 열 수 있습니다."
+        loading = false; error = os1Tr("브라우저 프로세스가 종료됐습니다. 새로고침으로 다시 열 수 있습니다.",
+                                       "The browser process ended. Reload to open it again.")
     }
 }
 
@@ -81,18 +83,18 @@ struct OS1BrowserPanel: View {
         VStack(spacing: 0) {
             HStack(spacing: 8) {
                 Button { page.webView.goBack() } label: { Image(systemName: "chevron.left") }
-                    .disabled(!page.canBack).accessibilityLabel("브라우저 뒤로")
+                    .disabled(!page.canBack).accessibilityLabel(os1Tr("브라우저 뒤로", "Browser back"))
                 Button { page.webView.goForward() } label: { Image(systemName: "chevron.right") }
-                    .disabled(!page.canForward).accessibilityLabel("브라우저 앞으로")
-                TextField("https://… 또는 http://127.0.0.1:포트", text: $page.address)
+                    .disabled(!page.canForward).accessibilityLabel(os1Tr("브라우저 앞으로", "Browser forward"))
+                TextField(os1Tr("https://… 또는 http://127.0.0.1:포트", "https://… or http://127.0.0.1:port"), text: $page.address)
                     .textFieldStyle(.roundedBorder).onSubmit { page.open(page.address) }
-                    .accessibilityLabel("OS1 브라우저 주소")
+                    .accessibilityLabel(os1Tr("OS1 브라우저 주소", "OS1 browser address"))
                 Button { page.open(page.address) } label: { Image(systemName: "arrow.clockwise") }
-                    .accessibilityLabel("브라우저 새로고침")
+                    .accessibilityLabel(os1Tr("브라우저 새로고침", "Reload browser"))
                 Button { if let url = BrowserNavigation.url(page.address) { NSWorkspace.shared.open(url) } }
                     label: { Image(systemName: "arrow.up.right.square") }
-                    .help("기본 브라우저에서 열기")
-                Button(action: close) { Image(systemName: "xmark") }.accessibilityLabel("브라우저 닫기")
+                    .help(os1Tr("기본 브라우저에서 열기", "Open in default browser"))
+                Button(action: close) { Image(systemName: "xmark") }.accessibilityLabel(os1Tr("브라우저 닫기", "Close browser"))
             }
             .buttonStyle(.plain)
             .padding(10)
@@ -102,8 +104,8 @@ struct OS1BrowserPanel: View {
             if page.address.isEmpty {
                 VStack(spacing: 12) {
                     Image(systemName: "globe").font(.largeTitle)
-                    Text("작업 옆에서 결과를 확인하세요")
-                    Text("답변의 웹 링크를 누르거나 위에 주소를 입력하세요.").font(.caption)
+                    Text(os1Tr("작업 옆에서 결과를 확인하세요", "Check results alongside your work"))
+                    Text(os1Tr("답변의 웹 링크를 누르거나 위에 주소를 입력하세요.", "Click a web link in an answer or enter an address above.")).font(.caption)
                 }.frame(maxWidth: .infinity, maxHeight: .infinity)
             } else { EmbeddedWebContent(page: page) }
         }.frame(minWidth: 360, idealWidth: 540, maxWidth: .infinity, maxHeight: .infinity)

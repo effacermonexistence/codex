@@ -8,6 +8,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+// These checks assert OS-1's Korean wording; pin the interface language for
+// every OS-1 process started below (the shipped default is English).
+process.env.OS1_INTERFACE_LANGUAGE = 'ko';
 
 const [runtimeArg, configArg, appArg, mode, artifactArg] = process.argv.slice(2);
 assert(runtimeArg && configArg && appArg && ['--retrieval-only', '--live', '--check-fixture', '--recheck-existing'].includes(mode),

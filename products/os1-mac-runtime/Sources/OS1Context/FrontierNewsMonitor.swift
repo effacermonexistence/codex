@@ -27,10 +27,10 @@ public enum FrontierSignalKind: String, Codable, Sendable {
 
     public var label: String {
         switch self {
-        case .tokenReset: return "토큰·리셋"
-        case .usageLimit: return "사용량·한도"
-        case .incident: return "서비스 상태"
-        case .announcement: return "공지"
+        case .tokenReset: return os1Tr("토큰·리셋", "Token reset")
+        case .usageLimit: return os1Tr("사용량·한도", "Usage limit")
+        case .incident: return os1Tr("서비스 상태", "Service status")
+        case .announcement: return os1Tr("공지", "Announcement")
         }
     }
 }
@@ -313,7 +313,8 @@ public actor FrontierNewsMonitor {
         state.lastPollAt = now
         do { try persist() } catch {
             statuses.append(FrontierSourceStatus(sourceID: "local-history", provider: .openAI, checkedAt: now,
-                available: false, message: "로컬 기록 저장 실패 · 재시작 후 중복 알림 가능"))
+                available: false, message: os1Tr("로컬 기록 저장 실패 · 재시작 후 중복 알림 가능",
+                                                 "Local history not saved · alerts may repeat after a restart")))
         }
 
         return FrontierMonitorPollResult(completedAt: now, newItems: fresh.sorted { $0.publishedAt > $1.publishedAt },
@@ -336,7 +337,7 @@ public actor FrontierNewsMonitor {
         guard source.endpoint.scheme?.lowercased() == "https",
               source.endpoint.host?.lowercased() == source.allowedHost,
               !source.allowedHost.isEmpty else {
-            return FetchResult(status: sourceStatusBase(false, "공식 HTTPS 원본이 아님", nil), items: [], notModified: false)
+            return FetchResult(status: sourceStatusBase(false, os1Tr("공식 HTTPS 원본이 아님", "Not an official HTTPS source"), nil), items: [], notModified: false)
         }
 
         var request = URLRequest(url: source.endpoint)
@@ -357,13 +358,13 @@ public actor FrontierNewsMonitor {
             }
             if http.statusCode == 304 {
                 guard cursor != nil else { throw URLError(.badServerResponse) }
-                return FetchResult(status: sourceStatusBase(true, "변경 없음 · 조건부 요청 확인", http.statusCode), items: [], notModified: true)
+                return FetchResult(status: sourceStatusBase(true, os1Tr("변경 없음 · 조건부 요청 확인", "No change · confirmed by conditional request"), http.statusCode), items: [], notModified: true)
             }
             guard (200..<300).contains(http.statusCode) else {
-                return FetchResult(status: sourceStatusBase(false, "공식 원본 응답 오류", http.statusCode), items: [], notModified: false)
+                return FetchResult(status: sourceStatusBase(false, os1Tr("공식 원본 응답 오류", "Official source returned an error"), http.statusCode), items: [], notModified: false)
             }
             guard data.count <= 2_000_000 else {
-                return FetchResult(status: sourceStatusBase(false, "응답 크기 제한 초과", http.statusCode), items: [], notModified: false)
+                return FetchResult(status: sourceStatusBase(false, os1Tr("응답 크기 제한 초과", "Response exceeds the size limit"), http.statusCode), items: [], notModified: false)
             }
             let items: [FrontierNewsItem]
             try Self.validate(data: data, source: source)
@@ -374,11 +375,11 @@ public actor FrontierNewsMonitor {
             } else {
                 items = Self.parseStatusPage(data: data, source: source, detectedAt: now)
             }
-            return FetchResult(status: sourceStatusBase(true, "공식 원본 확인 · \(items.count)개 항목", http.statusCode),
+            return FetchResult(status: sourceStatusBase(true, os1Tr("공식 원본 확인 · \(items.count)개 항목", "Official source checked · \(items.count) item(s)"), http.statusCode),
                 items: items, notModified: false, cursor: SourceCursor(etag: http.value(forHTTPHeaderField: "ETag"),
                     lastModified: http.value(forHTTPHeaderField: "Last-Modified")))
         } catch {
-            return FetchResult(status: sourceStatusBase(false, "공식 원본을 확인하지 못함", nil), items: [], notModified: false)
+            return FetchResult(status: sourceStatusBase(false, os1Tr("공식 원본을 확인하지 못함", "Could not check the official source"), nil), items: [], notModified: false)
         }
     }
 

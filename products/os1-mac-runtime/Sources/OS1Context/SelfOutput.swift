@@ -8,10 +8,16 @@ public enum OS1SelfOutput {
     static let lineMarkers: [String] = [
         "작업 준비가 됐습니다", "준비된 자료", "작업 폴더:", "현재 버전:", "기준 버전 (세 가지를 구분합니다)",
         "복구 기준점(gold 포인터)", "기록된 운영 릴리스", "운영 서버 실제 상태", "확정된 결정:", "다음 단계:", "하지 않은 것:",
+        // The same answer in the English interface.
+        "is ready to work on.", "prepared materials", "working folder:", "current revision:", "baselines (three kept separate)",
+        "recovery baseline (gold pointer)", "recorded operating release:", "live server state:", "confirmed decisions:",
+        "next step: describe", "not done: no ",
         "os-1 error:", "실행 기록 확인됨", "실행 기록 미확인", "세부 정보 보기", "세부 정보 접기",
-        "native record", "revas adopted", "백엔드 실행 기록의 확인 여부입니다",
+        "execution record verified", "execution record unverified",
+        "native record", "revas adopted", "백엔드 실행 기록의 확인 여부입니다", "whether the backend's execution record was verified",
         // Connection-control receipts and provenance notes OS-1 itself prints.
         "claude 연결됨", "github 연결됨", "r2 연결됨", "os-1 외부 작업", "이 대화에 흡수했습니다",
+        "claude connection verified", "github connection verified", "r2 connection verified", "outside os-1, not an adoption verdict",
     ]
     static let labelLines: Set<String> = ["os-1", "os1", "claude", "codex", "◇"]
 

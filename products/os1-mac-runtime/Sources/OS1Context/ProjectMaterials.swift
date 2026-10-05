@@ -37,9 +37,12 @@ public enum ProjectMaterialError: LocalizedError {
     case invalidIdentity, invalidArtifact, invalidManifest
     public var errorDescription: String? {
         switch self {
-        case .invalidIdentity: return "프로젝트 자료의 출처 또는 접근 범위가 일치하지 않습니다. 복원이나 모델 실행 없이 중단했습니다."
-        case .invalidArtifact: return "프로젝트 자료의 파일 해시·크기 또는 압축파일 구성이 일치하지 않습니다. 검증되지 않은 자료를 채택하지 않았습니다."
-        case .invalidManifest: return "프로젝트 자료 목록과 복구 기록이 일치하지 않습니다. 현재 배포 버전으로 추정하지 않았습니다."
+        case .invalidIdentity: return os1Tr("프로젝트 자료의 출처 또는 접근 범위가 일치하지 않습니다. 복원이나 모델 실행 없이 중단했습니다.",
+                                            "The project material's origin or access scope does not match. Stopped without restoring anything or running a model.")
+        case .invalidArtifact: return os1Tr("프로젝트 자료의 파일 해시·크기 또는 압축파일 구성이 일치하지 않습니다. 검증되지 않은 자료를 채택하지 않았습니다.",
+                                            "The project material's file hashes, sizes or archive contents do not match. Unverified material was not adopted.")
+        case .invalidManifest: return os1Tr("프로젝트 자료 목록과 복구 기록이 일치하지 않습니다. 현재 배포 버전으로 추정하지 않았습니다.",
+                                            "The project material list does not match the recovery record. It was not assumed to be the currently deployed version.")
         }
     }
 }

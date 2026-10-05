@@ -361,13 +361,17 @@ public enum BackendRecovery {
         }
         let text = String(decoding: body.prefix(256), as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
         if status == 429 && text == "error code: 1027" {
-            return "OS1 라우팅 서버가 Cloudflare 한도 오류(429/1027)로 응답하지 못했습니다. 백엔드 모델을 바꿔 해결할 수 있는 오류가 아닙니다. 기존 요청과 작업은 유지됩니다."
+            return os1Tr("OS1 라우팅 서버가 Cloudflare 한도 오류(429/1027)로 응답하지 못했습니다. 백엔드 모델을 바꿔 해결할 수 있는 오류가 아닙니다. 기존 요청과 작업은 유지됩니다.",
+                         "The OS1 routing server could not answer because of a Cloudflare limit error (429/1027). Switching backend models cannot fix this. The existing request and work are kept.")
         }
         if status == 401 || status == 403 {
-            return "OS1 서버가 연결 인증·접근 권한을 거부했습니다(HTTP \(status)). 계정 인증 확인이 필요하며, 다른 모델로 권한 거부를 우회하지 않았습니다."
+            return os1Tr("OS1 서버가 연결 인증·접근 권한을 거부했습니다(HTTP \(status)). 계정 인증 확인이 필요하며, 다른 모델로 권한 거부를 우회하지 않았습니다.",
+                         "The OS1 server refused the connection's authentication or access (HTTP \(status)). The account's authentication needs checking; the denial was not bypassed through another model.")
         }
-        if status == 429 { return "OS1 서버의 요청 한도에 도달했습니다(HTTP 429). 요청과 기존 작업을 유지했으며 반복 모델 호출을 하지 않습니다." }
-        return "OS1 서버 요청을 처리하지 못했습니다(HTTP \(status)). 요청과 기존 작업은 유지됩니다."
+        if status == 429 { return os1Tr("OS1 서버의 요청 한도에 도달했습니다(HTTP 429). 요청과 기존 작업을 유지했으며 반복 모델 호출을 하지 않습니다.",
+                                        "The OS1 server's request limit was reached (HTTP 429). The request and existing work are kept, and no repeated model calls are made.") }
+        return os1Tr("OS1 서버 요청을 처리하지 못했습니다(HTTP \(status)). 요청과 기존 작업은 유지됩니다.",
+                     "The OS1 server could not process the request (HTTP \(status)). The request and existing work are kept.")
     }
     /// Called only after an actual local failure. File-writing attempts cannot
     /// be safely replayed from an assistant's prose or workspace hash alone.

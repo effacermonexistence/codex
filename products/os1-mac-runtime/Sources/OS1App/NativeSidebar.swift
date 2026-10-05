@@ -1,5 +1,6 @@
 import Foundation
 import SQLite3
+import OS1Context
 
 struct NativePinState: Equatable, Sendable {
     let pinned: Bool
@@ -16,11 +17,11 @@ enum NativeSidebar {
             let code = sqlite3_open_v2(home.appendingPathComponent(".codex/state_5.sqlite").path,
                 &db, SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX, nil)
             defer { if let db { sqlite3_close(db) } }
-            guard code == SQLITE_OK, let db else { throw failure("Codex 핀 목록을 읽을 수 없습니다.") }
+            guard code == SQLITE_OK, let db else { throw failure(os1Tr("Codex 핀 목록을 읽을 수 없습니다.", "The Codex pin list could not be read.")) }
             var stmt: OpaquePointer?
             let query = "SELECT id, thread_section_id, section_position FROM threads WHERE archived = 0"
             guard sqlite3_prepare_v2(db, query, -1, &stmt, nil) == SQLITE_OK, let stmt else {
-                throw failure("이 Codex 버전의 사이드바 형식을 지원하지 않습니다.")
+                throw failure(os1Tr("이 Codex 버전의 사이드바 형식을 지원하지 않습니다.", "This Codex version's sidebar format is not supported."))
             }
             defer { sqlite3_finalize(stmt) }
             func string(_ column: Int32) -> String { sqlite3_column_text(stmt, column).map { String(cString: $0) } ?? "" }
@@ -32,14 +33,14 @@ enum NativeSidebar {
                     position: pinned && sqlite3_column_type(stmt, 2) != SQLITE_NULL ? Int(sqlite3_column_int64(stmt, 2)) : nil)
                 step = sqlite3_step(stmt)
             }
-            guard step == SQLITE_DONE else { throw failure("Codex 핀 목록 읽기가 중단됐습니다.") }
+            guard step == SQLITE_DONE else { throw failure(os1Tr("Codex 핀 목록 읽기가 중단됐습니다.", "Reading the Codex pin list was interrupted.")) }
             return result
         }
         guard provider == "claude" else { return [:] }
         let root = home.appendingPathComponent("Library/Application Support/Claude/claude-code-sessions")
         guard FileManager.default.fileExists(atPath: root.path),
               let files = FileManager.default.enumerator(at: root, includingPropertiesForKeys: [.fileSizeKey], options: [.skipsHiddenFiles]) else {
-            throw failure("Claude 앱의 핀 정보를 아직 읽을 수 없습니다.")
+            throw failure(os1Tr("Claude 앱의 핀 정보를 아직 읽을 수 없습니다.", "The Claude app's pin information can't be read yet."))
         }
         var result: [String: NativePinState] = [:]
         for case let url as URL in files where url.lastPathComponent.hasPrefix("local_") && url.pathExtension == "json" {

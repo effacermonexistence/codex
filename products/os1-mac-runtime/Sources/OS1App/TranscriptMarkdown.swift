@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import OS1Context
 
 /// Native attributed text, never HTML/web content. One text storage keeps selection
 /// continuous across answers, questions, code, and execution details.
@@ -45,8 +46,9 @@ enum TranscriptMarkdown {
                 let token = "\(key)-code-\(block)"; block += 1
                 let long = code.count > 12 || code.joined().count > 1800
                 let show = expandAll || expanded.contains(token) || !long
-                let label = language.isEmpty ? "코드" : language.uppercased()
-                append(long ? detailLink("\(label) · \(code.count)줄 · \(show ? "접기" : "펼쳐보기")", key: token)
+                let label = language.isEmpty ? os1Tr("코드", "Code") : language.uppercased()
+                append(long ? detailLink(os1Tr("\(label) · \(code.count)줄 · \(show ? "접기" : "펼쳐보기")",
+                                               "\(label) · \(code.count) line\(code.count == 1 ? "" : "s") · \(show ? "Collapse" : "Expand")"), key: token)
                     : NSAttributedString(string: label, attributes: [.font: NSFont.systemFont(ofSize: 10, weight: .semibold), .foregroundColor: accent]))
                 if show {
                     append(NSAttributedString(string: code.joined(separator: separator), attributes: [
@@ -110,7 +112,7 @@ enum TranscriptMarkdown {
             for row in rows.dropFirst() {
                 for column in 0..<columns {
                     let value = column < row.count ? row[column] : ""
-                    let heading = column < rows[0].count ? rows[0][column] : "항목 \(column + 1)"
+                    let heading = column < rows[0].count ? rows[0][column] : os1Tr("항목 \(column + 1)", "Column \(column + 1)")
                     let label = column == 0 ? "" : "\(heading): "
                     let cell = NSMutableAttributedString(attributedString: inline(label + value,
                         font: .systemFont(ofSize: column == 0 ? 14 : 13, weight: column == 0 ? .semibold : .regular)))

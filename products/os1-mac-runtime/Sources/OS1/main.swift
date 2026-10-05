@@ -20,8 +20,10 @@ enum OS1Error: Error, CustomStringConvertible {
         case .message(let value): return value
         case .backendBlocked(let blocker): return blocker.message
         case .toolPermissionDenied(let provider, let tools, let count):
-            return "\(provider) 도구 실행이 권한 정책에 의해 차단됐습니다 (\(tools.joined(separator: ", ")); \(count)회). " +
-                "모델을 바꾸거나 반복 호출해 권한 거부를 우회하지 않았습니다. 기존 요청은 보존했으며 OS-1에서 다시 시도할 수 있습니다."
+            return os1Tr("\(provider) 도구 실행이 권한 정책에 의해 차단됐습니다 (\(tools.joined(separator: ", ")); \(count)회). " +
+                         "모델을 바꾸거나 반복 호출해 권한 거부를 우회하지 않았습니다. 기존 요청은 보존했으며 OS-1에서 다시 시도할 수 있습니다.",
+                         "\(provider) tool execution was blocked by the permission policy (\(tools.joined(separator: ", ")); \(count) times). " +
+                         "OS-1 did not switch models or retry to get around the denial. The original request is preserved and can be retried in OS-1.")
         }
     }
 
@@ -169,19 +171,24 @@ func observedBackendHealth(claudeCatalog: [ClaudeModelCapability], codexCatalog:
     let modelLimited = ClaudeQuotaBackoff.activeModels(directory: receipts, now: now).joined(separator: ", ")
     if ClaudeQuotaBackoff.active(at: receipts.appendingPathComponent(ClaudeQuotaBackoff.defaultURL.lastPathComponent), now: now) != nil {
         claude = BackendHealth.Backend(state: .quotaExhausted,
-            detail: "최근 실행에서 한도 거절됨 · 5분 재시도 간격 적용, 실제 한도 복구 시각은 미확인")
+            detail: os1Tr("최근 실행에서 한도 거절됨 · 5분 재시도 간격 적용, 실제 한도 복구 시각은 미확인",
+                          "Refused by the usage limit in a recent run · 5-minute retry interval applied; actual limit recovery time unconfirmed"))
     } else if !claudeCatalog.isEmpty {
         claude = BackendHealth.Backend(state: .usable,
-            detail: modelLimited.isEmpty ? nil : "모델별 한도로 \(modelLimited) 제외 · 나머지 Claude 모델 사용 가능")
+            detail: modelLimited.isEmpty ? nil : os1Tr("모델별 한도로 \(modelLimited) 제외 · 나머지 Claude 모델 사용 가능",
+                                                       "\(modelLimited) excluded by model limits · other Claude models available"))
     } else if claudeLimitedOnly, !modelLimited.isEmpty {
         claude = BackendHealth.Backend(state: .quotaExhausted,
-            detail: "모델별 한도(\(modelLimited))로 실행 가능한 Claude 모델 없음 · 1시간 재확인, 실제 복구 시각은 미확인")
+            detail: os1Tr("모델별 한도(\(modelLimited))로 실행 가능한 Claude 모델 없음 · 1시간 재확인, 실제 복구 시각은 미확인",
+                          "No runnable Claude model under model limits (\(modelLimited)) · rechecking in 1 hour; actual recovery time unconfirmed"))
     } else {
         switch (authProbe ?? ModelAvailability.claudeAuthProbe)(workspace) {
-        case .loggedIn: claude = BackendHealth.Backend(state: .probeFailed, detail: "로그인은 유효하지만 사용 가능한 모델 목록을 받지 못함"
-            + (modelLimited.isEmpty ? "" : " · 모델별 한도 기록: \(modelLimited)"))
-        case .loggedOut: claude = BackendHealth.Backend(state: .loggedOut, detail: "현재 Claude CLI가 loggedIn=false를 반환함; 원인과 만료 여부는 미확인")
-        case .missing: claude = BackendHealth.Backend(state: .missing, detail: "claude 실행 파일 없음")
+        case .loggedIn: claude = BackendHealth.Backend(state: .probeFailed, detail: os1Tr("로그인은 유효하지만 사용 가능한 모델 목록을 받지 못함",
+                                                                                          "Signed in, but the available model list was not received")
+            + (modelLimited.isEmpty ? "" : os1Tr(" · 모델별 한도 기록: \(modelLimited)", " · model limits recorded: \(modelLimited)")))
+        case .loggedOut: claude = BackendHealth.Backend(state: .loggedOut, detail: os1Tr("현재 Claude CLI가 loggedIn=false를 반환함; 원인과 만료 여부는 미확인",
+                                                                                         "Claude CLI currently returns loggedIn=false; cause and expiry unconfirmed"))
+        case .missing: claude = BackendHealth.Backend(state: .missing, detail: os1Tr("claude 실행 파일 없음", "claude executable missing"))
         case .failed(let detail): claude = BackendHealth.Backend(state: .probeFailed, detail: detail)
         }
     }
@@ -253,7 +260,8 @@ func selfRepairBackends(health: BackendHealth, codexCatalog: ActiveCodexCatalog,
         switch step {
         case .reconnectClaude:
             guard environment["OS1_ALLOW_AUTHENTICATION"] == "1" else {
-                notes.append("이 실행 환경에서는 공식 로그인 창을 열 수 없습니다. OS-1 앱 왼쪽 CLAUDE 타일에서 로그인하거나 `os1 accounts login --provider claude`를 실행하세요.")
+                notes.append(os1Tr("이 실행 환경에서는 공식 로그인 창을 열 수 없습니다. OS-1 앱 왼쪽 CLAUDE 타일에서 로그인하거나 `os1 accounts login --provider claude`를 실행하세요.",
+                                   "The official sign-in window cannot open in this environment. Sign in from the CLAUDE tile on the left of the OS-1 app, or run `os1 accounts login --provider claude`."))
                 continue
             }
             RuntimeActivity.emit(.authorizing,
@@ -264,18 +272,21 @@ func selfRepairBackends(health: BackendHealth, codexCatalog: ActiveCodexCatalog,
                 let verified = try reconnect()
                 let claude = claudeCatalog() ?? ((try? ModelAvailability.claudeCatalog(workspace: workspace, config: config)) ?? [])
                 guard !claude.isEmpty else {
-                    notes.append("\(verified) — 하지만 실행 가능한 Claude 모델 목록을 받지 못했습니다.")
+                    notes.append(os1Tr("\(verified) — 하지만 실행 가능한 Claude 모델 목록을 받지 못했습니다.",
+                                       "\(verified) — but the runnable Claude model list was not received."))
                     continue
                 }
-                RuntimeActivity.emit(.recovering, publicText: "\(verified) · 보존한 요청을 이어서 실행합니다.")
+                RuntimeActivity.emit(.recovering, publicText: os1Tr("\(verified) · 보존한 요청을 이어서 실행합니다.", "\(verified) · continuing the preserved request."))
                 return ((claude, codexCatalog), verified)
             } catch {
-                notes.append("공식 Claude 로그인이 완료되지 않았습니다(\(error)). 다음 요청에서 다시 열 수 있습니다(60초 간격).")
+                notes.append(os1Tr("공식 Claude 로그인이 완료되지 않았습니다(\(error)). 다음 요청에서 다시 열 수 있습니다(60초 간격).",
+                                   "The official Claude sign-in did not complete (\(error)). It can open again on the next request (60-second interval)."))
             }
         case .waitCodexQuota:
-            notes.append("Codex 한도는 " + (health.codex.recoversAt.map { BackendHealth.describe($0) } ?? "미확인 시각") + "에 복구됩니다.")
+            notes.append(os1Tr("Codex 한도는 " + (health.codex.recoversAt.map { BackendHealth.describe($0) } ?? "미확인 시각") + "에 복구됩니다.",
+                               "The Codex limit resets at " + (health.codex.recoversAt.map { BackendHealth.describe($0) } ?? "an unconfirmed time") + "."))
         case .waitClaudeQuota:
-            notes.append("Claude 한도 복구를 기다립니다.")
+            notes.append(os1Tr("Claude 한도 복구를 기다립니다.", "Waiting for the Claude limit to reset."))
         }
     }
     return (nil, notes.isEmpty ? nil : notes.joined(separator: " "))
@@ -334,9 +345,11 @@ func executableProviderPreference(requested: String, prompt: String, codexAvaila
     if constrained == "codex" {
         if codexAvailable { return "codex" }
         guard claudeAvailable else {
-            throw OS1Error.message("이 작업에 필요한 Codex 실행 환경이 없고\(reason) Claude 실행 환경도 없습니다. 모델 호출 없이 사전 검사에서 중단했으며 요청은 보존했습니다.")
+            throw OS1Error.message(os1Tr("이 작업에 필요한 Codex 실행 환경이 없고\(reason) Claude 실행 환경도 없습니다. 모델 호출 없이 사전 검사에서 중단했으며 요청은 보존했습니다.",
+                                         "Codex, which this task needs, is unavailable\(reason), and so is Claude. Stopped at the preflight check without a model call; the request is preserved."))
         }
-        RuntimeActivity.emit(.routing, publicText: "Codex를 사용할 수 없어\(reason) 이 작업을 Claude로 수행합니다.")
+        RuntimeActivity.emit(.routing, publicText: os1Tr("Codex를 사용할 수 없어\(reason) 이 작업을 Claude로 수행합니다.",
+                                                         "Codex is unavailable\(reason), so this task runs on Claude."))
         return "claude"
     }
     if constrained == "claude" {
@@ -345,14 +358,17 @@ func executableProviderPreference(requested: String, prompt: String, codexAvaila
         // why and how to bring it back instead of a bare switch notice.
         let why = claudeUnavailableReason?().map { " (\($0))" } ?? ""
         guard codexAvailable else {
-            throw OS1Error.message("선택한 Claude 실행 환경이 없고\(why) Codex 실행 환경도 없습니다. 모델 호출 없이 사전 검사에서 중단했으며 요청은 보존했습니다.")
+            throw OS1Error.message(os1Tr("선택한 Claude 실행 환경이 없고\(why) Codex 실행 환경도 없습니다. 모델 호출 없이 사전 검사에서 중단했으며 요청은 보존했습니다.",
+                                         "The selected Claude is unavailable\(why), and so is Codex. Stopped at the preflight check without a model call; the request is preserved."))
         }
-        RuntimeActivity.emit(.routing, publicText: "Claude를 사용할 수 없어\(why) 이 작업을 Codex로 수행합니다.")
+        RuntimeActivity.emit(.routing, publicText: os1Tr("Claude를 사용할 수 없어\(why) 이 작업을 Codex로 수행합니다.",
+                                                         "Claude is unavailable\(why), so this task runs on Codex."))
         return "codex"
     }
     if !codexAvailable && !claudeAvailable && localAvailable { return "auto" }
     guard codexAvailable || claudeAvailable else {
-        throw OS1Error.message("사용 가능한 백엔드 실행 환경이 없습니다. 유료 모델을 호출하지 않았습니다.")
+        throw OS1Error.message(os1Tr("사용 가능한 백엔드 실행 환경이 없습니다. 유료 모델을 호출하지 않았습니다.",
+                                     "No backend is available to run this. No paid model was called."))
     }
     return codexAvailable && claudeAvailable ? "auto" : (codexAvailable ? "codex" : "claude")
 }
@@ -2163,7 +2179,8 @@ func commandOutput(
         }
         // Do not mislabel a preflight/source utility as a model failure or
         // send it into provider retry logic. Never expose command arguments.
-        throw OS1Error.message("로컬 자료·연결 확인 중 \(URL(fileURLWithPath: executable).lastPathComponent) 응답 대기시간(\(timeout)초)을 초과했습니다. 기존 대화와 자료는 유지했습니다.")
+        throw OS1Error.message(os1Tr("로컬 자료·연결 확인 중 \(URL(fileURLWithPath: executable).lastPathComponent) 응답 대기시간(\(timeout)초)을 초과했습니다. 기존 대화와 자료는 유지했습니다.",
+                                     "\(URL(fileURLWithPath: executable).lastPathComponent) did not respond within \(timeout) seconds while checking local sources and connections. The existing conversation and sources are kept."))
     }
     try drain()
     return (process.terminationStatus, try Data(contentsOf: stdoutURL), try Data(contentsOf: stderrURL))
@@ -2222,18 +2239,20 @@ private func managedR2Executable() throws -> String {
         "wrangler@\(managedWranglerVersion)",
     ], timeout: 120, currentDirectory: root.path)
     guard installation.0 == 0, validated(staging) != nil else {
-        throw OS1Error.message("R2 도구 설치에 실패했습니다. 기존 로그인은 변경하지 않았습니다. OS-1 전용 도구 설치를 다시 시도해 주세요.")
+        throw OS1Error.message(os1Tr("R2 도구 설치에 실패했습니다. 기존 로그인은 변경하지 않았습니다. OS-1 전용 도구 설치를 다시 시도해 주세요.",
+                                     "Installing the R2 tool failed. The existing sign-in was not changed. Try installing OS-1's own tool again."))
     }
     if FileManager.default.fileExists(atPath: target.path) {
         // A concurrent first run may have completed the same installation.
         guard let executable = validated(target) else {
-            throw OS1Error.message("OS-1 R2 도구 캐시를 검증할 수 없습니다.")
+            throw OS1Error.message(os1Tr("OS-1 R2 도구 캐시를 검증할 수 없습니다.",
+                                         "The OS-1 R2 tool cache could not be verified."))
         }
         return executable
     }
     do { try FileManager.default.moveItem(at: staging, to: target) }
     catch { if validated(target) == nil { throw error } }
-    guard let executable = validated(target) else { throw OS1Error.message("OS-1 R2 도구 검증 실패") }
+    guard let executable = validated(target) else { throw OS1Error.message(os1Tr("OS-1 R2 도구 검증 실패", "OS-1 R2 tool verification failed")) }
     return executable
 }
 
@@ -2565,7 +2584,8 @@ private func decodedJSONObject(_ data: Data) -> [String: Any]? {
 
 private func verifyGitHubConnection() throws -> String {
     _ = try githubToken(requireRepositoryWrite: true)
-    return "GitHub 연결됨 — effacermonexistence/codex 쓰기 권한 확인"
+    return os1Tr("GitHub 연결됨 — effacermonexistence/codex 쓰기 권한 확인",
+                 "GitHub connection verified — write access to effacermonexistence/codex confirmed")
 }
 
 private func verifyR2Connection() throws -> String {
@@ -2588,7 +2608,7 @@ private func existingClaudeConnection(home: URL? = nil) throws -> String {
     guard result.0 == 0, let status = decodedJSONObject(result.1), status["loggedIn"] as? Bool == true else {
         throw ConnectionFailure.classify(text.isEmpty ? "not logged in" : text)
     }
-    return "Claude 연결됨" + ((status["email"] as? String).map { " — \($0)" } ?? "")
+    return os1Tr("Claude 연결됨", "Claude connection verified") + ((status["email"] as? String).map { " — \($0)" } ?? "")
 }
 
 // R2 authentication is intentionally device-local. The shared archive owner
@@ -2619,7 +2639,7 @@ private func existingR2Connection() throws -> String {
             currentDirectory: workingDirectory
         )
         if result.0 == 0, decodedJSONObject(result.1)?["name"] as? String == bucket {
-            return "R2 연결됨 — omar-private-archive 접근 확인"
+            return os1Tr("R2 연결됨 — omar-private-archive 접근 확인", "R2 connection verified — access to omar-private-archive confirmed")
         }
         failures.append(ConnectionFailure.classify(String(decoding: result.2 + result.1, as: UTF8.self)))
     }
@@ -3013,7 +3033,8 @@ private func latestVerifiedR2Mirror() throws -> (root: URL, capturedAt: String) 
               report["all_sizes_match"] as? Bool == true else { continue }
         return (candidate, report["captured_at"] as? String ?? "unknown")
     }
-    throw OS1Error.message("OS-1 자료 인덱스가 없습니다. 자료 설정에서 검증된 R2 복구본 폴더를 한 번 연결해 주세요. Documents 전체를 자동 탐색하지 않습니다.")
+    throw OS1Error.message(os1Tr("OS-1 자료 인덱스가 없습니다. 자료 설정에서 검증된 R2 복구본 폴더를 한 번 연결해 주세요. Documents 전체를 자동 탐색하지 않습니다.",
+                                 "OS-1 has no materials index. Connect a verified R2 recovery folder once in Materials. OS-1 does not search all of Documents automatically."))
 }
 
 private func verifiedMirrorContainsR2Object(
@@ -3539,7 +3560,8 @@ private func liveR2Manifest(repository: String) throws -> [String: Any] {
             return manifest
         }
     }
-    throw OS1Error.message("R2 최신 manifest 검증에 실패했습니다: \(repository)")
+    throw OS1Error.message(os1Tr("R2 최신 manifest 검증에 실패했습니다: \(repository)",
+                                 "Verifying the latest R2 manifest failed: \(repository)"))
 }
 
 private func liveR2Object(key: String, maximumBytes: Int = 2_000_000) throws -> Data {
@@ -3596,7 +3618,7 @@ private func ensureBareResearchRepository(_ root: URL, cache: URL, git: String) 
         try FileManager.default.removeItem(at: root)
     }
     guard try commandOutput(git, ["init", "--bare", root.path], currentDirectory: cache.path).0 == 0 else {
-        throw OS1Error.message("R2 연구 캐시 생성 실패")
+        throw OS1Error.message(os1Tr("R2 연구 캐시 생성 실패", "Creating the R2 research cache failed"))
     }
 }
 
@@ -3611,7 +3633,8 @@ private func verifiedOPTRepository() throws -> VerifiedResearchRepository {
           let digest = manifest["sha256"] as? String,
           digest.range(of: #"^[0-9a-f]{64}$"#, options: .regularExpression) != nil,
           let size = (manifest["size"] as? NSNumber)?.intValue, size > 0, size <= 20_000_000 else {
-        throw OS1Error.message("Orthogonal Projection R2 저장소 manifest 검증 실패")
+        throw OS1Error.message(os1Tr("Orthogonal Projection R2 저장소 manifest 검증 실패",
+                                     "Orthogonal Projection R2 repository manifest verification failed"))
     }
     return try verifiedResearchRepository(identity: ResearchBundleIdentity(
         repository: repository, commit: sha, key: key, digest: digest, size: size))
@@ -3630,7 +3653,8 @@ private func verifiedResearchRepository(identity: ResearchBundleIdentity) throws
     } else {
         bytes = try liveR2Object(key: key, maximumBytes: identity.size ?? ResearchBundleIdentity.maximumBytes)
         guard identity.accepts(byteCount: bytes.count, sha256: sha256Hex(bytes)) else {
-            throw OS1Error.message("Orthogonal Projection R2 번들 크기·SHA-256 불일치")
+            throw OS1Error.message(os1Tr("Orthogonal Projection R2 번들 크기·SHA-256 불일치",
+                                         "Orthogonal Projection R2 bundle size/SHA-256 mismatch"))
         }
         try bytes.write(to: bundle, options: .atomic)
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: bundle.path)
@@ -3642,11 +3666,13 @@ private func verifiedResearchRepository(identity: ResearchBundleIdentity) throws
           try commandOutput(git, ["-C", root.path, "-c", "core.hooksPath=/dev/null", "fetch", "--no-tags", bundle.path,
                                  "refs/heads/main:refs/heads/verified"], currentDirectory: cache.path).0 == 0,
           try commandOutput(git, ["-C", root.path, "cat-file", "-e", sha + "^{commit}"], currentDirectory: cache.path).0 == 0 else {
-        throw OS1Error.message("R2 연구 번들의 Git 무결성·commit 검증 실패")
+        throw OS1Error.message(os1Tr("R2 연구 번들의 Git 무결성·commit 검증 실패",
+                                     "R2 research bundle Git integrity/commit verification failed"))
     }
     let mainRef = try commandOutput(git, ["-C", root.path, "rev-parse", "refs/heads/verified^{commit}"], currentDirectory: cache.path)
     guard mainRef.0 == 0, String(decoding: mainRef.1, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines) == sha else {
-        throw OS1Error.message("R2 연구 번들의 main 참조가 manifest commit과 다릅니다")
+        throw OS1Error.message(os1Tr("R2 연구 번들의 main 참조가 manifest commit과 다릅니다",
+                                     "The R2 research bundle's main ref differs from the manifest commit"))
     }
     return VerifiedResearchRepository(identity: identity, root: root, sha: sha, key: key, bundleSHA256: digest, bundleSize: bytes.count,
         capturedAt: ISO8601DateFormatter().string(from: Date()))
@@ -3894,7 +3920,8 @@ private func optResearchEvidence() throws -> R2EvidenceBundle {
                                        currentDirectory: repository.root.path)
         guard result.0 == 0, result.1.count <= 150_000,
               let text = String(data: result.1, encoding: .utf8), !protectedRouteMaterialInEvidence(text) else {
-            throw OS1Error.message("Orthogonal Projection 필수 원문 검증 실패: \(path)")
+            throw OS1Error.message(os1Tr("Orthogonal Projection 필수 원문 검증 실패: \(path)",
+                                         "Orthogonal Projection required source verification failed: \(path)"))
         }
         sources.append(["repository": "effacermonexistence/orthogonal-projection-term-benchmarks",
             "repository_sha": repository.sha, "object_key": repository.key,
@@ -3941,7 +3968,8 @@ private func readSCVLiveRelease() throws -> SCVLiveRelease {
     let result = try commandOutput("/usr/bin/curl", ["--fail", "--silent", "--show-error", "--max-time", "12",
         "--proto", "=https", SCVLiveRelease.readinessURL], timeout: 15)
     guard result.0 == 0 else {
-        throw OS1Error.message("Instagram 운영 버전을 확인하지 못했습니다. 과거 소스를 수정 대상으로 대신 선택하지 않았고, 모델을 호출하지 않았습니다.")
+        throw OS1Error.message(os1Tr("Instagram 운영 버전을 확인하지 못했습니다. 과거 소스를 수정 대상으로 대신 선택하지 않았고, 모델을 호출하지 않았습니다.",
+                                     "Could not confirm the Instagram production version. No older source was chosen as the edit target instead, and no model was called."))
     }
     return try SCVLiveRelease(data: result.1)
 }
@@ -3951,14 +3979,16 @@ private func scvProjectEvidence(live observed: SCVLiveRelease? = nil) throws -> 
     let commit = try commandOutput(gh, ["api", "repos/\(SCVProjectMaterials.repository)/commits/main"], timeout: 20)
     guard commit.0 == 0, let sha = decodedJSONObject(commit.1)?["sha"] as? String,
           ProjectMaterialObject.validSHA(sha, count: 40) else {
-        throw OS1Error.message("Instagram 자료의 GitHub 기준 버전을 확인하지 못했습니다.")
+        throw OS1Error.message(os1Tr("Instagram 자료의 GitHub 기준 버전을 확인하지 못했습니다.",
+                                     "Could not confirm the GitHub baseline version of the Instagram materials."))
     }
     let pointerResult = try commandOutput(gh, ["api",
         "repos/\(SCVProjectMaterials.repository)/contents/\(SCVProjectMaterials.pointerPath)?ref=\(sha)"], timeout: 20)
     guard pointerResult.0 == 0, let object = decodedJSONObject(pointerResult.1),
           object["encoding"] as? String == "base64", let encoded = object["content"] as? String,
           let pointer = Data(base64Encoded: encoded, options: .ignoreUnknownCharacters) else {
-        throw OS1Error.message("Instagram 자료의 복구 목록을 읽지 못했습니다.")
+        throw OS1Error.message(os1Tr("Instagram 자료의 복구 목록을 읽지 못했습니다.",
+                                     "Could not read the recovery list of the Instagram materials."))
     }
     let descriptorIdentity = try SCVProjectMaterials.pointer(pointer)
     let descriptor = try liveR2Object(key: descriptorIdentity.object.key, maximumBytes: 64_000)
@@ -4013,7 +4043,8 @@ private func scvProjectEvidence(live observed: SCVLiveRelease? = nil) throws -> 
         guard member.0 == 0 else { throw ProjectMaterialError.invalidArtifact }
         let text = try SCVProjectMaterials.contextMember(member.1)
         guard !protectedRouteMaterialInEvidence(text) else {
-            throw OS1Error.message("Instagram 기술 자료의 안전한 원문 전달을 검증하지 못했습니다: \(path)")
+            throw OS1Error.message(os1Tr("Instagram 기술 자료의 안전한 원문 전달을 검증하지 못했습니다: \(path)",
+                                         "Could not verify safe delivery of the Instagram technical source: \(path)"))
         }
         originals.append((path, text))
     }
@@ -4088,7 +4119,8 @@ private func scvOperatingSource(gh: String, mainSHA: String, live: SCVLiveReleas
         let result = try commandOutput(gh, ["api", "repos/\(SCVProjectMaterials.repository)/contents/\(path)?ref=\(commit)"], timeout: 20)
         if result.0 != 0 {
             if decodedJSONObject(result.1)?["status"] as? String == "404" { return nil }
-            throw OS1Error.message("Instagram 릴리스 기록을 읽지 못했습니다. 다른 버전으로 추정하지 않았습니다.")
+            throw OS1Error.message(os1Tr("Instagram 릴리스 기록을 읽지 못했습니다. 다른 버전으로 추정하지 않았습니다.",
+                                         "Could not read the Instagram release record. No other version was assumed."))
         }
         guard let object = decodedJSONObject(result.1), object["encoding"] as? String == "base64",
               let encoded = object["content"] as? String,
@@ -4113,7 +4145,8 @@ private func scvOperatingSource(gh: String, mainSHA: String, live: SCVLiveReleas
     }
     let identities = Set(matches.map { "\($0.record.key ?? ""):\($0.record.sha256 ?? ""):\($0.record.bytes ?? 0)" })
     guard identities.count == 1, let match = matches.first else {
-        throw OS1Error.message("실제 운영 \(live.id)와 해시가 일치하는 소스 기록을 확정하지 못했습니다. 이전 버전이나 공개 미러로 대신하지 않았고 모델을 호출하지 않았습니다.")
+        throw OS1Error.message(os1Tr("실제 운영 \(live.id)와 해시가 일치하는 소스 기록을 확정하지 못했습니다. 이전 버전이나 공개 미러로 대신하지 않았고 모델을 호출하지 않았습니다.",
+                                     "Could not pin down a source record whose hash matches production \(live.id). No earlier version or public mirror was substituted, and no model was called."))
     }
     return match
 }
@@ -4176,22 +4209,26 @@ private func applyWorkspaceBaseline(projectID: String, workspace: String, contex
 private func runWorkspacePreparationControl(projectID: String, workspace: String, revision: WorkspaceRevision,
                                             context: TaskContext, startedAt: Date) throws -> RunSummary {
     let label = ProjectAdapterRegistry.label(for: projectID)
-    var lines = ["\(label) 작업 준비가 됐습니다.", "", "준비된 자료"]
-    lines.append("- 작업 폴더: \(workspace)")
+    // Pasted back, every heading below is recognised as OS-1 output in both
+    // languages (OS1SelfOutput.lineMarkers).
+    var lines = [os1Tr("\(label) 작업 준비가 됐습니다.", "\(label) is ready to work on."), "", os1Tr("준비된 자료", "Prepared materials")]
+    lines.append(os1Tr("- 작업 폴더: \(workspace)", "- Working folder: \(workspace)"))
     if let head = revision.head {
-        lines.append("- 현재 버전: \(revision.branch ?? "detached")@\(head.prefix(12))" +
-            (revision.dirtyFiles.map { " · 미커밋 변경 \($0)개" } ?? ""))
+        lines.append(os1Tr("- 현재 버전: \(revision.branch ?? "detached")@\(head.prefix(12))", "- Current revision: \(revision.branch ?? "detached")@\(head.prefix(12))") +
+            (revision.dirtyFiles.map { os1Tr(" · 미커밋 변경 \($0)개", " · \($0) uncommitted change(s)") } ?? ""))
     } else {
-        lines.append("- git 저장소가 아니므로 파일 목록 해시 \(revision.manifestHash.prefix(12))…를 기준으로 삼았습니다.")
+        lines.append(os1Tr("- git 저장소가 아니므로 파일 목록 해시 \(revision.manifestHash.prefix(12))…를 기준으로 삼았습니다.",
+                           "- Not a git repository, so the file-list hash \(revision.manifestHash.prefix(12))… is the baseline."))
     }
     lines.append("")
-    lines.append("기준 버전 (세 가지를 구분합니다)")
-    lines.append(contentsOf: (context.project?.baselineLines ?? ["- 기준 버전 기록 없음"]).map { $0.hasPrefix("- ") ? $0 : "- " + $0 })
+    lines.append(os1Tr("기준 버전 (세 가지를 구분합니다)", "Baselines (three kept separate)"))
+    lines.append(contentsOf: (context.project?.baselineLines ?? [os1Tr("- 기준 버전 기록 없음", "- No baseline recorded")]).map { $0.hasPrefix("- ") ? $0 : "- " + $0 })
     let decisions = context.activeDecisions.map(\.text)
     lines.append("")
-    lines.append("확정된 결정: " + (decisions.isEmpty ? "아직 없음" : decisions.joined(separator: "; ")))
-    lines.append("다음 단계: 수정할 내용을 말하면 이 작업 폴더와 버전 기준으로 진행합니다. 백엔드(Codex/Claude)는 그때 선택하고, 이 준비 상태를 함께 전달합니다.")
-    lines.append("하지 않은 것: 파일 변경·빌드·테스트·배포·모델 실행 없음.")
+    lines.append(os1Tr("확정된 결정: ", "Confirmed decisions: ") + (decisions.isEmpty ? os1Tr("아직 없음", "none yet") : decisions.joined(separator: "; ")))
+    lines.append(os1Tr("다음 단계: 수정할 내용을 말하면 이 작업 폴더와 버전 기준으로 진행합니다. 백엔드(Codex/Claude)는 그때 선택하고, 이 준비 상태를 함께 전달합니다.",
+                       "Next step: describe the change and it proceeds from this working folder and revision. The backend (Codex/Claude) is chosen then and receives this prepared state."))
+    lines.append(os1Tr("하지 않은 것: 파일 변경·빌드·테스트·배포·모델 실행 없음.", "Not done: no file changes, builds, tests, deploys or model runs."))
     let userOutput = lines.joined(separator: "\n")
     guard !protectedRouteMaterialInEvidence(userOutput) else { throw OS1Error.message("OS-1 blocked protected route material in a preparation answer") }
     let operationID = UUID().uuidString.lowercased()
@@ -4251,28 +4288,33 @@ private func preparedStateBundle(_ evidence: R2EvidenceBundle, context: TaskCont
     let archiveLink = evidence.userOutput.range(of: #"\[소스 파일 열기\]\(<[^>]+>\)"#, options: .regularExpression)
         .map { String(evidence.userOutput[$0]) }
     let package = evidence.sources.first.map { source in
-        "- 실제 소스 압축파일: \(source["object_key"] ?? "등록된 운영 원본") · sha256 \((source["bundle_sha256"] ?? "").prefix(12))… · \(source["object_size"] ?? "?")바이트"
+        os1Tr("- 실제 소스 압축파일: \(source["object_key"] ?? "등록된 운영 원본") · sha256 \((source["bundle_sha256"] ?? "").prefix(12))… · \(source["object_size"] ?? "?")바이트",
+              "- Actual source archive: \(source["object_key"] ?? "registered production source") · sha256 \((source["bundle_sha256"] ?? "").prefix(12))… · \(source["object_size"] ?? "?") bytes")
     }
     var lines = [reused
-        ? "이미 연결된 Instagram 자동화 자료를 재사용했습니다. 새로 내려받지 않았고, 같은 자료 기준으로 준비된 상태입니다."
-        : "Instagram 자동화 수정 준비가 됐습니다."]
+        ? os1Tr("이미 연결된 Instagram 자동화 자료를 재사용했습니다. 새로 내려받지 않았고, 같은 자료 기준으로 준비된 상태입니다.",
+                "Reused the Instagram automation materials already attached. Nothing was downloaded again; it is prepared on the same materials.")
+        : os1Tr("Instagram 자동화 수정 준비가 됐습니다.", "Ready to change the Instagram automation.")]
     lines.append("")
-    lines.append("준비된 자료")
+    lines.append(os1Tr("준비된 자료", "Prepared materials"))
     if let package { lines.append(package) }
     if let archiveLink { lines.append("- \(archiveLink)") }
-    lines.append("- 함께 연결된 자료: \(evidence.sourceCount)개 (릴리스 목록, 동작 설계 문서, 실행·테스트 설정, 상태 스키마, 전체 파일 목록)")
+    lines.append(os1Tr("- 함께 연결된 자료: \(evidence.sourceCount)개 (릴리스 목록, 동작 설계 문서, 실행·테스트 설정, 상태 스키마, 전체 파일 목록)",
+                       "- Also attached: \(evidence.sourceCount) item(s) (release list, behavior design document, run and test settings, state schema, full file list)"))
     lines.append("")
-    lines.append("기준 버전 (세 가지를 구분합니다)")
+    lines.append(os1Tr("기준 버전 (세 가지를 구분합니다)", "Baselines (three kept separate)"))
     if let project = context.project {
         lines.append(contentsOf: project.baselineLines.map { "- " + $0 })
     } else {
-        lines.append("- 기준 버전 기록 없음")
+        lines.append(os1Tr("- 기준 버전 기록 없음", "- No baseline recorded"))
     }
     let decisions = context.activeDecisions.map(\.text)
     lines.append("")
-    lines.append("확정된 결정: " + (decisions.isEmpty ? "아직 없음" : decisions.joined(separator: "; ")))
-    lines.append("다음 단계: 수정할 동작을 말하면 같은 자료와 기준으로 진행합니다. 백엔드(Codex/Claude)는 그때 선택하고, 이 준비 상태를 함께 전달합니다.")
-    lines.append("하지 않은 것: 복원·배포·테스트·고객 데이터 접근·모델 실행 없음. Gold 포인터와 운영 서버는 변경하지 않았습니다.")
+    lines.append(os1Tr("확정된 결정: ", "Confirmed decisions: ") + (decisions.isEmpty ? os1Tr("아직 없음", "none yet") : decisions.joined(separator: "; ")))
+    lines.append(os1Tr("다음 단계: 수정할 동작을 말하면 같은 자료와 기준으로 진행합니다. 백엔드(Codex/Claude)는 그때 선택하고, 이 준비 상태를 함께 전달합니다.",
+                       "Next step: describe the behavior to change and it proceeds from the same materials and baselines. The backend (Codex/Claude) is chosen then and receives this prepared state."))
+    lines.append(os1Tr("하지 않은 것: 복원·배포·테스트·고객 데이터 접근·모델 실행 없음. Gold 포인터와 운영 서버는 변경하지 않았습니다.",
+                       "Not done: no restore, deploy, test, customer-data access or model run. The Gold pointer and the production server were not changed."))
     let block = lines.joined(separator: "\n")
     let userOutput = reused ? block : evidence.userOutput + "\n\n" + block
     let modelPayload = evidence.modelPayload + "\n\n" + block
@@ -4313,7 +4355,8 @@ private func r2RetrievalEvidence(_ prompt: String, context: String? = nil, objec
     }
     let terms = r2RetrievalTerms(prompt)
     guard !terms.isEmpty else {
-        throw OS1Error.message("R2에서 찾을 자료 이름이나 주제를 함께 입력해 주세요.")
+        throw OS1Error.message(os1Tr("R2에서 찾을 자료 이름이나 주제를 함께 입력해 주세요.",
+                                     "Include the name or topic of the material to find in R2."))
     }
     let reposRoot = mirror.root.appendingPathComponent("repos", isDirectory: true)
     let git = try findExecutable("git")
@@ -4401,7 +4444,8 @@ private func r2RetrievalEvidence(_ prompt: String, context: String? = nil, objec
             text: r2EvidenceSnippet($0.text, terms: terms), terms: terms)
     }.prefix(6))
     guard !selected.isEmpty else {
-        throw OS1Error.message("이번 검색 범위에서 요청한 주제를 모두 확인할 수 있는 R2 원문을 찾지 못했습니다. 관련 없는 파일을 결과로 내보내지 않았으며, R2 전체에 자료가 없다는 뜻은 아닙니다.")
+        throw OS1Error.message(os1Tr("이번 검색 범위에서 요청한 주제를 모두 확인할 수 있는 R2 원문을 찾지 못했습니다. 관련 없는 파일을 결과로 내보내지 않았으며, R2 전체에 자료가 없다는 뜻은 아닙니다.",
+                                     "No R2 source in this search scope covers every requested topic. No unrelated file was returned as a result, and this does not mean R2 as a whole lacks the material."))
     }
 
     var modelPayload = """
@@ -4518,7 +4562,8 @@ private func runR2RetrievalControl(
     try receiptData.write(to: receiptURL, options: [.atomic])
     try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: receiptURL.path)
     guard (try? Data(contentsOf: receiptURL)) == receiptData else {
-        throw OS1Error.message("OS-1 R2 회수 영수증 검증에 실패했습니다.")
+        throw OS1Error.message(os1Tr("OS-1 R2 회수 영수증 검증에 실패했습니다.",
+                                     "OS-1 R2 retrieval receipt verification failed."))
     }
     let record = NativeRecordEvidence(
         turnID: operationID,
@@ -4557,7 +4602,8 @@ private func runSourceStatusControl(config: RuntimeConfig) throws -> RunSummary 
           let commit = decodedJSONObject(commitResult.1),
           let githubSHA = commit["sha"] as? String,
           githubSHA.range(of: #"^[0-9a-f]{40}$"#, options: .regularExpression) != nil else {
-        throw OS1Error.message("GitHub main 최신 상태 검증에 실패했습니다.")
+        throw OS1Error.message(os1Tr("GitHub main 최신 상태 검증에 실패했습니다.",
+                                     "Verifying the latest GitHub main state failed."))
     }
 
     let backup = try liveR2Manifest(repository: "codex")
@@ -4565,12 +4611,14 @@ private func runSourceStatusControl(config: RuntimeConfig) throws -> RunSummary 
           let backupKey = backup["key"] as? String,
           let backupSHA256 = backup["sha256"] as? String,
           let backupSize = (backup["size"] as? NSNumber)?.int64Value else {
-        throw OS1Error.message("R2 codex 최신 manifest 검증에 실패했습니다.")
+        throw OS1Error.message(os1Tr("R2 codex 최신 manifest 검증에 실패했습니다.",
+                                     "Verifying the latest R2 codex manifest failed."))
     }
 
     guard let gateway = URL(string: config.apiURL),
           let releaseURL = URL(string: "/v1/releases/latest", relativeTo: gateway) else {
-        throw OS1Error.message("OS-1 release endpoint 설정이 올바르지 않습니다.")
+        throw OS1Error.message(os1Tr("OS-1 release endpoint 설정이 올바르지 않습니다.",
+                                     "The OS-1 release endpoint setting is invalid."))
     }
     let curl = try findExecutable("curl")
     let releaseResult = try commandOutput(
@@ -4582,7 +4630,8 @@ private func runSourceStatusControl(config: RuntimeConfig) throws -> RunSummary 
           let release = decodedJSONObject(releaseResult.1),
           let releaseVersion = release["version"] as? String,
           let releaseSHA256 = release["sha256"] as? String else {
-        throw OS1Error.message("OS-1 공개 release 최신 상태 검증에 실패했습니다.")
+        throw OS1Error.message(os1Tr("OS-1 공개 release 최신 상태 검증에 실패했습니다.",
+                                     "Verifying the latest public OS-1 release failed."))
     }
 
     let appURL = FileManager.default.homeDirectoryForCurrentUser
@@ -4591,7 +4640,7 @@ private func runSourceStatusControl(config: RuntimeConfig) throws -> RunSummary 
         forInfoDictionaryKey: "CFBundleShortVersionString"
     ) as? String ?? "not-installed"
     let backupCurrent = backupSHA == githubSHA
-    let output = """
+    let output = os1Tr("""
     OS-1 최신 소스 상태를 실제 연결에서 확인했습니다.
 
     - GitHub `effacermonexistence/codex` main: `\(githubSHA)`
@@ -4600,7 +4649,16 @@ private func runSourceStatusControl(config: RuntimeConfig) throws -> RunSummary 
     - 공개 OS-1 release: `\(releaseVersion)` (`\(releaseSHA256)`)
     - 이 Mac 설치판: `\(installedVersion)`
     - 모델 호출: 없음 (OS-1 검증 제어 경로)
-    """
+    """, """
+    OS-1 checked its latest source status over live connections.
+
+    - GitHub `effacermonexistence/codex` main: `\(githubSHA)`
+    - R2 `omar-private-archive` codex bundle source: `\(backupSHA)`
+    - R2 backup status: `\(backupCurrent ? "matches GitHub main" : "differs from GitHub main — backup needs a refresh")`
+    - Public OS-1 release: `\(releaseVersion)` (`\(releaseSHA256)`)
+    - Installed on this Mac: `\(installedVersion)`
+    - Model call: none (OS-1 verified control path)
+    """)
 
     let operationID = UUID().uuidString.lowercased()
     let receiptRoot = FileManager.default.homeDirectoryForCurrentUser
@@ -4630,7 +4688,8 @@ private func runSourceStatusControl(config: RuntimeConfig) throws -> RunSummary 
     try receiptData.write(to: receiptURL, options: [.atomic])
     try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: receiptURL.path)
     guard (try? Data(contentsOf: receiptURL)) == receiptData else {
-        throw OS1Error.message("OS-1 최신 소스 상태 영수증 검증에 실패했습니다.")
+        throw OS1Error.message(os1Tr("OS-1 최신 소스 상태 영수증 검증에 실패했습니다.",
+                                     "OS-1 source-status receipt verification failed."))
     }
     let record = NativeRecordEvidence(
         turnID: operationID,
@@ -4657,13 +4716,19 @@ private func runSourceStatusControl(config: RuntimeConfig) throws -> RunSummary 
 
 private func runProtectedRouteMaterialControl() throws -> RunSummary {
     let started = Date()
-    let output = """
+    let output = os1Tr("""
     **RCC·REVAS 내부 구현은 모델에 전달하지 않았습니다.**
 
     RCC는 작업의 실행 경로를 선택하고, REVAS는 실행 결과를 검토해 채택하거나 재시도하는 역할입니다. OS-1은 이 제어 과정과 실제로 모델에 전달할 사용자 자료를 구분합니다.
 
     공개 앱에서 내부 프롬프트·가중치·임계값·평가기준을 가져와 답변하도록 하면 보호하려던 구현이 모델 입력과 세션에 남게 됩니다. 그래서 이 요청은 로컬에서 보호 경계를 설명하는 것으로 처리했습니다. R2 연결이 끊겼거나 자료가 없다는 뜻은 아니며, 원문을 가져왔다고 주장하는 것도 아닙니다.
-    """
+    """, """
+    **RCC and REVAS internals were not sent to a model.**
+
+    RCC selects the execution route for a task, and REVAS reviews the result to adopt it or retry. OS-1 keeps this control process separate from the user material it actually sends to a model.
+
+    Answering with internal prompts, weights, thresholds and evaluation criteria pulled into the public app would leave the protected implementation in model inputs and sessions. So this request was handled locally by explaining the protection boundary. It does not mean the R2 connection is down or the material is missing, and it does not claim the original was retrieved.
+    """)
     let operationID = UUID().uuidString.lowercased()
     let receiptRoot = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent("Library/Application Support/OS-1/control-receipts", isDirectory: true)
@@ -4681,7 +4746,8 @@ private func runProtectedRouteMaterialControl() throws -> RunSummary {
     try receiptData.write(to: receiptURL, options: [.atomic])
     try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: receiptURL.path)
     guard (try? Data(contentsOf: receiptURL)) == receiptData else {
-        throw OS1Error.message("OS-1 보호 경계 영수증 검증에 실패했습니다.")
+        throw OS1Error.message(os1Tr("OS-1 보호 경계 영수증 검증에 실패했습니다.",
+                                     "OS-1 protection-boundary receipt verification failed."))
     }
     let record = NativeRecordEvidence(
         turnID: operationID,
@@ -4732,7 +4798,8 @@ private func runConnectionControl(_ targets: ConnectionControlTargets) throws ->
     try receiptData.write(to: receiptURL, options: [.atomic])
     try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: receiptURL.path)
     guard (try? Data(contentsOf: receiptURL)) == receiptData else {
-        throw OS1Error.message("OS-1 연결 확인 영수증 검증에 실패했습니다.")
+        throw OS1Error.message(os1Tr("OS-1 연결 확인 영수증 검증에 실패했습니다.",
+                                     "OS-1 connection-check receipt verification failed."))
     }
     let record = NativeRecordEvidence(
         turnID: operationID,
@@ -4824,7 +4891,8 @@ struct APIClient {
                   let retry, retry > 0, retry <= 55_000 else {
                 throw OS1Error.service(status: status, message: message, retryAfterMS: retry)
             }
-            RuntimeActivity.emit(.authorizing, publicText: "GitHub 인증 조회가 잠시 제한되어 \((retry + 999) / 1000)초 후 같은 요청을 이어갑니다. 추가 모델 호출은 하지 않습니다.", tool: "github")
+            RuntimeActivity.emit(.authorizing, publicText: os1Tr("GitHub 인증 조회가 잠시 제한되어 \((retry + 999) / 1000)초 후 같은 요청을 이어갑니다. 추가 모델 호출은 하지 않습니다.",
+                                                                 "GitHub authentication lookup is briefly limited; the same request continues in \((retry + 999) / 1000) s. No additional model call is made."), tool: "github")
             var remaining = retry
             while remaining > 0 {
                 if ExecutionCancellation.isCancelled { throw OS1Error.backendBlocked(.cancelled) }
@@ -5705,7 +5773,8 @@ final class CodexAppServerClient: @unchecked Sendable {
             try NativeAppApproval.publish(approval)
             defer { NativeAppApproval.remove(approval) }
             RuntimeActivity.emit(.executing, provider: "codex", publicText:
-                "네이티브 Computer Use 승인 요청 · OS-1 창에서 이 실행에만 허용하거나 거절해 주세요. " + approval.message)
+                os1Tr("네이티브 Computer Use 승인 요청 · OS-1 창에서 이 실행에만 허용하거나 거절해 주세요. ",
+                      "Native Computer Use approval request · in the OS-1 window, allow it for this run only or decline. ") + approval.message)
             var approved = false
             while Date() < approval.expiresAt && !ExecutionCancellation.isCancelled {
                 if let answer = NativeAppApproval.decision(approval) { approved = answer; break }
@@ -7559,7 +7628,8 @@ private func runRouteFanoutWithOwnerPolicy(
     try receiptData.write(to: receiptURL, options: [.atomic])
     try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: receiptURL.path)
     guard (try? Data(contentsOf: receiptURL)) == receiptData else {
-        throw OS1Error.message("OS-1 경로 분배 영수증 검증에 실패했습니다.")
+        throw OS1Error.message(os1Tr("OS-1 경로 분배 영수증 검증에 실패했습니다.",
+                                     "OS-1 route fan-out receipt verification failed."))
     }
     steps.append(RunStepSummary(
         sequence: steps.count + 1,
@@ -7895,12 +7965,14 @@ func runWorkflowTaskWithOwnerPolicy(
               ["codex", "claude"].contains(adopted.provider),
               adopted.nativeRecord?.isVerified == true, adopted.exitCode == 0,
               adopted.permissionProfile == stage.executionPermissionProfile else {
-            return held("\(stage.rawValue): 검증된 native 실행·권한·REVAS 채택이 없어 다음 단계로 진행하지 않았습니다.")
+            return held(os1Tr("\(stage.rawValue): 검증된 native 실행·권한·REVAS 채택이 없어 다음 단계로 진행하지 않았습니다.",
+                              "\(stage.rawValue): no verified native run, permission and REVAS adoption, so the next stage did not start."))
         }
         if stage == .verification && TaskWorkflow.verdict(adopted.output) != true {
             guard TaskWorkflow.permitsBoundedRepair(verdict: TaskWorkflow.verdict(adopted.output),
                 stageIndex: stageIndex, repairAttempted: repairAttempted) else {
-                return held("verification: 분리된 검증 단계가 PASS를 증명하지 못했습니다. 구현 결과와 검증 기록은 보존했습니다. 이전 쓰기 단계를 자동 재실행하지 말고 실패 근거를 확인한 뒤 수정 범위를 다시 지정해야 합니다.")
+                return held(os1Tr("verification: 분리된 검증 단계가 PASS를 증명하지 못했습니다. 구현 결과와 검증 기록은 보존했습니다. 이전 쓰기 단계를 자동 재실행하지 말고 실패 근거를 확인한 뒤 수정 범위를 다시 지정해야 합니다.",
+                                  "verification: the separate verification stage did not prove PASS. The implementation result and verification record are preserved. Do not re-run the earlier write stage automatically; check the failure evidence, then specify the change scope again."))
             }
             // Only an explicit, verified BLOCK opens one bounded repair pass.
             // Missing/malformed verdicts and uncertain implementation writes
@@ -7985,11 +8057,13 @@ func loadCurrentOwnerPolicy() throws -> OwnerPolicySnapshot? {
     let helper = FileManager.default.fileExists(atPath: resource.path) ? resource
         : FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Applications/OS-1 CLODEX.app/Contents/Resources/sync-owner-policy.py")
     guard FileManager.default.fileExists(atPath: helper.path) else {
-        throw OS1Error.message("거버넌스 정책 동기화 도구가 설치되지 않아 호출하지 않았습니다. 기존 작업은 보존됩니다.")
+        throw OS1Error.message(os1Tr("거버넌스 정책 동기화 도구가 설치되지 않아 호출하지 않았습니다. 기존 작업은 보존됩니다.",
+                                     "The governance policy sync tool is missing, so it was not called. Existing work is preserved."))
     }
     let (status, _, _) = try commandOutput("/usr/bin/python3", [helper.path], timeout: 50)
     guard status == 0, let policy = try OwnerPolicySnapshot.load(root: root) else {
-        throw OS1Error.message("최신 거버넌스 원문 확인 또는 무결성 검증에 실패해 모델 호출 전에 보존했습니다.")
+        throw OS1Error.message(os1Tr("최신 거버넌스 원문 확인 또는 무결성 검증에 실패해 모델 호출 전에 보존했습니다.",
+                                     "Checking the latest governance original or verifying its integrity failed, so the request was preserved before any model call."))
     }
     return policy
 }
@@ -8513,11 +8587,14 @@ func runTaskWithOwnerPolicy(
                     "Working as an OS-1 repair in OS-1's source \(resolved.workspace). OS-1 builds, verifies and installs it itself."))
                 _ = applyWorkspaceBaseline(projectID: localProjectID, workspace: resolved.workspace, context: &taskState)
             } else {
-                RuntimeActivity.emit(.preparing, publicText: "\(ProjectAdapterRegistry.label(for: localProjectID)) 소스 작업 폴더로 \(resolved.workspace)을(를) 사용합니다. 대화 폴더 \(requestedWorkspace)에는 해당 소스가 없습니다."
-                    + (resolved.alternates.isEmpty ? "" : " 다른 등록 후보: \(resolved.alternates.joined(separator: ", "))"))
+                RuntimeActivity.emit(.preparing, publicText: os1Tr("\(ProjectAdapterRegistry.label(for: localProjectID)) 소스 작업 폴더로 \(resolved.workspace)을(를) 사용합니다. 대화 폴더 \(requestedWorkspace)에는 해당 소스가 없습니다.",
+                                                                   "Using \(resolved.workspace) as the \(ProjectAdapterRegistry.label(for: localProjectID)) source folder. The conversation folder \(requestedWorkspace) does not contain that source.")
+                    + (resolved.alternates.isEmpty ? "" : os1Tr(" 다른 등록 후보: \(resolved.alternates.joined(separator: ", "))",
+                                                                " Other registered candidates: \(resolved.alternates.joined(separator: ", "))")))
             }
         } else if preparation?.projectID == localProjectID || forcedProjectID == localProjectID {
-            throw OS1Error.message("\(ProjectAdapterRegistry.label(for: localProjectID)) 소스 폴더를 찾지 못했습니다. 대화 폴더 \(requestedWorkspace)에는 \(LocalProjectWorkspace.marker(for: localProjectID) ?? "프로젝트 표식")이(가) 없고 등록된 프로젝트 목록에도 해당 소스 트리가 없습니다. 소스 체크아웃 폴더를 이 대화의 작업 폴더로 선택한 뒤 다시 요청하세요.")
+            throw OS1Error.message(os1Tr("\(ProjectAdapterRegistry.label(for: localProjectID)) 소스 폴더를 찾지 못했습니다. 대화 폴더 \(requestedWorkspace)에는 \(LocalProjectWorkspace.marker(for: localProjectID) ?? "프로젝트 표식")이(가) 없고 등록된 프로젝트 목록에도 해당 소스 트리가 없습니다. 소스 체크아웃 폴더를 이 대화의 작업 폴더로 선택한 뒤 다시 요청하세요.",
+                                         "The \(ProjectAdapterRegistry.label(for: localProjectID)) source folder was not found. The conversation folder \(requestedWorkspace) has no \(LocalProjectWorkspace.marker(for: localProjectID) ?? "project marker"), and no registered project contains that source tree. Choose the source checkout folder as this conversation's working folder, then ask again."))
         }
     }
     // A readback observes the previous operation; it must never mint a new
@@ -8528,7 +8605,8 @@ func runTaskWithOwnerPolicy(
         canonicalWorkspace = target.workspace
         taskState.setProject(TaskContext.ProjectBaseline(projectID: "workspace:" + URL(fileURLWithPath: target.workspace).lastPathComponent,
             workspace: target.workspace), now: objectiveStartedAt)
-        RuntimeActivity.emit(.preparing, publicText: "요청한 로컬 미리보기의 실제 소스 폴더를 확인했습니다: \(target.workspace)")
+        RuntimeActivity.emit(.preparing, publicText: os1Tr("요청한 로컬 미리보기의 실제 소스 폴더를 확인했습니다: \(target.workspace)",
+                                                           "Confirmed the actual source folder of the requested local preview: \(target.workspace)"))
     }
     canonicalWorkspace = LocalProjectWorkspace.executionPath(canonicalWorkspace)
     var isDirectory: ObjCBool = false
@@ -8662,7 +8740,8 @@ func runTaskWithOwnerPolicy(
                     catch {
                         // Corrupt cache bytes are not adopted, but do not block
                         // an independently verifiable exact remote source.
-                        RuntimeActivity.emit(.source, publicText: "등록 원본 검증을 통과하지 못해 GitHub·R2의 동일 운영 원본을 확인합니다.")
+                        RuntimeActivity.emit(.source, publicText: os1Tr("등록 원본 검증을 통과하지 못해 GitHub·R2의 동일 운영 원본을 확인합니다.",
+                                                                        "The registered source did not pass verification; checking the same production source on GitHub and R2."))
                     }
                 }
                 r2Evidence = try registered ?? r2RetrievalEvidence(objectiveRequest, context: sourceSelectionContext, objective: r2Objective, scvLive: scvLive)
@@ -8840,7 +8919,8 @@ func runTaskWithOwnerPolicy(
             return efforts.isEmpty ? nil : ClaudeModelCapability(model: row.model, supportedEfforts: efforts)
         }
         guard !codexCatalog.models.isEmpty || !observedClaudeCatalog.isEmpty else {
-            throw OS1Error.message("\(workflowStage.rawValue): 현재 계정·설정에서 실행 가능한 단계별 모델이 없어 호출하지 않았습니다.")
+            throw OS1Error.message(os1Tr("\(workflowStage.rawValue): 현재 계정·설정에서 실행 가능한 단계별 모델이 없어 호출하지 않았습니다.",
+                                         "\(workflowStage.rawValue): no stage model can run with the current account and settings, so none was called."))
         }
     }
     var claudeCatalog = observedClaudeCatalog
@@ -9031,9 +9111,11 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
                 }
             }
             if steps.isEmpty {
-                throw OS1Error.message("현재 모델·reasoning·권한 조합을 충족하는 실행 경로가 없어 모델 호출 전에 중단했습니다. 요청과 자료는 보존했습니다.")
+                throw OS1Error.message(os1Tr("현재 모델·reasoning·권한 조합을 충족하는 실행 경로가 없어 모델 호출 전에 중단했습니다. 요청과 자료는 보존했습니다.",
+                                             "No execution route satisfies the current model, reasoning and permission combination, so OS-1 stopped before calling a model. The request and sources are preserved."))
             }
-            throw OS1Error.message(lastLocalFailure.map { "실행 결과를 채택하지 못했습니다: \($0). 기존 자료와 대화는 유지했습니다." }
+            throw OS1Error.message(lastLocalFailure.map { os1Tr("실행 결과를 채택하지 못했습니다: \($0). 기존 자료와 대화는 유지했습니다.",
+                                                                "The run result was not adopted: \($0). Existing sources and the conversation are kept.") }
                 ?? "OS-1 verification rejected the result after governed retries")
         }
         guard let ticket = route.ticket else { throw OS1Error.message("Invalid OS-1 route response") }
@@ -9043,7 +9125,8 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
         // the authority floor. Every ticket is checked, including retries and
         // read-only verify/other tasks; classification labels cannot widen it.
         guard ScopeResolution.permitsTicket(scope: resolvedScope, permission: ticket.permissionProfile) else {
-            throw OS1Error.message("요청의 실행 범위와 서명된 라우팅 권한이 달라 모델 호출 전에 중단했습니다. 요청과 자료는 보존했고 권한을 임의 변경하지 않았습니다.")
+            throw OS1Error.message(os1Tr("요청의 실행 범위와 서명된 라우팅 권한이 달라 모델 호출 전에 중단했습니다. 요청과 자료는 보존했고 권한을 임의 변경하지 않았습니다.",
+                                         "The request's execution scope differs from the signed routing permission, so OS-1 stopped before calling a model. The request and sources are preserved, and the permission was not changed."))
         }
         let model = try configuredModel(provider: ticket.provider, action: ticket.action, config: config)
         let effort = try configuredEffort(provider: ticket.provider, action: ticket.action, config: config)
@@ -9055,15 +9138,18 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
         guard !failedCandidates.contains(candidateKey) else {
             recordExecutionFailure(ticket: ticket, model: model, effort: effort,
                 reason: "repeated_failed_tuple_blocked_before_provider_call", source: sourceContext)
-            throw OS1Error.message("라우팅 서버가 같은 실패 경로를 다시 선택했습니다. 중복 모델 호출을 막았으며 요청과 기존 자료는 보존했습니다.")
+            throw OS1Error.message(os1Tr("라우팅 서버가 같은 실패 경로를 다시 선택했습니다. 중복 모델 호출을 막았으며 요청과 기존 자료는 보존했습니다.",
+                                         "The routing server chose the same failed route again. A duplicate model call was blocked; the request and existing sources are preserved."))
         }
         guard ticket.provider != "codex" || codexCatalog.models.contains(where: {
             $0.slug == model && $0.supportedEfforts.contains(effort)
-        }) else { throw OS1Error.message("라우팅된 Codex 모델·effort가 현재 실행 환경과 맞지 않아 유료 호출 전에 차단했습니다.") }
+        }) else { throw OS1Error.message(os1Tr("라우팅된 Codex 모델·effort가 현재 실행 환경과 맞지 않아 유료 호출 전에 차단했습니다.",
+                                               "The routed Codex model/effort does not match the current runtime, so it was blocked before a paid call.")) }
         guard ticket.provider != "claude" || claudeCatalog.contains(where: {
             $0.model == model && $0.supportedEfforts.contains(effort)
         }) else {
-            throw OS1Error.message("라우팅된 Claude 모델·effort가 현재 계정의 모델 목록과 달라 유료 호출 전에 차단했습니다.")
+            throw OS1Error.message(os1Tr("라우팅된 Claude 모델·effort가 현재 계정의 모델 목록과 달라 유료 호출 전에 차단했습니다.",
+                                         "The routed Claude model/effort differs from the current account's model list, so it was blocked before a paid call."))
         }
         // How this attempt keeps off OS-1's live source when the task's
         // folder contains it (build 320). A Claude attempt is confined: its
@@ -9125,7 +9211,8 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
             body: AttemptStartRequest(ticket: ticket, device_signature: Base64URL.encode(try key.sign(startData))), as: AttemptStartReceipt.self)
         guard lease.execution_id == ticket.executionID, lease.sequence == ticket.sequence,
               let deadline = parseCodexRetirementDate(lease.execution_deadline), deadline > Date() else {
-            throw OS1Error.message("실행 시작 확인이 일치하지 않아 백엔드를 호출하지 않았습니다.")
+            throw OS1Error.message(os1Tr("실행 시작 확인이 일치하지 않아 백엔드를 호출하지 않았습니다.",
+                                         "The execution start confirmation did not match, so no backend was called."))
         }
         let attemptTimeout = min(config.executionTimeoutSeconds, max(1, Int(deadline.timeIntervalSinceNow) - 1))
         AttemptLatencyTrace.mark("lease")
@@ -9315,8 +9402,10 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
                     let remaining = [claudeCatalog.isEmpty ? "" : "Claude: " + claudeCatalog.map(\.model).joined(separator: ", "),
                                      nextPreference == "claude" || codexCatalog.models.isEmpty ? "" : "Codex"].filter { !$0.isEmpty }
                     RuntimeActivity.emit(.recovering, publicText: modelScoped
-                        ? "Claude \(model) 모델 한도에 도달했습니다. 이 모델만 1시간 제외하고 같은 요청을 남은 모델(\(remaining.joined(separator: " · ")))로 다시 라우팅합니다. 로그인은 변경하지 않습니다."
-                        : "\(ticket.provider) 사용량 한도에 도달했습니다. 같은 요청을 \(nextPreference)로 이어갑니다. 로그인은 변경하지 않습니다.")
+                        ? os1Tr("Claude \(model) 모델 한도에 도달했습니다. 이 모델만 1시간 제외하고 같은 요청을 남은 모델(\(remaining.joined(separator: " · ")))로 다시 라우팅합니다. 로그인은 변경하지 않습니다.",
+                                "Claude \(model) reached its model limit. Excluding only this model for one hour and re-routing the same request to the remaining models (\(remaining.joined(separator: " · "))). Sign-in is not changed.")
+                        : os1Tr("\(ticket.provider) 사용량 한도에 도달했습니다. 같은 요청을 \(nextPreference)로 이어갑니다. 로그인은 변경하지 않습니다.",
+                                "\(ticket.provider) reached its usage limit. Continuing the same request on \(nextPreference). Sign-in is not changed."))
                     route = try await client.post("/v1/executions", body: next, as: RouteResponse.self)
                     guard let nextTicket = route.ticket, nextTicket.permissionProfile == ticket.permissionProfile,
                           nextPreference == "auto" ? ["claude", "codex"].contains(nextTicket.provider)
@@ -9630,7 +9719,8 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
             RuntimeActivity.emit(.recovering)
             route = try await client.post("/v1/executions", body: next, as: RouteResponse.self)
             guard route.ticket?.permissionProfile == ticket.permissionProfile else {
-                throw OS1Error.message("서버의 완료 판정과 실제 실행 증거가 일치하지 않아 결과를 채택하지 않았습니다. 요청과 원본은 보존했습니다.")
+                throw OS1Error.message(os1Tr("서버의 완료 판정과 실제 실행 증거가 일치하지 않아 결과를 채택하지 않았습니다. 요청과 원본은 보존했습니다.",
+                                             "The server's completion verdict does not match the actual execution evidence, so the result was not adopted. The request and the original are preserved."))
             }
             lastFailureNotice = nil
             continue
@@ -9645,7 +9735,8 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
             // A self-repair that did not pass staging is reported with its
             // exact diagnostic, never as a generic verdict mismatch.
             if let failure = attemptFailure, failure.hasPrefix(selfRepairFailurePrefix) { throw OS1Error.message(failure) }
-            throw OS1Error.message("서버의 완료 판정과 실제 실행 증거가 일치하지 않아 결과를 채택하지 않았습니다. 요청과 원본은 보존했습니다.")
+            throw OS1Error.message(os1Tr("서버의 완료 판정과 실제 실행 증거가 일치하지 않아 결과를 채택하지 않았습니다. 요청과 원본은 보존했습니다.",
+                                         "The server's completion verdict does not match the actual execution evidence, so the result was not adopted. The request and the original are preserved."))
         }
         try OwnerPolicyContext.snapshot?.verifyOriginal()
         let revasDisposition = route.status == "complete" && locallyAdoptable ? "adopted" : (route.ticket == nil ? "rejected" : "retry")
@@ -9658,7 +9749,8 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
         attemptRecorded = true
         if revasDisposition != "adopted",
            ExecutionSteering.currentSubmission.map({ !ExecutionSteering().inputs($0).isEmpty }) == true {
-            throw OS1Error.message("정정이 포함된 현재 턴의 결과 검증이 끝나지 않았습니다. 입력과 결과를 보존했으며 원래 요청을 자동 재실행하지 않았습니다.")
+            throw OS1Error.message(os1Tr("정정이 포함된 현재 턴의 결과 검증이 끝나지 않았습니다. 입력과 결과를 보존했으며 원래 요청을 자동 재실행하지 않았습니다.",
+                                         "Verification of the current turn, which includes a correction, did not finish. The input and result are preserved, and the original request was not re-run automatically."))
         }
         if revasDisposition != "adopted" { failedCandidates.insert(candidateKey) }
         if revasDisposition != "adopted",
@@ -9703,7 +9795,8 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
             recordRoutingInput(recoveryRequest, ticket: route.ticket, source: sourceContext)
             guard BackendRecovery.recoveryTicketMatches(provider: route.ticket?.provider, permission: route.ticket?.permissionProfile,
                 expectedProvider: recovery, expectedPermission: ticket.permissionProfile) else {
-                throw OS1Error.message("복구 경로가 요청한 백엔드·권한 범위와 일치하지 않아 대체 실행을 시작하지 않았습니다. 요청과 자료는 OS1에 보존했습니다.")
+                throw OS1Error.message(os1Tr("복구 경로가 요청한 백엔드·권한 범위와 일치하지 않아 대체 실행을 시작하지 않았습니다. 요청과 자료는 OS1에 보존했습니다.",
+                                             "The recovery route does not match the requested backend and permission scope, so no substitute run was started. The request and sources are preserved in OS1."))
             }
             sourceBackendSwitched = true
             recordExecutionFailure(ticket: ticket, model: model, effort: effort,
@@ -9752,9 +9845,11 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
         }
         if route.status == "failed" {
             if steps.isEmpty {
-                throw OS1Error.message("현재 모델·reasoning·권한 조합을 충족하는 실행 경로가 없어 모델 호출 전에 중단했습니다. 요청과 자료는 보존했습니다.")
+                throw OS1Error.message(os1Tr("현재 모델·reasoning·권한 조합을 충족하는 실행 경로가 없어 모델 호출 전에 중단했습니다. 요청과 자료는 보존했습니다.",
+                                             "No execution route satisfies the current model, reasoning and permission combination, so OS-1 stopped before calling a model. The request and sources are preserved."))
             }
-            throw OS1Error.message(lastLocalFailure.map { "실행 결과를 채택하지 못했습니다: \($0). 기존 자료와 대화는 유지했습니다." }
+            throw OS1Error.message(lastLocalFailure.map { os1Tr("실행 결과를 채택하지 못했습니다: \($0). 기존 자료와 대화는 유지했습니다.",
+                                                                "The run result was not adopted: \($0). Existing sources and the conversation are kept.") }
                 ?? "OS-1 verification rejected the result after governed retries")
         }
     }
@@ -9771,9 +9866,11 @@ func resumeDelivery(_ identifier: String) async throws -> RunSummary {
     let box = DeliveryOutbox()
     var record = try box.read(identifier)
     guard record.localRejection == nil else {
-        throw OS1Error.message("저장된 답변은 로컬 검증을 통과하지 못했습니다. 원문은 보존했으며, 서버 재접수로 검증 실패를 덮거나 작업을 다시 실행하지 않았습니다.")
+        throw OS1Error.message(os1Tr("저장된 답변은 로컬 검증을 통과하지 못했습니다. 원문은 보존했으며, 서버 재접수로 검증 실패를 덮거나 작업을 다시 실행하지 않았습니다.",
+                                     "The saved answer did not pass local verification. The original is preserved; OS-1 did not resubmit it to the server to cover the failure or re-run the task."))
     }
-    guard record.apiURL == config.apiURL, record.deviceID == id else { throw OS1Error.message("저장된 결과의 계정·서버 경계가 다릅니다. 재전송하지 않았습니다.") }
+    guard record.apiURL == config.apiURL, record.deviceID == id else { throw OS1Error.message(os1Tr("저장된 결과의 계정·서버 경계가 다릅니다. 재전송하지 않았습니다.",
+                                                                                                    "The saved result belongs to a different account/server boundary. It was not resent.")) }
     let step = try JSONDecoder().decode(RunStepSummary.self, from: record.step)
     let artifact = try JSONDecoder().decode(Artifact.self, from: record.artifact)
     let submission = try JSONDecoder().decode(ResultSubmission.self, from: record.submission)
@@ -9793,7 +9890,7 @@ func resumeDelivery(_ identifier: String) async throws -> RunSummary {
           // shares the upload's signature byte for byte.
           submission.usage != nil || upload.deviceSignature == submission.deviceSignature,
           submission.ticket.executionID + "-" + String(submission.ticket.sequence) == record.id,
-          try Base64URL.decode(upload.artifactBase64) == record.artifact else { throw OS1Error.message("저장된 결과 무결성 확인 실패") }
+          try Base64URL.decode(upload.artifactBase64) == record.artifact else { throw OS1Error.message(os1Tr("저장된 결과 무결성 확인 실패", "Saved result integrity check failed")) }
     let client = APIClient(config: config, token: try githubToken(), deviceID: id)
     RuntimeActivity.emit(.verifying, provider: step.provider, surface: step.surface, model: step.model, effort: step.effort, publicText: record.output)
     let route: RouteResponse
@@ -9814,7 +9911,8 @@ func resumeDelivery(_ identifier: String) async throws -> RunSummary {
     }
     guard route.status == "complete", step.exitCode == 0, !step.output.isEmpty,
           step.nativeRecord?.persistence == "verified" else {
-        throw OS1Error.message("저장된 답변이 검증에서 채택되지 않았습니다. 새 모델 실행은 하지 않았고 원본을 보존했습니다.")
+        throw OS1Error.message(os1Tr("저장된 답변이 검증에서 채택되지 않았습니다. 새 모델 실행은 하지 않았고 원본을 보존했습니다.",
+                                     "The saved answer was not adopted by verification. No new model run was started, and the original is preserved."))
     }
     if let application = record.driftApplication,
        application.eventID == DriftScope.digest("apply:\(submission.ticket.executionID):\(submission.ticket.sequence)"),

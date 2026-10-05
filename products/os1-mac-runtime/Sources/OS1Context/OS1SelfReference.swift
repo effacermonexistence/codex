@@ -25,27 +25,27 @@ public enum OS1SelfReference {
         #"/products/os1-mac-runtime"#,
     ]
     /// OS-1 surfaces a request can only mean inside OS-1.
-    static let surfaces: [(label: String, pattern: String)] = [
-        ("말풍선", #"말풍선|(?<![a-z0-9_])bubble(?![a-z0-9_])|버블"#),
-        ("채팅창", #"채팅\s*창|새\s*채팅|새로운\s*채팅|새\s*대화|새로운\s*대화|대화\s*창|입력\s*창|컴포저|(?<![a-z0-9_])composer(?![a-z0-9_])"#),
-        ("스티어링", #"스티어링|(?<![a-z0-9_])steering(?![a-z0-9_])"#),
-        ("대기열", #"대기열|(?:^|[^a-z가-힣])(?:q|큐)\s*(?:에|가|를|로|는|에서)?\s*(?:쌓|밀려|걸려|남아|들어가|넘어가)"#),
-        ("사이드바", #"사이드\s*바|(?<![a-z0-9_])sidebar(?![a-z0-9_])|세션\s*창|세창"#),
-        ("거버넌스", #"(?:rcc|os1|os-1)\s*(?:가버|가보|거버|가이브)|(?:거버넌스|가버넌스|governance)\s*(?:모니터|monitor|탭|tab|레이어|패널|panel|그래프|창)|액티비티\s*모니터\s*(?:처럼|같이)|activity monitor"#),
-        ("음성 입력", #"위스퍼|(?<![a-z0-9_])whisper(?![a-z0-9_])|받아쓰기|음성\s*입력"#),
-        ("라우팅", #"(?:코덱스|codex|클로드|claude|gpt|지피티|클러더|클로즈)[^.?!\n]{0,20}라우팅|(?:자동|니가|네가|너가)\s*라우팅|라우팅(?:을|이)?\s*(?:왜\s*)?(?:계속\s*)?(?:코덱스|codex|클로드|claude|gpt)\s*(?:한테|에게)|(?:코덱스|codex|클로드|claude|클러더)\s*(?:한테|에게)\s*(?:만|도)?\s*(?:넘기|넘겨|보내|시키)"#),
-        ("백엔드 창", #"(?:코덱스|codex|클로드|claude).{0,30}(?:앞으로|앞에|위로|맨\s*위)\s*(?:떠|뜨|튀어|나오|나와)|왼쪽(?:에|의)?\s*(?:있는\s*)?(?:코덱스|클로드|codex|claude)"#),
-    ]
+    static var surfaces: [(label: String, pattern: String)] { [
+        (os1Tr("말풍선", "chat bubble"), #"말풍선|(?<![a-z0-9_])bubble(?![a-z0-9_])|버블"#),
+        (os1Tr("채팅창", "chat window"), #"채팅\s*창|새\s*채팅|새로운\s*채팅|새\s*대화|새로운\s*대화|대화\s*창|입력\s*창|컴포저|(?<![a-z0-9_])composer(?![a-z0-9_])"#),
+        (os1Tr("스티어링", "steering"), #"스티어링|(?<![a-z0-9_])steering(?![a-z0-9_])"#),
+        (os1Tr("대기열", "queue"), #"대기열|(?:^|[^a-z가-힣])(?:q|큐)\s*(?:에|가|를|로|는|에서)?\s*(?:쌓|밀려|걸려|남아|들어가|넘어가)"#),
+        (os1Tr("사이드바", "sidebar"), #"사이드\s*바|(?<![a-z0-9_])sidebar(?![a-z0-9_])|세션\s*창|세창"#),
+        (os1Tr("거버넌스", "governance"), #"(?:rcc|os1|os-1)\s*(?:가버|가보|거버|가이브)|(?:거버넌스|가버넌스|governance)\s*(?:모니터|monitor|탭|tab|레이어|패널|panel|그래프|창)|액티비티\s*모니터\s*(?:처럼|같이)|activity monitor"#),
+        (os1Tr("음성 입력", "voice input"), #"위스퍼|(?<![a-z0-9_])whisper(?![a-z0-9_])|받아쓰기|음성\s*입력"#),
+        (os1Tr("라우팅", "routing"), #"(?:코덱스|codex|클로드|claude|gpt|지피티|클러더|클로즈)[^.?!\n]{0,20}라우팅|(?:자동|니가|네가|너가)\s*라우팅|라우팅(?:을|이)?\s*(?:왜\s*)?(?:계속\s*)?(?:코덱스|codex|클로드|claude|gpt)\s*(?:한테|에게)|(?:코덱스|codex|클로드|claude|클러더)\s*(?:한테|에게)\s*(?:만|도)?\s*(?:넘기|넘겨|보내|시키)"#),
+        (os1Tr("백엔드 창", "backend window"), #"(?:코덱스|codex|클로드|claude).{0,30}(?:앞으로|앞에|위로|맨\s*위)\s*(?:떠|뜨|튀어|나오|나와)|왼쪽(?:에|의)?\s*(?:있는\s*)?(?:코덱스|클로드|codex|claude)"#),
+    ] }
     /// The owner's standing measure: OS-1 must behave like Codex / Claude Code.
     static let parityPattern = #"(?:코덱스|코디스|코덱|codex|클로드\s*코드|claude\s*code|커로드\s*코드)\s*(?:기준|처럼|같이|보면|수준|컨버전스|(?:랑|와|하고|이랑)\s*.{0,12}(?:똑같|일치|통일|맞춰|같게|컨버전스))|like\s+(?:codex|claude\s+code)|(?:codex|claude\s+code)[- ](?:style|parity)"#
     /// Weaker hints: count only in combination.
-    static let hints: [(label: String, pattern: String)] = [
-        ("백엔드", #"백엔드|백겐드|백핸드|(?<![a-z0-9_])backend(?![a-z0-9_])"#),
-        ("토큰·완료율", #"코타|쿼타|quota|토큰\s*(?:절감|절약|감소|세이브)|테스크\s*완료율|태스크\s*완료율|task completion"#),
-        ("첨부", #"첨부|드래그|drag"#),
-        ("버튼", #"(?:멈춤|정지|전송|보내기)\s*버튼|stop button"#),
-        ("OS-1 동작", #"(?:니가|네가|너가|너는|넌)\s.{0,24}(?:라우팅|출력|답변|보내|실행|띄우|넘기)"#),
-    ]
+    static var hints: [(label: String, pattern: String)] { [
+        (os1Tr("백엔드", "backend"), #"백엔드|백겐드|백핸드|(?<![a-z0-9_])backend(?![a-z0-9_])"#),
+        (os1Tr("토큰·완료율", "tokens·completion rate"), #"코타|쿼타|quota|토큰\s*(?:절감|절약|감소|세이브)|테스크\s*완료율|태스크\s*완료율|task completion"#),
+        (os1Tr("첨부", "attachment"), #"첨부|드래그|drag"#),
+        (os1Tr("버튼", "button"), #"(?:멈춤|정지|전송|보내기)\s*버튼|stop button"#),
+        (os1Tr("OS-1 동작", "OS-1 behavior"), #"(?:니가|네가|너가|너는|넌)\s.{0,24}(?:라우팅|출력|답변|보내|실행|띄우|넘기)"#),
+    ] }
     static let deicticPattern = #"이거|이런|요거|여기|저거|봐봐|보이지|보여"#
     static let inlineImagePattern = #"\.(?:png|jpe?g|gif|webp|heic)(?![a-z0-9])"#
     /// Route-selection complaints name the pre-dispatch UI, not necessarily
@@ -134,13 +134,13 @@ public enum OS1SelfReference {
         let named = namedPatterns.contains { matches($0, text) }
         let hasImage = !PromptAttachments.imagePaths(in: request).isEmpty || matches(inlineImagePattern, text)
         let routeSelection = matches(routeSelectionPattern, text) && (hasImage || matches(routeSelectionProblemPattern, text))
-        let surfaceHits = surfaces.filter { matches($0.pattern, text) }.map(\.label) + (routeSelection ? ["실행 경로 선택"] : [])
+        let surfaceHits = surfaces.filter { matches($0.pattern, text) }.map(\.label) + (routeSelection ? [os1Tr("실행 경로 선택", "route selection")] : [])
         let parity = matches(parityPattern, text)
         let weak = hints.filter { matches($0.pattern, text) }.map(\.label)
         let showing = hasImage && matches(deicticPattern, text)
-        var signals = (named ? ["OS-1 이름"] : []) + surfaceHits
-        if parity { signals.append("Codex/Claude Code 기준 비교") }
-        if showing { signals.append("화면 첨부") }
+        var signals = (named ? [os1Tr("OS-1 이름", "OS-1 name")] : []) + surfaceHits
+        if parity { signals.append(os1Tr("Codex/Claude Code 기준 비교", "Codex/Claude Code parity")) }
+        if showing { signals.append(os1Tr("화면 첨부", "attached screenshot")) }
         signals += weak
         func blocked(_ reason: String) -> Inference { Inference(bound: false, signals: signals, blockedBy: reason) }
         guard named || parity || !surfaceHits.isEmpty || weak.count >= 2 || showing else {

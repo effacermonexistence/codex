@@ -7,6 +7,9 @@ import {createHash} from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+// These checks assert OS-1's Korean wording; pin the interface language for
+// every OS-1 process started below (the shipped default is English).
+process.env.OS1_INTERFACE_LANGUAGE = 'ko';
 const args = process.argv.slice(2);
 const option = key => args[args.indexOf(key) + 1];
 for (const name of ['--app', '--baseline-app', '--session', '--output-dir']) assert(args.includes(name) && option(name));

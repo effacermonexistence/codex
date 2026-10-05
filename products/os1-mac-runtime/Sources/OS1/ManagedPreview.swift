@@ -1,5 +1,6 @@
 import Foundation
 import Darwin
+import OS1Context
 import OS1HookSupport
 
 /// User-owned local previews outlive the backend tool's process group. No
@@ -143,7 +144,8 @@ enum ManagedPreview {
     static func deliveryFailure(output: String) async -> String? {
         for url in urls(in: output) {
             guard await healthy(url) else {
-                return "로컬 주소 \(url.absoluteString)의 HTTP 응답이 확인되지 않았습니다. 파일/실행 결과는 보존했습니다. preview-start로 서버 수명을 복구한 뒤 실제 페이지를 확인해야 합니다."
+                return os1Tr("로컬 주소 \(url.absoluteString)의 HTTP 응답이 확인되지 않았습니다. 파일/실행 결과는 보존했습니다. preview-start로 서버 수명을 복구한 뒤 실제 페이지를 확인해야 합니다.",
+                             "No HTTP response was confirmed from the local address \(url.absoluteString). Files and run results are preserved. Restore the server's lifetime with preview-start, then check the actual page.")
             }
         }
         return nil

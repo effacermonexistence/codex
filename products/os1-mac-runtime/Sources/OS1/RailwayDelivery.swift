@@ -80,7 +80,7 @@ enum RailwayDelivery {
             verified.append((receipt, evidence))
         }
         guard verified.count == 1, let (delivery, evidence) = verified.first else { return nil }
-        let output = """
+        let output = os1Tr("""
         Ben.
         LuaIsHere :3
 
@@ -91,7 +91,18 @@ enum RailwayDelivery {
         • 서비스·환경·도메인과 공개 proof 해시 일치
         • 모델 재실행 없음
         OS1_EFFECTS: applied
-        """
+        """, """
+        Ben.
+        LuaIsHere :3
+
+        Re-verified the Railway deployment in its current state. Nothing was redeployed.
+        • Public page: \(delivery.url)
+        • Deployment: \(delivery.deploymentID) · SUCCESS
+        • Public HTML matches the requested local preview
+        • Service, environment, domain and public proof hash match
+        • No model re-run
+        OS1_EFFECTS: applied
+        """)
         let id = UUID().uuidString.lowercased()
         let directory = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Application Support/OS-1/control-receipts")

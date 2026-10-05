@@ -112,9 +112,9 @@ public struct NativePublicRunLog: Codable, Equatable, Sendable {
         entries.map { entry in
             let name = ProviderSurface.resolveExecuted(rawSurface: entry.surface, provider: entry.provider)?.routeTitle
                 ?? (entry.provider == "claude" ? "Anthropic" : "OpenAI")
-            let label = entry.origin == .legacyUnattributed ? "출처 미확인 공개 출력 · 미채택"
-                : entry.kind == .candidate ? "수신 후보 출력 · 미채택"
-                : (entry.kind == .action ? "네이티브 동작" : "공개 진행 출력")
+            let label = entry.origin == .legacyUnattributed ? os1Tr("출처 미확인 공개 출력 · 미채택", "Public output of unconfirmed origin · not adopted")
+                : entry.kind == .candidate ? os1Tr("수신 후보 출력 · 미채택", "Received candidate output · not adopted")
+                : (entry.kind == .action ? os1Tr("네이티브 동작", "Native action") : os1Tr("공개 진행 출력", "Public progress output"))
             return name + " · " + label + "\n\n" + entry.text
         }.joined(separator: "\n\n")
     }

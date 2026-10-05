@@ -65,7 +65,8 @@ public struct ExecutionSteering: Sendable {
     public func enqueue(_ input: SteeringInput) throws {
         guard !input.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
               input.text.utf8.count <= 16_000, inputs(input.submissionID).count < 32 else {
-            throw NSError(domain: "OS1Steering", code: 1, userInfo: [NSLocalizedDescriptionKey: "정정 입력은 16KB·32개 이내여야 합니다. 입력을 보존했습니다."])
+            throw NSError(domain: "OS1Steering", code: 1, userInfo: [NSLocalizedDescriptionKey: os1Tr("정정 입력은 16KB·32개 이내여야 합니다. 입력을 보존했습니다.",
+                                                                                                      "Corrections are limited to 16KB each and 32 per run. Your input is preserved.")])
         }
         try encode(input, at: path(input.submissionID, input.id.uuidString + ".input.json"), exclusive: true)
     }

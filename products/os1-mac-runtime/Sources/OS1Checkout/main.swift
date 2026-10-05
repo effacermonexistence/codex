@@ -97,7 +97,7 @@ final class DecisionBox: @unchecked Sendable {
 
 func authenticateOwner(reason: String, timeout: TimeInterval) -> ApprovalDecision {
     let context = LAContext()
-    context.localizedCancelTitle = "거절"
+    context.localizedCancelTitle = os1Tr("거절", "Decline")
     context.touchIDAuthenticationAllowableReuseDuration = 0
     var error: NSError?
     guard context.canEvaluatePolicy(.deviceOwnerAuthentication, error: &error) else {
@@ -543,7 +543,8 @@ final class CheckoutBroker: @unchecked Sendable {
     private func ownerOnly(_ element: BrowserCheckout.Element) -> BrokerError {
         BrokerError(code: "owner_only_field",
                     message: "\(element.ref) (\(element.name)) takes card data, a password or a one-time code: only the owner types it.",
-                    ownerStep: "‘\(element.name)’ 칸은 직접 입력해 주세요.")
+                    ownerStep: os1Tr("‘\(element.name)’ 칸은 직접 입력해 주세요.",
+                                     "Please fill in the ‘\(element.name)’ field yourself."))
     }
 
     private func approvalRequired(_ element: BrowserCheckout.Element) -> BrokerError {

@@ -71,7 +71,8 @@ public struct SessionHandoff: Codable, Sendable {
 public enum SourceContextError: LocalizedError {
     case invalid
     public var errorDescription: String? {
-        "OS-1 연결 자료를 검증할 수 없습니다. 원문을 다시 가져와 주세요. 자료 없이 계속하지 않았습니다."
+        os1Tr("OS-1 연결 자료를 검증할 수 없습니다. 원문을 다시 가져와 주세요. 자료 없이 계속하지 않았습니다.",
+              "OS-1 cannot verify the connected material. Please fetch the original again. OS-1 did not continue without it.")
     }
 }
 

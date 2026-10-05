@@ -77,7 +77,7 @@ public struct BackendHealth: Codable, Equatable, Sendable {
             usable.windowResetsAt = window?.resetsAt
             return usable
         }
-        if !executablePresent { return Backend(state: .missing, detail: "codex 실행 파일 없음") }
+        if !executablePresent { return Backend(state: .missing, detail: os1Tr("codex 실행 파일 없음", "codex executable missing")) }
         if source.contains("사용량 한도") { return Backend(state: .quotaExhausted, detail: source, recoversAt: resetsAt) }
         if source.contains("기본 지시문") { return Backend(state: .contextBudget, detail: source) }
         return Backend(state: .probeFailed, detail: source)
@@ -132,8 +132,8 @@ public struct BackendHealth: Codable, Equatable, Sendable {
 
     public static func describe(_ date: Date) -> String {
         let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "ko_KR")
-        formatter.dateFormat = "M월 d일 HH:mm zzz"
+        formatter.locale = Locale(identifier: os1Tr("ko_KR", "en_US"))
+        formatter.dateFormat = os1Tr("M월 d일 HH:mm zzz", "MMM d, HH:mm zzz")
         return formatter.string(from: date)
     }
 
@@ -143,15 +143,18 @@ public struct BackendHealth: Codable, Equatable, Sendable {
         // why it cannot run at all, so a quota-window suffix here would be
         // unreachable. The window reaches the owner through `os1
         // backend-health` and through the burn notice on the run itself.
-        case .usable: return "\(name): 사용 가능"
+        case .usable: return os1Tr("\(name): 사용 가능", "\(name): available")
         case .loggedOut: return os1Tr("\(name): CLI 로그인 미확인 — 공식 로그인 승인이 필요합니다. 로그인 창을 여는 순간 기존 세션이 지워지므로, 연 창은 끝까지 완료해야 합니다.",
             "\(name): CLI reports no active sign-in — official login approval is required. Opening the login clears the stored session, so a window that was opened has to be finished.")
         case .quotaExhausted:
-            let reset = backend.recoversAt.map { " — \(describe($0))에 복구" } ?? " — 복구 시각 미확인"
-            return "\(name): 사용량 한도 소진\(reset)"
-        case .contextBudget: return "\(name): 남은 모델이 계정 기본 지시문을 담지 못해 제외됨"
-        case .missing: return "\(name): 실행 파일 없음"
-        case .probeFailed: return "\(name): 상태 확인 실패" + (backend.detail.map { "(\($0))" } ?? "")
+            let reset = backend.recoversAt.map { os1Tr(" — \(describe($0))에 복구", " — recovers \(describe($0))") }
+                ?? os1Tr(" — 복구 시각 미확인", " — recovery time unconfirmed")
+            return os1Tr("\(name): 사용량 한도 소진\(reset)", "\(name): usage quota exhausted\(reset)")
+        case .contextBudget: return os1Tr("\(name): 남은 모델이 계정 기본 지시문을 담지 못해 제외됨",
+                                          "\(name): excluded — the remaining models cannot hold the account's base instructions")
+        case .missing: return os1Tr("\(name): 실행 파일 없음", "\(name): executable not found")
+        case .probeFailed: return os1Tr("\(name): 상태 확인 실패", "\(name): status check failed")
+            + (backend.detail.map { os1Tr("(\($0))", " (\($0))") } ?? "")
         case .disabled: return os1Tr("\(name): 설정에서 꺼짐", "\(name): turned off in Settings")
         }
     }
@@ -160,38 +163,46 @@ public struct BackendHealth: Codable, Equatable, Sendable {
 
     /// One-paragraph activity text while OS-1 repairs.
     public var publicSummary: String {
-        "사용 가능한 백엔드가 없습니다. " + diagnosisLines.joined(separator: " · ") + ". " + repairPlanText
+        os1Tr("사용 가능한 백엔드가 없습니다. ", "No backend is usable. ") + diagnosisLines.joined(separator: " · ") + ". " + repairPlanText
     }
 
     public var repairPlanText: String {
         var parts: [String] = []
         for step in repairSteps {
             switch step {
-            case .reconnectClaude: parts.append("터미널 창에 공식 Claude 로그인을 열어 승인·코드 입력을 기다립니다")
-            case .waitCodexQuota: parts.append("Codex 한도 복구" + (codex.recoversAt.map { "(\(Self.describe($0)))" } ?? "") + "를 기다립니다")
-            case .waitClaudeQuota: parts.append("Claude 한도 복구" + (claude.recoversAt.map { "(\(Self.describe($0)))" } ?? "") + "를 기다립니다")
+            case .reconnectClaude: parts.append(os1Tr("터미널 창에 공식 Claude 로그인을 열어 승인·코드 입력을 기다립니다",
+                                                      "opens the official Claude login in a Terminal window and waits for approval and the code"))
+            case .waitCodexQuota: parts.append(os1Tr("Codex 한도 복구" + (codex.recoversAt.map { "(\(Self.describe($0)))" } ?? "") + "를 기다립니다",
+                                                     "waits for the Codex quota to recover" + (codex.recoversAt.map { " (\(Self.describe($0)))" } ?? "")))
+            case .waitClaudeQuota: parts.append(os1Tr("Claude 한도 복구" + (claude.recoversAt.map { "(\(Self.describe($0)))" } ?? "") + "를 기다립니다",
+                                                      "waits for the Claude quota to recover" + (claude.recoversAt.map { " (\(Self.describe($0)))" } ?? "")))
             }
         }
-        return parts.isEmpty ? "OS1이 스스로 고칠 수 있는 항목이 없습니다." : "OS1 자가 복구: " + parts.joined(separator: ", ") + "."
+        return parts.isEmpty ? os1Tr("OS1이 스스로 고칠 수 있는 항목이 없습니다.", "There is nothing OS1 can fix by itself.")
+            : os1Tr("OS1 자가 복구: ", "OS1 self-repair: ") + parts.joined(separator: ", ") + "."
     }
 
     /// Message preserved with the held request after repair did not finish.
     public func holdMessage(repairNote: String?) -> String {
-        var lines = ["사용 가능한 백엔드가 없어 모델 호출 없이 사전 검사에서 중단했습니다. 요청은 보존했습니다."]
+        var lines = [os1Tr("사용 가능한 백엔드가 없어 모델 호출 없이 사전 검사에서 중단했습니다. 요청은 보존했습니다.",
+                           "No backend is usable, so preflight stopped without calling a model. The request is preserved.")]
         lines += diagnosisLines.map { "- " + $0 }
-        if let repairNote, !repairNote.isEmpty { lines.append("자가 복구 결과: " + repairNote) }
-        lines.append("백엔드가 돌아오면 OS1이 이 요청을 자동으로 이어서 실행합니다."
-            + (earliestRecovery.map { " 가장 이른 복구 예정: \(Self.describe($0))." } ?? ""))
+        if let repairNote, !repairNote.isEmpty { lines.append(os1Tr("자가 복구 결과: ", "Self-repair result: ") + repairNote) }
+        lines.append(os1Tr("백엔드가 돌아오면 OS1이 이 요청을 자동으로 이어서 실행합니다.",
+                           "When a backend is back, OS1 resumes this request automatically.")
+            + (earliestRecovery.map { os1Tr(" 가장 이른 복구 예정: \(Self.describe($0)).",
+                                            " Earliest expected recovery: \(Self.describe($0)).") } ?? ""))
         return lines.joined(separator: "\n")
     }
 
     /// Status line the app shows while waiting for a recovery.
     public var waitingStatus: String {
         var reasons: [String] = []
-        if claude.state == .loggedOut { reasons.append("Claude 로그인 승인") }
-        if codex.state == .quotaExhausted { reasons.append("Codex 한도 복구" + (codex.recoversAt.map { "(\(Self.describe($0)))" } ?? "")) }
-        if claude.state == .quotaExhausted { reasons.append("Claude 한도 복구") }
-        let trigger = reasons.isEmpty ? "백엔드 복구" : reasons.joined(separator: " 또는 ")
-        return "백엔드 복구 대기 · \(trigger) 시 자동 재실행"
+        if claude.state == .loggedOut { reasons.append(os1Tr("Claude 로그인 승인", "Claude sign-in approval")) }
+        if codex.state == .quotaExhausted { reasons.append(os1Tr("Codex 한도 복구" + (codex.recoversAt.map { "(\(Self.describe($0)))" } ?? ""),
+                                                                 "Codex quota recovery" + (codex.recoversAt.map { " (\(Self.describe($0)))" } ?? ""))) }
+        if claude.state == .quotaExhausted { reasons.append(os1Tr("Claude 한도 복구", "Claude quota recovery")) }
+        let trigger = reasons.isEmpty ? os1Tr("백엔드 복구", "backend recovery") : reasons.joined(separator: os1Tr(" 또는 ", " or "))
+        return os1Tr("백엔드 복구 대기 · \(trigger) 시 자동 재실행", "Waiting for backend recovery · reruns automatically on \(trigger)")
     }
 }

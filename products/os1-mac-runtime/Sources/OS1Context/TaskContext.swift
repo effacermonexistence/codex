@@ -455,28 +455,30 @@ public extension TaskContext.ProjectBaseline {
     var baselineLines: [String] {
         var lines: [String] = []
         if let record = recoveryBaseline {
-            var parts = ["복구 기준점(Gold 포인터): \(record.id)"]
+            var parts = [os1Tr("복구 기준점(Gold 포인터): \(record.id)", "Recovery baseline (Gold pointer): \(record.id)")]
             if let sha = record.sha256 { parts.append("sha256 \(sha.prefix(12))…") }
-            if let at = record.recordedAt { parts.append("기록 \(at)") }
+            if let at = record.recordedAt { parts.append(os1Tr("기록 \(at)", "recorded \(at)")) }
             lines.append(parts.joined(separator: " · "))
         } else {
-            lines.append("복구 기준점(Gold 포인터): 기록 없음")
+            lines.append(os1Tr("복구 기준점(Gold 포인터): 기록 없음", "Recovery baseline (Gold pointer): none recorded"))
         }
         if let record = operatingRecord {
-            var parts = ["기록된 운영 릴리스: \(record.id)"]
+            var parts = [os1Tr("기록된 운영 릴리스: \(record.id)", "Recorded operating release: \(record.id)")]
             if let key = record.key { parts.append("R2 \(key)") }
             if let sha = record.sha256 { parts.append("sha256 \(sha.prefix(12))…") }
-            if let bytes = record.bytes { parts.append("\(bytes)바이트") }
-            if let at = record.recordedAt { parts.append("기록 \(at)") }
-            parts.append("실제 배포 상태 조회 아님")
+            if let bytes = record.bytes { parts.append(os1Tr("\(bytes)바이트", "\(bytes) bytes")) }
+            if let at = record.recordedAt { parts.append(os1Tr("기록 \(at)", "recorded \(at)")) }
+            parts.append(os1Tr("실제 배포 상태 조회 아님", "live deployment state not queried"))
             lines.append(parts.joined(separator: " · "))
         } else {
-            lines.append("기록된 운영 릴리스: 기록 없음")
+            lines.append(os1Tr("기록된 운영 릴리스: 기록 없음", "Recorded operating release: none recorded"))
         }
         if let record = liveVerified, let at = record.verifiedAt {
-            lines.append("운영 서버 실제 상태: \(record.id) · 확인 \(ISO8601DateFormatter().string(from: at))")
+            lines.append(os1Tr("운영 서버 실제 상태: \(record.id) · 확인 \(ISO8601DateFormatter().string(from: at))",
+                               "Live server state: \(record.id) · verified \(ISO8601DateFormatter().string(from: at))"))
         } else {
-            lines.append("운영 서버 실제 상태: 미확인 (운영 서버를 조회하지 않았습니다)")
+            lines.append(os1Tr("운영 서버 실제 상태: 미확인 (운영 서버를 조회하지 않았습니다)",
+                               "Live server state: unverified (the live server was not queried)"))
         }
         return lines
     }
@@ -710,7 +712,7 @@ public enum ProjectAdapterRegistry {
     }
     public static func label(for projectID: String) -> String {
         switch projectID {
-        case "scv-instagram": return "Instagram 자동화"
+        case "scv-instagram": return os1Tr("Instagram 자동화", "Instagram automation")
         case "os1-clodex": return "OS-1 CLODEX"
         default: return projectID
         }
@@ -1149,6 +1151,7 @@ public enum OS1ReceiptText {
         "revas adopted", "os-1 control verified", "native record verified", "native session saved",
         "external app not opened", "실행 기록 확인됨", "실행 기록 미확인", "세부 정보 접기", "세부 정보 펼치기",
         "백엔드 실행 기록의 확인 여부입니다", "source snapshot delivered:", "· read only", "· 읽기 전용",
+        "execution record verified", "execution record unverified", "whether the backend's execution record was verified",
         "standard claude backend", "standard codex backend", "efficient claude backend", "efficient codex backend",
         "deep claude backend", "deep codex backend",
     ]

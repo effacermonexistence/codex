@@ -157,7 +157,7 @@ enum BackendAccountCommands {
             print(provider == "claude" ? "Claude Code" : "Codex")
             for account in BackendAccounts.accounts(provider: provider, in: book) {
                 let active = book.active[provider] == account.id ? "*" : " "
-                let state = account.signedIn ? "로그인됨" : "로그아웃"
+                let state = account.signedIn ? os1Tr("로그인됨", "signed in") : os1Tr("로그아웃", "signed out")
                 let who = account.signedInAs.map { " · \($0)" } ?? ""
                 print("  \(active) \(account.label) [\(account.id)] — \(state)\(who)")
             }
@@ -220,7 +220,8 @@ enum BackendAccountCommands {
                      : "OS1_ACCOUNT_SIGNED_OUT_UNVERIFIED \(provider) \(target)")
         if !alsoSignedOut.isEmpty {
             print("OS1_ACCOUNT_SHARED_CREDENTIAL \(provider) " + alsoSignedOut.map(\.label).joined(separator: ", "))
-            throw OS1Error.message("이 Mac은 \(provider == "claude" ? "Claude Code" : "Codex") 자격 증명을 계정끼리 공유합니다. 로그아웃하면서 다음 계정도 함께 로그아웃됐습니다: "
+            throw OS1Error.message(os1Tr("이 Mac은 \(provider == "claude" ? "Claude Code" : "Codex") 자격 증명을 계정끼리 공유합니다. 로그아웃하면서 다음 계정도 함께 로그아웃됐습니다: ",
+                                         "This Mac shares one \(provider == "claude" ? "Claude Code" : "Codex") credential across its accounts. Signing out also signed out these accounts: ")
                 + alsoSignedOut.map(\.label).joined(separator: ", "))
         }
     }
@@ -291,7 +292,8 @@ enum BackendAccountCommands {
         BackendAccountState.shared.invalidate()
         guard state.signedIn else {
             if case .failure(let error) = outcome, !(error is ConnectionFailure) { throw error }
-            throw OS1Error.message("\(provider == "claude" ? "Claude Code" : "Codex") 로그인이 확인되지 않았습니다. 브라우저에서 승인을 마쳤는지 확인하고 다시 시도하세요.")
+            throw OS1Error.message(os1Tr("\(provider == "claude" ? "Claude Code" : "Codex") 로그인이 확인되지 않았습니다. 브라우저에서 승인을 마쳤는지 확인하고 다시 시도하세요.",
+                                         "The \(provider == "claude" ? "Claude Code" : "Codex") sign-in was not confirmed. Check that you finished approving it in the browser, then try again."))
         }
         print("OS1_ACCOUNT_SIGNED_IN \(provider) \(account.id)")
     }

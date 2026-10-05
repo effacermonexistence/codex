@@ -94,9 +94,12 @@ public enum TaskWorkflow: String, Codable, Sendable, CaseIterable {
 
     public var progressText: String {
         switch self {
-        case .architecture: return "1/3 제작 준비 · 구현 계약을 정리한 뒤 자동으로 제작합니다."
-        case .implementation: return "2/3 제작 · 승인된 작업 공간의 파일을 만들고 수정합니다."
-        case .verification: return "3/3 검증 · 생성된 파일과 실행 결과를 확인합니다."
+        case .architecture: return os1Tr("1/3 제작 준비 · 구현 계약을 정리한 뒤 자동으로 제작합니다.",
+                                         "1/3 Preparing the build · drafting the implementation contract, then building automatically.")
+        case .implementation: return os1Tr("2/3 제작 · 승인된 작업 공간의 파일을 만들고 수정합니다.",
+                                           "2/3 Building · creating and editing files in the approved workspace.")
+        case .verification: return os1Tr("3/3 검증 · 생성된 파일과 실행 결과를 확인합니다.",
+                                         "3/3 Verifying · checking the generated files and the run results.")
         }
     }
 

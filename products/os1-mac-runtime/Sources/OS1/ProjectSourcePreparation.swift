@@ -5,7 +5,8 @@ import OS1Context
 /// and receipt. The historical R2EvidenceBundle transport name is not a claim
 /// that locally registered source was downloaded from R2.
 func registeredSCVProjectEvidence(live: SCVLiveRelease) throws -> R2EvidenceBundle? {
-    RuntimeActivity.emit(.source, publicText: "운영 버전과 등록된 원본의 파일 해시를 대조하고 있습니다.")
+    RuntimeActivity.emit(.source, publicText: os1Tr("운영 버전과 등록된 원본의 파일 해시를 대조하고 있습니다.",
+                                                    "Comparing the production version with the registered source's file hashes."))
     guard let stored = try RegisteredProjectSource.lookup(live: live) else { return nil }
     let verified = stored.verified
     var originals: [(path: String, text: String)] = []
@@ -81,7 +82,7 @@ func sourcePreparationPending(live: SCVLiveRelease, error: Error, state: TaskCon
     // Preserve the old source and baseline as old evidence. They must not be
     // relabelled as the new live source while acquisition remains pending.
     let reason = (error as? OS1Error)?.description ?? (error as? LocalizedError)?.errorDescription ??
-        "운영 버전과 일치하는 소스를 확보하지 못했습니다."
+        os1Tr("운영 버전과 일치하는 소스를 확보하지 못했습니다.", "No source matching the production version could be acquired.")
     context.sourcePreparation = SourcePreparationState(live: live, reason: reason)
     context.blockers.removeAll { $0.hasPrefix("source_preparation:") }
     context.blockers.append("source_preparation: " + live.id + " — " + reason)
@@ -89,15 +90,23 @@ func sourcePreparationPending(live: SCVLiveRelease, error: Error, state: TaskCon
     context.record(execution: TaskContext.ExecutionRecord(executionID: executionID, provider: "local",
         stage: "source_pending", startedAt: startedAt, endedAt: Date(), sideEffects: .none,
         adoption: .pending, contextRevision: context.latestSemanticRevision))
-    let output = """
+    let output = os1Tr("""
     현재 운영은 **\(live.id)**입니다. 해당 버전의 원본 확보가 아직 끝나지 않아 수정 준비를 완료하지 못했습니다.
 
     \(reason)
 
     요청과 확인한 운영 버전은 OS1에 보존했습니다. 일치하는 원본이 OS1에 등록되면 준비 요청을 이어갑니다. R2를 직접 지정했거나 원격 게시만 바뀐 경우에는 이 화면에서 다시 확인할 수 있습니다.
     과거 버전이나 공개 미러로 대체하지 않았고, 모델 호출·코드 수정·배포는 하지 않았습니다.
-    """
-    RuntimeActivity.emit(.source, publicText: "운영 원본 확보 대기 · 요청과 확인한 버전을 OS1에 보존합니다.")
+    """, """
+    Production is currently **\(live.id)**. Acquiring the source for that version has not finished, so edit preparation is not complete.
+
+    \(reason)
+
+    The request and the confirmed production version are preserved in OS1. Preparation resumes when a matching source is registered in OS1. If you named R2 directly or only the remote publication changed, you can check again from this screen.
+    No older version or public mirror was substituted, and no model call, code change or deployment was made.
+    """)
+    RuntimeActivity.emit(.source, publicText: os1Tr("운영 원본 확보 대기 · 요청과 확인한 버전을 OS1에 보존합니다.",
+                                                    "Waiting for the production source · the request and the confirmed version are preserved in OS1."))
     return RunSummary(status: "source_pending", steps: [RunStepSummary(sequence: 1, provider: "local",
         action: "source_preparation_pending", model: nil, effort: "none", revasDisposition: "pending",
         sessionID: executionID, permissionProfile: "local_control", exitCode: 0, output: output, stderr: "",
