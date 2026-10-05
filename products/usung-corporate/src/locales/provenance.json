@@ -152,5 +152,6 @@
     "en",
     "ko"
   ],
-  "machine_translated_languages": 29
+  "machine_translated_languages": 29,
+  "home_v26_label_update": "The fixed AI & AX division name replaces the first item of the existing translated three-business label; all remaining translated names are preserved."
 }

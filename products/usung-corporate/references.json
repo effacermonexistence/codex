@@ -14,7 +14,9 @@
     "https://www.figure.ai/",
     "https://www.fieldai.com/",
     "https://www.geckorobotics.com/",
-    "https://www.skild.ai/"
+    "https://www.skild.ai/",
+    "https://www.hitachi.com/en/",
+    "https://hexagon.com/"
   ],
   "assets": [
     {
@@ -409,7 +411,7 @@
       "file": "assets/media/usung-field-team-v25.webp",
       "sourcePage": "https://suffolk.com/",
       "sourceAsset": "https://suffolk.com/wp-content/uploads/2025/07/NAPLES_BEACH_CLUB-12.png",
-      "used": true,
+      "used": false,
       "bytes": 1698146,
       "sha256": "671a3d5516d5aaf426f2aeb2a8ea8cca7e417d6a8032cbef49033408fbf65101",
       "servedBytes": 1698146,
@@ -468,10 +470,41 @@
       "servedSha256": "cbe0e0548bb6c87df4d4ff4a82c13df6da29961be5f8da514a35c85906694067",
       "servedTransformation": "sign company pigment local masks; geometry, lighting, camera motion, background, visitors, instructions retained. Structural and tablet footage unedited before crop/resize/encode.; selected original structural crop and source-frame montage.",
       "acquisition": "Preserved original official source, deterministic local editing"
+    },
+    {
+      "file": "assets/media/usung-field-team-v26.webp",
+      "sourcePage": "https://suffolk.com/",
+      "sourceAsset": "https://suffolk.com/wp-content/uploads/2025/07/NAPLES_BEACH_CLUB-12.png",
+      "used": true,
+      "bytes": 1695026,
+      "sha256": "00855895d5a7f8184cde8de85882be72d163078269db668ea5e4d8d6116f8812",
+      "servedBytes": 1695026,
+      "servedSha256": "00855895d5a7f8184cde8de85882be72d163078269db668ea5e4d8d6116f8812",
+      "servedTransformation": "Compact approved U replaces both stretched front wordmarks in existing helmet print footprints; source curvature, photographed illumination, grain and focus matched; confirmed red company-print remnant removed locally. Existing vest and side sticker preserved exactly; original scene retained; no generation.",
+      "acquisition": "Preserved original official source, deterministic local editing",
+      "previousServed": {
+        "file": "assets/media/usung-field-team-v25.webp",
+        "sha256": "671a3d5516d5aaf426f2aeb2a8ea8cca7e417d6a8032cbef49033408fbf65101"
+      }
     }
   ],
   "layoutImplementation": "HTML/CSS adapted from approved reference compositions; acquired graphic and footage files used directly",
-  "brandingRevision": "2026-10-04-real-footage-v25",
+  "brandingRevision": "2026-10-04-home-divisions-v26",
   "photographicSceneGeneration": false,
-  "abstractGlassArtwork": "Existing previously requested glass extension; unchanged in this source-photography correction"
+  "abstractGlassArtwork": "Existing previously requested glass extension; unchanged in this source-photography correction",
+  "homeRevision": {
+    "revision": "2026-10-04-home-divisions-v26",
+    "reviewedReferences": [
+      "https://www.hitachi.com/en/",
+      "https://hexagon.com/"
+    ],
+    "adaptation": "Independent open business chapters with large media and concise explanatory copy; all three divisions available through natural scrolling.",
+    "approvedOpeningRetained": true,
+    "media": [
+      "assets/generated/ai-glass-extended-v1.png",
+      "assets/media/usung-construction-film-v25.mp4",
+      "assets/references/usung-field-robots-v23.mp4"
+    ],
+    "newSceneGeneration": false
+  }
 }

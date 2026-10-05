@@ -1,5 +1,5 @@
 {
-  "revision": "2026-10-04-real-footage-v25",
+  "revision": "2026-10-04-home-divisions-v26",
   "scope": "Currently displayed reference media on Home, AI, Smart Construction and Physical AI, including video playback and posters",
   "approvedMark": "public/assets/brand/usung-wordmark.svg",
   "photoEditor": "Non-generative source-pixel compositing, local printed-mark masks and lossless WebP",
@@ -177,29 +177,261 @@
     },
     {
       "source": "assets/media/suffolk-naples.jpg",
-      "served": "assets/media/usung-field-team-v25.webp",
-      "servedBytes": 1698146,
-      "servedSha256": "671a3d5516d5aaf426f2aeb2a8ea8cca7e417d6a8032cbef49033408fbf65101",
-      "transformation": "Local source-pixel printed-mark repair with native perspective, source ink, focus and texture; safety/operating labels preserved",
+      "served": "assets/media/usung-field-team-v26.webp",
+      "servedBytes": 1695026,
+      "servedSha256": "00855895d5a7f8184cde8de85882be72d163078269db668ea5e4d8d6116f8812",
+      "transformation": "Compact approved U replaces both stretched front wordmarks in existing helmet print footprints; source curvature, photographed illumination, grain and focus matched; confirmed red company-print remnant removed locally. Existing vest and side sticker preserved exactly; original scene retained; no generation.",
       "verification": {
-        "source": "assets/media/suffolk-naples.jpg",
-        "served": "assets/media/usung-field-team-v25.webp",
+        "sourceFile": "products/usung-corporate/public/assets/media/suffolk-naples.jpg",
+        "baselineFile": "products/usung-corporate/public/assets/media/usung-field-team-v25.webp",
+        "candidateFile": "outputs/website/usung-rework-v26/edited/usung-field-team-v26.webp",
         "sourceSha256": "2a18b8507d87814098d8e7e69fa8d35738d2db0d7209a748b9e8bc6e89461aae",
-        "servedSha256": "671a3d5516d5aaf426f2aeb2a8ea8cca7e417d6a8032cbef49033408fbf65101",
+        "baselineSha256": "671a3d5516d5aaf426f2aeb2a8ea8cca7e417d6a8032cbef49033408fbf65101",
+        "candidateSha256": "00855895d5a7f8184cde8de85882be72d163078269db668ea5e4d8d6116f8812",
         "dimensions": [
           2200,
           1466
         ],
-        "outsideMaskIdentical": true,
-        "sourceScenePreserved": true,
+        "changedVersusV25Pixels": 6504,
+        "outsideRepairMaskEqualsV25": true,
+        "outsideAllBrandMasksEqualsSource": true,
         "losslessEncoding": true,
-        "priorServed": "assets/media/usung-field-team-v24.webp",
-        "transformation": "Local source-pixel printed-mark repair with native perspective, source ink, focus and texture; safety/operating labels preserved",
+        "preservedExactly": {
+          "vest": true,
+          "yellow-side-sticker": true,
+          "man-tab-hardware": true,
+          "faces": true
+        },
+        "repairs": [
+          {
+            "name": "man",
+            "oldPrintPolygon": [
+              [
+                771,
+                216
+              ],
+              [
+                829,
+                230
+              ],
+              [
+                870,
+                251
+              ],
+              [
+                902,
+                282
+              ],
+              [
+                939,
+                349
+              ],
+              [
+                919,
+                334
+              ],
+              [
+                885,
+                304
+              ],
+              [
+                788,
+                271
+              ]
+            ],
+            "nativeUQuadrilateral": [
+              [
+                808,
+                238
+              ],
+              [
+                838,
+                248
+              ],
+              [
+                851,
+                278
+              ],
+              [
+                818,
+                267
+              ]
+            ],
+            "sourceGrainDonor": [
+              696,
+              236,
+              748,
+              292
+            ],
+            "printFocusSigma": 1.15,
+            "changedPixels": 3655,
+            "surfaceSamples": 6823
+          },
+          {
+            "name": "woman",
+            "oldPrintPolygon": [
+              [
+                1438,
+                187
+              ],
+              [
+                1490,
+                187
+              ],
+              [
+                1520,
+                201
+              ],
+              [
+                1549,
+                223
+              ],
+              [
+                1580,
+                269
+              ],
+              [
+                1553,
+                255
+              ],
+              [
+                1524,
+                244
+              ],
+              [
+                1458,
+                231
+              ]
+            ],
+            "nativeUQuadrilateral": [
+              [
+                1470,
+                198
+              ],
+              [
+                1499,
+                205
+              ],
+              [
+                1511,
+                228
+              ],
+              [
+                1479,
+                220
+              ]
+            ],
+            "sourceGrainDonor": [
+              1350,
+              198,
+              1416,
+              252
+            ],
+            "printFocusSigma": 1.1,
+            "changedPixels": 2803,
+            "surfaceSamples": 4801
+          }
+        ],
         "sourcePage": "https://suffolk.com/",
         "sourceAsset": "https://suffolk.com/wp-content/uploads/2025/07/NAPLES_BEACH_CLUB-12.png",
-        "sourceUrlRecovery": "Official URL and image matching rechecked in v25; earlier asset hashes preserved"
+        "nativeLogoAsset": "outputs/website/usung-reference-branding-v22/audit/black-symbol.png",
+        "nativeDesignPink": "#FF0F6F",
+        "pixelTransform": "Native U perspective projection; deterministic interpolation of existing helmet print; source-photo grain and photographed local illumination; no generative imagery",
+        "claim": "Original photo scene retained. Existing v25 front wordmarks replaced by approved compact native U using reconstructed local helmet light and source-photo grain; accepted vest and side sticker unchanged. Candidate requires visual review.",
+        "finalAdditionalRepair": {
+          "target": "Confirmed original SUFFOLK red pigment remnant at woman front helmet right curve",
+          "regionPolygon": [
+            [
+              1513,
+              196
+            ],
+            [
+              1542,
+              210
+            ],
+            [
+              1545,
+              218
+            ],
+            [
+              1518,
+              205
+            ]
+          ],
+          "changedPixels": 46,
+          "blueAndGreenChannelsUnchanged": true,
+          "skyAndCurveGeometryRetained": true,
+          "allOtherPixelsEqualParentReviewedCandidate": true,
+          "mask": "outputs/website/usung-rework-v26/audit/woman-rim-print-remnant-mask.png"
+        },
+        "repairMask": "outputs/website/usung-rework-v26/audit/naples-v26-change-mask.png",
+        "sourceMask": "outputs/website/usung-rework-v26/audit/naples-v26-source-mask.png",
+        "unmodifiedOriginalHelmetParts": {
+          "man-blue-triangle-hardware": {
+            "box": [
+              534,
+              210,
+              701,
+              303
+            ],
+            "candidateEqualsOriginalPixels": true
+          },
+          "man-small-side-shield": {
+            "box": [
+              463,
+              282,
+              548,
+              359
+            ],
+            "candidateEqualsOriginalPixels": true
+          },
+          "woman-blue-triangle-hardware": {
+            "box": [
+              1222,
+              211,
+              1380,
+              310
+            ],
+            "candidateEqualsOriginalPixels": true
+          },
+          "woman-side-buckle-hardware": {
+            "box": [
+              1103,
+              312,
+              1184,
+              412
+            ],
+            "candidateEqualsOriginalPixels": true
+          }
+        },
+        "unmodifiedOriginalHelmetPartsInterpretation": "These dark blue triangular vent/accessory areas and side hardware occupy different original positions from the front rectangular blue/red SUFFOLK contractor decal. The small manufacturer-like text is too blurred to identify with certainty; it is unchanged. No SUFFOLK logo is legible in these original hardware regions."
       },
-      "editor": "Deterministic source-pixel compositing; no scene generation"
+      "editor": "Deterministic source-pixel compositing; no scene generation",
+      "previousServed": {
+        "file": "assets/media/usung-field-team-v25.webp",
+        "bytes": 1698146,
+        "sha256": "671a3d5516d5aaf426f2aeb2a8ea8cca7e417d6a8032cbef49033408fbf65101",
+        "transformation": "Local source-pixel printed-mark repair with native perspective, source ink, focus and texture; safety/operating labels preserved",
+        "verification": {
+          "source": "assets/media/suffolk-naples.jpg",
+          "served": "assets/media/usung-field-team-v25.webp",
+          "sourceSha256": "2a18b8507d87814098d8e7e69fa8d35738d2db0d7209a748b9e8bc6e89461aae",
+          "servedSha256": "671a3d5516d5aaf426f2aeb2a8ea8cca7e417d6a8032cbef49033408fbf65101",
+          "dimensions": [
+            2200,
+            1466
+          ],
+          "outsideMaskIdentical": true,
+          "sourceScenePreserved": true,
+          "losslessEncoding": true,
+          "priorServed": "assets/media/usung-field-team-v24.webp",
+          "transformation": "Local source-pixel printed-mark repair with native perspective, source ink, focus and texture; safety/operating labels preserved",
+          "sourcePage": "https://suffolk.com/",
+          "sourceAsset": "https://suffolk.com/wp-content/uploads/2025/07/NAPLES_BEACH_CLUB-12.png",
+          "sourceUrlRecovery": "Official URL and image matching rechecked in v25; earlier asset hashes preserved"
+        }
+      },
+      "durableVerification": "baseline/original-media-v26/helmet-repair-verification.json"
     },
     {
       "source": "assets/media/built-trenching.jpg",
@@ -331,7 +563,7 @@
         },
         "sourceRangesSecondsExclusiveEnd": [
           [
-            0.0,
+            0,
             7.549208333333333
           ],
           [
@@ -388,7 +620,7 @@
               0,
               119
             ],
-            "seconds": 5.0,
+            "seconds": 5,
             "operation": "local sign company pigment replacement",
             "nativeCropXYWH": [
               0,
@@ -407,7 +639,7 @@
               120,
               167
             ],
-            "seconds": 2.0,
+            "seconds": 2,
             "operation": "unaltered source crop",
             "nativeCropXYWH": [
               2208,
@@ -458,7 +690,7 @@
             1920,
             3
           ],
-          "fps": 24.0,
+          "fps": 24,
           "postersFromEncodedFrames": [
             0,
             120
