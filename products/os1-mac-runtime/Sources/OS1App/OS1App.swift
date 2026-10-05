@@ -10307,22 +10307,23 @@ private struct OS1SettingsView: View {
 
     var body: some View {
         Form {
-            Section(os1Tr("언어", "Language")) {
-                Picker(os1Tr("인터페이스 언어", "Interface language"), selection: binding(\.interfaceLanguage)) {
-                    Text("English").tag("en")
-                    Text("한국어").tag("ko")
-                    Text(os1Tr("시스템 설정 따름", "Follow system setting")).tag("system")
-                }
-                Picker(os1Tr("응답 언어", "Response language"), selection: binding(\.outputLanguage)) {
-                    Text(os1Tr("자동 · 내 메시지 언어를 따름", "Auto · match my message")).tag("auto")
-                    Text("English").tag("en")
-                    Text("한국어").tag("ko")
-                    Text("日本語").tag("ja")
-                    Text("中文").tag("zh")
-                    Text("Español").tag("es")
-                }
-                Text(os1Tr("인터페이스 언어는 메뉴·상태 표시에 적용됩니다. 응답 언어 ‘자동’은 입력한 언어 그대로 답합니다 — 키보드가 영어라도 한국어로 쓰면 한국어로 답합니다.",
-                           "Interface language applies to menus and status text. Response ‘Auto’ answers in whatever language you type — an English keyboard with a Korean message still gets a Korean answer."))
+            // Codex's General → Language row: English unless changed here,
+            // "Auto detect" follows macOS.
+            Section(os1Tr("일반", "General")) {
+                LanguagePickerRow(title: os1Tr("언어", "Language"),
+                                  description: os1Tr("앱 UI 언어", "Language for the app UI"),
+                                  automaticTitle: os1Tr("자동 감지", "Auto detect"),
+                                  languages: OS1LanguageCatalog.interface,
+                                  selection: store.appSettings.interfaceLanguageCode,
+                                  select: { code in store.updateSettings { $0.setInterfaceLanguage(code: code) } })
+                LanguagePickerRow(title: os1Tr("응답 언어", "Response language"),
+                                  description: os1Tr("OS-1 답변을 쓰는 언어", "Language OS-1 writes its answers in"),
+                                  automaticTitle: os1Tr("자동 · 내 메시지 언어를 따름", "Auto · match my message"),
+                                  languages: OS1LanguageCatalog.all,
+                                  selection: store.appSettings.outputLanguageCode,
+                                  select: { code in store.updateSettings { $0.setOutputLanguage(code: code) } })
+                Text(os1Tr("언어는 메뉴·버튼·상태 표시에 바로 적용됩니다. OS-1 화면은 English와 한국어로 제공되고, ‘자동 감지’는 macOS 언어 순서에서 둘 중 먼저 오는 언어를 씁니다. 응답 언어는 Codex 언어 목록 전체에서 고를 수 있고, ‘자동’은 입력한 언어 그대로 답합니다 — 키보드가 영어라도 한국어로 쓰면 한국어로 답합니다.",
+                           "Language applies to menus, buttons and status text right away. The OS-1 interface is available in English and 한국어; ‘Auto detect’ uses whichever comes first in your macOS language order. Response language offers Codex's full language list, and ‘Auto’ answers in whatever language you type — an English keyboard with a Korean message still gets a Korean answer."))
                     .font(.footnote).foregroundStyle(.secondary)
             }
             Section(os1Tr("동시 실행", "Parallel runs")) {
