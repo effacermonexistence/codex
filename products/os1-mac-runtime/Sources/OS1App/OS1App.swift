@@ -9455,6 +9455,66 @@ private enum SidebarHeaderLayout {
     static let buttonLabelPaintInset: CGFloat = 12
 }
 
+/// The Dock image OS-1 hands the Dock while it runs: OmarAGI.png's ring alone,
+/// transparent around it and through its hole. macOS 26 shows a running app's
+/// own image as given (no squircle plate), so this is the one place the Dock
+/// can show through the logo (owner 2026-10-05: "동그라미 최대한 꽉 채우고 뒤에
+/// 배경 투명색으로 빼. 너무 작아졌어"). The ring spans 900 of 1024 px: a circle
+/// must be a little wider than the 824 px squircle body of the neighbouring
+/// icons to read as the same size, and the smaller ring is what was rejected.
+private enum OS1DockIcon {
+    static let canvas = 1024
+    static let ringDiameter: CGFloat = 900
+    /// Ring outer diameter inside OmarAGI.png: 500 px of 512, centred.
+    static let markRingFraction: CGFloat = 500.0 / 512.0
+
+    static func transparentRing(markURL: URL? = Bundle.main.url(forResource: "OmarAGI", withExtension: "png")) -> NSImage? {
+        guard let markURL, let mark = NSImage(contentsOf: markURL),
+              let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: canvas, pixelsHigh: canvas,
+                                         bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+                                         colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0),
+              let context = NSGraphicsContext(bitmapImageRep: rep) else { return nil }
+        let side = ringDiameter / markRingFraction
+        let origin = (CGFloat(canvas) - side) / 2
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = context
+        context.imageInterpolation = .high
+        NSColor.clear.set()
+        NSRect(x: 0, y: 0, width: canvas, height: canvas).fill(using: .copy)
+        mark.draw(in: NSRect(x: origin, y: origin, width: side, height: side),
+                  from: .zero, operation: .sourceOver, fraction: 1)
+        NSGraphicsContext.restoreGraphicsState()
+        let image = NSImage(size: NSSize(width: canvas, height: canvas))
+        image.addRepresentation(rep)
+        return image
+    }
+}
+
+/// Measures the image the running app hands the Dock: no plate at the corners
+/// or in the hole, and the ring 900 px across. Only the app bundle carries
+/// OmarAGI.png, so the release self-test measures it and a bare debug binary
+/// reports the skip.
+@MainActor
+private func dockIconSelfTest() throws {
+    guard Bundle.main.url(forResource: "OmarAGI", withExtension: "png") != nil else {
+        print("Dock icon: skipped, OmarAGI.png is bundled only in the app"); return
+    }
+    guard let bitmap = OS1DockIcon.transparentRing()?.representations.first as? NSBitmapImageRep else {
+        throw RunnerError.message("Dock icon: the transparent ring was not drawn")
+    }
+    let side = OS1DockIcon.canvas, mid = side / 2
+    func alpha(_ x: Int, _ y: Int) -> CGFloat { bitmap.colorAt(x: x, y: y)?.alphaComponent ?? 1 }
+    guard [(0, 0), (side - 1, 0), (0, side - 1), (side - 1, side - 1), (mid, mid)].allSatisfy({ alpha($0.0, $0.1) == 0 }) else {
+        throw RunnerError.message("Dock icon: a corner or the ring's hole is not transparent")
+    }
+    let ring = (0..<side).filter { alpha($0, mid) > 0.5 }
+    guard let left = ring.first, let right = ring.last,
+          abs(CGFloat(right - left + 1) - OS1DockIcon.ringDiameter) <= 4 else {
+        throw RunnerError.message("Dock icon: ring spans \(ring.first ?? -1)…\(ring.last ?? -1) of \(side) px")
+    }
+    print("Dock icon: ring \(right - left + 1) of \(side) px; corners and hole transparent")
+}
+
 private struct OmarAGILogo: View {
     let size: CGFloat
 
@@ -9468,8 +9528,10 @@ private struct OmarAGILogo: View {
                     .antialiased(true)
                     .scaledToFit()
             } else {
+                // Inside the frame like the PNG's ring: the rail self-test
+                // measures the ring from its tile's top edge.
                 ZStack {
-                    Circle().stroke(Theme.pink, lineWidth: max(4, size * 0.18))
+                    Circle().strokeBorder(Theme.pink, lineWidth: max(4, size * 0.18))
                     Circle().fill(Color.white.opacity(0.94)).frame(width: max(4, size * 0.12))
                 }
             }
@@ -10805,6 +10867,7 @@ private struct OS1DesktopApp: App {
                 try transcriptLatencySelfTest()
                 try liveRunRowSelfTest()
                 try railSelectionSelfTest()
+                try dockIconSelfTest()
                 try sidebarSynchronizationSelfTest()
                 try backendRecoverySelfTest()
                 try selfUpdateReportSelfTest()
@@ -10845,15 +10908,18 @@ private struct OS1DesktopApp: App {
             exit(EXIT_FAILURE)
         }
         // The Dock tile is frozen on the image it cached for build 259 (its
-        // record still holds that bundle's file ID and mod date), so every
-        // reinstall and reboot since kept the old full-size ring although
-        // IconServices renders the shipped icon with the 80% ring (owner
-        // 2026-10-04: "사파리랑 GPT 보면 간격이 있는데 간격이 하나도 없어").
-        // A running app's own icon replaces the tile image: hand the Dock the
-        // icon IconServices renders for this installed bundle.
+        // record still holds that bundle's file ID and mod date), so the
+        // running app's own image is what replaces it. Handing it the icon
+        // IconServices renders showed the 80% ring on the black plate, which
+        // the owner rejected (2026-10-05: "너무 작아졌어 … 배경화면이 완전
+        // 생블랙"). macOS 26 jails a bundle icon that is not a full squircle on
+        // a gray plate but shows a running app's image as given, so the Dock
+        // gets the ring alone on a transparent canvas; the bundle icon stands
+        // in only if the PNG cannot be drawn.
         NotificationCenter.default.addObserver(forName: NSApplication.didFinishLaunchingNotification, object: nil, queue: .main) { _ in
             MainActor.assumeIsolated {
-                NSApplication.shared.applicationIconImage = NSWorkspace.shared.icon(forFile: Bundle.main.bundlePath)
+                NSApplication.shared.applicationIconImage = OS1DockIcon.transparentRing()
+                    ?? NSWorkspace.shared.icon(forFile: Bundle.main.bundlePath)
             }
         }
         _store = StateObject(wrappedValue: SessionStore())
@@ -11970,8 +12036,12 @@ private struct ProviderRail: View {
     private var homeButton: some View {
         let homeAppearance = RailItemAppearance.resolve(selected: store.surface == .auto, linked: true)
         return Button { store.showClodexHome() } label: {
-            VStack(spacing: 6) {
-                OmarAGILogo(size: 40)
+            // No plate behind the logo (owner 2026-10-05): the ring fills the
+            // tile and the rail shows through it; selection reads from content
+            // strength alone. 55 + 3 + the label stays inside homeHeight, so
+            // Codex and Claude keep their coordinates.
+            VStack(spacing: 3) {
+                OmarAGILogo(size: 55)
                     .opacity(homeAppearance.contentOpacity)
                 Text("OS-1")
                     .font(.system(size: 7, weight: .bold))
@@ -11979,7 +12049,6 @@ private struct ProviderRail: View {
                     .foregroundStyle(Color.white.opacity(homeAppearance.contentOpacity))
             }
             .frame(width: ProviderRailLayout.itemWidth, height: ProviderRailLayout.homeHeight)
-            .background(RailSelectionBackground(accent: ProviderChoice.auto.tint, appearance: homeAppearance))
             .contentShape(RoundedRectangle(cornerRadius: Theme.radiusControl, style: .continuous))
         }
         .buttonStyle(.plain)
@@ -12224,8 +12293,15 @@ private func railPixelGapSelfTest(surfacesBadged: Bool = false) throws -> [(Int,
         if on, !inRun { start = y; inRun = true }
         if !on, inRun { runs.append((start, y)); inRun = false }
     }
-    guard let home = runs.first(where: { $1 - $0 >= Int(60 * scale) }) else { throw RunnerError.message("Provider rail pixels: OS-1 tile not found") }
-    try check(abs(CGFloat(home.1 - home.0) - ProviderRailLayout.homeHeight * scale) <= 2, "OS-1 tile height \(home.1 - home.0)px")
+    // OS-1 paints no plate (owner 2026-10-05), so its tile is its frame and
+    // the ring must fill it: lit from the tile's top edge down through 55 pt.
+    let home = (Int(ProviderRailLayout.homeTop * scale),
+                Int((ProviderRailLayout.homeTop + ProviderRailLayout.homeHeight) * scale))
+    let logoRuns = runs.filter { $0.0 >= home.0 - 1 && $0.1 <= home.1 + 1 }
+    guard let ringTop = logoRuns.first?.0 else { throw RunnerError.message("Provider rail pixels: OS-1 logo not painted inside its tile") }
+    try check(CGFloat(ringTop - home.0) <= 2 * scale, "OS-1 ring starts \(ringTop - home.0)px below its tile top")
+    try check(logoRuns.contains { abs(CGFloat($0.1 - ringTop) - 55 * scale) <= 2 * scale },
+        "OS-1 ring does not span 55 pt: \(logoRuns)")
     guard let codexTop = runs.first(where: { $0.0 > home.1 })?.0 else { throw RunnerError.message("Provider rail pixels: Codex outline not found") }
     let codexBottomExpected = codexTop + Int(ProviderRailLayout.backendHeight * scale)
     guard let codexBottom = runs.first(where: { abs($0.1 - codexBottomExpected) <= 3 })?.1 else {

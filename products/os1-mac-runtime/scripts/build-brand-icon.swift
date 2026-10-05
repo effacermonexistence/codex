@@ -3,10 +3,11 @@
 import AppKit
 import Foundation
 
-// macOS fits this full-bleed square to the Dock icon body, so the mark is inset:
-// its ring (97.7% of the mark canvas) then spans 80% of the body, the Dock margin
-// measured for Chrome (80.9%), ChatGPT (79.1%) and Safari (80.3%).
-let markInset: CGFloat = 0.09
+// macOS 26 fits this full-bleed square to the Dock icon body and jails a bundle
+// icon that is not a full squircle on a gray plate, so the backing stays opaque;
+// while OS-1 runs it hands the Dock the ring alone instead (OS1DockIcon). The
+// mark spans the whole canvas: the 10-04 inset to 80% of the body was rejected
+// as too small (owner 2026-10-05: "너무 작아졌어 … 바꾸기 전 그게 좋았는데").
 
 let args = CommandLine.arguments
 guard args.count == 3, let mark = NSImage(contentsOfFile: args[1]) else { fatalError("logo input and iconset directory required") }
@@ -22,12 +23,10 @@ for points in [16, 32, 128, 256, 512] {
         NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: bitmap)
         let rect = NSRect(x: 0, y: 0, width: size, height: size)
         NSColor.black.setFill(); rect.fill()
-        let inset = CGFloat(size) * markInset
-        mark.draw(in: rect.insetBy(dx: inset, dy: inset), from: .zero, operation: .sourceOver, fraction: 1)
+        mark.draw(in: rect, from: .zero, operation: .sourceOver, fraction: 1)
         NSGraphicsContext.restoreGraphicsState()
-        // Black corners, edge margin and central hole must be opaque, not near-black noise.
-        let m = Int(inset) - 1
-        for (x,y) in [(0,0),(size/2,size/2),(size/2,m),(m,size/2),(size/2,size-1-m),(size-1-m,size/2)] {
+        // Black corners and central hole must be opaque, not near-black noise.
+        for (x,y) in [(0,0),(size/2,size/2)] {
             let c = bitmap.colorAt(x:x,y:y)!.usingColorSpace(.deviceRGB)!
             precondition(c.redComponent == 0 && c.greenComponent == 0 && c.blueComponent == 0 && c.alphaComponent == 1)
         }
