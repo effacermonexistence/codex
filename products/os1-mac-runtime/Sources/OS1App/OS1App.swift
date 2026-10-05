@@ -13795,13 +13795,17 @@ private struct NativeStepPresentation {
         }
         return verbText(step.verb).map { $0 + " · " + label } ?? label
     }
-    static func rows(_ log: NativeStepLog) -> [Row] {
+    /// `executing`: the backend process is still running. Once it has
+    /// exited (verifying, syncing, recovering) nothing is awaited any more.
+    static func rows(_ log: NativeStepLog, executing: Bool) -> [Row] {
         log.entries.map { entry in
             let step = entry.step
-            let waiting = step.state == .requested && entry.inLatestRing && entry.segment == log.segment
+            let waiting = step.state == .requested && entry.inLatestRing && entry.segment == log.segment && executing
             let (glyph, state): (String, String)
             switch step.state {
             case .requested where waiting: (glyph, state) = ("◌", os1Tr("반환 대기", "awaiting return"))
+            // Left the stream's 24-step ring: its return may have arrived unseen.
+            case .requested where !entry.inLatestRing: (glyph, state) = ("·", os1Tr("추적 범위 밖", "outside the tracked window"))
             case .requested: (glyph, state) = ("·", os1Tr("반환 신호 미수신", "no return signal received"))
             case .returned: (glyph, state) = ("↩︎", os1Tr("반환", "returned"))
             case .failed: (glyph, state) = ("⚠︎", os1Tr("오류 반환", "returned an error"))
@@ -13837,8 +13841,10 @@ private struct NativeStepPresentation {
         formatter.locale = Locale(identifier: "en_US_POSIX"); formatter.dateFormat = "HH:mm:ss"
         return formatter
     }()
-    static var footer: String { os1Tr("백엔드가 보낸 단계 설명을 그대로 표시 · 명령은 비밀값을 가려 표시 · 도구 결과·사고 내용은 표시하지 않음 · 반환은 과제 완료가 아님",
-        "The backend's own step descriptions · commands shown with secrets masked · tool results and thinking are not shown · a return is not task completion") }
+    // Masking is heuristic, so the footer names what is masked rather than
+    // promising that no secret can appear.
+    static var footer: String { os1Tr("백엔드가 보낸 단계 설명을 그대로 표시 · 명령은 알려진 비밀값 형태를 가려 표시 · 도구 결과·사고 내용은 표시하지 않음 · 반환은 과제 완료가 아님",
+        "The backend's own step descriptions · commands shown with known secret shapes masked · tool results and thinking are not shown · a return is not task completion") }
 }
 
 private struct NativeProgressPanel: View {
@@ -13884,7 +13890,7 @@ private struct NativeProgressPanel: View {
     var body: some View {
         let presentation = NativeProgressPresentation(activity: activity)
         let log = steps.isEmpty ? NativeStepLog(merging: activity.phase == .waitingForSource ? nil : activity.progress) : steps
-        let allSteps = NativeStepPresentation.rows(log)
+        let allSteps = NativeStepPresentation.rows(log, executing: activity.phase == .executing)
         let current = allSteps.filter { $0.segment == log.segment }
         let earlier = allSteps.filter { $0.segment != log.segment }
         // Processing signals collapse into one thinking line; other lifecycle
@@ -13925,7 +13931,8 @@ private struct NativeProgressPanel: View {
                         ScrollView(.vertical) {
                             VStack(alignment: .leading, spacing: 6) {
                                 if !earlier.isEmpty {
-                                    Text(os1Tr("이전 시도", "Earlier attempt")).font(.system(size: 9, weight: .semibold)).foregroundStyle(Theme.muted)
+                                    // A retry, a fallback or another route: all an earlier backend stream.
+                                    Text(os1Tr("이전 백엔드 실행", "Earlier backend stream")).font(.system(size: 9, weight: .semibold)).foregroundStyle(Theme.muted)
                                     stepRows(earlier, now: context.date)
                                     Divider()
                                 }
@@ -13989,11 +13996,12 @@ private func nativeProgressPresentationSelfTest() throws {
     // Step lines: the backend's own words, accumulated per run by step id.
     typealias Step = NativeExecutionProgress.Step
     func snapshot(_ sequence: Int, kind: NativeExecutionProgress.Kind = .toolStarted, at seconds: Double = 0,
-                  _ steps: [Step]) -> NativeExecutionProgress {
+                  stream: String? = nil, _ steps: [Step]) -> NativeExecutionProgress {
         NativeExecutionProgress(sequence: sequence, kind: kind, tool: nil, scope: "main", toolsRequested: steps.count,
             toolsReturned: steps.filter { $0.state != .requested }.count, activeTools: steps.filter { $0.state == .requested }.count,
             observedAt: stamp.addingTimeInterval(seconds),
-            events: [.init(sequence: sequence, kind: kind, tool: nil, scope: "main", observedAt: stamp.addingTimeInterval(seconds))], steps: steps)
+            events: [.init(sequence: sequence, kind: kind, tool: nil, scope: "main", observedAt: stamp.addingTimeInterval(seconds))], steps: steps,
+            stream: stream)
     }
     let bash = Step(id: "00000000000a", sequence: 2, tool: "Bash", scope: "main", startedAt: stamp)
     let first = snapshot(2, [bash])
@@ -14009,7 +14017,7 @@ private func nativeProgressPresentationSelfTest() throws {
     log.merge(snapshot(6, at: 6, [bash, child]))
     try check(log.entries.count == 2 && log.entries[0].step.state == .returned && log.entries[0].step.label != nil && log.segment == 0,
         "an older copy of a step reverted its later state/label or split the run")
-    let rows = NativeStepPresentation.rows(log)
+    let rows = NativeStepPresentation.rows(log, executing: true)
     try check(rows.map(\.text) == ["Check available CLIs", NativeStepPresentation.verbText("read")! + " · Sources/App.swift"],
         "backend text not relayed verbatim with a fixed verb")
     try check(rows[1].subagent && rows[1].waitingSince == child.startedAt && rows[0].waitingSince == nil &&
@@ -14030,10 +14038,37 @@ private func nativeProgressPresentationSelfTest() throws {
     let restarted = snapshot(1, [Step(id: "00000000000e", sequence: 1, tool: "commandExecution", scope: "main", verb: "run",
                                       label: "swift build", startedAt: stamp.addingTimeInterval(9))])
     log.merge(restarted)
-    try check(log.segment == 1 && NativeStepPresentation.rows(log).filter { $0.segment == 1 }.count == 1 &&
-        NativeStepPresentation.rows(log).filter { $0.segment == 0 }.count == 2, "a new backend stream did not start a new segment")
-    try check(NativeStepPresentation.rows(log).first { $0.segment == 0 && $0.subagent }?.waitingSince == nil,
+    try check(log.segment == 1 && NativeStepPresentation.rows(log, executing: true).filter { $0.segment == 1 }.count == 1 &&
+        NativeStepPresentation.rows(log, executing: true).filter { $0.segment == 0 }.count == 2,
+        "a writer without stream identity: a lower sequence did not start a new segment")
+    try check(NativeStepPresentation.rows(log, executing: true).first { $0.segment == 0 && $0.subagent }?.waitingSince == nil,
         "an earlier attempt's unreturned step still counts as waiting")
+    // Stream identity: a new stream starts a segment even at a higher
+    // sequence; a stale snapshot of the same stream is ignored.
+    let streamA = "0000000000aa", streamB = "0000000000bb"
+    let waitingRead = Step(id: "00000000001a", sequence: 3, tool: "Read", scope: "main", verb: "read", label: "a.swift",
+                           startedAt: stamp.addingTimeInterval(20))
+    var streamed = NativeStepLog()
+    streamed.merge(snapshot(3, at: 20, stream: streamA, [waitingRead]))
+    streamed.merge(snapshot(2, at: 21, stream: streamA, [Step(id: "00000000001b", sequence: 2, tool: "Bash", scope: "main",
+                                                               label: "stale", startedAt: stamp.addingTimeInterval(19))]))
+    try check(streamed.segment == 0 && streamed.entries.map(\.step.label) == ["a.swift"] && streamed.entries[0].inLatestRing,
+        "a stale snapshot of the same stream changed the log or started a segment")
+    streamed.merge(snapshot(9, at: 30, stream: streamB, [Step(id: "00000000001c", sequence: 9, tool: "Bash", scope: "main",
+                                                              label: "next route", startedAt: stamp.addingTimeInterval(30))]))
+    try check(streamed.segment == 1 && streamed.entries.last?.segment == 1 && streamed.entries.first?.segment == 0,
+        "a new stream at a higher sequence was merged into the earlier stream's segment")
+    let after = NativeStepPresentation.rows(log, executing: false)
+    try check(after.allSatisfy { $0.waitingSince == nil } &&
+        after.contains { $0.stateText == os1Tr("반환 신호 미수신", "no return signal received") },
+        "a step still shows a live wait after the backend exited")
+    var ring = NativeStepLog()
+    ring.merge(snapshot(3, stream: streamA, [waitingRead]))
+    ring.merge(snapshot(4, stream: streamA, [Step(id: "00000000001d", sequence: 4, tool: "Bash", scope: "main", label: "later",
+                                                  startedAt: stamp)]))
+    let outside = NativeStepPresentation.rows(ring, executing: true).first { $0.text.hasSuffix("a.swift") }
+    try check(outside?.waitingSince == nil && outside?.stateText == os1Tr("추적 범위 밖", "outside the tracked window"),
+        "a step that left the ring is claimed as never returned or still waiting")
     let thinkingProgress = snapshot(9, kind: .processing, at: 10, [])
     let thinkingActivity = RuntimeActivity(.executing, provider: "claude", timestamp: stamp, progress: thinkingProgress)
     try check(NativeStepPresentation.thinking(thinkingActivity, now: stamp.addingTimeInterval(11)) &&

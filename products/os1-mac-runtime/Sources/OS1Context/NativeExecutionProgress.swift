@@ -103,22 +103,29 @@ public struct NativeExecutionProgress: Codable, Equatable, Sendable {
     public let steps: [Step]?
     /// A backend status word such as "compacting"; nil when none is active.
     public let backendStatus: String?
+    /// Random 12-hex identity of the native stream that produced this record.
+    /// A new stream (a retry, a fallback, the next route) has a new one; nil
+    /// from a writer that predates it.
+    public let stream: String?
 
     public init(sequence: Int, kind: Kind, tool: String?, scope: String,
                 toolsRequested: Int, toolsReturned: Int, activeTools: Int,
-                observedAt: Date, events: [Event], steps: [Step]? = nil, backendStatus: String? = nil) {
+                observedAt: Date, events: [Event], steps: [Step]? = nil, backendStatus: String? = nil,
+                stream: String? = nil) {
         self.sequence = sequence; self.kind = kind; self.tool = tool; self.scope = scope
         self.toolsRequested = toolsRequested; self.toolsReturned = toolsReturned
         self.activeTools = activeTools; self.observedAt = observedAt; self.events = events
-        self.steps = steps; self.backendStatus = backendStatus
+        self.steps = steps; self.backendStatus = backendStatus; self.stream = stream
     }
 
     /// Same lifecycle observation with a different step ring or status word.
     public func replacing(steps: [Step]?, backendStatus: String?) -> NativeExecutionProgress {
         NativeExecutionProgress(sequence: sequence, kind: kind, tool: tool, scope: scope, toolsRequested: toolsRequested,
             toolsReturned: toolsReturned, activeTools: activeTools, observedAt: observedAt, events: events,
-            steps: steps, backendStatus: backendStatus)
+            steps: steps, backendStatus: backendStatus, stream: stream)
     }
+
+    static func safeStream(_ stream: String) -> Bool { stream.range(of: #"^[0-9a-f]{12}$"#, options: .regularExpression) != nil }
 
     static func validSteps(_ steps: [Step], sequence: Int) -> Bool {
         guard steps.count <= maximumSteps, Set(steps.map(\.id)).count == steps.count else { return false }
@@ -148,7 +155,8 @@ public struct NativeExecutionProgress: Codable, Equatable, Sendable {
               events.last?.kind == kind, events.last?.tool == tool, events.last?.scope == scope,
               events.last?.observedAt == observedAt,
               steps.map({ Self.validSteps($0, sequence: sequence) }) ?? true,
-              backendStatus.map(Self.backendStatuses.contains) ?? true else { return false }
+              backendStatus.map(Self.backendStatuses.contains) ?? true,
+              stream.map(Self.safeStream) ?? true else { return false }
         var prior = 0
         for event in events {
             guard event.sequence > prior, event.sequence <= sequence,
@@ -160,7 +168,7 @@ public struct NativeExecutionProgress: Codable, Equatable, Sendable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case sequence, kind, tool, scope, toolsRequested, toolsReturned, activeTools, observedAt, events, steps, backendStatus
+        case sequence, kind, tool, scope, toolsRequested, toolsReturned, activeTools, observedAt, events, steps, backendStatus, stream
     }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -171,11 +179,12 @@ public struct NativeExecutionProgress: Codable, Equatable, Sendable {
             .flatMap { Self.validSteps($0, sequence: sequence) ? $0 : nil }
         let status = (try? c.decodeIfPresent(String.self, forKey: .backendStatus))
             .flatMap { Self.backendStatuses.contains($0) ? $0 : nil }
+        let stream = (try? c.decodeIfPresent(String.self, forKey: .stream)).flatMap { Self.safeStream($0) ? $0 : nil }
         self.init(sequence: sequence, kind: try c.decode(Kind.self, forKey: .kind),
             tool: try c.decodeIfPresent(String.self, forKey: .tool), scope: try c.decode(String.self, forKey: .scope),
             toolsRequested: try c.decode(Int.self, forKey: .toolsRequested), toolsReturned: try c.decode(Int.self, forKey: .toolsReturned),
             activeTools: try c.decode(Int.self, forKey: .activeTools), observedAt: try c.decode(Date.self, forKey: .observedAt),
-            events: try c.decode([Event].self, forKey: .events), steps: steps, backendStatus: status)
+            events: try c.decode([Event].self, forKey: .events), steps: steps, backendStatus: status, stream: stream)
         guard isValid else {
             throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath, debugDescription: "Invalid native progress metadata"))
         }

@@ -8,7 +8,7 @@ import Foundation
 public struct NativeStepLog: Equatable, Sendable {
     public struct Entry: Equatable, Sendable, Identifiable {
         public internal(set) var step: NativeExecutionProgress.Step
-        /// Increments when a new native stream starts (sequence went down).
+        /// Increments when a new native stream starts.
         public let segment: Int
         /// The step is still in the latest received ring. A requested step that
         /// scrolled out may have returned unseen, so it is not shown as waiting.
@@ -19,6 +19,7 @@ public struct NativeStepLog: Equatable, Sendable {
     public private(set) var entries: [Entry] = []
     public private(set) var segment = 0
     private var lastSequence = 0
+    private var stream: String?
 
     public init() {}
     public init(merging progress: NativeExecutionProgress?) { merge(progress) }
@@ -27,7 +28,21 @@ public struct NativeStepLog: Equatable, Sendable {
 
     public mutating func merge(_ progress: NativeExecutionProgress?) {
         guard let progress, progress.isValid else { return }
-        if progress.sequence < lastSequence, !entries.isEmpty { segment += 1 }
+        if let next = progress.stream {
+            if next == stream {
+                // Same stream, older snapshot (a coalesced or reordered read):
+                // it carries nothing newer and must not start a segment.
+                if progress.sequence < lastSequence { return }
+            } else if !entries.isEmpty {
+                // A different stream: a retry, a fallback or the next route.
+                segment += 1
+            }
+        } else if stream != nil || progress.sequence < lastSequence, !entries.isEmpty {
+            // A writer without stream identity: a sequence that went down
+            // is the only sign of a new stream.
+            segment += 1
+        }
+        stream = progress.stream
         lastSequence = progress.sequence
         let incoming = progress.steps ?? []
         let ids = Set(incoming.map(\.id))

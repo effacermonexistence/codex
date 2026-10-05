@@ -258,7 +258,115 @@ func runNativeExecutionProgressFixtures() throws {
     let shed = try JSONDecoder().decode(RuntimeActivity.self, from: written)
     check(written.count <= 150_000 && shed.publicText == oversized && shed.progress?.steps == nil && shed.progress?.sequence == 24,
           "near the cap, step labels are shed before public text or lifecycle progress")
-    print("Native progress: \(checks) deterministic metadata/privacy/lifecycle checks PASS; no provider calls")
+    // Every emit reads the previous file only for its route; with a full
+    // labelled ring that read must not re-redact 24 labels each time.
+    let labelledSteps = (1...24).map { index in
+        NativeExecutionProgress.Step(id: String(format: "%012x", index), sequence: index, tool: "Bash", scope: "main", verb: "run",
+            label: "swift test --filter NativeStepLabel\(index) --parallel", state: .returned, startedAt: stamp, endedAt: stamp)
+    }
+    let labelledRing = NativeExecutionProgress(sequence: 24, kind: .toolFailed, tool: "Bash", scope: "main", toolsRequested: 24,
+        toolsReturned: 24, activeTools: 0, observedAt: stamp, events: ringEvents, steps: labelledSteps)
+    check(labelledRing.isValid, "labelled ring fixture is valid")
+    RuntimeActivity.emit(.executing, provider: "claude", publicText: "공개 응답", tool: "Bash", progress: labelledRing)
+    let emitStarted = Date()
+    for _ in 0..<20 { RuntimeActivity.emit(.executing, provider: "claude", publicText: "공개 응답", tool: "Bash", progress: labelledRing) }
+    let perEmit = Date().timeIntervalSince(emitStarted) / 20
+    check(perEmit < 0.02, "an emit with a full labelled ring took \(Int(perEmit * 1000)) ms")
+    let decodeStarted = Date()
+    for _ in 0..<20 { _ = try JSONDecoder().decode(RuntimeActivity.self, from: Data(contentsOf: activityURL)) }
+    let perDecode = Date().timeIntervalSince(decodeStarted) / 20
+    let decodedRing = try JSONDecoder().decode(RuntimeActivity.self, from: Data(contentsOf: activityURL))
+    check(perDecode < 0.02 && decodedRing.progress?.steps?.count == 24, "decoding a full labelled ring took \(Int(perDecode * 1000)) ms")
+
+    // The full block first, then a partial start with the same id (subagent
+    // or no partial messages): one request, the full block's label, no revision.
+    let reversed = ExecutionStream(claudeSessionID: session, workspace: "/fixture/ws", observedTime: { now })
+    func feedReversed(_ row: [String: Any]) throws {
+        var object = row
+        if object["session_id"] == nil { object["session_id"] = session }
+        reversed.ingestClaude(try JSONSerialization.data(withJSONObject: object) + Data([10]))
+    }
+    try feedReversed(["type":"assistant", "message":["id":"m", "content":[["type":"tool_use", "id":"full-first", "name":"Read",
+        "input":["file_path":"/fixture/ws/README.md"]]]]])
+    let fullFirst = reversed.eventCount
+    try feedReversed(["type":"stream_event", "event":["type":"content_block_start", "content_block":["type":"tool_use", "id":"full-first",
+        "name":"Read", "input":[:]]]])
+    check(reversed.eventCount == fullFirst && reversed.progress?.toolsRequested == 1 && reversed.progress?.steps?.count == 1 &&
+          reversed.progress?.steps?.first?.label == "README.md", "a partial start after the full block added a request, a step or a revision")
+
+    // A subagent's Agent call under more than 24 child calls stays in the
+    // ring: its task progress keeps counting and its return is relayed.
+    let agent = ExecutionStream(claudeSessionID: session, workspace: "/fixture/ws", observedTime: { now })
+    func feedAgent(_ row: [String: Any]) throws {
+        var object = row
+        if object["session_id"] == nil { object["session_id"] = session }
+        agent.ingestClaude(try JSONSerialization.data(withJSONObject: object) + Data([10]))
+    }
+    try feedAgent(["type":"assistant", "message":["id":"agent-message", "content":[["type":"tool_use", "id":"agent-call", "name":"Agent",
+        "input":["description":"Explore parser", "prompt":"PRIVATE PROMPT"]]]]])
+    var agentLog = NativeStepLog()
+    for index in 0..<30 {
+        try feedAgent(["type":"assistant", "parent_tool_use_id":"agent-call", "message":["id":"child-\(index)", "content":[["type":"tool_use",
+            "id":"child-call-\(index)", "name":"Read", "input":["file_path":"/fixture/ws/f\(index).swift"]]]]])
+        try feedAgent(["type":"user", "parent_tool_use_id":"agent-call", "message":["content":[["type":"tool_result",
+            "tool_use_id":"child-call-\(index)", "content":"PRIVATE CHILD RESULT"]]]])
+        agentLog.merge(agent.progress)
+    }
+    try feedAgent(["type":"system", "subtype":"task_progress", "tool_use_id":"agent-call", "description":"Explore parser",
+                   "last_tool_name":"Read", "usage":["tool_uses":30]])
+    func agentStep() -> NativeExecutionProgress.Step? { agent.progress?.steps?.first { $0.label == "Explore parser" } }
+    check(agent.progress?.steps?.count == 24 && agentStep()?.state == .requested && agentStep()?.childToolUses == 30,
+          "a running Agent step left the ring under its own child calls")
+    try feedAgent(["type":"user", "message":["content":[["type":"tool_result", "tool_use_id":"agent-call", "content":"PRIVATE"]]]])
+    agentLog.merge(agent.progress)
+    let agentEntry = agentLog.entries.first { $0.step.label == "Explore parser" }
+    check(agentStep()?.state == .returned && agent.progress?.toolsReturned == 31 && agentEntry?.step.state == .returned &&
+          agentEntry?.inLatestRing == true && agentEntry?.step.childToolUses == 30,
+          "the Agent's own return was not relayed to the step or the app log")
+
+    // One Bash call with a long run of dashes and no description ingests in
+    // bounded time (it ran synchronously in the stdout handler).
+    let dashes = ExecutionStream(claudeSessionID: session, observedTime: { now })
+    let dashRow: [String: Any] = ["type":"assistant", "session_id":session, "message":["id":"dash", "content":[["type":"tool_use",
+        "id":"dash-call", "name":"Bash", "input":["command":"echo " + String(repeating: "-", count: 12_000)]]]]]
+    let dashStarted = Date()
+    dashes.ingestClaude(try JSONSerialization.data(withJSONObject: dashRow) + Data([10]))
+    let dashElapsed = Date().timeIntervalSince(dashStarted)
+    check(dashElapsed < 0.5 && dashes.progress?.steps?.first?.label != nil, "a 12,000-dash Bash block took \(Int(dashElapsed * 1000)) ms")
+
+    // Each stream carries its own identity; an invalid one drops only itself.
+    check(stream.progress?.stream.map { $0.range(of: #"^[0-9a-f]{12}$"#, options: .regularExpression) != nil } == true &&
+          agent.progress?.stream != nil && agent.progress?.stream != stream.progress?.stream, "streams do not carry distinct identities")
+    var foreignStream = try JSONSerialization.jsonObject(with: try JSONEncoder().encode(agent.progress!)) as! [String: Any]
+    foreignStream["stream"] = "not-a-stream"
+    let unstreamed = try JSONDecoder().decode(NativeExecutionProgress.self, from: JSONSerialization.data(withJSONObject: foreignStream))
+    check(unstreamed.stream == nil && unstreamed.steps?.count == 24 && unstreamed.isValid, "an invalid stream identity dropped more than itself")
+
+    // A declined Codex command did not run: it is not shown as a plain return.
+    let declined = ExecutionStream(workspace: "/fixture/ws")
+    func declinedEvent(_ method: String, _ item: [String: Any]) {
+        declined.ingestCodex(["method":method, "params":["threadId":"t", "turnId":"u", "item":item]], threadID:"t", turnID:"u")
+    }
+    declinedEvent("item/started", ["id":"rm", "type":"commandExecution", "command":"rm -rf build"])
+    declinedEvent("item/completed", ["id":"rm", "type":"commandExecution", "status":"declined"])
+    check(declined.progress?.kind == .toolFailed && declined.progress?.steps?.first?.state == .failed &&
+          declined.progress?.steps?.first?.label == "rm -rf build", "a declined command was shown as returned")
+    let snapshotDeclined = ExecutionStream()
+    snapshotDeclined.ingestCodexTurnSnapshot(items:[["id":"no", "type":"commandExecution", "status":"declined", "command":"rm -rf build"]],
+                                            status:"inProgress", threadID:"t", turnID:"u")
+    check(snapshotDeclined.progress?.steps?.first?.state == .failed, "a first-seen declined snapshot item was shown as returned")
+    // A status-less snapshot item has no lifecycle: no step, no label, no
+    // repeated observation on unchanged polls.
+    let statusless = ExecutionStream(workspace: "/fixture/ws")
+    let bare: [String: Any] = ["id":"bare-search", "type":"webSearch", "query":"swift regex"]
+    statusless.ingestCodexTurnSnapshot(items:[bare], status:"inProgress", threadID:"t", turnID:"u")
+    let statuslessCount = statusless.eventCount
+    statusless.ingestCodexTurnSnapshot(items:[bare], status:"inProgress", threadID:"t", turnID:"u")
+    check(statusless.eventCount == statuslessCount && statusless.progress?.steps == nil &&
+          statusless.progress?.toolsRequested == 0, "a status-less snapshot item invented a step or repeated on polls")
+    print("Native progress: \(checks) deterministic metadata/privacy/lifecycle checks PASS; full labelled ring " +
+          String(format: "emit %.2f ms, decode %.2f ms, 12,000-dash Bash ingest %.1f ms", perEmit * 1000, perDecode * 1000, dashElapsed * 1000) +
+          "; no provider calls")
 }
 
 /// Field allowlist and redaction, independent of any stream.
@@ -315,6 +423,117 @@ func runNativeStepLabelFixtures() throws {
     let multiMegabyte = "echo start; " + String(repeating: "A", count: 3_000_000)
     check(redact(multiMegabyte).count <= NativeStepLabel.maximumCharacters, "huge command bounded")
 
+    // Credential shapes beyond token prefixes: other auth schemes, quoted keys,
+    // cookies, positional and short-flag passwords, URL passwords holding `/`,
+    // and values handed to secret-setting CLIs on argv, stdin or a here-string.
+    let pw = "hunter2" + "Pass9"
+    let credentialShapes = [
+        "curl -H 'Authorization: Token \(pw)' https://api.example.com",
+        "curl -H 'Proxy-Authorization: Digest \(pw)' https://x",
+        "git -c http.extraheader='AUTHORIZATION: basic \(pw)' clone https://x",
+        "curl -H 'Cookie: a=1; sid=\(pw)' https://x",
+        "curl -b 'session=\(pw)' https://x",
+        "curl -H 'X-Auth: \(pw)' https://x",
+        "curl -d '{\"password\":\"\(pw)\"}' https://x/login",
+        "node -e \"fetch(u,{headers:{'x-api-key':'\(pw)'}})\"",
+        "python3 -c \"import os; os.environ['OPENAI_API_KEY']='\(pw)'\"",
+        "curl -u admin:\(pw) https://api.example.com/v1/x",
+        "mysql -uroot -p\(pw) db",
+        "sshpass -p \(pw) ssh deploy@host",
+        "docker login -u bot -p \(pw) ghcr.io",
+        "echo \(pw) | docker login -u bot --password-stdin ghcr.io",
+        "redis-cli -a \(pw) ping",
+        "zip -P \(pw) out.zip a",
+        "gpg --batch --passphrase \(pw) -d f.gpg",
+        "openssl enc -aes-256-cbc -pass pass:\(pw) -in a",
+        "keytool -list -storepass \(pw) -keystore k.jks",
+        "printf 'machine x login u password \(pw)' >> ~/.netrc",
+        "security add-generic-password -a me -s os1 -w \(pw)",
+        "gh secret set CLOUDFLARE_API_TOKEN --body \(pw)",
+        "echo \(pw) | gh secret set X",
+        "printf %s \(pw) | pnpm exec wrangler secret put SCV_TOKEN",
+        "wrangler secret put X <<< \(pw)",
+        "kubectl create secret generic db --from-literal=db=\(pw)",
+        "fly secrets set db_url=\(pw)",
+        "echo \(pw) | sudo -S true",
+        "git clone https://me:\(pw)/x@github.com/o/r",
+        "git clone https://user:pa \(pw)@host/r",
+    ]
+    for raw in credentialShapes {
+        let shown = redact(raw)
+        check(!shown.contains(pw), "credential survived redaction: \(raw) -> \(shown)")
+        check(NativeStepLabel.redact(shown) == shown && NativeStepLabel.isDisplayable(shown), "redaction is idempotent and displayable: \(shown)")
+    }
+    check(redact("security add-generic-password -a me -s os1 -w \(pw)") == "security add-generic-password -a me -s os1 -w …",
+          "a flag starts a word: a subcommand named …-password is not a flag")
+    check(redact("echo \(pw) | docker login -u bot --password-stdin ghcr.io") == "echo … | docker login -u bot --password-stdin ghcr.io",
+          "a value-less switch does not mask the next word")
+    check(redact("railway variables --set \"A=1\" --set \"B=2\" --skip-deploys") ==
+          "railway variables --set \"A=…\" --set \"B=…\" --skip-deploys", "a cut inside quotes keeps the closing quote")
+    for text in ["git log e0fa67d..e4b2c1a --oneline", "Read isNewEditAfterReadOnlyTask", "Find metadata for message 19fedfc7904ba68a",
+                 "head -c 1200 codex-1d395a7bff4b9d25.md", "git checkout -b fix/os1-build-319-progress", "Check basic authentication flow",
+                 "Update password reset docs", "ls -la ~/.os1/self-update/source-write.lock", "swift build 2>&1 | tail -5",
+                 "grep -o '\"last_token_usage\":{[^}]*}' run.jsonl", "curl -sS -w \"최종URL=%{url_effective}\" https://example.com"] {
+        check(redact(text) == text, "ordinary label altered: \(text) -> \(redact(text))")
+    }
+    // Zero-width and other format characters are removed before masking.
+    for joiner in ["\u{2060}", "\u{200B}", "\u{FEFF}"] {
+        let shown = redact("echo " + sk + "Ab1Cd" + joiner + "2Ef3Gh4Ij5Kl6Mn7Op8Qr9 done")
+        check(shown == "echo … done", "a zero-width character split a token past the masks: \(shown)")
+    }
+    check(redact("ab\u{200B}c\u{200D}d\u{FEFF}e\u{00AD}f\u{034F}g") == "abcdefg", "zero-width and format characters removed")
+    check(!NativeStepLabel.isDisplayable("ab\u{2060}cd"), "a label holding a format character is not displayable as-is")
+
+    // Seeded random secrets in neutral commands: no whole secret and no 8+
+    // character piece of one survives (the long-run detector alone).
+    var random = FixtureRandom(seed: 319)
+    let base64Alphabet = Array("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/")
+    let lowerDigit = Array("abcdefghijklmnopqrstuvwxyz0123456789")
+    func draw(_ alphabet: [Character], _ count: Int) -> String {
+        String((0..<count).map { _ in alphabet[Int(random.next() % UInt64(alphabet.count))] })
+    }
+    var leaks: [String] = []
+    func audit(_ secret: String, _ command: String) {
+        let shown = redact(command), characters = Array(secret)
+        let fragment = characters.count >= 8 && (0...(characters.count - 8)).contains { shown.contains(String(characters[$0..<($0 + 8)])) }
+        if fragment, leaks.count < 3 { leaks.append(shown) }
+    }
+    for _ in 0..<150 {
+        let bytes = Data((0..<32).map { _ in UInt8(truncatingIfNeeded: random.next()) }).base64EncodedString()
+        audit(bytes, "echo \(bytes) | base64 -d > key.bin")
+        let aws = draw(base64Alphabet, 40)
+        audit(aws, "echo \(aws) | wc -c")
+        let short = draw(lowerDigit, 32), long = draw(lowerDigit, 40)
+        audit(short, "echo \(short) > token.txt")
+        audit(long, "deploy \(long)")
+    }
+    let armour = "PRIVATE" + " KEY-----"
+    for _ in 0..<40 {
+        let tail = draw(base64Alphabet, 20) + "=="
+        let body = (0..<4).map { _ in draw(base64Alphabet, 64) }.joined(separator: "\n") + "\n" + tail
+        audit(tail, "cat > k.pem <<EOF\n-----BEGIN RSA " + armour + "\n" + body + "\n-----END RSA " + armour + "\nEOF")
+    }
+    check(leaks.isEmpty, "random secret survived redaction: \(leaks)")
+
+    // Linear time: unbounded quantifiers before an alternation once took
+    // seconds to minutes on long `-`/`.`-joined runs.
+    var slowest = 0.0
+    for (name, input) in [("dashes", String(repeating: "-", count: 16_000)), ("a-a-", String(repeating: "a-", count: 8_000)),
+                          ("a.a.", String(repeating: "a.", count: 8_000)), ("base64url", draw(base64Alphabet, 16_000))] {
+        let started = Date()
+        _ = NativeStepLabel.redact(input)
+        let elapsed = Date().timeIntervalSince(started)
+        slowest = max(slowest, elapsed)
+        check(elapsed < 0.25, "redaction of 16 KB of \(name) took \(Int(elapsed * 1000)) ms")
+    }
+    // A label repeats in every snapshot and every decode: it is redacted once.
+    let repeated = "swift test --filter Fixture" + String(random.next() % 1_000_000)
+    _ = NativeStepLabel.redact(repeated)
+    let memoStarted = Date()
+    for _ in 0..<1_000 { _ = NativeStepLabel.redact(repeated) }
+    let memoElapsed = Date().timeIntervalSince(memoStarted)
+    check(memoElapsed < 0.1, "a repeated label is redacted again on every call")
+
     // Field allowlist per Claude tool.
     func claude(_ tool: String, _ input: [String: Any]?) -> NativeStepLabel.Extract? {
         NativeStepLabel.claude(tool: tool, input: input, workspace: "/ws/proj")
@@ -366,5 +585,19 @@ func runNativeStepLabelFixtures() throws {
     check(codex(["type": "webSearch", "query": "", "action": ["type": "openPage", "url": "https://example.com/p?sig=PRIVATE"]]) ==
           Ex(verb: .fetch, label: "https://example.com/p"), "Codex open page")
     check(codex(["type": "mcpToolCall", "server": "fs", "arguments": ["path": "PRIVATE"]]) == nil, "MCP without a tool name gives no label")
-    print("Native step labels: \(checks) allowlist/redaction/idempotence checks PASS; no provider calls")
+    print("Native step labels: \(checks) allowlist/redaction/idempotence checks PASS; slowest 16 KB redaction " +
+          String(format: "%.1f ms, 1,000 repeats %.1f ms", slowest * 1000, memoElapsed * 1000) + "; no provider calls")
+}
+
+/// Deterministic SplitMix64, so the random-secret corpus is the same on every run.
+struct FixtureRandom: RandomNumberGenerator {
+    var state: UInt64
+    init(seed: UInt64) { state = seed }
+    mutating func next() -> UInt64 {
+        state &+= 0x9E3779B97F4A7C15
+        var z = state
+        z = (z ^ (z >> 30)) &* 0xBF58476D1CE4E5B9
+        z = (z ^ (z >> 27)) &* 0x94D049BB133111EB
+        return z ^ (z >> 31)
+    }
 }

@@ -35,6 +35,9 @@ public final class ExecutionStream {
     /// by id only. Grows with `toolStates` and shares its cap.
     private var claudeToolKeys: [String: String] = [:]
     private var backendStatus: String?
+    /// Random per stream: the app starts a new step segment when it changes
+    /// (a retry, a fallback, the next route), not when a sequence goes down.
+    private let streamID = String(UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased().prefix(12))
     public private(set) var progress: NativeExecutionProgress?
 
     /// Protocol attestation, not an inference from empty UI output or unchanged files.
@@ -85,11 +88,18 @@ public final class ExecutionStream {
         if events.count > 12 { events.removeFirst(events.count - 12) }
         var steps = nativeSteps
         change?(&steps, sequence, date)
-        if steps.count > NativeExecutionProgress.maximumSteps { steps.removeFirst(steps.count - NativeExecutionProgress.maximumSteps) }
+        // Over the cap, a finished step goes first: a step still awaiting its
+        // return (a subagent's Agent call under many child calls) must stay to
+        // receive its task progress and its return. Removal keeps the order.
+        while steps.count > NativeExecutionProgress.maximumSteps {
+            if let finished = steps.firstIndex(where: { $0.state != .requested }) { steps.remove(at: finished) }
+            else { steps.removeFirst() }
+        }
         func candidate(_ steps: [Step]) -> NativeExecutionProgress {
             NativeExecutionProgress(sequence: sequence, kind: kind, tool: name, scope: scope,
                 toolsRequested: toolsRequested, toolsReturned: toolsReturned, activeTools: toolsRequested - toolsReturned,
-                observedAt: date, events: events, steps: steps.isEmpty ? nil : steps, backendStatus: backendStatus)
+                observedAt: date, events: events, steps: steps.isEmpty ? nil : steps, backendStatus: backendStatus,
+                stream: streamID)
         }
         // A step can never cost the lifecycle observation it rides on.
         let next = candidate(steps)
@@ -133,6 +143,9 @@ public final class ExecutionStream {
         let id = Self.stepID(key)
         return nativeSteps.contains { $0.id == id && $0.label == nil }
     }
+    /// Codex reports a command the owner declined as "declined": it did not
+    /// run, so its step is not shown as an ordinary return.
+    private static func codexFailed(_ status: String?) -> Bool { status == "failed" || status == "declined" }
     private func setBackendStatus(_ status: String?) {
         guard status != backendStatus else { return }
         backendStatus = status
@@ -379,14 +392,20 @@ public final class ExecutionStream {
                let id = i["id"] as? String, let text = i["text"] as? String { update(id, text: text, append: false) }
             if let i = p["item"] as? [String: Any], let name = i["type"] as? String,
                ["commandExecution", "fileChange", "mcpToolCall", "webSearch"].contains(name), let id = i["id"] as? String {
-                toolReturn(id: id, scope: "main", provider: "codex", failed: i["status"] as? String == "failed",
-                           extract: NativeStepLabel.codex(item: i, workspace: workspace))
+                // Derive (and redact) a label only for a request still open
+                // whose step lacks one; this handler runs per stream message.
+                let key = "codex:main:" + id
+                let open = toolStates[key].map { !$0.returned } ?? false
+                toolReturn(id: id, scope: "main", provider: "codex", failed: Self.codexFailed(i["status"] as? String),
+                           extract: open && needsLabel(key) ? NativeStepLabel.codex(item: i, workspace: workspace) : nil)
             }
         case "item/started":
             if let i = p["item"] as? [String: Any], let name = i["type"] as? String,
                ["commandExecution", "fileChange", "mcpToolCall", "webSearch"].contains(name) {
-                toolRequest(id: i["id"] as? String, name: name, scope: "main", provider: "codex",
-                            extract: NativeStepLabel.codex(item: i, workspace: workspace))
+                let id = i["id"] as? String
+                let labelled = id.map { needsLabel("codex:main:" + $0) } ?? false
+                toolRequest(id: id, name: name, scope: "main", provider: "codex",
+                            extract: labelled ? NativeStepLabel.codex(item: i, workspace: workspace) : nil)
             }
         default: break
         }
@@ -416,25 +435,32 @@ public final class ExecutionStream {
             let itemStatus = item["status"] as? String
             let returned = ["completed", "failed", "declined"].contains(itemStatus ?? "")
             let key = "codex:main:" + id
-            // Every poll repeats every item: derive a label only while this
-            // item's step can still take one, not on each unchanged snapshot.
-            let extract = needsLabel(key) ? NativeStepLabel.codex(item: item, workspace: workspace) : nil
-            if returned, toolStates[key] == nil, toolStates.count < 50_000 {
+            let state = toolStates[key]
+            // Every poll repeats every item: derive (and redact) a label only
+            // in a branch that can still attach one, never for an unchanged,
+            // finished or status-less item.
+            func extract() -> NativeStepLabel.Extract? { NativeStepLabel.codex(item: item, workspace: workspace) }
+            if returned, state == nil, toolStates.count < 50_000 {
                 toolStates[key] = ToolState(name: type, scope: "main", returned: true)
                 toolsRequested += 1; toolsReturned += 1
-                let failed = itemStatus == "failed"
+                let failed = Self.codexFailed(itemStatus)
+                let label = extract()
                 observe(failed ? .toolFailed : .toolReturned, tool: type) { steps, sequence, date in
-                    steps.append(Self.newStep(key: key, tool: type, scope: "main", extract: extract, sequence: sequence,
+                    steps.append(Self.newStep(key: key, tool: type, scope: "main", extract: label, sequence: sequence,
                                               date: date, ended: failed ? .failed : .returned))
                 }
             } else if returned {
-                toolReturn(id: id, scope: "main", provider: "codex", failed: itemStatus == "failed", extract: extract)
+                if let state, !state.returned {
+                    toolReturn(id: id, scope: "main", provider: "codex", failed: Self.codexFailed(itemStatus),
+                               extract: needsLabel(key) ? extract() : nil)
+                }
             } else if ["inProgress", "in_progress"].contains(itemStatus ?? "") {
-                toolRequest(id: id, name: type, scope: "main", provider: "codex", extract: extract)
+                toolRequest(id: id, name: type, scope: "main", provider: "codex", extract: needsLabel(key) ? extract() : nil)
             } else if itemStatus == nil {
                 // Some snapshot tool variants expose an item identity without
                 // a lifecycle status. Preserve observed presence only; no
-                // requested/returned count or running state is invented.
+                // requested/returned count, running state or step is invented,
+                // so no label is derived for it either.
                 observeOnce("codex:" + identity + ":item:" + id, kind: .toolWorking, scope: "main", tool: type)
             }
         }
