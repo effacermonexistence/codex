@@ -1152,7 +1152,13 @@ private func parallelInteractionSelfTest() async throws {
     })
     let suspendedID = restarted.queuedSubmissions.first!.id
     restarted.createSession(); restarted.composer = "unrelated new work"; restarted.send()
+    // Wait for the new work itself to finish (≈100 ms, much longer on a
+    // loaded Mac — a fixed 250 ms sleep failed the build-326 installer). A
+    // store that wrongly resumed the old queue afterwards still fails below:
+    // the suspended submission would have left the queue.
+    let restartDeadline = Date().addingTimeInterval(15)
     try await Task.sleep(for: .milliseconds(250))
+    while !restarted.activeRuns.isEmpty && Date() < restartDeadline { try await Task.sleep(for: .milliseconds(50)) }
     try check(restarted.activeRuns.isEmpty && restarted.queuedSubmissions.map(\.id) == [suspendedID],
         "new work must not implicitly resume an old persisted queue")
     restarted.removeQueued(suspendedID)
