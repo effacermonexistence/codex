@@ -5796,6 +5796,14 @@ private final class SessionStore: ObservableObject {
         // Read-only work never waits on the writer itself, but source-bound
         // reads also stay parked for a ready update's brief installation gate.
         guard sourceWriteAccess(next, session: session, root: root, home: home) != nil else { return false }
+        // A HOME write that can run on Claude is no longer parked behind a
+        // repair (build 319): its runtime confines a Claude attempt from
+        // OS-1's source with no lease, and re-routes an "auto" Codex attempt
+        // to Claude rather than wait. Only OS-1 writers, and HOME writes that
+        // can only run on Codex (which would hold a run slot while waiting),
+        // still wait here.
+        let confinable = next.provider != .codex && next.claudeCapacity > 0
+        guard SourceWriteAdmission.parksBehindSourceWriter(access, confinable: confinable) else { return false }
         let admittedWriter = inFlightSubmissions.values.contains { candidate in
             sessions.first(where: { $0.id == candidate.sessionID }).map {
                 sourceWriteAccess(candidate, session: $0, root: root, home: home) == .exclusive
@@ -9373,35 +9381,51 @@ private func sourceWriterFairnessSelfTest() async throws {
     store.composer = "HOME next 파일 수정해"; store.send()
     try check(store.activeRuns.count == 1 && store.activeRuns[readerID] != nil && store.queuedSubmissions.count == 2,
         "cap-full repair stays queued without stopping the running reader")
-    try check(store.sourceWaitingActivity(nextHomeID)?.phase == .waitingForSource && store.globalSlotWait(nextHomeID) == nil,
-        "eligible queued repair parks new HOME readers rather than admitting a starvation stream")
+    // Build 319: a HOME write is never parked behind a repair in the app. Its
+    // runtime confines a Claude attempt from OS-1's source (no lease) and
+    // makes a Codex attempt wait on the real shared lease.
+    try check(store.sourceWaitingActivity(nextHomeID) == nil && store.globalSlotWait(nextHomeID) != nil,
+        "a HOME follower behind a queued repair waits only for a run slot, never for source access")
     store.updateSettings { $0.parallelRunLimit = 2 }
     try check(store.activeRuns[writerID]?.submissionID == writerSubmissionID && store.activeRuns.count == 2,
         "exactly one repair is admitted through a reader-only hold to announce writer intent")
-    try check(store.activeRuns[nextHomeID] == nil && store.queuedSubmissions.count == 1,
-        "shared HOME follower remains parked while repair enters runtime")
+    try check(store.activeRuns[nextHomeID] == nil && store.queuedSubmissions.count == 1 &&
+        store.sourceWaitingActivity(nextHomeID) == nil && store.globalSlotWait(nextHomeID) != nil,
+        "the HOME follower then waits for a free slot, not for the repair entering runtime")
     let deadline = Date().addingTimeInterval(8)
     while store.activeRuns[writerID]?.activity.phase != .waitingForSource && Date() < deadline { try await Task.sleep(for: .milliseconds(20)) }
     try check(SourceWriteAdmission.availability(root: source.path, access: .shared, home: home) == .busy,
         "runtime fixture owns actual writer intent while readers drain")
     releaseReader = true
-    while (store.activeRuns[readerID] != nil || store.activeRuns[writerID]?.activity.phase != .executing) && Date() < deadline {
+    while (store.activeRuns[readerID] != nil || store.activeRuns[writerID]?.activity.phase != .executing
+           || !dispatched.contains("HOME next 파일 수정해") || store.activeRuns[nextHomeID] != nil) && Date() < deadline {
         try await Task.sleep(for: .milliseconds(20))
     }
-    try check(store.activeRuns[writerID] != nil && store.activeRuns[nextHomeID] == nil && store.queuedSubmissions.count == 1,
-        "reader completion leaves HOME follower parked despite a free backend slot")
+    try check(store.activeRuns[writerID] != nil && store.activeRuns[nextHomeID] == nil && store.queuedSubmissions.isEmpty &&
+        dispatched == ["HOME first 파일 수정해", "SOURCE repair 파일 수정해", "HOME next 파일 수정해"],
+        "the freed slot runs the HOME follower beside the executing repair (its runtime confines it)")
+    // A HOME write pinned to Codex cannot run confined: its runtime would only
+    // wait for the repair, so it waits parked here and holds no run slot.
+    store.createSession(); let codexHomeID = store.selectedSessionID!
+    store.sessions[0].workspace = home.path
+    store.sessions[0].provider = .codex
+    store.composer = "HOME codex 파일 수정해"; store.send()
+    try check(store.activeRuns[codexHomeID] == nil && store.sourceWaitingActivity(codexHomeID)?.phase == .waitingForSource
+        && store.activeRuns.count == 1, "a Codex-pinned HOME write stays parked behind the repair without taking the free slot")
     store.createSession(); let siblingID = store.selectedSessionID!
     store.sessions[0].workspace = sibling.path
     store.composer = "SIBLING file 수정해"; store.send()
-    try check(store.activeRuns[siblingID] != nil, "actual sibling project bypasses source repair without changing source guard")
+    try check(store.activeRuns[siblingID] != nil,
+        "actual sibling project bypasses source repair, and a parked Codex HOME write does not hold its slot")
     while store.activeRuns[siblingID] != nil && Date() < deadline { try await Task.sleep(for: .milliseconds(20)) }
     releaseWriter = true
     while (!store.activeRuns.isEmpty || !store.queuedSubmissions.isEmpty) && Date() < deadline {
         store.resumeSourceWaitingSubmissions(); try await Task.sleep(for: .milliseconds(20))
     }
-    try check(store.activeRuns.isEmpty && store.queuedSubmissions.isEmpty, "writer and parked HOME follower reach terminal drain")
-    try check(dispatched == ["HOME first 파일 수정해", "SOURCE repair 파일 수정해", "SIBLING file 수정해", "HOME next 파일 수정해"],
-        "repair resumes exactly once before new HOME work; sibling remains independent")
+    try check(store.activeRuns.isEmpty && store.queuedSubmissions.isEmpty, "writer and HOME followers reach terminal drain")
+    try check(dispatched == ["HOME first 파일 수정해", "SOURCE repair 파일 수정해", "HOME next 파일 수정해", "SIBLING file 수정해",
+                             "HOME codex 파일 수정해"],
+        "each request runs exactly once; the Codex HOME write resumes after the repair; the sibling is independent")
     releaseWriter = false
     store.createSession(); let idleWriterID = store.selectedSessionID!
     store.sessions[0].workspace = source.path
@@ -9420,6 +9444,23 @@ private func sourceWriterFairnessSelfTest() async throws {
     try check(store.activeRuns.isEmpty && store.queuedSubmissions.isEmpty &&
         Array(dispatched.suffix(2)) == ["SOURCE repair idle 파일 수정해", "SOURCE repair follower 파일 수정해"],
         "queued idle-source repair resumes once after the admitted repair terminates")
+    // I8 stays: a staged build ready to install still parks a HOME write, so
+    // a stream of HOME work cannot keep that install from its idle moment.
+    let staged = SelfUpdate.Intent(build: 999, version: "fixture", sourceRoot: source.path, sourceCommit: nil,
+        stagedAppSHA256: "fixture-app", stagedCLISHA256: "fixture-cli", conversationID: nil, submissionID: nil, checks: [])
+    try SelfUpdate.save(staged, root: source.path)
+    store.createSession(); let gatedID = store.selectedSessionID!
+    store.sessions[0].workspace = home.path
+    store.composer = "HOME gated 파일 수정해"; store.send()
+    try check(store.activeRuns[gatedID] == nil && store.sourceWaitingActivity(gatedID)?.phase == .waitingForSource,
+        "a ready update still parks a HOME write before its install gate")
+    try FileManager.default.removeItem(at: SelfUpdate.intentURL(root: source.path))
+    let gateDeadline = Date().addingTimeInterval(8)
+    while (!store.activeRuns.isEmpty || !store.queuedSubmissions.isEmpty) && Date() < gateDeadline {
+        store.resumeSourceWaitingSubmissions(); try await Task.sleep(for: .milliseconds(20))
+    }
+    try check(store.queuedSubmissions.isEmpty && dispatched.last == "HOME gated 파일 수정해",
+        "the parked HOME write resumes once the update is gone")
     print("Source-writer fairness: \(checks) checks; real isolated flock probes; model calls 0")
 }
 

@@ -812,6 +812,14 @@ struct RunStepSummary: Codable {
     var ownerPolicyProjectionSHA256: String? = OwnerPolicyContext.snapshot?.projectionSHA256
     /// On a review's answer: the draft it checked ("codex · gpt-6-astra · high").
     var reviewedDraft: String? = nil
+    /// This attempt ran confined from OS-1's live source instead of holding
+    /// its shared lease (`OS1SourceConfinement`). In-process only: never
+    /// encoded, so a resumed delivery is never escalated.
+    var os1SourceConfined: Bool = false
+    /// The confined backend handed the request's OS-1 part back with the
+    /// marker; `runTask` continues that part once as an OS-1 repair.
+    /// In-process only.
+    var os1ChangeRequired: Bool = false
 
     enum CodingKeys: String, CodingKey {
         case sequence, provider, action, model, effort, output, stderr
@@ -850,6 +858,8 @@ struct ProviderExecution {
     let nativeRecord: NativeRecordEvidence
     var surface: String? = nil
     var driftApplication: DriftApplication? = nil
+    /// A confined backend handed a change to OS-1 itself back (the marker).
+    var os1ChangeRequired: Bool = false
 
     /// The same execution with OS-1's own completion note appended to the
     /// answer, before the artifact is hashed and delivered.
@@ -861,7 +871,8 @@ struct ProviderExecution {
             output: a.output.trimmingCharacters(in: .whitespacesAndNewlines) + "\n\n" + note, stderr: a.stderr,
             durationMS: a.durationMS, workspaceBeforeHash: a.workspaceBeforeHash, workspaceAfterHash: a.workspaceAfterHash,
             nativeRecord: a.nativeRecord)
-        return ProviderExecution(artifact: artifact, sessionID: sessionID, nativeRecord: nativeRecord, surface: surface, driftApplication: driftApplication)
+        return ProviderExecution(artifact: artifact, sessionID: sessionID, nativeRecord: nativeRecord, surface: surface,
+                                 driftApplication: driftApplication, os1ChangeRequired: os1ChangeRequired)
     }
 }
 
@@ -1528,9 +1539,17 @@ func claudeArguments(
     permissionProfile: String,
     prompt: String,
     sourceContextOnly: Bool = false,
-    streamInput: Bool = false
+    streamInput: Bool = false,
+    confinedPaths: [String] = [],
+    confinedEscalates: Bool = true
 ) throws -> [String] {
     var arguments = ["-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages"]
+    // A HOME write task that holds no OS-1 source lease (build 319): its
+    // backend must be unable to write OS-1's live tree, and is told so.
+    let confined = permissionProfile == "workspace_write" && !confinedPaths.isEmpty
+    let instructions = confined
+        ? instructions + OS1SourceConfinement.instructions(protectedPaths: confinedPaths, escalates: confinedEscalates)
+        : instructions
     if sourceContextOnly && permissionProfile == "read_only" {
         // A source-only answer needs no machine customizations or external
         // tools. Safe mode keeps subscription OAuth and managed permissions;
@@ -1541,6 +1560,7 @@ func claudeArguments(
     // following named option so the positional user prompt is never consumed
     // as another tool name.
     arguments += try claudePermissionArguments(permissionProfile, sourceContextOnly: sourceContextOnly)
+    if confined { arguments += ["--settings", OS1SourceConfinement.claudeSettings(protectedPaths: confinedPaths)] }
     if let model { arguments += ["--model", model] }
     arguments += [
         "--effort", effort,
@@ -1605,9 +1625,12 @@ func claudePermissionArguments(_ permissionProfile: String, sourceContextOnly: B
 struct ClaudePrintResult {
     let output: Data
     let sessionID: String
+    /// A confined run tried to write OS-1's protected source and was denied.
+    var protectedWriteDenied = false
 }
 
-func parseClaudePrintResult(_ data: Data, requestedSessionID: String, boundedShell: Bool = false) throws -> ClaudePrintResult {
+func parseClaudePrintResult(_ data: Data, requestedSessionID: String, boundedShell: Bool = false,
+                            confinedPaths: [String] = []) throws -> ClaudePrintResult {
     guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
           let returnedSessionID = object["session_id"] as? String,
           let normalizedReturned = try normalizedSessionID(returnedSessionID),
@@ -1618,7 +1641,11 @@ func parseClaudePrintResult(_ data: Data, requestedSessionID: String, boundedShe
     // In the bounded read-only lane (dontAsk + prefix allow rules) a denial is
     // the bound doing its job, not a policy verdict: the answer is judged on
     // its content and must name what it could not run.
-    let denials = boundedShell ? [] : (object["permission_denials"] as? [[String: Any]] ?? [])
+    let allDenials = boundedShell ? [] : (object["permission_denials"] as? [[String: Any]] ?? [])
+    // In a confined run a write into OS-1's protected source is denied by
+    // design: that is the request needing an OS-1 change, which OS-1 then
+    // runs as its own repair, not a policy verdict on the task.
+    let denials = allDenials.filter { !OS1SourceConfinement.isProtectedWriteDenial($0, protectedPaths: confinedPaths) }
     if !denials.isEmpty {
         let tools = Array(Set(denials.map { $0["tool_name"] as? String ?? "unknown tool" })).sorted()
         // Classify before is_error. Neither a success-shaped final answer nor
@@ -1626,17 +1653,19 @@ func parseClaudePrintResult(_ data: Data, requestedSessionID: String, boundedShe
         throw OS1Error.toolPermissionDenied(provider: "Claude", tools: tools, count: denials.count)
     }
     var classified = object
-    if boundedShell { classified["permission_denials"] = [] as [Any] }
+    if boundedShell || denials.count != allDenials.count { classified["permission_denials"] = denials as [Any] }
     if let blocker = UnifiedExecution.claudeTerminalBlocker(status: 0, object: classified) {
         throw OS1Error.backendBlocked(blocker)
     }
     guard let value = object["result"] as? String else {
         throw OS1Error.message("Claude did not return a completed result.")
     }
-    return ClaudePrintResult(output: Data(value.utf8), sessionID: normalizedReturned)
+    return ClaudePrintResult(output: Data(value.utf8), sessionID: normalizedReturned,
+                             protectedWriteDenied: denials.count != allDenials.count)
 }
 
-func parseClaudeCommandResult(_ status: Int32, _ data: Data, requestedSessionID: String, boundedShell: Bool = false) throws -> ClaudePrintResult {
+func parseClaudeCommandResult(_ status: Int32, _ data: Data, requestedSessionID: String, boundedShell: Bool = false,
+                              confinedPaths: [String] = []) throws -> ClaudePrintResult {
     // Bind even error variants to this invocation before trusting their cause.
     guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
           let returned = object["session_id"] as? String,
@@ -1645,19 +1674,22 @@ func parseClaudeCommandResult(_ status: Int32, _ data: Data, requestedSessionID:
     }
     if let blocker = UnifiedExecution.claudeTerminalBlocker(status: status, object: object) {
         if blocker == .policyDenied, !(object["permission_denials"] as? [Any] ?? []).isEmpty {
-            return try parseClaudePrintResult(data, requestedSessionID: requestedSessionID, boundedShell: boundedShell)
+            return try parseClaudePrintResult(data, requestedSessionID: requestedSessionID, boundedShell: boundedShell,
+                                              confinedPaths: confinedPaths)
         }
         throw OS1Error.backendBlocked(blocker)
     }
     if status != 0 {
         // Some CLI versions return a non-zero exit alongside structured
         // permission denials. Preserve that terminal classification too.
-        do { _ = try parseClaudePrintResult(data, requestedSessionID: requestedSessionID, boundedShell: boundedShell) }
+        do { _ = try parseClaudePrintResult(data, requestedSessionID: requestedSessionID, boundedShell: boundedShell,
+                                            confinedPaths: confinedPaths) }
         catch let failure as OS1Error where failure.isTerminalPermissionFailure { throw failure }
         catch { /* Other command failures retain bounded backend recovery. */ }
         throw OS1Error.message("Claude execution failed. OS-1 did not verify this step.")
     }
-    return try parseClaudePrintResult(data, requestedSessionID: requestedSessionID, boundedShell: boundedShell)
+    return try parseClaudePrintResult(data, requestedSessionID: requestedSessionID, boundedShell: boundedShell,
+                                      confinedPaths: confinedPaths)
 }
 
 /// Inspect structured execution evidence before trusting a final answer.
@@ -6258,6 +6290,8 @@ private func execute(
     let sessionID: String
     let nativeRecord: NativeRecordEvidence
     var validateCandidate: (() throws -> Void)?
+    // A confined Claude run handing the request back as an OS-1 change.
+    var os1ChangeRequired = false
     let hasPreloadedR2Evidence = preloadedR2Evidence != nil
     let evidenceDirective = sourceExecutionDirective(preloadedR2Evidence, required: sourceUseRequired)
     let readinessDirective = asksRecoveryReadiness(lockedObjective) ? """
@@ -6502,6 +6536,12 @@ private func execute(
                 "Passing \(attachedImages.count) attached image(s) to the model as image input."))
         }
         defer { steerDriver?.processDidEnd() }
+        // Set by the runtime when this attempt holds no OS-1 source lease
+        // (a HOME write task, build 319): the launch must confine the backend.
+        let confinedPaths = confinedClaudeLaunchPaths(permissionProfile: ticket.permissionProfile)
+        let confined = !confinedPaths.isEmpty
+        // Only an owner request reruns a handed-back OS-1 change (runTask).
+        let handBackEscalates = OS1ChangeEscalation.available
         var arguments = try claudeArguments(
             model: nativeModel.invocation,
             effort: effort,
@@ -6514,7 +6554,9 @@ private func execute(
             permissionProfile: ticket.permissionProfile,
             prompt: prompt,
             sourceContextOnly: hasPreloadedR2Evidence || chatLane,
-            streamInput: steerDriver != nil
+            streamInput: steerDriver != nil,
+            confinedPaths: confinedPaths,
+            confinedEscalates: handBackEscalates
         )
         if projectlessRead && !sourceOnly && !chatLane { arguments.insert("--safe-mode", at: 1) }
         if CheckoutTurn.enabled && ticket.permissionProfile == "workspace_write" && !sourceOnly && !chatLane {
@@ -6540,13 +6582,15 @@ private func execute(
                 if let text = stream.takeClaudePublicFinal(sessionID: activeSessionID, after: &relayedResultCount) {
                     revision = stream.eventCount
                     AttemptLatencyTrace.markOnce("native_output_received")
-                    RuntimeActivity.emit(.verifying, provider: "claude", model: model, effort: effort, publicText: text, progress: stream.progress)
+                    RuntimeActivity.emit(.verifying, provider: "claude", model: model, effort: effort,
+                        publicText: confined ? OS1SourceConfinement.strippingMarker(text, partialTail: true) : text, progress: stream.progress)
                     AttemptLatencyTrace.markOnce("native_output_published")
                 } else if stream.eventCount != revision {
                     revision = stream.eventCount
                     if !stream.text.isEmpty { AttemptLatencyTrace.markOnce("first_public_output_received") }
                     RuntimeActivity.emit(.executing, provider: "claude", model: model, effort: effort,
-                        publicText: stream.text, tool: stream.tool, progress: stream.progress)
+                        publicText: confined ? OS1SourceConfinement.strippingMarker(stream.text, partialTail: true) : stream.text,
+                        tool: stream.tool, progress: stream.progress)
                     if !stream.text.isEmpty { AttemptLatencyTrace.markOnce("first_public_output_published") }
                 }
             },
@@ -6555,13 +6599,16 @@ private func execute(
             stream.finishClaude()
             if let result = stream.result { onUsage?(CompletionUsageParser.parseClaudeResult(result)) }
             throw interruptedExecution(ticket: ticket, model: model, effort: effort, contract: executorContract,
-                sessionID: activeSessionID, publicProgress: stream.text, beforeHash: workspaceBeforeHash,
+                sessionID: activeSessionID,
+                publicProgress: confined ? OS1SourceConfinement.strippingMarker(stream.text, partialTail: true) : stream.text,
+                beforeHash: workspaceBeforeHash,
                 workspace: executionWorkspace, started: started, cause: error, surface: executedSurface?.rawValue)
         }
         stream.finishClaude()
         if let text = stream.takeClaudePublicFinal(sessionID: activeSessionID, after: &relayedResultCount) {
             AttemptLatencyTrace.markOnce("native_output_received")
-            RuntimeActivity.emit(.verifying, provider: "claude", model: model, effort: effort, publicText: text, progress: stream.progress)
+            RuntimeActivity.emit(.verifying, provider: "claude", model: model, effort: effort,
+                publicText: confined ? OS1SourceConfinement.strippingMarker(text) : text, progress: stream.progress)
             AttemptLatencyTrace.markOnce("native_output_published")
         }
         AttemptLatencyTrace.mark("provider_exited")
@@ -6569,10 +6616,11 @@ private func execute(
         onUsage?(CompletionUsageParser.parseClaudeResult(resultData))
         let parsed: ClaudePrintResult
         do { parsed = try parseClaudeCommandResult(raw.0, resultData, requestedSessionID: activeSessionID,
-                                                    boundedShell: ticket.permissionProfile == "read_only") }
+                                                    boundedShell: ticket.permissionProfile == "read_only", confinedPaths: confinedPaths) }
         catch {
             let object = (try? JSONSerialization.jsonObject(with: resultData)) as? [String: Any]
-            let progress = object?["session_id"] as? String == activeSessionID ? (object?["result"] as? String ?? stream.text) : stream.text
+            let rawProgress = object?["session_id"] as? String == activeSessionID ? (object?["result"] as? String ?? stream.text) : stream.text
+            let progress = confined ? OS1SourceConfinement.strippingMarker(rawProgress) : rawProgress
             var rejection = interruptedExecution(ticket: ticket, model: model, effort: effort, contract: executorContract,
                 sessionID: activeSessionID, publicProgress: progress, beforeHash: workspaceBeforeHash,
                 workspace: executionWorkspace, started: started, cause: error, surface: executedSurface?.rawValue)
@@ -6587,15 +6635,28 @@ private func execute(
             }
             throw rejection
         }
-        let outputIssues = outputContractIssues(parsed.output, prompt: lockedObjective, snapshotOnly: hasPreloadedR2Evidence)
-        let rejectedConfiguration = claudeOutputMisclassifiedRuntimeConfiguration(parsed.output)
-        let rejectedClarification = claudeOutputDefersRequestedDeliverable(parsed.output, prompt: prompt)
-        let rejectedCapability = providerOutputDeclaresCapabilityFailure(parsed.output, prompt: lockedObjective, evidenceSupplied: hasPreloadedR2Evidence,
+        // A confined run that needs a change to OS-1 itself says so with the
+        // marker (never inferred from a denied write: that is the protection
+        // working); the owner never sees the marker. When runTask will rerun
+        // the OS-1 part as a repair, the answer reports the rest and hands
+        // that part back, so only the checks a handoff inherently fails — a
+        // stated inability, a deferred deliverable, a manual backend handoff —
+        // are skipped; drift, configuration, source-contract and presentation
+        // checks still apply. Without that rerun (a workflow stage, an
+        // internal run) every check applies as to any other answer.
+        let handled = OS1SourceConfinement.confinedAnswer(String(decoding: parsed.output, as: UTF8.self), confined: confined)
+        os1ChangeRequired = handled.changeRequired
+        let handsBack = os1ChangeRequired && handBackEscalates
+        let answer = confined ? Data(handled.text.utf8) : parsed.output
+        let outputIssues = outputContractIssues(answer, prompt: lockedObjective, snapshotOnly: hasPreloadedR2Evidence)
+        let rejectedConfiguration = claudeOutputMisclassifiedRuntimeConfiguration(answer)
+        let rejectedClarification = claudeOutputDefersRequestedDeliverable(answer, prompt: prompt)
+        let rejectedCapability = providerOutputDeclaresCapabilityFailure(answer, prompt: lockedObjective, evidenceSupplied: hasPreloadedR2Evidence,
                                                                          boundedShell: ticket.permissionProfile == "read_only")
-        let rejectedControlChatter = providerOutputReplacedTaskWithControlChatter(parsed.output, prompt: lockedObjective)
+        let rejectedControlChatter = providerOutputReplacedTaskWithControlChatter(answer, prompt: lockedObjective)
         let rejectedEvidence = sourceUseRequired && (preloadedR2Evidence.map {
             !outputSatisfiesPreloadedR2Evidence(
-                parsed.output,
+                answer,
                 prompt: objectivePrompt ?? prompt,
                 requiredMarkers: $0.requiredOutputMarkers,
                 contentAnchors: $0.contentAnchors,
@@ -6611,28 +6672,30 @@ private func execute(
                 .reduce(lockedObjective) { ExecutionSteering.continuation(original: $0, correction: $1.text) }
         } ?? lockedObjective
         validateCandidate = {
-        if UnifiedExecution.requestsManualBackendHandoff(String(decoding: parsed.output, as: UTF8.self), request: correctedObjective) {
-            throw OS1Error.backendBlocked(BackendBlocker.reported(in: String(decoding: parsed.output, as: UTF8.self)) ?? .incomplete)
+        if !handsBack, UnifiedExecution.requestsManualBackendHandoff(String(decoding: answer, as: UTF8.self), request: correctedObjective) {
+            throw OS1Error.backendBlocked(BackendBlocker.reported(in: String(decoding: answer, as: UTF8.self)) ?? .incomplete)
         }
-        if rejectedCapability {
-            throw OS1Error.backendBlocked(BackendBlocker.reported(in: String(decoding: parsed.output, as: UTF8.self)) ?? .capabilityUnavailable)
+        if !handsBack, rejectedCapability {
+            throw OS1Error.backendBlocked(BackendBlocker.reported(in: String(decoding: answer, as: UTF8.self)) ?? .capabilityUnavailable)
         }
         if rejectedControlChatter {
             throw DriftDetected(.objective, diagnostic: "Claude did not execute the locked objective with the required capabilities. This candidate was not adopted.")
         }
-        if rejectedConfiguration || rejectedClarification || rejectedEvidence || !outputIssues.isEmpty {
+        let deferredDeliverable = rejectedClarification && !handsBack
+        if rejectedConfiguration || deferredDeliverable || rejectedEvidence || !outputIssues.isEmpty {
             // Keep each billed candidate visible to REVAS and the usage ledger.
             // Retrying the same model invisibly spent tokens outside that loop.
             let reason = rejectedEvidence ? "verified source contract" :
-                (rejectedClarification ? "requested deliverable" :
+                (deferredDeliverable ? "requested deliverable" :
                     (rejectedConfiguration ? "executor configuration" : "presentation/structure checks"))
             let kind: DriftKind = rejectedEvidence ? .sourceContract :
-                (rejectedClarification ? .deliverable : (rejectedConfiguration ? .configuration : .presentation))
+                (deferredDeliverable ? .deliverable : (rejectedConfiguration ? .configuration : .presentation))
             throw DriftDetected(kind, diagnostic: "Claude answer failed \(reason). \(outputIssues.joined(separator: " ")) A different governed route is required; this candidate was not adopted.")
         }
         }
         sessionID = parsed.sessionID
-        result = (raw.0, parsed.output, raw.2)
+        result = (raw.0, answer, raw.2)
+        // The transcript holds the backend's own words, marker included.
         let transcript = claudeTranscriptPath(
             sessionID: parsed.sessionID,
             modifiedAfter: started,
@@ -6669,7 +6732,8 @@ private func execute(
         sessionID: sessionID,
         nativeRecord: nativeRecord,
         surface: executedSurface?.rawValue,
-        driftApplication: driftApplication
+        driftApplication: driftApplication,
+        os1ChangeRequired: os1ChangeRequired
     )
     AttemptLatencyTrace.mark("candidate_built")
     do { try validateCandidate?() }
@@ -7927,6 +7991,195 @@ func loadCurrentOwnerPolicy() throws -> OwnerPolicySnapshot? {
     return policy
 }
 
+/// Whether a confined backend's handed-back OS-1 change continues as an
+/// OS-1 repair. Only an owner request does (runTask, not a workflow stage or
+/// a read-only run), and only once: the rerun itself runs with this off.
+enum OS1ChangeEscalation {
+    @TaskLocal static var available = false
+}
+
+/// A confined attempt (a HOME request's Claude backend, kept off OS-1's live
+/// source, build 319) handed the request's OS-1 part back with the marker.
+/// The step output is already stripped of it; the flag is the signal.
+func confinedDraftRequiresOS1Change(_ summary: RunSummary) -> Bool {
+    summary.steps.contains { $0.os1SourceConfined && $0.os1ChangeRequired }
+}
+
+/// Paths the Claude backend of this attempt is launched confined from: the
+/// runtime's per-attempt decision, for a write ticket only (the read-only
+/// lane keeps its own settings).
+func confinedClaudeLaunchPaths(permissionProfile: String) -> [String] {
+    permissionProfile == "workspace_write" ? OS1SourceConfinement.activeRoots : []
+}
+
+/// Whether an attempt's end finishes an OS-1 source change as this task's
+/// own. Never for an attempt that ran confined with no lease: it could not
+/// write OS-1's source, so a change seen meanwhile belongs to a repair that
+/// ran beside it. A confined attempt that still carries the lease of an
+/// earlier unconfined attempt is the exception (`carriesEarlierWriter`): no
+/// repair could run while that lease was held, so a change seen is that
+/// earlier writer's, and is finished as before.
+func unboundOS1SourceChangeObserved(confined: Bool, carriesEarlierWriter: Bool = false, watch: OS1SourceWatch?) -> Bool {
+    (!confined || carriesEarlierWriter) && watch?.changed() == true
+}
+
+/// OS-1's live-source state across one HOME write task's attempts.
+struct OS1AttemptSourceState {
+    var lease: ExclusiveHookLease?
+    var watch: OS1SourceWatch?
+    /// The held shared lease still covers an unconfined attempt that ended
+    /// uncertain. A lease taken only to wait out a repair covers nothing.
+    var leaseCarriesWriter = false
+    /// Instead of waiting behind a repair, the first attempt may be re-routed
+    /// once to a confined Claude backend…
+    var claudeReroutesLeft = 1
+    /// …and once more when its ticket aged past its lifetime while it waited
+    /// (a repair's release build alone can take 30 minutes; a ticket lives 5).
+    var staleTicketReroutesLeft = 1
+}
+
+enum OS1AttemptSourceStep: Equatable {
+    /// Launch the attempt. `confined`: no lease, protected paths set.
+    case proceed(confined: Bool, carriesEarlierWriter: Bool)
+    /// Ask the route core again before launching: for a Claude route, or for
+    /// a fresh ticket of the same request.
+    case reroute(preferClaude: Bool)
+}
+
+/// How one attempt of a write task whose folder contains OS-1's live tree
+/// keeps off it (build 319). A Claude attempt runs confined and takes no
+/// lease, so it may run beside an OS-1 repair. Any other attempt holds the
+/// shared lease for its call — beside other HOME tasks, never beside a
+/// repair. When a repair holds or awaits the tree, the first attempt is
+/// re-routed to Claude rather than waiting (`claudeAlternative`), and a
+/// ticket that went stale while it waited is replaced before use.
+func prepareOS1AttemptSource(
+    provider: String, permissionProfile: String, sharedLeaseRoot: String?, firstAttempt: Bool,
+    claudeAlternative: () async -> Bool, ticketFresh: () -> Bool, state: inout OS1AttemptSourceState,
+    protectedPaths: (String) -> [String] = { OS1SourceConfinement.protectedPaths(root: $0) },
+    tryAcquire: (String) throws -> ExclusiveHookLease? = tryAcquireOS1SourceSharedLease,
+    acquireWaiting: (String) throws -> ExclusiveHookLease = acquireOS1SourceSharedLease,
+    capture: (String) -> OS1SourceWatch = {
+        OS1SourceWatch(root: $0, head: gitHead($0), fingerprint: OS1SourceWatch.fingerprint(root: $0))
+    }
+) async throws -> OS1AttemptSourceStep {
+    OS1SourceConfinement.activeRoots = []
+    if permissionProfile == "read_only" {
+        state.lease = nil
+        state.watch = nil
+        state.leaseCarriesWriter = false
+    }
+    switch OS1SourceConfinement.attemptGuard(provider: provider, permissionProfile: permissionProfile,
+                                             sharedLeaseRoot: sharedLeaseRoot, protectedPaths: protectedPaths) {
+    case .unguarded:
+        return .proceed(confined: false, carriesEarlierWriter: false)
+    case .confined(let paths):
+        // A lease kept only from a wait covers no writer: never hold a
+        // repair back for nothing. One kept for an earlier writer that ended
+        // uncertain keeps protecting until this attempt succeeds.
+        if state.lease != nil, !state.leaseCarriesWriter { state.lease = nil }
+        OS1SourceConfinement.activeRoots = paths
+        return .proceed(confined: true, carriesEarlierWriter: state.lease != nil)
+    case .sharedLease:
+        guard let root = sharedLeaseRoot else { return .proceed(confined: false, carriesEarlierWriter: false) }
+        if state.lease == nil {
+            if let lease = try tryAcquire(root) {
+                state.lease = lease
+            } else {
+                if firstAttempt, state.claudeReroutesLeft > 0, await claudeAlternative() {
+                    state.claudeReroutesLeft -= 1
+                    return .reroute(preferClaude: true)
+                }
+                state.lease = try acquireWaiting(root)
+                if firstAttempt, state.staleTicketReroutesLeft > 0, !ticketFresh() {
+                    // Keep the lease: the fresh route most likely runs the
+                    // same backend. A source repair may have run meanwhile.
+                    state.staleTicketReroutesLeft -= 1
+                    state.watch = capture(root)
+                    state.leaseCarriesWriter = false
+                    return .reroute(preferClaude: false)
+                }
+            }
+            // A source repair may have run during the previous attempt's
+            // external verification. Attribute only this attempt's changes.
+            state.watch = capture(root)
+        }
+        state.leaseCarriesWriter = true
+        return .proceed(confined: false, carriesEarlierWriter: false)
+    }
+}
+
+/// A signed ticket still has `seconds` of its lifetime left.
+func ticketValid(_ ticket: Ticket, forAtLeast seconds: TimeInterval, now: Date = Date()) -> Bool {
+    let formatter = ISO8601DateFormatter()
+    formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    guard let expiry = formatter.date(from: ticket.expiresAt) else { return true }
+    return expiry.timeIntervalSince(now) >= seconds
+}
+
+/// The execution prompt of the OS-1 repair that continues a confined run's
+/// handed-back OS-1 change. It carries the corrections the first run took in
+/// and that run's report, and limits the repair to the OS-1 part: the first
+/// run already did everything else, so nothing it did is repeated.
+func os1RepairHandoffPrompt(request: String, corrections: [String], draftReport: String) -> String {
+    let corrected = corrections.reduce(request) { ExecutionSteering.continuation(original: $0, correction: $1) }
+    let report = draftReport.count <= 12_000 ? draftReport
+        : String(draftReport.prefix(6_000)) + "\n…\n" + String(draftReport.suffix(6_000))
+    return """
+    \(corrected)
+
+    OS-1 HANDOFF: this request first ran with OS-1's own source protected. That run did the rest of the request and reported:
+    <<<
+    \(report)
+    >>>
+    Make only the change to OS-1 itself that this request still needs. Do not redo, repeat or undo anything that report says was done (no repeated deploy, push, message, or file change outside OS-1).
+    OS-1 인계: 이 요청은 먼저 OS-1 소스를 보호한 채 실행되었고, 위 보고처럼 나머지 부분을 처리했습니다. 이 요청에 아직 필요한 OS-1 자체 변경만 하세요. 보고에 이미 했다고 적힌 일은 다시 하거나 되돌리지 마세요(배포·푸시·메시지·OS-1 밖 파일 변경 반복 금지).
+    """
+}
+
+/// The owner sees both: the confined run's report (what it did and what OS-1
+/// needed) and the repair that made the OS-1 change. The repair's task
+/// context wins — later turns continue in OS-1's source, where its native
+/// session lives, exactly as when the owner asks for an OS-1 change directly.
+func mergedOS1Escalation(draft: RunSummary, repair: RunSummary, monitorTaskID: String?) -> RunSummary {
+    let corrections = (draft.persistedCorrectionIDs ?? []) + (repair.persistedCorrectionIDs ?? []).filter {
+        !(draft.persistedCorrectionIDs ?? []).contains($0)
+    }
+    return RunSummary(status: repair.status, steps: draft.steps + repair.steps,
+        sourceContext: repair.sourceContext ?? draft.sourceContext, taskContext: repair.taskContext ?? draft.taskContext,
+        persistedCorrectionIDs: corrections.isEmpty ? nil : corrections,
+        monitorTaskID: monitorTaskID ?? repair.monitorTaskID ?? draft.monitorTaskID, workflowBlocker: repair.workflowBlocker)
+}
+
+/// The confined run's answer when its OS-1 repair could not continue: said
+/// plainly, so the handed-back OS-1 change is never read as done.
+func appendingOS1RepairNote(_ summary: RunSummary, cancelled: Bool, reason: String) -> RunSummary {
+    let note = cancelled
+        ? os1Tr("OS-1 자체 수정은 취소되어 진행하지 않았습니다. 위에서 말한 OS-1 변경은 아직 적용되지 않았습니다.",
+                "The change to OS-1 itself was cancelled and not made; the OS-1 change described above is not applied.")
+        : os1Tr("OS-1 자체 수정을 이어서 진행하지 못했습니다: \(reason). 위에서 말한 OS-1 변경은 아직 적용되지 않았습니다.",
+                "The change to OS-1 itself could not continue: \(reason). The OS-1 change described above is not applied.")
+    guard let index = summary.steps.lastIndex(where: { $0.revasDisposition == "adopted" }) else { return summary }
+    var steps = summary.steps
+    steps[index].output = steps[index].output.trimmingCharacters(in: .whitespacesAndNewlines) + "\n\n" + note
+    return RunSummary(status: summary.status, steps: steps, sourceContext: summary.sourceContext,
+        taskContext: summary.taskContext, persistedCorrectionIDs: summary.persistedCorrectionIDs,
+        monitorTaskID: summary.monitorTaskID, workflowBlocker: summary.workflowBlocker)
+}
+
+/// The owner never sees the escalation marker, whichever answer is returned.
+func strippingOS1ChangeMarker(_ summary: RunSummary) -> RunSummary {
+    guard summary.steps.contains(where: { OS1SourceConfinement.containsMarker($0.output) }) else { return summary }
+    let steps = summary.steps.map { step -> RunStepSummary in
+        var step = step
+        step.output = OS1SourceConfinement.strippingMarker(step.output)
+        return step
+    }
+    return RunSummary(status: summary.status, steps: steps, sourceContext: summary.sourceContext,
+        taskContext: summary.taskContext, persistedCorrectionIDs: summary.persistedCorrectionIDs,
+        monitorTaskID: summary.monitorTaskID, workflowBlocker: summary.workflowBlocker)
+}
+
 func runTask(
     prompt: String,
     workspace: String,
@@ -7962,35 +8215,101 @@ func runTask(
         && monitorTaskIDOverride == nil && providerPreference == "auto" && claudeCapacity > 0
         && ReviewPass.applies(request: prompt)
     let reviewMonitorID = reviewable ? UUID().uuidString.lowercased() : nil
+    // A HOME owner request may continue its handed-back OS-1 part as an OS-1
+    // repair (build 319). The first run and that repair are one owner task
+    // for governance accounting, as a draft and its review are.
+    let escalationAvailable = workflowStage == nil && !requireReadOnly
+    let escalationMonitorID = reviewMonitorID == nil && escalationAvailable && monitorTaskIDOverride == nil
+        && OS1SourceWatch.containedRoot(workspace: workspace) != nil ? UUID().uuidString.lowercased() : nil
+    let ownerMonitorID = reviewMonitorID ?? escalationMonitorID
     return try await OwnerPolicyContext.$snapshot.withValue(policy) {
         try await RequestObservation.$namedPaths.withValue(namedPaths) {
-            if let reviewMonitorID { try? GovernanceActivityStore().begin(id: reviewMonitorID) }
+            if let ownerMonitorID { try? GovernanceActivityStore().begin(id: ownerMonitorID) }
             var adopted = false
             defer {
-                if let reviewMonitorID {
-                    try? GovernanceActivityStore().finish(id: reviewMonitorID, adopted: adopted,
+                if let ownerMonitorID {
+                    try? GovernanceActivityStore().finish(id: ownerMonitorID, adopted: adopted,
                         cancelled: ExecutionCancellation.isCancelled)
                 }
             }
-            let draft = try await runTaskWithOwnerPolicy(
-                prompt: prompt,
-                workspace: workspace,
-                providerPreference: providerPreference,
-                context: context,
-                codexSessionID: codexSessionID,
-                claudeSessionID: claudeSessionID,
-                codexCapacity: codexCapacity,
-                claudeCapacity: claudeCapacity,
-                progress: progress,
-                desktopReveal: desktopReveal,
-                requireReadOnly: requireReadOnly,
-                routingTaskOverride: routingTaskOverride,
-                workflowStage: workflowStage,
-                ownerPrompt: ownerPrompt,
-                monitorTaskIDOverride: reviewMonitorID ?? monitorTaskIDOverride,
-                heldOS1SourceRoot: heldOS1SourceRoot,
-                preflight: preflight)
+            let draft = strippingOS1ChangeMarker(try await OS1ChangeEscalation.$available.withValue(escalationAvailable) {
+                try await runTaskWithOwnerPolicy(
+                    prompt: prompt,
+                    workspace: workspace,
+                    providerPreference: providerPreference,
+                    context: context,
+                    codexSessionID: codexSessionID,
+                    claudeSessionID: claudeSessionID,
+                    codexCapacity: codexCapacity,
+                    claudeCapacity: claudeCapacity,
+                    progress: progress,
+                    desktopReveal: desktopReveal,
+                    requireReadOnly: requireReadOnly,
+                    routingTaskOverride: routingTaskOverride,
+                    workflowStage: workflowStage,
+                    ownerPrompt: ownerPrompt,
+                    monitorTaskIDOverride: ownerMonitorID ?? monitorTaskIDOverride,
+                    heldOS1SourceRoot: heldOS1SourceRoot,
+                    preflight: preflight)
+            })
             adopted = draft.status == "complete"
+            // A HOME request first runs confined from OS-1's source (build
+            // 319). Its backend does the rest of the request and hands only
+            // the change to OS-1 itself back (the marker); OS-1 then makes
+            // that change once as its own repair — bound to OS-1's source,
+            // exclusive lease, fresh native sessions — told what the first
+            // run already did, so nothing it did is replayed. The owner sees
+            // both answers. A failed or cancelled repair returns the first
+            // answer with a plain note that the OS-1 change was not made.
+            if escalationAvailable, draft.status == "complete", confinedDraftRequiresOS1Change(draft) {
+                RuntimeActivity.emit(.preparing, publicText: os1Tr(
+                    "OS-1 자체 수정이 필요한 요청이라 OS-1 수리로 이어서 진행합니다.",
+                    "This request needs a change to OS-1 itself, so it continues as an OS-1 repair."))
+                let report = draft.steps.last(where: { $0.revasDisposition == "adopted" })?.output ?? ""
+                // Corrections the first run took in never reach the fresh
+                // sessions by steering (they already have receipts).
+                let mailbox = ExecutionSteering()
+                let corrections = ExecutionSteering.currentSubmission.map { id in
+                    mailbox.inputs(id).filter { input in
+                        mailbox.receipt(input).map { $0.state == .persisted || $0.state == .accepted } == true
+                    }.map(\.text)
+                } ?? []
+                do {
+                    let repair = strippingOS1ChangeMarker(try await OS1ChangeEscalation.$available.withValue(false) {
+                        try await runTaskWithOwnerPolicy(
+                            prompt: os1RepairHandoffPrompt(request: prompt, corrections: corrections, draftReport: report),
+                            workspace: workspace,
+                            providerPreference: providerPreference,
+                            context: context,
+                            codexSessionID: nil,
+                            claudeSessionID: nil,
+                            codexCapacity: codexCapacity,
+                            claudeCapacity: claudeCapacity,
+                            progress: progress,
+                            desktopReveal: desktopReveal,
+                            routingTaskOverride: routingTaskOverride ?? prompt,
+                            // The owner's own words stay the durable objective
+                            // and the binding/preparation input; the handoff is
+                            // execution scaffolding, as a workflow stage's is.
+                            ownerPrompt: ownerPrompt ?? prompt,
+                            monitorTaskIDOverride: ownerMonitorID ?? monitorTaskIDOverride,
+                            heldOS1SourceRoot: heldOS1SourceRoot,
+                            preflight: preflight,
+                            forcedProjectID: "os1-clodex")
+                    })
+                    adopted = repair.status == "complete"
+                    return mergedOS1Escalation(draft: draft, repair: repair, monitorTaskID: ownerMonitorID ?? monitorTaskIDOverride)
+                } catch {
+                    // The first answer was adopted on its own checks; the
+                    // repair's failure never takes it away, but the owner's
+                    // request is not complete without its OS-1 part.
+                    BackendFailureNotice.clear()
+                    adopted = false
+                    let cancelled = ExecutionCancellation.isCancelled || backendBlocker(error) == .cancelled
+                    let reason = String(String(describing: error).prefix(300))
+                    return appendingOS1RepairNote(draft, cancelled: cancelled, reason: reason)
+                }
+            }
             guard reviewable else { return draft }
             return await reviewedCodeExplanation(draft, request: prompt, workspace: workspace, context: context,
                 codexCapacity: codexCapacity, claudeCapacity: claudeCapacity, progress: progress,
@@ -8087,9 +8406,13 @@ func runTaskWithOwnerPolicy(
     monitorTaskIDOverride: String? = nil,
     heldOS1SourceRoot: String? = nil,
     preflight: PreflightInventory? = nil,
-    readOnlyReview: Bool = false
+    readOnlyReview: Bool = false,
+    forcedProjectID: String? = nil
 ) async throws -> RunSummary {
     RuntimeActivity.emit(.preparing)
+    // Confinement is per attempt; nothing from an earlier run carries over.
+    OS1SourceConfinement.activeRoots = []
+    defer { OS1SourceConfinement.activeRoots = [] }
     if requireReadOnly, let verified = try await RailwayDelivery.recoverySummary(request: prompt) {
         return verified
     }
@@ -8166,8 +8489,10 @@ func runTaskWithOwnerPolicy(
     // registered root; the bound project keeps that root for later turns.
     // A request about OS-1 itself that names no project ("말풍선이 안 맞아,
     // 코덱스 기준으로 고쳐") binds OS-1 too, so OS-1 can finish the repair.
+    // `forcedProjectID`: a confined HOME request handed back as a change to
+    // OS-1 itself reruns bound to OS-1 (runTask), as if the owner named it.
     let projectBinding = localProjectBinding(request: TaskWorkflow.preparationRequest(owner: ownerPrompt, stagePrompt: prompt),
-        workspace: requestedWorkspace, namedProjectID: preparation?.projectID, boundProjectID: taskState.project?.projectID,
+        workspace: requestedWorkspace, namedProjectID: forcedProjectID ?? preparation?.projectID, boundProjectID: taskState.project?.projectID,
         readOnly: requireReadOnly)
     let localProjectID = projectBinding.projectID
     var canonicalWorkspace = requestedWorkspace
@@ -8179,11 +8504,16 @@ func runTaskWithOwnerPolicy(
                     "OS-1 자체 수정 요청으로 보고 OS-1 소스 \(resolved.workspace)에서 작업합니다 (근거: \(projectBinding.inference?.signals.prefix(3).joined(separator: " · ") ?? "")). 끝나면 OS-1이 직접 빌드·검증·설치합니다.",
                     "Treating this as a change to OS-1 itself: working in OS-1's source \(resolved.workspace) (evidence: \(projectBinding.inference?.signals.prefix(3).joined(separator: " · ") ?? "")). OS-1 builds, verifies and installs it itself."))
                 _ = applyWorkspaceBaseline(projectID: localProjectID, workspace: resolved.workspace, context: &taskState)
+            } else if forcedProjectID == localProjectID {
+                RuntimeActivity.emit(.preparing, publicText: os1Tr(
+                    "OS-1 소스 \(resolved.workspace)에서 OS-1 수리로 작업합니다. 끝나면 OS-1이 직접 빌드·검증·설치합니다.",
+                    "Working as an OS-1 repair in OS-1's source \(resolved.workspace). OS-1 builds, verifies and installs it itself."))
+                _ = applyWorkspaceBaseline(projectID: localProjectID, workspace: resolved.workspace, context: &taskState)
             } else {
                 RuntimeActivity.emit(.preparing, publicText: "\(ProjectAdapterRegistry.label(for: localProjectID)) 소스 작업 폴더로 \(resolved.workspace)을(를) 사용합니다. 대화 폴더 \(requestedWorkspace)에는 해당 소스가 없습니다."
                     + (resolved.alternates.isEmpty ? "" : " 다른 등록 후보: \(resolved.alternates.joined(separator: ", "))"))
             }
-        } else if preparation?.projectID == localProjectID {
+        } else if preparation?.projectID == localProjectID || forcedProjectID == localProjectID {
             throw OS1Error.message("\(ProjectAdapterRegistry.label(for: localProjectID)) 소스 폴더를 찾지 못했습니다. 대화 폴더 \(requestedWorkspace)에는 \(LocalProjectWorkspace.marker(for: localProjectID) ?? "프로젝트 표식")이(가) 없고 등록된 프로젝트 목록에도 해당 소스 트리가 없습니다. 소스 체크아웃 폴더를 이 대화의 작업 폴더로 선택한 뒤 다시 요청하세요.")
         }
     }
@@ -8215,21 +8545,29 @@ func runTaskWithOwnerPolicy(
         os1StartHead = gitHead(os1Root)
     }
     // A write task in a folder that contains OS-1's live tree (HOME) can
-    // still change OS-1; then OS-1 finishes that repair after the turn. It
-    // holds the shared lease for the whole turn: beside other HOME tasks, but
-    // never beside an OS-1 repair, whose build would carry its half-written
-    // edits (the profile-menu repair of 2026-09-30 failed exactly so).
-    var os1SharedLease: ExclusiveHookLease?
-    defer { withExtendedLifetime(os1SharedLease) {} }
+    // still change OS-1; it must never write beside an OS-1 repair, whose
+    // build would carry its half-written edits (the profile-menu repair of
+    // 2026-09-30 failed exactly so). Each attempt decides how (build 319): a
+    // Claude attempt runs confined so it cannot write OS-1's source and takes
+    // no lease — beside a repair; a Codex attempt holds the shared lease for
+    // its call — beside other HOME tasks, never beside a repair — and OS-1
+    // finishes an OS-1 change it made after the turn. So no lease is taken
+    // here, before routing knows the backend (`prepareOS1AttemptSource`).
+    var os1Source = OS1AttemptSourceState()
+    defer { withExtendedLifetime(os1Source.lease) {} }
     var os1SharedLeaseRoot: String?
-    var os1SourceWatch: OS1SourceWatch?
     if resolvedScope == .workspaceWrite, previewDeploymentTarget == nil, os1StartHead == nil,
        let containedRoot = OS1SourceWatch.containedRoot(workspace: canonicalWorkspace) {
         if heldOS1SourceRoot.map({ URL(fileURLWithPath: $0).resolvingSymlinksInPath().standardizedFileURL.path }) != URL(fileURLWithPath: containedRoot).resolvingSymlinksInPath().standardizedFileURL.path {
-            os1SharedLease = try acquireOS1SourceSharedLease(root: containedRoot)
             os1SharedLeaseRoot = containedRoot
+        } else {
+            // The caller (a workflow) holds the source lease for us, so the
+            // tree can be read now. Without it, reading here would run git on
+            // the live tree beside a repair — `git status` refreshes the index
+            // under index.lock and fails that repair's `git add`/`commit` —
+            // and an unconfined attempt reads it under its own lease anyway.
+            os1Source.watch = OS1SourceWatch.capture(workspace: canonicalWorkspace)
         }
-        os1SourceWatch = OS1SourceWatch.capture(workspace: canonicalWorkspace)
     }
     let pinnedEvidence = try (requireReadOnly || !requestsFreshSource(objectiveRequest)) ? attachedSource.map { try loadSource($0) } : nil
     let discussesPinnedProvenance = pinnedEvidence != nil && RegisteredProjectSource.discussesAttachedProvenance(objectiveRequest)
@@ -8724,17 +9062,59 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
         }) else {
             throw OS1Error.message("라우팅된 Claude 모델·effort가 현재 계정의 모델 목록과 달라 유료 호출 전에 차단했습니다.")
         }
-        // A verifier retry writes again: the shared lease released for this
-        // task's own finishing is taken back before the next backend call.
-        if ticket.permissionProfile == "read_only" {
-            os1SharedLease = nil
-            os1SourceWatch = nil
-        }
-        if os1SharedLease == nil, let root = os1SharedLeaseRoot, ticket.permissionProfile == "workspace_write" {
-            os1SharedLease = try acquireOS1SourceSharedLease(root: root)
-            // A source repair may have run during the previous attempt's
-            // external verification. Attribute only this attempt's changes.
-            os1SourceWatch = OS1SourceWatch(root: root, head: gitHead(root), fingerprint: OS1SourceWatch.fingerprint(root: root))
+        // How this attempt keeps off OS-1's live source when the task's
+        // folder contains it (build 319). A Claude attempt is confined: its
+        // backend cannot write the tree, so it takes no lease and may run
+        // beside an OS-1 repair. Codex has no reliable subtree exclusion yet,
+        // so a Codex attempt still takes the shared lease — and a verifier
+        // retry writes again: the lease released for this task's own
+        // finishing is taken back before the next unconfined call. Waiting
+        // behind a repair happens here, after routing: an "auto" first
+        // attempt is re-routed to a confined Claude backend instead, and a
+        // ticket that aged past its lifetime meanwhile is replaced.
+        let sourceStep = try await prepareOS1AttemptSource(provider: ticket.provider,
+            permissionProfile: ticket.permissionProfile, sharedLeaseRoot: os1SharedLeaseRoot, firstAttempt: steps.isEmpty,
+            claudeAlternative: {
+                guard providerPreference == "auto", claudeCapacity > 0 else { return false }
+                if claudeInventoryDeferred {
+                    claudeInventoryDeferred = false
+                    claudeCatalog = await claudeProbe.value.routable
+                    hasClaudeExecutable = !claudeCatalog.isEmpty
+                    inputContext.availableClaudeModels = claudeCatalog
+                }
+                return hasClaudeExecutable
+            },
+            ticketFresh: { ticketValid(ticket, forAtLeast: 60) }, state: &os1Source)
+        var attemptConfined = false, attemptCarriesEarlierWriter = false
+        switch sourceStep {
+        case .reroute(let preferClaude):
+            if preferClaude {
+                RuntimeActivity.emit(.routing, provider: "claude", publicText: os1Tr(
+                    "OS-1 수리가 OS-1 소스를 쓰고 있어, 기다리지 않도록 이 작업은 OS-1 소스를 보호한 Claude로 바로 진행합니다.",
+                    "An OS-1 repair is using OS-1's source, so instead of waiting this task runs now on Claude with OS-1's source protected."))
+            }
+            let routedRequest = StartExecutionRequest(task: request.task, providerPreference: request.providerPreference,
+                capacityPlan: request.capacityPlan, executorContractVersion: request.executorContractVersion,
+                executorContractSHA256: request.executorContractSHA256, availableCodexModels: request.availableCodexModels,
+                executionContext: inputContext)
+            request = routedRequest
+            if preferClaude {
+                request = StartExecutionRequest(task: routedRequest.task, providerPreference: "claude",
+                    capacityPlan: routedRequest.capacityPlan, executorContractVersion: routedRequest.executorContractVersion,
+                    executorContractSHA256: routedRequest.executorContractSHA256,
+                    availableCodexModels: routedRequest.availableCodexModels, executionContext: inputContext)
+            }
+            route = try await client.post("/v1/executions", body: request, as: RouteResponse.self)
+            if preferClaude, route.ticket == nil {
+                // No Claude route after all: route as before and wait.
+                request = routedRequest
+                route = try await client.post("/v1/executions", body: request, as: RouteResponse.self)
+            }
+            step -= 1
+            continue
+        case .proceed(let confined, let carriesEarlierWriter):
+            attemptConfined = confined
+            attemptCarriesEarlierWriter = carriesEarlierWriter
         }
         let startData = Data(["os1-attempt-start-v1", ticket.executionID, String(ticket.sequence), ticket.nonce, ticket.signature].joined(separator: "\n").utf8)
         AttemptLatencyTrace.beginIfIdle()
@@ -9078,8 +9458,16 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
         // backend result. An interrupted/uncertain native writer retains the
         // existing protection; uploads and readbacks of a successful result
         // must not keep a repair waiting after the writer has stopped.
-        let unboundOS1SourceChanged = os1SourceWatch?.changed() == true
-        if execution.artifact.exitCode == 0, attemptFailure == nil { os1SharedLease = nil }
+        // A confined attempt could not have written OS-1's source; a change
+        // seen now is another task's — a repair running beside it — so it is
+        // never finished (or claimed) as this task's.
+        OS1SourceConfinement.activeRoots = []
+        let unboundOS1SourceChanged = unboundOS1SourceChangeObserved(confined: attemptConfined,
+            carriesEarlierWriter: attemptCarriesEarlierWriter, watch: os1Source.watch)
+        if execution.artifact.exitCode == 0, attemptFailure == nil {
+            os1Source.lease = nil
+            os1Source.leaseCarriesWriter = false
+        }
         // OS-1 finishes its own repair. A backend's job ends when the source
         // is changed and builds; the mechanical tail (version bump, signed
         // release, self-tests, staging, commit, push) is OS-1's own, so a
@@ -9104,7 +9492,7 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
                 attemptFailure = note
                 terminalPermissionFailure = OS1Error.message(note)
             }
-        } else if let os1SourceWatch, TaskWorkflow.permitsSelfUpdate(stage: workflowStage, finalVerdict: nil), attemptFailure == nil,
+        } else if let os1SourceWatch = os1Source.watch, TaskWorkflow.permitsSelfUpdate(stage: workflowStage, finalVerdict: nil), attemptFailure == nil,
                   dispatchStage == .dispatched, execution.artifact.exitCode == 0, ticket.permissionProfile == "workspace_write",
                   unboundOS1SourceChanged {
             // Not bound to OS-1, yet OS-1's source changed: never leave a fix
@@ -9354,7 +9742,9 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
                 durationMS: artifact.durationMS,
                 nativeRecord: adoptedRecord,
                 surface: execution.surface,
-                verifiedPreviewDelivery: verifiedPreviewDelivery
+                verifiedPreviewDelivery: verifiedPreviewDelivery,
+                os1SourceConfined: attemptConfined,
+                os1ChangeRequired: attemptConfined && execution.os1ChangeRequired
             ))
         }
         if route.status == "failed" {
@@ -9583,6 +9973,106 @@ func steeringProtocolSelfTest() throws {
     let recovered = ExecutionSteering.continuation(original: "Modify fixture; no deployment", correction: "Use context, don't ask again")
     try check(recovered.contains("Modify fixture; no deployment") && recovered.contains("not a new standalone"), "fallback lost original scope")
     print("Steering protocol: \(checks) checks passed; native stdio ACK/reject/wrong-turn/EOF/persistence/dedup; model calls 0")
+}
+
+/// The runtime's per-attempt wiring for a HOME write task (build 319), on
+/// real flock leases: a Claude attempt beside a repair takes no lease; a
+/// contended "auto" first attempt is re-routed to Claude instead of waiting;
+/// otherwise it waits, and a ticket that aged meanwhile is replaced; a lease
+/// carried for an uncertain writer keeps protecting; read-only clears all.
+func os1AttemptSourceSelfTest() async throws {
+    var checks = 0
+    func check(_ condition: Bool, _ message: String) throws {
+        guard condition else { throw OS1Error.message("OS-1 attempt source self-test failed: " + message) }
+        checks += 1
+    }
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("os1-attempt-source-" + UUID().uuidString, isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    let lock = try os1SourceWriteLeaseURL(root: root.path)
+    defer {
+        try? FileManager.default.removeItem(at: root)
+        try? FileManager.default.removeItem(at: lock)
+        try? FileManager.default.removeItem(at: lock.appendingPathExtension("writer-intent"))
+        OS1SourceConfinement.activeRoots = []
+    }
+    let protected = OS1SourceConfinement.protectedPaths(root: root.path)
+    let changedWatch = OS1SourceWatch(root: "/nonexistent/os1-attempt-" + UUID().uuidString, head: "start", fingerprint: "start")
+    var waited = 0
+    func noWait(_: String) throws -> ExclusiveHookLease {
+        waited += 1
+        throw OS1Error.message("fixture: this attempt must not wait")
+    }
+    func prepare(_ provider: String, _ profile: String = "workspace_write", first: Bool = true, claude: Bool = false,
+                 fresh: Bool = true, state: inout OS1AttemptSourceState,
+                 acquireWaiting: (String) throws -> ExclusiveHookLease) async throws -> OS1AttemptSourceStep {
+        try await prepareOS1AttemptSource(provider: provider, permissionProfile: profile, sharedLeaseRoot: root.path,
+            firstAttempt: first, claudeAlternative: { claude }, ticketFresh: { fresh }, state: &state,
+            acquireWaiting: acquireWaiting, capture: { _ in changedWatch })
+    }
+    var repair = try tryAcquireOS1SourceWriteLease(root: root.path)
+    try check(repair != nil, "fixture repair holds the tree exclusively")
+
+    // Beside the repair: Claude runs confined with no lease.
+    var state = OS1AttemptSourceState()
+    try check(try await prepare("claude", state: &state, acquireWaiting: noWait) == .proceed(confined: true, carriesEarlierWriter: false)
+        && state.lease == nil && OS1SourceConfinement.activeRoots == protected && waited == 0,
+        "a Claude attempt beside a repair is confined and takes no lease")
+    // An "auto" Codex first attempt is re-routed to Claude instead of waiting.
+    try check(try await prepare("codex", claude: true, state: &state, acquireWaiting: noWait) == .reroute(preferClaude: true)
+        && state.lease == nil && waited == 0 && OS1SourceConfinement.activeRoots.isEmpty,
+        "a contended Codex first attempt is re-routed to Claude without waiting")
+    // Only once; then it waits on the real shared lease. The fixture's wait
+    // ends the repair first, as a real one would.
+    let staleStep = try await prepare("codex", claude: true, fresh: false, state: &state) { path in
+        waited += 1
+        repair = nil
+        return try acquireOS1SourceSharedLease(root: path)
+    }
+    try check(staleStep == .reroute(preferClaude: false) && waited == 1 && state.lease != nil
+        && !state.leaseCarriesWriter && state.watch == changedWatch,
+        "after one Claude re-route a Codex attempt waits, and a ticket that aged meanwhile is replaced, lease kept")
+    try check((try tryAcquireOS1SourceWriteLease(root: root.path)) == nil, "the kept lease still holds a new repair off")
+    // The fresh route goes to Claude: a lease held only from the wait covers
+    // no writer and is released, so no repair waits for nothing.
+    try check(try await prepare("claude", state: &state, acquireWaiting: noWait) == .proceed(confined: true, carriesEarlierWriter: false)
+        && state.lease == nil, "a confined attempt drops a lease that covers no writer")
+    try check((try tryAcquireOS1SourceWriteLease(root: root.path)) != nil, "a repair can start beside the confined attempt")
+
+    // Uncontended: Codex takes the shared lease and reads the tree under it.
+    state = OS1AttemptSourceState()
+    try check(try await prepare("codex", state: &state, acquireWaiting: noWait) == .proceed(confined: false, carriesEarlierWriter: false)
+        && state.lease != nil && state.leaseCarriesWriter && state.watch == changedWatch && OS1SourceConfinement.activeRoots.isEmpty,
+        "an uncontended Codex attempt holds the shared lease and watches the tree")
+    // That writer ended uncertain (the lease is kept); the next attempt is
+    // Claude: it stays confined, keeps the lease, and finishes that change.
+    try check(try await prepare("claude", first: false, state: &state, acquireWaiting: noWait)
+        == .proceed(confined: true, carriesEarlierWriter: true) && state.lease != nil,
+        "a confined attempt after an uncertain writer keeps its lease")
+    try check((try tryAcquireOS1SourceWriteLease(root: root.path)) == nil, "no repair runs while that writer's lease is held")
+    try check(unboundOS1SourceChangeObserved(confined: true, carriesEarlierWriter: true, watch: state.watch),
+        "the earlier writer's OS-1 change is still finished")
+    // Read-only clears everything.
+    try check(try await prepare("claude", "read_only", state: &state, acquireWaiting: noWait)
+        == .proceed(confined: false, carriesEarlierWriter: false)
+        && state.lease == nil && state.watch == nil && OS1SourceConfinement.activeRoots.isEmpty,
+        "a read-only attempt holds nothing and confines nothing")
+    // A later (non-first) Codex attempt behind a repair waits, never re-routes.
+    repair = try tryAcquireOS1SourceWriteLease(root: root.path)
+    try check(repair != nil, "second fixture repair")
+    state = OS1AttemptSourceState()
+    let later = try await prepare("codex", first: false, claude: true, fresh: false, state: &state) { path in
+        waited += 1
+        repair = nil
+        return try acquireOS1SourceSharedLease(root: path)
+    }
+    try check(later == .proceed(confined: false, carriesEarlierWriter: false) && waited == 2 && state.lease != nil,
+        "a retry's Codex attempt waits on the shared lease; only a first attempt is re-routed")
+    // An OS-1-bound task or a workflow-held lease has no shared root.
+    state = OS1AttemptSourceState()
+    try check(try await prepareOS1AttemptSource(provider: "codex", permissionProfile: "workspace_write", sharedLeaseRoot: nil,
+        firstAttempt: true, claudeAlternative: { true }, ticketFresh: { true }, state: &state, acquireWaiting: noWait)
+        == .proceed(confined: false, carriesEarlierWriter: false) && state.lease == nil, "no shared root, no lease")
+    print("OS-1 attempt source (build 319): \(checks) checks OK; real flock leases; model calls 0")
 }
 
 func selfTest() throws {
@@ -11895,6 +12385,197 @@ func selfTest() throws {
             repair = nil
             return (try? tryAcquireOS1SourceSharedLease(root: root.path)) != nil
         }()),
+        ("a HOME Claude attempt runs confined beside an OS-1 repair with no lease; a Codex attempt still waits on the shared lease", {
+            let root = FileManager.default.temporaryDirectory.appendingPathComponent("os1-confined-" + UUID().uuidString, isDirectory: true)
+            guard (try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)) != nil,
+                  let lock = try? os1SourceWriteLeaseURL(root: root.path) else { return false }
+            defer {
+                try? FileManager.default.removeItem(at: root)
+                try? FileManager.default.removeItem(at: lock)
+                try? FileManager.default.removeItem(at: lock.appendingPathExtension("writer-intent"))
+                OS1SourceConfinement.activeRoots = []
+            }
+            // An OS-1 repair owns the live tree exclusively.
+            var repair = try? tryAcquireOS1SourceWriteLease(root: root.path)
+            guard repair != nil else { return false }
+            let protected = OS1SourceConfinement.protectedPaths(root: root.path)
+            // The tree itself first; any other entry is its data-volume spelling.
+            guard let realRoot = realpath(root.path, nil) else { return false }
+            defer { free(realRoot) }
+            guard protected.first == String(cString: realRoot),
+                  protected.dropFirst().allSatisfy({ $0 == "/System/Volumes/Data" + String(cString: realRoot) }),
+                  OS1SourceConfinement.attemptGuard(provider: "claude", permissionProfile: "workspace_write",
+                      sharedLeaseRoot: root.path) == .confined(protected),
+                  // Codex keeps the lease, which a repair blocks: it waits in the runtime.
+                  OS1SourceConfinement.attemptGuard(provider: "codex", permissionProfile: "workspace_write",
+                      sharedLeaseRoot: root.path) == .sharedLease,
+                  (try? tryAcquireOS1SourceSharedLease(root: root.path)) == nil,
+                  // Unresolvable protection never launches an unguarded writer.
+                  OS1SourceConfinement.attemptGuard(provider: "claude", permissionProfile: "workspace_write",
+                      sharedLeaseRoot: root.path, protectedPaths: { _ in [] }) == .sharedLease,
+                  OS1SourceConfinement.attemptGuard(provider: "claude", permissionProfile: "read_only",
+                      sharedLeaseRoot: root.path) == .unguarded,
+                  // An OS-1-bound task or a held workflow lease has no shared root.
+                  OS1SourceConfinement.attemptGuard(provider: "claude", permissionProfile: "workspace_write",
+                      sharedLeaseRoot: nil) == .unguarded else { return false }
+            // The launch reads the runtime's per-attempt decision, for a write
+            // ticket only; the confined launch carries the probed settings and
+            // the instruction.
+            OS1SourceConfinement.activeRoots = protected
+            let session = UUID().uuidString.lowercased()
+            guard confinedClaudeLaunchPaths(permissionProfile: "workspace_write") == protected,
+                  confinedClaudeLaunchPaths(permissionProfile: "read_only").isEmpty,
+                  let confined = try? claudeArguments(model: "sonnet", effort: "medium", instructions: "base", sessionID: session,
+                      startNewSession: true, title: "t", permissionProfile: "workspace_write", prompt: "p",
+                      confinedPaths: confinedClaudeLaunchPaths(permissionProfile: "workspace_write")),
+                  let settingsIndex = confined.firstIndex(of: "--settings"), settingsIndex + 1 < confined.count,
+                  confined[settingsIndex + 1] == OS1SourceConfinement.claudeSettings(protectedPaths: protected),
+                  let promptIndex = confined.firstIndex(of: "--append-system-prompt"),
+                  confined[promptIndex + 1].hasPrefix("base"),
+                  confined[promptIndex + 1].contains(OS1SourceConfinement.changeRequiredMarker),
+                  confined.contains("bypassPermissions"), confined.last == "p",
+                  // A workflow stage cannot continue an OS-1 change: no marker asked for.
+                  let stage = try? claudeArguments(model: "sonnet", effort: "medium", instructions: "base", sessionID: session,
+                      startNewSession: true, title: "t", permissionProfile: "workspace_write", prompt: "p",
+                      confinedPaths: protected, confinedEscalates: false),
+                  stage.contains(OS1SourceConfinement.claudeSettings(protectedPaths: protected)),
+                  !stage.joined().contains(OS1SourceConfinement.changeRequiredMarker),
+                  let unconfined = try? claudeArguments(model: "sonnet", effort: "medium", instructions: "base", sessionID: session,
+                      startNewSession: true, title: "t", permissionProfile: "workspace_write", prompt: "p"),
+                  !unconfined.contains("--settings"),
+                  // The read-only lane keeps its own settings, never these.
+                  let readOnly = try? claudeArguments(model: "sonnet", effort: "medium", instructions: "base", sessionID: session,
+                      startNewSession: true, title: "t", permissionProfile: "read_only", prompt: "p", confinedPaths: protected),
+                  readOnly.filter({ $0 == "--settings" }).count == 1,
+                  readOnly.contains(ClaudeReadOnlyShell.sandboxSettings),
+                  !readOnly.joined().contains(OS1SourceConfinement.changeRequiredMarker) else { return false }
+            repair = nil
+            return (try? tryAcquireOS1SourceSharedLease(root: root.path)) != nil
+        }()),
+        ("a confined attempt finishes only an OS-1 change an earlier unconfined attempt under the same lease made", {
+            // A watch whose tree changed (here: no longer resolvable at all).
+            let watch = OS1SourceWatch(root: "/nonexistent/os1-confined-" + UUID().uuidString, head: "start", fingerprint: "start")
+            return watch.changed()
+                && !unboundOS1SourceChangeObserved(confined: true, watch: watch)
+                && unboundOS1SourceChangeObserved(confined: true, carriesEarlierWriter: true, watch: watch)
+                && unboundOS1SourceChangeObserved(confined: false, watch: watch)
+                && !unboundOS1SourceChangeObserved(confined: false, watch: nil)
+        }()),
+        ("a confined answer hands back its OS-1 part by the marker only, stripped before anyone sees it", {
+            let marker = OS1SourceConfinement.changeRequiredMarker
+            let root = FileManager.default.temporaryDirectory.appendingPathComponent("os1-confined-handoff-" + UUID().uuidString, isDirectory: true)
+            guard (try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)) != nil else { return false }
+            defer { try? FileManager.default.removeItem(at: root) }
+            let protected = OS1SourceConfinement.protectedPaths(root: root.path)
+            let session = UUID().uuidString.lowercased()
+            func envelope(_ result: String, deniedPath: String? = nil) -> Data {
+                var object: [String: Any] = ["session_id": session, "result": result, "subtype": "success", "is_error": false]
+                if let deniedPath {
+                    object["permission_denials"] = [["tool_name": "Edit", "tool_use_id": "toolu_x",
+                        "tool_input": ["file_path": deniedPath, "old_string": "a", "new_string": "b"]]]
+                }
+                return (try? JSONSerialization.data(withJSONObject: object)) ?? Data()
+            }
+            // The order execute() applies: parse the backend's envelope, then
+            // read the answer; the step keeps only the stripped text and flag.
+            func handled(_ data: Data, confined: Bool) -> (text: String, changeRequired: Bool)? {
+                guard let parsed = try? parseClaudeCommandResult(0, data, requestedSessionID: session,
+                          confinedPaths: confined ? protected : []) else { return nil }
+                return OS1SourceConfinement.confinedAnswer(String(decoding: parsed.output, as: UTF8.self), confined: confined)
+            }
+            func step(_ answer: (text: String, changeRequired: Bool), confined: Bool) -> RunStepSummary {
+                var step = RunStepSummary(sequence: 1, provider: "claude", action: "agent_run", model: "m", effort: "max",
+                    revasDisposition: "adopted", sessionID: UUID().uuidString.lowercased(), permissionProfile: "workspace_write",
+                    exitCode: 0, output: answer.text, stderr: "", durationMS: 1, nativeRecord: nil)
+                step.os1SourceConfined = confined
+                step.os1ChangeRequired = confined && answer.changeRequired
+                return step
+            }
+            guard let handedBack = handled(envelope("푸터는 배포했습니다. OS-1 사이드바를 고쳐야 합니다.\n" + marker), confined: true),
+                  // A denied write into OS-1's source alone is the protection
+                  // working: never a rerun, which could replay finished work.
+                  let denied = handled(envelope("다른 폴더에서 끝냈습니다.", deniedPath: root.path + "/Sources/a.swift"), confined: true),
+                  let unconfined = handled(envelope("quoted " + marker), confined: false),
+                  let ordinary = handled(envelope("사이트 푸터를 고쳤습니다."), confined: true) else { return false }
+            let draft = RunSummary(status: "complete", steps: [step(handedBack, confined: true)])
+            // The in-process flags are never written into a stored record.
+            guard let encoded = try? JSONEncoder().encode(step(handedBack, confined: true)),
+                  let decoded = try? JSONDecoder().decode(RunStepSummary.self, from: encoded) else { return false }
+            return handedBack == ("푸터는 배포했습니다. OS-1 사이드바를 고쳐야 합니다.", true)
+                && !draft.steps[0].output.contains(marker) && confinedDraftRequiresOS1Change(draft)
+                && denied == ("다른 폴더에서 끝냈습니다.", false)
+                && !confinedDraftRequiresOS1Change(RunSummary(status: "complete", steps: [step(denied, confined: true)]))
+                && unconfined.text.contains(marker) && !unconfined.changeRequired
+                && !confinedDraftRequiresOS1Change(RunSummary(status: "complete", steps: [step(unconfined, confined: false)]))
+                && !strippingOS1ChangeMarker(RunSummary(status: "complete", steps: [step(unconfined, confined: false)]))
+                    .steps.contains { $0.output.contains(marker) }
+                && !confinedDraftRequiresOS1Change(RunSummary(status: "complete", steps: [step(ordinary, confined: true)]))
+                && !String(decoding: encoded, as: UTF8.self).contains("os1") && !decoded.os1SourceConfined && !decoded.os1ChangeRequired
+        }()),
+        ("the OS-1 repair continuing a handoff gets the report and corrections, and only the OS-1 part", {
+            let request = "푸터 배포하고 OS-1 사이드바도 고쳐"
+            let report = "푸터는 배포했습니다(https://x.up.railway.app). OS-1 사이드바의 정렬을 고쳐야 합니다."
+            let prompt = os1RepairHandoffPrompt(request: request, corrections: ["정정: 사이드바는 왼쪽 정렬"], draftReport: report)
+            let long = os1RepairHandoffPrompt(request: request, corrections: [],
+                draftReport: "HEAD" + String(repeating: "x", count: 20_000) + "TAIL")
+            func step(_ sequence: Int, _ output: String, session: String) -> RunStepSummary {
+                RunStepSummary(sequence: sequence, provider: "claude", action: "agent_run", model: "m", effort: "max",
+                    revasDisposition: "adopted", sessionID: session, permissionProfile: "workspace_write",
+                    exitCode: 0, output: output, stderr: "", durationMS: 1, nativeRecord: nil)
+            }
+            let draft = RunSummary(status: "complete", steps: [step(1, report, session: "d")], monitorTaskID: "owner")
+            let repair = RunSummary(status: "complete", steps: [step(1, "사이드바를 고치고 build를 준비했습니다.", session: "r")],
+                persistedCorrectionIDs: [UUID()], monitorTaskID: "owner")
+            let merged = mergedOS1Escalation(draft: draft, repair: repair, monitorTaskID: "owner")
+            let failed = appendingOS1RepairNote(draft, cancelled: false, reason: "build failed")
+            let cancelled = appendingOS1RepairNote(draft, cancelled: true, reason: "")
+            return prompt.contains(request) && prompt.contains("정정: 사이드바는 왼쪽 정렬") && prompt.contains(report)
+                && prompt.contains("Make only the change to OS-1 itself") && prompt.contains("OS-1 인계")
+                && long.contains("HEAD") && long.contains("TAIL") && long.count < 16_000
+                && merged.steps.map(\.sessionID) == ["d", "r"] && merged.status == "complete"
+                && merged.monitorTaskID == "owner" && merged.persistedCorrectionIDs == repair.persistedCorrectionIDs
+                && failed.status == "complete" && failed.steps[0].output.hasPrefix(report)
+                && failed.steps[0].output.contains("build failed") && failed.steps[0].output.count > report.count
+                && cancelled.steps[0].output != failed.steps[0].output
+        }()),
+        ("a ticket that aged while it waited is replaced, a fresh one is used", {
+            func ticket(_ expires: Date) -> Ticket {
+                let formatter = ISO8601DateFormatter()
+                formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+                return Ticket(executionID: "e", sequence: 1, provider: "codex", action: "a", permissionProfile: "workspace_write",
+                    expiresAt: formatter.string(from: expires), nonce: "n", signature: "s")
+            }
+            return ticketValid(ticket(Date().addingTimeInterval(240)), forAtLeast: 60)
+                && !ticketValid(ticket(Date().addingTimeInterval(30)), forAtLeast: 60)
+                && !ticketValid(ticket(Date().addingTimeInterval(-5)), forAtLeast: 60)
+        }()),
+        ("a confined run's denied write into OS-1's source is the confinement, not a policy failure", {
+            let root = FileManager.default.temporaryDirectory.appendingPathComponent("os1-confined-denial-" + UUID().uuidString, isDirectory: true)
+            guard (try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)) != nil else { return false }
+            defer { try? FileManager.default.removeItem(at: root) }
+            let protected = OS1SourceConfinement.protectedPaths(root: root.path)
+            let session = UUID().uuidString.lowercased()
+            func envelope(_ tool: String, _ input: [String: Any]) -> Data {
+                (try? JSONSerialization.data(withJSONObject: ["session_id": session, "result": "OS-1 소스는 보호되어 있습니다.",
+                    "subtype": "success", "is_error": false, "permission_denials": [["tool_name": tool, "tool_use_id": "toolu_x",
+                    "tool_input": input]]])) ?? Data()
+            }
+            let inside = envelope("Edit", ["file_path": root.path + "/Sources/a.swift", "old_string": "a", "new_string": "b"])
+            let outside = envelope("Edit", ["file_path": "/etc/hosts", "old_string": "a", "new_string": "b"])
+            let shell = envelope("Bash", ["command": "echo x > '\(protected[0])/f'"])
+            let sibling = envelope("Bash", ["command": "echo x > '\(protected[0])-copy/f'"])
+            guard let parsed = try? parseClaudeCommandResult(0, inside, requestedSessionID: session, confinedPaths: protected),
+                  parsed.protectedWriteDenied,
+                  (try? parseClaudeCommandResult(0, shell, requestedSessionID: session, confinedPaths: protected))?.protectedWriteDenied == true
+            else { return false }
+            func terminal(_ body: () throws -> ClaudePrintResult) -> Bool {
+                do { _ = try body(); return false } catch let error as OS1Error { return error.isTerminalPermissionFailure } catch { return false }
+            }
+            return terminal { try parseClaudeCommandResult(0, inside, requestedSessionID: session) }
+                && terminal { try parseClaudeCommandResult(0, outside, requestedSessionID: session, confinedPaths: protected) }
+                // A sibling folder that only shares the name's prefix is a real denial.
+                && terminal { try parseClaudeCommandResult(0, sibling, requestedSessionID: session, confinedPaths: protected) }
+        }()),
         ("a pending OS-1 writer drains existing HOME readers without admitting new ones", {
             let root = FileManager.default.temporaryDirectory.appendingPathComponent("os1-writer-priority-" + UUID().uuidString, isDirectory: true)
             guard let lock = try? os1SourceWriteLeaseURL(root: root.path),
@@ -12238,7 +12919,9 @@ struct OS1Main {
                     "bytes": saved.verified.archive.count, "verified_source_files": saved.verified.files.count - 1,
                     "source_archive_path": saved.url.path, "r2_downloaded": false, "production_changed": false,
                 ], options: [.sortedKeys]), as: UTF8.self))
-            case "self-test": try selfTest()
+            case "self-test":
+                try selfTest()
+                try await os1AttemptSourceSelfTest()
             case "browser-mcp": browserMCPCommand()
             case "drift-policy-status":
                 guard arguments.count == 1 else { throw OS1Error.message("Expected: os1 drift-policy-status") }
