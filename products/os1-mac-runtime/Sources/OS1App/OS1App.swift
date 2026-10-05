@@ -5620,13 +5620,16 @@ private final class SessionStore: ObservableObject {
     @Published var nativeAppApproval: NativeAppApproval.Request?
     @Published var showArchived = false
     var activeActivity: RuntimeActivity { selectedSessionID.flatMap { activeRuns[$0]?.activity } ?? RuntimeActivity(.preparing) }
-    var activeNativeSteps: NativeStepLog { selectedSessionID.flatMap { activeRuns[$0]?.nativeSteps } ?? NativeStepLog() }
     func publicRunProgress(_ conversationID: UUID) -> String? {
         guard let active = activeRuns[conversationID] else { return nil }
         if let text = active.publicRunLog?.displayText, !text.isEmpty { return text }
         return active.activity.publicTextOrigin == .systemStatus ? nil : active.activity.publicText
     }
-    var runStartedAt: Date? { selectedSessionID.flatMap { activeRuns[$0]?.started } }
+    /// A conversation's live run as its transcript row draws it; nil when idle.
+    func liveRunPresentation(_ conversationID: UUID) -> LiveRunPresentation? {
+        activeRuns[conversationID].map { LiveRunPresentation(activity: $0.activity, steps: $0.nativeSteps,
+            started: $0.started, stopping: $0.cancellationRequested) }
+    }
     private var draftSaveTask: Task<Void, Never>?
     private let customStorageRoot: URL?
     private let publicLogWriter = NativePublicRunLogWriter()
@@ -10083,16 +10086,10 @@ private struct OS1DesktopApp: App {
                 try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
                 let started = Date(timeIntervalSinceReferenceDate: 1_000)
                 for (index, elapsed) in [4.0, 4.3, 65.0].enumerated() {
-                    let content = RunActivityBanner(activity: RuntimeActivity(.executing, provider: "codex", model: "gpt-5.6-luna", effort: "medium", timestamp: started),
-                        started: started, previewTime: started.addingTimeInterval(elapsed))
-                        .frame(width: 900, height: 74).background(Theme.background).environment(\.colorScheme, .dark)
-                    let view = NSHostingView(rootView: content)
-                    view.frame = NSRect(x: 0, y: 0, width: 900, height: 74)
-                    view.layoutSubtreeIfNeeded()
-                    guard let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { throw SourceContextError.invalid }
-                    view.cacheDisplay(in: view.bounds, to: bitmap)
-                    guard let data = bitmap.representation(using: .png, properties: [:]) else { throw SourceContextError.invalid }
-                    try data.write(to: output.appendingPathComponent("activity-\(index).png"))
+                    // The transcript's live row for a quiet run: twice within one second, then past a minute.
+                    let quiet = LiveRunPresentation(activity: RuntimeActivity(.executing, provider: "codex", model: "gpt-5.6-luna",
+                        effort: "medium", timestamp: started), started: started, now: started.addingTimeInterval(elapsed))
+                    try liveRunPreviewPNG(quiet, expanded: false).write(to: output.appendingPathComponent("activity-\(index).png"))
                     let rowContent = VStack(spacing: 4) {
                         SessionRow(session: ConversationSession(title: "연구 자료 분석", workspace: "/tmp"), selected: true,
                             activity: RuntimeActivity(.executing, provider: "claude", model: "claude-fixture", effort: "max"), queuedCount: 1,
@@ -10114,6 +10111,12 @@ private struct OS1DesktopApp: App {
                     guard let rowPNG = rowBitmap.representation(using: .png, properties: [:]) else { throw SourceContextError.invalid }
                     try rowPNG.write(to: output.appendingPathComponent("sidebar-\(index).png"))
                 }
+                // A run with the backend's own steps under the request it works on, collapsed and opened.
+                let request = [ChatMessage(role: .user, text: os1Tr("진행 표시를 작게 접었다 펼 수 있게 해 줘.",
+                    "Make the progress display small and collapsible."))]
+                let run = liveRunFixture(started: started)
+                try liveRunPreviewPNG(run, expanded: false, messages: request).write(to: output.appendingPathComponent("activity-steps.png"))
+                try liveRunPreviewPNG(run, expanded: true, messages: request).write(to: output.appendingPathComponent("activity-expanded.png"))
                 print(output.path); exit(EXIT_SUCCESS)
             } catch { fputs("\(error.localizedDescription)\n", stderr); exit(EXIT_FAILURE) }
         }
@@ -10312,6 +10315,7 @@ private struct OS1DesktopApp: App {
                 try memoryPagingHandoffSelfTest()
                 try interactionSelfTest()
                 try transcriptLatencySelfTest()
+                try liveRunRowSelfTest()
                 try railSelectionSelfTest()
                 try sidebarSynchronizationSelfTest()
                 try backendRecoverySelfTest()
@@ -12738,7 +12742,8 @@ private struct ConversationView: View {
                         queuedSubmissions: store.queuedSubmissions.filter { $0.sessionID == session.id },
                         publicProgress: store.publicRunProgress(session.id),
                         waitingReason: store.waitingBubbleReason(session.id),
-                        progressAnchors: store.activeRuns[session.id]?.steeringAnchors ?? [:]
+                        progressAnchors: store.activeRuns[session.id]?.steeringAnchors ?? [:],
+                        liveRun: store.liveRunPresentation(session.id)
                     )
                 }
                 ComposerView(store: store, session: session)
@@ -13081,7 +13086,9 @@ private func timelineAttributedDocument(
     publicProgress: String? = nil,
     waitingReason: String? = nil,
     progressAnchors: [UUID: String] = [:],
-    progressFollows: String? = nil
+    progressFollows: String? = nil,
+    liveRun: LiveRunPresentation? = nil,
+    liveRunExpanded: Bool = false
 ) -> NSAttributedString {
     let document = NSMutableAttributedString()
     let queuedMessageIDs = Set(queuedSubmissions.map(\.userMessageID))
@@ -13227,8 +13234,12 @@ private func timelineAttributedDocument(
         if let publicProgress {
             appendLiveProgress(liveProgress(after: steeredAfter, in: publicProgress), key: "live-progress")
         }
-        // Activity and elapsed time have one owner: RunActivityBanner.
-
+        // Activity, elapsed time and steps have one owner: this last row,
+        // one line until the owner opens it, as Codex shows a working turn.
+        if let liveRun {
+            appendBlock(role: "liveRun", components: [], richContent: liveRunRow(liveRun, expanded: liveRunExpanded),
+                trailingSpacing: 8)
+        }
     }
 
     return document.copy() as! NSAttributedString
@@ -13471,18 +13482,43 @@ private struct TranscriptRenderInput: Equatable {
     /// Live output on screen when each steered input appeared. Fixed once
     /// set, so it belongs to the cached history, not the live suffix.
     var progressAnchors: [UUID: String] = [:]
+    /// The live run's last row and its disclosure; the live suffix only.
+    var liveRun: LiveRunPresentation? = nil
+    var liveRunExpanded = false
 }
 
 /// Immutable history is keyed by all render-relevant input, not by time or
-/// session name. Only the live suffix changes on native text deltas.
+/// session name. Only the live suffix changes on native text deltas, and a
+/// clock tick changes only the live run's row within it.
 private final class TranscriptRenderCache {
+    struct Parts {
+        let prefix: NSAttributedString
+        /// Reused by identity until the live output itself changes.
+        let progress: NSAttributedString
+        let row: NSAttributedString
+        let rebuilt: Bool
+        var tail: NSAttributedString {
+            guard row.length > 0 else { return progress }
+            let joined = NSMutableAttributedString(attributedString: progress); joined.append(row)
+            return joined
+        }
+    }
+    private struct ProgressInput: Equatable {
+        let isRunning: Bool
+        let workspace: String
+        let text: String?
+        let follows: String?
+    }
     private var input: TranscriptRenderInput?
     private var expanded = Set<String>()
     private var prefix = NSAttributedString(string: "")
+    private var progressInput: ProgressInput?
+    private var progress = NSAttributedString(string: "")
     private(set) var prefixBuildCount = 0
+    private(set) var progressBuildCount = 0
 
-    func parts(_ value: TranscriptRenderInput, expanded: Set<String>) -> (prefix: NSAttributedString, tail: NSAttributedString, rebuilt: Bool) {
-        var stable = value; stable.publicProgress = nil
+    func parts(_ value: TranscriptRenderInput, expanded: Set<String>) -> Parts {
+        var stable = value; stable.publicProgress = nil; stable.liveRun = nil; stable.liveRunExpanded = false
         let rebuilt = input != stable || self.expanded != expanded
         if rebuilt {
             prefix = timelineAttributedDocument(messages: value.messages, queuedSubmissions: value.queued,
@@ -13492,12 +13528,20 @@ private final class TranscriptRenderCache {
         }
         // Output already drawn above the latest steered input stays there;
         // the suffix holds only what streamed after it.
-        let tail = timelineAttributedDocument(messages: [], queuedSubmissions: [], isRunning: value.isRunning,
-            workspace: value.workspace, publicProgress: value.publicProgress,
-            progressFollows: value.isRunning ? latestSteeringAnchor(value.messages, value.progressAnchors) : nil)
-        return (prefix, tail, rebuilt)
+        let key = ProgressInput(isRunning: value.isRunning, workspace: value.workspace, text: value.publicProgress,
+            follows: value.isRunning ? latestSteeringAnchor(value.messages, value.progressAnchors) : nil)
+        if key != progressInput {
+            progress = timelineAttributedDocument(messages: [], queuedSubmissions: [], isRunning: value.isRunning,
+                workspace: value.workspace, publicProgress: value.publicProgress, progressFollows: key.follows)
+            progressInput = key; progressBuildCount += 1
+        }
+        let row = value.isRunning && value.liveRun != nil
+            ? timelineAttributedDocument(messages: [], queuedSubmissions: [], isRunning: true, workspace: value.workspace,
+                liveRun: value.liveRun, liveRunExpanded: value.liveRunExpanded)
+            : NSAttributedString(string: "")
+        return Parts(prefix: prefix, progress: progress, row: row, rebuilt: rebuilt)
     }
-    func invalidate() { input = nil }
+    func invalidate() { input = nil; progressInput = nil }
 }
 
 private final class TranscriptClipView: NSClipView {
@@ -13519,36 +13563,112 @@ private struct ContinuousTranscriptView: NSViewRepresentable {
     var publicProgress: String? = nil
     var waitingReason: String? = nil
     var progressAnchors: [UUID: String] = [:]
+    var liveRun: LiveRunPresentation? = nil
 
     final class Coordinator: NSObject, NSTextViewDelegate {
         var renderedSessionID: UUID?
         var hasRendered = false
         var hasRenderedMessages = false
         var expanded = Set<String>()
+        /// The live row's disclosure is a view preference, not message state:
+        /// it starts collapsed and holds across runs and conversations.
+        var liveRunExpanded = false
         var content: ContinuousTranscriptView?
         var lastInput: TranscriptRenderInput?
+        /// The live output last written after the history. While the cache
+        /// returns the same object, a clock tick rewrites only the live row.
+        private var appliedProgress: NSAttributedString?
         let renderCache = TranscriptRenderCache()
 
         func textView(_ textView: NSTextView, clickedOnLink link: Any, at charIndex: Int) -> Bool {
             guard let url = link as? URL, url.scheme == "os1-detail", let content else { return false }
             let key = url.lastPathComponent
+            if key == liveRunDetailKey {
+                // Only the live row changes; the history keeps its rendering.
+                liveRunExpanded.toggle()
+                if let scrollView = textView.enclosingScrollView { render(content, in: scrollView) }
+                return true
+            }
             if expanded.contains(key) { expanded.remove(key) } else { expanded.insert(key) }
             let scroll = textView.enclosingScrollView
             let origin = scroll?.contentView.bounds.origin
             let document = timelineAttributedDocument(messages: content.messages, queuedSubmissions: content.queuedSubmissions,
                 isRunning: content.isRunning, workspace: content.workspace, expanded: expanded, publicProgress: content.publicProgress,
-                waitingReason: content.waitingReason, progressAnchors: content.progressAnchors)
+                waitingReason: content.waitingReason, progressAnchors: content.progressAnchors,
+                liveRun: content.liveRun, liveRunExpanded: liveRunExpanded)
             textView.textStorage?.setAttributedString(document)
-            renderCache.invalidate(); lastInput = nil
+            renderCache.invalidate(); lastInput = nil; appliedProgress = nil
             textView.needsDisplay = true
             if let origin { scroll?.contentView.scroll(to: origin) }
             return true
+        }
+
+        @MainActor func render(_ view: ContinuousTranscriptView, in scrollView: NSScrollView) {
+            guard let textView = scrollView.documentView as? ContinuousTranscriptTextView else { return }
+            let changingSession = renderedSessionID != view.sessionID
+            if changingSession { expanded.removeAll() }
+            content = view
+            let input = TranscriptRenderInput(sessionID: view.sessionID, messages: view.messages,
+                queued: view.queuedSubmissions, isRunning: view.isRunning, workspace: view.workspace, publicProgress: view.publicProgress,
+                waitingReason: view.waitingReason, progressAnchors: view.progressAnchors,
+                liveRun: view.liveRun, liveRunExpanded: liveRunExpanded)
+            // Math attachments have object identity. Comparing freshly rendered
+            // attributed strings would rewrite the text storage on every keystroke.
+            guard lastInput != input else { return }
+            lastInput = input
+            let renderStarted = Date()
+            let parts = renderCache.parts(input, expanded: expanded)
+            let rebuildBaseline = parts.rebuilt
+            if rebuildBaseline { textView.completeTranscript = completeTranscriptText(view.messages) }
+            let prefixLength = parts.prefix.length
+            let documentLength = prefixLength + parts.progress.length + parts.row.length
+            let selection = textView.selectedRange()
+            let distanceFromBottom = max(0, textView.bounds.height - scrollView.contentView.bounds.maxY)
+            let firstMessages = !view.messages.isEmpty && (!hasRenderedMessages || changingSession)
+            let shouldFollowBottom = !hasRendered || changingSession || firstMessages || distanceFromBottom < 80
+            // A clock tick redraws the live row alone; it applies no new output.
+            let outputApplied = rebuildBaseline || parts.progress !== appliedProgress
+            if let storage = textView.textStorage {
+                let rowStart = prefixLength + parts.progress.length
+                if rebuildBaseline || storage.length < prefixLength {
+                    let document = NSMutableAttributedString(attributedString: parts.prefix)
+                    document.append(parts.tail)
+                    storage.setAttributedString(document)
+                } else if parts.progress === appliedProgress, storage.length >= rowStart {
+                    storage.replaceCharacters(in: NSRange(location: rowStart, length: storage.length - rowStart), with: parts.row)
+                } else {
+                    storage.replaceCharacters(in: NSRange(location: prefixLength, length: storage.length - prefixLength), with: parts.tail)
+                }
+                appliedProgress = parts.progress
+            }
+            textView.progressSession = view.isRunning ? view.sessionID : nil
+            textView.progressText = view.publicProgress
+            textView.needsDisplay = true
+            if !changingSession, selection.location != NSNotFound {
+                let boundedLocation = min(selection.location, documentLength)
+                let boundedLength = min(selection.length, documentLength - boundedLocation)
+                textView.setSelectedRange(NSRange(location: boundedLocation, length: boundedLength))
+            }
+            if outputApplied { ActivityDisplayTiming.applied(session: view.sessionID, text: view.publicProgress, started: renderStarted) }
+            renderedSessionID = view.sessionID
+            hasRendered = true
+            hasRenderedMessages = !view.messages.isEmpty
+            if shouldFollowBottom, changingSession || selection.length == 0 {
+                DispatchQueue.main.async {
+                    if let container = textView.textContainer { textView.layoutManager?.ensureLayout(for: container) }
+                    scrollView.layoutSubtreeIfNeeded()
+                    textView.scrollToEndOfDocument(nil)
+                    scrollView.reflectScrolledClipView(scrollView.contentView)
+                }
+            }
         }
     }
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
-    func makeNSView(context: Context) -> NSScrollView {
+    func makeNSView(context: Context) -> NSScrollView { Self.makeScrollView(delegate: context.coordinator) }
+
+    static func makeScrollView(delegate: Coordinator) -> NSScrollView {
         let scrollView = NSScrollView()
         scrollView.drawsBackground = false
         scrollView.contentView = TranscriptClipView()
@@ -13559,7 +13679,7 @@ private struct ContinuousTranscriptView: NSViewRepresentable {
         scrollView.borderType = .noBorder
 
         let textView = ContinuousTranscriptTextView(frame: scrollView.contentView.bounds)
-        textView.delegate = context.coordinator
+        textView.delegate = delegate
         textView.linkTextAttributes = [.foregroundColor: TimelinePalette.pink, .cursor: NSCursor.pointingHand]
         textView.drawsBackground = false
         textView.isEditable = false
@@ -13598,54 +13718,21 @@ private struct ContinuousTranscriptView: NSViewRepresentable {
     }
 
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
-        guard let textView = scrollView.documentView as? ContinuousTranscriptTextView else { return }
-        let changingSession = context.coordinator.renderedSessionID != sessionID
-        if changingSession { context.coordinator.expanded.removeAll() }
-        context.coordinator.content = self
-        let input = TranscriptRenderInput(sessionID: sessionID, messages: messages,
-            queued: queuedSubmissions, isRunning: isRunning, workspace: workspace, publicProgress: publicProgress,
-            waitingReason: waitingReason, progressAnchors: progressAnchors)
-        // Math attachments have object identity. Comparing freshly rendered
-        // attributed strings would rewrite the text storage on every keystroke.
-        guard context.coordinator.lastInput != input else { return }
-        context.coordinator.lastInput = input
-        let renderStarted = Date()
-        let parts = context.coordinator.renderCache.parts(input, expanded: context.coordinator.expanded)
-        let rebuildBaseline = parts.rebuilt
-        if rebuildBaseline { textView.completeTranscript = completeTranscriptText(messages) }
-        let tail = parts.tail
-        let prefixLength = parts.prefix.length
-        let documentLength = prefixLength + tail.length
-        let selection = textView.selectedRange()
-        let distanceFromBottom = max(0, textView.bounds.height - scrollView.contentView.bounds.maxY)
-        let firstMessages = !messages.isEmpty && (!context.coordinator.hasRenderedMessages || changingSession)
-        let shouldFollowBottom = !context.coordinator.hasRendered || changingSession || firstMessages || distanceFromBottom < 80
-        if rebuildBaseline || (textView.textStorage?.length ?? 0) < prefixLength {
-            let document = NSMutableAttributedString(attributedString: parts.prefix)
-            document.append(tail)
-            textView.textStorage?.setAttributedString(document)
-        } else if let storage = textView.textStorage {
-            storage.replaceCharacters(in: NSRange(location: prefixLength, length: storage.length - prefixLength), with: tail)
-        }
-        textView.progressSession = isRunning ? sessionID : nil
-        textView.progressText = publicProgress
-        textView.needsDisplay = true
-        if !changingSession, selection.location != NSNotFound {
-            let boundedLocation = min(selection.location, documentLength)
-            let boundedLength = min(selection.length, documentLength - boundedLocation)
-            textView.setSelectedRange(NSRange(location: boundedLocation, length: boundedLength))
-        }
-        ActivityDisplayTiming.applied(session: sessionID, text: publicProgress, started: renderStarted)
-        context.coordinator.renderedSessionID = sessionID
-        context.coordinator.hasRendered = true
-        context.coordinator.hasRenderedMessages = !messages.isEmpty
-        if shouldFollowBottom, changingSession || selection.length == 0 {
-            DispatchQueue.main.async {
-                if let container = textView.textContainer { textView.layoutManager?.ensureLayout(for: container) }
-                scrollView.layoutSubtreeIfNeeded()
-                textView.scrollToEndOfDocument(nil)
-                scrollView.reflectScrolledClipView(scrollView.contentView)
-            }
+        context.coordinator.render(self, in: scrollView)
+    }
+}
+
+/// One entry per whole second of the live run, so its row's clock neither
+/// skips nor repeats a second; a single entry, so no redraw, while idle.
+private struct LiveRunTicks: TimelineSchedule, Equatable {
+    let started: Date?
+    func entries(from startDate: Date, mode: TimelineScheduleMode) -> AnyIterator<Date> {
+        guard let started else { return AnyIterator([startDate].makeIterator()) }
+        // Whole seconds counted from the start, never a sum of steps that drifts.
+        var second = max(0, startDate.timeIntervalSince(started).rounded(.down))
+        return AnyIterator {
+            defer { second += 1 }
+            return started.addingTimeInterval(second)
         }
     }
 }
@@ -13657,18 +13744,24 @@ private struct MessageTimeline: View {
     var publicProgress: String? = nil
     var waitingReason: String? = nil
     var progressAnchors: [UUID: String] = [:]
+    var liveRun: LiveRunPresentation? = nil
 
     var body: some View {
-        ContinuousTranscriptView(
-            sessionID: session.id,
-            messages: presentedMessages(session),
-            queuedSubmissions: queuedSubmissions,
-            isRunning: isRunning,
-            workspace: session.workspace,
-            publicProgress: publicProgress,
-            waitingReason: waitingReason,
-            progressAnchors: progressAnchors
-        )
+        // Outside the timeline: a clock tick must not re-read saved results.
+        let messages = presentedMessages(session)
+        TimelineView(LiveRunTicks(started: isRunning ? liveRun?.started : nil)) { context in
+            ContinuousTranscriptView(
+                sessionID: session.id,
+                messages: messages,
+                queuedSubmissions: queuedSubmissions,
+                isRunning: isRunning,
+                workspace: session.workspace,
+                publicProgress: publicProgress,
+                waitingReason: waitingReason,
+                progressAnchors: progressAnchors,
+                liveRun: isRunning ? liveRun?.at(context.date) : nil
+            )
+        }
     }
 }
 
@@ -14140,113 +14233,366 @@ private struct NativeStepPresentation {
         "The backend's own step descriptions · commands shown with known secret shapes masked · tool results and thinking are not shown · a return is not task completion") }
 }
 
-private struct NativeProgressPanel: View {
+/// The transcript key of the live run row's own disclosure.
+private let liveRunDetailKey = "live-run"
+
+/// The live run as the transcript's last row draws it, read at one whole
+/// second of the run: its activity, accumulated steps and clock.
+private struct LiveRunPresentation: Equatable {
     let activity: RuntimeActivity
     /// The run's accumulated steps; empty falls back to the latest snapshot.
-    var steps = NativeStepLog()
-    @State private var expanded = false
-    private func eventRows(_ rows: [NativeProgressPresentation.Row]) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            ForEach(rows) { row in
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Text(row.receivedAt.formatted(date: .omitted, time: .standard))
-                        .font(.system(size: 9, design: .monospaced)).foregroundStyle(Theme.muted)
-                    Text(row.label).font(.system(size: 10)).foregroundStyle(Theme.text)
-                    Spacer(minLength: 0)
-                }
-            }
-        }.frame(maxWidth: .infinity, alignment: .leading)
+    let steps: NativeStepLog
+    let started: Date
+    let stopping: Bool
+    /// The second of the run the row shows, never a moment between two.
+    let now: Date
+
+    init(activity: RuntimeActivity, steps: NativeStepLog = NativeStepLog(), started: Date, stopping: Bool = false,
+         now: Date? = nil) {
+        self.activity = activity; self.steps = steps; self.started = started; self.stopping = stopping
+        // A tick computed as start + n seconds can land a hair below n.
+        let second = ((now ?? started).timeIntervalSince(started) + 0.001).rounded(.down)
+        self.now = started.addingTimeInterval(max(0, second))
     }
-    private func stepRows(_ rows: [NativeStepPresentation.Row], now: Date) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            ForEach(rows) { row in
-                HStack(alignment: .firstTextBaseline, spacing: 6) {
-                    Text(NativeStepPresentation.clock.string(from: row.receivedAt))
-                        .font(.system(size: 9, design: .monospaced)).foregroundStyle(Theme.muted)
-                    Text(row.glyph).font(.system(size: 10)).foregroundStyle(row.waitingSince == nil ? Theme.muted : Theme.pink)
-                        .help(row.stateText).accessibilityLabel(row.stateText)
-                    if row.subagent { Text("↳").font(.system(size: 10)).foregroundStyle(Theme.muted) }
-                    Text(row.text).font(.system(size: 10)).foregroundStyle(Theme.text)
-                        .lineLimit(1).truncationMode(.middle).help(row.text)
-                    if let detail = row.detail {
-                        Text(detail).font(.system(size: 9)).foregroundStyle(Theme.muted).lineLimit(1).fixedSize()
-                    }
-                    Spacer(minLength: 0)
-                    if let since = row.waitingSince {
-                        Text("\(max(0, Int(now.timeIntervalSince(since))))s")
-                            .font(.system(size: 9, design: .monospaced)).foregroundStyle(Theme.muted)
-                    }
-                }
-            }
-        }.frame(maxWidth: .infinity, alignment: .leading)
+    func at(_ date: Date) -> Self { Self(activity: activity, steps: steps, started: started, stopping: stopping, now: date) }
+    var seconds: Int { Int(now.timeIntervalSince(started).rounded()) }
+    var elapsed: String { "\(seconds / 60):" + String(format: "%02d", seconds % 60) }
+}
+
+/// A received label on one line: breaks flattened and a long middle elided,
+/// so a path keeps both its root and its file name.
+private func liveRunClipped(_ text: String, _ limit: Int) -> String {
+    let flat = text.components(separatedBy: .newlines).joined(separator: " ")
+    guard flat.count > limit, limit > 1 else { return flat }
+    let head = (limit - 1) / 2
+    return String(flat.prefix(head)) + "…" + String(flat.suffix(limit - 1 - head))
+}
+
+/// The live run as one transcript line — its state, clock and the step the
+/// backend is on — whose label opens it in place into the route, counts and
+/// every step of the run, as Codex shows a working turn. All of it is
+/// received metadata; none of it is a completion claim.
+private func liveRunRow(_ run: LiveRunPresentation, expanded: Bool) -> NSAttributedString {
+    let activity = run.activity, now = run.now
+    let muted = TimelinePalette.muted, small = NSFont.systemFont(ofSize: 11)
+    func piece(_ text: String, _ font: NSFont, _ color: NSColor = TimelinePalette.muted) -> NSAttributedString {
+        NSAttributedString(string: text, attributes: [.font: font, .foregroundColor: color])
     }
-    var body: some View {
-        let presentation = NativeProgressPresentation(activity: activity)
-        let log = steps.isEmpty ? NativeStepLog(merging: activity.phase == .waitingForSource ? nil : activity.progress) : steps
-        let allSteps = NativeStepPresentation.rows(log, executing: activity.phase == .executing)
-        let current = allSteps.filter { $0.segment == log.segment }
-        let earlier = allSteps.filter { $0.segment != log.segment }
+    let presentation = NativeProgressPresentation(activity: activity)
+    let quiet = max(0, Int(now.timeIntervalSince(presentation.receivedAt)))
+    let thinking = NativeStepPresentation.thinking(activity, now: now)
+    let waitingStep = NativeStepPresentation.latestWaitingText(activity)
+    let row = NSMutableAttributedString()
+
+    // The dot breathes with the clock; it holds still while stopping or
+    // when the owner reduces motion.
+    let dotFont = NSFont.systemFont(ofSize: 9)
+    let steady = run.stopping || NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+    row.append(piece("●  ", dotFont, run.stopping ? muted
+        : TimelinePalette.pink.withAlphaComponent(steady || run.seconds % 2 == 0 ? 1 : 0.4)))
+    let label = run.stopping ? os1Tr("작업 중지 확인 중", "Confirming task stop") : activity.label
+    let toggle = NSMutableAttributedString(attributedString:
+        TranscriptMarkdown.detailLink(label + (expanded ? "  ▾" : "  ▸"), key: liveRunDetailKey))
+    toggle.addAttributes([.font: NSFont.systemFont(ofSize: 13, weight: .medium),
+        .toolTip: expanded ? os1Tr("진행 단계 접기", "Collapse the run's steps") : os1Tr("진행 단계 펼쳐보기", "Expand the run's steps")],
+        range: NSRange(location: 0, length: toggle.length))
+    row.append(toggle)
+    row.append(piece("   " + os1Tr("\(run.elapsed) 경과", "\(run.elapsed) elapsed"),
+        NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .regular)))
+    let meta = NSFont.systemFont(ofSize: 12)
+    if let waitingStep {
+        // The backend's own words for the call it is on, as Claude Code shows them.
+        row.append(piece(" · " + liveRunClipped(waitingStep, 72), meta))
+    } else if thinking {
+        row.append(piece(" · " + os1Tr("생각 중…", "Thinking…"), meta))
+    } else if let tool = NativeProgressPresentation.safeTool(activity.tool) {
+        row.append(piece(" · " + os1Tr("최근 도구 관측 · ", "Latest observed tool · ") + tool, meta))
+    }
+    if activity.phase != .waitingForSource, quiet >= 30 {
+        row.append(piece(" · " + os1Tr("마지막 신호 \(quiet)초 전", "last signal \(quiet)s ago"), meta))
+    }
+    guard expanded else { return row }
+
+    // Opened: one paragraph per line, under the label.
+    let indent = piece("●  ", dotFont).size().width
+    var previousStyle: NSParagraphStyle?
+    func line(_ parts: [NSAttributedString], wrapIndent: CGFloat? = nil, tabs: [CGFloat] = [], before: CGFloat = 0,
+              toolTip: String? = nil) {
+        let style = NSMutableParagraphStyle()
+        style.firstLineHeadIndent = indent; style.headIndent = wrapIndent ?? indent
+        style.tabStops = tabs.map { NSTextTab(textAlignment: .left, location: $0) }
+        style.lineSpacing = 2; style.paragraphSpacing = 2; style.paragraphSpacingBefore = before
+        // A paragraph's break carries that paragraph's own style.
+        var breakAttributes: [NSAttributedString.Key: Any] = [.font: small]
+        if let previousStyle { breakAttributes[.paragraphStyle] = previousStyle }
+        row.append(NSAttributedString(string: "\n", attributes: breakAttributes))
+        let start = row.length
+        parts.forEach(row.append)
+        let range = NSRange(location: start, length: row.length - start)
+        row.addAttribute(.paragraphStyle, value: style, range: range)
+        if let toolTip { row.addAttribute(.toolTip, value: toolTip, range: range) }
+        previousStyle = style
+    }
+    let route = ExecutionRoutePresentation(activity: activity)
+    line([piece(route.governanceLine, small)], before: 6, toolTip: route.detail)
+    if let counts = presentation.counts {
+        line([piece(counts, NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular), TimelinePalette.pink)])
+    } else if !presentation.rows.isEmpty {
+        line([piece(os1Tr("기존 실행: 도구 이름·수신 시각만 관측 · 누적 횟수/반환 상태 미계측",
+                          "Earlier run: only tool names and receipt times observed · cumulative counts/return state not measured"), small)])
+    }
+    if let status = activity.progress?.backendStatus.flatMap(NativeStepPresentation.statusText) {
+        line([piece(status, small)])
+    }
+    let note: String
+    if activity.phase == .waitingForSource {
+        note = os1Tr("백엔드는 아직 시작하지 않았습니다 · 요청은 보존되며 소스 수리·업데이트가 끝나면 자동으로 이어갑니다.",
+                     "The backend hasn't started yet · the request is preserved and continues automatically after the source repair or update.")
+    } else if quiet >= 30 {
+        note = os1Tr("마지막 단계 업데이트 \(quiet)초 전 · 실행은 열려 있지만 새 진행 신호를 기다리고 있습니다.",
+                     "Last stage update \(quiet)s ago · the run is still open but waiting for a new progress signal.")
+    } else if activity.toolProgressLabel != nil {
+        note = os1Tr("최근 수신 신호 \(quiet)초 전 · 도구 실행/성공 여부는 별도입니다.",
+                     "Last signal received \(quiet)s ago · whether the tool ran or succeeded is separate.")
+    } else {
+        note = os1Tr("최근 수신 \(quiet)초 전", "Last received \(quiet)s ago")
+    }
+    line([piece(note, small)])
+
+    let log = run.steps.isEmpty ? NativeStepLog(merging: activity.progress) : run.steps
+    let steps = NativeStepPresentation.rows(log, executing: activity.phase == .executing)
+    let current = steps.filter { $0.segment == log.segment }, earlier = steps.filter { $0.segment != log.segment }
+    let clockFont = NSFont.monospacedDigitSystemFont(ofSize: 10.5, weight: .regular)
+    let detailFont = NSFont.systemFont(ofSize: 10.5), heading = NSFont.systemFont(ofSize: 10.5, weight: .semibold)
+    // Clock, state glyph and step text each in their own column.
+    let glyphColumn = indent + piece("00:00:00", clockFont).size().width + 12
+    let columns = [glyphColumn, glyphColumn + 18]
+    func stepLine(_ step: NativeStepPresentation.Row) {
+        let lead = NSMutableAttributedString(attributedString:
+            piece(NativeStepPresentation.clock.string(from: step.receivedAt) + "\t", clockFont))
+        lead.append(piece(step.glyph + "\t", small, step.waitingSince == nil ? muted : TimelinePalette.pink))
+        let nested = piece("↳ ", small)
+        if step.subagent { lead.append(nested) }
+        var parts: [NSAttributedString] = [lead, piece(liveRunClipped(step.text, 140), meta, TimelinePalette.text)]
+        if let detail = step.detail { parts.append(piece("  " + detail, detailFont)) }
+        if let since = step.waitingSince {
+            let waited = max(0, Int(now.timeIntervalSince(since)))
+            parts.append(piece("  · " + step.stateText + " " + os1Tr("\(waited)초", "\(waited)s"), clockFont, TimelinePalette.pink))
+        } else if step.stateText != os1Tr("반환", "returned") {
+            parts.append(piece("  · " + step.stateText, detailFont))
+        }
+        line(parts, wrapIndent: columns[1] + (step.subagent ? nested.size().width : 0), tabs: columns, toolTip: step.stateText)
+    }
+    if !earlier.isEmpty {
+        // A retry, a fallback or another route: all an earlier backend stream.
+        line([piece(os1Tr("이전 백엔드 실행", "Earlier backend stream"), heading)], before: 4)
+        earlier.forEach(stepLine)
+        if !current.isEmpty { line([piece(os1Tr("현재 백엔드 실행", "Current backend stream"), heading)], before: 4) }
+    }
+    current.forEach(stepLine)
+    if current.isEmpty {
         // Processing signals collapse into one thinking line; other lifecycle
         // events stay visible until the backend names a step.
-        let signals = Array(presentation.rows.filter { !$0.processing }.suffix(4))
-        return TimelineView(.periodic(from: .now, by: 1)) { context in
-            let thinking = NativeStepPresentation.thinking(activity, now: context.date)
-            VStack(alignment: .leading, spacing: 6) {
-                HStack {
-                    Text(os1Tr("실제 백엔드 진행 신호", "Live backend progress signals")).font(.system(size: 11, weight: .semibold))
-                    Spacer()
-                    Text(os1Tr("최근 수신 \(max(0, Int(context.date.timeIntervalSince(presentation.receivedAt))))초 전",
-                               "Last received \(max(0, Int(context.date.timeIntervalSince(presentation.receivedAt))))s ago"))
-                        .font(.system(size: 9, design: .monospaced)).foregroundStyle(Theme.muted)
-                }
-                if let counts = presentation.counts {
-                    Text(counts).font(.system(size: 10, design: .monospaced)).foregroundStyle(Theme.pink)
-                } else {
-                    Text(os1Tr("기존 실행: 도구 이름·수신 시각만 관측 · 누적 횟수/반환 상태 미계측",
-                               "Earlier run: only tool names and receipt times observed · cumulative counts/return state not measured"))
-                        .font(.system(size: 9)).foregroundStyle(Theme.muted)
-                }
-                if let status = activity.progress?.backendStatus.flatMap(NativeStepPresentation.statusText) {
-                    Text(status).font(.system(size: 10)).foregroundStyle(Theme.muted)
-                }
-                if !current.isEmpty {
-                    stepRows(Array(current.suffix(NativeStepPresentation.visibleCount)), now: context.date)
-                } else if !signals.isEmpty {
-                    eventRows(signals)
-                } else if !thinking {
-                    Text(activity.phase == .waitingForSource ? os1Tr("네이티브 실행 전 소스 접근 대기", "Waiting for source access before the native run") : os1Tr("현재 단계 · ", "Current stage · ") + activity.label + os1Tr(" · 공개 응답/도구 신호를 기다립니다", " · waiting for public response/tool signals"))
-                        .font(.system(size: 10)).foregroundStyle(Theme.muted)
-                }
-                if thinking {
-                    Text(os1Tr("생각 중…", "Thinking…")).font(.system(size: 10)).foregroundStyle(Theme.muted)
-                }
-                if allSteps.count > NativeStepPresentation.visibleCount || !earlier.isEmpty || !presentation.rows.isEmpty {
-                    DisclosureGroup(os1Tr("전체 단계 \(allSteps.count)개 · 수신 신호 \(presentation.rows.count)개",
-                                          "All \(allSteps.count) steps · \(presentation.rows.count) signals"), isExpanded: $expanded) {
-                        ScrollView(.vertical) {
-                            VStack(alignment: .leading, spacing: 6) {
-                                if !earlier.isEmpty {
-                                    // A retry, a fallback or another route: all an earlier backend stream.
-                                    Text(os1Tr("이전 백엔드 실행", "Earlier backend stream")).font(.system(size: 9, weight: .semibold)).foregroundStyle(Theme.muted)
-                                    stepRows(earlier, now: context.date)
-                                    Divider()
-                                }
-                                stepRows(current, now: context.date)
-                                if !presentation.rows.isEmpty {
-                                    Divider()
-                                    eventRows(presentation.rows)
-                                }
-                            }
-                        }.frame(maxHeight: 200)
-                    }.font(.system(size: 9)).foregroundStyle(Theme.muted)
-                }
-                Text(NativeStepPresentation.footer)
-                    .font(.system(size: 8)).foregroundStyle(Theme.muted).fixedSize(horizontal: false, vertical: true)
+        let signals = presentation.rows.filter { !$0.processing }.suffix(4)
+        if !signals.isEmpty {
+            for signal in signals {
+                line([piece(NativeStepPresentation.clock.string(from: signal.receivedAt) + "\t\t", clockFont),
+                      piece(signal.label, meta, TimelinePalette.text)], wrapIndent: columns[1], tabs: columns)
             }
-            .padding(10).background(Theme.panelRaised.opacity(0.75), in: RoundedRectangle(cornerRadius: 9))
-            .accessibilityIdentifier("os1.native-progress")
+        } else if !thinking {
+            line([piece(activity.phase == .waitingForSource
+                ? os1Tr("네이티브 실행 전 소스 접근 대기", "Waiting for source access before the native run")
+                : os1Tr("현재 단계 · ", "Current stage · ") + activity.label + os1Tr(" · 공개 응답/도구 신호를 기다립니다", " · waiting for public response/tool signals"), small)])
         }
     }
+    // The header names the waiting step; the thinking line then sits here.
+    if thinking, waitingStep != nil { line([piece(os1Tr("생각 중…", "Thinking…"), small)]) }
+    line([piece(NativeStepPresentation.footer, NSFont.systemFont(ofSize: 10))], before: 4)
+    return row
+}
+
+/// A run with the backend's own step lines: six returned steps, one of them
+/// a subagent's, and one awaiting its return. Preview and self-test only.
+private func liveRunFixture(started: Date, elapsed: TimeInterval = 58, publicText: String? = nil) -> LiveRunPresentation {
+    typealias Step = NativeExecutionProgress.Step
+    func at(_ seconds: TimeInterval) -> Date { started.addingTimeInterval(seconds) }
+    let steps = [
+        Step(id: "00000000000a", sequence: 2, tool: "Bash", scope: "main", verb: "run", label: "which codex claude gh",
+             state: .returned, startedAt: at(3), endedAt: at(4)),
+        Step(id: "00000000000b", sequence: 4, tool: "Read", scope: "main", verb: "read", label: "Sources/OS1App/OS1App.swift",
+             state: .returned, startedAt: at(9), endedAt: at(10)),
+        Step(id: "00000000000c", sequence: 6, tool: "Grep", scope: "main", verb: "search", label: "RunActivityBanner",
+             state: .returned, startedAt: at(15), endedAt: at(16)),
+        Step(id: "00000000000d", sequence: 8, tool: "Agent", scope: "main", verb: "agent", label: "Review the transcript layout",
+             childToolUses: 3, lastChildTool: "Read", state: .returned, startedAt: at(20), endedAt: at(41)),
+        Step(id: "00000000000e", sequence: 9, tool: "Read", scope: "subagent:0123456789ab", verb: "read",
+             label: "Sources/OS1App/TranscriptMarkdown.swift", state: .returned, startedAt: at(24), endedAt: at(25)),
+        Step(id: "00000000000f", sequence: 10, tool: "Edit", scope: "main", verb: "edit", label: "Sources/OS1App/OS1App.swift",
+             state: .returned, startedAt: at(44), endedAt: at(45)),
+        Step(id: "000000000010", sequence: 12, tool: "Bash", scope: "main", verb: "run", label: "swift build", startedAt: at(50)),
+    ]
+    let progress = NativeExecutionProgress(sequence: 12, kind: .toolStarted, tool: "Bash", scope: "main",
+        toolsRequested: 7, toolsReturned: 6, activeTools: 1, observedAt: at(50),
+        events: [.init(sequence: 12, kind: .toolStarted, tool: "Bash", scope: "main", observedAt: at(50))],
+        steps: steps, stream: "0000000000aa")
+    let activity = RuntimeActivity(.executing, provider: "claude", surface: "claude", model: "claude-fixture", effort: "max",
+        timestamp: at(50), publicText: publicText, tool: "Bash", progress: progress)
+    return LiveRunPresentation(activity: activity, steps: NativeStepLog(merging: progress), started: started, now: at(elapsed))
+}
+
+/// The live row exactly as the transcript lays it out, for the preview.
+@MainActor
+private func liveRunPreviewPNG(_ run: LiveRunPresentation, expanded: Bool, messages: [ChatMessage] = [],
+                               width: CGFloat = 1_000) throws -> Data {
+    let document = timelineAttributedDocument(messages: messages, queuedSubmissions: [], isRunning: true, workspace: "/tmp",
+        liveRun: run, liveRunExpanded: expanded)
+    let view = ContinuousTranscriptTextView(frame: NSRect(x: 0, y: 0, width: width, height: 200))
+    view.drawsBackground = false
+    view.linkTextAttributes = [.foregroundColor: TimelinePalette.pink]
+    view.isEditable = false
+    view.isVerticallyResizable = true
+    view.maxSize = NSSize(width: width, height: 100_000)
+    view.textContainer?.lineFragmentPadding = 0
+    view.textContainer?.heightTracksTextView = false
+    view.textContainer?.widthTracksTextView = true
+    view.textContainer?.containerSize = NSSize(width: width, height: 100_000)
+    view.layoutManager?.allowsNonContiguousLayout = false
+    view.textStorage?.setAttributedString(document)
+    view.setFrameSize(NSSize(width: width, height: 200))
+    guard let layout = view.layoutManager, let container = view.textContainer else { throw SourceContextError.invalid }
+    layout.ensureLayout(for: container)
+    let height = ceil(layout.usedRect(for: container).height + 2 * view.textContainerInset.height)
+    view.setFrameSize(NSSize(width: width, height: height))
+    let surface = TranscriptSnapshotSurface(frame: view.bounds)
+    surface.addSubview(view)
+    guard let bitmap = surface.bitmapImageRepForCachingDisplay(in: surface.bounds) else { throw SourceContextError.invalid }
+    surface.cacheDisplay(in: surface.bounds, to: bitmap)
+    guard let png = bitmap.representation(using: .png, properties: [:]) else { throw SourceContextError.invalid }
+    return png
+}
+
+/// The run's activity is the transcript's last row: one line until opened,
+/// opened in place, and on each second of its clock redrawn alone.
+@MainActor
+private func liveRunRowSelfTest() throws {
+    var checks = 0
+    func check(_ ok: Bool, _ why: String) throws {
+        guard ok else { throw RunnerError.message("Live run row: " + why) }; checks += 1
+    }
+    func roles(_ document: NSAttributedString) -> [String] {
+        var found: [String] = []
+        document.enumerateAttribute(.os1TimelineRole, in: NSRange(location: 0, length: document.length)) { value, _, _ in
+            if let role = value as? String, found.last != role { found.append(role) }
+        }
+        return found
+    }
+    let started = Date(timeIntervalSince1970: 1_800_000_000)
+    let run = liveRunFixture(started: started, publicText: "PRIVATE_PROMPT THINKING TOOL_ARGS TOOL_RESULT")
+    func second(_ value: TimeInterval) -> Date { started.addingTimeInterval(value) }
+
+    // The clock shows the run's whole second, never the one before or a negative one.
+    try check(run.at(second(3.9995)).elapsed == "0:04" && run.at(second(4.3)).elapsed == "0:04" &&
+        run.at(second(65)).elapsed == "1:05" && run.at(second(-5)).elapsed == "0:00", "elapsed clock is not the run's whole second")
+    let ticks = LiveRunTicks(started: started).entries(from: second(2.5), mode: .normal)
+    try check([ticks.next(), ticks.next(), ticks.next()] == [second(2), second(3), second(4)],
+        "ticks are not one per whole second of the run")
+    let idleTicks = LiveRunTicks(started: nil).entries(from: started, mode: .normal)
+    try check(idleTicks.next() == started && idleTicks.next() == nil, "an idle transcript keeps ticking")
+
+    // Collapsed: one line of state, clock and the step the backend is on.
+    let collapsed = liveRunRow(run, expanded: false), open = liveRunRow(run, expanded: true)
+    let rows = NativeStepPresentation.rows(run.steps, executing: true)
+    let waiting = rows.filter { $0.waitingSince != nil }
+    try check(rows.count == 7 && waiting.count == 1 && NativeStepPresentation.latestWaitingText(run.activity) == waiting[0].text,
+        "fixture does not have one waiting step among seven")
+    try check(!collapsed.string.contains("\n") && collapsed.string.contains(run.activity.label) &&
+        collapsed.string.contains("0:58 경과") && collapsed.string.contains(waiting[0].text),
+        "collapsed row is not one line of state, clock and the current step")
+    try check(rows.filter { $0.waitingSince == nil }.allSatisfy { !collapsed.string.contains($0.text) } &&
+        !collapsed.string.contains(NativeStepPresentation.footer), "collapsed row lists finished steps or the footer")
+    var links: [URL] = []
+    collapsed.enumerateAttribute(.link, in: NSRange(location: 0, length: collapsed.length)) { value, _, _ in
+        if let url = value as? URL { links.append(url) }
+    }
+    let toggle = URL(string: "os1-detail://toggle/" + liveRunDetailKey)!
+    try check(links == [toggle], "collapsed row has no single disclosure of its own")
+    // Opened: route, counts, every step with its state, and the footer.
+    try check(open.string.hasPrefix(collapsed.string.replacingOccurrences(of: "▸", with: "▾")), "opening the row changed its first line")
+    try check(open.string.contains(ExecutionRoutePresentation(activity: run.activity).governanceLine) &&
+        open.string.contains("요청 7 · 반환 6 · 미반환 1") && open.string.contains("↳ ") &&
+        open.string.contains("반환 대기 8초") && open.string.contains(NativeStepPresentation.footer),
+        "opened row lacks the route, counts, subagent nesting, waiting time or footer")
+    try check(rows.allSatisfy { open.string.contains(liveRunClipped($0.text, 140)) }, "opened row omits a step")
+    try check(![collapsed.string, open.string.replacingOccurrences(of: NativeStepPresentation.footer, with: "")].contains {
+        $0.contains("완료") || $0.contains("PRIVATE") || $0.contains("TOOL_RESULT") }, "row claims completion or shows private content")
+    let stopping = liveRunRow(LiveRunPresentation(activity: run.activity, steps: run.steps, started: started, stopping: true,
+        now: run.now), expanded: false)
+    try check(stopping.string.contains("작업 중지 확인 중") && !stopping.string.contains(run.activity.label), "a stop request is not shown")
+    let quiet = LiveRunPresentation(activity: RuntimeActivity(.executing, provider: "codex", timestamp: started), started: started,
+        now: second(65))
+    try check(liveRunRow(quiet, expanded: false).string.contains("마지막 신호 65초 전"), "a quiet run hides how long since its last signal")
+    let source = LiveRunPresentation(activity: RuntimeActivity(.waitingForSource, provider: "codex", timestamp: started, tool: "Bash"),
+        started: started)
+    try check(liveRunRow(source, expanded: true).string.contains("백엔드는 아직 시작하지 않았습니다") &&
+        !liveRunRow(source, expanded: true).string.contains("요청 "), "a source wait claims backend work")
+
+    // The row is the transcript's one last block, only while the run is live.
+    let history = [ChatMessage(role: .user, text: "LIVE_ROW_REQUEST_SENTINEL")]
+    let document = timelineAttributedDocument(messages: history, queuedSubmissions: [], isRunning: true, workspace: "/tmp",
+        publicProgress: "PUBLIC_PROGRESS_SENTINEL", liveRun: run)
+    try check(roles(document) == ["user", "assistant", "liveRun"], "live row is not the transcript's last row: \(roles(document))")
+    try check(!roles(timelineAttributedDocument(messages: history, queuedSubmissions: [], isRunning: false, workspace: "/tmp",
+        liveRun: run)).contains("liveRun"), "a finished run keeps its live row")
+
+    // A tick rebuilds only the row: history and live output keep their rendering.
+    let cache = TranscriptRenderCache()
+    var input = TranscriptRenderInput(sessionID: UUID(), messages: history, queued: [], isRunning: true, workspace: "/tmp",
+        publicProgress: "PUBLIC_PROGRESS_SENTINEL")
+    var firstPrefix: NSAttributedString?, firstProgress: NSAttributedString?
+    for tick in 58...61 {
+        input.liveRun = run.at(second(Double(tick)))
+        let parts = cache.parts(input, expanded: [])
+        if tick == 58 { firstPrefix = parts.prefix; firstProgress = parts.progress }
+        try check(parts.prefix === firstPrefix && parts.progress === firstProgress && (tick == 58 || !parts.rebuilt),
+            "a clock tick rebuilt the history or the live output")
+        let joined = NSMutableAttributedString(attributedString: parts.prefix); joined.append(parts.tail)
+        let reference = timelineAttributedDocument(messages: history, queuedSubmissions: [], isRunning: true, workspace: "/tmp",
+            publicProgress: input.publicProgress, liveRun: input.liveRun)
+        try check(joined.isEqual(to: reference), "cached live row differs from a full render at \(tick)s")
+        try check(joined.string.contains(input.liveRun!.elapsed + " 경과"), "a tick did not advance the clock")
+    }
+    try check(cache.prefixBuildCount == 1 && cache.progressBuildCount == 1, "ticks reparsed the history or live output")
+
+    // The actual transcript view: a click opens and closes the row in place.
+    let coordinator = ContinuousTranscriptView.Coordinator()
+    let scroll = ContinuousTranscriptView.makeScrollView(delegate: coordinator)
+    scroll.frame = NSRect(x: 0, y: 0, width: 1_000, height: 700)
+    guard let textView = scroll.documentView as? ContinuousTranscriptTextView else { throw RunnerError.message("Live run row: no transcript view") }
+    let sessionID = UUID()
+    func view(_ tick: Int, running: Bool = true) -> ContinuousTranscriptView {
+        ContinuousTranscriptView(sessionID: sessionID, messages: history, queuedSubmissions: [], isRunning: running, workspace: "/tmp",
+            publicProgress: running ? "PUBLIC_PROGRESS_SENTINEL" : nil, liveRun: running ? run.at(second(Double(tick))) : nil)
+    }
+    func full(_ tick: Int, expanded: Bool) -> String {
+        timelineAttributedDocument(messages: history, queuedSubmissions: [], isRunning: true, workspace: "/tmp",
+            publicProgress: "PUBLIC_PROGRESS_SENTINEL", liveRun: run.at(second(Double(tick))), liveRunExpanded: expanded).string
+    }
+    let footer = NativeStepPresentation.footer
+    coordinator.render(view(58), in: scroll)
+    try check(textView.string == full(58, expanded: false), "the live row does not start collapsed")
+    try check(coordinator.textView(textView, clickedOnLink: toggle, at: 0) && textView.string == full(58, expanded: true),
+        "clicking the row did not open it in place")
+    coordinator.render(view(59), in: scroll)
+    try check(textView.string == full(59, expanded: true), "a tick closed the opened row or left a stale clock")
+    try check(coordinator.textView(textView, clickedOnLink: toggle, at: 0) && textView.string == full(59, expanded: false),
+        "clicking again did not collapse the row")
+    coordinator.render(view(60), in: scroll)
+    try check(textView.string == full(60, expanded: false) && !textView.string.contains(footer), "a tick reopened the row")
+    try check(coordinator.renderCache.prefixBuildCount == 1 && coordinator.renderCache.progressBuildCount == 1,
+        "opening, closing or a tick re-rendered the history")
+    coordinator.render(view(61, running: false), in: scroll)
+    try check(!textView.string.contains("경과") && textView.string.contains("LIVE_ROW_REQUEST_SENTINEL"), "the live row outlived its run")
+    print("Live run row: \(checks) checks PASS; one line at the transcript end, opens in place, row-only redraw per second; model calls 0")
 }
 
 private func nativeProgressPresentationSelfTest() throws {
@@ -14373,67 +14719,6 @@ private func nativeProgressPresentationSelfTest() throws {
         "processing signals not collapsed out of the visible rows")
     try check(NativeStepPresentation.clock.string(from: Date(timeIntervalSince1970: 0)).count == 8, "HH:mm:ss receipt time")
     print("Native progress presentation: \(checks) checks PASS; receipt metadata, backend step lines, legacy/unknown/privacy; model calls 0")
-}
-
-private struct RunActivityBanner: View {
-    let activity: RuntimeActivity
-    let started: Date
-    var previewTime: Date? = nil
-    var stopping = false
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    var body: some View {
-        TimelineView(.periodic(from: .now, by: reduceMotion ? 1 : 0.12)) { context in
-            let now = previewTime ?? context.date
-            let seconds = max(0, Int(now.timeIntervalSince(started)))
-            let quiet = max(0, Int(now.timeIntervalSince(NativeProgressPresentation(activity: activity).receivedAt)))
-            HStack(spacing: 8) {
-                HStack(alignment: .center, spacing: 3) {
-                    ForEach(0..<4) { index in
-                        Capsule().fill(Theme.pink)
-                            .frame(width: 3, height: reduceMotion ? 6 : 3 + 8 * (0.5 + 0.5 * sin(now.timeIntervalSinceReferenceDate * 5 - Double(index))))
-                    }
-                }.frame(width: 16, height: 16).accessibilityHidden(true)
-                VStack(alignment: .leading, spacing: 3) {
-                    HStack {
-                        let route = ExecutionRoutePresentation(activity: activity)
-                        Text(stopping ? os1Tr("작업 중지 확인 중", "Confirming task stop") : activity.label).font(.system(size: 11))
-                        Text(route.executionLine).font(.system(size: 10, weight: .medium)).foregroundStyle(Theme.pink).help(route.detail)
-                        if let modelLine = route.modelLine { Text(modelLine).font(.system(size: 10)).foregroundStyle(Theme.muted).help(route.detail) }
-                        if let reasoningLine = route.reasoningLine {
-                            Text(reasoningLine).font(.system(size: 10)).foregroundStyle(Theme.muted).fixedSize()
-                        }
-                        // The backend's own words for the call it is on, as Claude Code shows them.
-                        if let step = NativeStepPresentation.latestWaitingText(activity) {
-                            Text(step).font(.system(size: 10)).foregroundStyle(Theme.muted)
-                                .lineLimit(1).truncationMode(.middle)
-                        } else if let tool = NativeProgressPresentation.safeTool(activity.tool) {
-                            Text(os1Tr("최근 도구 관측 · ", "Latest observed tool · ") + tool).font(.system(size: 10)).foregroundStyle(Theme.muted)
-                        }
-                    }
-                    if activity.toolProgressLabel != nil && quiet < 30 {
-                        Text(os1Tr("최근 수신 신호 \(quiet)초 전 · 도구 실행/성공 여부는 별도입니다.",
-                                   "Last signal received \(quiet)s ago · whether the tool ran or succeeded is separate."))
-                            .font(.system(size: 10)).foregroundStyle(Theme.muted)
-                    }
-                    if activity.phase == .waitingForSource {
-                        Text(os1Tr("백엔드는 아직 시작하지 않았습니다 · 요청은 보존되며 소스 수리·업데이트가 끝나면 자동으로 이어갑니다.",
-                                   "The backend hasn't started yet · the request is preserved and continues automatically after the source repair or update."))
-                            .font(.system(size: 10)).foregroundStyle(Theme.muted)
-                    } else if quiet >= 30 {
-                        Text(os1Tr("마지막 단계 업데이트 \(quiet)초 전 · 실행은 열려 있지만 새 진행 신호를 기다리고 있습니다.",
-                                   "Last stage update \(quiet)s ago · the run is still open but waiting for a new progress signal."))
-                            .font(.system(size: 10)).foregroundStyle(Theme.muted)
-                    }
-                }
-                Spacer()
-                Text(os1Tr("\(seconds / 60):\(String(format: "%02d", seconds % 60)) 경과",
-                           "\(seconds / 60):\(String(format: "%02d", seconds % 60)) elapsed"))
-                    .font(.system(size: 11, design: .monospaced)).foregroundStyle(Theme.muted)
-            }
-            .foregroundStyle(Theme.text).padding(.horizontal, 8).padding(.vertical, 5)
-            .accessibilityElement(children: .combine)
-        }
-    }
 }
 
 private struct QueueEditSheet: View {
@@ -14594,10 +14879,8 @@ private struct ComposerView: View {
 
     var body: some View {
         VStack(spacing: 8) {
-            if store.isRunning, let started = store.runStartedAt {
-                RunActivityBanner(activity: store.activeActivity, started: started, stopping: store.isStopping)
-                NativeProgressPanel(activity: store.activeActivity, steps: store.activeNativeSteps)
-            }
+            // The live run is the transcript's last row (LiveRunPresentation),
+            // not a panel docked here: the composer keeps its own height.
             if !store.isSessionRunning(session.id), session.lastFailure != nil {
                 if let failure = session.lastBackendFailure {
                     Text(failure.blocker.message)

@@ -95,11 +95,18 @@ check('Backend handoff and source snapshot unchanged', () => {
     JSON.parse(run(baseline, ['--export-session-context', sessionID])));
 });
 run(app, ['--render-activity-preview', output]);
-check('Activity animation frames differ while elapsed second is the same', () => {
-  assert.notEqual(digest(fs.readFileSync(path.join(output, 'activity-0.png'))),
+const pngHeight = (file) => fs.readFileSync(path.join(output, file)).readUInt32BE(20);
+check('Live run row holds still within one elapsed second', () => {
+  assert.equal(digest(fs.readFileSync(path.join(output, 'activity-0.png'))),
     digest(fs.readFileSync(path.join(output, 'activity-1.png'))));
 });
+check('Live run row redraws on the next elapsed second', () => {
+  assert.notEqual(digest(fs.readFileSync(path.join(output, 'activity-0.png'))),
+    digest(fs.readFileSync(path.join(output, 'activity-2.png'))));
+});
 check('Long quiet-stage preview renders', () => assert(fs.statSync(path.join(output, 'activity-2.png')).size > 1000));
+check('Live run row opens in place below the request', () =>
+  assert(pngHeight('activity-expanded.png') > pngHeight('activity-steps.png') + 100));
 check('Read-only validation preserves all session-store bytes', () =>
   assert(fs.readFileSync(sourceFile).equals(before), 'Session store changed during native replay'));
 const report = { timestamp: new Date().toISOString(), app, appSHA256: digest(fs.readFileSync(app)),
