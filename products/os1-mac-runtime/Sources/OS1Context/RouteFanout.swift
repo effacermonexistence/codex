@@ -19,7 +19,8 @@ import Foundation
 public struct RouteFanout: Equatable, Sendable {
     public struct Target: Equatable, Sendable {
         public let surface: ProviderSurface
-        /// The name as written, with its particle ("Codex한테").
+        /// The name as written, with its particle ("Codex한테", or "GPT랑" in
+        /// a list that shares the last name's particle).
         public let mention: String
         /// What this route is asked, with the routing words removed.
         public let payload: String
@@ -45,6 +46,16 @@ public struct RouteFanout: Equatable, Sendable {
     ]
     /// The Korean dative particle that turns a name into a destination.
     static let particle = #"(?:한테|에게|께)(?:는|도|만)?"#
+    /// Names listed before a destination share its particle: a Korean case
+    /// particle attaches to the last name of a coordination but covers all of
+    /// them ([A랑 B]한테). Owner, 2026-10-04: "GPT랑 코덱스랑 클로드랑 클로드
+    /// 코드한테 1+2 이런거 해봐" reached only Claude Code, the one name the
+    /// particle touched. Only a name joined straight to another name is listed;
+    /// "GPT랑 비교해서 Claude한테" keeps GPT as company, not a destination.
+    static let conjunction = #"(?:\s?(?:이랑|랑|하고|와|과)|\s*[,，、/·&])\s*(?:(?:및|그리고|and)\s+)?|\s+(?:및|그리고|and)\s+"#
+    /// Routing as the subject of the sentence, not an instruction to route:
+    /// "라우팅이 이상해", "라우팅 되게 해줘", "라우팅 잘 됐는지".
+    static let routingTalk = #"라우팅\s*(?:이|가|은|는|도|만)?\s*(?:(?:잘|제대로|다|안|못)\s*)?(?:되|돼|됐|된|됨|됩)|라우팅(?:이|가|은|는)(?![가-힣])"#
     /// Routing words, not content: removed from each part before it is sent.
     static let chatter = [
         #"라우팅\s*(?:을|도)?\s*(?:시켜서|시켜|해서|해봐|해줘|해)?"#,
@@ -55,14 +66,20 @@ public struct RouteFanout: Equatable, Sendable {
         #"(?:해봐|해 봐|해줘|해라|해보자|하라고|해)(?=\s|$)"#,
         #"각각|제발|\bsend\b|\bask\b"#,
     ]
-    static let negation = #"말고|말아|하지\s*마|시키지\s*마|않|don'?t|do not|instead of|rather than"#
+    /// Short negation ("안 갔잖아", "안돼", "못 받았어") counts as well as the long form.
+    static let negation = #"말고|말아|하지\s*마|시키지\s*마|않|(?:^|\s)(?:안|못)(?=\s|$|돼|됐|되|가|갔|해|했|와|왔)|don'?t|do not|instead of|rather than"#
     /// A handover verb left in a part means its name is an argument, not a
     /// destination: "클로드한테도 넘기게 해 왜 코덱스한테만 넘기냐?" (owner,
-    /// 2026-09-23) is a complaint about routing, not two questions.
-    static let routingVerbs = #"넘기|넘겨|보내|시키|시켜|맡기|맡겨|라우팅|돌리|돌려|물어|\broute\b|\bsend\b|\bforward\b|\bhand\s+(?:off|over)\b"#
+    /// 2026-09-23) is a complaint about routing, not two questions. Past and
+    /// relative forms ("보냈어?", "넘어간 거") report a routing, never ask one.
+    static let routingVerbs = #"넘기|넘겨|넘긴|넘겼|넘어가|넘어갔|넘어간|보내|보낸|보냈|시키|시켜|시킨|시켰|맡기|맡겨|맡긴|맡겼|라우팅|돌리|돌려|돌린|돌렸|전달(?:한|했|된|됐|되)|물어|\broute\b|\bsend\b|\bforward\b|\bhand\s+(?:off|over)\b"#
     /// Words that carry no question of their own.
     static let fillers: Set<String> = ["그리고", "근데", "그런데", "그럼", "그래서", "또", "자", "아", "야", "왜", "뭐",
-                                       "어떻게", "and", "but", "so", "then", "why", "what", "how"]
+                                       "어떻게", "이런", "그런", "저런", "이런거", "그런거", "저런거", "거", "것", "이것",
+                                       "그것", "저거", "저것", "좀", "일", "작업", "다시", "한번", "빨리", "얼른", "바로",
+                                       "지금", "그냥", "일단", "먼저", "같이", "동시에", "다", "둘", "모두", "전부", "각자",
+                                       "따로", "제대로", "랑", "이랑", "하고", "와", "과",
+                                       "and", "but", "so", "then", "why", "what", "how"]
     /// "같은 질문 Claude한테도": the part is the previous part again.
     static let repeatPrevious = #"^(?:같은\s*(?:질문|거|것|문제)|똑같(?:이|은\s*(?:질문|거|것))|동일한\s*(?:질문|거|것)|(?:the\s+)?same(?:\s+(?:question|thing))?)(?:도|을|를|으로|로)?$"#
     /// Work on this machine or in a codebase: such a part keeps the normal path.
@@ -100,12 +117,16 @@ public struct RouteFanout: Equatable, Sendable {
                     let start = index == 0 ? clause.startIndex : found[index - 1].range.upperBound
                     raw = String(clause[start..<mention.range.lowerBound])
                 }
+                if raw.range(of: routingTalk, options: .regularExpression) != nil { return nil }
                 var payload = strip(raw)
                 if payload.range(of: repeatPrevious, options: [.regularExpression, .caseInsensitive]) != nil {
                     guard let previous = targets.last?.payload else { return nil }
                     payload = previous
                 }
-                targets.append(Target(surface: mention.surface, mention: mention.text, payload: payload))
+                // A listed name is asked the same part as the name carrying the particle.
+                for destination in mention.destinations {
+                    targets.append(Target(surface: destination.surface, mention: destination.text, payload: payload))
+                }
             }
             if found.count > 1, !nameFirst {
                 let tail = strip(String(clause[found[found.count - 1].range.upperBound...]))
@@ -131,19 +152,32 @@ public struct RouteFanout: Equatable, Sendable {
         if payload.range(of: routingVerbs, options: [.regularExpression, .caseInsensitive]) != nil { return false }
         let words = payload.lowercased()
             .split(whereSeparator: { $0.isWhitespace || ",.?!~".contains($0) }).map(String.init)
-        if words.isEmpty || words.allSatisfy(fillers.contains) { return false }
+        // "이것도", "다시는": a particle does not turn a filler into a question.
+        let filler = { (word: String) in
+            fillers.contains(word) || (word.count > 1 && fillers.contains(
+                word.replacingOccurrences(of: #"(?:도|만|은|는|을|를)$"#, with: "", options: .regularExpression)))
+        }
+        if words.isEmpty || words.allSatisfy(filler) { return false }
         if words.count == 1, words[0].range(of: #"[가-힣](?:은|는|을|를)$"#, options: .regularExpression) != nil { return false }
         return true
     }
 
-    struct Mention { let range: Range<String.Index>; let surface: ProviderSurface; let text: String }
+    struct Mention {
+        let range: Range<String.Index>
+        /// Every destination named here, in the owner's order: one name, or a
+        /// list sharing the last name's particle.
+        let destinations: [(surface: ProviderSurface, text: String)]
+        /// Named with a Korean particle, not English "to": names listed before
+        /// it share the particle.
+        let hasParticle: Bool
+    }
 
     static func mentions(in text: String) -> [Mention] {
         var found: [Mention] = []
         for (pattern, surface) in names {
             // A name followed by its particle ("GPT한테"), or English "to GPT".
             // A name inside a longer word or version ("GPT-5한테") is not one.
-            let full = "(?<![A-Za-z0-9가-힣\\-])(?:\(pattern))(?=\\s?\(particle))|(?<![A-Za-z0-9가-힣])to\\s+(?:\(pattern))(?![A-Za-z0-9가-힣\\-])"
+            let full = "(?<![A-Za-z0-9가-힣\\-])((?:\(pattern)))(?=\\s?\(particle))|(?<![A-Za-z0-9가-힣])to\\s+(?:\(pattern))(?![A-Za-z0-9가-힣\\-])"
             guard let regex = try? NSRegularExpression(pattern: full, options: [.caseInsensitive]) else { continue }
             for match in regex.matches(in: text, range: NSRange(text.startIndex..., in: text)) {
                 guard let range = Range(match.range, in: text) else { continue }
@@ -153,7 +187,9 @@ public struct RouteFanout: Equatable, Sendable {
                    let particleRange = Range(particleMatch.range, in: text) {
                     end = particleRange.upperBound
                 }
-                found.append(Mention(range: range.lowerBound..<end, surface: surface, text: String(text[range.lowerBound..<end])))
+                found.append(Mention(range: range.lowerBound..<end,
+                                     destinations: [(surface, String(text[range.lowerBound..<end]))],
+                                     hasParticle: match.range(at: 1).location != NSNotFound))
             }
         }
         // Same start: the longer name wins ("Claude Code" over "Claude").
@@ -164,7 +200,36 @@ public struct RouteFanout: Equatable, Sendable {
             if let last = kept.last, mention.range.lowerBound < last.range.upperBound { continue }
             kept.append(mention)
         }
-        return kept
+        return kept.indices.map { index in
+            guard kept[index].hasParticle else { return kept[index] }
+            return listed(kept[index], after: index == 0 ? text.startIndex : kept[index - 1].range.upperBound, in: text)
+        }
+    }
+
+    /// The mention widened over the names listed right before it ("GPT랑
+    /// Codex, Claude한테"), one name and conjunction at a time, never reaching
+    /// back into the previous mention.
+    static func listed(_ mention: Mention, after floor: String.Index, in text: String) -> Mention {
+        // Anchored at the list so far; of the names that fit, the earliest start is the longest.
+        let members = names.compactMap { pattern, surface in
+            (try? NSRegularExpression(pattern: "(?<![A-Za-z0-9가-힣\\-])(?:\(pattern))(?:\(conjunction))$",
+                                      options: [.caseInsensitive])).map { ($0, surface) }
+        }
+        var start = mention.range.lowerBound
+        var destinations = mention.destinations
+        while destinations.count < maximumTargets {
+            var member: (range: Range<String.Index>, surface: ProviderSurface)?
+            for (regex, surface) in members {
+                guard let match = regex.firstMatch(in: text, options: [.withTransparentBounds],
+                                                   range: NSRange(floor..<start, in: text)),
+                      let range = Range(match.range, in: text) else { continue }
+                if member.map({ range.lowerBound < $0.range.lowerBound }) ?? true { member = (range, surface) }
+            }
+            guard let member else { break }
+            destinations.insert((member.surface, String(text[member.range]).trimmingCharacters(in: .whitespaces)), at: 0)
+            start = member.range.lowerBound
+        }
+        return Mention(range: start..<mention.range.upperBound, destinations: destinations, hasParticle: true)
     }
 
     /// Sentence ends only: ". " "。" "!" "?" a newline or ";". The dot in "3.14" is not one.
@@ -182,6 +247,9 @@ public struct RouteFanout: Equatable, Sendable {
         }
         text = text.replacingOccurrences(of: #"^[\s,，、:：;·\-]+|[\s,，、:：;·\-]+$"#, with: "", options: .regularExpression)
         text = text.replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+        // "1+2 이런거 해봐": the hedge after the part is the owner's, not the part's.
+        text = text.replacingOccurrences(of: #"(?<=\S)\s+(?:이런|요런|그런|저런|같은)\s?(?:거|것|걸)(?:로|으로)?$"#, with: "",
+                                         options: .regularExpression)
         // "1+1은 지피티한테": the topic particle belongs to the sentence, not the part.
         text = text.replacingOccurrences(of: #"(?<=[0-9A-Za-z)\]])(?:은|는|을|를|이|가)$"#, with: "", options: .regularExpression)
         return text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -223,6 +291,19 @@ public struct RouteFanout: Equatable, Sendable {
         checks.append(("voice spellings", surfaces("1+1 코덱세한테. 2+2 클로더 코드한테.") == ["codex:1+1", "claude:2+2"]))
         checks.append(("handover endings", surfaces("1+1 GPT한테 보내고 2+2 Codex한테 보내") == ["gpt-chat:1+1", "codex:2+2"]))
         checks.append(("same question again", surfaces("1+1 GPT한테. 같은 질문 Claude한테도.") == ["gpt-chat:1+1", "claude-chat:1+1"]))
+        let listed = "야 라우팅 잘 됐는지 일단 확인해 보자. GPT랑 코덱스랑 클로드랑 클로드 코드한테 1+2 이런거 해봐. 간단한 거."
+        checks.append(("listed names", surfaces(listed) == ["gpt-chat:1+2", "codex:1+2", "claude-chat:1+2", "claude:1+2"]))
+        checks.append(("listed frame kept out of the parts", plan(listed)?.frame == ["야 라우팅 잘 됐는지 일단 확인해 보자", "간단한 거"]))
+        checks.append(("comma list", surfaces("GPT, Codex, Claude한테 2+2") == ["gpt-chat:2+2", "codex:2+2", "claude-chat:2+2"]))
+        checks.append(("list beside a name", surfaces("GPT하고 Codex한테 1+1, Claude Code한테 2+2")
+            == ["gpt-chat:1+1", "codex:1+1", "claude:2+2"]))
+        checks.append(("part before a list", surfaces("1+2 지피티와 클로드 코드한테.") == ["gpt-chat:1+2", "claude:1+2"]))
+        for prompt in ["GPT랑 비교해서 클로드한테 1+1 물어봐", "GPT랑 코덱스랑 클로드한테는 안 갔잖아", "코덱스랑 클로드한테 라우팅이 이상해",
+                       "GPT랑 클로드한테 라우팅 되게 해줘", "GPT랑 클로드한테 1+2 보냈어?", "코덱스랑 클로드한테 이 함수 만들어줘",
+                       "GPT랑 클로드한테 이런 거 해봐", "코덱스랑 클로드한테 시키지 말고 GPT한테 시켜", "코덱스랑 클로드한테 일 좀 시켜",
+                       "GPT랑 클로드한테 라우팅 다시 해줘", "GPT랑 클로드한테 이것도 해봐", "GPT랑 클로드한테 둘 다 보내"] {
+            checks.append(("no list split: \(prompt)", plan(prompt) == nil))
+        }
         for prompt in ["코덱스 사용량과 클로드 사용량을 비교해줘", "Codex and Claude are both backends", "이 버그를 고치고 테스트해",
                        "그리고 클로드한테도 넘기게 해 왜 코덱스한테만 넘기냐? 항상 전체적으로 토큰 다 감시해야 돼",
                        "번역은 GPT한테, 요약은 Claude한테 해줘", "같은 질문 GPT한테. 1+1 Claude한테.",
