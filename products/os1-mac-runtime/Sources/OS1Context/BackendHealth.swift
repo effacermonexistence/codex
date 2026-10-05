@@ -70,7 +70,10 @@ public struct BackendHealth: Codable, Equatable, Sendable {
 
     public static func codexBackend(modelCount: Int, source: String, resetsAt: Date?, executablePresent: Bool,
                                     window: CodexQuotaWindow? = nil) -> Backend {
-        if source == disabledCatalogSource { return Backend(state: .disabled, detail: source) }
+        // The stored source stays the Korean marker; only the shown detail follows the language.
+        if source == disabledCatalogSource {
+            return Backend(state: .disabled, detail: os1Tr("Codex 백엔드가 설정에서 꺼져 있습니다", "The Codex backend is turned off in Settings"))
+        }
         if modelCount > 0 {
             var usable = Backend(state: .usable)
             usable.windowUsedPercent = window?.usedPercent
@@ -78,8 +81,12 @@ public struct BackendHealth: Codable, Equatable, Sendable {
             return usable
         }
         if !executablePresent { return Backend(state: .missing, detail: os1Tr("codex 실행 파일 없음", "codex executable missing")) }
-        if source.contains("사용량 한도") { return Backend(state: .quotaExhausted, detail: source, recoversAt: resetsAt) }
-        if source.contains("기본 지시문") { return Backend(state: .contextBudget, detail: source) }
+        // The catalog note is written in the interface language of the probe
+        // that made it (ModelAvailability); recognise both.
+        if source.contains("사용량 한도") || source.contains("usage limit reached") {
+            return Backend(state: .quotaExhausted, detail: source, recoversAt: resetsAt)
+        }
+        if source.contains("기본 지시문") || source.contains("base instructions") { return Backend(state: .contextBudget, detail: source) }
         return Backend(state: .probeFailed, detail: source)
     }
 

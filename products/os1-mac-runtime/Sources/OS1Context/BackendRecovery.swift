@@ -221,7 +221,12 @@ public enum BackendRecovery {
         exitCode == 0 && !output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             && persistence.hasPrefix("verified") ? .verificationRejected : .effectsUncertain
     }
-    public static let identityVerificationUnavailable = "GitHub 인증 조회가 일시적으로 제한됐습니다. 접근 권한 거부가 아닙니다. 요청과 자료를 보존했으며 모델을 바꾸거나 계정을 바꿔 재실행하지 않았습니다."
+    /// Computed, so the producer (serviceFailure) and the comparison in the
+    /// CLI read the same interface language.
+    public static var identityVerificationUnavailable: String {
+        os1Tr("GitHub 인증 조회가 일시적으로 제한됐습니다. 접근 권한 거부가 아닙니다. 요청과 자료를 보존했으며 모델을 바꾸거나 계정을 바꿔 재실행하지 않았습니다.",
+              "GitHub identity lookup is temporarily limited. This is not an access denial. The request and materials were kept; no model or account was switched and nothing was re-run.")
+    }
     /// Protocol error data only: quoted quota text in a successful answer is
     /// not evidence that the account is exhausted. Denials take precedence.
     public static func claudeQuotaFailure(status: Int32, object: [String: Any]) -> Bool {

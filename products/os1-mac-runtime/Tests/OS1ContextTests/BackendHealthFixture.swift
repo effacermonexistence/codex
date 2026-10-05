@@ -19,6 +19,14 @@ func runBackendHealthFixtures() throws {
     check(quota.state == .quotaExhausted && quota.recoversAt == reset, "quota exhaustion wins over the context-budget note and keeps the reset")
     check(BackendHealth.codexBackend(modelCount: 0, source: "x · 계정 기본 지시문(839KB)을 담지 못하는 모델 제외: a", resetsAt: nil, executablePresent: true).state == .contextBudget,
           "context-budget-only exclusion")
+    // The same notes written by a probe that ran in the English interface.
+    check(BackendHealth.codexBackend(modelCount: 0,
+            source: "native account model/list · Codex usage limit reached: excluded 3 model(s), resets 2026-09-19 20:51 GMT",
+            resetsAt: reset, executablePresent: true).state == .quotaExhausted
+          && BackendHealth.codexBackend(modelCount: 0,
+            source: "x · Excluded models that cannot hold the account's base instructions (839KB): a",
+            resetsAt: nil, executablePresent: true).state == .contextBudget,
+          "English catalog notes classify the same way")
     check(BackendHealth.codexBackend(modelCount: 0, source: "native account metadata unavailable", resetsAt: nil, executablePresent: false).state == .missing,
           "missing executable")
     check(BackendHealth.codexBackend(modelCount: 0, source: "native account metadata unavailable", resetsAt: nil, executablePresent: true).state == .probeFailed,
