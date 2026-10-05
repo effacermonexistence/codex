@@ -25,9 +25,12 @@ def transient_notes_failure(error):
         and any(code in error.stderr for code in TRANSIENT_NOTES_ERRORS)
 
 class RefreshBudgetExhausted(subprocess.SubprocessError):
-    """The refresh budget ran out before a Notes query could be sent (a long
-    sync.lock wait, or earlier queries and the retry used it up). Nothing was
-    asked of Notes, so this is not a Notes timeout; fail closed, never retried."""
+    """The refresh budget ran out before the next Notes query could be sent (a
+    long sync.lock wait, or earlier queries and the retry used it up). That
+    query was never sent, so this is not its timeout; fail closed, never
+    retried. refresh_locked names the unsent query (os1_query), whether any
+    query was sent in this refresh (os1_sent) and an earlier Notes failure it
+    swallowed in this refresh (os1_earlier), so the cause stays honest."""
 
 def bounded_osa(deadline, clock=time.monotonic, run=osa):
     # No single Notes query outlives the refresh budget.
@@ -54,7 +57,15 @@ def describe(error):
     # is what tells two causes apart. osascript's stderr carries Apple's error
     # text and code, never the note's text (that is stdout only).
     if isinstance(error, RefreshBudgetExhausted):
-        return 'RefreshBudgetExhausted: refresh time budget exhausted before querying Notes'
+        query = getattr(error, 'os1_query', None) or 'the next Notes query'
+        earlier = getattr(error, 'os1_earlier', None)
+        if earlier:
+            # 2026-10-05 review: a swallowed Notes timeout used up the budget;
+            # the cause must point at Notes, not say nothing was asked.
+            return 'RefreshBudgetExhausted: '+earlier+'; refresh time budget then exhausted before '+query
+        if getattr(error, 'os1_sent', None) is False:
+            return 'RefreshBudgetExhausted: refresh time budget exhausted before querying Notes'
+        return 'RefreshBudgetExhausted: refresh time budget exhausted before '+query
     if isinstance(error, subprocess.CalledProcessError):
         # The end of the line holds the code; keep it when the line is long.
         line = one_line(error.stderr or '', keep_end=True)
@@ -152,6 +163,13 @@ def verified_cached_source(ROOT, old):
 # loader accepts a certification up to 24 h old; re-certify hourly.
 RECERTIFY_SECONDS = 3600
 
+def swallowed_notes_failure(error, query):
+    # One line for a transient Notes failure refresh_locked swallowed.
+    if isinstance(error, subprocess.TimeoutExpired):
+        return 'Notes query timed out ('+query+')'
+    code = osascript_error_code(one_line(getattr(error, 'stderr', '') or '', keep_end=True))
+    return 'Notes query failed'+(' with osascript error '+code if code else '')+' ('+query+')'
+
 def refresh(root, run_osa=None, now=time.time, sleep=time.sleep, clock=time.monotonic,
             report=lambda line: print(line, file=sys.stderr, flush=True)):
     deadline = clock() + REFRESH_BUDGET_SECONDS
@@ -159,12 +177,15 @@ def refresh(root, run_osa=None, now=time.time, sleep=time.sleep, clock=time.mono
     root.mkdir(mode=0o700, parents=True, exist_ok=True)
     os.chmod(root, 0o700)
     retried = False
+    # Across both attempts: whether Notes was queried at all, and the latest
+    # Notes failure refresh_locked swallowed (for an honest final cause).
+    trace = {'sent': 0, 'swallowed': None}
     while True:
         try:
             with open(root/"sync.lock", "a") as lock:
                 os.chmod(root/"sync.lock", 0o600)
                 fcntl.flock(lock, fcntl.LOCK_EX)
-                return refresh_locked(root, run_osa, now)
+                return refresh_locked(root, run_osa, now, trace)
         except subprocess.SubprocessError as error:
             # Nothing is written before every query has answered, so a whole
             # second attempt is safe. Exactly one, and only with time left.
@@ -176,7 +197,23 @@ def refresh(root, run_osa=None, now=time.time, sleep=time.sleep, clock=time.mono
             report(describe(error)+'; Notes query failed, retrying once in '+str(RETRY_DELAY_SECONDS)+' s.')
         sleep(RETRY_DELAY_SECONDS)
 
-def refresh_locked(ROOT, run_osa, now=time.time):
+def refresh_locked(ROOT, run_osa, now=time.time, trace=None):
+    trace = {'sent': 0, 'swallowed': None} if trace is None else trace
+    def ask(script, query):
+        # Every Notes query, counted and named: a budget that runs out names
+        # the query it could not send and any earlier swallowed Notes failure.
+        try:
+            answer = run_osa(script)
+        except RefreshBudgetExhausted as error:
+            error.os1_query = query
+            error.os1_sent = trace['sent'] > 0
+            error.os1_earlier = trace['swallowed']
+            raise
+        except BaseException:
+            trace['sent'] += 1
+            raise
+        trace['sent'] += 1
+        return answer
     active=ROOT/'active.json'
     if active.is_symlink(): raise ValueError('Policy pointer must not be a symlink')
     old=json.loads(active.read_text()) if active.exists() else {}
@@ -186,25 +223,28 @@ def refresh_locked(ROOT, run_osa, now=time.time):
     certified = False
     if script is not None and source is not None:
         try:
-            returned = run_osa(script)
+            returned = ask(script, 'the cached certification')
             # No deduplication, inferred type conversion, whitespace repair,
             # TTL or database proxy. Every promotion has a fresh Notes query.
             certified = isinstance(returned, str) and returned.splitlines() == [old['sourceID']]
-        except (ValueError, OSError, subprocess.SubprocessError):
+        except (ValueError, OSError, subprocess.SubprocessError) as error:
             certified = False
+            if transient_notes_failure(error):
+                trace['swallowed'] = swallowed_notes_failure(error, 'cached certification')
     if certified:
         note,modified=old['sourceID'],old['sourceModified']
     else:
-        note,modified=latest_note(run_osa(INDEX_SCRIPT))
+        note,modified=latest_note(ask(INDEX_SCRIPT, 'the index query'))
     cached = old.get('sourceID')==note and old.get('sourceModified')==modified
     if cached:
         if source is None: source=verified_cached_source(ROOT, old)
         # A live predicate or complete index certified the same identity/time.
         # Nothing was captured; full capture below retains its second index.
     else:
-        source=run_osa('with timeout of 20 seconds\n tell application "Notes" to get plaintext of note id "'+note+'"\nend timeout')+'\n'
+        source=ask('with timeout of 20 seconds\n tell application "Notes" to get plaintext of note id "'+note+'"\nend timeout',
+                   'the note capture')+'\n'
         # A concurrent edit/newer note must never be certified with the old timestamp.
-        if latest_note(run_osa(INDEX_SCRIPT)) != (note, modified):
+        if latest_note(ask(INDEX_SCRIPT, 'the capture re-check index query')) != (note, modified):
             raise ValueError('Canonical note changed during capture; existing snapshot retained')
     if not 1000<len(source.encode())<=4_000_000 or 'REVAS' not in source: raise SystemExit('Invalid canonical note')
     # Exact, bounded extracts. Required anchors missing => no promotion. Original is

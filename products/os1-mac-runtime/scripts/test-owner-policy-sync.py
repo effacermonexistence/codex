@@ -273,7 +273,9 @@ class Tests(unittest.TestCase):
                       sleep=sleep, clock=lambda: now[0], report=lambda line: None)
         self.assertEqual((len(calls), sleeps, raised.exception.os1_retried), (1, [15], True))
         message=m.failure_message(raised.exception, raised.exception.os1_retried)
-        self.assertTrue(message.startswith('RefreshBudgetExhausted: refresh time budget exhausted before querying Notes'), message)
+        # The first attempt did query Notes: the cause names the query the
+        # budget could not send, never 'before querying Notes'.
+        self.assertTrue(message.startswith('RefreshBudgetExhausted: refresh time budget exhausted before the index query'), message)
         self.assertNotIn('did not answer', message); self.assertIn('retried once', message)
         # A refresh whose budget went to a long sync.lock wait never queried Notes either.
         now[0]=0.0; calls.clear()
@@ -285,6 +287,43 @@ class Tests(unittest.TestCase):
                       sleep=sleep, clock=late_clock, report=lambda line: None)
         self.assertEqual((calls, raised.exception.os1_retried), ([], False))
         self.assertNotIn('retried', m.failure_message(raised.exception, False))
+    def test_exhausted_budget_names_the_swallowed_notes_timeout(self):
+        # 2026-10-05 review, reproduced with the module's own refresh and
+        # bounded_osa on a simulated clock: a cached snapshot exists; the
+        # first attempt's cached certification times out (swallowed), INDEX
+        # answers slowly with a newer note, the capture times out (retried);
+        # after the 15 s wait the certification times out again (swallowed)
+        # and INDEX has 0.5 s left. Notes was queried four times; the cause
+        # must say Notes timed out, not that nothing was queried.
+        self.capture([FAST_INDEX, FAST_INDEX])
+        p=self.root/'active.json'; before=p.read_bytes()
+        record=json.loads(before)
+        self.assertIsNotNone(m.cached_latest_script(record['sourceID'], record['sourceModified']))
+        now=[0.0]; log=[]; index_calls=[0]
+        newer=FAST_INDEX.replace('100','101')
+        def notes(text, timeout):
+            if text==m.INDEX_SCRIPT:
+                index_calls[0]+=1
+                if index_calls[0]==1:
+                    now[0]+=19.5; log.append('index'); return newer
+            now[0]+=timeout; log.append('capture' if 'plaintext' in text else 'cached-certification')
+            raise subprocess.TimeoutExpired('osascript', timeout)
+        def sleep(seconds): now[0]+=seconds
+        clock=lambda: now[0]
+        with self.assertRaises(m.RefreshBudgetExhausted) as raised:
+            m.refresh(self.root, m.bounded_osa(m.REFRESH_BUDGET_SECONDS, clock, notes), m.time.time,
+                      sleep=sleep, clock=clock, report=lambda line: None)
+        self.assertEqual(log, ['cached-certification', 'index', 'capture', 'cached-certification'])
+        self.assertTrue(raised.exception.os1_retried)
+        message=m.failure_message(raised.exception, raised.exception.os1_retried)
+        self.assertTrue(message.startswith('RefreshBudgetExhausted: Notes query timed out (cached certification); '
+                                           'refresh time budget then exhausted before the index query'), message)
+        self.assertNotIn('before querying Notes', message); self.assertIn('retried once', message)
+        self.assertEqual(p.read_bytes(), before)
+        # A refused (not timed-out) transient query keeps its osascript code.
+        refused=subprocess.CalledProcessError(1, ['/usr/bin/osascript'], output='', stderr='execution error: Notes got an error: AppleEvent timed out. (-1712)\n')
+        self.assertEqual(m.swallowed_notes_failure(refused, 'cached certification'),
+                         'Notes query failed with osascript error -1712 (cached certification)')
     def test_osascript_cause_and_code_come_first(self):
         # A note-id-bearing osascript error is longer than the 159-character
         # line the Swift caller records; the code must survive that cut.
