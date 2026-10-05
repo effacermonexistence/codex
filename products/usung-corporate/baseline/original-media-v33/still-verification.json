@@ -1,0 +1,189 @@
+[
+  {
+    "old": "assets/media/usung-daylight-piling-v25.webp",
+    "new": "assets/media/usung-daylight-piling-v34.webp",
+    "candidate": "outputs/website/usung-still-branding-v34/edited/usung-daylight-piling-v34.webp",
+    "source": "assets/media/built-rpd.jpg",
+    "sourceSha256": "7ec087d5f54254ad5b67e4404dc308026ede60d9452fee625a2f06ce63114a87",
+    "baselineSha256": "17b9ff77b06489ec9d28c163c65ad0c24ef4dbd52aeabd6618cc71034486b2e1",
+    "candidateSha256": "5e0493946d5c050c2df4210afb75dd1f6305fdf0339d6971a9a76be7ad441321",
+    "dimensions": [
+      2200,
+      1466
+    ],
+    "nativeBRect": [
+      72.362,
+      23.072,
+      16.09,
+      15.987
+    ],
+    "nativePink": "#FF0F6F",
+    "method": "Model-forward old-to-B corner-only delta using preserved original photograph and the exact prior print surface, projection, focus, illumination and texture recipe. Existing printed shape/placement and every pixel outside corner delta retained.",
+    "noGeneration": true,
+    "shapeAlphaProjectionAndFocusUnchanged": true,
+    "changedPixels": 14,
+    "deltaMask": "outputs/website/usung-still-branding-v34/audit/usung-daylight-piling-corner-delta-mask.png",
+    "sourceBrandMask": "outputs/website/usung-still-branding-v34/audit/usung-daylight-piling-all-source-brand-mask.png",
+    "outsideDeltaEqualsBaseline": true,
+    "outsideCombinedSourceBrandMasksEqualsOriginal": true,
+    "losslessWebP": true,
+    "models": [
+      {
+        "name": "vented native U",
+        "deltaPixels": 14,
+        "maxChannelDelta": 219
+      }
+    ],
+    "sourcePage": "https://www.builtrobotics.com/about/downloads",
+    "sourceAsset": "https://assets.builtrobotics.com/production/public/download/2024_01_24_BUILT_0769.jpg",
+    "pixelIdenticalModels": []
+  },
+  {
+    "old": "assets/media/usung-autonomous-excavation-v25.webp",
+    "new": "assets/media/usung-autonomous-excavation-v34.webp",
+    "candidate": "outputs/website/usung-still-branding-v34/edited/usung-autonomous-excavation-v34.webp",
+    "source": "assets/media/built-trenching.jpg",
+    "sourceSha256": "4ca60832f971b10a811e984acdbf269cea8a9aa12cc86c20facab0389d7d2f34",
+    "baselineSha256": "1a9524fe00fafad3031a6843efdbcbbc4e90c04c6460966d338f3dac33da39aa",
+    "candidateSha256": "7768507961f515f97475ee2f4646117bbf2ae87316ce298f3d9c64dcf712c257",
+    "dimensions": [
+      2200,
+      1237
+    ],
+    "nativeBRect": [
+      72.362,
+      23.072,
+      16.09,
+      15.987
+    ],
+    "nativePink": "#FF0F6F",
+    "method": "Model-forward old-to-B corner-only delta using preserved original photograph and the exact prior print surface, projection, focus, illumination and texture recipe. Existing printed shape/placement and every pixel outside corner delta retained.",
+    "noGeneration": true,
+    "shapeAlphaProjectionAndFocusUnchanged": true,
+    "changedPixels": 88,
+    "deltaMask": "outputs/website/usung-still-branding-v34/audit/usung-autonomous-excavation-corner-delta-mask.png",
+    "sourceBrandMask": "outputs/website/usung-still-branding-v34/audit/usung-autonomous-excavation-all-source-brand-mask.png",
+    "outsideDeltaEqualsBaseline": true,
+    "outsideCombinedSourceBrandMasksEqualsOriginal": true,
+    "losslessWebP": true,
+    "models": [
+      {
+        "name": "upper USUNG",
+        "deltaPixels": 0,
+        "maxChannelDelta": 0
+      },
+      {
+        "name": "lower U",
+        "deltaPixels": 88,
+        "maxChannelDelta": 75
+      }
+    ],
+    "sourcePage": "https://www.builtrobotics.com/about/downloads",
+    "sourceAsset": "https://assets.builtrobotics.com/production/public/download/Built-Robotics-Exosystem-Trenching-Dry-Climate.jpg",
+    "pixelIdenticalModels": [
+      "upper USUNG"
+    ],
+    "quantizationNote": "Both native A and B rasters were forwarded through the identical prior photo projection, focus and print color sampling. Listed models rasterize to exactly identical RGB at this photograph scale. No extra repaint was introduced merely to force a changed pixel."
+  },
+  {
+    "old": "assets/media/usung-site-robot-v25.webp",
+    "new": "assets/media/usung-site-robot-v34.webp",
+    "candidate": "outputs/website/usung-still-branding-v34/edited/usung-site-robot-v34.webp",
+    "source": "assets/media/suffolk-robotics.jpg",
+    "sourceSha256": "c3fe773c4d1177d09af8db3dd7a4aea1682f1e54b1597d26c96699d2f4cbc7e4",
+    "baselineSha256": "c88667c40e0abe22c5c41a1492cac5a222214047456860ecc2a95316bc162e55",
+    "candidateSha256": "dd3c66ded8329f64983846ff745b3b7fea248e5be4b5c4f63f75fb86d8af1459",
+    "dimensions": [
+      2200,
+      1237
+    ],
+    "nativeBRect": [
+      72.362,
+      23.072,
+      16.09,
+      15.987
+    ],
+    "nativePink": "#FF0F6F",
+    "method": "Model-forward old-to-B corner-only delta using preserved original photograph and the exact prior print surface, projection, focus, illumination and texture recipe. Existing printed shape/placement and every pixel outside corner delta retained.",
+    "noGeneration": true,
+    "shapeAlphaProjectionAndFocusUnchanged": true,
+    "changedPixels": 154,
+    "deltaMask": "outputs/website/usung-still-branding-v34/audit/usung-site-robot-corner-delta-mask.png",
+    "sourceBrandMask": "outputs/website/usung-still-branding-v34/audit/usung-site-robot-all-source-brand-mask.png",
+    "outsideDeltaEqualsBaseline": true,
+    "outsideCombinedSourceBrandMasksEqualsOriginal": true,
+    "losslessWebP": true,
+    "models": [
+      {
+        "name": "front USUNG",
+        "deltaPixels": 154,
+        "maxChannelDelta": 46
+      }
+    ],
+    "sourcePage": "https://suffolk.com/",
+    "sourceAsset": "https://suffolk.com/wp-content/uploads/2025/07/rugged-thumbnail-1.jpg",
+    "pixelIdenticalModels": []
+  },
+  {
+    "old": "assets/media/usung-site-dawn-v24.webp",
+    "new": "assets/media/usung-site-dawn-v34.webp",
+    "candidate": "outputs/website/usung-still-branding-v34/edited/usung-site-dawn-v34.webp",
+    "source": "assets/media/built-sunrise.jpg",
+    "sourceSha256": "51124b57542c4eed9761f66ce5f79d7fa4f7bba8afd1ca8e46a4ad08ed6ba01b",
+    "baselineSha256": "123dd4dd98eaf0e64fcd86132bc8f9d4071ef85f79623b5435fc1189dcff2e32",
+    "candidateSha256": "123dd4dd98eaf0e64fcd86132bc8f9d4071ef85f79623b5435fc1189dcff2e32",
+    "dimensions": [
+      2200,
+      1466
+    ],
+    "nativeBRect": [
+      72.362,
+      23.072,
+      16.09,
+      15.987
+    ],
+    "nativePink": "#FF0F6F",
+    "method": "Model-forward old-to-B corner-only delta using preserved original photograph and the exact prior print surface, projection, focus, illumination and texture recipe. Existing printed shape/placement and every pixel outside corner delta retained.",
+    "noGeneration": true,
+    "shapeAlphaProjectionAndFocusUnchanged": true,
+    "changedPixels": 0,
+    "deltaMask": "outputs/website/usung-still-branding-v34/audit/usung-site-dawn-corner-delta-mask.png",
+    "sourceBrandMask": "outputs/website/usung-still-branding-v34/audit/usung-site-dawn-all-source-brand-mask.png",
+    "outsideDeltaEqualsBaseline": true,
+    "outsideCombinedSourceBrandMasksEqualsOriginal": true,
+    "losslessWebP": true,
+    "models": [
+      {
+        "name": "edge-clipped native U",
+        "deltaPixels": 0,
+        "maxChannelDelta": 0
+      }
+    ],
+    "sourcePage": "https://www.builtrobotics.com/about/downloads",
+    "sourceAsset": "https://assets.builtrobotics.com/production/public/download/2024_01_26_BUILT_0261.jpg",
+    "officialSourceVerification": {
+      "retrieved": "2026-10-05",
+      "officialPageLabel": "RPD 35 Autonomously Drives Pile during Sunrise",
+      "remoteDimensions": [
+        5472,
+        3648
+      ],
+      "remoteSha256": "66c625ba0117b32610ce82d933fb5e8770be4b6a419657e20b766bf76c3b18d1",
+      "localDimensions": [
+        2200,
+        1466
+      ],
+      "comparisonAt": [
+        220,
+        146
+      ],
+      "rgbMeanAbsoluteError": 0.5648920713989207,
+      "rgbCorrelation": 0.9999694734989498,
+      "relationship": "Official original and local resized JPEG depict the same source photograph; byte identity is not claimed."
+    },
+    "pixelIdenticalModels": [
+      "edge-clipped native U"
+    ],
+    "quantizationNote": "Both native A and B rasters were forwarded through the identical prior photo projection, focus and print color sampling. Listed models rasterize to exactly identical RGB at this photograph scale. No extra repaint was introduced merely to force a changed pixel."
+  }
+]

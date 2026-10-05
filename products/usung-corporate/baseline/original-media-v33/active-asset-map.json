@@ -1,0 +1,122 @@
+[
+  {
+    "old": "assets/references/usung-physical-hero-v23.mp4",
+    "new": "assets/references/usung-physical-hero-v33.mp4",
+    "sha256": "98ad5f89dd0109479064086d1b3a4e2d8f1540407a1ceb52b72d3e12fcbbcc06",
+    "bytes": 5857091
+  },
+  {
+    "old": "assets/references/usung-physical-hero-v23-poster.jpg",
+    "new": "assets/references/usung-physical-hero-v33-poster.webp",
+    "sha256": "2b3e6144b4b12f39f4ec2cd7b6560c5201ddb03fde8c4bbaa853657c95638f9f",
+    "bytes": 865988
+  },
+  {
+    "old": "assets/references/usung-perception-v23.mp4",
+    "new": "assets/references/usung-perception-v33.mp4",
+    "sha256": "b49d7ab591f61407bf54a3c721218c909380f5a0293a55786dad7c32f8b20380",
+    "bytes": 4171599
+  },
+  {
+    "old": "assets/references/usung-perception-v23-poster.jpg",
+    "new": "assets/references/usung-perception-v33-poster.webp",
+    "sha256": "ac9211317b7db6327786be4f5a297d94d1d202cfd667b24f8db39b0ba41fe4b7",
+    "bytes": 297958
+  },
+  {
+    "old": "assets/references/usung-coordination-v23.mp4",
+    "new": "assets/references/usung-coordination-v33.mp4",
+    "sha256": "56b93b1d7aa8610ee4ae2a7634f6afbcb191a790f4762ac47daedff50fc4012a",
+    "bytes": 3573870
+  },
+  {
+    "old": "assets/references/usung-coordination-v23-poster.jpg",
+    "new": "assets/references/usung-coordination-v33-poster.webp",
+    "sha256": "4260a91df0deaed937d3c4520cc35a2aa77b2f8201a306ce3a93049e44ba1905",
+    "bytes": 290250
+  },
+  {
+    "old": "assets/references/usung-field-robots-v23.mp4",
+    "new": "assets/references/usung-field-robots-v33.mp4",
+    "sha256": "d47a449481912fdfed7b7a1be5fd28ae7ba63592ea4b7337775a3d67409616c7",
+    "bytes": 4106086
+  },
+  {
+    "old": "assets/references/usung-field-robots-v23-poster.jpg",
+    "new": "assets/references/usung-field-robots-v33-poster.webp",
+    "sha256": "11db7e908ac1c40aba4a1efda438d0d4d9ee435cbc4b92620a2e1e66f795d573",
+    "bytes": 320972
+  },
+  {
+    "old": "assets/references/contextual-context.svg",
+    "new": "assets/references/contextual-context-v33.svg",
+    "sha256": "70d201e54cc7cb26cac7476d898aa36be705c89743d082af53755abeeef05b99",
+    "bytes": 724503
+  },
+  {
+    "old": "assets/references/contextual-data.svg",
+    "new": "assets/references/contextual-data-v33.svg",
+    "sha256": "8eb33899ebd316c92b954f7d93aefe5f851feed7618f505c2985bb247545d4b4",
+    "bytes": 724497
+  },
+  {
+    "old": "assets/references/contextual-intelligence.svg",
+    "new": "assets/references/contextual-intelligence-v33.svg",
+    "sha256": "2f025c7412e6659eb95e409f05c5e87b8eeda13df6d466deed76c7bcd66d3745",
+    "bytes": 724513
+  },
+  {
+    "old": "assets/media/usung-delivery-film-v25.mp4",
+    "new": "assets/media/usung-delivery-film-v33.mp4",
+    "sha256": "1347e5a85810d89e1f911361436492b04d43fe238736c423ec7a417d59abf9da",
+    "bytes": 9446393
+  },
+  {
+    "old": "assets/media/usung-delivery-film-v25-poster.jpg",
+    "new": "assets/media/usung-delivery-film-v33-poster.webp",
+    "sha256": "5fba6f6eacf85b87865d6677b8b62938f38c70751ac8b67463d173ed89d63e11",
+    "bytes": 297376
+  },
+  {
+    "old": "assets/media/usung-delivery-film-v25-wide.jpg",
+    "new": "assets/media/usung-delivery-film-v33-wide.jpg",
+    "sha256": "939d2de413632aa6737da93c7406c09d01496865ab954e7c200c1b6c44cbfd3d",
+    "bytes": 310015
+  },
+  {
+    "old": "assets/media/usung-daylight-piling-v25.webp",
+    "new": "assets/media/usung-daylight-piling-v34.webp",
+    "sha256": "5e0493946d5c050c2df4210afb75dd1f6305fdf0339d6971a9a76be7ad441321",
+    "bytes": 2347304
+  },
+  {
+    "old": "assets/media/usung-autonomous-excavation-v25.webp",
+    "new": "assets/media/usung-autonomous-excavation-v34.webp",
+    "sha256": "7768507961f515f97475ee2f4646117bbf2ae87316ce298f3d9c64dcf712c257",
+    "bytes": 2636786
+  },
+  {
+    "old": "assets/media/usung-site-robot-v25.webp",
+    "new": "assets/media/usung-site-robot-v34.webp",
+    "sha256": "dd3c66ded8329f64983846ff745b3b7fea248e5be4b5c4f63f75fb86d8af1459",
+    "bytes": 1438054
+  },
+  {
+    "old": "assets/media/usung-site-dawn-v24.webp",
+    "new": "assets/media/usung-site-dawn-v34.webp",
+    "sha256": "123dd4dd98eaf0e64fcd86132bc8f9d4071ef85f79623b5435fc1189dcff2e32",
+    "bytes": 2424738
+  },
+  {
+    "old": "assets/media/usung-construction-film-v25.mp4",
+    "new": "assets/media/usung-construction-film-v33.mp4",
+    "sha256": "5281bfc87b7bc95aec5c19d95f9adb54cbc8f9cb6d2282ae358a0eb211adaf9a",
+    "bytes": 12457082
+  },
+  {
+    "old": "assets/media/usung-construction-film-v25-poster.jpg",
+    "new": "assets/media/usung-construction-film-v33-poster.jpg",
+    "sha256": "1b9747087ee2230ddef5549c58b749f210be27b4cedafc945a0776b83ac863bf",
+    "bytes": 494728
+  }
+]

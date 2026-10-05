@@ -1,0 +1,29 @@
+{
+  "variant": "B",
+  "approvedBy": "Direct owner selection in current conversation",
+  "pink": "#FF0F6F",
+  "pinkRect": {
+    "x": 72.362,
+    "y": 23.072,
+    "width": 16.09,
+    "height": 15.987
+  },
+  "vectorGeometryUnchanged": true,
+  "whiteRoundedBackground": true,
+  "changedVectors": [
+    "src/brand.mjs",
+    "public/assets/brand/usung-wordmark.svg",
+    "public/assets/brand/usung-wordmark-inverse.svg",
+    "public/assets/brand/usung-icon-white.svg",
+    "public/assets/brand/usung-u-symbol.svg",
+    "public/favicon.svg"
+  ],
+  "iconHashes": {
+    "favicon-32.png": "102be667ceded4c4bca4b60ad2633be50d8a40b39661dfbb48f9318292093a51",
+    "favicon.png": "bddaa11617410c748c881900ea248baf2f49ac7e7036cd395caa6f5825f24281",
+    "apple-touch-icon.png": "29f6c23519110a3d33b8aacd7be73b4910a1005885f9b874e91c33a8a2492074",
+    "icon-192.png": "dafb777d4ffc90d6f68e243ce4c7e26f6aedd89bd9eb1e8f7c9641bc4ec4bc1b",
+    "icon-512.png": "2f16ab2fa6f34367e00a87ab5980f53caf26d597b8306ac00179c4bfb2346bc6",
+    "favicon.ico": "3a26416a0f33439d068d33a61a9c258ecb1a6a9fb7e1f98982caa42d74f15a34"
+  }
+}

@@ -7,13 +7,13 @@
   "theme_color": "#FFFFFF",
   "icons": [
     {
-      "src": "/assets/brand/icons/usung-u-a2a6d19d189f-icon-192.png",
+      "src": "/assets/brand/icons/usung-u-bddaa1161741-icon-192.png",
       "sizes": "192x192",
       "type": "image/png",
       "purpose": "any"
     },
     {
-      "src": "/assets/brand/icons/usung-u-a2a6d19d189f-icon-512.png",
+      "src": "/assets/brand/icons/usung-u-bddaa1161741-icon-512.png",
       "sizes": "512x512",
       "type": "image/png",
       "purpose": "any"

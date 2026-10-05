@@ -41,10 +41,14 @@
       "sha256": "9f128f0cf4acb0756c5432602e43d5cad729dd75c513605a5dc160da65091880",
       "acquisition": "browser pageAssets bundle",
       "used": true,
-      "servedTransformation": "Approved outlined USUNG wordmark inserted in native SVG; original diagram geometry retained",
+      "servedTransformation": "Owner-approved B corner: first-U pink extends to left stem edge with no contrasting strip. Original scene, dimensions, surface pose, light and alpha preserved; only measured corner pigment delta changed before encoding. No scene generation.",
       "servedBytes": 724513,
-      "servedSha256": "0b343f5a6f6689892db71dc8892d0bf291f3b152462518eb2a42f09b380b93a6",
-      "servedFile": "assets/references/contextual-intelligence.svg"
+      "servedSha256": "2f025c7412e6659eb95e409f05c5e87b8eeda13df6d466deed76c7bcd66d3745",
+      "servedFile": "assets/references/contextual-intelligence-v33.svg",
+      "previousServed": {
+        "file": "assets/references/contextual-intelligence.svg",
+        "sha256": "0b343f5a6f6689892db71dc8892d0bf291f3b152462518eb2a42f09b380b93a6"
+      }
     },
     {
       "file": "contextual-context.svg",
@@ -54,10 +58,14 @@
       "sha256": "59b9f558279eb8f41b1cf4655258cdf31755e8c57761286f56e9048216853a5f",
       "acquisition": "browser pageAssets bundle",
       "used": true,
-      "servedTransformation": "Approved outlined USUNG wordmark inserted in native SVG; original diagram geometry retained",
+      "servedTransformation": "Owner-approved B corner: first-U pink extends to left stem edge with no contrasting strip. Original scene, dimensions, surface pose, light and alpha preserved; only measured corner pigment delta changed before encoding. No scene generation.",
       "servedBytes": 724503,
-      "servedSha256": "67cec7f400f1d963be426b06ca64211bf2a0ef49690b73adefdfec57b8da0e88",
-      "servedFile": "assets/references/contextual-context.svg"
+      "servedSha256": "70d201e54cc7cb26cac7476d898aa36be705c89743d082af53755abeeef05b99",
+      "servedFile": "assets/references/contextual-context-v33.svg",
+      "previousServed": {
+        "file": "assets/references/contextual-context.svg",
+        "sha256": "67cec7f400f1d963be426b06ca64211bf2a0ef49690b73adefdfec57b8da0e88"
+      }
     },
     {
       "file": "contextual-data.svg",
@@ -67,10 +75,14 @@
       "sha256": "91385ce92caf99147fb051241ebc8012b607986a551dd4ceb34f249d2871d3f1",
       "acquisition": "browser pageAssets bundle",
       "used": true,
-      "servedTransformation": "Approved outlined USUNG wordmark inserted in native SVG; original diagram geometry retained",
+      "servedTransformation": "Owner-approved B corner: first-U pink extends to left stem edge with no contrasting strip. Original scene, dimensions, surface pose, light and alpha preserved; only measured corner pigment delta changed before encoding. No scene generation.",
       "servedBytes": 724497,
-      "servedSha256": "fb2b2507e56e07bc35df96fc05df41c29bab3911e4972a8d2918741fbb2320c3",
-      "servedFile": "assets/references/contextual-data.svg"
+      "servedSha256": "8eb33899ebd316c92b954f7d93aefe5f851feed7618f505c2985bb247545d4b4",
+      "servedFile": "assets/references/contextual-data-v33.svg",
+      "previousServed": {
+        "file": "assets/references/contextual-data.svg",
+        "sha256": "fb2b2507e56e07bc35df96fc05df41c29bab3911e4972a8d2918741fbb2320c3"
+      }
     },
     {
       "file": "field-robot-poster.jpg",
@@ -104,12 +116,16 @@
       "sha256": "da37643255a86517ff64d720ef0b769974e4708432eed949ac8577369205ace8",
       "acquisition": "browser pageAssets bundle",
       "used": true,
-      "servedTransformation": "Original footage frame count/dimensions/fps retained; brand painted into observed physical planes with foreground masks, photographed ink colour, local lighting/texture and focus softness; no new screen-corner logo; H264 CRF17, no audio",
+      "servedTransformation": "Owner-approved B corner: first-U pink extends to left stem edge with no contrasting strip. Original scene, dimensions, surface pose, light and alpha preserved; only measured corner pigment delta changed before encoding. No scene generation.",
       "poster": "dexterity-perception-poster.jpg",
-      "servedBytes": 3263110,
-      "servedSha256": "3ef7e6126a73b8a6c846c40487ae503061ea0b35b1108506b2d1181c292e0e5f",
-      "servedFile": "assets/references/usung-perception-v23.mp4",
-      "servedPoster": "assets/references/usung-perception-v23-poster.jpg"
+      "servedBytes": 4171599,
+      "servedSha256": "b49d7ab591f61407bf54a3c721218c909380f5a0293a55786dad7c32f8b20380",
+      "servedFile": "assets/references/usung-perception-v33.mp4",
+      "servedPoster": "assets/references/usung-perception-v33-poster.webp",
+      "previousServed": {
+        "file": "assets/references/usung-perception-v23.mp4",
+        "sha256": "3ef7e6126a73b8a6c846c40487ae503061ea0b35b1108506b2d1181c292e0e5f"
+      }
     },
     {
       "file": "dexterity-handling.mp4",
@@ -128,12 +144,16 @@
       "sha256": "ebd4a9773664e3d8a4a2c2312453b4d433e2f99deece22588a41b74f821ebeab",
       "acquisition": "browser pageAssets bundle",
       "used": true,
-      "servedTransformation": "Original footage frame count/dimensions/fps retained; brand painted into observed physical planes with foreground masks, photographed ink colour, local lighting/texture and focus softness; no new screen-corner logo; H264 CRF17, no audio",
+      "servedTransformation": "Owner-approved B corner: first-U pink extends to left stem edge with no contrasting strip. Original scene, dimensions, surface pose, light and alpha preserved; only measured corner pigment delta changed before encoding. No scene generation.",
       "poster": "dexterity-coordination-poster.jpg",
-      "servedBytes": 3214755,
-      "servedSha256": "3fb9fc8c79842483c3b5fae4e558f18b6ef5e93f4c2b3128d4fbf41c4a8176b0",
-      "servedFile": "assets/references/usung-coordination-v23.mp4",
-      "servedPoster": "assets/references/usung-coordination-v23-poster.jpg"
+      "servedBytes": 3573870,
+      "servedSha256": "56b93b1d7aa8610ee4ae2a7634f6afbcb191a790f4762ac47daedff50fc4012a",
+      "servedFile": "assets/references/usung-coordination-v33.mp4",
+      "servedPoster": "assets/references/usung-coordination-v33-poster.webp",
+      "previousServed": {
+        "file": "assets/references/usung-coordination-v23.mp4",
+        "sha256": "3fb9fc8c79842483c3b5fae4e558f18b6ef5e93f4c2b3128d4fbf41c4a8176b0"
+      }
     },
     {
       "file": "dexterity-precision.mp4",
@@ -156,12 +176,16 @@
       "sha256": "e897a430a871bd8269554269bb2efa25a577535501d660f83e5328b2f3ddc6f0",
       "acquisition": "browser pageAssets bundle",
       "used": true,
-      "servedTransformation": "Original footage frame count/dimensions/fps retained; brand painted into observed physical planes with foreground masks, photographed ink colour, local lighting/texture and focus softness; no new screen-corner logo; H264 CRF17, no audio",
+      "servedTransformation": "Owner-approved B corner: first-U pink extends to left stem edge with no contrasting strip. Original scene, dimensions, surface pose, light and alpha preserved; only measured corner pigment delta changed before encoding. No scene generation.",
       "poster": "dexterity-hero-poster.jpg",
-      "servedBytes": 5144551,
-      "servedSha256": "dae826af16ba054ef7753aad0b3ce92ed47693c44d01760cb57e30dd6e07255b",
-      "servedFile": "assets/references/usung-physical-hero-v23.mp4",
-      "servedPoster": "assets/references/usung-physical-hero-v23-poster.jpg"
+      "servedBytes": 5857091,
+      "servedSha256": "98ad5f89dd0109479064086d1b3a4e2d8f1540407a1ceb52b72d3e12fcbbcc06",
+      "servedFile": "assets/references/usung-physical-hero-v33.mp4",
+      "servedPoster": "assets/references/usung-physical-hero-v33-poster.webp",
+      "previousServed": {
+        "file": "assets/references/usung-physical-hero-v23.mp4",
+        "sha256": "dae826af16ba054ef7753aad0b3ce92ed47693c44d01760cb57e30dd6e07255b"
+      }
     },
     {
       "file": "dexterity-mech.png",
@@ -180,12 +204,16 @@
       "sha256": "fa935f89175d875da3d57482d9162c5954734a9572137d09911ec03355c04761",
       "acquisition": "exact observed URL; HTTP fallback after browser bundle failure",
       "used": true,
-      "servedTransformation": "Original footage frame count/dimensions/fps retained; brand painted into observed physical planes with foreground masks, photographed ink colour, local lighting/texture and focus softness; no new screen-corner logo; H264 CRF17, no audio",
+      "servedTransformation": "Owner-approved B corner: first-U pink extends to left stem edge with no contrasting strip. Original scene, dimensions, surface pose, light and alpha preserved; only measured corner pigment delta changed before encoding. No scene generation.",
       "poster": "field-robots-poster.jpg",
-      "servedBytes": 3478255,
-      "servedSha256": "336af7519093e91aa7ef366d27dcb5827c3b481da441f4b8893f407cf273ed37",
-      "servedFile": "assets/references/usung-field-robots-v23.mp4",
-      "servedPoster": "assets/references/usung-field-robots-v23-poster.jpg"
+      "servedBytes": 4106086,
+      "servedSha256": "d47a449481912fdfed7b7a1be5fd28ae7ba63592ea4b7337775a3d67409616c7",
+      "servedFile": "assets/references/usung-field-robots-v33.mp4",
+      "servedPoster": "assets/references/usung-field-robots-v33-poster.webp",
+      "previousServed": {
+        "file": "assets/references/usung-field-robots-v23.mp4",
+        "sha256": "336af7519093e91aa7ef366d27dcb5827c3b481da441f4b8893f407cf273ed37"
+      }
     },
     {
       "file": "generated/ai-glass-extended-v1.png",
@@ -269,7 +297,7 @@
       "sourceFile": "assets/media/built-sunrise.jpg",
       "originalBytes": 723259,
       "originalSha256": "51124b57542c4eed9761f66ce5f79d7fa4f7bba8afd1ca8e46a4ad08ed6ba01b",
-      "used": true,
+      "used": false,
       "servedBytes": 2424738,
       "servedSha256": "123dd4dd98eaf0e64fcd86132bc8f9d4071ef85f79623b5435fc1189dcff2e32",
       "servedTransformation": "Original source pixels retained outside printed-brand masks; non-generative surface compositing",
@@ -412,7 +440,7 @@
       "file": "assets/media/usung-daylight-piling-v25.webp",
       "sourcePage": "https://www.builtrobotics.com/about/downloads",
       "sourceAsset": "https://assets.builtrobotics.com/production/public/download/2024_01_24_BUILT_0769.jpg",
-      "used": true,
+      "used": false,
       "bytes": 2347310,
       "sha256": "17b9ff77b06489ec9d28c163c65ad0c24ef4dbd52aeabd6618cc71034486b2e1",
       "servedBytes": 2347310,
@@ -436,7 +464,7 @@
       "file": "assets/media/usung-autonomous-excavation-v25.webp",
       "sourcePage": "https://www.builtrobotics.com/about/downloads",
       "sourceAsset": "https://assets.builtrobotics.com/production/public/download/Built-Robotics-Exosystem-Trenching-Dry-Climate.jpg",
-      "used": true,
+      "used": false,
       "bytes": 2637226,
       "sha256": "1a9524fe00fafad3031a6843efdbcbbc4e90c04c6460966d338f3dac33da39aa",
       "servedBytes": 2637226,
@@ -448,7 +476,7 @@
       "file": "assets/media/usung-site-robot-v25.webp",
       "sourcePage": "https://suffolk.com/",
       "sourceAsset": "https://suffolk.com/wp-content/uploads/2025/07/rugged-thumbnail-1.jpg",
-      "used": true,
+      "used": false,
       "bytes": 1437984,
       "sha256": "c88667c40e0abe22c5c41a1492cac5a222214047456860ecc2a95316bc162e55",
       "servedBytes": 1437984,
@@ -460,7 +488,7 @@
       "file": "assets/media/usung-construction-film-v25.mp4",
       "sourcePage": "https://www.builtrobotics.com/",
       "sourceAsset": "https://servd-careful-chuckwalla.b-cdn.net/production/video/home-hero-desk.mp4",
-      "used": true,
+      "used": false,
       "bytes": 12460321,
       "sha256": "b539e514dc1b6fa92a9061a98af24856bd0b2d0525a01e3f12828bbe86a8997d",
       "servedBytes": 12460321,
@@ -476,7 +504,7 @@
         "https://ep-turnerconstruction-prod-asdcetgubtducba3.z01.azurefd.net/uploads/jobsite-02.mp4?v=06e65",
         "https://ep-turnerconstruction-prod-asdcetgubtducba3.z01.azurefd.net/uploads/tech-01.mp4?v=887d3"
       ],
-      "used": true,
+      "used": false,
       "bytes": 8662061,
       "sha256": "cbe0e0548bb6c87df4d4ff4a82c13df6da29961be5f8da514a35c85906694067",
       "servedBytes": 8662061,
@@ -488,7 +516,7 @@
       "file": "assets/media/usung-field-team-v26.webp",
       "sourcePage": "https://suffolk.com/",
       "sourceAsset": "https://suffolk.com/wp-content/uploads/2025/07/NAPLES_BEACH_CLUB-12.png",
-      "used": true,
+      "used": false,
       "bytes": 1695026,
       "sha256": "00855895d5a7f8184cde8de85882be72d163078269db668ea5e4d8d6116f8812",
       "servedBytes": 1695026,
@@ -499,10 +527,127 @@
         "file": "assets/media/usung-field-team-v25.webp",
         "sha256": "671a3d5516d5aaf426f2aeb2a8ea8cca7e417d6a8032cbef49033408fbf65101"
       }
+    },
+    {
+      "file": "assets/media/usung-field-team-v33.webp",
+      "sourcePage": "https://suffolk.com/",
+      "sourceAsset": "https://suffolk.com/wp-content/uploads/2025/07/NAPLES_BEACH_CLUB-12.png",
+      "used": true,
+      "bytes": 1696252,
+      "sha256": "78fda174791049fc996c5fff8f02b3dc1c0aae7186cd121dd578039fec07afef",
+      "servedBytes": 1696252,
+      "servedSha256": "78fda174791049fc996c5fff8f02b3dc1c0aae7186cd121dd578039fec07afef",
+      "servedTransformation": "Approved B native U and #FF0F6F corner without a left strip projected together onto estimated local helmet surfaces, corrected print proportions and direction, shared source-photo reflection/grain and single matched-focus filter. Front helmet prints and tiny vest/sticker corners corrected locally; faces, hardware and sticker lower fields preserved exactly. No scene generation.",
+      "acquisition": "Preserved original official source, deterministic local editing",
+      "previousServed": {
+        "file": "assets/media/usung-field-team-v26.webp",
+        "sha256": "00855895d5a7f8184cde8de85882be72d163078269db668ea5e4d8d6116f8812"
+      }
+    },
+    {
+      "file": "assets/media/usung-delivery-film-v33.mp4",
+      "sourcePage": "https://www.turnerconstruction.com/",
+      "sourceAsset": [
+        "https://ep-turnerconstruction-prod-asdcetgubtducba3.z01.azurefd.net/uploads/jobsite-01.mp4?v=dd733",
+        "https://ep-turnerconstruction-prod-asdcetgubtducba3.z01.azurefd.net/uploads/jobsite-02.mp4?v=06e65",
+        "https://ep-turnerconstruction-prod-asdcetgubtducba3.z01.azurefd.net/uploads/tech-01.mp4?v=887d3"
+      ],
+      "used": true,
+      "bytes": 9446393,
+      "sha256": "1347e5a85810d89e1f911361436492b04d43fe238736c423ec7a417d59abf9da",
+      "servedBytes": 9446393,
+      "servedSha256": "1347e5a85810d89e1f911361436492b04d43fe238736c423ec7a417d59abf9da",
+      "servedTransformation": "Owner-approved B corner: first-U pink extends to left stem edge with no contrasting strip. Original scene, dimensions, surface pose, light and alpha preserved; only measured corner pigment delta changed before encoding. No scene generation.",
+      "acquisition": "Preserved original official source, deterministic local editing",
+      "previousServed": {
+        "file": "assets/media/usung-delivery-film-v25.mp4",
+        "sha256": "cbe0e0548bb6c87df4d4ff4a82c13df6da29961be5f8da514a35c85906694067"
+      }
+    },
+    {
+      "file": "assets/media/usung-daylight-piling-v34.webp",
+      "sourcePage": "https://www.builtrobotics.com/about/downloads",
+      "sourceAsset": "https://assets.builtrobotics.com/production/public/download/2024_01_24_BUILT_0769.jpg",
+      "used": true,
+      "bytes": 2347304,
+      "sha256": "5e0493946d5c050c2df4210afb75dd1f6305fdf0339d6971a9a76be7ad441321",
+      "servedBytes": 2347304,
+      "servedSha256": "5e0493946d5c050c2df4210afb75dd1f6305fdf0339d6971a9a76be7ad441321",
+      "servedTransformation": "Owner-approved B corner: first-U pink extends to left stem edge with no contrasting strip. Original scene, dimensions, surface pose, light and alpha preserved; only measured corner pigment delta changed before encoding. No scene generation.",
+      "acquisition": "Preserved original official source, deterministic local editing",
+      "previousServed": {
+        "file": "assets/media/usung-daylight-piling-v25.webp",
+        "sha256": "17b9ff77b06489ec9d28c163c65ad0c24ef4dbd52aeabd6618cc71034486b2e1"
+      }
+    },
+    {
+      "file": "assets/media/usung-autonomous-excavation-v34.webp",
+      "sourcePage": "https://www.builtrobotics.com/about/downloads",
+      "sourceAsset": "https://assets.builtrobotics.com/production/public/download/Built-Robotics-Exosystem-Trenching-Dry-Climate.jpg",
+      "used": true,
+      "bytes": 2636786,
+      "sha256": "7768507961f515f97475ee2f4646117bbf2ae87316ce298f3d9c64dcf712c257",
+      "servedBytes": 2636786,
+      "servedSha256": "7768507961f515f97475ee2f4646117bbf2ae87316ce298f3d9c64dcf712c257",
+      "servedTransformation": "Owner-approved B corner: first-U pink extends to left stem edge with no contrasting strip. Original scene, dimensions, surface pose, light and alpha preserved; only measured corner pigment delta changed before encoding. No scene generation.",
+      "acquisition": "Preserved original official source, deterministic local editing",
+      "previousServed": {
+        "file": "assets/media/usung-autonomous-excavation-v25.webp",
+        "sha256": "1a9524fe00fafad3031a6843efdbcbbc4e90c04c6460966d338f3dac33da39aa"
+      }
+    },
+    {
+      "file": "assets/media/usung-site-robot-v34.webp",
+      "sourcePage": "https://suffolk.com/",
+      "sourceAsset": "https://suffolk.com/wp-content/uploads/2025/07/rugged-thumbnail-1.jpg",
+      "used": true,
+      "bytes": 1438054,
+      "sha256": "dd3c66ded8329f64983846ff745b3b7fea248e5be4b5c4f63f75fb86d8af1459",
+      "servedBytes": 1438054,
+      "servedSha256": "dd3c66ded8329f64983846ff745b3b7fea248e5be4b5c4f63f75fb86d8af1459",
+      "servedTransformation": "Owner-approved B corner: first-U pink extends to left stem edge with no contrasting strip. Original scene, dimensions, surface pose, light and alpha preserved; only measured corner pigment delta changed before encoding. No scene generation.",
+      "acquisition": "Preserved original official source, deterministic local editing",
+      "previousServed": {
+        "file": "assets/media/usung-site-robot-v25.webp",
+        "sha256": "c88667c40e0abe22c5c41a1492cac5a222214047456860ecc2a95316bc162e55"
+      }
+    },
+    {
+      "file": "assets/media/usung-site-dawn-v34.webp",
+      "sourceFile": "assets/media/built-sunrise.jpg",
+      "originalBytes": 723259,
+      "originalSha256": "51124b57542c4eed9761f66ce5f79d7fa4f7bba8afd1ca8e46a4ad08ed6ba01b",
+      "used": true,
+      "servedBytes": 2424738,
+      "servedSha256": "123dd4dd98eaf0e64fcd86132bc8f9d4071ef85f79623b5435fc1189dcff2e32",
+      "servedTransformation": "Owner-approved B corner: first-U pink extends to left stem edge with no contrasting strip. Original scene, dimensions, surface pose, light and alpha preserved; only measured corner pigment delta changed before encoding. No scene generation.",
+      "acquisition": "local transformation of preserved original source",
+      "previousServed": {
+        "file": "assets/media/usung-site-dawn-v24.webp",
+        "sha256": "123dd4dd98eaf0e64fcd86132bc8f9d4071ef85f79623b5435fc1189dcff2e32"
+      },
+      "bytes": 2424738,
+      "sha256": "123dd4dd98eaf0e64fcd86132bc8f9d4071ef85f79623b5435fc1189dcff2e32"
+    },
+    {
+      "file": "assets/media/usung-construction-film-v33.mp4",
+      "sourcePage": "https://www.builtrobotics.com/",
+      "sourceAsset": "https://servd-careful-chuckwalla.b-cdn.net/production/video/home-hero-desk.mp4",
+      "used": true,
+      "bytes": 12457082,
+      "sha256": "5281bfc87b7bc95aec5c19d95f9adb54cbc8f9cb6d2282ae358a0eb211adaf9a",
+      "servedBytes": 12457082,
+      "servedSha256": "5281bfc87b7bc95aec5c19d95f9adb54cbc8f9cb6d2282ae358a0eb211adaf9a",
+      "servedTransformation": "Owner-approved B corner: first-U pink extends to left stem edge with no contrasting strip. Original scene, dimensions, surface pose, light and alpha preserved; only measured corner pigment delta changed before encoding. No scene generation.",
+      "acquisition": "Preserved original official source, deterministic local editing",
+      "previousServed": {
+        "file": "assets/media/usung-construction-film-v25.mp4",
+        "sha256": "b539e514dc1b6fa92a9061a98af24856bd0b2d0525a01e3f12828bbe86a8997d"
+      }
     }
   ],
   "layoutImplementation": "Original approved glass texture with slow continuous native deformation and localized cursor compression/inertial recovery; original reference diagrams and acquired photography/footage retained",
-  "brandingRevision": "2026-10-04-home-divisions-v26",
+  "brandingRevision": "2026-10-05-surface-branding-v33",
   "photographicSceneGeneration": false,
   "abstractGlassArtwork": "Previously requested generated glass extension retained as the same unmodified PNG; v32 animates its existing pixels with continuous RGBA texture displacement, without new raster assets or video generation",
   "homeRevision": {
@@ -515,8 +660,8 @@
     "approvedOpeningRetained": true,
     "media": [
       "assets/generated/ai-glass-extended-v1.png",
-      "assets/media/usung-construction-film-v25.mp4",
-      "assets/references/usung-field-robots-v23.mp4"
+      "assets/media/usung-construction-film-v33.mp4",
+      "assets/references/usung-field-robots-v33.mp4"
     ],
     "newSceneGeneration": false
   },
@@ -652,5 +797,138 @@
     "approvedPhotographyAndVideoFilesUnmodified": true,
     "domainContactPreserved": "contact@usungcorp.com",
     "historicalV30RecordPreserved": true
+  },
+  "surfaceBrandingRevision": {
+    "revision": "2026-10-05-surface-branding-v33",
+    "variant": "B",
+    "approvedBy": "Direct owner selection in current conversation",
+    "helmetVerification": "baseline/original-media-v33/helmet-verification.json",
+    "nativeBrand": "src/brand.mjs:firstU",
+    "newSceneGeneration": false,
+    "surfaceCompositeReview": "Root visual review; owner review of surface corrections pending",
+    "activeAssetMapping": [
+      {
+        "old": "assets/references/usung-physical-hero-v23.mp4",
+        "new": "assets/references/usung-physical-hero-v33.mp4",
+        "sha256": "98ad5f89dd0109479064086d1b3a4e2d8f1540407a1ceb52b72d3e12fcbbcc06",
+        "bytes": 5857091
+      },
+      {
+        "old": "assets/references/usung-physical-hero-v23-poster.jpg",
+        "new": "assets/references/usung-physical-hero-v33-poster.webp",
+        "sha256": "2b3e6144b4b12f39f4ec2cd7b6560c5201ddb03fde8c4bbaa853657c95638f9f",
+        "bytes": 865988
+      },
+      {
+        "old": "assets/references/usung-perception-v23.mp4",
+        "new": "assets/references/usung-perception-v33.mp4",
+        "sha256": "b49d7ab591f61407bf54a3c721218c909380f5a0293a55786dad7c32f8b20380",
+        "bytes": 4171599
+      },
+      {
+        "old": "assets/references/usung-perception-v23-poster.jpg",
+        "new": "assets/references/usung-perception-v33-poster.webp",
+        "sha256": "ac9211317b7db6327786be4f5a297d94d1d202cfd667b24f8db39b0ba41fe4b7",
+        "bytes": 297958
+      },
+      {
+        "old": "assets/references/usung-coordination-v23.mp4",
+        "new": "assets/references/usung-coordination-v33.mp4",
+        "sha256": "56b93b1d7aa8610ee4ae2a7634f6afbcb191a790f4762ac47daedff50fc4012a",
+        "bytes": 3573870
+      },
+      {
+        "old": "assets/references/usung-coordination-v23-poster.jpg",
+        "new": "assets/references/usung-coordination-v33-poster.webp",
+        "sha256": "4260a91df0deaed937d3c4520cc35a2aa77b2f8201a306ce3a93049e44ba1905",
+        "bytes": 290250
+      },
+      {
+        "old": "assets/references/usung-field-robots-v23.mp4",
+        "new": "assets/references/usung-field-robots-v33.mp4",
+        "sha256": "d47a449481912fdfed7b7a1be5fd28ae7ba63592ea4b7337775a3d67409616c7",
+        "bytes": 4106086
+      },
+      {
+        "old": "assets/references/usung-field-robots-v23-poster.jpg",
+        "new": "assets/references/usung-field-robots-v33-poster.webp",
+        "sha256": "11db7e908ac1c40aba4a1efda438d0d4d9ee435cbc4b92620a2e1e66f795d573",
+        "bytes": 320972
+      },
+      {
+        "old": "assets/references/contextual-context.svg",
+        "new": "assets/references/contextual-context-v33.svg",
+        "sha256": "70d201e54cc7cb26cac7476d898aa36be705c89743d082af53755abeeef05b99",
+        "bytes": 724503
+      },
+      {
+        "old": "assets/references/contextual-data.svg",
+        "new": "assets/references/contextual-data-v33.svg",
+        "sha256": "8eb33899ebd316c92b954f7d93aefe5f851feed7618f505c2985bb247545d4b4",
+        "bytes": 724497
+      },
+      {
+        "old": "assets/references/contextual-intelligence.svg",
+        "new": "assets/references/contextual-intelligence-v33.svg",
+        "sha256": "2f025c7412e6659eb95e409f05c5e87b8eeda13df6d466deed76c7bcd66d3745",
+        "bytes": 724513
+      },
+      {
+        "old": "assets/media/usung-delivery-film-v25.mp4",
+        "new": "assets/media/usung-delivery-film-v33.mp4",
+        "sha256": "1347e5a85810d89e1f911361436492b04d43fe238736c423ec7a417d59abf9da",
+        "bytes": 9446393
+      },
+      {
+        "old": "assets/media/usung-delivery-film-v25-poster.jpg",
+        "new": "assets/media/usung-delivery-film-v33-poster.webp",
+        "sha256": "5fba6f6eacf85b87865d6677b8b62938f38c70751ac8b67463d173ed89d63e11",
+        "bytes": 297376
+      },
+      {
+        "old": "assets/media/usung-delivery-film-v25-wide.jpg",
+        "new": "assets/media/usung-delivery-film-v33-wide.jpg",
+        "sha256": "939d2de413632aa6737da93c7406c09d01496865ab954e7c200c1b6c44cbfd3d",
+        "bytes": 310015
+      },
+      {
+        "old": "assets/media/usung-daylight-piling-v25.webp",
+        "new": "assets/media/usung-daylight-piling-v34.webp",
+        "sha256": "5e0493946d5c050c2df4210afb75dd1f6305fdf0339d6971a9a76be7ad441321",
+        "bytes": 2347304
+      },
+      {
+        "old": "assets/media/usung-autonomous-excavation-v25.webp",
+        "new": "assets/media/usung-autonomous-excavation-v34.webp",
+        "sha256": "7768507961f515f97475ee2f4646117bbf2ae87316ce298f3d9c64dcf712c257",
+        "bytes": 2636786
+      },
+      {
+        "old": "assets/media/usung-site-robot-v25.webp",
+        "new": "assets/media/usung-site-robot-v34.webp",
+        "sha256": "dd3c66ded8329f64983846ff745b3b7fea248e5be4b5c4f63f75fb86d8af1459",
+        "bytes": 1438054
+      },
+      {
+        "old": "assets/media/usung-site-dawn-v24.webp",
+        "new": "assets/media/usung-site-dawn-v34.webp",
+        "sha256": "123dd4dd98eaf0e64fcd86132bc8f9d4071ef85f79623b5435fc1189dcff2e32",
+        "bytes": 2424738
+      },
+      {
+        "old": "assets/media/usung-construction-film-v25.mp4",
+        "new": "assets/media/usung-construction-film-v33.mp4",
+        "sha256": "5281bfc87b7bc95aec5c19d95f9adb54cbc8f9cb6d2282ae358a0eb211adaf9a",
+        "bytes": 12457082
+      },
+      {
+        "old": "assets/media/usung-construction-film-v25-poster.jpg",
+        "new": "assets/media/usung-construction-film-v33-poster.jpg",
+        "sha256": "1b9747087ee2230ddef5549c58b749f210be27b4cedafc945a0776b83ac863bf",
+        "bytes": 494728
+      }
+    ],
+    "verification": "baseline/original-media-v33/",
+    "constructionSurfaceTracking": "Native source metal affine tracking in first shot; measured per-pose source plane in wide shot"
   }
 }

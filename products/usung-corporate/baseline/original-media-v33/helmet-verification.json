@@ -1,0 +1,124 @@
+{
+  "source": "products/usung-corporate/public/assets/media/suffolk-naples.jpg",
+  "sourceSha256": "2a18b8507d87814098d8e7e69fa8d35738d2db0d7209a748b9e8bc6e89461aae",
+  "baseline": "products/usung-corporate/public/assets/media/usung-field-team-v26.webp",
+  "baselineSha256": "00855895d5a7f8184cde8de85882be72d163078269db668ea5e4d8d6116f8812",
+  "output": "outputs/website/usung-surface-branding-v33/edited/usung-field-team-v33.webp",
+  "outputSha256": "78fda174791049fc996c5fff8f02b3dc1c0aae7186cd121dd578039fec07afef",
+  "dimensions": [
+    2200,
+    1466
+  ],
+  "nativeVector": "products/usung-corporate/src/brand.mjs:firstU",
+  "nativeAspect": 0.847741935483871,
+  "nativePink": "#FF0F6F",
+  "repair": "Canonical vector alpha and color projected together onto estimated local helmet surfaces, one focus filter, shared illumination and original-photo grain. Deterministic interpolation only in former print regions.",
+  "noSceneGeneration": true,
+  "changedPixels": 3510,
+  "outsideRepairMaskEqualsBaseline": true,
+  "protected": {
+    "sticker-lower-fields": true,
+    "hardware": true,
+    "faces": true
+  },
+  "repairs": [
+    {
+      "name": "man",
+      "quad": [
+        [
+          801,
+          226
+        ],
+        [
+          840,
+          235
+        ],
+        [
+          854,
+          282
+        ],
+        [
+          814,
+          273
+        ]
+      ],
+      "focusSigma": 1.05,
+      "projectedCurveBowPx": 1.0,
+      "changedPixels": 1904
+    },
+    {
+      "name": "woman",
+      "quad": [
+        [
+          1461,
+          190
+        ],
+        [
+          1494,
+          194
+        ],
+        [
+          1509,
+          231
+        ],
+        [
+          1476,
+          227
+        ]
+      ],
+      "focusSigma": 1.0,
+      "projectedCurveBowPx": 0.8,
+      "changedPixels": 1462
+    },
+    {
+      "name": "vest-corner",
+      "quad": [
+        [
+          894,
+          1256
+        ],
+        [
+          908,
+          1263
+        ],
+        [
+          918,
+          1286
+        ],
+        [
+          904,
+          1279
+        ]
+      ],
+      "variant": "B",
+      "focusSigma": 1.2,
+      "cornerOnly": true,
+      "changedPixels": 112
+    },
+    {
+      "name": "sticker-corner",
+      "quad": [
+        [
+          1160,
+          264
+        ],
+        [
+          1206,
+          244
+        ],
+        [
+          1206,
+          253
+        ],
+        [
+          1160,
+          273
+        ]
+      ],
+      "variant": "B",
+      "focusSigma": 0.8,
+      "cornerOnly": true,
+      "changedPixels": 32
+    }
+  ]
+}

@@ -1,0 +1,5271 @@
+{
+  "nativePinkB": [
+    72.362,
+    23.072,
+    16.09,
+    15.987
+  ],
+  "scope": "Four active PHYSICAL AI/reference videos and posters; delivery film and poster; three contextual SVG diagrams. Main construction film, still photos, canonical brand assets, and page wiring assigned elsewhere.",
+  "sceneGeneration": false,
+  "currentDecodedPixelDifferential": true,
+  "outsideCorrectionMasksIdenticalBeforeVideoEncode": true,
+  "postersLosslessWebpPixelEqualityVerified": true,
+  "encodingLimit": "H264 decoding after reencoding can differ outside the corner mask; full equality claimed only before encoding.",
+  "sharedLogoReceipt": "outputs/website/usung-rework-v33/reference-corner-repair/logos/logo-b-verification.json",
+  "assets": [
+    {
+      "old": "products/usung-corporate/public/assets/references/usung-physical-hero-v23.mp4",
+      "new": "products/usung-corporate/public/assets/references/usung-physical-hero-v33.mp4",
+      "oldSha256": "dae826af16ba054ef7753aad0b3ce92ed47693c44d01760cb57e30dd6e07255b",
+      "newSha256": "98ad5f89dd0109479064086d1b3a4e2d8f1540407a1ceb52b72d3e12fcbbcc06",
+      "source": "products/usung-corporate/public/assets/references/dexterity-hero.mp4",
+      "sourceSha256": "4027f53d10c0d09db2b2c9b9a591344915f695004c02813a201d17511bae353e",
+      "fps": 30.0,
+      "frames": 420,
+      "size": [
+        1280,
+        756
+      ],
+      "perFrameMaskPixels": [
+        1,
+        2,
+        3,
+        5,
+        3,
+        5,
+        4,
+        5,
+        6,
+        6,
+        6,
+        6,
+        6,
+        6,
+        6,
+        6,
+        6,
+        6,
+        6,
+        6,
+        5,
+        6,
+        5,
+        3,
+        2,
+        4,
+        2,
+        1,
+        1,
+        1,
+        4,
+        6,
+        6,
+        7,
+        6,
+        6,
+        6,
+        6,
+        6,
+        6,
+        6,
+        6,
+        6,
+        5,
+        5,
+        6,
+        6,
+        6,
+        6,
+        6,
+        6,
+        6,
+        6,
+        6,
+        6,
+        5,
+        5,
+        5,
+        5,
+        5,
+        6,
+        5,
+        5,
+        5,
+        4,
+        3,
+        3,
+        3,
+        3,
+        4,
+        4,
+        4,
+        4,
+        4,
+        4,
+        3,
+        3,
+        3,
+        3,
+        3,
+        3,
+        3,
+        3,
+        4,
+        4,
+        4,
+        4,
+        4,
+        3,
+        4,
+        4,
+        3,
+        3,
+        3,
+        3,
+        4,
+        4,
+        4,
+        4,
+        4,
+        4,
+        4,
+        4,
+        4,
+        4,
+        4,
+        4,
+        4,
+        5,
+        5,
+        5,
+        5,
+        5,
+        5,
+        5,
+        5,
+        5,
+        5,
+        5,
+        5,
+        5,
+        5,
+        5,
+        5,
+        5,
+        5,
+        5,
+        5,
+        5,
+        5,
+        5,
+        5,
+        5,
+        5,
+        5,
+        6,
+        6,
+        6,
+        6,
+        6,
+        5,
+        5,
+        6,
+        6,
+        6,
+        6,
+        6,
+        6,
+        6,
+        7,
+        6,
+        6,
+        6,
+        6,
+        6,
+        6,
+        6,
+        6,
+        5,
+        4,
+        4,
+        3,
+        3,
+        3,
+        3,
+        3,
+        3,
+        3,
+        3,
+        3,
+        3,
+        3,
+        3,
+        3,
+        3,
+        3,
+        3,
+        3,
+        3,
+        3,
+        3,
+        3,
+        3,
+        3,
+        3,
+        3,
+        3,
+        2,
+        1,
+        1,
+        0,
+        2,
+        2,
+        2,
+        3,
+        3,
+        5,
+        6,
+        3,
+        3,
+        3,
+        6,
+        3,
+        4,
+        4,
+        3,
+        3,
+        6,
+        6,
+        3,
+        2,
+        4,
+        4,
+        4,
+        4,
+        4,
+        2,
+        4,
+        2,
+        3,
+        6,
+        5,
+        6,
+        6,
+        6,
+        5,
+        3,
+        3,
+        3,
+        3,
+        2,
+        2,
+        5,
+        5,
+        3,
+        3,
+        3,
+        6,
+        6,
+        3,
+        3,
+        3,
+        3,
+        3,
+        3,
+        3,
+        3,
+        3,
+        3,
+        2,
+        1,
+        2,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        1,
+        1,
+        1,
+        3,
+        3,
+        2,
+        4,
+        2,
+        2,
+        6,
+        4,
+        5,
+        6,
+        3,
+        3,
+        4,
+        4,
+        7,
+        7,
+        5,
+        1,
+        1,
+        3,
+        3,
+        5,
+        5,
+        2,
+        2,
+        5,
+        4,
+        6,
+        5,
+        6,
+        4,
+        4,
+        4,
+        4,
+        3,
+        6,
+        4,
+        5,
+        6,
+        7,
+        7,
+        7,
+        6,
+        6,
+        6,
+        6,
+        7,
+        7,
+        7,
+        6,
+        5,
+        6,
+        5,
+        2,
+        6,
+        7,
+        7,
+        7,
+        7,
+        7,
+        6,
+        0,
+        6,
+        5,
+        4,
+        6,
+        5,
+        4,
+        4,
+        4,
+        5,
+        7,
+        6,
+        6,
+        6,
+        6,
+        6,
+        6,
+        6,
+        6,
+        6,
+        6,
+        6,
+        6,
+        6,
+        6,
+        6,
+        6,
+        6,
+        7,
+        7,
+        7,
+        7,
+        7,
+        6,
+        6,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        6,
+        6,
+        6,
+        6,
+        6,
+        6,
+        6,
+        7,
+        6,
+        6,
+        6,
+        6,
+        6,
+        7,
+        8,
+        8,
+        8,
+        8,
+        8,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        5,
+        2,
+        2,
+        3,
+        4,
+        5,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7
+      ],
+      "unionMaskPixels": 39,
+      "outsideCornerMaskPixelIdenticalBeforeEncodeAllFrames": true,
+      "encodedMovieDecodedAndFrameCountVerified": true,
+      "poster": {
+        "old": "products/usung-corporate/public/assets/references/usung-physical-hero-v23-poster.jpg",
+        "new": "products/usung-corporate/public/assets/references/usung-physical-hero-v33-poster.webp",
+        "oldSha256": "3f1da0fd40e62f80e32c1e8d58e9dcf30d1b30f5836de8ca3b9c443f7f3ccdd1",
+        "newSha256": "2b3e6144b4b12f39f4ec2cd7b6560c5201ddb03fde8c4bbaa853657c95638f9f",
+        "maskPixels": 4,
+        "outsideMaskPixelIdenticalAfterLosslessWebpDecode": true
+      },
+      "encodingLimit": "H264 reencoding can change pixels outside the local correction mask. Exact equality is established before encode."
+    },
+    {
+      "old": "products/usung-corporate/public/assets/references/usung-perception-v23.mp4",
+      "new": "products/usung-corporate/public/assets/references/usung-perception-v33.mp4",
+      "oldSha256": "3ef7e6126a73b8a6c846c40487ae503061ea0b35b1108506b2d1181c292e0e5f",
+      "newSha256": "b49d7ab591f61407bf54a3c721218c909380f5a0293a55786dad7c32f8b20380",
+      "source": "products/usung-corporate/public/assets/references/dexterity-perception.mp4",
+      "sourceSha256": "80739bd28aa3eaf629b9416742e5b11d0e82a97839e232ba8358ceddd59b3b87",
+      "fps": 30.0,
+      "frames": 420,
+      "size": [
+        1280,
+        720
+      ],
+      "perFrameMaskPixels": [
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        6,
+        6,
+        6,
+        6,
+        6,
+        6,
+        6,
+        6,
+        6,
+        6,
+        6,
+        6,
+        6,
+        6,
+        6,
+        6,
+        6,
+        7,
+        7,
+        7,
+        8,
+        8,
+        8,
+        8,
+        8,
+        8,
+        8,
+        8,
+        8,
+        8,
+        8,
+        8,
+        8,
+        8,
+        8,
+        8,
+        8,
+        8,
+        8,
+        8,
+        8,
+        7,
+        6,
+        5,
+        3,
+        0,
+        0,
+        1,
+        0,
+        6,
+        5,
+        3,
+        3,
+        3,
+        4,
+        8,
+        7,
+        3,
+        3,
+        4,
+        5,
+        7,
+        3,
+        9,
+        8,
+        5,
+        6,
+        7,
+        4,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "unionMaskPixels": 81,
+      "outsideCornerMaskPixelIdenticalBeforeEncodeAllFrames": true,
+      "encodedMovieDecodedAndFrameCountVerified": true,
+      "poster": {
+        "old": "products/usung-corporate/public/assets/references/usung-perception-v23-poster.jpg",
+        "new": "products/usung-corporate/public/assets/references/usung-perception-v33-poster.webp",
+        "oldSha256": "6a9967b307e846e0d8dd33a762f7344953123b30d4ae9e347eb13cf2b371d989",
+        "newSha256": "ac9211317b7db6327786be4f5a297d94d1d202cfd667b24f8db39b0ba41fe4b7",
+        "maskPixels": 8,
+        "outsideMaskPixelIdenticalAfterLosslessWebpDecode": true
+      },
+      "encodingLimit": "H264 reencoding can change pixels outside the local correction mask. Exact equality is established before encode."
+    },
+    {
+      "old": "products/usung-corporate/public/assets/references/usung-coordination-v23.mp4",
+      "new": "products/usung-corporate/public/assets/references/usung-coordination-v33.mp4",
+      "oldSha256": "3fb9fc8c79842483c3b5fae4e558f18b6ef5e93f4c2b3128d4fbf41c4a8176b0",
+      "newSha256": "56b93b1d7aa8610ee4ae2a7634f6afbcb191a790f4762ac47daedff50fc4012a",
+      "source": "products/usung-corporate/public/assets/references/dexterity-coordination.mp4",
+      "sourceSha256": "1331f63a9481f35dce97531a57dbf644d739e0f826dfde1bcc1d4cde03ac96b9",
+      "fps": 60.0,
+      "frames": 840,
+      "size": [
+        600,
+        720
+      ],
+      "perFrameMaskPixels": [
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        2,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        2,
+        2,
+        1,
+        1,
+        1,
+        2,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        2,
+        2,
+        1,
+        1,
+        1,
+        1,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        1,
+        2,
+        3,
+        3,
+        3,
+        3,
+        3,
+        3,
+        3,
+        3,
+        3,
+        2,
+        2,
+        1,
+        1,
+        2,
+        2,
+        2,
+        1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        1,
+        1,
+        1,
+        1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        1,
+        2,
+        2,
+        2,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        1,
+        1,
+        1,
+        1,
+        1,
+        2,
+        0,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        2,
+        1,
+        1,
+        1,
+        1,
+        1,
+        2,
+        2,
+        3,
+        3,
+        3,
+        3,
+        3,
+        1,
+        1,
+        2,
+        1,
+        1,
+        1,
+        0,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        2,
+        2,
+        1,
+        1,
+        2,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        2,
+        2,
+        2,
+        1,
+        1,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        2,
+        2,
+        2,
+        2,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        2,
+        2,
+        2,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        3,
+        1,
+        1,
+        1,
+        2,
+        2,
+        3,
+        2,
+        2,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        2,
+        2,
+        1,
+        0,
+        0,
+        1,
+        2,
+        1,
+        1,
+        1,
+        1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        1,
+        1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        1,
+        2,
+        0,
+        1,
+        2,
+        2,
+        2,
+        3,
+        4,
+        1,
+        1,
+        2,
+        2,
+        1,
+        1,
+        1,
+        1,
+        1,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        3,
+        4,
+        4,
+        3,
+        3,
+        2,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        2,
+        1,
+        1,
+        1,
+        0,
+        1,
+        1,
+        0,
+        0,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        0,
+        0,
+        0,
+        1,
+        1,
+        0,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        2,
+        2,
+        1,
+        1,
+        3,
+        3,
+        3,
+        3,
+        3,
+        2,
+        1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        1,
+        1,
+        1,
+        2,
+        2,
+        2,
+        2,
+        1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        1,
+        1,
+        1,
+        1,
+        0,
+        0,
+        2,
+        3,
+        2,
+        2,
+        2,
+        3,
+        3,
+        3,
+        1,
+        1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        2,
+        3,
+        2,
+        3,
+        3,
+        2,
+        1,
+        1,
+        1,
+        1,
+        2,
+        0,
+        2,
+        0,
+        0,
+        0,
+        1,
+        0,
+        1,
+        0,
+        0,
+        0,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        2,
+        4,
+        4,
+        5,
+        3,
+        3,
+        2,
+        2,
+        3,
+        2,
+        2,
+        2,
+        2,
+        1,
+        1,
+        1,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        4,
+        2,
+        2,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        1,
+        2,
+        2,
+        3,
+        3,
+        1,
+        2,
+        1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        1,
+        1,
+        1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        1,
+        1,
+        1,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        3,
+        2,
+        2,
+        1,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        1,
+        2,
+        1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        3,
+        0,
+        1,
+        0,
+        1,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        1,
+        1,
+        2,
+        2,
+        0,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        0,
+        1,
+        2,
+        3,
+        2,
+        2,
+        2,
+        2,
+        1,
+        2,
+        3,
+        2,
+        2,
+        3,
+        2,
+        1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        2,
+        2,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        2,
+        1,
+        1,
+        1,
+        0,
+        1,
+        0,
+        0,
+        1,
+        2,
+        2,
+        2,
+        2,
+        3,
+        2,
+        3,
+        4,
+        3,
+        3,
+        4,
+        3,
+        4,
+        3,
+        3,
+        3,
+        2,
+        2,
+        3,
+        1,
+        1,
+        2,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        2,
+        3,
+        2,
+        2,
+        3,
+        4,
+        3,
+        3,
+        3,
+        4,
+        4,
+        5,
+        2,
+        2,
+        5,
+        4,
+        3,
+        2,
+        2,
+        2,
+        2,
+        2,
+        3,
+        3,
+        5,
+        2,
+        3,
+        2,
+        2,
+        1,
+        3,
+        2,
+        3,
+        2,
+        4,
+        3,
+        2,
+        2,
+        2,
+        1,
+        2,
+        2,
+        3,
+        2,
+        4,
+        1,
+        1,
+        0,
+        0,
+        0,
+        1,
+        2,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        1,
+        1,
+        2,
+        1,
+        1,
+        1,
+        2,
+        1,
+        1,
+        2,
+        2,
+        3,
+        3,
+        3,
+        2,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        1,
+        2,
+        2,
+        3,
+        2,
+        3,
+        3,
+        1,
+        2,
+        1,
+        1,
+        2,
+        2,
+        2,
+        2
+      ],
+      "unionMaskPixels": 135,
+      "outsideCornerMaskPixelIdenticalBeforeEncodeAllFrames": true,
+      "encodedMovieDecodedAndFrameCountVerified": true,
+      "poster": {
+        "old": "products/usung-corporate/public/assets/references/usung-coordination-v23-poster.jpg",
+        "new": "products/usung-corporate/public/assets/references/usung-coordination-v33-poster.webp",
+        "oldSha256": "e140ba4b95403da2f9d9fd8466d04cc1ee1e1ce603e9c71ed05317eea3482b07",
+        "newSha256": "4260a91df0deaed937d3c4520cc35a2aa77b2f8201a306ce3a93049e44ba1905",
+        "maskPixels": 0,
+        "outsideMaskPixelIdenticalAfterLosslessWebpDecode": true
+      },
+      "encodingLimit": "H264 reencoding can change pixels outside the local correction mask. Exact equality is established before encode."
+    },
+    {
+      "old": "products/usung-corporate/public/assets/references/usung-field-robots-v23.mp4",
+      "new": "products/usung-corporate/public/assets/references/usung-field-robots-v33.mp4",
+      "oldSha256": "336af7519093e91aa7ef366d27dcb5827c3b481da441f4b8893f407cf273ed37",
+      "newSha256": "d47a449481912fdfed7b7a1be5fd28ae7ba63592ea4b7337775a3d67409616c7",
+      "source": "products/usung-corporate/public/assets/references/field-robots.mp4",
+      "sourceSha256": "44dc0a3811e346989e74f1dfff29f10fb8709d395566135271ecaa2061ea8147",
+      "fps": 30.0,
+      "frames": 361,
+      "size": [
+        1280,
+        720
+      ],
+      "perFrameMaskPixels": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        1,
+        1,
+        1,
+        0,
+        2,
+        2,
+        2,
+        2,
+        0,
+        1,
+        0,
+        4,
+        4,
+        0,
+        3,
+        3,
+        0,
+        0,
+        5,
+        3,
+        4,
+        4,
+        4,
+        5,
+        6,
+        6,
+        6,
+        6,
+        7,
+        8,
+        10,
+        11,
+        11,
+        12,
+        12,
+        12,
+        13,
+        13,
+        14,
+        12,
+        11,
+        13,
+        13,
+        11,
+        11,
+        10,
+        9,
+        9,
+        9,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        9,
+        9,
+        14,
+        7,
+        2,
+        12,
+        12,
+        17,
+        18,
+        6,
+        14,
+        16,
+        6,
+        12,
+        14,
+        7,
+        6,
+        11,
+        18,
+        8,
+        8,
+        14,
+        9,
+        6,
+        10,
+        11,
+        10,
+        7,
+        10,
+        5,
+        2,
+        6,
+        14,
+        18,
+        7,
+        7,
+        12,
+        17,
+        17,
+        19,
+        19,
+        7,
+        18,
+        1,
+        11,
+        11,
+        13,
+        4,
+        11,
+        10,
+        10,
+        6,
+        16,
+        11,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        8,
+        4,
+        4,
+        2,
+        3,
+        0,
+        1,
+        0,
+        0,
+        0,
+        7,
+        5,
+        3,
+        1,
+        3,
+        5,
+        0,
+        7,
+        3,
+        3,
+        4,
+        0,
+        0,
+        5,
+        4,
+        6,
+        3,
+        4,
+        8,
+        9,
+        6,
+        7,
+        6,
+        3,
+        3,
+        6,
+        2,
+        3,
+        0,
+        0,
+        1,
+        6,
+        1,
+        0,
+        3,
+        5,
+        4,
+        5,
+        2,
+        2,
+        4,
+        2,
+        1,
+        4,
+        4,
+        5,
+        4,
+        1,
+        4,
+        4,
+        8,
+        5,
+        3,
+        5,
+        5,
+        0,
+        3,
+        4,
+        4,
+        4,
+        0,
+        5,
+        5
+      ],
+      "unionMaskPixels": 860,
+      "outsideCornerMaskPixelIdenticalBeforeEncodeAllFrames": true,
+      "encodedMovieDecodedAndFrameCountVerified": true,
+      "poster": {
+        "old": "products/usung-corporate/public/assets/references/usung-field-robots-v23-poster.jpg",
+        "new": "products/usung-corporate/public/assets/references/usung-field-robots-v33-poster.webp",
+        "oldSha256": "aacb20733e81086cb13943220da11d3f6ef8247bf014ba22049646714a1a0015",
+        "newSha256": "11db7e908ac1c40aba4a1efda438d0d4d9ee435cbc4b92620a2e1e66f795d573",
+        "maskPixels": 6,
+        "outsideMaskPixelIdenticalAfterLosslessWebpDecode": true
+      },
+      "encodingLimit": "H264 reencoding can change pixels outside the local correction mask. Exact equality is established before encode."
+    },
+    {
+      "old": "products/usung-corporate/public/assets/references/contextual-context.svg",
+      "new": "products/usung-corporate/public/assets/references/contextual-context-v33.svg",
+      "oldSha256": "67cec7f400f1d963be426b06ca64211bf2a0ef49690b73adefdfec57b8da0e88",
+      "newSha256": "70d201e54cc7cb26cac7476d898aa36be705c89743d082af53755abeeef05b99",
+      "changed": "one clipped native corner rectangle only"
+    },
+    {
+      "old": "products/usung-corporate/public/assets/references/contextual-data.svg",
+      "new": "products/usung-corporate/public/assets/references/contextual-data-v33.svg",
+      "oldSha256": "fb2b2507e56e07bc35df96fc05df41c29bab3911e4972a8d2918741fbb2320c3",
+      "newSha256": "8eb33899ebd316c92b954f7d93aefe5f851feed7618f505c2985bb247545d4b4",
+      "changed": "one clipped native corner rectangle only"
+    },
+    {
+      "old": "products/usung-corporate/public/assets/references/contextual-intelligence.svg",
+      "new": "products/usung-corporate/public/assets/references/contextual-intelligence-v33.svg",
+      "oldSha256": "0b343f5a6f6689892db71dc8892d0bf291f3b152462518eb2a42f09b380b93a6",
+      "newSha256": "2f025c7412e6659eb95e409f05c5e87b8eeda13df6d466deed76c7bcd66d3745",
+      "changed": "one clipped native corner rectangle only"
+    },
+    {
+      "old": "products/usung-corporate/public/assets/media/usung-delivery-film-v25.mp4",
+      "new": "products/usung-corporate/public/assets/media/usung-delivery-film-v33.mp4",
+      "oldSha256": "cbe0e0548bb6c87df4d4ff4a82c13df6da29961be5f8da514a35c85906694067",
+      "newSha256": "1347e5a85810d89e1f911361436492b04d43fe238736c423ec7a417d59abf9da",
+      "source": "products/usung-corporate/baseline/original-media-v25/turner-jobsite-01.mp4",
+      "sourceSha256": "89957b2e1ade74b4c0b2fab57135b5611c16739596899cf03d8a02f1ee06d115",
+      "recipe": "products/usung-corporate/baseline/original-media-v25/delivery-sign-edit.py",
+      "recipeSha256": "12ba3c2c2de159a71e52b9535f3b6fae4db47a856d90fd518f167fc0e9a88637",
+      "fps": 24.0,
+      "frames": 287,
+      "size": [
+        1920,
+        1080
+      ],
+      "perFrame": [
+        {
+          "frame": 0,
+          "maskPixels": 419,
+          "photographedPigment": [
+            {
+              "part": 0,
+              "sourceInkContrastBGR": [
+                24.380011602183032,
+                28.921148569914337,
+                31.60763000783058
+              ],
+              "transmission": 0.13164153516267899
+            }
+          ]
+        },
+        {
+          "frame": 1,
+          "maskPixels": 424,
+          "photographedPigment": [
+            {
+              "part": 0,
+              "sourceInkContrastBGR": [
+                24.34020533804852,
+                29.09771252332601,
+                31.438326106531036
+              ],
+              "transmission": 0.13159107591923344
+            }
+          ]
+        },
+        {
+          "frame": 2,
+          "maskPixels": 422,
+          "photographedPigment": [
+            {
+              "part": 0,
+              "sourceInkContrastBGR": [
+                24.40286762259626,
+                29.230718833003365,
+                31.636007734442785
+              ],
+              "transmission": 0.13220092122487195
+            }
+          ]
+        },
+        {
+          "frame": 3,
+          "maskPixels": 424,
+          "photographedPigment": [
+            {
+              "part": 0,
+              "sourceInkContrastBGR": [
+                24.37357123149036,
+                29.443752838085928,
+                31.664479728568978
+              ],
+              "transmission": 0.13252992836921748
+            }
+          ]
+        },
+        {
+          "frame": 4,
+          "maskPixels": 425,
+          "photographedPigment": [
+            {
+              "part": 0,
+              "sourceInkContrastBGR": [
+                24.507291598499705,
+                29.500558313558884,
+                31.759883637921405
+              ],
+              "transmission": 0.13297323031004651
+            }
+          ]
+        },
+        {
+          "frame": 5,
+          "maskPixels": 426,
+          "photographedPigment": [
+            {
+              "part": 0,
+              "sourceInkContrastBGR": [
+                24.543699901318504,
+                29.771185932646887,
+                31.900302062515564
+              ],
+              "transmission": 0.13366695797904024
+            }
+          ]
+        },
+        {
+          "frame": 6,
+          "maskPixels": 425,
+          "photographedPigment": [
+            {
+              "part": 0,
+              "sourceInkContrastBGR": [
+                24.29961335259256,
+                29.951513534205176,
+                32.013149462679266
+              ],
+              "transmission": 0.13374306410771628
+            }
+          ]
+        },
+        {
+          "frame": 7,
+          "maskPixels": 422,
+          "photographedPigment": [
+            {
+              "part": 0,
+              "sourceInkContrastBGR": [
+                24.727077570458817,
+                29.862887587821433,
+                32.37074319145185
+              ],
+              "transmission": 0.1348228036429955
+            }
+          ]
+        },
+        {
+          "frame": 8,
+          "maskPixels": 424,
+          "photographedPigment": [
+            {
+              "part": 0,
+              "sourceInkContrastBGR": [
+                24.546005456294083,
+                30.077199076447812,
+                32.1594641928625
+              ],
+              "transmission": 0.1345467732179913
+            }
+          ]
+        },
+        {
+          "frame": 9,
+          "maskPixels": 420,
+          "photographedPigment": [
+            {
+              "part": 0,
+              "sourceInkContrastBGR": [
+                24.566511848675006,
+                30.205361711814305,
+                32.15192254369195
+              ],
+              "transmission": 0.1347655753553198
+            }
+          ]
+        },
+        {
+          "frame": 10,
+          "maskPixels": 425,
+          "photographedPigment": [
+            {
+              "part": 0,
+              "sourceInkContrastBGR": [
+                24.542547377348683,
+                30.17976820901093,
+                32.47670550660831
+              ],
+              "transmission": 0.13519228076429135
+            }
+          ]
+        },
+        {
+          "frame": 11,
+          "maskPixels": 424,
+          "photographedPigment": [
+            {
+              "part": 0,
+              "sourceInkContrastBGR": [
+                24.409950286298198,
+                30.22275797275924,
+                32.46013183966687
+              ],
+              "transmission": 0.13502765906778963
+            }
+          ]
+        },
+        {
+          "frame": 12,
+          "maskPixels": 425,
+          "photographedPigment": [
+            {
+              "part": 0,
+              "sourceInkContrastBGR": [
+                24.24189373318012,
+                30.14763335444715,
+                32.47402084896939
+              ],
+              "transmission": 0.13467216734356072
+            }
+          ]
+        },
+        {
+          "frame": 13,
+          "maskPixels": 428,
+          "photographedPigment": [
+            {
+              "part": 0,
+              "sourceInkContrastBGR": [
+                24.18943467267627,
+                30.193064261018634,
+                32.45524283216665
+              ],
+              "transmission": 0.13463215777652954
+            }
+          ]
+        },
+        {
+          "frame": 14,
+          "maskPixels": 424,
+          "photographedPigment": [
+            {
+              "part": 0,
+              "sourceInkContrastBGR": [
+                24.083737896912595,
+                29.981598419453576,
+                32.41301776866965
+              ],
+              "transmission": 0.13407496757369894
+            }
+          ]
+        },
+        {
+          "frame": 15,
+          "maskPixels": 424,
+          "photographedPigment": [
+            {
+              "part": 0,
+              "sourceInkContrastBGR": [
+                23.892008170790888,
+                29.89156441502854,
+                32.34225211947813
+              ],
+              "transmission": 0.13352841039581018
+            }
+          ]
+        },
+        {
+          "frame": 16,
+          "maskPixels": 422,
+          "photographedPigment": [
+            {
+              "part": 0,
+              "sourceInkContrastBGR": [
+                23.55645063186472,
+                29.616190257166608,
+                32.29756120194486
+              ],
+              "transmission": 0.13251194122631965
+            }
+          ]
+        },
+        {
+          "frame": 17,
+          "maskPixels": 427,
+          "photographedPigment": [
+            {
+              "part": 0,
+              "sourceInkContrastBGR": [
+                23.217764991994386,
+                29.26243639108722,
+                32.07072405023351
+              ],
+              "transmission": 0.13108670609816298
+            }
+          ]
+        },
+        {
+          "frame": 18,
+          "maskPixels": 423,
+          "photographedPigment": [
+            {
+              "part": 0,
+              "sourceInkContrastBGR": [
+                23.15933294007442,
+                29.04407306746907,
+                31.995920537360504
+              ],
+              "transmission": 0.13054159154248682
+            }
+          ]
+        },
+        {
+          "frame": 19,
+          "maskPixels": 424,
+          "photographedPigment": [
+            {
+              "part": 0,
+              "sourceInkContrastBGR": [
+                22.899756468190006,
+                28.88237893559655,
+                31.9011192999331
+              ],
+              "transmission": 0.12974148016080567
+            }
+          ]
+        },
+        {
+          "frame": 20,
+          "maskPixels": 425,
+          "photographedPigment": [
+            {
+              "part": 0,
+              "sourceInkContrastBGR": [
+                22.866494255471054,
+                28.95510593338082,
+                32.06299543858506
+              ],
+              "transmission": 0.13005363663168518
+            }
+          ]
+        },
+        {
+          "frame": 21,
+          "maskPixels": 428,
+          "photographedPigment": [
+            {
+              "part": 0,
+              "sourceInkContrastBGR": [
+                22.793383186566416,
+                29.12239696157539,
+                32.20081192432227
+              ],
+              "transmission": 0.13041332104257997
+            }
+          ]
+        },
+        {
+          "frame": 22,
+          "maskPixels": 424,
+          "photographedPigment": [
+            {
+              "part": 0,
+              "sourceInkContrastBGR": [
+                22.764431409043937,
+                29.21944636482101,
+                32.55062923903236
+              ],
+              "transmission": 0.13106125118278653
+            }
+          ]
+        },
+        {
+          "frame": 23,
+          "maskPixels": 427,
+          "photographedPigment": [
+            {
+              "part": 0,
+              "sourceInkContrastBGR": [
+                22.8951999557962,
+                29.66860868580808,
+                32.84131440010847
+              ],
+              "transmission": 0.13241104347552365
+            }
+          ]
+        },
+        {
+          "frame": 24,
+          "maskPixels": 427,
+          "photographedPigment": [
+            {
+              "part": 0,
+              "sourceInkContrastBGR": [
+                22.925062003133633,
+                30.38084341052378,
+                32.99077424867248
+              ],
+              "transmission": 0.13379330180206186
+            }
+          ]
+        },
+        {
+          "frame": 25,
+          "maskPixels": 425,
+          "photographedPigment": [
+            {
+              "part": 0,
+              "sourceInkContrastBGR": [
+                23.090124015679606,
+                30.658710935247512,
+                33.18607143308071
+              ],
+              "transmission": 0.134782800595361
+            }
+          ]
+        },
+        {
+          "frame": 26,
+          "maskPixels": 427,
+          "photographedPigment": [
+            {
+              "part": 0,
+              "sourceInkContrastBGR": [
+                23.29509676367806,
+                30.935616705576166,
+                33.43395581167945
+              ],
+              "transmission": 0.13591421593943206
+            }
+          ]
+        },
+        {
+          "frame": 27,
+          "maskPixels": 427,
+          "photographedPigment": [
+            {
+              "part": 0,
+              "sourceInkContrastBGR": [
+                23.33063993700648,
+                31.191533348033687,
+                33.86419510551127
+              ],
+              "transmission": 0.13703312928767666
+            }
+          ]
+        },
+        {
+          "frame": 28,
+          "maskPixels": 426,
+          "photographedPigment": [
+            {
+              "part": 0,
+              "sourceInkContrastBGR": [
+                23.519971167176536,
+                31.02261537005718,
+                34.05638547491277
+              ],
+              "transmission": 0.13736274730565345
+            }
+          ]
+        },
+        {
+          "frame": 29,
+          "maskPixels": 431,
+          "photographedPigment": [
+            {
+              "part": 0,
+              "sourceInkContrastBGR": [
+                23.35875307306523,
+                30.673201816614636,
+                34.10802401170707
+              ],
+              "transmission": 0.13665113007966967
+            }
+          ]
+        },
+        {
+          "frame": 30,
+          "maskPixels": 436,
+          "photographedPigment": [
+            {
+              "part": 0,
+              "sourceInkContrastBGR": [
+                23.120886934681323,
+                30.90623031415349,
+                34.00259365358848
+              ],
+              "transmission": 0.13648017194174153
+            }
+          ]
+        },
+        {
+          "frame": 31,
+          "maskPixels": 441,
+          "photographedPigment": [
+            {
+              "part": 0,
+              "sourceInkContrastBGR": [
+                23.163905314977313,
+                30.895772672301206,
+                34.19353791898715
+              ],
+              "transmission": 0.13682669132754366
+            }
+          ]
+        },
+        {
+          "frame": 32,
+          "maskPixels": 450,
+          "photographedPigment": [
+            {
+              "part": 0,
+              "sourceInkContrastBGR": [
+                23.115462825464874,
+                30.837132613874516,
+                34.229594741920366
+              ],
+              "transmission": 0.13671657392443373
+            }
+          ]
+        },
+        {
+          "frame": 33,
+          "maskPixels": 448,
+          "photographedPigment": [
+            {
+              "part": 0,
+              "sourceInkContrastBGR": [
+                23.133868029490998,
+                30.90182966463223,
+                34.144419097768576
+              ],
+              "transmission": 0.13671335936727413
+            }
+          ]
+        },
+        {
+          "frame": 34,
+          "maskPixels": 449,
+          "photographedPigment": [
+            {
+              "part": 0,
+              "sourceInkContrastBGR": [
+                23.03220542345693,
+                30.81123886709088,
+                34.143181664742116
+              ],
+              "transmission": 0.13641337357409292
+            }
+          ]
+        },
+        {
+          "frame": 35,
+          "maskPixels": 451,
+          "photographedPigment": [
+            {
+              "part": 0,
+              "sourceInkContrastBGR": [
+                23.07760647825205,
+                30.743409188457733,
+                34.25133634127121
+              ],
+              "transmission": 0.13654628218291626
+            }
+          ]
+        },
+        {
+          "frame": 36,
+          "maskPixels": 444,
+          "photographedPigment": [
+            {
+              "part": 0,
+              "sourceInkContrastBGR": [
+                23.167950454126554,
+                30.85513299178004,
+                34.09241108219591
+              ],
+              "transmission": 0.13661316981101163
+            }
+          ]
+        },
+        {
+          "frame": 37,
+          "maskPixels": 450,
+          "photographedPigment": [
+            {
+              "part": 0,
+              "sourceInkContrastBGR": [
+                23.26282204497288,
+                30.906347925121054,
+                33.9859629240879
+              ],
+              "transmission": 0.13667462464214236
+            }
+          ]
+        },
+        {
+          "frame": 38,
+          "maskPixels": 448,
+          "photographedPigment": [
+            {
+              "part": 0,
+              "sourceInkContrastBGR": [
+                23.407483496526083,
+                30.934605148649013,
+                34.028310739775605
+              ],
+              "transmission": 0.13700837113945846
+            }
+          ]
+        },
+        {
+          "frame": 39,
+          "maskPixels": 443,
+          "photographedPigment": [
+            {
+              "part": 0,
+              "sourceInkContrastBGR": [
+                23.516839233198965,
+                30.97469923190276,
+                34.0246955615431
+              ],
+              "transmission": 0.13723447135913927
+            }
+          ]
+        },
+        {
+          "frame": 40,
+          "maskPixels": 446,
+          "photographedPigment": [
+            {
+              "part": 0,
+              "sourceInkContrastBGR": [
+                23.551815293328474,
+                31.102255547080205,
+                34.198468405139394
+              ],
+              "transmission": 0.13775587479929932
+            }
+          ]
+        },
+        {
+          "frame": 41,
+          "maskPixels": 444,
+          "photographedPigment": [
+            {
+              "part": 0,
+              "sourceInkContrastBGR": [
+                23.57039726579643,
+                31.15082659621379,
+                34.19249511869177
+              ],
+              "transmission": 0.13785072710186355
+            }
+          ]
+        },
+        {
+          "frame": 42,
+          "maskPixels": 446,
+          "photographedPigment": [
+            {
+              "part": 0,
+              "sourceInkContrastBGR": [
+                23.49415918107084,
+                31.004306117373233,
+                34.17936666588912
+              ],
+              "transmission": 0.1374850107974158
+            }
+          ]
+        },
+        {
+          "frame": 43,
+          "maskPixels": 440,
+          "photographedPigment": [
+            {
+              "part": 0,
+              "sourceInkContrastBGR": [
+                23.418803860859455,
+                31.032151631753706,
+                34.05011613001574
+              ],
+              "transmission": 0.1372109637560138
+            }
+          ]
+        },
+        {
+          "frame": 44,
+          "maskPixels": 444,
+          "photographedPigment": [
+            {
+              "part": 0,
+              "sourceInkContrastBGR": [
+                23.548619163173328,
+                30.97471054456355,
+                34.06700437286531
+              ],
+              "transmission": 0.13734935516372432
+            }
+          ]
+        },
+        {
+          "frame": 45,
+          "maskPixels": 438,
+          "photographedPigment": [
+            {
+              "part": 0,
+              "sourceInkContrastBGR": [
+                23.57972116248824,
+                30.938906591246223,
+                34.05426440697495
+              ],
+              "transmission": 0.13732231342745646
+            }
+          ]
+        },
+        {
+          "frame": 46,
+          "maskPixels": 441,
+          "photographedPigment": [
+            {
+              "part": 0,
+              "sourceInkContrastBGR": [
+                23.577316159270666,
+                31.01920420034692,
+                33.92556192979431
+              ],
+              "transmission": 0.13724353843319675
+            }
+          ]
+        },
+        {
+          "frame": 47,
+          "maskPixels": 438,
+          "photographedPigment": [
+            {
+              "part": 0,
+              "sourceInkContrastBGR": [
+                23.3967426784979,
+                30.964745735320363,
+                33.863891595479714
+              ],
+              "transmission": 0.13678353489813638
+            }
+          ]
+        },
+        {
+          "frame": 48,
+          "maskPixels": 438,
+          "photographedPigment": [
+            {
+              "part": 0,
+              "sourceInkContrastBGR": [
+                23.623932985867498,
+                30.90330228452754,
+                33.62910033307293
+              ],
+              "transmission": 0.13667648930770226
+            }
+          ]
+        },
+        {
+          "frame": 49,
+          "maskPixels": 437,
+          "photographedPigment": [
+            {
+              "part": 0,
+              "sourceInkContrastBGR": [
+                23.464032950042707,
+                30.89356899811638,
+                33.54921722993912
+              ],
+              "transmission": 0.13628964213658637
+            }
+          ]
+        },
+        {
+          "frame": 50,
+          "maskPixels": 435,
+          "photographedPigment": [
+            {
+              "part": 0,
+              "sourceInkContrastBGR": [
+                23.340974350354955,
+                30.806752229168737,
+                33.425835217764146
+              ],
+              "transmission": 0.13577296402680283
+            }
+          ]
+        },
+        {
+          "frame": 51,
+          "maskPixels": 438,
+          "photographedPigment": [
+            {
+              "part": 0,
+              "sourceInkContrastBGR": [
+                22.744471375246803,
+                30.577860089577825,
+                33.3057333400119
+              ],
+              "transmission": 0.13430707721680082
+            }
+          ]
+        },
+        {
+          "frame": 52,
+          "maskPixels": 437,
+          "photographedPigment": [
+            {
+              "part": 0,
+              "sourceInkContrastBGR": [
+                22.50012322358873,
+                30.394455963788886,
+                33.132567945775776
+              ],
+              "transmission": 0.13337542191186572
+            }
+          ]
+        },
+        {
+          "frame": 53,
+          "maskPixels": 436,
+          "photographedPigment": [
+            {
+              "part": 0,
+              "sourceInkContrastBGR": [
+                22.390098071631314,
+                30.48402012097769,
+                33.12497204883046
+              ],
+              "transmission": 0.1333319228549449
+            }
+          ]
+        },
+        {
+          "frame": 54,
+          "maskPixels": 435,
+          "photographedPigment": [
+            {
+              "part": 0,
+              "sourceInkContrastBGR": [
+                22.42735867968119,
+                30.564840116296324,
+                32.97538866410676
+              ],
+              "transmission": 0.133283081333464
+            }
+          ]
+        },
+        {
+          "frame": 55,
+          "maskPixels": 438,
+          "photographedPigment": [
+            {
+              "part": 0,
+              "sourceInkContrastBGR": [
+                22.419016141833765,
+                30.583068659961654,
+                32.913347710707
+              ],
+              "transmission": 0.13320222094961615
+            }
+          ]
+        },
+        {
+          "frame": 56,
+          "maskPixels": 435,
+          "photographedPigment": [
+            {
+              "part": 0,
+              "sourceInkContrastBGR": [
+                22.37027538327277,
+                30.551837975830836,
+                32.81308172801596
+              ],
+              "transmission": 0.13292278308080552
+            }
+          ]
+        },
+        {
+          "frame": 57,
+          "maskPixels": 434,
+          "photographedPigment": [
+            {
+              "part": 0,
+              "sourceInkContrastBGR": [
+                22.358088699844842,
+                30.54214538738431,
+                32.691261647069425
+              ],
+              "transmission": 0.13269999338650942
+            }
+          ]
+        },
+        {
+          "frame": 58,
+          "maskPixels": 439,
+          "photographedPigment": [
+            {
+              "part": 0,
+              "sourceInkContrastBGR": [
+                22.493193557232587,
+                30.579614184453078,
+                32.70090885691948
+              ],
+              "transmission": 0.1329825063544266
+            }
+          ]
+        },
+        {
+          "frame": 59,
+          "maskPixels": 438,
+          "photographedPigment": [
+            {
+              "part": 0,
+              "sourceInkContrastBGR": [
+                22.432760841029875,
+                30.54055219820259,
+                32.729319884365026
+              ],
+              "transmission": 0.1328722991063527
+            }
+          ]
+        },
+        {
+          "frame": 60,
+          "maskPixels": 438,
+          "photographedPigment": [
+            {
+              "part": 0,
+              "sourceInkContrastBGR": [
+                22.60445774969321,
+                30.4955816388331,
+                32.76124678609415
+              ],
+              "transmission": 0.13311827313894645
+            }
+          ]
+        },
+        {
+          "frame": 61,
+          "maskPixels": 436,
+          "photographedPigment": [
+            {
+              "part": 0,
+              "sourceInkContrastBGR": [
+                22.70806699623634,
+                30.516513934532952,
+                32.8321212116774
+              ],
+              "transmission": 0.1334212436317003
+            }
+          ]
+        },
+        {
+          "frame": 62,
+          "maskPixels": 432,
+          "photographedPigment": [
+            {
+              "part": 0,
+              "sourceInkContrastBGR": [
+                22.666259720936495,
+                30.530281606570014,
+                32.864031235823745
+              ],
+              "transmission": 0.13342724428423294
+            }
+          ]
+        },
+        {
+          "frame": 63,
+          "maskPixels": 437,
+          "photographedPigment": [
+            {
+              "part": 0,
+              "sourceInkContrastBGR": [
+                22.60682399122632,
+                30.3987287317062,
+                32.83265779319538
+              ],
+              "transmission": 0.1330824969242293
+            }
+          ]
+        },
+        {
+          "frame": 64,
+          "maskPixels": 435,
+          "photographedPigment": [
+            {
+              "part": 0,
+              "sourceInkContrastBGR": [
+                22.48385090075584,
+                30.24855587660568,
+                32.66918992342315
+              ],
+              "transmission": 0.1324055762802863
+            }
+          ]
+        },
+        {
+          "frame": 65,
+          "maskPixels": 431,
+          "photographedPigment": [
+            {
+              "part": 0,
+              "sourceInkContrastBGR": [
+                22.324819505990916,
+                30.097094094152084,
+                32.56065743308329
+              ],
+              "transmission": 0.13175592408252138
+            }
+          ]
+        },
+        {
+          "frame": 66,
+          "maskPixels": 432,
+          "photographedPigment": [
+            {
+              "part": 0,
+              "sourceInkContrastBGR": [
+                22.28822301600178,
+                30.027744012236056,
+                32.49082990939971
+              ],
+              "transmission": 0.1314834061048644
+            }
+          ]
+        },
+        {
+          "frame": 67,
+          "maskPixels": 434,
+          "photographedPigment": [
+            {
+              "part": 0,
+              "sourceInkContrastBGR": [
+                22.132253394868414,
+                30.005883212894574,
+                32.511580640368905
+              ],
+              "transmission": 0.13123987170253007
+            }
+          ]
+        },
+        {
+          "frame": 68,
+          "maskPixels": 430,
+          "photographedPigment": [
+            {
+              "part": 0,
+              "sourceInkContrastBGR": [
+                21.98133746186997,
+                29.851547528894343,
+                32.63972755150965
+              ],
+              "transmission": 0.13096529076321545
+            }
+          ]
+        },
+        {
+          "frame": 69,
+          "maskPixels": 426,
+          "photographedPigment": [
+            {
+              "part": 0,
+              "sourceInkContrastBGR": [
+                21.615660589129106,
+                29.818589504638396,
+                32.58690112710602
+              ],
+              "transmission": 0.13026535073003648
+            }
+          ]
+        },
+        {
+          "frame": 70,
+          "maskPixels": 433,
+          "photographedPigment": [
+            {
+              "part": 0,
+              "sourceInkContrastBGR": [
+                21.58464132656134,
+                29.717553986722905,
+                32.64647212047686
+              ],
+              "transmission": 0.1301529727655211
+            }
+          ]
+        },
+        {
+          "frame": 71,
+          "maskPixels": 431,
+          "photographedPigment": [
+            {
+              "part": 0,
+              "sourceInkContrastBGR": [
+                21.42430895394662,
+                29.804252910007733,
+                32.59980923897287
+              ],
+              "transmission": 0.12996646682624374
+            }
+          ]
+        },
+        {
+          "frame": 72,
+          "maskPixels": 432,
+          "photographedPigment": [
+            {
+              "part": 0,
+              "sourceInkContrastBGR": [
+                21.08766579336168,
+                29.77915456858244,
+                32.67817269158064
+              ],
+              "transmission": 0.1295271210132167
+            }
+          ]
+        },
+        {
+          "frame": 73,
+          "maskPixels": 436,
+          "photographedPigment": [
+            {
+              "part": 0,
+              "sourceInkContrastBGR": [
+                20.575555124482833,
+                29.2291475482524,
+                32.75648503201404
+              ],
+              "transmission": 0.12800184140271204
+            }
+          ]
+        },
+        {
+          "frame": 74,
+          "maskPixels": 434,
+          "photographedPigment": [
+            {
+              "part": 0,
+              "sourceInkContrastBGR": [
+                20.439556828483518,
+                28.887510624775445,
+                32.74121372295025
+              ],
+              "transmission": 0.12723764523443287
+            }
+          ]
+        },
+        {
+          "frame": 75,
+          "maskPixels": 437,
+          "photographedPigment": [
+            {
+              "part": 0,
+              "sourceInkContrastBGR": [
+                20.689996728047134,
+                28.885290287425192,
+                32.74411479746652
+              ],
+              "transmission": 0.12762697955494395
+            }
+          ]
+        },
+        {
+          "frame": 76,
+          "maskPixels": 430,
+          "photographedPigment": [
+            {
+              "part": 0,
+              "sourceInkContrastBGR": [
+                20.737599780331976,
+                28.634951594293355,
+                32.581376047346026
+              ],
+              "transmission": 0.12706035259220366
+            }
+          ]
+        },
+        {
+          "frame": 77,
+          "maskPixels": 429,
+          "photographedPigment": [
+            {
+              "part": 0,
+              "sourceInkContrastBGR": [
+                20.958955686502023,
+                28.47792566020877,
+                32.457866341558
+              ],
+              "transmission": 0.1269686010670834
+            },
+            {
+              "part": 1,
+              "sourceInkContrastBGR": [
+                30,
+                30,
+                30
+              ],
+              "transmission": 0.13953488372093023
+            }
+          ]
+        },
+        {
+          "frame": 78,
+          "maskPixels": 427,
+          "photographedPigment": [
+            {
+              "part": 0,
+              "sourceInkContrastBGR": [
+                20.61598958277831,
+                28.137227807151717,
+                32.00124605042387
+              ],
+              "transmission": 0.1252007185121766
+            },
+            {
+              "part": 1,
+              "sourceInkContrastBGR": [
+                30,
+                30,
+                30
+              ],
+              "transmission": 0.13953488372093023
+            }
+          ]
+        },
+        {
+          "frame": 79,
+          "maskPixels": 420,
+          "photographedPigment": [
+            {
+              "part": 0,
+              "sourceInkContrastBGR": [
+                20.013065491081505,
+                27.616008731960477,
+                31.47538789310076
+              ],
+              "transmission": 0.12264257692425232
+            },
+            {
+              "part": 1,
+              "sourceInkContrastBGR": [
+                30,
+                30,
+                30
+              ],
+              "transmission": 0.13953488372093023
+            }
+          ]
+        },
+        {
+          "frame": 80,
+          "maskPixels": 424,
+          "photographedPigment": [
+            {
+              "part": 0,
+              "sourceInkContrastBGR": [
+                18.97781390582921,
+                27.30253567806875,
+                30.888300276913554
+              ],
+              "transmission": 0.11964131761366127
+            },
+            {
+              "part": 1,
+              "sourceInkContrastBGR": [
+                35.83940678494902,
+                44.75417827336133,
+                46.69812399984238
+              ],
+              "transmission": 0.1973514869118647
+            }
+          ]
+        },
+        {
+          "frame": 81,
+          "maskPixels": 429,
+          "photographedPigment": [
+            {
+              "part": 0,
+              "sourceInkContrastBGR": [
+                18.503110631631756,
+                27.327583316014994,
+                30.500243483434858
+              ],
+              "transmission": 0.1183425386528397
+            },
+            {
+              "part": 1,
+              "sourceInkContrastBGR": [
+                36.1630474376411,
+                44.83861053369591,
+                48.06695902298196
+              ],
+              "transmission": 0.20010638293692865
+            }
+          ]
+        },
+        {
+          "frame": 82,
+          "maskPixels": 497,
+          "photographedPigment": [
+            {
+              "part": 0,
+              "sourceInkContrastBGR": [
+                18.796043583625732,
+                27.421177888602003,
+                30.374557597790798
+              ],
+              "transmission": 0.11874694429460236
+            },
+            {
+              "part": 1,
+              "sourceInkContrastBGR": [
+                37.112981416134886,
+                45.65427362694166,
+                48.481349773425535
+              ],
+              "transmission": 0.20348620901783268
+            }
+          ]
+        },
+        {
+          "frame": 83,
+          "maskPixels": 532,
+          "photographedPigment": [
+            {
+              "part": 0,
+              "sourceInkContrastBGR": [
+                19.50825318501748,
+                27.624478066509965,
+                30.221557259032664
+              ],
+              "transmission": 0.11992912947373661
+            },
+            {
+              "part": 1,
+              "sourceInkContrastBGR": [
+                36.7936175516579,
+                45.431252031737515,
+                48.19457036580735
+              ],
+              "transmission": 0.20220068209178724
+            }
+          ]
+        },
+        {
+          "frame": 84,
+          "maskPixels": 609,
+          "photographedPigment": [
+            {
+              "part": 0,
+              "sourceInkContrastBGR": [
+                20.159912144669818,
+                27.93566919919644,
+                30.374805431747404
+              ],
+              "transmission": 0.12165951438079636
+            },
+            {
+              "part": 1,
+              "sourceInkContrastBGR": [
+                36.85203617715723,
+                45.097801037393864,
+                47.38051975326583
+              ],
+              "transmission": 0.2005121813454526
+            }
+          ]
+        },
+        {
+          "frame": 85,
+          "maskPixels": 659,
+          "photographedPigment": [
+            {
+              "part": 0,
+              "sourceInkContrastBGR": [
+                21.269427345987907,
+                28.843329481100312,
+                30.81471485354008
+              ],
+              "transmission": 0.12546894834205938
+            },
+            {
+              "part": 1,
+              "sourceInkContrastBGR": [
+                36.18536711492165,
+                44.508062137987906,
+                46.77229194435057
+              ],
+              "transmission": 0.1976212731740467
+            }
+          ]
+        },
+        {
+          "frame": 86,
+          "maskPixels": 711,
+          "photographedPigment": [
+            {
+              "part": 0,
+              "sourceInkContrastBGR": [
+                22.920222580871396,
+                30.304098462034872,
+                31.67760225863519
+              ],
+              "transmission": 0.13163088883959914
+            },
+            {
+              "part": 1,
+              "sourceInkContrastBGR": [
+                35.46298146273861,
+                44.46887223346985,
+                46.33114347093178
+              ],
+              "transmission": 0.1957565847552562
+            }
+          ]
+        },
+        {
+          "frame": 87,
+          "maskPixels": 735,
+          "photographedPigment": [
+            {
+              "part": 0,
+              "sourceInkContrastBGR": [
+                23.986819009756545,
+                30.90474581682622,
+                32.52915759032922
+              ],
+              "transmission": 0.13553600374715036
+            },
+            {
+              "part": 1,
+              "sourceInkContrastBGR": [
+                35.21037737809722,
+                44.41313402788779,
+                45.76576000653496
+              ],
+              "transmission": 0.1944019711822015
+            }
+          ]
+        },
+        {
+          "frame": 88,
+          "maskPixels": 740,
+          "photographedPigment": [
+            {
+              "part": 0,
+              "sourceInkContrastBGR": [
+                25.38246566189548,
+                31.493199232751692,
+                33.81719574471583
+              ],
+              "transmission": 0.1406090862625783
+            },
+            {
+              "part": 1,
+              "sourceInkContrastBGR": [
+                35.235025515456556,
+                43.687453816632996,
+                45.59343001454636
+              ],
+              "transmission": 0.19304792146765257
+            }
+          ]
+        },
+        {
+          "frame": 89,
+          "maskPixels": 742,
+          "photographedPigment": [
+            {
+              "part": 0,
+              "sourceInkContrastBGR": [
+                26.481243817452196,
+                31.93202348341302,
+                34.553001862619396
+              ],
+              "transmission": 0.1441337506410614
+            },
+            {
+              "part": 1,
+              "sourceInkContrastBGR": [
+                34.38782710376965,
+                43.016302045474006,
+                43.89136188421226
+              ],
+              "transmission": 0.18805502485807118
+            }
+          ]
+        },
+        {
+          "frame": 90,
+          "maskPixels": 732,
+          "photographedPigment": [
+            {
+              "part": 0,
+              "sourceInkContrastBGR": [
+                27.2153106137698,
+                32.31756278231643,
+                35.04586608264006
+              ],
+              "transmission": 0.1466337046181803
+            },
+            {
+              "part": 1,
+              "sourceInkContrastBGR": [
+                33.128856985251815,
+                41.55330603704684,
+                43.16295569999039
+              ],
+              "transmission": 0.18270561042215355
+            }
+          ]
+        },
+        {
+          "frame": 91,
+          "maskPixels": 736,
+          "photographedPigment": [
+            {
+              "part": 0,
+              "sourceInkContrastBGR": [
+                27.88245261537243,
+                32.693846764455586,
+                35.337549037537954
+              ],
+              "transmission": 0.14870364095715655
+            },
+            {
+              "part": 1,
+              "sourceInkContrastBGR": [
+                32.24496526671638,
+                40.979325288728205,
+                42.55666700458593
+              ],
+              "transmission": 0.17950536055818686
+            }
+          ]
+        },
+        {
+          "frame": 92,
+          "maskPixels": 737,
+          "photographedPigment": [
+            {
+              "part": 0,
+              "sourceInkContrastBGR": [
+                27.437279485283028,
+                32.71869525408812,
+                35.20206998143581
+              ],
+              "transmission": 0.1478419297997007
+            },
+            {
+              "part": 1,
+              "sourceInkContrastBGR": [
+                31.44143493878093,
+                39.61594425566969,
+                42.614893716429506
+              ],
+              "transmission": 0.1762360820323723
+            }
+          ]
+        },
+        {
+          "frame": 93,
+          "maskPixels": 731,
+          "photographedPigment": [
+            {
+              "part": 0,
+              "sourceInkContrastBGR": [
+                26.10411547163143,
+                32.53696904387495,
+                34.81494269194158
+              ],
+              "transmission": 0.1448930654379038
+            },
+            {
+              "part": 1,
+              "sourceInkContrastBGR": [
+                31.275903131208622,
+                39.378949176212444,
+                42.81224731687985
+              ],
+              "transmission": 0.17591798391364483
+            }
+          ]
+        },
+        {
+          "frame": 94,
+          "maskPixels": 731,
+          "photographedPigment": [
+            {
+              "part": 0,
+              "sourceInkContrastBGR": [
+                25.24669947671019,
+                32.06314697143573,
+                34.5102218773273
+              ],
+              "transmission": 0.14235669507825305
+            },
+            {
+              "part": 1,
+              "sourceInkContrastBGR": [
+                31.384009894753007,
+                39.1367342909749,
+                42.86064833582917
+              ],
+              "transmission": 0.17578510468458464
+            }
+          ]
+        },
+        {
+          "frame": 95,
+          "maskPixels": 732,
+          "photographedPigment": [
+            {
+              "part": 0,
+              "sourceInkContrastBGR": [
+                25.253403461811786,
+                31.829252241707337,
+                34.27979133321816
+              ],
+              "transmission": 0.1416472047081198
+            },
+            {
+              "part": 1,
+              "sourceInkContrastBGR": [
+                30.92221770111243,
+                38.96057725741127,
+                42.959020420596175
+              ],
+              "transmission": 0.17494855097537965
+            }
+          ]
+        },
+        {
+          "frame": 96,
+          "maskPixels": 725,
+          "photographedPigment": [
+            {
+              "part": 0,
+              "sourceInkContrastBGR": [
+                25.09637695953751,
+                31.8759868326339,
+                34.17068292441422
+              ],
+              "transmission": 0.14130704917300096
+            },
+            {
+              "part": 1,
+              "sourceInkContrastBGR": [
+                31.061284077197158,
+                38.70896558574232,
+                42.80508527163029
+              ],
+              "transmission": 0.17453540299933296
+            }
+          ]
+        },
+        {
+          "frame": 97,
+          "maskPixels": 737,
+          "photographedPigment": [
+            {
+              "part": 0,
+              "sourceInkContrastBGR": [
+                25.369749441903764,
+                31.911781162835524,
+                34.356500991773686
+              ],
+              "transmission": 0.14207446759149298
+            },
+            {
+              "part": 1,
+              "sourceInkContrastBGR": [
+                30.48755367610994,
+                38.01078699347457,
+                42.648554171445355
+              ],
+              "transmission": 0.17232076719539516
+            }
+          ]
+        },
+        {
+          "frame": 98,
+          "maskPixels": 738,
+          "photographedPigment": [
+            {
+              "part": 0,
+              "sourceInkContrastBGR": [
+                25.3949668911349,
+                31.951095090854153,
+                34.32223109138364
+              ],
+              "transmission": 0.14212138460988016
+            },
+            {
+              "part": 1,
+              "sourceInkContrastBGR": [
+                29.263164380184776,
+                38.18552192936647,
+                41.89766492386943
+              ],
+              "transmission": 0.16952922671848167
+            }
+          ]
+        },
+        {
+          "frame": 99,
+          "maskPixels": 719,
+          "photographedPigment": [
+            {
+              "part": 0,
+              "sourceInkContrastBGR": [
+                25.597365106289857,
+                32.01154343197703,
+                34.301545582063056
+              ],
+              "transmission": 0.1424968280935348
+            },
+            {
+              "part": 1,
+              "sourceInkContrastBGR": [
+                27.03101711897814,
+                37.85696966874643,
+                40.875524752798555
+              ],
+              "transmission": 0.16397443649693508
+            }
+          ]
+        },
+        {
+          "frame": 100,
+          "maskPixels": 729,
+          "photographedPigment": [
+            {
+              "part": 0,
+              "sourceInkContrastBGR": [
+                25.748709434481526,
+                32.154267062076514,
+                34.318607260073264
+              ],
+              "transmission": 0.1429791996226842
+            },
+            {
+              "part": 1,
+              "sourceInkContrastBGR": [
+                27.438049569621967,
+                37.68508981754759,
+                41.013160812507735
+              ],
+              "transmission": 0.1645524034103524
+            }
+          ]
+        },
+        {
+          "frame": 101,
+          "maskPixels": 727,
+          "photographedPigment": [
+            {
+              "part": 0,
+              "sourceInkContrastBGR": [
+                25.932759751339972,
+                31.99695251482845,
+                34.45278304415055
+              ],
+              "transmission": 0.14322867489971933
+            },
+            {
+              "part": 1,
+              "sourceInkContrastBGR": [
+                30.91659843627336,
+                37.513403002689955,
+                42.049179454195595
+              ],
+              "transmission": 0.17128555177233942
+            }
+          ]
+        },
+        {
+          "frame": 102,
+          "maskPixels": 732,
+          "photographedPigment": [
+            {
+              "part": 0,
+              "sourceInkContrastBGR": [
+                25.820888346887557,
+                32.044849365116676,
+                34.54952722225531
+              ],
+              "transmission": 0.14327948051823186
+            },
+            {
+              "part": 1,
+              "sourceInkContrastBGR": [
+                33.38958837321721,
+                37.944980577237885,
+                42.78082346412148
+              ],
+              "transmission": 0.1769230890148474
+            }
+          ]
+        },
+        {
+          "frame": 103,
+          "maskPixels": 729,
+          "photographedPigment": [
+            {
+              "part": 0,
+              "sourceInkContrastBGR": [
+                25.846197690579743,
+                31.921363812129357,
+                34.7096136233135
+              ],
+              "transmission": 0.14337546531166295
+            },
+            {
+              "part": 1,
+              "sourceInkContrastBGR": [
+                33.415225597133514,
+                38.16749175826081,
+                42.806161271332385
+              ],
+              "transmission": 0.17734709864608791
+            }
+          ]
+        },
+        {
+          "frame": 104,
+          "maskPixels": 726,
+          "photographedPigment": [
+            {
+              "part": 0,
+              "sourceInkContrastBGR": [
+                25.750656034996382,
+                31.921109985745602,
+                34.82139241942957
+              ],
+              "transmission": 0.14340024564367682
+            },
+            {
+              "part": 1,
+              "sourceInkContrastBGR": [
+                32.474952121784895,
+                37.96094154965897,
+                42.77755529367667
+              ],
+              "transmission": 0.17552472707770625
+            }
+          ]
+        },
+        {
+          "frame": 105,
+          "maskPixels": 723,
+          "photographedPigment": [
+            {
+              "part": 0,
+              "sourceInkContrastBGR": [
+                25.802183550887975,
+                31.97796377366805,
+                34.584503743213986
+              ],
+              "transmission": 0.14320100940739536
+            },
+            {
+              "part": 1,
+              "sourceInkContrastBGR": [
+                31.589719708009028,
+                38.43823414966171,
+                42.39139477664935
+              ],
+              "transmission": 0.17429356377413968
+            }
+          ]
+        },
+        {
+          "frame": 106,
+          "maskPixels": 725,
+          "photographedPigment": [
+            {
+              "part": 0,
+              "sourceInkContrastBGR": [
+                25.581270921851768,
+                32.10303426254049,
+                34.565231164970996
+              ],
+              "transmission": 0.14302253697575698
+            },
+            {
+              "part": 1,
+              "sourceInkContrastBGR": [
+                30.219260900377975,
+                38.20074768080161,
+                42.36219418276862
+              ],
+              "transmission": 0.17175535312240034
+            }
+          ]
+        },
+        {
+          "frame": 107,
+          "maskPixels": 718,
+          "photographedPigment": [
+            {
+              "part": 0,
+              "sourceInkContrastBGR": [
+                25.00293848310403,
+                31.737547207116023,
+                34.73445730985151
+              ],
+              "transmission": 0.14182161705437452
+            },
+            {
+              "part": 1,
+              "sourceInkContrastBGR": [
+                30.20707482424723,
+                38.21807737759042,
+                42.27821875091237
+              ],
+              "transmission": 0.17163313326007756
+            }
+          ]
+        },
+        {
+          "frame": 108,
+          "maskPixels": 722,
+          "photographedPigment": [
+            {
+              "part": 0,
+              "sourceInkContrastBGR": [
+                24.59273119701433,
+                31.3618092320786,
+                34.67494332794399
+              ],
+              "transmission": 0.14051082753028982
+            },
+            {
+              "part": 1,
+              "sourceInkContrastBGR": [
+                29.565877439337967,
+                38.22641426849873,
+                42.532407404924484
+              ],
+              "transmission": 0.17104604513606383
+            }
+          ]
+        },
+        {
+          "frame": 109,
+          "maskPixels": 727,
+          "photographedPigment": [
+            {
+              "part": 0,
+              "sourceInkContrastBGR": [
+                24.316093195985502,
+                31.165091636119854,
+                34.58838260743536
+              ],
+              "transmission": 0.1396427402163422
+            },
+            {
+              "part": 1,
+              "sourceInkContrastBGR": [
+                29.728351600604412,
+                38.36242460298405,
+                42.56822370321581
+              ],
+              "transmission": 0.17156434094078182
+            }
+          ]
+        },
+        {
+          "frame": 110,
+          "maskPixels": 722,
+          "photographedPigment": [
+            {
+              "part": 0,
+              "sourceInkContrastBGR": [
+                24.031470224550688,
+                31.132018369057192,
+                34.44718666177488
+              ],
+              "transmission": 0.1389312794657097
+            },
+            {
+              "part": 1,
+              "sourceInkContrastBGR": [
+                29.41032764392773,
+                38.320694477840064,
+                42.536445446303816
+              ],
+              "transmission": 0.17095731405902576
+            }
+          ]
+        },
+        {
+          "frame": 111,
+          "maskPixels": 723,
+          "photographedPigment": [
+            {
+              "part": 0,
+              "sourceInkContrastBGR": [
+                23.837845382463826,
+                31.010090416776762,
+                34.2619133328927
+              ],
+              "transmission": 0.1381548048560206
+            },
+            {
+              "part": 1,
+              "sourceInkContrastBGR": [
+                29.29294551832598,
+                38.28675732108928,
+                42.716509978241234
+              ],
+              "transmission": 0.17100188033745195
+            }
+          ]
+        },
+        {
+          "frame": 112,
+          "maskPixels": 726,
+          "photographedPigment": [
+            {
+              "part": 0,
+              "sourceInkContrastBGR": [
+                23.576810487686032,
+                30.64081719347999,
+                34.23459740713645
+              ],
+              "transmission": 0.13713523269504257
+            },
+            {
+              "part": 1,
+              "sourceInkContrastBGR": [
+                29.279972790794133,
+                38.38916200128986,
+                42.65048653719242
+              ],
+              "transmission": 0.17103817260352933
+            }
+          ]
+        },
+        {
+          "frame": 113,
+          "maskPixels": 720,
+          "photographedPigment": [
+            {
+              "part": 0,
+              "sourceInkContrastBGR": [
+                23.29539895030348,
+                30.380493414027967,
+                34.063055604910716
+              ],
+              "transmission": 0.13602937669649948
+            },
+            {
+              "part": 1,
+              "sourceInkContrastBGR": [
+                29.430874584337516,
+                38.44313793357961,
+                42.822548070836206
+              ],
+              "transmission": 0.17162257455620672
+            }
+          ]
+        },
+        {
+          "frame": 114,
+          "maskPixels": 723,
+          "photographedPigment": [
+            {
+              "part": 0,
+              "sourceInkContrastBGR": [
+                23.29170850984906,
+                30.163745334253207,
+                33.952354886486575
+              ],
+              "transmission": 0.13551598252804473
+            },
+            {
+              "part": 1,
+              "sourceInkContrastBGR": [
+                29.65411034557779,
+                38.645698575542525,
+                42.84589674380443
+              ],
+              "transmission": 0.17231892351151123
+            }
+          ]
+        },
+        {
+          "frame": 115,
+          "maskPixels": 719,
+          "photographedPigment": [
+            {
+              "part": 0,
+              "sourceInkContrastBGR": [
+                23.35158256147821,
+                30.049238609524906,
+                33.89545395617148
+              ],
+              "transmission": 0.1353430622126738
+            },
+            {
+              "part": 1,
+              "sourceInkContrastBGR": [
+                29.903248909286376,
+                38.696711136787044,
+                43.13098991424458
+              ],
+              "transmission": 0.17322627900824497
+            }
+          ]
+        },
+        {
+          "frame": 116,
+          "maskPixels": 723,
+          "photographedPigment": [
+            {
+              "part": 0,
+              "sourceInkContrastBGR": [
+                23.394217623300648,
+                30.151323254288386,
+                33.89635882053588
+              ],
+              "transmission": 0.13556883674127893
+            },
+            {
+              "part": 1,
+              "sourceInkContrastBGR": [
+                30.124797086654652,
+                38.873976576403194,
+                43.33660421238149
+              ],
+              "transmission": 0.17416337655106873
+            }
+          ]
+        },
+        {
+          "frame": 117,
+          "maskPixels": 725,
+          "photographedPigment": [
+            {
+              "part": 0,
+              "sourceInkContrastBGR": [
+                23.54218781297186,
+                30.36372879980317,
+                34.06299817061068
+              ],
+              "transmission": 0.13638591439284606
+            },
+            {
+              "part": 1,
+              "sourceInkContrastBGR": [
+                30.26049453139862,
+                39.003104417712905,
+                43.329746315358506
+              ],
+              "transmission": 0.1745633259914264
+            }
+          ]
+        },
+        {
+          "frame": 118,
+          "maskPixels": 717,
+          "photographedPigment": [
+            {
+              "part": 0,
+              "sourceInkContrastBGR": [
+                23.61638468356921,
+                30.608264281280924,
+                34.22322744993377
+              ],
+              "transmission": 0.13712849056555643
+            },
+            {
+              "part": 1,
+              "sourceInkContrastBGR": [
+                30.3345211910204,
+                39.07407026943221,
+                43.32196779279428
+              ],
+              "transmission": 0.17477606085774713
+            }
+          ]
+        },
+        {
+          "frame": 119,
+          "maskPixels": 719,
+          "photographedPigment": [
+            {
+              "part": 0,
+              "sourceInkContrastBGR": [
+                23.427266297189306,
+                30.663843530300994,
+                34.23826449558801
+              ],
+              "transmission": 0.13694476639236947
+            },
+            {
+              "part": 1,
+              "sourceInkContrastBGR": [
+                30.25070343969051,
+                39.02270888257539,
+                43.465881136866216
+              ],
+              "transmission": 0.17478960226222034
+            }
+          ]
+        },
+        {
+          "frame": 120,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 121,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 122,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 123,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 124,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 125,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 126,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 127,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 128,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 129,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 130,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 131,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 132,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 133,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 134,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 135,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 136,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 137,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 138,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 139,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 140,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 141,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 142,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 143,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 144,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 145,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 146,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 147,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 148,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 149,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 150,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 151,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 152,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 153,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 154,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 155,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 156,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 157,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 158,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 159,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 160,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 161,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 162,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 163,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 164,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 165,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 166,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 167,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 168,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 169,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 170,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 171,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 172,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 173,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 174,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 175,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 176,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 177,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 178,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 179,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 180,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 181,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 182,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 183,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 184,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 185,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 186,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 187,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 188,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 189,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 190,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 191,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 192,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 193,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 194,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 195,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 196,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 197,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 198,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 199,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 200,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 201,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 202,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 203,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 204,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 205,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 206,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 207,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 208,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 209,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 210,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 211,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 212,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 213,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 214,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 215,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 216,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 217,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 218,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 219,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 220,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 221,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 222,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 223,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 224,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 225,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 226,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 227,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 228,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 229,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 230,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 231,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 232,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 233,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 234,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 235,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 236,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 237,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 238,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 239,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 240,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 241,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 242,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 243,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 244,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 245,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 246,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 247,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 248,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 249,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 250,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 251,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 252,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 253,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 254,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 255,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 256,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 257,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 258,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 259,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 260,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 261,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 262,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 263,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 264,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 265,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 266,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 267,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 268,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 269,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 270,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 271,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 272,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 273,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 274,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 275,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 276,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 277,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 278,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 279,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 280,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 281,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 282,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 283,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 284,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 285,
+          "maskPixels": 0,
+          "photographedPigment": []
+        },
+        {
+          "frame": 286,
+          "maskPixels": 0,
+          "photographedPigment": []
+        }
+      ],
+      "unionMaskPixels": 8860,
+      "outsideCornerMaskPixelIdenticalBeforeEncodeAllFrames": true,
+      "decodedFrameCountVerified": true,
+      "preservedUneditedFrameRangeInclusive": [
+        120,
+        286
+      ],
+      "newPinkNativeRect": [
+        72.362,
+        23.072,
+        16.09,
+        15.987
+      ],
+      "method": "Analytic new-minus-old photographed pigment differential through original sign homography; integer rounding before adding to current decoded pixels.",
+      "encodingLimit": "H264 reencoding can change pixels outside the local correction mask. Exact equality established before encode.",
+      "poster": {
+        "old": "products/usung-corporate/public/assets/media/usung-delivery-film-v25-poster.jpg",
+        "new": "products/usung-corporate/public/assets/media/usung-delivery-film-v33-poster.webp",
+        "oldSha256": "fee5726daceb3a46b2432fb4d214556c57c3d6cb3b39e2ff1fde6d8e5d44ecc7",
+        "newSha256": "5fba6f6eacf85b87865d6677b8b62938f38c70751ac8b67463d173ed89d63e11",
+        "maskPixels": 419,
+        "outsideMaskPixelIdenticalAfterLosslessWebpDecode": true
+      },
+      "wide": {
+        "note": "Active structure-frame wide poster contains no replacement U; no color correction required.",
+        "old": "products/usung-corporate/public/assets/media/usung-delivery-film-v25-wide.jpg",
+        "new": "products/usung-corporate/public/assets/media/usung-delivery-film-v33-wide.jpg",
+        "sha256": "939d2de413632aa6737da93c7406c09d01496865ab954e7c200c1b6c44cbfd3d",
+        "byteIdentical": true
+      }
+    }
+  ],
+  "unchangedPrecision": {
+    "video": "products/usung-corporate/public/assets/references/dexterity-precision.mp4",
+    "sha256": "5139e4801f8e1ec6f89c8f7da3f38b0f1d1f0fd6f88b4a964ea38cccd6133ece",
+    "frames": 262,
+    "fps": 23.976023976023978,
+    "poster": "products/usung-corporate/public/assets/references/dexterity-precision-poster.jpg",
+    "posterSha256": "492739d39baf380d205730192fd183bf8626e1e1c8919da2947de9c70dfb96d0",
+    "action": "retained unchanged",
+    "basis": "Active source asset has no USUNG compositing recipe in v22/v23; native Dexterity precision footage and poster remain original. Six sampled source frames saved for visual inventory."
+  }
+}

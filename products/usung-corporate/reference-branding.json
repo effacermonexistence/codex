@@ -1,5 +1,5 @@
 {
-  "revision": "2026-10-04-home-divisions-v26",
+  "revision": "2026-10-05-surface-branding-v33",
   "scope": "Currently displayed reference media on Home, AI, Smart Construction and Physical AI, including video playback and posters",
   "approvedMark": "public/assets/brand/usung-wordmark.svg",
   "photoEditor": "Non-generative source-pixel compositing, local printed-mark masks and lossless WebP",
@@ -7,586 +7,1013 @@
   "assets": [
     {
       "source": "assets/media/built-sunrise.jpg",
-      "served": "assets/media/usung-site-dawn-v24.webp",
+      "served": "assets/media/usung-site-dawn-v34.webp",
       "servedBytes": 2424738,
       "servedSha256": "123dd4dd98eaf0e64fcd86132bc8f9d4071ef85f79623b5435fc1189dcff2e32",
-      "transformation": "Original decoded source photograph retained exactly outside printed-brand masks; local non-generative retouching, perspective/curvature, photographed light/ink/focus; lossless WebP",
+      "transformation": "Owner-approved B corner: first-U pink extends to left stem edge with no contrasting strip. Original scene, dimensions, surface pose, light and alpha preserved; only measured corner pigment delta changed before encoding. No scene generation.",
       "editor": "deterministic source pixel compositing",
       "previousServed": {
-        "file": "assets/media/usung-site-dawn-v22.jpg",
-        "bytes": 348401,
-        "sha256": "939e83e60f9b8ddfb11b36447fa2808feddacce9a752351293110549913383b2"
+        "file": "assets/media/usung-site-dawn-v24.webp",
+        "sha256": "123dd4dd98eaf0e64fcd86132bc8f9d4071ef85f79623b5435fc1189dcff2e32",
+        "transformation": "Original decoded source photograph retained exactly outside printed-brand masks; local non-generative retouching, perspective/curvature, photographed light/ink/focus; lossless WebP",
+        "verification": {
+          "source": "built-sunrise.jpg",
+          "served": "usung-site-dawn-v24.webp",
+          "dimensions": [
+            2200,
+            1466
+          ],
+          "sourceSha256": "51124b57542c4eed9761f66ce5f79d7fa4f7bba8afd1ca8e46a4ad08ed6ba01b",
+          "changedPixels": 163,
+          "totalPixels": 3225200,
+          "outsideMaskIdentical": true,
+          "encoding": "lossless WebP"
+        }
       },
       "verification": {
-        "source": "built-sunrise.jpg",
-        "served": "usung-site-dawn-v24.webp",
+        "old": "assets/media/usung-site-dawn-v24.webp",
+        "new": "assets/media/usung-site-dawn-v34.webp",
+        "candidate": "outputs/website/usung-still-branding-v34/edited/usung-site-dawn-v34.webp",
+        "source": "assets/media/built-sunrise.jpg",
+        "sourceSha256": "51124b57542c4eed9761f66ce5f79d7fa4f7bba8afd1ca8e46a4ad08ed6ba01b",
+        "baselineSha256": "123dd4dd98eaf0e64fcd86132bc8f9d4071ef85f79623b5435fc1189dcff2e32",
+        "candidateSha256": "123dd4dd98eaf0e64fcd86132bc8f9d4071ef85f79623b5435fc1189dcff2e32",
         "dimensions": [
           2200,
           1466
         ],
-        "sourceSha256": "51124b57542c4eed9761f66ce5f79d7fa4f7bba8afd1ca8e46a4ad08ed6ba01b",
-        "changedPixels": 163,
-        "totalPixels": 3225200,
-        "outsideMaskIdentical": true,
-        "encoding": "lossless WebP"
-      }
+        "nativeBRect": [
+          72.362,
+          23.072,
+          16.09,
+          15.987
+        ],
+        "nativePink": "#FF0F6F",
+        "method": "Model-forward old-to-B corner-only delta using preserved original photograph and the exact prior print surface, projection, focus, illumination and texture recipe. Existing printed shape/placement and every pixel outside corner delta retained.",
+        "noGeneration": true,
+        "shapeAlphaProjectionAndFocusUnchanged": true,
+        "changedPixels": 0,
+        "deltaMask": "outputs/website/usung-still-branding-v34/audit/usung-site-dawn-corner-delta-mask.png",
+        "sourceBrandMask": "outputs/website/usung-still-branding-v34/audit/usung-site-dawn-all-source-brand-mask.png",
+        "outsideDeltaEqualsBaseline": true,
+        "outsideCombinedSourceBrandMasksEqualsOriginal": true,
+        "losslessWebP": true,
+        "models": [
+          {
+            "name": "edge-clipped native U",
+            "deltaPixels": 0,
+            "maxChannelDelta": 0
+          }
+        ],
+        "sourcePage": "https://www.builtrobotics.com/about/downloads",
+        "sourceAsset": "https://assets.builtrobotics.com/production/public/download/2024_01_26_BUILT_0261.jpg",
+        "officialSourceVerification": {
+          "retrieved": "2026-10-05",
+          "officialPageLabel": "RPD 35 Autonomously Drives Pile during Sunrise",
+          "remoteDimensions": [
+            5472,
+            3648
+          ],
+          "remoteSha256": "66c625ba0117b32610ce82d933fb5e8770be4b6a419657e20b766bf76c3b18d1",
+          "localDimensions": [
+            2200,
+            1466
+          ],
+          "comparisonAt": [
+            220,
+            146
+          ],
+          "rgbMeanAbsoluteError": 0.5648920713989207,
+          "rgbCorrelation": 0.9999694734989498,
+          "relationship": "Official original and local resized JPEG depict the same source photograph; byte identity is not claimed."
+        },
+        "pixelIdenticalModels": [
+          "edge-clipped native U"
+        ],
+        "quantizationNote": "Both native A and B rasters were forwarded through the identical prior photo projection, focus and print color sampling. Listed models rasterize to exactly identical RGB at this photograph scale. No extra repaint was introduced merely to force a changed pixel."
+      },
+      "durableVerification": "baseline/original-media-v33/"
     },
     {
       "source": "assets/references/dexterity-hero.mp4",
-      "served": "assets/references/usung-physical-hero-v23.mp4",
-      "servedBytes": 5144551,
-      "servedSha256": "dae826af16ba054ef7753aad0b3ce92ed47693c44d01760cb57e30dd6e07255b",
-      "transformation": "Original footage frame count/dimensions/fps retained; brand painted into observed physical planes with foreground masks, photographed ink colour, local lighting/texture and focus softness; no new screen-corner logo; H264 CRF17, no audio",
+      "served": "assets/references/usung-physical-hero-v33.mp4",
+      "servedBytes": 5857091,
+      "servedSha256": "98ad5f89dd0109479064086d1b3a4e2d8f1540407a1ceb52b72d3e12fcbbcc06",
+      "transformation": "Owner-approved B corner: first-U pink extends to left stem edge with no contrasting strip. Original scene, dimensions, surface pose, light and alpha preserved; only measured corner pigment delta changed before encoding. No scene generation.",
       "previousServed": {
-        "file": "assets/references/usung-physical-hero-v22.mp4",
-        "bytes": 4569451,
-        "sha256": "f2912728b0064f0be8046e9505c185e2f58f2aa855a12f9ff5fbe0822a248a33"
-      }
+        "file": "assets/references/usung-physical-hero-v23.mp4",
+        "sha256": "dae826af16ba054ef7753aad0b3ce92ed47693c44d01760cb57e30dd6e07255b",
+        "transformation": "Original footage frame count/dimensions/fps retained; brand painted into observed physical planes with foreground masks, photographed ink colour, local lighting/texture and focus softness; no new screen-corner logo; H264 CRF17, no audio"
+      },
+      "durableVerification": "baseline/original-media-v33/"
     },
     {
       "source": "assets/references/dexterity-hero-poster.jpg",
-      "served": "assets/references/usung-physical-hero-v23-poster.jpg",
-      "servedBytes": 317394,
-      "servedSha256": "3f1da0fd40e62f80e32c1e8d58e9dcf30d1b30f5836de8ca3b9c443f7f3ccdd1",
-      "transformation": "Frame at 1 second from corrected surface-branded video",
+      "served": "assets/references/usung-physical-hero-v33-poster.webp",
+      "servedBytes": 865988,
+      "servedSha256": "2b3e6144b4b12f39f4ec2cd7b6560c5201ddb03fde8c4bbaa853657c95638f9f",
+      "transformation": "Owner-approved B corner: first-U pink extends to left stem edge with no contrasting strip. Original scene, dimensions, surface pose, light and alpha preserved; only measured corner pigment delta changed before encoding. No scene generation.",
       "previousServed": {
-        "file": "assets/references/usung-physical-hero-v22-poster.jpg",
-        "bytes": 317385,
-        "sha256": "a1f0dd72eab7b22e6cc0d8c556ff28cda3d4b7a3d9b283d95749bb3664737f66"
-      }
+        "file": "assets/references/usung-physical-hero-v23-poster.jpg",
+        "sha256": "3f1da0fd40e62f80e32c1e8d58e9dcf30d1b30f5836de8ca3b9c443f7f3ccdd1",
+        "transformation": "Frame at 1 second from corrected surface-branded video"
+      },
+      "durableVerification": "baseline/original-media-v33/"
     },
     {
       "source": "assets/references/dexterity-perception.mp4",
-      "served": "assets/references/usung-perception-v23.mp4",
-      "servedBytes": 3263110,
-      "servedSha256": "3ef7e6126a73b8a6c846c40487ae503061ea0b35b1108506b2d1181c292e0e5f",
-      "transformation": "Original footage frame count/dimensions/fps retained; brand painted into observed physical planes with foreground masks, photographed ink colour, local lighting/texture and focus softness; no new screen-corner logo; H264 CRF17, no audio",
+      "served": "assets/references/usung-perception-v33.mp4",
+      "servedBytes": 4171599,
+      "servedSha256": "b49d7ab591f61407bf54a3c721218c909380f5a0293a55786dad7c32f8b20380",
+      "transformation": "Owner-approved B corner: first-U pink extends to left stem edge with no contrasting strip. Original scene, dimensions, surface pose, light and alpha preserved; only measured corner pigment delta changed before encoding. No scene generation.",
       "previousServed": {
-        "file": "assets/references/usung-perception-v22.mp4",
-        "bytes": 2974255,
-        "sha256": "386bf5031641dd7ecc48e14acce1b041a30e24521716afd5bc85b4d9f09d826b"
-      }
+        "file": "assets/references/usung-perception-v23.mp4",
+        "sha256": "3ef7e6126a73b8a6c846c40487ae503061ea0b35b1108506b2d1181c292e0e5f",
+        "transformation": "Original footage frame count/dimensions/fps retained; brand painted into observed physical planes with foreground masks, photographed ink colour, local lighting/texture and focus softness; no new screen-corner logo; H264 CRF17, no audio"
+      },
+      "durableVerification": "baseline/original-media-v33/"
     },
     {
       "source": "assets/references/dexterity-perception-poster.jpg",
-      "served": "assets/references/usung-perception-v23-poster.jpg",
-      "servedBytes": 154850,
-      "servedSha256": "6a9967b307e846e0d8dd33a762f7344953123b30d4ae9e347eb13cf2b371d989",
-      "transformation": "Frame at 1 second from corrected surface-branded video",
+      "served": "assets/references/usung-perception-v33-poster.webp",
+      "servedBytes": 297958,
+      "servedSha256": "ac9211317b7db6327786be4f5a297d94d1d202cfd667b24f8db39b0ba41fe4b7",
+      "transformation": "Owner-approved B corner: first-U pink extends to left stem edge with no contrasting strip. Original scene, dimensions, surface pose, light and alpha preserved; only measured corner pigment delta changed before encoding. No scene generation.",
       "previousServed": {
-        "file": "assets/references/usung-perception-v22-poster.jpg",
-        "bytes": 156511,
-        "sha256": "3715c74433ead2041a4dcec15479f5b48fb97629f9f8ffe514527bd1f58dd203"
-      }
+        "file": "assets/references/usung-perception-v23-poster.jpg",
+        "sha256": "6a9967b307e846e0d8dd33a762f7344953123b30d4ae9e347eb13cf2b371d989",
+        "transformation": "Frame at 1 second from corrected surface-branded video"
+      },
+      "durableVerification": "baseline/original-media-v33/"
     },
     {
       "source": "assets/references/dexterity-coordination.mp4",
-      "served": "assets/references/usung-coordination-v23.mp4",
-      "servedBytes": 3214755,
-      "servedSha256": "3fb9fc8c79842483c3b5fae4e558f18b6ef5e93f4c2b3128d4fbf41c4a8176b0",
-      "transformation": "Original footage frame count/dimensions/fps retained; brand painted into observed physical planes with foreground masks, photographed ink colour, local lighting/texture and focus softness; no new screen-corner logo; H264 CRF17, no audio",
+      "served": "assets/references/usung-coordination-v33.mp4",
+      "servedBytes": 3573870,
+      "servedSha256": "56b93b1d7aa8610ee4ae2a7634f6afbcb191a790f4762ac47daedff50fc4012a",
+      "transformation": "Owner-approved B corner: first-U pink extends to left stem edge with no contrasting strip. Original scene, dimensions, surface pose, light and alpha preserved; only measured corner pigment delta changed before encoding. No scene generation.",
       "previousServed": {
-        "file": "assets/references/usung-coordination-v22.mp4",
-        "bytes": 2867762,
-        "sha256": "efa891d844e3eb1fe37cf49becb61a7d2a0c820e7876c65480d1352acca693b1"
-      }
+        "file": "assets/references/usung-coordination-v23.mp4",
+        "sha256": "3fb9fc8c79842483c3b5fae4e558f18b6ef5e93f4c2b3128d4fbf41c4a8176b0",
+        "transformation": "Original footage frame count/dimensions/fps retained; brand painted into observed physical planes with foreground masks, photographed ink colour, local lighting/texture and focus softness; no new screen-corner logo; H264 CRF17, no audio"
+      },
+      "durableVerification": "baseline/original-media-v33/"
     },
     {
       "source": "assets/references/dexterity-coordination-poster.jpg",
-      "served": "assets/references/usung-coordination-v23-poster.jpg",
-      "servedBytes": 118849,
-      "servedSha256": "e140ba4b95403da2f9d9fd8466d04cc1ee1e1ce603e9c71ed05317eea3482b07",
-      "transformation": "Frame at 1 second from corrected surface-branded video",
+      "served": "assets/references/usung-coordination-v33-poster.webp",
+      "servedBytes": 290250,
+      "servedSha256": "4260a91df0deaed937d3c4520cc35a2aa77b2f8201a306ce3a93049e44ba1905",
+      "transformation": "Owner-approved B corner: first-U pink extends to left stem edge with no contrasting strip. Original scene, dimensions, surface pose, light and alpha preserved; only measured corner pigment delta changed before encoding. No scene generation.",
       "previousServed": {
-        "file": "assets/references/usung-coordination-v22-poster.jpg",
-        "bytes": 119205,
-        "sha256": "8e432e233a85ce32ca3c7960b4dbdbb97db36cc91cb058cef88367b1c1c72b40"
-      }
+        "file": "assets/references/usung-coordination-v23-poster.jpg",
+        "sha256": "e140ba4b95403da2f9d9fd8466d04cc1ee1e1ce603e9c71ed05317eea3482b07",
+        "transformation": "Frame at 1 second from corrected surface-branded video"
+      },
+      "durableVerification": "baseline/original-media-v33/"
     },
     {
       "source": "assets/references/field-robots.mp4",
-      "served": "assets/references/usung-field-robots-v23.mp4",
-      "servedBytes": 3478255,
-      "servedSha256": "336af7519093e91aa7ef366d27dcb5827c3b481da441f4b8893f407cf273ed37",
-      "transformation": "Original footage frame count/dimensions/fps retained; brand painted into observed physical planes with foreground masks, photographed ink colour, local lighting/texture and focus softness; no new screen-corner logo; H264 CRF17, no audio",
+      "served": "assets/references/usung-field-robots-v33.mp4",
+      "servedBytes": 4106086,
+      "servedSha256": "d47a449481912fdfed7b7a1be5fd28ae7ba63592ea4b7337775a3d67409616c7",
+      "transformation": "Owner-approved B corner: first-U pink extends to left stem edge with no contrasting strip. Original scene, dimensions, surface pose, light and alpha preserved; only measured corner pigment delta changed before encoding. No scene generation.",
       "previousServed": {
-        "file": "assets/references/usung-field-robots-v22.mp4",
-        "bytes": 3266952,
-        "sha256": "588e68abea0f10d567a865103e2e5ff8ae8889689ecc3a0b02063058160a9e09"
-      }
+        "file": "assets/references/usung-field-robots-v23.mp4",
+        "sha256": "336af7519093e91aa7ef366d27dcb5827c3b481da441f4b8893f407cf273ed37",
+        "transformation": "Original footage frame count/dimensions/fps retained; brand painted into observed physical planes with foreground masks, photographed ink colour, local lighting/texture and focus softness; no new screen-corner logo; H264 CRF17, no audio"
+      },
+      "durableVerification": "baseline/original-media-v33/"
     },
     {
       "source": "assets/references/field-robots-poster.jpg",
-      "served": "assets/references/usung-field-robots-v23-poster.jpg",
-      "servedBytes": 137562,
-      "servedSha256": "aacb20733e81086cb13943220da11d3f6ef8247bf014ba22049646714a1a0015",
-      "transformation": "Frame at 1 second from corrected surface-branded video",
+      "served": "assets/references/usung-field-robots-v33-poster.webp",
+      "servedBytes": 320972,
+      "servedSha256": "11db7e908ac1c40aba4a1efda438d0d4d9ee435cbc4b92620a2e1e66f795d573",
+      "transformation": "Owner-approved B corner: first-U pink extends to left stem edge with no contrasting strip. Original scene, dimensions, surface pose, light and alpha preserved; only measured corner pigment delta changed before encoding. No scene generation.",
       "previousServed": {
-        "file": "assets/references/usung-field-robots-v22-poster.jpg",
-        "bytes": 140513,
-        "sha256": "ddce007c3fb400ff3134883f28d0e7322cb946717797d427ae42ba2f431f8582"
-      }
+        "file": "assets/references/usung-field-robots-v23-poster.jpg",
+        "sha256": "aacb20733e81086cb13943220da11d3f6ef8247bf014ba22049646714a1a0015",
+        "transformation": "Frame at 1 second from corrected surface-branded video"
+      },
+      "durableVerification": "baseline/original-media-v33/"
     },
     {
       "source": "assets/references/contextual-intelligence.svg",
-      "served": "assets/references/contextual-intelligence.svg",
+      "served": "assets/references/contextual-intelligence-v33.svg",
       "servedBytes": 724513,
-      "servedSha256": "0b343f5a6f6689892db71dc8892d0bf291f3b152462518eb2a42f09b380b93a6",
-      "transformation": "Approved outlined USUNG wordmark inserted in native SVG; original diagram geometry retained"
+      "servedSha256": "2f025c7412e6659eb95e409f05c5e87b8eeda13df6d466deed76c7bcd66d3745",
+      "transformation": "Owner-approved B corner: first-U pink extends to left stem edge with no contrasting strip. Original scene, dimensions, surface pose, light and alpha preserved; only measured corner pigment delta changed before encoding. No scene generation.",
+      "previousServed": {
+        "file": "assets/references/contextual-intelligence.svg",
+        "sha256": "0b343f5a6f6689892db71dc8892d0bf291f3b152462518eb2a42f09b380b93a6",
+        "transformation": "Approved outlined USUNG wordmark inserted in native SVG; original diagram geometry retained"
+      },
+      "durableVerification": "baseline/original-media-v33/"
     },
     {
       "source": "assets/references/contextual-context.svg",
-      "served": "assets/references/contextual-context.svg",
+      "served": "assets/references/contextual-context-v33.svg",
       "servedBytes": 724503,
-      "servedSha256": "67cec7f400f1d963be426b06ca64211bf2a0ef49690b73adefdfec57b8da0e88",
-      "transformation": "Approved outlined USUNG wordmark inserted in native SVG; original diagram geometry retained"
+      "servedSha256": "70d201e54cc7cb26cac7476d898aa36be705c89743d082af53755abeeef05b99",
+      "transformation": "Owner-approved B corner: first-U pink extends to left stem edge with no contrasting strip. Original scene, dimensions, surface pose, light and alpha preserved; only measured corner pigment delta changed before encoding. No scene generation.",
+      "previousServed": {
+        "file": "assets/references/contextual-context.svg",
+        "sha256": "67cec7f400f1d963be426b06ca64211bf2a0ef49690b73adefdfec57b8da0e88",
+        "transformation": "Approved outlined USUNG wordmark inserted in native SVG; original diagram geometry retained"
+      },
+      "durableVerification": "baseline/original-media-v33/"
     },
     {
       "source": "assets/references/contextual-data.svg",
-      "served": "assets/references/contextual-data.svg",
+      "served": "assets/references/contextual-data-v33.svg",
       "servedBytes": 724497,
-      "servedSha256": "fb2b2507e56e07bc35df96fc05df41c29bab3911e4972a8d2918741fbb2320c3",
-      "transformation": "Approved outlined USUNG wordmark inserted in native SVG; original diagram geometry retained"
+      "servedSha256": "8eb33899ebd316c92b954f7d93aefe5f851feed7618f505c2985bb247545d4b4",
+      "transformation": "Owner-approved B corner: first-U pink extends to left stem edge with no contrasting strip. Original scene, dimensions, surface pose, light and alpha preserved; only measured corner pigment delta changed before encoding. No scene generation.",
+      "previousServed": {
+        "file": "assets/references/contextual-data.svg",
+        "sha256": "fb2b2507e56e07bc35df96fc05df41c29bab3911e4972a8d2918741fbb2320c3",
+        "transformation": "Approved outlined USUNG wordmark inserted in native SVG; original diagram geometry retained"
+      },
+      "durableVerification": "baseline/original-media-v33/"
     },
     {
       "source": "assets/media/built-rpd.jpg",
-      "served": "assets/media/usung-daylight-piling-v25.webp",
-      "servedBytes": 2347310,
-      "servedSha256": "17b9ff77b06489ec9d28c163c65ad0c24ef4dbd52aeabd6618cc71034486b2e1",
-      "transformation": "Native U printed on original vent panel; source ink colour by vent row; source camera photograph retained, local non-generative pixel retouch only",
+      "served": "assets/media/usung-daylight-piling-v34.webp",
+      "servedBytes": 2347304,
+      "servedSha256": "5e0493946d5c050c2df4210afb75dd1f6305fdf0339d6971a9a76be7ad441321",
+      "transformation": "Owner-approved B corner: first-U pink extends to left stem edge with no contrasting strip. Original scene, dimensions, surface pose, light and alpha preserved; only measured corner pigment delta changed before encoding. No scene generation.",
       "verification": {
+        "old": "assets/media/usung-daylight-piling-v25.webp",
+        "new": "assets/media/usung-daylight-piling-v34.webp",
+        "candidate": "outputs/website/usung-still-branding-v34/edited/usung-daylight-piling-v34.webp",
         "source": "assets/media/built-rpd.jpg",
-        "served": "assets/media/usung-daylight-piling-v25.webp",
-        "sourceOfficialUrl": "https://assets.builtrobotics.com/production/public/download/2024_01_24_BUILT_0769.jpg",
-        "cameraRecord": "https://commons.wikimedia.org/wiki/File:2023_03_03_RPD_Video_Shoot.jpg",
+        "sourceSha256": "7ec087d5f54254ad5b67e4404dc308026ede60d9452fee625a2f06ce63114a87",
+        "baselineSha256": "17b9ff77b06489ec9d28c163c65ad0c24ef4dbd52aeabd6618cc71034486b2e1",
+        "candidateSha256": "5e0493946d5c050c2df4210afb75dd1f6305fdf0339d6971a9a76be7ad441321",
         "dimensions": [
           2200,
           1466
         ],
-        "sourceSha256": "7ec087d5f54254ad5b67e4404dc308026ede60d9452fee625a2f06ce63114a87",
-        "servedSha256": "17b9ff77b06489ec9d28c163c65ad0c24ef4dbd52aeabd6618cc71034486b2e1",
-        "outsideMaskIdentical": true,
-        "changedPixels": 3182,
-        "transformation": "Native U printed on original vent panel; source ink colour by vent row; source camera photograph retained, local non-generative pixel retouch only",
-        "encoding": "lossless WebP",
+        "nativeBRect": [
+          72.362,
+          23.072,
+          16.09,
+          15.987
+        ],
+        "nativePink": "#FF0F6F",
+        "method": "Model-forward old-to-B corner-only delta using preserved original photograph and the exact prior print surface, projection, focus, illumination and texture recipe. Existing printed shape/placement and every pixel outside corner delta retained.",
+        "noGeneration": true,
+        "shapeAlphaProjectionAndFocusUnchanged": true,
+        "changedPixels": 14,
+        "deltaMask": "outputs/website/usung-still-branding-v34/audit/usung-daylight-piling-corner-delta-mask.png",
+        "sourceBrandMask": "outputs/website/usung-still-branding-v34/audit/usung-daylight-piling-all-source-brand-mask.png",
+        "outsideDeltaEqualsBaseline": true,
+        "outsideCombinedSourceBrandMasksEqualsOriginal": true,
+        "losslessWebP": true,
+        "models": [
+          {
+            "name": "vented native U",
+            "deltaPixels": 14,
+            "maxChannelDelta": 219
+          }
+        ],
         "sourcePage": "https://www.builtrobotics.com/about/downloads",
         "sourceAsset": "https://assets.builtrobotics.com/production/public/download/2024_01_24_BUILT_0769.jpg",
-        "sourceUrlRecovery": "Official URL and image matching rechecked in v25; earlier asset hashes preserved"
+        "pixelIdenticalModels": []
       },
-      "editor": "Deterministic source-pixel compositing; no scene generation"
+      "editor": "Deterministic source-pixel compositing; no scene generation",
+      "previousServed": {
+        "file": "assets/media/usung-daylight-piling-v25.webp",
+        "sha256": "17b9ff77b06489ec9d28c163c65ad0c24ef4dbd52aeabd6618cc71034486b2e1",
+        "transformation": "Native U printed on original vent panel; source ink colour by vent row; source camera photograph retained, local non-generative pixel retouch only",
+        "verification": {
+          "source": "assets/media/built-rpd.jpg",
+          "served": "assets/media/usung-daylight-piling-v25.webp",
+          "sourceOfficialUrl": "https://assets.builtrobotics.com/production/public/download/2024_01_24_BUILT_0769.jpg",
+          "cameraRecord": "https://commons.wikimedia.org/wiki/File:2023_03_03_RPD_Video_Shoot.jpg",
+          "dimensions": [
+            2200,
+            1466
+          ],
+          "sourceSha256": "7ec087d5f54254ad5b67e4404dc308026ede60d9452fee625a2f06ce63114a87",
+          "servedSha256": "17b9ff77b06489ec9d28c163c65ad0c24ef4dbd52aeabd6618cc71034486b2e1",
+          "outsideMaskIdentical": true,
+          "changedPixels": 3182,
+          "transformation": "Native U printed on original vent panel; source ink colour by vent row; source camera photograph retained, local non-generative pixel retouch only",
+          "encoding": "lossless WebP",
+          "sourcePage": "https://www.builtrobotics.com/about/downloads",
+          "sourceAsset": "https://assets.builtrobotics.com/production/public/download/2024_01_24_BUILT_0769.jpg",
+          "sourceUrlRecovery": "Official URL and image matching rechecked in v25; earlier asset hashes preserved"
+        }
+      },
+      "durableVerification": "baseline/original-media-v33/"
     },
     {
       "source": "assets/media/suffolk-naples.jpg",
-      "served": "assets/media/usung-field-team-v26.webp",
-      "servedBytes": 1695026,
-      "servedSha256": "00855895d5a7f8184cde8de85882be72d163078269db668ea5e4d8d6116f8812",
-      "transformation": "Compact approved U replaces both stretched front wordmarks in existing helmet print footprints; source curvature, photographed illumination, grain and focus matched; confirmed red company-print remnant removed locally. Existing vest and side sticker preserved exactly; original scene retained; no generation.",
+      "served": "assets/media/usung-field-team-v33.webp",
+      "servedBytes": 1696252,
+      "servedSha256": "78fda174791049fc996c5fff8f02b3dc1c0aae7186cd121dd578039fec07afef",
+      "transformation": "Approved B native U and #FF0F6F corner without a left strip projected together onto estimated local helmet surfaces, corrected print proportions and direction, shared source-photo reflection/grain and single matched-focus filter. Front helmet prints and tiny vest/sticker corners corrected locally; faces, hardware and sticker lower fields preserved exactly. No scene generation.",
       "verification": {
-        "sourceFile": "products/usung-corporate/public/assets/media/suffolk-naples.jpg",
-        "baselineFile": "products/usung-corporate/public/assets/media/usung-field-team-v25.webp",
-        "candidateFile": "outputs/website/usung-rework-v26/edited/usung-field-team-v26.webp",
+        "source": "products/usung-corporate/public/assets/media/suffolk-naples.jpg",
         "sourceSha256": "2a18b8507d87814098d8e7e69fa8d35738d2db0d7209a748b9e8bc6e89461aae",
-        "baselineSha256": "671a3d5516d5aaf426f2aeb2a8ea8cca7e417d6a8032cbef49033408fbf65101",
-        "candidateSha256": "00855895d5a7f8184cde8de85882be72d163078269db668ea5e4d8d6116f8812",
+        "baseline": "products/usung-corporate/public/assets/media/usung-field-team-v26.webp",
+        "baselineSha256": "00855895d5a7f8184cde8de85882be72d163078269db668ea5e4d8d6116f8812",
+        "output": "outputs/website/usung-surface-branding-v33/edited/usung-field-team-v33.webp",
+        "outputSha256": "78fda174791049fc996c5fff8f02b3dc1c0aae7186cd121dd578039fec07afef",
         "dimensions": [
           2200,
           1466
         ],
-        "changedVersusV25Pixels": 6504,
-        "outsideRepairMaskEqualsV25": true,
-        "outsideAllBrandMasksEqualsSource": true,
-        "losslessEncoding": true,
-        "preservedExactly": {
-          "vest": true,
-          "yellow-side-sticker": true,
-          "man-tab-hardware": true,
+        "nativeVector": "products/usung-corporate/src/brand.mjs:firstU",
+        "nativeAspect": 0.847741935483871,
+        "nativePink": "#FF0F6F",
+        "repair": "Canonical vector alpha and color projected together onto estimated local helmet surfaces, one focus filter, shared illumination and original-photo grain. Deterministic interpolation only in former print regions.",
+        "noSceneGeneration": true,
+        "changedPixels": 3510,
+        "outsideRepairMaskEqualsBaseline": true,
+        "protected": {
+          "sticker-lower-fields": true,
+          "hardware": true,
           "faces": true
         },
         "repairs": [
           {
             "name": "man",
-            "oldPrintPolygon": [
+            "quad": [
               [
-                771,
-                216
+                801,
+                226
               ],
               [
-                829,
-                230
+                840,
+                235
               ],
               [
-                870,
-                251
-              ],
-              [
-                902,
+                854,
                 282
               ],
               [
-                939,
-                349
-              ],
-              [
-                919,
-                334
-              ],
-              [
-                885,
-                304
-              ],
-              [
-                788,
-                271
+                814,
+                273
               ]
             ],
-            "nativeUQuadrilateral": [
-              [
-                808,
-                238
-              ],
-              [
-                838,
-                248
-              ],
-              [
-                851,
-                278
-              ],
-              [
-                818,
-                267
-              ]
-            ],
-            "sourceGrainDonor": [
-              696,
-              236,
-              748,
-              292
-            ],
-            "printFocusSigma": 1.15,
-            "changedPixels": 3655,
-            "surfaceSamples": 6823
+            "focusSigma": 1.05,
+            "projectedCurveBowPx": 1,
+            "changedPixels": 1904
           },
           {
             "name": "woman",
-            "oldPrintPolygon": [
+            "quad": [
               [
-                1438,
-                187
+                1461,
+                190
               ],
               [
-                1490,
-                187
+                1494,
+                194
               ],
               [
-                1520,
-                201
+                1509,
+                231
               ],
               [
-                1549,
-                223
+                1476,
+                227
+              ]
+            ],
+            "focusSigma": 1,
+            "projectedCurveBowPx": 0.8,
+            "changedPixels": 1462
+          },
+          {
+            "name": "vest-corner",
+            "quad": [
+              [
+                894,
+                1256
               ],
               [
-                1580,
-                269
+                908,
+                1263
               ],
               [
-                1553,
-                255
+                918,
+                1286
               ],
               [
-                1524,
+                904,
+                1279
+              ]
+            ],
+            "variant": "B",
+            "focusSigma": 1.2,
+            "cornerOnly": true,
+            "changedPixels": 112
+          },
+          {
+            "name": "sticker-corner",
+            "quad": [
+              [
+                1160,
+                264
+              ],
+              [
+                1206,
                 244
               ],
               [
-                1458,
-                231
+                1206,
+                253
+              ],
+              [
+                1160,
+                273
               ]
             ],
-            "nativeUQuadrilateral": [
-              [
-                1470,
-                198
-              ],
-              [
-                1499,
-                205
-              ],
-              [
-                1511,
-                228
-              ],
-              [
-                1479,
-                220
-              ]
-            ],
-            "sourceGrainDonor": [
-              1350,
-              198,
-              1416,
-              252
-            ],
-            "printFocusSigma": 1.1,
-            "changedPixels": 2803,
-            "surfaceSamples": 4801
+            "variant": "B",
+            "focusSigma": 0.8,
+            "cornerOnly": true,
+            "changedPixels": 32
           }
-        ],
-        "sourcePage": "https://suffolk.com/",
-        "sourceAsset": "https://suffolk.com/wp-content/uploads/2025/07/NAPLES_BEACH_CLUB-12.png",
-        "nativeLogoAsset": "outputs/website/usung-reference-branding-v22/audit/black-symbol.png",
-        "nativeDesignPink": "#FF0F6F",
-        "pixelTransform": "Native U perspective projection; deterministic interpolation of existing helmet print; source-photo grain and photographed local illumination; no generative imagery",
-        "claim": "Original photo scene retained. Existing v25 front wordmarks replaced by approved compact native U using reconstructed local helmet light and source-photo grain; accepted vest and side sticker unchanged. Candidate requires visual review.",
-        "finalAdditionalRepair": {
-          "target": "Confirmed original SUFFOLK red pigment remnant at woman front helmet right curve",
-          "regionPolygon": [
-            [
-              1513,
-              196
-            ],
-            [
-              1542,
-              210
-            ],
-            [
-              1545,
-              218
-            ],
-            [
-              1518,
-              205
-            ]
-          ],
-          "changedPixels": 46,
-          "blueAndGreenChannelsUnchanged": true,
-          "skyAndCurveGeometryRetained": true,
-          "allOtherPixelsEqualParentReviewedCandidate": true,
-          "mask": "outputs/website/usung-rework-v26/audit/woman-rim-print-remnant-mask.png"
-        },
-        "repairMask": "outputs/website/usung-rework-v26/audit/naples-v26-change-mask.png",
-        "sourceMask": "outputs/website/usung-rework-v26/audit/naples-v26-source-mask.png",
-        "unmodifiedOriginalHelmetParts": {
-          "man-blue-triangle-hardware": {
-            "box": [
-              534,
-              210,
-              701,
-              303
-            ],
-            "candidateEqualsOriginalPixels": true
-          },
-          "man-small-side-shield": {
-            "box": [
-              463,
-              282,
-              548,
-              359
-            ],
-            "candidateEqualsOriginalPixels": true
-          },
-          "woman-blue-triangle-hardware": {
-            "box": [
-              1222,
-              211,
-              1380,
-              310
-            ],
-            "candidateEqualsOriginalPixels": true
-          },
-          "woman-side-buckle-hardware": {
-            "box": [
-              1103,
-              312,
-              1184,
-              412
-            ],
-            "candidateEqualsOriginalPixels": true
-          }
-        },
-        "unmodifiedOriginalHelmetPartsInterpretation": "These dark blue triangular vent/accessory areas and side hardware occupy different original positions from the front rectangular blue/red SUFFOLK contractor decal. The small manufacturer-like text is too blurred to identify with certainty; it is unchanged. No SUFFOLK logo is legible in these original hardware regions."
+        ]
       },
       "editor": "Deterministic source-pixel compositing; no scene generation",
       "previousServed": {
-        "file": "assets/media/usung-field-team-v25.webp",
-        "bytes": 1698146,
-        "sha256": "671a3d5516d5aaf426f2aeb2a8ea8cca7e417d6a8032cbef49033408fbf65101",
-        "transformation": "Local source-pixel printed-mark repair with native perspective, source ink, focus and texture; safety/operating labels preserved",
+        "file": "assets/media/usung-field-team-v26.webp",
+        "sha256": "00855895d5a7f8184cde8de85882be72d163078269db668ea5e4d8d6116f8812",
         "verification": {
-          "source": "assets/media/suffolk-naples.jpg",
-          "served": "assets/media/usung-field-team-v25.webp",
+          "sourceFile": "products/usung-corporate/public/assets/media/suffolk-naples.jpg",
+          "baselineFile": "products/usung-corporate/public/assets/media/usung-field-team-v25.webp",
+          "candidateFile": "outputs/website/usung-rework-v26/edited/usung-field-team-v26.webp",
           "sourceSha256": "2a18b8507d87814098d8e7e69fa8d35738d2db0d7209a748b9e8bc6e89461aae",
-          "servedSha256": "671a3d5516d5aaf426f2aeb2a8ea8cca7e417d6a8032cbef49033408fbf65101",
+          "baselineSha256": "671a3d5516d5aaf426f2aeb2a8ea8cca7e417d6a8032cbef49033408fbf65101",
+          "candidateSha256": "00855895d5a7f8184cde8de85882be72d163078269db668ea5e4d8d6116f8812",
           "dimensions": [
             2200,
             1466
           ],
-          "outsideMaskIdentical": true,
-          "sourceScenePreserved": true,
+          "changedVersusV25Pixels": 6504,
+          "outsideRepairMaskEqualsV25": true,
+          "outsideAllBrandMasksEqualsSource": true,
           "losslessEncoding": true,
-          "priorServed": "assets/media/usung-field-team-v24.webp",
-          "transformation": "Local source-pixel printed-mark repair with native perspective, source ink, focus and texture; safety/operating labels preserved",
+          "preservedExactly": {
+            "vest": true,
+            "yellow-side-sticker": true,
+            "man-tab-hardware": true,
+            "faces": true
+          },
+          "repairs": [
+            {
+              "name": "man",
+              "oldPrintPolygon": [
+                [
+                  771,
+                  216
+                ],
+                [
+                  829,
+                  230
+                ],
+                [
+                  870,
+                  251
+                ],
+                [
+                  902,
+                  282
+                ],
+                [
+                  939,
+                  349
+                ],
+                [
+                  919,
+                  334
+                ],
+                [
+                  885,
+                  304
+                ],
+                [
+                  788,
+                  271
+                ]
+              ],
+              "nativeUQuadrilateral": [
+                [
+                  808,
+                  238
+                ],
+                [
+                  838,
+                  248
+                ],
+                [
+                  851,
+                  278
+                ],
+                [
+                  818,
+                  267
+                ]
+              ],
+              "sourceGrainDonor": [
+                696,
+                236,
+                748,
+                292
+              ],
+              "printFocusSigma": 1.15,
+              "changedPixels": 3655,
+              "surfaceSamples": 6823
+            },
+            {
+              "name": "woman",
+              "oldPrintPolygon": [
+                [
+                  1438,
+                  187
+                ],
+                [
+                  1490,
+                  187
+                ],
+                [
+                  1520,
+                  201
+                ],
+                [
+                  1549,
+                  223
+                ],
+                [
+                  1580,
+                  269
+                ],
+                [
+                  1553,
+                  255
+                ],
+                [
+                  1524,
+                  244
+                ],
+                [
+                  1458,
+                  231
+                ]
+              ],
+              "nativeUQuadrilateral": [
+                [
+                  1470,
+                  198
+                ],
+                [
+                  1499,
+                  205
+                ],
+                [
+                  1511,
+                  228
+                ],
+                [
+                  1479,
+                  220
+                ]
+              ],
+              "sourceGrainDonor": [
+                1350,
+                198,
+                1416,
+                252
+              ],
+              "printFocusSigma": 1.1,
+              "changedPixels": 2803,
+              "surfaceSamples": 4801
+            }
+          ],
           "sourcePage": "https://suffolk.com/",
           "sourceAsset": "https://suffolk.com/wp-content/uploads/2025/07/NAPLES_BEACH_CLUB-12.png",
-          "sourceUrlRecovery": "Official URL and image matching rechecked in v25; earlier asset hashes preserved"
-        }
+          "nativeLogoAsset": "outputs/website/usung-reference-branding-v22/audit/black-symbol.png",
+          "nativeDesignPink": "#FF0F6F",
+          "pixelTransform": "Native U perspective projection; deterministic interpolation of existing helmet print; source-photo grain and photographed local illumination; no generative imagery",
+          "claim": "Original photo scene retained. Existing v25 front wordmarks replaced by approved compact native U using reconstructed local helmet light and source-photo grain; accepted vest and side sticker unchanged. Candidate requires visual review.",
+          "finalAdditionalRepair": {
+            "target": "Confirmed original SUFFOLK red pigment remnant at woman front helmet right curve",
+            "regionPolygon": [
+              [
+                1513,
+                196
+              ],
+              [
+                1542,
+                210
+              ],
+              [
+                1545,
+                218
+              ],
+              [
+                1518,
+                205
+              ]
+            ],
+            "changedPixels": 46,
+            "blueAndGreenChannelsUnchanged": true,
+            "skyAndCurveGeometryRetained": true,
+            "allOtherPixelsEqualParentReviewedCandidate": true,
+            "mask": "outputs/website/usung-rework-v26/audit/woman-rim-print-remnant-mask.png"
+          },
+          "repairMask": "outputs/website/usung-rework-v26/audit/naples-v26-change-mask.png",
+          "sourceMask": "outputs/website/usung-rework-v26/audit/naples-v26-source-mask.png",
+          "unmodifiedOriginalHelmetParts": {
+            "man-blue-triangle-hardware": {
+              "box": [
+                534,
+                210,
+                701,
+                303
+              ],
+              "candidateEqualsOriginalPixels": true
+            },
+            "man-small-side-shield": {
+              "box": [
+                463,
+                282,
+                548,
+                359
+              ],
+              "candidateEqualsOriginalPixels": true
+            },
+            "woman-blue-triangle-hardware": {
+              "box": [
+                1222,
+                211,
+                1380,
+                310
+              ],
+              "candidateEqualsOriginalPixels": true
+            },
+            "woman-side-buckle-hardware": {
+              "box": [
+                1103,
+                312,
+                1184,
+                412
+              ],
+              "candidateEqualsOriginalPixels": true
+            }
+          },
+          "unmodifiedOriginalHelmetPartsInterpretation": "These dark blue triangular vent/accessory areas and side hardware occupy different original positions from the front rectangular blue/red SUFFOLK contractor decal. The small manufacturer-like text is too blurred to identify with certainty; it is unchanged. No SUFFOLK logo is legible in these original hardware regions."
+        },
+        "transformation": "Compact approved U replaces both stretched front wordmarks in existing helmet print footprints; source curvature, photographed illumination, grain and focus matched; confirmed red company-print remnant removed locally. Existing vest and side sticker preserved exactly; original scene retained; no generation."
       },
-      "durableVerification": "baseline/original-media-v26/helmet-repair-verification.json"
+      "durableVerification": "baseline/original-media-v33/helmet-verification.json"
     },
     {
       "source": "assets/media/built-trenching.jpg",
-      "served": "assets/media/usung-autonomous-excavation-v25.webp",
-      "servedBytes": 2637226,
-      "servedSha256": "1a9524fe00fafad3031a6843efdbcbbc4e90c04c6460966d338f3dac33da39aa",
-      "transformation": "Local source-pixel printed-mark repair with native perspective, source ink, focus and texture; safety/operating labels preserved",
+      "served": "assets/media/usung-autonomous-excavation-v34.webp",
+      "servedBytes": 2636786,
+      "servedSha256": "7768507961f515f97475ee2f4646117bbf2ae87316ce298f3d9c64dcf712c257",
+      "transformation": "Owner-approved B corner: first-U pink extends to left stem edge with no contrasting strip. Original scene, dimensions, surface pose, light and alpha preserved; only measured corner pigment delta changed before encoding. No scene generation.",
       "verification": {
+        "old": "assets/media/usung-autonomous-excavation-v25.webp",
+        "new": "assets/media/usung-autonomous-excavation-v34.webp",
+        "candidate": "outputs/website/usung-still-branding-v34/edited/usung-autonomous-excavation-v34.webp",
         "source": "assets/media/built-trenching.jpg",
-        "served": "assets/media/usung-autonomous-excavation-v25.webp",
         "sourceSha256": "4ca60832f971b10a811e984acdbf269cea8a9aa12cc86c20facab0389d7d2f34",
-        "servedSha256": "1a9524fe00fafad3031a6843efdbcbbc4e90c04c6460966d338f3dac33da39aa",
+        "baselineSha256": "1a9524fe00fafad3031a6843efdbcbbc4e90c04c6460966d338f3dac33da39aa",
+        "candidateSha256": "7768507961f515f97475ee2f4646117bbf2ae87316ce298f3d9c64dcf712c257",
         "dimensions": [
           2200,
           1237
         ],
-        "outsideMaskIdentical": true,
-        "sourceScenePreserved": true,
-        "losslessEncoding": true,
-        "priorServed": "assets/media/usung-autonomous-excavation-v24.webp",
-        "transformation": "Local source-pixel printed-mark repair with native perspective, source ink, focus and texture; safety/operating labels preserved",
+        "nativeBRect": [
+          72.362,
+          23.072,
+          16.09,
+          15.987
+        ],
+        "nativePink": "#FF0F6F",
+        "method": "Model-forward old-to-B corner-only delta using preserved original photograph and the exact prior print surface, projection, focus, illumination and texture recipe. Existing printed shape/placement and every pixel outside corner delta retained.",
+        "noGeneration": true,
+        "shapeAlphaProjectionAndFocusUnchanged": true,
+        "changedPixels": 88,
+        "deltaMask": "outputs/website/usung-still-branding-v34/audit/usung-autonomous-excavation-corner-delta-mask.png",
+        "sourceBrandMask": "outputs/website/usung-still-branding-v34/audit/usung-autonomous-excavation-all-source-brand-mask.png",
+        "outsideDeltaEqualsBaseline": true,
+        "outsideCombinedSourceBrandMasksEqualsOriginal": true,
+        "losslessWebP": true,
+        "models": [
+          {
+            "name": "upper USUNG",
+            "deltaPixels": 0,
+            "maxChannelDelta": 0
+          },
+          {
+            "name": "lower U",
+            "deltaPixels": 88,
+            "maxChannelDelta": 75
+          }
+        ],
         "sourcePage": "https://www.builtrobotics.com/about/downloads",
         "sourceAsset": "https://assets.builtrobotics.com/production/public/download/Built-Robotics-Exosystem-Trenching-Dry-Climate.jpg",
-        "sourceUrlRecovery": "Official URL and image matching rechecked in v25; earlier asset hashes preserved"
+        "pixelIdenticalModels": [
+          "upper USUNG"
+        ],
+        "quantizationNote": "Both native A and B rasters were forwarded through the identical prior photo projection, focus and print color sampling. Listed models rasterize to exactly identical RGB at this photograph scale. No extra repaint was introduced merely to force a changed pixel."
       },
-      "editor": "Deterministic source-pixel compositing; no scene generation"
+      "editor": "Deterministic source-pixel compositing; no scene generation",
+      "previousServed": {
+        "file": "assets/media/usung-autonomous-excavation-v25.webp",
+        "sha256": "1a9524fe00fafad3031a6843efdbcbbc4e90c04c6460966d338f3dac33da39aa",
+        "transformation": "Local source-pixel printed-mark repair with native perspective, source ink, focus and texture; safety/operating labels preserved",
+        "verification": {
+          "source": "assets/media/built-trenching.jpg",
+          "served": "assets/media/usung-autonomous-excavation-v25.webp",
+          "sourceSha256": "4ca60832f971b10a811e984acdbf269cea8a9aa12cc86c20facab0389d7d2f34",
+          "servedSha256": "1a9524fe00fafad3031a6843efdbcbbc4e90c04c6460966d338f3dac33da39aa",
+          "dimensions": [
+            2200,
+            1237
+          ],
+          "outsideMaskIdentical": true,
+          "sourceScenePreserved": true,
+          "losslessEncoding": true,
+          "priorServed": "assets/media/usung-autonomous-excavation-v24.webp",
+          "transformation": "Local source-pixel printed-mark repair with native perspective, source ink, focus and texture; safety/operating labels preserved",
+          "sourcePage": "https://www.builtrobotics.com/about/downloads",
+          "sourceAsset": "https://assets.builtrobotics.com/production/public/download/Built-Robotics-Exosystem-Trenching-Dry-Climate.jpg",
+          "sourceUrlRecovery": "Official URL and image matching rechecked in v25; earlier asset hashes preserved"
+        }
+      },
+      "durableVerification": "baseline/original-media-v33/"
     },
     {
       "source": "assets/media/suffolk-robotics.jpg",
-      "served": "assets/media/usung-site-robot-v25.webp",
-      "servedBytes": 1437984,
-      "servedSha256": "c88667c40e0abe22c5c41a1492cac5a222214047456860ecc2a95316bc162e55",
-      "transformation": "Local source-pixel printed-mark repair with native perspective, source ink, focus and texture; safety/operating labels preserved",
+      "served": "assets/media/usung-site-robot-v34.webp",
+      "servedBytes": 1438054,
+      "servedSha256": "dd3c66ded8329f64983846ff745b3b7fea248e5be4b5c4f63f75fb86d8af1459",
+      "transformation": "Owner-approved B corner: first-U pink extends to left stem edge with no contrasting strip. Original scene, dimensions, surface pose, light and alpha preserved; only measured corner pigment delta changed before encoding. No scene generation.",
       "verification": {
+        "old": "assets/media/usung-site-robot-v25.webp",
+        "new": "assets/media/usung-site-robot-v34.webp",
+        "candidate": "outputs/website/usung-still-branding-v34/edited/usung-site-robot-v34.webp",
         "source": "assets/media/suffolk-robotics.jpg",
-        "served": "assets/media/usung-site-robot-v25.webp",
         "sourceSha256": "c3fe773c4d1177d09af8db3dd7a4aea1682f1e54b1597d26c96699d2f4cbc7e4",
-        "servedSha256": "c88667c40e0abe22c5c41a1492cac5a222214047456860ecc2a95316bc162e55",
+        "baselineSha256": "c88667c40e0abe22c5c41a1492cac5a222214047456860ecc2a95316bc162e55",
+        "candidateSha256": "dd3c66ded8329f64983846ff745b3b7fea248e5be4b5c4f63f75fb86d8af1459",
         "dimensions": [
           2200,
           1237
         ],
-        "outsideMaskIdentical": true,
-        "sourceScenePreserved": true,
-        "losslessEncoding": true,
-        "priorServed": "assets/media/usung-site-robot-v24.webp",
-        "transformation": "Local source-pixel printed-mark repair with native perspective, source ink, focus and texture; safety/operating labels preserved",
+        "nativeBRect": [
+          72.362,
+          23.072,
+          16.09,
+          15.987
+        ],
+        "nativePink": "#FF0F6F",
+        "method": "Model-forward old-to-B corner-only delta using preserved original photograph and the exact prior print surface, projection, focus, illumination and texture recipe. Existing printed shape/placement and every pixel outside corner delta retained.",
+        "noGeneration": true,
+        "shapeAlphaProjectionAndFocusUnchanged": true,
+        "changedPixels": 154,
+        "deltaMask": "outputs/website/usung-still-branding-v34/audit/usung-site-robot-corner-delta-mask.png",
+        "sourceBrandMask": "outputs/website/usung-still-branding-v34/audit/usung-site-robot-all-source-brand-mask.png",
+        "outsideDeltaEqualsBaseline": true,
+        "outsideCombinedSourceBrandMasksEqualsOriginal": true,
+        "losslessWebP": true,
+        "models": [
+          {
+            "name": "front USUNG",
+            "deltaPixels": 154,
+            "maxChannelDelta": 46
+          }
+        ],
         "sourcePage": "https://suffolk.com/",
         "sourceAsset": "https://suffolk.com/wp-content/uploads/2025/07/rugged-thumbnail-1.jpg",
-        "sourceUrlRecovery": "Official URL and image matching rechecked in v25; earlier asset hashes preserved"
+        "pixelIdenticalModels": []
       },
-      "editor": "Deterministic source-pixel compositing; no scene generation"
+      "editor": "Deterministic source-pixel compositing; no scene generation",
+      "previousServed": {
+        "file": "assets/media/usung-site-robot-v25.webp",
+        "sha256": "c88667c40e0abe22c5c41a1492cac5a222214047456860ecc2a95316bc162e55",
+        "transformation": "Local source-pixel printed-mark repair with native perspective, source ink, focus and texture; safety/operating labels preserved",
+        "verification": {
+          "source": "assets/media/suffolk-robotics.jpg",
+          "served": "assets/media/usung-site-robot-v25.webp",
+          "sourceSha256": "c3fe773c4d1177d09af8db3dd7a4aea1682f1e54b1597d26c96699d2f4cbc7e4",
+          "servedSha256": "c88667c40e0abe22c5c41a1492cac5a222214047456860ecc2a95316bc162e55",
+          "dimensions": [
+            2200,
+            1237
+          ],
+          "outsideMaskIdentical": true,
+          "sourceScenePreserved": true,
+          "losslessEncoding": true,
+          "priorServed": "assets/media/usung-site-robot-v24.webp",
+          "transformation": "Local source-pixel printed-mark repair with native perspective, source ink, focus and texture; safety/operating labels preserved",
+          "sourcePage": "https://suffolk.com/",
+          "sourceAsset": "https://suffolk.com/wp-content/uploads/2025/07/rugged-thumbnail-1.jpg",
+          "sourceUrlRecovery": "Official URL and image matching rechecked in v25; earlier asset hashes preserved"
+        }
+      },
+      "durableVerification": "baseline/original-media-v33/"
     },
     {
       "source": "baseline/original-media-v25/built-home-hero.mp4",
-      "served": "assets/media/usung-construction-film-v25.mp4",
-      "servedBytes": 12460321,
-      "servedSha256": "b539e514dc1b6fa92a9061a98af24856bd0b2d0525a01e3f12828bbe86a8997d",
-      "transformation": "Selected original source shots in original frame order and timing, 4K to 1920x1080 area downsample, local tight company-B footprints replaced by native U+pink via non-generative photographed-panel reconstruction and direct source-letter template localization; photographed white-paint colour and local light/focus; H264 CRF16, audio omitted.",
+      "served": "assets/media/usung-construction-film-v33.mp4",
+      "servedBytes": 12457082,
+      "servedSha256": "5281bfc87b7bc95aec5c19d95f9adb54cbc8f9cb6d2282ae358a0eb211adaf9a",
+      "transformation": "Approved B U on original native tracked metal surfaces; same source frames/scene/order, local photographed pigment replacement; no scene generation.",
       "verification": {
-        "sourcePage": "https://www.builtrobotics.com/",
-        "sourceAsset": "https://servd-careful-chuckwalla.b-cdn.net/production/video/home-hero-desk.mp4",
-        "sourceFile": "baseline/original-media-v25/built-home-hero.mp4",
-        "sourceSha256": "8c88c1d51fdb1f6400c494f97a2787c3caff739f88e146d615125673d9ad48a8",
-        "sourceWidth": 3840,
-        "sourceHeight": 2160,
-        "sourceFrames": 768,
-        "sourceFps": 23.976023976023978,
-        "outputFile": "outputs/website/usung-rework-v25/edited/usung-construction-film-v25.mp4",
-        "outputSha256": "b539e514dc1b6fa92a9061a98af24856bd0b2d0525a01e3f12828bbe86a8997d",
-        "bytes": 12460321,
-        "width": 1920,
-        "height": 1080,
-        "frames": 288,
-        "fps": 23.976023976023978,
-        "duration": 12.011999999999999,
-        "sourceRangesExclusiveEnd": [
-          [
-            0,
-            181
+        "durableVerification": "baseline/original-media-v33/construction-film-v33-report.json",
+        "version": "surface-branding-v33",
+        "canonicalGeometry": {
+          "svg": "/Users/lua/Documents/Codex/usung-corporate-website/products/usung-corporate/public/assets/brand/usung-u-symbol.svg",
+          "svgReadSha256": "6dd71d55be63069437bc86189b22731d51ff09da6ba9a973f00cc74278797013",
+          "literalUPath": "M50.55 23.171999999999997V56.792Q50.55 59.498 50.754999999999995 62.327Q50.96 65.156 51.985 67.452Q53.010000000000005 69.748 55.224000000000004 71.18299999999999Q57.438 72.618 61.456 72.618Q65.474 72.618 67.64699999999999 71.18299999999999Q69.82 69.748 70.886 67.452Q71.952 65.156 72.157 62.327Q72.362 59.498 72.362 56.792V23.171999999999997H88.352V59.006Q88.352 73.438 81.751 80.08Q75.15 86.722 61.456 86.722Q47.762 86.722 41.120000000000005 80.08Q34.478 73.438 34.478 59.006V23.171999999999997Z",
+          "nativeUPathBBox": [
+            34.478,
+            23.171999999999997,
+            88.352,
+            86.722
           ],
-          [
-            464,
-            518
+          "pathRatio": 0.847741935483871,
+          "pinkVariant": "owner-approved B",
+          "pinkRect": [
+            72.362,
+            23.072,
+            16.09,
+            15.987
           ],
-          [
-            715,
-            768
-          ]
-        ],
-        "outputCutFrames": [
-          0,
-          51,
-          98,
-          139,
-          181,
-          220,
-          235
-        ],
-        "transformation": "Selected original source shots in original frame order and timing, 4K to 1920x1080 area downsample, local tight company-B footprints replaced by native U+pink via non-generative photographed-panel reconstruction and direct source-letter template localization; photographed white-paint colour and local light/focus; H264 CRF16, audio omitted.",
-        "noSceneGeneration": true,
-        "safetyModelAndRoundAutonomousMachineIdentifiersPreserved": true,
-        "sourceBrandMasks": {
-          "opening two B marks": [
-            0,
-            51
+          "pinkBaseRGB": [
+            255,
+            15,
+            111
           ],
-          "wide two B marks": [
-            503,
-            518
-          ]
+          "pinkClippedToLiteralUPath": true,
+          "inverseBodyPaint": "literal U geometry uses photographed original white pigment exposure on dark machine surface; favicon background tile omitted; no improvised glyph",
+          "approvedBProvenanceSvg": "/Users/lua/Documents/Codex/usung-corporate-website/outputs/website/usung-rework-v27/construction-audit/v33/approved-canonical-B.svg",
+          "approvedBProvenanceSvgSha256": "6dd71d55be63069437bc86189b22731d51ff09da6ba9a973f00cc74278797013"
         },
-        "wideInkReflectionTransfer": "Original visible B-ink pixels supply a normalized local reflection field; missing B-letter gaps use interpolated photographed row exposure. No uniform replacement pigment for the wide source letters.",
-        "maximumAllowedMaskPixels": 4460,
-        "maximumChangedPixels": 3399,
-        "pixelsPerFrame": 2073600,
-        "outsideMasksIdenticalBeforeVideoEncode": true,
-        "poster": "usung-construction-film-v25-poster.jpg",
-        "selectionNote": "Forest skidsteer segment excluded because dust/turning/heavy blur would require additional masking work; later solar timelapse section after frame517 excluded because newly exposed BUILT body/Exosystem marks require additional local retouch.",
-        "encodedDecodeVerification": {
+        "methods": {
+          "opening": "native original letter and same metal-face points, forward-backward optical flow, RANSAC full affine surface mapping; geometry preserved before actual source perspective",
+          "timelapse": "source B glyph top and left stroke edges measured independently in each real rotating body pose; actual sudden timelapse turning retained",
+          "paint": "original photographed pigment samples transfer nonuniform local light/reflections; native lens defocus applied; saturated approved B pink clip shares source pigment lighting",
+          "erase": "only old B footprint and photographed optical blur fringe; local source-only image inpainting, no generative reconstruction",
+          "occlusion": "selected source company marks visually exposed; body boundaries and source perspective checked at keyframes; no new machinery/scene"
+        },
+        "noSceneGeneration": true,
+        "verification": {
+          "encoderExitCode": 0,
+          "ffmpegFullDecodeExitCode": 0,
+          "ffmpegFullDecodeErrors": "",
           "framesDecoded": 288,
           "blackFrames": 0,
-          "allFrameDimensions": [
+          "allFrameShape": [
+            1080,
+            1920,
+            3
+          ],
+          "outsideMaskIdentityPassedAll288Frames": true,
+          "editedFramesCount": 66,
+          "glyphPlacements": 132,
+          "minimumSaturatedPinkPixelsPerGlyph": 6,
+          "allGlyphsHaveSaturatedPink": true,
+          "elapsedSeconds": 81.79,
+          "openingTracking": {
+            "opening-left": {
+              "nativeMinInliers": 25,
+              "nativeMaxReprojectionP95": 1.143384337425232,
+              "frameCount": 51
+            },
+            "opening-right": {
+              "nativeMinInliers": 80,
+              "nativeMaxReprojectionP95": 1.1052559614181519,
+              "frameCount": 51
+            }
+          }
+        },
+        "output": {
+          "file": "/Users/lua/Documents/Codex/usung-corporate-website/outputs/website/usung-rework-v27/construction-audit/v33/usung-construction-film-v33.mp4",
+          "sha256": "5281bfc87b7bc95aec5c19d95f9adb54cbc8f9cb6d2282ae358a0eb211adaf9a",
+          "bytes": 12457082,
+          "frames": 288,
+          "fps": 23.976023976023978,
+          "size": [
             1920,
             1080
           ],
-          "fps": 23.976023976023978,
-          "sha256": "b539e514dc1b6fa92a9061a98af24856bd0b2d0525a01e3f12828bbe86a8997d"
-        },
-        "sourceRangesSecondsExclusiveEnd": [
-          [
-            0,
-            7.549208333333333
-          ],
-          [
-            19.352666666666664,
-            21.604916666666664
-          ],
-          [
-            29.821458333333332,
-            32.032
-          ]
-        ],
-        "served": "assets/media/usung-construction-film-v25.mp4",
-        "servedSha256": "b539e514dc1b6fa92a9061a98af24856bd0b2d0525a01e3f12828bbe86a8997d",
-        "servedBytes": 12460321
+          "durationSeconds": 12.011999999999999,
+          "poster": "/Users/lua/Documents/Codex/usung-corporate-website/outputs/website/usung-rework-v27/construction-audit/v33/usung-construction-film-v33-poster.jpg",
+          "posterFromEncodedFrame": 0
+        }
       },
-      "editor": "Deterministic source-pixel compositing; no scene generation"
+      "editor": "Deterministic source-pixel compositing; no scene generation",
+      "previousServed": {
+        "file": "assets/media/usung-construction-film-v25.mp4",
+        "sha256": "b539e514dc1b6fa92a9061a98af24856bd0b2d0525a01e3f12828bbe86a8997d",
+        "transformation": "Selected original source shots in original frame order and timing, 4K to 1920x1080 area downsample, local tight company-B footprints replaced by native U+pink via non-generative photographed-panel reconstruction and direct source-letter template localization; photographed white-paint colour and local light/focus; H264 CRF16, audio omitted.",
+        "verification": {
+          "sourcePage": "https://www.builtrobotics.com/",
+          "sourceAsset": "https://servd-careful-chuckwalla.b-cdn.net/production/video/home-hero-desk.mp4",
+          "sourceFile": "baseline/original-media-v25/built-home-hero.mp4",
+          "sourceSha256": "8c88c1d51fdb1f6400c494f97a2787c3caff739f88e146d615125673d9ad48a8",
+          "sourceWidth": 3840,
+          "sourceHeight": 2160,
+          "sourceFrames": 768,
+          "sourceFps": 23.976023976023978,
+          "outputFile": "outputs/website/usung-rework-v25/edited/usung-construction-film-v25.mp4",
+          "outputSha256": "b539e514dc1b6fa92a9061a98af24856bd0b2d0525a01e3f12828bbe86a8997d",
+          "bytes": 12460321,
+          "width": 1920,
+          "height": 1080,
+          "frames": 288,
+          "fps": 23.976023976023978,
+          "duration": 12.011999999999999,
+          "sourceRangesExclusiveEnd": [
+            [
+              0,
+              181
+            ],
+            [
+              464,
+              518
+            ],
+            [
+              715,
+              768
+            ]
+          ],
+          "outputCutFrames": [
+            0,
+            51,
+            98,
+            139,
+            181,
+            220,
+            235
+          ],
+          "transformation": "Selected original source shots in original frame order and timing, 4K to 1920x1080 area downsample, local tight company-B footprints replaced by native U+pink via non-generative photographed-panel reconstruction and direct source-letter template localization; photographed white-paint colour and local light/focus; H264 CRF16, audio omitted.",
+          "noSceneGeneration": true,
+          "safetyModelAndRoundAutonomousMachineIdentifiersPreserved": true,
+          "sourceBrandMasks": {
+            "opening two B marks": [
+              0,
+              51
+            ],
+            "wide two B marks": [
+              503,
+              518
+            ]
+          },
+          "wideInkReflectionTransfer": "Original visible B-ink pixels supply a normalized local reflection field; missing B-letter gaps use interpolated photographed row exposure. No uniform replacement pigment for the wide source letters.",
+          "maximumAllowedMaskPixels": 4460,
+          "maximumChangedPixels": 3399,
+          "pixelsPerFrame": 2073600,
+          "outsideMasksIdenticalBeforeVideoEncode": true,
+          "poster": "usung-construction-film-v25-poster.jpg",
+          "selectionNote": "Forest skidsteer segment excluded because dust/turning/heavy blur would require additional masking work; later solar timelapse section after frame517 excluded because newly exposed BUILT body/Exosystem marks require additional local retouch.",
+          "encodedDecodeVerification": {
+            "framesDecoded": 288,
+            "blackFrames": 0,
+            "allFrameDimensions": [
+              1920,
+              1080
+            ],
+            "fps": 23.976023976023978,
+            "sha256": "b539e514dc1b6fa92a9061a98af24856bd0b2d0525a01e3f12828bbe86a8997d"
+          },
+          "sourceRangesSecondsExclusiveEnd": [
+            [
+              0,
+              7.549208333333333
+            ],
+            [
+              19.352666666666664,
+              21.604916666666664
+            ],
+            [
+              29.821458333333332,
+              32.032
+            ]
+          ],
+          "served": "assets/media/usung-construction-film-v25.mp4",
+          "servedSha256": "b539e514dc1b6fa92a9061a98af24856bd0b2d0525a01e3f12828bbe86a8997d",
+          "servedBytes": 12460321
+        }
+      },
+      "durableVerification": "baseline/original-media-v33/"
     },
     {
       "source": "baseline/original-media-v25/sources.json",
-      "served": "assets/media/usung-delivery-film-v25.mp4",
-      "servedBytes": 8662061,
-      "servedSha256": "cbe0e0548bb6c87df4d4ff4a82c13df6da29961be5f8da514a35c85906694067",
-      "transformation": "sign company pigment local masks; geometry, lighting, camera motion, background, visitors, instructions retained. Structural and tablet footage unedited before crop/resize/encode.; selected original structural crop and source-frame montage.",
+      "served": "assets/media/usung-delivery-film-v33.mp4",
+      "servedBytes": 9446393,
+      "servedSha256": "1347e5a85810d89e1f911361436492b04d43fe238736c423ec7a417d59abf9da",
+      "transformation": "Owner-approved B corner: first-U pink extends to left stem edge with no contrasting strip. Original scene, dimensions, surface pose, light and alpha preserved; only measured corner pigment delta changed before encoding. No scene generation.",
       "verification": {
         "status": "rendered-and-decoded",
         "sources": [
@@ -818,28 +1245,283 @@
         "transformation": "sign company pigment local masks; geometry, lighting, camera motion, background, visitors, instructions retained. Structural and tablet footage unedited before crop/resize/encode.; selected original structural crop and source-frame montage.",
         "servedPoster": "assets/media/usung-delivery-film-v25-poster.jpg"
       },
-      "editor": "Deterministic source-pixel compositing; no scene generation"
+      "editor": "Deterministic source-pixel compositing; no scene generation",
+      "previousServed": {
+        "file": "assets/media/usung-delivery-film-v25.mp4",
+        "sha256": "cbe0e0548bb6c87df4d4ff4a82c13df6da29961be5f8da514a35c85906694067",
+        "transformation": "sign company pigment local masks; geometry, lighting, camera motion, background, visitors, instructions retained. Structural and tablet footage unedited before crop/resize/encode.; selected original structural crop and source-frame montage.",
+        "verification": {
+          "status": "rendered-and-decoded",
+          "sources": [
+            {
+              "file": "baseline/original-media-v25/turner-jobsite-01.mp4",
+              "url": "https://ep-turnerconstruction-prod-asdcetgubtducba3.z01.azurefd.net/uploads/jobsite-01.mp4?v=dd733",
+              "sha256": "89957b2e1ade74b4c0b2fab57135b5611c16739596899cf03d8a02f1ee06d115",
+              "bytes": 3343499
+            },
+            {
+              "file": "baseline/original-media-v25/turner-jobsite-02.mp4",
+              "url": "https://ep-turnerconstruction-prod-asdcetgubtducba3.z01.azurefd.net/uploads/jobsite-02.mp4?v=06e65",
+              "sha256": "8bbe69e13074b00996e880f84f6d5d1c26453e47c5d49f89e54b8c9da659b6d3",
+              "bytes": 6195974
+            },
+            {
+              "file": "baseline/original-media-v25/turner-tech-01.mp4",
+              "url": "https://ep-turnerconstruction-prod-asdcetgubtducba3.z01.azurefd.net/uploads/tech-01.mp4?v=887d3",
+              "sha256": "32f5277b2f6c20e186dee385d32d9ec9febce834c68aec208ee6f68b07b0c4b9",
+              "bytes": 3258327
+            }
+          ],
+          "segments": [
+            {
+              "source": "turner-jobsite-01.mp4",
+              "sourceFrameRangeInclusive": [
+                0,
+                119
+              ],
+              "outputFrameRangeInclusive": [
+                0,
+                119
+              ],
+              "seconds": 5,
+              "operation": "local sign company pigment replacement",
+              "nativeCropXYWH": [
+                0,
+                0,
+                3840,
+                2160
+              ]
+            },
+            {
+              "source": "turner-jobsite-02.mp4",
+              "sourceFrameRangeInclusive": [
+                0,
+                47
+              ],
+              "outputFrameRangeInclusive": [
+                120,
+                167
+              ],
+              "seconds": 2,
+              "operation": "unaltered source crop",
+              "nativeCropXYWH": [
+                2208,
+                400,
+                1632,
+                918
+              ]
+            },
+            {
+              "source": "turner-tech-01.mp4",
+              "sourceFrameRangeInclusive": [
+                0,
+                118
+              ],
+              "outputFrameRangeInclusive": [
+                168,
+                286
+              ],
+              "seconds": 4.958333333333333,
+              "operation": "unaltered source downsample",
+              "nativeCropXYWH": [
+                0,
+                0,
+                3840,
+                2160
+              ]
+            }
+          ],
+          "output": {
+            "fps": 24,
+            "size": [
+              1920,
+              1080
+            ],
+            "framesWritten": 287,
+            "seconds": 11.958333333333334
+          },
+          "generatedScene": false,
+          "nativeEditOnly": "sign company pigment local masks; geometry, lighting, camera motion, background, visitors, instructions retained. Structural and tablet footage unedited before crop/resize/encode.",
+          "verification": {
+            "encoderExitCodes": [
+              0,
+              0
+            ],
+            "decodedFrameCount": 287,
+            "decodedShapesAllEqual": [
+              1080,
+              1920,
+              3
+            ],
+            "fps": 24,
+            "postersFromEncodedFrames": [
+              0,
+              120
+            ],
+            "outsideLocalSignMaskOriginalPixelEquality": "120 of 120 native frames asserted in sign_edit before downsample/encode",
+            "structureTabletPixelEditing": "zero; only selected native crop and downsample",
+            "elapsedSeconds": 74.67,
+            "ffmpegFullDecodeExitCode": 0,
+            "ffmpegFullDecodeErrorOutput": ""
+          },
+          "excludedWork": {
+            "rejectedWideEdits": "SUNBELT RENTALS / JLG in full-frame wide salvage were rejected. No pixels from wide-edit.py output are used. Selected actual source structure crop excludes equipment and those marks; it contains no replacement USUNG glyph.",
+            "modelSafety": "No JLG 460SJ model/safety decals are repainted. Equipment decals are outside the selected crop. Visitor sign instructions and border remain source pixels."
+          },
+          "retainedUnknown": [
+            {
+              "segment": "tablet",
+              "object": "small blue-white cooler badge in background",
+              "classification": "unreadable unknown; not asserted as company or safety label",
+              "action": "original pixels retained; no all-brands-removed claim"
+            }
+          ],
+          "artifacts": [
+            {
+              "file": "/Users/lua/Documents/Codex/usung-corporate-website/outputs/website/usung-rework-v25/video-diagnosis/candidate/usung-delivery-film-v25.mp4",
+              "bytes": 8662061,
+              "sha256": "cbe0e0548bb6c87df4d4ff4a82c13df6da29961be5f8da514a35c85906694067"
+            },
+            {
+              "file": "/Users/lua/Documents/Codex/usung-corporate-website/outputs/website/usung-rework-v25/video-diagnosis/candidate/usung-delivery-film-v25-source-comparator.mp4",
+              "bytes": 8721758,
+              "sha256": "0f10af7fbb69fc485b8178042e4c8bbf12d400e7b63550acb766538d016029b4"
+            }
+          ],
+          "signGeometry": {
+            "sourceToRectifiedPlaneMatrices": "baseline/original-media-v25/delivery-sign-plane-matrices.json",
+            "rectifiedPlaneSize": [
+              1600,
+              920
+            ],
+            "upperOldPigmentCandidateRegionXYWH": [
+              245,
+              75,
+              1215,
+              357
+            ],
+            "lowerOldPigmentCandidateRegionXYWH": [
+              69,
+              670,
+              567,
+              149
+            ],
+            "upperUSUNGInsertXYWidth": [
+              270,
+              152,
+              1110
+            ],
+            "lowerUSUNGInsertXYWidth": [
+              98,
+              687,
+              502
+            ],
+            "ratio": "approved wordmark native ratio; no arbitrary stretch",
+            "planeTracking": "backward KLT source fence/sign plane, RANSAC homography plus source-plane ECC affine refinement",
+            "ECCMinimum": 0.9674941385587082,
+            "inlierMinimum": 519,
+            "localMaskRule": "old pigment contrast>5 inside old-company regions, dilate5+blur0.75; union with replacement glyph alpha>0.001; homography warp back to native source. Source pixels outside warped mask remain identical. No claim saved binary masks: method, matrices, exact source and implementation retained for reproduction."
+          },
+          "visualAudit": {
+            "signNativeKeyFramesObserved": [
+              0,
+              24,
+              48,
+              72,
+              96,
+              119
+            ],
+            "signAllNativeFramesPixelEqualityChecks": 120,
+            "structureAll48SelectedFramesObservedViaContactSheets": true,
+            "tabletAll119SelectedFramesObservedViaContactSheets": true,
+            "structureLabelsAtCropBoundary": "no visible company fragment or model/safety label on any of 48 selected crops; equipment bearing SUNBELT/JLG/460SJ is outside selected frame",
+            "tabletFrameTransform": "entire3840x2160 source downsampled, no new framing cuts, no pixel paint edits",
+            "signSourceCameraFraming": "first source frame naturally includes partial lower sign outside frame; unchanged native camera framing, no artificial crop. matchingframe0 poster therefore also naturally partially frames USUNG."
+          },
+          "photometricMethod": {
+            "sceneGenerated": false,
+            "upperLensDefocusSigmaPlanePixels": 1.9,
+            "lowerLensDefocusSigmaPlanePixels": 1.25,
+            "inkContrast": "measured per-source-frame old pigment difference from adjacent unprinted sign substrate; pink contrast attenuated by actual frame haze",
+            "substrate": "robust second-order polynomial illumination fit from adjacent unprinted source sign; source high-frequency grain contribution on altered pigment",
+            "outsideSourceSurface": "unchanged native pixels before downsample/encode"
+          },
+          "provenanceFiles": [
+            {
+              "file": "/Users/lua/Documents/Codex/usung-corporate-website/outputs/website/usung-rework-v25/video-diagnosis/candidate/usung-delivery-film-v25.jpg",
+              "bytes": 154393,
+              "sha256": "fee5726daceb3a46b2432fb4d214556c57c3d6cb3b39e2ff1fde6d8e5d44ecc7"
+            },
+            {
+              "file": "/Users/lua/Documents/Codex/usung-corporate-website/outputs/website/usung-rework-v25/video-diagnosis/candidate/usung-delivery-film-v25-wide.jpg",
+              "bytes": 310015,
+              "sha256": "939d2de413632aa6737da93c7406c09d01496865ab954e7c200c1b6c44cbfd3d"
+            },
+            {
+              "file": "/Users/lua/Documents/Codex/usung-corporate-website/outputs/website/usung-rework-v25/video-diagnosis/candidate/sign-edit.py",
+              "bytes": 4211,
+              "sha256": "12ba3c2c2de159a71e52b9535f3b6fae4db47a856d90fd518f167fc0e9a88637"
+            },
+            {
+              "file": "/Users/lua/Documents/Codex/usung-corporate-website/outputs/website/usung-rework-v25/video-diagnosis/candidate/sign-H-refined.json",
+              "bytes": 48766,
+              "sha256": "19f78f497aabe86f0fe2a2ee927550a8536265d2d01a24f53c3b3cd5c34e2172"
+            }
+          ],
+          "served": "assets/media/usung-delivery-film-v25.mp4",
+          "servedSha256": "cbe0e0548bb6c87df4d4ff4a82c13df6da29961be5f8da514a35c85906694067",
+          "servedBytes": 8662061,
+          "sourcePage": "https://www.turnerconstruction.com/",
+          "sourceAssets": [
+            "https://ep-turnerconstruction-prod-asdcetgubtducba3.z01.azurefd.net/uploads/jobsite-01.mp4?v=dd733",
+            "https://ep-turnerconstruction-prod-asdcetgubtducba3.z01.azurefd.net/uploads/jobsite-02.mp4?v=06e65",
+            "https://ep-turnerconstruction-prod-asdcetgubtducba3.z01.azurefd.net/uploads/tech-01.mp4?v=887d3"
+          ],
+          "sourceFile": "baseline/original-media-v25/sources.json",
+          "transformation": "sign company pigment local masks; geometry, lighting, camera motion, background, visitors, instructions retained. Structural and tablet footage unedited before crop/resize/encode.; selected original structural crop and source-frame montage.",
+          "servedPoster": "assets/media/usung-delivery-film-v25-poster.jpg"
+        }
+      },
+      "durableVerification": "baseline/original-media-v33/"
     },
     {
       "source": "Corresponding original source-video frame",
-      "served": "assets/media/usung-construction-film-v25-poster.jpg",
-      "servedBytes": 403774,
-      "servedSha256": "05d436c6ae89b64ffd30b9a41975ff94c1b0d5bb9d1803dc41af84792cc5ad10",
-      "transformation": "Photographic source-video frame; same surface edit as corresponding video"
+      "served": "assets/media/usung-construction-film-v33-poster.jpg",
+      "servedBytes": 494728,
+      "servedSha256": "1b9747087ee2230ddef5549c58b749f210be27b4cedafc945a0776b83ac863bf",
+      "transformation": "Owner-approved B corner: first-U pink extends to left stem edge with no contrasting strip. Original scene, dimensions, surface pose, light and alpha preserved; only measured corner pigment delta changed before encoding. No scene generation.",
+      "previousServed": {
+        "file": "assets/media/usung-construction-film-v25-poster.jpg",
+        "sha256": "05d436c6ae89b64ffd30b9a41975ff94c1b0d5bb9d1803dc41af84792cc5ad10",
+        "transformation": "Photographic source-video frame; same surface edit as corresponding video"
+      },
+      "durableVerification": "baseline/original-media-v33/"
     },
     {
       "source": "Corresponding original source-video frame",
-      "served": "assets/media/usung-delivery-film-v25-poster.jpg",
-      "servedBytes": 154393,
-      "servedSha256": "fee5726daceb3a46b2432fb4d214556c57c3d6cb3b39e2ff1fde6d8e5d44ecc7",
-      "transformation": "Photographic source-video frame; same surface edit as corresponding video"
+      "served": "assets/media/usung-delivery-film-v33-poster.webp",
+      "servedBytes": 297376,
+      "servedSha256": "5fba6f6eacf85b87865d6677b8b62938f38c70751ac8b67463d173ed89d63e11",
+      "transformation": "Owner-approved B corner: first-U pink extends to left stem edge with no contrasting strip. Original scene, dimensions, surface pose, light and alpha preserved; only measured corner pigment delta changed before encoding. No scene generation.",
+      "previousServed": {
+        "file": "assets/media/usung-delivery-film-v25-poster.jpg",
+        "sha256": "fee5726daceb3a46b2432fb4d214556c57c3d6cb3b39e2ff1fde6d8e5d44ecc7",
+        "transformation": "Photographic source-video frame; same surface edit as corresponding video"
+      },
+      "durableVerification": "baseline/original-media-v33/"
     },
     {
       "source": "Corresponding original source-video frame",
-      "served": "assets/media/usung-delivery-film-v25-wide.jpg",
+      "served": "assets/media/usung-delivery-film-v33-wide.jpg",
       "servedBytes": 310015,
       "servedSha256": "939d2de413632aa6737da93c7406c09d01496865ab954e7c200c1b6c44cbfd3d",
-      "transformation": "Photographic source-video frame; same surface edit as corresponding video"
+      "transformation": "Owner-approved B corner: first-U pink extends to left stem edge with no contrasting strip. Original scene, dimensions, surface pose, light and alpha preserved; only measured corner pigment delta changed before encoding. No scene generation.",
+      "previousServed": {
+        "file": "assets/media/usung-delivery-film-v25-wide.jpg",
+        "sha256": "939d2de413632aa6737da93c7406c09d01496865ab954e7c200c1b6c44cbfd3d",
+        "transformation": "Photographic source-video frame; same surface edit as corresponding video"
+      },
+      "durableVerification": "baseline/original-media-v33/"
     }
   ],
   "unchangedAssets": [
@@ -1097,5 +1779,16 @@
     "footer": "White background, black approved USUNG wordmark, #FF0F6F accent at upper right of first U"
   },
   "previousRevision": "2026-10-04-original-media-v24",
-  "sourceOnlyRule": "Real photos and videos must start from preserved source media. No generative replacement scene or full-frame imagegen edit. Keep source scene geometry and pixels outside explicitly recorded brand masks."
+  "sourceOnlyRule": "Real photos and videos must start from preserved source media. No generative replacement scene or full-frame imagegen edit. Keep source scene geometry and pixels outside explicitly recorded brand masks.",
+  "approvedVariant": {
+    "variant": "B",
+    "ownerSelection": "Current conversation",
+    "pink": "#FF0F6F",
+    "rect": {
+      "x": 72.362,
+      "y": 23.072,
+      "width": 16.09,
+      "height": 15.987
+    }
+  }
 }
