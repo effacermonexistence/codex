@@ -34,7 +34,10 @@ for i in 1...180 {
 check(sampler.history.points.count == 1, "180 unchanged heartbeats are not 180 experiments")
 check(sampler.history.points[0].tokenSavings == -0.2, "negative token change survives")
 let visible = sampler.history.points.filter { $0.id >= t.addingTimeInterval(60) }
-check(visible.isEmpty, "aged-out observation does not fabricate a fresh chart point")
+check(visible.isEmpty, "aged-out observation does not fabricate a fresh change point")
+let held = sampler.history.trace(from: t.addingTimeInterval(60), to: t.addingTimeInterval(180), heldUntil: sampler.confirmedAt)
+check(held.map(\.id) == [t.addingTimeInterval(60), t.addingTimeInterval(180)] && held.allSatisfy { $0.tokenSavings == -0.2 },
+      "re-confirmed value is one held line across the window to the current tick")
 sampler.observe(context: "a", evidence: "real-cohort-2", at: t.addingTimeInterval(181),
                 tokenSavings: 0, completionDelta: -0.1)
 check(sampler.history.points.count == 2, "changed evidence is recorded")
@@ -46,6 +49,9 @@ check(sampler.history.points.count == 1 && sampler.history.points[0].tokenSaving
       "partial measurement never prices unknown tokens as zero")
 sampler.observe(context: "b", evidence: "other-cohort", at: t.addingTimeInterval(184), tokenSavings: 0.3, completionDelta: 0.2)
 check(sampler.history.points.count == 1, "filter/baseline change resets cohort history")
+sampler.observe(context: "b", evidence: "other-cohort", at: t.addingTimeInterval(200), tokenSavings: 0.3, completionDelta: 0.2)
+check(sampler.history.points.map(\.id) == [t.addingTimeInterval(200)],
+      "a stalled detector restarts the line instead of bridging the unobserved span")
 print("Governance delta sampler: \(checks) checks passed (synthetic isolated fixtures)")
 '''
 with tempfile.TemporaryDirectory(prefix="os1-governance-sampler-fixture-") as directory:
