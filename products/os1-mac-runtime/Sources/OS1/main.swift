@@ -13257,6 +13257,8 @@ func selfTest() throws {
         ("quoted OS-1 output is not the user's recovery question",
          !OS1SelfOutput.stripQuoted("이거 가능하냐?\nOS-1\n\n준비된 자료\n• 복구 기준점(Gold 포인터): 기록 없음\n고쳐").contains("복구") &&
          OS1SelfOutput.stripQuoted("이거 가능하냐?\nOS-1\n• 복구 기준점(Gold 포인터): 기록 없음\n고쳐").contains("고쳐")),
+        ("a pasted tool-call or work line is OS-1 output, not the owner's request",
+         OS1SelfOutput.stripQuoted("4분 12초 동안 작업 · 도구 호출 13회  ▸\n도구 호출 12회 · 실행 6 · 읽기 4  ▾\n이거 다시 실행해") == "이거 다시 실행해"),
         ("local project root is not guessed outside the tree",
          LocalProjectWorkspace.root(containing: "/nonexistent/os1-fixture", projectID: "os1-clodex") == nil &&
          LocalProjectWorkspace.root(containing: "/nonexistent", projectID: "unregistered") == nil),

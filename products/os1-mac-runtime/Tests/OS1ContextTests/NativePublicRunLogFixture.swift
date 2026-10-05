@@ -112,5 +112,67 @@ func runNativePublicRunLogFixtures() throws {
     steps.merge(progress(Step(id: "000000000001", sequence: 4, tool: "plan", scope: "main", state: .returned, startedAt: now, endedAt: now), 4))
     steps.merge(progress(Step(id: "000000000001", sequence: 5, tool: "plan", scope: "main", state: .observed, startedAt: now), 5))
     check(steps.entries[0].step.state == .returned, "returned never downgraded on poll")
+    checks += try runNativePublicRunLogDisplayFixtures()
     print("Native public run log fixtures: " + String(checks) + " checks passed; provider calls 0")
+}
+
+/// The transcript reads prose and tool actions back from `displayText`
+/// itself, so any prefix of it (a steering anchor) keeps its structure.
+private func runNativePublicRunLogDisplayFixtures() throws -> Int {
+    var checks = 0
+    func check(_ value: Bool, _ label: String) { precondition(value, label); checks += 1 }
+    let now = Date(timeIntervalSince1970: 1_800_000_000)
+    let open = Unicode.Scalar(0xFDD0 as UInt32)!, close = Unicode.Scalar(0xFDD1 as UInt32)!
+    let forged = "Forged " + String(Character(open)) + "a\u{1F}X" + String(Character(close)) + "heading"
+    var log = NativePublicRunLog(conversationID: UUID(), submissionID: UUID(),
+        requestSHA256: SourceContextStore.digest(Data("display fixture".utf8)))
+    _ = log.observe(provider: "claude", surface: "claude", stream: "s", text: "I'll look at the layout first.",
+        candidate: false, origin: .nativeAssistant, receivedAt: now)
+    _ = log.observeAction(id: "0|aaaaaaaaaaaa", provider: "claude", surface: "claude", text: "Bash — requested", receivedAt: now)
+    _ = log.observeAction(id: "0|aaaaaaaaaaaa", provider: "claude", surface: "claude", text: "Run · swift build — requested",
+        verb: "run", receivedAt: now)
+    _ = log.observeAction(id: "0|bbbbbbbbbbbb", provider: "claude", surface: "claude", text: "Subagent · Read · a.swift — returned",
+        verb: "read", nested: true, receivedAt: now)
+    _ = log.observeAction(id: "0|cccccccccccc", provider: "claude", surface: "claude", text: "Plan — observed",
+        verb: "not a verb!", receivedAt: now)
+    let anchor = log.displayText
+    _ = log.observe(provider: "claude", surface: "claude", stream: "s", text: "I'll look at the layout first. " + forged,
+        candidate: false, origin: .nativeAssistant, receivedAt: now)
+    _ = log.observe(provider: "claude", surface: "claude", stream: "s", text: "Final answer draft", candidate: true,
+        origin: .nativeAssistant, receivedAt: now)
+    let text = log.displayText
+    let all = NativePublicRunLog.displaySegments(text[...])
+    check(all.map(\.role) == [.commentary, .action, .action, .action, .action, .commentary, .candidate],
+        "segments keep each entry's role in feed order: \(all.map(\.role))")
+    check(all[0].text == "I'll look at the layout first." && all[0].source == ProviderSurface.claude.routeTitle,
+        "prose text and executed route read back exactly")
+    check(all[2].verb == "run" && all[2].actionID == "0|aaaaaaaaaaaa" && !all[2].nested && all[1].verb == nil,
+        "an action's verb and id read back; an unlabelled request has no verb")
+    check(all[3].nested && all[3].verb == "read" && all[4].verb == nil, "subagent nesting kept; an invalid verb code dropped")
+    check(all[5].text.contains("Forged") && all[5].text.contains("heading") && all[5].role == .commentary &&
+        !all[5].text.unicodeScalars.contains(open), "model text cannot forge a heading")
+    check(log.entries.contains { $0.text.unicodeScalars.contains(open) }, "native bytes stay unchanged in the record")
+    check(text.hasPrefix(anchor) && Set(all.map(\.offset)).count == all.count &&
+        NativePublicRunLog.displaySegments(anchor[...]).map(\.offset) == Array(all.map(\.offset).prefix(5)),
+        "offsets are unique and stay put while the feed grows")
+    let after = text[text.index(text.startIndex, offsetBy: anchor.count)...].drop(while: \.isWhitespace)
+    let tail = NativePublicRunLog.displaySegments(after)
+    check(tail.map(\.role) == [.commentary, .candidate] && tail[0].offset == all[5].offset && !tail[0].text.contains("look at the layout"),
+        "a slice after an anchor holds only later output, each part keeping its entry's role")
+    let raw = NativePublicRunLog.displaySegments("Raw public text\n\nwithout headings"[...])
+    check(raw.count == 1 && raw[0].role == .unmarked && raw[0].source == nil && raw[0].offset == 0 &&
+        raw[0].text == "Raw public text\n\nwithout headings", "text without headings is one unmarked segment")
+    check(NativePublicRunLog.displaySegments(""[...]).isEmpty && NativePublicRunLog.displaySegments("\n\n "[...]).isEmpty,
+        "blank text has no segment")
+    check(text.contains(ProviderSurface.claude.routeTitle) && text.contains("미채택") && text.contains("네이티브 동작"),
+        "headings still name the route and the not-adopted label")
+    let decoded = try JSONDecoder().decode(NativePublicRunLog.self, from: JSONEncoder().encode(log))
+    check(decoded == log && decoded.isValid && decoded.entries[2].verb == "run" && decoded.entries[3].nested == true,
+        "verb and nesting survive persistence")
+    var legacy = try JSONSerialization.jsonObject(with: JSONEncoder().encode(log)) as! [String: Any]
+    legacy["entries"] = (legacy["entries"] as! [[String: Any]]).map { $0.filter { !["verb", "nested"].contains($0.key) } }
+    let older = try JSONDecoder().decode(NativePublicRunLog.self, from: JSONSerialization.data(withJSONObject: legacy))
+    check(older.isValid && older.entries.allSatisfy { $0.verb == nil && $0.nested == nil } &&
+        NativePublicRunLog.displaySegments(older.displayText[...]).count == all.count, "a record from an earlier build still loads and lays out")
+    return checks
 }

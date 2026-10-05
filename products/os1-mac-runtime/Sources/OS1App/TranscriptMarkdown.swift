@@ -162,9 +162,11 @@ enum TranscriptMarkdown {
         return result
     }
 
-    static func detailLink(_ label: String, key: String) -> NSAttributedString {
+    /// A label that opens or closes `key` in place. Secondary details pass a
+    /// gray `color`; links keep the color they are drawn with.
+    static func detailLink(_ label: String, key: String, color: NSColor = accent) -> NSAttributedString {
         NSAttributedString(string: label, attributes: [
-            .font: NSFont.systemFont(ofSize: 11, weight: .medium), .foregroundColor: accent,
+            .font: NSFont.systemFont(ofSize: 11, weight: .medium), .foregroundColor: color,
             .link: URL(string: "os1-detail://toggle/\(key)")!
         ])
     }
