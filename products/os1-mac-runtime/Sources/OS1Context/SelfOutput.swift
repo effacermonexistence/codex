@@ -18,6 +18,9 @@ public enum OS1SelfOutput {
         // Connection-control receipts and provenance notes OS-1 itself prints.
         "claude 연결됨", "github 연결됨", "r2 연결됨", "os-1 외부 작업", "이 대화에 흡수했습니다",
         "claude connection verified", "github connection verified", "r2 connection verified", "outside os-1, not an adoption verdict",
+        // Disclosure lines the transcript draws (tool calls, work time, the
+        // live run) end in a gray "▸" or "▾" after two spaces.
+        "  ▸", "  ▾",
     ]
     static let labelLines: Set<String> = ["os-1", "os1", "claude", "codex", "◇"]
 

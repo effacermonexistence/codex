@@ -15,6 +15,12 @@ public struct NativePublicRunLog: Codable, Equatable, Sendable {
         public let actionID: String?
         public var text: String
         public let receivedAt: Date
+        /// An action's fixed verb code (`NativeStepLabel.Verb`), so the
+        /// transcript can fold a run of calls into "read 3 · run 2". Absent on
+        /// prose and on actions recorded by earlier builds.
+        public var verb: String? = nil
+        /// The action is a subagent's call, not the main turn's.
+        public var nested: Bool? = nil
     }
     public let conversationID: UUID
     public let submissionID: UUID
@@ -95,6 +101,7 @@ public struct NativePublicRunLog: Codable, Equatable, Sendable {
         return true
     }
     @discardableResult public mutating func observeAction(id: String, provider: String, surface: String?, text: String,
+                                                        verb: String? = nil, nested: Bool = false,
                                                         receivedAt: Date) -> Bool {
         guard !id.isEmpty, id.utf8.count <= 256, !text.isEmpty, text.utf8.count <= 16_384,
               receivedAt.timeIntervalSince1970.isFinite, ["codex", "claude"].contains(provider) else { return false }
@@ -103,11 +110,23 @@ public struct NativePublicRunLog: Codable, Equatable, Sendable {
         if let previous = entries.last(where: { $0.kind == .action && $0.actionID == id }), previous.text == text { return false }
         checkpoint()
         entries.append(Entry(id: UUID(), provider: provider, surface: surface, stream: id, origin: .nativeUI,
-            kind: .action, actionID: id, text: text, receivedAt: receivedAt))
+            kind: .action, actionID: id, text: text, receivedAt: receivedAt,
+            verb: verb.flatMap { Self.isVerbCode($0) ? $0 : nil }, nested: nested ? true : nil))
         revision += 1; return true
     }
+    /// Opens and closes each entry's heading in `displayText`. Unicode
+    /// noncharacters are reserved for internal use and dropped from every
+    /// entry's text there, so model output cannot forge a heading, and any
+    /// prefix of the text (a steering anchor is one) still says which entry
+    /// each part of it belongs to. (Swift rejects them in string literals.)
+    static let headingOpen = Unicode.Scalar(0xFDD0 as UInt32)!
+    static let headingClose = Unicode.Scalar(0xFDD1 as UInt32)!
+    static let fieldSeparator = Unicode.Scalar(0x1F as UInt8)
+
     /// Markers are presentation labels, not model-authored sentences. The
     /// native bytes themselves stay unchanged and the scored final is separate.
+    /// Each entry is a heading (role, route, label, action id, verb, nesting)
+    /// and its text; `displaySegments` reads it back for the transcript.
     public var displayText: String {
         entries.map { entry in
             let name = ProviderSurface.resolveExecuted(rawSurface: entry.surface, provider: entry.provider)?.routeTitle
@@ -115,8 +134,101 @@ public struct NativePublicRunLog: Codable, Equatable, Sendable {
             let label = entry.origin == .legacyUnattributed ? os1Tr("출처 미확인 공개 출력 · 미채택", "Public output of unconfirmed origin · not adopted")
                 : entry.kind == .candidate ? os1Tr("수신 후보 출력 · 미채택", "Received candidate output · not adopted")
                 : (entry.kind == .action ? os1Tr("네이티브 동작", "Native action") : os1Tr("공개 진행 출력", "Public progress output"))
-            return name + " · " + label + "\n\n" + entry.text
+            let role = entry.origin == .legacyUnattributed ? "u" : entry.kind == .candidate ? "c" : entry.kind == .action ? "a" : "p"
+            let fields = [role, name, label, entry.actionID ?? "", entry.verb ?? "", entry.nested == true ? "1" : ""]
+            var heading = String.UnicodeScalarView([Self.headingOpen])
+            for (index, field) in fields.enumerated() {
+                if index > 0 { heading.append(Self.fieldSeparator) }
+                heading.append(contentsOf: field.unicodeScalars.filter { !Self.isStructural($0) && $0 != Self.fieldSeparator })
+            }
+            heading.append(Self.headingClose)
+            return String(heading) + Self.withoutHeadings(entry.text)
         }.joined(separator: "\n\n")
+    }
+
+    /// One entry of `displayText` as the transcript lays it out — the
+    /// backend's prose, a received candidate or one of its tool actions — or
+    /// the part of that entry inside a slice of the text.
+    public struct DisplaySegment: Equatable, Sendable {
+        public enum Role: String, Sendable { case commentary, candidate, unattributed, action, unmarked }
+        public let role: Role
+        /// The executed route's title; nil for text without headings.
+        public let source: String?
+        public let actionID: String?
+        public let verb: String?
+        public let nested: Bool
+        /// Unicode-scalar offset of the entry's heading in the whole text.
+        /// The feed only appends, so it stays put while the feed grows.
+        public let offset: Int
+        public let text: String
+    }
+
+    /// The entries inside `slice`, read from the headings `displayText`
+    /// writes. A slice that starts inside an entry — the output after a
+    /// steering anchor — keeps that entry's role; text without headings
+    /// (a backend's raw public text) is one unmarked segment.
+    public static func displaySegments(_ slice: Substring) -> [DisplaySegment] {
+        let scalars = slice.base.unicodeScalars
+        var headings: [(start: String.Index, body: String.Index, offset: Int, fields: [String])] = []
+        var open: (index: String.Index, offset: Int)?
+        var offset = 0, index = scalars.startIndex
+        while index < scalars.endIndex {
+            let next = scalars.index(after: index)
+            if scalars[index] == headingOpen {
+                open = (index, offset)
+            } else if scalars[index] == headingClose, let start = open {
+                let fields = scalars[scalars.index(after: start.index)..<index]
+                    .split(separator: fieldSeparator, omittingEmptySubsequences: false)
+                    .map { String(String.UnicodeScalarView($0)) }
+                headings.append((start.index, next, start.offset, fields))
+                open = nil
+            }
+            offset += 1
+            index = next
+        }
+        func text(_ from: String.Index, _ to: String.Index) -> String? {
+            let start = max(from, slice.startIndex), end = min(to, slice.endIndex)
+            guard start < end else { return nil }
+            let value = String(String.UnicodeScalarView(scalars[start..<end]))
+            return value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : value
+        }
+        var segments: [DisplaySegment] = []
+        if let lead = text(scalars.startIndex, headings.first?.start ?? scalars.endIndex) {
+            segments.append(DisplaySegment(role: .unmarked, source: nil, actionID: nil, verb: nil, nested: false, offset: 0, text: lead))
+        }
+        for (position, heading) in headings.enumerated() {
+            var end = position + 1 < headings.count ? headings[position + 1].start : scalars.endIndex
+            if position + 1 < headings.count {
+                // The "\n\n" between two entries belongs to neither.
+                let joiner = scalars.index(end, offsetBy: -2, limitedBy: heading.body)
+                if let joiner, scalars[joiner..<end].elementsEqual("\n\n".unicodeScalars) { end = joiner }
+            }
+            guard let body = text(heading.body, end) else { continue }
+            func field(_ index: Int) -> String? {
+                index < heading.fields.count && !heading.fields[index].isEmpty ? heading.fields[index] : nil
+            }
+            let role: DisplaySegment.Role
+            switch field(0) {
+            case "p": role = .commentary
+            case "c": role = .candidate
+            case "u": role = .unattributed
+            case "a": role = .action
+            default: role = .unmarked
+            }
+            segments.append(DisplaySegment(role: role, source: field(1), actionID: role == .action ? field(3) : nil,
+                verb: role == .action ? field(4) : nil, nested: role == .action && field(5) == "1",
+                offset: heading.offset, text: body))
+        }
+        return segments
+    }
+
+    private static func isStructural(_ scalar: Unicode.Scalar) -> Bool { scalar == headingOpen || scalar == headingClose }
+    private static func withoutHeadings(_ text: String) -> String {
+        guard text.unicodeScalars.contains(where: isStructural) else { return text }
+        return String(String.UnicodeScalarView(text.unicodeScalars.filter { !isStructural($0) }))
+    }
+    private static func isVerbCode(_ value: String) -> Bool {
+        value.range(of: #"^[A-Za-z]{1,24}$"#, options: .regularExpression) != nil
     }
     public func belongs(conversationID: UUID, submissionID: UUID, requestSHA256: String) -> Bool {
         self.conversationID == conversationID && self.submissionID == submissionID && self.requestSHA256 == requestSHA256
@@ -126,7 +238,9 @@ public struct NativePublicRunLog: Codable, Equatable, Sendable {
         entries.allSatisfy { entry in
             ["codex", "claude"].contains(entry.provider) && !entry.stream.isEmpty && entry.stream.utf8.count <= 512 &&
             !entry.text.isEmpty && entry.text.utf8.count <= 16_000_000 && entry.receivedAt.timeIntervalSince1970.isFinite &&
-            (entry.kind == .action ? entry.origin == .nativeUI && entry.actionID != nil : entry.origin != .nativeUI && entry.actionID == nil)
+            (entry.kind == .action ? entry.origin == .nativeUI && entry.actionID != nil
+                : entry.origin != .nativeUI && entry.actionID == nil && entry.verb == nil && entry.nested == nil) &&
+            (entry.verb.map(Self.isVerbCode) ?? true)
         } && snapshots.allSatisfy { !$0.key.isEmpty && $0.key.utf8.count <= 512 && $0.value.utf8.count <= 4_000_000 } &&
         streamIdentities.count <= 1_024 && streamIdentities.allSatisfy {
             !$0.key.isEmpty && $0.key.utf8.count <= 256 && !$0.value.namespace.isEmpty && $0.value.namespace.utf8.count <= 256 &&
