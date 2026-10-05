@@ -417,14 +417,98 @@ func selfRepairSecretHit(root: String, git: String, since startHead: String? = n
     return nil
 }
 
+/// What OS-1's own completion reads from and does to this Mac outside the
+/// tree. Production uses the installed app, the real release build and the
+/// registered roots; the fixture replaces them so it never builds a release
+/// or reads the owner's state.
+struct SelfRepairHost {
+    var installedBuild: () -> Int = { installedOS1Build() }
+    var installedVersion: () -> String = { installedOS1Version() }
+    var staleDiagnostic: (String) -> String? = { staleOS1SourceDiagnostic(root: $0) }
+    var stage: (String) throws -> SelfUpdate.Intent = { try stageSelfUpdateRelease(root: $0) }
+    var isRegistered: (String) -> Bool = { root in
+        LocalProjectWorkspace.candidates(projectID: "os1-clodex").map(LocalProjectWorkspace.executionPath)
+            .contains(LocalProjectWorkspace.executionPath(root))
+    }
+}
+
+/// The staging gate a `stageSelfUpdateRelease` error names: the self-test
+/// label ("app-self-test-parallel"), "release-build", "version-string",
+/// "staged-build", else "staging".
+func selfRepairStagingGate(_ error: Error) -> String {
+    let text = String(describing: error)
+    if let range = text.range(of: #"self-update stage: ([a-z0-9-]+) failed"#, options: .regularExpression) {
+        let match = String(text[range])
+        return String(match.dropFirst("self-update stage: ".count).dropLast(" failed".count))
+    }
+    if text.contains("release build failed") { return "release-build" }
+    if text.contains("must name build") { return "version-string" }
+    if text.contains("staged app does not carry build") { return "staged-build" }
+    return "staging"
+}
+
+/// A self-test gate can fail on timing alone (the parallel suite's restart
+/// check); a release build or version mismatch cannot pass by running again.
+func selfRepairGateIsSelfTest(_ gate: String) -> Bool { gate.hasSuffix("self-test") || gate.contains("self-test-") }
+
+/// Where a repair's change actually is: committed since `startHead` (and
+/// whether a remote-tracking ref already contains it), or left uncommitted.
+struct OS1RepairSourceState: Equatable {
+    var head: String?
+    var branch: String?
+    /// HEAD moved past the start commit: the repair committed its change.
+    var committed: Bool
+    var pushed: Bool
+    var uncommittedFiles: Int
+
+    static func read(root: String, startHead: String?) -> OS1RepairSourceState {
+        let head = gitHead(root)
+        guard let git = try? findExecutable("git") else {
+            return OS1RepairSourceState(head: head, branch: nil, committed: false, pushed: false, uncommittedFiles: 0)
+        }
+        let branch = (try? commandOutput(git, ["-C", root, "symbolic-ref", "--short", "-q", "HEAD"], timeout: 20))
+            .flatMap { $0.0 == 0 ? String(decoding: $0.1, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines) : nil }
+            .flatMap { $0.isEmpty ? nil : $0 }
+        let committed = head != nil && startHead != nil && head != startHead
+        var pushed = false
+        if committed, let head, let remote = try? commandOutput(git, ["-C", root, "branch", "-r", "--contains", head], timeout: 20),
+           remote.0 == 0 {
+            pushed = !String(decoding: remote.1, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+        let status = (try? commandOutput(git, ["-C", root, "status", "--porcelain", "--", SelfUpdate.runtimeRelativePath], timeout: 60))
+            .flatMap { $0.0 == 0 ? String(decoding: $0.1, as: UTF8.self) : nil } ?? ""
+        let uncommitted = SelfUpdate.sourceChanges(status.split(separator: "\n").map { String($0.dropFirst(3)) }).count
+        return OS1RepairSourceState(head: head, branch: branch, committed: committed, pushed: pushed, uncommittedFiles: uncommitted)
+    }
+
+    /// One sentence, in the diagnostic's language (English, like every
+    /// completion diagnostic; the owner-facing note is built from the record).
+    func description(root: String) -> String {
+        var parts: [String] = []
+        if committed, let head {
+            parts.append("the repair's change is committed as \(head.prefix(7)) on \(branch ?? "a detached HEAD")"
+                + (pushed ? " and pushed" : " (local only, not pushed)"))
+        }
+        if uncommittedFiles > 0 {
+            parts.append("\(uncommittedFiles) source file(s) are still uncommitted in \(root)")
+        }
+        if parts.isEmpty { parts.append("no committed or uncommitted change of the repair remains in \(root)") }
+        return parts.joined(separator: "; ")
+    }
+}
+
 /// OS-1 finishes its own repair. A backend's job ends when the source is
 /// changed and builds; the mechanical tail — version bump, signed release,
 /// self-tests, staging, commit, push — is OS-1's own, so completion never
 /// depends on a backend following instructions. The caller holds the
 /// source-write lease. Never throws: the outcome is part of the task's result.
-func completeOS1SelfRepair(root: String, objective: String, startedAt: Date, startHead: String? = nil, verifiedSourceReady: Bool = false) -> SelfRepairCompletion {
+/// A repair run binds its pending record (`PendingOS1RepairContext`): a
+/// staging failure is recorded there for a model-free retry, and the record is
+/// removed once the install intent is written.
+func completeOS1SelfRepair(root: String, objective: String, startedAt: Date, startHead: String? = nil, verifiedSourceReady: Bool = false,
+                           host: SelfRepairHost = SelfRepairHost()) -> SelfRepairCompletion {
     let runtime = URL(fileURLWithPath: root).appendingPathComponent(SelfUpdate.runtimeRelativePath).path
-    let installed = installedOS1Build()
+    let installed = host.installedBuild()
     guard let git = try? findExecutable("git") else { return .failed("git is not available") }
     if let intent = SelfUpdate.loadIntent(root: root), intent.build > installed, intent.stagedAt >= startedAt {
         return .notApplicable("the task staged build \(intent.build) itself")
@@ -445,16 +529,56 @@ func completeOS1SelfRepair(root: String, objective: String, startedAt: Date, sta
     if let hit = selfRepairSecretHit(root: root, git: git, since: startHead) {
         return .failed("refusing to commit or stage: possible credential in the change (\(hit))")
     }
-    if let stale = staleOS1SourceDiagnostic(root: root) { return .failed(stale) }
+    if let stale = host.staleDiagnostic(root) { return .failed(stale) }
     RuntimeActivity.emit(.verifying, publicText: os1Tr("OS-1 자체 수리 마무리 · 변경 \(changed.count)개 파일 · 버전 올리고 빌드·검증·스테이징·커밋까지 OS-1이 직접 합니다",
         "OS-1 finishing its own repair · \(changed.count) changed file(s) · version bump, build, tests, staging and commit are OS-1's own"))
+    // The bump is OS-1's own edit: a staging failure takes it back, so a
+    // failed build never leaves a dirty identity behind that blocks later
+    // staging and the live-tree catch-up (2026-10-05, build 326).
+    let versionFiles = [runtime + "/Resources/Info.plist", runtime + "/Sources/OS1/SelfUpdateCommands.swift"]
+    let beforeBump = versionFiles.map { try? Data(contentsOf: URL(fileURLWithPath: $0)) }
     let build: Int, version: String
     do {
-        (build, version) = try ensureSelfUpdateVersion(runtime: runtime, installed: installed, installedVersion: installedOS1Version())
+        (build, version) = try ensureSelfUpdateVersion(runtime: runtime, installed: installed, installedVersion: host.installedVersion())
     } catch { return .failed(String(describing: error)) }
-    let intent: SelfUpdate.Intent
-    do { intent = try stageSelfUpdateRelease(root: root) } catch {
-        return .failed("build \(build) (\(version)) did not pass staging — the source change stays in the working tree, nothing was installed. " + String(describing: error))
+    var staged: SelfUpdate.Intent?
+    var stageFailure: Error?
+    var gate = "staging"
+    for attempt in 1...2 {
+        do { staged = try host.stage(root); break } catch {
+            stageFailure = error
+            gate = selfRepairStagingGate(error)
+            // One automatic re-run, no model call: a self-test can fail on
+            // timing alone. A failed build or identity check cannot pass so.
+            guard attempt == 1, selfRepairGateIsSelfTest(gate) else { break }
+            RuntimeActivity.emit(.verifying, publicText: os1Tr(
+                "OS-1 자체 업데이트 build \(build) 검증 \(gate) 실패 · 모델 호출 없이 스테이징을 한 번 더 실행합니다",
+                "OS-1 self-update build \(build) failed \(gate) · running staging once more, without a model call"))
+        }
+    }
+    guard let intent = staged else {
+        for (path, data) in zip(versionFiles, beforeBump) {
+            if let data { try? data.write(to: URL(fileURLWithPath: path), options: .atomic) }
+        }
+        let state = OS1RepairSourceState.read(root: root, startHead: startHead)
+        let failureText = stageFailure.map { String(describing: $0) } ?? "staging failed"
+        let binding = PendingOS1RepairContext.current
+        if let binding {
+            binding.store.update(id: binding.id) { record in
+                record.state = .stagingFailed
+                record.failedGate = gate
+                record.lastError = String(failureText.prefix(2_000))
+                record.repairCommit = state.committed ? state.head : nil
+                record.repairBranch = state.branch
+                record.repairPushed = state.committed ? state.pushed : nil
+                record.sourceRoot = root
+                if record.startCommit == nil { record.startCommit = startHead }
+            }
+        }
+        let retried = selfRepairGateIsSelfTest(gate) ? " (run twice)" : ""
+        let retry = binding == nil ? "" : " OS-1 retries staging without a model call on the next request in this conversation."
+        return .failed("build \(build) (\(version)) did not pass staging at \(gate)\(retried) — nothing was installed; "
+            + state.description(root: root) + "; the version bump was reverted." + retry + " " + failureText)
     }
     // Commit on the current branch (a dedicated branch when on main or
     // detached), then re-record the intent against that commit.
@@ -479,6 +603,11 @@ func completeOS1SelfRepair(root: String, objective: String, startedAt: Date, sta
         stagedAppSHA256: intent.stagedAppSHA256, stagedCLISHA256: intent.stagedCLISHA256, stagedAt: intent.stagedAt,
         conversationID: intent.conversationID, submissionID: intent.submissionID, checks: intent.checks)
     try? SelfUpdate.save(recorded, root: root)
+    // The install intent exists: the pending repair is done (the app's
+    // install receipt reports the rest).
+    if let binding = PendingOS1RepairContext.current, SelfUpdate.loadIntent(root: root) != nil {
+        binding.store.remove(id: binding.id)
+    }
     var pushNote: String
     let home = FileManager.default.homeDirectoryForCurrentUser.path
     let path = "\(home)/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
@@ -490,8 +619,7 @@ func completeOS1SelfRepair(root: String, objective: String, startedAt: Date, sta
     }
     // Only registered roots are installed automatically; a fleet clone or
     // another checkout must not promise an install that will not happen.
-    let registered = LocalProjectWorkspace.candidates(projectID: "os1-clodex").map(LocalProjectWorkspace.executionPath)
-        .contains(LocalProjectWorkspace.executionPath(root))
+    let registered = host.isRegistered(root)
     let installNote = registered ? "OS-1 installs this build by itself when no task is running and posts the receipt here."
         : "This checkout is not a registered OS-1 source, so OS-1 does not install it by itself; merge the pushed commit into the live source to ship it."
     let note = "OS-1 self-repair: staged build \(build) (\(version)) · " + intent.checks.joined(separator: ", ") +

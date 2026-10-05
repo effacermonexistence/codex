@@ -8466,6 +8466,217 @@ func confinedDraftRequiresOS1Change(_ summary: RunSummary) -> Bool {
     summary.steps.contains { $0.os1SourceConfined && $0.os1ChangeRequired }
 }
 
+/// The last attempt of a run that reached delivery, kept in process for
+/// `runTask` (build 327). A confined draft REVAS did not adopt throws before
+/// any step is returned, yet its backend finished and handed the OS-1 part
+/// back; a failed repair throws too, yet produced its own answer. Reset at
+/// every attempt start, so a later attempt never inherits an earlier one.
+final class OS1RunAttemptRecorder: @unchecked Sendable {
+    @TaskLocal static var current: OS1RunAttemptRecorder?
+    private let lock = NSLock()
+    private var step: RunStepSummary?
+    func reset() { lock.lock(); step = nil; lock.unlock() }
+    func record(_ step: RunStepSummary) { lock.lock(); self.step = step; lock.unlock() }
+    /// REVAS's verdict on the recorded attempt.
+    func settle(disposition: String) { lock.lock(); step?.revasDisposition = disposition; lock.unlock() }
+    var last: RunStepSummary? { lock.lock(); defer { lock.unlock() }; return step }
+}
+
+/// The draft an owner request's OS-1 part continues from, or nil. An adopted
+/// draft continues when it handed back (build 320). A draft REVAS did not
+/// adopt continues too (build 327) — the hand-back answer says by design that
+/// the OS-1 part is not done, which a verifier can read as incomplete — but
+/// only a genuine hand-back: a confined attempt whose backend exited 0 with
+/// the marker and reached a REVAS verdict (so no policy or preflight failure),
+/// and not cancelled. The repair is still judged by its own adoption.
+func os1HandBackDraft(adopted: RunSummary?, rejectedAttempt: RunStepSummary?, cancelled: Bool) -> RunSummary? {
+    if let adopted {
+        return adopted.status == "complete" && confinedDraftRequiresOS1Change(adopted) ? adopted : nil
+    }
+    guard !cancelled, var step = rejectedAttempt, step.os1SourceConfined, step.os1ChangeRequired, step.exitCode == 0,
+          ["retry", "rejected"].contains(step.revasDisposition),
+          !step.output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+    step.output = OS1SourceConfinement.strippingMarker(step.output)
+    return RunSummary(status: "handed_back", steps: [step])
+}
+
+/// What a repair that did not finish leaves the owner (build 327): what
+/// failed, where the change is (commit, branch, pushed), that it is not
+/// installed, and whether OS-1 continues it on the next request here.
+func os1RepairFailureNote(record: PendingOS1Repair?, reason: String) -> String {
+    let what: (ko: String, en: String)
+    switch record?.state {
+    case .stagingFailed?:
+        let gate = record?.failedGate ?? "staging"
+        what = ("스테이징 검증 \(gate) 실패", "staging check \(gate) failed")
+    case .interrupted?:
+        what = ("실행이 중간에 끊김", "the run was interrupted")
+    default:
+        let text = String((record?.lastError ?? reason).prefix(300))
+        what = (text, text)
+    }
+    let place: (ko: String, en: String)
+    if let commit = record?.repairCommit {
+        let branch = record?.repairBranch ?? "detached HEAD"
+        let pushed = record?.repairPushed == true
+        place = ("변경은 커밋 \(commit.prefix(7))(\(branch))에 있고 " + (pushed ? "원격에 푸시되었습니다." : "아직 푸시되지 않았습니다."),
+                 "The change is committed as \(commit.prefix(7)) on \(branch) and " + (pushed ? "pushed." : "not pushed yet."))
+    } else {
+        place = ("커밋된 변경은 없습니다.", "No committed change exists.")
+    }
+    // No record (a run without a conversation id): nothing continues it by itself.
+    let next: (String, String) = record.map { $0.attempts < PendingOS1Repair.maximumAutomaticAttempts } == true
+        ? (" 이 대화에서 다음 요청을 보내면 OS-1이 이어서 다시 마무리합니다.",
+           " OS-1 continues it on your next request in this conversation.")
+        : record == nil ? ("", "")
+        : (" 자동 재시도 횟수를 넘었습니다. 다시 요청하거나 취소하세요.",
+           " The automatic retries are used up; ask again or cancel it.")
+    return os1Tr("OS-1 자체 수정을 끝내지 못했습니다: \(what.ko). \(place.ko) 아직 설치되지 않았습니다.\(next.0)",
+                 "The change to OS-1 itself did not finish: \(what.en). \(place.en) It is not installed yet.\(next.1)")
+}
+
+/// The turn whose OS-1 part did not finish (build 327): never "complete",
+/// so the app neither records it as REVAS-adopted nor drops the conversation's
+/// hold. An adopted draft stays visible as a kept intermediate step; the note
+/// carries the repair's own answer (or, with no visible draft, the draft's).
+func os1RepairBlockedSummary(draft: RunSummary?, repairAnswer: String?, note: String, monitorTaskID: String?) -> RunSummary {
+    var steps = draft?.steps.filter { $0.revasDisposition == "adopted" } ?? []
+    for index in steps.indices { steps[index].workflowStage = "os1-repair-pending" }
+    var blocker = note
+    if let answer = repairAnswer?.trimmingCharacters(in: .whitespacesAndNewlines), !answer.isEmpty {
+        blocker += "\n\n" + os1Tr("OS-1 수리의 답변:", "The OS-1 repair's answer:") + "\n" + PendingOS1Repair.bounded(answer, limit: 6_000)
+    } else if steps.isEmpty, let shown = draft?.steps.last?.output.trimmingCharacters(in: .whitespacesAndNewlines), !shown.isEmpty {
+        blocker += "\n\n" + os1Tr("첫 실행의 답변:", "The first run's answer:") + "\n" + PendingOS1Repair.bounded(shown, limit: 6_000)
+    }
+    return RunSummary(status: "workflow_blocked", steps: steps, sourceContext: draft?.sourceContext,
+        taskContext: draft?.taskContext, persistedCorrectionIDs: draft?.persistedCorrectionIDs,
+        monitorTaskID: monitorTaskID ?? draft?.monitorTaskID, workflowBlocker: blocker)
+}
+
+/// The repair's own answer, without OS-1's appended completion diagnostic
+/// (the note says that more precisely).
+func os1RepairAnswer(_ step: RunStepSummary?) -> String? {
+    guard let output = step?.output else { return nil }
+    let answer = output.components(separatedBy: selfRepairFailurePrefix).first?
+        .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    return answer.isEmpty ? nil : OS1SourceConfinement.strippingMarker(answer)
+}
+
+/// How a conversation's unfinished OS-1 repair continues on its next write
+/// request (build 327): a repair that failed only at staging and whose commit
+/// is still in OS-1's source is staged again first, with no model call; any
+/// other state runs the repair again with what the record knows.
+enum OS1PendingRepairRetry: Equatable {
+    case restage(root: String)
+    case repairAgain
+}
+
+func os1PendingRepairRetryPlan(_ record: PendingOS1Repair, root: String?, contains: (_ root: String, _ commit: String) -> Bool,
+                               isAlive: (Int32) -> Bool = PendingOS1Repair.processAlive) -> OS1PendingRepairRetry {
+    guard record.effectiveState(isAlive: isAlive) == .stagingFailed, let commit = record.repairCommit, let root,
+          contains(root, commit) else { return .repairAgain }
+    return .restage(root: root)
+}
+
+/// `commit` is HEAD or one of its ancestors in the checkout at `root`.
+func gitCommit(_ commit: String, isContainedIn root: String) -> Bool {
+    guard let git = try? findExecutable("git") else { return false }
+    return (try? commandOutput(git, ["-C", root, "merge-base", "--is-ancestor", commit, "HEAD"], timeout: 20))?.0 == 0
+}
+
+enum OS1PendingRestageOutcome {
+    /// Staged (or already staged): the owner's turn ends with this summary.
+    case finished(RunSummary)
+    /// Staging failed again: the repair runs again with this record.
+    case stillFailing(PendingOS1Repair)
+}
+
+/// A repair that failed only at staging is staged again with no model call
+/// (build 327): OS-1's own completion over the repair's commit — version
+/// bump, signed release, self-tests, commit, push, install intent — under the
+/// exclusive source lease. Success removes the record; another failure is
+/// recorded there and the caller runs the repair again.
+func restagePendingOS1Repair(_ record: PendingOS1Repair, root: String, store: PendingOS1RepairStore,
+                             host: SelfRepairHost = SelfRepairHost(),
+                             acquireLease: (String) throws -> ExclusiveHookLease? = { try acquireOS1SourceWriteLease(root: $0) },
+                             finished: (_ output: String, _ commit: String?) throws -> RunSummary = os1RepairRestageControl) throws -> OS1PendingRestageOutcome {
+    let short = record.repairCommit.map { String($0.prefix(7)) } ?? "HEAD"
+    RuntimeActivity.emit(.verifying, publicText: os1Tr(
+        "OS-1 수리 커밋 \(short)을(를) 모델 호출 없이 다시 스테이징합니다 · 빌드·자체 테스트·커밋·푸시·설치 예약",
+        "Staging OS-1 repair commit \(short) again, without a model call · build, self-tests, commit, push, install"))
+    let lease = try acquireLease(root)
+    defer { withExtendedLifetime(lease) {} }
+    store.update(id: record.id) { $0.state = .running; $0.pid = getpid(); $0.sourceRoot = root }
+    let outcome = PendingOS1RepairContext.$current.withValue(PendingOS1RepairContext.Binding(store: store, id: record.id)) {
+        completeOS1SelfRepair(root: root, objective: record.ownerRequest, startedAt: .distantPast,
+            startHead: record.startCommit, verifiedSourceReady: true, host: host)
+    }
+    switch outcome {
+    case .staged(_, let note):
+        store.remove(id: record.id)
+        return .finished(try finished(os1Tr(
+            "이 대화에서 멈춰 있던 OS-1 자체 수정(\(short))을 모델 호출 없이 다시 스테이징했습니다.",
+            "The unfinished change to OS-1 itself in this conversation (\(short)) was staged again, without a model call.")
+            + "\n\n" + note, gitHead(root)))
+    case .notApplicable(let reason):
+        store.remove(id: record.id)
+        return .finished(try finished(os1Tr(
+            "이 대화의 OS-1 자체 수정(\(short))은 다시 스테이징할 것이 없습니다: \(reason).",
+            "The change to OS-1 itself in this conversation (\(short)) has nothing left to stage: \(reason)."), gitHead(root)))
+    case .failed(let diagnostic):
+        let updated = store.update(id: record.id) { pending in
+            if pending.state == .running { pending.state = .failed }
+            pending.lastError = String(diagnostic.prefix(2_000))
+        }
+        return .stillFailing(updated ?? record)
+    }
+}
+
+/// The owner-visible result of a model-free restage, with its control receipt.
+func os1RepairRestageControl(output: String, commit: String?) throws -> RunSummary {
+    let started = Date()
+    let operationID = UUID().uuidString.lowercased()
+    let receiptRoot = FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent("Library/Application Support/OS-1/control-receipts", isDirectory: true)
+    try FileManager.default.createDirectory(at: receiptRoot, withIntermediateDirectories: true)
+    let receiptURL = receiptRoot.appendingPathComponent("\(operationID).json")
+    let receipt: [String: Any] = [
+        "schema": 1,
+        "operation_id": operationID,
+        "operation": "os1_repair_restage",
+        "source_commit": commit ?? NSNull(),
+        "model_invoked": false,
+        "result_sha256": sha256Hex(Data(output.utf8)),
+    ]
+    let receiptData = try JSONSerialization.data(withJSONObject: receipt, options: [.sortedKeys])
+    try receiptData.write(to: receiptURL, options: [.atomic])
+    try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: receiptURL.path)
+    guard (try? Data(contentsOf: receiptURL)) == receiptData else {
+        throw OS1Error.message(os1Tr("OS-1 재스테이징 영수증 검증에 실패했습니다.", "OS-1 restage receipt verification failed."))
+    }
+    let record = NativeRecordEvidence(turnID: operationID, recordPath: receiptURL.path, persistence: "verified",
+                                      desktopVisibility: "control_only")
+    return RunSummary(status: "complete", steps: [RunStepSummary(sequence: 1, provider: "local", action: "os1_repair_restage",
+        model: "os1-control", effort: "none", revasDisposition: "control_verified", sessionID: operationID,
+        permissionProfile: "local_control", exitCode: 0, output: output, stderr: "",
+        durationMS: Int64(Date().timeIntervalSince(started) * 1_000), nativeRecord: record)])
+}
+
+/// The execution prompt of a repair that continues an unfinished one: the
+/// original hand-back context plus what the earlier attempt left and the
+/// owner's new message.
+func os1PendingRepairPrompt(_ record: PendingOS1Repair, newMessage: String) -> String {
+    var previous = ["PREVIOUS OS-1 REPAIR (\(record.attempts) attempt(s)) did not finish: state \(record.state.rawValue)"
+        + (record.failedGate.map { ", failed gate \($0)" } ?? "") + "."]
+    if let error = record.lastError { previous.append("Last error: " + String(error.prefix(3_000))) }
+    if let commit = record.repairCommit {
+        previous.append("Its change is already committed as \(commit) on \(record.repairBranch ?? "detached HEAD"); build on it and fix only what still fails. 이미 커밋된 변경 위에서 남은 문제만 고치세요.")
+    }
+    if let report = record.repairReport { previous.append("Its answer:\n" + PendingOS1Repair.bounded(report, limit: 4_000)) }
+    return os1RepairHandoffPrompt(request: record.ownerRequest, corrections: record.corrections + [newMessage],
+        draftReport: record.draftReport + "\n\n" + previous.joined(separator: "\n"))
+}
+
 /// Paths the Claude backend of this attempt is launched confined from: the
 /// runtime's per-attempt decision, for a write ticket only (the read-only
 /// lane keeps its own settings).
@@ -8693,40 +8904,193 @@ func runTask(
                         cancelled: ExecutionCancellation.isCancelled)
                 }
             }
-            let draft = strippingOS1ChangeMarker(try await OS1ChangeEscalation.$available.withValue(escalationAvailable) {
-                try await runTaskWithOwnerPolicy(
-                    prompt: prompt,
-                    workspace: workspace,
-                    providerPreference: providerPreference,
-                    context: context,
-                    codexSessionID: codexSessionID,
-                    claudeSessionID: claudeSessionID,
-                    codexCapacity: codexCapacity,
-                    claudeCapacity: claudeCapacity,
-                    progress: progress,
-                    desktopReveal: desktopReveal,
-                    requireReadOnly: requireReadOnly,
-                    routingTaskOverride: routingTaskOverride,
-                    workflowStage: workflowStage,
-                    ownerPrompt: ownerPrompt,
-                    monitorTaskIDOverride: ownerMonitorID ?? monitorTaskIDOverride,
-                    heldOS1SourceRoot: heldOS1SourceRoot,
-                    preflight: preflight)
-            })
-            adopted = draft.status == "complete"
+            // The OS-1 part of an owner request survives this process
+            // (build 327): a durable record per conversation, written before
+            // the repair starts and removed once its install intent exists.
+            let pendingStore = PendingOS1RepairStore()
+            let environment = ProcessInfo.processInfo.environment
+            let recordID = escalationAvailable ? PendingOS1Repair.recordID(conversationID: environment["OS1_CONVERSATION_ID"],
+                submissionID: ExecutionSteering.currentSubmission?.uuidString) : nil
+            let repairAttempts = OS1RunAttemptRecorder()
+            /// Runs the OS-1 repair: once, bound to OS-1, fresh native
+            /// sessions, its pending record bound for OS-1's own completion.
+            func runOS1Repair(_ repairPrompt: String) async throws -> RunSummary {
+                try await PendingOS1RepairContext.$current.withValue(recordID.map { PendingOS1RepairContext.Binding(store: pendingStore, id: $0) }) {
+                    try await OS1RunAttemptRecorder.$current.withValue(repairAttempts) {
+                        strippingOS1ChangeMarker(try await OS1ChangeEscalation.$available.withValue(false) {
+                            try await runTaskWithOwnerPolicy(
+                                prompt: repairPrompt,
+                                workspace: workspace,
+                                providerPreference: providerPreference,
+                                context: context,
+                                codexSessionID: nil, claudeSessionID: nil,
+                                codexCapacity: codexCapacity,
+                                claudeCapacity: claudeCapacity,
+                                progress: progress,
+                                desktopReveal: desktopReveal,
+                                routingTaskOverride: routingTaskOverride ?? prompt,
+                                // The owner's own words stay the durable objective
+                                // and the binding/preparation input; the handoff is
+                                // execution scaffolding, as a workflow stage's is.
+                                ownerPrompt: ownerPrompt ?? prompt,
+                                monitorTaskIDOverride: ownerMonitorID ?? monitorTaskIDOverride,
+                                heldOS1SourceRoot: heldOS1SourceRoot,
+                                preflight: preflight,
+                                forcedProjectID: "os1-clodex")
+                        })
+                    }
+                }
+            }
+            /// OS-1's source tree the repair works in, and its HEAD now.
+            func os1RepairRoot(preferring recorded: String? = nil) -> String? {
+                if let recorded, LocalProjectWorkspace.root(containing: recorded, projectID: "os1-clodex") != nil { return recorded }
+                return resolveLocalProjectWorkspace(projectID: "os1-clodex", requested: workspace)
+                    .flatMap { LocalProjectWorkspace.root(containing: $0.workspace, projectID: "os1-clodex") }
+            }
+            /// The repair, its record and what the owner sees when it does
+            /// not finish. `draft` is the confined first run (nil on a retry).
+            func continueAsOS1Repair(draft: RunSummary?, draftFailure: Error?, ownerRequest: String, corrections: [String],
+                                     report: String, repairPrompt: String, existing: PendingOS1Repair?) async throws -> RunSummary {
+                let root = os1RepairRoot(preferring: existing?.sourceRoot)
+                if let recordID {
+                    var record = existing ?? PendingOS1Repair(id: recordID, conversationID: environment["OS1_CONVERSATION_ID"],
+                        submissionID: ExecutionSteering.currentSubmission?.uuidString, ownerRequest: ownerRequest,
+                        corrections: corrections, draftReport: report, sourceRoot: root, startCommit: root.flatMap(gitHead))
+                    if existing != nil {
+                        record.state = .running
+                        record.attempts += 1
+                        record.pid = getpid()
+                        record.corrections = corrections.map { PendingOS1Repair.bounded($0) }
+                        record.submissionID = ExecutionSteering.currentSubmission?.uuidString ?? record.submissionID
+                        record.sourceRoot = root ?? record.sourceRoot
+                        if record.startCommit == nil { record.startCommit = root.flatMap(gitHead) }
+                        record.updatedAt = Date()
+                    }
+                    try? pendingStore.save(record)
+                }
+                do {
+                    let repair = try await runOS1Repair(repairPrompt)
+                    adopted = repair.status == "complete"
+                    if adopted, let recordID { pendingStore.remove(id: recordID) }
+                    guard let draft else { return repair }
+                    return mergedOS1Escalation(draft: draft, repair: repair, monitorTaskID: ownerMonitorID ?? monitorTaskIDOverride)
+                } catch {
+                    // The first answer was adopted on its own checks (or kept
+                    // as the hand-back REVAS did not adopt); the repair's
+                    // failure never takes it away, but the owner's request is
+                    // not complete without its OS-1 part.
+                    BackendFailureNotice.clear()
+                    adopted = false
+                    let cancelled = ExecutionCancellation.isCancelled || backendBlocker(error) == .cancelled
+                    let reason = String(String(describing: error).prefix(300))
+                    if cancelled {
+                        // The owner cancelled the OS-1 part: nothing is pending.
+                        if let recordID { pendingStore.remove(id: recordID) }
+                        if let draft, draft.status == "complete" {
+                            return appendingOS1RepairNote(draft, cancelled: true, reason: reason)
+                        }
+                        throw draftFailure ?? error
+                    }
+                    let answer = os1RepairAnswer(repairAttempts.last)
+                    let record = recordID.flatMap { id in
+                        pendingStore.update(id: id) { record in
+                            // OS-1's completion already recorded a staging
+                            // failure precisely; anything else failed the run.
+                            if record.state == .running { record.state = .failed }
+                            if record.state == .failed { record.lastError = String(String(describing: error).prefix(2_000)) }
+                            record.repairReport = answer.map { PendingOS1Repair.bounded($0) } ?? record.repairReport
+                            if record.repairCommit == nil, let root {
+                                let state = OS1RepairSourceState.read(root: root, startHead: record.startCommit)
+                                if state.committed {
+                                    record.repairCommit = state.head
+                                    record.repairBranch = state.branch
+                                    record.repairPushed = state.pushed
+                                }
+                            }
+                        }
+                    }
+                    return os1RepairBlockedSummary(draft: draft, repairAnswer: answer,
+                        note: os1RepairFailureNote(record: record, reason: reason),
+                        monitorTaskID: ownerMonitorID ?? monitorTaskIDOverride)
+                }
+            }
+            // A new write request in a conversation whose OS-1 repair did not
+            // finish continues that repair in OS-1's source (build 327),
+            // whatever its own words: "고치라니까" means the pending change.
+            // The request's own scope decides "write" exactly as the run would.
+            if escalationAvailable, monitorTaskIDOverride == nil, routingTaskOverride == nil, ownerPrompt == nil,
+               let recordID, let pending = pendingStore.load(id: recordID), pending.retryable() {
+                let handoff = try? SessionHandoff.decode(context)
+                let attached = !detachesConversationSource(prompt) && handoff?.source != nil
+                if !ownerRequestRunsReadOnly(prompt, attachedSource: attached) {
+                    RuntimeActivity.emit(.preparing, publicText: os1Tr(
+                        "이 대화에 끝나지 않은 OS-1 자체 수정이 있어 OS-1 소스에서 이어서 마무리합니다.",
+                        "This conversation has an unfinished change to OS-1 itself, so OS-1 continues it in its own source."))
+                    let root = os1RepairRoot(preferring: pending.sourceRoot)
+                    var current = pending
+                    if case .restage(let restageRoot) = os1PendingRepairRetryPlan(pending, root: root, contains: { root, commit in
+                        gitCommit(commit, isContainedIn: root)
+                    }) {
+                        switch try restagePendingOS1Repair(pending, root: restageRoot, store: pendingStore) {
+                        case .finished(let summary):
+                            adopted = summary.status == "complete"
+                            return summary
+                        case .stillFailing(let updated):
+                            current = updated
+                        }
+                    }
+                    let corrections = current.corrections + [prompt]
+                    return try await continueAsOS1Repair(draft: nil, draftFailure: nil, ownerRequest: current.ownerRequest,
+                        corrections: corrections, report: current.draftReport,
+                        repairPrompt: os1PendingRepairPrompt(current, newMessage: prompt), existing: current)
+                }
+            }
+            var adoptedDraft: RunSummary?
+            var draftFailure: Error?
+            let draftAttempts = OS1RunAttemptRecorder()
+            do {
+                adoptedDraft = strippingOS1ChangeMarker(try await OS1RunAttemptRecorder.$current.withValue(draftAttempts) {
+                    try await OS1ChangeEscalation.$available.withValue(escalationAvailable) {
+                        try await runTaskWithOwnerPolicy(
+                            prompt: prompt,
+                            workspace: workspace,
+                            providerPreference: providerPreference,
+                            context: context,
+                            codexSessionID: codexSessionID,
+                            claudeSessionID: claudeSessionID,
+                            codexCapacity: codexCapacity,
+                            claudeCapacity: claudeCapacity,
+                            progress: progress,
+                            desktopReveal: desktopReveal,
+                            requireReadOnly: requireReadOnly,
+                            routingTaskOverride: routingTaskOverride,
+                            workflowStage: workflowStage,
+                            ownerPrompt: ownerPrompt,
+                            monitorTaskIDOverride: ownerMonitorID ?? monitorTaskIDOverride,
+                            heldOS1SourceRoot: heldOS1SourceRoot,
+                            preflight: preflight)
+                    }
+                })
+            } catch {
+                guard escalationAvailable else { throw error }
+                draftFailure = error
+            }
+            adopted = adoptedDraft?.status == "complete"
             // A HOME request first runs confined from OS-1's source (build
             // 319). Its backend does the rest of the request and hands only
             // the change to OS-1 itself back (the marker); OS-1 then makes
             // that change once as its own repair — bound to OS-1's source,
             // exclusive lease, fresh native sessions — told what the first
             // run already did, so nothing it did is replayed. The owner sees
-            // both answers. A failed or cancelled repair returns the first
-            // answer with a plain note that the OS-1 change was not made.
-            if escalationAvailable, draft.status == "complete", confinedDraftRequiresOS1Change(draft) {
+            // both answers. A repair that does not finish is said plainly,
+            // kept as a pending record and continued on the next request.
+            let cancelled = ExecutionCancellation.isCancelled || draftFailure.map { backendBlocker($0) == .cancelled } == true
+            if escalationAvailable, let handBack = os1HandBackDraft(adopted: adoptedDraft,
+                   rejectedAttempt: draftFailure == nil ? nil : draftAttempts.last, cancelled: cancelled) {
                 RuntimeActivity.emit(.preparing, publicText: os1Tr(
                     "OS-1 자체 수정이 필요한 요청이라 OS-1 수리로 이어서 진행합니다.",
                     "This request needs a change to OS-1 itself, so it continues as an OS-1 repair."))
-                let report = draft.steps.last(where: { $0.revasDisposition == "adopted" })?.output ?? ""
+                let report = handBack.steps.last(where: { ["adopted", "retry", "rejected"].contains($0.revasDisposition) })?.output ?? ""
                 // Corrections the first run took in never reach the fresh
                 // sessions by steering (they already have receipts).
                 let mailbox = ExecutionSteering()
@@ -8735,42 +9099,12 @@ func runTask(
                         mailbox.receipt(input).map { $0.state == .persisted || $0.state == .accepted } == true
                     }.map(\.text)
                 } ?? []
-                do {
-                    let repair = strippingOS1ChangeMarker(try await OS1ChangeEscalation.$available.withValue(false) {
-                        try await runTaskWithOwnerPolicy(
-                            prompt: os1RepairHandoffPrompt(request: prompt, corrections: corrections, draftReport: report),
-                            workspace: workspace,
-                            providerPreference: providerPreference,
-                            context: context,
-                            codexSessionID: nil,
-                            claudeSessionID: nil,
-                            codexCapacity: codexCapacity,
-                            claudeCapacity: claudeCapacity,
-                            progress: progress,
-                            desktopReveal: desktopReveal,
-                            routingTaskOverride: routingTaskOverride ?? prompt,
-                            // The owner's own words stay the durable objective
-                            // and the binding/preparation input; the handoff is
-                            // execution scaffolding, as a workflow stage's is.
-                            ownerPrompt: ownerPrompt ?? prompt,
-                            monitorTaskIDOverride: ownerMonitorID ?? monitorTaskIDOverride,
-                            heldOS1SourceRoot: heldOS1SourceRoot,
-                            preflight: preflight,
-                            forcedProjectID: "os1-clodex")
-                    })
-                    adopted = repair.status == "complete"
-                    return mergedOS1Escalation(draft: draft, repair: repair, monitorTaskID: ownerMonitorID ?? monitorTaskIDOverride)
-                } catch {
-                    // The first answer was adopted on its own checks; the
-                    // repair's failure never takes it away, but the owner's
-                    // request is not complete without its OS-1 part.
-                    BackendFailureNotice.clear()
-                    adopted = false
-                    let cancelled = ExecutionCancellation.isCancelled || backendBlocker(error) == .cancelled
-                    let reason = String(String(describing: error).prefix(300))
-                    return appendingOS1RepairNote(draft, cancelled: cancelled, reason: reason)
-                }
+                return try await continueAsOS1Repair(draft: handBack, draftFailure: draftFailure, ownerRequest: ownerPrompt ?? prompt,
+                    corrections: corrections, report: report,
+                    repairPrompt: os1RepairHandoffPrompt(request: prompt, corrections: corrections, draftReport: report), existing: nil)
             }
+            if let draftFailure { throw draftFailure }
+            guard let draft = adoptedDraft else { throw OS1Error.message("OS-1 completed without an adopted result") }
             guard reviewable else { return draft }
             return await reviewedCodeExplanation(draft, request: prompt, workspace: workspace, context: context,
                 codexCapacity: codexCapacity, claudeCapacity: claudeCapacity, progress: progress,
@@ -8849,6 +9183,33 @@ func mergeReviewedRun(draft: RunSummary, review: RunSummary) -> RunSummary? {
         monitorTaskID: review.monitorTaskID ?? draft.monitorTaskID)
 }
 
+/// An owner request that runs on a read-only lane: no write authority, no
+/// OS-1 source lock. One predicate for the run's scope and for `runTask`
+/// deciding whether a request continues a pending OS-1 repair (build 327).
+func ownerRequestRunsReadOnly(_ prompt: String, attachedSource: Bool) -> Bool {
+    // The owner selecting the bounded chat lane on the rail is the same
+    // authority statement as a self-contained text operation: answer from the
+    // request, touch nothing. It has to reach the scope here, because the
+    // signed ticket's permission is what the lane predicate actually reads —
+    // a rail label that left the scope writable would be cosmetic.
+    let ownerSelectedChatLane = ClaudeChatLane.ownerSelected
+        && claudeChatLaneRefusal(objective: prompt, hasSource: attachedSource) == nil
+    // A short conversational question ("co가 무슨 뜻이야?") is the same kind of
+    // statement: the answer comes from the conversation and the model, so it
+    // asks for the bounded chat lane too. Not with an attached source.
+    let conversationalQuestion = !attachedSource
+        && ClaudeChatLane.conversationalQuestion(prompt) && !promptRequiresShellCapability(prompt)
+    let selfContainedText = (ClaudeChatLane.selfContainedTextOperation(prompt)
+        && !promptRequiresShellCapability(prompt)) || ownerSelectedChatLane || conversationalQuestion
+    // A question that changes nothing ("…대기업 웹페이지 문법을 따라야 되는데?")
+    // or a request for information ("…후보 좀 줘봐") runs on the read-only
+    // agent: web lookups and read tools, no write authority, no OS-1 source
+    // lock (2026-10-02; every such turn ran write-authorized in HOME).
+    let readOnlyQuestion = !attachedSource
+        && ClaudeChatLane.readOnlyAnswer(prompt) && !promptRequiresShellCapability(prompt)
+    return selfContainedText || readOnlyQuestion
+}
+
 func runTaskWithOwnerPolicy(
     prompt: String,
     workspace: String,
@@ -8912,31 +9273,10 @@ func runTaskWithOwnerPolicy(
     // and asks the route core for a read-only ticket. Both come from this one
     // predicate on this one text, so the authority floor and the signed ticket
     // cannot disagree; every other request keeps the executable envelope.
-    // The owner selecting the bounded chat lane on the rail is the same
-    // authority statement as a self-contained text operation: answer from the
-    // request, touch nothing. It has to reach the scope here, because the
-    // signed ticket's permission is what the lane predicate actually reads —
-    // a rail label that left the scope writable would be cosmetic.
-    let ownerSelectedChatLane = workflowStage == nil && !requireReadOnly
-        && ClaudeChatLane.ownerSelected
-        && claudeChatLaneRefusal(objective: prompt, hasSource: attachedSource != nil) == nil
-    // A short conversational question ("co가 무슨 뜻이야?") is the same kind of
-    // statement: the answer comes from the conversation and the model, so it
-    // asks for the bounded chat lane too. Not with an attached source.
-    let conversationalQuestion = workflowStage == nil && !requireReadOnly && attachedSource == nil
-        && ClaudeChatLane.conversationalQuestion(prompt) && !promptRequiresShellCapability(prompt)
-    let selfContainedText = (workflowStage == nil && !requireReadOnly
-        && ClaudeChatLane.selfContainedTextOperation(prompt)
-        && !promptRequiresShellCapability(prompt)) || ownerSelectedChatLane || conversationalQuestion
-    // A question that changes nothing ("…대기업 웹페이지 문법을 따라야 되는데?")
-    // or a request for information ("…후보 좀 줘봐") runs on the read-only
-    // agent: web lookups and read tools, no write authority, no OS-1 source
-    // lock (2026-10-02; every such turn ran write-authorized in HOME).
-    let readOnlyQuestion = workflowStage == nil && !requireReadOnly && attachedSource == nil
-        && ClaudeChatLane.readOnlyAnswer(prompt) && !promptRequiresShellCapability(prompt)
     // A review (ReviewPass) reads the code and changes nothing: it asks for a
     // read-only ticket, so Claude runs with its read-only tool set.
-    let resolvedScope = selfContainedText || readOnlyReview || readOnlyQuestion
+    let resolvedScope = (workflowStage == nil && !requireReadOnly
+                         && ownerRequestRunsReadOnly(prompt, attachedSource: attachedSource != nil)) || readOnlyReview
         ? TaskContext.Scope.readOnly
         : ScopeResolution.delegationScope(internalReadOnly: internalReadOnly)
     if taskState.objective.requestText != objectiveRequest || taskState.objective.kind != kind || taskState.objective.scope != resolvedScope {
@@ -9616,6 +9956,7 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
             attemptConfined = confined
             attemptCarriesEarlierWriter = carriesEarlierWriter
         }
+        OS1RunAttemptRecorder.current?.reset()
         let startData = Data(["os1-attempt-start-v1", ticket.executionID, String(ticket.sequence), ticket.nonce, ticket.signature].joined(separator: "\n").utf8)
         AttemptLatencyTrace.beginIfIdle()
         let lease: AttemptStartReceipt = try await client.post("/v1/attempts/start",
@@ -10086,6 +10427,12 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
                 publicProgress: lastFailureNotice?.publicProgress, surface: attemptSurface?.rawValue)
             throw terminalPermissionFailure ?? OS1Error.backendBlocked(.deliveryPending)
         }
+        // Delivered: runTask may still need this attempt's answer and
+        // hand-back after a rejection or a failed repair throws (build 327).
+        var deliveredStep = pendingStep
+        deliveredStep.os1SourceConfined = attemptConfined
+        deliveredStep.os1ChangeRequired = attemptConfined && execution.os1ChangeRequired
+        OS1RunAttemptRecorder.current?.record(deliveredStep)
         if let failure = terminalPermissionFailure {
             // Reporting a failed artifact must not change a terminal denial
             // into a completion, generic write-uncertainty or steering retry.
@@ -10152,6 +10499,7 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
         }
         try OwnerPolicyContext.snapshot?.verifyOriginal()
         let revasDisposition = route.status == "complete" && locallyAdoptable ? "adopted" : (route.ticket == nil ? "rejected" : "retry")
+        OS1RunAttemptRecorder.current?.settle(disposition: revasDisposition)
         recordDriftAdoption(execution, ticket: ticket, localPassed: locallyAdoptable,
             adopted: revasDisposition == "adopted")
         recordCompletionAttempt(store: feedbackStore, scope: feedbackScope, ticket: ticket,
@@ -13070,6 +13418,185 @@ func selfTest() throws {
                 && failed.status == "complete" && failed.steps[0].output.hasPrefix(report)
                 && failed.steps[0].output.contains("build failed") && failed.steps[0].output.count > report.count
                 && cancelled.steps[0].output != failed.steps[0].output
+        }()),
+        ("a confined hand-back REVAS did not adopt still continues as the OS-1 repair; nothing else does (build 327)", {
+            func step(_ disposition: String, confined: Bool = true, handsBack: Bool = true, exit: Int32 = 0,
+                      output: String = "푸터는 배포했습니다. OS-1 사이드바는 OS-1 쪽에서 고쳐야 합니다.") -> RunStepSummary {
+                var step = RunStepSummary(sequence: 1, provider: "claude", action: "agent_run", model: "m", effort: "max",
+                    revasDisposition: disposition, sessionID: UUID().uuidString.lowercased(), permissionProfile: "workspace_write",
+                    exitCode: exit, output: output, stderr: "", durationMS: 1, nativeRecord: nil)
+                step.os1SourceConfined = confined
+                step.os1ChangeRequired = confined && handsBack
+                return step
+            }
+            // The pink-bar turn (10D29E5A): exit 0, marker, adoption=retry.
+            guard let rejected = os1HandBackDraft(adopted: nil, rejectedAttempt: step("retry"), cancelled: false),
+                  rejected.status == "handed_back", rejected.steps.count == 1,
+                  rejected.steps[0].output.hasPrefix("푸터는 배포했습니다"),
+                  os1HandBackDraft(adopted: nil, rejectedAttempt: step("rejected"), cancelled: false) != nil else { return false }
+            let marked = step("retry", output: "OS-1 쪽에서 고쳐야 합니다.\n" + OS1SourceConfinement.changeRequiredMarker)
+            guard os1HandBackDraft(adopted: nil, rejectedAttempt: marked, cancelled: false)?.steps[0].output
+                    .contains(OS1SourceConfinement.changeRequiredMarker) == false else { return false }
+            // Not a genuine hand-back: cancelled, a failed backend, no REVAS
+            // verdict (delivery or a local post-check stopped it), no marker,
+            // an unconfined run, an empty answer, or no attempt at all (a
+            // policy or preflight failure never reaches an attempt).
+            let refused = [
+                os1HandBackDraft(adopted: nil, rejectedAttempt: step("retry"), cancelled: true),
+                os1HandBackDraft(adopted: nil, rejectedAttempt: step("retry", exit: 1), cancelled: false),
+                os1HandBackDraft(adopted: nil, rejectedAttempt: step("verification_pending"), cancelled: false),
+                os1HandBackDraft(adopted: nil, rejectedAttempt: step("retry", handsBack: false), cancelled: false),
+                os1HandBackDraft(adopted: nil, rejectedAttempt: step("retry", confined: false), cancelled: false),
+                os1HandBackDraft(adopted: nil, rejectedAttempt: step("retry", output: "  "), cancelled: false),
+                os1HandBackDraft(adopted: nil, rejectedAttempt: nil, cancelled: false),
+            ]
+            guard refused.allSatisfy({ $0 == nil }) else { return false }
+            // An adopted draft escalates only when it handed back (build 320).
+            let adopted = RunSummary(status: "complete", steps: [step("adopted")])
+            let plain = RunSummary(status: "complete", steps: [step("adopted", handsBack: false)])
+            guard os1HandBackDraft(adopted: adopted, rejectedAttempt: nil, cancelled: false) != nil,
+                  os1HandBackDraft(adopted: plain, rejectedAttempt: step("retry"), cancelled: false) == nil else { return false }
+            // The recorder keeps only the current attempt and its verdict.
+            let recorder = OS1RunAttemptRecorder()
+            recorder.record(step("verification_pending"))
+            recorder.settle(disposition: "retry")
+            guard recorder.last?.revasDisposition == "retry" else { return false }
+            recorder.reset()
+            recorder.settle(disposition: "adopted")
+            return recorder.last == nil
+        }()),
+        ("a repair that fails staging leaves a clean tree, a staging_failed record naming its commit, and retries a self-test once (build 327)", {
+            let base = FileManager.default.temporaryDirectory.appendingPathComponent("os1-repair-staging-" + UUID().uuidString, isDirectory: true)
+            let root = base.appendingPathComponent("source", isDirectory: true)
+            let runtime = root.appendingPathComponent(SelfUpdate.runtimeRelativePath, isDirectory: true)
+            let store = PendingOS1RepairStore(root: base.appendingPathComponent("pending", isDirectory: true))
+            defer { try? FileManager.default.removeItem(at: base) }
+            guard let git = try? findExecutable("git") else { return false }
+            func run(_ arguments: [String]) -> Bool {
+                (try? commandOutput(git, ["-C", root.path] + arguments, timeout: 30))?.0 == 0
+            }
+            func porcelain() -> String {
+                (try? commandOutput(git, ["-C", root.path, "status", "--porcelain", "--", SelfUpdate.runtimeRelativePath], timeout: 30))
+                    .map { String(decoding: $0.1, as: UTF8.self) } ?? "?"
+            }
+            do {
+                let plist = runtime.appendingPathComponent("Resources/Info.plist")
+                let commands = runtime.appendingPathComponent("Sources/OS1/SelfUpdateCommands.swift")
+                let feature = runtime.appendingPathComponent("Sources/OS1App/Row.swift")
+                for folder in [plist, commands, feature].map({ $0.deletingLastPathComponent() }) {
+                    try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+                }
+                try PropertyListSerialization.data(fromPropertyList: ["CFBundleVersion": "142", "CFBundleShortVersionString": "0.9.76"],
+                    format: .xml, options: 0).write(to: plist)
+                try "import Foundation\nlet os1RuntimeVersionString = \"OS-1 Runtime 0.9.76 (fixture-build142)\"\n".write(to: commands, atomically: true, encoding: .utf8)
+                try "let row = 1\n".write(to: feature, atomically: true, encoding: .utf8)
+                guard run(["init", "-q", "-b", "os1/inline-row"]), run(["config", "user.name", "OS-1 fixture"]),
+                      run(["config", "user.email", "fixture@os1.invalid"]), run(["add", "-A"]), run(["commit", "-q", "-m", "base"]),
+                      let start = gitHead(root.path) else { return false }
+                // The repair's backend committed its change itself (5c25d67).
+                try "let row = 2\n".write(to: feature, atomically: true, encoding: .utf8)
+                guard run(["commit", "-q", "-am", "os1: the live run is one row"]), let repairCommit = gitHead(root.path) else { return false }
+                let originalPlist = try Data(contentsOf: plist), originalCommands = try Data(contentsOf: commands)
+                var record = PendingOS1Repair(id: UUID().uuidString.lowercased(), conversationID: nil, submissionID: nil,
+                    ownerRequest: "밑에 너무 크거든 코덱스처럼 한 줄로", corrections: [], draftReport: "OS-1 쪽 변경이 필요합니다.",
+                    sourceRoot: root.path, startCommit: start)
+                try store.save(record)
+                var stageCalls = 0
+                let selfTestFailure = SelfRepairHost(installedBuild: { 142 }, installedVersion: { "0.9.76" }, staleDiagnostic: { _ in nil },
+                    stage: { _ in stageCalls += 1; throw OS1Error.message("self-update stage: app-self-test-parallel failed\nunbounded parallel admission") },
+                    isRegistered: { _ in false })
+                let failed = PendingOS1RepairContext.$current.withValue(PendingOS1RepairContext.Binding(store: store, id: record.id)) {
+                    completeOS1SelfRepair(root: root.path, objective: record.ownerRequest, startedAt: Date(), startHead: start, host: selfTestFailure)
+                }
+                guard case .failed(let diagnostic) = failed, stageCalls == 2,
+                      diagnostic.contains(String(repairCommit.prefix(7))), diagnostic.contains("os1/inline-row"),
+                      diagnostic.contains("app-self-test-parallel"), diagnostic.contains("nothing was installed"),
+                      !diagnostic.contains("stays in the working tree"),
+                      porcelain().isEmpty, try Data(contentsOf: plist) == originalPlist, try Data(contentsOf: commands) == originalCommands,
+                      let stored = store.load(id: record.id), stored.state == .stagingFailed,
+                      stored.failedGate == "app-self-test-parallel", stored.repairCommit == repairCommit,
+                      stored.repairBranch == "os1/inline-row", stored.repairPushed == false else { return false }
+                record = stored
+                // The note the owner gets names the gate and the commit, and
+                // says it is not installed and continues here.
+                let note = os1RepairFailureNote(record: stored, reason: "x")
+                guard note.contains("app-self-test-parallel"), note.contains(String(repairCommit.prefix(7))),
+                      note.contains("os1/inline-row") else { return false }
+                // A build failure is not re-run: it cannot pass by running again.
+                stageCalls = 0
+                let buildFailure = SelfRepairHost(installedBuild: { 142 }, installedVersion: { "0.9.76" }, staleDiagnostic: { _ in nil },
+                    stage: { _ in stageCalls += 1; throw OS1Error.message("self-update stage: release build failed\nerror: x") },
+                    isRegistered: { _ in false })
+                guard case .failed(let buildDiagnostic) = completeOS1SelfRepair(root: root.path, objective: "x", startedAt: Date(),
+                          startHead: start, host: buildFailure), stageCalls == 1, buildDiagnostic.contains("release-build"),
+                      porcelain().isEmpty, store.load(id: record.id)?.state == .stagingFailed else { return false }
+                // The follow-up ("고치라니까") restages that commit first, with no
+                // model call; success removes the record.
+                guard os1PendingRepairRetryPlan(stored, root: root.path, contains: { gitCommit($1, isContainedIn: $0) }) == .restage(root: root.path)
+                else { return false }
+                let passing = SelfRepairHost(installedBuild: { 142 }, installedVersion: { "0.9.76" }, staleDiagnostic: { _ in nil },
+                    stage: { root in
+                        SelfUpdate.Intent(build: 143, version: "0.9.77", sourceRoot: root, sourceCommit: gitHead(root),
+                            stagedAppSHA256: String(repeating: "a", count: 64), stagedCLISHA256: String(repeating: "b", count: 64),
+                            conversationID: nil, submissionID: nil, checks: ["fixture: PASS"])
+                    }, isRegistered: { _ in false })
+                var shown = ""
+                let outcome = try restagePendingOS1Repair(stored, root: root.path, store: store, host: passing,
+                    acquireLease: { _ in nil }, finished: { output, _ in shown = output; return RunSummary(status: "complete", steps: []) })
+                guard case .finished = outcome, store.load(id: record.id) == nil, shown.contains("build 143"),
+                      let staged = gitHead(root.path), staged != repairCommit, gitCommit(repairCommit, isContainedIn: root.path),
+                      SelfUpdate.loadIntent(root: root.path)?.sourceCommit == staged,
+                      porcelain().split(separator: "\n").allSatisfy({ $0.hasSuffix("release/") || $0.hasSuffix("release") }) else { return false }
+                return true
+            } catch { return false }
+        }()),
+        ("a conversation's unfinished OS-1 repair continues on its next request: restage first, else the repair again with the record (build 327)", {
+            var record = PendingOS1Repair(id: UUID().uuidString.lowercased(), conversationID: UUID().uuidString, submissionID: nil,
+                ownerRequest: "로고 바꿔", corrections: ["정정: 왼쪽"], draftReport: "OS-1 쪽 변경이 필요합니다.",
+                sourceRoot: "/os1", startCommit: "a")
+            record.state = .stagingFailed
+            record.repairCommit = "c0ffee"
+            record.repairBranch = "os1/logo"
+            record.failedGate = "app-self-test-parallel"
+            let alive: (Int32) -> Bool = { _ in true }, dead: (Int32) -> Bool = { _ in false }
+            guard os1PendingRepairRetryPlan(record, root: "/os1", contains: { _, _ in true }, isAlive: alive) == .restage(root: "/os1"),
+                  os1PendingRepairRetryPlan(record, root: "/os1", contains: { _, _ in false }, isAlive: alive) == .repairAgain,
+                  os1PendingRepairRetryPlan(record, root: nil, contains: { _, _ in true }, isAlive: alive) == .repairAgain,
+                  record.retryable(isAlive: alive) else { return false }
+            var interrupted = record
+            interrupted.state = .running
+            guard interrupted.retryable(isAlive: dead), !interrupted.retryable(isAlive: alive),
+                  os1PendingRepairRetryPlan(interrupted, root: "/os1", contains: { _, _ in true }, isAlive: dead) == .repairAgain else { return false }
+            var exhausted = record
+            exhausted.attempts = PendingOS1Repair.maximumAutomaticAttempts
+            guard !exhausted.retryable(isAlive: alive) else { return false }
+            record.lastError = "self-update stage: app-self-test-parallel failed"
+            let prompt = os1PendingRepairPrompt(record, newMessage: "아니 그래서 고치라니까?")
+            return prompt.contains("로고 바꿔") && prompt.contains("정정: 왼쪽") && prompt.contains("아니 그래서 고치라니까?")
+                && prompt.contains("c0ffee") && prompt.contains("app-self-test-parallel") && prompt.contains("OS-1 HANDOFF")
+                // A read-only question never continues the repair; a write request does.
+                && ownerRequestRunsReadOnly("co가 무슨 뜻이야?", attachedSource: false)
+                && !ownerRequestRunsReadOnly("아니 그래서 고치라니까?", attachedSource: false)
+        }()),
+        ("a repair that did not finish is never a complete turn: the repair's answer and the note reach the owner (build 327)", {
+            func step(_ disposition: String, _ output: String) -> RunStepSummary {
+                RunStepSummary(sequence: 1, provider: "claude", action: "agent_run", model: "m", effort: "max",
+                    revasDisposition: disposition, sessionID: UUID().uuidString.lowercased(), permissionProfile: "workspace_write",
+                    exitCode: 0, output: output, stderr: "", durationMS: 1, nativeRecord: nil)
+            }
+            let adoptedDraft = RunSummary(status: "complete", steps: [step("adopted", "OS-1 쪽 변경이 필요합니다.")], monitorTaskID: "owner")
+            let rejectedDraft = RunSummary(status: "handed_back", steps: [step("retry", "분홍 바는 OS-1 쪽 변경입니다.")])
+            let repairAnswer = os1RepairAnswer(step("verification_pending",
+                "진행 패널을 한 줄로 바꿨습니다.\n\n" + selfRepairFailurePrefix + "build 326 did not pass staging"))
+            let kept = os1RepairBlockedSummary(draft: adoptedDraft, repairAnswer: repairAnswer, note: "NOTE", monitorTaskID: "owner")
+            let rejected = os1RepairBlockedSummary(draft: rejectedDraft, repairAnswer: nil, note: "NOTE", monitorTaskID: nil)
+            return repairAnswer == "진행 패널을 한 줄로 바꿨습니다." && kept.status == "workflow_blocked"
+                && kept.steps.count == 1 && kept.steps[0].workflowStage == "os1-repair-pending"
+                && kept.workflowBlocker?.hasPrefix("NOTE") == true && kept.workflowBlocker?.contains("진행 패널을 한 줄로 바꿨습니다.") == true
+                && kept.monitorTaskID == "owner"
+                && rejected.status == "workflow_blocked" && rejected.steps.isEmpty
+                && rejected.workflowBlocker?.contains("분홍 바는 OS-1 쪽 변경입니다.") == true
+                && os1RepairAnswer(step("x", selfRepairFailurePrefix + "only the note")) == nil
         }()),
         ("a ticket that aged while it waited is replaced, a fresh one is used", {
             func ticket(_ expires: Date) -> Ticket {

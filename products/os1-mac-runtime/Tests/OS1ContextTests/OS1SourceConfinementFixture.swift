@@ -161,4 +161,5 @@ func runOS1SourceConfinementFixtures() throws {
     check(OS1SourceConfinement.confinedAnswer(answer, confined: false) == (answer, false),
         "an unconfined answer is never read for the marker")
     print("Source confinement fixtures: \(checks) checks; model calls 0")
+    try runPendingOS1RepairFixtures()
 }

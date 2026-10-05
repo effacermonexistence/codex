@@ -95,16 +95,51 @@ check('os1SourceConfined: attemptConfined,' in main and 'os1ChangeRequired: atte
 # 6. The escalation: once, bound to OS-1, told what the first run did.
 task = body(main, 'func runTask(\n', '/// Measured 2026-10-01')
 check('OS1ChangeEscalation.$available.withValue(escalationAvailable)' in task, 'the first run knows whether a hand-back continues')
-check('if escalationAvailable, draft.status == "complete", confinedDraftRequiresOS1Change(draft) {' in task,
-      'only an adopted owner request escalates')
-rerun = flat(task[task.index('let repair = strippingOS1ChangeMarker('):])
+check('OS1RunAttemptRecorder.$current.withValue(draftAttempts)' in task,
+      'the first run records its last attempt, so a rejected hand-back is not lost')
+check(re.search(r'os1HandBackDraft\(adopted: adoptedDraft,\s*rejectedAttempt: draftFailure == nil \? nil : draftAttempts\.last, cancelled: cancelled\)', task),
+      'an adopted hand-back, or one REVAS did not adopt (build 327), escalates through the tested decision')
+check('if let draftFailure { throw draftFailure }' in task, 'a rejected draft that did not hand back fails as before')
+check('OS1RunAttemptRecorder.current?.reset()' in main and 'OS1RunAttemptRecorder.current?.record(deliveredStep)' in main
+      and 'OS1RunAttemptRecorder.current?.settle(disposition: revasDisposition)' in main,
+      'each attempt is recorded once delivered and settled by the REVAS verdict')
+check(main.index('OS1RunAttemptRecorder.current?.settle(disposition: revasDisposition)')
+      < main.index('reason: "remote_verification_not_adopted_no_write_replay"'),
+      'the verdict is recorded before a rejected writer throws')
+rerun = flat(task[task.index('func runOS1Repair('):task.index('/// OS-1\'s source tree the repair works in')])
 check('OS1ChangeEscalation.$available.withValue(false)' in rerun, 'the repair never escalates again')
 check('forcedProjectID: "os1-clodex"' in rerun, 'the repair is bound to OS-1')
-check('prompt: os1RepairHandoffPrompt(request: prompt, corrections: corrections, draftReport: report)' in rerun,
-      'the repair gets the first run report and the owner corrections')
 check('codexSessionID: nil, claudeSessionID: nil' in rerun, 'the repair starts fresh native sessions')
-check('return mergedOS1Escalation(draft: draft, repair: repair' in rerun, 'the owner sees both answers')
-check('return appendingOS1RepairNote(draft' in rerun, 'a failed repair is said plainly')
+check('PendingOS1RepairContext.$current.withValue(' in rerun, 'the repair runs with its pending record bound for OS-1\'s completion')
+check('repairPrompt: os1RepairHandoffPrompt(request: prompt, corrections: corrections, draftReport: report)' in flat(task),
+      'the repair gets the first run report and the owner corrections')
+cont = task[task.index('func continueAsOS1Repair('):task.index('// A new write request in a conversation whose OS-1 repair did not')]
+check(cont.index('try? pendingStore.save(record)') < cont.index('let repair = try await runOS1Repair(repairPrompt)'),
+      'the pending record is written before the repair starts')
+check('if adopted, let recordID { pendingStore.remove(id: recordID) }' in cont, 'an adopted repair removes the record')
+check('return mergedOS1Escalation(draft: draft, repair: repair' in cont, 'the owner sees both answers')
+check('return appendingOS1RepairNote(draft, cancelled: true' in cont, 'a cancelled repair is said plainly and removes the record')
+check('return os1RepairBlockedSummary(draft: draft, repairAnswer: answer,' in cont
+      and 'note: os1RepairFailureNote(record: record, reason: reason)' in cont,
+      'a failed repair shows its own answer and a precise note, never a complete turn')
+retry = task[task.index('// A new write request in a conversation whose OS-1 repair did not'):task.index('var adoptedDraft: RunSummary?')]
+check('let pending = pendingStore.load(id: recordID), pending.retryable()' in retry
+      and '!ownerRequestRunsReadOnly(prompt, attachedSource: attached)' in retry,
+      'a write request in a conversation with an unfinished repair continues it, before any draft runs')
+check('os1PendingRepairRetryPlan(pending, root: root, contains:' in retry and 'restagePendingOS1Repair(pending, root: restageRoot, store: pendingStore)' in retry,
+      'a staging-only failure is staged again first, with no model call')
+check('repairPrompt: os1PendingRepairPrompt(current, newMessage: prompt), existing: current)' in flat(retry),
+      'otherwise the repair runs again (bound to OS-1) with the record and the new message')
+check('ownerRequestRunsReadOnly(prompt, attachedSource: attachedSource != nil)' in main,
+      'the run scope and the retry decision share one read-only predicate')
+complete = body(self_update, 'func completeOS1SelfRepair(', 'private func applySelfUpdate(')
+check('for attempt in 1...2 {' in complete and 'guard attempt == 1, selfRepairGateIsSelfTest(gate) else { break }' in complete,
+      'a self-test staging failure is re-run once, nothing else is')
+check('try? data.write(to: URL(fileURLWithPath: path), options: .atomic)' in complete,
+      'a staging failure takes OS-1\'s version bump back')
+check('record.state = .stagingFailed' in complete and 'binding.store.remove(id: binding.id)' in complete,
+      'the pending record learns a staging failure and is removed once the install intent exists')
+check('stays in the working tree, nothing was installed' not in complete, 'the failure states where the change actually is')
 
 # 7. Reading the live tree never takes git's index lock.
 fingerprint = body(self_update, 'static func fingerprint(root: String) -> String? {', 'return sha256Hex(data)')

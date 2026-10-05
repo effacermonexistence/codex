@@ -4434,6 +4434,10 @@ private func stepRecordIsVerified(_ step: AppRunStep) -> Bool {
     case "protected_material_guard":
         return receipt["operation"] as? String == "protected_route_material_guard" &&
             receipt["model_egress_blocked"] as? Bool == true
+    case "os1_repair_restage":
+        // A pending OS-1 repair staged again by OS-1 itself (build 327).
+        return receipt["operation"] as? String == "os1_repair_restage" &&
+            receipt["model_invoked"] as? Bool == false
     case "work_preparation":
         return receipt["operation"] as? String == "work_preparation" &&
             (receipt["project_id"] as? String)?.isEmpty == false &&

@@ -1,0 +1,71 @@
+import Darwin
+import Foundation
+import OS1Context
+
+/// The durable record of an owner request's unfinished OS-1 repair (build
+/// 327): one private file per conversation, updated as the repair runs and
+/// reconciled at launch when its process is gone.
+func runPendingOS1RepairFixtures() throws {
+    var checks = 0
+    func check(_ condition: Bool, _ message: String) {
+        precondition(condition, "Pending OS-1 repair: " + message); checks += 1
+    }
+    let base = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("os1-pending-repair-" + UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: base) }
+    let store = PendingOS1RepairStore(root: base.appendingPathComponent("pending-os1-repairs"))
+
+    let conversation = UUID(), submission = UUID()
+    check(PendingOS1Repair.recordID(conversationID: conversation.uuidString, submissionID: submission.uuidString)
+        == conversation.uuidString.lowercased(), "a conversation's record is found by its next request")
+    check(PendingOS1Repair.recordID(conversationID: nil, submissionID: submission.uuidString) == submission.uuidString.lowercased(),
+        "without a conversation the submission names it")
+    check(PendingOS1Repair.recordID(conversationID: "not-a-uuid", submissionID: nil) == nil, "no id, no record")
+    check(store.list().isEmpty && store.load(id: conversation.uuidString) == nil, "an absent folder is an empty store")
+
+    let long = String(repeating: "가", count: 30_000)
+    let start = Date(timeIntervalSince1970: 1_800_000_000)
+    let record = PendingOS1Repair(id: conversation.uuidString.lowercased(), conversationID: conversation.uuidString,
+        submissionID: submission.uuidString, ownerRequest: "밑에 너무 크거든", corrections: ["정정"], draftReport: "HEAD" + long + "TAIL",
+        sourceRoot: "/os1", startCommit: String(repeating: "a", count: 40), now: start, pid: getpid())
+    check(record.state == .running && record.attempts == 1, "a new record is a running first attempt")
+    check(record.draftReport.count < 13_000 && record.draftReport.hasPrefix("HEAD") && record.draftReport.hasSuffix("TAIL"),
+        "a long report keeps its head and tail")
+    try store.save(record)
+    let url = store.url(id: record.id)!
+    let mode = (try FileManager.default.attributesOfItem(atPath: url.path)[.posixPermissions] as? NSNumber)?.intValue
+    let folderMode = (try FileManager.default.attributesOfItem(atPath: store.root.path)[.posixPermissions] as? NSNumber)?.intValue
+    check(mode == 0o600 && folderMode == 0o700, "the record is private")
+    check(store.load(id: record.id.uppercased()) == record, "a record round-trips, whatever the id's case")
+
+    // OS-1's completion records a staging failure on it.
+    let later = start.addingTimeInterval(60)
+    let failed = store.update(id: record.id, now: later) {
+        $0.state = .stagingFailed; $0.failedGate = "app-self-test-parallel"
+        $0.repairCommit = String(repeating: "c", count: 40); $0.repairBranch = "os1/inline-live-run-row"; $0.repairPushed = true
+    }
+    check(failed?.state == .stagingFailed && failed?.updatedAt == later && store.load(id: record.id)?.failedGate == "app-self-test-parallel",
+        "an update is saved with its time")
+    check(store.update(id: UUID().uuidString) { $0.state = .failed } == nil, "updating a missing record creates nothing")
+    check(failed?.retryable(isAlive: { _ in true }) == true, "a staging failure is retried on the next request")
+
+    // A running record whose process is gone is an interrupted repair.
+    let other = UUID().uuidString.lowercased()
+    try store.save(PendingOS1Repair(id: other, conversationID: nil, submissionID: other, ownerRequest: "로고",
+        corrections: [], draftReport: "", sourceRoot: nil, startCommit: nil, now: start, pid: 999_999))
+    check(store.load(id: other)?.effectiveState(isAlive: { _ in false }) == .interrupted, "a dead writer reads as interrupted")
+    check(store.load(id: other)?.retryable(isAlive: { _ in true }) == false, "a live writer's repair is not taken over")
+    let reconciled = store.reconcileInterrupted(isAlive: { $0 != 999_999 })
+    check(reconciled.map(\.id) == [other] && store.load(id: other)?.state == .interrupted, "launch marks only the dead writer interrupted")
+    check(store.list().count == 2, "every record is listed")
+    check(!PendingOS1Repair.processAlive(0) && PendingOS1Repair.processAlive(getpid()), "the liveness probe")
+
+    var exhausted = store.load(id: other)!
+    exhausted.attempts = PendingOS1Repair.maximumAutomaticAttempts
+    check(!exhausted.retryable(isAlive: { _ in false }), "automatic retries stop at the limit")
+
+    // Done or cancelled: the record is removed.
+    store.remove(id: record.id)
+    store.remove(id: "not-a-uuid")
+    check(store.load(id: record.id) == nil && store.list().map(\.id) == [other], "removal is per record")
+    print("Pending OS-1 repair fixtures: \(checks) checks; model calls 0")
+}
