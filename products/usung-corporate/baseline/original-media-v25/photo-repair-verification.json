@@ -1,0 +1,64 @@
+[
+  {
+    "sourceFile": "suffolk-naples.jpg",
+    "acceptedBaseline": "usung-field-team-v24.webp",
+    "candidateFile": "usung-field-team-v25.webp",
+    "sourceSha256": "2a18b8507d87814098d8e7e69fa8d35738d2db0d7209a748b9e8bc6e89461aae",
+    "candidateSha256": "671a3d5516d5aaf426f2aeb2a8ea8cca7e417d6a8032cbef49033408fbf65101",
+    "sourceDimensions": [
+      2200,
+      1466
+    ],
+    "changedVersusBaselinePixels": 3556,
+    "outsideRepairMaskEqualsBaseline": true,
+    "outsideAllBrandMasksEqualsOriginal": true,
+    "sourceScenePreserved": true,
+    "losslessEncoding": true,
+    "repairMask": "outputs/website/usung-rework-v25/audit/source-photo-review/naples-v25-change-mask.png",
+    "sourceMask": "outputs/website/usung-rework-v25/audit/source-photo-review/naples-v25-source-mask.png",
+    "additionalRepair": {
+      "target": "Only confirmed SUFFOLK letters inside yellow sticker printed box",
+      "changedPixels": 586,
+      "lowerFieldsRetained": true,
+      "helmetHardwareRetained": true,
+      "unconfirmedKASKTabRetained": true,
+      "mask": "outputs/website/usung-rework-v25/audit/source-photo-review/naples-yellow-v25-mask.png"
+    }
+  },
+  {
+    "sourceFile": "built-trenching.jpg",
+    "acceptedBaseline": "usung-autonomous-excavation-v24.webp",
+    "candidateFile": "usung-autonomous-excavation-v25.webp",
+    "sourceSha256": "4ca60832f971b10a811e984acdbf269cea8a9aa12cc86c20facab0389d7d2f34",
+    "candidateSha256": "1a9524fe00fafad3031a6843efdbcbbc4e90c04c6460966d338f3dac33da39aa",
+    "sourceDimensions": [
+      2200,
+      1237
+    ],
+    "changedVersusBaselinePixels": 13094,
+    "outsideRepairMaskEqualsBaseline": true,
+    "outsideAllBrandMasksEqualsOriginal": true,
+    "sourceScenePreserved": true,
+    "losslessEncoding": true,
+    "repairMask": "outputs/website/usung-rework-v25/audit/source-photo-review/trenching-v25-change-mask.png",
+    "sourceMask": "outputs/website/usung-rework-v25/audit/source-photo-review/trenching-v25-source-mask.png"
+  },
+  {
+    "sourceFile": "suffolk-robotics.jpg",
+    "acceptedBaseline": "usung-site-robot-v24.webp",
+    "candidateFile": "usung-site-robot-v25.webp",
+    "sourceSha256": "c3fe773c4d1177d09af8db3dd7a4aea1682f1e54b1597d26c96699d2f4cbc7e4",
+    "candidateSha256": "c88667c40e0abe22c5c41a1492cac5a222214047456860ecc2a95316bc162e55",
+    "sourceDimensions": [
+      2200,
+      1237
+    ],
+    "changedVersusBaselinePixels": 30853,
+    "outsideRepairMaskEqualsBaseline": true,
+    "outsideAllBrandMasksEqualsOriginal": true,
+    "sourceScenePreserved": true,
+    "losslessEncoding": true,
+    "repairMask": "outputs/website/usung-rework-v25/audit/source-photo-review/robotics-v25-change-mask.png",
+    "sourceMask": "outputs/website/usung-rework-v25/audit/source-photo-review/robotics-v25-source-mask.png"
+  }
+]

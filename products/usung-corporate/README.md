@@ -45,7 +45,7 @@ Previous deployment (recovery baseline): `62b8e0e4-9032-4cdb-af88-a1f7daae8ae3`.
 
 ## Reference branding (2026-10-04)
 
-Visible source-company marks are adapted to the approved USUNG wordmark or U symbol. The original v22 revision used six imagegen photo edits; v24 replaces every one with non-generative edits of the preserved original photographs. Six videos receive native vector compositing on the observed logo regions, retaining scene sequence, frame count, dimensions and frame rate. Four posters are regenerated from these videos. Three native SVG diagrams receive the outlined USUNG mark. Reference captions are plain text. `reference-branding.json` records the 19 transformed assets, served checksums and photo-edit prompt set. Images and footage with no observed source-company mark remain unchanged.
+Visible source-company marks are adapted to the approved USUNG wordmark or U symbol. The original v22 revision used six imagegen photo edits; v24 replaces every one with non-generative edits of the preserved original photographs. Physical AI videos retain their original sequence and timing. Construction films are now selected montages from the higher resolution official reference footage, with source ranges and transformations recorded. Matching posters are frames from the corresponding videos. Three native SVG diagrams receive the outlined USUNG mark. Reference captions are plain text. `reference-branding.json` records transformed assets, their original source identity, served checksums and transformation history. Images and footage with no observed source-company mark remain unchanged.
 
 
 ### Physical AI surface correction (v23)
@@ -59,6 +59,17 @@ All four footers use white surfaces with the approved black USUNG mark and its p
 
 Six photographs now start from the acquired originals. Only original printed-brand regions are retouched and composited using source perspective, curvature, ink, illumination and softness. Photographs are delivered as lossless WebP; decoded pixels outside the recorded edit masks are identical to the original JPEG decode. No equipment, sky, people or surrounding scene is regenerated. In particular, the dusk photograph no longer contains the additional invented boom logos.
 
-Both construction videos are recomposited from original footage. Excavator marks retain their physical decal region and source ink brightness. Safety-helmet inserts follow short, source-checked motion segments and foreshortening. Vest marks use cloth visibility so hands remain in front of the print. Office vest and ID-card company text are included. Source dimensions, frame rate, frames and cuts are retained; pixels outside masks are identical before the necessary H264 export. The source-only verification record is `media-source-verification.json`. Previous files remain available for recovery. The existing abstract glass artwork is separate from photographed construction/robotics media and retains its generation provenance.
+The v24 construction videos preserved outside-mask pixels, but subsequent visual review found oversized marks, original-letter remnants and failed arm occlusion. Pixel identity did not establish natural-looking branding. Those films are superseded by v25. Previous files remain available for recovery. The existing abstract glass artwork is separate from photographed construction/robotics media and retains its generation provenance.
 
 Do not return to full-frame generative photo edits. Preserve real photographed scenes and make future brand corrections only within verified source-brand masks.
+
+
+### Camera photograph and 4K source-footage rework (v25)
+
+The previous blue dusk photograph matches Built Robotics’ official HDR download. The Home feature and daylight piling references now use the photographed RPD35 image with a matching Commons camera record (Canon EOS R6, 2024-01-24). The U print replaces only the original B on the vented body; the original AUTONOMOUS MACHINE cab identification is restored. No scene is generated.
+
+Both Smart Construction films use new official 4K source footage, exported at 1920×1080. The equipment film selects original pile-driving, hammer, solar-field, aerial and overhead machinery shots. The delivery film selects the real entrance sign, structural construction and BIM tablet footage. Source-company prints are replaced in their physical planes, including source softness and sun flare. Original safety and operating labels are preserved. Source frame ranges, local masks, checksums and exports are recorded in `media-source-verification.json`. These are visual-reference films, with no claim of USUNG project ownership.
+
+Vest, excavation-panel and robotics-board prints receive further local source-pixel retouching. Physical AI v23 remains unchanged. Visual review and published-byte verification are separate gates; these records do not claim owner visual acceptance or universal photographic indistinguishability.
+
+On phones, the construction hero preserves the full 16:9 source frame. Its heading follows on the light page surface rather than cropping most of the equipment into a portrait video. The pause control retains readable contrast over the footage.

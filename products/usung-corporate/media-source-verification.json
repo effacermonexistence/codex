@@ -1,292 +1,701 @@
 {
-  "release": "2026-10-04-original-media-v24",
+  "release": "2026-10-04-real-footage-v25",
+  "previousRelease": "2026-10-04-original-media-v24",
   "photos": [
     {
-      "source": "built-rpd.jpg",
-      "served": "usung-autonomous-piling-v24.webp",
+      "source": "assets/media/built-rpd.jpg",
+      "served": "assets/media/usung-daylight-piling-v25.webp",
+      "sourceOfficialUrl": "https://assets.builtrobotics.com/production/public/download/2024_01_24_BUILT_0769.jpg",
+      "cameraRecord": "https://commons.wikimedia.org/wiki/File:2023_03_03_RPD_Video_Shoot.jpg",
       "dimensions": [
         2200,
         1466
       ],
       "sourceSha256": "7ec087d5f54254ad5b67e4404dc308026ede60d9452fee625a2f06ce63114a87",
-      "changedPixels": 4798,
-      "totalPixels": 3225200,
+      "servedSha256": "17b9ff77b06489ec9d28c163c65ad0c24ef4dbd52aeabd6618cc71034486b2e1",
       "outsideMaskIdentical": true,
-      "encoding": "lossless WebP"
+      "changedPixels": 3182,
+      "transformation": "Native U printed on original vent panel; source ink colour by vent row; source camera photograph retained, local non-generative pixel retouch only",
+      "encoding": "lossless WebP",
+      "sourcePage": "https://www.builtrobotics.com/about/downloads",
+      "sourceAsset": "https://assets.builtrobotics.com/production/public/download/2024_01_24_BUILT_0769.jpg",
+      "sourceUrlRecovery": "Official URL and image matching rechecked in v25; earlier asset hashes preserved"
     },
     {
-      "source": "built-sundown.jpg",
-      "served": "usung-site-dusk-v24.webp",
-      "dimensions": [
-        2200,
-        1467
-      ],
-      "sourceSha256": "2b7ad90b11c964e4770b0f4a5a2623e33e764ff679c564cbb8d9f4c0c8788b4a",
-      "changedPixels": 1335,
-      "totalPixels": 3227400,
-      "outsideMaskIdentical": true,
-      "encoding": "lossless WebP"
-    },
-    {
-      "source": "built-sunrise.jpg",
-      "served": "usung-site-dawn-v24.webp",
-      "dimensions": [
-        2200,
-        1466
-      ],
-      "sourceSha256": "51124b57542c4eed9761f66ce5f79d7fa4f7bba8afd1ca8e46a4ad08ed6ba01b",
-      "changedPixels": 163,
-      "totalPixels": 3225200,
-      "outsideMaskIdentical": true,
-      "encoding": "lossless WebP"
-    },
-    {
-      "source": "built-trenching.jpg",
-      "served": "usung-autonomous-excavation-v24.webp",
-      "dimensions": [
-        2200,
-        1237
-      ],
-      "sourceSha256": "4ca60832f971b10a811e984acdbf269cea8a9aa12cc86c20facab0389d7d2f34",
-      "changedPixels": 16753,
-      "totalPixels": 2721400,
-      "outsideMaskIdentical": true,
-      "encoding": "lossless WebP"
-    },
-    {
-      "source": "suffolk-naples.jpg",
-      "served": "usung-field-team-v24.webp",
-      "dimensions": [
-        2200,
-        1466
-      ],
+      "source": "assets/media/suffolk-naples.jpg",
+      "served": "assets/media/usung-field-team-v25.webp",
       "sourceSha256": "2a18b8507d87814098d8e7e69fa8d35738d2db0d7209a748b9e8bc6e89461aae",
-      "changedPixels": 17728,
-      "totalPixels": 3225200,
+      "servedSha256": "671a3d5516d5aaf426f2aeb2a8ea8cca7e417d6a8032cbef49033408fbf65101",
+      "dimensions": [
+        2200,
+        1466
+      ],
       "outsideMaskIdentical": true,
-      "encoding": "lossless WebP"
+      "sourceScenePreserved": true,
+      "losslessEncoding": true,
+      "priorServed": "assets/media/usung-field-team-v24.webp",
+      "transformation": "Local source-pixel printed-mark repair with native perspective, source ink, focus and texture; safety/operating labels preserved",
+      "sourcePage": "https://suffolk.com/",
+      "sourceAsset": "https://suffolk.com/wp-content/uploads/2025/07/NAPLES_BEACH_CLUB-12.png",
+      "sourceUrlRecovery": "Official URL and image matching rechecked in v25; earlier asset hashes preserved"
     },
     {
-      "source": "suffolk-robotics.jpg",
-      "served": "usung-site-robot-v24.webp",
+      "source": "assets/media/built-trenching.jpg",
+      "served": "assets/media/usung-autonomous-excavation-v25.webp",
+      "sourceSha256": "4ca60832f971b10a811e984acdbf269cea8a9aa12cc86c20facab0389d7d2f34",
+      "servedSha256": "1a9524fe00fafad3031a6843efdbcbbc4e90c04c6460966d338f3dac33da39aa",
       "dimensions": [
         2200,
         1237
       ],
-      "sourceSha256": "c3fe773c4d1177d09af8db3dd7a4aea1682f1e54b1597d26c96699d2f4cbc7e4",
-      "changedPixels": 26598,
-      "totalPixels": 2721400,
       "outsideMaskIdentical": true,
-      "encoding": "lossless WebP"
+      "sourceScenePreserved": true,
+      "losslessEncoding": true,
+      "priorServed": "assets/media/usung-autonomous-excavation-v24.webp",
+      "transformation": "Local source-pixel printed-mark repair with native perspective, source ink, focus and texture; safety/operating labels preserved",
+      "sourcePage": "https://www.builtrobotics.com/about/downloads",
+      "sourceAsset": "https://assets.builtrobotics.com/production/public/download/Built-Robotics-Exosystem-Trenching-Dry-Climate.jpg",
+      "sourceUrlRecovery": "Official URL and image matching rechecked in v25; earlier asset hashes preserved"
+    },
+    {
+      "source": "assets/media/suffolk-robotics.jpg",
+      "served": "assets/media/usung-site-robot-v25.webp",
+      "sourceSha256": "c3fe773c4d1177d09af8db3dd7a4aea1682f1e54b1597d26c96699d2f4cbc7e4",
+      "servedSha256": "c88667c40e0abe22c5c41a1492cac5a222214047456860ecc2a95316bc162e55",
+      "dimensions": [
+        2200,
+        1237
+      ],
+      "outsideMaskIdentical": true,
+      "sourceScenePreserved": true,
+      "losslessEncoding": true,
+      "priorServed": "assets/media/usung-site-robot-v24.webp",
+      "transformation": "Local source-pixel printed-mark repair with native perspective, source ink, focus and texture; safety/operating labels preserved",
+      "sourcePage": "https://suffolk.com/",
+      "sourceAsset": "https://suffolk.com/wp-content/uploads/2025/07/rugged-thumbnail-1.jpg",
+      "sourceUrlRecovery": "Official URL and image matching rechecked in v25; earlier asset hashes preserved"
     }
   ],
   "constructionVideos": [
     {
-      "source": "suffolk-hero.mp4",
-      "served": "usung-construction-film-v24.mp4",
-      "width": 1280,
-      "height": 720,
-      "fps": 23.976023976023978,
-      "frames": 515,
-      "outsideMasksIdenticalBeforeEncode": true,
-      "framesWithEdits": 104,
-      "maximumEditedPixels": 4653,
-      "totalPixelsPerFrame": 921600,
-      "sourceSha256": "c8c77ece9cfc894d6ddd1309da9fd9bd11f1a1c3c2f5b5734b0c4d25e710a335"
-    },
-    {
-      "source": "turner-hero.mp4",
-      "served": "usung-delivery-film-v24.mp4",
+      "sourcePage": "https://www.builtrobotics.com/",
+      "sourceAsset": "https://servd-careful-chuckwalla.b-cdn.net/production/video/home-hero-desk.mp4",
+      "sourceFile": "baseline/original-media-v25/built-home-hero.mp4",
+      "sourceSha256": "8c88c1d51fdb1f6400c494f97a2787c3caff739f88e146d615125673d9ad48a8",
+      "sourceWidth": 3840,
+      "sourceHeight": 2160,
+      "sourceFrames": 768,
+      "sourceFps": 23.976023976023978,
+      "outputFile": "outputs/website/usung-rework-v25/edited/usung-construction-film-v25.mp4",
+      "outputSha256": "b539e514dc1b6fa92a9061a98af24856bd0b2d0525a01e3f12828bbe86a8997d",
+      "bytes": 12460321,
       "width": 1920,
       "height": 1080,
+      "frames": 288,
       "fps": 23.976023976023978,
-      "frames": 203,
-      "outsideMasksIdenticalBeforeEncode": true,
-      "framesWithEdits": 123,
-      "maximumEditedPixels": 8111,
-      "totalPixelsPerFrame": 2073600,
-      "sourceSha256": "a277360b6b6ed832a0ce4f6a141f13be7849fc5079b46898d10634b59bb9e85e"
+      "duration": 12.011999999999999,
+      "sourceRangesExclusiveEnd": [
+        [
+          0,
+          181
+        ],
+        [
+          464,
+          518
+        ],
+        [
+          715,
+          768
+        ]
+      ],
+      "outputCutFrames": [
+        0,
+        51,
+        98,
+        139,
+        181,
+        220,
+        235
+      ],
+      "transformation": "Selected original source shots in original frame order and timing, 4K to 1920x1080 area downsample, local tight company-B footprints replaced by native U+pink via non-generative photographed-panel reconstruction and direct source-letter template localization; photographed white-paint colour and local light/focus; H264 CRF16, audio omitted.",
+      "noSceneGeneration": true,
+      "safetyModelAndRoundAutonomousMachineIdentifiersPreserved": true,
+      "sourceBrandMasks": {
+        "opening two B marks": [
+          0,
+          51
+        ],
+        "wide two B marks": [
+          503,
+          518
+        ]
+      },
+      "wideInkReflectionTransfer": "Original visible B-ink pixels supply a normalized local reflection field; missing B-letter gaps use interpolated photographed row exposure. No uniform replacement pigment for the wide source letters.",
+      "maximumAllowedMaskPixels": 4460,
+      "maximumChangedPixels": 3399,
+      "pixelsPerFrame": 2073600,
+      "outsideMasksIdenticalBeforeVideoEncode": true,
+      "poster": "usung-construction-film-v25-poster.jpg",
+      "selectionNote": "Forest skidsteer segment excluded because dust/turning/heavy blur would require additional masking work; later solar timelapse section after frame517 excluded because newly exposed BUILT body/Exosystem marks require additional local retouch.",
+      "encodedDecodeVerification": {
+        "framesDecoded": 288,
+        "blackFrames": 0,
+        "allFrameDimensions": [
+          1920,
+          1080
+        ],
+        "fps": 23.976023976023978,
+        "sha256": "b539e514dc1b6fa92a9061a98af24856bd0b2d0525a01e3f12828bbe86a8997d"
+      },
+      "sourceRangesSecondsExclusiveEnd": [
+        [
+          0.0,
+          7.549208333333333
+        ],
+        [
+          19.352666666666664,
+          21.604916666666664
+        ],
+        [
+          29.821458333333332,
+          32.032
+        ]
+      ],
+      "served": "assets/media/usung-construction-film-v25.mp4",
+      "servedSha256": "b539e514dc1b6fa92a9061a98af24856bd0b2d0525a01e3f12828bbe86a8997d",
+      "servedBytes": 12460321
+    },
+    {
+      "status": "rendered-and-decoded",
+      "sources": [
+        {
+          "file": "baseline/original-media-v25/turner-jobsite-01.mp4",
+          "url": "https://ep-turnerconstruction-prod-asdcetgubtducba3.z01.azurefd.net/uploads/jobsite-01.mp4?v=dd733",
+          "sha256": "89957b2e1ade74b4c0b2fab57135b5611c16739596899cf03d8a02f1ee06d115",
+          "bytes": 3343499
+        },
+        {
+          "file": "baseline/original-media-v25/turner-jobsite-02.mp4",
+          "url": "https://ep-turnerconstruction-prod-asdcetgubtducba3.z01.azurefd.net/uploads/jobsite-02.mp4?v=06e65",
+          "sha256": "8bbe69e13074b00996e880f84f6d5d1c26453e47c5d49f89e54b8c9da659b6d3",
+          "bytes": 6195974
+        },
+        {
+          "file": "baseline/original-media-v25/turner-tech-01.mp4",
+          "url": "https://ep-turnerconstruction-prod-asdcetgubtducba3.z01.azurefd.net/uploads/tech-01.mp4?v=887d3",
+          "sha256": "32f5277b2f6c20e186dee385d32d9ec9febce834c68aec208ee6f68b07b0c4b9",
+          "bytes": 3258327
+        }
+      ],
+      "segments": [
+        {
+          "source": "turner-jobsite-01.mp4",
+          "sourceFrameRangeInclusive": [
+            0,
+            119
+          ],
+          "outputFrameRangeInclusive": [
+            0,
+            119
+          ],
+          "seconds": 5.0,
+          "operation": "local sign company pigment replacement",
+          "nativeCropXYWH": [
+            0,
+            0,
+            3840,
+            2160
+          ]
+        },
+        {
+          "source": "turner-jobsite-02.mp4",
+          "sourceFrameRangeInclusive": [
+            0,
+            47
+          ],
+          "outputFrameRangeInclusive": [
+            120,
+            167
+          ],
+          "seconds": 2.0,
+          "operation": "unaltered source crop",
+          "nativeCropXYWH": [
+            2208,
+            400,
+            1632,
+            918
+          ]
+        },
+        {
+          "source": "turner-tech-01.mp4",
+          "sourceFrameRangeInclusive": [
+            0,
+            118
+          ],
+          "outputFrameRangeInclusive": [
+            168,
+            286
+          ],
+          "seconds": 4.958333333333333,
+          "operation": "unaltered source downsample",
+          "nativeCropXYWH": [
+            0,
+            0,
+            3840,
+            2160
+          ]
+        }
+      ],
+      "output": {
+        "fps": 24,
+        "size": [
+          1920,
+          1080
+        ],
+        "framesWritten": 287,
+        "seconds": 11.958333333333334
+      },
+      "generatedScene": false,
+      "nativeEditOnly": "sign company pigment local masks; geometry, lighting, camera motion, background, visitors, instructions retained. Structural and tablet footage unedited before crop/resize/encode.",
+      "verification": {
+        "encoderExitCodes": [
+          0,
+          0
+        ],
+        "decodedFrameCount": 287,
+        "decodedShapesAllEqual": [
+          1080,
+          1920,
+          3
+        ],
+        "fps": 24.0,
+        "postersFromEncodedFrames": [
+          0,
+          120
+        ],
+        "outsideLocalSignMaskOriginalPixelEquality": "120 of 120 native frames asserted in sign_edit before downsample/encode",
+        "structureTabletPixelEditing": "zero; only selected native crop and downsample",
+        "elapsedSeconds": 74.67,
+        "ffmpegFullDecodeExitCode": 0,
+        "ffmpegFullDecodeErrorOutput": ""
+      },
+      "excludedWork": {
+        "rejectedWideEdits": "SUNBELT RENTALS / JLG in full-frame wide salvage were rejected. No pixels from wide-edit.py output are used. Selected actual source structure crop excludes equipment and those marks; it contains no replacement USUNG glyph.",
+        "modelSafety": "No JLG 460SJ model/safety decals are repainted. Equipment decals are outside the selected crop. Visitor sign instructions and border remain source pixels."
+      },
+      "retainedUnknown": [
+        {
+          "segment": "tablet",
+          "object": "small blue-white cooler badge in background",
+          "classification": "unreadable unknown; not asserted as company or safety label",
+          "action": "original pixels retained; no all-brands-removed claim"
+        }
+      ],
+      "artifacts": [
+        {
+          "file": "/Users/lua/Documents/Codex/usung-corporate-website/outputs/website/usung-rework-v25/video-diagnosis/candidate/usung-delivery-film-v25.mp4",
+          "bytes": 8662061,
+          "sha256": "cbe0e0548bb6c87df4d4ff4a82c13df6da29961be5f8da514a35c85906694067"
+        },
+        {
+          "file": "/Users/lua/Documents/Codex/usung-corporate-website/outputs/website/usung-rework-v25/video-diagnosis/candidate/usung-delivery-film-v25-source-comparator.mp4",
+          "bytes": 8721758,
+          "sha256": "0f10af7fbb69fc485b8178042e4c8bbf12d400e7b63550acb766538d016029b4"
+        }
+      ],
+      "signGeometry": {
+        "sourceToRectifiedPlaneMatrices": "baseline/original-media-v25/delivery-sign-plane-matrices.json",
+        "rectifiedPlaneSize": [
+          1600,
+          920
+        ],
+        "upperOldPigmentCandidateRegionXYWH": [
+          245,
+          75,
+          1215,
+          357
+        ],
+        "lowerOldPigmentCandidateRegionXYWH": [
+          69,
+          670,
+          567,
+          149
+        ],
+        "upperUSUNGInsertXYWidth": [
+          270,
+          152,
+          1110
+        ],
+        "lowerUSUNGInsertXYWidth": [
+          98,
+          687,
+          502
+        ],
+        "ratio": "approved wordmark native ratio; no arbitrary stretch",
+        "planeTracking": "backward KLT source fence/sign plane, RANSAC homography plus source-plane ECC affine refinement",
+        "ECCMinimum": 0.9674941385587082,
+        "inlierMinimum": 519,
+        "localMaskRule": "old pigment contrast>5 inside old-company regions, dilate5+blur0.75; union with replacement glyph alpha>0.001; homography warp back to native source. Source pixels outside warped mask remain identical. No claim saved binary masks: method, matrices, exact source and implementation retained for reproduction."
+      },
+      "visualAudit": {
+        "signNativeKeyFramesObserved": [
+          0,
+          24,
+          48,
+          72,
+          96,
+          119
+        ],
+        "signAllNativeFramesPixelEqualityChecks": 120,
+        "structureAll48SelectedFramesObservedViaContactSheets": true,
+        "tabletAll119SelectedFramesObservedViaContactSheets": true,
+        "structureLabelsAtCropBoundary": "no visible company fragment or model/safety label on any of 48 selected crops; equipment bearing SUNBELT/JLG/460SJ is outside selected frame",
+        "tabletFrameTransform": "entire3840x2160 source downsampled, no new framing cuts, no pixel paint edits",
+        "signSourceCameraFraming": "first source frame naturally includes partial lower sign outside frame; unchanged native camera framing, no artificial crop. matchingframe0 poster therefore also naturally partially frames USUNG."
+      },
+      "photometricMethod": {
+        "sceneGenerated": false,
+        "upperLensDefocusSigmaPlanePixels": 1.9,
+        "lowerLensDefocusSigmaPlanePixels": 1.25,
+        "inkContrast": "measured per-source-frame old pigment difference from adjacent unprinted sign substrate; pink contrast attenuated by actual frame haze",
+        "substrate": "robust second-order polynomial illumination fit from adjacent unprinted source sign; source high-frequency grain contribution on altered pigment",
+        "outsideSourceSurface": "unchanged native pixels before downsample/encode"
+      },
+      "provenanceFiles": [
+        {
+          "file": "/Users/lua/Documents/Codex/usung-corporate-website/outputs/website/usung-rework-v25/video-diagnosis/candidate/usung-delivery-film-v25.jpg",
+          "bytes": 154393,
+          "sha256": "fee5726daceb3a46b2432fb4d214556c57c3d6cb3b39e2ff1fde6d8e5d44ecc7"
+        },
+        {
+          "file": "/Users/lua/Documents/Codex/usung-corporate-website/outputs/website/usung-rework-v25/video-diagnosis/candidate/usung-delivery-film-v25-wide.jpg",
+          "bytes": 310015,
+          "sha256": "939d2de413632aa6737da93c7406c09d01496865ab954e7c200c1b6c44cbfd3d"
+        },
+        {
+          "file": "/Users/lua/Documents/Codex/usung-corporate-website/outputs/website/usung-rework-v25/video-diagnosis/candidate/sign-edit.py",
+          "bytes": 4211,
+          "sha256": "12ba3c2c2de159a71e52b9535f3b6fae4db47a856d90fd518f167fc0e9a88637"
+        },
+        {
+          "file": "/Users/lua/Documents/Codex/usung-corporate-website/outputs/website/usung-rework-v25/video-diagnosis/candidate/sign-H-refined.json",
+          "bytes": 48766,
+          "sha256": "19f78f497aabe86f0fe2a2ee927550a8536265d2d01a24f53c3b3cd5c34e2172"
+        }
+      ],
+      "served": "assets/media/usung-delivery-film-v25.mp4",
+      "servedSha256": "cbe0e0548bb6c87df4d4ff4a82c13df6da29961be5f8da514a35c85906694067",
+      "servedBytes": 8662061,
+      "sourcePage": "https://www.turnerconstruction.com/",
+      "sourceAssets": [
+        "https://ep-turnerconstruction-prod-asdcetgubtducba3.z01.azurefd.net/uploads/jobsite-01.mp4?v=dd733",
+        "https://ep-turnerconstruction-prod-asdcetgubtducba3.z01.azurefd.net/uploads/jobsite-02.mp4?v=06e65",
+        "https://ep-turnerconstruction-prod-asdcetgubtducba3.z01.azurefd.net/uploads/tech-01.mp4?v=887d3"
+      ],
+      "sourceFile": "baseline/original-media-v25/sources.json",
+      "transformation": "sign company pigment local masks; geometry, lighting, camera motion, background, visitors, instructions retained. Structural and tablet footage unedited before crop/resize/encode.; selected original structural crop and source-frame montage.",
+      "servedPoster": "assets/media/usung-delivery-film-v25-poster.jpg"
     }
   ],
   "imageGenerationUsedForThisRevision": false,
-  "physicalVideos": "Existing v23 source-video composites reviewed; no wholesale scene generation",
-  "abstractArtwork": "Existing previously approved glass artwork is outside the real-photograph correction; still records its imagegen provenance",
-  "observedConstructionCuts": {
-    "suffolk-hero": [
-      117,
-      250,
-      382
+  "originalFootageArchive": "baseline/original-media-v25/sources.json",
+  "previousSourceVerification": {
+    "release": "2026-10-04-original-media-v24",
+    "photos": [
+      {
+        "source": "built-rpd.jpg",
+        "served": "usung-autonomous-piling-v24.webp",
+        "dimensions": [
+          2200,
+          1466
+        ],
+        "sourceSha256": "7ec087d5f54254ad5b67e4404dc308026ede60d9452fee625a2f06ce63114a87",
+        "changedPixels": 4798,
+        "totalPixels": 3225200,
+        "outsideMaskIdentical": true,
+        "encoding": "lossless WebP"
+      },
+      {
+        "source": "built-sundown.jpg",
+        "served": "usung-site-dusk-v24.webp",
+        "dimensions": [
+          2200,
+          1467
+        ],
+        "sourceSha256": "2b7ad90b11c964e4770b0f4a5a2623e33e764ff679c564cbb8d9f4c0c8788b4a",
+        "changedPixels": 1335,
+        "totalPixels": 3227400,
+        "outsideMaskIdentical": true,
+        "encoding": "lossless WebP"
+      },
+      {
+        "source": "built-sunrise.jpg",
+        "served": "usung-site-dawn-v24.webp",
+        "dimensions": [
+          2200,
+          1466
+        ],
+        "sourceSha256": "51124b57542c4eed9761f66ce5f79d7fa4f7bba8afd1ca8e46a4ad08ed6ba01b",
+        "changedPixels": 163,
+        "totalPixels": 3225200,
+        "outsideMaskIdentical": true,
+        "encoding": "lossless WebP"
+      },
+      {
+        "source": "built-trenching.jpg",
+        "served": "usung-autonomous-excavation-v24.webp",
+        "dimensions": [
+          2200,
+          1237
+        ],
+        "sourceSha256": "4ca60832f971b10a811e984acdbf269cea8a9aa12cc86c20facab0389d7d2f34",
+        "changedPixels": 16753,
+        "totalPixels": 2721400,
+        "outsideMaskIdentical": true,
+        "encoding": "lossless WebP"
+      },
+      {
+        "source": "suffolk-naples.jpg",
+        "served": "usung-field-team-v24.webp",
+        "dimensions": [
+          2200,
+          1466
+        ],
+        "sourceSha256": "2a18b8507d87814098d8e7e69fa8d35738d2db0d7209a748b9e8bc6e89461aae",
+        "changedPixels": 17728,
+        "totalPixels": 3225200,
+        "outsideMaskIdentical": true,
+        "encoding": "lossless WebP"
+      },
+      {
+        "source": "suffolk-robotics.jpg",
+        "served": "usung-site-robot-v24.webp",
+        "dimensions": [
+          2200,
+          1237
+        ],
+        "sourceSha256": "c3fe773c4d1177d09af8db3dd7a4aea1682f1e54b1597d26c96699d2f4cbc7e4",
+        "changedPixels": 26598,
+        "totalPixels": 2721400,
+        "outsideMaskIdentical": true,
+        "encoding": "lossless WebP"
+      }
     ],
-    "turner-hero": [
-      32,
-      71,
-      110,
-      153,
-      194
+    "constructionVideos": [
+      {
+        "source": "suffolk-hero.mp4",
+        "served": "usung-construction-film-v24.mp4",
+        "width": 1280,
+        "height": 720,
+        "fps": 23.976023976023978,
+        "frames": 515,
+        "outsideMasksIdenticalBeforeEncode": true,
+        "framesWithEdits": 104,
+        "maximumEditedPixels": 4653,
+        "totalPixelsPerFrame": 921600,
+        "sourceSha256": "c8c77ece9cfc894d6ddd1309da9fd9bd11f1a1c3c2f5b5734b0c4d25e710a335"
+      },
+      {
+        "source": "turner-hero.mp4",
+        "served": "usung-delivery-film-v24.mp4",
+        "width": 1920,
+        "height": 1080,
+        "fps": 23.976023976023978,
+        "frames": 203,
+        "outsideMasksIdenticalBeforeEncode": true,
+        "framesWithEdits": 123,
+        "maximumEditedPixels": 8111,
+        "totalPixelsPerFrame": 2073600,
+        "sourceSha256": "a277360b6b6ed832a0ce4f6a141f13be7849fc5079b46898d10634b59bb9e85e"
+      }
+    ],
+    "imageGenerationUsedForThisRevision": false,
+    "physicalVideos": "Existing v23 source-video composites reviewed; no wholesale scene generation",
+    "abstractArtwork": "Existing previously approved glass artwork is outside the real-photograph correction; still records its imagegen provenance",
+    "observedConstructionCuts": {
+      "suffolk-hero": [
+        117,
+        250,
+        382
+      ],
+      "turner-hero": [
+        32,
+        71,
+        110,
+        153,
+        194
+      ]
+    },
+    "assetInventory": [
+      {
+        "asset": "/assets/generated/ai-glass-extended-v1.png",
+        "bytes": 2233287,
+        "status": 206,
+        "mime": "image/png"
+      },
+      {
+        "asset": "/assets/media/suffolk-project.jpg",
+        "bytes": 774177,
+        "status": 206,
+        "mime": "image/jpeg"
+      },
+      {
+        "asset": "/assets/references/usung-physical-hero-v23-poster.jpg",
+        "bytes": 317394,
+        "status": 206,
+        "mime": "image/jpeg"
+      },
+      {
+        "asset": "/assets/references/usung-physical-hero-v23.mp4",
+        "bytes": 5144551,
+        "status": 206,
+        "mime": "video/mp4"
+      },
+      {
+        "asset": "/assets/media/usung-site-dusk-v24.webp",
+        "bytes": 2232804,
+        "status": 206,
+        "mime": "image/webp"
+      },
+      {
+        "asset": "/assets/references/contextual-intelligence.svg",
+        "bytes": 724513,
+        "status": 206,
+        "mime": "image/svg+xml"
+      },
+      {
+        "asset": "/assets/references/contextual-context.svg",
+        "bytes": 724503,
+        "status": 206,
+        "mime": "image/svg+xml"
+      },
+      {
+        "asset": "/assets/references/contextual-data.svg",
+        "bytes": 724497,
+        "status": 206,
+        "mime": "image/svg+xml"
+      },
+      {
+        "asset": "/assets/media/usung-construction-film-v24.mp4",
+        "bytes": 13521078,
+        "status": 206,
+        "mime": "video/mp4"
+      },
+      {
+        "asset": "/assets/media/turner-hero.jpg",
+        "bytes": 458409,
+        "status": 206,
+        "mime": "image/jpeg"
+      },
+      {
+        "asset": "/assets/media/usung-delivery-film-v24.mp4",
+        "bytes": 7663984,
+        "status": 206,
+        "mime": "video/mp4"
+      },
+      {
+        "asset": "/assets/media/usung-field-team-v24.webp",
+        "bytes": 1698790,
+        "status": 206,
+        "mime": "image/webp"
+      },
+      {
+        "asset": "/assets/media/usung-autonomous-piling-v24.webp",
+        "bytes": 2347166,
+        "status": 206,
+        "mime": "image/webp"
+      },
+      {
+        "asset": "/assets/media/turner-project.jpg",
+        "bytes": 508370,
+        "status": 206,
+        "mime": "image/jpeg"
+      },
+      {
+        "asset": "/assets/media/turner-innovation.jpg",
+        "bytes": 903913,
+        "status": 206,
+        "mime": "image/jpeg"
+      },
+      {
+        "asset": "/assets/media/usung-autonomous-excavation-v24.webp",
+        "bytes": 2630380,
+        "status": 206,
+        "mime": "image/webp"
+      },
+      {
+        "asset": "/assets/media/usung-site-robot-v24.webp",
+        "bytes": 1429122,
+        "status": 206,
+        "mime": "image/webp"
+      },
+      {
+        "asset": "/assets/media/usung-site-dawn-v24.webp",
+        "bytes": 2424738,
+        "status": 206,
+        "mime": "image/webp"
+      },
+      {
+        "asset": "/assets/references/usung-perception-v23-poster.jpg",
+        "bytes": 154850,
+        "status": 206,
+        "mime": "image/jpeg"
+      },
+      {
+        "asset": "/assets/references/usung-perception-v23.mp4",
+        "bytes": 3263110,
+        "status": 206,
+        "mime": "video/mp4"
+      },
+      {
+        "asset": "/assets/references/usung-coordination-v23-poster.jpg",
+        "bytes": 118849,
+        "status": 206,
+        "mime": "image/jpeg"
+      },
+      {
+        "asset": "/assets/references/usung-coordination-v23.mp4",
+        "bytes": 3214755,
+        "status": 206,
+        "mime": "video/mp4"
+      },
+      {
+        "asset": "/assets/references/dexterity-precision-poster.jpg",
+        "bytes": 25477,
+        "status": 206,
+        "mime": "image/jpeg"
+      },
+      {
+        "asset": "/assets/references/dexterity-precision.mp4",
+        "bytes": 2331514,
+        "status": 206,
+        "mime": "video/mp4"
+      },
+      {
+        "asset": "/assets/references/field-world-model.webp",
+        "bytes": 87296,
+        "status": 206,
+        "mime": "image/webp"
+      },
+      {
+        "asset": "/assets/references/usung-field-robots-v23-poster.jpg",
+        "bytes": 137562,
+        "status": 206,
+        "mime": "image/jpeg"
+      },
+      {
+        "asset": "/assets/references/usung-field-robots-v23.mp4",
+        "bytes": 3478255,
+        "status": 206,
+        "mime": "video/mp4"
+      }
     ]
   },
-  "assetInventory": [
-    {
-      "asset": "/assets/generated/ai-glass-extended-v1.png",
-      "bytes": 2233287,
-      "status": 206,
-      "mime": "image/png"
-    },
-    {
-      "asset": "/assets/media/suffolk-project.jpg",
-      "bytes": 774177,
-      "status": 206,
-      "mime": "image/jpeg"
-    },
-    {
-      "asset": "/assets/references/usung-physical-hero-v23-poster.jpg",
-      "bytes": 317394,
-      "status": 206,
-      "mime": "image/jpeg"
-    },
-    {
-      "asset": "/assets/references/usung-physical-hero-v23.mp4",
-      "bytes": 5144551,
-      "status": 206,
-      "mime": "video/mp4"
-    },
-    {
-      "asset": "/assets/media/usung-site-dusk-v24.webp",
-      "bytes": 2232804,
-      "status": 206,
-      "mime": "image/webp"
-    },
-    {
-      "asset": "/assets/references/contextual-intelligence.svg",
-      "bytes": 724513,
-      "status": 206,
-      "mime": "image/svg+xml"
-    },
-    {
-      "asset": "/assets/references/contextual-context.svg",
-      "bytes": 724503,
-      "status": 206,
-      "mime": "image/svg+xml"
-    },
-    {
-      "asset": "/assets/references/contextual-data.svg",
-      "bytes": 724497,
-      "status": 206,
-      "mime": "image/svg+xml"
-    },
-    {
-      "asset": "/assets/media/usung-construction-film-v24.mp4",
-      "bytes": 13521078,
-      "status": 206,
-      "mime": "video/mp4"
-    },
-    {
-      "asset": "/assets/media/turner-hero.jpg",
-      "bytes": 458409,
-      "status": 206,
-      "mime": "image/jpeg"
-    },
-    {
-      "asset": "/assets/media/usung-delivery-film-v24.mp4",
-      "bytes": 7663984,
-      "status": 206,
-      "mime": "video/mp4"
-    },
-    {
-      "asset": "/assets/media/usung-field-team-v24.webp",
-      "bytes": 1698790,
-      "status": 206,
-      "mime": "image/webp"
-    },
-    {
-      "asset": "/assets/media/usung-autonomous-piling-v24.webp",
-      "bytes": 2347166,
-      "status": 206,
-      "mime": "image/webp"
-    },
-    {
-      "asset": "/assets/media/turner-project.jpg",
-      "bytes": 508370,
-      "status": 206,
-      "mime": "image/jpeg"
-    },
-    {
-      "asset": "/assets/media/turner-innovation.jpg",
-      "bytes": 903913,
-      "status": 206,
-      "mime": "image/jpeg"
-    },
-    {
-      "asset": "/assets/media/usung-autonomous-excavation-v24.webp",
-      "bytes": 2630380,
-      "status": 206,
-      "mime": "image/webp"
-    },
-    {
-      "asset": "/assets/media/usung-site-robot-v24.webp",
-      "bytes": 1429122,
-      "status": 206,
-      "mime": "image/webp"
-    },
-    {
-      "asset": "/assets/media/usung-site-dawn-v24.webp",
-      "bytes": 2424738,
-      "status": 206,
-      "mime": "image/webp"
-    },
-    {
-      "asset": "/assets/references/usung-perception-v23-poster.jpg",
-      "bytes": 154850,
-      "status": 206,
-      "mime": "image/jpeg"
-    },
-    {
-      "asset": "/assets/references/usung-perception-v23.mp4",
-      "bytes": 3263110,
-      "status": 206,
-      "mime": "video/mp4"
-    },
-    {
-      "asset": "/assets/references/usung-coordination-v23-poster.jpg",
-      "bytes": 118849,
-      "status": 206,
-      "mime": "image/jpeg"
-    },
-    {
-      "asset": "/assets/references/usung-coordination-v23.mp4",
-      "bytes": 3214755,
-      "status": 206,
-      "mime": "video/mp4"
-    },
-    {
-      "asset": "/assets/references/dexterity-precision-poster.jpg",
-      "bytes": 25477,
-      "status": 206,
-      "mime": "image/jpeg"
-    },
-    {
-      "asset": "/assets/references/dexterity-precision.mp4",
-      "bytes": 2331514,
-      "status": 206,
-      "mime": "video/mp4"
-    },
-    {
-      "asset": "/assets/references/field-world-model.webp",
-      "bytes": 87296,
-      "status": 206,
-      "mime": "image/webp"
-    },
-    {
-      "asset": "/assets/references/usung-field-robots-v23-poster.jpg",
-      "bytes": 137562,
-      "status": 206,
-      "mime": "image/jpeg"
-    },
-    {
-      "asset": "/assets/references/usung-field-robots-v23.mp4",
-      "bytes": 3478255,
-      "status": 206,
-      "mime": "video/mp4"
-    }
+  "physicalVideos": "Existing v23 files unchanged",
+  "abstractArtwork": "Existing previously approved glass artwork is outside the real-photograph correction; still records its imagegen provenance",
+  "visualReviewStatus": "Source/current crops and motion reviewed locally. Owner acceptance not asserted.",
+  "retainedUnconfirmedMarks": [
+    "Naples helmet small KASK-like hardware tab is not legible enough to identify; unchanged",
+    "Delivery tablet cooler label not legible enough to identify; recorded by video audit"
   ]
 }

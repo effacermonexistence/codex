@@ -1,0 +1,2103 @@
+{
+  "sourcePage": "https://www.builtrobotics.com/",
+  "sourceAsset": "https://servd-careful-chuckwalla.b-cdn.net/production/video/home-hero-desk.mp4",
+  "sourceFile": "outputs/website/usung-rework-v25/source-candidates/built-home-hero.mp4",
+  "sourceSha256": "8c88c1d51fdb1f6400c494f97a2787c3caff739f88e146d615125673d9ad48a8",
+  "sourceWidth": 3840,
+  "sourceHeight": 2160,
+  "sourceFrames": 768,
+  "sourceFps": 23.976023976023978,
+  "outputFile": "outputs/website/usung-rework-v25/edited/usung-construction-film-v25.mp4",
+  "outputSha256": "b539e514dc1b6fa92a9061a98af24856bd0b2d0525a01e3f12828bbe86a8997d",
+  "bytes": 12460321,
+  "width": 1920,
+  "height": 1080,
+  "frames": 288,
+  "fps": 23.976023976023978,
+  "duration": 12.011999999999999,
+  "sourceRangesExclusiveEnd": [
+    [
+      0,
+      181
+    ],
+    [
+      464,
+      518
+    ],
+    [
+      715,
+      768
+    ]
+  ],
+  "outputCutFrames": [
+    0,
+    51,
+    98,
+    139,
+    181,
+    220,
+    235
+  ],
+  "transformation": "Selected original source shots in original frame order and timing, 4K to 1920x1080 area downsample, local tight company-B footprints replaced by native U+pink via non-generative photographed-panel reconstruction and direct source-letter template localization; photographed white-paint colour and local light/focus; H264 CRF16, audio omitted.",
+  "noSceneGeneration": true,
+  "safetyModelAndRoundAutonomousMachineIdentifiersPreserved": true,
+  "sourceBrandMasks": {
+    "opening two B marks": [
+      0,
+      51
+    ],
+    "wide two B marks": [
+      503,
+      518
+    ]
+  },
+  "wideInkReflectionTransfer": "Original visible B-ink pixels supply a normalized local reflection field; missing B-letter gaps use interpolated photographed row exposure. No uniform replacement pigment for the wide source letters.",
+  "maximumAllowedMaskPixels": 4460,
+  "maximumChangedPixels": 3399,
+  "pixelsPerFrame": 2073600,
+  "outsideMasksIdenticalBeforeVideoEncode": true,
+  "poster": "usung-construction-film-v25-poster.jpg",
+  "framesAudit": [
+    {
+      "outputFrame": 0,
+      "sourceFrame": 0,
+      "allowedMaskPixels": 3896,
+      "changedPixels": 2875,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 1,
+      "sourceFrame": 1,
+      "allowedMaskPixels": 3896,
+      "changedPixels": 2872,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 2,
+      "sourceFrame": 2,
+      "allowedMaskPixels": 3896,
+      "changedPixels": 2881,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 3,
+      "sourceFrame": 3,
+      "allowedMaskPixels": 3842,
+      "changedPixels": 2828,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 4,
+      "sourceFrame": 4,
+      "allowedMaskPixels": 3842,
+      "changedPixels": 2826,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 5,
+      "sourceFrame": 5,
+      "allowedMaskPixels": 3842,
+      "changedPixels": 2830,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 6,
+      "sourceFrame": 6,
+      "allowedMaskPixels": 3896,
+      "changedPixels": 2880,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 7,
+      "sourceFrame": 7,
+      "allowedMaskPixels": 3950,
+      "changedPixels": 2924,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 8,
+      "sourceFrame": 8,
+      "allowedMaskPixels": 3950,
+      "changedPixels": 2922,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 9,
+      "sourceFrame": 9,
+      "allowedMaskPixels": 4030,
+      "changedPixels": 2992,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 10,
+      "sourceFrame": 10,
+      "allowedMaskPixels": 4088,
+      "changedPixels": 3050,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 11,
+      "sourceFrame": 11,
+      "allowedMaskPixels": 4088,
+      "changedPixels": 3043,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 12,
+      "sourceFrame": 12,
+      "allowedMaskPixels": 4088,
+      "changedPixels": 3046,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 13,
+      "sourceFrame": 13,
+      "allowedMaskPixels": 4088,
+      "changedPixels": 3051,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 14,
+      "sourceFrame": 14,
+      "allowedMaskPixels": 4088,
+      "changedPixels": 3048,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 15,
+      "sourceFrame": 15,
+      "allowedMaskPixels": 4088,
+      "changedPixels": 3045,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 16,
+      "sourceFrame": 16,
+      "allowedMaskPixels": 4144,
+      "changedPixels": 3100,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 17,
+      "sourceFrame": 17,
+      "allowedMaskPixels": 4112,
+      "changedPixels": 3067,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 18,
+      "sourceFrame": 18,
+      "allowedMaskPixels": 4112,
+      "changedPixels": 3071,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 19,
+      "sourceFrame": 19,
+      "allowedMaskPixels": 4121,
+      "changedPixels": 3072,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 20,
+      "sourceFrame": 20,
+      "allowedMaskPixels": 4090,
+      "changedPixels": 3040,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 21,
+      "sourceFrame": 21,
+      "allowedMaskPixels": 4154,
+      "changedPixels": 3100,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 22,
+      "sourceFrame": 22,
+      "allowedMaskPixels": 4146,
+      "changedPixels": 3093,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 23,
+      "sourceFrame": 23,
+      "allowedMaskPixels": 4234,
+      "changedPixels": 3175,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 24,
+      "sourceFrame": 24,
+      "allowedMaskPixels": 4234,
+      "changedPixels": 3172,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 25,
+      "sourceFrame": 25,
+      "allowedMaskPixels": 4292,
+      "changedPixels": 3228,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 26,
+      "sourceFrame": 26,
+      "allowedMaskPixels": 4238,
+      "changedPixels": 3175,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 27,
+      "sourceFrame": 27,
+      "allowedMaskPixels": 4238,
+      "changedPixels": 3177,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 28,
+      "sourceFrame": 28,
+      "allowedMaskPixels": 4184,
+      "changedPixels": 3131,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 29,
+      "sourceFrame": 29,
+      "allowedMaskPixels": 4238,
+      "changedPixels": 3181,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 30,
+      "sourceFrame": 30,
+      "allowedMaskPixels": 4242,
+      "changedPixels": 3183,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 31,
+      "sourceFrame": 31,
+      "allowedMaskPixels": 4242,
+      "changedPixels": 3180,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 32,
+      "sourceFrame": 32,
+      "allowedMaskPixels": 4242,
+      "changedPixels": 3178,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 33,
+      "sourceFrame": 33,
+      "allowedMaskPixels": 4219,
+      "changedPixels": 3143,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 34,
+      "sourceFrame": 34,
+      "allowedMaskPixels": 4188,
+      "changedPixels": 3126,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 35,
+      "sourceFrame": 35,
+      "allowedMaskPixels": 4304,
+      "changedPixels": 3226,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 36,
+      "sourceFrame": 36,
+      "allowedMaskPixels": 4400,
+      "changedPixels": 3322,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 37,
+      "sourceFrame": 37,
+      "allowedMaskPixels": 4400,
+      "changedPixels": 3319,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 38,
+      "sourceFrame": 38,
+      "allowedMaskPixels": 4372,
+      "changedPixels": 3297,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 39,
+      "sourceFrame": 39,
+      "allowedMaskPixels": 4372,
+      "changedPixels": 3303,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 40,
+      "sourceFrame": 40,
+      "allowedMaskPixels": 4372,
+      "changedPixels": 3295,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 41,
+      "sourceFrame": 41,
+      "allowedMaskPixels": 4319,
+      "changedPixels": 3250,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 42,
+      "sourceFrame": 42,
+      "allowedMaskPixels": 4319,
+      "changedPixels": 3249,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 43,
+      "sourceFrame": 43,
+      "allowedMaskPixels": 4346,
+      "changedPixels": 3289,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 44,
+      "sourceFrame": 44,
+      "allowedMaskPixels": 4406,
+      "changedPixels": 3329,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 45,
+      "sourceFrame": 45,
+      "allowedMaskPixels": 4406,
+      "changedPixels": 3321,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 46,
+      "sourceFrame": 46,
+      "allowedMaskPixels": 4406,
+      "changedPixels": 3342,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 47,
+      "sourceFrame": 47,
+      "allowedMaskPixels": 4460,
+      "changedPixels": 3399,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 48,
+      "sourceFrame": 48,
+      "allowedMaskPixels": 4460,
+      "changedPixels": 3393,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 49,
+      "sourceFrame": 49,
+      "allowedMaskPixels": 4460,
+      "changedPixels": 3395,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 50,
+      "sourceFrame": 50,
+      "allowedMaskPixels": 4460,
+      "changedPixels": 3387,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 51,
+      "sourceFrame": 51,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 52,
+      "sourceFrame": 52,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 53,
+      "sourceFrame": 53,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 54,
+      "sourceFrame": 54,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 55,
+      "sourceFrame": 55,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 56,
+      "sourceFrame": 56,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 57,
+      "sourceFrame": 57,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 58,
+      "sourceFrame": 58,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 59,
+      "sourceFrame": 59,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 60,
+      "sourceFrame": 60,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 61,
+      "sourceFrame": 61,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 62,
+      "sourceFrame": 62,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 63,
+      "sourceFrame": 63,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 64,
+      "sourceFrame": 64,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 65,
+      "sourceFrame": 65,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 66,
+      "sourceFrame": 66,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 67,
+      "sourceFrame": 67,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 68,
+      "sourceFrame": 68,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 69,
+      "sourceFrame": 69,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 70,
+      "sourceFrame": 70,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 71,
+      "sourceFrame": 71,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 72,
+      "sourceFrame": 72,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 73,
+      "sourceFrame": 73,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 74,
+      "sourceFrame": 74,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 75,
+      "sourceFrame": 75,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 76,
+      "sourceFrame": 76,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 77,
+      "sourceFrame": 77,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 78,
+      "sourceFrame": 78,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 79,
+      "sourceFrame": 79,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 80,
+      "sourceFrame": 80,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 81,
+      "sourceFrame": 81,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 82,
+      "sourceFrame": 82,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 83,
+      "sourceFrame": 83,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 84,
+      "sourceFrame": 84,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 85,
+      "sourceFrame": 85,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 86,
+      "sourceFrame": 86,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 87,
+      "sourceFrame": 87,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 88,
+      "sourceFrame": 88,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 89,
+      "sourceFrame": 89,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 90,
+      "sourceFrame": 90,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 91,
+      "sourceFrame": 91,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 92,
+      "sourceFrame": 92,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 93,
+      "sourceFrame": 93,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 94,
+      "sourceFrame": 94,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 95,
+      "sourceFrame": 95,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 96,
+      "sourceFrame": 96,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 97,
+      "sourceFrame": 97,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 98,
+      "sourceFrame": 98,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 99,
+      "sourceFrame": 99,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 100,
+      "sourceFrame": 100,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 101,
+      "sourceFrame": 101,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 102,
+      "sourceFrame": 102,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 103,
+      "sourceFrame": 103,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 104,
+      "sourceFrame": 104,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 105,
+      "sourceFrame": 105,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 106,
+      "sourceFrame": 106,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 107,
+      "sourceFrame": 107,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 108,
+      "sourceFrame": 108,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 109,
+      "sourceFrame": 109,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 110,
+      "sourceFrame": 110,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 111,
+      "sourceFrame": 111,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 112,
+      "sourceFrame": 112,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 113,
+      "sourceFrame": 113,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 114,
+      "sourceFrame": 114,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 115,
+      "sourceFrame": 115,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 116,
+      "sourceFrame": 116,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 117,
+      "sourceFrame": 117,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 118,
+      "sourceFrame": 118,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 119,
+      "sourceFrame": 119,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 120,
+      "sourceFrame": 120,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 121,
+      "sourceFrame": 121,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 122,
+      "sourceFrame": 122,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 123,
+      "sourceFrame": 123,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 124,
+      "sourceFrame": 124,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 125,
+      "sourceFrame": 125,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 126,
+      "sourceFrame": 126,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 127,
+      "sourceFrame": 127,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 128,
+      "sourceFrame": 128,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 129,
+      "sourceFrame": 129,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 130,
+      "sourceFrame": 130,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 131,
+      "sourceFrame": 131,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 132,
+      "sourceFrame": 132,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 133,
+      "sourceFrame": 133,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 134,
+      "sourceFrame": 134,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 135,
+      "sourceFrame": 135,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 136,
+      "sourceFrame": 136,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 137,
+      "sourceFrame": 137,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 138,
+      "sourceFrame": 138,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 139,
+      "sourceFrame": 139,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 140,
+      "sourceFrame": 140,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 141,
+      "sourceFrame": 141,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 142,
+      "sourceFrame": 142,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 143,
+      "sourceFrame": 143,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 144,
+      "sourceFrame": 144,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 145,
+      "sourceFrame": 145,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 146,
+      "sourceFrame": 146,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 147,
+      "sourceFrame": 147,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 148,
+      "sourceFrame": 148,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 149,
+      "sourceFrame": 149,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 150,
+      "sourceFrame": 150,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 151,
+      "sourceFrame": 151,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 152,
+      "sourceFrame": 152,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 153,
+      "sourceFrame": 153,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 154,
+      "sourceFrame": 154,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 155,
+      "sourceFrame": 155,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 156,
+      "sourceFrame": 156,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 157,
+      "sourceFrame": 157,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 158,
+      "sourceFrame": 158,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 159,
+      "sourceFrame": 159,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 160,
+      "sourceFrame": 160,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 161,
+      "sourceFrame": 161,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 162,
+      "sourceFrame": 162,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 163,
+      "sourceFrame": 163,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 164,
+      "sourceFrame": 164,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 165,
+      "sourceFrame": 165,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 166,
+      "sourceFrame": 166,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 167,
+      "sourceFrame": 167,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 168,
+      "sourceFrame": 168,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 169,
+      "sourceFrame": 169,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 170,
+      "sourceFrame": 170,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 171,
+      "sourceFrame": 171,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 172,
+      "sourceFrame": 172,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 173,
+      "sourceFrame": 173,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 174,
+      "sourceFrame": 174,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 175,
+      "sourceFrame": 175,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 176,
+      "sourceFrame": 176,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 177,
+      "sourceFrame": 177,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 178,
+      "sourceFrame": 178,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 179,
+      "sourceFrame": 179,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 180,
+      "sourceFrame": 180,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 181,
+      "sourceFrame": 464,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 182,
+      "sourceFrame": 465,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 183,
+      "sourceFrame": 466,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 184,
+      "sourceFrame": 467,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 185,
+      "sourceFrame": 468,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 186,
+      "sourceFrame": 469,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 187,
+      "sourceFrame": 470,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 188,
+      "sourceFrame": 471,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 189,
+      "sourceFrame": 472,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 190,
+      "sourceFrame": 473,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 191,
+      "sourceFrame": 474,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 192,
+      "sourceFrame": 475,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 193,
+      "sourceFrame": 476,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 194,
+      "sourceFrame": 477,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 195,
+      "sourceFrame": 478,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 196,
+      "sourceFrame": 479,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 197,
+      "sourceFrame": 480,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 198,
+      "sourceFrame": 481,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 199,
+      "sourceFrame": 482,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 200,
+      "sourceFrame": 483,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 201,
+      "sourceFrame": 484,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 202,
+      "sourceFrame": 485,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 203,
+      "sourceFrame": 486,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 204,
+      "sourceFrame": 487,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 205,
+      "sourceFrame": 488,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 206,
+      "sourceFrame": 489,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 207,
+      "sourceFrame": 490,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 208,
+      "sourceFrame": 491,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 209,
+      "sourceFrame": 492,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 210,
+      "sourceFrame": 493,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 211,
+      "sourceFrame": 494,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 212,
+      "sourceFrame": 495,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 213,
+      "sourceFrame": 496,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 214,
+      "sourceFrame": 497,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 215,
+      "sourceFrame": 498,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 216,
+      "sourceFrame": 499,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 217,
+      "sourceFrame": 500,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 218,
+      "sourceFrame": 501,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 219,
+      "sourceFrame": 502,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 220,
+      "sourceFrame": 503,
+      "allowedMaskPixels": 2795,
+      "changedPixels": 1953,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 221,
+      "sourceFrame": 504,
+      "allowedMaskPixels": 2795,
+      "changedPixels": 1953,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 222,
+      "sourceFrame": 505,
+      "allowedMaskPixels": 2637,
+      "changedPixels": 1828,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 223,
+      "sourceFrame": 506,
+      "allowedMaskPixels": 2637,
+      "changedPixels": 1828,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 224,
+      "sourceFrame": 507,
+      "allowedMaskPixels": 2637,
+      "changedPixels": 1828,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 225,
+      "sourceFrame": 508,
+      "allowedMaskPixels": 2637,
+      "changedPixels": 1829,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 226,
+      "sourceFrame": 509,
+      "allowedMaskPixels": 2795,
+      "changedPixels": 1958,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 227,
+      "sourceFrame": 510,
+      "allowedMaskPixels": 2795,
+      "changedPixels": 1958,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 228,
+      "sourceFrame": 511,
+      "allowedMaskPixels": 2795,
+      "changedPixels": 1953,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 229,
+      "sourceFrame": 512,
+      "allowedMaskPixels": 2795,
+      "changedPixels": 1953,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 230,
+      "sourceFrame": 513,
+      "allowedMaskPixels": 2795,
+      "changedPixels": 1953,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 231,
+      "sourceFrame": 514,
+      "allowedMaskPixels": 2637,
+      "changedPixels": 1823,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 232,
+      "sourceFrame": 515,
+      "allowedMaskPixels": 2637,
+      "changedPixels": 1823,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 233,
+      "sourceFrame": 516,
+      "allowedMaskPixels": 2637,
+      "changedPixels": 1827,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 234,
+      "sourceFrame": 517,
+      "allowedMaskPixels": 2752,
+      "changedPixels": 1914,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 235,
+      "sourceFrame": 715,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 236,
+      "sourceFrame": 716,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 237,
+      "sourceFrame": 717,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 238,
+      "sourceFrame": 718,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 239,
+      "sourceFrame": 719,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 240,
+      "sourceFrame": 720,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 241,
+      "sourceFrame": 721,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 242,
+      "sourceFrame": 722,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 243,
+      "sourceFrame": 723,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 244,
+      "sourceFrame": 724,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 245,
+      "sourceFrame": 725,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 246,
+      "sourceFrame": 726,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 247,
+      "sourceFrame": 727,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 248,
+      "sourceFrame": 728,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 249,
+      "sourceFrame": 729,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 250,
+      "sourceFrame": 730,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 251,
+      "sourceFrame": 731,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 252,
+      "sourceFrame": 732,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 253,
+      "sourceFrame": 733,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 254,
+      "sourceFrame": 734,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 255,
+      "sourceFrame": 735,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 256,
+      "sourceFrame": 736,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 257,
+      "sourceFrame": 737,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 258,
+      "sourceFrame": 738,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 259,
+      "sourceFrame": 739,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 260,
+      "sourceFrame": 740,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 261,
+      "sourceFrame": 741,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 262,
+      "sourceFrame": 742,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 263,
+      "sourceFrame": 743,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 264,
+      "sourceFrame": 744,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 265,
+      "sourceFrame": 745,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 266,
+      "sourceFrame": 746,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 267,
+      "sourceFrame": 747,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 268,
+      "sourceFrame": 748,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 269,
+      "sourceFrame": 749,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 270,
+      "sourceFrame": 750,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 271,
+      "sourceFrame": 751,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 272,
+      "sourceFrame": 752,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 273,
+      "sourceFrame": 753,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 274,
+      "sourceFrame": 754,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 275,
+      "sourceFrame": 755,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 276,
+      "sourceFrame": 756,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 277,
+      "sourceFrame": 757,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 278,
+      "sourceFrame": 758,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 279,
+      "sourceFrame": 759,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 280,
+      "sourceFrame": 760,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 281,
+      "sourceFrame": 761,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 282,
+      "sourceFrame": 762,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 283,
+      "sourceFrame": 763,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 284,
+      "sourceFrame": 764,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 285,
+      "sourceFrame": 765,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 286,
+      "sourceFrame": 766,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    },
+    {
+      "outputFrame": 287,
+      "sourceFrame": 767,
+      "allowedMaskPixels": 0,
+      "changedPixels": 0,
+      "outsideMaskIdenticalBeforeVideoEncode": true
+    }
+  ],
+  "selectionNote": "Forest skidsteer segment excluded because dust/turning/heavy blur would require additional masking work; later solar timelapse section after frame517 excluded because newly exposed BUILT body/Exosystem marks require additional local retouch.",
+  "encodedDecodeVerification": {
+    "framesDecoded": 288,
+    "blackFrames": 0,
+    "allFrameDimensions": [
+      1920,
+      1080
+    ],
+    "fps": 23.976023976023978,
+    "sha256": "b539e514dc1b6fa92a9061a98af24856bd0b2d0525a01e3f12828bbe86a8997d"
+  },
+  "sourceRangesSecondsExclusiveEnd": [
+    [
+      0.0,
+      7.549208333333333
+    ],
+    [
+      19.352666666666664,
+      21.604916666666664
+    ],
+    [
+      29.821458333333332,
+      32.032
+    ]
+  ]
+}

@@ -1,0 +1,54 @@
+[
+  {
+    "file": "built-home-hero.mp4",
+    "width": 3840,
+    "height": 2160,
+    "fps": 23.976023976023978,
+    "frames": 768,
+    "duration": 32.032,
+    "sha256": "8c88c1d51fdb1f6400c494f97a2787c3caff739f88e146d615125673d9ad48a8",
+    "sourceAsset": "https://servd-careful-chuckwalla.b-cdn.net/production/video/home-hero-desk.mp4",
+    "sourcePage": "https://www.builtrobotics.com/",
+    "sourceBytes": 13501132,
+    "usagePermission": "not independently verified; reference source and transformation provenance"
+  },
+  {
+    "file": "turner-jobsite-01.mp4",
+    "width": 3840,
+    "height": 2160,
+    "fps": 24.0,
+    "frames": 120,
+    "duration": 5.0,
+    "sha256": "89957b2e1ade74b4c0b2fab57135b5611c16739596899cf03d8a02f1ee06d115",
+    "sourceAsset": "https://ep-turnerconstruction-prod-asdcetgubtducba3.z01.azurefd.net/uploads/jobsite-01.mp4?v=dd733",
+    "sourcePage": "https://www.turnerconstruction.com/",
+    "sourceBytes": 3343499,
+    "usagePermission": "not independently verified; reference source and transformation provenance"
+  },
+  {
+    "file": "turner-jobsite-02.mp4",
+    "width": 3840,
+    "height": 2160,
+    "fps": 24.0,
+    "frames": 120,
+    "duration": 5.0,
+    "sha256": "8bbe69e13074b00996e880f84f6d5d1c26453e47c5d49f89e54b8c9da659b6d3",
+    "sourceAsset": "https://ep-turnerconstruction-prod-asdcetgubtducba3.z01.azurefd.net/uploads/jobsite-02.mp4?v=06e65",
+    "sourcePage": "https://www.turnerconstruction.com/",
+    "sourceBytes": 6195974,
+    "usagePermission": "not independently verified; reference source and transformation provenance"
+  },
+  {
+    "file": "turner-tech-01.mp4",
+    "width": 3840,
+    "height": 2160,
+    "fps": 24.0,
+    "frames": 119,
+    "duration": 4.958333333333333,
+    "sha256": "32f5277b2f6c20e186dee385d32d9ec9febce834c68aec208ee6f68b07b0c4b9",
+    "sourceAsset": "https://ep-turnerconstruction-prod-asdcetgubtducba3.z01.azurefd.net/uploads/tech-01.mp4?v=887d3",
+    "sourcePage": "https://www.turnerconstruction.com/",
+    "sourceBytes": 3258327,
+    "usagePermission": "not independently verified; reference source and transformation provenance"
+  }
+]

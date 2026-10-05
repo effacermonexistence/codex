@@ -479,15 +479,17 @@ html[dir=rtl] .corp-construction :is(.manifesto-copy,.manifesto-note,.system-hea
  .corp-construction .desktop-nav{display:flex;justify-content:space-between;gap:0;height:44px;overflow-x:auto;scrollbar-width:none}
  .corp-construction .desktop-nav a{display:flex;align-items:center;justify-content:center;min-height:44px;flex:1 0 auto;padding:0 8px;font-size:9px;letter-spacing:.08em}
  .corp-construction section[id]{scroll-margin-top:calc(var(--mobile-header) + 44px)}
- .corp-construction .hero{min-height:calc(100svh - var(--mobile-header))}
- .corp-construction .hero-content{padding:132px 24px 40px}
+ .corp-construction .hero{display:block;min-height:0;background:var(--corp-paper);color:var(--corp-ink)}
+ .corp-construction .hero-media{position:relative;inset:auto;display:block;width:100%;height:auto;aspect-ratio:16/9;object-fit:contain;filter:none}
+ .corp-construction .hero-shade,.corp-construction .hero-grid{display:none}
+ .corp-construction .hero-content{padding:36px 24px 48px}
  .corp-construction .hero-title{font-size:clamp(58px,18vw,118px);line-height:1;letter-spacing:var(--usung-heading-spacing,-.035em);margin:22px 0 28px}
  .corp-construction .hero-title span:last-child{margin-left:0}
  .corp-construction .hero-bottom{margin-left:0;align-items:center;gap:20px}
  .corp-construction .hero-bottom p{font-size:14px;line-height:1.7;max-width:240px}
  .corp-construction .round-link{width:80px;height:80px;flex-shrink:0}
  .corp-construction .round-link span{font-size:8px;line-height:1.4;text-align:center}
- .corp-construction .motion-toggle{top:60px;right:24px;min-height:44px;font-size:11px}
+ .corp-construction .motion-toggle{top:12px;right:12px;min-height:44px;font-size:11px;color:#fff;background:#151616b3;border-color:#ffffff40}
  .corp-construction :is(.manifesto-note p,.cap-intro>p,.cap-list p,.source-sequence-intro,.source-sequence-copy p,.project-toolbar p,.future-step p,.dialog-copy>p:not(.eyebrow)){font-size:15px;line-height:1.8}
  .corp-construction .source-sequence-note{font-size:12px;line-height:1.8}
  .corp-construction .cap-detail>span{font-size:12px;line-height:1.7}
@@ -554,8 +556,8 @@ body:has(.corp-main-landing) .corp-intro{padding-top:80px}
  body:has(.corp-main-landing) .corp-intro{padding-top:56px}
  .corp-footer-bottom{grid-template-columns:1fr}
  .corp-construction section[id]{scroll-margin-top:var(--mobile-header)}
- .corp-construction .hero-content{padding-top:104px}
- .corp-construction .motion-toggle{top:20px}
+ .corp-construction .hero-content{padding-top:36px}
+ .corp-construction .motion-toggle{top:12px}
 }
 
 /* Approved USUNG mark replaces source-company branding in reference labels. */
