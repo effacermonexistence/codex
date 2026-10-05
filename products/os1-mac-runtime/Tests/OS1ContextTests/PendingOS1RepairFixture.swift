@@ -93,14 +93,20 @@ func runPendingOS1RepairFixtures() throws {
     // evidence: a short unrelated HOME task runs as itself.
     let home = URL(fileURLWithPath: "/Users/fixture", isDirectory: true)
     for continuing in ["아니 그래서 고치라니까?", "계속", "왜 안 됐냐", "다시 해봐", "왜 안 돼?", "retry",
-                       "고쳐", "마저 해", "설치 됐어?", "OS-1 사이드바 정렬을 왼쪽으로 바꾸고 아이콘 간격도 조금 넓혀줘. 그리고 대기열 표시도 코덱스처럼 한 줄로 정리해 줘 부탁해 정말로"] {
+                       "고쳐", "마저 해", "설치 됐어?", "아직도 안 됐어?", "빨리 고쳐", "다시 해줘", "계속 해",
+                       "OS-1 사이드바 정렬을 왼쪽으로 바꾸고 아이콘 간격도 조금 넓혀줘. 그리고 대기열 표시도 코덱스처럼 한 줄로 정리해 줘 부탁해 정말로"] {
         check(OS1SelfReference.continuesPendingOS1Change(continuing, home: home), "'\(continuing)' does not continue the pending OS-1 change")
     }
     for different in ["웹사이트 푸터 색 바꿔", "https://example.com 배포 상태 확인하고 다시 올려", "인스타 DM 자동응답 문구 고쳐",
                       "omaragi.com 랜딩 헤더 계속 수정해", "~/Projects/shop/README.md 에 설치 방법 한 줄 추가해",
                       String(repeating: "새 정리 작업을 해 줘 ", count: 9),
                       "캘린더에 내일 3시 미팅 추가해줘", "다운로드 폴더 정리해줘", "노션에 오늘 회의록 정리해서 올려",
-                      "아빠한테 보낼 이메일 초안 써서 저장해", "밑에 너무 크거든 코덱스처럼 한 줄로"] {
+                      "아빠한테 보낼 이메일 초안 써서 저장해", "밑에 너무 크거든 코덱스처럼 한 줄로",
+                      // Common verbs of the retry pattern inside their own task (build 327 review).
+                      "엑셀 파일 수식 고쳐줘", "파이썬 스크립트 버그 고쳐줘", "캘린더에 내일 3시 미팅 다시 잡아줘",
+                      "다운로드 폴더 다시 정리해줘", "brew로 ffmpeg 설치해줘", "프린터 드라이버 설치해줘",
+                      "보고서 마무리해서 저장해", "노션 회의록 이어서 정리해줘", "아빠한테 보낼 이메일 다시 써서 저장해",
+                      "Gmail 영수증 메일 다시 정리해줘"] {
         check(!OS1SelfReference.continuesPendingOS1Change(different, home: home), "'\(different)' was taken over by the pending OS-1 change")
     }
 

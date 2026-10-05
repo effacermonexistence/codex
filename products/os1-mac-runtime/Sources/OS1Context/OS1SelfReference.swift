@@ -143,9 +143,21 @@ public enum OS1SelfReference {
         let otherProject = PreparationIntent.detect(words)?.projectID.map { $0 != "os1-clodex" } == true
         let foreign = matches(urlPattern, text) || foreignPatterns.contains { matches($0, text) } || otherProject
             || foreignTargetPath(in: words, os1Roots: os1Roots, home: home.path) != nil
-        guard !foreign else { return false }
-        return matches(pendingContinuationPattern, text)
+        guard !foreign, matches(pendingContinuationPattern, text) else { return false }
+        // Retry phrasing ALONE: once the retry words, fillers and punctuation
+        // are gone nothing may remain. "엑셀 수식 고쳐줘", "brew로 ffmpeg
+        // 설치해줘" or "노션 회의록 이어서 정리해줘" carry their own task
+        // and run as themselves; an OS-1 part they hand back still continues
+        // the record through the hand-back path.
+        var rest = text.replacingOccurrences(of: pendingContinuationPattern, with: " ", options: .regularExpression)
+        rest = rest.replacingOccurrences(of: pendingContinuationFillerPattern, with: " ", options: .regularExpression)
+        rest = rest.replacingOccurrences(of: #"[\s\p{P}\p{S}]+"#, with: "", options: .regularExpression)
+        return rest.isEmpty
     }
+
+    /// Words that carry no task of their own around retry phrasing: fillers,
+    /// pressure, "do it" endings and particles.
+    static let pendingContinuationFillerPattern = #"아니|그래서|그러니까|그니까|근데|빨리|제발|그냥|진짜|좀|씨발|시발|야|이거|그거|저거|아직도|아직|언제|이제|안|왜|해봐|해줘|해라|하라고|하라니까|해야지|해|하|줘|봐|요|라|고|니까|냐|니|다|돼|되|됐|어|지|(?<![a-z])(?:please|just|it|now|again|the|and|then|so|ok|okay)(?![a-z])"#
 
     /// Decide whether a request not bound to any project is about OS-1 itself.
     /// - request: the owner's words (the app's attachment block may follow).

@@ -8819,19 +8819,28 @@ func os1PendingRepairAttributeAttempt(_ record: inout PendingOS1Repair, root: St
 
 /// The record a further attempt runs with: the same repair (its commit,
 /// corrections and count kept), a fresh attempt window, `running` again.
-/// With no commit on record, the start becomes the previous attempt's window
-/// start, which the next lease bounds (`os1PendingRepairRecordStart`).
+/// With no commit on record, a killed attempt's window start is kept (the
+/// next lease bounds it, `os1PendingRepairRecordStart`); a cleanly closed
+/// window leaves no start, so the next lease starts fresh at HEAD.
 func os1PendingRepairNextAttempt(_ existing: PendingOS1Repair, corrections: [String], submissionID: String?, root: String?,
                                  head: (String) -> String? = gitHead, now: Date = Date()) -> PendingOS1Repair {
     var record = existing
-    if record.repairCommit == nil, let previous = existing.attemptStartCommit { record.startCommit = previous }
+    if record.repairCommit == nil {
+        // Only a window that never closed (the attempt was killed between
+        // taking and releasing the lease) may hold an unattributed commit of
+        // its own: keep its start. A window that closed with no commit made
+        // nothing — a fresh start at the next lease, so commits other
+        // writers made since (installed or not) are never this repair's.
+        let killed = existing.attemptStartCommit != nil && existing.attemptEndCommit == nil
+        record.startCommit = killed ? existing.attemptStartCommit : nil
+    }
     record.state = .running
     record.attempts += 1
     record.pid = getpid()
     record.corrections = corrections.map { PendingOS1Repair.bounded($0) }
     record.submissionID = submissionID ?? record.submissionID
     record.sourceRoot = root ?? record.sourceRoot
-    if record.startCommit == nil { record.startCommit = root.flatMap(head) }
+    if record.repairCommit != nil, record.startCommit == nil { record.startCommit = root.flatMap(head) }
     record.attemptStartCommit = nil
     record.attemptEndCommit = nil
     record.updatedAt = now
@@ -14153,6 +14162,17 @@ func selfTest() throws {
                       var failedA = store.update(id: a.id, { $0.state = .failed }) else { return false }
                 os1PendingRepairAttributeAttempt(&failedA, root: root.path)
                 guard failedA.repairCommit == nil else { return false }
+                // Variant: B's commit is NOT installed (staged and waiting, or
+                // staging_failed). A's attempt closed cleanly with nothing, so
+                // the retry starts fresh at the next lease — never at A's old
+                // start, which would make B's commit A's change.
+                do {
+                    let next = os1PendingRepairNextAttempt(failedA, corrections: ["계속"], submissionID: nil, root: root.path)
+                    guard next.startCommit == nil else { return false }
+                    let foreign = String(repeating: "f", count: 40)
+                    guard os1PendingRepairRetryStart(previous: next.startCommit, head: foreign, installed: start,
+                                                     isAncestor: { _, _ in true }) == foreign else { return false }
+                }
                 // Conversation B's repair commits and installs build N.
                 try "let footer = 2\n".write(to: other, atomically: true, encoding: .utf8)
                 guard run(["commit", "-q", "-am", "os1: B's footer"]), let installedB = gitHead(root.path) else { return false }
@@ -14162,7 +14182,7 @@ func selfTest() throws {
                 // installed build's commit, so B's installed commit is not A's.
                 a = os1PendingRepairNextAttempt(failedA, corrections: ["계속"], submissionID: nil, root: root.path)
                 try store.save(a)
-                guard a.attempts == 2, a.attemptStartCommit == nil, a.attemptEndCommit == nil, a.startCommit == start,
+                guard a.attempts == 2, a.attemptStartCommit == nil, a.attemptEndCommit == nil, a.startCommit == nil,
                       let retried = recordStart(installedB),
                       retried.startCommit == installedB, retried.attemptStartCommit == installedB,
                       // A second run inside the same attempt keeps the window.
