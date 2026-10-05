@@ -108,6 +108,20 @@ func runNativeExecutionProgressFixtures() throws {
     check(stream.progress?.kind == .retrying, "retry signal excludes raw error")
     try feed(["type":"result", "session_id":other, "is_error":false, "result":"FOREIGN FINAL"])
     check(stream.resultCount == 0, "foreign final cannot consume current result cursor")
+    // command_lifecycle for a steering correction OS-1 sent with its uuid:
+    // bound to this session and the main scope; a terminal state sticks.
+    let correction = UUID()
+    try feed(["type":"command_lifecycle", "command_uuid":correction.uuidString, "state":"queued"])
+    try feed(["type":"command_lifecycle", "command_uuid":correction.uuidString.lowercased(), "state":"started"])
+    try feed(["type":"command_lifecycle", "session_id":other, "command_uuid":correction.uuidString, "state":"cancelled"])
+    try feed(["type":"command_lifecycle", "parent_tool_use_id":"parent-tool", "command_uuid":correction.uuidString, "state":"refused"])
+    try feed(["type":"command_lifecycle", "command_uuid":"not-a-uuid", "state":"completed"])
+    check(stream.commandLifecycle == [correction.uuidString.lowercased(): .init(state:"started", startedAfterResults:0)],
+          "lifecycle keyed by canonical uuid; foreign session, subagent and malformed frames ignored")
+    try feed(["type":"command_lifecycle", "command_uuid":correction.uuidString, "state":"completed"])
+    try feed(["type":"command_lifecycle", "command_uuid":correction.uuidString, "state":"started"])
+    check(stream.commandLifecycle[correction.uuidString.lowercased()] == .init(state:"completed", startedAfterResults:0)
+          && stream.turnOpen && stream.resultCount == 0, "folded completion precedes the result and is never downgraded")
     try feed(["type":"result", "is_error":false, "result":"EXACT FINAL 👋"])
     var cursor = 0
     check(stream.takeClaudePublicFinal(sessionID:session, after:&cursor) == "EXACT FINAL 👋", "bound final unchanged")

@@ -2099,7 +2099,8 @@ func commandOutput(
     removingEnvironment: Set<String> = [],
     onLaunch: (() -> Void)? = nil,
     onOutput: ((Data) -> Void)? = nil,
-    interactiveStdin: ((FileHandle) -> Void)? = nil
+    interactiveStdin: ((FileHandle) -> Void)? = nil,
+    releaseAfterFinalAnswer: (() -> Bool)? = nil
 ) throws -> (Int32, Data, Data) {
     let temporary = FileManager.default.temporaryDirectory.appendingPathComponent("os1-process-\(UUID().uuidString)")
     try FileManager.default.createDirectory(at: temporary, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
@@ -2186,6 +2187,29 @@ func commandOutput(
             if bytes != observedBytes { observedBytes = bytes; watchdog.observeActivity() }
         }
         _ = exited.wait(timeout: .now() + 0.1)
+    }
+    // The native final answer already arrived and no turn is open: only the
+    // backend's exit is pending (e.g. a steered Claude run whose stdin stayed
+    // open). That is a finished run with known effects, not a lost one: let
+    // the backend exit on closed input, else stop it, and return the answer.
+    if process.isRunning, !ExecutionCancellation.isCancelled, let releaseAfterFinalAnswer {
+        try drain()
+        if releaseAfterFinalAnswer() {
+            let grace = Date().addingTimeInterval(3)
+            while process.isRunning && Date() < grace { try drain(); _ = exited.wait(timeout: .now() + 0.1) }
+            try drain()
+            if !process.isRunning || releaseAfterFinalAnswer() {
+                var stopped = false
+                if process.isRunning {
+                    stopped = true
+                    process.terminate()
+                    if exited.wait(timeout: .now() + 1) == .timedOut, process.isRunning { kill(process.processIdentifier, SIGKILL) }
+                    process.waitUntilExit()
+                }
+                try drain()
+                return (stopped ? 0 : process.terminationStatus, try Data(contentsOf: stdoutURL), try Data(contentsOf: stderrURL))
+            }
+        }
     }
     if process.isRunning {
         process.terminate()
@@ -6835,7 +6859,7 @@ private func execute(
             },
             onOutput: { bytes in
                 stream.ingestClaude(bytes)
-                steerDriver?.observe(resultCount: stream.resultCount, turnOpen: stream.turnOpen)
+                steerDriver?.observe(resultCount: stream.resultCount, turnOpen: stream.turnOpen, commandLifecycle: stream.commandLifecycle)
                 if let text = stream.takeClaudePublicFinal(sessionID: activeSessionID, after: &relayedResultCount) {
                     revision = stream.eventCount
                     AttemptLatencyTrace.markOnce("native_output_received")
@@ -6851,7 +6875,13 @@ private func execute(
                     if !stream.text.isEmpty { AttemptLatencyTrace.markOnce("first_public_output_published") }
                 }
             },
-            interactiveStdin: steerDriver.map { driver in { handle in driver.attach(handle) } }
+            interactiveStdin: steerDriver.map { driver in { handle in driver.attach(handle) } },
+            // Idle watchdog: once the final answer arrived and no turn is
+            // open, a CLI that has not exited ends the run normally.
+            releaseAfterFinalAnswer: {
+                guard let steerDriver else { return stream.resultCount >= 1 && !stream.turnOpen }
+                return steerDriver.releaseAfterFinalAnswer(resultCount: stream.resultCount, turnOpen: stream.turnOpen)
+            }
         ) } catch {
             stream.finishClaude()
             if let result = stream.result { onUsage?(CompletionUsageParser.parseClaudeResult(result)) }
@@ -10687,6 +10717,7 @@ func selfTest() throws {
     }
     print("GitHub credential path: local read only, network probes 0, account switches 0, malformed credentials rejected")
     try steeringProtocolSelfTest()
+    try claudeSteeringSelfTest()
     for request in ["인스타그램 가격 버그 손봐줘", "파일을 수정해. 서버를 변경하지 마.",
                     "Create auto-review-probe.txt and verify its exact bytes",
                     "Create auto-review-probe.txt and write exactly OS1_AUTO_REVIEW_OK followed by one newline, then verify its exact bytes. Do not modify anything else.",
@@ -13527,6 +13558,8 @@ struct OS1Main {
                     "bytes": saved.verified.archive.count, "verified_source_files": saved.verified.files.count - 1,
                     "source_archive_path": saved.url.path, "r2_downloaded": false, "production_changed": false,
                 ], options: [.sortedKeys]), as: UTF8.self))
+            case "self-test-claude-steering":
+                try claudeSteeringSelfTest()
             case "self-test":
                 // A fixture, never part of a live run it was started in.
                 LiveRunEnvironment.detachCurrentProcess()

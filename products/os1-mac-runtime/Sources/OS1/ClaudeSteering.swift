@@ -9,7 +9,7 @@ import OS1Context
 /// is read; corrections are the owner's words, never model output.
 final class ClaudeSteerDriver: @unchecked Sendable {
     private let lock = NSLock()
-    private let mailbox = ExecutionSteering()
+    private let mailbox: ExecutionSteering
     /// nil when the run has no owning OS-1 submission (no mailbox), e.g. a
     /// CLI run that still needs stream input to carry image attachments.
     private let submissionID: UUID?
@@ -22,10 +22,18 @@ final class ClaudeSteerDriver: @unchecked Sendable {
     private var mailboxOpened = false
     private var resultCount = 0
     private var turnOpen = false
+    private var commandLifecycle: [String: ExecutionStream.CommandLifecycle] = [:]
+    private var lastOutput = Date()
+    /// Silence after a result before a correction written into that open turn
+    /// counts as folded into it (see `loop`).
+    private let foldQuietWindow: TimeInterval
     private let finished = DispatchSemaphore(value: 0)
     private var started = false
 
-    init(submissionID: UUID?, sessionID: String, prompt: String, images: [ImageInput.Encoded] = []) {
+    init(submissionID: UUID?, sessionID: String, prompt: String, images: [ImageInput.Encoded] = [],
+         mailbox: ExecutionSteering = ExecutionSteering(), foldQuietWindow: TimeInterval = 10) {
+        self.mailbox = mailbox
+        self.foldQuietWindow = foldQuietWindow
         self.submissionID = submissionID
         self.sessionID = sessionID
         self.initialPrompt = prompt
@@ -33,10 +41,12 @@ final class ClaudeSteerDriver: @unchecked Sendable {
     }
 
     /// Mirror the parser thread's view of the stream. Called from onOutput.
-    func observe(resultCount: Int, turnOpen: Bool) {
+    func observe(resultCount: Int, turnOpen: Bool, commandLifecycle: [String: ExecutionStream.CommandLifecycle] = [:]) {
         lock.lock()
         self.resultCount = resultCount
         self.turnOpen = turnOpen
+        self.commandLifecycle = commandLifecycle
+        lastOutput = Date()
         lock.unlock()
     }
 
@@ -69,16 +79,32 @@ final class ClaudeSteerDriver: @unchecked Sendable {
         if let submissionID { mailbox.close(submissionID) }
     }
 
-    private func snapshot() -> (results: Int, open: Bool, ended: Bool) {
+    /// Asked by the idle watchdog: true when the native final answer arrived
+    /// and no turn is open, so only the CLI's exit is pending. Closes its
+    /// stdin so it can still exit on its own.
+    func releaseAfterFinalAnswer(resultCount: Int, turnOpen: Bool) -> Bool {
+        guard resultCount >= 1, !turnOpen else { return false }
+        closeStdin()
+        return true
+    }
+
+    private struct State {
+        let results: Int, open: Bool, ended: Bool, quiet: TimeInterval
+        let lifecycle: [String: ExecutionStream.CommandLifecycle]
+    }
+    private func snapshot() -> State {
         lock.lock(); defer { lock.unlock() }
-        return (resultCount, turnOpen, processEnded)
+        return State(results: resultCount, open: turnOpen, ended: processEnded,
+                     quiet: Date().timeIntervalSince(lastOutput), lifecycle: commandLifecycle)
     }
 
     private func loop() {
         defer { finished.signal() }
         // input id -> the result index its turn must reach to count as
-        // persisted: sent mid-turn means "the turn after the current one".
+        // persisted: sent mid-turn means "the turn after the current one",
+        // unless the CLI folds it into the current one (see below).
         var requiredResult: [UUID: Int] = [:]
+        var midTurn = Set<UUID>()
         while true {
             let state = snapshot()
             if state.ended { return }
@@ -91,9 +117,10 @@ final class ClaudeSteerDriver: @unchecked Sendable {
             }
             for input in mailbox.inputs(submissionID) where mailbox.receipt(input) == nil {
                 try? mailbox.record(input, state: .sending, threadID: sessionID, turnID: "stream")
-                if writeUserMessage(input.text) {
+                if writeUserMessage(input.text, uuid: input.id) {
                     try? mailbox.record(input, state: .accepted, threadID: sessionID, turnID: "stream")
                     requiredResult[input.id] = state.results + (state.open ? 2 : 1)
+                    if state.open { midTurn.insert(input.id) }
                 } else {
                     try? mailbox.record(input, state: .rejected, threadID: sessionID, turnID: "stream")
                 }
@@ -101,30 +128,72 @@ final class ClaudeSteerDriver: @unchecked Sendable {
             var allPersisted = true
             for input in mailbox.inputs(submissionID) {
                 guard let receipt = mailbox.receipt(input) else { allPersisted = false; continue }
-                if receipt.state == .accepted {
-                    if let needed = requiredResult[input.id], state.results >= needed {
-                        try? mailbox.record(input, state: .persisted, threadID: sessionID,
-                                            turnID: "result-\(state.results)")
-                    } else {
-                        allPersisted = false
-                    }
+                guard receipt.state == .accepted else { continue }
+                switch Self.fate(of: input.id, required: requiredResult[input.id], midTurn: midTurn.contains(input.id),
+                                 state: state, quietWindow: foldQuietWindow) {
+                case .persisted(let turnID):
+                    try? mailbox.record(input, state: .persisted, threadID: sessionID, turnID: turnID)
+                case .notDelivered(let turnID):
+                    // The CLI reports it never reached a model turn (or the
+                    // turn died): no persistence is claimed, so the app keeps
+                    // the correction and carries it into the continuation.
+                    try? mailbox.record(input, state: .rejected, threadID: sessionID, turnID: turnID)
+                case .pending:
+                    allPersisted = false
+                case .earlierAttempt:
+                    continue
                 }
             }
             // The run ends when the current turn finished and nothing is
             // pending: closing stdin lets the CLI exit. A correction that
             // lands in the closing race stays unconsumed in the mailbox and
             // the app's existing continuation path re-attaches it.
-            if state.results >= 1, allPersisted { closeStdin(); return }
+            if state.results >= 1, !state.open, allPersisted { closeStdin(); return }
             Thread.sleep(forTimeInterval: 0.25)
         }
     }
 
-    private func writeUserMessage(_ text: String, images: [ImageInput.Encoded] = []) -> Bool {
+    private enum Fate: Equatable { case pending, persisted(String), notDelivered(String), earlierAttempt }
+
+    /// Claude Code 2.1.286 folds a message that arrives during an open turn
+    /// into that same turn ("absorbed_mid_turn": the text joins the turn as a
+    /// queued_command attachment) and then ends it with one result, so the
+    /// second result `required` expects never comes. Evidence, strongest first:
+    /// 1. its `command_lifecycle` frames: `completed` before the required
+    ///    result is a fold; cancelled/discarded/refused were not answered;
+    /// 2. without frames, for a message written mid-turn: the turn it was
+    ///    written into ended, no turn is open and the CLI stayed silent for
+    ///    `quietWindow`. A message still queued would have drained into a new
+    ///    turn at once, so it was consumed.
+    /// A message the CLI drained into a turn of its own after that result
+    /// (`started` later) is answered by that turn: wait for its result.
+    private static func fate(of id: UUID, required: Int?, midTurn: Bool, state: State, quietWindow: TimeInterval) -> Fate {
+        let lifecycle = state.lifecycle[id.uuidString.lowercased()]
+        if let lifecycle, lifecycle.terminal {
+            guard lifecycle.state == "completed" else { return .notDelivered("lifecycle-" + lifecycle.state) }
+            if let required, state.results < required { return .persisted("folded-into-result-\(required - 1)") }
+            return .persisted("result-\(state.results)")
+        }
+        // Accepted by an earlier attempt of this submission, whose process is
+        // gone: nothing this CLI does can answer it, so it must not hold
+        // stdin open. Its receipt is left as the app last saw it.
+        guard let required else { return .earlierAttempt }
+        if state.results >= required { return .persisted("result-\(state.results)") }
+        let foldTurn = required - 1
+        guard midTurn, foldTurn >= 1, state.results >= foldTurn, !state.open, state.quiet >= quietWindow else { return .pending }
+        if let started = lifecycle?.startedAfterResults, started >= foldTurn { return .pending }
+        return .persisted("folded-into-result-\(foldTurn)")
+    }
+
+    private func writeUserMessage(_ text: String, images: [ImageInput.Encoded] = [], uuid: UUID? = nil) -> Bool {
         var content: [[String: Any]] = images.map { image in
             ["type": "image", "source": ["type": "base64", "media_type": image.mediaType, "data": image.base64]]
         }
         content.append(["type": "text", "text": text])
-        let object: [String: Any] = ["type": "user", "message": ["role": "user", "content": content]]
+        var object: [String: Any] = ["type": "user", "message": ["role": "user", "content": content]]
+        // Claude Code reports a uuid-carrying message's fate on stdout as
+        // `command_lifecycle` frames under this same uuid (canonical lowercase).
+        if let uuid { object["uuid"] = uuid.uuidString.lowercased() }
         guard let data = try? JSONSerialization.data(withJSONObject: object) else { return false }
         lock.lock(); defer { lock.unlock() }
         guard !stdinClosed, let handle else { return false }
@@ -142,4 +211,149 @@ final class ClaudeSteerDriver: @unchecked Sendable {
         stdinClosed = true
         try? handle?.close()
     }
+}
+
+/// Fake-CLI cases for the Claude steering loop and the idle watchdog. All
+/// state lives in a temporary directory; no model is called.
+func claudeSteeringSelfTest() throws {
+    func check(_ ok: Bool, _ message: String) throws {
+        guard ok else { throw OS1Error.message("Claude steering: " + message) }
+    }
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("os1-claude-steering-" + UUID().uuidString)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+    defer { try? FileManager.default.removeItem(at: root) }
+    let python = try findExecutable("python3")
+    // Mirrors Claude Code 2.1.286 in stream-json mode: a correction sent
+    // while a turn is open is either folded into that turn (one result) or
+    // answered as its own turn (a second result). The CLI exits at stdin EOF;
+    // "final-silent" never exits, "never-final" never answers.
+    let script = root.appendingPathComponent("fake-claude.py")
+    try Data(#"""
+import json, sys, time
+mode, sid = sys.argv[1], sys.argv[2]
+lifecycle = mode.endswith("-lifecycle")
+def out(o):
+    o["session_id"] = sid
+    sys.stdout.write(json.dumps(o) + "\n"); sys.stdout.flush()
+def read():
+    line = sys.stdin.readline()
+    return json.loads(line) if line.strip() else None
+def result(n):
+    out({"type": "result", "subtype": "success", "is_error": False, "result": "answer %d" % n})
+def lc(uid, state):
+    if lifecycle and uid: out({"type": "command_lifecycle", "command_uuid": uid, "state": state})
+read()
+out({"type": "system", "subtype": "init"})
+out({"type": "assistant", "message": {"id": "m1", "content": [{"type": "text", "text": "working"}]}})
+if mode == "plain":
+    result(1)
+    while sys.stdin.readline():
+        pass
+    sys.exit(0)
+if mode == "never-final":
+    time.sleep(600)
+if mode == "final-silent":
+    result(1)
+    time.sleep(600)
+correction = read() or {}
+uid = correction.get("uuid")
+lc(uid, "queued")
+if mode.startswith("fold"):
+    lc(uid, "started"); time.sleep(0.5); lc(uid, "completed"); result(1)
+else:
+    time.sleep(0.5); result(1)
+    time.sleep(3)
+    lc(uid, "started")
+    out({"type": "assistant", "message": {"id": "m2", "content": [{"type": "text", "text": "correction"}]}})
+    time.sleep(1); result(2); lc(uid, "completed")
+while sys.stdin.readline():
+    pass
+"""#.utf8).write(to: script)
+
+    struct Outcome { let status: Int32; let elapsed: TimeInterval; let results: Int; let receipt: SteeringReceipt?; let error: String? }
+    func run(_ mode: String, correct: Bool = true, idle: TimeInterval = 20, quiet: TimeInterval = 10,
+             earlierAttempt: Bool = false) -> Outcome {
+        let mailbox = ExecutionSteering(root: root.appendingPathComponent("mailbox-" + mode))
+        let submission = UUID(), sessionID = UUID().uuidString.lowercased()
+        if earlierAttempt {
+            let old = SteeringInput(submissionID: submission, text: "그 말이 아니라, 이전 시도에 보낸 정정.")
+            try? mailbox.enqueue(old)
+            try? mailbox.record(old, state: .accepted, threadID: "earlier", turnID: "stream")
+        }
+        let driver = ClaudeSteerDriver(submissionID: submission, sessionID: sessionID, prompt: "고쳐",
+                                       mailbox: mailbox, foldQuietWindow: quiet)
+        let stream = ExecutionStream(claudeSessionID: sessionID)
+        let correction = SteeringInput(submissionID: submission, text: "그 말이 아니라, 로고만 바꿔.")
+        var enqueued = !correct
+        let started = Date()
+        var status: Int32 = -1, failure: String?
+        do {
+            let output = try commandOutput(python, [script.path, mode, sessionID], timeout: 60, idleTimeout: idle,
+                isProvider: true,
+                onOutput: { bytes in
+                    stream.ingestClaude(bytes)
+                    driver.observe(resultCount: stream.resultCount, turnOpen: stream.turnOpen,
+                                   commandLifecycle: stream.commandLifecycle)
+                    // The owner corrects while the first turn is still open.
+                    if !enqueued, stream.turnOpen, stream.resultCount == 0 { try? mailbox.enqueue(correction); enqueued = true }
+                },
+                interactiveStdin: { driver.attach($0) },
+                releaseAfterFinalAnswer: { driver.releaseAfterFinalAnswer(resultCount: stream.resultCount, turnOpen: stream.turnOpen) })
+            status = output.0
+        } catch { failure = "\(error)" }
+        driver.processDidEnd()
+        stream.finishClaude()
+        return Outcome(status: status, elapsed: Date().timeIntervalSince(started), results: stream.resultCount,
+                       receipt: correct ? mailbox.receipt(correction) : nil, error: failure)
+    }
+
+    // (a) Folded into the open turn, announced by command_lifecycle: one
+    // result, the run ends at once and the receipt is persisted as folded.
+    let foldedAnnounced = run("fold-lifecycle")
+    try check(foldedAnnounced.error == nil && foldedAnnounced.status == 0 && foldedAnnounced.results == 1,
+              "announced fold did not end normally: \(foldedAnnounced.error ?? "status \(foldedAnnounced.status)")")
+    try check(foldedAnnounced.elapsed < 8, "announced fold took \(Int(foldedAnnounced.elapsed)) s")
+    try check(foldedAnnounced.receipt?.state == .persisted && foldedAnnounced.receipt?.turnID.hasPrefix("folded") == true,
+              "announced fold receipt \(String(describing: foldedAnnounced.receipt))")
+    // (a) Folded without lifecycle frames (the 5A3C90FF/F050022B shape): the
+    // run ends after the quiet window, well inside 15 s, not after 30 min.
+    let foldedSilent = run("fold")
+    try check(foldedSilent.error == nil && foldedSilent.status == 0 && foldedSilent.results == 1,
+              "silent fold did not end normally: \(foldedSilent.error ?? "status \(foldedSilent.status)")")
+    try check(foldedSilent.elapsed < 15, "silent fold took \(Int(foldedSilent.elapsed)) s")
+    try check(foldedSilent.receipt?.state == .persisted && foldedSilent.receipt?.turnID.hasPrefix("folded") == true,
+              "silent fold receipt \(String(describing: foldedSilent.receipt))")
+    // (b) Answered as its own turn: the run waits for the second result, with
+    // and without lifecycle frames.
+    for mode in ["separate", "separate-lifecycle"] {
+        let separate = run(mode)
+        try check(separate.error == nil && separate.status == 0 && separate.results == 2,
+                  "\(mode) turn ended early or failed: results \(separate.results), \(separate.error ?? "status \(separate.status)")")
+        try check(separate.receipt?.state == .persisted && separate.receipt?.turnID == "result-2",
+                  "\(mode) receipt \(String(describing: separate.receipt))")
+    }
+    // (c) Final answer, then silence (stdin closed, process never exits): the
+    // idle watchdog finishes the run normally.
+    let silent = run("final-silent", correct: false, idle: 1.5)
+    try check(silent.error == nil && silent.status == 0 && silent.results == 1 && silent.elapsed < 10,
+              "final answer then silence was not finished normally: \(silent.error ?? "status \(silent.status)")")
+    // A correction accepted by an earlier attempt of the same submission does
+    // not hold this attempt's stdin open.
+    let retried = run("plain", correct: false, earlierAttempt: true)
+    try check(retried.error == nil && retried.status == 0 && retried.results == 1 && retried.elapsed < 8,
+              "earlier attempt's correction held the run: \(retried.error ?? "\(Int(retried.elapsed)) s")")
+    // The watchdog stays strict for a run that never produced a final answer.
+    let unanswered = run("never-final", correct: false, idle: 1.5)
+    try check(unanswered.error?.contains("no backend activity") == true && unanswered.results == 0,
+              "a run without a final answer escaped the idle watchdog")
+    // Lifecycle parsing: a terminal state is never downgraded.
+    let stream = ExecutionStream()
+    let id = UUID()
+    for state in ["queued", "started", "completed", "started", "bogus"] {
+        stream.ingestClaude((try JSONSerialization.data(withJSONObject: [
+            "type": "command_lifecycle", "command_uuid": id.uuidString, "state": state])) + Data([10]))
+    }
+    try check(stream.commandLifecycle == [id.uuidString.lowercased(): .init(state: "completed", startedAfterResults: 0)],
+              "lifecycle state \(stream.commandLifecycle)")
+    print("Claude steering: fold announced \(Int(foldedAnnounced.elapsed)) s, fold silent \(Int(foldedSilent.elapsed)) s, separate turns wait for result 2, silent final finished normally, unanswered run still times out")
 }

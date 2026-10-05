@@ -69,8 +69,23 @@ public final class ExecutionStream {
     /// Completed Claude turns in this run (a steered run has several).
     public private(set) var resultCount = 0
     /// True while an assistant turn is streaming; a correction sent now is
-    /// queued by the CLI for the turn after the current one.
+    /// either folded into this turn or queued for the next one (see
+    /// `commandLifecycle`).
     public private(set) var turnOpen = false
+    /// Claude Code's `command_lifecycle` frames for user messages that OS-1
+    /// sent with its own uuid (lowercased): queued, started, then one terminal
+    /// state. A message folded into the running turn reports `completed`
+    /// before that turn's result; one answered as its own turn reports it
+    /// after. A terminal state is never replaced by a later non-terminal one.
+    public private(set) var commandLifecycle: [String: CommandLifecycle] = [:]
+    public struct CommandLifecycle: Equatable, Sendable {
+        public let state: String
+        /// Completed turns when the message drained into a turn (`started`).
+        public let startedAfterResults: Int?
+        public init(state: String, startedAfterResults: Int?) { self.state = state; self.startedAfterResults = startedAfterResults }
+        public var terminal: Bool { ExecutionStream.terminalCommandStates.contains(state) }
+    }
+    public static let terminalCommandStates: Set<String> = ["completed", "cancelled", "discarded", "refused"]
     public var text: String { String(items.map(\.1).joined(separator: "\n\n").suffix(24_000)) }
     public init(claudeSessionID: String? = nil, workspace: String? = nil, observedTime: @escaping () -> Date = { Date() }) {
         expectedClaudeSessionID = claudeSessionID.flatMap { UUID(uuidString: $0)?.uuidString.lowercased() }
@@ -319,6 +334,17 @@ public final class ExecutionStream {
             scope = "subagent:" + String(CompletionFeedbackScope.digest(Data(parent.utf8)).prefix(12))
         } else { scope = "main" }
         let type = o["type"] as? String ?? ""
+        if type == "command_lifecycle" {
+            guard parent == nil, let raw = o["command_uuid"] as? String, let id = UUID(uuidString: raw)?.uuidString.lowercased(),
+                  let state = o["state"] as? String,
+                  ["queued", "started"].contains(state) || Self.terminalCommandStates.contains(state) else { return }
+            let previous = commandLifecycle[id]
+            if previous?.terminal == true { return }
+            guard previous != nil || commandLifecycle.count < 64 else { return }
+            commandLifecycle[id] = CommandLifecycle(state: state,
+                startedAfterResults: state == "started" ? resultCount : previous?.startedAfterResults)
+            return
+        }
         if type == "system", let subtype = o["subtype"] as? String {
             if subtype == "init" { observeOnce("claude:" + scope + ":init", kind: .ready, scope: scope) }
             if ["task_started", "task_progress"].contains(subtype) { claudeTaskEvent(o, subtype: subtype) }
