@@ -19,7 +19,11 @@ print('Startup archive isolation: 8 checks PASS (structural; no model calls)')
 maintenance = s[s.index('    func runMaintenanceTick()'):s.index('    func releaseRestartHolds(')]
 assert maintenance.index('install-maintenance.pid') < maintenance.index('resumeBackendRecoveries()')
 assert 'kill(pid, 0) == 0 { return }' in maintenance
-print('Installer maintenance lease: 2 checks PASS')
+# Restart-interrupted work resumes after the install lease and the staged
+# build's hold, before any readback would spend a model call on it (build 327).
+assert maintenance.index('install-maintenance.pid') < maintenance.index('applyPendingSelfUpdate()') \
+    < maintenance.index('resumeInterruptedWork()') < maintenance.index('resumeStaleReconciliations()')
+print('Installer maintenance lease: 3 checks PASS')
 
 live_start = s.index('        _store = StateObject(wrappedValue: SessionStore())')
 assert s.index('guard SelfUpdate.isInstalledApp(Bundle.main.bundleURL) else') < live_start

@@ -192,6 +192,14 @@ func runBackendRecoveryFixtures() throws {
     check(!BackendRecovery.readbackPrompt(objective: "x").contains("read-only") &&
         !BackendRecovery.readbackPrompt(objective: "x").contains("읽기 전용"), "reconciliation does not impose read-only executor capability")
     check(BackendRecovery.readbackPrompt(objective: "x").contains("OS1_EFFECTS: none"), "readback demands the machine-checkable verdict")
+    // A conversation with an unfinished OS-1 repair on record (build 327):
+    // the readback says OS-1 resumes it and keeps its verdict contract.
+    let pendingReadback = BackendRecovery.readbackPrompt(objective: "로고 바꿔", pendingOS1Repair: true)
+    check(pendingReadback.contains(BackendRecovery.pendingOS1RepairNote) && BackendRecovery.isReadbackPrompt(pendingReadback)
+        && pendingReadback.hasSuffix("OS1_EFFECTS: unknown") && pendingReadback.contains("로고 바꿔"),
+        "a readback with a pending OS-1 repair says OS-1 resumes it")
+    check(!BackendRecovery.readbackPrompt(objective: "x").contains(BackendRecovery.pendingOS1RepairNote),
+        "a readback without a pending repair is unchanged")
     let recoveryPrompt = BackendRecovery.readbackPrompt(objective: "inspect existing delivery; do not redeploy")
     let advertisedVerdicts = recoveryPrompt.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }
         .filter { $0.hasPrefix("OS1_EFFECTS:") }

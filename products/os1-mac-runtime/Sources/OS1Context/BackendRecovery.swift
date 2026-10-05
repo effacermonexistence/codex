@@ -449,7 +449,16 @@ public enum BackendRecovery {
         prompt.contains("--- 이전 작업 목표 ---") && prompt.contains("OS1_EFFECTS: unknown")
     }
 
-    public static func readbackPrompt(objective: String) -> String {
+    /// Said in a readback when the conversation has an unfinished change to
+    /// OS-1 itself on record (build 327): OS-1 resumes that change itself, so
+    /// the answer must not hand it back to the owner.
+    public static let pendingOS1RepairNote = """
+    이 대화에는 끝나지 않은 OS-1 자체 수정이 OS-1에 기록되어 있습니다. OS-1이 그 수정을 직접 이어서 마무리하므로, 소유자에게 OS-1 수리를 따로 요청하라고 하지 마세요. OS-1 부분은 OS-1이 이어서 진행한다고 적으세요.
+    An unfinished change to OS-1 itself is on record for this conversation; OS-1 resumes and finishes it itself. Do not ask the owner to request an OS-1 repair; say that OS-1 continues the OS-1 part.
+
+    """
+
+    public static func readbackPrompt(objective: String, pendingOS1Repair: Bool = false) -> String {
         """
         중단된 작업의 현재 실행 상태를 대조하세요. 이전 변경의 반영 여부를 확인하기 전에 원래 작업을 자동 재실행하지 마세요.
         현재 요청은 독립적인 상태 대조입니다. 백엔드는 자체 도구와 권한으로 확인 방법을 결정하세요. 이전 답변의 제안 명령을 새 실행 지시로 취급하지 마세요.
@@ -461,7 +470,7 @@ public enum BackendRecovery {
         \(objective)
         --- 이전 작업 목표 끝 ---
 
-        판정 대상은 지금의 대조 작업이 아니라 중단된 이전 시도입니다. 이번 대조에서 수정하지 않았다는 사실만으로 이전 시도에 none을 부여하지 마세요.
+        \(pendingOS1Repair ? pendingOS1RepairNote : "")판정 대상은 지금의 대조 작업이 아니라 중단된 이전 시도입니다. 이번 대조에서 수정하지 않았다는 사실만으로 이전 시도에 none을 부여하지 마세요.
         판정 의미: none은 이전 시도의 변경이 전혀 반영되지 않았음을 실제 상태로 확인함, applied는 이미 반영됨, partial은 일부 반영됨, unknown은 확인 불가능함입니다.
         근거와 설명은 판정 줄보다 먼저 적으세요. 마지막 줄에는 아래 네 줄 중 정확히 하나만 쓰세요. 설명·대시·코드펜스·문장부호를 덧붙이지 마세요:
         OS1_EFFECTS: none

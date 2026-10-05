@@ -59,6 +59,19 @@ func runPendingOS1RepairFixtures() throws {
     check(store.list().count == 2, "every record is listed")
     check(!PendingOS1Repair.processAlive(0) && PendingOS1Repair.processAlive(getpid()), "the liveness probe")
 
+    // The app's once-per-record resume flag survives a reload; an older
+    // record without the field still decodes.
+    let flagged = store.update(id: other) { $0.autoResumeAttempted = true }
+    check(flagged?.autoResumeAttempted == true && store.load(id: other)?.autoResumeAttempted == true, "the resume flag is durable")
+    check(store.load(id: record.id)?.autoResumeAttempted == nil, "a record written before the flag existed reads as not resumed")
+    // A pid that is alive but started after the record was written is a
+    // reused number, not the writer.
+    var reused = store.load(id: record.id)!
+    reused.pid = getpid()
+    reused.updatedAt = Date(timeIntervalSince1970: 0)
+    check(!PendingOS1Repair.writerAlive(reused), "a reused pid is not the writer")
+    reused.updatedAt = Date()
+    check(PendingOS1Repair.writerAlive(reused), "the running writer is alive")
     var exhausted = store.load(id: other)!
     exhausted.attempts = PendingOS1Repair.maximumAutomaticAttempts
     check(!exhausted.retryable(isAlive: { _ in false }), "automatic retries stop at the limit")

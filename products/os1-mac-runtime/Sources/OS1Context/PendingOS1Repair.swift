@@ -66,6 +66,9 @@ public struct PendingOS1Repair: Codable, Equatable, Sendable {
     public var updatedAt: Date
     /// The CLI process running (or last running) the repair.
     public var pid: Int32
+    /// Set once the app resumed this record by itself after a restart
+    /// (build 327): an interrupted repair is resumed automatically at most once.
+    public var autoResumeAttempted: Bool?
 
     public init(id: String, conversationID: String?, submissionID: String?, ownerRequest: String,
                 corrections: [String], draftReport: String, sourceRoot: String?, startCommit: String?,
@@ -109,6 +112,30 @@ public struct PendingOS1Repair: Codable, Equatable, Sendable {
     public static func processAlive(_ pid: Int32) -> Bool {
         pid > 0 && (kill(pid, 0) == 0 || errno == EPERM)
     }
+
+    /// The process that wrote this record is still running. A pid alone is
+    /// not enough after a restart: the number is reused, so a live process
+    /// that started after the record was written is someone else.
+    public static func writerAlive(_ record: PendingOS1Repair) -> Bool {
+        guard processAlive(record.pid) else { return false }
+        guard let started = processStartTime(record.pid) else { return true }
+        return started <= record.updatedAt.addingTimeInterval(2)
+    }
+
+    public static func processStartTime(_ pid: Int32) -> Date? {
+        var info = kinfo_proc()
+        var size = MemoryLayout<kinfo_proc>.stride
+        var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_PID, pid]
+        guard sysctl(&mib, 4, &info, &size, nil, 0) == 0, size > 0, info.kp_proc.p_pid == pid else { return nil }
+        let start = info.kp_proc.p_un.__p_starttime
+        return Date(timeIntervalSince1970: TimeInterval(start.tv_sec) + TimeInterval(start.tv_usec) / 1_000_000)
+    }
+
+    /// The follow-up the app sends to resume an interrupted repair. It is a
+    /// write request, so the CLI's pending-repair path takes it (build 327).
+    public static let resumeRequestKorean = "중단된 OS-1 자체 수정을 이어서 마무리해"
+    public static let resumeRequestEnglish = "Finish the interrupted change to OS-1 itself"
+    public static var resumeRequest: String { os1Tr(resumeRequestKorean, resumeRequestEnglish) }
 }
 
 public struct PendingOS1RepairStore: Sendable {

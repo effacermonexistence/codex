@@ -4205,6 +4205,12 @@ private struct PendingSubmission: Identifiable, Codable, Equatable, Sendable {
     var startNextRequested: Bool? = nil
     var replacesSubmissionID: UUID? = nil
     var replacesObjective: Bool? = nil
+    /// Set at launch on a request that was in flight when the previous app
+    /// process ended (a Mac or app restart): when that process last saved the
+    /// store. A request that never reached a model is re-run once by itself
+    /// while this is recent (build 327); `restartRequeued` spends that once.
+    var restartInterruptedAt: Date? = nil
+    var restartRequeued: Bool? = nil
     /// Set when a clean readback (OS1_EFFECTS: none) already resumed this
     /// objective once. A verified follow-up turn takes precedence over this
     /// replay path, matching Codex: the completed output stays in the native
@@ -8265,6 +8271,117 @@ private final class SessionStore: ObservableObject {
             start(retry)
         }
     }
+    /// Pending OS-1 repairs of this store: the owner's real folder for the
+    /// live app, a folder inside the fixture root for a test store.
+    private var pendingOS1Repairs: PendingOS1RepairStore {
+        customStorageRoot.map { PendingOS1RepairStore(root: $0.appendingPathComponent("pending-os1-repairs", isDirectory: true)) }
+            ?? PendingOS1RepairStore()
+    }
+    private func cancellationRequested(_ submissionID: UUID) -> Bool {
+        let marker = customStorageRoot.map {
+            $0.appendingPathComponent("run-journals", isDirectory: true).appendingPathComponent(submissionID.uuidString + ".cancel")
+        } ?? ExecutionCancellation.url(submissionID: submissionID)
+        return fileManager.fileExists(atPath: marker.path)
+    }
+    /// A repair interrupted by a restart this recent is resumed by itself.
+    static let interruptedRepairResumeWindow: TimeInterval = 6 * 3_600
+    /// A request that never reached a model, this recent, is re-run by itself.
+    static let restartPreflightRequeueWindow: TimeInterval = 2 * 3_600
+    /// Work a Mac or app restart cut off continues instead of being silently
+    /// lost (build 327). Two cases, each at most once:
+    /// - an OS-1 repair whose writer is gone (a `running` pending record
+    ///   written before this launch) becomes `interrupted`; when it is younger
+    ///   than six hours it is resumed through the conversation's follow-up
+    ///   path, which the CLI binds to the pending record;
+    /// - a request still in preflight (no model reached, so no effects) when
+    ///   the previous process ended is re-run when younger than two hours.
+    /// Older items, owner-queued requests and every hold stay as they are.
+    func resumeInterruptedWork(now: Date = Date(), writerAlive: (PendingOS1Repair) -> Bool = PendingOS1Repair.writerAlive) {
+        let repairs = pendingOS1Repairs
+        for record in repairs.list() {
+            var current = record
+            if record.state == .running {
+                // A record written by this launch's own runs, or whose writer
+                // still runs, is not a restart's. Its time stays the last time
+                // its writer saved it: the repair's age, now and on every
+                // later launch.
+                guard record.updatedAt < storeLaunchedAt, !writerAlive(record),
+                      let marked = repairs.update(id: record.id, now: record.updatedAt, { $0.state = .interrupted }) else { continue }
+                if let conversationID = record.conversationID.flatMap(UUID.init(uuidString:)) {
+                    appendTaskEvent(conversationID: conversationID, kind: "os1_repair_interrupted",
+                        summary: "Pending OS-1 repair \(record.id) lost its process (restart); marked interrupted")
+                }
+                current = marked
+            }
+            guard current.state == .interrupted, current.autoResumeAttempted != true,
+                  now.timeIntervalSince(current.updatedAt) < Self.interruptedRepairResumeWindow,
+                  current.retryable(isAlive: { _ in false }),
+                  let conversationID = current.conversationID.flatMap(UUID.init(uuidString:)),
+                  selfUpdateHold == nil, activeRuns.count < maximumConcurrentSessions,
+                  !isSessionRunning(conversationID), inFlightSubmissions[conversationID] == nil,
+                  let index = sessions.firstIndex(where: { $0.id == conversationID }),
+                  sessions[index].queuePaused != true, sessions[index].taskContext?.sourcePreparation == nil,
+                  sessions[index].lastBackendFailure?.blocker != .backendUnavailable else { continue }
+            // The once is spent before dispatch, so a crash cannot replay it.
+            guard repairs.update(id: current.id, now: current.updatedAt, { $0.autoResumeAttempted = true }) != nil else { continue }
+            // The same path a follow-up uses: a write request in this
+            // conversation, which the CLI continues as the pending repair.
+            var resume: PendingSubmission
+            if var waiting = sessions[index].lastFailure, waiting.preflightOnly == true, waiting.recoveryParentID == nil,
+               waiting.restartInterruptedAt != nil, waiting.restartRequeued != true {
+                // The owner's own follow-up never reached a model before the
+                // restart: it is that follow-up, words included, that resumes
+                // the repair, once.
+                waiting.restartRequeued = true
+                sessions[index].lastFailure = waiting
+                resume = waiting
+            } else {
+                guard let anchor = sessions[index].lastFailure.flatMap({ failed in
+                          sessions[index].messages.contains(where: { $0.id == failed.userMessageID }) ? failed.userMessageID : nil
+                      }) ?? sessions[index].messages.last(where: { $0.role == .user })?.id else { continue }
+                resume = PendingSubmission(sessionID: conversationID, userMessageID: anchor,
+                    request: PendingOS1Repair.resumeRequest, provider: .auto,
+                    workspace: sessions[index].lastFailure?.workspace ?? sessions[index].workspace,
+                    codexCapacity: sessions[index].effectiveCodexCapacity, claudeCapacity: sessions[index].effectiveClaudeCapacity)
+                resume.submittedAt = now
+                if let failed = sessions[index].lastFailure {
+                    // The interrupted run is preserved, not re-sent; its
+                    // evidence is handed to the resumed repair.
+                    resume.startNextRequested = true
+                    resume.replacesSubmissionID = failed.id
+                }
+            }
+            let line = os1Tr("재시작으로 중단된 OS-1 자체 수정을 OS-1이 이어서 마무리합니다.",
+                             "OS-1 is resuming the change to OS-1 itself that the restart interrupted.")
+            sessions[index].messages.append(ChatMessage(role: .system, text: line))
+            sessions[index].updatedAt = now
+            sessionStatuses[conversationID] = line
+            if selectedSessionID == conversationID { statusText = line }
+            appendTaskEvent(conversationID: conversationID, kind: "os1_repair_resume",
+                summary: "Interrupted OS-1 repair \(current.id) (attempt \(current.attempts)) resumed once after the restart")
+            save()
+            start(resume)
+        }
+        for session in sessions where selfUpdateHold == nil {
+            guard activeRuns.count < maximumConcurrentSessions, !isSessionRunning(session.id),
+                  inFlightSubmissions[session.id] == nil,
+                  let failed = session.lastFailure, failed.preflightOnly == true, failed.recoveryParentID == nil,
+                  let interruptedAt = failed.restartInterruptedAt, failed.restartRequeued != true,
+                  now.timeIntervalSince(interruptedAt) < Self.restartPreflightRequeueWindow,
+                  session.lastBackendFailure?.dispatchStage != .dispatched,
+                  session.lastBackendFailure?.blocker != .backendUnavailable,
+                  session.queuePaused != true, session.taskContext?.sourcePreparation == nil,
+                  !cancellationRequested(failed.id),
+                  let index = sessions.firstIndex(where: { $0.id == session.id }) else { continue }
+            var retry = failed
+            retry.restartRequeued = true
+            sessions[index].lastFailure = retry
+            save() // the once is spent before dispatch; survives another restart
+            appendTaskEvent(conversationID: session.id, kind: "restart_requeue",
+                summary: "Request was still in preflight (no model reached) when the app restarted; running it again once")
+            start(retry)
+        }
+    }
     /// OS-1 repairing OS-1: a build staged by a task (`os1 self-update stage`)
     /// is installed by the app itself as soon as nothing is in flight. The
     /// installer restarts the app into the new build; the relaunched app
@@ -8450,7 +8567,11 @@ private final class SessionStore: ObservableObject {
         guard !isSessionRunning(conversationID), activeRuns.count < maximumConcurrentSessions, selfUpdateHold == nil,
               let index = sessions.firstIndex(where: { $0.id == conversationID }),
               let failed = sessions[index].lastFailure else { return }
-        let request = BackendRecovery.readbackPrompt(objective: failed.request)
+        // OS-1 resumes an unfinished OS-1 repair itself: the readback must
+        // not tell the owner to ask for it.
+        let pendingRepair = pendingOS1Repairs.load(id: conversationID.uuidString)
+            .map { $0.attempts < PendingOS1Repair.maximumAutomaticAttempts } == true
+        let request = BackendRecovery.readbackPrompt(objective: failed.request, pendingOS1Repair: pendingRepair)
         var readback = PendingSubmission(sessionID: failed.sessionID, userMessageID: failed.userMessageID,
             request: request, provider: .auto, workspace: failed.workspace,
             codexCapacity: failed.codexCapacity, claudeCapacity: failed.claudeCapacity,
@@ -8500,6 +8621,8 @@ private final class SessionStore: ObservableObject {
         // First, so a staged build's hold is in force before anything below
         // can start work in this tick.
         applyPendingSelfUpdate()
+        // Before the readbacks below: a resumed OS-1 repair needs none.
+        resumeInterruptedWork()
         resumeRegisteredSourcePreparations()
         resumeBackendRecoveries()
         reportSelfUpdateOutcomes()
@@ -8877,6 +9000,9 @@ private final class SessionStore: ObservableObject {
         nativePinnedOrders = envelope.nativePinnedOrders ?? [:]
         // Persist waiting requests but never silently execute them on app launch.
         queuedSubmissions = (envelope.queued ?? []).filter { queued in sessions.contains { $0.id == queued.sessionID } }
+        // The last time the previous process saved the store: no later than
+        // when the requests still in flight were interrupted.
+        let previousProcessLastSaved = (try? storageURL.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
         for pending in envelope.inFlight ?? [] {
             guard let index = sessions.firstIndex(where: { $0.id == pending.sessionID }) else { continue }
             if pending.recoveryParentID != nil, sessions[index].lastFailure != nil {
@@ -8894,7 +9020,8 @@ private final class SessionStore: ObservableObject {
                 }
                 queuedSubmissions.removeAll { $0.sessionID == pending.sessionID && corrections.map(\.id).contains($0.userMessageID) }
             }
-            if let result = DeliveryOutbox().forSubmission(pending.id.uuidString) {
+            if let result = DeliveryOutbox(root: customStorageRoot?.appendingPathComponent("execution-outbox"))
+                .forSubmission(pending.id.uuidString) {
                 recovered.deliveryID = result.id
                 let verdict = result.response.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }?["status"] as? String
                 recovered.savedResultNeedsReview = result.localRejection != nil || (verdict != nil && verdict != "complete")
@@ -8903,6 +9030,7 @@ private final class SessionStore: ObservableObject {
             } else if pending.preflightOnly == true {
                 sessions[index].lastBackendFailure = BackendFailureNotice(provider: "local",
                     sessionID: nil, blocker: .unclassified, dispatchStage: .notDispatched)
+                recovered.restartInterruptedAt = previousProcessLastSaved
             } else {
                 sessions[index].lastBackendFailure = BackendFailureNotice(provider:sessions[index].lastProvider ?? "codex",
                     sessionID:nil,blocker:.effectsUncertain,dispatchStage:.dispatched)
@@ -10121,7 +10249,7 @@ private struct OS1DesktopApp: App {
         }
         if CommandLine.arguments.contains("--self-test-sidebar-queue") {
             Task { @MainActor in
-                do { try await sidebarQueueSelfTest(); exit(EXIT_SUCCESS) }
+                do { try await sidebarQueueSelfTest(); try await restartResumeSelfTest(); exit(EXIT_SUCCESS) }
                 catch { fputs("\(error.localizedDescription)\n", stderr); exit(EXIT_FAILURE) }
             }
             NSApplication.shared.run()
@@ -10678,6 +10806,171 @@ private struct OS1SettingsView: View {
         // all fit without scrolling to reach the cap.
         .frame(width: 560, height: 640)
     }
+}
+
+/// A Mac or app restart must not silently drop OS-1 work (build 327): an
+/// interrupted OS-1 repair resumes once through the follow-up path, a recent
+/// request that never reached a model re-runs once, old work stays parked,
+/// and a readback in a conversation with a pending repair says OS-1 resumes
+/// it. Every file lives under a temporary root; no model call.
+@MainActor
+private func restartResumeSelfTest() async throws {
+    func check(_ value: Bool, _ name: String) throws {
+        guard value else { throw RunnerError.message("Restart resume: " + name) }
+    }
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("os1-restart-resume-" + UUID().uuidString)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let now = Date()
+    func writeStore(_ folder: URL, sessions: [ConversationSession], inFlight: [PendingSubmission], savedAt: Date) throws {
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let url = folder.appendingPathComponent("sessions.json")
+        try JSONEncoder().encode(SessionEnvelope(schema: 4, sessions: sessions, queued: [], inFlight: inFlight)).write(to: url)
+        try FileManager.default.setAttributes([.modificationDate: savedAt], ofItemAtPath: url.path)
+    }
+    func complete(_ submission: PendingSubmission, _ context: String) throws -> AppRunSummary {
+        var returned = try SessionHandoff.decode(context).taskContext
+        if submission.readOnlyReconciliation == true {
+            returned?.setObjective(TaskContext.Objective(requestText: submission.request, kind: .explain, scope: .readOnly))
+        }
+        return AppRunSummary(status: "complete", steps: [AppRunStep(sequence: 1, provider: "claude", action: "test",
+            model: "fixture", effort: "low", revasDisposition: "adopted", sessionID: UUID().uuidString,
+            permissionProfile: "workspace_write", exitCode: 0, output: "fixture", stderr: "", durationMS: 10, nativeRecord: nil)],
+            taskContext: returned)
+    }
+    func idle(_ store: SessionStore) async throws {
+        let deadline = Date().addingTimeInterval(10)
+        while !store.activeRuns.isEmpty && Date() < deadline { try await Task.sleep(for: .milliseconds(20)) }
+        try check(store.activeRuns.isEmpty, "a fixture run did not finish")
+    }
+
+    // 1. OS-1 repairs: a dead writer 10 minutes ago, a dead writer 8 hours
+    // ago, and a writer that is still running. Each conversation's repair
+    // run was in flight when the previous app ended.
+    let repairFolder = root.appendingPathComponent("repairs")
+    let repairs = PendingOS1RepairStore(root: repairFolder.appendingPathComponent("pending-os1-repairs"))
+    var conversations: [ConversationSession] = []
+    var interruptedRuns: [PendingSubmission] = []
+    // The fourth conversation's owner follow-up ("고치라니까") was still
+    // waiting for OS-1's source (no model reached) when the app ended.
+    for title in ["recent", "old", "alive", "follow-up"] {
+        let first = ChatMessage(role: .user, text: "로고 바꿔 " + title)
+        var session = ConversationSession(title: title, workspace: root.path, messages: [first])
+        var run = PendingSubmission(sessionID: session.id, userMessageID: first.id, request: first.text,
+            provider: .auto, workspace: root.path, codexCapacity: 1, claudeCapacity: 1)
+        run.preflightOnly = false
+        if title == "follow-up" {
+            let again = ChatMessage(role: .user, text: "아니 그래서 고치라니까?")
+            session.messages.append(again)
+            run = PendingSubmission(sessionID: session.id, userMessageID: again.id, request: again.text,
+                provider: .auto, workspace: root.path, codexCapacity: 1, claudeCapacity: 1)
+        }
+        conversations.append(session); interruptedRuns.append(run)
+    }
+    let ages: [TimeInterval] = [10 * 60, 8 * 3_600, 60, 20 * 60]
+    let writer: [Int32] = [999_991, 999_992, getpid(), 999_994]
+    for (index, session) in conversations.enumerated() {
+        try repairs.save(PendingOS1Repair(id: session.id.uuidString.lowercased(), conversationID: session.id.uuidString,
+            submissionID: interruptedRuns[index].id.uuidString, ownerRequest: session.messages[0].text, corrections: [],
+            draftReport: "draft", sourceRoot: nil, startCommit: nil, now: now.addingTimeInterval(-ages[index]), pid: writer[index]))
+    }
+    try writeStore(repairFolder, sessions: conversations, inFlight: interruptedRuns, savedAt: now.addingTimeInterval(-60))
+    var repairCalls: [PendingSubmission] = []
+    let repairOperation: SessionStore.RunOperation = { submission, context, _, _, _ in
+        repairCalls.append(submission)
+        try await Task.sleep(for: .milliseconds(20))
+        return try complete(submission, context)
+    }
+    let repairStore = SessionStore(storageRoot: repairFolder, runOperation: repairOperation)
+    try check(repairCalls.isEmpty && repairStore.activeRuns.isEmpty, "opening the store started work by itself")
+    let alive: (PendingOS1Repair) -> Bool = { $0.pid == getpid() }
+    repairStore.resumeInterruptedWork(now: now, writerAlive: alive)
+    try await idle(repairStore)
+    let recent = conversations[0].id, old = conversations[1].id, live = conversations[2].id, followUp = conversations[3].id
+    let resumedRecent = repairCalls.filter { $0.sessionID == recent }, resumedFollowUp = repairCalls.filter { $0.sessionID == followUp }
+    try check(repairCalls.count == 2 && resumedRecent.count == 1 && resumedRecent[0].request == PendingOS1Repair.resumeRequest
+        && resumedRecent[0].readOnlyReconciliation != true, "the interrupted repair was not resumed exactly once through a follow-up")
+    try check(resumedFollowUp.count == 1 && resumedFollowUp[0].id == interruptedRuns[3].id && resumedFollowUp[0].request == "아니 그래서 고치라니까?",
+        "an owner follow-up that never reached a model was not the one resuming its repair, words included")
+    try check(repairStore.sessions.first { $0.id == followUp }!.messages.filter { $0.role == .user }.count == 2
+        && repairs.load(id: followUp.uuidString)?.autoResumeAttempted == true, "the follow-up resume duplicated a turn or did not spend its once")
+    let resumed = repairStore.sessions.first { $0.id == recent }!
+    try check(resumed.messages.filter { $0.role == .user }.map(\.text) == ["로고 바꿔 recent"], "the resume added a synthetic owner turn")
+    try check(resumed.messages.contains { $0.role == .system && $0.text.contains("OS-1") && ($0.text.contains("이어서") || $0.text.contains("resuming")) },
+        "the conversation does not say OS-1 is resuming the interrupted change")
+    try check(resumed.preservedTasks?.last?.request?.id == interruptedRuns[0].id, "the interrupted run was not preserved")
+    try check(repairs.load(id: recent.uuidString)?.state == .interrupted && repairs.load(id: recent.uuidString)?.autoResumeAttempted == true,
+        "the resumed record did not spend its once")
+    try check(repairs.load(id: old.uuidString)?.state == .interrupted && repairs.load(id: old.uuidString)?.autoResumeAttempted == nil,
+        "an 8-hour-old repair was resumed or not marked interrupted")
+    try check(repairs.load(id: live.uuidString)?.state == .running, "a repair whose writer still runs was taken over")
+    repairStore.resumeInterruptedWork(now: now.addingTimeInterval(5), writerAlive: alive)
+    try await idle(repairStore)
+    try check(repairCalls.count == 2, "a second pass resumed again")
+    let relaunched = SessionStore(storageRoot: repairFolder, runOperation: repairOperation)
+    // A repair this launch's own run writes from now on is not a restart's.
+    let fresh = UUID().uuidString.lowercased()
+    try repairs.save(PendingOS1Repair(id: fresh, conversationID: recent.uuidString, submissionID: nil, ownerRequest: "새 수리",
+        corrections: [], draftReport: "", sourceRoot: nil, startCommit: nil, now: Date().addingTimeInterval(1), pid: 999_993))
+    relaunched.resumeInterruptedWork(now: now.addingTimeInterval(10), writerAlive: alive)
+    try await idle(relaunched)
+    try check(repairCalls.count == 2, "an interrupted repair resumed more than once")
+    try check(repairs.load(id: live.uuidString)?.state == .running && repairs.load(id: fresh)?.state == .running,
+        "a live writer's record or one written after this launch was marked interrupted")
+    repairs.remove(id: fresh)
+
+    // A readback in a conversation whose repair is still pending says OS-1
+    // resumes it instead of asking the owner to.
+    relaunched.select(old)
+    relaunched.reconcileSelectedFailure()
+    try await idle(relaunched)
+    try check(repairCalls.count == 3 && repairCalls[2].readOnlyReconciliation == true
+        && repairCalls[2].request.contains(BackendRecovery.pendingOS1RepairNote), "the readback does not say OS-1 resumes the pending repair")
+    try check(!BackendRecovery.readbackPrompt(objective: "x").contains(BackendRecovery.pendingOS1RepairNote),
+        "a readback without a pending repair changed")
+
+    // 2. Requests that never reached a model: 3 hours old stays, 30 minutes
+    // old re-runs once, even when it fails again before a model.
+    var preflightCalls: [PendingSubmission] = []
+    for (label, age) in [("old", 3.0 * 3_600), ("recent", 30.0 * 60)] {
+        let folder = root.appendingPathComponent("preflight-" + label)
+        let request = ChatMessage(role: .user, text: "스피너 색 바꿔 " + label)
+        let session = ConversationSession(title: label, workspace: root.path, messages: [request])
+        let waiting = PendingSubmission(sessionID: session.id, userMessageID: request.id, request: request.text,
+            provider: .auto, workspace: root.path, codexCapacity: 1, claudeCapacity: 1)
+        try writeStore(folder, sessions: [session], inFlight: [waiting], savedAt: now.addingTimeInterval(-age))
+        let operation: SessionStore.RunOperation = { submission, _, _, _, _ in
+            preflightCalls.append(submission)
+            try await Task.sleep(for: .milliseconds(20))
+            throw RunnerError.backend(BackendFailureNotice(provider: "local", sessionID: nil,
+                blocker: .unclassified, dispatchStage: .notDispatched))
+        }
+        let store = SessionStore(storageRoot: folder, runOperation: operation)
+        let held = store.sessions.first { $0.id == session.id }!
+        try check(held.lastFailure?.id == waiting.id && held.lastFailure?.restartInterruptedAt != nil,
+            "the restart-interrupted preflight request lost its interruption time")
+        store.resumeInterruptedWork(now: now, writerAlive: { _ in false })
+        try await idle(store)
+        store.resumeInterruptedWork(now: now.addingTimeInterval(5), writerAlive: { _ in false })
+        try await idle(store)
+        let again = SessionStore(storageRoot: folder, runOperation: operation)
+        again.resumeInterruptedWork(now: now.addingTimeInterval(10), writerAlive: { _ in false })
+        try await idle(again)
+        let runs = preflightCalls.filter { $0.sessionID == session.id }
+        if label == "old" {
+            try check(runs.isEmpty && again.sessions.first { $0.id == session.id }?.lastFailure?.restartRequeued == nil,
+                "a 3-hour-old preflight failure was re-queued")
+        } else {
+            try check(runs.count == 1 && runs[0].id == waiting.id && runs[0].request == waiting.request,
+                "a 30-minute-old preflight failure was not re-run exactly once")
+            try check(again.sessions.first { $0.id == session.id }?.messages.filter { $0.role == .user }.count == 1,
+                "the re-run added a duplicate owner turn")
+        }
+    }
+    // Nothing above may touch the owner's real pending repairs.
+    try check(repairs.root.path.hasPrefix(root.path) && FileManager.default.fileExists(atPath: repairs.root.path),
+        "the fixture's pending repairs were not under its own root")
+    print("Restart resume self-test: interrupted repair resumed once, old work parked, recent preflight re-run once; model calls 0")
 }
 
 @MainActor

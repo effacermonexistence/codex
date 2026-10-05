@@ -13578,6 +13578,29 @@ func selfTest() throws {
                 && ownerRequestRunsReadOnly("co가 무슨 뜻이야?", attachedSource: false)
                 && !ownerRequestRunsReadOnly("아니 그래서 고치라니까?", attachedSource: false)
         }()),
+        ("after a restart the app resumes an interrupted OS-1 repair once with a write follow-up the CLI binds to the record; a reused pid is not its writer (build 327)", {
+            // The app's resume text must take the CLI's pending-repair path,
+            // never the read-only lane.
+            for text in [PendingOS1Repair.resumeRequestKorean, PendingOS1Repair.resumeRequestEnglish] {
+                for attached in [false, true] where ownerRequestRunsReadOnly(text, attachedSource: attached) { return false }
+            }
+            var record = PendingOS1Repair(id: UUID().uuidString.lowercased(), conversationID: UUID().uuidString, submissionID: nil,
+                ownerRequest: "로고 바꿔", corrections: [], draftReport: "", sourceRoot: nil, startCommit: nil)
+            // This process wrote it just now: its writer is alive.
+            guard PendingOS1Repair.writerAlive(record) else { return false }
+            // The same pid written before this process started is a reused
+            // number (a restart): the writer is gone.
+            var reused = record
+            reused.updatedAt = Date(timeIntervalSinceNow: -10 * 365 * 86_400)
+            guard !PendingOS1Repair.writerAlive(reused) else { return false }
+            var gone = record
+            gone.pid = 0
+            guard !PendingOS1Repair.writerAlive(gone) else { return false }
+            // The app's once does not stop the CLI from taking the resume.
+            record.state = .interrupted
+            record.autoResumeAttempted = true
+            return record.retryable(isAlive: { _ in true })
+        }()),
         ("a repair that did not finish is never a complete turn: the repair's answer and the note reach the owner (build 327)", {
             func step(_ disposition: String, _ output: String) -> RunStepSummary {
                 RunStepSummary(sequence: 1, provider: "claude", action: "agent_run", model: "m", effort: "max",
