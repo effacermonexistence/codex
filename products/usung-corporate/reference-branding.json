@@ -1,5 +1,5 @@
 {
-  "revision": "2026-10-05-helmet-surface-v35",
+  "revision": "2026-10-05-helmet-wordmark-v36",
   "scope": "Currently displayed reference media on Home, AI, Smart Construction and Physical AI, including video playback and posters",
   "approvedMark": "public/assets/brand/usung-wordmark.svg",
   "photoEditor": "Non-generative source-pixel compositing, local printed-mark masks and lossless WebP",
@@ -311,26 +311,39 @@
     },
     {
       "source": "assets/media/suffolk-naples.jpg",
-      "served": "assets/media/usung-field-team-v35.webp",
-      "servedBytes": 1695062,
-      "servedSha256": "5ad79c703a1383cb08e830adc4dc165f1d76843b5144b197f6f47fae4b33ef9b",
-      "transformation": "Only the two helmet-front U marks refined: native B glyphs mapped through observed source-plate curved traces with separate dome foreshortening; shared photographed diffuse/specular field in linear RGB, lens softness and original helmet grain. Old U pigment removed locally. All pixels outside the two small repair masks, including faces, hardware, vest and side sticker, equal v33. Original camera photograph retained; no scene generation.",
+      "served": "assets/media/usung-field-team-v36.webp",
+      "servedBytes": 1697842,
+      "servedSha256": "8c31c25422a0b2e7ce0c64e7f7930ba0a1962da4ca5ba18e6d68decc8b368463",
+      "transformation": "Both helmet-front U-only marks replaced by full canonical B USUNG wordmarks at the original decal footprint width, preserving native wordmark proportions and pink corner. Quadratic photographed surface mapping, source-derived diffuse/specular illumination in linear RGB, lens focus and source grain. Only 5637 front-print pixels differ from v35; faces, vest, hardware and side sticker preserved. Original camera photograph retained; no scene generation.",
       "verification": {
         "source": "products/usung-corporate/public/assets/media/suffolk-naples.jpg",
         "sourceSha256": "2a18b8507d87814098d8e7e69fa8d35738d2db0d7209a748b9e8bc6e89461aae",
-        "baseline": "products/usung-corporate/public/assets/media/usung-field-team-v33.webp",
-        "baselineSha256": "78fda174791049fc996c5fff8f02b3dc1c0aae7186cd121dd578039fec07afef",
-        "output": "products/usung-corporate/public/assets/media/usung-field-team-v35.webp",
-        "outputSha256": "5ad79c703a1383cb08e830adc4dc165f1d76843b5144b197f6f47fae4b33ef9b",
+        "baseline": "products/usung-corporate/public/assets/media/usung-field-team-v35.webp",
+        "baselineSha256": "5ad79c703a1383cb08e830adc4dc165f1d76843b5144b197f6f47fae4b33ef9b",
+        "output": "products/usung-corporate/public/assets/media/usung-field-team-v36.webp",
+        "outputSha256": "8c31c25422a0b2e7ce0c64e7f7930ba0a1962da4ca5ba18e6d68decc8b368463",
         "dimensions": [
           2200,
           1466
         ],
         "variant": "B",
         "nativePink": "#FF0F6F",
-        "method": "Nonlinear source-plate-curve mapping of native U; linear-RGB diffuse/specular response from photographed helmet surface; single premultiplied lens focus; original-photo grain. Estimated surface fit, no camera calibration or new scene generation.",
-        "changedPixels": 4313,
-        "outsideTwoFrontMasksEqualsV33": true,
+        "nativeCornerRect": [
+          72.362,
+          23.072,
+          16.09,
+          15.987
+        ],
+        "canonicalVector": "products/usung-corporate/src/brand.mjs",
+        "canonicalRaster": "products/usung-corporate/baseline/original-media-v36/canonical-transparent-wordmark.png",
+        "canonicalRasterSha256": "58d18887d26c140019c90675bfa53596ce6846cafd529b45cef78616ff18872a",
+        "sourcePage": "https://suffolk.com/",
+        "sourceAsset": "https://suffolk.com/wp-content/uploads/2025/07/NAPLES_BEACH_CLUB-12.png",
+        "outsideCombinedOriginalBrandMaskEqualsSource": true,
+        "noGeneration": true,
+        "method": "Full canonical B USUNG wordmark, native intrinsic aspect; exact model-forward delta against current v35 scene baseline. Nonlinear source-plate-curve mapping; linear-RGB diffuse/specular response from photographed helmet surface; single premultiplied lens focus; original-photo grain. Estimated surface fit, no camera calibration or new scene generation.",
+        "changedPixels": 5637,
+        "outsideTwoFrontMasksEqualsV35": true,
         "lossless": true,
         "protected": {
           "vest": true,
@@ -386,39 +399,42 @@
               ]
             ],
             "surfaceFit": "quadratic source-edge traces plus estimated vertical dome bow",
-            "nativeAspect": 0.847741935483871,
+            "nativeAspect": 4.818697144257874,
+            "v35ModelReconstructsAccepted": true,
+            "wordSpan": 1.2,
+            "wordVHeight": 0.7221869098262147,
             "estimatedSurfaceAspect": 2.9,
             "projectedCorners": [
               [
-                811.0560380916162,
-                228.12726038771774
+                773.8154794475466,
+                222.7952504630042
               ],
               [
-                835.5463755205054,
-                237.2197899320368
+                882.8166223046894,
+                265.2412917034013
               ],
               [
-                844.7463755205055,
-                269.794127912737
+                890.0384914029515,
+                288.98910829659866
               ],
               [
-                820.2560380916162,
-                261.2473443917454
+                781.0373485458088,
+                248.75172096556724
               ]
             ],
             "lensSigmaPx": 1.12,
             "whiteSurfaceSamples": 4226,
             "blackPrintedMedianBGR": [
-              110,
-              108,
-              107
+              124,
+              123,
+              121
             ],
             "linearReflectionRange": [
-              0.055810341417525874,
-              0.09512114831625558
+              0.04074304883132459,
+              0.09223356183680353
             ],
-            "inverseMapMaxResidualPx": 0.000007115433647471365,
-            "changedPixels": 2411
+            "inverseMapMaxResidualPx": 0.000011566001990666928,
+            "changedPixels": 3101
           },
           {
             "name": "woman",
@@ -467,654 +483,89 @@
               ]
             ],
             "surfaceFit": "quadratic source-edge traces plus estimated vertical dome bow",
-            "nativeAspect": 0.847741935483871,
+            "nativeAspect": 4.818697144257874,
+            "v35ModelReconstructsAccepted": true,
+            "wordSpan": 1.25,
+            "wordVHeight": 0.7003967875469755,
             "estimatedSurfaceAspect": 2.7,
             "projectedCorners": [
               [
-                1474.6769074303156,
-                191.66762078344053
+                1440.6702084450524,
+                194.52485346139906
               ],
               [
-                1496.976916032466,
-                196.2648228528722
+                1535.4690602547143,
+                215.1588386145683
               ],
               [
-                1510.437463719842,
-                227.19740948051071
+                1540.7113300961355,
+                236.476875671146
               ],
               [
-                1490.643111154558,
-                223.77255072044926
+                1454.4673247629403,
+                219.82514653860096
               ]
             ],
             "lensSigmaPx": 1.05,
             "whiteSurfaceSamples": 3876,
             "blackPrintedMedianBGR": [
-              121,
-              119,
-              117.5
+              130,
+              127,
+              125
             ],
             "linearReflectionRange": [
-              0.05263466285588327,
-              0.10736091852063642
+              0.04384098280621426,
+              0.09652807086960426
             ],
-            "inverseMapMaxResidualPx": 0.000004332452368151276,
-            "changedPixels": 1902
+            "inverseMapMaxResidualPx": 0.000010377373863408262,
+            "changedPixels": 2536
           }
-        ]
+        ],
+        "baselineApprovalState": "Prior scene and secondary prints preserved; the owner rejected the v35 front U branding and requested these full USUNG replacements.",
+        "durableScript": "products/usung-corporate/baseline/original-media-v36/repair-wordmarks.py"
       },
       "editor": "Deterministic source-pixel compositing; no scene generation",
       "previousServed": {
-        "file": "assets/media/usung-field-team-v26.webp",
-        "sha256": "00855895d5a7f8184cde8de85882be72d163078269db668ea5e4d8d6116f8812",
-        "verification": {
-          "sourceFile": "products/usung-corporate/public/assets/media/suffolk-naples.jpg",
-          "baselineFile": "products/usung-corporate/public/assets/media/usung-field-team-v25.webp",
-          "candidateFile": "outputs/website/usung-rework-v26/edited/usung-field-team-v26.webp",
-          "sourceSha256": "2a18b8507d87814098d8e7e69fa8d35738d2db0d7209a748b9e8bc6e89461aae",
-          "baselineSha256": "671a3d5516d5aaf426f2aeb2a8ea8cca7e417d6a8032cbef49033408fbf65101",
-          "candidateSha256": "00855895d5a7f8184cde8de85882be72d163078269db668ea5e4d8d6116f8812",
-          "dimensions": [
-            2200,
-            1466
-          ],
-          "changedVersusV25Pixels": 6504,
-          "outsideRepairMaskEqualsV25": true,
-          "outsideAllBrandMasksEqualsSource": true,
-          "losslessEncoding": true,
-          "preservedExactly": {
-            "vest": true,
-            "yellow-side-sticker": true,
-            "man-tab-hardware": true,
-            "faces": true
-          },
-          "repairs": [
-            {
-              "name": "man",
-              "oldPrintPolygon": [
-                [
-                  771,
-                  216
-                ],
-                [
-                  829,
-                  230
-                ],
-                [
-                  870,
-                  251
-                ],
-                [
-                  902,
-                  282
-                ],
-                [
-                  939,
-                  349
-                ],
-                [
-                  919,
-                  334
-                ],
-                [
-                  885,
-                  304
-                ],
-                [
-                  788,
-                  271
-                ]
-              ],
-              "nativeUQuadrilateral": [
-                [
-                  808,
-                  238
-                ],
-                [
-                  838,
-                  248
-                ],
-                [
-                  851,
-                  278
-                ],
-                [
-                  818,
-                  267
-                ]
-              ],
-              "sourceGrainDonor": [
-                696,
-                236,
-                748,
-                292
-              ],
-              "printFocusSigma": 1.15,
-              "changedPixels": 3655,
-              "surfaceSamples": 6823
-            },
-            {
-              "name": "woman",
-              "oldPrintPolygon": [
-                [
-                  1438,
-                  187
-                ],
-                [
-                  1490,
-                  187
-                ],
-                [
-                  1520,
-                  201
-                ],
-                [
-                  1549,
-                  223
-                ],
-                [
-                  1580,
-                  269
-                ],
-                [
-                  1553,
-                  255
-                ],
-                [
-                  1524,
-                  244
-                ],
-                [
-                  1458,
-                  231
-                ]
-              ],
-              "nativeUQuadrilateral": [
-                [
-                  1470,
-                  198
-                ],
-                [
-                  1499,
-                  205
-                ],
-                [
-                  1511,
-                  228
-                ],
-                [
-                  1479,
-                  220
-                ]
-              ],
-              "sourceGrainDonor": [
-                1350,
-                198,
-                1416,
-                252
-              ],
-              "printFocusSigma": 1.1,
-              "changedPixels": 2803,
-              "surfaceSamples": 4801
-            }
-          ],
-          "sourcePage": "https://suffolk.com/",
-          "sourceAsset": "https://suffolk.com/wp-content/uploads/2025/07/NAPLES_BEACH_CLUB-12.png",
-          "nativeLogoAsset": "outputs/website/usung-reference-branding-v22/audit/black-symbol.png",
-          "nativeDesignPink": "#FF0F6F",
-          "pixelTransform": "Native U perspective projection; deterministic interpolation of existing helmet print; source-photo grain and photographed local illumination; no generative imagery",
-          "claim": "Original photo scene retained. Existing v25 front wordmarks replaced by approved compact native U using reconstructed local helmet light and source-photo grain; accepted vest and side sticker unchanged. Candidate requires visual review.",
-          "finalAdditionalRepair": {
-            "target": "Confirmed original SUFFOLK red pigment remnant at woman front helmet right curve",
-            "regionPolygon": [
-              [
-                1513,
-                196
-              ],
-              [
-                1542,
-                210
-              ],
-              [
-                1545,
-                218
-              ],
-              [
-                1518,
-                205
-              ]
-            ],
-            "changedPixels": 46,
-            "blueAndGreenChannelsUnchanged": true,
-            "skyAndCurveGeometryRetained": true,
-            "allOtherPixelsEqualParentReviewedCandidate": true,
-            "mask": "outputs/website/usung-rework-v26/audit/woman-rim-print-remnant-mask.png"
-          },
-          "repairMask": "outputs/website/usung-rework-v26/audit/naples-v26-change-mask.png",
-          "sourceMask": "outputs/website/usung-rework-v26/audit/naples-v26-source-mask.png",
-          "unmodifiedOriginalHelmetParts": {
-            "man-blue-triangle-hardware": {
-              "box": [
-                534,
-                210,
-                701,
-                303
-              ],
-              "candidateEqualsOriginalPixels": true
-            },
-            "man-small-side-shield": {
-              "box": [
-                463,
-                282,
-                548,
-                359
-              ],
-              "candidateEqualsOriginalPixels": true
-            },
-            "woman-blue-triangle-hardware": {
-              "box": [
-                1222,
-                211,
-                1380,
-                310
-              ],
-              "candidateEqualsOriginalPixels": true
-            },
-            "woman-side-buckle-hardware": {
-              "box": [
-                1103,
-                312,
-                1184,
-                412
-              ],
-              "candidateEqualsOriginalPixels": true
-            }
-          },
-          "unmodifiedOriginalHelmetPartsInterpretation": "These dark blue triangular vent/accessory areas and side hardware occupy different original positions from the front rectangular blue/red SUFFOLK contractor decal. The small manufacturer-like text is too blurred to identify with certainty; it is unchanged. No SUFFOLK logo is legible in these original hardware regions."
-        },
-        "transformation": "Compact approved U replaces both stretched front wordmarks in existing helmet print footprints; source curvature, photographed illumination, grain and focus matched; confirmed red company-print remnant removed locally. Existing vest and side sticker preserved exactly; original scene retained; no generation."
+        "file": "assets/media/usung-field-team-v35.webp",
+        "sha256": "5ad79c703a1383cb08e830adc4dc165f1d76843b5144b197f6f47fae4b33ef9b",
+        "verification": "baseline/original-media-v35/helmet-verification.json"
       },
-      "durableVerification": "baseline/original-media-v35/helmet-verification.json",
-      "priorServed": "assets/media/usung-field-team-v33.webp",
+      "durableVerification": "baseline/original-media-v36/wordmark-verification.json",
+      "priorServed": "assets/media/usung-field-team-v35.webp",
       "previousVerification": {
-        "source": "assets/media/suffolk-naples.jpg",
-        "served": "assets/media/usung-field-team-v33.webp",
-        "servedBytes": 1696252,
-        "servedSha256": "78fda174791049fc996c5fff8f02b3dc1c0aae7186cd121dd578039fec07afef",
-        "transformation": "Approved B native U and #FF0F6F corner without a left strip projected together onto estimated local helmet surfaces, corrected print proportions and direction, shared source-photo reflection/grain and single matched-focus filter. Front helmet prints and tiny vest/sticker corners corrected locally; faces, hardware and sticker lower fields preserved exactly. No scene generation.",
-        "verification": {
-          "source": "products/usung-corporate/public/assets/media/suffolk-naples.jpg",
-          "sourceSha256": "2a18b8507d87814098d8e7e69fa8d35738d2db0d7209a748b9e8bc6e89461aae",
-          "baseline": "products/usung-corporate/public/assets/media/usung-field-team-v26.webp",
-          "baselineSha256": "00855895d5a7f8184cde8de85882be72d163078269db668ea5e4d8d6116f8812",
-          "output": "outputs/website/usung-surface-branding-v33/edited/usung-field-team-v33.webp",
-          "outputSha256": "78fda174791049fc996c5fff8f02b3dc1c0aae7186cd121dd578039fec07afef",
-          "dimensions": [
-            2200,
-            1466
-          ],
-          "nativeVector": "products/usung-corporate/src/brand.mjs:firstU",
-          "nativeAspect": 0.847741935483871,
-          "nativePink": "#FF0F6F",
-          "repair": "Canonical vector alpha and color projected together onto estimated local helmet surfaces, one focus filter, shared illumination and original-photo grain. Deterministic interpolation only in former print regions.",
-          "noSceneGeneration": true,
-          "changedPixels": 3510,
-          "outsideRepairMaskEqualsBaseline": true,
-          "protected": {
-            "sticker-lower-fields": true,
-            "hardware": true,
-            "faces": true
-          },
-          "repairs": [
-            {
-              "name": "man",
-              "quad": [
-                [
-                  801,
-                  226
-                ],
-                [
-                  840,
-                  235
-                ],
-                [
-                  854,
-                  282
-                ],
-                [
-                  814,
-                  273
-                ]
-              ],
-              "focusSigma": 1.05,
-              "projectedCurveBowPx": 1,
-              "changedPixels": 1904
-            },
-            {
-              "name": "woman",
-              "quad": [
-                [
-                  1461,
-                  190
-                ],
-                [
-                  1494,
-                  194
-                ],
-                [
-                  1509,
-                  231
-                ],
-                [
-                  1476,
-                  227
-                ]
-              ],
-              "focusSigma": 1,
-              "projectedCurveBowPx": 0.8,
-              "changedPixels": 1462
-            },
-            {
-              "name": "vest-corner",
-              "quad": [
-                [
-                  894,
-                  1256
-                ],
-                [
-                  908,
-                  1263
-                ],
-                [
-                  918,
-                  1286
-                ],
-                [
-                  904,
-                  1279
-                ]
-              ],
-              "variant": "B",
-              "focusSigma": 1.2,
-              "cornerOnly": true,
-              "changedPixels": 112
-            },
-            {
-              "name": "sticker-corner",
-              "quad": [
-                [
-                  1160,
-                  264
-                ],
-                [
-                  1206,
-                  244
-                ],
-                [
-                  1206,
-                  253
-                ],
-                [
-                  1160,
-                  273
-                ]
-              ],
-              "variant": "B",
-              "focusSigma": 0.8,
-              "cornerOnly": true,
-              "changedPixels": 32
-            }
-          ]
-        },
-        "editor": "Deterministic source-pixel compositing; no scene generation",
-        "previousServed": {
-          "file": "assets/media/usung-field-team-v26.webp",
-          "sha256": "00855895d5a7f8184cde8de85882be72d163078269db668ea5e4d8d6116f8812",
-          "verification": {
-            "sourceFile": "products/usung-corporate/public/assets/media/suffolk-naples.jpg",
-            "baselineFile": "products/usung-corporate/public/assets/media/usung-field-team-v25.webp",
-            "candidateFile": "outputs/website/usung-rework-v26/edited/usung-field-team-v26.webp",
-            "sourceSha256": "2a18b8507d87814098d8e7e69fa8d35738d2db0d7209a748b9e8bc6e89461aae",
-            "baselineSha256": "671a3d5516d5aaf426f2aeb2a8ea8cca7e417d6a8032cbef49033408fbf65101",
-            "candidateSha256": "00855895d5a7f8184cde8de85882be72d163078269db668ea5e4d8d6116f8812",
-            "dimensions": [
-              2200,
-              1466
-            ],
-            "changedVersusV25Pixels": 6504,
-            "outsideRepairMaskEqualsV25": true,
-            "outsideAllBrandMasksEqualsSource": true,
-            "losslessEncoding": true,
-            "preservedExactly": {
-              "vest": true,
-              "yellow-side-sticker": true,
-              "man-tab-hardware": true,
-              "faces": true
-            },
-            "repairs": [
-              {
-                "name": "man",
-                "oldPrintPolygon": [
-                  [
-                    771,
-                    216
-                  ],
-                  [
-                    829,
-                    230
-                  ],
-                  [
-                    870,
-                    251
-                  ],
-                  [
-                    902,
-                    282
-                  ],
-                  [
-                    939,
-                    349
-                  ],
-                  [
-                    919,
-                    334
-                  ],
-                  [
-                    885,
-                    304
-                  ],
-                  [
-                    788,
-                    271
-                  ]
-                ],
-                "nativeUQuadrilateral": [
-                  [
-                    808,
-                    238
-                  ],
-                  [
-                    838,
-                    248
-                  ],
-                  [
-                    851,
-                    278
-                  ],
-                  [
-                    818,
-                    267
-                  ]
-                ],
-                "sourceGrainDonor": [
-                  696,
-                  236,
-                  748,
-                  292
-                ],
-                "printFocusSigma": 1.15,
-                "changedPixels": 3655,
-                "surfaceSamples": 6823
-              },
-              {
-                "name": "woman",
-                "oldPrintPolygon": [
-                  [
-                    1438,
-                    187
-                  ],
-                  [
-                    1490,
-                    187
-                  ],
-                  [
-                    1520,
-                    201
-                  ],
-                  [
-                    1549,
-                    223
-                  ],
-                  [
-                    1580,
-                    269
-                  ],
-                  [
-                    1553,
-                    255
-                  ],
-                  [
-                    1524,
-                    244
-                  ],
-                  [
-                    1458,
-                    231
-                  ]
-                ],
-                "nativeUQuadrilateral": [
-                  [
-                    1470,
-                    198
-                  ],
-                  [
-                    1499,
-                    205
-                  ],
-                  [
-                    1511,
-                    228
-                  ],
-                  [
-                    1479,
-                    220
-                  ]
-                ],
-                "sourceGrainDonor": [
-                  1350,
-                  198,
-                  1416,
-                  252
-                ],
-                "printFocusSigma": 1.1,
-                "changedPixels": 2803,
-                "surfaceSamples": 4801
-              }
-            ],
-            "sourcePage": "https://suffolk.com/",
-            "sourceAsset": "https://suffolk.com/wp-content/uploads/2025/07/NAPLES_BEACH_CLUB-12.png",
-            "nativeLogoAsset": "outputs/website/usung-reference-branding-v22/audit/black-symbol.png",
-            "nativeDesignPink": "#FF0F6F",
-            "pixelTransform": "Native U perspective projection; deterministic interpolation of existing helmet print; source-photo grain and photographed local illumination; no generative imagery",
-            "claim": "Original photo scene retained. Existing v25 front wordmarks replaced by approved compact native U using reconstructed local helmet light and source-photo grain; accepted vest and side sticker unchanged. Candidate requires visual review.",
-            "finalAdditionalRepair": {
-              "target": "Confirmed original SUFFOLK red pigment remnant at woman front helmet right curve",
-              "regionPolygon": [
-                [
-                  1513,
-                  196
-                ],
-                [
-                  1542,
-                  210
-                ],
-                [
-                  1545,
-                  218
-                ],
-                [
-                  1518,
-                  205
-                ]
-              ],
-              "changedPixels": 46,
-              "blueAndGreenChannelsUnchanged": true,
-              "skyAndCurveGeometryRetained": true,
-              "allOtherPixelsEqualParentReviewedCandidate": true,
-              "mask": "outputs/website/usung-rework-v26/audit/woman-rim-print-remnant-mask.png"
-            },
-            "repairMask": "outputs/website/usung-rework-v26/audit/naples-v26-change-mask.png",
-            "sourceMask": "outputs/website/usung-rework-v26/audit/naples-v26-source-mask.png",
-            "unmodifiedOriginalHelmetParts": {
-              "man-blue-triangle-hardware": {
-                "box": [
-                  534,
-                  210,
-                  701,
-                  303
-                ],
-                "candidateEqualsOriginalPixels": true
-              },
-              "man-small-side-shield": {
-                "box": [
-                  463,
-                  282,
-                  548,
-                  359
-                ],
-                "candidateEqualsOriginalPixels": true
-              },
-              "woman-blue-triangle-hardware": {
-                "box": [
-                  1222,
-                  211,
-                  1380,
-                  310
-                ],
-                "candidateEqualsOriginalPixels": true
-              },
-              "woman-side-buckle-hardware": {
-                "box": [
-                  1103,
-                  312,
-                  1184,
-                  412
-                ],
-                "candidateEqualsOriginalPixels": true
-              }
-            },
-            "unmodifiedOriginalHelmetPartsInterpretation": "These dark blue triangular vent/accessory areas and side hardware occupy different original positions from the front rectangular blue/red SUFFOLK contractor decal. The small manufacturer-like text is too blurred to identify with certainty; it is unchanged. No SUFFOLK logo is legible in these original hardware regions."
-          },
-          "transformation": "Compact approved U replaces both stretched front wordmarks in existing helmet print footprints; source curvature, photographed illumination, grain and focus matched; confirmed red company-print remnant removed locally. Existing vest and side sticker preserved exactly; original scene retained; no generation."
-        },
-        "durableVerification": "baseline/original-media-v33/helmet-verification.json"
+        "served": "assets/media/usung-field-team-v35.webp",
+        "servedSha256": "5ad79c703a1383cb08e830adc4dc165f1d76843b5144b197f6f47fae4b33ef9b",
+        "durableVerification": "baseline/original-media-v35/helmet-verification.json"
       },
       "currentVerification": {
         "source": "products/usung-corporate/public/assets/media/suffolk-naples.jpg",
         "sourceSha256": "2a18b8507d87814098d8e7e69fa8d35738d2db0d7209a748b9e8bc6e89461aae",
-        "baseline": "products/usung-corporate/public/assets/media/usung-field-team-v33.webp",
-        "baselineSha256": "78fda174791049fc996c5fff8f02b3dc1c0aae7186cd121dd578039fec07afef",
-        "output": "products/usung-corporate/public/assets/media/usung-field-team-v35.webp",
-        "outputSha256": "5ad79c703a1383cb08e830adc4dc165f1d76843b5144b197f6f47fae4b33ef9b",
+        "baseline": "products/usung-corporate/public/assets/media/usung-field-team-v35.webp",
+        "baselineSha256": "5ad79c703a1383cb08e830adc4dc165f1d76843b5144b197f6f47fae4b33ef9b",
+        "output": "products/usung-corporate/public/assets/media/usung-field-team-v36.webp",
+        "outputSha256": "8c31c25422a0b2e7ce0c64e7f7930ba0a1962da4ca5ba18e6d68decc8b368463",
         "dimensions": [
           2200,
           1466
         ],
         "variant": "B",
         "nativePink": "#FF0F6F",
-        "method": "Nonlinear source-plate-curve mapping of native U; linear-RGB diffuse/specular response from photographed helmet surface; single premultiplied lens focus; original-photo grain. Estimated surface fit, no camera calibration or new scene generation.",
-        "changedPixels": 4313,
-        "outsideTwoFrontMasksEqualsV33": true,
+        "nativeCornerRect": [
+          72.362,
+          23.072,
+          16.09,
+          15.987
+        ],
+        "canonicalVector": "products/usung-corporate/src/brand.mjs",
+        "canonicalRaster": "products/usung-corporate/baseline/original-media-v36/canonical-transparent-wordmark.png",
+        "canonicalRasterSha256": "58d18887d26c140019c90675bfa53596ce6846cafd529b45cef78616ff18872a",
+        "sourcePage": "https://suffolk.com/",
+        "sourceAsset": "https://suffolk.com/wp-content/uploads/2025/07/NAPLES_BEACH_CLUB-12.png",
+        "outsideCombinedOriginalBrandMaskEqualsSource": true,
+        "noGeneration": true,
+        "method": "Full canonical B USUNG wordmark, native intrinsic aspect; exact model-forward delta against current v35 scene baseline. Nonlinear source-plate-curve mapping; linear-RGB diffuse/specular response from photographed helmet surface; single premultiplied lens focus; original-photo grain. Estimated surface fit, no camera calibration or new scene generation.",
+        "changedPixels": 5637,
+        "outsideTwoFrontMasksEqualsV35": true,
         "lossless": true,
         "protected": {
           "vest": true,
@@ -1170,39 +621,42 @@
               ]
             ],
             "surfaceFit": "quadratic source-edge traces plus estimated vertical dome bow",
-            "nativeAspect": 0.847741935483871,
+            "nativeAspect": 4.818697144257874,
+            "v35ModelReconstructsAccepted": true,
+            "wordSpan": 1.2,
+            "wordVHeight": 0.7221869098262147,
             "estimatedSurfaceAspect": 2.9,
             "projectedCorners": [
               [
-                811.0560380916162,
-                228.12726038771774
+                773.8154794475466,
+                222.7952504630042
               ],
               [
-                835.5463755205054,
-                237.2197899320368
+                882.8166223046894,
+                265.2412917034013
               ],
               [
-                844.7463755205055,
-                269.794127912737
+                890.0384914029515,
+                288.98910829659866
               ],
               [
-                820.2560380916162,
-                261.2473443917454
+                781.0373485458088,
+                248.75172096556724
               ]
             ],
             "lensSigmaPx": 1.12,
             "whiteSurfaceSamples": 4226,
             "blackPrintedMedianBGR": [
-              110,
-              108,
-              107
+              124,
+              123,
+              121
             ],
             "linearReflectionRange": [
-              0.055810341417525874,
-              0.09512114831625558
+              0.04074304883132459,
+              0.09223356183680353
             ],
-            "inverseMapMaxResidualPx": 0.000007115433647471365,
-            "changedPixels": 2411
+            "inverseMapMaxResidualPx": 0.000011566001990666928,
+            "changedPixels": 3101
           },
           {
             "name": "woman",
@@ -1251,41 +705,46 @@
               ]
             ],
             "surfaceFit": "quadratic source-edge traces plus estimated vertical dome bow",
-            "nativeAspect": 0.847741935483871,
+            "nativeAspect": 4.818697144257874,
+            "v35ModelReconstructsAccepted": true,
+            "wordSpan": 1.25,
+            "wordVHeight": 0.7003967875469755,
             "estimatedSurfaceAspect": 2.7,
             "projectedCorners": [
               [
-                1474.6769074303156,
-                191.66762078344053
+                1440.6702084450524,
+                194.52485346139906
               ],
               [
-                1496.976916032466,
-                196.2648228528722
+                1535.4690602547143,
+                215.1588386145683
               ],
               [
-                1510.437463719842,
-                227.19740948051071
+                1540.7113300961355,
+                236.476875671146
               ],
               [
-                1490.643111154558,
-                223.77255072044926
+                1454.4673247629403,
+                219.82514653860096
               ]
             ],
             "lensSigmaPx": 1.05,
             "whiteSurfaceSamples": 3876,
             "blackPrintedMedianBGR": [
-              121,
-              119,
-              117.5
+              130,
+              127,
+              125
             ],
             "linearReflectionRange": [
-              0.05263466285588327,
-              0.10736091852063642
+              0.04384098280621426,
+              0.09652807086960426
             ],
-            "inverseMapMaxResidualPx": 0.000004332452368151276,
-            "changedPixels": 1902
+            "inverseMapMaxResidualPx": 0.000010377373863408262,
+            "changedPixels": 2536
           }
-        ]
+        ],
+        "baselineApprovalState": "Prior scene and secondary prints preserved; the owner rejected the v35 front U branding and requested these full USUNG replacements.",
+        "durableScript": "products/usung-corporate/baseline/original-media-v36/repair-wordmarks.py"
       }
     },
     {
@@ -2394,7 +1853,7 @@
     "perceptualClaim": "Visual review of selected full-frame and occlusion frames; no universal indistinguishability claim",
     "footer": "White background, black approved USUNG wordmark, #FF0F6F accent at upper right of first U"
   },
-  "previousRevision": "2026-10-04-original-media-v24",
+  "previousRevision": "2026-10-05-helmet-surface-v35",
   "sourceOnlyRule": "Real photos and videos must start from preserved source media. No generative replacement scene or full-frame imagegen edit. Keep source scene geometry and pixels outside explicitly recorded brand masks.",
   "approvedVariant": {
     "variant": "B",
@@ -2408,6 +1867,14 @@
     }
   },
   "helmetSurfaceRevision": {
+    "revision": "2026-10-05-helmet-wordmark-v36",
+    "variant": "B",
+    "wordmark": "USUNG",
+    "sourcePhotoUnchanged": true,
+    "onlyTwoFrontMarks": true,
+    "verification": "baseline/original-media-v36/wordmark-verification.json"
+  },
+  "previousHelmetSurfaceRevision": {
     "revision": "2026-10-05-helmet-surface-v35",
     "variant": "B",
     "sourcePhotoUnchanged": true,

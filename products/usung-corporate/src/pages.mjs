@@ -29,7 +29,7 @@ export const home = `<main id="main-content">
  <div class="corp-home-division-body"><div class="corp-home-division-copy"><h3>현장을 읽고, 판단을 확인하고,<br>실제 움직임으로 연결합니다.</h3><p>센서·비전·현장 시스템에서 얻은 데이터를 바탕으로 Physical AI의 적용 방향을 구체화합니다.</p><span class="corp-home-division-detail">PERCEPTION / VERIFICATION / ACTION</span></div><div class="corp-home-division-media" aria-hidden="true"><video muted loop playsinline preload="none" poster="/assets/references/usung-field-robots-v33-poster.webp" aria-hidden="true"><source src="/assets/references/usung-field-robots-v33.mp4" type="video/mp4"></video></div>${motionButton}</div>
 </section>
 </div>${contact}</main>`;
-const sourceCredit = (_url, _name, label = 'VISUAL REFERENCE') => `<span class="ref-credit">${label}</span>`;
+const sourceCredit = () => '';
 const sourceVideo = (name, cls = '', preload = 'none') => `<video class="${cls}" muted loop playsinline preload="${preload}" poster="/assets/references/${name}-poster.${name.endsWith("-v33") ? "webp" : "jpg"}" aria-hidden="true"><source src="/assets/references/${name}.mp4" type="video/mp4"></video>`;
 export const ai = `<main id="main-content">
 <section class="ref-ai-hero">

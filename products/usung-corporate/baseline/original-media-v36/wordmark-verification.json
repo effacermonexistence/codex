@@ -1,0 +1,209 @@
+{
+  "source": "products/usung-corporate/public/assets/media/suffolk-naples.jpg",
+  "sourceSha256": "2a18b8507d87814098d8e7e69fa8d35738d2db0d7209a748b9e8bc6e89461aae",
+  "baseline": "products/usung-corporate/public/assets/media/usung-field-team-v35.webp",
+  "baselineSha256": "5ad79c703a1383cb08e830adc4dc165f1d76843b5144b197f6f47fae4b33ef9b",
+  "output": "products/usung-corporate/public/assets/media/usung-field-team-v36.webp",
+  "outputSha256": "8c31c25422a0b2e7ce0c64e7f7930ba0a1962da4ca5ba18e6d68decc8b368463",
+  "dimensions": [
+    2200,
+    1466
+  ],
+  "variant": "B",
+  "nativePink": "#FF0F6F",
+  "nativeCornerRect": [
+    72.362,
+    23.072,
+    16.09,
+    15.987
+  ],
+  "canonicalVector": "products/usung-corporate/src/brand.mjs",
+  "canonicalRaster": "products/usung-corporate/baseline/original-media-v36/canonical-transparent-wordmark.png",
+  "canonicalRasterSha256": "58d18887d26c140019c90675bfa53596ce6846cafd529b45cef78616ff18872a",
+  "sourcePage": "https://suffolk.com/",
+  "sourceAsset": "https://suffolk.com/wp-content/uploads/2025/07/NAPLES_BEACH_CLUB-12.png",
+  "outsideCombinedOriginalBrandMaskEqualsSource": true,
+  "noGeneration": true,
+  "method": "Full canonical B USUNG wordmark, native intrinsic aspect; exact model-forward delta against current v35 scene baseline. Nonlinear source-plate-curve mapping; linear-RGB diffuse/specular response from photographed helmet surface; single premultiplied lens focus; original-photo grain. Estimated surface fit, no camera calibration or new scene generation.",
+  "changedPixels": 5637,
+  "outsideTwoFrontMasksEqualsV35": true,
+  "lossless": true,
+  "protected": {
+    "vest": true,
+    "side-sticker": true,
+    "man-hardware": true,
+    "faces": true
+  },
+  "repairs": [
+    {
+      "name": "man",
+      "observedTopTrace": [
+        [
+          774,
+          218
+        ],
+        [
+          797,
+          223
+        ],
+        [
+          820,
+          230
+        ],
+        [
+          843,
+          239
+        ],
+        [
+          865,
+          251
+        ]
+      ],
+      "observedBaselineTrace": [
+        [
+          784,
+          254
+        ],
+        [
+          807,
+          259
+        ],
+        [
+          830,
+          266
+        ],
+        [
+          853,
+          274
+        ],
+        [
+          875,
+          285
+        ]
+      ],
+      "surfaceFit": "quadratic source-edge traces plus estimated vertical dome bow",
+      "nativeAspect": 4.818697144257874,
+      "v35ModelReconstructsAccepted": true,
+      "wordSpan": 1.2,
+      "wordVHeight": 0.7221869098262147,
+      "estimatedSurfaceAspect": 2.9,
+      "projectedCorners": [
+        [
+          773.8154794475466,
+          222.7952504630042
+        ],
+        [
+          882.8166223046894,
+          265.2412917034013
+        ],
+        [
+          890.0384914029515,
+          288.98910829659866
+        ],
+        [
+          781.0373485458088,
+          248.75172096556724
+        ]
+      ],
+      "lensSigmaPx": 1.12,
+      "whiteSurfaceSamples": 4226,
+      "blackPrintedMedianBGR": [
+        124,
+        123,
+        121
+      ],
+      "linearReflectionRange": [
+        0.04074304883132459,
+        0.09223356183680353
+      ],
+      "inverseMapMaxResidualPx": 0.000011566001990666928,
+      "changedPixels": 3101
+    },
+    {
+      "name": "woman",
+      "observedTopTrace": [
+        [
+          1439,
+          189
+        ],
+        [
+          1456,
+          189
+        ],
+        [
+          1478,
+          191
+        ],
+        [
+          1500,
+          195
+        ],
+        [
+          1515,
+          202
+        ]
+      ],
+      "observedBaselineTrace": [
+        [
+          1458,
+          225
+        ],
+        [
+          1476,
+          225
+        ],
+        [
+          1495,
+          225
+        ],
+        [
+          1513,
+          229
+        ],
+        [
+          1527,
+          234
+        ]
+      ],
+      "surfaceFit": "quadratic source-edge traces plus estimated vertical dome bow",
+      "nativeAspect": 4.818697144257874,
+      "v35ModelReconstructsAccepted": true,
+      "wordSpan": 1.25,
+      "wordVHeight": 0.7003967875469755,
+      "estimatedSurfaceAspect": 2.7,
+      "projectedCorners": [
+        [
+          1440.6702084450524,
+          194.52485346139906
+        ],
+        [
+          1535.4690602547143,
+          215.1588386145683
+        ],
+        [
+          1540.7113300961355,
+          236.476875671146
+        ],
+        [
+          1454.4673247629403,
+          219.82514653860096
+        ]
+      ],
+      "lensSigmaPx": 1.05,
+      "whiteSurfaceSamples": 3876,
+      "blackPrintedMedianBGR": [
+        130,
+        127,
+        125
+      ],
+      "linearReflectionRange": [
+        0.04384098280621426,
+        0.09652807086960426
+      ],
+      "inverseMapMaxResidualPx": 0.000010377373863408262,
+      "changedPixels": 2536
+    }
+  ],
+  "baselineApprovalState": "Prior scene and secondary prints preserved; the owner rejected the v35 front U branding and requested these full USUNG replacements.",
+  "durableScript": "products/usung-corporate/baseline/original-media-v36/repair-wordmarks.py"
+}

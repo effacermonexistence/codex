@@ -649,7 +649,7 @@
       "file": "assets/media/usung-field-team-v35.webp",
       "sourcePage": "https://suffolk.com/",
       "sourceAsset": "https://suffolk.com/wp-content/uploads/2025/07/NAPLES_BEACH_CLUB-12.png",
-      "used": true,
+      "used": false,
       "bytes": 1695062,
       "sha256": "5ad79c703a1383cb08e830adc4dc165f1d76843b5144b197f6f47fae4b33ef9b",
       "servedBytes": 1695062,
@@ -661,10 +661,28 @@
         "sha256": "78fda174791049fc996c5fff8f02b3dc1c0aae7186cd121dd578039fec07afef"
       },
       "durableVerification": "baseline/original-media-v35/helmet-verification.json"
+    },
+    {
+      "file": "assets/media/usung-field-team-v36.webp",
+      "sourcePage": "https://suffolk.com/",
+      "sourceAsset": "https://suffolk.com/wp-content/uploads/2025/07/NAPLES_BEACH_CLUB-12.png",
+      "used": true,
+      "bytes": 1697842,
+      "sha256": "8c31c25422a0b2e7ce0c64e7f7930ba0a1962da4ca5ba18e6d68decc8b368463",
+      "servedBytes": 1697842,
+      "servedSha256": "8c31c25422a0b2e7ce0c64e7f7930ba0a1962da4ca5ba18e6d68decc8b368463",
+      "servedTransformation": "Both helmet-front U-only marks replaced by full canonical B USUNG wordmarks at the original decal footprint width, preserving native wordmark proportions and pink corner. Quadratic photographed surface mapping, source-derived diffuse/specular illumination in linear RGB, lens focus and source grain. Only 5637 front-print pixels differ from v35; faces, vest, hardware and side sticker preserved. Original camera photograph retained; no scene generation.",
+      "acquisition": "Preserved original official source, deterministic local editing",
+      "previousServed": {
+        "file": "assets/media/usung-field-team-v35.webp",
+        "sha256": "5ad79c703a1383cb08e830adc4dc165f1d76843b5144b197f6f47fae4b33ef9b",
+        "verification": "baseline/original-media-v35/helmet-verification.json"
+      },
+      "durableVerification": "baseline/original-media-v36/wordmark-verification.json"
     }
   ],
   "layoutImplementation": "Original approved glass texture with slow continuous native deformation and localized cursor compression/inertial recovery; original reference diagrams and acquired photography/footage retained",
-  "brandingRevision": "2026-10-05-helmet-surface-v35",
+  "brandingRevision": "2026-10-05-helmet-wordmark-v36",
   "photographicSceneGeneration": false,
   "abstractGlassArtwork": "Previously requested generated glass extension retained as the same unmodified PNG; v32 animates its existing pixels with continuous RGBA texture displacement, without new raster assets or video generation",
   "homeRevision": {
@@ -949,6 +967,14 @@
     "constructionSurfaceTracking": "Native source metal affine tracking in first shot; measured per-pose source plane in wide shot"
   },
   "helmetSurfaceRevision": {
+    "revision": "2026-10-05-helmet-wordmark-v36",
+    "variant": "B",
+    "wordmark": "USUNG",
+    "sourcePhotoUnchanged": true,
+    "onlyTwoFrontMarks": true,
+    "verification": "baseline/original-media-v36/wordmark-verification.json"
+  },
+  "previousHelmetSurfaceRevision": {
     "revision": "2026-10-05-helmet-surface-v35",
     "variant": "B",
     "verification": "baseline/original-media-v35/helmet-verification.json",
