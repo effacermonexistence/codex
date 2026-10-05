@@ -65,15 +65,37 @@ func runExecutionFixtures() throws {
     check(nested["CLAUDECODE"] == nil && nested["CLAUDE_CODE_SESSION_ID"] == nil && nested["CLAUDE_CODE_OAUTH_SCOPES"] == nil)
     check(nested["CODEX_THREAD_ID"] == nil && nested["CLAUDE_CONFIG_DIR"] == "/fixture/claude" && nested["CODEX_HOME"] == "/fixture/codex")
     check(nested["PATH"] == inherited["PATH"] && nested["OS1_INTERNAL_PROVIDER_EXECUTION"] == "1")
-    // A self-test child never carries the live run that launched it (build 326
-    // staging wrote fixture activity into the owner's run journal); settings
-    // that are not run identity pass through.
-    let configured = inherited.merging(["OS1_INTERFACE_LANGUAGE": "ko", "OS1_CONFIG": "/fixture/config.json"]) { _, new in new }
-    let liveRun = configured.merging(["OS1_EVENT_JOURNAL": "/fixture/journal", "OS1_ACTIVITY_FILE": "/fixture/activity",
-        "OS1_FAILURE_FILE": "/fixture/failure", "OS1_CANCEL_FILE": "/fixture/cancel", "OS1_SUBMISSION_ID": "fixture",
-        "OS1_SUBMISSION_STARTED_AT": "1", "OS1_CONVERSATION_ID": "fixture", "OS1_ALLOW_AUTHENTICATION": "1",
-        "OS1_INTERNAL_PROVIDER_EXECUTION": "1", "OS1_CHECKOUT_EXECUTION_ID": "fixture", "OS1_MEMORY_EXECUTION_ID": "fixture"]) { _, new in new }
-    check(LiveRunEnvironment.removed(from: liveRun) == configured)
+    // A self-test detaches from the live run it was started in (build 326
+    // staging wrote fixture activity into the owner's run journal). This runs
+    // the call every --self-test entry makes against the real consumers:
+    // before it, activity, the journal and the cancel marker reach the run's
+    // files; after it, none do. Settings that are not run identity stay.
+    do {
+        let liveRoot = FileManager.default.temporaryDirectory.appendingPathComponent("os1-live-run-fixture-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: liveRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: liveRoot) }
+        let sentinel = Data("owner live-run state\n".utf8)
+        let liveFiles = ["OS1_ACTIVITY_FILE", "OS1_EVENT_JOURNAL", "OS1_CANCEL_FILE"].map { ($0, liveRoot.appendingPathComponent($0)) }
+        func resetLiveFiles() throws { for (_, url) in liveFiles { try sentinel.write(to: url) } }
+        func liveFilesUntouched() -> Bool { liveFiles.allSatisfy { (try? Data(contentsOf: $0.1)) == sentinel } }
+        let saved = ProcessInfo.processInfo.environment
+        let touched = LiveRunEnvironment.variables.union(["OS1_CONFIG"])
+        defer { for key in touched { if let value = saved[key] { setenv(key, value, 1) } else { unsetenv(key) } } }
+        for key in LiveRunEnvironment.variables { setenv(key, "fixture", 1) }
+        for (key, url) in liveFiles { setenv(key, url.path, 1) }
+        setenv("OS1_CONFIG", "/fixture/config.json", 1)
+        try resetLiveFiles()
+        check(ExecutionCancellation.isCancelled)
+        RuntimeActivity.emit(.executing, provider: "codex")
+        check(!liveFilesUntouched())
+        try resetLiveFiles()
+        LiveRunEnvironment.detachCurrentProcess()
+        check(!ExecutionCancellation.isCancelled)
+        RuntimeActivity.emit(.executing, provider: "codex")
+        check(liveFilesUntouched())
+        check(LiveRunEnvironment.variables.allSatisfy { ProcessInfo.processInfo.environment[$0] == nil })
+        check(ProcessInfo.processInfo.environment["OS1_CONFIG"] == "/fixture/config.json")
+    }
     let root = FileManager.default.temporaryDirectory.appendingPathComponent("os1-outbox-fixture-" + UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }
     let data = Data("finished paid result".utf8)

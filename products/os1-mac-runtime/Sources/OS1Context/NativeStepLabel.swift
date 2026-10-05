@@ -58,6 +58,47 @@ public enum NativeStepLabel {
         return result
     }
 
+    /// `redact` for a diagnostic line whose last words tell causes apart (an
+    /// error code at the end): a line over the cap keeps its end, after
+    /// "… ", instead of its start. A line within the cap redacts exactly as
+    /// `redact` does. Masking runs over the whole (bounded) line before the
+    /// cut, so a credential whose flag falls before the cut is still masked.
+    public static func redactKeepingEnd(_ raw: String) -> String? {
+        let text = windowFromEnd(normalize(raw.utf8.count > 4 * maskWindow ? String(raw.suffix(2 * maskWindow)) : raw))
+        guard !text.isEmpty else { return nil }
+        var masked = mask(text)
+        for _ in 0..<3 {
+            let again = mask(masked)
+            if again == masked { break }
+            masked = again
+        }
+        guard masked.count > maximumCharacters || masked.utf8.count > maximumBytes else { return redact(masked) }
+        // Whole characters from the back, inside both caps with room for "… ".
+        var kept: [Character] = []
+        var bytes = 0
+        for character in masked.reversed() {
+            let size = String(character).utf8.count
+            if kept.count >= maximumCharacters - 2 || bytes + size > maximumBytes - 4 { break }
+            kept.append(character); bytes += size
+        }
+        var tail = String(kept.reversed())
+        // Start on a word, so no part of a cut token is kept.
+        if let space = tail.firstIndex(of: " "), tail.distance(from: tail.startIndex, to: space) <= 24 {
+            tail = String(tail[tail.index(after: space)...])
+        }
+        return redact("… " + tail)
+    }
+
+    /// The last `maskWindow` characters, starting on a word when one is near.
+    private static func windowFromEnd(_ text: String) -> String {
+        guard text.count > maskWindow else { return text }
+        var cut = text.suffix(maskWindow)
+        if let space = cut.firstIndex(of: " "), cut.distance(from: cut.startIndex, to: space) <= 256 {
+            cut = cut[cut.index(after: space)...]
+        }
+        return "… " + String(cut)
+    }
+
     private static func computeRedaction(_ raw: String) -> String? {
         var text = window(normalize(raw.utf8.count > 4 * maskWindow ? String(raw.prefix(2 * maskWindow)) : raw))
         guard !text.isEmpty else { return nil }

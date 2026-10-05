@@ -254,8 +254,56 @@ class Tests(unittest.TestCase):
         self.assertEqual(m.bounded_osa(100.0, lambda: 90.0, run)('script'), 'ok')
         self.assertEqual(m.bounded_osa(100.0, lambda: 10.0, run)('script'), 'ok')
         self.assertEqual(seen, [10.0, m.OSA_TIMEOUT_SECONDS])
-        with self.assertRaises(subprocess.TimeoutExpired): m.bounded_osa(100.0, lambda: 99.5, run)('script')
+        # An exhausted budget sends no query at all: its own cause, not a Notes timeout.
+        with self.assertRaises(m.RefreshBudgetExhausted): m.bounded_osa(100.0, lambda: 99.5, run)('script')
         self.assertEqual(len(seen), 2)
+        self.assertFalse(m.transient_notes_failure(m.RefreshBudgetExhausted()))
+    def test_exhausted_budget_is_named_and_never_retried(self):
+        # 2026-10-05 review: after one transient failure and the 15 s retry
+        # wait, the budget ran out before the next query, and the helper said
+        # 'Notes did not answer within 0 s' although no query was sent.
+        now=[0.0]; calls=[]; sleeps=[]
+        def run(text, timeout):
+            calls.append(timeout)
+            raise APPLE_EVENT_TIMEOUT
+        def sleep(seconds):
+            sleeps.append(seconds); now[0]=m.REFRESH_BUDGET_SECONDS   # the retry wait used up the budget
+        with self.assertRaises(m.RefreshBudgetExhausted) as raised:
+            m.refresh(self.root, m.bounded_osa(m.REFRESH_BUDGET_SECONDS, lambda: now[0], run), m.time.time,
+                      sleep=sleep, clock=lambda: now[0], report=lambda line: None)
+        self.assertEqual((len(calls), sleeps, raised.exception.os1_retried), (1, [15], True))
+        message=m.failure_message(raised.exception, raised.exception.os1_retried)
+        self.assertTrue(message.startswith('RefreshBudgetExhausted: refresh time budget exhausted before querying Notes'), message)
+        self.assertNotIn('did not answer', message); self.assertIn('retried once', message)
+        # A refresh whose budget went to a long sync.lock wait never queried Notes either.
+        now[0]=0.0; calls.clear()
+        def late_clock():
+            return now[0]
+        deadline=m.REFRESH_BUDGET_SECONDS; now[0]=deadline-0.5
+        with self.assertRaises(m.RefreshBudgetExhausted) as raised:
+            m.refresh(self.root, m.bounded_osa(deadline, late_clock, run), m.time.time,
+                      sleep=sleep, clock=late_clock, report=lambda line: None)
+        self.assertEqual((calls, raised.exception.os1_retried), ([], False))
+        self.assertNotIn('retried', m.failure_message(raised.exception, False))
+    def test_osascript_cause_and_code_come_first(self):
+        # A note-id-bearing osascript error is longer than the 159-character
+        # line the Swift caller records; the code must survive that cut.
+        quoted='42:107: execution error: Notes got an error: Can’t get note id "x-coredata://8E1C4F2A-1B3C-4D5E-8F90-123456789ABC/ICNote/p1880". (-1728)'
+        gone=subprocess.CalledProcessError(1, ['/usr/bin/osascript'], output='', stderr=quoted+'\n')
+        message=m.failure_message(gone, retried=True)
+        self.assertGreater(len(message), 159)
+        self.assertTrue(message.startswith('osascript error -1728 (exit 1): '), message)
+        self.assertIn('-1728', message[:159]); self.assertIn('retried once', message)
+        # The retry notice leads with the cause too.
+        timeout=subprocess.CalledProcessError(1, ['/usr/bin/osascript'], output='',
+            stderr=quoted.replace('Can’t get note id', 'AppleEvent timed out while reading note id').replace('(-1728)', '(-1712)')+'\n')
+        self.retrying_refresh([timeout, INDEX, INDEX])
+        self.assertEqual(len(self.reports), 1)
+        self.assertTrue(self.reports[0].startswith('osascript error -1712 (exit 1): '), self.reports[0])
+        self.assertIn('retrying once', self.reports[0])
+        # A stderr line far longer than the bound keeps its end, where the code is.
+        flood=subprocess.CalledProcessError(1, ['/usr/bin/osascript'], output='', stderr='x'*900+' (-1743)\n')
+        self.assertTrue(m.failure_message(flood, retried=False).startswith('osascript error -1743 (exit 1): ...'))
     def test_failure_message_names_the_cause_without_policy_text(self):
         message=m.failure_message(APPLE_EVENT_TIMEOUT, retried=True)
         self.assertIn('AppleEvent timed out. (-1712)', message); self.assertIn('retried once', message)

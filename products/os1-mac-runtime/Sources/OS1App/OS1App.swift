@@ -836,6 +836,109 @@ private func providerIntentSelfTest() throws {
     }
 }
 
+/// Child side of `fixtureStoreIsolationSelfTest`: what a fixture store and
+/// this process see. Writes only inside a temporary directory.
+@MainActor
+private func fixtureStoreProbe() throws -> [String: Any] {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("os1-fixture-store-probe-" + UUID().uuidString)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let store = SessionStore(storageRoot: root)
+    let defaultBook = BackendAccounts.normalized(BackendAccountBook())
+    let environment = ProcessInfo.processInfo.environment
+    return [
+        "home": FileManager.default.homeDirectoryForCurrentUser.path,
+        "home_settings_default": OS1Settings.load() == OS1Settings(),
+        "home_accounts_default": BackendAccounts.load() == defaultBook,
+        "fixture_settings_default": store.appSettings == OS1Settings(),
+        "fixture_accounts_default": store.accountBook == defaultBook,
+        "live_run_variables": LiveRunEnvironment.variables.filter { environment[$0] != nil }.sorted(),
+    ]
+}
+
+/// Build 326 failed staging because every fixture SessionStore copied the
+/// owner's settings.json and accounts.json; build 327 gives a store with its
+/// own storage root the defaults. This keeps that automatic: directly (on the
+/// owner's Mac, where staging runs, a regression fails here by name), and in
+/// a child of this binary whose home (CFFIXED_USER_HOME, which
+/// homeDirectoryForCurrentUser honours) holds non-default settings and an
+/// added active account, so it fails on every Mac. The child also carries a
+/// live run's variables (sentinel files and an existing cancel marker): the
+/// `--self-test*` entry must detach from them and leave every file as it was.
+@MainActor
+private func fixtureStoreIsolationSelfTest() throws {
+    var checks = 0
+    func check(_ condition: @autoclosure () -> Bool, _ message: String) throws {
+        if !condition() { throw RunnerError.message("Fixture store isolation: " + message) }
+        checks += 1
+    }
+    let fileManager = FileManager.default
+    let created = fileManager.temporaryDirectory.appendingPathComponent("os1-fixture-store-" + UUID().uuidString)
+    try fileManager.createDirectory(at: created, withIntermediateDirectories: true)
+    defer { try? fileManager.removeItem(at: created) }
+    // The real path: CFFIXED_USER_HOME is used verbatim, and an account's
+    // home is accepted only under that exact string.
+    let root = created.resolvingSymlinksInPath()
+    let defaultBook = BackendAccounts.normalized(BackendAccountBook())
+    let direct = SessionStore(storageRoot: root.appendingPathComponent("store"))
+    try check(direct.appSettings == OS1Settings() && direct.accountBook == defaultBook,
+              "a fixture store inherited this Mac's settings or accounts")
+    // A home whose settings and accounts are not the defaults.
+    let home = root.appendingPathComponent("home")
+    let support = home.appendingPathComponent("Library/Application Support/OS-1", isDirectory: true)
+    try fileManager.createDirectory(at: support, withIntermediateDirectories: true)
+    var settings = OS1Settings(interfaceLanguage: "ko", showCodex: false)
+    settings.parallelRunLimit = 1
+    let settingsURL = support.appendingPathComponent("settings.json")
+    try JSONEncoder().encode(settings).write(to: settingsURL)
+    let added = UUID().uuidString.lowercased()
+    let book = BackendAccountBook(accounts: [BackendAccount(id: added, provider: "claude", label: "Isolation fixture",
+        homePath: support.appendingPathComponent("accounts/claude/" + added).path)], active: ["claude": added])
+    let accountsURL = support.appendingPathComponent("accounts.json")
+    let encoder = JSONEncoder(); encoder.dateEncodingStrategy = .iso8601
+    try encoder.encode(book).write(to: accountsURL)
+    // A live run the child was "started in".
+    let sentinel = Data("owner live-run state must survive fixture execution\n".utf8)
+    var live: [String: String] = [:]
+    for name in ["OS1_ACTIVITY_FILE", "OS1_EVENT_JOURNAL", "OS1_FAILURE_FILE", "OS1_CANCEL_FILE"] {
+        let url = root.appendingPathComponent(name.lowercased())
+        try sentinel.write(to: url)
+        live[name] = url.path
+    }
+    live["OS1_SUBMISSION_ID"] = UUID().uuidString
+    live["OS1_CONVERSATION_ID"] = UUID().uuidString
+    let before = try [settingsURL, accountsURL].map { try Data(contentsOf: $0) }
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: CommandLine.arguments[0]).standardizedFileURL
+    process.arguments = ["--self-test-fixture-store-probe"]
+    process.environment = ProcessInfo.processInfo.environment
+        .merging(live) { _, new in new }
+        .merging(["CFFIXED_USER_HOME": home.path, "HOME": home.path]) { _, new in new }
+    let output = Pipe()
+    process.standardOutput = output
+    process.standardError = FileHandle.nullDevice
+    try process.run()
+    DispatchQueue.global().asyncAfter(deadline: .now() + 60) { if process.isRunning { process.terminate() } }
+    let printed = output.fileHandleForReading.readDataToEndOfFile()
+    process.waitUntilExit()
+    let line = String(decoding: printed, as: UTF8.self).split(separator: "\n").last { $0.hasPrefix("{") }.map(String.init) ?? ""
+    let seen = (try? JSONSerialization.jsonObject(with: Data(line.utf8))) as? [String: Any] ?? [:]
+    try check(process.terminationStatus == 0 && !seen.isEmpty, "the probe child failed (status \(process.terminationStatus))")
+    // The child's home really is the prepared one, with non-default files:
+    // otherwise the checks below would prove nothing.
+    try check(seen["home"] as? String == home.path && seen["home_settings_default"] as? Bool == false
+              && seen["home_accounts_default"] as? Bool == false, "the probe did not see the prepared home: \(line)")
+    try check(seen["fixture_settings_default"] as? Bool == true, "a fixture store copied the home's settings.json")
+    try check(seen["fixture_accounts_default"] as? Bool == true, "a fixture store copied the home's accounts.json")
+    try check((seen["live_run_variables"] as? [String]) == [], "the --self-test entry kept a live run's variables: \(line)")
+    for name in live.keys where name.hasSuffix("_FILE") || name == "OS1_EVENT_JOURNAL" {
+        try check((try? Data(contentsOf: URL(fileURLWithPath: live[name]!))) == sentinel, "the probe wrote the live run's \(name)")
+    }
+    let after = try [settingsURL, accountsURL].map { try Data(contentsOf: $0) }
+    try check(after == before, "the probe rewrote the home's settings or accounts")
+    print("Fixture store isolation: \(checks) checks OK; fixture stores start from defaults, the --self-test entry detaches from a live run")
+}
+
 @MainActor
 private func interactionSelfTest() throws {
     func check(_ condition: Bool, _ message: String) throws {
@@ -1166,8 +1269,11 @@ private func parallelInteractionSelfTest() async throws {
     // Wait for the new work's own completion — that is where the scheduler
     // would wrongly pick the persisted queue up — instead of a fixed 250 ms
     // sleep. Send-to-completion measured 270–320 ms in a debug build (the
-    // fixture itself sleeps 100 ms), so the fixed wait failed there on every
-    // run, and reportedly in 2 of 4 staged runs.
+    // fixture itself sleeps 100 ms), so the fixed wait raced the completion.
+    // The failure was intermittent and load-dependent, not deterministic: 2
+    // of 4 staged runs, the build-326 installer's post-install run, and 2 of
+    // 5 and 2 of 4 isolated debug runs at 311664e. One passing run proves
+    // little; repeat it (test-self-test-isolation.mjs --parallel-repeats).
     let restartDeadline = Date().addingTimeInterval(15)
     func unrelatedFinished() -> Bool {
         restarted.activeRuns.isEmpty && restarted.sessions.first(where: { $0.id == unrelated })?.lastFailure != nil
@@ -1313,6 +1419,43 @@ private func parallelInteractionSelfTest() async throws {
     try check(held?.request == "DEPLOY AFTER REBOOT" &&
               policyStore.sessions.first { $0.id == policySessionID }!.lastBackendFailure?.requiresReadback == true,
         "the original request and its uncertain-effect hold must stay preserved for the owner's retry")
+    // Build 327 review: a readback the owner started for a saved result
+    // (savedResultNeedsReview, a refused adoption — no uncertain-effect hold)
+    // has no automatic retry, so its policy stop must not restore the budget
+    // or promise "OS1 retries it once after 2 minutes".
+    var reviewCalls: [PendingSubmission] = []
+    let reviewStore = SessionStore(storageRoot: root.appendingPathComponent("policy-saved-review"), runOperation: { submission, _, _, _, _ in
+        reviewCalls.append(submission)
+        try await Task.sleep(for: .milliseconds(30))
+        throw RunnerError.ownerPolicyUnavailable(policyText)
+    })
+    let reviewID = reviewStore.selectedSessionID!, reviewIndex = reviewStore.sessions.firstIndex { $0.id == reviewID }!
+    var reviewOriginal = PendingSubmission(sessionID: reviewID, userMessageID: UUID(), request: "INTEGRATE SAVED RESULT",
+        provider: .auto, workspace: root.path, codexCapacity: 30, claudeCapacity: 100)
+    reviewOriginal.savedResultNeedsReview = true
+    reviewStore.sessions[reviewIndex].lastFailure = reviewOriginal
+    reviewStore.sessions[reviewIndex].lastBackendFailure = BackendFailureNotice(provider: "claude", sessionID: nil,
+        blocker: .verificationRejected, dispatchStage: .dispatched, permissionProfile: "workspace_write")
+    try check(reviewStore.sessions[reviewIndex].lastBackendFailure?.requiresReadback == false,
+        "fixture: a refused adoption is not an uncertain-effect hold")
+    reviewStore.retrySelectedFailure()
+    while !reviewStore.activeRuns.isEmpty { try await Task.sleep(for: .milliseconds(30)) }
+    let reviewHeld = reviewStore.sessions[reviewIndex].lastFailure
+    try check(reviewCalls.count == 1 && reviewCalls[0].readOnlyReconciliation == true && reviewHeld?.request == "INTEGRATE SAVED RESULT",
+        "the owner's retry of a saved result must run exactly one readback")
+    try check(reviewHeld?.readbackBudgetRestored != true && reviewHeld?.readbackNotBefore == nil,
+        "a readback with no automatic retry restored its budget and scheduled a retry that never runs")
+    try check(!reviewStore.sessions[reviewIndex].messages.contains { $0.text.contains("한 번 다시 확인합니다") || $0.text.contains("retries it once") }
+              && !reviewStore.statusText.contains("자동 재확인") && reviewStore.statusText.contains("다시 시도하면"),
+        "a readback with no automatic retry must not promise one: \(reviewStore.statusText)")
+    try check(reviewStore.sessions[reviewIndex].messages.contains { $0.role == .system && $0.text.contains(policyText) },
+        "the policy refusal must stay visible in the conversation")
+    reviewStore.resumeStaleReconciliations(now: Date().addingTimeInterval(3_600))
+    try check(reviewStore.activeRuns.isEmpty && reviewCalls.count == 1, "nothing retries a saved-result readback by itself")
+    reviewStore.retrySelectedFailure()
+    while !reviewStore.activeRuns.isEmpty { try await Task.sleep(for: .milliseconds(30)) }
+    try check(reviewCalls.count == 2 && reviewCalls[1].readOnlyReconciliation == true,
+        "the status says a retry checks again: the owner's retry must start the readback")
     // Readback must release admission before dispatching the preserved objective.
     for verified in [true, false] {
         var calls: [PendingSubmission] = []
@@ -1503,7 +1646,13 @@ private func selfUpdateHoldSelfTest() async throws {
             permissionProfile: "read_only", exitCode: 0, output: "answer " + submission.request, stderr: "", durationMS: 300,
             nativeRecord: nil)])
     })
-    let markerBefore = FileManager.default.fileExists(atPath: SelfUpdate.holdURL().path)
+    // The store's fleet marker is its own, under its storage root: the real
+    // ~/.os1/fleet marker (which the live app writes and clears on its 3 s
+    // tick) is neither read nor written, so it cannot change this result.
+    try check(store.selfUpdateHome == root && store.selfUpdateHome != FileManager.default.homeDirectoryForCurrentUser,
+              "a fixture store must keep its fleet marker under its own root")
+    // A stale marker the "previous app" left behind.
+    try SelfUpdate.saveHold(SelfUpdate.Hold(build: 998, since: Date()), home: root)
     store.composer = "running"; store.send()
     let startDeadline = Date().addingTimeInterval(3)
     while started.isEmpty && Date() < startDeadline { try await Task.sleep(for: .milliseconds(20)) }
@@ -1519,14 +1668,16 @@ private func selfUpdateHoldSelfTest() async throws {
               "the running work drains and nothing new starts, so the build can install")
     store.retrySelectedFailure()
     try check(store.activeRuns.isEmpty && started == ["running"], "a retry does not start work during the hold")
+    try check(FileManager.default.fileExists(atPath: SelfUpdate.holdURL(home: root).path),
+              "only ending the hold clears the store's marker")
     store.endSelfUpdateHold()
     while store.queuedSubmissions.count + store.activeRuns.count > 0 && Date() < deadline {
         try await Task.sleep(for: .milliseconds(50))
     }
     try check(started == ["running", "new request"] && store.queuedSubmissions.isEmpty,
               "what waited runs, in order, once the hold ends")
-    try check(FileManager.default.fileExists(atPath: SelfUpdate.holdURL().path) == markerBefore,
-              "a fixture store never touches the real fleet marker")
+    try check(!FileManager.default.fileExists(atPath: SelfUpdate.holdURL(home: root).path),
+              "ending the hold clears the store's own stale fleet marker")
     print("Self-update hold: \(checks) checks passed; new work waits, running work drains, the queue resumes after the hold; model calls 0")
 }
 
@@ -5738,6 +5889,11 @@ private final class SessionStore: ObservableObject {
     }
     private var draftSaveTask: Task<Void, Never>?
     private let customStorageRoot: URL?
+    /// The home whose ~/.os1/fleet holds this store's self-update hold marker.
+    /// A fixture store keeps its marker under its own storage root, so its
+    /// checks never read or write the real one, and the live app's tick (which
+    /// writes and clears the real one) cannot change a fixture's result.
+    fileprivate let selfUpdateHome: URL
     private let publicLogWriter = NativePublicRunLogWriter()
     private let nativeSessionOpener: NativeSessionOpener
     private let nativePinOperation: NativePinOperation?
@@ -5773,6 +5929,7 @@ private final class SessionStore: ObservableObject {
         nativeSessionOpener: @escaping NativeSessionOpener = { NSWorkspace.shared.open($0) }
     ) {
         customStorageRoot = storageRoot
+        selfUpdateHome = storageRoot ?? FileManager.default.homeDirectoryForCurrentUser
         // Only the live store reads the owner's files; a store with its own
         // storage root is a fixture and must not depend on this Mac's state.
         appSettings = storageRoot == nil ? OS1Settings.load() : OS1Settings()
@@ -7613,22 +7770,29 @@ private final class SessionStore: ObservableObject {
                     }
                     // The readback budget was saved as spent before dispatch.
                     // This readback stopped at the owner-policy refresh, before
-                    // any model call: give the budget back once, with a delay.
-                    if let parent = submission.recoveryParentID, case .ownerPolicyUnavailable(_)? = error as? RunnerError,
-                       sessions[target].lastFailure?.id == parent,
-                       BackendRecovery.restoresReadbackBudget(stoppedBeforeModel: true,
-                           alreadyRestored: sessions[target].lastFailure?.readbackBudgetRestored) {
-                        let minutes = Int(BackendRecovery.preModelReadbackRetryDelay / 60)
-                        sessions[target].lastFailure?.verdictReconciled = nil
-                        sessions[target].lastFailure?.reconciledUnderBuild = nil
-                        sessions[target].lastFailure?.readbackBudgetRestored = true
-                        sessions[target].lastFailure?.readbackNotBefore = Date().addingTimeInterval(BackendRecovery.preModelReadbackRetryDelay)
-                        description += "\n" + os1Tr("모델 호출 전에 멈췄으므로 자동 상태 확인 기회는 그대로 두었습니다. \(minutes)분 뒤 한 번 다시 확인합니다.",
-                                                    "It stopped before any model call, so the automatic state check is kept: OS1 retries it once after \(minutes) minutes.")
-                        holdStatus = os1Tr("거버넌스 정책 확인 실패 · 모델 호출 없음 · \(minutes)분 뒤 한 번 자동 재확인",
-                                           "Governance policy check failed · no model call · OS1 re-checks once after \(minutes) minutes")
-                        appendTaskEvent(conversationID: submission.sessionID, kind: "readback_deferred",
-                            summary: "Readback stopped at the owner-policy refresh before any model call; its automatic readback stays available and runs once after \(Int(BackendRecovery.preModelReadbackRetryDelay)) s")
+                    // any model call: give the budget back once, with a delay —
+                    // only when the deferred retry can actually run. A readback
+                    // the owner started for a saved result (no uncertain-effect
+                    // hold) has no automatic retry, so none is promised.
+                    if case .ownerPolicyUnavailable(_)? = error as? RunnerError, let parent = submission.recoveryParentID,
+                       sessions[target].lastFailure?.id == parent {
+                        if !automaticReadbackEligible(sessions[target]) {
+                            holdStatus = os1Tr("거버넌스 정책 확인 실패 · 모델 호출 없음 · 다시 시도하면 다시 확인합니다",
+                                               "Governance policy check failed · no model call · retry to check again")
+                        } else if BackendRecovery.restoresReadbackBudget(stoppedBeforeModel: true,
+                                      alreadyRestored: sessions[target].lastFailure?.readbackBudgetRestored) {
+                            let minutes = Int(BackendRecovery.preModelReadbackRetryDelay / 60)
+                            sessions[target].lastFailure?.verdictReconciled = nil
+                            sessions[target].lastFailure?.reconciledUnderBuild = nil
+                            sessions[target].lastFailure?.readbackBudgetRestored = true
+                            sessions[target].lastFailure?.readbackNotBefore = Date().addingTimeInterval(BackendRecovery.preModelReadbackRetryDelay)
+                            description += "\n" + os1Tr("모델 호출 전에 멈췄으므로 자동 상태 확인 기회는 그대로 두었습니다. \(minutes)분 뒤 한 번 다시 확인합니다.",
+                                                        "It stopped before any model call, so the automatic state check is kept: OS1 retries it once after \(minutes) minutes.")
+                            holdStatus = os1Tr("거버넌스 정책 확인 실패 · 모델 호출 없음 · \(minutes)분 뒤 한 번 자동 재확인",
+                                               "Governance policy check failed · no model call · OS1 re-checks once after \(minutes) minutes")
+                            appendTaskEvent(conversationID: submission.sessionID, kind: "readback_deferred",
+                                summary: "Readback stopped at the owner-policy refresh before any model call; its automatic readback stays available and runs once after \(Int(BackendRecovery.preModelReadbackRetryDelay)) s")
+                        }
                     }
                     sessions[target].messages.append(ChatMessage(
                         role: .system,
@@ -8451,7 +8615,7 @@ private final class SessionStore: ObservableObject {
         guard previous?.build != pending.intent.build else { return }
         let hold = SelfUpdate.Hold(build: pending.intent.build, since: since ?? now)
         selfUpdateHold = hold
-        try? SelfUpdate.saveHold(hold)
+        try? SelfUpdate.saveHold(hold, home: selfUpdateHome)
         // Nothing running: the build installs on this tick, no wait to announce.
         let running = Set(activeRuns.keys).union(inFlightSubmissions.keys).count + (fleetBusy ? 1 : 0)
         guard running > 0 else { return }
@@ -8473,9 +8637,12 @@ private final class SessionStore: ObservableObject {
     }
     fileprivate func endSelfUpdateHold() {
         // A marker left by the previous app (it quit into the new build, or
-        // crashed) is cleared here too, so the fleet never waits on it. Live
-        // store only: a fixture store must never touch the real marker.
-        if customStorageRoot == nil, FileManager.default.fileExists(atPath: SelfUpdate.holdURL().path) { SelfUpdate.clearHold() }
+        // crashed) is cleared here too, so the fleet never waits on it. A
+        // fixture store's marker lives under its own root (`selfUpdateHome`):
+        // it never touches the real one.
+        if FileManager.default.fileExists(atPath: SelfUpdate.holdURL(home: selfUpdateHome).path) {
+            SelfUpdate.clearHold(home: selfUpdateHome)
+        }
         guard selfUpdateHold != nil else { return }
         selfUpdateHold = nil
         // What waited for the build runs now (the install may have been
@@ -8696,6 +8863,15 @@ private final class SessionStore: ObservableObject {
             runNextQueuedSubmissionIfNeeded()
         }
     }
+    /// The lasting conditions under which `resumeStaleReconciliations` runs a
+    /// held failure's readback by itself: an uncertain-effect hold on the
+    /// original request, which the owner has not cancelled. A saved result
+    /// that only needs review is read back when the owner asks, never alone.
+    private func automaticReadbackEligible(_ session: ConversationSession) -> Bool {
+        guard session.lastBackendFailure?.requiresReadback == true,
+              let failed = session.lastFailure, failed.recoveryParentID == nil else { return false }
+        return !FileManager.default.fileExists(atPath: ExecutionCancellation.url(submissionID: failed.id).path)
+    }
     /// A conversation stuck behind an uncertain-effect failure gets its
     /// read-only readback even when the failure predates this build (or the
     /// verdict contract): one readback per contract generation, and the
@@ -8708,14 +8884,12 @@ private final class SessionStore: ObservableObject {
         // rest follow on a live session. A staged build installs first.
         guard activeRuns.isEmpty, selfUpdateHold == nil else { return }
         for session in sessions {
-            guard !isSessionRunning(session.id),
-                  session.lastBackendFailure?.requiresReadback == true,
+            guard !isSessionRunning(session.id), automaticReadbackEligible(session),
                   !queuedSubmissions.contains(where: { $0.sessionID == session.id && $0.startNextRequested == true }),
-                  let failed = session.lastFailure, failed.recoveryParentID == nil,
+                  let failed = session.lastFailure,
                   BackendRecovery.needsAutomaticReadback(attempted: failed.recoveryAttempted,
                       verdictReconciled: failed.verdictReconciled),
-                  failed.readbackNotBefore.map({ $0 <= now }) ?? true,
-                  !FileManager.default.fileExists(atPath: ExecutionCancellation.url(submissionID: failed.id).path) else { continue }
+                  failed.readbackNotBefore.map({ $0 <= now }) ?? true else { continue }
             appendTaskEvent(conversationID: session.id, kind: "stale_reconcile",
                 summary: failed.readbackBudgetRestored == true
                     ? "Readback stopped before any model call (owner-policy refresh); running its one retry now"
@@ -10120,6 +10294,14 @@ private struct OS1DesktopApp: App {
             // (the activity fixture) must not append to the owner's run journal.
             LiveRunEnvironment.detachCurrentProcess()
         }
+        if CommandLine.arguments.contains("--self-test-fixture-store-probe") {
+            // Child of fixtureStoreIsolationSelfTest, after the detach above.
+            do {
+                let seen = try fixtureStoreProbe()
+                print(String(decoding: try JSONSerialization.data(withJSONObject: seen, options: [.sortedKeys]), as: UTF8.self))
+                exit(EXIT_SUCCESS)
+            } catch { fputs("\(error.localizedDescription)\n", stderr); exit(EXIT_FAILURE) }
+        }
         if CommandLine.arguments.contains("--self-test-bound-native") {
             do { try boundNativeLookupSelfTest(); exit(EXIT_SUCCESS) }
             catch { fputs("\(error.localizedDescription)\n", stderr); exit(EXIT_FAILURE) }
@@ -10606,6 +10788,7 @@ private struct OS1DesktopApp: App {
         }
         if CommandLine.arguments.contains("--self-test") {
             do {
+                try fixtureStoreIsolationSelfTest()
                 try reasoningVisibilitySelfTest()
                 try governanceActivityStripSelfTest()
                 try nativeProvenanceSelfTest()

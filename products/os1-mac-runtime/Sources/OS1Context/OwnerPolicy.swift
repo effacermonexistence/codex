@@ -95,11 +95,13 @@ public enum OwnerPolicyRefresh {
     /// the run stopped before any routing or model call.
     public static let preModelFailureExitStatus: Int32 = 75
     /// The last lines of the helper's stderr for the local diagnostics folder:
-    /// at most `lines` lines, each masked and capped (NativeStepLabel.redact).
+    /// at most `lines` lines, each masked and capped. A capped line keeps its
+    /// end (NativeStepLabel.redactKeepingEnd): an osascript error that quotes
+    /// a note id ends with the error code, the field that tells causes apart.
     /// The helper writes only its own error text there, never policy text.
     public static func stderrTail(_ data: Data, lines: Int = 6) -> [String] {
         let text = String(decoding: data.suffix(16_384), as: UTF8.self)
         return Array(text.components(separatedBy: .newlines)
-            .compactMap { NativeStepLabel.redact($0) }.suffix(lines))
+            .compactMap { NativeStepLabel.redactKeepingEnd($0) }.suffix(lines))
     }
 }

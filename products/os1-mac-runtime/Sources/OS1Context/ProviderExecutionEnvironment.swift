@@ -39,11 +39,10 @@ public enum LiveRunEnvironment {
         "OS1_CHECKOUT_EXECUTION_ID", "OS1_MEMORY_EXECUTION_ID",
     ]
 
-    public static func removed(from environment: [String: String]) -> [String: String] {
-        environment.filter { !variables.contains($0.key) }
-    }
-
     /// Detach this process (a self-test) from any live run it was started in.
+    /// The app's `--self-test*` entry, `os1 self-test` and `os1
+    /// fleet-self-test` call this; staging strips the same set from every
+    /// child it starts (commandOutput `removingEnvironment`).
     public static func detachCurrentProcess() {
         for key in variables { unsetenv(key) }
     }

@@ -8,9 +8,11 @@
 // self-test suites against a temporary home whose settings carry a cap of
 // 1, 12 or nothing, non-default surfaces, Codex switched off and an added
 // active Claude account, while the process carries a live run's OS1_*
-// variables pointing at sentinel files. Every suite must pass, every
-// sentinel must stay byte-identical, the cancel marker must stay absent, and
-// the temporary home's settings/accounts must be untouched.
+// variables pointing at sentinel files, its cancel marker already present.
+// Every suite must pass (a fixture that still read OS1_CANCEL_FILE would
+// see a cancelled run and fail), every sentinel and the cancel marker must
+// stay byte-identical, the temporary home's settings/accounts must be
+// untouched, and a home that had none (cap `none`) must still have none.
 //
 // Isolation mechanism (no test-only code path in OS-1): OS1Settings.defaultURL
 // and BackendAccounts.storeURL resolve FileManager.homeDirectoryForCurrentUser.
@@ -58,6 +60,9 @@ function makeHome(root, cap) {
   const home = path.join(fs.realpathSync(root), 'home');
   const support = path.join(home, 'Library/Application Support/OS-1');
   fs.mkdirSync(support, { recursive: true, mode: 0o700 });
+  // Always named, written only for a cap: a fixture that writes either into
+  // a home that had none is caught too.
+  const candidates = { settings: path.join(support, 'settings.json'), accounts: path.join(support, 'accounts.json') };
   const files = {};
   if (cap !== 'none') {
     const settings = { interfaceLanguage: 'en', outputLanguage: 'auto', showCodex: false,
@@ -69,12 +74,12 @@ function makeHome(root, cap) {
         homePath: path.join(support, 'accounts/claude', added) }],
       active: { claude: added },
     };
-    files.settings = path.join(support, 'settings.json');
-    files.accounts = path.join(support, 'accounts.json');
+    files.settings = candidates.settings;
+    files.accounts = candidates.accounts;
     fs.writeFileSync(files.settings, JSON.stringify(settings, null, 2), { mode: 0o600 });
     fs.writeFileSync(files.accounts, JSON.stringify(accounts, null, 2), { mode: 0o600 });
   }
-  return { home, files };
+  return { home, files, candidates };
 }
 
 function snapshot(paths) {
@@ -84,17 +89,21 @@ function snapshot(paths) {
 function runOne(label, cap, executable, args, extraEnv = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'os1-self-test-isolation-'));
   try {
-    const { home, files } = makeHome(root, cap);
+    const { home, files, candidates } = makeHome(root, cap);
+    // The run's cancel marker exists: the owner pressed Stop on the run that
+    // started these suites. Staging stops through its own loop; a fixture
+    // must not read it (it would see a cancelled run and fail).
     const live = {
       OS1_ACTIVITY_FILE: path.join(root, 'live-activity.json'),
       OS1_EVENT_JOURNAL: path.join(root, 'live-journal.jsonl'),
       OS1_FAILURE_FILE: path.join(root, 'live-failure.json'),
+      OS1_CANCEL_FILE: path.join(root, 'live-cancel-marker'),
     };
     for (const file of Object.values(live)) fs.writeFileSync(file, sentinel, { mode: 0o600 });
-    const cancelMarker = path.join(root, 'live-cancel-marker');
+    const absent = Object.entries(candidates).filter(([, file]) => !fs.existsSync(file));
     const before = snapshot(files);
     const env = { ...process.env, CFFIXED_USER_HOME: home, HOME: home, ...live,
-      OS1_CANCEL_FILE: cancelMarker, OS1_SUBMISSION_ID: crypto.randomUUID().toUpperCase(),
+      OS1_SUBMISSION_ID: crypto.randomUUID().toUpperCase(),
       OS1_SUBMISSION_STARTED_AT: String(Date.now() / 1000), OS1_CONVERSATION_ID: crypto.randomUUID().toUpperCase(),
       ...extraEnv };
     for (const key of Object.keys(env)) if (key === 'CLAUDECODE' || key.startsWith('CLAUDE_CODE_')) delete env[key];
@@ -110,9 +119,12 @@ function runOne(label, cap, executable, args, extraEnv = {}) {
       problems.push(`exit ${result.status}: ${(reason.length ? reason : lines(result.stdout).slice(-2)).join(' | ')}`);
     }
     for (const [key, file] of Object.entries(live)) {
-      if (fs.readFileSync(file, 'utf8') !== sentinel) problems.push(`${key} (live run) was written`);
+      if (!fs.existsSync(file)) problems.push(`${key} (live run) was removed`);
+      else if (fs.readFileSync(file, 'utf8') !== sentinel) problems.push(`${key} (live run) was written`);
     }
-    if (fs.existsSync(cancelMarker)) problems.push('the live run cancel marker was created');
+    for (const [key, file] of absent) {
+      if (fs.existsSync(file)) problems.push(`a ${key} file appeared in a home that had none`);
+    }
     const after = snapshot(files);
     for (const key of Object.keys(before)) {
       if (!before[key].equals(after[key])) problems.push(`the home's ${key} file was rewritten`);

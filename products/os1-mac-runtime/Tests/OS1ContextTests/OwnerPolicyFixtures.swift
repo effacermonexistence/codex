@@ -48,5 +48,20 @@ func runOwnerPolicyFixtures() throws {
         precondition(!OwnerPolicyContext.instructions.isEmpty)
     }
     precondition(OwnerPolicyContext.snapshot == nil)
+    // A refresh diagnostic keeps the end of a capped stderr line: an
+    // osascript error ends with its code, and one that quotes its reference
+    // is longer than the cap even after masking (build 327 review: the
+    // head-kept cap cut it before the code).
+    let noteError = "Owner policy refresh rejected (CalledProcessError: osascript exit 1: 42:107: execution error: "
+        + "Notes got an error: Can’t get note id \"x-coredata://8E1C4F2A-1B3C-4D5E-8F90-123456789ABC/ICNote/p1880\" "
+        + "of every note whose name contains \"RCC ENGINE v26\". (-1728)); "
+        + "retried once after 15 s; existing snapshot retained. --token fixture-credential-not-a-real-value-0123"
+    precondition(noteError.count > NativeStepLabel.maximumCharacters)
+    precondition(NativeStepLabel.redact(noteError)?.contains("(-1728)") == false, "the fixture must exceed the head-kept cap even after masking: \(NativeStepLabel.redact(noteError) ?? "")")
+    let tail = OwnerPolicyRefresh.stderrTail(Data((noteError + "\nshort cause (-1712)\n").utf8))
+    precondition(tail.count == 2 && tail[0].hasPrefix("… ") && tail[0].contains("(-1728)")
+                 && !tail[0].contains("fixture-credential") && NativeStepLabel.isDisplayable(tail[0]), "capped line lost its end: \(tail)")
+    precondition(tail[1] == NativeStepLabel.redact("short cause (-1712)"), "a line within the cap must redact as before")
+    precondition(tail.allSatisfy { NativeStepLabel.redact($0) == $0 }, "a kept tail must stay stable under redaction")
     print("Owner policy: absent, integrity, freshness, path, symlink, pre/post mutation and task-local custody passed")
 }

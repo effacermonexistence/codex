@@ -8395,11 +8395,11 @@ func ownerPolicyRefreshSelfTest() throws {
         if case .failure(let error) = result { return error is OwnerPolicyRefreshFailure }
         return false
     }
-    let timedOut = "Owner policy refresh rejected (CalledProcessError: osascript exit 1: 35:120: execution error: Notes got an error: AppleEvent timed out. (-1712)); retried once after 15 s; existing snapshot retained."
+    let timedOut = "osascript error -1712 (exit 1): 35:120: execution error: Notes got an error: AppleEvent timed out. (-1712); owner policy refresh rejected; retried once after 15 s; existing snapshot retained."
     // 1. A refusal keeps the helper's stated cause; stdout (where policy text could be) is not recorded.
     try check(refused(refresh(try helper("""
         print("POLICY TEXT MUST NOT BE RECORDED", flush=True)
-        sys.stderr.write("Notes query failed (CalledProcessError: osascript exit 1: AppleEvent timed out. (-1712)); retrying once in 15 s.\\n")
+        sys.stderr.write("osascript error -1712 (exit 1): AppleEvent timed out. (-1712); Notes query failed, retrying once in 15 s.\\n")
         raise SystemExit("\(timedOut)")
         """))), "a non-zero helper exit must stop the run as a policy refusal")
     guard let refusal = try diagnostic() else { throw OS1Error.message("Owner-policy refresh: refusal left no diagnostic") }
@@ -8417,7 +8417,7 @@ func ownerPolicyRefreshSelfTest() throws {
         "projection": "projection", "sourceID": "fixture", "sourceModified": "1",
         "checkedAt": Date().timeIntervalSince1970]).write(to: policy.appendingPathComponent("active.json"))
     let retried = refresh(try helper("""
-        sys.stderr.write("Notes query failed (TimeoutExpired: Notes did not answer within 20 s); retrying once in 15 s.\\n")
+        sys.stderr.write("TimeoutExpired: Notes did not answer within 20 s; Notes query failed, retrying once in 15 s.\\n")
         print("{}")
         """))
     try check((try? retried.get())?.sourceSHA256 == digest, "a retried, certified refresh must load the snapshot")
@@ -8445,6 +8445,19 @@ func ownerPolicyRefreshSelfTest() throws {
     let noisyTail = noisy?.entry["stderr_tail"] as? [String] ?? []
     try check(noisyTail.count == 6 && noisyTail.allSatisfy { $0.count <= NativeStepLabel.maximumCharacters }
               && noisy?.raw.contains("fixture-credential") == false, "stderr tail unbounded or unmasked: \(noisyTail)")
+    // 6b. A line longer than the cap keeps its end: an osascript error ends
+    // with its code, and one that quotes its reference stays longer than the
+    // cap after masking (build 327 review: the head-kept cap cut the code).
+    // The line is in the helper's pre-327 wording, which also ended with the
+    // code, so this holds whatever order the helper writes.
+    let noteGone = "Owner policy refresh rejected (CalledProcessError: osascript exit 1: 42:107: execution error: Notes got an error: "
+        + "Can’t get note id \"x-coredata://8E1C4F2A-1B3C-4D5E-8F90-123456789ABC/ICNote/p1880\" of every note whose name contains "
+        + "\"RCC ENGINE v26\". (-1728)); existing snapshot retained."
+    try check(NativeStepLabel.redact(noteGone)?.contains("(-1728)") == false, "the fixture line must exceed the head-kept cap after masking")
+    try check(refused(refresh(try helper("raise SystemExit('" + noteGone + "')"))), "a note-id refusal must be refused")
+    let noteTail = try diagnostic()?.entry["stderr_tail"] as? [String] ?? []
+    try check(noteTail.count == 1 && noteTail[0].contains("(-1728)") && noteTail[0].count <= NativeStepLabel.maximumCharacters,
+              "a capped stderr line lost its error code: \(noteTail)")
     // 7. `os1 run` tells the app this stop spent nothing.
     try check(cliExitStatus(for: OwnerPolicyRefreshFailure()) == OwnerPolicyRefresh.preModelFailureExitStatus
               && cliExitStatus(for: OS1Error.message("other")) == 1, "pre-model exit status")

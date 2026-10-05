@@ -133,11 +133,18 @@ final class ClaudeSteerDriver: @unchecked Sendable {
                                  state: state, quietWindow: foldQuietWindow) {
                 case .persisted(let turnID):
                     try? mailbox.record(input, state: .persisted, threadID: sessionID, turnID: turnID)
-                case .notDelivered(let turnID):
-                    // The CLI reports it never reached a model turn (or the
-                    // turn died): no persistence is claimed, so the app keeps
-                    // the correction and carries it into the continuation.
-                    try? mailbox.record(input, state: .rejected, threadID: sessionID, turnID: turnID)
+                case .notAnswered(let turnID):
+                    // The CLI took it, then reports it never reached a model
+                    // turn (or the turn died). It stays accepted, never
+                    // persisted: a receipt only moves sending → accepted →
+                    // persisted or sending → rejected (the Codex contract;
+                    // the app's bubble treats accepted as final). Like a
+                    // correction still pending when the watchdog releases the
+                    // run, the app carries it into the continuation. Only the
+                    // evidence is kept, once.
+                    if receipt.turnID != turnID {
+                        try? mailbox.record(input, state: .accepted, threadID: sessionID, turnID: turnID)
+                    }
                 case .pending:
                     allPersisted = false
                 case .earlierAttempt:
@@ -153,7 +160,7 @@ final class ClaudeSteerDriver: @unchecked Sendable {
         }
     }
 
-    private enum Fate: Equatable { case pending, persisted(String), notDelivered(String), earlierAttempt }
+    private enum Fate: Equatable { case pending, persisted(String), notAnswered(String), earlierAttempt }
 
     /// Claude Code 2.1.286 folds a message that arrives during an open turn
     /// into that same turn ("absorbed_mid_turn": the text joins the turn as a
@@ -167,12 +174,21 @@ final class ClaudeSteerDriver: @unchecked Sendable {
     ///    turn at once, so it was consumed.
     /// A message the CLI drained into a turn of its own after that result
     /// (`started` later) is answered by that turn: wait for its result.
+    /// The receipt names the result that answered it: the turn it started in
+    /// ends with the result after the ones counted then. Without a `started`
+    /// frame, a fold names the turn in flight when it was written — the open
+    /// one for a mid-turn write (`required - 1`), else the next one
+    /// (`required`), as for a correction written before the first
+    /// `message_start`.
     private static func fate(of id: UUID, required: Int?, midTurn: Bool, state: State, quietWindow: TimeInterval) -> Fate {
         let lifecycle = state.lifecycle[id.uuidString.lowercased()]
         if let lifecycle, lifecycle.terminal {
-            guard lifecycle.state == "completed" else { return .notDelivered("lifecycle-" + lifecycle.state) }
-            if let required, state.results < required { return .persisted("folded-into-result-\(required - 1)") }
-            return .persisted("result-\(state.results)")
+            guard lifecycle.state == "completed" else { return .notAnswered("lifecycle-" + lifecycle.state) }
+            let startedTurn = lifecycle.startedAfterResults.map { $0 + 1 }
+            if let required, state.results < required {
+                return .persisted("folded-into-result-\(startedTurn ?? (midTurn ? required - 1 : required))")
+            }
+            return .persisted("result-\(startedTurn ?? state.results)")
         }
         // Accepted by an earlier attempt of this submission, whose process is
         // gone: nothing this CLI does can answer it, so it must not hold
@@ -244,6 +260,17 @@ def lc(uid, state):
     if lifecycle and uid: out({"type": "command_lifecycle", "command_uuid": uid, "state": state})
 read()
 out({"type": "system", "subtype": "init"})
+if mode.startswith("early"):
+    # The correction arrives before the first message_start: the driver
+    # sees no open turn, and the CLI folds it into the turn it then runs.
+    correction = read() or {}
+    uid = correction.get("uuid")
+    lc(uid, "queued")
+    out({"type": "assistant", "message": {"id": "m1", "content": [{"type": "text", "text": "working"}]}})
+    time.sleep(0.5); lc(uid, "completed"); time.sleep(1); result(1)
+    while sys.stdin.readline():
+        pass
+    sys.exit(0)
 out({"type": "assistant", "message": {"id": "m1", "content": [{"type": "text", "text": "working"}]}})
 if mode == "plain":
     result(1)
@@ -260,6 +287,9 @@ uid = correction.get("uuid")
 lc(uid, "queued")
 if mode.startswith("fold"):
     lc(uid, "started"); time.sleep(0.5); lc(uid, "completed"); result(1)
+elif mode.startswith("cancel"):
+    # Taken into the open turn, then that turn was aborted.
+    lc(uid, "started"); time.sleep(0.5); lc(uid, "cancelled"); result(1)
 else:
     time.sleep(0.5); result(1)
     time.sleep(3)
@@ -272,7 +302,7 @@ while sys.stdin.readline():
 
     struct Outcome { let status: Int32; let elapsed: TimeInterval; let results: Int; let receipt: SteeringReceipt?; let error: String? }
     func run(_ mode: String, correct: Bool = true, idle: TimeInterval = 20, quiet: TimeInterval = 10,
-             earlierAttempt: Bool = false) -> Outcome {
+             earlierAttempt: Bool = false, beforeTurn: Bool = false) -> Outcome {
         let mailbox = ExecutionSteering(root: root.appendingPathComponent("mailbox-" + mode))
         let submission = UUID(), sessionID = UUID().uuidString.lowercased()
         if earlierAttempt {
@@ -294,8 +324,9 @@ while sys.stdin.readline():
                     stream.ingestClaude(bytes)
                     driver.observe(resultCount: stream.resultCount, turnOpen: stream.turnOpen,
                                    commandLifecycle: stream.commandLifecycle)
-                    // The owner corrects while the first turn is still open.
-                    if !enqueued, stream.turnOpen, stream.resultCount == 0 { try? mailbox.enqueue(correction); enqueued = true }
+                    // The owner corrects while the first turn is still open
+                    // (or, `beforeTurn`, before it opened).
+                    if !enqueued, stream.turnOpen != beforeTurn, stream.resultCount == 0 { try? mailbox.enqueue(correction); enqueued = true }
                 },
                 interactiveStdin: { driver.attach($0) },
                 releaseAfterFinalAnswer: { driver.releaseAfterFinalAnswer(resultCount: stream.resultCount, turnOpen: stream.turnOpen) })
@@ -313,8 +344,25 @@ while sys.stdin.readline():
     try check(foldedAnnounced.error == nil && foldedAnnounced.status == 0 && foldedAnnounced.results == 1,
               "announced fold did not end normally: \(foldedAnnounced.error ?? "status \(foldedAnnounced.status)")")
     try check(foldedAnnounced.elapsed < 8, "announced fold took \(Int(foldedAnnounced.elapsed)) s")
-    try check(foldedAnnounced.receipt?.state == .persisted && foldedAnnounced.receipt?.turnID.hasPrefix("folded") == true,
+    try check(foldedAnnounced.receipt?.state == .persisted && foldedAnnounced.receipt?.turnID == "folded-into-result-1",
               "announced fold receipt \(String(describing: foldedAnnounced.receipt))")
+    // Written before the first message_start (no open turn yet) and folded
+    // into that turn: the receipt names result 1, the one that answered it,
+    // not a result 0 that never exists (build 327 review).
+    let foldedEarly = run("early-lifecycle", beforeTurn: true)
+    try check(foldedEarly.error == nil && foldedEarly.status == 0 && foldedEarly.results == 1 && foldedEarly.elapsed < 8,
+              "early fold did not end normally: \(foldedEarly.error ?? "status \(foldedEarly.status)")")
+    try check(foldedEarly.receipt?.state == .persisted && foldedEarly.receipt?.turnID == "folded-into-result-1",
+              "early fold receipt names the wrong result: \(String(describing: foldedEarly.receipt))")
+    // Taken into the open turn, then cancelled: the receipt stays accepted
+    // (never persisted, never moved back to rejected — the app's bubble
+    // already shows accepted as delivered), the run still ends at once, and
+    // the app's continuation carries the correction on.
+    let cancelled = run("cancel-lifecycle")
+    try check(cancelled.error == nil && cancelled.status == 0 && cancelled.results == 1 && cancelled.elapsed < 8,
+              "a cancelled correction held the run: \(cancelled.error ?? "\(Int(cancelled.elapsed)) s")")
+    try check(cancelled.receipt?.state == .accepted && cancelled.receipt?.turnID == "lifecycle-cancelled",
+              "a cancelled correction's receipt moved off accepted: \(String(describing: cancelled.receipt))")
     // (a) Folded without lifecycle frames (the 5A3C90FF/F050022B shape): the
     // run ends after the quiet window, well inside 15 s, not after 30 min.
     let foldedSilent = run("fold")

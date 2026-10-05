@@ -24,25 +24,44 @@ def transient_notes_failure(error):
     return isinstance(error, subprocess.CalledProcessError) and isinstance(error.stderr, str) \
         and any(code in error.stderr for code in TRANSIENT_NOTES_ERRORS)
 
+class RefreshBudgetExhausted(subprocess.SubprocessError):
+    """The refresh budget ran out before a Notes query could be sent (a long
+    sync.lock wait, or earlier queries and the retry used it up). Nothing was
+    asked of Notes, so this is not a Notes timeout; fail closed, never retried."""
+
 def bounded_osa(deadline, clock=time.monotonic, run=osa):
     # No single Notes query outlives the refresh budget.
     def call(text):
         remaining = deadline - clock()
-        if remaining < 1: raise subprocess.TimeoutExpired('osascript', 0)
+        if remaining < 1: raise RefreshBudgetExhausted()
         return run(text, timeout=min(OSA_TIMEOUT_SECONDS, remaining))
     return call
 
-def one_line(text, limit=200):
+def one_line(text, limit=200, keep_end=False):
     lines = [l.strip() for l in str(text).splitlines() if l.strip()]
     line = ''.join(c if c.isprintable() else ' ' for c in (lines[-1] if lines else ''))
-    return line[:limit]
+    if len(line) <= limit: return line
+    return '...'+line[-(limit-3):] if keep_end else line[:limit]
+
+def osascript_error_code(line):
+    # osascript ends its message with Apple's error number, e.g. "(-1728)".
+    found = re.search(r'\((-?[0-9]{1,6})\)\s*$', line)
+    return found.group(1) if found else None
 
 def describe(error):
-    # The cause, bounded and on one line. osascript's stderr carries Apple's
-    # error text and code, never the note's text (that is stdout only).
+    # The cause, bounded and on one line, the discriminating part first:
+    # the Swift caller records each stderr line capped, and Apple's error code
+    # is what tells two causes apart. osascript's stderr carries Apple's error
+    # text and code, never the note's text (that is stdout only).
+    if isinstance(error, RefreshBudgetExhausted):
+        return 'RefreshBudgetExhausted: refresh time budget exhausted before querying Notes'
     if isinstance(error, subprocess.CalledProcessError):
-        cause = 'osascript exit '+str(error.returncode)+': '+one_line(error.stderr or '')
-    elif isinstance(error, subprocess.TimeoutExpired):
+        # The end of the line holds the code; keep it when the line is long.
+        line = one_line(error.stderr or '', keep_end=True)
+        code = osascript_error_code(line)
+        return ('osascript error '+code+' (exit '+str(error.returncode)+')' if code
+                else 'osascript exit '+str(error.returncode))+': '+line
+    if isinstance(error, subprocess.TimeoutExpired):
         cause = 'Notes did not answer within '+str(int(error.timeout or 0))+' s'
     elif isinstance(error, OSError):
         cause = one_line(error.strerror or '')
@@ -51,7 +70,8 @@ def describe(error):
     return type(error).__name__+': '+cause
 
 def failure_message(error, retried):
-    return ('Owner policy refresh rejected ('+describe(error)+')'
+    # Cause first, then what OS-1 did about it.
+    return (describe(error)+'; owner policy refresh rejected'
             +('; retried once after '+str(RETRY_DELAY_SECONDS)+' s' if retried else '')
             +'; existing snapshot retained.')
 def sha(s): return hashlib.sha256(s.encode()).hexdigest()
@@ -153,7 +173,7 @@ def refresh(root, run_osa=None, now=time.time, sleep=time.sleep, clock=time.mono
                 error.os1_retried = retried
                 raise
             retried = True
-            report('Notes query failed ('+describe(error)+'); retrying once in '+str(RETRY_DELAY_SECONDS)+' s.')
+            report(describe(error)+'; Notes query failed, retrying once in '+str(RETRY_DELAY_SECONDS)+' s.')
         sleep(RETRY_DELAY_SECONDS)
 
 def refresh_locked(ROOT, run_osa, now=time.time):
