@@ -1,0 +1,141 @@
+{
+  "diagnosticOnly": true,
+  "source": "products/usung-corporate/public/assets/media/suffolk-naples.jpg",
+  "served": "products/usung-corporate/public/assets/media/usung-field-team-v33.webp",
+  "approvedElsewherePreserved": "Only review files written. No products/scripts/video/AI/vest/side sticker mutations.",
+  "visualFindings": [
+    "Both logos have near-uniform dark interior and saturated pink lacking the broad glare/light/color variation visible in the original photographed plate.",
+    "Current shader clamps white plastic illumination to .88..1.04 and uses uniform .08 reflected surface mixture. This suppresses the spatial reflective field; it is not a measured material response.",
+    "Current map is a parallelogram plus small uniform horizontal bow. Source plate top/base traces curve and steepen toward the right dome.",
+    "Man U descends beyond source blue plate baseline, and woman symbol is moderately taller than its original blue plate space."
+  ],
+  "sourcePlateTraceApproximatePx": {
+    "man": {
+      "top": [
+        [
+          774,
+          218
+        ],
+        [
+          797,
+          223
+        ],
+        [
+          820,
+          230
+        ],
+        [
+          843,
+          239
+        ],
+        [
+          865,
+          251
+        ]
+      ],
+      "base": [
+        [
+          784,
+          254
+        ],
+        [
+          807,
+          259
+        ],
+        [
+          830,
+          266
+        ],
+        [
+          853,
+          274
+        ],
+        [
+          875,
+          285
+        ]
+      ]
+    },
+    "woman": {
+      "top": [
+        [
+          1439,
+          189
+        ],
+        [
+          1456,
+          189
+        ],
+        [
+          1478,
+          191
+        ],
+        [
+          1500,
+          195
+        ],
+        [
+          1515,
+          202
+        ]
+      ],
+      "base": [
+        [
+          1458,
+          225
+        ],
+        [
+          1476,
+          225
+        ],
+        [
+          1495,
+          225
+        ],
+        [
+          1513,
+          229
+        ],
+        [
+          1527,
+          234
+        ]
+      ]
+    }
+  },
+  "traceUncertaintyPx": 2,
+  "recommendedMapping": "Use source-derived top/base splines and a local Coons map. Fit the native aspect before projection; use dome-dependent horizontal compression, rather than forcing a generic ellipse.",
+  "recommendedMaterial": "In linear RGB, estimate smooth spatial light/color and broad reflective components from photographed plastic plus original dark ink regions. Apply one common field to black and pink; retain camera PSF and native source grain after shading. The source does not determine a unique calibrated BRDF; visually check the result beside actual source.",
+  "materialMeasurements": {
+    "man": {
+      "sourceNavyPrintSamples": 1453,
+      "navyPrintLumaPercentiles": [
+        102.0,
+        115.0,
+        136.0,
+        156.0,
+        172.0
+      ],
+      "navyPrintBgrMedian": [
+        155.0,
+        138.0,
+        124.0
+      ]
+    },
+    "woman": {
+      "sourceNavyPrintSamples": 1193,
+      "navyPrintLumaPercentiles": [
+        117.0,
+        123.0,
+        141.0,
+        157.0,
+        168.0
+      ],
+      "navyPrintBgrMedian": [
+        160.0,
+        143.0,
+        129.0
+      ]
+    }
+  }
+}

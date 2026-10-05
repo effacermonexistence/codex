@@ -532,7 +532,7 @@
       "file": "assets/media/usung-field-team-v33.webp",
       "sourcePage": "https://suffolk.com/",
       "sourceAsset": "https://suffolk.com/wp-content/uploads/2025/07/NAPLES_BEACH_CLUB-12.png",
-      "used": true,
+      "used": false,
       "bytes": 1696252,
       "sha256": "78fda174791049fc996c5fff8f02b3dc1c0aae7186cd121dd578039fec07afef",
       "servedBytes": 1696252,
@@ -644,10 +644,27 @@
         "file": "assets/media/usung-construction-film-v25.mp4",
         "sha256": "b539e514dc1b6fa92a9061a98af24856bd0b2d0525a01e3f12828bbe86a8997d"
       }
+    },
+    {
+      "file": "assets/media/usung-field-team-v35.webp",
+      "sourcePage": "https://suffolk.com/",
+      "sourceAsset": "https://suffolk.com/wp-content/uploads/2025/07/NAPLES_BEACH_CLUB-12.png",
+      "used": true,
+      "bytes": 1695062,
+      "sha256": "5ad79c703a1383cb08e830adc4dc165f1d76843b5144b197f6f47fae4b33ef9b",
+      "servedBytes": 1695062,
+      "servedSha256": "5ad79c703a1383cb08e830adc4dc165f1d76843b5144b197f6f47fae4b33ef9b",
+      "servedTransformation": "Only the two helmet-front U marks refined: native B glyphs mapped through observed source-plate curved traces with separate dome foreshortening; shared photographed diffuse/specular field in linear RGB, lens softness and original helmet grain. Old U pigment removed locally. All pixels outside the two small repair masks, including faces, hardware, vest and side sticker, equal v33. Original camera photograph retained; no scene generation.",
+      "acquisition": "Preserved original official source, deterministic local editing",
+      "previousServed": {
+        "file": "assets/media/usung-field-team-v33.webp",
+        "sha256": "78fda174791049fc996c5fff8f02b3dc1c0aae7186cd121dd578039fec07afef"
+      },
+      "durableVerification": "baseline/original-media-v35/helmet-verification.json"
     }
   ],
   "layoutImplementation": "Original approved glass texture with slow continuous native deformation and localized cursor compression/inertial recovery; original reference diagrams and acquired photography/footage retained",
-  "brandingRevision": "2026-10-05-surface-branding-v33",
+  "brandingRevision": "2026-10-05-helmet-surface-v35",
   "photographicSceneGeneration": false,
   "abstractGlassArtwork": "Previously requested generated glass extension retained as the same unmodified PNG; v32 animates its existing pixels with continuous RGBA texture displacement, without new raster assets or video generation",
   "homeRevision": {
@@ -930,5 +947,11 @@
     ],
     "verification": "baseline/original-media-v33/",
     "constructionSurfaceTracking": "Native source metal affine tracking in first shot; measured per-pose source plane in wide shot"
+  },
+  "helmetSurfaceRevision": {
+    "revision": "2026-10-05-helmet-surface-v35",
+    "variant": "B",
+    "verification": "baseline/original-media-v35/helmet-verification.json",
+    "scope": "two photographed helmet-front marks only"
   }
 }

@@ -1,0 +1,188 @@
+{
+  "source": "products/usung-corporate/public/assets/media/suffolk-naples.jpg",
+  "sourceSha256": "2a18b8507d87814098d8e7e69fa8d35738d2db0d7209a748b9e8bc6e89461aae",
+  "baseline": "products/usung-corporate/public/assets/media/usung-field-team-v33.webp",
+  "baselineSha256": "78fda174791049fc996c5fff8f02b3dc1c0aae7186cd121dd578039fec07afef",
+  "output": "products/usung-corporate/public/assets/media/usung-field-team-v35.webp",
+  "outputSha256": "5ad79c703a1383cb08e830adc4dc165f1d76843b5144b197f6f47fae4b33ef9b",
+  "dimensions": [
+    2200,
+    1466
+  ],
+  "variant": "B",
+  "nativePink": "#FF0F6F",
+  "method": "Nonlinear source-plate-curve mapping of native U; linear-RGB diffuse/specular response from photographed helmet surface; single premultiplied lens focus; original-photo grain. Estimated surface fit, no camera calibration or new scene generation.",
+  "changedPixels": 4313,
+  "outsideTwoFrontMasksEqualsV33": true,
+  "lossless": true,
+  "protected": {
+    "vest": true,
+    "side-sticker": true,
+    "man-hardware": true,
+    "faces": true
+  },
+  "repairs": [
+    {
+      "name": "man",
+      "observedTopTrace": [
+        [
+          774,
+          218
+        ],
+        [
+          797,
+          223
+        ],
+        [
+          820,
+          230
+        ],
+        [
+          843,
+          239
+        ],
+        [
+          865,
+          251
+        ]
+      ],
+      "observedBaselineTrace": [
+        [
+          784,
+          254
+        ],
+        [
+          807,
+          259
+        ],
+        [
+          830,
+          266
+        ],
+        [
+          853,
+          274
+        ],
+        [
+          875,
+          285
+        ]
+      ],
+      "surfaceFit": "quadratic source-edge traces plus estimated vertical dome bow",
+      "nativeAspect": 0.847741935483871,
+      "estimatedSurfaceAspect": 2.9,
+      "projectedCorners": [
+        [
+          811.0560380916162,
+          228.12726038771774
+        ],
+        [
+          835.5463755205054,
+          237.2197899320368
+        ],
+        [
+          844.7463755205055,
+          269.794127912737
+        ],
+        [
+          820.2560380916162,
+          261.2473443917454
+        ]
+      ],
+      "lensSigmaPx": 1.12,
+      "whiteSurfaceSamples": 4226,
+      "blackPrintedMedianBGR": [
+        110,
+        108,
+        107
+      ],
+      "linearReflectionRange": [
+        0.055810341417525874,
+        0.09512114831625558
+      ],
+      "inverseMapMaxResidualPx": 0.000007115433647471365,
+      "changedPixels": 2411
+    },
+    {
+      "name": "woman",
+      "observedTopTrace": [
+        [
+          1439,
+          189
+        ],
+        [
+          1456,
+          189
+        ],
+        [
+          1478,
+          191
+        ],
+        [
+          1500,
+          195
+        ],
+        [
+          1515,
+          202
+        ]
+      ],
+      "observedBaselineTrace": [
+        [
+          1458,
+          225
+        ],
+        [
+          1476,
+          225
+        ],
+        [
+          1495,
+          225
+        ],
+        [
+          1513,
+          229
+        ],
+        [
+          1527,
+          234
+        ]
+      ],
+      "surfaceFit": "quadratic source-edge traces plus estimated vertical dome bow",
+      "nativeAspect": 0.847741935483871,
+      "estimatedSurfaceAspect": 2.7,
+      "projectedCorners": [
+        [
+          1474.6769074303156,
+          191.66762078344053
+        ],
+        [
+          1496.976916032466,
+          196.2648228528722
+        ],
+        [
+          1510.437463719842,
+          227.19740948051071
+        ],
+        [
+          1490.643111154558,
+          223.77255072044926
+        ]
+      ],
+      "lensSigmaPx": 1.05,
+      "whiteSurfaceSamples": 3876,
+      "blackPrintedMedianBGR": [
+        121,
+        119,
+        117.5
+      ],
+      "linearReflectionRange": [
+        0.05263466285588327,
+        0.10736091852063642
+      ],
+      "inverseMapMaxResidualPx": 0.000004332452368151276,
+      "changedPixels": 1902
+    }
+  ]
+}

@@ -1,0 +1,27 @@
+{
+  "reviewedAtUtc": "2026-10-05T21:02:56.346389+00:00",
+  "candidate": "outputs/website/usung-helmet-v35/edited/usung-field-team-v35.webp",
+  "candidateSha256": "5ad79c703a1383cb08e830adc4dc165f1d76843b5144b197f6f47fae4b33ef9b",
+  "baseline": "products/usung-corporate/public/assets/media/usung-field-team-v33.webp",
+  "baselineSha256": "78fda174791049fc996c5fff8f02b3dc1c0aae7186cd121dd578039fec07afef",
+  "changedPixels": 4313,
+  "maskPixels": 5391,
+  "outsideMaskChangedPixels": 0,
+  "protected": {
+    "vest": true,
+    "side-sticker": true,
+    "hardware": true,
+    "faces": true
+  },
+  "visualReview": [
+    "Original source/current v33/candidate enlarged crops compared.",
+    "Candidate1100px full photo viewed.",
+    "No old-U ghost, tinted tile or gray tail wedge observed.",
+    "Smaller symbol follows each original dome tangent and plausible far-side compression.",
+    "Pink corner shares photographed focus/light with charcoal body.",
+    "Surrounding photographed white plastic gradient appears continuous at reviewed scales."
+  ],
+  "localReview": "passes for parent integration",
+  "ownerApproval": "not established by independent agent review",
+  "productMutationByReviewer": false
+}
