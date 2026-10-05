@@ -614,6 +614,7 @@ private func providerIntentSelfTest() throws {
           requestedProvider(for: ownerFanout, configured: .auto) == .auto,
           requestedProvider(for: ownerFanout, configured: .claude) == .auto,
           requestedProvider(for: "1+1 코덱스한테 시켜. 2+2 클로드한테 시켜.", configured: .auto) == .auto,
+          requestedProvider(for: "GPT랑 코덱스랑 클로드랑 클로드 코드한테 1+2 이런거 해봐.", configured: .claude) == .auto,
           requestedProvider(for: "코덱스한테 말시켜봐", configured: .auto) == .codex,
           requestedProvider(for: "이 버그를 고치고 테스트해", configured: .claude) == .claude,
           isChatLaneRoutePart(chatPart), !isChatLaneRoutePart(fullPart), !isChatLaneRoutePart(review) else {

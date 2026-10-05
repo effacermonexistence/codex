@@ -24,6 +24,13 @@ func runRouteFanoutFixtures() throws {
     check(plan?.frame.contains("라우팅 시켜서 답변 받아와") == true, "the routing instruction is framing, never a part")
     check(RouteFanout.plan("1+1 ChatGPT한테. 2+2 Codex한테.")?.targets.first?.surface == .chatgpt,
           "ChatGPT by name is the app handoff, not GPT on the Codex account")
+    // Owner, 2026-10-04: one particle after four listed names reached only
+    // Claude Code. Every listed name is a destination for the same part.
+    let listed = RouteFanout.plan("야 라우팅 잘 됐는지 일단 확인해 보자. GPT랑 코덱스랑 클로드랑 클로드 코드한테 1+2 이런거 해봐. 간단한 거.")
+    check(listed?.targets.map(\.surface) == [.gptChat, .codex, .claudeChat, .claude], "a listed name shares the last name's particle")
+    check(listed?.targets.map(\.payload) == ["1+2", "1+2", "1+2", "1+2"], "every listed surface is sent the same part, without the hedge")
+    check(listed?.targets.map(\.mention) == ["GPT랑", "코덱스랑", "클로드랑", "클로드 코드한테"], "each name is kept as written")
+    check(listed?.executionOrder == [0, 1, 2, 3], "listed executors run in the owner's order")
     // Real owner texts that mention several backends but ask no question of them.
     for text in [
         "그리고 클로드한테도 넘기게 해 왜 코덱스한테만 넘기냐? 항상 전체적으로 토큰 다 감시해야 돼",
@@ -33,6 +40,11 @@ func runRouteFanoutFixtures() throws {
         "1+1 GPT한테",
     ] {
         check(RouteFanout.plan(text) == nil, "no split: \(text.prefix(40))")
+    }
+    // A list makes a complaint about routing name several backends at once;
+    // it is still a remark, not a question for each of them.
+    for text in ["GPT랑 코덱스랑 클로드한테는 안 갔잖아", "코덱스랑 클로드한테 라우팅이 이상해", "GPT랑 클로드한테 1+2 보냈어?"] {
+        check(RouteFanout.plan(text) == nil, "no list split: \(text.prefix(40))")
     }
     print("Route fan-out: \(count) checks passed")
 }
