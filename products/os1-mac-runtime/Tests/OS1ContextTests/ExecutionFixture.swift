@@ -26,6 +26,7 @@ func runExecutionFixtures() throws {
     check(claude.tool == "Read")
     check(claude.result != nil)
     check(!claude.text.contains("PRIVATE") && !claude.text.contains("HIDDEN"))
+    check(!String(decoding: try JSONEncoder().encode(claude.progress), as: UTF8.self).contains("PRIVATE"))
     let codex = ExecutionStream()
     func event(_ method: String, _ params: [String: Any]) { codex.ingestCodex(["method":method,"params":params],threadID:"t",turnID:"u") }
     event("item/reasoning/textDelta",["threadId":"t","turnId":"u","delta":"PRIVATE"])
@@ -35,6 +36,7 @@ func runExecutionFixtures() throws {
     event("item/started",["threadId":"t","turnId":"u","item":["type":"commandExecution","command":"SECRET COMMAND"]])
     check(codex.text == "hello")
     check(codex.tool == "commandExecution")
+    check(!String(decoding: try JSONEncoder().encode(codex.progress), as: UTF8.self).contains("SECRET"))
     let now = Date(timeIntervalSince1970: 1000)
     let quota: [String: Any] = ["rateLimitsByLimitId":[
         "codex":["primary":["usedPercent":66,"resetsAt":2000]],

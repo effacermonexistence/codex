@@ -2,6 +2,9 @@ import Foundation
 
 /// Public execution state only. Never reasoning, prompts, raw errors or policy.
 public let journalRotationBytes = 8_000_000
+/// Above this encoded size an activity snapshot drops its step labels; the
+/// app's observer ignores files over 150,000 bytes.
+public let activityStepBudgetBytes = 140_000
 
 public struct RuntimeActivity: Codable, Equatable, Sendable {
     public enum Phase: String, Codable, Sendable { case preparing, waitingForSource, source, authorizing, routing, executing, verifying, syncing, recovering }
@@ -95,7 +98,8 @@ public struct RuntimeActivity: Codable, Equatable, Sendable {
         case .recovering: return os1Tr("OS1이 작업 이어가는 중", "OS1 is continuing the task")
         }
     }
-    /// Public tool category only; never expose commands, credentials or reasoning.
+    /// Public tool category only; never commands, credentials or reasoning.
+    /// The backend's own per-call words live in `progress.steps`, redacted.
     public var toolProgressLabel: String? {
         guard let tool, !tool.isEmpty else { return nil }
         switch tool {
@@ -118,12 +122,21 @@ public struct RuntimeActivity: Codable, Equatable, Sendable {
         let sameRoute = sameProvider && phase != .waitingForSource && previous?.phase != .waitingForSource &&
             (surface == nil || surface == previous?.surface)
         let retained = sameRoute && [.verifying, .syncing].contains(phase) ? previous?.publicText : nil
-        guard let data = try? JSONEncoder().encode(Self(phase, provider: provider,
-            surface: surface ?? (sameRoute ? previous?.surface : nil),
-            model: model ?? (sameRoute ? previous?.model : nil), effort: effort ?? (sameRoute ? previous?.effort : nil),
-            publicText: publicText ?? retained, tool: tool,
-            nativeSessionID: nativeSessionID ?? (sameRoute ? previous?.nativeSessionID : nil),
-            progress: progress)) else { return }
+        func activity(_ progress: NativeExecutionProgress?) -> Self {
+            Self(phase, provider: provider,
+                surface: surface ?? (sameRoute ? previous?.surface : nil),
+                model: model ?? (sameRoute ? previous?.model : nil), effort: effort ?? (sameRoute ? previous?.effort : nil),
+                publicText: publicText ?? retained, tool: tool,
+                nativeSessionID: nativeSessionID ?? (sameRoute ? previous?.nativeSessionID : nil),
+                progress: progress)
+        }
+        guard var data = try? JSONEncoder().encode(activity(progress)) else { return }
+        // The app ignores an activity file over 150,000 bytes, which would
+        // also hide the public text. Step labels are the first thing to go.
+        if data.count > activityStepBudgetBytes, let progress, progress.steps != nil,
+           let lean = try? JSONEncoder().encode(activity(progress.replacing(steps: nil, backendStatus: progress.backendStatus))) {
+            data = lean
+        }
         // Best-effort display telemetry must not fail or change execution.
         try? data.write(to: URL(fileURLWithPath: path), options: .atomic)
         if let journal = ProcessInfo.processInfo.environment["OS1_EVENT_JOURNAL"] {

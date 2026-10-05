@@ -5472,7 +5472,8 @@ final class CodexAppServerClient: @unchecked Sendable {
                 .record(submissionID: id, threadID: threadID, turnID: turnID)
             try steering.open(submissionID: id, threadID: threadID, turnID: turnID)
         }
-        let output = try waitForTurn(threadID: threadID, turnID: turnID, deadline: deadline, idleTimeout: idleTimeout)
+        let output = try waitForTurn(threadID: threadID, turnID: turnID, deadline: deadline, idleTimeout: idleTimeout,
+                                     workspace: workspace)
         return CodexTurnOutput(turnID: turnID, output: output)
     }
 
@@ -5567,8 +5568,10 @@ final class CodexAppServerClient: @unchecked Sendable {
         )
     }
 
-    private func waitForTurn(threadID: String, turnID: String, deadline: Date, idleTimeout: TimeInterval? = nil) throws -> Data {
-        let stream = ExecutionStream()
+    private func waitForTurn(threadID: String, turnID: String, deadline: Date, idleTimeout: TimeInterval? = nil,
+                             workspace: String? = nil) throws -> Data {
+        // The workspace only shortens file paths in the redacted step labels.
+        let stream = ExecutionStream(workspace: workspace)
         interruptedPublicProgress = ""
         defer { interruptedPublicProgress = stream.text }
         var revision = 0
@@ -5621,7 +5624,7 @@ final class CodexAppServerClient: @unchecked Sendable {
             // Native final text is visible now, independently of persistence,
             // upload and REVAS. This remains an explicitly unadopted preview.
             AttemptLatencyTrace.mark("native_output_received")
-            RuntimeActivity.emit(.verifying, provider: "codex", publicText: text)
+            RuntimeActivity.emit(.verifying, provider: "codex", publicText: text, progress: stream.progress)
             AttemptLatencyTrace.mark("native_output_published")
             return Data(text.utf8)
         }
@@ -5834,7 +5837,7 @@ func runCodexDesktopTurn(executable: String, threadID: String, prompt: String, w
     defer { if let submission = ExecutionSteering.currentSubmission { mailbox.close(submission) } }
     defer { try? desktop.follow(threadID: threadID, following: false) }
     var previous = ""
-    let progressStream = ExecutionStream()
+    let progressStream = ExecutionStream(workspace: workspace)
     var progressRevision = 0
     // Desktop state changes (new items, a growing current item, status) are
     // activity: a working turn runs to the ceiling, a silent one stops at `idle`.
@@ -5887,7 +5890,7 @@ func runCodexDesktopTurn(executable: String, threadID: String, prompt: String, w
                     throw OS1Error.message("Desktop completed without a final answer")
                 }
                 AttemptLatencyTrace.mark("native_output_received")
-                RuntimeActivity.emit(.verifying, provider: "codex", publicText: final)
+                RuntimeActivity.emit(.verifying, provider: "codex", publicText: final, progress: progressStream.progress)
                 AttemptLatencyTrace.mark("native_output_published")
                 return CodexTurnOutput(turnID: turnID, output: Data(final.utf8))
             }
@@ -6521,7 +6524,7 @@ private func execute(
             arguments.insert(contentsOf: CheckoutTurn.claudeMCPArguments(os1Executable: currentOS1Executable(),
                                                                          executionID: ticket.executionID), at: 1)
         }
-        let stream = ExecutionStream(claudeSessionID: activeSessionID)
+        let stream = ExecutionStream(claudeSessionID: activeSessionID, workspace: executionWorkspace)
         var revision = 0
         var relayedResultCount = 0
         let raw: (Int32, Data, Data)
