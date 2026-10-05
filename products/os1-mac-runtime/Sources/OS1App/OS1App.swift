@@ -2809,6 +2809,162 @@ private func publicFeedCompletionSelfTest() async throws {
     print("Public feed completion: \(checks) checks passed; model calls 0; folded live feed/prose as text/work saved with the answer/opens from the stored feed/stopped run keeps its work")
 }
 
+/// Each attempt owns the feed entries it added, recorded when it ended —
+/// not inferred from work lines. Mirrors the two reviewed scenarios:
+/// P1, an attempt that ended with no work line (no tool calls, its prose in
+/// the "received before" bubble) and is then retried; P2, a failed attempt
+/// whose work sits on its saved-result preview and is then delivered with
+/// "Deliver saved result · no model re-run".
+@MainActor
+private func attemptOwnershipSelfTest() async throws {
+    var checks = 0
+    func check(_ condition: Bool, _ message: String) throws {
+        guard condition else { throw RunnerError.message("Attempt ownership: " + message) }; checks += 1
+    }
+    func eventually(_ condition: () -> Bool) async throws {
+        let end = Date().addingTimeInterval(10)
+        while !condition(), Date() < end { try await Task.sleep(for: .milliseconds(10)) }
+        try check(condition(), "scheduler deadline")
+    }
+    func occurrences(_ needle: String, in text: String) -> Int { text.components(separatedBy: needle).count - 1 }
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("os1-attempt-ownership-" + UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    // P1: the first attempt streams its answer, makes no tool call, and is
+    // refused adoption on a read-only lane: its prose stays in the bubble,
+    // with no work line. The owner presses Retry.
+    let firstAnswer = "P1_FIRST_ANSWER 첫 시도의 답 첫 줄입니다."
+    let firstFull = firstAnswer + "\n\n둘째 줄까지 받은 뒤 검증에서 채택되지 않았습니다."
+    var p1Attempt = 0
+    var p1Gate: CheckedContinuation<Void, Never>?
+    let p1Root = root.appendingPathComponent("p1")
+    let p1 = SessionStore(storageRoot: p1Root, runOperation: { _, _, _, _, onActivity in
+        p1Attempt += 1
+        if p1Attempt == 1 {
+            onActivity(RuntimeActivity(.executing, provider: "claude", surface: "claude", model: "fixture", effort: "max",
+                publicText: firstAnswer, publicTextOrigin: .nativeAssistant))
+            try? await Task.sleep(for: .seconds(2))
+            onActivity(RuntimeActivity(.verifying, provider: "claude", surface: "claude", model: "fixture", effort: "max",
+                publicText: firstFull, publicTextOrigin: .nativeAssistant))
+            try? await Task.sleep(for: .milliseconds(200))
+            throw RunnerError.backend(BackendFailureNotice(provider: "claude", sessionID: nil, blocker: .verificationRejected,
+                dispatchStage: .dispatched, permissionProfile: "read_only", publicProgress: firstFull, surface: "claude"))
+        }
+        onActivity(RuntimeActivity(.executing, provider: "claude", surface: "claude", model: "fixture", effort: "max",
+            publicText: "P1_SECOND_PROSE 다시 확인하고 있습니다.", publicTextOrigin: .nativeAssistant))
+        await withCheckedContinuation { p1Gate = $0 }
+        return AppRunSummary(status: "complete", steps: [AppRunStep(sequence: 1, provider: "claude", action: "fixture",
+            model: "fixture", effort: "max", revasDisposition: "adopted", sessionID: UUID().uuidString,
+            permissionProfile: "read_only", exitCode: 0, output: "P1_RETRY_ANSWER 다시 확인한 답입니다.",
+            stderr: "", durationMS: 0, nativeRecord: nil)])
+    })
+    let p1ID = p1.selectedSessionID!
+    p1.composer = "읽기만 해서 답해 줘."; p1.send()
+    try await eventually { p1Attempt == 1 && !p1.isSessionRunning(p1ID) }
+    let workspace = p1.selectedSession!.workspace
+    let firstEnd = p1.selectedSession!.attemptFeedEnds?.last?.end ?? 0
+    try check(p1.selectedSession!.messages.contains { $0.role == .assistant && $0.text.contains("P1_FIRST_ANSWER") } &&
+        !p1.selectedSession!.messages.contains { $0.work != nil } && firstEnd > 0,
+        "the first attempt did not end with its prose in the bubble, no work line and a recorded feed end")
+    try await Task.sleep(for: .seconds(1)) // the owner reads, then presses Retry
+    p1.retrySelectedFailure()
+    try await eventually { p1Gate != nil && p1.publicRunProgress(p1ID)?.contains("P1_SECOND_PROSE") == true }
+    let p1Live = p1.publicRunProgress(p1ID) ?? ""
+    let p1LiveDocument = timelineAttributedDocument(messages: presentedMessages(p1.selectedSession!), queuedSubmissions: [],
+        isRunning: true, workspace: workspace, publicProgress: p1Live).string
+    try check(!p1Live.contains("P1_FIRST_ANSWER") && occurrences("P1_FIRST_ANSWER", in: p1LiveDocument) == 1,
+        "a retry shows an earlier attempt's prose that left no work line as its own live progress")
+    p1Gate?.resume(); p1Gate = nil
+    try await eventually { !p1.isSessionRunning(p1ID) }
+    let p1Answer = p1.selectedSession!.messages.last { $0.role == .assistant }
+    try check(p1Answer?.text.hasPrefix("P1_RETRY_ANSWER") == true && p1Answer?.work?.entryStart == firstEnd &&
+        (p1Answer?.work?.seconds ?? 99) <= 1 && p1.selectedSession!.messages.filter { $0.work != nil }.count == 1,
+        "the retry's work holds or is timed by the earlier attempt: start \(p1Answer?.work?.entryStart ?? -1) of \(firstEnd), \(p1Answer?.work?.seconds ?? -1)s")
+    let p1Opened = timelineAttributedDocument(messages: presentedMessages(p1.selectedSession!), queuedSubmissions: [],
+        isRunning: false, workspace: workspace, expanded: [(p1Answer?.id.uuidString ?? "") + "-work"], workLogStore: p1.publicLogStore).string
+    try check(occurrences("P1_FIRST_ANSWER", in: p1Opened) == 1 && p1Opened.contains("P1_SECOND_PROSE"),
+        "the retry's opened work folds in the earlier attempt's prose")
+    let p1Saved = try JSONDecoder().decode(SessionEnvelope.self, from: Data(contentsOf: p1Root.appendingPathComponent("sessions.json")))
+    try check(p1Saved.sessions.first { $0.id == p1ID }?.attemptFeedEnds?.count == 1, "the attempts' feed ends are not saved with the conversation")
+    // A store from an earlier build has no recorded end: its work lines decide.
+    var legacy = p1.selectedSession!; legacy.attemptFeedEnds = nil
+    if let work = p1Answer?.work {
+        try check(SessionStore.attemptFeedStart(legacy, submissionID: work.submissionID, requestSHA256: work.requestSHA256,
+                feedCount: (work.entryEnd ?? 0) + 5) == work.entryEnd &&
+            SessionStore.attemptFeedStart(legacy, submissionID: UUID(), requestSHA256: work.requestSHA256, feedCount: 7) == 0,
+            "a store from an earlier build does not fall back to its work lines")
+    }
+
+    // P2: the first attempt makes three calls (one returns an error), its
+    // result is saved, and adoption fails: its work sits on the preview.
+    // "Deliver saved result" then delivers it with no model re-run.
+    let started = Date()
+    typealias Step = NativeExecutionProgress.Step
+    let progress = NativeExecutionProgress(sequence: 6, kind: .toolReturned, tool: "Grep", scope: "main",
+        toolsRequested: 3, toolsReturned: 3, activeTools: 0, observedAt: started,
+        events: [.init(sequence: 6, kind: .toolReturned, tool: "Grep", scope: "main", observedAt: started)],
+        steps: [
+            Step(id: "0000000001a1", sequence: 2, tool: "Bash", scope: "main", verb: "run", label: "swift build",
+                 state: .returned, startedAt: started, endedAt: started),
+            Step(id: "0000000001a2", sequence: 4, tool: "Read", scope: "main", verb: "read", label: "Sources/OS1App/OS1App.swift",
+                 state: .failed, startedAt: started, endedAt: started),
+            Step(id: "0000000001a3", sequence: 6, tool: "Grep", scope: "main", verb: "search", label: "deliveryID",
+                 state: .returned, startedAt: started, endedAt: started),
+        ], stream: "0000000001aa")
+    let saved = "P2_SAVED_RESULT 저장된 결과입니다."
+    let p2Root = root.appendingPathComponent("p2")
+    let recordID = UUID().uuidString.lowercased() + "-1"
+    let artifact = try JSONSerialization.data(withJSONObject: ["provider": "claude", "permission_profile": "read_only",
+        "output": saved, "exit_code": 0] as [String: Any], options: .sortedKeys)
+    let savedStep: [String: Any] = ["sequence": 1, "provider": "claude", "action": "fixture", "effort": "max", "model": "fixture",
+        "session_id": UUID().uuidString, "revas_disposition": "rejected", "permission_profile": "read_only",
+        "exit_code": 0, "output": saved, "stderr": "", "duration_ms": 1]
+    try DeliveryOutbox(root: p2Root.appendingPathComponent("execution-outbox")).save(DeliveryRecord(id: recordID,
+        apiURL: "https://fixture.invalid", deviceID: "fixture",
+        resultSHA256: SHA256.hash(data: artifact).map { String(format: "%02x", $0) }.joined(), artifact: artifact,
+        upload: Data(), submission: Data(), step: try JSONSerialization.data(withJSONObject: savedStep), source: nil, output: saved))
+    var p2Attempt = 0
+    let p2 = SessionStore(storageRoot: p2Root, runOperation: { submission, _, _, _, onActivity in
+        p2Attempt += 1
+        if p2Attempt == 1 {
+            onActivity(RuntimeActivity(.executing, provider: "claude", surface: "claude", model: "fixture", effort: "max",
+                publicText: "P2_WORK_PROSE 결과를 저장하기 전에 확인합니다.", tool: "Grep", progress: progress, publicTextOrigin: .nativeAssistant))
+            try? await Task.sleep(for: .seconds(1))
+            throw RunnerError.backend(BackendFailureNotice(provider: "claude", sessionID: nil, blocker: .verificationRejected,
+                dispatchStage: .dispatched, permissionProfile: "read_only", deliveryID: recordID, surface: "claude"))
+        }
+        guard submission.deliveryID == recordID else { throw RunnerError.message("P2_NOT_A_DELIVERY") }
+        return AppRunSummary(status: "complete", steps: [AppRunStep(sequence: 1, provider: "claude", action: "fixture",
+            model: "fixture", effort: "max", revasDisposition: "adopted", sessionID: UUID().uuidString,
+            permissionProfile: "read_only", exitCode: 0, output: saved, stderr: "", durationMS: 0, nativeRecord: nil)])
+    })
+    let p2ID = p2.selectedSessionID!
+    p2.composer = "결과를 저장해 두고 전달해 줘."; p2.send()
+    try await eventually { p2Attempt == 1 && !p2.isSessionRunning(p2ID) }
+    let previewID = UUID(uuidString: String(recordID.prefix(36)))!
+    let previewWork = p2.selectedSession!.messages.first { $0.id == previewID }?.work
+    try check(previewWork?.toolCalls == 3 && previewWork?.failedCalls == 1 && p2.selectedSession!.lastFailure?.deliveryID == recordID &&
+        p2.selectedSession!.lastFailure?.savedResultNeedsReview == false,
+        "the failed attempt's work is not on its saved-result preview, or the result is not offered for delivery: " +
+        "calls \(previewWork?.toolCalls ?? -1) errors \(previewWork?.failedCalls ?? -1) delivery \(p2.selectedSession!.lastFailure?.deliveryID ?? "-") " +
+        "review \(String(describing: p2.selectedSession!.lastFailure?.savedResultNeedsReview)) · " +
+        p2.selectedSession!.messages.map { "[\($0.role) work=\($0.work?.toolCalls ?? -1)] \($0.text.prefix(20))" }.joined(separator: " | "))
+    p2.retrySelectedFailure() // "Deliver saved result · no model re-run"
+    try await eventually { p2Attempt == 2 && !p2.isSessionRunning(p2ID) }
+    let delivered = p2.selectedSession!.messages.last { $0.role == .assistant }
+    try check(!p2.selectedSession!.messages.contains { $0.id == previewID } && delivered?.text == saved &&
+        delivered?.work?.toolCalls == 3 && delivered?.work?.failedCalls == 1 && delivered?.work?.seconds == previewWork?.seconds &&
+        p2.selectedSession!.messages.filter { $0.work != nil }.count == 1,
+        "the delivered answer does not carry the run's work, its calls and errors: " +
+        p2.selectedSession!.messages.map { "[\($0.role) work=\($0.work?.toolCalls ?? -1)] \($0.text.prefix(20))" }.joined(separator: " | "))
+    let p2Done = timelineAttributedDocument(messages: presentedMessages(p2.selectedSession!), queuedSubmissions: [],
+        isRunning: false, workspace: workspace, workLogStore: p2.publicLogStore).string as NSString
+    try check(occurrences("동안 작업", in: p2Done as String) == 1 && (p2Done as String).contains("도구 호출 3회") &&
+        p2Done.range(of: "동안 작업").location < p2Done.range(of: "P2_SAVED_RESULT").location,
+        "the delivered answer's work line vanished or does not sit above it")
+    print("Attempt ownership: \(checks) checks passed; model calls 0; no-work-line retry keeps its own feed/time, delivered saved result keeps the run's work")
+}
+
 @MainActor
 private func replacementInteractionSelfTest() async throws {
     var checks = 0
@@ -4552,6 +4708,11 @@ private struct ConversationSession: Codable, Identifiable, Sendable {
     /// after can be charged to it: that run was not a completed task.
     var lastCompletedMonitorTaskID: String? = nil
     var lastCompletedAt: Date? = nil
+    /// Where each finished attempt of a submission ended in its saved public
+    /// feed. A retry runs under the same submission and reloads that feed:
+    /// the entries before the recorded end are earlier attempts', whether or
+    /// not one of them left a work line. nil in stores from earlier builds.
+    var attemptFeedEnds: [AttemptFeedEnd]? = nil
     var updatedAt: Date
 
     init(
@@ -4585,6 +4746,13 @@ private struct ConversationSession: Codable, Identifiable, Sendable {
     var effectiveCodexCapacity: Int { codexCapacity ?? CapacityMix.defaultCodex }
     var effectiveClaudeCapacity: Int { claudeCapacity ?? CapacityMix.defaultClaude }
     var visibleMessages: [ChatMessage] { messages.filter { $0.nativeManagedTurnID == nil } }
+}
+
+/// One finished attempt's boundary in its submission's saved public feed.
+private struct AttemptFeedEnd: Codable, Equatable, Sendable {
+    let submissionID: UUID
+    let requestSHA256: String
+    let end: Int
 }
 
 /// A user may leave an unfinished objective, but its evidence is never erased
@@ -6271,6 +6439,17 @@ private final class SessionStore: ObservableObject {
                     answer: answer, now: now)
             }
         }
+        /// An earlier attempt's work carried onto this attempt's answer (a
+        /// saved result delivered without a model re-run): one line holding
+        /// both attempts' entries and the sum of their own times.
+        func work(answer: String, continuing earlier: TurnWork, current: TurnWork?, now: Date = Date()) -> TurnWork? {
+            guard let current, let log = publicRunLog,
+                  earlier.submissionID == log.submissionID, earlier.requestSHA256 == log.requestSHA256 else { return earlier }
+            let start = min(earlier.entries(in: log.entries.count).lowerBound, current.entries(in: log.entries.count).lowerBound)
+            let seconds = TimeInterval(earlier.seconds + current.seconds)
+            return TurnWork(log: log, entries: start..<log.entries.count, started: now.addingTimeInterval(-seconds),
+                answer: answer, now: now) ?? current
+        }
     }
     typealias RunOperation = @MainActor (PendingSubmission, String, String?, String?,
         @escaping @Sendable (RuntimeActivity) -> Void) async throws -> AppRunSummary
@@ -6342,6 +6521,30 @@ private final class SessionStore: ObservableObject {
     @Published var nativeAppApproval: NativeAppApproval.Request?
     @Published var showArchived = false
     var activeActivity: RuntimeActivity { selectedSessionID.flatMap { activeRuns[$0]?.activity } ?? RuntimeActivity(.preparing) }
+    /// Where a new attempt of `submissionID` starts in its saved feed: the
+    /// end its last finished attempt recorded. Without a record (stores from
+    /// earlier builds), the end of what this submission's work lines hold.
+    static func attemptFeedStart(_ session: ConversationSession, submissionID: UUID, requestSHA256: String,
+                                 feedCount: Int) -> Int {
+        if let recorded = session.attemptFeedEnds?.last(where: {
+            $0.submissionID == submissionID && $0.requestSHA256 == requestSHA256 }) {
+            return min(max(0, recorded.end), feedCount)
+        }
+        return session.messages.compactMap(\.work).filter { $0.submissionID == submissionID }
+            .map { $0.entryEnd ?? feedCount }.max() ?? 0
+    }
+    /// Records where an attempt ended in its feed, once per submission and
+    /// request; only the most recent submissions are kept.
+    static func recordAttemptFeedEnd(_ session: inout ConversationSession, submissionID: UUID, requestSHA256: String, end: Int) {
+        var ends = (session.attemptFeedEnds ?? []).filter {
+            !($0.submissionID == submissionID && $0.requestSHA256 == requestSHA256) }
+        ends.append(AttemptFeedEnd(submissionID: submissionID, requestSHA256: requestSHA256, end: max(0, end)))
+        // A failure still waiting for a retry keeps its record however many
+        // other requests ran here since.
+        let held = session.lastFailure?.id
+        let recent = Array(ends.suffix(16))
+        session.attemptFeedEnds = ends.filter { $0.submissionID == held && !recent.contains($0) } + recent
+    }
     func publicRunProgress(_ conversationID: UUID) -> String? {
         guard let active = activeRuns[conversationID] else { return nil }
         if let log = active.publicRunLog {
@@ -7860,11 +8063,15 @@ private final class SessionStore: ObservableObject {
         if !savedFeed.entries.isEmpty { savedFeed.checkpoint() }
         activeRuns[submission.sessionID]?.publicRunLog = savedFeed
         // A retry reloads the earlier attempts' feed: this attempt starts
-        // after what their work lines hold (work from earlier builds holds
-        // everything saved). Output no work line holds — the app quit
-        // mid-attempt — stays this attempt's, with the time it took.
-        let credited = sessions[index].messages.compactMap(\.work).filter { $0.submissionID == submission.id }
-            .map { $0.entryEnd ?? savedFeed.entries.count }.max() ?? 0
+        // where the last finished attempt ended — recorded when it ended,
+        // so an attempt that left no work line (no tool calls; its prose
+        // kept in the "received before" bubble) still owns its entries.
+        // Records from earlier builds have no end: there the work lines
+        // decide (work from earlier builds holds everything saved). Output
+        // after the last end — the app quit mid-attempt — stays this
+        // attempt's, with the time it took.
+        let credited = Self.attemptFeedStart(sessions[index], submissionID: submission.id,
+            requestSHA256: savedFeed.requestSHA256, feedCount: savedFeed.entries.count)
         let feedStart = min(credited, savedFeed.entries.count)
         activeRuns[submission.sessionID]?.feedStart = feedStart
         if feedStart < savedFeed.entries.count, let first = savedFeed.entries[feedStart...].first?.receivedAt,
@@ -8130,8 +8337,17 @@ private final class SessionStore: ObservableObject {
                 }
                 // The run's work folds above its first answer, as Codex shows
                 // "Worked for": the live feed leaves the screen, not the record.
+                let answerText = visibleSteps.map(\.output).joined(separator: "\n\n")
                 var work = activeRuns[submission.sessionID].flatMap { run in
-                    run.submissionID == submission.id ? run.work(answer: visibleSteps.map(\.output).joined(separator: "\n\n")) : nil
+                    run.submissionID == submission.id ? run.work(answer: answerText) : nil
+                }
+                // A delivered saved result replaces its preview, and the work
+                // that produced it moves to the delivered answer with it (a
+                // failed attempt's work is held by the preview it left).
+                if let deliveryID = submission.deliveryID, let previewID = UUID(uuidString: String(deliveryID.prefix(36))),
+                   let earlier = sessions[target].messages.first(where: { $0.id == previewID })?.work,
+                   let run = activeRuns[submission.sessionID], run.submissionID == submission.id {
+                    work = run.work(answer: answerText, continuing: earlier, current: work)
                 }
                 for step in visibleSteps {
                     sessions[target].lastProvider = step.provider
@@ -8235,7 +8451,8 @@ private final class SessionStore: ObservableObject {
                                 executionSurface: notice.surface, permissionProfile: notice.permissionProfile, nativeRecordVerified: false))
                         }
                         if let deliveryID = notice.deliveryID,
-                           let result = try? DeliveryOutbox().read(deliveryID), !result.output.isEmpty {
+                           let result = try? DeliveryOutbox(root: customStorageRoot?.appendingPathComponent("execution-outbox")).read(deliveryID),
+                           !result.output.isEmpty {
                             sessions[target].lastFailure?.deliveryID = deliveryID
                             let verdict = result.response.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }?["status"] as? String
                             let needsReview = result.localRejection != nil || (verdict != nil && verdict != "complete")
@@ -8342,6 +8559,11 @@ private final class SessionStore: ObservableObject {
             // Read this run's receipts while they still identify it, so no
             // bubble keeps claiming a hand-off that can no longer happen.
             settleSteeringDelivery(conversationID: submission.sessionID, submissionID: submission.id)
+            if let log = activeRuns[submission.sessionID]?.publicRunLog,
+               let target = sessions.firstIndex(where: { $0.id == submission.sessionID }) {
+                Self.recordAttemptFeedEnd(&sessions[target], submissionID: submission.id,
+                    requestSHA256: log.requestSHA256, end: log.entries.count)
+            }
             activeRuns.removeValue(forKey: submission.sessionID); publicFeedTexts.removeValue(forKey: submission.sessionID)
             inFlightSubmissions.removeValue(forKey: submission.sessionID)
             if selectedSessionID == submission.sessionID { statusText = sessionStatuses[submission.sessionID] ?? "Ready" }
@@ -11031,6 +11253,7 @@ private struct OS1DesktopApp: App {
                     try await steeringVisibilitySelfTest()
                     try await steeringPlacementSelfTest()
                     try await publicFeedCompletionSelfTest()
+                    try await attemptOwnershipSelfTest()
                     try await replacementInteractionSelfTest()
                     try await failureAcknowledgementSelfTest()
                     exit(EXIT_SUCCESS)
