@@ -177,12 +177,32 @@ public struct GovernanceComparison: Identifiable, Sendable {
     /// baseline failed. When this equals `matchedScopes`
     /// the completion Δ is selection-biased and must not read as an A/B.
     public var candidateAfterBaselineFailureScopes = 0
-    public var completionDeltaIsSelectionBiased: Bool {
-        matchedScopes > 0 && candidateAfterBaselineFailureScopes == matchedScopes
+    /// The mirror: the candidate ran first and was never adopted, then the
+    /// baseline ran. Same escalation scopes, viewed from the other side.
+    public var baselineAfterCandidateFailureScopes = 0
+    /// Selection bias does not depend on which route is called the baseline:
+    /// when every matched scope ran one route only after the other failed,
+    /// the completion Δ measures a rescue, not an A/B.
+    public var selectionBias: GovernanceSelectionBias {
+        guard matchedScopes > 0 else { return .none }
+        if candidateAfterBaselineFailureScopes == matchedScopes { return .candidateAfterBaselineFailure }
+        if baselineAfterCandidateFailureScopes == matchedScopes { return .baselineAfterCandidateFailure }
+        if candidateAfterBaselineFailureScopes + baselineAfterCandidateFailureScopes == matchedScopes { return .mixed }
+        return .none
     }
+    public var completionDeltaIsSelectionBiased: Bool { selectionBias != .none }
     /// Matched scopes where each route completed (adopted at least once).
     public var baselineCompletedScopes = 0
     public var candidateCompletedScopes = 0
+}
+
+/// Which side of a matched pair only ever ran after the other side failed.
+public enum GovernanceSelectionBias: Equatable, Sendable {
+    case none
+    case candidateAfterBaselineFailure
+    case baselineAfterCandidateFailure
+    /// Every scope is after-failure, in both directions across scopes.
+    case mixed
 }
 
 /// One point of a comparison's evidence-time series: the cumulative value
@@ -221,6 +241,128 @@ public enum GovernanceDeltaHeadline: Equatable, Sendable {
         guard let latestEvidence, latestEvidence >= cutoff else { return .stale(since: latestEvidence) }
         guard scopes >= minimum else { return .tooFew(scopes: scopes) }
         return .value(value)
+    }
+}
+
+/// A chart header: the text and whether it is the big headline number.
+public struct GovernanceHeadlineDisplay: Equatable, Sendable {
+    public let text: String
+    public let prominent: Bool
+    public init(text: String, prominent: Bool) { self.text = text; self.prominent = prominent }
+}
+
+public enum GovernanceEvidenceSeries: Sendable { case token, completion }
+
+/// X axis of a Δ evidence chart, as positions in 0…1. The evidence gets
+/// the width: when the stretch from the last receipt to now is long next to
+/// the evidence itself, that stretch is compressed into the last fifth of
+/// the axis behind a labelled break ("≈ 14 days") and ends at a "now" tick,
+/// so a day of evidence followed by two quiet weeks is still a readable line
+/// and the quiet weeks are still shown. Tick labels never repeat: the first
+/// evidence point and each midnight carry the date ("9/20", "9/21"), hour
+/// ticks carry the time, and ticks too close to a more important one drop.
+public struct GovernanceEvidenceTimeAxis: Sendable {
+    public struct Tick: Equatable, Sendable {
+        public let position: Double
+        public let label: String
+    }
+    /// Share of the width the evidence keeps when the axis is broken.
+    public static let evidenceShare = 0.8
+    public let start: Date
+    public let now: Date
+    /// End of the uncompressed stretch: the last evidence plus padding when
+    /// broken, `now` on a linear axis.
+    public let evidenceEnd: Date
+    /// The compressed stretch between the last evidence and now, when the
+    /// axis is broken; nil on a linear axis.
+    public let breakRange: ClosedRange<Double>?
+    public let gapLabel: String?
+    public let ticks: [Tick]
+
+    public init(evidence: [Date], now: Date, calendar: Calendar = .current) {
+        self.now = now
+        let first = evidence.min() ?? now.addingTimeInterval(-3_600)
+        let last = evidence.max() ?? now
+        // At least an hour wide; shorter evidence sits in the middle of it.
+        let span = max(last.timeIntervalSince(first), 3_600)
+        let pad = span * 0.06 + (span - last.timeIntervalSince(first)) / 2
+        let low = first.addingTimeInterval(-pad)
+        let high = last.addingTimeInterval(pad)
+        let quiet = now.timeIntervalSince(high)
+        let broken = !evidence.isEmpty && quiet > max(span * 0.5, 6 * 3_600)
+        let axisStart = broken ? low : min(low, now.addingTimeInterval(-3_600))
+        let axisEnd = broken ? high : now
+        start = axisStart
+        evidenceEnd = axisEnd
+        if broken {
+            breakRange = Self.evidenceShare...1
+            let since = now.timeIntervalSince(last)
+            let days = Int((since / 86_400).rounded())
+            gapLabel = days >= 2 ? os1Tr("\(days)일", "\(days) days")
+                : os1Tr("\(Int((since / 3_600).rounded()))시간", "\(Int((since / 3_600).rounded()))h")
+        } else {
+            breakRange = nil
+            gapLabel = nil
+        }
+        ticks = Self.ticks(start: axisStart, end: axisEnd, now: now, first: evidence.isEmpty ? nil : first,
+                           position: { Self.position($0, start: axisStart, evidenceEnd: axisEnd, now: now, broken: broken) },
+                           calendar: calendar)
+    }
+
+    public func position(_ date: Date) -> Double {
+        Self.position(date, start: start, evidenceEnd: evidenceEnd, now: now, broken: breakRange != nil)
+    }
+
+    private static func position(_ date: Date, start: Date, evidenceEnd: Date, now: Date, broken: Bool) -> Double {
+        let segment = max(1, evidenceEnd.timeIntervalSince(start))
+        let offset = date.timeIntervalSince(start)
+        guard broken else { return min(1, max(0, offset / segment)) }
+        if date <= evidenceEnd { return max(0, evidenceShare * offset / segment) }
+        let tail = max(1, now.timeIntervalSince(evidenceEnd))
+        return evidenceShare + (1 - evidenceShare) * min(1, date.timeIntervalSince(evidenceEnd) / tail)
+    }
+
+    private static func ticks(start: Date, end: Date, now: Date, first: Date?, position: (Date) -> Double,
+                              calendar: Calendar) -> [Tick] {
+        func dayLabel(_ date: Date) -> String {
+            let parts = calendar.dateComponents([.month, .day], from: date)
+            return "\(parts.month ?? 0)/\(parts.day ?? 0)"
+        }
+        func timeLabel(_ date: Date) -> String {
+            let parts = calendar.dateComponents([.hour, .minute], from: date)
+            return String(format: "%d:%02d", parts.hour ?? 0, parts.minute ?? 0)
+        }
+        // (priority, date, label): lower priority wins a crowded spot.
+        var candidates: [(Int, Date, String)] = []
+        if let first { candidates.append((0, first, dayLabel(first))) }
+        candidates.append((1, now, os1Tr("지금", "now")))
+        let span = end.timeIntervalSince(start)
+        let days = span / 86_400
+        let stride = max(1, Int((days / 7).rounded(.up)))
+        var midnight = calendar.startOfDay(for: start)
+        var index = 0
+        while midnight <= end, index < 400 {
+            if midnight > start, index % stride == 0 { candidates.append((2, midnight, dayLabel(midnight))) }
+            midnight = calendar.date(byAdding: .day, value: 1, to: midnight) ?? end.addingTimeInterval(1)
+            index += 1
+        }
+        if span < 2 * 86_400 {
+            let interval = [3_600.0, 7_200, 10_800, 21_600, 43_200].first { span / $0 <= 5 } ?? 43_200
+            let offset = TimeInterval(calendar.timeZone.secondsFromGMT(for: start))
+            var tick = (((start.timeIntervalSince1970 + offset) / interval).rounded(.up)) * interval - offset
+            while tick <= end.timeIntervalSince1970 {
+                let date = Date(timeIntervalSince1970: tick)
+                if date != calendar.startOfDay(for: date) { candidates.append((3, date, timeLabel(date))) }
+                tick += interval
+            }
+        }
+        var chosen: [Tick] = []
+        for (_, date, label) in candidates.sorted(by: { $0.0 < $1.0 || ($0.0 == $1.0 && $0.1 < $1.1) }) {
+            let at = position(date)
+            guard at >= 0, at <= 1, !chosen.contains(where: { abs($0.position - at) < 0.09 || $0.label == label }) else { continue }
+            chosen.append(Tick(position: at, label: label))
+        }
+        return chosen.sorted { $0.position < $1.position }
     }
 }
 
@@ -274,8 +416,70 @@ public enum GovernanceMonitorText {
         let day = shortDate(since)
         return os1Tr("\(day) 이후 경로 비교 없음", "No route comparison since \(day)")
     }
-    public static var staleReason: String {
-        os1Tr("현재 라우팅은 요청당 경로 하나만 실행", "current routing runs one route per request")
+    /// What is known (no comparison receipt since a date) and, marked as
+    /// likely, the usual cause: a pair also goes stale under a provider
+    /// filter or when a route is no longer used.
+    public static func staleReason(since: Date?) -> String {
+        let known = since.map { os1Tr("\(shortDate($0)) 이후 비교 영수증 없음", "no comparison receipts since \(shortDate($0))") }
+            ?? os1Tr("시각이 기록된 비교 영수증 없음", "no timestamped comparison receipts")
+        return known + os1Tr(" · 추정 원인: 현재 라우팅이 요청당 경로 하나만 실행", " · likely cause: current routing runs one route per request")
+    }
+    /// Title, value and note for a selection-biased comparison, named from
+    /// the side that only ran after the other failed. Nil when unbiased.
+    public static func selectionBiasSummary(_ item: GovernanceComparison) -> (title: String, value: String, note: String)? {
+        let (base, cand) = sideNames(baseline: item.baseline, candidate: item.id)
+        let n = item.matchedScopes
+        func rescue(_ later: String, _ first: String, _ completed: Int) -> (String, String, String) {
+            (os1Tr("\(first) 실패 후 \(later)", "\(later) after \(first) failed"),
+             os1Tr("\(completed)/\(n) 성공", "\(completed)/\(n) succeeded"),
+             os1Tr("모든 묶음에서 \(first)가 먼저 실패한 뒤 \(later) 실행 · A/B 비교 아님",
+                   "\(later) ran only after \(first) failed in every scope · not an A/B"))
+        }
+        switch item.selectionBias {
+        case .none: return nil
+        case .candidateAfterBaselineFailure: return rescue(cand, base, item.candidateCompletedScopes)
+        case .baselineAfterCandidateFailure: return rescue(base, cand, item.baselineCompletedScopes)
+        case .mixed:
+            return (os1Tr("한쪽 실패 후 다른 쪽", "One route after the other failed"),
+                    os1Tr("\(base) \(item.baselineCompletedScopes)/\(n) · \(cand) \(item.candidateCompletedScopes)/\(n) 성공",
+                          "\(base) \(item.baselineCompletedScopes)/\(n) · \(cand) \(item.candidateCompletedScopes)/\(n) succeeded"),
+                    os1Tr("모든 묶음에서 한 경로가 실패한 뒤에만 다른 경로 실행 · A/B 비교 아님",
+                          "in every scope one route ran only after the other failed · not an A/B"))
+        }
+    }
+    /// A Δ chart's header. Only a fresh value over enough scopes is the big
+    /// number; stale, thin or undefined evidence is small gray text, so an
+    /// old value never sits on the first screen as a current reading.
+    public static func headlineDisplay(_ headline: GovernanceDeltaHeadline, lastValue: Double?, lastEvidence: Date?,
+                                       format: (Double?) -> String) -> GovernanceHeadlineDisplay {
+        switch headline {
+        case .value(let value):
+            return GovernanceHeadlineDisplay(text: format(value), prominent: true)
+        case .stale:
+            let when = lastEvidence.map { shortDate($0) } ?? os1Tr("시각 미기록", "time unrecorded")
+            return GovernanceHeadlineDisplay(text: os1Tr("마지막 \(format(lastValue)) · \(when)", "last \(format(lastValue)) · \(when)"),
+                                             prominent: false)
+        case .tooFew(let scopes):
+            return GovernanceHeadlineDisplay(text: tooFew(scopes: scopes), prominent: false)
+        case .unavailable:
+            return GovernanceHeadlineDisplay(text: "—", prominent: false)
+        }
+    }
+    /// Why a Δ chart has no line to draw. It must agree with the card above
+    /// it: a comparison that exists but has no timestamped scope is legacy
+    /// evidence, not "no comparison".
+    public static func evidenceEmptyText(_ item: GovernanceComparison?, series: GovernanceEvidenceSeries,
+                                         loading: Bool) -> String {
+        if loading { return os1Tr("경로 비교를 계산하는 중…", "Computing the route comparison…") }
+        guard let item else {
+            return os1Tr("같은 요청 묶음에서 두 경로가 실행된 기록이 없습니다.", "No request scope ran on two routes.")
+        }
+        let scopes = series == .token ? item.measuredScopes : item.matchedScopes
+        if series == .token, scopes == 0 {
+            return os1Tr("양쪽 토큰이 모두 측정된 묶음이 없습니다.", "No scope has tokens measured on both routes.")
+        }
+        return os1Tr("n=\(scopes) 근거가 영수증 시각 없는 과거 원장에만 있어 시간축에 그릴 점이 없습니다.",
+                     "The n=\(scopes) evidence is in the legacy ledger, which has no receipt times, so there is nothing to plot over time.")
     }
     public static func tooFew(scopes: Int) -> String {
         os1Tr("n=\(scopes), 비교하기엔 너무 적음", "n=\(scopes), too few to compare")
@@ -610,6 +814,7 @@ public struct GovernanceSnapshot: Sendable {
                 var aDuration: Double, bDuration: Double
                 var aAttempts: Int, bAttempts: Int
                 var candidateAfterBaselineFailure: Bool
+                var baselineAfterCandidateFailure: Bool
             }
             var scopes: [Scope] = []
             for entries in grouped.values {
@@ -635,8 +840,11 @@ public struct GovernanceSnapshot: Sendable {
                 // The baseline ran (and, below, failed) before the candidate's
                 // first attempt. A later re-run of both (low → medium → … →
                 // low → medium) is still "candidate after baseline failure".
-                let ordered = aStarts.count == a.count && bStarts.count == b.count
-                    && aStarts.min()! < bStarts.min()!
+                let timed = aStarts.count == a.count && bStarts.count == b.count
+                let ordered = timed && aStarts.min()! < bStarts.min()!
+                // The mirror: the candidate ran first. Viewed from either side
+                // of the pair, the same escalation scope is the same rescue.
+                let reversed = timed && bStarts.min()! < aStarts.min()!
                 let aDurationSum: Int = a.map(\.durationMS).reduce(0, +)
                 let bDurationSum: Int = b.map(\.durationMS).reduce(0, +)
                 scopes.append(Scope(recordedAt: (a + b).compactMap { recordedAt[key($0)] }.max(),
@@ -644,7 +852,8 @@ public struct GovernanceSnapshot: Sendable {
                     aTokens: measured ? Double(at.reduce(0, +)) : nil, bTokens: measured ? Double(bt.reduce(0, +)) : nil,
                     adoptionDelta: bRate - aRate, aDuration: Double(aDurationSum), bDuration: Double(bDurationSum),
                     aAttempts: a.count, bAttempts: b.count,
-                    candidateAfterBaselineFailure: ordered && aAdopted == 0))
+                    candidateAfterBaselineFailure: ordered && aAdopted == 0,
+                    baselineAfterCandidateFailure: reversed && bAdopted == 0))
             }
             guard !scopes.isEmpty else { return nil }
             // One accumulation order for the series and the final figures, so
@@ -652,7 +861,7 @@ public struct GovernanceSnapshot: Sendable {
             // (untimestamped) scopes come first and add no point of their own.
             scopes.sort { ($0.recordedAt ?? .distantPast) < ($1.recordedAt ?? .distantPast) }
             var count = 0, measured = 0, completedA = 0, completedB = 0
-            var measuredCompletedA = 0, measuredCompletedB = 0, baselineN = 0, candidateN = 0, biased = 0
+            var measuredCompletedA = 0, measuredCompletedB = 0, baselineN = 0, candidateN = 0, biased = 0, mirrored = 0
             var baselineTokens = 0.0, candidateTokens = 0.0, timeA = 0.0, timeB = 0.0, adoptionSum = 0.0
             var latestEvidence: Date?, latestMeasuredEvidence: Date?
             var tokenEvidence: [GovernanceEvidencePoint] = [], completionEvidence: [GovernanceEvidencePoint] = []
@@ -667,6 +876,7 @@ public struct GovernanceSnapshot: Sendable {
                 completedA += scope.aCompleted ? 1 : 0; completedB += scope.bCompleted ? 1 : 0
                 adoptionSum += scope.adoptionDelta; timeA += scope.aDuration; timeB += scope.bDuration
                 biased += scope.candidateAfterBaselineFailure ? 1 : 0
+                mirrored += scope.baselineAfterCandidateFailure ? 1 : 0
                 if let date = scope.recordedAt {
                     latestEvidence = max(latestEvidence ?? date, date)
                     push(GovernanceEvidencePoint(id: date, value: Double(completedB) / Double(count) - Double(completedA) / Double(count),
@@ -709,6 +919,7 @@ public struct GovernanceSnapshot: Sendable {
             comparison.tokenEvidence = hasMeasuredUsage ? tokenEvidence : []
             comparison.completionEvidence = completionEvidence
             comparison.candidateAfterBaselineFailureScopes = biased
+            comparison.baselineAfterCandidateFailureScopes = mirrored
             if hasMeasuredUsage {
                 // Completions and tokens come from the same measured scopes, so
                 // a completion whose cost is unknown never inflates efficiency.

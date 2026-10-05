@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 import Charts
 import OS1Context
@@ -25,21 +26,23 @@ struct GovernanceChartPoint: Identifiable {
     let value: Double
 }
 
-/// What the Overview's comparison cards show for the selected pair. The
-/// period comparison (or, under All, the all-time one) is the source; when
-/// it is missing or its newest receipt predates the freshness cutoff the
-/// whole row is one stale card that keeps the old values in its note.
+/// What the Overview's comparison cards and the Δ charts below them show
+/// for the selected pair. One comparison feeds both: the pair over all
+/// recorded evidence. The period only decides whether that evidence is fresh
+/// enough to be a headline (`freshAfter`); when it is not, the cards collapse
+/// into one stale card and the chart headers turn into small gray text.
 struct GovernanceMonitorDeltaCards {
+    enum Kind: Equatable { case loading, noComparison, stale, values }
     let source: GovernanceComparison?
-    let reference: GovernanceComparison?
+    let loading: Bool
     let token: GovernanceDeltaHeadline
     let completion: GovernanceDeltaHeadline
     let efficiency: GovernanceDeltaHeadline
 
-    init(period: GovernanceComparison?, reference: GovernanceComparison?, freshAfter cutoff: Date) {
-        let source = period ?? reference
+    init(comparison: GovernanceComparison?, freshAfter cutoff: Date, loading: Bool = false) {
+        let source = loading ? nil : comparison
         self.source = source
-        self.reference = reference
+        self.loading = loading
         token = GovernanceDeltaHeadline.evaluate(value: source?.tokenSavings, scopes: source?.measuredScopes ?? 0,
                                                  latestEvidence: source?.latestMeasuredEvidenceAt, freshAfter: cutoff)
         completion = GovernanceDeltaHeadline.evaluate(value: source?.taskCompletionDelta, scopes: source?.matchedScopes ?? 0,
@@ -47,17 +50,19 @@ struct GovernanceMonitorDeltaCards {
         efficiency = GovernanceDeltaHeadline.evaluate(value: source?.completionEfficiencyDelta, scopes: source?.measuredScopes ?? 0,
                                                       latestEvidence: source?.latestMeasuredEvidenceAt, freshAfter: cutoff)
     }
-    /// No comparison inside the freshness window: the cards collapse into one.
-    var isStale: Bool {
-        guard source != nil else { return false }
-        if case .stale = completion { return true }
-        return false
+    var kind: Kind {
+        if loading { return .loading }
+        if source == nil { return .noComparison }
+        if case .stale = completion { return .stale }
+        return .values
     }
+    /// No comparison inside the freshness window: the cards collapse into one.
+    var isStale: Bool { kind == .stale }
     var staleSince: Date? { source?.latestEvidenceAt }
     var staleTitle: String { GovernanceMonitorText.staleTitle(since: staleSince) }
     /// The last measured values, kept in the stale card's note only.
     var staleNote: String {
-        var parts = [GovernanceMonitorText.staleReason]
+        var parts = [GovernanceMonitorText.staleReason(since: staleSince)]
         if let item = source {
             if item.tokenSavings != nil {
                 parts.append(os1Tr("마지막 토큰 \(GovernanceMonitorText.tokenChange(savings: item.tokenSavings)) (\(GovernanceMonitorText.tokenCohort(item)))",
@@ -69,13 +74,75 @@ struct GovernanceMonitorDeltaCards {
     }
     func adoptionSummary(_ item: GovernanceComparison) -> String {
         let date = item.latestEvidenceAt.map { " · " + GovernanceMonitorText.shortDate($0) } ?? ""
-        if item.completionDeltaIsSelectionBiased {
-            let (base, cand) = GovernanceMonitorText.sideNames(baseline: item.baseline, candidate: item.id)
-            return os1Tr("\(base) 실패 후 \(cand) \(item.candidateCompletedScopes)/\(item.matchedScopes) 성공\(date)",
-                         "\(cand) after \(base) failed: \(item.candidateCompletedScopes)/\(item.matchedScopes) succeeded\(date)")
+        if let bias = GovernanceMonitorText.selectionBiasSummary(item) {
+            return "\(bias.title): \(bias.value)\(date)"
         }
         return os1Tr("요청 묶음 채택 \(GovernanceMonitorText.percentagePoints(item.taskCompletionDelta)) (n=\(item.matchedScopes)\(date))",
                      "request-scope adoption \(GovernanceMonitorText.percentagePoints(item.taskCompletionDelta)) (n=\(item.matchedScopes)\(date))")
+    }
+    /// Δ chart headers: the same gate as the cards, so a stale or thin value
+    /// is never the big number under a card that withholds it.
+    var chartToken: GovernanceHeadlineDisplay {
+        GovernanceMonitorText.headlineDisplay(token, lastValue: source?.tokenSavings, lastEvidence: source?.latestMeasuredEvidenceAt) {
+            GovernanceMonitorText.tokenChange(savings: $0)
+        }
+    }
+    var chartCompletion: GovernanceHeadlineDisplay {
+        GovernanceMonitorText.headlineDisplay(completion, lastValue: source?.taskCompletionDelta, lastEvidence: source?.latestEvidenceAt) {
+            GovernanceMonitorText.percentagePoints($0)
+        }
+    }
+}
+
+/// Testable pieces of the monitor that do not need a live view.
+extension GovernanceMonitorView {
+    /// Cards and charts for the selected pair, from one cohort.
+    static func overviewCards(evidence: GovernanceDashboardProjection, baseline: String, candidate: String,
+                              freshAfter cutoff: Date, loading: Bool) -> GovernanceMonitorDeltaCards {
+        let all = evidence.comparisonsByBaseline[baseline]?.first { $0.id == candidate }
+        return GovernanceMonitorDeltaCards(comparison: all, freshAfter: cutoff, loading: loading)
+    }
+    /// The live strip's window and bucket. Like Activity Monitor it is the
+    /// last 30 minutes in 10-second buckets under every period choice.
+    static func liveStripLayout(window: String) -> (span: TimeInterval, bucket: TimeInterval) {
+        (1_800, 10)
+    }
+    struct LegendItem: Equatable {
+        let label: String
+        let isData: Bool
+    }
+    /// The live chart's legend: only series that are drawn from receipts.
+    static var liveLegend: [LegendItem] {
+        [LegendItem(label: os1Tr("시작", "Started"), isData: true),
+         LegendItem(label: os1Tr("종료", "Finished"), isData: true)]
+    }
+    /// The token card's note, and the session-resume caveat on its own line.
+    static func tokenCardNote(_ item: GovernanceComparison?, headline: GovernanceDeltaHeadline) -> (note: String, caveat: String?) {
+        var note = item.map { GovernanceMonitorText.tokenCohort($0) } ?? ""
+        if case .value = headline {} else if let savings = item?.tokenSavings {
+            note = GovernanceMonitorText.tokenChange(savings: savings) + " · " + note
+        }
+        return (note, os1Tr("후속 시도가 같은 세션을 이어 쓸 수 있음(경로 효과와 섞임)",
+                            "a later attempt may reuse the same session (warm start)"))
+    }
+    /// Card text width at the monitor's minimum window width (980 pt):
+    /// five columns, 10 pt gaps, 24 pt page and 14 pt card padding.
+    static let minimumCardTextWidth: CGFloat = (980 - 48 - 40) / 5 - 28
+    /// Whether `text` at the cards' 9 pt note size fits in `lines` lines.
+    static func noteFits(_ text: String, width: CGFloat = minimumCardTextWidth, lines: Int = 2) -> Bool {
+        let font = NSFont.systemFont(ofSize: 9)
+        let bounds = (text as NSString).boundingRect(with: NSSize(width: width, height: .greatestFiniteMagnitude),
+                                                     options: [.usesLineFragmentOrigin, .usesFontLeading],
+                                                     attributes: [.font: font])
+        let lineHeight = NSLayoutManager().defaultLineHeight(for: font)
+        return bounds.height <= lineHeight * CGFloat(lines) + 0.5
+    }
+    /// Previews render with an empty account book and never read the
+    /// owner's accounts file; the live monitor loads it as before.
+    @MainActor
+    static func makeAccountsModel(preview: Bool,
+                                  load: @escaping () -> BackendAccountBook = { BackendAccounts.load() }) -> BackendAccountsModel {
+        preview ? BackendAccountsModel(load: { BackendAccounts.normalized(BackendAccountBook()) }) : BackendAccountsModel(load: load)
     }
 }
 
@@ -105,7 +172,7 @@ struct GovernanceMonitorView: View {
     /// whether that evidence is fresh enough for a headline.
     @State private var evidence: GovernanceDashboardProjection
     @State private var evidenceProvider = "전체"
-    @StateObject private var accounts = BackendAccountsModel()
+    @StateObject private var accounts: BackendAccountsModel
     @Environment(\.dismiss) private var dismiss
     private let green = Color(red: 0.23, green: 0.9, blue: 0.56)
     private let pink = Color(red: 0.99, green: 0.61, blue: 0.77)
@@ -120,6 +187,7 @@ struct GovernanceMonitorView: View {
         self.preview = preview
         _snapshot = State(initialValue: snapshot)
         _section = State(initialValue: GovernanceMonitorSection(rawValue: previewSection) ?? .live)
+        _accounts = StateObject(wrappedValue: Self.makeAccountsModel(preview: preview))
         _refreshed = State(initialValue: snapshot.loadedAt)
         let window = Self.defaultWindow
         let allTime = snapshot.dashboardProjection(provider: nil, since: nil, includeHistorical: true, now: snapshot.loadedAt)
@@ -179,17 +247,14 @@ struct GovernanceMonitorView: View {
     }
     /// The selected pair over all recorded evidence (charts, Details).
     private var selectedComparison: GovernanceComparison? { comparisons.first { $0.id == candidate } }
-    /// The selected pair inside the period (the period's own cohort).
-    private var periodComparison: GovernanceComparison? {
-        if window == "전체" { return selectedComparison }
-        guard projectionIsCurrent else { return nil }
-        return projection.comparisonsByBaseline[baseline]?.first { $0.id == candidate }
-    }
     /// Evidence older than this is not a current number: the period start,
     /// or seven days back under All.
     private var freshnessCutoff: Date { since ?? refreshed.addingTimeInterval(-604_800) }
+    /// Cards and charts read the same comparison (all recorded evidence);
+    /// while a provider change is still being computed they say so.
     private var deltaCards: GovernanceMonitorDeltaCards {
-        GovernanceMonitorDeltaCards(period: periodComparison, reference: selectedComparison, freshAfter: freshnessCutoff)
+        Self.overviewCards(evidence: evidence, baseline: baseline, candidate: candidate,
+                           freshAfter: freshnessCutoff, loading: !evidenceIsCurrent)
     }
     private var taskCompletionDelta: Double? { selectedComparison?.taskCompletionDelta }
     private var meteredTasks: [GovernanceTask] { terminal.filter { $0.tokens != nil } }
@@ -257,12 +322,6 @@ struct GovernanceMonitorView: View {
         return os1Tr("n=\(item.measuredScopes)\(date) · 기준 채택 0 또는 0 토큰이면 정의 불가",
                      "n=\(item.measuredScopes)\(date) · undefined with 0 baseline adoptions or a 0-token denominator")
     }
-    /// The same session continues on a later attempt in most retry scopes,
-    /// so the later route starts warm. Named on every token figure.
-    private var sessionResumeNote: String {
-        os1Tr("후속 시도가 같은 세션을 이어 쓸 수 있어 경로 효과와 섞임",
-              "a later attempt may resume the same session, so route and warm start are mixed")
-    }
     private func evidenceStamp(_ date: Date?) -> String {
         guard let date else { return os1Tr("근거 시각 미기록(과거 원장)", "evidence time unrecorded (legacy ledger)") }
         return date.formatted(.dateTime.month(.defaultDigits).day().hour().minute())
@@ -276,16 +335,10 @@ struct GovernanceMonitorView: View {
     /// While a filter change is recomputed off the actor, keep drawing the
     /// last coherent projection under its own window: zeros must never stand
     /// in for data that simply has not been computed yet.
-    private var liveActivityWindow: String {
-        projectionIsCurrent ? window
-            : (projectionFilterContext.split(separator: "|").first.map(String.init) ?? window)
-    }
-    private var liveActivitySpan: TimeInterval {
-        liveActivityWindow == "24시간" ? 86_400 : (liveActivityWindow == "7일" ? 604_800 : 1_800)
-    }
-    private var liveActivityBucketSeconds: TimeInterval {
-        liveActivityWindow == "24시간" ? 900 : (liveActivityWindow == "7일" ? 3_600 : 10)
-    }
+    /// Like Activity Monitor the strip always shows the last 30 minutes in
+    /// 10-second buckets, moving every second; the Period picker applies to
+    /// the cards, not to this strip.
+    private var liveActivityLayout: (span: TimeInterval, bucket: TimeInterval) { Self.liveStripLayout(window: window) }
     /// Display text for a stored period value. The stored value stays the
     /// filter, projection and sampler key; only its label is translated.
     private func windowLabel(_ value: String) -> String {
@@ -296,20 +349,19 @@ struct GovernanceMonitorView: View {
         default: return value
         }
     }
-    private var liveActivityWindowLabel: String { liveActivityWindow == "전체" ? os1Tr("최근 30분", "Last 30 minutes") : windowLabel(liveActivityWindow) }
+    private var liveActivityWindowLabel: String {
+        liveActivityLayout.span == 1_800 ? os1Tr("최근 30분", "Last 30 minutes") : os1Tr("기간 \(windowLabel(window))", "Period \(windowLabel(window))")
+    }
     private var liveActivityBucketLabel: String {
-        liveActivityWindow == "24시간" ? os1Tr("15분 간격", "15-minute intervals")
-            : (liveActivityWindow == "7일" ? os1Tr("1시간 간격", "1-hour intervals") : os1Tr("10초 간격", "10-second intervals"))
+        let bucket = Int(liveActivityLayout.bucket)
+        return bucket < 60 ? os1Tr("\(bucket)초 간격", "\(bucket)-second intervals")
+            : (bucket < 3_600 ? os1Tr("\(bucket / 60)분 간격", "\(bucket / 60)-minute intervals") : os1Tr("1시간 간격", "1-hour intervals"))
     }
-    private var liveActivityAxisFormat: Date.FormatStyle {
-        liveActivityWindow == "7일" ? .dateTime.month().day() : .dateTime.hour().minute()
-    }
-    private var liveActivityTickInterval: TimeInterval {
-        liveActivityWindow == "24시간" ? 14_400 : (liveActivityWindow == "7일" ? 86_400 : 300)
-    }
+    /// All-time tasks of the current provider filter: a long task that
+    /// started before a period still shows when it finishes.
     private var liveActivityStrip: GovernanceActivityStrip {
-        GovernanceActivityStrip.build(tasks: projection.tasks, until: refreshed, span: liveActivitySpan,
-                                      bucketSeconds: liveActivityBucketSeconds)
+        let layout = liveActivityLayout
+        return GovernanceActivityStrip.build(tasks: evidence.tasks, until: refreshed, span: layout.span, bucketSeconds: layout.bucket)
     }
 
     var body: some View {
@@ -410,7 +462,13 @@ struct GovernanceMonitorView: View {
                 Text("ACTIVITY MONITOR  /  OPENAI + ANTHROPIC").font(.system(size: 10, weight: .medium, design: .monospaced)).tracking(1.1).foregroundStyle(muted)
             }
             Spacer()
-            if !preview { heartbeatTrace(width: 72, height: 18) }
+            // The only place the clock-driven pulse is drawn, with its
+            // visible label: it is a liveness indicator, never data.
+            VStack(alignment: .trailing, spacing: 1) {
+                heartbeatTrace(width: 72, height: 14)
+                Text(os1Tr("모니터 동작 표시 · 데이터 아님", "monitor running · not data"))
+                    .font(.system(size: 8)).foregroundStyle(muted)
+            }
             Circle().fill(green)
                 .frame(width: 6, height: 6)
                 .scaleEffect(preview ? 1 : (heartbeatPulse ? 1.45 : 0.8))
@@ -479,8 +537,8 @@ struct GovernanceMonitorView: View {
                         ForEach(comparisons) { item in Text(short(item.id)).tag(item.id) }
                     }.labelsHidden().frame(maxWidth: 390)
                     Spacer()
-                    Text(os1Tr("경로 비교는 기록된 전체 근거 · 기간은 최신 여부만 판정",
-                               "Route comparison uses all recorded evidence · the period only decides freshness"))
+                    Text(os1Tr("경로 비교(카드·그래프)는 기록된 전체 근거 · 기간은 최신 여부와 채택률 카드만 정함",
+                               "Route comparison (cards and charts) uses all recorded evidence · the period decides freshness and the adoption card"))
                         .font(.system(size: 9)).foregroundStyle(muted)
                 }
             }
@@ -521,13 +579,17 @@ struct GovernanceMonitorView: View {
             .background(Color.white.opacity(0.045), in: RoundedRectangle(cornerRadius: 12))
     }
     private func compactCard(_ title: String, _ value: String, _ note: String, color: Color = .white,
-                             valueSize: CGFloat = 22) -> some View {
+                             valueSize: CGFloat = 22, caveat: String? = nil) -> some View {
         VStack(alignment: .leading, spacing: 7) {
             Text(title).font(.system(size: 10, weight: .medium)).foregroundStyle(muted).lineLimit(1)
             Text(value).font(.system(size: valueSize, weight: .semibold, design: .rounded)).monospacedDigit().foregroundStyle(color)
                 .lineLimit(1).minimumScaleFactor(0.7)
             Text(note).font(.system(size: 9)).foregroundStyle(muted).lineLimit(2)
                 .fixedSize(horizontal: false, vertical: true)
+            if let caveat {
+                Text(caveat).font(.system(size: 9)).foregroundStyle(muted.opacity(0.85)).italic().lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
         .frame(maxWidth: .infinity, minHeight: 70, alignment: .topLeading)
         .padding(.horizontal, 14).padding(.vertical, 11)
@@ -564,16 +626,22 @@ struct GovernanceMonitorView: View {
                                     "No goal-verdict receipts yet · adoption ≠ goal success")
                             : os1Tr("판정 \(quality.verifiedSuccesses + quality.verifiedFailures)건", "\(quality.verifiedSuccesses + quality.verifiedFailures) verdicts"),
                         color: quality.rate == nil ? muted : green, valueSize: quality.rate == nil ? 18 : 22)
-            if cards.source == nil {
-                compactCard(os1Tr("경로 비교 Δ", "Route comparison Δ"), "—",
-                            os1Tr("같은 요청 묶음에서 두 경로가 실행된 기록이 없습니다.", "No request scope ran on two routes."),
+            switch cards.kind {
+            case .loading:
+                compactCard(os1Tr("경로 비교 Δ", "Route comparison Δ"), os1Tr("불러오는 중…", "Loading…"),
+                            GovernanceMonitorText.evidenceEmptyText(nil, series: .completion, loading: true),
                             color: muted, valueSize: 18)
                     .gridCellColumns(3)
-            } else if cards.isStale {
-                compactCard(os1Tr("경로 비교 Δ · \(pairLabel)", "Route comparison Δ · \(pairLabel)"), cards.staleTitle,
-                            cards.staleNote + os1Tr(" · 값은 상세에", " · values in Details"), color: .yellow, valueSize: 18)
+            case .noComparison:
+                compactCard(os1Tr("경로 비교 Δ", "Route comparison Δ"), "—",
+                            GovernanceMonitorText.evidenceEmptyText(nil, series: .completion, loading: false),
+                            color: muted, valueSize: 18)
                     .gridCellColumns(3)
-            } else {
+            case .stale:
+                compactCard(os1Tr("경로 비교 Δ · \(pairLabel)", "Route comparison Δ · \(pairLabel)"), cards.staleTitle,
+                            cards.staleNote, color: .yellow, valueSize: 18)
+                    .gridCellColumns(3)
+            case .values:
                 tokenCard(cards)
                 adoptionCard(cards)
                 efficiencyCard(cards)
@@ -594,30 +662,21 @@ struct GovernanceMonitorView: View {
         }
     }
     private func tokenCard(_ cards: GovernanceMonitorDeltaCards) -> some View {
-        let item = cards.source
         let (text, size) = headlineText(cards.token) { GovernanceMonitorText.tokenChange(savings: $0) }
-        var note = item.map { GovernanceMonitorText.tokenCohort($0) } ?? ""
-        if case .value = cards.token {} else if let savings = item?.tokenSavings {
-            note = GovernanceMonitorText.tokenChange(savings: savings) + " · " + note
-        }
+        let note = Self.tokenCardNote(cards.source, headline: cards.token)
         let color: Color = { if case .value(let v) = cards.token { return v >= 0 ? green : pink }; return muted }()
-        return compactCard(os1Tr("토큰 변화 Δ", "Token change Δ"), text, note + " · " + sessionResumeNote,
-                           color: color, valueSize: size)
+        return compactCard(os1Tr("토큰 변화 Δ · 전체 누적", "Token change Δ · all-time"), text, note.note,
+                           color: color, valueSize: size, caveat: note.caveat)
     }
     private func adoptionCard(_ cards: GovernanceMonitorDeltaCards) -> some View {
         let item = cards.source
-        if let item, item.completionDeltaIsSelectionBiased {
-            let (base, cand) = GovernanceMonitorText.sideNames(baseline: item.baseline, candidate: item.id)
-            return compactCard(os1Tr("\(base) 실패 후 \(cand)", "\(cand) after \(base) failed"),
-                               os1Tr("\(item.candidateCompletedScopes)/\(item.matchedScopes) 성공", "\(item.candidateCompletedScopes)/\(item.matchedScopes) succeeded"),
-                               os1Tr("모든 묶음에서 \(base)가 먼저 실패한 뒤 실행 · A/B 비교 아님\(item.latestEvidenceAt.map { " · " + GovernanceMonitorText.shortDate($0) } ?? "")",
-                                     "\(cand) ran only after \(base) failed in every scope · not an A/B\(item.latestEvidenceAt.map { " · " + GovernanceMonitorText.shortDate($0) } ?? "")"),
-                               color: .white, valueSize: 20)
+        let date = item?.latestEvidenceAt.map { " · " + GovernanceMonitorText.shortDate($0) } ?? ""
+        if let item, let bias = GovernanceMonitorText.selectionBiasSummary(item) {
+            return compactCard(bias.title, bias.value, bias.note + date, color: .white, valueSize: 20)
         }
         let (text, size) = headlineText(cards.completion) { GovernanceMonitorText.percentagePoints($0) }
         let color: Color = { if case .value(let v) = cards.completion { return v >= 0 ? green : pink }; return muted }()
-        let date = item?.latestEvidenceAt.map { " · " + GovernanceMonitorText.shortDate($0) } ?? ""
-        return compactCard(os1Tr("요청 묶음 채택 Δ", "Request-scope adoption Δ"), text,
+        return compactCard(os1Tr("묶음 채택 Δ · 전체 누적", "Scope adoption Δ · all-time"), text,
                            os1Tr("\(percent(item?.baselineTaskCompletionRate)) → \(percent(item?.candidateTaskCompletionRate)) · n=\(item?.matchedScopes ?? 0)\(date)",
                                  "\(percent(item?.baselineTaskCompletionRate)) → \(percent(item?.candidateTaskCompletionRate)) · n=\(item?.matchedScopes ?? 0)\(date)"),
                            color: color, valueSize: size)
@@ -625,35 +684,34 @@ struct GovernanceMonitorView: View {
     private func efficiencyCard(_ cards: GovernanceMonitorDeltaCards) -> some View {
         let (text, size) = headlineText(cards.efficiency) { delta($0) }
         let color: Color = { if case .value(let v) = cards.efficiency { return v >= 0 ? green : pink }; return muted }()
-        return compactCard(os1Tr("채택/토큰 Δ", "Adoptions/token Δ"), text, efficiencyCohortNote(cards.source),
+        return compactCard(os1Tr("채택/토큰 Δ · 전체 누적", "Adoptions/token Δ · all-time"), text, efficiencyCohortNote(cards.source),
                            color: color, valueSize: size)
     }
     /// Δ over evidence time for the selected pair: a connected line through
     /// the cumulative value after each matched scope's receipt, then a dashed
-    /// line at the last value from that receipt to now.
+    /// line at the last value from that receipt to now. Header values go
+    /// through the same stale / too-few gate as the cards above.
     @ViewBuilder private func evidenceCharts(stacked: Bool) -> some View {
-        let item = selectedComparison
-        let biased = item?.completionDeltaIsSelectionBiased == true
-        let sides = item.map { GovernanceMonitorText.sideNames(baseline: $0.baseline, candidate: $0.id) }
+        let cards = deltaCards
+        let item = cards.source
+        let bias = item.flatMap { GovernanceMonitorText.selectionBiasSummary($0) }
         let token = evidenceChart(
             title: os1Tr("토큰 변화 Δ · \(pairLabel)", "Token change Δ · \(pairLabel)"),
-            current: GovernanceMonitorText.tokenChange(savings: item?.tokenSavings),
+            headline: cards.chartToken,
             note: (item.map { GovernanceMonitorText.tokenCohort($0) } ?? "") + " · " + os1Tr("인과적 절약 아님", "not causal savings"),
             points: (item?.tokenEvidence ?? []).compactMap { point in point.value.map { GovernanceChartPoint(id: point.id, value: -$0 * 100) } },
             unit: "%", color: (item?.tokenSavings ?? 0) >= 0 ? green : pink,
-            emptyText: item == nil ? os1Tr("같은 요청 묶음에서 두 경로가 실행된 기록이 없습니다.", "No request scope ran on two routes.")
-                : os1Tr("양쪽 토큰이 모두 측정된 묶음이 없습니다.", "No scope has tokens measured on both routes."),
+            emptyText: GovernanceMonitorText.evidenceEmptyText(item, series: .token, loading: cards.loading),
             stacked: stacked)
         let completion = evidenceChart(
-            title: biased && sides != nil
-                ? os1Tr("누적 채택 Δ · \(sides!.0) 실패 후 \(sides!.1)", "Cumulative adoption Δ · \(sides!.1) after \(sides!.0) failed")
-                : os1Tr("요청 묶음 채택 Δ · \(pairLabel)", "Request-scope adoption Δ · \(pairLabel)"),
-            current: GovernanceMonitorText.percentagePoints(taskCompletionDelta),
-            note: "n=\(item?.matchedScopes ?? 0) · " + (biased ? os1Tr("선택 편향 · A/B 아님", "selection-biased · not an A/B")
-                                                       : os1Tr("순차 재시도 묶음 · 독립 A/B 아님", "sequential retry scopes · not an independent A/B")),
+            title: bias.map { os1Tr("누적 채택 Δ · \($0.title)", "Cumulative adoption Δ · \($0.title)") }
+                ?? os1Tr("요청 묶음 채택 Δ · \(pairLabel)", "Request-scope adoption Δ · \(pairLabel)"),
+            headline: cards.chartCompletion,
+            note: "n=\(item?.matchedScopes ?? 0) · " + (bias != nil ? os1Tr("선택 편향 · A/B 아님", "selection-biased · not an A/B")
+                                                        : os1Tr("순차 재시도 묶음 · 독립 A/B 아님", "sequential retry scopes · not an independent A/B")),
             points: (item?.completionEvidence ?? []).compactMap { point in point.value.map { GovernanceChartPoint(id: point.id, value: $0 * 100) } },
-            unit: "pp", color: biased ? Color(white: 0.85) : ((taskCompletionDelta ?? 0) >= 0 ? green : pink),
-            emptyText: os1Tr("같은 요청 묶음에서 두 경로가 실행된 기록이 없습니다.", "No request scope ran on two routes."),
+            unit: "pp", color: bias != nil ? Color(white: 0.85) : ((item?.taskCompletionDelta ?? 0) >= 0 ? green : pink),
+            emptyText: GovernanceMonitorText.evidenceEmptyText(item, series: .completion, loading: cards.loading),
             stacked: stacked)
         if stacked {
             VStack(alignment: .leading, spacing: 12) { completion; token }
@@ -667,9 +725,11 @@ struct GovernanceMonitorView: View {
         let startedEvents = points.filter { $0.started > 0 }
         let finishedEvents = points.filter { $0.finished > 0 }
         let maxValue = max(1, strip.maxValue)
-        let axisFormat = liveActivityAxisFormat
-        let axisTicks = GovernanceActivityStrip.axisTicks(from: strip.start, to: strip.end, every: liveActivityTickInterval,
-                                                          edgeMargin: liveActivitySpan * 0.04)
+        let span = liveActivityLayout.span
+        let axisFormat: Date.FormatStyle = span > 86_400 ? .dateTime.month().day() : .dateTime.hour().minute()
+        let tickInterval: TimeInterval = span > 86_400 ? 86_400 : (span > 1_800 ? 14_400 : 300)
+        let axisTicks = GovernanceActivityStrip.axisTicks(from: strip.start, to: strip.end, every: tickInterval,
+                                                          edgeMargin: span * 0.04)
         return VStack(alignment: .leading, spacing: 11) {
             HStack(alignment: .firstTextBaseline) {
                 VStack(alignment: .leading, spacing: 3) {
@@ -679,16 +739,15 @@ struct GovernanceMonitorView: View {
                         .font(.system(size: 9)).foregroundStyle(muted)
                 }
                 Spacer()
-                HStack(spacing: 7) {
-                    heartbeatTrace(width: 92, height: 18)
-                    Text(os1Tr("모니터 확인 \(refreshed.formatted(date: .omitted, time: .standard))",
-                               "Monitor checked \(refreshed.formatted(date: .omitted, time: .standard))"))
-                        .font(.system(size: 9, design: .monospaced))
-                        .foregroundStyle(green)
-                }
                 HStack(spacing: 10) {
-                    Label(os1Tr("시작", "Started"), systemImage: "circle.fill").foregroundStyle(green)
-                    Label(os1Tr("종료", "Finished"), systemImage: "circle.fill").foregroundStyle(pink)
+                    ForEach(Self.liveLegend, id: \.label) { item in
+                        if item.isData {
+                            Label(item.label, systemImage: "circle.fill")
+                                .foregroundStyle(item.label == os1Tr("시작", "Started") ? green : pink)
+                        } else {
+                            Text(item.label).foregroundStyle(muted)
+                        }
+                    }
                 }.font(.system(size: 9, weight: .medium))
             }
             Chart {
@@ -757,21 +816,16 @@ struct GovernanceMonitorView: View {
         let span = max(1, high - low)
         return (low - span * 0.16)...(high + span * 0.16)
     }
-    private func evidenceAxisTicks(from start: Date, to end: Date) -> [Date] {
-        let span = end.timeIntervalSince(start)
-        let interval: TimeInterval = span > 20 * 86_400 ? 7 * 86_400 : (span > 4 * 86_400 ? 2 * 86_400
-            : (span > 86_400 ? 43_200 : (span > 21_600 ? 10_800 : 3_600)))
-        return GovernanceActivityStrip.axisTicks(from: start, to: end, every: interval, edgeMargin: span * 0.04)
-    }
     /// `points` are evidence points on receipt time, joined by a line (each
     /// value holds until the next scope's receipt changes it). The dashed
     /// segment holds the last value from the last receipt to now: no point
-    /// is drawn where no receipt exists.
-    private func evidenceChart(title: String, current: String, note: String, points: [GovernanceChartPoint],
+    /// is drawn where no receipt exists. When that stretch is long it is
+    /// compressed behind a labelled break, so the evidence keeps the width.
+    private func evidenceChart(title: String, headline: GovernanceHeadlineDisplay, note: String, points: [GovernanceChartPoint],
                                unit: String, color: Color, emptyText: String, stacked: Bool) -> some View {
         let now = refreshed
         let last = points.last
-        let start = points.first.map { min($0.id, now.addingTimeInterval(-3_600)) } ?? now.addingTimeInterval(-3_600)
+        let axis = GovernanceEvidenceTimeAxis(evidence: points.map(\.id), now: now)
         let tail: [GovernanceChartPoint] = last.flatMap { last in
             now > last.id ? [last, GovernanceChartPoint(id: now, value: last.value)] : nil
         } ?? []
@@ -781,6 +835,7 @@ struct GovernanceMonitorView: View {
         } ?? ""
         let domain = chartDomain(points)
         let symbol: CGFloat = points.count > 20 ? 10 : 28
+        let tickLabels = Dictionary(axis.ticks.map { ($0.position, $0.label) }, uniquingKeysWith: { first, _ in first })
         return VStack(alignment: .leading, spacing: 11) {
             HStack(alignment: .firstTextBaseline) {
                 VStack(alignment: .leading, spacing: 3) {
@@ -789,9 +844,10 @@ struct GovernanceMonitorView: View {
                 }
                 Spacer()
                 VStack(alignment: .trailing, spacing: 2) {
-                    // Evidence older than a week is history, not a live reading.
-                    Text(current).font(.system(size: 22, weight: .semibold, design: .rounded))
-                        .monospacedDigit().foregroundStyle(last == nil || ageDays > 7 ? muted : color)
+                    // Only a fresh value over enough scopes is the big number.
+                    Text(headline.text)
+                        .font(headline.prominent ? .system(size: 22, weight: .semibold, design: .rounded) : .system(size: 11, weight: .medium))
+                        .monospacedDigit().foregroundStyle(headline.prominent ? color : muted)
                     if let last {
                         Text(os1Tr("근거 \(points.count)점 · 마지막 \(evidenceStamp(last.id))",
                                    "\(points.count) evidence points · last \(evidenceStamp(last.id))"))
@@ -812,42 +868,53 @@ struct GovernanceMonitorView: View {
                     RuleMark(y: .value(os1Tr("기준", "Baseline"), 0))
                         .foregroundStyle(Color.white.opacity(0.16))
                         .lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 4]))
+                    if let gap = axis.breakRange {
+                        RectangleMark(xStart: .value(os1Tr("시간", "Time"), gap.lowerBound),
+                                      xEnd: .value(os1Tr("시간", "Time"), gap.upperBound))
+                            .foregroundStyle(Color.white.opacity(0.06))
+                            .annotation(position: .overlay, alignment: .bottom, spacing: 0) {
+                                Text("≈ " + (axis.gapLabel ?? "")).font(.system(size: 8, weight: .medium)).foregroundStyle(muted)
+                                    .fixedSize().padding(.bottom, 2)
+                            }
+                    }
                     ForEach(points) { point in
-                        AreaMark(x: .value(os1Tr("시간", "Time"), point.id),
+                        AreaMark(x: .value(os1Tr("시간", "Time"), axis.position(point.id)),
                                  yStart: .value(os1Tr("기준", "Baseline"), 0), yEnd: .value(os1Tr("델타", "Delta"), point.value),
                                  series: .value(os1Tr("계열", "Series"), "evidence"))
                             .interpolationMethod(.stepEnd)
                             .foregroundStyle(LinearGradient(colors: [color.opacity(0.24), color.opacity(0.015)], startPoint: .top, endPoint: .bottom))
-                        LineMark(x: .value(os1Tr("시간", "Time"), point.id), y: .value(os1Tr("델타", "Delta"), point.value),
+                        LineMark(x: .value(os1Tr("시간", "Time"), axis.position(point.id)), y: .value(os1Tr("델타", "Delta"), point.value),
                                  series: .value(os1Tr("계열", "Series"), "evidence"))
                             .interpolationMethod(.stepEnd)
                             .foregroundStyle(color)
                             .lineStyle(StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
-                        PointMark(x: .value(os1Tr("시간", "Time"), point.id), y: .value(os1Tr("델타", "Delta"), point.value))
+                        PointMark(x: .value(os1Tr("시간", "Time"), axis.position(point.id)), y: .value(os1Tr("델타", "Delta"), point.value))
                             .foregroundStyle(color).symbolSize(symbol)
                     }
                     ForEach(tail) { point in
-                        LineMark(x: .value(os1Tr("시간", "Time"), point.id), y: .value(os1Tr("델타", "Delta"), point.value),
+                        LineMark(x: .value(os1Tr("시간", "Time"), axis.position(point.id)), y: .value(os1Tr("델타", "Delta"), point.value),
                                  series: .value(os1Tr("계열", "Series"), "no-new-evidence"))
                             .foregroundStyle(color.opacity(0.55))
                             .lineStyle(StrokeStyle(lineWidth: 1.4, dash: [5, 4]))
                     }
                     if let end = tail.last {
-                        PointMark(x: .value(os1Tr("시간", "Time"), end.id), y: .value(os1Tr("델타", "Delta"), end.value))
+                        PointMark(x: .value(os1Tr("시간", "Time"), axis.position(end.id)), y: .value(os1Tr("델타", "Delta"), end.value))
                             .symbol(.circle).symbolSize(16).foregroundStyle(color.opacity(0.55))
                             .annotation(position: .top, alignment: .trailing, spacing: 4) {
                                 Text(tailLabel).font(.system(size: 9, weight: .medium)).foregroundStyle(.yellow)
                             }
                     }
                 }
-                .chartXScale(domain: start...now)
+                .chartXScale(domain: 0...1)
                 .chartYScale(domain: domain)
                 .chartXAxis {
-                    AxisMarks(values: evidenceAxisTicks(from: start, to: now)) { _ in
+                    AxisMarks(values: axis.ticks.map(\.position)) { value in
                         AxisGridLine().foregroundStyle(Color.white.opacity(0.06))
-                        AxisValueLabel(format: now.timeIntervalSince(start) > 2 * 86_400
-                                       ? .dateTime.month(.defaultDigits).day() : .dateTime.hour().minute())
-                            .font(.system(size: 8)).foregroundStyle(muted)
+                        AxisValueLabel(anchor: (value.as(Double.self) ?? 0) > 0.97 ? .topTrailing : .top) {
+                            if let position = value.as(Double.self), let label = tickLabels[position] {
+                                Text(label).font(.system(size: 8)).foregroundStyle(muted)
+                            }
+                        }
                     }
                 }
                 .chartYAxis {
@@ -864,8 +931,8 @@ struct GovernanceMonitorView: View {
                 .frame(height: stacked ? 190 : 155)
                 .accessibilityElement()
                 .accessibilityLabel(title)
-                .accessibilityValue(os1Tr("근거 \(points.count)점 · 현재 \(current) · \(tailLabel)",
-                                          "\(points.count) evidence points · current \(current) · \(tailLabel)"))
+                .accessibilityValue(os1Tr("근거 \(points.count)점 · 현재 \(headline.text) · \(tailLabel)",
+                                          "\(points.count) evidence points · current \(headline.text) · \(tailLabel)"))
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -1299,8 +1366,8 @@ struct GovernanceMonitorView: View {
                            "Input + output tokens include retry and failure costs. Cache is part of input, so it is not added again. Tokenizers differ by provider, so token savings are not compared across providers."))
                 Text(os1Tr("토큰 변화·채택당 토큰·효율은 양쪽 시도가 모두 실측된 과거 요청 묶음만 계산합니다(n). 토큰 변화는 비교 경로가 기준보다 쓴 토큰의 증감이며 −는 감소입니다. 미측정은 0이 아니라 제외입니다. 후속 시도가 같은 세션을 이어 쓰는 경우가 많아 경로 효과와 세션 재개 효과가 섞입니다. 모든 묶음에서 기준 경로가 먼저 실패한 뒤에만 비교 경로가 실행됐다면 채택 Δ는 선택 편향이며 'B가 A 실패 후 성공' 비율로 표시합니다.",
                            "Token change, tokens per adoption and efficiency are computed only over past request scopes where attempts on both sides were measured (n). Token change is how many more or fewer tokens the comparison route used than the baseline; − means fewer. Unmeasured is excluded, not 0. A later attempt often resumes the same session, so the route effect is mixed with a warm start. When the comparison route ran only after the baseline failed in every scope, the adoption Δ is selection-biased and shown as 'B after A failed' successes."))
-                Text(os1Tr("Δ 그래프는 영수증 시각 기준입니다. 각 점은 matched 묶음의 마지막 시도가 끝난 시각의 누적 값이며 선으로 잇고, 마지막 근거부터 지금까지는 마지막 값을 점선으로만 이어 '새 근거 없음'을 표시합니다. 근거가 기간 시작(전체에서는 7일)보다 오래되면 상단 카드는 값 대신 '경로 비교 없음'을 표시하고, 측정 묶음이 \(GovernanceDeltaHeadline.minimumScopes)개 미만이면 'n이 너무 적음'으로 표시합니다. 모니터는 1초마다 영수증 폴더의 변경 시각을 확인하고 바뀐 파일만 다시 읽습니다. 헤더의 맥박 선은 모니터 동작 표시이며 데이터가 아닙니다. Wilson 표시는 상관된 운영 표본의 명목 구간으로 일반 성능을 보증하지 않습니다.",
-                           "Δ charts use receipt time. Each point is the cumulative value when a matched scope's last attempt ended, joined by a line; from the last evidence to now the last value continues only as a dashed line marked 'no new evidence'. When the newest evidence is older than the period start (7 days under All), the top cards show 'no route comparison' instead of a value, and with fewer than \(GovernanceDeltaHeadline.minimumScopes) measured scopes they show 'too few to compare'. The monitor checks the receipt folders' modification times every second and re-reads only changed files. The pulse in the header shows the monitor is running; it is not data. Wilson figures are nominal intervals over correlated operating samples and do not guarantee general performance."))
+                Text(os1Tr("Δ 그래프는 영수증 시각 기준입니다. 각 점은 matched 묶음의 마지막 시도가 끝난 시각의 누적 값이며 선으로 잇고, 마지막 근거부터 지금까지는 마지막 값을 점선으로만 이어 '새 근거 없음'을 표시합니다. 마지막 근거부터 지금까지가 근거 구간보다 길면 그 구간을 오른쪽 1/5로 압축하고 '≈ 14일'처럼 표시합니다. 카드와 그래프는 같은 비교(기록된 전체 근거)를 씁니다. 근거가 기간 시작(전체에서는 7일)보다 오래되면 카드는 값 대신 '경로 비교 없음'을, 그래프 머리글은 작은 회색 '마지막 값 · 날짜'를 표시하고, 묶음이 \(GovernanceDeltaHeadline.minimumScopes)개 미만이면 둘 다 'n이 너무 적음'으로 표시합니다. 실시간 활동 스트립은 기간과 무관하게 최근 30분을 10초 간격으로 보여 줍니다. 모니터는 1초마다 영수증 폴더의 변경 시각을 확인하고 바뀐 파일만 다시 읽습니다. 헤더의 맥박 선은 모니터 동작 표시이며 데이터가 아닙니다. Wilson 표시는 상관된 운영 표본의 명목 구간으로 일반 성능을 보증하지 않습니다.",
+                           "Δ charts use receipt time. Each point is the cumulative value when a matched scope's last attempt ended, joined by a line; from the last evidence to now the last value continues only as a dashed line marked 'no new evidence'. When the stretch from the last evidence to now is longer than the evidence itself, it is compressed into the right fifth of the axis and labelled (for example '≈ 14 days'). Cards and charts read the same comparison (all recorded evidence). When the newest evidence is older than the period start (7 days under All), the cards show 'no route comparison' instead of a value and the chart headers show a small gray 'last value · date'; with fewer than \(GovernanceDeltaHeadline.minimumScopes) scopes both show 'too few to compare'. The live activity strip always shows the last 30 minutes in 10-second buckets, whatever the period. The monitor checks the receipt folders' modification times every second and re-reads only changed files. The pulse in the header shows the monitor is running; it is not data. Wilson figures are nominal intervals over correlated operating samples and do not guarantee general performance."))
                 Text(os1Tr("과거 기록은 요청당 최대 16회 보관된 시도 표본입니다. 시각·테스크 종료가 없으므로 과거 실행 완료율과 실시간 추이는 소급 생성하지 않습니다. 새 테스크는 별도 원자적 기록으로 누적합니다. 확인된 결과 재전송은 기존 테스크에 합쳐 호출을 중복 계산하지 않습니다.",
                            "Past records are attempt samples, up to 16 kept per request. They carry no timestamps or task finish, so past completion rates and live trends are not generated retroactively. New tasks accumulate as separate atomic records. A re-sent confirmed result is merged into its existing task, so calls are not double-counted."))
                 Text(os1Tr("새 기록 \(snapshot.tasks.count)건 · 과거 시도 \(snapshot.historical.count)회 · 읽기/검증 거부 \(snapshot.rejectedRecords)건 · 표시 한도 초과 \(snapshot.omittedFiles)건 · 요금표 미연결: 토큰 절약 ≠ 금액 절약",

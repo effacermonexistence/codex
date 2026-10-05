@@ -15,17 +15,25 @@ final class BackendAccountsModel: ObservableObject {
     /// Posted after any change so other views (the rail) reload their copy.
     static let changed = Notification.Name("os1.backendAccountsChanged")
 
-    @Published private(set) var book = BackendAccounts.load()
+    @Published private(set) var book: BackendAccountBook
+    /// Where the book comes from. The owner's accounts file by default; a
+    /// preview passes an empty book so a render never reads owner state.
+    private let load: () -> BackendAccountBook
+
+    init(load: @escaping () -> BackendAccountBook = { BackendAccounts.load() }) {
+        self.load = load
+        book = load()
+    }
     /// The provider whose sign-in is running, so its row can say so.
     @Published private(set) var busy: String?
     @Published var notice: String?
 
-    func reload() { book = BackendAccounts.load() }
+    func reload() { book = load() }
 
     /// Read-only: asks each provider's own status command who is signed in.
     func refresh() async {
         _ = try? await BackendAccountRunner.run(["accounts", "list", "--json"], timeout: 90)
-        book = BackendAccounts.load()
+        book = load()
         NotificationCenter.default.post(name: Self.changed, object: nil)
     }
 
@@ -57,7 +65,7 @@ final class BackendAccountsModel: ObservableObject {
         } catch {
             notice = error.localizedDescription
         }
-        book = BackendAccounts.load()
+        book = load()
         NotificationCenter.default.post(name: Self.changed, object: nil)
     }
 }

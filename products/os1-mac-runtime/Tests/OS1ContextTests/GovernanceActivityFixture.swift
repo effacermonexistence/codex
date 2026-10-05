@@ -4,6 +4,7 @@ import OS1Context
 func runGovernanceActivityFixtures() throws {
     runGovernanceStatisticsFixtures()
     try runGovernanceRuntimeFixtures()
+    try runGovernanceMonitorRound2Fixtures()
     try runGovernanceEvidenceFixtures()
     let fm = FileManager.default
     let root = fm.temporaryDirectory.resolvingSymlinksInPath().appendingPathComponent("governance-fixture-\(UUID())")

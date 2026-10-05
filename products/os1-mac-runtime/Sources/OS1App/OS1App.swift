@@ -319,14 +319,14 @@ private func governanceEvidenceMonitorSelfTest() throws {
     let week = now.addingTimeInterval(-604_800)
     let period = snapshot.dashboardProjection(provider: nil, since: week, includeHistorical: false, now: now)
     let periodPair = period.comparisonsByBaseline[pair.baseline]?.first { $0.id == pair.id }
-    let cards = GovernanceMonitorDeltaCards(period: periodPair, reference: pair, freshAfter: week)
+    let cards = GovernanceMonitorDeltaCards(comparison: pair, freshAfter: week)
     guard periodPair == nil, cards.isStale, cards.staleTitle.contains(GovernanceMonitorText.shortDate(pair.latestEvidenceAt!)),
           cards.staleNote.contains(GovernanceMonitorText.tokenChange(savings: pair.tokenSavings)) else {
         throw fail("two-week-old evidence is shown as a current headline")
     }
-    let allCards = GovernanceMonitorDeltaCards(period: pair, reference: pair, freshAfter: week)
+    let allCards = GovernanceMonitorDeltaCards(comparison: pair, freshAfter: week)
     guard allCards.isStale else { throw fail("under All, evidence older than 7 days is not stale") }
-    let fresh = GovernanceMonitorDeltaCards(period: pair, reference: pair, freshAfter: old.addingTimeInterval(-60))
+    let fresh = GovernanceMonitorDeltaCards(comparison: pair, freshAfter: old.addingTimeInterval(-60))
     guard !fresh.isStale, fresh.token == .tooFew(scopes: 2), fresh.completion == .value(pair.taskCompletionDelta!) else {
         throw fail("fresh n=2 tokens are not 'too few' or the 6-scope adoption Δ is hidden")
     }
@@ -338,6 +338,144 @@ private func governanceEvidenceMonitorSelfTest() throws {
     }
     let goal = GovernanceMonitorText.goalValue(snapshot.quality(since: nil))
     guard !goal.contains("0/"), !goal.contains("%") else { throw fail("the goal card shows a ratio without verdicts") }
+}
+
+/// Build 329 governance monitor, review round 2, run by the staged
+/// `app-self-test` gate: the Overview cards and the Δ charts below them read
+/// one cohort (all recorded evidence), a chart header goes through the
+/// cards' stale / too-few gate, the live strip stays a 30-minute,
+/// 10-second Activity-Monitor strip under every period, its legend holds
+/// data series only, a provider change shows "loading" rather than "no
+/// comparison", card notes fit their two lines, the default pair is the
+/// most recent one even when an older pair has far more tokens, and a
+/// preview never reads the owner's accounts file. Every check runs before
+/// the failures are reported together.
+@MainActor
+private func governanceMonitorRound2SelfTest() throws {
+    var failures: [String] = []
+    func check(_ value: Bool, _ label: String) { if !value { failures.append(label) } }
+    let fm = FileManager.default
+    let root = fm.temporaryDirectory.appendingPathComponent("os1-governance-round2-" + UUID().uuidString)
+    defer { try? fm.removeItem(at: root) }
+    func scope(_ n: Int) -> CompletionFeedbackScope {
+        CompletionFeedbackScope(objectiveSHA256: String(repeating: "a", count: 60) + String(format: "%04x", n), sourceSHA256: nil,
+            executorContractSHA256: String(repeating: "b", count: 64), assembledInputSHA256: String(repeating: "c", count: 64))
+    }
+    func task(_ store: GovernanceActivityStore, _ bound: CompletionFeedbackScope, model: String, _ effort: String,
+              adopted: Bool, tokens: Int?, at: Date) throws {
+        let id = UUID().uuidString.lowercased(), remote = UUID().uuidString.lowercased()
+        try store.begin(id: id, now: at)
+        let usage = tokens.map {
+            CompletionMeasuredUsage(inputTokens: $0, outputTokens: 0, cacheTokens: 0,
+                resource: CompletionUsageResourceMetadata(format: .codexRolloutJSONL, byteCount: 100,
+                    sha256: String(repeating: "e", count: 64), usageRecordCount: 1, accountingVersion: 2))
+        }
+        let observation = CompletionFeedbackObservation(executionID: remote, sequence: 1, provider: "codex", model: model,
+            effort: effort, outcome: adopted ? .adopted : .qualityFailure, usage: usage, durationMS: 1_000)
+        try store.attempt(id: id, executionID: remote, sequence: 1, scope: bound, provider: "codex", model: model,
+            effort: effort, startedAt: at.addingTimeInterval(0.1), observation: observation)
+        try store.finish(id: id, adopted: adopted, now: at.addingTimeInterval(2))
+    }
+    let now = Date()
+    let week = now.addingTimeInterval(-604_800)
+    let low = "codex / gpt-mm / low", medium = "codex / gpt-mm / medium"
+
+    // 1. One cohort: 40 scopes 20 days old (medium far cheaper) and 6 in the
+    //    last 2 days (medium dearer). Cards and charts show the all-evidence
+    //    value; the 6-scope period cohort is never the card headline.
+    let mm = GovernanceActivityStore(root: root.appendingPathComponent("mismatch"))
+    for i in 0..<40 {
+        let at = now.addingTimeInterval(-20 * 86_400 + Double(i) * 600)
+        let lowFirst = i % 2 == 0
+        try task(mm, scope(i), model: "gpt-mm", lowFirst ? "low" : "medium", adopted: !lowFirst, tokens: lowFirst ? 900_000 : 300_000, at: at)
+        try task(mm, scope(i), model: "gpt-mm", lowFirst ? "medium" : "low", adopted: true, tokens: lowFirst ? 300_000 : 900_000, at: at.addingTimeInterval(120))
+    }
+    for i in 40..<46 {
+        let at = now.addingTimeInterval(-2 * 86_400 + Double(i) * 600)
+        try task(mm, scope(i), model: "gpt-mm", "low", adopted: true, tokens: 200_000, at: at)
+        try task(mm, scope(i), model: "gpt-mm", "medium", adopted: false, tokens: 600_000, at: at.addingTimeInterval(120))
+    }
+    let mmEvidence = mm.snapshot(legacyRoot: nil).dashboardProjection(provider: nil, since: nil, includeHistorical: false, now: now)
+    let allPair = mmEvidence.comparisonsByBaseline[low]?.first { $0.id == medium }
+    let cards = GovernanceMonitorView.overviewCards(evidence: mmEvidence, baseline: low, candidate: medium, freshAfter: week, loading: false)
+    if let allPair, let savings = allPair.tokenSavings, let completion = allPair.taskCompletionDelta {
+        check(cards.token == .value(savings) && cards.completion == .value(completion),
+              "cards show the all-evidence values (\(GovernanceMonitorText.tokenChange(savings: savings))), not the period cohort's (\(cards.token))")
+        check(cards.chartToken == GovernanceHeadlineDisplay(text: GovernanceMonitorText.tokenChange(savings: savings), prominent: true)
+              && cards.chartCompletion.text == GovernanceMonitorText.percentagePoints(completion),
+              "the chart header below a card shows the same value as the card")
+    } else {
+        check(false, "the mismatch fixture has a measured low → medium comparison")
+    }
+
+    // 2. Chart header gate: stale evidence and n<5 are never the big number.
+    let luna = GovernanceActivityStore(root: root.appendingPathComponent("luna"))
+    let old = now.addingTimeInterval(-14 * 86_400)
+    for i in 0..<6 {
+        let at = old.addingTimeInterval(Double(i) * 600)
+        try task(luna, scope(i), model: "gpt-luna", "low", adopted: false, tokens: i < 2 ? 700_000 : nil, at: at)
+        try task(luna, scope(i), model: "gpt-luna", "medium", adopted: i % 2 == 0, tokens: i < 2 ? 212_000 : nil, at: at.addingTimeInterval(120))
+    }
+    let lunaPair = luna.snapshot(legacyRoot: nil).dashboardProjection(provider: nil, since: nil, includeHistorical: false, now: now)
+        .comparisonsByBaseline["codex / gpt-luna / low"]?.first
+    let staleCards = GovernanceMonitorDeltaCards(comparison: lunaPair, freshAfter: week)
+    check(!staleCards.chartToken.prominent && staleCards.chartToken.text.contains(GovernanceMonitorText.tokenChange(savings: lunaPair?.tokenSavings))
+          && !staleCards.chartCompletion.prominent,
+          "a two-week-old Δ is small gray text in the chart header, not a headline (\(staleCards.chartToken))")
+    let thinCards = GovernanceMonitorDeltaCards(comparison: lunaPair, freshAfter: old.addingTimeInterval(-60))
+    check(thinCards.chartToken == GovernanceHeadlineDisplay(text: GovernanceMonitorText.tooFew(scopes: 2), prominent: false),
+          "n=2 tokens read 'too few' in the chart as on the card (\(thinCards.chartToken))")
+
+    // 3. A provider change is loading, not "no comparison".
+    check(GovernanceMonitorDeltaCards(comparison: nil, freshAfter: week, loading: true).kind == .loading
+          && GovernanceMonitorView.overviewCards(evidence: mmEvidence, baseline: low, candidate: medium, freshAfter: week, loading: true).kind == .loading,
+          "while the evidence projection is recomputed the cards say loading")
+
+    // 4. The live strip is the 30-minute, 10-second strip under every period.
+    for window in ["전체", "24시간", "7일"] {
+        let layout = GovernanceMonitorView.liveStripLayout(window: window)
+        check(layout.span == 1_800 && layout.bucket == 10, "period \(window): live strip is \(layout.span)s / \(layout.bucket)s, not 1800s / 10s")
+    }
+
+    // 5. The live chart's legend lists data series only.
+    check(GovernanceMonitorView.liveLegend.allSatisfy(\.isData), "the liveness pulse is not in the data legend")
+
+    // 6. Card notes fit their lines at the minimum window width.
+    if let allPair {
+        for headline in [cards.token, GovernanceDeltaHeadline.stale(since: allPair.latestMeasuredEvidenceAt), .tooFew(scopes: 3)] {
+            let note = GovernanceMonitorView.tokenCardNote(allPair, headline: headline)
+            check(GovernanceMonitorView.noteFits(note.note) && note.caveat.map { GovernanceMonitorView.noteFits($0) } != false
+                  && (note.note + (note.caveat ?? "")).contains(os1Tr("세션", "session")),
+                  "token card note and session caveat are readable, not cut off: \(note)")
+        }
+    }
+
+    // 7. Default pair: the newest evidence wins over an older pair with far
+    //    more tokens and scopes (the token-volume rule picked a stale pair).
+    let pairs = GovernanceActivityStore(root: root.appendingPathComponent("pairs"))
+    for i in 0..<6 {
+        let at = now.addingTimeInterval(-20 * 86_400 + Double(i) * 600)
+        try task(pairs, scope(i), model: "gpt-big", "low", adopted: false, tokens: 5_000_000, at: at)
+        try task(pairs, scope(i), model: "gpt-big", "medium", adopted: true, tokens: 4_000_000, at: at.addingTimeInterval(120))
+    }
+    try task(pairs, scope(99), model: "gpt-new", "low", adopted: false, tokens: 10, at: now.addingTimeInterval(-86_400))
+    try task(pairs, scope(99), model: "gpt-new", "medium", adopted: true, tokens: 5, at: now.addingTimeInterval(-86_000))
+    let chosen = pairs.snapshot(legacyRoot: nil).dashboardProjection(provider: nil, since: nil, includeHistorical: false, now: now)
+        .defaultComparison()
+    check(chosen?.baseline == "codex / gpt-new / low" && chosen?.id == "codex / gpt-new / medium",
+          "the default pair is the most recent comparison, not the biggest: \(chosen?.baseline ?? "nil") → \(chosen?.id ?? "nil")")
+
+    // 8. A preview never calls the owner's account loader.
+    var ownerReads = 0
+    let previewModel = GovernanceMonitorView.makeAccountsModel(preview: true, load: { ownerReads += 1; return BackendAccountBook() })
+    previewModel.reload()
+    check(ownerReads == 0, "a governance preview read the owner's accounts file \(ownerReads) time(s)")
+    _ = GovernanceMonitorView.makeAccountsModel(preview: false, load: { ownerReads += 1; return BackendAccountBook() })
+    check(ownerReads == 1, "the live monitor still loads the account book")
+
+    guard failures.isEmpty else {
+        throw RunnerError.message("OS-1 governance monitor round 2: \(failures.count) checks failed\n  " + failures.joined(separator: "\n  "))
+    }
 }
 
 @MainActor
@@ -11117,6 +11255,7 @@ private struct OS1DesktopApp: App {
                 try fixtureStoreIsolationSelfTest()
                 try reasoningVisibilitySelfTest()
                 try governanceActivityStripSelfTest()
+                try governanceMonitorRound2SelfTest()
                 try governanceEvidenceMonitorSelfTest()
                 try nativeProvenanceSelfTest()
                 try boundNativeLookupSelfTest()
