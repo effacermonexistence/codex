@@ -3982,6 +3982,83 @@ private func migratedSourceReference(_ session: ConversationSession, store: Sour
     return nil
 }
 
+private func pagingSessionHandoff(_ session: ConversationSession, sessions: [ConversationSession], root: URL,
+                                  before userMessageID: UUID? = nil) throws -> String {
+    let peers = sessions.filter { $0.workspace == session.workspace }
+    var captures: [MemoryPaging.Capture] = []
+    for peer in peers {
+        for message in peer.messages where message.nativeManagedTurnID == nil && (message.role == .user || message.role == .assistant) {
+            captures.append(.init(sessionID: peer.id.uuidString.lowercased(), messageID: message.id.uuidString.lowercased(),
+                speaker: message.role == .user ? "user" : (message.provider ?? "assistant"), raw: Data(message.text.utf8),
+                timestamp: message.timestamp))
+        }
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+        captures.append(.init(sessionID: peer.id.uuidString.lowercased(), messageID: "envelope", speaker: "OS-1 store",
+            raw: try encoder.encode(peer), timestamp: nil, envelope: true))
+    }
+    try MemoryPaging.recordBatch(captures, workspace: session.workspace, root: root)
+    let reference = try MemoryPaging.archiveConversation(raw: JSONEncoder().encode(session), sessionID: session.id.uuidString.lowercased(),
+        workspace: session.workspace, messageCount: session.messages.count,
+        allowedSessionIDs: peers.map { $0.id.uuidString.lowercased() }, root: root)
+    for message in session.messages where message.role == .user {
+        try MemoryPaging.archiveAttachments(in: message.text, conversationID: session.id.uuidString.lowercased(),
+            messageID: message.id.uuidString.lowercased(), workspace: session.workspace, root: root)
+    }
+    let context = migratedTaskContext(session, sourceContext: migratedSourceReference(session))
+    try MemoryPaging.archiveTaskState(context, workspace: session.workspace, ownerMessages: session.messages.filter { $0.role == .user }.map {
+        .init(id: $0.id.uuidString.lowercased(), text: $0.text, timestamp: $0.timestamp)
+    }, root: root)
+    // Original data stays in sessions.json and immutable memory. Only a bounded
+    // recent window is working context; earlier dependencies are page faults.
+    var working = session
+    if let id = userMessageID, let index = session.messages.firstIndex(where: { $0.id == id }) {
+        working.messages = Array(session.messages[..<index].suffix(6))
+    } else { working.messages = Array(session.messages.suffix(6)) }
+    let encoded = try sessionHandoff(working)
+    let handed = try SessionHandoff.decode(encoded)
+    let config = try MemoryPaging.configuration(root: root)
+    guard handed.transcript.utf8.count <= config.retrievalBudgetTokens else {
+        // A large most-recent turn is a paged item, not a partial fake quote.
+        return try SessionHandoff(transcript: "Recent transcript is stored exactly in episodic memory; use memory_query when required.",
+            source: handed.source, taskContext: context, memoryPaging: reference).encoded()
+    }
+    return try SessionHandoff(transcript: handed.transcript, source: handed.source, taskContext: context, memoryPaging: reference).encoded()
+}
+
+private func memoryPagingHandoffSelfTest() throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("os1-paging-app-" + UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    var session = ConversationSession(workspace: root.appendingPathComponent("project").path)
+    let first = ChatMessage(role: .user, text: "decision: mode=A", timestamp: Date(timeIntervalSince1970: 1_000))
+    let corrected = ChatMessage(role: .user, text: "correction: mode=B", timestamp: Date(timeIntervalSince1970: 2_000))
+    let request = ChatMessage(role: .user, text: "Continue the current object. Do not send messages.")
+    session.messages = [first, corrected] + (0..<24).map { ChatMessage(role: .assistant,
+        text: "Historical exact record \($0) " + String(repeating: "x", count: 1000), provider: "codex") } + [request]
+    var context = TaskContext.migrated(conversationID: session.id, request: request.text, workspace: session.workspace,
+        sourceContext: nil, codexSessionID: nil, claudeSessionID: nil)
+    context.decideSemantic("mode=A"); context.decideSemantic("mode=B")
+    session.taskContext = context
+    var peer = ConversationSession(workspace: session.workspace)
+    peer.messages = [ChatMessage(role: .user, text: "Same project peer exact=92/128")]
+    let stableEncoder = JSONEncoder(); stableEncoder.outputFormatting = [.sortedKeys]
+    let before = try stableEncoder.encode(session)
+    let handoff = try SessionHandoff.decode(pagingSessionHandoff(session, sessions: [session, peer], root: root, before: request.id))
+    guard handoff.transcript.utf8.count < 24_000, !handoff.transcript.contains("Historical exact record 0 "),
+          handoff.memoryPaging?.archivedMessages == session.messages.count,
+          handoff.memoryPaging?.allowedSessionIDs.contains(peer.id.uuidString.lowercased()) == true,
+          try stableEncoder.encode(session) == before else { throw RunnerError.message("Paging mutated raw session or loaded whole history") }
+    let active = try MemoryPaging.activeBlock(context, budgetTokens: 8000, currentRequest: request.text, root: root)
+    guard active.contains("mode=B"), !active.contains("mode=A"), context.activeDecisions.contains(where: { $0.text == "mode=A" }) else {
+        throw RunnerError.message("Raw cache must stay intact while current hot decisions reconstruct latest explicit correction")
+    }
+    let manifest = try MemoryPaging.prepare(reference: handoff.memoryPaging!, executionID: UUID().uuidString, root: root)
+    let page = try MemoryPaging.retrieve(manifest, kind: .exactQuote, text: nil, messageID: first.id.uuidString.lowercased(), root: root)
+    guard page.hits.first?.text == first.text, page.hits.first?.item.metadata.sourceMessageID == first.id.uuidString.lowercased() else {
+        throw RunnerError.message("Evicted past message did not page in with original identity")
+    }
+    print("OS-1 actual GUI paging handoff/hot correction/raw preservation/exact page-in: OK (4 checks, no model calls)")
+}
+
 private func sessionHandoff(_ session: ConversationSession, before userMessageID: UUID? = nil) throws -> String {
     let bounded: ArraySlice<ChatMessage>
     if let id = userMessageID, let index = session.messages.firstIndex(where: { $0.id == id }) {
@@ -6978,7 +7055,7 @@ private final class SessionStore: ObservableObject {
         appendTaskEvent(conversationID: sessions[index].id, kind: "objective", summary: submission.request)
         }
         do {
-            _ = try sessionHandoff(sessions[index], before: existingUserMessage && submission.recoveryParentID == nil ? submission.userMessageID : nil)
+            _ = try pagingSessionHandoff(sessions[index], sessions: sessions, root: storageURL.deletingLastPathComponent(), before: existingUserMessage && submission.recoveryParentID == nil ? submission.userMessageID : nil)
         } catch {
             if !existingUserMessage && submission.recoveryParentID == nil {
                 sessions[index].messages.append(ChatMessage(id: submission.userMessageID, role: .user, text: submission.request))
@@ -7056,7 +7133,7 @@ private final class SessionStore: ObservableObject {
                     applyIngestedRecords(records, conversationID: submission.sessionID, preparingSubmission: submission.id)
                 }
                 guard let refreshed = sessions.firstIndex(where: { $0.id == submission.sessionID }) else { return }
-                let refreshedContext = try sessionHandoff(sessions[refreshed], before: submission.recoveryParentID == nil ? submission.userMessageID : nil)
+                let refreshedContext = try pagingSessionHandoff(sessions[refreshed], sessions: sessions, root: storageURL.deletingLastPathComponent(), before: submission.recoveryParentID == nil ? submission.userMessageID : nil)
                 activeRuns[submission.sessionID]?.handedRevision = sessions[refreshed].taskContext?.contextRevision
                 let summary = try await runOperation(submission, refreshedContext, codexSessionID, claudeSessionID,
                     { [weak self] activity in
@@ -10232,6 +10309,7 @@ private struct OS1DesktopApp: App {
                 try providerIntentSelfTest()
                 try routeFanoutDetailsSelfTest()
                 try taskContextSelfTest()
+                try memoryPagingHandoffSelfTest()
                 try interactionSelfTest()
                 try transcriptLatencySelfTest()
                 try railSelectionSelfTest()
@@ -12724,6 +12802,7 @@ private struct ConversationHeader: View {
                 Text("/").foregroundStyle(Theme.muted.opacity(0.5))
                 Text(session.title).fontWeight(.medium).lineLimit(1).foregroundStyle(Theme.text)
                 Spacer(minLength: 8)
+                MemoryContextView(conversationID: session.id.uuidString.lowercased())
                 if let activity = store.activeRuns[session.id]?.activity ?? store.sourceWaitingActivity(session.id) {
                     SessionExecutionBadge(session: session, activity: activity, compact: true)
                         .layoutPriority(1)

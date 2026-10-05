@@ -23,8 +23,9 @@ public struct SessionHandoff: Codable, Sendable {
     /// v3: the OS1-owned task state (objective, decisions, project baseline,
     /// all bound sources, bindings, executions). Absent on v2 handoffs.
     public let taskContext: TaskContext?
+    public let memoryPaging: MemoryPagingReference?
 
-    public init(transcript: String, source: SourceReference?, taskContext: TaskContext? = nil) {
+    public init(transcript: String, source: SourceReference?, taskContext: TaskContext? = nil, memoryPaging: MemoryPagingReference? = nil) {
         format = Self.currentFormat
         // Budget bytes, not Swift characters: Korean can consume 3+ bytes each.
         var bytes = Data(transcript.utf8).suffix(150_000)
@@ -32,6 +33,7 @@ public struct SessionHandoff: Codable, Sendable {
         self.transcript = String(data: bytes, encoding: .utf8) ?? ""
         self.source = source
         self.taskContext = taskContext
+        self.memoryPaging = memoryPaging
     }
 
     public func encoded() throws -> String {
@@ -46,7 +48,7 @@ public struct SessionHandoff: Codable, Sendable {
             // transcript shrinks.
             guard !bounded.transcript.isEmpty else { throw SourceContextError.invalid }
             bounded = SessionHandoff(transcript: String(bounded.transcript.suffix(bounded.transcript.count / 2)),
-                                     source: source, taskContext: taskContext)
+                                     source: source, taskContext: taskContext, memoryPaging: memoryPaging)
         }
     }
 

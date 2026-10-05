@@ -156,6 +156,11 @@ final class SourceContextTests {
         try runProviderActivityWatchdogFixtures()
         runABCDCarryPolicyFixtures()
         try runLeanBackendInstructionsFixtures()
+        try runContextBudgetFixtures()
+        let memoryFixtureRoot = FileManager.default.temporaryDirectory.appendingPathComponent("os1-memory-fixture-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: memoryFixtureRoot) }
+        try runEpisodicMemoryFixtures(root: memoryFixtureRoot)
+        try runMemoryPagingIntegrationFixtures(root: memoryFixtureRoot.appendingPathComponent("integration"))
         try runOwnerTermDefinitionsFixtures()
         try runOS1SelfReferenceFixtures()
         try runBackendWindowFocusFixtures()

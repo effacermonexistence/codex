@@ -6,6 +6,179 @@ import path from 'node:path';
 import os from 'node:os';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import { fileURLToPath } from 'node:url';
+
+// Exact private OS-1 custody scope. Do not enumerate the support directory or
+// copy another application's files, credentials, provider caches or models.
+const pagingRoots = Object.freeze(['episodic-memory', 'memory-paging', 'context-budget.json', 'source-snapshots']);
+const pagingRecoveryFormat = 'os1-private-paging-recovery-v1';
+const safeRoot = root => {
+  const resolved = path.resolve(root);
+  assert.equal(fs.realpathSync(resolved), resolved, 'paging recovery root may not traverse a symlink');
+  assert(fs.lstatSync(resolved).isDirectory(), 'paging recovery root must be a real directory');
+  return resolved;
+};
+const allowedRelative = value => {
+  assert(typeof value === 'string' && value.length && !value.includes('\\') && !value.includes('\0') &&
+    value.split('/').every(part => part && part !== '.' && part !== '..') &&
+    pagingRoots.includes(value.split('/')[0]), 'paging recovery path outside exact allowlist');
+  return value;
+};
+const pagingPath = (root, relative) => path.join(root, ...allowedRelative(relative).split('/'));
+const present = file => {
+  try { fs.lstatSync(file); return true; } catch (error) { if (error.code === 'ENOENT') return false; throw error; }
+};
+// Streaming SHA avoids holding whole historical transcripts in installer RAM.
+// O_NOFOLLOW and descriptor/path identity checks reject link and write races.
+const fileIntegrity = file => {
+  const fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+  try {
+    const before = fs.fstatSync(fd);
+    assert(before.isFile() && before.nlink === 1 && Number.isSafeInteger(before.size), 'paging state must be an unaliased regular file');
+    const digest = createHash('sha256'), buffer = Buffer.alloc(64 * 1024);
+    let bytes = 0, count;
+    while ((count = fs.readSync(fd, buffer, 0, buffer.length, null)) > 0) {
+      bytes += count; digest.update(buffer.subarray(0, count));
+    }
+    const after = fs.fstatSync(fd), named = fs.lstatSync(file);
+    assert(!named.isSymbolicLink() && before.dev === named.dev && before.ino === named.ino &&
+      before.size === bytes && after.size === bytes && before.mtimeMs === after.mtimeMs &&
+      before.ctimeMs === after.ctimeMs, 'paging file changed during integrity read');
+    return { bytes, sha256: digest.digest('hex') };
+  } finally { fs.closeSync(fd); }
+};
+const pagingInventory = root => {
+  safeRoot(root);
+  const roots = [], entries = [];
+  const walk = relative => {
+    const file = pagingPath(root, relative), stat = fs.lstatSync(file);
+    assert(!stat.isSymbolicLink(), 'paging snapshot never follows a symlink');
+    if (stat.isDirectory()) {
+      entries.push({ path: relative, kind: 'directory', bytes: 0, sha256: null });
+      for (const name of fs.readdirSync(file).sort()) walk(relative + '/' + name);
+    } else {
+      assert(stat.isFile(), 'paging snapshot rejects special files');
+      entries.push({ path: relative, kind: 'file', ...fileIntegrity(file) });
+    }
+  };
+  for (const name of pagingRoots) {
+    const exists = present(pagingPath(root, name));
+    roots.push({ name, present: exists });
+    if (exists) {
+      const stat = fs.lstatSync(pagingPath(root, name));
+      assert(name === 'context-budget.json' ? stat.isFile() : stat.isDirectory(), 'paging root has wrong type');
+      walk(name);
+    }
+  }
+  return { roots, entries };
+};
+const validatePagingManifest = manifest => {
+  assert.equal(manifest.format, pagingRecoveryFormat, 'unknown paging recovery format');
+  assert.deepEqual(manifest.roots.map(root => root.name), [...pagingRoots], 'paging manifest root scope changed');
+  assert(manifest.roots.every(root => typeof root.present === 'boolean'), 'invalid root presence');
+  const paths = new Set();
+  for (const entry of manifest.entries) {
+    allowedRelative(entry.path);
+    assert(!paths.has(entry.path), 'duplicate paging manifest path'); paths.add(entry.path);
+    assert(manifest.roots.find(root => root.name === entry.path.split('/')[0])?.present, 'entry under absent paging root');
+    assert(['file', 'directory'].includes(entry.kind) && Number.isSafeInteger(entry.bytes) && entry.bytes >= 0,
+      'invalid paging manifest entry');
+    assert(entry.kind === 'file' ? /^[a-f0-9]{64}$/.test(entry.sha256) : entry.sha256 === null && entry.bytes === 0,
+      'invalid paging digest');
+  }
+};
+export const verifyPagingRecoveryTree = (root, manifest, { allowAdditional = false, privateCopy = false } = {}) => {
+  validatePagingManifest(manifest);
+  const current = pagingInventory(root), byPath = new Map(current.entries.map(entry => [entry.path, entry]));
+  for (const entry of manifest.entries) assert.deepEqual(byPath.get(entry.path), entry, 'archived paging state lost or changed: ' + entry.path);
+  if (!allowAdditional) {
+    assert.deepEqual(current.roots, manifest.roots, 'paging root presence changed');
+    assert.deepEqual(current.entries, manifest.entries, 'paging inventory changed');
+  }
+  if (privateCopy) {
+    for (const relative of ['', ...current.entries.map(entry => entry.path)]) {
+      assert.equal(fs.lstatSync(relative ? pagingPath(root, relative) : root).mode & 0o077, 0, 'paging recovery must remain private');
+    }
+  }
+  return { preservedFiles: manifest.entries.filter(entry => entry.kind === 'file').length,
+    preservedBytes: manifest.entries.reduce((sum, entry) => sum + entry.bytes, 0),
+    additionalEntries: current.entries.length - manifest.entries.length };
+};
+const copyPagingTree = (from, to, manifest) => {
+  safeRoot(from); safeRoot(path.dirname(to));
+  assert(!present(to), 'paging recovery destination already exists');
+  fs.mkdirSync(to, { mode: 0o700 });
+  for (const entry of manifest.entries) {
+    const destination = pagingPath(to, entry.path);
+    if (entry.kind === 'directory') fs.mkdirSync(destination, { mode: 0o700 });
+    else {
+      assert.equal(fs.realpathSync(path.dirname(destination)), path.dirname(destination), 'paging destination parent changed');
+      const sourceFile = pagingPath(from, entry.path);
+      assert.deepEqual(fileIntegrity(sourceFile), { bytes: entry.bytes, sha256: entry.sha256 }, 'paging source changed before copy');
+      const input = fs.openSync(sourceFile, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+      let output;
+      try {
+        const sourceStat = fs.fstatSync(input);
+        assert(sourceStat.isFile() && sourceStat.nlink === 1, 'paging copy source is not an unaliased file');
+        output = fs.openSync(destination, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW, 0o600);
+        const buffer = Buffer.alloc(64 * 1024); let count;
+        while ((count = fs.readSync(input, buffer, 0, buffer.length, null)) > 0) {
+          let offset = 0;
+          while (offset < count) {
+            const written = fs.writeSync(output, buffer, offset, count - offset, null);
+            assert(written > 0, 'paging recovery write made no progress'); offset += written;
+          }
+        }
+        fs.fsyncSync(output);
+        const named = fs.lstatSync(sourceFile);
+        assert(!named.isSymbolicLink() && named.dev === sourceStat.dev && named.ino === sourceStat.ino,
+          'paging source identity changed during copy');
+      } finally { fs.closeSync(input); if (output !== undefined) fs.closeSync(output); }
+      assert.deepEqual(fileIntegrity(destination), { bytes: entry.bytes, sha256: entry.sha256 }, 'paging copy digest/byte mismatch');
+    }
+  }
+  verifyPagingRecoveryTree(to, manifest, { privateCopy: true });
+};
+
+/// Snapshot and a staged restore drill, never activation or live data replay.
+/// Exported so synthetic temporary fixtures can test this without installing.
+export const backupPagingState = ({ supportRoot, recoveryRoot }) => {
+  const sourceRoot = safeRoot(supportRoot), privateRecovery = safeRoot(recoveryRoot);
+  assert.equal(fs.lstatSync(privateRecovery).mode & 0o077, 0, 'recovery directory must be private');
+  const manifest = { format: pagingRecoveryFormat, capturedAt: new Date().toISOString(),
+    sourceRoot, ...pagingInventory(sourceRoot), liveRestoreAuthorized: false };
+  const backup = path.join(privateRecovery, 'paging-state');
+  copyPagingTree(sourceRoot, backup, manifest);
+  verifyPagingRecoveryTree(sourceRoot, manifest); // no mixed-time snapshot
+  const manifestFile = path.join(privateRecovery, 'paging-state-manifest.json');
+  const manifestBytes = Buffer.from(JSON.stringify(manifest, null, 2) + '\n');
+  const manifestFD = fs.openSync(manifestFile, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW, 0o600);
+  try { fs.writeFileSync(manifestFD, manifestBytes); fs.fsyncSync(manifestFD); } finally { fs.closeSync(manifestFD); }
+  const manifestIntegrity = fileIntegrity(manifestFile);
+  assert.deepEqual(manifestIntegrity, { bytes: manifestBytes.length,
+    sha256: createHash('sha256').update(manifestBytes).digest('hex') }, 'written paging manifest changed');
+  const restored = path.join(privateRecovery, 'paging-state-restore-drill');
+  copyPagingTree(backup, restored, manifest);
+  // The drill ends in a read-only private tree, not a runnable/live memory store.
+  for (const entry of [...manifest.entries].reverse()) {
+    fs.chmodSync(pagingPath(restored, entry.path), entry.kind === 'directory' ? 0o500 : 0o400);
+  }
+  fs.chmodSync(restored, 0o500);
+  const preservation = verifyPagingRecoveryTree(restored, manifest, { privateCopy: true });
+  verifyPagingRecoveryTree(backup, manifest, { privateCopy: true });
+  verifyPagingRecoveryTree(sourceRoot, manifest);
+  return { manifest, receipt: { format: pagingRecoveryFormat, manifestFile, ...manifestIntegrity,
+    backup, roots: manifest.roots, ...preservation,
+    restoreDrill: { path: restored, status: 'PASS', readOnly: true, completedAt: new Date().toISOString(), liveActivated: false } } };
+};
+
+// Fleet's original loaded state does not grant or remove rollback authority.
+// A newly failed paging gate still permits recovery of unadopted binaries when
+// fresh quiescence is established. Never replay live session/memory snapshots.
+export const binaryRollbackPermitted = ({ appStopped, pagingQuiesced: quiesced, anyBinaryMoved }) =>
+  appStopped === true && quiesced === true && anyBinaryMoved === true;
+
+async function install() {
 
 const [sourceArg, recoveryArg, expectedBuild, ...options] = process.argv.slice(2);
 assert(sourceArg && recoveryArg && /^\d+$/.test(expectedBuild), 'staged-app new-private-recovery-dir expected-build');
@@ -21,6 +194,7 @@ const cli = path.join(home, '.local/bin/os1'), resource = path.join(source, 'Con
 // was never replaced, so the CLI kept a 2026-09-13 config.
 const cliConfig = path.join(path.dirname(cli), 'config.json'), sourceConfig = path.join(source, 'Contents/Resources/config.json');
 const store = path.join(home, 'Library/Application Support/OS-1/sessions.json');
+const pagingSupportRoot = path.dirname(store);
 const fleetRoot = path.join(home, '.os1/fleet');
 const service = `gui/${process.getuid()}/com.os1.fleet-agent`;
 const plist = path.join(home, 'Library/LaunchAgents/com.os1.fleet-agent.plist');
@@ -71,6 +245,18 @@ const foreignWriters = () => run('/bin/ps', ['-axo', 'pid=,args=']).split('\n').
   const match = line.trim().match(/^(\d+)\s+(.*)$/);
   return match && match[2].endsWith('/Contents/MacOS/OS1App') && match[2] !== path.join(app, 'Contents/MacOS/OS1App');
 });
+// A provider-owned memory MCP child can outlive its GUI. Do not snapshot a
+// store still being served, kill that child, or assume GUI idle means no writer.
+const memoryWriters = () => run('/bin/ps', ['-axo', 'pid=,args=']).split('\n').filter(line => {
+  const match = line.trim().match(/^(\d+)\s+(.*)$/);
+  return match && Number(match[1]) !== process.pid && /(?:^|\/)(?:os1|OS1App)\s+memory-mcp(?:\s|$)/.test(match[2]);
+});
+const pagingQuiesced = () => {
+  idle();
+  assert.equal(appPIDs().length, 0, 'installed GUI is a possible paging writer');
+  assert.equal(foreignWriters().length, 0, 'foreign OS-1 GUI is a possible paging writer');
+  assert.equal(memoryWriters().length, 0, 'memory MCP child still running; do not snapshot or interrupt it');
+};
 assert.equal(foreignWriters().length, 0, 'non-installed OS1 writer is running; leave installation unchanged');
 const oldRequirement = requirement(app);
 const sourceRequirement = requirement(source);
@@ -94,6 +280,7 @@ assert(!fs.existsSync(cliConfig) || !fs.lstatSync(cliConfig).isSymbolicLink());
 const backupApp = path.join(recovery, 'OS-1 CLODEX.app'), backupCLI = path.join(recovery, 'os1');
 const backupConfig = path.join(recovery, 'config.json');
 let paused = false, appMoved = false, cliMoved = false, configMoved = false, configInstalled = false, activated = false;
+let pagingManifest;
 const receipt = { startedAt: new Date().toISOString(), build: expectedBuild, app, recovery,
   previousAppHash: hash(path.join(app, 'Contents/MacOS/OS1App')), previousCLIHash: hash(cli),
   stagedAppHash: hash(path.join(source, 'Contents/MacOS/OS1App')), stagedCLIHash: hash(resource),
@@ -134,9 +321,15 @@ try {
   }
   for (let i = 0; appPIDs().length && i < 40; i++) await wait(250);
   assert.equal(appPIDs().length, 0, 'app did not quit; no force-kill');
-  idle();
+  pagingQuiesced();
   const before = fs.readFileSync(store); const original = JSON.parse(before);
   fs.writeFileSync(path.join(recovery, 'sessions-at-install.json'), before, { mode: 0o600, flag: 'wx' });
+  receipt.sessionsAtInstall = { sha256: createHash('sha256').update(before).digest('hex'), bytes: before.length };
+  const paging = backupPagingState({ supportRoot: pagingSupportRoot, recoveryRoot: recovery });
+  pagingManifest = paging.manifest; receipt.pagingStateRecovery = paging.receipt;
+  receipt.checks.push('private paging snapshot + SHA-256/byte manifest + read-only staged restore drill: PASS (not live activation)');
+  pagingQuiesced();
+  assert.deepEqual(JSON.parse(fs.readFileSync(store)), original, 'session store changed during paging backup');
   fs.renameSync(app, backupApp); appMoved = true;
   fs.renameSync(stageApp, app);
   fs.renameSync(cli, backupCLI); cliMoved = true;
@@ -164,6 +357,9 @@ try {
   // change — a session, message, queue or flag — still fails here, and the
   // per-session preservation checks below re-verify every message.
   assert.deepEqual(JSON.parse(fs.readFileSync(store)), original, 'verification changed the real session store');
+  pagingQuiesced();
+  receipt.pagingStateBeforeResume = verifyPagingRecoveryTree(pagingSupportRoot, pagingManifest);
+  receipt.checks.push('paging state unchanged after binary verification, before worker resume: PASS');
   if (paused) { run('/bin/launchctl', ['bootstrap', `gui/${process.getuid()}`, plist]); paused = false; }
   if (wasRunning.length) launchApp();
   await wait(3000);
@@ -200,6 +396,8 @@ try {
   }
   receipt.sessionCountBefore = original.sessions.length; receipt.sessionCountAfter = after.sessions.length;
   receipt.checks.push('existing conversations/messages/pins/drafts/native bindings: PASS');
+  receipt.pagingStateAfterRestart = verifyPagingRecoveryTree(pagingSupportRoot, pagingManifest, { allowAdditional: true });
+  receipt.checks.push('existing paging originals, state, config and capability snapshots preserved after restart: PASS');
   if (wasRunning.length) assert(appPIDs().length > 0, 'new app is not running');
   if (fleetLoaded) {
     const fleet = run('/bin/launchctl', ['print', service]);
@@ -212,7 +410,11 @@ try {
   // No rollback of sessions: the user may have added newer work. If a restarted
   // process is using the new image, leave both verified binary versions in
   // custody for reconciliation rather than moving a live executable.
-  if (appPIDs().length === 0 && paused) {
+  let rollbackQuiesced = false;
+  try { pagingQuiesced(); rollbackQuiesced = true; }
+  catch (quiescenceError) { receipt.binaryRollbackBlocked = String(quiescenceError.message || quiescenceError); }
+  if (binaryRollbackPermitted({ appStopped: appPIDs().length === 0, pagingQuiesced: rollbackQuiesced,
+    anyBinaryMoved: appMoved || cliMoved || configMoved || configInstalled })) {
     if (cliMoved) { if (fs.existsSync(cli)) fs.renameSync(cli, path.join(recovery, 'unadopted-os1')); fs.renameSync(backupCLI, cli); }
     if (configInstalled && fs.existsSync(cliConfig)) fs.renameSync(cliConfig, path.join(recovery, 'unadopted-config.json'));
     if (configMoved) fs.renameSync(backupConfig, cliConfig);
@@ -230,6 +432,11 @@ try {
   } catch (error) { receipt.recoveryError = String(error.stack || error); }
   fs.writeFileSync(path.join(recovery, 'install-receipt.json'), JSON.stringify(receipt, null, 2), { mode: 0o600 });
   fs.writeFileSync(path.join(recovery, 'RECOVERY.md'),
-    '# Local binary recovery\n\nPrevious app and CLI are preserved here. Stop OS1 only when idle before restoring these binaries. Never replace the current sessions.json with sessions-at-install.json: it is evidence, not permission to discard newer conversations. Authentication caches were not copied.\n', { mode: 0o600 });
+    '# Local binary and private paging recovery\n\nPrevious app and CLI are preserved here. Stop OS1 only when idle before restoring these binaries. Never replace the current sessions.json with sessions-at-install.json: it is evidence, not permission to discard newer conversations. Authentication caches were not copied.\n\nPaging recovery covers only episodic-memory, memory-paging, context-budget.json and source-snapshots under the OS-1 support directory. See paging-state-manifest.json for every SHA-256 and byte count, and install-receipt.json for the actual drill outcome. paging-state is the private backup; paging-state-restore-drill is a separate read-only integrity-verified reconstruction. Neither is a live activation. Do not run a runtime against the read-only drill, overwrite newer live memory, replay the old session snapshot or widen the restore to another application. A live data restoration needs separate authority, exact target/quiescence (including memory MCP children), a fresh current-data backup and collision reconciliation. Binary rollback deliberately leaves current sessions and memory untouched. No Handy directories, provider authentication caches or credentials were read by paging recovery.\n', { mode: 0o600 });
 }
 assert(activated); console.log(JSON.stringify(receipt));
+}
+
+// Importing the recovery helpers for a fixture performs no installation and
+// never reads HOME, sessions.json, credentials or another application's data.
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) await install();
