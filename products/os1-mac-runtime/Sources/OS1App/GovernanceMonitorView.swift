@@ -26,11 +26,17 @@ struct GovernanceChartPoint: Identifiable {
 }
 
 // BEGIN GOVERNANCE MONITOR DELTA SAMPLER
-/// Observation timestamps describe dashboard calculations, not new trials.
-/// An unchanged heartbeat adds no evidence. Missing measurements clear the
-/// preceding trace so later points cannot interpolate across an unknown gap.
+/// Activity-Monitor sampling for the Δ charts. Every detector tick re-reads
+/// the receipts. An unchanged value confirms the held line up to that tick;
+/// it is not a new trial and adds no point. A changed value is recorded as a
+/// point. Missing measurements, a changed filter/pair, or a detector that did
+/// not tick for longer than `maximumTickGap` clear the trace, so the line
+/// never bridges a span nobody observed.
 struct GovernanceMonitorDeltaSampler {
+    static let maximumTickGap: TimeInterval = 5
     private(set) var history = GovernanceDeltaHistory()
+    /// Last tick that re-read the receipts and found the newest value unchanged.
+    private(set) var confirmedAt: Date?
     private var context = ""
     private var lastEvidence: String?
     static func evidence(_ item: GovernanceComparison?) -> String? {
@@ -48,15 +54,21 @@ struct GovernanceMonitorDeltaSampler {
         guard date.timeIntervalSince1970.isFinite else { return }
         let tokenSavings = tokenSavings.flatMap { $0.isFinite ? $0 : nil }
         let completionDelta = completionDelta.flatMap { $0.isFinite ? $0 : nil }
-        if context != nextContext { history = GovernanceDeltaHistory(); lastEvidence = nil; context = nextContext }
-        guard let evidence, tokenSavings != nil || completionDelta != nil else {
-            history = GovernanceDeltaHistory(); lastEvidence = nil; return
-        }
+        if context != nextContext { clear(); context = nextContext }
+        guard let evidence, tokenSavings != nil || completionDelta != nil else { clear(); return }
+        if let confirmedAt, date.timeIntervalSince(confirmedAt) > Self.maximumTickGap { clear() }
+        // A projection that lands after a later tick is placed at that tick,
+        // so the trace only moves forward in time.
+        let at = max(date, confirmedAt ?? date)
         let identity = evidence + "|" + String(describing: tokenSavings) + "|" + String(describing: completionDelta)
-        guard identity != lastEvidence else { return }
+        if identity == lastEvidence { confirmedAt = at; return }
         if tokenSavings == nil || completionDelta == nil { history = GovernanceDeltaHistory() }
-        history.append(at: date, tokenSavings: tokenSavings, taskCompletionDelta: completionDelta)
+        history.append(at: at, tokenSavings: tokenSavings, taskCompletionDelta: completionDelta)
         lastEvidence = identity
+        confirmedAt = at
+    }
+    private mutating func clear() {
+        history = GovernanceDeltaHistory(); lastEvidence = nil; confirmedAt = nil
     }
 }
 // END GOVERNANCE MONITOR DELTA SAMPLER
@@ -85,16 +97,20 @@ struct GovernanceMonitorView: View {
     private let pink = Color(red: 0.99, green: 0.61, blue: 0.77)
     private let muted = Color(white: 0.59)
 
+    /// `previewElapsed` renders the preview as it looks after that many
+    /// one-second ticks in which no receipt changed: the same value is
+    /// re-confirmed each tick. Live panels always start at zero.
     init(active: [String] = [], queued: Int = 0, onClose: (() -> Void)? = nil,
          preview: Bool = false, snapshot: GovernanceSnapshot = GovernanceSnapshot(),
-         previewSection: String = GovernanceMonitorSection.live.rawValue) {
+         previewSection: String = GovernanceMonitorSection.live.rawValue, previewElapsed: Int = 0) {
         self.active = active
         self.queued = queued
         self.onClose = onClose
         self.preview = preview
+        let elapsed = preview ? max(0, min(previewElapsed, 3_600)) : 0
         _snapshot = State(initialValue: snapshot)
         _section = State(initialValue: GovernanceMonitorSection(rawValue: previewSection) ?? .live)
-        _refreshed = State(initialValue: snapshot.loadedAt)
+        _refreshed = State(initialValue: snapshot.loadedAt.addingTimeInterval(TimeInterval(elapsed)))
         let initialProjection = snapshot.dashboardProjection(provider: nil, since: nil,
                                                              includeHistorical: true, now: snapshot.loadedAt)
         _projection = State(initialValue: initialProjection)
@@ -111,9 +127,12 @@ struct GovernanceMonitorView: View {
         _candidate = State(initialValue: initialCandidate)
         if let comparison = initialComparisons.first(where: { $0.id == initialCandidate }) {
             var sampler = GovernanceMonitorDeltaSampler()
-            sampler.observe(context: ["전체", "전체", initialBaseline, initialCandidate].joined(separator: "|"),
-                evidence: GovernanceMonitorDeltaSampler.evidence(comparison), at: snapshot.loadedAt,
-                tokenSavings: comparison.tokenSavings, completionDelta: comparison.taskCompletionDelta)
+            for tick in 0...elapsed {
+                sampler.observe(context: ["전체", "전체", initialBaseline, initialCandidate].joined(separator: "|"),
+                    evidence: GovernanceMonitorDeltaSampler.evidence(comparison),
+                    at: snapshot.loadedAt.addingTimeInterval(TimeInterval(tick)),
+                    tokenSavings: comparison.tokenSavings, completionDelta: comparison.taskCompletionDelta)
+            }
             _deltaSampler = State(initialValue: sampler)
         }
     }
@@ -232,8 +251,7 @@ struct GovernanceMonitorView: View {
     }
     private var tokenDeltaEmptyText: String {
         guard let item = selectedComparison else { return os1Tr("재시도 묶음 비교 데이터가 없습니다.", "No retry-scope comparison data.") }
-        if item.tokenSavings != nil { return os1Tr("최근 2분 비교 관측 변경 없음 · 현재값은 기존 관측 기반",
-                                                   "No comparison observation changes in the last 2 minutes · current value is based on earlier observations") }
+        if item.tokenSavings != nil { return deltaSampleWaitText }
         return item.measuredScopes == 0
             ? os1Tr("matched \(item.matchedScopes)묶음 · 모든 시도의 토큰이 측정된 묶음이 없습니다.",
                     "\(item.matchedScopes) matched scopes · no scope has tokens measured for every attempt.")
@@ -250,15 +268,37 @@ struct GovernanceMonitorView: View {
         return os1Tr("실측 \(item.measuredScopes)묶음 · 0 토큰 분모 또는 기준 채택 0이면 상대 효율 정의 불가",
                      "\(item.measuredScopes) measured scopes · relative efficiency undefined with a 0-token denominator or 0 baseline adoptions")
     }
-    private var tokenDeltaPoints: [GovernanceChartPoint] {
-        deltaHistory.points.compactMap { point in
-            point.tokenSavings.map { GovernanceChartPoint(id: point.id, value: $0 * 100) }
-        }
+    /// Shown while a defined value waits for its first one-second sample, or
+    /// after a stalled detector cleared the trace.
+    private var deltaSampleWaitText: String {
+        os1Tr("다음 1초 표본 대기 중 · 감지가 끊긴 구간은 잇지 않습니다.",
+              "Waiting for the next 1-second sample · spans the detector did not observe are not joined.")
     }
-    private var completionDeltaPoints: [GovernanceChartPoint] {
-        deltaHistory.points.compactMap { point in
-            point.taskCompletionDelta.map { GovernanceChartPoint(id: point.id, value: $0 * 100) }
-        }
+    /// Rolling Activity-Monitor window for the Δ charts, anchored to the tick.
+    private static let deltaWindowSeconds: TimeInterval = 120
+    private var deltaWindowStart: Date { refreshed.addingTimeInterval(-Self.deltaWindowSeconds) }
+    /// Held line through the window: one sample per value, extended to the last
+    /// tick that re-read the receipts and found it unchanged.
+    private var deltaTrace: [GovernanceDeltaPoint] {
+        deltaHistory.trace(from: deltaWindowStart, to: refreshed, heldUntil: deltaSampler.confirmedAt)
+    }
+    /// Dots: only the instants a receipt change produced a new value.
+    private var deltaChanges: [GovernanceDeltaPoint] {
+        deltaHistory.points.filter { $0.id >= deltaWindowStart && $0.id <= refreshed }
+    }
+    private func tokenPoints(_ points: [GovernanceDeltaPoint]) -> [GovernanceChartPoint] {
+        points.compactMap { point in point.tokenSavings.map { GovernanceChartPoint(id: point.id, value: $0 * 100) } }
+    }
+    private func completionPoints(_ points: [GovernanceDeltaPoint]) -> [GovernanceChartPoint] {
+        points.compactMap { point in point.taskCompletionDelta.map { GovernanceChartPoint(id: point.id, value: $0 * 100) } }
+    }
+    /// When the newest receipt behind a Δ value was recorded, so a flat line
+    /// over old evidence reads as old evidence, not as a frozen display.
+    private func evidenceAge(_ date: Date?, defined: Bool) -> String {
+        guard defined else { return "" }
+        guard let date else { return os1Tr("근거 시각 미기록(과거 원장)", "Evidence time unrecorded (legacy ledger)") }
+        let stamp = date.formatted(.dateTime.month(.defaultDigits).day().hour().minute())
+        return os1Tr("근거 최종 영수증 \(stamp)", "Newest evidence receipt \(stamp)")
     }
     /// Live activity is independent of matched baseline/candidate data. The
     /// delta charts stay empty until a paired comparison exists; that must not
@@ -304,9 +344,6 @@ struct GovernanceMonitorView: View {
         GovernanceActivityStrip.build(tasks: projection.tasks, until: refreshed, span: liveActivitySpan,
                                       bucketSeconds: liveActivityBucketSeconds)
     }
-    /// The delta traces are session-local one-second replots; give them the
-    /// same rolling window treatment, anchored to the current tick.
-    private var deltaWindowSeconds: TimeInterval { TimeInterval(deltaHistory.capacity) }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -406,7 +443,7 @@ struct GovernanceMonitorView: View {
                 .scaleEffect(preview ? 1 : (heartbeatPulse ? 1.45 : 0.8))
                 .opacity(preview ? 1 : (heartbeatPulse ? 1 : 0.5))
             Text(preview ? os1Tr("읽기 전용 미리보기", "Read-only preview")
-                 : os1Tr("영수증 조회 · 1초 polling · Δ는 관측 변경 시만 기록", "Receipt lookup · 1s polling · Δ recorded only when observations change"))
+                 : os1Tr("영수증 조회 · 1초 표본 · Δ 점은 영수증 변경 시점", "Receipt lookup · 1s samples · Δ dots mark receipt changes"))
                 .font(.system(size: 11)).foregroundStyle(green)
             Button { if let onClose { onClose() } else { dismiss() } } label: { Image(systemName: "xmark").frame(width: 26, height: 26) }
                 .buttonStyle(.plain).accessibilityLabel("Close governance monitor")
@@ -510,9 +547,18 @@ struct GovernanceMonitorView: View {
         .padding(.horizontal, 14).padding(.vertical, 11)
         .background(Color.white.opacity(0.045), in: RoundedRectangle(cornerRadius: 10))
     }
+    /// The rate covers every receipt in the period; over the whole history one
+    /// more task moves it by hundredths of a percent, so the scope is named.
+    private var periodScope: String {
+        switch window {
+        case "24시간": return os1Tr("최근 24시간", "last 24h")
+        case "7일": return os1Tr("최근 7일", "last 7d")
+        default: return os1Tr("전체 누적", "all-time")
+        }
+    }
     private var compactMetrics: some View {
         HStack(spacing: 10) {
-            compactCard(os1Tr("전달 채택률", "Delivery adoption rate"), percent(taskCompletionRate),
+            compactCard(os1Tr("전달 채택률 · \(periodScope)", "Delivery adoption · \(periodScope)"), percent(taskCompletionRate),
                         os1Tr("채택 \(completed) / 종료 \(terminal.count) · 목표 성공과 별개",
                               "Adopted \(completed) / finished \(terminal.count) · separate from goal success"), color: green)
             compactCard(os1Tr("목표 검증 성공률", "Goal verification success rate"), percent(quality.rate),
@@ -531,15 +577,22 @@ struct GovernanceMonitorView: View {
         }
     }
     private var deltaCharts: some View {
-        HStack(alignment: .top, spacing: 12) {
+        let trace = deltaTrace, changes = deltaChanges
+        return HStack(alignment: .top, spacing: 12) {
             deltaChart(title: os1Tr("과거 운영 토큰 차이 Δ", "Past operating token difference Δ"), current: delta(selectedComparison?.tokenSavings), unit: "%",
-                       note: tokenCohortNote(selectedComparison) + os1Tr(" · 변경 관측 · 인과적 절약 아님", " · changed observations · not causal savings"), points: tokenDeltaPoints,
+                       note: tokenCohortNote(selectedComparison) + os1Tr(" · 인과적 절약 아님", " · not causal savings"),
+                       evidence: evidenceAge(selectedComparison?.latestMeasuredEvidenceAt, defined: selectedComparison?.tokenSavings != nil),
+                       trace: tokenPoints(trace), changes: tokenPoints(changes),
                        color: (selectedComparison?.tokenSavings ?? 0) >= 0 ? green : pink,
                        emptyText: tokenDeltaEmptyText)
             deltaChart(title: os1Tr("과거 요청 묶음 채택 Δ", "Past request-scope adoption Δ"), current: percentagePoints(taskCompletionDelta), unit: "pp",
                        note: os1Tr("순차 재시도 묶음 · 독립 A/B·정확도 향상 아님",
-                                   "Sequential retry scopes · not an independent A/B or accuracy gain"), points: completionDeltaPoints,
-                       color: (taskCompletionDelta ?? 0) >= 0 ? green : pink)
+                                   "Sequential retry scopes · not an independent A/B or accuracy gain"),
+                       evidence: evidenceAge(selectedComparison?.latestEvidenceAt, defined: taskCompletionDelta != nil),
+                       trace: completionPoints(trace), changes: completionPoints(changes),
+                       color: (taskCompletionDelta ?? 0) >= 0 ? green : pink,
+                       emptyText: taskCompletionDelta == nil ? os1Tr("비교 가능한 실측 델타가 없습니다.", "No comparable measured delta.")
+                                                             : deltaSampleWaitText)
         }
     }
     private var liveActivityChart: some View {
@@ -638,12 +691,13 @@ struct GovernanceMonitorView: View {
         let span = max(1, high - low)
         return (low - span * 0.16)...(high + span * 0.16)
     }
-    private func deltaChart(title: String, current: String, unit: String, note: String,
-                            points: [GovernanceChartPoint], color: Color,
-                            emptyText: String = os1Tr("비교 가능한 실측 델타가 없습니다.", "No comparable measured delta.")) -> some View {
+    /// `trace` is the held one-second line across the window; `changes` are the
+    /// instants a receipt change produced a new value (the only dots).
+    private func deltaChart(title: String, current: String, unit: String, note: String, evidence: String,
+                            trace: [GovernanceChartPoint], changes: [GovernanceChartPoint], color: Color,
+                            emptyText: String) -> some View {
         let windowEnd = refreshed
-        let windowStart = windowEnd.addingTimeInterval(-deltaWindowSeconds)
-        let visible = points.filter { $0.id >= windowStart && $0.id <= windowEnd }
+        let windowStart = deltaWindowStart
         return VStack(alignment: .leading, spacing: 11) {
             HStack(alignment: .firstTextBaseline) {
                 VStack(alignment: .leading, spacing: 3) {
@@ -651,26 +705,31 @@ struct GovernanceMonitorView: View {
                     Text(note).font(.system(size: 9)).foregroundStyle(muted)
                 }
                 Spacer()
-                Text(current).font(.system(size: 22, weight: .semibold, design: .rounded))
-                    .monospacedDigit().foregroundStyle(color)
+                VStack(alignment: .trailing, spacing: 2) {
+                    Text(current).font(.system(size: 22, weight: .semibold, design: .rounded))
+                        .monospacedDigit().foregroundStyle(color)
+                    if !evidence.isEmpty {
+                        Text(evidence).font(.system(size: 9)).foregroundStyle(muted)
+                    }
+                }
             }
-            if visible.isEmpty {
+            if trace.isEmpty {
                 VStack(spacing: 7) {
                     Image(systemName: "chart.xyaxis.line").font(.system(size: 24)).foregroundStyle(muted.opacity(0.55))
-                    Text(points.isEmpty ? emptyText : os1Tr("최근 2분에 비교 관측 변경 없음 · 현재값은 마지막 영수증 계산",
-                                                            "No comparison observation changes in the last 2 minutes · current value is from the last receipt calculation"))
+                    Text(emptyText)
                         .font(.system(size: 10)).foregroundStyle(muted)
                         .multilineTextAlignment(.center).padding(.horizontal, 24)
                 }
                 .frame(maxWidth: .infinity, minHeight: 155)
             } else {
                 let deltaTicks = GovernanceActivityStrip.axisTicks(from: windowStart, to: windowEnd, every: 30,
-                                                                   edgeMargin: deltaWindowSeconds * 0.04)
+                                                                   edgeMargin: Self.deltaWindowSeconds * 0.04)
                 Chart {
                     RuleMark(y: .value(os1Tr("기준", "Baseline"), 0))
                         .foregroundStyle(Color.white.opacity(0.16))
                         .lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 4]))
-                    ForEach(visible) { point in
+                    // Sample-and-hold: a value stays until the next one replaces it.
+                    ForEach(trace) { point in
                         LineMark(x: .value(os1Tr("시간", "Time"), point.id), y: .value(os1Tr("델타", "Delta"), point.value))
                             .interpolationMethod(.stepEnd)
                             .foregroundStyle(color)
@@ -679,13 +738,13 @@ struct GovernanceMonitorView: View {
                             .interpolationMethod(.stepEnd)
                             .foregroundStyle(LinearGradient(colors: [color.opacity(0.24), color.opacity(0.015)], startPoint: .top, endPoint: .bottom))
                     }
-                    if let last = visible.last {
-                        PointMark(x: .value(os1Tr("현재 시간", "Current time"), last.id), y: .value(os1Tr("현재 델타", "Current delta"), last.value))
-                            .foregroundStyle(color).symbolSize(34)
+                    ForEach(changes) { point in
+                        PointMark(x: .value(os1Tr("변경 시각", "Change time"), point.id), y: .value(os1Tr("변경 값", "Changed value"), point.value))
+                            .foregroundStyle(color).symbolSize(30)
                     }
                 }
                 .chartXScale(domain: windowStart...windowEnd)
-                .chartYScale(domain: chartDomain(points))
+                .chartYScale(domain: chartDomain(trace))
                 .chartXAxis {
                     AxisMarks(values: deltaTicks) { _ in
                         AxisGridLine().foregroundStyle(Color.white.opacity(0.06))
@@ -1197,8 +1256,8 @@ struct GovernanceMonitorView: View {
                            "Input + output tokens include retry and failure costs. Cache is part of input, so it is not added again. Tokenizers differ by provider, so token savings are not compared across providers."))
                 Text(os1Tr("운영 토큰 차이·채택당 토큰·효율은 양쪽 시도가 모두 실측된 과거 요청 묶음만 계산합니다(실측 n/N). 미측정은 0이 아니라 제외입니다. 묶음 채택 Δ는 전체 matched 묶음 기준이며 독립 대조·목표 정확도 향상은 아닙니다.",
                            "Operating token difference, tokens per adoption and efficiency are computed only over past request scopes where attempts on both sides were measured (measured n/N). Unmeasured is excluded, not 0. Scope adoption Δ is based on all matched scopes and is not an independent comparison or a goal-accuracy gain."))
-                Text(os1Tr("Δ 곡선은 조회 시점에 계산된 영수증 요약이 변경될 때만 기록합니다. 같은 1초 polling은 새 측정이 아니며, 미측정 구간을 이어 붙이지 않습니다. Wilson 표시는 상관된 운영 표본의 명목 구간으로 일반 성능을 보증하지 않습니다.",
-                           "Δ curves record a point only when the receipt summary computed at lookup changes. Repeated 1s polling is not a new measurement, and unmeasured gaps are not joined. Wilson figures are nominal intervals over correlated operating samples and do not guarantee general performance."))
+                Text(os1Tr("Δ 곡선은 Activity Monitor처럼 1초마다 영수증을 다시 확인해 현재 값을 이어 그립니다. 값이 그대로면 수평선이고, 점은 영수증 변경으로 값이 바뀐 시점에만 찍습니다. 1초 확인은 새 실험이나 새 측정 건수가 아니며, 값이 정의되지 않거나 감지가 끊긴 구간은 잇지 않습니다. '근거 최종 영수증'은 그 값을 만든 가장 최근 영수증의 시각입니다. Wilson 표시는 상관된 운영 표본의 명목 구간으로 일반 성능을 보증하지 않습니다.",
+                           "Like Activity Monitor, Δ curves re-read the receipts every second and draw the current value continuously. An unchanged value is a flat line; dots mark only the instants a receipt change produced a new value. A 1s re-read is not a new experiment or measurement count, and spans where the value is undefined or the detector stalled are not joined. 'Newest evidence receipt' is the time of the most recent receipt behind that value. Wilson figures are nominal intervals over correlated operating samples and do not guarantee general performance."))
                 Text(os1Tr("과거 기록은 요청당 최대 16회 보관된 시도 표본입니다. 시각·테스크 종료가 없으므로 과거 실행 완료율과 실시간 추이는 소급 생성하지 않습니다. 새 테스크는 별도 원자적 기록으로 누적합니다. 확인된 결과 재전송은 기존 테스크에 합쳐 호출을 중복 계산하지 않습니다.",
                            "Past records are attempt samples, up to 16 kept per request. They carry no timestamps or task finish, so past completion rates and live trends are not generated retroactively. New tasks accumulate as separate atomic records. A re-sent confirmed result is merged into its existing task, so calls are not double-counted."))
                 Text(os1Tr("새 기록 \(snapshot.tasks.count)건 · 과거 시도 \(snapshot.historical.count)회 · 읽기/검증 거부 \(snapshot.rejectedRecords)건 · 표시 한도 초과 \(snapshot.omittedFiles)건 · 요금표 미연결: 토큰 절약 ≠ 금액 절약",

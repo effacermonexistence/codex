@@ -173,6 +173,24 @@ func runGovernanceActivityFixtures() throws {
     history.reset(at:start.addingTimeInterval(10),tokenSavings:0.5,taskCompletionDelta:0)
     check(history.points.count == 1 && history.points.first?.tokenSavings == 0.5 && history.points.first?.taskCompletionDelta == 0,
           "filter context reset removes stale graph points before reseeding")
+    // Activity-Monitor trace: values hold until replaced and reach the last
+    // confirming tick, never beyond it, and nothing exists before the first record.
+    var held = GovernanceDeltaHistory()
+    held.append(at:start,tokenSavings:0.2,taskCompletionDelta:0.1)
+    held.append(at:start.addingTimeInterval(50),tokenSavings:-0.1,taskCompletionDelta:0.1)
+    let window = held.trace(from:start.addingTimeInterval(20),to:start.addingTimeInterval(140),heldUntil:start.addingTimeInterval(140))
+    check(window.map(\.id) == [start.addingTimeInterval(20),start.addingTimeInterval(50),start.addingTimeInterval(140)] &&
+          window.map(\.tokenSavings) == [0.2,-0.1,-0.1],
+          "trace carries the value in effect into the window and holds the newest value to the confirming tick")
+    check(held.trace(from:start.addingTimeInterval(20),to:start.addingTimeInterval(140),heldUntil:start.addingTimeInterval(90)).last?.id
+            == start.addingTimeInterval(90), "trace never extends a value past its last confirmation")
+    check(held.trace(from:start.addingTimeInterval(100),to:start.addingTimeInterval(220),heldUntil:start.addingTimeInterval(90)).isEmpty,
+          "a value last confirmed before the window opened draws nothing")
+    check(held.trace(from:start.addingTimeInterval(-60),to:start.addingTimeInterval(60),heldUntil:nil).first?.id == start,
+          "trace does not invent values before the first record")
+    held.append(at:start.addingTimeInterval(50),tokenSavings:0.4,taskCompletionDelta:0.1)
+    check(held.points.count == 2 && held.points.last?.tokenSavings == 0.4,
+          "a second value for the same instant replaces the first instead of duplicating the chart identity")
 
     let dashboardStore = GovernanceActivityStore(root:root.appendingPathComponent("dashboard"))
     func dashboardTask(_ model:String, adopted:Bool, input:Int, output:Int, offset:Double,
@@ -268,6 +286,16 @@ func runGovernanceActivityFixtures() throws {
           extraUnmeasured.completionEfficiencyDelta == twoMeasured.completionEfficiencyDelta &&
           near(extraUnmeasured.taskCompletionDelta, 4.0/4 - 1.0/4),
           "an unmeasured matched scope changes the completion delta only, never the measured token figures")
+    // Evidence age: the newest receipt (attempt start + duration) behind each figure.
+    func at(_ value: Date?, _ offset: Double) -> Bool {
+        value.map { abs($0.timeIntervalSince(start.addingTimeInterval(offset))) < 1e-6 } ?? false
+    }
+    check(at(unmeasuredOnly.latestEvidenceAt, 311.1) && unmeasuredOnly.latestMeasuredEvidenceAt == nil,
+          "a cohort without a measured scope has an evidence time but no measured evidence time")
+    check(at(twoMeasured.latestEvidenceAt, 351.1) && at(twoMeasured.latestMeasuredEvidenceAt, 351.1),
+          "evidence time is the newest receipt in the cohort")
+    check(at(extraUnmeasured.latestEvidenceAt, 371.1) && at(extraUnmeasured.latestMeasuredEvidenceAt, 351.1),
+          "an unmeasured scope moves the matched evidence time but not the token figures' evidence time")
     let projection = dashboard.dashboardProjection(provider:"codex",since:nil,includeHistorical:false,now:start.addingTimeInterval(200))
     check(projection.tasks.count == 3 && projection.rows.count == 2 &&
           projection.comparisonsByBaseline["codex / dashboard-base / low"]?.count == 1,

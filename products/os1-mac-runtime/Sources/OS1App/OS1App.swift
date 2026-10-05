@@ -264,6 +264,57 @@ private func governanceActivityStripSelfTest() throws {
     }
 }
 
+/// The Δ charts must read like Activity Monitor: a value re-confirmed every
+/// second is one connected line to the current tick, not a lone dot that
+/// slides away, and the re-reads never become extra experiments. A receipt
+/// change adds a dot; a missing value or a stalled detector breaks the line.
+private func governanceDeltaTraceSelfTest() throws {
+    let t = Date(timeIntervalSince1970: 1_800_000_000)
+    var sampler = GovernanceMonitorDeltaSampler()
+    func tick(_ second: Double, _ evidence: String? = "cohort-1", token: Double? = 0.696,
+              completion: Double? = 0.373, context: String = "pair") {
+        sampler.observe(context: context, evidence: evidence, at: t.addingTimeInterval(second),
+                        tokenSavings: token, completionDelta: completion)
+    }
+    func trace(at second: Double) -> [GovernanceDeltaPoint] {
+        let end = t.addingTimeInterval(second)
+        return sampler.history.trace(from: end.addingTimeInterval(-120), to: end, heldUntil: sampler.confirmedAt)
+    }
+    for second in 0...180 { tick(Double(second)) }
+    let held = trace(at: 180)
+    guard sampler.history.points.count == 1, held.map(\.id) == [t.addingTimeInterval(60), t.addingTimeInterval(180)],
+          held.allSatisfy({ $0.tokenSavings == 0.696 && $0.taskCompletionDelta == 0.373 }) else {
+        throw RunnerError.message("OS-1 governance Δ chart does not hold an unchanged value as one line across the window")
+    }
+    tick(181, "cohort-2", token: 0.5)
+    tick(182, "cohort-2", token: 0.5)
+    let stepped = trace(at: 182)
+    guard sampler.history.points.count == 2, stepped.map(\.tokenSavings) == [0.696, 0.5, 0.5],
+          stepped.map(\.id) == [t.addingTimeInterval(62), t.addingTimeInterval(181), t.addingTimeInterval(182)] else {
+        throw RunnerError.message("OS-1 governance Δ chart does not step to a changed receipt value and hold it to now")
+    }
+    tick(190, "cohort-2", token: 0.5)
+    guard sampler.history.points.map(\.id) == [t.addingTimeInterval(190)], trace(at: 190).count == 1 else {
+        throw RunnerError.message("OS-1 governance Δ chart bridged a span the detector did not observe")
+    }
+    tick(191, nil, token: nil, completion: nil)
+    guard sampler.history.points.isEmpty, trace(at: 191).isEmpty, sampler.confirmedAt == nil else {
+        throw RunnerError.message("OS-1 governance Δ chart kept a line after the value became undefined")
+    }
+    tick(200, "cohort-3", token: 0.1)
+    tick(201, "cohort-3", token: 0.1)
+    tick(199, "cohort-4", token: 0.2)
+    tick(201, "cohort-5", token: 0.3)
+    guard sampler.history.points.map(\.id) == [t.addingTimeInterval(200), t.addingTimeInterval(201)],
+          sampler.history.points.last?.tokenSavings == 0.3 else {
+        throw RunnerError.message("OS-1 governance Δ chart went backwards in time or duplicated an instant")
+    }
+    tick(202, "cohort-5", token: 0.3, context: "other-pair")
+    guard sampler.history.points.count == 1, trace(at: 202).count == 1 else {
+        throw RunnerError.message("OS-1 governance Δ chart carried a line across a changed comparison pair")
+    }
+}
+
 @MainActor
 private func providerIntentSelfTest() throws {
     let sourceRef = SourceReference(kind: .snapshot, id: UUID(), sha256: String(repeating: "b", count: 64))
@@ -10533,7 +10584,10 @@ private struct OS1DesktopApp: App {
                 guard CommandLine.arguments.count > flag + 1 else { throw SourceContextError.invalid }
                 let output = URL(fileURLWithPath: CommandLine.arguments[flag + 1])
                 let initialSection = CommandLine.arguments.count > flag + 2 ? CommandLine.arguments[flag + 2] : "실시간"
-                let content = GovernanceMonitorView(preview: true, snapshot: GovernanceActivityStore().snapshot(), previewSection: initialSection)
+                // Optional: render as after N one-second ticks with no receipt change.
+                let elapsed = CommandLine.arguments.count > flag + 3 ? Int(CommandLine.arguments[flag + 3]) ?? 0 : 0
+                let content = GovernanceMonitorView(preview: true, snapshot: GovernanceActivityStore().snapshot(),
+                                                    previewSection: initialSection, previewElapsed: elapsed)
                     .frame(width: 1080, height: 1250).environment(\.colorScheme, .dark)
                 let view = NSHostingView(rootView: content)
                 view.frame = NSRect(x: 0, y: 0, width: 1080, height: 1250); view.layoutSubtreeIfNeeded()
@@ -10793,6 +10847,7 @@ private struct OS1DesktopApp: App {
                 try fixtureStoreIsolationSelfTest()
                 try reasoningVisibilitySelfTest()
                 try governanceActivityStripSelfTest()
+                try governanceDeltaTraceSelfTest()
                 try nativeProvenanceSelfTest()
                 try boundNativeLookupSelfTest()
                 try nativeProgressPresentationSelfTest()
