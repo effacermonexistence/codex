@@ -7872,8 +7872,9 @@ func runWorkflowTaskWithOwnerPolicy(
     let projectID = localProjectBinding(request: prompt, workspace: workspace, namedProjectID: namedProjectID,
         boundProjectID: handoff.taskContext?.project?.projectID, readOnly: false).projectID
         ?? namedProjectID ?? handoff.taskContext?.project?.projectID
+    // A workflow writes: heal a live tree left behind by a side-worktree install.
     let workflowWorkspace = projectID == "os1-clodex"
-        ? (resolveLocalProjectWorkspace(projectID: "os1-clodex", requested: workspace)?.workspace ?? workspace)
+        ? (resolveLocalProjectWorkspaceHealing(projectID: "os1-clodex", requested: workspace).resolution?.workspace ?? workspace)
         : workspace
     let repairRoot = LocalProjectWorkspace.root(containing: workflowWorkspace, projectID: "os1-clodex")
     let os1Repair = workflowIsOS1Repair(repairRoot: repairRoot, projectID: projectID)
@@ -8574,7 +8575,21 @@ func runTaskWithOwnerPolicy(
     let localProjectID = projectBinding.projectID
     var canonicalWorkspace = requestedWorkspace
     if let localProjectID, LocalProjectWorkspace.root(containing: requestedWorkspace, projectID: localProjectID) == nil {
-        if let resolved = resolveLocalProjectWorkspace(projectID: localProjectID, requested: requestedWorkspace) {
+        // A write first heals a live tree a side-worktree install left behind
+        // (2026-10-04); read-only work (internal or a read-only ticket) never
+        // moves a tree.
+        // A workflow stage never heals on its own: the workflow entry heals
+        // and holds custody of the tree across every stage.
+        let healing = requireReadOnly || resolvedScope == .readOnly || workflowStage != nil
+            ? (resolution: resolveLocalProjectWorkspace(projectID: localProjectID, requested: requestedWorkspace), healed: [String](),
+               diagnostic: String?.none)
+            : resolveLocalProjectWorkspaceHealing(projectID: localProjectID, requested: requestedWorkspace)
+        if !healing.healed.isEmpty {
+            RuntimeActivity.emit(.preparing, publicText: os1Tr(
+                "OS-1 소스 폴더를 설치된 build \(installedOS1Build())의 소스로 맞췄습니다: \(healing.healed.joined(separator: ", "))",
+                "Brought OS-1's source folder up to the installed build \(installedOS1Build()): \(healing.healed.joined(separator: ", "))"))
+        }
+        if let resolved = healing.resolution {
             canonicalWorkspace = resolved.workspace
             if projectBinding.inferred {
                 RuntimeActivity.emit(.preparing, publicText: os1Tr(
@@ -8593,7 +8608,7 @@ func runTaskWithOwnerPolicy(
                                                                 " Other registered candidates: \(resolved.alternates.joined(separator: ", "))")))
             }
         } else if preparation?.projectID == localProjectID || forcedProjectID == localProjectID {
-            throw OS1Error.message(os1Tr("\(ProjectAdapterRegistry.label(for: localProjectID)) 소스 폴더를 찾지 못했습니다. 대화 폴더 \(requestedWorkspace)에는 \(LocalProjectWorkspace.marker(for: localProjectID) ?? "프로젝트 표식")이(가) 없고 등록된 프로젝트 목록에도 해당 소스 트리가 없습니다. 소스 체크아웃 폴더를 이 대화의 작업 폴더로 선택한 뒤 다시 요청하세요.",
+            throw OS1Error.message(healing.diagnostic ?? os1Tr("\(ProjectAdapterRegistry.label(for: localProjectID)) 소스 폴더를 찾지 못했습니다. 대화 폴더 \(requestedWorkspace)에는 \(LocalProjectWorkspace.marker(for: localProjectID) ?? "프로젝트 표식")이(가) 없고 등록된 프로젝트 목록에도 해당 소스 트리가 없습니다. 소스 체크아웃 폴더를 이 대화의 작업 폴더로 선택한 뒤 다시 요청하세요.",
                                          "The \(ProjectAdapterRegistry.label(for: localProjectID)) source folder was not found. The conversation folder \(requestedWorkspace) has no \(LocalProjectWorkspace.marker(for: localProjectID) ?? "project marker"), and no registered project contains that source tree. Choose the source checkout folder as this conversation's working folder, then ask again."))
         }
     }
@@ -12762,6 +12777,88 @@ func selfTest() throws {
                 try "new\n".write(to: runtime.appendingPathComponent("Sources/b.swift"), atomically: true, encoding: .utf8)
                 guard let refused = uncommittedOS1SourceDiagnostic(root: root.path), refused.contains("2 uncommitted"), refused.contains("Commit") else { return false }
                 return run(["add", "-A"]) && run(["commit", "-q", "-m", "committed"]) && uncommittedOS1SourceDiagnostic(root: root.path) == nil
+            } catch { return false }
+        }()),
+        ("a live tree left behind by side-worktree installs is fast-forwarded only when it is safe", {
+            // 2026-10-04: builds 320 and 322 were installed from an unregistered
+            // worktree and the registered live tree kept an older build, so
+            // OS-1's repairs found no source until someone fast-forwarded it.
+            guard let git = try? findExecutable("git") else { return false }
+            let base = FileManager.default.temporaryDirectory.appendingPathComponent("os1-live-advance-" + UUID().uuidString, isDirectory: true)
+            let live = base.appendingPathComponent("live", isDirectory: true)
+            let side = base.appendingPathComponent("side", isDirectory: true)
+            let other = base.appendingPathComponent("other", isDirectory: true)
+            defer {
+                for root in [live.path, other.path].flatMap({ [$0, LocalProjectWorkspace.executionPath($0)] }) {
+                    if let lock = try? os1SourceWriteLeaseURL(root: root) {
+                        try? FileManager.default.removeItem(at: lock)
+                        try? FileManager.default.removeItem(at: lock.appendingPathExtension("writer-intent"))
+                    }
+                }
+                try? FileManager.default.removeItem(at: base)
+            }
+            func run(_ root: URL, _ arguments: [String]) -> Bool {
+                (try? commandOutput(git, ["-C", root.path, "-c", "user.name=OS-1 fixture", "-c", "user.email=fixture@os1.invalid"] + arguments, timeout: 30))?.0 == 0
+            }
+            func commit(_ root: URL, _ text: String) throws -> String? {
+                try text.write(to: root.appendingPathComponent(SelfUpdate.runtimeRelativePath + "/Sources/a.swift"), atomically: true, encoding: .utf8)
+                return run(root, ["commit", "-q", "-am", text]) ? gitHead(root.path) : nil
+            }
+            func advance(_ installed: String, _ history: [String], _ roots: [URL] = [live]) -> [OS1LiveTreeAdvance] {
+                advanceOS1LiveTrees(installedCommit: installed, history: history, candidates: roots.map(\.path)).map(\.result)
+            }
+            do {
+                let runtime = live.appendingPathComponent(SelfUpdate.runtimeRelativePath, isDirectory: true)
+                try FileManager.default.createDirectory(at: runtime.appendingPathComponent("Sources"), withIntermediateDirectories: true)
+                try "previous\n".write(to: runtime.appendingPathComponent("Sources/a.swift"), atomically: true, encoding: .utf8)
+                guard run(live, ["init", "-q", "-b", "live"]), run(live, ["add", "-A"]), run(live, ["commit", "-q", "-m", "previous build"]),
+                      let previous = gitHead(live.path), run(live, ["worktree", "add", "-q", "-b", "side", side.path]),
+                      let first = try commit(side, "first side install\n"), let installed = try commit(side, "second side install\n")
+                else { return false }
+                // No earlier build held by the tree: left alone.
+                guard advance(installed, [installed, String(repeating: "e", count: 40)]) == [.notLiveTree],
+                      advance(installed, []) == [.notLiveTree], gitHead(live.path) == previous else { return false }
+                // Uncommitted runtime source: never moved.
+                try "edited\n".write(to: runtime.appendingPathComponent("Sources/a.swift"), atomically: true, encoding: .utf8)
+                guard case .dirty? = advance(installed, [first, previous]).first, gitHead(live.path) == previous,
+                      run(live, ["checkout", "-q", "--", "."]) else { return false }
+                // Another OS-1 writer holds the tree: never waits, never moves.
+                var writer = try tryAcquireOS1SourceWriteLease(root: LocalProjectWorkspace.executionPath(live.path))
+                guard writer != nil, advance(installed, [first, previous]) == [.busy], gitHead(live.path) == previous else { return false }
+                writer = nil
+                // A detached HEAD or a local commit the installed build lacks: never moved.
+                guard run(live, ["checkout", "-q", "--detach"]), advance(installed, [first, previous]) == [.detached],
+                      run(live, ["checkout", "-q", "live"]) else { return false }
+                try "local\n".write(to: live.appendingPathComponent("local.txt"), atomically: true, encoding: .utf8)
+                guard run(live, ["add", "local.txt"]), run(live, ["commit", "-q", "-m", "local"]),
+                      advance(installed, [first, previous]) == [.diverged], run(live, ["reset", "-q", "--hard", previous]) else { return false }
+                // A second registered checkout at the same build on its own branch:
+                // only the tree OS-1 last worked in (most recently changed) moves.
+                guard run(live, ["worktree", "add", "-q", "-b", "other", other.path, previous]) else { return false }
+                // A linked worktree's index lives under the common git dir, not <root>/.git.
+                let liveIndex = live.appendingPathComponent(".git/index").path
+                let otherIndex = live.appendingPathComponent(".git/worktrees/other/index").path
+                func touch(newer: String, older: String) throws {
+                    try FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSinceNow: -3_600)], ofItemAtPath: older)
+                    try FileManager.default.setAttributes([.modificationDate: Date()], ofItemAtPath: newer)
+                }
+                // The linked checkout changed last (its folder's own date says otherwise):
+                // it is the one moved, the main checkout stays.
+                try touch(newer: otherIndex, older: liveIndex)
+                try FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSinceNow: -7_200)], ofItemAtPath: other.path)
+                guard advance(installed, [first, previous], [other, live]) == [.advanced, .notLiveTree],
+                      gitHead(other.path) == installed, gitHead(live.path) == previous,
+                      run(other, ["reset", "-q", "--hard", previous]) else { return false }
+                try touch(newer: liveIndex, older: otherIndex)
+                // Two side installs behind (history newest first): still healed, exactly to the installed commit.
+                guard advance(installed, [installed, first, previous], [other, live]) == [.notLiveTree, .advanced],
+                      gitHead(live.path) == installed, gitHead(other.path) == previous else { return false }
+                // Once a registered tree is current, nothing else moves.
+                guard advance(installed, [first, previous], [other, live]) == [.alreadyCurrent],
+                      gitHead(other.path) == previous else { return false }
+                let diagnostic = os1SourceNotFoundDiagnostic(requestedWorkspace: "/Users/fixture", installedCommit: installed,
+                    results: [(root: live.path, result: .diverged)])
+                return diagnostic.contains(String(installed.prefix(7))) && diagnostic.contains(live.path) && diagnostic.contains("sync-live")
             } catch { return false }
         }()),
         ("delivery waits out about a minute of network loss, never a refusal", {

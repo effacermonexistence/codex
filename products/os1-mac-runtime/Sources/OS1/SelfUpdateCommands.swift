@@ -23,7 +23,8 @@ func selfUpdateCommand(_ arguments: [String]) async throws -> Bool {
     case "stage": try stageSelfUpdate(source: options["source"])
     case "apply": try applySelfUpdate(root: options["root"])
     case "status": try printSelfUpdateStatus(root: options["root"])
-    default: throw OS1Error.message("self-update: expected stage, apply or status")
+    case "sync-live": try syncLiveOS1Source()
+    default: throw OS1Error.message("self-update: expected stage, apply, status or sync-live")
     }
     return true
 }
@@ -89,7 +90,7 @@ func selfRepairCommand(_ arguments: [String]) async throws -> Bool {
 /// Shared with the runtime hook in main.swift.
 let selfRepairFailurePrefixText = "OS-1 self-repair could not complete: "
 
-let os1RuntimeVersionString = "OS-1 Runtime 0.9.257 (codex-language-build323)"
+let os1RuntimeVersionString = "OS-1 Runtime 0.9.258 (dock-icon-live-source-build324)"
 
 func os1SourceWriteLeaseURL(root: String) throws -> URL {
     let directory = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".os1/self-update", isDirectory: true)
@@ -229,7 +230,12 @@ private func stageSelfUpdate(source: String?) throws {
     encoder.dateEncodingStrategy = .iso8601
     encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
     print(String(decoding: try encoder.encode(intent), as: UTF8.self))
-    print("OS-1 self-update staged: build \(intent.build) (\(intent.version)) from \(root); checks \(intent.checks.joined(separator: ", ")). OS-1 installs it by itself as soon as no task is in flight and reports the receipt; do not run the installer or restart OS-1.")
+    let registered = LocalProjectWorkspace.candidates(projectID: "os1-clodex").map(LocalProjectWorkspace.executionPath)
+        .contains(LocalProjectWorkspace.executionPath(root))
+    let installNote = registered
+        ? "OS-1 installs it by itself as soon as no task is in flight and reports the receipt; do not run the installer or restart OS-1."
+        : "\(root) is not a registered OS-1 source, so OS-1 does not install it by itself: run `os1 self-update apply --root '\(root)'` when no task is in flight. The apply brings the registered live tree up to this build when it can; otherwise run `os1 self-update sync-live`."
+    print("OS-1 self-update staged: build \(intent.build) (\(intent.version)) from \(root); checks \(intent.checks.joined(separator: ", ")). " + installNote)
 }
 
 /// Builds the signed release for the tree at `root`, runs the release
@@ -537,6 +543,17 @@ private func applySelfUpdate(root requested: String?) throws {
         try SelfUpdate.saveOutcome(SelfUpdate.Outcome(intent: intent, success: true, receiptPath: receiptPath, error: nil, summary: summary), home: home)
         SelfUpdate.removeIntent(root: root)
         print(summary)
+        // Installed from a side worktree: keep the registered live tree current,
+        // or OS-1's next repair finds no source (see advanceOS1LiveTrees).
+        if let installedCommit = intent.sourceCommit {
+            let live = advanceOS1LiveTrees(installedCommit: installedCommit, history: installedOS1SourceHistory())
+            for (liveRoot, outcome) in live where outcome != .alreadyCurrent && outcome != .notLiveTree {
+                print("self-update apply: live OS-1 source \(liveRoot): \(outcome.reason)")
+            }
+            if !live.contains(where: { $0.result == .advanced || $0.result == .alreadyCurrent }) {
+                print("self-update apply: no registered OS-1 source folder holds build \(intent.build)'s commit \(installedCommit.prefix(7)); OS-1 brings it up before its next repair, or run `os1 self-update sync-live`")
+            }
+        }
         return
     }
     let transient = SelfUpdate.isTransientInstallFailure(text)
@@ -609,6 +626,158 @@ func resolveLocalProjectWorkspace(projectID: String, requested: String) -> Local
     }
     return LocalProjectWorkspace.resolve(projectID: projectID, requested: requested) { root in
         (try? commandOutput(git, ["-C", root, "merge-base", "--is-ancestor", commit, "HEAD"], timeout: 10))?.0 == 0
+    }
+}
+
+/// Source commits OS-1 installed itself, newest first, without repeats.
+func installedOS1SourceHistory() -> [String] {
+    var seen = Set<String>()
+    return SelfUpdate.outcomes().reversed().compactMap { $0.success ? $0.intent.sourceCommit : nil }.filter { seen.insert($0).inserted }
+}
+
+/// What `advanceOS1LiveTrees` found for one registered OS-1 tree.
+enum OS1LiveTreeAdvance: Equatable {
+    case advanced, alreadyCurrent, notLiveTree, diverged, detached, missingCommit, busy
+    case dirty(String)
+    case failed(String)
+
+    var reason: String {
+        switch self {
+        case .advanced: return os1Tr("설치된 build의 소스로 맞췄습니다", "brought up to the installed build's source")
+        case .alreadyCurrent: return os1Tr("이미 설치된 build의 소스를 담고 있습니다", "already contains the installed build's source")
+        case .notLiveTree: return os1Tr("OS-1이 마지막으로 쓰던 소스 폴더가 아니라 건드리지 않았습니다", "is not the source folder OS-1 last worked in; left alone")
+        case .diverged: return os1Tr("설치된 커밋에 없는 로컬 커밋이 있어 자동으로 맞추지 않았습니다", "has local commits the installed commit lacks; not moved automatically")
+        case .detached: return os1Tr("브랜치가 아닌 커밋에 있어 자동으로 맞추지 않았습니다", "is on a detached commit, not a branch; not moved automatically")
+        case .missingCommit: return os1Tr("이 저장소에 설치된 커밋이 없습니다", "does not have the installed commit in its repository")
+        case .busy: return os1Tr("다른 OS-1 작업이 이 소스를 쓰는 중이라 지금은 맞추지 않았습니다", "another OS-1 writer holds this source; not moved now")
+        case .dirty: return os1Tr("커밋되지 않은 OS-1 소스 변경이 있어 자동으로 맞추지 않았습니다", "has uncommitted OS-1 source changes; not moved automatically")
+        case .failed(let detail): return os1Tr("맞추지 못했습니다: \(detail)", "could not be moved: \(detail)")
+        }
+    }
+}
+
+/// A build installed from a checkout that is not registered (a side worktree)
+/// leaves the registered live tree behind, and OS-1 then finds no current
+/// source for its own repairs: builds 320 and 322 on 2026-10-04 each left
+/// "OS-1 CLODEX 소스 폴더를 찾지 못했습니다" until someone fast-forwarded the
+/// live tree by hand. Only when no registered tree holds `installedCommit`,
+/// fast-forward exactly one tree: of the trees holding the newest earlier
+/// build any registered tree still holds (`history`, newest first), the one
+/// whose git index changed last. So a tree several side installs behind still
+/// heals and a second registered checkout on its own branch is not moved. That
+/// tree must sit strictly behind `installedCommit` on a branch, with a clean
+/// runtime subtree and a free OS-1 writer lease. Never merges, rebases,
+/// resets, fetches or waits for a lease.
+func advanceOS1LiveTrees(installedCommit: String, history: [String],
+                         candidates: [String] = LocalProjectWorkspace.candidates(projectID: "os1-clodex"))
+    -> [(root: String, result: OS1LiveTreeAdvance)] {
+    guard let git = try? findExecutable("git") else { return [] }
+    func succeeds(_ root: String, _ arguments: [String]) -> Bool {
+        (try? commandOutput(git, ["-C", root] + arguments, timeout: 20))?.0 == 0
+    }
+    var seen = Set<String>()
+    let roots = candidates.map(LocalProjectWorkspace.executionPath).filter { seen.insert($0).inserted }
+    let current = roots.filter { succeeds($0, ["merge-base", "--is-ancestor", installedCommit, "HEAD"]) }
+    guard current.isEmpty else { return current.map { ($0, .alreadyCurrent) } }
+    // Most recently changed first, read from each tree's own index: for a
+    // linked worktree (the live tree is one) `<root>/.git` is a file and the
+    // index lives under the common git dir, so ask git for its path.
+    func changedAt(_ root: String) -> Date {
+        var path = root
+        if let result = try? commandOutput(git, ["-C", root, "rev-parse", "--path-format=absolute", "--git-path", "index"], timeout: 20),
+           result.0 == 0 {
+            let index = String(decoding: result.1, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+            if FileManager.default.fileExists(atPath: index) { path = index }
+        }
+        return (try? FileManager.default.attributesOfItem(atPath: path))?[.modificationDate] as? Date ?? .distantPast
+    }
+    // A plain loop: each tree is probed once per commit (a lazy compactMap
+    // would re-run the probes and trap if the second run disagreed).
+    var live: String?
+    for commit in history where commit != installedCommit {
+        let holders = roots.filter { succeeds($0, ["merge-base", "--is-ancestor", commit, "HEAD"]) }
+        guard !holders.isEmpty else { continue }
+        var newest: (root: String, changed: Date)?
+        for root in holders {
+            let changed = changedAt(root)
+            // Ties go to the lexically first root, as in LocalProjectWorkspace.resolve.
+            if let best = newest, changed < best.changed || (changed == best.changed && root > best.root) { continue }
+            newest = (root, changed)
+        }
+        live = newest?.root
+        break
+    }
+    func outcome(_ root: String) -> OS1LiveTreeAdvance {
+        guard succeeds(root, ["cat-file", "-e", installedCommit + "^{commit}"]) else { return .missingCommit }
+        guard succeeds(root, ["merge-base", "--is-ancestor", "HEAD", installedCommit]) else { return .diverged }
+        guard succeeds(root, ["symbolic-ref", "-q", "HEAD"]) else { return .detached }
+        // Non-blocking: a repair, a stage or this very process may hold it.
+        guard let lease = try? tryAcquireOS1SourceWriteLease(root: root) else { return .busy }
+        defer { withExtendedLifetime(lease) {} }
+        if let dirty = uncommittedOS1SourceDiagnostic(root: root) { return .dirty(dirty) }
+        // Not through commandOutput: the owner's stop button (OS1_CANCEL_FILE)
+        // or a short timeout killing git mid-checkout would leave the tree
+        // half-updated and then refused as dirty. A fast-forward is seconds.
+        let merge = Process()
+        merge.executableURL = URL(fileURLWithPath: git)
+        merge.arguments = ["-C", root, "merge", "--ff-only", "-q", installedCommit]
+        let errors = Pipe()
+        merge.standardOutput = FileHandle.nullDevice
+        merge.standardError = errors
+        do { try merge.run() } catch { return .failed("git merge did not run: \(error.localizedDescription)") }
+        let detail = errors.fileHandleForReading.readDataToEndOfFile()
+        merge.waitUntilExit()
+        guard merge.terminationStatus == 0, succeeds(root, ["merge-base", "--is-ancestor", installedCommit, "HEAD"]) else {
+            return .failed(String(decoding: detail.suffix(400), as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+        return .advanced
+    }
+    return roots.map { root in (root, root == live ? outcome(root) : .notLiveTree) }
+}
+
+/// Why no registered tree holds the installed build's source, per tree.
+func os1SourceNotFoundDiagnostic(requestedWorkspace: String, installedCommit: String?,
+                                 results: [(root: String, result: OS1LiveTreeAdvance)]) -> String {
+    let build = installedOS1Build()
+    let installedSource = SelfUpdate.outcomes().last(where: { $0.success && $0.intent.build == build })?.intent.sourceRoot
+    let marker = LocalProjectWorkspace.marker(for: "os1-clodex") ?? "products/os1-mac-runtime/Package.swift"
+    let commit = installedCommit.map { String($0.prefix(7)) } ?? os1Tr("(기록 없음)", "(not recorded)")
+    let trees = results.isEmpty
+        ? os1Tr("등록된 OS-1 소스 폴더가 없습니다", "no registered OS-1 source folder")
+        : results.map { "\($0.root) — \($0.result.reason)" }.joined(separator: "; ")
+    let source = installedSource.map { os1Tr(" 설치에 쓰인 소스: \($0).", " Installed from: \($0).") } ?? ""
+    return os1Tr(
+        "OS-1 CLODEX 소스 폴더를 찾지 못했습니다. 대화 폴더 \(requestedWorkspace)에는 \(marker)이(가) 없고, 등록된 OS-1 소스 폴더 중 설치된 build \(build)의 소스 커밋 \(commit)을 담은 곳이 없습니다.\(source) 등록된 폴더: \(trees). 그 폴더를 설치된 커밋까지 맞추거나(os1 self-update sync-live), 설치된 build의 소스 폴더를 이 대화의 작업 폴더로 선택한 뒤 다시 요청하세요.",
+        "OS-1 CLODEX source folder not found. The conversation folder \(requestedWorkspace) has no \(marker), and no registered OS-1 source folder contains the installed build \(build)'s source commit \(commit).\(source) Registered folders: \(trees). Bring that folder up to the installed commit (os1 self-update sync-live), or choose the installed build's source folder as this conversation's working folder, then ask again.")
+}
+
+/// `resolveLocalProjectWorkspace` for a request about to write OS-1's source:
+/// when no registered tree holds the installed build's source, first bring the
+/// tree OS-1 last worked in up to it. Read-only callers keep the plain
+/// resolver, which never changes a tree.
+func resolveLocalProjectWorkspaceHealing(projectID: String, requested: String)
+    -> (resolution: LocalProjectWorkspace.Resolution?, healed: [String], diagnostic: String?) {
+    if let resolved = resolveLocalProjectWorkspace(projectID: projectID, requested: requested) { return (resolved, [], nil) }
+    guard projectID == "os1-clodex" else { return (nil, [], nil) }
+    let installedCommit = installedOS1SourceCommit()
+    let results = installedCommit.map { advanceOS1LiveTrees(installedCommit: $0, history: installedOS1SourceHistory()) } ?? []
+    let healed = results.filter { $0.result == .advanced }.map(\.root)
+    // Re-resolve even when this call moved nothing: a writer that held the
+    // lease may just have brought the tree up itself.
+    if let resolved = resolveLocalProjectWorkspace(projectID: projectID, requested: requested) { return (resolved, healed, nil) }
+    return (nil, healed, os1SourceNotFoundDiagnostic(requestedWorkspace: requested, installedCommit: installedCommit, results: results))
+}
+
+/// `os1 self-update sync-live`: the same fast-forward, run by hand after
+/// installing from a side worktree.
+private func syncLiveOS1Source() throws {
+    guard let installedCommit = installedOS1SourceCommit() else {
+        throw OS1Error.message("self-update sync-live: the installed build \(installedOS1Build()) has no recorded source commit")
+    }
+    let results = advanceOS1LiveTrees(installedCommit: installedCommit, history: installedOS1SourceHistory())
+    for (root, result) in results { print("\(root): \(result.reason)") }
+    guard results.contains(where: { $0.result == .advanced || $0.result == .alreadyCurrent }) else {
+        throw OS1Error.message("self-update sync-live: no registered OS-1 source folder holds build \(installedOS1Build())'s commit \(installedCommit.prefix(7))")
     }
 }
 

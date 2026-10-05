@@ -10274,6 +10274,18 @@ private struct OS1DesktopApp: App {
             fputs("OS1 could not acquire live-store ownership; sessions were not opened.\n", stderr)
             exit(EXIT_FAILURE)
         }
+        // The Dock tile is frozen on the image it cached for build 259 (its
+        // record still holds that bundle's file ID and mod date), so every
+        // reinstall and reboot since kept the old full-size ring although
+        // IconServices renders the shipped icon with the 80% ring (owner
+        // 2026-10-04: "사파리랑 GPT 보면 간격이 있는데 간격이 하나도 없어").
+        // A running app's own icon replaces the tile image: hand the Dock the
+        // icon IconServices renders for this installed bundle.
+        NotificationCenter.default.addObserver(forName: NSApplication.didFinishLaunchingNotification, object: nil, queue: .main) { _ in
+            MainActor.assumeIsolated {
+                NSApplication.shared.applicationIconImage = NSWorkspace.shared.icon(forFile: Bundle.main.bundlePath)
+            }
+        }
         _store = StateObject(wrappedValue: SessionStore())
     }
 
