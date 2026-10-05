@@ -2,6 +2,9 @@ import Foundation
 
 /// Public execution state only. Never reasoning, prompts, raw errors or policy.
 public let journalRotationBytes = 8_000_000
+/// Above this encoded size an activity snapshot drops its step labels; the
+/// app's observer ignores files over 150,000 bytes.
+public let activityStepBudgetBytes = 140_000
 
 public struct RuntimeActivity: Codable, Equatable, Sendable {
     public enum Phase: String, Codable, Sendable { case preparing, waitingForSource, source, authorizing, routing, executing, verifying, syncing, recovering }
@@ -38,6 +41,10 @@ public struct RuntimeActivity: Codable, Equatable, Sendable {
     private enum CodingKeys: String, CodingKey {
         case phase, provider, surface, model, effort, timestamp, publicText, tool, nativeSessionID, waitingReason, progress
     }
+    /// Decoder flag: skip `progress`. `emit` reads the previous snapshot on
+    /// every event only for its route fields; decoding its step ring would
+    /// re-redact every label each time.
+    static let routeOnlyKey = CodingUserInfoKey(rawValue: "os1.runtimeActivity.routeOnly")!
 
     public init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
@@ -61,7 +68,8 @@ public struct RuntimeActivity: Codable, Equatable, Sendable {
             nativeSessionID: try values.decodeIfPresent(String.self, forKey: .nativeSessionID),
             // Optional telemetry must never suppress valid public prose when
             // an older/unknown/malformed progress schema is encountered.
-            progress: try? values.decode(NativeExecutionProgress.self, forKey: .progress))
+            progress: decoder.userInfo[Self.routeOnlyKey] as? Bool == true ? nil
+                : try? values.decode(NativeExecutionProgress.self, forKey: .progress))
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -95,7 +103,8 @@ public struct RuntimeActivity: Codable, Equatable, Sendable {
         case .recovering: return os1Tr("OS1이 작업 이어가는 중", "OS1 is continuing the task")
         }
     }
-    /// Public tool category only; never expose commands, credentials or reasoning.
+    /// Public tool category only; never commands, credentials or reasoning.
+    /// The backend's own per-call words live in `progress.steps`, redacted.
     public var toolProgressLabel: String? {
         guard let tool, !tool.isEmpty else { return nil }
         switch tool {
@@ -110,7 +119,9 @@ public struct RuntimeActivity: Codable, Equatable, Sendable {
     }
     public static func emit(_ phase: Phase, provider: String? = nil, surface: String? = nil, model: String? = nil, effort: String? = nil, publicText: String? = nil, tool: String? = nil, nativeSessionID: String? = nil, progress: NativeExecutionProgress? = nil) {
         guard let path = ProcessInfo.processInfo.environment["OS1_ACTIVITY_FILE"] else { return }
-        let previous = (try? Data(contentsOf:URL(fileURLWithPath:path))).flatMap { try? JSONDecoder().decode(Self.self,from:$0) }
+        let routeDecoder = JSONDecoder()
+        routeDecoder.userInfo[routeOnlyKey] = true
+        let previous = (try? Data(contentsOf:URL(fileURLWithPath:path))).flatMap { try? routeDecoder.decode(Self.self,from:$0) }
         let sameProvider = previous?.provider == provider
         // GPT and Codex (or Claude and Claude Code) share a transport, but a
         // lane change is still a route boundary. Never inherit the other
@@ -118,12 +129,21 @@ public struct RuntimeActivity: Codable, Equatable, Sendable {
         let sameRoute = sameProvider && phase != .waitingForSource && previous?.phase != .waitingForSource &&
             (surface == nil || surface == previous?.surface)
         let retained = sameRoute && [.verifying, .syncing].contains(phase) ? previous?.publicText : nil
-        guard let data = try? JSONEncoder().encode(Self(phase, provider: provider,
-            surface: surface ?? (sameRoute ? previous?.surface : nil),
-            model: model ?? (sameRoute ? previous?.model : nil), effort: effort ?? (sameRoute ? previous?.effort : nil),
-            publicText: publicText ?? retained, tool: tool,
-            nativeSessionID: nativeSessionID ?? (sameRoute ? previous?.nativeSessionID : nil),
-            progress: progress)) else { return }
+        func activity(_ progress: NativeExecutionProgress?) -> Self {
+            Self(phase, provider: provider,
+                surface: surface ?? (sameRoute ? previous?.surface : nil),
+                model: model ?? (sameRoute ? previous?.model : nil), effort: effort ?? (sameRoute ? previous?.effort : nil),
+                publicText: publicText ?? retained, tool: tool,
+                nativeSessionID: nativeSessionID ?? (sameRoute ? previous?.nativeSessionID : nil),
+                progress: progress)
+        }
+        guard var data = try? JSONEncoder().encode(activity(progress)) else { return }
+        // The app ignores an activity file over 150,000 bytes, which would
+        // also hide the public text. Step labels are the first thing to go.
+        if data.count > activityStepBudgetBytes, let progress, progress.steps != nil,
+           let lean = try? JSONEncoder().encode(activity(progress.replacing(steps: nil, backendStatus: progress.backendStatus))) {
+            data = lean
+        }
         // Best-effort display telemetry must not fail or change execution.
         try? data.write(to: URL(fileURLWithPath: path), options: .atomic)
         if let journal = ProcessInfo.processInfo.environment["OS1_EVENT_JOURNAL"] {

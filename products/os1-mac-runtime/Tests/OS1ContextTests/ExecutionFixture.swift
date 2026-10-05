@@ -14,7 +14,7 @@ func runExecutionFixtures() throws {
         ["type":"assistant","message":["id":"m1","content":[["type":"thinking","thinking":"PRIVATE"],["type":"text","text":"확인 중 👋"]]]],
         ["type":"assistant","parent_tool_use_id":"subagent","message":["id":"sub","content":[["type":"text","text":"HIDDEN SUBAGENT"]]]],
         ["type":"system","text":"PRIVATE HOOK"],
-        ["type":"stream_event","event":["type":"content_block_start","content_block":["type":"tool_use","name":"Read","input":["path":"PRIVATE PATH"]]]],
+        ["type":"stream_event","event":["type":"content_block_start","content_block":["type":"tool_use","id":"read-1","name":"Read","input":["path":"PRIVATE PATH"]]]],
         ["type":"result","result":"완성","session_id":UUID().uuidString,"is_error":false],
     ]
     for event in events {
@@ -26,15 +26,23 @@ func runExecutionFixtures() throws {
     check(claude.tool == "Read")
     check(claude.result != nil)
     check(!claude.text.contains("PRIVATE") && !claude.text.contains("HIDDEN"))
+    // An identified request opens a step; its partial input is never read.
+    check(claude.progress?.steps?.count == 1 && claude.progress?.steps?.first?.label == nil)
+    check(!String(decoding: try JSONEncoder().encode(claude.progress), as: UTF8.self).contains("PRIVATE"))
     let codex = ExecutionStream()
     func event(_ method: String, _ params: [String: Any]) { codex.ingestCodex(["method":method,"params":params],threadID:"t",turnID:"u") }
     event("item/reasoning/textDelta",["threadId":"t","turnId":"u","delta":"PRIVATE"])
     event("item/agentMessage/delta",["threadId":"other","turnId":"u","itemId":"a","delta":"OTHER"])
     event("item/agentMessage/delta",["threadId":"t","turnId":"u","itemId":"a","delta":"hello"])
     event("item/completed",["threadId":"t","turnId":"u","item":["type":"agentMessage","id":"a","text":"hello"]])
-    event("item/started",["threadId":"t","turnId":"u","item":["type":"commandExecution","command":"SECRET COMMAND"]])
+    // Codex shows a command with no read/search/list action (owner decision
+    // B), so the label is the command, redacted: the credential is masked.
+    event("item/started",["threadId":"t","turnId":"u","item":["type":"commandExecution","id":"cmd-1",
+        "command":"deploy --token SECRET-VALUE-1 --region eu"]])
     check(codex.text == "hello")
     check(codex.tool == "commandExecution")
+    check(codex.progress?.steps?.first?.label == "deploy --token … --region eu" && codex.progress?.steps?.first?.verb == "run")
+    check(!String(decoding: try JSONEncoder().encode(codex.progress), as: UTF8.self).contains("SECRET"))
     let now = Date(timeIntervalSince1970: 1000)
     let quota: [String: Any] = ["rateLimitsByLimitId":[
         "codex":["primary":["usedPercent":66,"resetsAt":2000]],
