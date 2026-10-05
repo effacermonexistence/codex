@@ -40,7 +40,7 @@
       "bytes": 719299,
       "sha256": "9f128f0cf4acb0756c5432602e43d5cad729dd75c513605a5dc160da65091880",
       "acquisition": "browser pageAssets bundle",
-      "used": false,
+      "used": true,
       "servedTransformation": "Approved outlined USUNG wordmark inserted in native SVG; original diagram geometry retained",
       "servedBytes": 724513,
       "servedSha256": "0b343f5a6f6689892db71dc8892d0bf291f3b152462518eb2a42f09b380b93a6",
@@ -53,7 +53,7 @@
       "bytes": 719299,
       "sha256": "59b9f558279eb8f41b1cf4655258cdf31755e8c57761286f56e9048216853a5f",
       "acquisition": "browser pageAssets bundle",
-      "used": false,
+      "used": true,
       "servedTransformation": "Approved outlined USUNG wordmark inserted in native SVG; original diagram geometry retained",
       "servedBytes": 724503,
       "servedSha256": "67cec7f400f1d963be426b06ca64211bf2a0ef49690b73adefdfec57b8da0e88",
@@ -66,7 +66,7 @@
       "bytes": 719299,
       "sha256": "91385ce92caf99147fb051241ebc8012b607986a551dd4ceb34f249d2871d3f1",
       "acquisition": "browser pageAssets bundle",
-      "used": false,
+      "used": true,
       "servedTransformation": "Approved outlined USUNG wordmark inserted in native SVG; original diagram geometry retained",
       "servedBytes": 724497,
       "servedSha256": "fb2b2507e56e07bc35df96fc05df41c29bab3911e4972a8d2918741fbb2320c3",
@@ -194,11 +194,18 @@
       "acquisition": "Built-in image_gen edit, explicitly requested by the user",
       "editScope": "Outpaint the cropped right-side glass ribbons; complete the silhouette at top and bottom; preserve the source form, materials and palette as closely as possible.",
       "used": true,
-      "usedOn": "Main page approved opening Intelligence business card only",
+      "usedOn": "Main page approved opening Intelligence card, Home AI & AX chapter, and AI & AX page hero; the two large scenes use image-preserving display interaction",
       "previousUsageRecord": {
         "recordedInGitRevision": "bb84d22d09bf938d859bd30d6374154a7d547a8c",
         "usedOn": "AI page hero, AI page field bridge, and main page Intelligence business card"
       },
+      "usageHistory": [
+        {
+          "recordedInGitRevision": "6ec18c193812a6907bd7021a1248e569368d48ba",
+          "revision": "2026-10-04-immersive-v29",
+          "usedOn": "Main page approved opening Intelligence business card only"
+        }
+      ],
       "servedTransformation": "Unmodified generated transparent PNG",
       "servedBytes": 2233287,
       "servedSha256": "0089f0cde4a3df2a65ea81a41e9f76334adec20f4fb51406e7693434e43740c6",
@@ -494,10 +501,10 @@
       }
     }
   ],
-  "layoutImplementation": "HTML/CSS adapted from reviewed reference compositions; approved acquired media retained, with original local native SVG/CSS decorative scenes",
+  "layoutImplementation": "Original approved glass image with automatic movement, pointer response, and optional subpixel refraction; original source diagrams restored; approved acquired photography and footage retained with immersive cover display",
   "brandingRevision": "2026-10-04-home-divisions-v26",
   "photographicSceneGeneration": false,
-  "abstractGlassArtwork": "Existing previously requested generated glass extension; unchanged and retained only in the approved opening Home Intelligence card",
+  "abstractGlassArtwork": "Previously requested generated glass extension retained as the same unmodified PNG; v30 interaction is a display effect around that image, with no replacement raster, new sculptural geometry, or video generation",
   "homeRevision": {
     "revision": "2026-10-04-home-divisions-v26",
     "reviewedReferences": [
@@ -556,5 +563,68 @@
       "replacementSource": "src/ai-motion.mjs",
       "preservedAcquisitionAndTransformationRecords": true
     }
+  },
+  "visualRestorationRevision": {
+    "revision": "2026-10-05-interactive-glass-v30",
+    "metadataUpdatedAtUTC": "2026-10-05T12:09:33Z",
+    "userRejectionDate": "2026-10-05",
+    "rejectionProvenance": "Explicit user rejection reported by the root task; restore original diagrams and move the original glass through automatic and cursor microinteraction, with no video generation",
+    "restorationSourceGitRevision": "e26e8e4f690730c53d414210372e93495955f102",
+    "restoredDiagrams": [
+      "assets/references/contextual-intelligence.svg",
+      "assets/references/contextual-context.svg",
+      "assets/references/contextual-data.svg"
+    ],
+    "restoredDiagramTreatment": "Existing served SVG files with the approved USUNG wordmark; original diagram geometry and prior acquisition/transformation records preserved",
+    "retiredVisualImplementations": [
+      {
+        "sourceFile": "src/ai-motion.mjs",
+        "introducedInRevision": "2026-10-04-ai-motion-v28",
+        "scenes": [
+          "Custom native Verify diagram",
+          "Custom native Control diagram",
+          "Custom native Observe diagram"
+        ],
+        "status": "retired after user rejection",
+        "retirementDate": "2026-10-05"
+      },
+      {
+        "sourceFile": "src/ai-hero.mjs",
+        "introducedInRevision": "2026-10-04-immersive-v29",
+        "scene": "Matte orbit and recessed routing-plane sculpture",
+        "status": "retired after user rejection",
+        "retirementDate": "2026-10-05"
+      },
+      {
+        "sourceFile": "src/home-ai.mjs",
+        "introducedInRevision": "2026-10-04-immersive-v29",
+        "scene": "Home curved signal field and moving pink traces",
+        "status": "retired after user rejection",
+        "retirementDate": "2026-10-05"
+      }
+    ],
+    "historicalV29RecordPreserved": "immersiveRevision records the v29 implementation at that time; its native scenes are retired by this restoration record",
+    "glassInteraction": {
+      "sourceImage": "assets/generated/ai-glass-extended-v1.png",
+      "sourceImageSha256": "0089f0cde4a3df2a65ea81a41e9f76334adec20f4fb51406e7693434e43740c6",
+      "dimensions": [
+        1536,
+        1024
+      ],
+      "implementationSources": [
+        "public/glass-interaction.js",
+        "public/glass-interaction.css"
+      ],
+      "treatment": "Automatic drift and cursor-controlled tilt/translation of the existing image, with optional WebGL subpixel texture sampling; original alpha and image file retained, without added lighting, colour grading, or a replacement silhouette",
+      "originalImageFileUnmodified": true,
+      "newRasterImageAssetGeneration": false,
+      "newPhotographicSceneGeneration": false,
+      "newSculpturalGeometryGeneration": false,
+      "videoGeneration": false,
+      "historicalGlassGenerationRecordPreserved": true
+    },
+    "approvedPhotoAndVideoFilesUnmodified": true,
+    "fullbleedMediaLayoutRetained": true,
+    "displayCroppingOnly": "Cover framing may crop approved media at viewport edges; no photo/video pixels or encoded files are changed by this revision"
   }
 }

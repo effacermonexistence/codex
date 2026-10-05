@@ -14,7 +14,7 @@ addEventListener('scroll', () => { if (!scrollPending) { scrollPending = true; r
 updateScroll();
 const videos = [...document.querySelectorAll('.corp-page video')];
 const visibleVideos = new Set();
-const nativeOwners = [...new Set([...document.querySelectorAll('[data-ai-hero-motion]')].map(scene => scene.closest('section')))];
+const nativeOwners = [...new Set([...document.querySelectorAll('[data-glass-scene]')].map(scene => scene.closest('section')))];
 const visibleNativeOwners = new Set();
 const motionButtons = [...document.querySelectorAll('.corp-motion')];
 function updateMedia() {
@@ -49,23 +49,10 @@ updateMedia();
 document.querySelectorAll('[data-ref-tabs]').forEach(group => {
  const tabs = [...group.querySelectorAll('[data-ref-tab]')];
  const panels = [...group.querySelectorAll('[data-ref-panel]')];
- const toggle = group.querySelector('[data-ai-motion-toggle]');
- let diagramPaused = false;
- let diagramVisible = !('IntersectionObserver' in window);
- const updateDiagramMotion = () => {
-  group.dataset.motionRunning = String(diagramVisible && !diagramPaused && !reduced.matches && !document.hidden);
-  if (!toggle) return;
-  toggle.hidden = reduced.matches;
-  toggle.dataset.paused = String(diagramPaused);
-  const label = t(diagramPaused ? 'PLAY ANIMATION' : 'PAUSE ANIMATION');
-  toggle.setAttribute('aria-label', label);
-  toggle.title = label;
- };
  const select = (index, focus = false) => {
   tabs.forEach((tab, i) => { tab.setAttribute('aria-selected', String(i === index)); tab.tabIndex = i === index ? 0 : -1; });
   panels.forEach((panel, i) => { panel.hidden = i !== index; });
   if (focus) tabs[index].focus();
-  updateDiagramMotion();
  };
  tabs.forEach((tab, index) => {
   tab.addEventListener('click', () => select(index));
@@ -78,18 +65,5 @@ document.querySelectorAll('[data-ref-tabs]').forEach(group => {
    if (next !== undefined) { event.preventDefault(); select(next, true); }
   });
  });
- if (toggle) {
-  toggle.addEventListener('click', () => { diagramPaused = !diagramPaused; updateDiagramMotion(); });
-  if ('IntersectionObserver' in window) {
-   const diagramObserver = new IntersectionObserver(entries => {
-    diagramVisible = entries.some(entry => entry.isIntersecting);
-    updateDiagramMotion();
-   }, { threshold: .08 });
-   diagramObserver.observe(group.querySelector('.ref-platform-visual'));
-  }
-  reduced.addEventListener('change', updateDiagramMotion);
-  document.addEventListener('visibilitychange', updateDiagramMotion);
- }
- updateDiagramMotion();
 });
 })();
