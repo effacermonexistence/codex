@@ -1,0 +1,292 @@
+{
+  "release": "2026-10-04-original-media-v24",
+  "photos": [
+    {
+      "source": "built-rpd.jpg",
+      "served": "usung-autonomous-piling-v24.webp",
+      "dimensions": [
+        2200,
+        1466
+      ],
+      "sourceSha256": "7ec087d5f54254ad5b67e4404dc308026ede60d9452fee625a2f06ce63114a87",
+      "changedPixels": 4798,
+      "totalPixels": 3225200,
+      "outsideMaskIdentical": true,
+      "encoding": "lossless WebP"
+    },
+    {
+      "source": "built-sundown.jpg",
+      "served": "usung-site-dusk-v24.webp",
+      "dimensions": [
+        2200,
+        1467
+      ],
+      "sourceSha256": "2b7ad90b11c964e4770b0f4a5a2623e33e764ff679c564cbb8d9f4c0c8788b4a",
+      "changedPixels": 1335,
+      "totalPixels": 3227400,
+      "outsideMaskIdentical": true,
+      "encoding": "lossless WebP"
+    },
+    {
+      "source": "built-sunrise.jpg",
+      "served": "usung-site-dawn-v24.webp",
+      "dimensions": [
+        2200,
+        1466
+      ],
+      "sourceSha256": "51124b57542c4eed9761f66ce5f79d7fa4f7bba8afd1ca8e46a4ad08ed6ba01b",
+      "changedPixels": 163,
+      "totalPixels": 3225200,
+      "outsideMaskIdentical": true,
+      "encoding": "lossless WebP"
+    },
+    {
+      "source": "built-trenching.jpg",
+      "served": "usung-autonomous-excavation-v24.webp",
+      "dimensions": [
+        2200,
+        1237
+      ],
+      "sourceSha256": "4ca60832f971b10a811e984acdbf269cea8a9aa12cc86c20facab0389d7d2f34",
+      "changedPixels": 16753,
+      "totalPixels": 2721400,
+      "outsideMaskIdentical": true,
+      "encoding": "lossless WebP"
+    },
+    {
+      "source": "suffolk-naples.jpg",
+      "served": "usung-field-team-v24.webp",
+      "dimensions": [
+        2200,
+        1466
+      ],
+      "sourceSha256": "2a18b8507d87814098d8e7e69fa8d35738d2db0d7209a748b9e8bc6e89461aae",
+      "changedPixels": 17728,
+      "totalPixels": 3225200,
+      "outsideMaskIdentical": true,
+      "encoding": "lossless WebP"
+    },
+    {
+      "source": "suffolk-robotics.jpg",
+      "served": "usung-site-robot-v24.webp",
+      "dimensions": [
+        2200,
+        1237
+      ],
+      "sourceSha256": "c3fe773c4d1177d09af8db3dd7a4aea1682f1e54b1597d26c96699d2f4cbc7e4",
+      "changedPixels": 26598,
+      "totalPixels": 2721400,
+      "outsideMaskIdentical": true,
+      "encoding": "lossless WebP"
+    }
+  ],
+  "constructionVideos": [
+    {
+      "source": "suffolk-hero.mp4",
+      "served": "usung-construction-film-v24.mp4",
+      "width": 1280,
+      "height": 720,
+      "fps": 23.976023976023978,
+      "frames": 515,
+      "outsideMasksIdenticalBeforeEncode": true,
+      "framesWithEdits": 104,
+      "maximumEditedPixels": 4653,
+      "totalPixelsPerFrame": 921600,
+      "sourceSha256": "c8c77ece9cfc894d6ddd1309da9fd9bd11f1a1c3c2f5b5734b0c4d25e710a335"
+    },
+    {
+      "source": "turner-hero.mp4",
+      "served": "usung-delivery-film-v24.mp4",
+      "width": 1920,
+      "height": 1080,
+      "fps": 23.976023976023978,
+      "frames": 203,
+      "outsideMasksIdenticalBeforeEncode": true,
+      "framesWithEdits": 123,
+      "maximumEditedPixels": 8111,
+      "totalPixelsPerFrame": 2073600,
+      "sourceSha256": "a277360b6b6ed832a0ce4f6a141f13be7849fc5079b46898d10634b59bb9e85e"
+    }
+  ],
+  "imageGenerationUsedForThisRevision": false,
+  "physicalVideos": "Existing v23 source-video composites reviewed; no wholesale scene generation",
+  "abstractArtwork": "Existing previously approved glass artwork is outside the real-photograph correction; still records its imagegen provenance",
+  "observedConstructionCuts": {
+    "suffolk-hero": [
+      117,
+      250,
+      382
+    ],
+    "turner-hero": [
+      32,
+      71,
+      110,
+      153,
+      194
+    ]
+  },
+  "assetInventory": [
+    {
+      "asset": "/assets/generated/ai-glass-extended-v1.png",
+      "bytes": 2233287,
+      "status": 206,
+      "mime": "image/png"
+    },
+    {
+      "asset": "/assets/media/suffolk-project.jpg",
+      "bytes": 774177,
+      "status": 206,
+      "mime": "image/jpeg"
+    },
+    {
+      "asset": "/assets/references/usung-physical-hero-v23-poster.jpg",
+      "bytes": 317394,
+      "status": 206,
+      "mime": "image/jpeg"
+    },
+    {
+      "asset": "/assets/references/usung-physical-hero-v23.mp4",
+      "bytes": 5144551,
+      "status": 206,
+      "mime": "video/mp4"
+    },
+    {
+      "asset": "/assets/media/usung-site-dusk-v24.webp",
+      "bytes": 2232804,
+      "status": 206,
+      "mime": "image/webp"
+    },
+    {
+      "asset": "/assets/references/contextual-intelligence.svg",
+      "bytes": 724513,
+      "status": 206,
+      "mime": "image/svg+xml"
+    },
+    {
+      "asset": "/assets/references/contextual-context.svg",
+      "bytes": 724503,
+      "status": 206,
+      "mime": "image/svg+xml"
+    },
+    {
+      "asset": "/assets/references/contextual-data.svg",
+      "bytes": 724497,
+      "status": 206,
+      "mime": "image/svg+xml"
+    },
+    {
+      "asset": "/assets/media/usung-construction-film-v24.mp4",
+      "bytes": 13521078,
+      "status": 206,
+      "mime": "video/mp4"
+    },
+    {
+      "asset": "/assets/media/turner-hero.jpg",
+      "bytes": 458409,
+      "status": 206,
+      "mime": "image/jpeg"
+    },
+    {
+      "asset": "/assets/media/usung-delivery-film-v24.mp4",
+      "bytes": 7663984,
+      "status": 206,
+      "mime": "video/mp4"
+    },
+    {
+      "asset": "/assets/media/usung-field-team-v24.webp",
+      "bytes": 1698790,
+      "status": 206,
+      "mime": "image/webp"
+    },
+    {
+      "asset": "/assets/media/usung-autonomous-piling-v24.webp",
+      "bytes": 2347166,
+      "status": 206,
+      "mime": "image/webp"
+    },
+    {
+      "asset": "/assets/media/turner-project.jpg",
+      "bytes": 508370,
+      "status": 206,
+      "mime": "image/jpeg"
+    },
+    {
+      "asset": "/assets/media/turner-innovation.jpg",
+      "bytes": 903913,
+      "status": 206,
+      "mime": "image/jpeg"
+    },
+    {
+      "asset": "/assets/media/usung-autonomous-excavation-v24.webp",
+      "bytes": 2630380,
+      "status": 206,
+      "mime": "image/webp"
+    },
+    {
+      "asset": "/assets/media/usung-site-robot-v24.webp",
+      "bytes": 1429122,
+      "status": 206,
+      "mime": "image/webp"
+    },
+    {
+      "asset": "/assets/media/usung-site-dawn-v24.webp",
+      "bytes": 2424738,
+      "status": 206,
+      "mime": "image/webp"
+    },
+    {
+      "asset": "/assets/references/usung-perception-v23-poster.jpg",
+      "bytes": 154850,
+      "status": 206,
+      "mime": "image/jpeg"
+    },
+    {
+      "asset": "/assets/references/usung-perception-v23.mp4",
+      "bytes": 3263110,
+      "status": 206,
+      "mime": "video/mp4"
+    },
+    {
+      "asset": "/assets/references/usung-coordination-v23-poster.jpg",
+      "bytes": 118849,
+      "status": 206,
+      "mime": "image/jpeg"
+    },
+    {
+      "asset": "/assets/references/usung-coordination-v23.mp4",
+      "bytes": 3214755,
+      "status": 206,
+      "mime": "video/mp4"
+    },
+    {
+      "asset": "/assets/references/dexterity-precision-poster.jpg",
+      "bytes": 25477,
+      "status": 206,
+      "mime": "image/jpeg"
+    },
+    {
+      "asset": "/assets/references/dexterity-precision.mp4",
+      "bytes": 2331514,
+      "status": 206,
+      "mime": "video/mp4"
+    },
+    {
+      "asset": "/assets/references/field-world-model.webp",
+      "bytes": 87296,
+      "status": 206,
+      "mime": "image/webp"
+    },
+    {
+      "asset": "/assets/references/usung-field-robots-v23-poster.jpg",
+      "bytes": 137562,
+      "status": 206,
+      "mime": "image/jpeg"
+    },
+    {
+      "asset": "/assets/references/usung-field-robots-v23.mp4",
+      "bytes": 3478255,
+      "status": 206,
+      "mime": "video/mp4"
+    }
+  ]
+}

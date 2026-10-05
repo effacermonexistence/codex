@@ -52,7 +52,7 @@ $$('[data-filter]').forEach(button=>button.addEventListener('click',()=>{
   $('.project-count').textContent=t('{count}개의 레퍼런스 프로젝트', { count });schedule();
 }));
 const projects=[
- {title:'COASTAL ARCHITECTURE',image:'usung-field-team-v22.jpg',source:'USUNG · VISUAL REFERENCE',description:'대형 해안 건축의 수평적 스케일과 재료감을 보여주는 레퍼런스입니다. U-SUNG의 실제 시공 실적이 아닌, 이번 데모의 프로젝트 표현 방향입니다.',url:'https://suffolk.com/project/naples-beach-club-a-four-seasons-resort/'},
+ {title:'COASTAL ARCHITECTURE',image:'usung-field-team-v24.webp',source:'USUNG · VISUAL REFERENCE',description:'대형 해안 건축의 수평적 스케일과 재료감을 보여주는 레퍼런스입니다. U-SUNG의 실제 시공 실적이 아닌, 이번 데모의 프로젝트 표현 방향입니다.',url:'https://suffolk.com/project/naples-beach-club-a-four-seasons-resort/'},
  {title:'SPACES FOR PEOPLE',image:'turner-project.jpg',source:'USUNG · VISUAL REFERENCE',description:'자연광, 색채, 사용자의 동선이 만나는 실내 공간. 건물의 규모뿐 아니라 공간 안에서의 경험을 보여주는 Turner 이미지 레퍼런스입니다.',url:'https://www.turnerconstruction.com/projects'},
  {title:'CONNECTED CONSTRUCTION',image:'turner-innovation.jpg',source:'USUNG · VISUAL REFERENCE',description:'디지털 도구와 실제 현장의 연결을 표현합니다. 기술 단독의 이미지가 아니라 사람과 협업, 현장 계획이 함께 보이는 방향을 선택했습니다.',url:'https://www.turnerconstruction.com/commitments/innovation'}
 ];

@@ -1,71 +1,215 @@
 {
-  "revision": "2026-10-04-physical-surface-branding-v23",
+  "revision": "2026-10-04-original-media-v24",
   "scope": "Currently displayed reference media on Home, AI, Smart Construction and Physical AI, including video playback and posters",
   "approvedMark": "public/assets/brand/usung-wordmark.svg",
-  "photoEditor": "Built-in imagegen",
+  "photoEditor": "Non-generative source-pixel compositing, local printed-mark masks and lossless WebP",
   "videoEditor": "Native surface-plane compositing with paint detection, constrained temporal tracking, foreground visibility masks, perspective, source illumination/texture and focus matching",
   "assets": [
     {
       "source": "assets/media/built-rpd.jpg",
-      "served": "assets/media/usung-autonomous-piling-v22.jpg",
-      "servedBytes": 364202,
-      "servedSha256": "7e4e4ada01f984bf7cb93ba6f910b90f8bc2efc575435f78b8c360809f99ab63",
-      "transformation": "Built-in imagegen targeted brand replacement; scene retained; web JPEG export",
-      "editor": "built-in imagegen"
+      "served": "assets/media/usung-autonomous-piling-v24.webp",
+      "servedBytes": 2347166,
+      "servedSha256": "0903d1b0289591ef36639c8dba6505221fdb3314edebf9e5bb1dd8dc4db49723",
+      "transformation": "Original decoded source photograph retained exactly outside printed-brand masks; local non-generative retouching, perspective/curvature, photographed light/ink/focus; lossless WebP",
+      "editor": "deterministic source pixel compositing",
+      "previousServed": {
+        "file": "assets/media/usung-autonomous-piling-v22.jpg",
+        "bytes": 364202,
+        "sha256": "7e4e4ada01f984bf7cb93ba6f910b90f8bc2efc575435f78b8c360809f99ab63"
+      },
+      "verification": {
+        "source": "built-rpd.jpg",
+        "served": "usung-autonomous-piling-v24.webp",
+        "dimensions": [
+          2200,
+          1466
+        ],
+        "sourceSha256": "7ec087d5f54254ad5b67e4404dc308026ede60d9452fee625a2f06ce63114a87",
+        "changedPixels": 4798,
+        "totalPixels": 3225200,
+        "outsideMaskIdentical": true,
+        "encoding": "lossless WebP"
+      }
     },
     {
       "source": "assets/media/built-sundown.jpg",
-      "served": "assets/media/usung-site-dusk-v22.jpg",
-      "servedBytes": 348130,
-      "servedSha256": "eca5e41fdd4ad0e9393403399e4771cf98e318e986ad822272a520f4bf466570",
-      "transformation": "Built-in imagegen targeted brand replacement; scene retained; web JPEG export",
-      "editor": "built-in imagegen"
+      "served": "assets/media/usung-site-dusk-v24.webp",
+      "servedBytes": 2232804,
+      "servedSha256": "8a35de765e814e88c62edf9cb94813e101c6b88edaba84c7a0633d7874e29b6a",
+      "transformation": "Original decoded source photograph retained exactly outside printed-brand masks; local non-generative retouching, perspective/curvature, photographed light/ink/focus; lossless WebP",
+      "editor": "deterministic source pixel compositing",
+      "previousServed": {
+        "file": "assets/media/usung-site-dusk-v22.jpg",
+        "bytes": 348130,
+        "sha256": "eca5e41fdd4ad0e9393403399e4771cf98e318e986ad822272a520f4bf466570"
+      },
+      "verification": {
+        "source": "built-sundown.jpg",
+        "served": "usung-site-dusk-v24.webp",
+        "dimensions": [
+          2200,
+          1467
+        ],
+        "sourceSha256": "2b7ad90b11c964e4770b0f4a5a2623e33e764ff679c564cbb8d9f4c0c8788b4a",
+        "changedPixels": 1335,
+        "totalPixels": 3227400,
+        "outsideMaskIdentical": true,
+        "encoding": "lossless WebP"
+      }
     },
     {
       "source": "assets/media/built-sunrise.jpg",
-      "served": "assets/media/usung-site-dawn-v22.jpg",
-      "servedBytes": 348401,
-      "servedSha256": "939e83e60f9b8ddfb11b36447fa2808feddacce9a752351293110549913383b2",
-      "transformation": "Built-in imagegen targeted brand replacement; scene retained; web JPEG export",
-      "editor": "built-in imagegen"
+      "served": "assets/media/usung-site-dawn-v24.webp",
+      "servedBytes": 2424738,
+      "servedSha256": "123dd4dd98eaf0e64fcd86132bc8f9d4071ef85f79623b5435fc1189dcff2e32",
+      "transformation": "Original decoded source photograph retained exactly outside printed-brand masks; local non-generative retouching, perspective/curvature, photographed light/ink/focus; lossless WebP",
+      "editor": "deterministic source pixel compositing",
+      "previousServed": {
+        "file": "assets/media/usung-site-dawn-v22.jpg",
+        "bytes": 348401,
+        "sha256": "939e83e60f9b8ddfb11b36447fa2808feddacce9a752351293110549913383b2"
+      },
+      "verification": {
+        "source": "built-sunrise.jpg",
+        "served": "usung-site-dawn-v24.webp",
+        "dimensions": [
+          2200,
+          1466
+        ],
+        "sourceSha256": "51124b57542c4eed9761f66ce5f79d7fa4f7bba8afd1ca8e46a4ad08ed6ba01b",
+        "changedPixels": 163,
+        "totalPixels": 3225200,
+        "outsideMaskIdentical": true,
+        "encoding": "lossless WebP"
+      }
     },
     {
       "source": "assets/media/built-trenching.jpg",
-      "served": "assets/media/usung-autonomous-excavation-v22.jpg",
-      "servedBytes": 431406,
-      "servedSha256": "24c063c993ffe77b9823297608ae18ac49888d9113bb7a99bf3a344ac284c314",
-      "transformation": "Built-in imagegen targeted brand replacement; scene retained; web JPEG export",
-      "editor": "built-in imagegen"
+      "served": "assets/media/usung-autonomous-excavation-v24.webp",
+      "servedBytes": 2630380,
+      "servedSha256": "5b75b70852cec3a90e5277aaf9ec8953fe1efd5bcf7418c5d5daa0359a460193",
+      "transformation": "Original decoded source photograph retained exactly outside printed-brand masks; local non-generative retouching, perspective/curvature, photographed light/ink/focus; lossless WebP",
+      "editor": "deterministic source pixel compositing",
+      "previousServed": {
+        "file": "assets/media/usung-autonomous-excavation-v22.jpg",
+        "bytes": 431406,
+        "sha256": "24c063c993ffe77b9823297608ae18ac49888d9113bb7a99bf3a344ac284c314"
+      },
+      "verification": {
+        "source": "built-trenching.jpg",
+        "served": "usung-autonomous-excavation-v24.webp",
+        "dimensions": [
+          2200,
+          1237
+        ],
+        "sourceSha256": "4ca60832f971b10a811e984acdbf269cea8a9aa12cc86c20facab0389d7d2f34",
+        "changedPixels": 16753,
+        "totalPixels": 2721400,
+        "outsideMaskIdentical": true,
+        "encoding": "lossless WebP"
+      }
     },
     {
       "source": "assets/media/suffolk-naples.jpg",
-      "served": "assets/media/usung-field-team-v22.jpg",
-      "servedBytes": 237696,
-      "servedSha256": "6fbec2072c38dce672147787a3435ff93776b50610a9856b4ca99f524e3f23b3",
-      "transformation": "Built-in imagegen targeted brand replacement; scene retained; web JPEG export",
-      "editor": "built-in imagegen"
+      "served": "assets/media/usung-field-team-v24.webp",
+      "servedBytes": 1698790,
+      "servedSha256": "933f27f6e56dc11231bc6957071b508a1a4aaf91b99d43cc67d48523e020d215",
+      "transformation": "Original decoded source photograph retained exactly outside printed-brand masks; local non-generative retouching, perspective/curvature, photographed light/ink/focus; lossless WebP",
+      "editor": "deterministic source pixel compositing",
+      "previousServed": {
+        "file": "assets/media/usung-field-team-v22.jpg",
+        "bytes": 237696,
+        "sha256": "6fbec2072c38dce672147787a3435ff93776b50610a9856b4ca99f524e3f23b3"
+      },
+      "verification": {
+        "source": "suffolk-naples.jpg",
+        "served": "usung-field-team-v24.webp",
+        "dimensions": [
+          2200,
+          1466
+        ],
+        "sourceSha256": "2a18b8507d87814098d8e7e69fa8d35738d2db0d7209a748b9e8bc6e89461aae",
+        "changedPixels": 17728,
+        "totalPixels": 3225200,
+        "outsideMaskIdentical": true,
+        "encoding": "lossless WebP"
+      }
     },
     {
       "source": "assets/media/suffolk-robotics.jpg",
-      "served": "assets/media/usung-site-robot-v22.jpg",
-      "servedBytes": 203407,
-      "servedSha256": "6713e4efa02391e0f0bc8e69531e142d459ce6418c10e7949081ab8e56de4958",
-      "transformation": "Built-in imagegen targeted brand replacement; scene retained; web JPEG export",
-      "editor": "built-in imagegen"
+      "served": "assets/media/usung-site-robot-v24.webp",
+      "servedBytes": 1429122,
+      "servedSha256": "337c8143c082ccddd9734be460d948a2effe6611b8da69cce2aa3f5df99a2a52",
+      "transformation": "Original decoded source photograph retained exactly outside printed-brand masks; local non-generative retouching, perspective/curvature, photographed light/ink/focus; lossless WebP",
+      "editor": "deterministic source pixel compositing",
+      "previousServed": {
+        "file": "assets/media/usung-site-robot-v22.jpg",
+        "bytes": 203407,
+        "sha256": "6713e4efa02391e0f0bc8e69531e142d459ce6418c10e7949081ab8e56de4958"
+      },
+      "verification": {
+        "source": "suffolk-robotics.jpg",
+        "served": "usung-site-robot-v24.webp",
+        "dimensions": [
+          2200,
+          1237
+        ],
+        "sourceSha256": "c3fe773c4d1177d09af8db3dd7a4aea1682f1e54b1597d26c96699d2f4cbc7e4",
+        "changedPixels": 26598,
+        "totalPixels": 2721400,
+        "outsideMaskIdentical": true,
+        "encoding": "lossless WebP"
+      }
     },
     {
       "source": "assets/media/suffolk-hero.mp4",
-      "served": "assets/media/usung-construction-film-v22.mp4",
-      "servedBytes": 10936479,
-      "servedSha256": "04de2ba906bcbef5bf9700f3fd1232ef72db4bb9cc8ee2e50aa6c1d584711e4b",
-      "transformation": "Native video compositing of approved vector brand on observed logo regions; motion tracked or constrained to source surfaces; original frame count, aspect ratio, frame rate and scenes retained; H264 re-encode, no audio"
+      "served": "assets/media/usung-construction-film-v24.mp4",
+      "servedBytes": 13521078,
+      "servedSha256": "87680dd26707ee15612e0f42d6efa4051e8ce9879e9c791275d1613125310d71",
+      "transformation": "Preserved original footage; printed marks replaced within source surface regions; source-anchored motion, perspective, source ink/illumination/focus, hand occlusion; original scene/cuts/count/fps/geometry retained; H264 CRF16",
+      "previousServed": {
+        "file": "assets/media/usung-construction-film-v22.mp4",
+        "bytes": 10936479,
+        "sha256": "04de2ba906bcbef5bf9700f3fd1232ef72db4bb9cc8ee2e50aa6c1d584711e4b"
+      },
+      "verification": {
+        "source": "suffolk-hero.mp4",
+        "served": "usung-construction-film-v24.mp4",
+        "width": 1280,
+        "height": 720,
+        "fps": 23.976023976023978,
+        "frames": 515,
+        "outsideMasksIdenticalBeforeEncode": true,
+        "framesWithEdits": 104,
+        "maximumEditedPixels": 4653,
+        "totalPixelsPerFrame": 921600,
+        "sourceSha256": "c8c77ece9cfc894d6ddd1309da9fd9bd11f1a1c3c2f5b5734b0c4d25e710a335"
+      }
     },
     {
       "source": "assets/media/turner-hero.mp4",
-      "served": "assets/media/usung-delivery-film-v22.mp4",
-      "servedBytes": 6040494,
-      "servedSha256": "67d2f4f6135e90b790930f8e915a97a2924b93af32dbae29d1b7d30b7ff2891f",
-      "transformation": "Native video compositing of approved vector brand on observed logo regions; motion tracked or constrained to source surfaces; original frame count, aspect ratio, frame rate and scenes retained; H264 re-encode, no audio"
+      "served": "assets/media/usung-delivery-film-v24.mp4",
+      "servedBytes": 7653283,
+      "servedSha256": "b043b18f83d78b503f99c5a89fafb3698ce6f9a5d37d1dbdff8780938382b624",
+      "transformation": "Preserved original footage; printed marks replaced within source surface regions; source-anchored motion, perspective, source ink/illumination/focus, hand occlusion; original scene/cuts/count/fps/geometry retained; H264 CRF16",
+      "previousServed": {
+        "file": "assets/media/usung-delivery-film-v22.mp4",
+        "bytes": 6040494,
+        "sha256": "67d2f4f6135e90b790930f8e915a97a2924b93af32dbae29d1b7d30b7ff2891f"
+      },
+      "verification": {
+        "source": "turner-hero.mp4",
+        "served": "usung-delivery-film-v24.mp4",
+        "width": 1920,
+        "height": 1080,
+        "fps": 23.976023976023978,
+        "frames": 203,
+        "outsideMasksIdenticalBeforeEncode": true,
+        "framesWithEdits": 123,
+        "maximumEditedPixels": 8111,
+        "totalPixelsPerFrame": 2073600,
+        "sourceSha256": "a277360b6b6ed832a0ce4f6a141f13be7849fc5079b46898d10634b59bb9e85e"
+      }
     },
     {
       "source": "assets/references/dexterity-hero.mp4",
@@ -252,5 +396,7 @@
     ],
     "perceptualClaim": "Visual review of selected full-frame and occlusion frames; no universal indistinguishability claim",
     "footer": "White background, black approved USUNG wordmark, #FF0F6F accent at upper right of first U"
-  }
+  },
+  "previousRevision": "2026-10-04-physical-surface-branding-v23",
+  "sourceOnlyRule": "Real photos and videos must start from preserved source media. No generative replacement scene or full-frame imagegen edit. Keep source scene geometry and pixels outside explicitly recorded brand masks."
 }

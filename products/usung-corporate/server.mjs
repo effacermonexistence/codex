@@ -16,7 +16,7 @@ const server = createServer(async (req, res) => {
   let pathname, url;
   try { url = new URL(req.url, 'http://localhost'); pathname = decodeURIComponent(url.pathname); }
   catch { res.writeHead(400); res.end(); return; }
-  if (pathname === '/health') { res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); res.end(req.method === 'HEAD' ? '' : JSON.stringify({ status: 'ok', site: 'usung-corporate', release: '2026-10-04-physical-surface-branding-v23', languages: languageCodes.size })); return; }
+  if (pathname === '/health') { res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); res.end(req.method === 'HEAD' ? '' : JSON.stringify({ status: 'ok', site: 'usung-corporate', release: '2026-10-04-original-media-v24', languages: languageCodes.size })); return; }
   if (['/ai', '/smart-construction', '/physical-ai'].includes(pathname)) { res.writeHead(308, { Location: pathname + '/' + url.search }); res.end(); return; }
   const cookieLanguage = /(?:^|;\s*)usung_lang=([^;]*)/.exec(req.headers.cookie || '')?.[1];
   const requestedLanguage = url.searchParams.get('lang');

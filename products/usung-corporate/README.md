@@ -45,7 +45,7 @@ Previous deployment (recovery baseline): `62b8e0e4-9032-4cdb-af88-a1f7daae8ae3`.
 
 ## Reference branding (2026-10-04)
 
-Visible source-company marks are adapted to the approved USUNG wordmark or U symbol. Six photographs receive targeted built-in imagegen edits. Six videos receive native vector compositing on the observed logo regions, retaining scene sequence, frame count, dimensions and frame rate. Four posters are regenerated from these videos. Three native SVG diagrams receive the outlined USUNG mark. Reference labels display the approved wordmark. `reference-branding.json` records the 19 transformed assets, served checksums and photo-edit prompt set. Images and footage with no observed source-company mark remain unchanged.
+Visible source-company marks are adapted to the approved USUNG wordmark or U symbol. The original v22 revision used six imagegen photo edits; v24 replaces every one with non-generative edits of the preserved original photographs. Six videos receive native vector compositing on the observed logo regions, retaining scene sequence, frame count, dimensions and frame rate. Four posters are regenerated from these videos. Three native SVG diagrams receive the outlined USUNG mark. Reference captions are plain text. `reference-branding.json` records the 19 transformed assets, served checksums and photo-edit prompt set. Images and footage with no observed source-company mark remain unchanged.
 
 
 ### Physical AI surface correction (v23)
@@ -53,3 +53,12 @@ Visible source-company marks are adapted to the approved USUNG wordmark or U sym
 Four Physical AI videos and their posters are recomposited from preserved originals. Printed joint marks use constrained observations of the original paint, temporal smoothing and visibility masks; body and cloth wordmarks retain perspective tracks. Inserts match source ink brightness, local lighting, texture and focus softness. The source screen-corner watermark is removed without a replacement floating wordmark. Footage duration, frame count, dimensions, frame rate and scenes are preserved. Video files use new v23 URLs; prior files remain available for recovery.
 
 All four footers use white surfaces with the approved black USUNG mark and its pink first-U corner. Standalone wordmarks in visual-reference captions are removed. Text sections use the light site palette, while photographed scene illumination is retained. The asset record preserves source provenance and previous served checksums. Perceptual realism is reviewed visually, not asserted as universally indistinguishable.
+
+
+### Original photograph and construction-film correction (v24)
+
+Six photographs now start from the acquired originals. Only original printed-brand regions are retouched and composited using source perspective, curvature, ink, illumination and softness. Photographs are delivered as lossless WebP; decoded pixels outside the recorded edit masks are identical to the original JPEG decode. No equipment, sky, people or surrounding scene is regenerated. In particular, the dusk photograph no longer contains the additional invented boom logos.
+
+Both construction videos are recomposited from original footage. Excavator marks retain their physical decal region and source ink brightness. Safety-helmet inserts follow short, source-checked motion segments and foreshortening. Vest marks use cloth visibility so hands remain in front of the print. Office vest and ID-card company text are included. Source dimensions, frame rate, frames and cuts are retained; pixels outside masks are identical before the necessary H264 export. The source-only verification record is `media-source-verification.json`. Previous files remain available for recovery. The existing abstract glass artwork is separate from photographed construction/robotics media and retains its generation provenance.
+
+Do not return to full-frame generative photo edits. Preserve real photographed scenes and make future brand corrections only within verified source-brand masks.

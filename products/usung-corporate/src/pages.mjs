@@ -14,7 +14,7 @@ export const home = `<main id="main-content">
 </section>
 <section class="corp-intro corp-light" id="company"><span class="corp-eyebrow">01 / THE NEXT U-SUNG</span><div class="corp-intro-main"><h2>현실을 짓는 경험.<br><em>가능성을 여는 지능.</em></h2><div class="corp-intro-bottom"><p>2007년부터 쌓아온 건설의 실행력.<br>이제 AI, 스마트 건설, Physical AI로<br>유성의 다음을 만들어갑니다.</p><div class="corp-company-facts"><span><b>2007</b>ESTABLISHED</span><span><b>BUSAN</b>BASED IN KOREA</span></div></div></div></section>
 
-<section class="corp-feature"><img src="/assets/media/usung-site-dusk-v22.jpg" alt="저녁의 건설 현장과 자율 장비" loading="lazy"><div class="corp-feature-shade"></div><div class="corp-feature-content"><p class="corp-eyebrow">U-SUNG × OmarAGI</p><h2>FROM<br>INTELLIGENCE<br><span>TO IMPACT.</span></h2><div class="corp-feature-bottom"><p>AI의 판단을 검증하고,<br>업무와 현장의 실행으로 연결합니다.</p></div></div></section>${contact}</main>`;
+<section class="corp-feature"><img src="/assets/media/usung-site-dusk-v24.webp" alt="저녁의 건설 현장과 자율 장비" loading="lazy"><div class="corp-feature-shade"></div><div class="corp-feature-content"><p class="corp-eyebrow">U-SUNG × OmarAGI</p><h2>FROM<br>INTELLIGENCE<br><span>TO IMPACT.</span></h2><div class="corp-feature-bottom"><p>AI의 판단을 검증하고,<br>업무와 현장의 실행으로 연결합니다.</p></div></div></section>${contact}</main>`;
 const sourceCredit = (_url, _name, label = 'VISUAL REFERENCE') => `<span class="ref-credit">${label}</span>`;
 const sourceVideo = (name, cls = '', preload = 'none') => `<video class="${cls}" muted loop playsinline preload="${preload}" poster="/assets/references/${name}-poster.jpg" aria-hidden="true"><source src="/assets/references/${name}.mp4" type="video/mp4"></video>`;
 export const ai = `<main id="main-content">
