@@ -1,9 +1,11 @@
 import { brandLogo } from './brand.mjs';
 import { aiMotionDiagram } from './ai-motion.mjs';
+import { aiHeroArt } from './ai-hero.mjs';
+import { homeAiArt } from './home-ai.mjs';
 export const nav = (active = '') => `<div class="corp-progress" aria-hidden="true"><i></i></div><header class="corp-header"><div class="corp-nav-inner"><a class="corp-brand" href="/" aria-label="유성 메인">${brandLogo('header')}</a><nav class="corp-nav" id="corp-navigation" aria-label="유성 사업 메뉴"><a href="/" ${active === '' ? 'aria-current="page"' : ''}>메인</a><a href="/ai/" ${active === 'ai' ? 'aria-current="page"' : ''}>AI &amp; AX</a><a href="/smart-construction/" ${active === 'construction' ? 'aria-current="page"' : ''}>스마트 건설</a><a href="/physical-ai/" ${active === 'physical' ? 'aria-current="page"' : ''}>Physical AI</a></nav><div class="corp-header-actions"><a class="corp-header-contact" href="/#contact" aria-label="프로젝트 문의"><span class="corp-contact-label">프로젝트 문의</span></a><usung-language></usung-language></div></div></header>`;
 export const footer = `<footer class="corp-footer"><div class="corp-footer-top"><a class="corp-footer-logo" href="/" aria-label="유성 메인">${brandLogo('footer')}</a><p>CONSTRUCTION. INTELLIGENCE. BEYOND.</p></div><div class="corp-footer-bottom"><div><strong>유성건설 주식회사</strong><span>부산광역시 동구 중앙대로 373, 3층</span></div><div><a href="tel:+82514699700">051-469-9700</a><span>© ${new Date().getUTCFullYear()} U-SUNG. All rights reserved.</span></div></div></footer>`;
 export const contact = `<section class="corp-contact corp-light" id="contact"><div class="corp-section-top"><span class="corp-eyebrow">LET’S BUILD TOGETHER</span></div><h2>WHAT’S<br><span>NEXT?</span></h2><div class="corp-contact-bottom"><p>AI 도입에서 새로운 현장의 구상까지.<br>다음 가능성을 함께 이야기합니다.</p><a class="corp-contact-link" href="mailto:qoengks12@hanmail.net">프로젝트 문의</a></div><a class="corp-contact-email" href="mailto:qoengks12@hanmail.net">qoengks12@hanmail.net</a></section>`;
-const motionButton = `<button class="corp-motion" type="button" aria-pressed="false" aria-label="배경 움직임 일시정지"><span>PAUSE MOTION</span><i aria-hidden="true">Ⅱ</i></button>`;
+const motionButton = `<button class="corp-motion" type="button" data-paused="false" aria-label="배경 움직임 일시정지"><span>PAUSE MOTION</span><i aria-hidden="true">Ⅱ</i></button>`;
 export const home = `<main id="main-content">
 <section class="corp-main-landing corp-light" aria-label="유성 메인">
 <div class="corp-main-heading"><div><p class="corp-eyebrow">U-SUNG CORPORATION</p><h1>BUILD<br><span>WHAT’S NEXT.</span></h1></div><div class="corp-main-intro"><p>현장을 짓는 경험.<br>미래를 여는 지능.</p></div></div>
@@ -16,26 +18,26 @@ export const home = `<main id="main-content">
 <section class="corp-intro corp-light" id="company"><span class="corp-eyebrow">01 / THE NEXT U-SUNG</span><div class="corp-intro-main"><h2>현실을 짓는 경험.<br><em>가능성을 여는 지능.</em></h2><div class="corp-intro-bottom"><p>이제 AI, 스마트 건설, Physical AI로<br>유성의 다음을 만들어갑니다.</p></div></div></section>
 
 <div class="corp-home-divisions">
-<section class="corp-home-division corp-light" id="home-ai" aria-labelledby="home-ai-title">
+<section class="corp-home-division corp-home-ai corp-light" id="home-ai" aria-labelledby="home-ai-title">
  <div class="corp-home-division-heading"><span class="corp-eyebrow">01 / INTELLIGENCE</span><h2 id="home-ai-title"><a href="/ai/">AI &amp; AX</a></h2></div>
- <div class="corp-home-division-body"><div class="corp-home-division-copy"><h3>AI의 판단에 근거를.<br>업무의 실행에 신뢰를.</h3><p>모델과 데이터, 실제 업무 사이.<br>검증·제어·관찰을 하나의 흐름으로 연결합니다.</p><span class="corp-home-division-detail">VERIFY / CONTROL / OBSERVE</span></div><a class="corp-home-division-media corp-home-ai-media" href="/ai/" aria-label="AI &amp; AX"><img src="/assets/generated/ai-glass-extended-v1.png" alt="투명한 입체 구조로 표현한 AI 인프라" loading="lazy" width="1536" height="1024"></a></div>
+ <div class="corp-home-division-body"><div class="corp-home-division-copy"><h3>AI의 판단에 근거를.<br>업무의 실행에 신뢰를.</h3><p>모델과 데이터, 실제 업무 사이.<br>검증·제어·관찰을 하나의 흐름으로 연결합니다.</p><span class="corp-home-division-detail">VERIFY / CONTROL / OBSERVE</span></div>${homeAiArt()}${motionButton}</div>
 </section>
-<section class="corp-home-division corp-light" id="home-construction" aria-labelledby="home-construction-title">
+<section class="corp-home-division corp-home-film corp-light" id="home-construction" aria-labelledby="home-construction-title">
  <div class="corp-home-division-heading"><span class="corp-eyebrow">02 / SMART CONSTRUCTION</span><h2 id="home-construction-title"><a href="/smart-construction/">스마트 건설</a></h2></div>
- <div class="corp-home-division-body"><div class="corp-home-division-copy"><h3>도시를 짓는 기술에서<br>도시를 움직이는 지능으로.</h3><p>계획부터 현장, 데이터에서 운영까지. 분리된 공정을 하나의 책임 있는 흐름으로 통합합니다.</p><span class="corp-home-division-detail">PLAN / ENGINEER / INTEGRATE / ADVANCE</span></div><a class="corp-home-division-media" href="/smart-construction/" aria-label="스마트 건설"><video muted loop playsinline preload="none" poster="/assets/media/usung-construction-film-v25-poster.jpg" aria-hidden="true"><source src="/assets/media/usung-construction-film-v25.mp4" type="video/mp4"></video></a></div>
+ <div class="corp-home-division-body"><div class="corp-home-division-copy"><h3>도시를 짓는 기술에서<br>도시를 움직이는 지능으로.</h3><p>계획부터 현장, 데이터에서 운영까지. 분리된 공정을 하나의 책임 있는 흐름으로 통합합니다.</p><span class="corp-home-division-detail">PLAN / ENGINEER / INTEGRATE / ADVANCE</span></div><div class="corp-home-division-media" aria-hidden="true"><video muted loop playsinline preload="none" poster="/assets/media/usung-construction-film-v25-poster.jpg" aria-hidden="true"><source src="/assets/media/usung-construction-film-v25.mp4" type="video/mp4"></video></div>${motionButton}</div>
 </section>
-<section class="corp-home-division corp-light" id="home-physical" aria-labelledby="home-physical-title">
+<section class="corp-home-division corp-home-film corp-light" id="home-physical" aria-labelledby="home-physical-title">
  <div class="corp-home-division-heading"><span class="corp-eyebrow">03 / PHYSICAL AI</span><h2 id="home-physical-title"><a href="/physical-ai/">Physical AI</a></h2></div>
- <div class="corp-home-division-body"><div class="corp-home-division-copy"><h3>현장을 읽고, 판단을 확인하고,<br>실제 움직임으로 연결합니다.</h3><p>센서·비전·현장 시스템에서 얻은 데이터를 바탕으로 Physical AI의 적용 방향을 구체화합니다.</p><span class="corp-home-division-detail">PERCEPTION / VERIFICATION / ACTION</span></div><a class="corp-home-division-media" href="/physical-ai/" aria-label="Physical AI"><video muted loop playsinline preload="none" poster="/assets/references/usung-field-robots-v23-poster.jpg" aria-hidden="true"><source src="/assets/references/usung-field-robots-v23.mp4" type="video/mp4"></video></a></div>
+ <div class="corp-home-division-body"><div class="corp-home-division-copy"><h3>현장을 읽고, 판단을 확인하고,<br>실제 움직임으로 연결합니다.</h3><p>센서·비전·현장 시스템에서 얻은 데이터를 바탕으로 Physical AI의 적용 방향을 구체화합니다.</p><span class="corp-home-division-detail">PERCEPTION / VERIFICATION / ACTION</span></div><div class="corp-home-division-media" aria-hidden="true"><video muted loop playsinline preload="none" poster="/assets/references/usung-field-robots-v23-poster.jpg" aria-hidden="true"><source src="/assets/references/usung-field-robots-v23.mp4" type="video/mp4"></video></div>${motionButton}</div>
 </section>
 </div>${contact}</main>`;
 const sourceCredit = (_url, _name, label = 'VISUAL REFERENCE') => `<span class="ref-credit">${label}</span>`;
 const sourceVideo = (name, cls = '', preload = 'none') => `<video class="${cls}" muted loop playsinline preload="${preload}" poster="/assets/references/${name}-poster.jpg" aria-hidden="true"><source src="/assets/references/${name}.mp4" type="video/mp4"></video>`;
 export const ai = `<main id="main-content">
 <section class="ref-ai-hero">
- <div class="ref-ai-art"><img src="/assets/generated/ai-glass-extended-v1.png" alt="투명한 입체 구조로 표현한 AI 인프라" fetchpriority="high" width="1536" height="1024"></div>
+ <div class="ref-ai-art">${aiHeroArt()}</div>${motionButton}
  <div class="ref-ai-hero-copy"><p class="corp-eyebrow">U-SUNG AI / POWERED WITH OmarAGI</p><h1>AI.<br>BUILT FOR<br><span>REAL WORK.</span></h1><p class="ref-hero-description">AI의 판단에 근거를.<br>업무의 실행에 신뢰를.</p></div>
- <div class="ref-hero-strip"><span>MODEL-AGNOSTIC</span><span>VERIFY / CONTROL / OBSERVE</span>${sourceCredit('https://contextual.ai/','CONTEXTUAL AI')}</div>
+ <div class="ref-hero-strip"><span>MODEL-AGNOSTIC</span><span>VERIFY / CONTROL / OBSERVE</span></div>
 </section>
 <section class="ref-statement corp-light"><div class="corp-section-top"><span class="corp-eyebrow">01 / RELIABILITY, BY DESIGN</span><span class="corp-small">U-SUNG × OmarAGI</span></div><div class="ref-statement-grid"><h2>지능이 업무가 되는 순간.<br><span>그 사이에 신뢰를 설계합니다.</span></h2><p>어떤 모델을 쓰든, 결과가 실제 업무에 연결되기까지.<br>유성의 현장·업무 적용 역량과 OmarAGI의 AI 신뢰·실행 인프라가 함께합니다.</p></div><div class="ref-principles"><span>근거에 연결된 판단</span><span>조건에 따라 제어되는 실행</span><span>기록으로 확인하는 운영</span></div></section>
 <section class="ref-platform corp-light" id="platform"><div class="corp-section-top"><span class="corp-eyebrow">02 / THE RELIABILITY LAYER</span><span class="corp-small">ONE INFRASTRUCTURE. ANY MODEL.</span></div><div class="ref-platform-heading"><h2>TRUST IS<br><span>BUILT IN.</span></h2><p>모델과 데이터, 실제 업무 사이.<br>검증·제어·관찰을 하나의 흐름으로 연결합니다.</p></div>
@@ -51,7 +53,7 @@ export const ai = `<main id="main-content">
  <div role="tabpanel" id="ai-panel-2" aria-labelledby="ai-tab-2" data-ref-panel="2" hidden>${aiMotionDiagram(2)}<div class="ref-panel-description"><h3>다시 확인할 수 있는 실행.</h3><p>응답과 실행 기록을 연결하고 이상 징후와 실패를 추적합니다. 평가, 관찰, 감사가 이어지는 운영 구조를 설계합니다.</p><span>OBSERVABILITY / EVALUATION / AUDIT LOGGING</span></div></div></div>
 </div></section>
 <section class="ref-applications" id="applications"><div class="corp-section-top"><span class="corp-eyebrow">03 / INTELLIGENCE, APPLIED</span><span class="corp-small">FROM DOCUMENTS TO THE FIELD</span></div><h2>REAL WORK.<br><span>REAL CONTEXT.</span></h2><div class="ref-usecases"><article><span class="ref-usecase-number">01</span><h3>문서와 지식</h3><p>계약서, 기술 문서, 현장 기록.<br>분산된 정보를 출처에 연결하고<br>업무에 쓰이는 답변을 검증합니다.</p><span>DOCUMENTS / RAG / SOURCE GROUNDING</span></article><article><span class="ref-usecase-number">02</span><h3>업무와 에이전트</h3><p>다단계 업무와 AI 에이전트.<br>실행 순서와 승인 조건을 연결하고<br>결과를 다시 확인할 수 있게 합니다.</p><span>AGENTS / ROUTING / EXECUTION</span></article><article><span class="ref-usecase-number">03</span><h3>현장과 데이터</h3><p>센서, 공공 데이터, 운영 로그.<br>데이터의 정합성과 이상 징후를 살피고<br>현장의 판단으로 연결합니다.</p><span>DATA CONSISTENCY / ANOMALY DETECTION</span></article></div></section>
-<section class="ref-ai-bridge corp-light"><div><p class="corp-eyebrow">DIGITAL INTELLIGENCE. PHYSICAL IMPACT.</p><h2>지능의 다음은,<br><span>현장의 실행입니다.</span></h2><p>AI의 신뢰·실행 인프라를 스마트 건설과 Physical AI로 연결합니다.</p></div><figure><img src="/assets/generated/ai-glass-extended-v1.png" alt="유성 AI 페이지에 사용한 입체 시각물" loading="lazy" width="1536" height="1024">${sourceCredit('https://contextual.ai/','CONTEXTUAL AI')}</figure></section>
+<section class="ref-ai-bridge corp-light"><div><p class="corp-eyebrow">DIGITAL INTELLIGENCE. PHYSICAL IMPACT.</p><h2>지능의 다음은,<br><span>현장의 실행입니다.</span></h2><p>AI의 신뢰·실행 인프라를 스마트 건설과 Physical AI로 연결합니다.</p></div></section>
 ${contact}</main>`;
 export const physical = `<main id="main-content">
 <section class="ref-physical-hero">

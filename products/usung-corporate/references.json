@@ -16,7 +16,9 @@
     "https://www.geckorobotics.com/",
     "https://www.skild.ai/",
     "https://www.hitachi.com/en/",
-    "https://hexagon.com/"
+    "https://hexagon.com/",
+    "https://www.spacex.com/",
+    "https://neuralink.com/"
   ],
   "assets": [
     {
@@ -38,7 +40,7 @@
       "bytes": 719299,
       "sha256": "9f128f0cf4acb0756c5432602e43d5cad729dd75c513605a5dc160da65091880",
       "acquisition": "browser pageAssets bundle",
-      "used": true,
+      "used": false,
       "servedTransformation": "Approved outlined USUNG wordmark inserted in native SVG; original diagram geometry retained",
       "servedBytes": 724513,
       "servedSha256": "0b343f5a6f6689892db71dc8892d0bf291f3b152462518eb2a42f09b380b93a6",
@@ -51,7 +53,7 @@
       "bytes": 719299,
       "sha256": "59b9f558279eb8f41b1cf4655258cdf31755e8c57761286f56e9048216853a5f",
       "acquisition": "browser pageAssets bundle",
-      "used": true,
+      "used": false,
       "servedTransformation": "Approved outlined USUNG wordmark inserted in native SVG; original diagram geometry retained",
       "servedBytes": 724503,
       "servedSha256": "67cec7f400f1d963be426b06ca64211bf2a0ef49690b73adefdfec57b8da0e88",
@@ -64,7 +66,7 @@
       "bytes": 719299,
       "sha256": "91385ce92caf99147fb051241ebc8012b607986a551dd4ceb34f249d2871d3f1",
       "acquisition": "browser pageAssets bundle",
-      "used": true,
+      "used": false,
       "servedTransformation": "Approved outlined USUNG wordmark inserted in native SVG; original diagram geometry retained",
       "servedBytes": 724497,
       "servedSha256": "fb2b2507e56e07bc35df96fc05df41c29bab3911e4972a8d2918741fbb2320c3",
@@ -192,7 +194,11 @@
       "acquisition": "Built-in image_gen edit, explicitly requested by the user",
       "editScope": "Outpaint the cropped right-side glass ribbons; complete the silhouette at top and bottom; preserve the source form, materials and palette as closely as possible.",
       "used": true,
-      "usedOn": "AI page hero, AI page field bridge, and main page Intelligence business card",
+      "usedOn": "Main page approved opening Intelligence business card only",
+      "previousUsageRecord": {
+        "recordedInGitRevision": "bb84d22d09bf938d859bd30d6374154a7d547a8c",
+        "usedOn": "AI page hero, AI page field bridge, and main page Intelligence business card"
+      },
       "servedTransformation": "Unmodified generated transparent PNG",
       "servedBytes": 2233287,
       "servedSha256": "0089f0cde4a3df2a65ea81a41e9f76334adec20f4fb51406e7693434e43740c6",
@@ -488,10 +494,10 @@
       }
     }
   ],
-  "layoutImplementation": "HTML/CSS adapted from approved reference compositions; acquired graphic and footage files used directly",
+  "layoutImplementation": "HTML/CSS adapted from reviewed reference compositions; approved acquired media retained, with original local native SVG/CSS decorative scenes",
   "brandingRevision": "2026-10-04-home-divisions-v26",
   "photographicSceneGeneration": false,
-  "abstractGlassArtwork": "Existing previously requested glass extension; unchanged in this source-photography correction",
+  "abstractGlassArtwork": "Existing previously requested generated glass extension; unchanged and retained only in the approved opening Home Intelligence card",
   "homeRevision": {
     "revision": "2026-10-04-home-divisions-v26",
     "reviewedReferences": [
@@ -506,5 +512,49 @@
       "assets/references/usung-field-robots-v23.mp4"
     ],
     "newSceneGeneration": false
+  },
+  "immersiveRevision": {
+    "revision": "2026-10-04-immersive-v29",
+    "metadataUpdatedAtUTC": "2026-10-05T06:12:48.378733+00:00",
+    "reviewedLayoutReferences": [
+      "https://www.spacex.com/",
+      "https://neuralink.com/"
+    ],
+    "layoutReferenceProvenance": "Actual browser inspection by the root task, reported to this metadata reviewer; layout references only, with no assets acquired from either site",
+    "adaptation": "Full-width viewport media with concise overlaid copy, distinct moving AI artwork, and independently composed Home business chapters; approved opening cards retained",
+    "displayTreatment": "Immersive media uses CSS object-fit:cover, and decorative SVG scenes use slice framing; intentional viewport-edge cropping changes display composition only",
+    "approvedMediaBytesUnchangedFromGitRevision": "bb84d22d09bf938d859bd30d6374154a7d547a8c",
+    "mediaConservationAudit": "outputs/website/usung-immersive-v29/audit/asset-card-conservation.json",
+    "newPhotographicSceneGeneration": false,
+    "newRasterImageOrVideoGeneration": false,
+    "historicallyGeneratedGlassRetained": true,
+    "nativeDecorativeScenes": [
+      {
+        "sourceFile": "src/ai-hero.mjs",
+        "usedOn": "AI & AX page hero only",
+        "description": "Matte architectural orbit with recessed routing planes and a moving pink signal",
+        "provenance": "Original local inline SVG geometry and CSS animation authored for v29; decorative illustration, with no imported source artwork or photographic pixels",
+        "format": "Native inline SVG and CSS",
+        "photographicSceneGeneration": false
+      },
+      {
+        "sourceFile": "src/home-ai.mjs",
+        "usedOn": "Home AI & AX business chapter only",
+        "description": "Curved signal field with two moving pink traces, distinct from the AI page sculpture",
+        "provenance": "Original local inline SVG paths and CSS animation authored for v29; decorative illustration, with no imported source artwork or photographic pixels",
+        "format": "Native inline SVG and CSS",
+        "photographicSceneGeneration": false
+      }
+    ],
+    "retainedUnusedDiagrams": {
+      "replacedInRevision": "2026-10-04-ai-motion-v28",
+      "files": [
+        "assets/references/contextual-intelligence.svg",
+        "assets/references/contextual-context.svg",
+        "assets/references/contextual-data.svg"
+      ],
+      "replacementSource": "src/ai-motion.mjs",
+      "preservedAcquisitionAndTransformationRecords": true
+    }
   }
 }

@@ -8,10 +8,12 @@ import { brandLogo } from './src/brand.mjs';
 const constructionStyles = await readFile(new URL('./baseline/styles.css', import.meta.url));
 const brandSource = await readFile(new URL('./src/brand.mjs', import.meta.url));
 const aiMotionSource = await readFile(new URL('./src/ai-motion.mjs', import.meta.url));
+const aiHeroSource = await readFile(new URL('./src/ai-hero.mjs', import.meta.url));
+const homeAiSource = await readFile(new URL('./src/home-ai.mjs', import.meta.url));
 const brandFavicon = await readFile(new URL('./public/assets/brand/usung-icon-white.svg', import.meta.url));
 const pngFavicon = await readFile(new URL('./public/favicon.png', import.meta.url));
 
-const assetVersion = createHash('sha256').update(await readFile(new URL('./public/corporate.css', import.meta.url))).update(await readFile(new URL('./public/corporate.js', import.meta.url))).update(await readFile(new URL('./public/locale.js', import.meta.url))).update(await readFile(new URL('./src/pages.mjs', import.meta.url))).update(await readFile(new URL('./src/languages.mjs', import.meta.url))).update(await readFile(new URL('./references.json', import.meta.url))).update(await readFile(new URL('./build.mjs', import.meta.url))).update(await readFile(new URL('./baseline/app.js', import.meta.url))).update(constructionStyles).update(brandSource).update(aiMotionSource).update(brandFavicon).update(pngFavicon).digest('hex').slice(0, 12);
+const assetVersion = createHash('sha256').update(await readFile(new URL('./public/corporate.css', import.meta.url))).update(await readFile(new URL('./public/corporate.js', import.meta.url))).update(await readFile(new URL('./public/locale.js', import.meta.url))).update(await readFile(new URL('./src/pages.mjs', import.meta.url))).update(await readFile(new URL('./src/languages.mjs', import.meta.url))).update(await readFile(new URL('./references.json', import.meta.url))).update(await readFile(new URL('./build.mjs', import.meta.url))).update(await readFile(new URL('./baseline/app.js', import.meta.url))).update(constructionStyles).update(brandSource).update(aiMotionSource).update(aiHeroSource).update(homeAiSource).update(brandFavicon).update(pngFavicon).digest('hex').slice(0, 12);
 // Change the pathname when the icon changes; Safari can retain icons across query changes.
 const iconVersion = createHash('sha256').update(pngFavicon).digest('hex').slice(0, 12);
 const iconHref = file => `/assets/brand/icons/usung-u-${iconVersion}-${file}`;
@@ -43,6 +45,7 @@ original = original.replace('content="U-SUNG construction and physical AI visual
 original = original.replace('href="styles.css"', `href="/smart-construction/styles.css?v=${assetVersion}"`);
 original = original.replace('src="app.js"', `src="/smart-construction/app.js?v=${assetVersion}"`);
 original = original.replaceAll('"assets/media/', '"/assets/media/');
+original = original.replace('<button class="motion-toggle" type="button" aria-pressed="false">', '<button class="motion-toggle" type="button" data-paused="false">');
 original = original.replace(/<small>(?:SUFFOLK|TURNER|BUILT ROBOTICS) · VISUAL REFERENCE<\/small>/g, (_match, offset) => `<small class="usung-reference-label">${brandLogo('construction-reference-' + offset)}<span>VISUAL REFERENCE</span></small>`);
 original = original.replace('</head>', `<meta name="theme-color" content="#FFFFFF"><link rel="canonical" href="https://usungcorp.com/smart-construction/">${iconLinks}<meta name="application-name" content="USUNG"><meta name="apple-mobile-web-app-title" content="USUNG"><link rel="stylesheet" href="/corporate.css?v=20261003-q2"><script src="/corporate.js?v=20261003-q2" defer></script></head>`);
 original = original.replace('<body>', `<body class="corp-construction">${nav('construction')}`);
@@ -54,6 +57,7 @@ let legacyJs = await readFile(new URL('./baseline/app.js', import.meta.url), 'ut
 legacyJs = legacyJs.replace('`assets/media/${p.image}`', '`/assets/media/${p.image}`');
 legacyJs = "const t = (...args) => window.UsungI18n.t(...args);\n" + legacyJs;
 legacyJs = legacyJs.replace("$$('dialog')", () => "$$('dialog:not(.corp-language-dialog)')");
+legacyJs = legacyJs.replace("$('.motion-toggle').setAttribute('aria-pressed',String(paused));", "$('.motion-toggle').dataset.paused = String(paused);");
 legacyJs = legacyJs.replace("paused?'영상 재생 <span aria-hidden=\"true\">▷</span>':'영상 일시정지 <span aria-hidden=\"true\">Ⅱ</span>'", "t(paused ? '영상 재생' : '영상 일시정지') + (paused ? ' <span aria-hidden=\"true\">▷</span>' : ' <span aria-hidden=\"true\">Ⅱ</span>')");
 legacyJs = legacyJs.replace("textContent='동작 줄이기 설정 적용 중'", "textContent=t('동작 줄이기 설정 적용 중')");
 legacyJs = legacyJs.replace('`${count}개의 레퍼런스 프로젝트`', "t('{count}개의 레퍼런스 프로젝트', { count })");

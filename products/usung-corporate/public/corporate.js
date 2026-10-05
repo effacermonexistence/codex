@@ -14,26 +14,34 @@ addEventListener('scroll', () => { if (!scrollPending) { scrollPending = true; r
 updateScroll();
 const videos = [...document.querySelectorAll('.corp-page video')];
 const visibleVideos = new Set();
-const motionButton = document.querySelector('.corp-motion');
+const nativeOwners = [...new Set([...document.querySelectorAll('[data-ai-hero-motion]')].map(scene => scene.closest('section')))];
+const visibleNativeOwners = new Set();
+const motionButtons = [...document.querySelectorAll('.corp-motion')];
 function updateMedia() {
   const blocked = userPaused || reduced.matches || document.hidden;
   videos.forEach(video => { if (!blocked && visibleVideos.has(video)) video.play().catch(() => {}); else video.pause(); });
-  if (motionButton) {
+  nativeOwners.forEach(owner => { owner.dataset.heroRunning = String(!blocked && visibleNativeOwners.has(owner)); });
+  motionButtons.forEach(motionButton => {
     const paused = userPaused || reduced.matches;
-    motionButton.setAttribute('aria-pressed', String(paused));
+    motionButton.dataset.paused = String(paused);
+    motionButton.hidden = reduced.matches;
     motionButton.setAttribute('aria-label', t(paused ? '배경 움직임 재생' : '배경 움직임 일시정지'));
     motionButton.querySelector('span').textContent = t(paused ? 'PLAY MOTION' : 'PAUSE MOTION');
     motionButton.querySelector('i').textContent = paused ? '▷' : 'Ⅱ';
-  }
+  });
 }
-if (motionButton) motionButton.addEventListener('click', () => { userPaused = !userPaused; updateMedia(); });
+motionButtons.forEach(button => button.addEventListener('click', () => { userPaused = !userPaused; updateMedia(); }));
 if ('IntersectionObserver' in window) {
  const observer = new IntersectionObserver(entries => {
-  entries.forEach(entry => entry.isIntersecting ? visibleVideos.add(entry.target) : visibleVideos.delete(entry.target));
+  entries.forEach(entry => {
+   const visible = nativeOwners.includes(entry.target) ? visibleNativeOwners : visibleVideos;
+   entry.isIntersecting ? visible.add(entry.target) : visible.delete(entry.target);
+  });
   updateMedia();
  }, { threshold: .05 });
  videos.forEach(video => observer.observe(video));
-} else { videos.forEach(video => visibleVideos.add(video)); }
+ nativeOwners.forEach(owner => observer.observe(owner));
+} else { videos.forEach(video => visibleVideos.add(video)); nativeOwners.forEach(owner => visibleNativeOwners.add(owner)); }
 reduced.addEventListener('change', updateMedia);
 document.addEventListener('visibilitychange', updateMedia);
 updateMedia();

@@ -35,7 +35,7 @@ const updateVideos=()=>{
     else video.pause();
   });
   const paused=userPaused||reduced.matches;
-  $('.motion-toggle').setAttribute('aria-pressed',String(paused));
+  $('.motion-toggle').dataset.paused = String(paused);
   $('.motion-toggle').innerHTML=t(paused ? '영상 재생' : '영상 일시정지') + (paused ? ' <span aria-hidden="true">▷</span>' : ' <span aria-hidden="true">Ⅱ</span>');
 };
 if('IntersectionObserver' in window){
