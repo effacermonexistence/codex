@@ -7,10 +7,11 @@ import { brandLogo } from './src/brand.mjs';
 
 const constructionStyles = await readFile(new URL('./baseline/styles.css', import.meta.url));
 const brandSource = await readFile(new URL('./src/brand.mjs', import.meta.url));
+const aiMotionSource = await readFile(new URL('./src/ai-motion.mjs', import.meta.url));
 const brandFavicon = await readFile(new URL('./public/assets/brand/usung-icon-white.svg', import.meta.url));
 const pngFavicon = await readFile(new URL('./public/favicon.png', import.meta.url));
 
-const assetVersion = createHash('sha256').update(await readFile(new URL('./public/corporate.css', import.meta.url))).update(await readFile(new URL('./public/corporate.js', import.meta.url))).update(await readFile(new URL('./public/locale.js', import.meta.url))).update(await readFile(new URL('./src/pages.mjs', import.meta.url))).update(await readFile(new URL('./src/languages.mjs', import.meta.url))).update(await readFile(new URL('./references.json', import.meta.url))).update(await readFile(new URL('./build.mjs', import.meta.url))).update(await readFile(new URL('./baseline/app.js', import.meta.url))).update(constructionStyles).update(brandSource).update(brandFavicon).update(pngFavicon).digest('hex').slice(0, 12);
+const assetVersion = createHash('sha256').update(await readFile(new URL('./public/corporate.css', import.meta.url))).update(await readFile(new URL('./public/corporate.js', import.meta.url))).update(await readFile(new URL('./public/locale.js', import.meta.url))).update(await readFile(new URL('./src/pages.mjs', import.meta.url))).update(await readFile(new URL('./src/languages.mjs', import.meta.url))).update(await readFile(new URL('./references.json', import.meta.url))).update(await readFile(new URL('./build.mjs', import.meta.url))).update(await readFile(new URL('./baseline/app.js', import.meta.url))).update(constructionStyles).update(brandSource).update(aiMotionSource).update(brandFavicon).update(pngFavicon).digest('hex').slice(0, 12);
 // Change the pathname when the icon changes; Safari can retain icons across query changes.
 const iconVersion = createHash('sha256').update(pngFavicon).digest('hex').slice(0, 12);
 const iconHref = file => `/assets/brand/icons/usung-u-${iconVersion}-${file}`;
