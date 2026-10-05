@@ -2727,11 +2727,85 @@ private func publicFeedCompletionSelfTest() async throws {
     let stoppedKey = (note?.id.uuidString ?? "") + "-work"
     let stopped = timelineAttributedDocument(messages: presentedMessages(failing.selectedSession!), queuedSubmissions: [],
         isRunning: false, workspace: workspace, workLogStore: failing.publicLogStore).string as NSString
-    try check(stopped.range(of: note?.work?.duration ?? "-").location < stopped.range(of: "STOPPED_SENTINEL").location &&
-        !(stopped as String).contains("STOPPED_PROSE"), "a stopped run's work is not folded above its failure note")
+    // Stopped with no text of its own: the prose it streamed stays readable
+    // as text (as Claude Code keeps it after an interrupt); only its tool
+    // calls fold, above the failure note.
+    let fold = stopped.range(of: "도구 호출 3회 · 실행 1 · 읽기 1 · 검색 1")
+    try check(stopped.range(of: (note?.work?.duration ?? "-") + " 동안 작업 · 도구 호출 3회 · 멈추기 전 받은 출력 · 검증되지 않음").location
+            < min(fold.location, stopped.range(of: "STOPPED_PROSE").location) &&
+        max(fold.location, stopped.range(of: "STOPPED_PROSE").location) < stopped.range(of: "STOPPED_SENTINEL").location &&
+        fold.location != NSNotFound && stopped.range(of: "STOPPED_PROSE").location != NSNotFound && !(stopped as String).contains("swift build"),
+        "a stopped run's prose is hidden in its fold, or its calls are not folded above its failure note")
     let stoppedOpen = timelineAttributedDocument(messages: presentedMessages(failing.selectedSession!), queuedSubmissions: [],
         isRunning: false, workspace: workspace, expanded: [stoppedKey], workLogStore: failing.publicLogStore).string
-    try check(stoppedOpen.contains("STOPPED_PROSE"), "a stopped run's work does not open from its stored feed")
+    try check(stoppedOpen.contains("STOPPED_PROSE"), "a stopped run's work does not show from its stored feed")
+
+    // A retry runs under the same submission and reloads its saved feed.
+    // Each attempt's work counts only its own calls and its own time: the
+    // owner's wait before pressing Retry is not work.
+    var attempt = 0
+    var retryGate: CheckedContinuation<Void, Never>?
+    let retrying = SessionStore(storageRoot: root.appendingPathComponent("retrying"), runOperation: { _, _, _, _, onActivity in
+        attempt += 1
+        switch attempt {
+        case 1:
+            onActivity(RuntimeActivity(.executing, provider: "claude", surface: "claude", model: "fixture", effort: "max",
+                publicText: "RETRY_FIRST_PROSE", tool: "Grep", progress: progress, publicTextOrigin: .nativeAssistant))
+            await withCheckedContinuation { retryGate = $0 }
+            throw RunnerError.message("RETRY_FIRST_STOP")
+        case 2: throw RunnerError.message("RETRY_SECOND_STOP_BEFORE_ANY_CALL")
+        default:
+            return AppRunSummary(status: "complete", steps: [AppRunStep(sequence: 1, provider: "claude", action: "fixture",
+                model: "fixture", effort: "max", revasDisposition: "adopted", sessionID: UUID().uuidString,
+                permissionProfile: "workspace_write", exitCode: 0, output: "RETRY_THIRD_ANSWER no tool calls this time",
+                stderr: "", durationMS: 0, nativeRecord: nil)])
+        }
+    })
+    let retryID = retrying.selectedSessionID!
+    retrying.composer = "다시 시도해도 작업 시간이 겹치지 않게."; retrying.send()
+    try await eventually { retryGate != nil && retrying.activeRuns[retryID]?.publicRunLog?.entries.count == 4 }
+    try await Task.sleep(for: .seconds(2))
+    retryGate?.resume(); retryGate = nil
+    try await eventually { !retrying.isSessionRunning(retryID) }
+    try await Task.sleep(for: .seconds(3)) // the owner waits, then presses Retry
+    retrying.retrySelectedFailure()
+    try await eventually { retrying.selectedSession!.messages.contains { $0.text.contains("RETRY_SECOND_STOP") } && !retrying.isSessionRunning(retryID) }
+    retrying.retrySelectedFailure()
+    try await eventually { retrying.selectedSession!.messages.contains { $0.text.contains("RETRY_THIRD_ANSWER") } && !retrying.isSessionRunning(retryID) }
+    let attempts = retrying.selectedSession!.messages.filter { $0.work != nil }
+    try check(attempt == 3 && attempts.count == 1 && attempts[0].text.contains("RETRY_FIRST_STOP") && attempts[0].work?.toolCalls == 3 &&
+        (attempts[0].work?.seconds ?? 99) <= 3, "a retry re-counts an earlier attempt's calls or its time includes the wait before the retry: " +
+        attempts.map { "[\($0.text.prefix(24))] \($0.work!.duration) · \($0.work!.toolCalls) calls" }.joined(separator: " | "))
+    let retried = timelineAttributedDocument(messages: presentedMessages(retrying.selectedSession!), queuedSubmissions: [],
+        isRunning: false, workspace: workspace, workLogStore: retrying.publicLogStore).string
+    try check(retried.components(separatedBy: "동안 작업").count == 2 && retried.components(separatedBy: "RETRY_FIRST_PROSE").count == 2,
+        "a retried submission shows an earlier attempt's work again")
+    // While a retry runs, its live feed holds only what it adds.
+    var liveAttempt = 0
+    var liveGate: CheckedContinuation<Void, Never>?
+    let relive = SessionStore(storageRoot: root.appendingPathComponent("relive"), runOperation: { _, _, _, _, onActivity in
+        liveAttempt += 1
+        onActivity(RuntimeActivity(.executing, provider: "claude", surface: "claude", model: "fixture", effort: "max",
+            publicText: liveAttempt == 1 ? "RELIVE_FIRST_PROSE" : "RELIVE_FIRST_PROSE RELIVE_SECOND_PROSE", tool: "Grep",
+            progress: progress, publicTextOrigin: .nativeAssistant))
+        await withCheckedContinuation { liveGate = $0 }
+        throw RunnerError.message("RELIVE_STOP_\(liveAttempt)")
+    })
+    let reliveID = relive.selectedSessionID!
+    relive.composer = "재시도 중에는 이번 시도만."; relive.send()
+    try await eventually { liveGate != nil && relive.activeRuns[reliveID]?.publicRunLog?.entries.count == 4 }
+    liveGate?.resume(); liveGate = nil
+    try await eventually { !relive.isSessionRunning(reliveID) }
+    relive.retrySelectedFailure()
+    try await eventually { liveGate != nil && relive.publicRunProgress(reliveID)?.contains("RELIVE_SECOND_PROSE") == true }
+    let reliveText = relive.publicRunProgress(reliveID) ?? ""
+    try check(!reliveText.contains("RELIVE_FIRST_PROSE") && NativePublicRunLog.displaySegments(reliveText[...]).filter { $0.role == .action }.isEmpty,
+        "a retry's live feed shows the earlier attempt's prose and calls as current progress")
+    liveGate?.resume(); liveGate = nil
+    try await eventually { !relive.isSessionRunning(reliveID) }
+    let reliveWork = relive.selectedSession!.messages.compactMap(\.work)
+    try check(reliveWork.count == 2 && reliveWork.map(\.toolCalls) == [3, 0] && reliveWork[0].entryEnd == reliveWork[1].entryStart,
+        "a retry's work holds the earlier attempt's calls")
     print("Public feed completion: \(checks) checks passed; model calls 0; folded live feed/prose as text/work saved with the answer/opens from the stored feed/stopped run keeps its work")
 }
 
@@ -4395,11 +4469,18 @@ private struct TurnWork: Codable, Equatable, Sendable {
     /// Calls whose latest state is a returned error; nil on work recorded
     /// by earlier builds.
     var failedCalls: Int? = nil
+    /// The feed entries this attempt added. A retry runs under the same
+    /// submission and so the same saved feed: each attempt's work holds only
+    /// its own part. nil on work recorded by earlier builds (the whole feed).
+    var entryStart: Int? = nil
+    var entryEnd: Int? = nil
 
-    /// nil when the run left nothing to show beside its answer: no tool
+    /// nil when the attempt left nothing to show beside its answer: no tool
     /// call, and no prose of its own that the answer does not already hold.
-    init?(log: NativePublicRunLog, started: Date, answer: String, now: Date = Date()) {
-        let segments = turnWorkSegments(log, answer: answer)
+    /// `entries`: the part of the feed this attempt added (all of it when nil).
+    init?(log: NativePublicRunLog, entries: Range<Int>? = nil, started: Date, answer: String, now: Date = Date()) {
+        let range = (entries ?? log.entries.indices).clamped(to: log.entries.indices)
+        let segments = turnWorkSegments(log, entries: range, answer: answer)
         guard !segments.isEmpty else { return nil }
         var calls: [String: NativePublicRunLog.DisplaySegment] = [:]
         for call in segments where call.role == .action { calls[call.actionID ?? String(call.offset)] = call }
@@ -4408,6 +4489,11 @@ private struct TurnWork: Codable, Equatable, Sendable {
         seconds = max(0, Int(now.timeIntervalSince(started).rounded())); toolCalls = calls.count - nested; subagentCalls = nested
         let failed = calls.values.filter(\.failed).count
         failedCalls = failed > 0 ? failed : nil
+        entryStart = range.lowerBound; entryEnd = range.upperBound
+    }
+    /// The feed entries this work holds, within a feed of `count` entries.
+    func entries(in count: Int) -> Range<Int> {
+        (entryStart ?? 0)..<max(entryStart ?? 0, min(entryEnd ?? count, count))
     }
 
     /// "4m 12s", as Codex's "Worked for" counts it.
@@ -4422,9 +4508,9 @@ private struct TurnWork: Codable, Equatable, Sendable {
 /// What a finished run's work line opens to: the run's own prose and tool
 /// calls. The answer is shown below it, so a received candidate and prose
 /// the answer already holds are left out rather than shown twice.
-private func turnWorkSegments(_ log: NativePublicRunLog, answer: String) -> [NativePublicRunLog.DisplaySegment] {
+private func turnWorkSegments(_ log: NativePublicRunLog, entries: Range<Int>, answer: String) -> [NativePublicRunLog.DisplaySegment] {
     let answer = answer.trimmingCharacters(in: .whitespacesAndNewlines)
-    return NativePublicRunLog.displaySegments(log.displayText[...]).filter { segment in
+    return NativePublicRunLog.displaySegments(log.displayText(entries: entries)[...]).filter { segment in
         switch segment.role {
         case .action: return true
         case .candidate: return false
@@ -6170,6 +6256,21 @@ private final class SessionStore: ObservableObject {
         /// Public native output survives metadata-only and convergence emits.
         /// Kept outside ChatMessage/result/handoff; every candidate is provisional.
         var publicRunLog: NativePublicRunLog? = nil
+        /// Where this attempt's part of the feed starts. A retry runs under
+        /// the same submission and reloads its saved feed; what an earlier
+        /// attempt's work already holds is neither shown live again nor
+        /// counted in this attempt's work.
+        var feedStart = 0
+        /// Work time of feed entries no earlier attempt's work holds (an
+        /// attempt the app quit during), counted with this attempt's own.
+        var inheritedSeconds: TimeInterval = 0
+        /// This attempt's work: its own entries, its own time.
+        func work(answer: String, now: Date = Date()) -> TurnWork? {
+            publicRunLog.flatMap { log in
+                TurnWork(log: log, entries: feedStart..<log.entries.count, started: started.addingTimeInterval(-inheritedSeconds),
+                    answer: answer, now: now)
+            }
+        }
     }
     typealias RunOperation = @MainActor (PendingSubmission, String, String?, String?,
         @escaping @Sendable (RuntimeActivity) -> Void) async throws -> AppRunSummary
@@ -6250,7 +6351,9 @@ private final class SessionStore: ObservableObject {
             if let cached = publicFeedTexts[conversationID], cached.submission == log.submissionID, cached.revision == log.revision {
                 text = cached.text
             } else {
-                text = log.displayText
+                // Only this attempt's part: an earlier attempt's work is
+                // already folded in the transcript above.
+                text = log.displayText(entries: active.feedStart..<log.entries.count)
                 publicFeedTexts[conversationID] = (log.submissionID, log.revision, text)
             }
             if !text.isEmpty { return text }
@@ -7751,8 +7854,23 @@ private final class SessionStore: ObservableObject {
             activity: RuntimeActivity(.preparing), provider: submission.provider == .auto ? nil : submission.provider,
             handedRevision: sessions[index].taskContext?.contextRevision, forkCheckpoint: checkpoint)
         let publicLogStore = self.publicLogStore
-        activeRuns[submission.sessionID]?.publicRunLog = publicLogStore.load(conversationID: submission.sessionID,
+        var savedFeed = publicLogStore.load(conversationID: submission.sessionID,
             submissionID: submission.id, requestSHA256: SourceContextStore.digest(Data(submission.executionRequest.utf8)))
+        // This attempt's text never merges into an earlier attempt's entry.
+        if !savedFeed.entries.isEmpty { savedFeed.checkpoint() }
+        activeRuns[submission.sessionID]?.publicRunLog = savedFeed
+        // A retry reloads the earlier attempts' feed: this attempt starts
+        // after what their work lines hold (work from earlier builds holds
+        // everything saved). Output no work line holds — the app quit
+        // mid-attempt — stays this attempt's, with the time it took.
+        let credited = sessions[index].messages.compactMap(\.work).filter { $0.submissionID == submission.id }
+            .map { $0.entryEnd ?? savedFeed.entries.count }.max() ?? 0
+        let feedStart = min(credited, savedFeed.entries.count)
+        activeRuns[submission.sessionID]?.feedStart = feedStart
+        if feedStart < savedFeed.entries.count, let first = savedFeed.entries[feedStart...].first?.receivedAt,
+           let last = savedFeed.entries.last?.receivedAt {
+            activeRuns[submission.sessionID]?.inheritedSeconds = max(0, last.timeIntervalSince(first))
+        }
         let startingStatus = submission.recoveryParentID != nil
             ? os1Tr("OS1이 중단된 작업 상태 확인 중", "OS1 checking the interrupted task's state")
             : os1Tr("OS1 작업 준비 중", "OS1 preparing the task")
@@ -8013,9 +8131,7 @@ private final class SessionStore: ObservableObject {
                 // The run's work folds above its first answer, as Codex shows
                 // "Worked for": the live feed leaves the screen, not the record.
                 var work = activeRuns[submission.sessionID].flatMap { run in
-                    // A run resumed after a restart reloads its feed: count from its first output.
-                    run.publicRunLog.flatMap { TurnWork(log: $0, started: min(run.started, $0.entries.first?.receivedAt ?? run.started),
-                        answer: visibleSteps.map(\.output).joined(separator: "\n\n")) }
+                    run.submissionID == submission.id ? run.work(answer: visibleSteps.map(\.output).joined(separator: "\n\n")) : nil
                 }
                 for step in visibleSteps {
                     sessions[target].lastProvider = step.provider
@@ -8203,11 +8319,10 @@ private final class SessionStore: ObservableObject {
                     // failure note): its tool calls and errors stay one click away.
                     let appended = sessions[target].messages.indices.filter { $0 >= failureMessagesStart }
                     if let holder = appended.first(where: { [.assistant, .system].contains(sessions[target].messages[$0].role) }),
-                       let run = activeRuns[submission.sessionID], run.submissionID == submission.id, let log = run.publicRunLog {
+                       let run = activeRuns[submission.sessionID], run.submissionID == submission.id {
                         let received = appended.filter { sessions[target].messages[$0].role == .assistant }
                             .map { sessions[target].messages[$0].text }.joined(separator: "\n\n")
-                        sessions[target].messages[holder].work = TurnWork(log: log,
-                            started: min(run.started, log.entries.first?.receivedAt ?? run.started), answer: received)
+                        sessions[target].messages[holder].work = run.work(answer: received)
                     }
                     sessions[target].updatedAt = Date()
                 }
@@ -11143,6 +11258,33 @@ private struct OS1DesktopApp: App {
                 stopped.work = TurnWork(log: long, started: started, answer: "", now: started.addingTimeInterval(427))
                 try transcriptPreviewPNG(timelineAttributedDocument(messages: request + [stopped], queuedSubmissions: [], isRunning: false,
                     workspace: "/tmp", workLogStore: workStore)).write(to: output.appendingPathComponent("work-stopped.png"))
+                // A steered input in the middle of three calls: requested
+                // above it, returned below it, listed once above it.
+                var steered = NativePublicRunLog(conversationID: UUID(), submissionID: UUID(), requestSHA256: long.requestSHA256)
+                let before = os1Tr("빌드와 테스트를 동시에 돌려 보겠습니다.", "I'll run the build and the tests together.")
+                _ = steered.observe(provider: "claude", surface: "claude", stream: "s", text: before, candidate: false,
+                    origin: .nativeAssistant, receivedAt: started)
+                let steeredCalls = ["swift build", ".build/debug/OS1ContextTests", ".build/debug/OS1App --self-test"]
+                for (index, call) in steeredCalls.enumerated() {
+                    _ = steered.observeAction(id: "0|00000000000\(index)", provider: "claude", surface: "claude",
+                        text: os1Tr("실행", "Run") + " · " + call + " — " + os1Tr("요청", "requested"), verb: "run", receivedAt: started)
+                }
+                let anchor = steered.displayText
+                let steer = ChatMessage(role: .user, text: os1Tr("테스트 끝나면 렌더도 같이 봐 줘.", "When the tests finish, check the renders too."))
+                for (index, call) in steeredCalls.enumerated() {
+                    _ = steered.observeAction(id: "0|00000000000\(index)", provider: "claude", surface: "claude",
+                        text: os1Tr("실행", "Run") + " · " + call + " — " + os1Tr("반환", "returned"), verb: "run", receivedAt: started)
+                }
+                _ = steered.observe(provider: "claude", surface: "claude", stream: "s", text: before + " " +
+                    os1Tr("테스트가 모두 통과했습니다. 말씀하신 대로 렌더를 확인하겠습니다.", "The tests all pass. As you asked, I'll check the renders."),
+                    candidate: false, origin: .nativeAssistant, receivedAt: started)
+                let steeredGroup = NativePublicRunLog.displaySegments(anchor[...]).first { $0.role == .action }
+                for (name, expanded) in [("feed-steered", Set<String>()),
+                                         ("feed-steered-opened", Set(steeredGroup.map { ["\(liveFeedKey)-tools-\($0.offset)"] } ?? []))] {
+                    try transcriptPreviewPNG(timelineAttributedDocument(messages: request + [steer], queuedSubmissions: [], isRunning: true,
+                        workspace: "/tmp", expanded: expanded, publicProgress: steered.displayText, progressAnchors: [steer.id: anchor],
+                        liveRun: run)).write(to: output.appendingPathComponent(name + ".png"))
+                }
                 print(output.path); exit(EXIT_SUCCESS)
             } catch { fputs("\(error.localizedDescription)\n", stderr); exit(EXIT_FAILURE) }
         }
@@ -14402,6 +14544,11 @@ private struct WelcomeStep: View {
 
 private extension NSAttributedString.Key {
     static let os1TimelineRole = NSAttributedString.Key("com.omaragi.os1.timeline-role")
+    /// On a folded line's link: what VoiceOver says for it (its summary,
+    /// without the "▸"/"▾" mark) and whether it is open, so it is announced
+    /// as a disclosure triangle, collapsed or expanded.
+    static let os1DisclosureLabel = NSAttributedString.Key("com.omaragi.os1.disclosure-label")
+    static let os1DisclosureOpen = NSAttributedString.Key("com.omaragi.os1.disclosure-open")
 }
 
 /// Inline attachment cards for the owner's files. Images get bounded
@@ -14568,6 +14715,27 @@ private func liveProgress(after anchor: String?, in progress: String) -> Substri
     return progress[...]
 }
 
+/// The calls in live output `text` (the part above a steered input).
+private func liveFeedCallIDs(_ text: String?) -> Set<String> {
+    guard let text, !text.isEmpty else { return [] }
+    return Set(NativePublicRunLog.displaySegments(text[...]).filter { $0.role == .action }.map { $0.actionID ?? String($0.offset) })
+}
+
+/// The whole live feed's latest state of each call that began above a
+/// steered input, so the part drawn above it shows the call as it is now
+/// (requested above, returned later). Empty without a steered input.
+private func anchoredLiveCallStates(_ progress: String?, anchors: [UUID: String]) -> [String: NativePublicRunLog.DisplaySegment] {
+    guard let progress, let longest = anchors.values.max(by: { $0.count < $1.count }) else { return [:] }
+    let above = liveFeedCallIDs(longest)
+    guard !above.isEmpty else { return [:] }
+    var states: [String: NativePublicRunLog.DisplaySegment] = [:]
+    for segment in NativePublicRunLog.displaySegments(progress[...]) where segment.role == .action {
+        let id = segment.actionID ?? String(segment.offset)
+        if above.contains(id) { states[id] = segment }
+    }
+    return states
+}
+
 /// The anchor of the last steered input in `messages`: the live output
 /// shown above it. Output after it belongs below that bubble.
 private func latestSteeringAnchor(_ messages: [ChatMessage], _ anchors: [UUID: String]) -> String? {
@@ -14589,9 +14757,13 @@ private func timelineAttributedDocument(
     progressFollows: String? = nil,
     liveRun: LiveRunPresentation? = nil,
     liveRunExpanded: Bool = false,
-    workLogStore: NativePublicRunLogStore = NativePublicRunLogStore()
+    workLogStore: NativePublicRunLogStore = NativePublicRunLogStore(),
+    liveCallStates: [String: NativePublicRunLog.DisplaySegment]? = nil
 ) -> NSAttributedString {
     let document = NSMutableAttributedString()
+    // Given by the render cache, which draws the history without the live
+    // output; read from the live output when it is drawn here too.
+    let liveCallStates = liveCallStates ?? (isRunning ? anchoredLiveCallStates(publicProgress, anchors: progressAnchors) : [:])
     let queuedMessageIDs = Set(queuedSubmissions.map(\.userMessageID))
 
     func appendBlock(
@@ -14641,12 +14813,14 @@ private func timelineAttributedDocument(
 
     // The backend's prose reads as text; its tool calls fold into gray
     // lines that open in place, as Claude Code and Codex show a working turn.
-    func appendLiveProgress(_ text: Substring, key: String) {
+    // `above`: the live output drawn above a steered input; a call that
+    // began there is listed there once, at its latest state.
+    func appendLiveProgress(_ text: Substring, key: String, above: String?) {
         let segments = NativePublicRunLog.displaySegments(text)
         guard !segments.isEmpty else { return }
         appendBlock(role: "assistant", components: [], richContent: publicFeedContent(segments, key: key, toolsKey: liveFeedKey,
             caption: os1Tr("진행 중 · 아직 검증되지 않은 출력", "In progress · output not yet verified"),
-            expanded: expanded, expandAll: expandAll))
+            expanded: expanded, expandAll: expandAll, listedAbove: liveFeedCallIDs(above), states: liveCallStates))
     }
 
     // A finished (or stopped) run's work, folded above what it left.
@@ -14657,7 +14831,7 @@ private func timelineAttributedDocument(
             .map(\.text).joined(separator: "\n\n")
         let key = "\(message.id.uuidString)-work"
         appendBlock(role: "work", components: [], richContent: turnWorkContent(work, key: key, answer: answer,
-            expanded: expanded, expandAll: expandAll, store: workLogStore),
+            expanded: expanded, expandAll: expandAll, store: workLogStore, stopped: message.role == .system),
             trailingSpacing: expandAll || expanded.contains(key) ? 24 : 14)
     }
 
@@ -14666,7 +14840,8 @@ private func timelineAttributedDocument(
     var steeredAfter = progressFollows
     for (index, message) in messages.enumerated() {
         if isRunning, let anchor = progressAnchors[message.id] {
-            appendLiveProgress(liveProgress(after: steeredAfter, in: anchor), key: "live-progress-" + message.id.uuidString)
+            appendLiveProgress(liveProgress(after: steeredAfter, in: anchor), key: "live-progress-" + message.id.uuidString,
+                above: steeredAfter)
             steeredAfter = anchor
         }
         switch message.role {
@@ -14752,7 +14927,7 @@ private func timelineAttributedDocument(
 
     if isRunning {
         if let publicProgress {
-            appendLiveProgress(liveProgress(after: steeredAfter, in: publicProgress), key: "live-progress")
+            appendLiveProgress(liveProgress(after: steeredAfter, in: publicProgress), key: "live-progress", above: steeredAfter)
         }
         // Activity, elapsed time and steps have one owner: this last row,
         // one line until the owner opens it, as Codex shows a working turn.
@@ -14847,6 +15022,33 @@ private final class ContinuousTranscriptTextView: NSTextView {
     var completeTranscript = ""
     var progressSession: UUID?
     var progressText: String?
+
+    /// A folded line is a link whose text ends in "▸"/"▾": VoiceOver would
+    /// say "black right-pointing small triangle, link". It is announced as
+    /// a disclosure triangle with its summary and collapsed/expanded state,
+    /// and pressing it still opens it in place.
+    private var describingDisclosures = false
+    override func accessibilityChildren() -> [Any]? {
+        // Changing an element's role asks this view for its children again.
+        guard !describingDisclosures else { return super.accessibilityChildren() }
+        describingDisclosures = true; defer { describingDisclosures = false }
+        let children = super.accessibilityChildren() ?? []
+        guard let storage = textStorage, storage.length > 0 else { return children }
+        var disclosures: [URL: (label: String, open: Bool)] = [:]
+        storage.enumerateAttribute(.os1DisclosureLabel, in: NSRange(location: 0, length: storage.length)) { value, range, _ in
+            guard let label = value as? String, let url = storage.attribute(.link, at: range.location, effectiveRange: nil) as? URL else { return }
+            disclosures[url] = (label, (storage.attribute(.os1DisclosureOpen, at: range.location, effectiveRange: nil) as? NSNumber)?.boolValue ?? false)
+        }
+        for child in children {
+            guard let link = child as? NSAccessibilityElement, let url = link.accessibilityURL(),
+                  let disclosure = disclosures[url] else { continue }
+            link.setAccessibilityRole(.disclosureTriangle)
+            link.setAccessibilityLabel(disclosure.label)
+            link.setAccessibilityValue(NSNumber(value: disclosure.open ? 1 : 0))
+            link.setAccessibilityExpanded(disclosure.open)
+        }
+        return children
+    }
 
     override func menu(for event: NSEvent) -> NSMenu? {
         let menu = super.menu(for: event) ?? NSMenu()
@@ -15005,6 +15207,10 @@ private struct TranscriptRenderInput: Equatable {
     /// The live run's last row and its disclosure; the live suffix only.
     var liveRun: LiveRunPresentation? = nil
     var liveRunExpanded = false
+    /// Derived by the cache from the live output and the anchors: the latest
+    /// state of each call drawn above a steered input. It changes only when
+    /// such a call changes state, so the history redraws only then.
+    var anchoredCallStates: [String: NativePublicRunLog.DisplaySegment] = [:]
 }
 
 /// Immutable history is keyed by all render-relevant input, not by time or
@@ -15036,6 +15242,7 @@ private final class TranscriptRenderCache {
     private var prefix = NSAttributedString(string: "")
     private var progressInput: ProgressInput?
     private var progress = NSAttributedString(string: "")
+    private var anchoredStates: (progress: String?, anchors: [UUID: String], states: [String: NativePublicRunLog.DisplaySegment])?
     private(set) var prefixBuildCount = 0
     private(set) var progressBuildCount = 0
 
@@ -15044,11 +15251,19 @@ private final class TranscriptRenderCache {
     func parts(_ value: TranscriptRenderInput, expanded: Set<String>,
                workLogStore: NativePublicRunLogStore = NativePublicRunLogStore()) -> Parts {
         var stable = value; stable.publicProgress = nil; stable.liveRun = nil; stable.liveRunExpanded = false
+        if value.isRunning, !value.progressAnchors.isEmpty {
+            if let cached = anchoredStates, cached.progress == value.publicProgress, cached.anchors == value.progressAnchors {
+                stable.anchoredCallStates = cached.states
+            } else {
+                stable.anchoredCallStates = anchoredLiveCallStates(value.publicProgress, anchors: value.progressAnchors)
+                anchoredStates = (value.publicProgress, value.progressAnchors, stable.anchoredCallStates)
+            }
+        }
         let rebuilt = input != stable || self.expanded != expanded
         if rebuilt {
             prefix = timelineAttributedDocument(messages: value.messages, queuedSubmissions: value.queued,
                 isRunning: value.isRunning, workspace: value.workspace, expanded: expanded, waitingReason: value.waitingReason,
-                progressAnchors: value.progressAnchors, workLogStore: workLogStore)
+                progressAnchors: value.progressAnchors, workLogStore: workLogStore, liveCallStates: stable.anchoredCallStates)
             input = stable; self.expanded = expanded; prefixBuildCount += 1
         }
         // Output already drawn above the latest steered input stays there;
@@ -15067,7 +15282,7 @@ private final class TranscriptRenderCache {
             : NSAttributedString(string: "")
         return Parts(prefix: prefix, progress: progress, row: row, rebuilt: rebuilt)
     }
-    func invalidate() { input = nil; progressInput = nil }
+    func invalidate() { input = nil; progressInput = nil; anchoredStates = nil }
 }
 
 private final class TranscriptClipView: NSClipView {
@@ -15731,35 +15946,51 @@ private struct NativeStepPresentation {
     }
     /// A run of tool calls on one line, as Claude Code and Codex fold them
     /// ("14 tool calls · run 7 · read 5"): the count and the fixed verb
-    /// families, never a claim that a call ran or succeeded.
-    /// `nested` counts the calls subagents made, kept apart from the turn's
-    /// own as Claude Code shows them under the agent ("45 tool uses").
-    static func toolSummary(_ verbs: [String?], nested: Int = 0) -> String {
+    /// families, never a claim that a call ran or succeeded. The count is
+    /// the total; the calls subagents made are named inside it ("846 tool
+    /// calls (299 in subagents)"), as Claude Code shows them under the
+    /// agent. A line with one subagent of the turn's own names its task
+    /// first, as Claude Code names the agent it folds.
+    static func toolSummary(_ verbs: [String?], nested: Int = 0, tasks: [String] = []) -> String {
         let families: [(verbs: Set<String>, ko: String, en: String)] = [
             (["run"], "실행", "run"), (["read", "view"], "읽기", "read"), (["edit", "write", "add", "delete"], "수정", "edit"),
             (["search", "find", "list"], "검색", "search"), (["fetch", "webSearch"], "웹", "web"),
             (["agent"], "하위 에이전트", "subagent"), (["plan"], "계획", "plan"), (["mcp"], "MCP", "MCP"),
         ]
+        let named = tasks.count == 1 ? tasks[0] : nil
         var counts = [Int](repeating: 0, count: families.count), other = 0
         for verb in verbs {
             if let family = families.firstIndex(where: { $0.verbs.contains(verb ?? "") }) { counts[family] += 1 } else { other += 1 }
         }
-        var parts = families.indices.filter { counts[$0] > 0 }
+        var parts = families.indices.filter { counts[$0] > 0 && !(named != nil && families[$0].verbs.contains("agent")) }
             .map { os1Tr("\(families[$0].ko) \(counts[$0])", "\(families[$0].en) \(counts[$0])") }
         // Calls recorded before verbs were kept have none: no "other" alone.
         if !parts.isEmpty, other > 0 { parts.append(os1Tr("기타 \(other)", "other \(other)")) }
-        var line = verbs.isEmpty ? [] : [os1Tr("도구 호출 \(verbs.count)회", verbs.count == 1 ? "1 tool call" : "\(verbs.count) tool calls")] + parts
-        if nested > 0 {
-            line.append(verbs.isEmpty
-                ? os1Tr("하위 에이전트 도구 호출 \(nested)회", nested == 1 ? "1 subagent tool call" : "\(nested) subagent tool calls")
-                : os1Tr("하위 에이전트 내부 \(nested)회", "\(nested) inside subagents"))
+        let total = verbs.count + nested
+        guard total > 0 else { return "" }
+        let count: String
+        if verbs.isEmpty {
+            count = os1Tr("하위 에이전트 도구 호출 \(nested)회", nested == 1 ? "1 subagent tool call" : "\(nested) subagent tool calls")
+        } else {
+            count = os1Tr("도구 호출 \(total)회", total == 1 ? "1 tool call" : "\(total) tool calls")
+                + (nested > 0 ? os1Tr(" (하위 에이전트 내부 \(nested)회)", " (\(nested) in subagents)") : "")
         }
-        return line.joined(separator: " · ")
+        return ((named.map { [os1Tr("하위 에이전트 · ", "Subagent · ") + $0] } ?? []) + [count] + parts).joined(separator: " · ")
+    }
+    /// The task a turn's own Agent call gave its subagent: its line without
+    /// the "Subagent · " prefix and the received state ("Subagent · Check
+    /// the tests — returned" → "Check the tests").
+    static func agentTask(_ call: NativePublicRunLog.DisplaySegment) -> String? {
+        guard call.verb == "agent", !isNested(call) else { return nil }
+        var line = feedText(call.text.trimmingCharacters(in: .whitespacesAndNewlines), nested: true)
+        if let state = line.range(of: " — ", options: .backwards) { line = String(line[..<state.lowerBound]) }
+        let task = line.trimmingCharacters(in: .whitespaces)
+        return task.isEmpty ? nil : liveRunClipped(task, 80)
     }
     /// The calls in a folded line that returned an error, named on that
     /// line so a fold never hides a failure.
     static func errorCount(_ count: Int) -> String {
-        os1Tr("오류 반환 \(count)회", count == 1 ? "1 returned an error" : "\(count) returned an error")
+        os1Tr("오류 \(count)회", count == 1 ? "1 error" : "\(count) errors")
     }
     /// A folded disclosure line: its gray summary, any error count in warm
     /// color and the "▸"/"▾" mark, opening `key` in place.
@@ -15768,7 +15999,8 @@ private struct NativeStepPresentation {
         let errors = failed > 0 ? " · " + errorCount(failed) : ""
         let line = NSMutableAttributedString(attributedString: TranscriptMarkdown.detailLink(
             summary + errors + (open ? "  ▾" : "  ▸"), key: key, color: TimelinePalette.detail))
-        line.addAttributes([.font: NSFont.systemFont(ofSize: size), .toolTip: toolTip],
+        line.addAttributes([.font: NSFont.systemFont(ofSize: size), .toolTip: toolTip,
+            .os1DisclosureLabel: summary + errors, .os1DisclosureOpen: NSNumber(value: open)],
             range: NSRange(location: 0, length: line.length))
         if failed > 0 {
             line.addAttribute(.foregroundColor, value: TimelinePalette.warning,
@@ -15877,7 +16109,8 @@ private let liveFeedKey = "live-feed"
 /// claim.
 private func publicFeedContent(_ segments: [NativePublicRunLog.DisplaySegment], key: String, toolsKey: String? = nil,
                                caption: String? = nil, expanded: Set<String>, expandAll: Bool,
-                               history: Bool = false) -> NSAttributedString {
+                               history: Bool = false, listedAbove: Set<String> = [],
+                               states: [String: NativePublicRunLog.DisplaySegment] = [:]) -> NSAttributedString {
     let result = NSMutableAttributedString()
     func style(before: CGFloat = 0, after: CGFloat = 0, indent: CGFloat = 0) -> NSParagraphStyle {
         let style = NSMutableParagraphStyle()
@@ -15912,12 +16145,16 @@ private func publicFeedContent(_ segments: [NativePublicRunLog.DisplaySegment], 
     }
     // Each call is listed once, where it began, at its latest state; a
     // subagent's call (also by its received prefix, for earlier records)
-    // sits under the agent.
+    // sits under the agent. Live output split by a steered input is drawn
+    // in parts: a call that began above the input (`listedAbove`) is not
+    // listed again below it, and `states` carries the whole feed's latest
+    // state of the calls that began above it.
     func id(_ action: NativePublicRunLog.DisplaySegment) -> String { action.actionID ?? String(action.offset) }
     let nested = NativeStepPresentation.isNested
     var latest: [String: NativePublicRunLog.DisplaySegment] = [:]
     for segment in segments where segment.role == .action { latest[id(segment)] = segment }
-    var listed = Set<String>()
+    latest.merge(states) { _, whole in whole }
+    var listed = listedAbove
     var index = 0
     while index < segments.count {
         let segment = segments[index]
@@ -15932,7 +16169,7 @@ private func publicFeedContent(_ segments: [NativePublicRunLog.DisplaySegment], 
             let groupKey = "\(toolsKey ?? key)-tools-\(group[0].offset)"
             let open = expandAll || expanded.contains(groupKey)
             let summary = NativeStepPresentation.toolSummary(calls.filter { !nested($0) }.map(\.verb),
-                nested: calls.filter(nested).count)
+                nested: calls.filter(nested).count, tasks: calls.compactMap(NativeStepPresentation.agentTask))
             add(NativeStepPresentation.disclosure(summary, failed: calls.filter(\.failed).count, key: groupKey, open: open,
                 toolTip: open ? os1Tr("도구 호출 접기", "Collapse the tool calls") : os1Tr("도구 호출 펼쳐보기", "Expand the tool calls")),
                 style(before: 3, after: 3))
@@ -15964,19 +16201,63 @@ private func publicFeedContent(_ segments: [NativePublicRunLog.DisplaySegment], 
     return result
 }
 
+/// Saved feeds read for finished runs' work, by file and modification
+/// time: a transcript redraw does not decode the same feed again.
+private final class TurnWorkFeedCache: @unchecked Sendable {
+    static let shared = TurnWorkFeedCache()
+    private let lock = NSLock()
+    private var feeds: [String: (modified: Date, log: NativePublicRunLog)] = [:]
+    func feed(_ work: TurnWork, store: NativePublicRunLogStore) -> NativePublicRunLog {
+        let file = store.root.appendingPathComponent(work.submissionID.uuidString.lowercased() + ".json").path
+        let modified = (try? FileManager.default.attributesOfItem(atPath: file))?[.modificationDate] as? Date
+        lock.lock(); defer { lock.unlock() }
+        if let modified, let cached = feeds[file], cached.modified == modified,
+           cached.log.belongs(conversationID: work.conversationID, submissionID: work.submissionID, requestSHA256: work.requestSHA256) {
+            return cached.log
+        }
+        let log = store.load(conversationID: work.conversationID, submissionID: work.submissionID, requestSHA256: work.requestSHA256)
+        if feeds.count > 32 { feeds.removeAll() }
+        if let modified { feeds[file] = (modified, log) }
+        return log
+    }
+}
+
 /// A finished run's work line, folded above its answer as Codex shows
 /// "Worked for 4m 12s"; opened, the run's own prose and tool calls in gray.
+/// `stopped`: the run ended with no text of its own (only a failure note
+/// follows), so the prose it streamed stays readable as text, as Claude
+/// Code keeps it after an interrupt, and only its tool calls fold.
 private func turnWorkContent(_ work: TurnWork, key: String, answer: String, expanded: Set<String>, expandAll: Bool,
-                             store: NativePublicRunLogStore) -> NSAttributedString {
+                             store: NativePublicRunLogStore, stopped: Bool = false) -> NSAttributedString {
     let open = expandAll || expanded.contains(key)
     let calls = NativeStepPresentation.toolSummary(Array(repeating: nil, count: work.toolCalls), nested: work.subagentCalls)
     let summary = os1Tr("\(work.duration) 동안 작업", "Worked for \(work.duration)") + (calls.isEmpty ? "" : " · " + calls)
+    if stopped {
+        let log = TurnWorkFeedCache.shared.feed(work, store: store)
+        let segments = turnWorkSegments(log, entries: work.entries(in: log.entries.count), answer: answer)
+        if !segments.isEmpty {
+            let errors = (work.failedCalls ?? 0) > 0 ? " · " + NativeStepPresentation.errorCount(work.failedCalls ?? 0) : ""
+            let gray: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 12), .foregroundColor: TimelinePalette.detail]
+            let content = NSMutableAttributedString(string: summary, attributes: gray)
+            if !errors.isEmpty {
+                content.append(NSAttributedString(string: errors, attributes: [.font: NSFont.systemFont(ofSize: 12),
+                    .foregroundColor: TimelinePalette.warning]))
+            }
+            content.append(NSAttributedString(string: " · " + os1Tr("멈추기 전 받은 출력 · 검증되지 않음",
+                "Received before it stopped · not verified"), attributes: gray))
+            let spaced = NSMutableParagraphStyle(); spaced.lineSpacing = 2; spaced.paragraphSpacing = 6
+            content.addAttribute(.paragraphStyle, value: spaced, range: NSRange(location: 0, length: content.length))
+            content.append(NSAttributedString(string: "\n", attributes: [.font: NSFont.systemFont(ofSize: 12), .paragraphStyle: spaced]))
+            content.append(publicFeedContent(segments, key: key, expanded: expanded, expandAll: expandAll))
+            return content
+        }
+    }
     let content = NSMutableAttributedString(attributedString: NativeStepPresentation.disclosure(summary,
         failed: work.failedCalls ?? 0, key: key, open: open,
         toolTip: open ? os1Tr("작업 과정 접기", "Collapse the work") : os1Tr("작업 과정 펼쳐보기 · 도구 호출과 중간 설명", "Expand the work · tool calls and progress notes")))
     guard open else { return content }
-    let log = store.load(conversationID: work.conversationID, submissionID: work.submissionID, requestSHA256: work.requestSHA256)
-    let segments = turnWorkSegments(log, answer: answer)
+    let log = TurnWorkFeedCache.shared.feed(work, store: store)
+    let segments = turnWorkSegments(log, entries: work.entries(in: log.entries.count), answer: answer)
     content.append(NSAttributedString(string: "\n", attributes: [.font: NSFont.systemFont(ofSize: 12)]))
     content.append(segments.isEmpty
         ? NSAttributedString(string: os1Tr("이 실행의 작업 기록을 더 이상 찾을 수 없습니다.", "This run's work record is no longer available."),
@@ -16460,7 +16741,10 @@ private func publicFeedLongRunSelfTest() throws {
     try check(reload == log && reload.isValid, "a saved feed does not load back equal")
     try check(observeMS < 25, String(format: "re-offering 846 steps took %.1f ms", observeMS))
     let feed = log.displayText
-    let segments = NativePublicRunLog.displaySegments(feed[...])
+    var segments: [NativePublicRunLog.DisplaySegment] = []
+    // Every live redraw parses the feed; a current record is not re-read by
+    // its line (the regex fallback for earlier records cost ~6 ms of this).
+    let parseMS = ms { segments = NativePublicRunLog.displaySegments(feed[...]) }
     try check(segments.filter { $0.role == .action && $0.failed }.count == 3, "a returned error is not read back from the feed")
     let history = [ChatMessage(role: .user, text: "LONG_FEED_REQUEST")]
     func live(_ expanded: Set<String> = []) -> NSAttributedString {
@@ -16485,8 +16769,10 @@ private func publicFeedLongRunSelfTest() throws {
     let openedMS = ms { opened = live(Set(agent.map { [$0.key] } ?? [])) }
     try check(opened.string.components(separatedBy: "↳ ").count - 1 == 299 && !opened.string.contains("↳ " + os1Tr("관련", "Check")) &&
         opened.string.contains(os1Tr("하위 에이전트 · 관련 테스트 확인", "Subagent · Check the related tests")) &&
-        agent?.text.hasPrefix(NativeStepPresentation.toolSummary(["agent"], nested: 299)) == true,
-        "the turn's own Agent call is counted or shown as inside the subagent, or its calls do not open under it")
+        agent?.text.hasPrefix(NativeStepPresentation.toolSummary(["agent"], nested: 299)) == false &&
+        agent?.text.hasPrefix(os1Tr("하위 에이전트 · 관련 테스트 확인 · 도구 호출 300회 (하위 에이전트 내부 299회)",
+            "Subagent · Check the related tests · 300 tool calls (299 in subagents)")) == true,
+        "the turn's own Agent call is counted or shown as inside the subagent, its calls do not open under it, or its folded line does not name its task")
     try check(foldedMS < 400 && openedMS < 600, String(format: "drawing the long feed took %.0f/%.0f ms", foldedMS, openedMS))
     // Finished: the work line counts the errors too.
     let root = FileManager.default.temporaryDirectory.appendingPathComponent("os1-long-work-" + UUID().uuidString)
@@ -16501,8 +16787,11 @@ private func publicFeedLongRunSelfTest() throws {
         workLogStore: store)
     try check(done.string.contains(NativeStepPresentation.errorCount(3)) && done.string.contains(answer.work!.duration),
         "the finished work line hides its errors")
-    print(String(format: "Long public feed: %d checks PASS; 1,702 entries fold to %d lines, re-offer %.1f ms, draw %.0f ms folded / %.0f ms opened; errors stay visible; model calls 0",
-        checks, lines, observeMS, foldedMS, openedMS))
+    // The work line reads as the total, as Claude Code counts tool uses.
+    try check(done.string.contains(os1Tr("7분 7초 동안 작업 · 도구 호출 846회 (하위 에이전트 내부 299회) · 오류 3회",
+        "Worked for 7m 7s · 846 tool calls (299 in subagents) · 3 errors")), "the work line does not read as the run's total")
+    print(String(format: "Long public feed: %d checks PASS; 1,702 entries fold to %d lines, re-offer %.1f ms, parse %.1f ms, draw %.0f ms folded / %.0f ms opened; errors stay visible; model calls 0",
+        checks, lines, observeMS, parseMS, foldedMS, openedMS))
 }
 
 /// Owner, 2026-10-05: "출력은 해 돌아가고 있는 건 알겠어 근데 그 필수값이
@@ -16543,14 +16832,14 @@ private func publicFeedPresentationSelfTest() throws {
     try check(!folded.string.contains("TOOL_LINE_") && !folded.string.contains("NESTED_LINE") && !folded.string.contains("SWIFT_BUILD") &&
         !folded.string.contains("Bash —"), "tool calls are not folded")
     try check(!folded.string.contains("네이티브 동작") && !folded.string.contains("공개 진행 출력"), "every entry still has its own heading")
-    try check(folded.string.contains("도구 호출 12회 · 실행 6 · 읽기 4 · 검색 2 · 하위 에이전트 내부 1회") &&
+    try check(folded.string.contains("도구 호출 13회 (하위 에이전트 내부 1회) · 실행 6 · 읽기 4 · 검색 2") &&
         folded.string.contains("도구 호출 1회 · 실행 1"), "a run of calls is not summarized by count and verb family")
     try check(folded.string.contains(ProviderSurface.claude.routeTitle + " · 진행 중 · 아직 검증되지 않은 출력"),
         "the feed lost its route or its not-yet-verified label")
     let groups = links(folded)
     try check(groups.count == 2 && groups.allSatisfy { $0.hasPrefix(liveFeedKey + "-tools-") } && Set(groups).count == 2,
         "each run of calls does not have one disclosure of its own")
-    try check(color("도구 호출 12회", in: folded) == TimelinePalette.detail && color("PROSE_TWO", in: folded) == TranscriptMarkdown.ink,
+    try check(color("도구 호출 13회", in: folded) == TimelinePalette.detail && color("PROSE_TWO", in: folded) == TranscriptMarkdown.ink,
         "secondary lines are not gray or the prose is not readable")
     let lines = folded.string.components(separatedBy: CharacterSet(charactersIn: "\n\u{2028}")).filter { !$0.isEmpty }.count
     try check(lines <= 8, "the folded feed takes \(lines) lines")
@@ -16651,14 +16940,15 @@ private func publicFeedPresentationSelfTest() throws {
     }
     let closed = done(), workKey = answer.id.uuidString + "-work"
     let text = closed.string as NSString
-    try check(closed.string.contains("4분 12초 동안 작업 · 도구 호출 13회 · 하위 에이전트 내부 1회") && !closed.string.contains("PROSE_ONE") &&
+    // The count is the total, the subagents' share named inside it.
+    try check(closed.string.contains("4분 12초 동안 작업 · 도구 호출 14회 (하위 에이전트 내부 1회)") && !closed.string.contains("PROSE_ONE") &&
         !closed.string.contains("TOOL_LINE_") && text.range(of: "동안 작업").location < text.range(of: "FINAL_ANSWER_SENTINEL").location,
         "the finished run's work is not one folded line above the answer")
     try check(color("4분 12초", in: closed) == TimelinePalette.detail && color("실행 기록 확인됨", in: closed) == TimelinePalette.detail &&
         color("FINAL_ANSWER_SENTINEL", in: closed) == TranscriptMarkdown.ink, "secondary lines are not gray around a readable answer")
     try check(links(closed) == [workKey, receipt.id.uuidString + "-receipt"], "the work line has no disclosure of its own")
     let shown = done([workKey])
-    try check(shown.string.contains("PROSE_ONE") && shown.string.contains("PROSE_THREE") && shown.string.contains("도구 호출 12회") &&
+    try check(shown.string.contains("PROSE_ONE") && shown.string.contains("PROSE_THREE") && shown.string.contains("도구 호출 13회") &&
         !shown.string.contains("TOOL_LINE_0 ") && shown.string.components(separatedBy: "CANDIDATE_TEXT").count == 2,
         "opened work does not show the run's prose and folded calls, or repeats the answer")
     try check(color("PROSE_ONE", in: shown) == TimelinePalette.detail, "opened work prose is not gray")
@@ -16670,6 +16960,69 @@ private func publicFeedPresentationSelfTest() throws {
     var bare = NativePublicRunLog(conversationID: UUID(), submissionID: UUID(), requestSHA256: log.requestSHA256)
     _ = bare.observe(provider: "codex", surface: "gpt-chat", stream: "c", text: "ONLY_ANSWER", candidate: false, origin: .nativeAssistant, receivedAt: now)
     try check(TurnWork(log: bare, started: now, answer: "ONLY_ANSWER") == nil, "a run with nothing beside its answer keeps a work line")
+    // VoiceOver: a folded line is a disclosure triangle with its summary
+    // and collapsed/expanded state, not "black right-pointing small
+    // triangle, link"; pressing it still opens it in place.
+    func disclosures(_ document: NSAttributedString) -> [NSAccessibilityElement] {
+        textView.textStorage?.setAttributedString(document)
+        return (textView.accessibilityChildren() ?? []).compactMap { $0 as? NSAccessibilityElement }
+            .filter { $0.accessibilityURL()?.scheme == "os1-detail" }
+    }
+    let closedWork = disclosures(closed).first { $0.accessibilityURL()?.lastPathComponent == workKey }
+    try check(closedWork?.accessibilityRole() == .disclosureTriangle &&
+        closedWork?.accessibilityLabel() == "4분 12초 동안 작업 · 도구 호출 14회 (하위 에이전트 내부 1회)" &&
+        closedWork?.accessibilityValue() as? NSNumber == 0 && closedWork?.isAccessibilityExpanded() == false,
+        "VoiceOver hears the work line as a link named by its triangle, not a collapsed disclosure")
+    let openWork = disclosures(shown).filter { $0.accessibilityURL()?.lastPathComponent.hasPrefix(workKey) == true }
+    try check(openWork.first?.accessibilityValue() as? NSNumber == 1 && openWork.first?.isAccessibilityExpanded() == true &&
+        openWork.count == 3 && openWork.allSatisfy { $0.accessibilityRole() == .disclosureTriangle &&
+            !($0.accessibilityLabel() ?? "▸").contains("▸") && !($0.accessibilityLabel() ?? "▾").contains("▾") },
+        "an opened work line or its tool-call folds are not announced as expanded/collapsed disclosures")
+    let liveFolds = disclosures(folded)
+    try check(liveFolds.count == 2 && liveFolds.allSatisfy { $0.accessibilityRole() == .disclosureTriangle &&
+        $0.isAccessibilityExpanded() == false } && liveFolds[0].accessibilityLabel()?.hasPrefix("도구 호출 13회") == true,
+        "a live tool-call fold is not announced as a collapsed disclosure")
+    // A steered input splits the live feed in two. A call requested above it
+    // and returned below it is one call: listed once, above, as returned.
+    var steered = NativePublicRunLog(conversationID: UUID(), submissionID: UUID(), requestSHA256: log.requestSHA256)
+    _ = steered.observe(provider: "claude", surface: "claude", stream: "s", text: "BEFORE_STEER", candidate: false,
+        origin: .nativeAssistant, receivedAt: now)
+    for index in 1...3 {
+        _ = steered.observeAction(id: "0|00000000000\(index)", provider: "claude", surface: "claude",
+            text: "STEER_CALL_\(index) — " + os1Tr("요청", "requested"), verb: "run", receivedAt: now)
+    }
+    let steerAnchor = steered.displayText
+    let steer = ChatMessage(role: .user, text: "STEER_MESSAGE")
+    for index in 1...3 {
+        _ = steered.observeAction(id: "0|00000000000\(index)", provider: "claude", surface: "claude",
+            text: "STEER_CALL_\(index) — " + os1Tr("반환", "returned"), verb: "run", failed: index == 3, receivedAt: now)
+    }
+    _ = steered.observe(provider: "claude", surface: "claude", stream: "s", text: "BEFORE_STEER AFTER_STEER", candidate: false,
+        origin: .nativeAssistant, receivedAt: now)
+    let steeredFeed = steered.displayText
+    func steeredDocument(_ expanded: Set<String> = []) -> NSAttributedString {
+        timelineAttributedDocument(messages: history + [steer], queuedSubmissions: [], isRunning: true, workspace: "/tmp",
+            expanded: expanded, publicProgress: steeredFeed, progressAnchors: [steer.id: steerAnchor])
+    }
+    let steeredFolds = links(steeredDocument())
+    let steeredOpen = steeredDocument(Set(steeredFolds)).string as NSString
+    try check(steeredFolds.count == 1 && steeredOpen.components(separatedBy: "STEER_CALL_1").count == 2 &&
+        !(steeredOpen as String).contains(os1Tr("— 요청", "— requested")) &&
+        steeredOpen.range(of: "STEER_CALL_1").location < steeredOpen.range(of: "STEER_MESSAGE").location &&
+        steeredOpen.range(of: "STEER_MESSAGE").location < steeredOpen.range(of: "AFTER_STEER").location &&
+        (steeredDocument().string as NSString).range(of: NativeStepPresentation.errorCount(1)).location
+            < (steeredDocument().string as NSString).range(of: "STEER_MESSAGE").location,
+        "a call that straddles a steered input is counted twice, or stays requested above it")
+    // The cached view draws the history (above the input) without the live
+    // output; it still shows those calls as they are now.
+    let steeredCache = TranscriptRenderCache()
+    func cached(_ feed: String) -> String {
+        let parts = steeredCache.parts(TranscriptRenderInput(sessionID: sessionID, messages: history + [steer], queued: [],
+            isRunning: true, workspace: "/tmp", publicProgress: feed, progressAnchors: [steer.id: steerAnchor]), expanded: Set(steeredFolds))
+        return parts.prefix.string + parts.tail.string
+    }
+    _ = cached(steerAnchor)
+    try check(cached(steeredFeed) == steeredOpen as String, "the cached transcript keeps a stale state above the steered input")
     // Stored with the answer; earlier answers decode without it.
     let decoded = try JSONDecoder().decode(ChatMessage.self, from: JSONEncoder().encode(answer))
     var legacy = try JSONSerialization.jsonObject(with: JSONEncoder().encode(answer)) as! [String: Any]

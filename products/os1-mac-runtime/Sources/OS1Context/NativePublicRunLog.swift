@@ -152,8 +152,12 @@ public struct NativePublicRunLog: Codable, Equatable, Sendable {
     /// native bytes themselves stay unchanged and the scored final is separate.
     /// Each entry is a heading (role, route, label, action id, verb, nesting, error)
     /// and its text; `displaySegments` reads it back for the transcript.
-    public var displayText: String {
-        entries.map { entry in
+    public var displayText: String { displayText(entries: entries.indices) }
+    /// The entries in `range` as `displayText` writes them: one attempt of a
+    /// retried submission, whose saved feed also holds the earlier attempts.
+    public func displayText(entries range: Range<Int>) -> String {
+        let range = range.clamped(to: entries.indices)
+        return entries[range].map { entry in
             let name = ProviderSurface.resolveExecuted(rawSurface: entry.surface, provider: entry.provider)?.routeTitle
                 ?? (entry.provider == "claude" ? "Anthropic" : "OpenAI")
             let label = entry.origin == .legacyUnattributed ? os1Tr("출처 미확인 공개 출력 · 미채택", "Public output of unconfirmed origin · not adopted")
@@ -247,7 +251,10 @@ public struct NativePublicRunLog: Codable, Equatable, Sendable {
             }
             segments.append(DisplaySegment(role: role, source: field(1), actionID: role == .action ? field(3) : nil,
                 verb: role == .action ? field(4) : nil, nested: role == .action && field(5) == "1",
-                failed: role == .action && (field(6) == "1" || Self.saysFailed(body.trimmingCharacters(in: .whitespacesAndNewlines))),
+                // A record with the error field is authoritative; only one
+                // from an earlier build (six fields) is read from its line.
+                failed: role == .action && (heading.fields.count < 7
+                    ? Self.saysFailed(body.trimmingCharacters(in: .whitespacesAndNewlines)) : field(6) == "1"),
                 offset: heading.offset, text: body))
         }
         return segments

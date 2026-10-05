@@ -175,9 +175,18 @@ private func runNativePublicRunLogDisplayFixtures() throws -> Int {
         receivedAt: now)
     _ = errors.observeAction(id: "0|ffffffffffff", provider: "claude", surface: "claude",
         text: "Search · — returned an error — returned", verb: "search", receivedAt: now)
-    let errorSegments = NativePublicRunLog.displaySegments(errors.displayText[...])
-    check(errorSegments.map(\.failed) == [true, true, false] && errors.entries[0].failed == true && errors.entries[1].failed == nil,
-        "a returned error reads back from its flag or its received state, not from a label")
+    // This build writes seven heading fields; an earlier build wrote six
+    // (no error field), so only such a record is read from its line.
+    let current = errors.displayText
+    let headingEnd = String(Character(Unicode.Scalar(0xFDD1 as UInt32)!)) // a noncharacter: no string literal
+    let earlier = current.replacingOccurrences(of: "\u{1F}" + headingEnd, with: headingEnd)
+    let errorSegments = NativePublicRunLog.displaySegments(earlier[...])
+    check(earlier != current && errorSegments.map(\.failed) == [true, true, false] && errors.entries[0].failed == true &&
+        errors.entries[1].failed == nil, "a returned error reads back from its flag or an earlier record's received state, not from a label")
+    // A record that carries the error field is authoritative: its line is
+    // not re-read (that regex cost a third of a long feed's redraw).
+    check(NativePublicRunLog.displaySegments(current[...]).map(\.failed) == [true, false, false],
+        "a current record's unflagged call is read as an error from its line")
     var reloaded = try JSONDecoder().decode(NativePublicRunLog.self, from: JSONEncoder().encode(errors))
     check(reloaded == errors && reloaded.isValid, "a feed with an error survives persistence")
     check(!reloaded.observeAction(id: "0|dddddddddddd", provider: "claude", surface: "claude",
