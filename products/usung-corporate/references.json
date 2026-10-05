@@ -501,10 +501,10 @@
       }
     }
   ],
-  "layoutImplementation": "Original approved glass image with automatic movement, pointer response, and optional subpixel refraction; original source diagrams restored; approved acquired photography and footage retained with immersive cover display",
+  "layoutImplementation": "Original approved glass texture with slow continuous native deformation and localized cursor compression/inertial recovery; original reference diagrams and acquired photography/footage retained",
   "brandingRevision": "2026-10-04-home-divisions-v26",
   "photographicSceneGeneration": false,
-  "abstractGlassArtwork": "Previously requested generated glass extension retained as the same unmodified PNG; v30 interaction is a display effect around that image, with no replacement raster, new sculptural geometry, or video generation",
+  "abstractGlassArtwork": "Previously requested generated glass extension retained as the same unmodified PNG; v32 animates its existing pixels with continuous RGBA texture displacement, without new raster assets or video generation",
   "homeRevision": {
     "revision": "2026-10-04-home-divisions-v26",
     "reviewedReferences": [
@@ -626,5 +626,31 @@
     "approvedPhotoAndVideoFilesUnmodified": true,
     "fullbleedMediaLayoutRetained": true,
     "displayCroppingOnly": "Cover framing may crop approved media at viewport edges; no photo/video pixels or encoded files are changed by this revision"
+  },
+  "glassDeformationRevision": {
+    "revision": "2026-10-05-fluid-glass-v32",
+    "userCorrection": "User rejected flat image tilt and Safari white masking fringe; requested slow autonomous deformation plus localized cursor interaction comparable to omaragi.com background",
+    "reference": {
+      "url": "https://omaragi.com/",
+      "observedScript": "https://omaragi.com/static/public-ui.fe97867c2737b0ee.min.js",
+      "observedBehavior": "Localized cursor displacement of an existing constellation field; radius 148 CSS pixels and maximum push 76 CSS pixels in that reference script",
+      "adoptedPrinciple": "Localized smooth pressure and inertial recovery, applied to continuous glass texture rather than particle sampling",
+      "referenceHasAutonomousIdleMotion": false
+    },
+    "sourceImage": "assets/generated/ai-glass-extended-v1.png",
+    "sourceImageSha256": "0089f0cde4a3df2a65ea81a41e9f76334adec20f4fb51406e7693434e43740c6",
+    "sourceImageFileUnmodified": true,
+    "replacedTreatment": "v30 whole-image CSS tilt/translation and independently shifted RGB with fixed alpha",
+    "treatment": "Slow spatial UV flow plus local radial compression and damped cursor drag; full premultiplied RGBA sampled at the same displaced UV; high precision, mipmapped sampling on WebGL2, bounded Retina drawing buffer, soft zero coverage at texture bounds",
+    "implementationSources": [
+      "public/glass-interaction.js",
+      "public/glass-interaction.css"
+    ],
+    "fallback": "Static original image for unsupported high precision/WebGL, reduced motion, pause, and offscreen/hidden suspension",
+    "newRasterImageAssetGeneration": false,
+    "videoGeneration": false,
+    "approvedPhotographyAndVideoFilesUnmodified": true,
+    "domainContactPreserved": "contact@usungcorp.com",
+    "historicalV30RecordPreserved": true
   }
 }
