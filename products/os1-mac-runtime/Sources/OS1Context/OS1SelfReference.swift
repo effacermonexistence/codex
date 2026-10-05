@@ -129,10 +129,12 @@ public enum OS1SelfReference {
 
     /// A write request in a conversation whose change to OS-1 itself is still
     /// pending (build 327) continues that change only when it is about it:
-    /// OS-1 itself is named or inferred, or it is retry/continue phrasing, or
-    /// it is a short follow-up ("왜 안 됐냐", "…한 줄로") that names no URL,
-    /// website, other product or outside path. A clearly different task
-    /// ("웹사이트 푸터 색 바꿔") runs as itself.
+    /// OS-1 itself is named or inferred, or it is retry/continue phrasing
+    /// ("고치라니까", "계속", "다시 해봐", "왜 안 돼?") that names no URL,
+    /// website, other product or outside path. Length is no evidence: any
+    /// other request ("캘린더에 내일 3시 미팅 추가해줘", "다운로드 폴더
+    /// 정리해줘") runs as itself, and an OS-1 part it hands back continues the
+    /// record through the hand-back path.
     public static func continuesPendingOS1Change(_ followUp: String, os1Roots: [String] = [],
                                                  home: URL = FileManager.default.homeDirectoryForCurrentUser) -> Bool {
         if infer(request: followUp, projectless: true, os1Roots: os1Roots, home: home).bound { return true }
@@ -142,7 +144,7 @@ public enum OS1SelfReference {
         let foreign = matches(urlPattern, text) || foreignPatterns.contains { matches($0, text) } || otherProject
             || foreignTargetPath(in: words, os1Roots: os1Roots, home: home.path) != nil
         guard !foreign else { return false }
-        return matches(pendingContinuationPattern, text) || text.count <= 80
+        return matches(pendingContinuationPattern, text)
     }
 
     /// Decide whether a request not bound to any project is about OS-1 itself.

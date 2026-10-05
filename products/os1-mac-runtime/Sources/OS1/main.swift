@@ -8750,21 +8750,44 @@ func os1RepairRestageControl(output: String, commit: String?) throws -> RunSumma
 
 /// Called with the exclusive source lease held, as the repair's run starts.
 /// The attempt's window opens at its first lease (HEAD now: a commit another
-/// writer made while it waited is not its own). The repair's start is that
-/// HEAD too, unless an earlier attempt already committed this repair's change
-/// (`repairCommit`): only then does a retry keep the original start, so that
-/// commit stays its change. A retry with nothing committed starts fresh, so
-/// commits other conversations made between attempts never become its own
+/// writer made while it waited is not its own). A first attempt starts at
+/// that HEAD. A retry keeps its start when an earlier attempt committed the
+/// change (`repairCommit`). A retry with nothing on record starts where the
+/// previous attempt's window opened (`os1PendingRepairRetryStart`), so a
+/// commit that attempt made before it was killed (no catch, no lease release)
+/// is still this repair's change, while commits already installed are not
 /// (build 327 fix).
 @discardableResult
-func os1PendingRepairRecordStart(_ binding: PendingOS1RepairContext.Binding, head: String, root: String) -> PendingOS1Repair? {
-    binding.store.update(id: binding.id) { record in
+func os1PendingRepairRecordStart(_ binding: PendingOS1RepairContext.Binding, head: String, root: String,
+                                 installedCommit: () -> String? = installedOS1SourceCommit,
+                                 isAncestor: ((_ ancestor: String, _ descendant: String) -> Bool)? = nil) -> PendingOS1Repair? {
+    let ancestry = isAncestor ?? { ancestor, descendant in gitCommit(ancestor, isContainedIn: root, ref: descendant) }
+    return binding.store.update(id: binding.id) { record in
         if record.attemptStartCommit == nil {
             record.attemptStartCommit = head
-            if record.repairCommit == nil { record.startCommit = head }
+            if record.repairCommit == nil {
+                record.startCommit = record.attempts > 1
+                    ? os1PendingRepairRetryStart(previous: record.startCommit, head: head, installed: installedCommit(), isAncestor: ancestry)
+                    : head
+            }
         }
         record.sourceRoot = root
     }
+}
+
+/// The start of a retry whose earlier attempts left no recorded commit: the
+/// previous attempt's window start (`previous`), so an uninstalled commit a
+/// killed attempt made stays in the diff; raised to the installed build's
+/// source commit when that lies between it and HEAD, so what is already
+/// installed (another conversation's repair) is never staged again. HEAD
+/// when the previous start is unknown or no longer an ancestor of HEAD.
+func os1PendingRepairRetryStart(previous: String?, head: String, installed: String?,
+                                isAncestor: (_ ancestor: String, _ descendant: String) -> Bool) -> String {
+    guard let previous, previous == head || isAncestor(previous, head) else { return head }
+    if let installed, installed != previous, isAncestor(previous, installed), installed == head || isAncestor(installed, head) {
+        return installed
+    }
+    return previous
 }
 
 /// Called as the repair's run releases the exclusive source lease: HEAD then
@@ -8794,11 +8817,14 @@ func os1PendingRepairAttributeAttempt(_ record: inout PendingOS1Repair, root: St
     }
 }
 
-/// The record a further attempt runs with: the same repair (its commit, start,
+/// The record a further attempt runs with: the same repair (its commit,
 /// corrections and count kept), a fresh attempt window, `running` again.
+/// With no commit on record, the start becomes the previous attempt's window
+/// start, which the next lease bounds (`os1PendingRepairRecordStart`).
 func os1PendingRepairNextAttempt(_ existing: PendingOS1Repair, corrections: [String], submissionID: String?, root: String?,
                                  head: (String) -> String? = gitHead, now: Date = Date()) -> PendingOS1Repair {
     var record = existing
+    if record.repairCommit == nil, let previous = existing.attemptStartCommit { record.startCommit = previous }
     record.state = .running
     record.attempts += 1
     record.pid = getpid()
@@ -8817,10 +8843,13 @@ func os1PendingRepairNextAttempt(_ existing: PendingOS1Repair, corrections: [Str
 /// record (build 327 fix): its commit, start, corrections and attempt count
 /// are kept, never overwritten by a fresh record. The new request and its
 /// steering are its corrections; its draft's report is added to the record's.
-/// Nil when there is no record, or another live process is running it.
+/// Only a record that may still be retried automatically is continued: nil
+/// when there is none, another live process runs it, or its automatic
+/// attempts are used up — then the hand-back gets a fresh record, so a new
+/// OS-1 change is never tied to an abandoned one (build 327 fix).
 func os1HandBackContinuation(store: PendingOS1RepairStore, recordID: String?, steering: [String], report: String,
                              isAlive: (PendingOS1Repair) -> Bool = PendingOS1Repair.writerAlive) -> PendingOS1Repair? {
-    guard let recordID, var record = store.load(id: recordID), record.effectiveState(isAlive: isAlive) != .running else { return nil }
+    guard let recordID, var record = store.load(id: recordID), record.retryable(isAlive: isAlive) else { return nil }
     record.corrections = record.corrections + steering
     if !report.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
         record.draftReport = PendingOS1Repair.bounded(record.draftReport + "\n\nA LATER REQUEST IN THIS CONVERSATION HANDED BACK:\n" + report)
@@ -8828,10 +8857,12 @@ func os1HandBackContinuation(store: PendingOS1RepairStore, recordID: String?, st
     return record
 }
 
-/// Uncommitted edits in OS-1's runtime tree other than the version bump's own
-/// files. A failed or interrupted repair with such edits is unfinished work:
-/// it is repaired again, never staged as it is (build 327 fix). Unknown
-/// (git unreadable) counts as unfinished.
+/// Uncommitted edits in OS-1's runtime tree other than a version bump. A
+/// failed or interrupted repair with such edits is unfinished work: it is
+/// repaired again, never staged as it is (build 327 fix). The bump's files
+/// count as the bump only while their change against HEAD is nothing but
+/// the version (`os1VersionBumpOnly`): SelfUpdateCommands.swift holds the
+/// completion logic itself. Unknown (git unreadable) counts as unfinished.
 func os1RuntimeHasUnfinishedEdits(root: String) -> Bool {
     guard let git = try? findExecutable("git"),
           let status = try? commandOutput(git, ["--no-optional-locks", "-C", root, "status", "--porcelain", "--", SelfUpdate.runtimeRelativePath], timeout: 60),
@@ -8842,7 +8873,35 @@ func os1RuntimeHasUnfinishedEdits(root: String) -> Bool {
         let path = String(line.dropFirst(3))
         return path.components(separatedBy: " -> ").last ?? path
     }
-    return SelfUpdate.sourceChanges(paths).contains { !bump.contains($0) }
+    return SelfUpdate.sourceChanges(paths).contains { path in
+        guard bump.contains(path),
+              let committed = try? commandOutput(git, ["--no-optional-locks", "-C", root, "show", "HEAD:" + path], timeout: 30),
+              committed.0 == 0,
+              let current = try? Data(contentsOf: URL(fileURLWithPath: root).appendingPathComponent(path)) else { return true }
+        return !os1VersionBumpOnly(path: path, committed: committed.1, current: current)
+    }
+}
+
+/// A version-bump file whose change touches only the version: in Info.plist
+/// the CFBundleVersion and CFBundleShortVersionString values, in
+/// SelfUpdateCommands.swift the `os1RuntimeVersionString` line.
+func os1VersionBumpOnly(path: String, committed: Data, current: Data) -> Bool {
+    if path.hasSuffix(".plist") {
+        let versionKeys: Set<String> = ["CFBundleVersion", "CFBundleShortVersionString"]
+        func rest(_ data: Data) -> NSDictionary? {
+            guard let plist = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any] else { return nil }
+            return plist.filter { !versionKeys.contains($0.key) } as NSDictionary
+        }
+        guard let before = rest(committed), let after = rest(current) else { return false }
+        return before.isEqual(after)
+    }
+    let before = String(decoding: committed, as: UTF8.self).components(separatedBy: "\n")
+    let after = String(decoding: current, as: UTF8.self).components(separatedBy: "\n")
+    guard before.count == after.count else { return false }
+    let versionLine = "let os1RuntimeVersionString = "
+    return zip(before, after).allSatisfy { old, new in
+        old == new || (old.hasPrefix(versionLine) && new.hasPrefix(versionLine))
+    }
 }
 
 /// The record a write follow-up continues: a `running` record whose writer
@@ -9304,9 +9363,9 @@ func runTask(
             }
             // A new write request in a conversation whose OS-1 repair did not
             // finish continues that repair in OS-1's source (build 327) when
-            // it is about it: retry phrasing ("고치라니까"), a short follow-up,
-            // or OS-1 itself. A clearly different task runs as itself, and its
-            // answer says the OS-1 change is still pending here.
+            // it is about it: retry phrasing ("고치라니까", "계속") or OS-1
+            // itself. Any other task runs as itself, and its answer says the
+            // OS-1 change is still pending here.
             // The request's own scope decides "write" exactly as the run would.
             if escalationAvailable, monitorTaskIDOverride == nil, routingTaskOverride == nil, ownerPrompt == nil,
                let recordID, var pending = pendingStore.load(id: recordID), pending.retryable() {
@@ -9635,11 +9694,11 @@ func runTaskWithOwnerPolicy(
        let os1Root = LocalProjectWorkspace.root(containing: canonicalWorkspace, projectID: "os1-clodex") {
         if heldOS1SourceRoot.map({ URL(fileURLWithPath: $0).resolvingSymlinksInPath().standardizedFileURL.path }) != URL(fileURLWithPath: os1Root).resolvingSymlinksInPath().standardizedFileURL.path { os1SourceLease = try acquireOS1SourceWriteLease(root: os1Root) }
         os1StartHead = gitHead(os1Root)
-        // A pending OS-1 repair's first attempt starts here, with the
-        // exclusive lease held: a commit another writer made while this one
-        // waited is never claimed as this repair's (build 327). A retry keeps
-        // the original start only when an earlier attempt committed the
-        // change; with nothing committed it starts here, as a first attempt.
+        // A pending OS-1 repair's attempt window opens here, with the
+        // exclusive lease held: a commit another writer made while a first
+        // attempt waited is never claimed as this repair's (build 327). A
+        // retry starts where its previous attempt's window opened, raised
+        // past what is already installed (`os1PendingRepairRecordStart`).
         if let binding = PendingOS1RepairContext.current, let os1StartHead {
             os1PendingRepairRecordStart(binding, head: os1StartHead, root: os1Root)
             os1BoundRepairRoot = os1Root
@@ -14054,7 +14113,7 @@ func selfTest() throws {
                 return try Data(contentsOf: index) != before
             } catch { return false }
         }()),
-        ("a retry with nothing committed starts fresh under the lease; only a commit inside its own lease window is the repair's; unfinished edits are repaired again, not restaged (build 327 fix)", {
+        ("a retry with nothing committed starts past the installed build's commit; only a commit inside its own lease window is the repair's; unfinished edits are repaired again, not restaged (build 327 fix)", {
             let base = FileManager.default.temporaryDirectory.appendingPathComponent("os1-repair-attempt-window-" + UUID().uuidString, isDirectory: true)
             let root = base.appendingPathComponent("source", isDirectory: true)
             let runtime = root.appendingPathComponent(SelfUpdate.runtimeRelativePath, isDirectory: true)
@@ -14084,7 +14143,12 @@ func selfTest() throws {
                     ownerRequest: "밑에 너무 크거든 코덱스처럼 한 줄로", corrections: [], draftReport: "", sourceRoot: root.path, startCommit: start)
                 try store.save(a)
                 let binding = PendingOS1RepairContext.Binding(store: store, id: a.id)
-                guard os1PendingRepairRecordStart(binding, head: start, root: root.path)?.attemptStartCommit == start,
+                // Never the owner's installed build: the fixture's is injected.
+                var installedNow: String? = start
+                func recordStart(_ head: String) -> PendingOS1Repair? {
+                    os1PendingRepairRecordStart(binding, head: head, root: root.path, installedCommit: { installedNow })
+                }
+                guard recordStart(start)?.attemptStartCommit == start,
                       os1PendingRepairRecordAttemptEnd(binding, head: start) != nil,
                       var failedA = store.update(id: a.id, { $0.state = .failed }) else { return false }
                 os1PendingRepairAttributeAttempt(&failedA, root: root.path)
@@ -14092,15 +14156,17 @@ func selfTest() throws {
                 // Conversation B's repair commits and installs build N.
                 try "let footer = 2\n".write(to: other, atomically: true, encoding: .utf8)
                 guard run(["commit", "-q", "-am", "os1: B's footer"]), let installedB = gitHead(root.path) else { return false }
-                // A retry ("계속"): a fresh window, and with nothing committed a
-                // fresh start under the lease — never A's old start.
+                installedNow = installedB
+                // A retry ("계속"): a fresh window; with nothing committed it
+                // starts from the previous window's start, raised past the
+                // installed build's commit, so B's installed commit is not A's.
                 a = os1PendingRepairNextAttempt(failedA, corrections: ["계속"], submissionID: nil, root: root.path)
                 try store.save(a)
                 guard a.attempts == 2, a.attemptStartCommit == nil, a.attemptEndCommit == nil, a.startCommit == start,
-                      let retried = os1PendingRepairRecordStart(binding, head: installedB, root: root.path),
+                      let retried = recordStart(installedB),
                       retried.startCommit == installedB, retried.attemptStartCommit == installedB,
                       // A second run inside the same attempt keeps the window.
-                      os1PendingRepairRecordStart(binding, head: installedB, root: root.path)?.attemptStartCommit == installedB,
+                      recordStart(installedB)?.attemptStartCommit == installedB,
                       os1PendingRepairStartHead(root: root.path, binding: binding) == installedB else { return false }
                 // The retry fails again without a commit: B's commit is never
                 // A's, so nothing is "already installed" or restaged.
@@ -14130,7 +14196,7 @@ func selfTest() throws {
                 // and only it, is the repair's.
                 a = os1PendingRepairNextAttempt(failedAgain, corrections: ["계속", "고쳐"], submissionID: nil, root: root.path)
                 try store.save(a)
-                guard os1PendingRepairRecordStart(binding, head: installedB, root: root.path) != nil else { return false }
+                guard recordStart(installedB) != nil else { return false }
                 try "let row = 2\n".write(to: feature, atomically: true, encoding: .utf8)
                 guard run(["commit", "-q", "-am", "os1: A's one row"]), let own = gitHead(root.path),
                       os1PendingRepairRecordAttemptEnd(binding, head: own) != nil,
@@ -14143,7 +14209,7 @@ func selfTest() throws {
                 // A retry of a repair that committed keeps its start.
                 let kept = os1PendingRepairNextAttempt(committed, corrections: [], submissionID: nil, root: root.path)
                 try store.save(kept)
-                guard os1PendingRepairRecordStart(binding, head: later, root: root.path)?.startCommit == installedB else { return false }
+                guard recordStart(later)?.startCommit == installedB else { return false }
                 // Its commit is in OS-1's source: a clean tree restages it with
                 // no model call; a half-written edit is repaired again, unless
                 // it failed only at staging (those edits were in that build).
@@ -14159,10 +14225,94 @@ func selfTest() throws {
                 try "let row = 3 // half\n".write(to: feature, atomically: true, encoding: .utf8)
                 guard os1RuntimeHasUnfinishedEdits(root: root.path), plan(committed) == .repairAgain, plan(interrupted) == .repairAgain,
                       plan(stagingFailed) == .restage(root: root.path) else { return false }
-                // The version bump's own files are not unfinished work.
+                // The version bump's own files are not unfinished work...
                 guard run(["checkout", "--", "."]) else { return false }
                 try "import Foundation\nlet os1RuntimeVersionString = \"OS-1 Runtime 0.9.77 (fixture-build143)\"\n".write(to: commands, atomically: true, encoding: .utf8)
-                return !os1RuntimeHasUnfinishedEdits(root: root.path) && plan(committed) == .restage(root: root.path)
+                try PropertyListSerialization.data(fromPropertyList: ["CFBundleVersion": "143", "CFBundleShortVersionString": "0.9.77"],
+                    format: .xml, options: 0).write(to: plist)
+                guard !os1RuntimeHasUnfinishedEdits(root: root.path), plan(committed) == .restage(root: root.path) else { return false }
+                // ...but only the version: a half-written edit of the
+                // completion logic in SelfUpdateCommands.swift, or another
+                // Info.plist key, is unfinished work (build 327 fix).
+                try "import Foundation\nlet os1RuntimeVersionString = \"OS-1 Runtime 0.9.77 (fixture-build143)\"\nfunc restage() { if retry {\n".write(to: commands, atomically: true, encoding: .utf8)
+                guard os1RuntimeHasUnfinishedEdits(root: root.path), plan(committed) == .repairAgain,
+                      plan(stagingFailed) == .restage(root: root.path) else { return false }
+                guard run(["checkout", "--", "."]) else { return false }
+                try PropertyListSerialization.data(fromPropertyList: ["CFBundleVersion": "143", "CFBundleShortVersionString": "0.9.77",
+                    "NSHighResolutionCapable": false], format: .xml, options: 0).write(to: plist)
+                return os1RuntimeHasUnfinishedEdits(root: root.path) && plan(committed) == .repairAgain
+            } catch { return false }
+        }()),
+        ("a retry after an attempt that committed and was then killed stages that commit; an installed commit is never staged again (build 327 fix)", {
+            let base = FileManager.default.temporaryDirectory.appendingPathComponent("os1-repair-killed-" + UUID().uuidString, isDirectory: true)
+            let root = base.appendingPathComponent("source", isDirectory: true)
+            let runtime = root.appendingPathComponent(SelfUpdate.runtimeRelativePath, isDirectory: true)
+            let store = PendingOS1RepairStore(root: base.appendingPathComponent("pending", isDirectory: true))
+            defer { try? FileManager.default.removeItem(at: base) }
+            guard let git = try? findExecutable("git") else { return false }
+            func run(_ arguments: [String]) -> Bool { (try? commandOutput(git, ["-C", root.path] + arguments, timeout: 30))?.0 == 0 }
+            do {
+                let plist = runtime.appendingPathComponent("Resources/Info.plist")
+                let commands = runtime.appendingPathComponent("Sources/OS1/SelfUpdateCommands.swift")
+                let feature = runtime.appendingPathComponent("Sources/OS1App/Row.swift")
+                for folder in [plist, commands, feature].map({ $0.deletingLastPathComponent() }) {
+                    try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+                }
+                try PropertyListSerialization.data(fromPropertyList: ["CFBundleVersion": "142", "CFBundleShortVersionString": "0.9.76"],
+                    format: .xml, options: 0).write(to: plist)
+                try "import Foundation\nlet os1RuntimeVersionString = \"OS-1 Runtime 0.9.76 (fixture-build142)\"\n".write(to: commands, atomically: true, encoding: .utf8)
+                try "let row = 1\n".write(to: feature, atomically: true, encoding: .utf8)
+                guard run(["init", "-q", "-b", "os1/k"]), run(["config", "user.name", "OS-1 fixture"]),
+                      run(["config", "user.email", "fixture@os1.invalid"]), run(["add", "-A"]), run(["commit", "-q", "-m", "base"]),
+                      let start = gitHead(root.path) else { return false }
+                // The installed build is the base (injected; never the owner's).
+                let installed: String? = start
+                let killed = PendingOS1Repair(id: UUID().uuidString.lowercased(), conversationID: UUID().uuidString, submissionID: nil,
+                    ownerRequest: "진행 패널 한 줄로", corrections: [], draftReport: "", sourceRoot: root.path, startCommit: start,
+                    pid: 999_970)
+                try store.save(killed)
+                let binding = PendingOS1RepairContext.Binding(store: store, id: killed.id)
+                guard os1PendingRepairRecordStart(binding, head: start, root: root.path, installedCommit: { installed })?
+                          .attemptStartCommit == start else { return false }
+                // The attempt commits its change X, then the Mac reboots: no
+                // catch, no lease-release defer, so nothing records X.
+                try "let row = 2\n".write(to: feature, atomically: true, encoding: .utf8)
+                guard run(["commit", "-q", "-am", "os1: one row"]), let x = gitHead(root.path),
+                      let stored = store.load(id: killed.id), stored.repairCommit == nil, stored.attemptEndCommit == nil,
+                      os1PendingRepairRetryPlan(stored, root: root.path, contains: { gitCommit($1, isContainedIn: $0) },
+                          installed: { gitCommitIsInstalled($1, root: $0, installedCommit: installed) },
+                          unfinishedEdits: { os1RuntimeHasUnfinishedEdits(root: $0) }, isAlive: { _ in false }) == .repairAgain
+                else { return false }
+                // The retry keeps the killed attempt's window start, so X is
+                // still the change, and a retried model run that edits
+                // nothing finishes X instead of "no source change".
+                let retry = os1PendingRepairNextAttempt(stored, corrections: ["계속"], submissionID: nil, root: root.path)
+                try store.save(retry)
+                guard retry.startCommit == start,
+                      os1PendingRepairRecordStart(binding, head: x, root: root.path, installedCommit: { installed })?.startCommit == start
+                else { return false }
+                var staged = 0
+                let passing = SelfRepairHost(installedBuild: { 142 }, installedVersion: { "0.9.76" }, staleDiagnostic: { _ in nil },
+                    stage: { root in
+                        staged += 1
+                        return SelfUpdate.Intent(build: 143, version: "0.9.77", sourceRoot: root, sourceCommit: gitHead(root),
+                            stagedAppSHA256: String(repeating: "a", count: 64), stagedCLISHA256: String(repeating: "b", count: 64),
+                            conversationID: nil, submissionID: nil, checks: ["fixture: PASS"])
+                    }, isRegistered: { _ in false })
+                let outcome = PendingOS1RepairContext.$current.withValue(binding) {
+                    completeOS1SelfRepair(root: root.path, objective: retry.ownerRequest, startedAt: Date(), startHead: x, host: passing)
+                }
+                guard case .staged(let build, _) = outcome, build == 143, staged == 1 else { return false }
+                // The retry start: the previous start, raised to an installed
+                // commit between it and HEAD, never to one outside that range.
+                let order = ["s", "i", "h"]
+                let ancestor = { (older: String, newer: String) in
+                    (order.firstIndex(of: older) ?? 9) <= (order.firstIndex(of: newer) ?? -1) }
+                return os1PendingRepairRetryStart(previous: "s", head: "h", installed: "i", isAncestor: ancestor) == "i"
+                    && os1PendingRepairRetryStart(previous: "s", head: "h", installed: "elsewhere", isAncestor: ancestor) == "s"
+                    && os1PendingRepairRetryStart(previous: "s", head: "h", installed: nil, isAncestor: ancestor) == "s"
+                    && os1PendingRepairRetryStart(previous: "gone", head: "h", installed: "i", isAncestor: ancestor) == "h"
+                    && os1PendingRepairRetryStart(previous: nil, head: "h", installed: "i", isAncestor: ancestor) == "h"
             } catch { return false }
         }()),
         ("a hand-back from a request that ran as its own task continues the conversation's pending OS-1 record, never a fresh one (build 327 fix)", {
@@ -14177,10 +14327,10 @@ func selfTest() throws {
             record.repairCommit = "c0ffee"
             record.failedGate = "app-self-test-parallel"
             guard (try? store.save(record)) != nil else { return false }
-            // A detailed 90-character correction about the same change: no
-            // OS-1 word, no retry phrasing, so it ran as its own task.
+            // A detailed correction about the same change: no OS-1 word, no
+            // retry phrasing, so it ran as its own task.
             let followUp = "밑에 두 줄로 나오는 거 한 줄로 바꾸고 회색 글씨는 조금 더 진하게 하고 아이콘 사이 간격도 반으로 좁혀서 정리하고 전체 글씨 크기도 한 단계 줄여줘"
-            guard followUp.count > 80, !OS1SelfReference.continuesPendingOS1Change(followUp) else { return false }
+            guard !OS1SelfReference.continuesPendingOS1Change(followUp) else { return false }
             guard let earlier = os1HandBackContinuation(store: store, recordID: conversation, steering: ["회색 말고 검정"],
                       report: "OS-1 쪽 변경이 필요합니다.", isAlive: { _ in false }),
                   earlier.repairCommit == "c0ffee", earlier.startCommit == "5ea7", earlier.attempts == 1,
@@ -14196,6 +14346,20 @@ func selfTest() throws {
             // No record, or a record another live process is running: a fresh one.
             guard os1HandBackContinuation(store: store, recordID: UUID().uuidString.lowercased(), steering: [], report: "") == nil,
                   os1HandBackContinuation(store: store, recordID: nil, steering: [], report: "") == nil else { return false }
+            // A record whose automatic attempts are used up is not continued
+            // (build 327 fix): the new hand-back gets a fresh record that
+            // replaces it, so a new OS-1 change is never judged against the
+            // abandoned one. One attempt short of the cap still continues.
+            var exhausted = record
+            exhausted.state = .failed
+            exhausted.attempts = PendingOS1Repair.maximumAutomaticAttempts
+            guard (try? store.save(exhausted)) != nil,
+                  os1HandBackContinuation(store: store, recordID: conversation, steering: ["새 요청"], report: "",
+                      isAlive: { _ in false }) == nil else { return false }
+            exhausted.attempts = PendingOS1Repair.maximumAutomaticAttempts - 1
+            guard (try? store.save(exhausted)) != nil,
+                  os1HandBackContinuation(store: store, recordID: conversation, steering: [], report: "",
+                      isAlive: { _ in false })?.attempts == PendingOS1Repair.maximumAutomaticAttempts - 1 else { return false }
             var live = record
             live.state = .running
             guard (try? store.save(live)) != nil else { return false }
