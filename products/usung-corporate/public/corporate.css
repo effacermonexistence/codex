@@ -1,6 +1,6 @@
 :root{--corp-black:#090a0a;--corp-ink:#151616;--corp-paper:#eeede7;--corp-muted:#999b96;--corp-line:rgba(255,255,255,.2);--corp-signal:#ff0f6f;--corp-pad:clamp(24px,5vw,84px);--usung-heading-spacing:-.035em;--corp-font:"Manrope","Noto Sans KR",sans-serif}
 html{scroll-behavior:smooth}
-.corp-page{margin:0;background:var(--corp-black);color:var(--corp-paper);font-family:var(--corp-font);-webkit-font-smoothing:antialiased;overflow-x:hidden}
+.corp-page{margin:0;background:var(--corp-paper);color:var(--corp-paper);font-family:var(--corp-font);-webkit-font-smoothing:antialiased;overflow-x:hidden}
 .corp-page *,.corp-header *,.corp-progress{box-sizing:border-box}
 .corp-page a,.corp-header a{text-decoration:none;color:inherit}
 .corp-page button,.corp-header button{font:inherit;color:inherit}
@@ -365,10 +365,12 @@ html[dir=rtl] .corp-construction :is(.manifesto-copy,.manifesto-note,.system-hea
 .corp-construction .site-header .brand-name.usung-section-name{font-size:8px;font-weight:500;letter-spacing:.08em;white-space:nowrap;opacity:.65}
 .corp-construction .site-header .brand-name.usung-section-name:after{content:none}
 .corp-construction .brand--footer .usung-wordmark{width:180px}
-/* Footer wordmarks are all white, without the pink corner; Smart Construction uses the same black footer. */
-.corp-footer-logo .usung-wordmark,.corp-construction .brand--footer .usung-wordmark{color:#fff}
-.corp-construction .site-footer{background:var(--corp-black);color:var(--corp-paper);border-top-color:#ffffff2b}
-.corp-construction .site-footer>div{color:#92968c}
+/* All footer surfaces are white; approved black wordmark retains its pink U corner. */
+.corp-footer,.corp-construction .site-footer{background:#fff;color:var(--corp-ink);border-top-color:#15161620}
+.corp-footer-logo .usung-wordmark,.corp-construction .brand--footer .usung-wordmark{color:var(--corp-ink)}
+.corp-footer-top{border-bottom-color:#15161620}
+.corp-footer-top p,.corp-footer-bottom,.corp-construction .site-footer>div{color:#686c65}
+.corp-footer-bottom strong{color:var(--corp-ink)}
 .corp-header-contact>.corp-contact-label{font-size:11px}
 .corp-construction .future-step-media{display:none}
 @media(max-width:760px){
@@ -561,3 +563,20 @@ body:has(.corp-main-landing) .corp-intro{padding-top:80px}
 .ref-usung-credit .usung-wordmark,.usung-reference-label .usung-wordmark{width:62px;height:auto;display:inline-block;vertical-align:middle}
 .usung-reference-label{display:flex;align-items:center;gap:10px}
 @media(max-width:760px){.ref-hero-strip .ref-usung-credit{justify-content:flex-start}}
+
+/* Light page surfaces; photographed scenes retain their original illumination. */
+html:has(.corp-page){background:var(--corp-paper)}
+.ref-applications,.ref-motion-section{background:var(--corp-paper);color:var(--corp-ink)}
+.ref-usecases>article{border-top-color:#15161630}
+.ref-usecases p,.ref-usecases article>span:last-child,.ref-motion-heading>p,.ref-motion-foot{color:#686c65}
+.ref-usecase-number,.ref-motion-section .corp-eyebrow{color:#72766d}
+.ref-motion-copy{color:var(--corp-paper)}
+.corp-construction .site-header,.corp-construction .site-header.is-scrolled{background:var(--corp-paper);color:var(--corp-ink);border-color:#15161620;backdrop-filter:none}
+.corp-construction .project-cards{background:var(--corp-paper);color:var(--corp-ink)}
+.corp-construction .project-toolbar{border-color:#15161630}
+.corp-construction .project-toolbar p,.corp-construction .project-count{color:#686c65}
+.corp-construction .project-filters button[aria-pressed=true]{color:var(--corp-ink)}
+.corp-construction .card-label{color:var(--corp-paper)}
+.corp-construction .future-step{background:var(--corp-paper);color:var(--corp-ink);border-color:#15161620;backdrop-filter:none}
+.corp-construction .future-step p,.corp-construction .future-step>span{color:#686c65}
+@media(max-width:760px){.corp-construction .future{background:var(--corp-paper);color:var(--corp-ink)}}

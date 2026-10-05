@@ -100,12 +100,12 @@
       "sha256": "da37643255a86517ff64d720ef0b769974e4708432eed949ac8577369205ace8",
       "acquisition": "browser pageAssets bundle",
       "used": true,
-      "servedTransformation": "Native video compositing of approved vector brand on observed logo regions; motion tracked or constrained to source surfaces; original frame count, aspect ratio, frame rate and scenes retained; H264 re-encode, no audio",
+      "servedTransformation": "Original footage frame count/dimensions/fps retained; brand painted into observed physical planes with foreground masks, photographed ink colour, local lighting/texture and focus softness; no new screen-corner logo; H264 CRF17, no audio",
       "poster": "dexterity-perception-poster.jpg",
-      "servedBytes": 2974255,
-      "servedSha256": "386bf5031641dd7ecc48e14acce1b041a30e24521716afd5bc85b4d9f09d826b",
-      "servedFile": "assets/references/usung-perception-v22.mp4",
-      "servedPoster": "assets/references/usung-perception-v22-poster.jpg"
+      "servedBytes": 3263110,
+      "servedSha256": "3ef7e6126a73b8a6c846c40487ae503061ea0b35b1108506b2d1181c292e0e5f",
+      "servedFile": "assets/references/usung-perception-v23.mp4",
+      "servedPoster": "assets/references/usung-perception-v23-poster.jpg"
     },
     {
       "file": "dexterity-handling.mp4",
@@ -124,12 +124,12 @@
       "sha256": "ebd4a9773664e3d8a4a2c2312453b4d433e2f99deece22588a41b74f821ebeab",
       "acquisition": "browser pageAssets bundle",
       "used": true,
-      "servedTransformation": "Native video compositing of approved vector brand on observed logo regions; motion tracked or constrained to source surfaces; original frame count, aspect ratio, frame rate and scenes retained; H264 re-encode, no audio",
+      "servedTransformation": "Original footage frame count/dimensions/fps retained; brand painted into observed physical planes with foreground masks, photographed ink colour, local lighting/texture and focus softness; no new screen-corner logo; H264 CRF17, no audio",
       "poster": "dexterity-coordination-poster.jpg",
-      "servedBytes": 2867762,
-      "servedSha256": "efa891d844e3eb1fe37cf49becb61a7d2a0c820e7876c65480d1352acca693b1",
-      "servedFile": "assets/references/usung-coordination-v22.mp4",
-      "servedPoster": "assets/references/usung-coordination-v22-poster.jpg"
+      "servedBytes": 3214755,
+      "servedSha256": "3fb9fc8c79842483c3b5fae4e558f18b6ef5e93f4c2b3128d4fbf41c4a8176b0",
+      "servedFile": "assets/references/usung-coordination-v23.mp4",
+      "servedPoster": "assets/references/usung-coordination-v23-poster.jpg"
     },
     {
       "file": "dexterity-precision.mp4",
@@ -152,12 +152,12 @@
       "sha256": "e897a430a871bd8269554269bb2efa25a577535501d660f83e5328b2f3ddc6f0",
       "acquisition": "browser pageAssets bundle",
       "used": true,
-      "servedTransformation": "Native video compositing of approved vector brand on observed logo regions; motion tracked or constrained to source surfaces; original frame count, aspect ratio, frame rate and scenes retained; H264 re-encode, no audio",
+      "servedTransformation": "Original footage frame count/dimensions/fps retained; brand painted into observed physical planes with foreground masks, photographed ink colour, local lighting/texture and focus softness; no new screen-corner logo; H264 CRF17, no audio",
       "poster": "dexterity-hero-poster.jpg",
-      "servedBytes": 4569451,
-      "servedSha256": "f2912728b0064f0be8046e9505c185e2f58f2aa855a12f9ff5fbe0822a248a33",
-      "servedFile": "assets/references/usung-physical-hero-v22.mp4",
-      "servedPoster": "assets/references/usung-physical-hero-v22-poster.jpg"
+      "servedBytes": 5144551,
+      "servedSha256": "dae826af16ba054ef7753aad0b3ce92ed47693c44d01760cb57e30dd6e07255b",
+      "servedFile": "assets/references/usung-physical-hero-v23.mp4",
+      "servedPoster": "assets/references/usung-physical-hero-v23-poster.jpg"
     },
     {
       "file": "dexterity-mech.png",
@@ -176,12 +176,12 @@
       "sha256": "fa935f89175d875da3d57482d9162c5954734a9572137d09911ec03355c04761",
       "acquisition": "exact observed URL; HTTP fallback after browser bundle failure",
       "used": true,
-      "servedTransformation": "Native video compositing of approved vector brand on observed logo regions; motion tracked or constrained to source surfaces; original frame count, aspect ratio, frame rate and scenes retained; H264 re-encode, no audio",
+      "servedTransformation": "Original footage frame count/dimensions/fps retained; brand painted into observed physical planes with foreground masks, photographed ink colour, local lighting/texture and focus softness; no new screen-corner logo; H264 CRF17, no audio",
       "poster": "field-robots-poster.jpg",
-      "servedBytes": 3266952,
-      "servedSha256": "588e68abea0f10d567a865103e2e5ff8ae8889689ecc3a0b02063058160a9e09",
-      "servedFile": "assets/references/usung-field-robots-v22.mp4",
-      "servedPoster": "assets/references/usung-field-robots-v22-poster.jpg"
+      "servedBytes": 3478255,
+      "servedSha256": "336af7519093e91aa7ef366d27dcb5827c3b481da441f4b8893f407cf273ed37",
+      "servedFile": "assets/references/usung-field-robots-v23.mp4",
+      "servedPoster": "assets/references/usung-field-robots-v23-poster.jpg"
     },
     {
       "file": "generated/ai-glass-extended-v1.png",
@@ -291,5 +291,5 @@
     }
   ],
   "layoutImplementation": "HTML/CSS adapted from approved reference compositions; acquired graphic and footage files used directly",
-  "brandingRevision": "2026-10-04-usung-reference-branding-v22"
+  "brandingRevision": "2026-10-04-physical-surface-branding-v23"
 }

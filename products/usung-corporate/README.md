@@ -46,3 +46,10 @@ Previous deployment (recovery baseline): `62b8e0e4-9032-4cdb-af88-a1f7daae8ae3`.
 ## Reference branding (2026-10-04)
 
 Visible source-company marks are adapted to the approved USUNG wordmark or U symbol. Six photographs receive targeted built-in imagegen edits. Six videos receive native vector compositing on the observed logo regions, retaining scene sequence, frame count, dimensions and frame rate. Four posters are regenerated from these videos. Three native SVG diagrams receive the outlined USUNG mark. Reference labels display the approved wordmark. `reference-branding.json` records the 19 transformed assets, served checksums and photo-edit prompt set. Images and footage with no observed source-company mark remain unchanged.
+
+
+### Physical AI surface correction (v23)
+
+Four Physical AI videos and their posters are recomposited from preserved originals. Printed joint marks use constrained observations of the original paint, temporal smoothing and visibility masks; body and cloth wordmarks retain perspective tracks. Inserts match source ink brightness, local lighting, texture and focus softness. The source screen-corner watermark is removed without a replacement floating wordmark. Footage duration, frame count, dimensions, frame rate and scenes are preserved. Video files use new v23 URLs; prior files remain available for recovery.
+
+All four footers use white surfaces with the approved black USUNG mark and its pink first-U corner. Standalone wordmarks in visual-reference captions are removed. Text sections use the light site palette, while photographed scene illumination is retained. The asset record preserves source provenance and previous served checksums. Perceptual realism is reviewed visually, not asserted as universally indistinguishable.

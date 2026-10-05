@@ -1,9 +1,9 @@
 {
-  "revision": "2026-10-04-usung-reference-branding-v22",
+  "revision": "2026-10-04-physical-surface-branding-v23",
   "scope": "Currently displayed reference media on Home, AI, Smart Construction and Physical AI, including video playback and posters",
   "approvedMark": "public/assets/brand/usung-wordmark.svg",
   "photoEditor": "Built-in imagegen",
-  "videoEditor": "Native frame compositing with outlined vector logo; edited video-derived posters",
+  "videoEditor": "Native surface-plane compositing with paint detection, constrained temporal tracking, foreground visibility masks, perspective, source illumination/texture and focus matching",
   "assets": [
     {
       "source": "assets/media/built-rpd.jpg",
@@ -69,59 +69,99 @@
     },
     {
       "source": "assets/references/dexterity-hero.mp4",
-      "served": "assets/references/usung-physical-hero-v22.mp4",
-      "servedBytes": 4569451,
-      "servedSha256": "f2912728b0064f0be8046e9505c185e2f58f2aa855a12f9ff5fbe0822a248a33",
-      "transformation": "Native video compositing of approved vector brand on observed logo regions; motion tracked or constrained to source surfaces; original frame count, aspect ratio, frame rate and scenes retained; H264 re-encode, no audio"
+      "served": "assets/references/usung-physical-hero-v23.mp4",
+      "servedBytes": 5144551,
+      "servedSha256": "dae826af16ba054ef7753aad0b3ce92ed47693c44d01760cb57e30dd6e07255b",
+      "transformation": "Original footage frame count/dimensions/fps retained; brand painted into observed physical planes with foreground masks, photographed ink colour, local lighting/texture and focus softness; no new screen-corner logo; H264 CRF17, no audio",
+      "previousServed": {
+        "file": "assets/references/usung-physical-hero-v22.mp4",
+        "bytes": 4569451,
+        "sha256": "f2912728b0064f0be8046e9505c185e2f58f2aa855a12f9ff5fbe0822a248a33"
+      }
     },
     {
       "source": "assets/references/dexterity-hero-poster.jpg",
-      "served": "assets/references/usung-physical-hero-v22-poster.jpg",
-      "servedBytes": 317385,
-      "servedSha256": "a1f0dd72eab7b22e6cc0d8c556ff28cda3d4b7a3d9b283d95749bb3664737f66",
-      "transformation": "Frame at 1 second from rebranded video"
+      "served": "assets/references/usung-physical-hero-v23-poster.jpg",
+      "servedBytes": 317394,
+      "servedSha256": "3f1da0fd40e62f80e32c1e8d58e9dcf30d1b30f5836de8ca3b9c443f7f3ccdd1",
+      "transformation": "Frame at 1 second from corrected surface-branded video",
+      "previousServed": {
+        "file": "assets/references/usung-physical-hero-v22-poster.jpg",
+        "bytes": 317385,
+        "sha256": "a1f0dd72eab7b22e6cc0d8c556ff28cda3d4b7a3d9b283d95749bb3664737f66"
+      }
     },
     {
       "source": "assets/references/dexterity-perception.mp4",
-      "served": "assets/references/usung-perception-v22.mp4",
-      "servedBytes": 2974255,
-      "servedSha256": "386bf5031641dd7ecc48e14acce1b041a30e24521716afd5bc85b4d9f09d826b",
-      "transformation": "Native video compositing of approved vector brand on observed logo regions; motion tracked or constrained to source surfaces; original frame count, aspect ratio, frame rate and scenes retained; H264 re-encode, no audio"
+      "served": "assets/references/usung-perception-v23.mp4",
+      "servedBytes": 3263110,
+      "servedSha256": "3ef7e6126a73b8a6c846c40487ae503061ea0b35b1108506b2d1181c292e0e5f",
+      "transformation": "Original footage frame count/dimensions/fps retained; brand painted into observed physical planes with foreground masks, photographed ink colour, local lighting/texture and focus softness; no new screen-corner logo; H264 CRF17, no audio",
+      "previousServed": {
+        "file": "assets/references/usung-perception-v22.mp4",
+        "bytes": 2974255,
+        "sha256": "386bf5031641dd7ecc48e14acce1b041a30e24521716afd5bc85b4d9f09d826b"
+      }
     },
     {
       "source": "assets/references/dexterity-perception-poster.jpg",
-      "served": "assets/references/usung-perception-v22-poster.jpg",
-      "servedBytes": 156511,
-      "servedSha256": "3715c74433ead2041a4dcec15479f5b48fb97629f9f8ffe514527bd1f58dd203",
-      "transformation": "Frame at 1 second from rebranded video"
+      "served": "assets/references/usung-perception-v23-poster.jpg",
+      "servedBytes": 154850,
+      "servedSha256": "6a9967b307e846e0d8dd33a762f7344953123b30d4ae9e347eb13cf2b371d989",
+      "transformation": "Frame at 1 second from corrected surface-branded video",
+      "previousServed": {
+        "file": "assets/references/usung-perception-v22-poster.jpg",
+        "bytes": 156511,
+        "sha256": "3715c74433ead2041a4dcec15479f5b48fb97629f9f8ffe514527bd1f58dd203"
+      }
     },
     {
       "source": "assets/references/dexterity-coordination.mp4",
-      "served": "assets/references/usung-coordination-v22.mp4",
-      "servedBytes": 2867762,
-      "servedSha256": "efa891d844e3eb1fe37cf49becb61a7d2a0c820e7876c65480d1352acca693b1",
-      "transformation": "Native video compositing of approved vector brand on observed logo regions; motion tracked or constrained to source surfaces; original frame count, aspect ratio, frame rate and scenes retained; H264 re-encode, no audio"
+      "served": "assets/references/usung-coordination-v23.mp4",
+      "servedBytes": 3214755,
+      "servedSha256": "3fb9fc8c79842483c3b5fae4e558f18b6ef5e93f4c2b3128d4fbf41c4a8176b0",
+      "transformation": "Original footage frame count/dimensions/fps retained; brand painted into observed physical planes with foreground masks, photographed ink colour, local lighting/texture and focus softness; no new screen-corner logo; H264 CRF17, no audio",
+      "previousServed": {
+        "file": "assets/references/usung-coordination-v22.mp4",
+        "bytes": 2867762,
+        "sha256": "efa891d844e3eb1fe37cf49becb61a7d2a0c820e7876c65480d1352acca693b1"
+      }
     },
     {
       "source": "assets/references/dexterity-coordination-poster.jpg",
-      "served": "assets/references/usung-coordination-v22-poster.jpg",
-      "servedBytes": 119205,
-      "servedSha256": "8e432e233a85ce32ca3c7960b4dbdbb97db36cc91cb058cef88367b1c1c72b40",
-      "transformation": "Frame at 1 second from rebranded video"
+      "served": "assets/references/usung-coordination-v23-poster.jpg",
+      "servedBytes": 118849,
+      "servedSha256": "e140ba4b95403da2f9d9fd8466d04cc1ee1e1ce603e9c71ed05317eea3482b07",
+      "transformation": "Frame at 1 second from corrected surface-branded video",
+      "previousServed": {
+        "file": "assets/references/usung-coordination-v22-poster.jpg",
+        "bytes": 119205,
+        "sha256": "8e432e233a85ce32ca3c7960b4dbdbb97db36cc91cb058cef88367b1c1c72b40"
+      }
     },
     {
       "source": "assets/references/field-robots.mp4",
-      "served": "assets/references/usung-field-robots-v22.mp4",
-      "servedBytes": 3266952,
-      "servedSha256": "588e68abea0f10d567a865103e2e5ff8ae8889689ecc3a0b02063058160a9e09",
-      "transformation": "Native video compositing of approved vector brand on observed logo regions; motion tracked or constrained to source surfaces; original frame count, aspect ratio, frame rate and scenes retained; H264 re-encode, no audio"
+      "served": "assets/references/usung-field-robots-v23.mp4",
+      "servedBytes": 3478255,
+      "servedSha256": "336af7519093e91aa7ef366d27dcb5827c3b481da441f4b8893f407cf273ed37",
+      "transformation": "Original footage frame count/dimensions/fps retained; brand painted into observed physical planes with foreground masks, photographed ink colour, local lighting/texture and focus softness; no new screen-corner logo; H264 CRF17, no audio",
+      "previousServed": {
+        "file": "assets/references/usung-field-robots-v22.mp4",
+        "bytes": 3266952,
+        "sha256": "588e68abea0f10d567a865103e2e5ff8ae8889689ecc3a0b02063058160a9e09"
+      }
     },
     {
       "source": "assets/references/field-robots-poster.jpg",
-      "served": "assets/references/usung-field-robots-v22-poster.jpg",
-      "servedBytes": 140513,
-      "servedSha256": "ddce007c3fb400ff3134883f28d0e7322cb946717797d427ae42ba2f431f8582",
-      "transformation": "Frame at 1 second from rebranded video"
+      "served": "assets/references/usung-field-robots-v23-poster.jpg",
+      "servedBytes": 137562,
+      "servedSha256": "aacb20733e81086cb13943220da11d3f6ef8247bf014ba22049646714a1a0015",
+      "transformation": "Frame at 1 second from corrected surface-branded video",
+      "previousServed": {
+        "file": "assets/references/usung-field-robots-v22-poster.jpg",
+        "bytes": 140513,
+        "sha256": "ddce007c3fb400ff3134883f28d0e7322cb946717797d427ae42ba2f431f8582"
+      }
     },
     {
       "source": "assets/references/contextual-intelligence.svg",
@@ -185,5 +225,32 @@
       "source": "built-sunrise.jpg",
       "prompt": "Precise tiny edit to the attached photo: remove the remaining small white letter B / old company badge at the extreme left edge of the photo, on the front lower horizontal black bumper/body of the left machine (about x=0 to 10, y=775 at 1536x1024). Fill that tiny clipped badge with matching dark painted metal. Preserve ALL other pixels/scene details, composition, machines, lighting, USUNG decal on the right machine, sky, crop and aspect ratio. Do not redesign or add anything."
     }
+  },
+  "history": [
+    {
+      "revision": "2026-10-04-usung-reference-branding-v22",
+      "retained": "Original source assets and prior v22 served files retained; photo edits unchanged",
+      "correction": "Physical AI surface placement corrected from original footage; corner wordmark removed; four posters regenerated; white footer with approved pink U restored"
+    }
+  ],
+  "surfaceCorrection": {
+    "scope": [
+      "dexterity-hero",
+      "dexterity-coordination",
+      "dexterity-perception",
+      "field-robots"
+    ],
+    "originalScenesRetained": true,
+    "screenCornerLogoAdded": false,
+    "surfaceMethods": [
+      "mechanically constrained painted-mark observations",
+      "temporal pose smoothing",
+      "foreground visibility masks",
+      "perspective projection",
+      "source ink colour and local illumination",
+      "surface texture and codec softness"
+    ],
+    "perceptualClaim": "Visual review of selected full-frame and occlusion frames; no universal indistinguishability claim",
+    "footer": "White background, black approved USUNG wordmark, #FF0F6F accent at upper right of first U"
   }
 }
