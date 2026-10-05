@@ -25,7 +25,7 @@ public struct NativeExecutionProgress: Codable, Equatable, Sendable {
     /// One tool call, as Claude Code lists it while the backend works. Kept
     /// in its own ring so "processing" signals cannot push steps out.
     public struct Step: Codable, Equatable, Sendable {
-        public enum State: String, Codable, Sendable { case requested, returned, failed }
+        public enum State: String, Codable, Sendable { case observed, requested, returned, failed }
         /// 12-hex digest of provider:scope:toolID, never the raw tool id.
         public let id: String
         /// Progress sequence at which the request (or first sight) was received.
@@ -61,7 +61,7 @@ public struct NativeExecutionProgress: Codable, Equatable, Sendable {
                 (childToolUses.map { (0...1_000_000).contains($0) } ?? true) &&
                 (lastChildTool.map(NativeExecutionProgress.safeToolName) ?? true) &&
                 startedAt.timeIntervalSince1970.isFinite && (endedAt?.timeIntervalSince1970.isFinite ?? true) &&
-                (state == .requested) == (endedAt == nil)
+                ([State.observed, .requested].contains(state)) == (endedAt == nil)
         }
 
         private enum CodingKeys: String, CodingKey {

@@ -10,6 +10,10 @@ public struct NativeStepLog: Equatable, Sendable {
         public internal(set) var step: NativeExecutionProgress.Step
         /// Increments when a new native stream starts.
         public let segment: Int
+        /// The surface that supplied this step, not the provider of a later
+        /// convergence segment. Unknown legacy attribution remains nil.
+        public let provider: String?
+        public let surface: String?
         /// The step is still in the latest received ring. A requested step that
         /// scrolled out may have returned unseen, so it is not shown as waiting.
         public internal(set) var inLatestRing: Bool
@@ -26,7 +30,7 @@ public struct NativeStepLog: Equatable, Sendable {
 
     public var isEmpty: Bool { entries.isEmpty }
 
-    public mutating func merge(_ progress: NativeExecutionProgress?) {
+    public mutating func merge(_ progress: NativeExecutionProgress?, provider: String? = nil, surface: String? = nil) {
         guard let progress, progress.isValid else { return }
         if let next = progress.stream {
             if next == stream {
@@ -53,7 +57,9 @@ public struct NativeStepLog: Equatable, Sendable {
             if let index = entries.lastIndex(where: { $0.segment == segment && $0.step.id == step.id }) {
                 entries[index].step = Self.merged(entries[index].step, step)
             } else {
-                entries.append(Entry(step: step, segment: segment, inLatestRing: true))
+                entries.append(Entry(step: step, segment: segment,
+                    provider: ["codex", "claude"].contains(provider ?? "") ? provider : nil,
+                    surface: surface, inLatestRing: true))
             }
         }
         if entries.count > Self.capacity { entries.removeFirst(entries.count - Self.capacity) }
@@ -63,8 +69,11 @@ public struct NativeStepLog: Equatable, Sendable {
     /// a stale or reordered snapshot cannot undo a later observation.
     static func merged(_ old: NativeExecutionProgress.Step, _ new: NativeExecutionProgress.Step) -> NativeExecutionProgress.Step {
         var step = old
-        if step.label == nil, new.label != nil { step.label = new.label; step.verb = new.verb }
-        if step.state == .requested, new.state != .requested { step.state = new.state; step.endedAt = new.endedAt }
+        if (step.label == nil || (step.state == .observed && new.state == .observed && step.verb == "plan" && new.verb == "plan")),
+           new.label != nil { step.label = new.label; step.verb = new.verb }
+        if step.state == .observed || (step.state == .requested && [.returned, .failed].contains(new.state)) {
+            step.state = new.state; step.endedAt = new.endedAt
+        }
         if let uses = new.childToolUses, uses >= (step.childToolUses ?? 0) {
             step.childToolUses = uses; step.lastChildTool = new.lastChildTool
         }

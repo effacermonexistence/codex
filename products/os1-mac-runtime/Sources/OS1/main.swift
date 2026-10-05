@@ -5632,7 +5632,7 @@ final class CodexAppServerClient: @unchecked Sendable {
             if stream.eventCount != revision {
                 revision = stream.eventCount
                 if !stream.text.isEmpty { AttemptLatencyTrace.markOnce("first_public_output_received") }
-                RuntimeActivity.emit(.executing, provider: "codex", publicText: stream.text, tool: stream.tool, progress: stream.progress)
+                RuntimeActivity.emit(.executing, provider: "codex", publicText: stream.text, tool: stream.tool, progress: stream.progress, publicTextOrigin: .nativeAssistant)
                 if !stream.text.isEmpty { AttemptLatencyTrace.markOnce("first_public_output_published") }
             }
             guard message["method"] as? String == "turn/completed",
@@ -5656,7 +5656,7 @@ final class CodexAppServerClient: @unchecked Sendable {
             // Native final text is visible now, independently of persistence,
             // upload and REVAS. This remains an explicitly unadopted preview.
             AttemptLatencyTrace.mark("native_output_received")
-            RuntimeActivity.emit(.verifying, provider: "codex", publicText: text, progress: stream.progress)
+            RuntimeActivity.emit(.verifying, provider: "codex", publicText: text, progress: stream.progress, publicTextOrigin: .nativeAssistant)
             AttemptLatencyTrace.mark("native_output_published")
             return Data(text.utf8)
         }
@@ -5913,7 +5913,7 @@ func runCodexDesktopTurn(executable: String, threadID: String, prompt: String, w
                 previous = progress
                 progressRevision = progressStream.eventCount
                 RuntimeActivity.emit(.executing, provider: "codex", publicText: progress,
-                    tool: progressStream.tool, progress: progressStream.progress)
+                    tool: progressStream.tool, progress: progressStream.progress, publicTextOrigin: .nativeAssistant)
             }
             if let blocker = codexTurnBlocker(current, approvalRejected: false) { throw OS1Error.backendBlocked(blocker) }
             let status = current["status"] as? String
@@ -5922,7 +5922,7 @@ func runCodexDesktopTurn(executable: String, threadID: String, prompt: String, w
                     throw OS1Error.message("Desktop completed without a final answer")
                 }
                 AttemptLatencyTrace.mark("native_output_received")
-                RuntimeActivity.emit(.verifying, provider: "codex", publicText: final, progress: progressStream.progress)
+                RuntimeActivity.emit(.verifying, provider: "codex", publicText: final, progress: progressStream.progress, publicTextOrigin: .nativeAssistant)
                 AttemptLatencyTrace.mark("native_output_published")
                 return CodexTurnOutput(turnID: turnID, output: Data(final.utf8))
             }
@@ -6586,14 +6586,14 @@ private func execute(
                     revision = stream.eventCount
                     AttemptLatencyTrace.markOnce("native_output_received")
                     RuntimeActivity.emit(.verifying, provider: "claude", model: model, effort: effort,
-                        publicText: confined ? OS1SourceConfinement.strippingMarker(text, partialTail: true) : text, progress: stream.progress)
+                        publicText: confined ? OS1SourceConfinement.strippingMarker(text, partialTail: true) : text, progress: stream.progress, publicTextOrigin: .nativeAssistant)
                     AttemptLatencyTrace.markOnce("native_output_published")
                 } else if stream.eventCount != revision {
                     revision = stream.eventCount
                     if !stream.text.isEmpty { AttemptLatencyTrace.markOnce("first_public_output_received") }
                     RuntimeActivity.emit(.executing, provider: "claude", model: model, effort: effort,
                         publicText: confined ? OS1SourceConfinement.strippingMarker(stream.text, partialTail: true) : stream.text,
-                        tool: stream.tool, progress: stream.progress)
+                        tool: stream.tool, progress: stream.progress, publicTextOrigin: .nativeAssistant)
                     if !stream.text.isEmpty { AttemptLatencyTrace.markOnce("first_public_output_published") }
                 }
             },
@@ -6611,7 +6611,7 @@ private func execute(
         if let text = stream.takeClaudePublicFinal(sessionID: activeSessionID, after: &relayedResultCount) {
             AttemptLatencyTrace.markOnce("native_output_received")
             RuntimeActivity.emit(.verifying, provider: "claude", model: model, effort: effort,
-                publicText: confined ? OS1SourceConfinement.strippingMarker(text) : text, progress: stream.progress)
+                publicText: confined ? OS1SourceConfinement.strippingMarker(text) : text, progress: stream.progress, publicTextOrigin: .nativeAssistant)
             AttemptLatencyTrace.markOnce("native_output_published")
         }
         AttemptLatencyTrace.mark("provider_exited")

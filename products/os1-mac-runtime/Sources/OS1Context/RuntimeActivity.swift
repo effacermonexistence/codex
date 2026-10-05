@@ -8,6 +8,7 @@ public let activityStepBudgetBytes = 140_000
 
 public struct RuntimeActivity: Codable, Equatable, Sendable {
     public enum Phase: String, Codable, Sendable { case preparing, waitingForSource, source, authorizing, routing, executing, verifying, syncing, recovering }
+    public enum PublicTextOrigin: String, Codable, Sendable { case nativeAssistant, systemStatus }
     public let phase: Phase
     public let provider: String?
     /// Actual executed mode, recorded only after lane selection. Absence on
@@ -17,11 +18,14 @@ public struct RuntimeActivity: Codable, Equatable, Sendable {
     public let effort: String?
     public let timestamp: Date
     public let publicText: String?
+    /// Producer identity: system stage notices are not model commentary.
+    /// Absent on legacy records; never infer native authorship from fluency.
+    public let publicTextOrigin: PublicTextOrigin?
     public let tool: String?
     public let nativeSessionID: String?
     /// Native lifecycle metadata, not generated assistant prose or a verdict.
     public let progress: NativeExecutionProgress?
-    public init(_ phase: Phase, provider: String? = nil, surface: String? = nil, model: String? = nil, effort: String? = nil, timestamp: Date = Date(), publicText: String? = nil, tool: String? = nil, nativeSessionID: String? = nil, progress: NativeExecutionProgress? = nil) {
+    public init(_ phase: Phase, provider: String? = nil, surface: String? = nil, model: String? = nil, effort: String? = nil, timestamp: Date = Date(), publicText: String? = nil, tool: String? = nil, nativeSessionID: String? = nil, progress: NativeExecutionProgress? = nil, publicTextOrigin: PublicTextOrigin? = nil) {
         self.phase = phase; self.timestamp = timestamp
         // A source lease is acquired before dispatch. Never carry an earlier
         // turn's executed route or native session into this pre-backend wait.
@@ -33,13 +37,14 @@ public struct RuntimeActivity: Codable, Equatable, Sendable {
                   resolved.rawValue == raw else { return nil }
             return raw
         }
-        self.publicText = publicText; self.tool = phase == .waitingForSource ? nil : tool
+        self.publicText = publicText; self.publicTextOrigin = publicText == nil ? nil : publicTextOrigin
+        self.tool = phase == .waitingForSource ? nil : tool
         self.nativeSessionID = (phase == .waitingForSource ? nil : nativeSessionID).flatMap { UUID(uuidString: $0)?.uuidString.lowercased() }
         self.progress = phase == .waitingForSource ? nil : progress.flatMap { $0.isValid ? $0 : nil }
     }
 
     private enum CodingKeys: String, CodingKey {
-        case phase, provider, surface, model, effort, timestamp, publicText, tool, nativeSessionID, waitingReason, progress
+        case phase, provider, surface, model, effort, timestamp, publicText, tool, nativeSessionID, waitingReason, progress, publicTextOrigin
     }
     /// Decoder flag: skip `progress`. `emit` reads the previous snapshot on
     /// every event only for its route fields; decoding its step ring would
@@ -69,7 +74,8 @@ public struct RuntimeActivity: Codable, Equatable, Sendable {
             // Optional telemetry must never suppress valid public prose when
             // an older/unknown/malformed progress schema is encountered.
             progress: decoder.userInfo[Self.routeOnlyKey] as? Bool == true ? nil
-                : try? values.decode(NativeExecutionProgress.self, forKey: .progress))
+                : try? values.decode(NativeExecutionProgress.self, forKey: .progress),
+            publicTextOrigin: try? values.decode(PublicTextOrigin.self, forKey: .publicTextOrigin))
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -85,6 +91,7 @@ public struct RuntimeActivity: Codable, Equatable, Sendable {
         try values.encodeIfPresent(effort, forKey: .effort)
         try values.encode(timestamp, forKey: .timestamp)
         try values.encodeIfPresent(publicText, forKey: .publicText)
+        try values.encodeIfPresent(publicTextOrigin, forKey: .publicTextOrigin)
         try values.encodeIfPresent(tool, forKey: .tool)
         try values.encodeIfPresent(nativeSessionID, forKey: .nativeSessionID)
         try values.encodeIfPresent(progress, forKey: .progress)
@@ -117,7 +124,7 @@ public struct RuntimeActivity: Codable, Equatable, Sendable {
         default: return os1Tr("도구 작업 진행 중", "Tool work in progress")
         }
     }
-    public static func emit(_ phase: Phase, provider: String? = nil, surface: String? = nil, model: String? = nil, effort: String? = nil, publicText: String? = nil, tool: String? = nil, nativeSessionID: String? = nil, progress: NativeExecutionProgress? = nil) {
+    public static func emit(_ phase: Phase, provider: String? = nil, surface: String? = nil, model: String? = nil, effort: String? = nil, publicText: String? = nil, tool: String? = nil, nativeSessionID: String? = nil, progress: NativeExecutionProgress? = nil, publicTextOrigin: PublicTextOrigin = .systemStatus) {
         guard let path = ProcessInfo.processInfo.environment["OS1_ACTIVITY_FILE"] else { return }
         let routeDecoder = JSONDecoder()
         routeDecoder.userInfo[routeOnlyKey] = true
@@ -135,7 +142,8 @@ public struct RuntimeActivity: Codable, Equatable, Sendable {
                 model: model ?? (sameRoute ? previous?.model : nil), effort: effort ?? (sameRoute ? previous?.effort : nil),
                 publicText: publicText ?? retained, tool: tool,
                 nativeSessionID: nativeSessionID ?? (sameRoute ? previous?.nativeSessionID : nil),
-                progress: progress)
+                progress: progress,
+                publicTextOrigin: publicText == nil ? (retained == nil ? nil : previous?.publicTextOrigin) : publicTextOrigin)
         }
         guard var data = try? JSONEncoder().encode(activity(progress)) else { return }
         // The app ignores an activity file over 150,000 bytes, which would

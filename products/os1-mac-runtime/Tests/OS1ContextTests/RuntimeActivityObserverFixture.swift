@@ -23,6 +23,14 @@ func runRuntimeActivityObserverFixtures() throws {
         publicText: "PUBLIC_TEXT_UNCHANGED", tool: "Bash", progress: progress)
     let roundtrip = try JSONDecoder().decode(RuntimeActivity.self, from: JSONEncoder().encode(typedActivity))
     try check(roundtrip == typedActivity, "native metadata/public prose roundtrip changed")
+    try check(roundtrip.publicTextOrigin == nil, "legacy text gained native authorship")
+    for origin in [RuntimeActivity.PublicTextOrigin.nativeAssistant, .systemStatus] {
+        let tagged = RuntimeActivity(.executing, provider: "claude", publicText: "PUBLIC_TEXT_UNCHANGED", publicTextOrigin: origin)
+        let decoded = try JSONDecoder().decode(RuntimeActivity.self, from: JSONEncoder().encode(tagged))
+        try check(decoded.publicTextOrigin == origin && decoded.publicText == tagged.publicText, "public source tag or bytes mutated")
+    }
+    try check(RuntimeActivity(.executing, publicTextOrigin: .nativeAssistant).publicTextOrigin == nil,
+              "absent text inherited an authorship claim")
     try check(RuntimeActivity(.waitingForSource, provider: "claude", progress: progress).progress == nil,
               "pre-dispatch source wait inherited native progress")
     var malformed = try JSONSerialization.jsonObject(with: JSONEncoder().encode(typedActivity)) as! [String: Any]

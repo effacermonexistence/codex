@@ -1,0 +1,196 @@
+import Foundation
+
+/// Display-only public native output. Never used as a result, verifier input,
+/// routing prompt, conversation handoff or proof of task completion.
+public struct NativePublicRunLog: Codable, Equatable, Sendable {
+    public enum Origin: String, Codable, Sendable { case nativeAssistant, nativeUI, legacyUnattributed }
+    public enum Kind: String, Codable, Sendable { case commentary, candidate, action }
+    public struct Entry: Codable, Equatable, Sendable, Identifiable {
+        public let id: UUID
+        public let provider: String
+        public let surface: String?
+        public let stream: String
+        public let origin: Origin
+        public let kind: Kind
+        public let actionID: String?
+        public var text: String
+        public let receivedAt: Date
+    }
+    public let conversationID: UUID
+    public let submissionID: UUID
+    public let requestSHA256: String
+    public private(set) var entries: [Entry] = []
+    private var snapshots: [String: String] = [:]
+    private struct StreamIdentity: Codable, Equatable, Sendable {
+        var namespace: String
+        var lastObserved: String?
+    }
+    private var streamIdentities: [String: StreamIdentity] = [:]
+    private var boundary = 0
+    public private(set) var revision = 0
+    public init(conversationID: UUID, submissionID: UUID, requestSHA256: String) {
+        self.conversationID = conversationID; self.submissionID = submissionID; self.requestSHA256 = requestSHA256
+    }
+    public mutating func checkpoint() { boundary += 1 }
+    /// Missing/invalid optional progress must not give the same producer two
+    /// text namespaces. Bind its first observed stream to its existing session
+    /// fallback; only a change between two known streams starts a new segment.
+    public mutating func resolveStream(provider: String, nativeSessionID: String?, observedStream: String?) -> String {
+        guard ["codex", "claude"].contains(provider) else { return provider + "-unattributed" }
+        let anchor = provider + "|" + (nativeSessionID ?? "legacy")
+        let fallback = nativeSessionID ?? provider + "-legacy"
+        guard let old = streamIdentities[anchor] else {
+            let next = StreamIdentity(namespace: observedStream ?? fallback, lastObserved: observedStream)
+            streamIdentities[anchor] = next; revision += 1
+            return anchor + "|" + next.namespace
+        }
+        var next = old
+        if let observedStream {
+            if let previous = old.lastObserved, previous != observedStream { next.namespace = observedStream }
+            next.lastObserved = observedStream
+        }
+        if next != old { streamIdentities[anchor] = next; revision += 1 }
+        return anchor + "|" + next.namespace
+    }
+    @discardableResult public mutating func observe(provider: String, surface: String? = nil, stream: String, text: String,
+        candidate: Bool, origin: Origin, receivedAt: Date) -> Bool {
+        guard ["codex", "claude"].contains(provider), !stream.isEmpty, stream.utf8.count <= 256,
+              !text.isEmpty, text.utf8.count <= 4_000_000,
+              receivedAt.timeIntervalSince1970.isFinite else { return false }
+        let kind: Kind = candidate ? .candidate : .commentary
+        let key = [provider, stream, kind.rawValue].joined(separator: "|")
+        let previous = snapshots[key] ?? ""
+        guard previous != text else { return false }
+        if !candidate, !previous.isEmpty, previous.hasPrefix(text) {
+            // A shorter exact public snapshot contains no new bytes. Native
+            // partial/full normalization can trim a tail without a new message.
+            // Keep already observed history and advance the snapshot cursor so
+            // the next delta cannot re-append the entire contracted body.
+            snapshots[key] = text
+            return false
+        }
+        var delta = text
+        if !candidate, !previous.isEmpty {
+            if text.hasPrefix(previous) { delta = String(text.dropFirst(previous.count)) }
+            else {
+                // The native stream keeps a 24k tail. Match only exact public
+                // bytes; no inferred continuation or generated narration.
+                let tail = String(previous.suffix(64))
+                if tail.count == 64, let found = text.range(of: tail) { delta = String(text[found.upperBound...]) }
+            }
+        }
+        snapshots[key] = text
+        guard !delta.isEmpty else { return false }
+        // Group adjacent deltas, but never merge through an owner steering
+        // checkpoint, a native stream change or a candidate boundary.
+        let group = key + "|" + String(boundary)
+        if !candidate, let last = entries.last, last.kind == kind,
+           last.provider == provider, last.stream == group, last.origin == origin {
+            entries[entries.count - 1].text += delta
+        } else {
+            entries.append(Entry(id: UUID(), provider: provider, surface: surface, stream: group, origin: origin,
+                kind: kind, actionID: nil, text: delta, receivedAt: receivedAt))
+        }
+        revision += 1
+        return true
+    }
+    @discardableResult public mutating func observeAction(id: String, provider: String, surface: String?, text: String,
+                                                        receivedAt: Date) -> Bool {
+        guard !id.isEmpty, id.utf8.count <= 256, !text.isEmpty, text.utf8.count <= 16_384,
+              receivedAt.timeIntervalSince1970.isFinite, ["codex", "claude"].contains(provider) else { return false }
+        // Append actual state transitions rather than rewriting earlier lines:
+        // owner steering anchors must remain exact prefixes of this feed.
+        if let previous = entries.last(where: { $0.kind == .action && $0.actionID == id }), previous.text == text { return false }
+        checkpoint()
+        entries.append(Entry(id: UUID(), provider: provider, surface: surface, stream: id, origin: .nativeUI,
+            kind: .action, actionID: id, text: text, receivedAt: receivedAt))
+        revision += 1; return true
+    }
+    /// Markers are presentation labels, not model-authored sentences. The
+    /// native bytes themselves stay unchanged and the scored final is separate.
+    public var displayText: String {
+        entries.map { entry in
+            let name = ProviderSurface.resolveExecuted(rawSurface: entry.surface, provider: entry.provider)?.routeTitle
+                ?? (entry.provider == "claude" ? "Anthropic" : "OpenAI")
+            let label = entry.origin == .legacyUnattributed ? "출처 미확인 공개 출력 · 미채택"
+                : entry.kind == .candidate ? "수신 후보 출력 · 미채택"
+                : (entry.kind == .action ? "네이티브 동작" : "공개 진행 출력")
+            return name + " · " + label + "\n\n" + entry.text
+        }.joined(separator: "\n\n")
+    }
+    public func belongs(conversationID: UUID, submissionID: UUID, requestSHA256: String) -> Bool {
+        self.conversationID == conversationID && self.submissionID == submissionID && self.requestSHA256 == requestSHA256
+    }
+    public var isValid: Bool {
+        requestSHA256.range(of: #"^[0-9a-f]{64}$"#, options: .regularExpression) != nil && boundary >= 0 && revision >= 0 &&
+        entries.allSatisfy { entry in
+            ["codex", "claude"].contains(entry.provider) && !entry.stream.isEmpty && entry.stream.utf8.count <= 512 &&
+            !entry.text.isEmpty && entry.text.utf8.count <= 16_000_000 && entry.receivedAt.timeIntervalSince1970.isFinite &&
+            (entry.kind == .action ? entry.origin == .nativeUI && entry.actionID != nil : entry.origin != .nativeUI && entry.actionID == nil)
+        } && snapshots.allSatisfy { !$0.key.isEmpty && $0.key.utf8.count <= 512 && $0.value.utf8.count <= 4_000_000 } &&
+        streamIdentities.count <= 1_024 && streamIdentities.allSatisfy {
+            !$0.key.isEmpty && $0.key.utf8.count <= 256 && !$0.value.namespace.isEmpty && $0.value.namespace.utf8.count <= 256 &&
+            ($0.value.lastObserved.map { !$0.isEmpty && $0.utf8.count <= 256 } ?? true)
+        }
+    }
+}
+
+public struct NativePublicRunLogStore: Sendable {
+    public let root: URL
+    public init(root: URL? = nil) {
+        self.root = root ?? FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/OS-1/public-run-progress", isDirectory: true)
+    }
+    public func load(conversationID: UUID, submissionID: UUID, requestSHA256: String) -> NativePublicRunLog {
+        let fresh = NativePublicRunLog(conversationID: conversationID, submissionID: submissionID, requestSHA256: requestSHA256)
+        let file = root.appendingPathComponent(submissionID.uuidString.lowercased() + ".json")
+        guard !root.isSymbolicLink, !file.isSymbolicLink,
+              let attrs = try? FileManager.default.attributesOfItem(atPath: file.path),
+              attrs[.type] as? FileAttributeType == .typeRegular,
+              (attrs[.size] as? NSNumber)?.intValue ?? Int.max <= 16_000_000,
+              let bytes = try? Data(contentsOf: file),
+              let value = try? JSONDecoder().decode(NativePublicRunLog.self, from: bytes),
+              value.isValid,
+              value.belongs(conversationID: conversationID, submissionID: submissionID, requestSHA256: requestSHA256) else { return fresh }
+        return value
+    }
+    public func save(_ value: NativePublicRunLog) throws {
+        guard value.isValid, !root.isSymbolicLink else { throw CocoaError(.fileWriteInvalidFileName) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        let file = root.appendingPathComponent(value.submissionID.uuidString.lowercased() + ".json")
+        guard !file.isSymbolicLink else { throw CocoaError(.fileWriteInvalidFileName) }
+        let bytes = try JSONEncoder().encode(value)
+        guard bytes.count <= 16_000_000 else { throw CocoaError(.fileWriteOutOfSpace) }
+        try bytes.write(to: file, options: .atomic)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
+    }
+}
+
+/// Ordered off-UI persistence. Multiple native deltas coalesce; stale queued
+/// snapshots can never overwrite a newer revision. Completion may flush.
+public actor NativePublicRunLogWriter {
+    private var pending: [UUID: (NativePublicRunLog, NativePublicRunLogStore)] = [:]
+    private var persisted: [UUID: Int] = [:]
+    private var timer: Task<Void, Never>?
+    public init() {}
+    public func enqueue(_ log: NativePublicRunLog, store: NativePublicRunLogStore) {
+        guard log.revision > (persisted[log.submissionID] ?? -1),
+              log.revision >= (pending[log.submissionID]?.0.revision ?? -1) else { return }
+        pending[log.submissionID] = (log, store)
+        if timer == nil {
+            timer = Task { try? await Task.sleep(for: .milliseconds(250)); flushAll() }
+        }
+    }
+    public func flush(_ submissionID: UUID) {
+        guard let (log,store) = pending.removeValue(forKey: submissionID) else { return }
+        do { try store.save(log); persisted[submissionID] = log.revision } catch { }
+    }
+    private func flushAll() {
+        timer = nil
+        for id in Array(pending.keys) { flush(id) }
+    }
+}
+
+private extension URL {
+    var isSymbolicLink: Bool { (try? resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) == true }
+}

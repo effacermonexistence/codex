@@ -6,6 +6,7 @@ import OS1Context
 /// Step labels are the backend's own redacted words; every PRIVATE/SECRET
 /// payload below sits in a field that must never be read.
 func runNativeExecutionProgressFixtures() throws {
+    try runNativePublicItemFixtures()
     try runNativeStepLabelFixtures()
     var checks = 0
     func check(_ value: Bool, _ label: String) { precondition(value, label); checks += 1 }
@@ -355,15 +356,16 @@ func runNativeExecutionProgressFixtures() throws {
     snapshotDeclined.ingestCodexTurnSnapshot(items:[["id":"no", "type":"commandExecution", "status":"declined", "command":"rm -rf build"]],
                                             status:"inProgress", threadID:"t", turnID:"u")
     check(snapshotDeclined.progress?.steps?.first?.state == .failed, "a first-seen declined snapshot item was shown as returned")
-    // A status-less snapshot item has no lifecycle: no step, no label, no
-    // repeated observation on unchanged polls.
+    // A status-less native item has observable public content but no lifecycle:
+    // an observed label, no fabricated counters/finish, no repeated poll.
     let statusless = ExecutionStream(workspace: "/fixture/ws")
     let bare: [String: Any] = ["id":"bare-search", "type":"webSearch", "query":"swift regex"]
     statusless.ingestCodexTurnSnapshot(items:[bare], status:"inProgress", threadID:"t", turnID:"u")
     let statuslessCount = statusless.eventCount
     statusless.ingestCodexTurnSnapshot(items:[bare], status:"inProgress", threadID:"t", turnID:"u")
-    check(statusless.eventCount == statuslessCount && statusless.progress?.steps == nil &&
-          statusless.progress?.toolsRequested == 0, "a status-less snapshot item invented a step or repeated on polls")
+    check(statusless.eventCount == statuslessCount && statusless.progress?.steps?.first?.state == .observed &&
+          statusless.progress?.steps?.first?.label == "swift regex" && statusless.progress?.steps?.first?.endedAt == nil &&
+          statusless.progress?.toolsRequested == 0, "status-less public content must be visible without invented lifecycle or repeated polls")
     print("Native progress: \(checks) deterministic metadata/privacy/lifecycle checks PASS; full labelled ring " +
           String(format: "emit %.2f ms, decode %.2f ms, 12,000-dash Bash ingest %.1f ms", perEmit * 1000, perDecode * 1000, dashElapsed * 1000) +
           "; no provider calls")

@@ -4,6 +4,7 @@ import OS1Context
 
 func runExecutionFixtures() throws {
     try runNativeExecutionProgressFixtures()
+    try runNativePublicRunLogFixtures()
     var checks = 0
     func check(_ x: Bool) { precondition(x); checks += 1 }
     let claude = ExecutionStream()

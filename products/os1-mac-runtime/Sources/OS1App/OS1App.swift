@@ -5451,6 +5451,9 @@ private final class SessionStore: ObservableObject {
         /// activity snapshots. Shown while the run is on screen; the final
         /// answer replaces them, so they are never persisted.
         var nativeSteps = NativeStepLog()
+        /// Public native output survives metadata-only and convergence emits.
+        /// Kept outside ChatMessage/result/handoff; every candidate is provisional.
+        var publicRunLog: NativePublicRunLog? = nil
     }
     typealias RunOperation = @MainActor (PendingSubmission, String, String?, String?,
         @escaping @Sendable (RuntimeActivity) -> Void) async throws -> AppRunSummary
@@ -5519,9 +5522,15 @@ private final class SessionStore: ObservableObject {
     @Published var showArchived = false
     var activeActivity: RuntimeActivity { selectedSessionID.flatMap { activeRuns[$0]?.activity } ?? RuntimeActivity(.preparing) }
     var activeNativeSteps: NativeStepLog { selectedSessionID.flatMap { activeRuns[$0]?.nativeSteps } ?? NativeStepLog() }
+    func publicRunProgress(_ conversationID: UUID) -> String? {
+        guard let active = activeRuns[conversationID] else { return nil }
+        if let text = active.publicRunLog?.displayText, !text.isEmpty { return text }
+        return active.activity.publicTextOrigin == .systemStatus ? nil : active.activity.publicText
+    }
     var runStartedAt: Date? { selectedSessionID.flatMap { activeRuns[$0]?.started } }
     private var draftSaveTask: Task<Void, Never>?
     private let customStorageRoot: URL?
+    private let publicLogWriter = NativePublicRunLogWriter()
     private let nativeSessionOpener: NativeSessionOpener
     private let nativePinOperation: NativePinOperation?
     private var nativeSyncRequestID: UUID?
@@ -6613,7 +6622,8 @@ private final class SessionStore: ObservableObject {
     /// moves it.
     private func anchorSteeringInput(_ messageID: UUID, conversationID: UUID) {
         guard let active = activeRuns[conversationID], active.steeringAnchors[messageID] == nil else { return }
-        activeRuns[conversationID]?.steeringAnchors[messageID] = active.activity.publicText ?? ""
+        activeRuns[conversationID]?.steeringAnchors[messageID] = publicRunProgress(conversationID) ?? ""
+        activeRuns[conversationID]?.publicRunLog?.checkpoint()
     }
     /// Mirrors the run's own receipts onto the visible bubbles so the owner can
     /// tell an input OS-1 is still handing over from one the run has taken.
@@ -6953,6 +6963,9 @@ private final class SessionStore: ObservableObject {
         activeRuns[submission.sessionID] = ActiveRun(submissionID: submission.id, started: Date(),
             activity: RuntimeActivity(.preparing), provider: submission.provider == .auto ? nil : submission.provider,
             handedRevision: sessions[index].taskContext?.contextRevision, forkCheckpoint: checkpoint)
+        let publicLogStore = NativePublicRunLogStore(root: customStorageRoot.map { $0.appendingPathComponent("public-run-progress") })
+        activeRuns[submission.sessionID]?.publicRunLog = publicLogStore.load(conversationID: submission.sessionID,
+            submissionID: submission.id, requestSHA256: SourceContextStore.digest(Data(submission.executionRequest.utf8)))
         let startingStatus = submission.recoveryParentID != nil
             ? os1Tr("OS1이 중단된 작업 상태 확인 중", "OS1 checking the interrupted task's state")
             : os1Tr("OS1 작업 준비 중", "OS1 preparing the task")
@@ -7001,7 +7014,40 @@ private final class SessionStore: ObservableObject {
                             guard let self, self.activeRuns[submission.sessionID]?.submissionID == submission.id else { return }
                             ActivityDisplayTiming.receive(session: submission.sessionID, submission: submission.id, activity: activity)
                             self.activeRuns[submission.sessionID]?.activity = activity
-                            self.activeRuns[submission.sessionID]?.nativeSteps.merge(activity.progress)
+                            self.activeRuns[submission.sessionID]?.nativeSteps.merge(activity.progress,
+                                provider: activity.provider, surface: activity.surface)
+                            var publicLogChanged = false
+                            let publicRevision = self.activeRuns[submission.sessionID]?.publicRunLog?.revision
+                            let producerStream = activity.provider.flatMap { provider in
+                                self.activeRuns[submission.sessionID]?.publicRunLog?.resolveStream(provider: provider,
+                                    nativeSessionID: activity.nativeSessionID, observedStream: activity.progress?.stream)
+                            }
+                            if let steps = self.activeRuns[submission.sessionID]?.nativeSteps {
+                                for entry in steps.entries {
+                                    guard let provider = entry.provider else { continue }
+                                    let changed = self.activeRuns[submission.sessionID]?.publicRunLog?.observeAction(
+                                        id: entry.id, provider: provider, surface: entry.surface,
+                                        text: NativeStepPresentation.feedLine(entry.step), receivedAt: activity.timestamp) ?? false
+                                    publicLogChanged = publicLogChanged || changed
+                                }
+                            }
+                            if let text = activity.publicText, !text.isEmpty,
+                               let provider = activity.provider, ["codex", "claude"].contains(provider),
+                               [.executing, .verifying, .syncing].contains(activity.phase),
+                               activity.publicTextOrigin != .systemStatus {
+                                let stream = producerStream ?? activity.nativeSessionID ?? provider + "-legacy"
+                                let changed = self.activeRuns[submission.sessionID]?.publicRunLog?.observe(provider: provider, surface: activity.surface,
+                                    stream: stream, text: text, candidate: activity.phase != .executing,
+                                    origin: activity.publicTextOrigin == .nativeAssistant ? .nativeAssistant : .legacyUnattributed,
+                                    receivedAt: activity.timestamp) ?? false
+                                publicLogChanged = publicLogChanged || changed
+                            }
+                            if publicLogChanged || publicRevision != self.activeRuns[submission.sessionID]?.publicRunLog?.revision,
+                               let log = self.activeRuns[submission.sessionID]?.publicRunLog {
+                                // Rendering adopts the in-memory snapshot immediately;
+                                // JSON encoding and atomic file writes run on the writer actor.
+                                Task { await self.publicLogWriter.enqueue(log, store: publicLogStore) }
+                            }
                             self.activeRuns[submission.sessionID]?.provider = activity.provider.flatMap(ProviderChoice.init(rawValue:))
                             self.promoteQueuedCorrections(submission.sessionID)
                             if submission.recoveryParentID == nil,
@@ -7313,6 +7359,10 @@ private final class SessionStore: ObservableObject {
             }
             // A superseded attempt must not release the newer run's admission.
             guard activeRuns[submission.sessionID]?.submissionID == submission.id else { save(); return }
+            if let log = activeRuns[submission.sessionID]?.publicRunLog {
+                await publicLogWriter.enqueue(log, store: publicLogStore)
+                await publicLogWriter.flush(submission.id)
+            }
             // Read this run's receipts while they still identify it, so no
             // bubble keeps claiming a hand-off that can no longer happen.
             settleSteeringDelivery(conversationID: submission.sessionID, submissionID: submission.id)
@@ -12513,7 +12563,7 @@ private struct ConversationView: View {
                         session: session,
                         isRunning: store.isSessionRunning(session.id),
                         queuedSubmissions: store.queuedSubmissions.filter { $0.sessionID == session.id },
-                        publicProgress: store.activeRuns[session.id]?.activity.publicText,
+                        publicProgress: store.publicRunProgress(session.id),
                         waitingReason: store.waitingBubbleReason(session.id),
                         progressAnchors: store.activeRuns[session.id]?.steeringAnchors ?? [:]
                     )
@@ -13825,6 +13875,8 @@ private struct NativeStepPresentation {
         case "fetch": return os1Tr("웹 열기", "Fetch")
         case "webSearch": return os1Tr("웹 검색", "Web search")
         case "agent": return os1Tr("하위 에이전트", "Subagent")
+        case "plan": return os1Tr("계획", "Plan")
+        case "view": return os1Tr("보기", "View")
         case "mcp": return "MCP"
         default: return nil
         }
@@ -13836,6 +13888,20 @@ private struct NativeStepPresentation {
         }
         return verbText(step.verb).map { $0 + " · " + label } ?? label
     }
+    /// A native-public UI line, not assistant narration or a completion claim.
+    /// Lifecycle labels depend only on actual received native state.
+    static func feedLine(_ step: Step) -> String {
+        let state: String
+        switch step.state {
+        case .observed: state = os1Tr("관측", "observed")
+        case .requested: state = os1Tr("요청", "requested")
+        case .returned: state = os1Tr("반환", "returned")
+        case .failed: state = os1Tr("오류 반환", "returned an error")
+        }
+        let scope = step.scope == "main" ? "" : os1Tr("하위 에이전트 · ", "Subagent · ")
+        let detail = step.childToolUses.map { os1Tr(" · 하위 도구 ", " · child tool calls ") + String($0) } ?? ""
+        return scope + text(step) + " — " + state + detail
+    }
     /// `executing`: the backend process is still running. Once it has
     /// exited (verifying, syncing, recovering) nothing is awaited any more.
     static func rows(_ log: NativeStepLog, executing: Bool) -> [Row] {
@@ -13844,6 +13910,7 @@ private struct NativeStepPresentation {
             let waiting = step.state == .requested && entry.inLatestRing && entry.segment == log.segment && executing
             let (glyph, state): (String, String)
             switch step.state {
+            case .observed: (glyph, state) = ("·", os1Tr("관측", "observed"))
             case .requested where waiting: (glyph, state) = ("◌", os1Tr("반환 대기", "awaiting return"))
             // Left the stream's 24-step ring: its return may have arrived unseen.
             case .requested where !entry.inLatestRing: (glyph, state) = ("·", os1Tr("추적 범위 밖", "outside the tracked window"))

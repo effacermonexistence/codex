@@ -27,6 +27,10 @@ public final class ExecutionStream {
     private var toolProgressValues: [String: Double] = [:]
     private var lastProcessingObservation: [String: Date] = [:]
     private var codexSnapshotIdentity: String?
+    /// Public plan deltas only, never reasoning deltas. Complete lines are
+    /// published so a fragmented credential is not exposed before redaction.
+    private var codexPlanBuffers: [String: String] = [:]
+    private var completedCodexPlans = Set<String>()
     private var toolsRequested = 0, toolsReturned = 0
     private typealias Step = NativeExecutionProgress.Step
     /// The latest tool steps, oldest first; published inside `progress`.
@@ -122,7 +126,8 @@ public final class ExecutionStream {
     private static func newStep(key: String, tool: String, scope: String, extract: NativeStepLabel.Extract?,
                                 sequence: Int, date: Date, ended state: Step.State? = nil) -> Step {
         Step(id: stepID(key), sequence: sequence, tool: tool, scope: scope, verb: extract?.verb, label: extract?.label,
-             state: state ?? .requested, startedAt: date, endedAt: state == nil ? nil : date)
+             state: state ?? .requested, startedAt: date,
+             endedAt: state == nil || state == .observed ? nil : date)
     }
     /// Labels are written once: a later, different text for the same call is ignored.
     @discardableResult
@@ -181,7 +186,44 @@ public final class ExecutionStream {
         toolsRequested += 1
         if scope == "main" { mainToolOrder.append(key); tool = name }
         observe(.toolStarted, tool: name, scope: scope) { steps, sequence, date in
-            steps.append(Self.newStep(key: key, tool: name, scope: scope, extract: extract, sequence: sequence, date: date))
+            if let index = steps.lastIndex(where: { $0.id == Self.stepID(key) }), steps[index].state == .observed {
+                steps[index].state = .requested
+                Self.label(&steps, key: key, extract: extract)
+            } else {
+                steps.append(Self.newStep(key: key, tool: name, scope: scope, extract: extract, sequence: sequence, date: date))
+            }
+        }
+    }
+    /// A status-less native item is publicly observable, not evidence of a
+    /// tool start or finish. Do not invent a request/return counter or status.
+    private func observedItem(id: String, name: String, provider: String, extract: NativeStepLabel.Extract?,
+                              replacePublicPlan: Bool = false) {
+        guard Self.safeID(id), Self.safeTool(name) else { return }
+        let key = provider + ":main:" + id
+        if let index = nativeSteps.lastIndex(where: { $0.id == Self.stepID(key) }) {
+            if replacePublicPlan, nativeSteps[index].state == .observed, let label = extract?.label,
+               nativeSteps[index].label != label {
+                var steps = nativeSteps; steps[index].label = label; steps[index].verb = extract?.verb
+                republish(steps: steps)
+            } else { labelStep(key: key, extract: extract) }
+            return
+        }
+        observe(.toolWorking, tool: name) { steps, sequence, date in
+            steps.append(Self.newStep(key: key, tool: name, scope: "main", extract: extract,
+                sequence: sequence, date: date, ended: .observed))
+        }
+    }
+    /// Completion receipt for an item whose start was not observed. Preserve
+    /// the native return state without fabricating a request notification/count.
+    private func returnObservedItem(id: String, name: String, provider: String, failed: Bool,
+                                    extract: NativeStepLabel.Extract?) {
+        guard Self.safeID(id), Self.safeTool(name) else { return }
+        let key = provider + ":main:" + id
+        guard let index = nativeSteps.lastIndex(where: { $0.id == Self.stepID(key) }),
+              nativeSteps[index].state == .observed else { return }
+        observe(failed ? .toolFailed : .toolReturned, tool: name) { steps, _, date in
+            Self.label(&steps, key: key, extract: extract)
+            steps[index].state = failed ? .failed : .returned; steps[index].endedAt = date
         }
     }
     private func toolReturn(id: String, scope: String, provider: String, failed: Bool = false,
@@ -382,30 +424,73 @@ public final class ExecutionStream {
         }
     }
     public func ingestCodex(_ message: [String: Any], threadID: String, turnID: String) {
-        guard let p = message["params"] as? [String: Any], p["threadId"] as? String == threadID,
-              p["turnId"] as? String == turnID else { return }
-        switch message["method"] as? String {
+        let method = message["method"] as? String
+        guard let p = message["params"] as? [String: Any], p["turnId"] as? String == turnID,
+              p["threadId"] as? String == threadID || (method == "turn/plan/updated" && p["threadId"] == nil) else { return }
+        let executableTypes = ["commandExecution", "fileChange", "mcpToolCall", "webSearch", "dynamicToolCall", "collabToolCall", "collabAgentToolCall"]
+        switch method {
+        case "item/plan/delta":
+            guard let id = p["itemId"] as? String, Self.safeID(id), let delta = p["delta"] as? String,
+                  !completedCodexPlans.contains(id),
+                  codexPlanBuffers[id] != nil || codexPlanBuffers.count < 128 else { return }
+            let accumulated = String(((codexPlanBuffers[id] ?? "") + delta).prefix(2_048))
+            codexPlanBuffers[id] = accumulated
+            guard let end = accumulated.lastIndex(of:"\n") else { return }
+            let complete = accumulated[..<end].components(separatedBy:"\n").last { !$0.trimmingCharacters(in:.whitespaces).isEmpty }
+            if let complete {
+                observedItem(id:id, name:"plan", provider:"codex",
+                    extract:NativeStepLabel.codex(item:["type":"plan","text":complete],workspace:workspace), replacePublicPlan:true)
+            }
+        case "turn/plan/updated":
+            let plan = p["plan"] as? [[String: Any]] ?? []
+            let actual = plan.prefix(8).compactMap { row -> String? in
+                guard let step = row["step"] as? String else { return nil }
+                let status = row["status"] as? String
+                return ["pending", "inProgress", "completed"].contains(status ?? "") ? "[\(status!)] " + step : step
+            }.joined(separator: "; ")
+            let explanation = p["explanation"] as? String
+            let publicFields = [explanation, actual.isEmpty ? nil : actual].compactMap { $0 }.joined(separator:" · ")
+            guard !publicFields.isEmpty else { return }
+            observedItem(id: "plan-" + Self.stepID(threadID + ":" + turnID), name: "plan", provider: "codex",
+                extract: NativeStepLabel.codex(item: ["type":"plan", "text":publicFields], workspace:workspace), replacePublicPlan:true)
         case "item/agentMessage/delta":
             if let id = p["itemId"] as? String, let text = p["delta"] as? String { update(id, text: text, append: true) }
         case "item/completed":
             if let i = p["item"] as? [String: Any], i["type"] as? String == "agentMessage",
                let id = i["id"] as? String, let text = i["text"] as? String { update(id, text: text, append: false) }
             if let i = p["item"] as? [String: Any], let name = i["type"] as? String,
-               ["commandExecution", "fileChange", "mcpToolCall", "webSearch"].contains(name), let id = i["id"] as? String {
+               executableTypes.contains(name), let id = i["id"] as? String {
                 // Derive (and redact) a label only for a request still open
                 // whose step lacks one; this handler runs per stream message.
                 let key = "codex:main:" + id
                 let open = toolStates[key].map { !$0.returned } ?? false
                 toolReturn(id: id, scope: "main", provider: "codex", failed: Self.codexFailed(i["status"] as? String),
                            extract: open && needsLabel(key) ? NativeStepLabel.codex(item: i, workspace: workspace) : nil)
+                if !open { returnObservedItem(id:id, name:name, provider:"codex", failed:Self.codexFailed(i["status"] as? String),
+                    extract:NativeStepLabel.codex(item:i, workspace:workspace)) }
+            }
+            if let item = p["item"] as? [String: Any], let type = item["type"] as? String,
+               ["plan", "imageView"].contains(type), let id = item["id"] as? String {
+                if type == "plan", completedCodexPlans.count < 50_000 {
+                    completedCodexPlans.insert(id); codexPlanBuffers.removeValue(forKey:id)
+                }
+                observedItem(id:id, name:type, provider:"codex", extract:NativeStepLabel.codex(item:item, workspace:workspace), replacePublicPlan:type == "plan")
             }
         case "item/started":
             if let i = p["item"] as? [String: Any], let name = i["type"] as? String,
-               ["commandExecution", "fileChange", "mcpToolCall", "webSearch"].contains(name) {
+               executableTypes.contains(name) {
                 let id = i["id"] as? String
                 let labelled = id.map { needsLabel("codex:main:" + $0) } ?? false
-                toolRequest(id: id, name: name, scope: "main", provider: "codex",
-                            extract: labelled ? NativeStepLabel.codex(item: i, workspace: workspace) : nil)
+                if name == "webSearch", i["status"] == nil, let id {
+                    observedItem(id:id, name:name, provider:"codex", extract:NativeStepLabel.codex(item:i, workspace:workspace))
+                } else {
+                    toolRequest(id: id, name: name, scope: "main", provider: "codex",
+                                extract: labelled ? NativeStepLabel.codex(item: i, workspace: workspace) : nil)
+                }
+            }
+            if let item = p["item"] as? [String: Any], let type = item["type"] as? String,
+               ["plan", "imageView"].contains(type), let id = item["id"] as? String {
+                observedItem(id:id, name:type, provider:"codex", extract:NativeStepLabel.codex(item:item, workspace:workspace))
             }
         default: break
         }
@@ -431,7 +516,11 @@ public final class ExecutionStream {
                items.first(where: { $0.0 == id })?.1 != String(text.suffix(24_000)) {
                 update(id, text: text, append: false)
             }
-            guard ["commandExecution", "fileChange", "mcpToolCall", "webSearch"].contains(type) else { continue }
+            if ["plan", "imageView"].contains(type) {
+                observedItem(id:id, name:type, provider:"codex", extract:NativeStepLabel.codex(item:item, workspace:workspace), replacePublicPlan:type == "plan")
+                continue
+            }
+            guard ["commandExecution", "fileChange", "mcpToolCall", "webSearch", "dynamicToolCall", "collabToolCall", "collabAgentToolCall"].contains(type) else { continue }
             let itemStatus = item["status"] as? String
             let returned = ["completed", "failed", "declined"].contains(itemStatus ?? "")
             let key = "codex:main:" + id
@@ -441,6 +530,12 @@ public final class ExecutionStream {
             // finished or status-less item.
             func extract() -> NativeStepLabel.Extract? { NativeStepLabel.codex(item: item, workspace: workspace) }
             if returned, state == nil, toolStates.count < 50_000 {
+                if let prior = nativeSteps.last(where: { $0.id == Self.stepID(key) }) {
+                    if prior.state == .observed {
+                        returnObservedItem(id:id, name:type, provider:"codex", failed:Self.codexFailed(itemStatus), extract:extract())
+                    } else { labelStep(key:key, extract:extract()) }
+                    continue
+                }
                 toolStates[key] = ToolState(name: type, scope: "main", returned: true)
                 toolsRequested += 1; toolsReturned += 1
                 let failed = Self.codexFailed(itemStatus)
@@ -457,11 +552,10 @@ public final class ExecutionStream {
             } else if ["inProgress", "in_progress"].contains(itemStatus ?? "") {
                 toolRequest(id: id, name: type, scope: "main", provider: "codex", extract: needsLabel(key) ? extract() : nil)
             } else if itemStatus == nil {
-                // Some snapshot tool variants expose an item identity without
-                // a lifecycle status. Preserve observed presence only; no
-                // requested/returned count, running state or step is invented,
-                // so no label is derived for it either.
-                observeOnce("codex:" + identity + ":item:" + id, kind: .toolWorking, scope: "main", tool: type)
+                // Status-less native items still expose public UI fields.
+                // Preserve a labelled observed step, never a fabricated
+                // requested/returned count, running state or completion.
+                observedItem(id:id, name:type, provider:"codex", extract:extract())
             }
         }
         if ["completed", "failed", "interrupted"].contains(status) {

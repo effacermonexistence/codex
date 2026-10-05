@@ -19,7 +19,7 @@ public enum NativeStepLabel {
     public static let maximumBytes = 480
 
     public enum Verb: String, CaseIterable, Sendable {
-        case run, read, edit, write, add, delete, search, find, list, fetch, webSearch, agent, mcp
+        case run, read, edit, write, add, delete, search, find, list, fetch, webSearch, agent, mcp, plan, view
     }
 
     public struct Extract: Equatable, Sendable {
@@ -731,7 +731,7 @@ public enum NativeStepLabel {
         }
     }
 
-    /// Codex app-server/Desktop ThreadItem of the four tool types. Never reads
+    /// Public Codex app-server/Desktop items. Never reads
     /// `aggregatedOutput`, `arguments`, `result`, diffs or per-action raw commands.
     public static func codex(item: [String: Any], workspace: String?) -> Extract? {
         switch item["type"] as? String {
@@ -755,7 +755,20 @@ public enum NativeStepLabel {
         case "webSearch":
             let action = item["action"] as? [String: Any]
             if let query = string(item["query"]) ?? string(action?["query"]) { return make(.webSearch, query) }
+            if let queries = action?["queries"] as? [String], !queries.isEmpty {
+                return make(.webSearch, queries.prefix(3).joined(separator: "; "))
+            }
             return make(.fetch, string(action?["url"]).map(displayURL))
+        case "collabToolCall", "collabAgentToolCall":
+            // The operation and any provider-supplied nickname are public
+            // metadata. Delegated prompts and child output stay private.
+            return make(.agent, joined([string(item["tool"]), string(item["agentNickname"]) ?? string(item["agentName"])]))
+        case "dynamicToolCall":
+            return make(.mcp, string(item["tool"])) // Never arguments/contentItems.
+        case "plan":
+            return make(.plan, string(item["text"])) // Native public proposed plan, not reasoning.
+        case "imageView":
+            return make(.view, string(item["path"]).map { displayPath($0, workspace: workspace) })
         default: return nil
         }
     }
