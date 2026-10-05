@@ -25,53 +25,59 @@ struct GovernanceChartPoint: Identifiable {
     let value: Double
 }
 
-// BEGIN GOVERNANCE MONITOR DELTA SAMPLER
-/// Activity-Monitor sampling for the Δ charts. Every detector tick re-reads
-/// the receipts. An unchanged value confirms the held line up to that tick;
-/// it is not a new trial and adds no point. A changed value is recorded as a
-/// point. Missing measurements, a changed filter/pair, or a detector that did
-/// not tick for longer than `maximumTickGap` clear the trace, so the line
-/// never bridges a span nobody observed.
-struct GovernanceMonitorDeltaSampler {
-    static let maximumTickGap: TimeInterval = 5
-    private(set) var history = GovernanceDeltaHistory()
-    /// Last tick that re-read the receipts and found the newest value unchanged.
-    private(set) var confirmedAt: Date?
-    private var context = ""
-    private var lastEvidence: String?
-    static func evidence(_ item: GovernanceComparison?) -> String? {
-        guard let item else { return nil }
-        return [item.baseline, item.id, String(item.matchedScopes), String(item.measuredScopes),
-            String(item.baselineAttempts), String(item.candidateAttempts),
-            String(item.measuredBaselineCompletions), String(item.measuredCandidateCompletions),
-            String(describing: item.baselineMeanTokens), String(describing: item.candidateMeanTokens),
-            String(describing: item.baselineTaskCompletionRate), String(describing: item.candidateTaskCompletionRate),
-            String(describing: item.tokenSavings), String(describing: item.taskCompletionDelta),
-            String(describing: item.completionEfficiencyDelta), String(describing: item.latencySavings)].joined(separator: "|")
+/// What the Overview's comparison cards show for the selected pair. The
+/// period comparison (or, under All, the all-time one) is the source; when
+/// it is missing or its newest receipt predates the freshness cutoff the
+/// whole row is one stale card that keeps the old values in its note.
+struct GovernanceMonitorDeltaCards {
+    let source: GovernanceComparison?
+    let reference: GovernanceComparison?
+    let token: GovernanceDeltaHeadline
+    let completion: GovernanceDeltaHeadline
+    let efficiency: GovernanceDeltaHeadline
+
+    init(period: GovernanceComparison?, reference: GovernanceComparison?, freshAfter cutoff: Date) {
+        let source = period ?? reference
+        self.source = source
+        self.reference = reference
+        token = GovernanceDeltaHeadline.evaluate(value: source?.tokenSavings, scopes: source?.measuredScopes ?? 0,
+                                                 latestEvidence: source?.latestMeasuredEvidenceAt, freshAfter: cutoff)
+        completion = GovernanceDeltaHeadline.evaluate(value: source?.taskCompletionDelta, scopes: source?.matchedScopes ?? 0,
+                                                      latestEvidence: source?.latestEvidenceAt, freshAfter: cutoff)
+        efficiency = GovernanceDeltaHeadline.evaluate(value: source?.completionEfficiencyDelta, scopes: source?.measuredScopes ?? 0,
+                                                      latestEvidence: source?.latestMeasuredEvidenceAt, freshAfter: cutoff)
     }
-    mutating func observe(context nextContext: String, evidence: String?, at date: Date,
-                          tokenSavings: Double?, completionDelta: Double?) {
-        guard date.timeIntervalSince1970.isFinite else { return }
-        let tokenSavings = tokenSavings.flatMap { $0.isFinite ? $0 : nil }
-        let completionDelta = completionDelta.flatMap { $0.isFinite ? $0 : nil }
-        if context != nextContext { clear(); context = nextContext }
-        guard let evidence, tokenSavings != nil || completionDelta != nil else { clear(); return }
-        if let confirmedAt, date.timeIntervalSince(confirmedAt) > Self.maximumTickGap { clear() }
-        // A projection that lands after a later tick is placed at that tick,
-        // so the trace only moves forward in time.
-        let at = max(date, confirmedAt ?? date)
-        let identity = evidence + "|" + String(describing: tokenSavings) + "|" + String(describing: completionDelta)
-        if identity == lastEvidence { confirmedAt = at; return }
-        if tokenSavings == nil || completionDelta == nil { history = GovernanceDeltaHistory() }
-        history.append(at: at, tokenSavings: tokenSavings, taskCompletionDelta: completionDelta)
-        lastEvidence = identity
-        confirmedAt = at
+    /// No comparison inside the freshness window: the cards collapse into one.
+    var isStale: Bool {
+        guard source != nil else { return false }
+        if case .stale = completion { return true }
+        return false
     }
-    private mutating func clear() {
-        history = GovernanceDeltaHistory(); lastEvidence = nil; confirmedAt = nil
+    var staleSince: Date? { source?.latestEvidenceAt }
+    var staleTitle: String { GovernanceMonitorText.staleTitle(since: staleSince) }
+    /// The last measured values, kept in the stale card's note only.
+    var staleNote: String {
+        var parts = [GovernanceMonitorText.staleReason]
+        if let item = source {
+            if item.tokenSavings != nil {
+                parts.append(os1Tr("마지막 토큰 \(GovernanceMonitorText.tokenChange(savings: item.tokenSavings)) (\(GovernanceMonitorText.tokenCohort(item)))",
+                                   "last tokens \(GovernanceMonitorText.tokenChange(savings: item.tokenSavings)) (\(GovernanceMonitorText.tokenCohort(item)))"))
+            }
+            parts.append(adoptionSummary(item))
+        }
+        return parts.joined(separator: " · ")
+    }
+    func adoptionSummary(_ item: GovernanceComparison) -> String {
+        let date = item.latestEvidenceAt.map { " · " + GovernanceMonitorText.shortDate($0) } ?? ""
+        if item.completionDeltaIsSelectionBiased {
+            let (base, cand) = GovernanceMonitorText.sideNames(baseline: item.baseline, candidate: item.id)
+            return os1Tr("\(base) 실패 후 \(cand) \(item.candidateCompletedScopes)/\(item.matchedScopes) 성공\(date)",
+                         "\(cand) after \(base) failed: \(item.candidateCompletedScopes)/\(item.matchedScopes) succeeded\(date)")
+        }
+        return os1Tr("요청 묶음 채택 \(GovernanceMonitorText.percentagePoints(item.taskCompletionDelta)) (n=\(item.matchedScopes)\(date))",
+                     "request-scope adoption \(GovernanceMonitorText.percentagePoints(item.taskCompletionDelta)) (n=\(item.matchedScopes)\(date))")
     }
 }
-// END GOVERNANCE MONITOR DELTA SAMPLER
 
 /// Read-only projection; opening this panel never starts a provider, replay, or benchmark.
 struct GovernanceMonitorView: View {
@@ -80,7 +86,11 @@ struct GovernanceMonitorView: View {
     var onClose: (() -> Void)? = nil
     var preview: Bool = false
     @State var snapshot = GovernanceSnapshot()
-    @State private var window = "전체"
+    /// The monitor opens on the last 7 days: an all-time rate over weeks of
+    /// receipts barely moves, which read as a frozen number. The all-time
+    /// figure stays in the adoption card's note.
+    static let defaultWindow = "7일"
+    @State private var window = GovernanceMonitorView.defaultWindow
     @State private var provider = "전체"
     @State private var baseline = ""
     @State private var candidate = ""
@@ -88,70 +98,64 @@ struct GovernanceMonitorView: View {
     @State private var scenarioTasks = 100
     @State private var selectedTaskID = ""
     @State private var refreshed = Date()
-    @State private var deltaSampler = GovernanceMonitorDeltaSampler()
     @State private var projection: GovernanceDashboardProjection
-    @State private var projectionFilterContext = "전체|전체"
+    @State private var projectionFilterContext: String
+    /// All-time projection (same provider filter) for route comparisons.
+    /// Matched retry scopes are historical evidence; the period decides only
+    /// whether that evidence is fresh enough for a headline.
+    @State private var evidence: GovernanceDashboardProjection
+    @State private var evidenceProvider = "전체"
     @StateObject private var accounts = BackendAccountsModel()
     @Environment(\.dismiss) private var dismiss
     private let green = Color(red: 0.23, green: 0.9, blue: 0.56)
     private let pink = Color(red: 0.99, green: 0.61, blue: 0.77)
     private let muted = Color(white: 0.59)
 
-    /// `previewElapsed` renders the preview as it looks after that many
-    /// one-second ticks in which no receipt changed: the same value is
-    /// re-confirmed each tick. Live panels always start at zero.
     init(active: [String] = [], queued: Int = 0, onClose: (() -> Void)? = nil,
          preview: Bool = false, snapshot: GovernanceSnapshot = GovernanceSnapshot(),
-         previewSection: String = GovernanceMonitorSection.live.rawValue, previewElapsed: Int = 0) {
+         previewSection: String = GovernanceMonitorSection.live.rawValue) {
         self.active = active
         self.queued = queued
         self.onClose = onClose
         self.preview = preview
-        let elapsed = preview ? max(0, min(previewElapsed, 3_600)) : 0
         _snapshot = State(initialValue: snapshot)
         _section = State(initialValue: GovernanceMonitorSection(rawValue: previewSection) ?? .live)
-        _refreshed = State(initialValue: snapshot.loadedAt.addingTimeInterval(TimeInterval(elapsed)))
-        let initialProjection = snapshot.dashboardProjection(provider: nil, since: nil,
-                                                             includeHistorical: true, now: snapshot.loadedAt)
-        _projection = State(initialValue: initialProjection)
-        let available = initialProjection.rows.filter { $0.attempts > 0 }
-        let initialBaseline = available.first(where: {
-            initialProjection.comparisonsByBaseline[$0.id]?.contains { $0.tokenSavings != nil } == true
-        })?.id ?? available.first(where: {
-            !(initialProjection.comparisonsByBaseline[$0.id] ?? []).isEmpty
-        })?.id ?? available.first?.id ?? ""
-        _baseline = State(initialValue: initialBaseline)
-        let initialComparisons = initialProjection.comparisonsByBaseline[initialBaseline] ?? []
-        let initialCandidate = initialComparisons.first(where: { $0.tokenSavings != nil })?.id
-            ?? initialComparisons.first?.id ?? ""
-        _candidate = State(initialValue: initialCandidate)
-        if let comparison = initialComparisons.first(where: { $0.id == initialCandidate }) {
-            var sampler = GovernanceMonitorDeltaSampler()
-            for tick in 0...elapsed {
-                sampler.observe(context: ["전체", "전체", initialBaseline, initialCandidate].joined(separator: "|"),
-                    evidence: GovernanceMonitorDeltaSampler.evidence(comparison),
-                    at: snapshot.loadedAt.addingTimeInterval(TimeInterval(tick)),
-                    tokenSavings: comparison.tokenSavings, completionDelta: comparison.taskCompletionDelta)
-            }
-            _deltaSampler = State(initialValue: sampler)
-        }
+        _refreshed = State(initialValue: snapshot.loadedAt)
+        let window = Self.defaultWindow
+        let allTime = snapshot.dashboardProjection(provider: nil, since: nil, includeHistorical: true, now: snapshot.loadedAt)
+        let period = Self.since(window: window, now: snapshot.loadedAt).map {
+            snapshot.dashboardProjection(provider: nil, since: $0, includeHistorical: false, now: snapshot.loadedAt)
+        } ?? allTime
+        _projection = State(initialValue: period)
+        _projectionFilterContext = State(initialValue: [window, "전체"].joined(separator: "|"))
+        _evidence = State(initialValue: allTime)
+        let pair = allTime.defaultComparison()
+        let fallback = allTime.rows.first { $0.attempts > 0 }?.id ?? ""
+        _baseline = State(initialValue: pair?.baseline ?? fallback)
+        _candidate = State(initialValue: pair?.id ?? (allTime.comparisonsByBaseline[fallback]?.first?.id ?? ""))
     }
-    private var since: Date? {
-        window == "전체" ? nil : refreshed.addingTimeInterval(window == "24시간" ? -86_400 : -604_800)
+    private static func since(window: String, now: Date) -> Date? {
+        window == "전체" ? nil : now.addingTimeInterval(window == "24시간" ? -86_400 : -604_800)
     }
+    private var since: Date? { Self.since(window: window, now: refreshed) }
     private var filterContext: String { [window, provider].joined(separator: "|") }
     private var projectionIsCurrent: Bool { projectionFilterContext == filterContext }
+    private var evidenceIsCurrent: Bool { evidenceProvider == provider }
     private var projectionRequestID: String {
         let rollingWindowTick = window == "전체" ? "all" : String(Int(refreshed.timeIntervalSince1970))
         return [String(snapshot.loadedAt.timeIntervalSince1970), filterContext, rollingWindowTick]
             .joined(separator: "|")
+    }
+    /// Recomputed when the receipts or the provider change, not every tick.
+    /// Under All the period projection already is the all-time one.
+    private var evidenceRequestID: String {
+        [String(snapshot.loadedAt.timeIntervalSince1970), provider, window == "전체" ? "all" : "period"].joined(separator: "|")
     }
     private var filtered: GovernanceSnapshot { projection.snapshot }
     private var tasks: [GovernanceTask] { projectionIsCurrent ? projection.tasks : [] }
     private var terminal: [GovernanceTask] { projectionIsCurrent ? projection.terminalTasks : [] }
     private var rows: [GovernanceRoute] { projectionIsCurrent ? projection.rows : [] }
     private var measuredRows: [GovernanceRoute] { rows.filter { $0.measuredAttempts > 0 }.prefix(8).map { $0 } }
-    private var baselineRow: GovernanceRoute? { rows.first { $0.id == baseline } }
     private var maxMeanTokens: Double { max(1, measuredRows.compactMap(\.meanTokens).max() ?? 1) }
     private var samples: [(String, CompletionFeedbackObservation)] { projectionIsCurrent ? projection.samples : [] }
     private var usage: [Int] { samples.compactMap { GovernanceSnapshot.tokens($0.1) } }
@@ -167,13 +171,27 @@ struct GovernanceMonitorView: View {
         guard !terminal.isEmpty, terminal.count == meteredTasks.count, tokens > 0, completed > 0 else { return nil }
         return Double(tokens) / Double(completed)
     }
+    /// Route rows and comparisons for the baseline/comparison pickers come
+    /// from the all-time evidence projection (see `evidence`).
+    private var evidenceRows: [GovernanceRoute] { evidenceIsCurrent ? evidence.rows.filter { $0.attempts > 0 } : [] }
     private var comparisons: [GovernanceComparison] {
-        projectionIsCurrent ? (projection.comparisonsByBaseline[baseline] ?? []) : []
+        evidenceIsCurrent ? (evidence.comparisonsByBaseline[baseline] ?? []) : []
     }
+    /// The selected pair over all recorded evidence (charts, Details).
     private var selectedComparison: GovernanceComparison? { comparisons.first { $0.id == candidate } }
-    private var candidateRow: GovernanceRoute? { rows.first { $0.id == candidate } }
+    /// The selected pair inside the period (the period's own cohort).
+    private var periodComparison: GovernanceComparison? {
+        if window == "전체" { return selectedComparison }
+        guard projectionIsCurrent else { return nil }
+        return projection.comparisonsByBaseline[baseline]?.first { $0.id == candidate }
+    }
+    /// Evidence older than this is not a current number: the period start,
+    /// or seven days back under All.
+    private var freshnessCutoff: Date { since ?? refreshed.addingTimeInterval(-604_800) }
+    private var deltaCards: GovernanceMonitorDeltaCards {
+        GovernanceMonitorDeltaCards(period: periodComparison, reference: selectedComparison, freshAfter: freshnessCutoff)
+    }
     private var taskCompletionDelta: Double? { selectedComparison?.taskCompletionDelta }
-    private var completionEfficiencyDelta: Double? { selectedComparison?.completionEfficiencyDelta }
     private var meteredTasks: [GovernanceTask] { terminal.filter { $0.tokens != nil } }
     private var quality: GovernanceQualitySummary {
         projectionIsCurrent ? projection.quality : GovernanceQualitySummary(outcomes: [], tokens: [])
@@ -189,11 +207,6 @@ struct GovernanceMonitorView: View {
     private var recentTasks: [GovernanceTask] { Array(tasks.sorted { $0.startedAt > $1.startedAt }.prefix(12)) }
     private var selectedTask: GovernanceTask? {
         tasks.first { $0.id == selectedTaskID } ?? recentTasks.first
-    }
-    private var selectedSavedTokensPerTask: Int? {
-        guard let baseline = selectedComparison?.baselineMeanTokens,
-              let candidate = selectedComparison?.candidateMeanTokens else { return nil }
-        return Int((baseline - candidate).rounded())
     }
     private var projectedBaselineTokens: Int? {
         selectedComparison?.baselineMeanTokens.map { Int(($0 * Double(scenarioTasks)).rounded()) }
@@ -233,72 +246,26 @@ struct GovernanceMonitorView: View {
         guard let value else { return "—" }
         return value >= 0 ? os1Tr("+\(num(value)) 절약", "+\(num(value)) saved") : os1Tr("\(num(abs(value))) 추가", "\(num(abs(value))) extra")
     }
-    private var currentHistoryContext: String { [window, provider, baseline, candidate].joined(separator: "|") }
-    private var deltaHistory: GovernanceDeltaHistory { deltaSampler.history }
-    /// Cohort label for every token-based figure: matched scopes with usage
-    /// measured on both routes, out of all matched scopes. A scope with an
-    /// unmeasured attempt is excluded, never priced at zero, so the count is
-    /// part of the number.
-    private func tokenCohortNote(_ item: GovernanceComparison?) -> String {
-        guard let item else { return os1Tr("재시도 묶음 비교 데이터 없음", "No retry-scope comparison data") }
-        return item.tokenSavings != nil
-            ? os1Tr("실측 \(item.measuredScopes)/\(item.matchedScopes)묶음 · 실패·재시도 포함",
-                    "Measured \(item.measuredScopes)/\(item.matchedScopes) scopes · includes failures and retries")
-            : (item.measuredScopes == 0 ? os1Tr("matched \(item.matchedScopes)묶음 · 완전 계측 묶음 없음",
-                                                "\(item.matchedScopes) matched scopes · no fully metered scope")
-                : os1Tr("실측 \(item.measuredScopes)/\(item.matchedScopes)묶음 · 상대 토큰 차이 정의 불가",
-                        "Measured \(item.measuredScopes)/\(item.matchedScopes) scopes · relative token difference undefined"))
-    }
-    private var tokenDeltaEmptyText: String {
-        guard let item = selectedComparison else { return os1Tr("재시도 묶음 비교 데이터가 없습니다.", "No retry-scope comparison data.") }
-        if item.tokenSavings != nil { return deltaSampleWaitText }
-        return item.measuredScopes == 0
-            ? os1Tr("matched \(item.matchedScopes)묶음 · 모든 시도의 토큰이 측정된 묶음이 없습니다.",
-                    "\(item.matchedScopes) matched scopes · no scope has tokens measured for every attempt.")
-            : os1Tr("실측 \(item.measuredScopes)묶음 · 기준 토큰이 0이면 상대 차이는 정의되지 않습니다.",
-                    "\(item.measuredScopes) measured scopes · the relative difference is undefined when baseline tokens are 0.")
-    }
     private func efficiencyCohortNote(_ item: GovernanceComparison?) -> String {
         guard let item else { return os1Tr("채택/1M tok · 실패·재시도 포함", "Adoptions/1M tok · includes failures and retries") }
+        let date = item.latestMeasuredEvidenceAt.map { " · " + GovernanceMonitorText.shortDate($0) } ?? ""
         if item.completionEfficiencyDelta != nil {
-            return os1Tr("채택/1M tok · 실측 \(item.measuredScopes)묶음 · 실패·재시도 포함",
-                         "Adoptions/1M tok · \(item.measuredScopes) measured scopes · includes failures and retries")
+            return os1Tr("채택/1M tok · n=\(item.measuredScopes)\(date) · 실패·재시도 포함",
+                         "Adoptions/1M tok · n=\(item.measuredScopes)\(date) · includes failures and retries")
         }
         if item.measuredScopes == 0 { return os1Tr("채택/1M tok · 완전 계측 묶음 없음", "Adoptions/1M tok · no fully metered scope") }
-        return os1Tr("실측 \(item.measuredScopes)묶음 · 0 토큰 분모 또는 기준 채택 0이면 상대 효율 정의 불가",
-                     "\(item.measuredScopes) measured scopes · relative efficiency undefined with a 0-token denominator or 0 baseline adoptions")
+        return os1Tr("n=\(item.measuredScopes)\(date) · 기준 채택 0 또는 0 토큰이면 정의 불가",
+                     "n=\(item.measuredScopes)\(date) · undefined with 0 baseline adoptions or a 0-token denominator")
     }
-    /// Shown while a defined value waits for its first one-second sample, or
-    /// after a stalled detector cleared the trace.
-    private var deltaSampleWaitText: String {
-        os1Tr("다음 1초 표본 대기 중 · 감지가 끊긴 구간은 잇지 않습니다.",
-              "Waiting for the next 1-second sample · spans the detector did not observe are not joined.")
+    /// The same session continues on a later attempt in most retry scopes,
+    /// so the later route starts warm. Named on every token figure.
+    private var sessionResumeNote: String {
+        os1Tr("후속 시도가 같은 세션을 이어 쓸 수 있어 경로 효과와 섞임",
+              "a later attempt may resume the same session, so route and warm start are mixed")
     }
-    /// Rolling Activity-Monitor window for the Δ charts, anchored to the tick.
-    private static let deltaWindowSeconds: TimeInterval = 120
-    private var deltaWindowStart: Date { refreshed.addingTimeInterval(-Self.deltaWindowSeconds) }
-    /// Held line through the window: one sample per value, extended to the last
-    /// tick that re-read the receipts and found it unchanged.
-    private var deltaTrace: [GovernanceDeltaPoint] {
-        deltaHistory.trace(from: deltaWindowStart, to: refreshed, heldUntil: deltaSampler.confirmedAt)
-    }
-    /// Dots: only the instants a receipt change produced a new value.
-    private var deltaChanges: [GovernanceDeltaPoint] {
-        deltaHistory.points.filter { $0.id >= deltaWindowStart && $0.id <= refreshed }
-    }
-    private func tokenPoints(_ points: [GovernanceDeltaPoint]) -> [GovernanceChartPoint] {
-        points.compactMap { point in point.tokenSavings.map { GovernanceChartPoint(id: point.id, value: $0 * 100) } }
-    }
-    private func completionPoints(_ points: [GovernanceDeltaPoint]) -> [GovernanceChartPoint] {
-        points.compactMap { point in point.taskCompletionDelta.map { GovernanceChartPoint(id: point.id, value: $0 * 100) } }
-    }
-    /// When the newest receipt behind a Δ value was recorded, so a flat line
-    /// over old evidence reads as old evidence, not as a frozen display.
-    private func evidenceAge(_ date: Date?, defined: Bool) -> String {
-        guard defined else { return "" }
-        guard let date else { return os1Tr("근거 시각 미기록(과거 원장)", "Evidence time unrecorded (legacy ledger)") }
-        let stamp = date.formatted(.dateTime.month(.defaultDigits).day().hour().minute())
-        return os1Tr("근거 최종 영수증 \(stamp)", "Newest evidence receipt \(stamp)")
+    private func evidenceStamp(_ date: Date?) -> String {
+        guard let date else { return os1Tr("근거 시각 미기록(과거 원장)", "evidence time unrecorded (legacy ledger)") }
+        return date.formatted(.dateTime.month(.defaultDigits).day().hour().minute())
     }
     /// Live activity is independent of matched baseline/candidate data. The
     /// delta charts stay empty until a paired comparison exists; that must not
@@ -373,11 +340,6 @@ struct GovernanceMonitorView: View {
                 if let update {
                     snapshot = update.snapshot
                 }
-                // Polling updates the clock/activity strip, not trial count.
-                // The sampler records only changed comparison evidence.
-                if projectionIsCurrent {
-                    recordDeltaPoint(at: refreshed)
-                }
                 try? await Task.sleep(until: tick.advanced(by: .seconds(1)), clock: .continuous)
             }
         }
@@ -395,38 +357,49 @@ struct GovernanceMonitorView: View {
             guard !Task.isCancelled else { return }
             projection = next
             projectionFilterContext = context
+            if selectedSince == nil {
+                evidence = next
+                evidenceProvider = provider
+            }
             setBaseline()
-            await Task.yield()
-            recordDeltaPoint(at: now)
+        }
+        .task(id: evidenceRequestID) {
+            guard window != "전체" else { return }
+            let source = snapshot
+            let selectedProvider = provider == "전체" ? nil : provider
+            let context = provider
+            let now = refreshed
+            let next = await Task.detached(priority: .utility) {
+                source.dashboardProjection(provider: selectedProvider, since: nil, includeHistorical: true, now: now)
+            }.value
+            guard !Task.isCancelled else { return }
+            evidence = next
+            evidenceProvider = context
+            setBaseline()
         }
         .onChange(of: baseline) { _ in setCandidate() }
-        .onChange(of: currentHistoryContext) { _ in
-            deltaSampler = GovernanceMonitorDeltaSampler()
-            if projectionIsCurrent { recordDeltaPoint(at: refreshed) }
-        }
     }
-    private func recordDeltaPoint(at date: Date) {
-        deltaSampler.observe(context: currentHistoryContext,
-            evidence: GovernanceMonitorDeltaSampler.evidence(selectedComparison), at: date,
-            tokenSavings: selectedComparison?.tokenSavings, completionDelta: taskCompletionDelta)
-    }
+    /// Keeps the owner's choice while it exists; otherwise opens on the
+    /// comparison with the newest evidence (`defaultComparison`).
     private func setBaseline() {
-        guard projectionIsCurrent else { return }
-        let available = rows.filter { $0.attempts > 0 }
+        guard evidenceIsCurrent else { return }
+        let available = evidenceRows
         if !available.contains(where: { $0.id == baseline }) {
-            baseline = available.first(where: {
-                projection.comparisonsByBaseline[$0.id]?.contains { $0.tokenSavings != nil } == true
-            })?.id
-                ?? available.first(where: { !(projection.comparisonsByBaseline[$0.id] ?? []).isEmpty })?.id
-                ?? available.first?.id
-                ?? ""
+            if let pair = evidence.defaultComparison() {
+                baseline = pair.baseline
+                candidate = pair.id
+            } else {
+                baseline = available.first?.id ?? ""
+            }
         }
         setCandidate()
     }
     private func setCandidate() {
         let ids = comparisons.map(\.id)
         if !ids.contains(candidate) {
-            candidate = comparisons.first(where: { $0.tokenSavings != nil })?.id ?? ids.first ?? ""
+            let newest = evidence.defaultComparison()
+            candidate = newest?.baseline == baseline ? newest!.id
+                : (comparisons.max { ($0.latestEvidenceAt ?? .distantPast, $0.measuredScopes) < ($1.latestEvidenceAt ?? .distantPast, $1.measuredScopes) }?.id ?? "")
         }
     }
     private var header: some View {
@@ -443,7 +416,7 @@ struct GovernanceMonitorView: View {
                 .scaleEffect(preview ? 1 : (heartbeatPulse ? 1.45 : 0.8))
                 .opacity(preview ? 1 : (heartbeatPulse ? 1 : 0.5))
             Text(preview ? os1Tr("읽기 전용 미리보기", "Read-only preview")
-                 : os1Tr("영수증 조회 · 1초 표본 · Δ 점은 영수증 변경 시점", "Receipt lookup · 1s samples · Δ dots mark receipt changes"))
+                 : os1Tr("영수증 폴더 1초마다 확인 · Δ 그래프는 영수증 시각 기준", "Receipt folder checked every second · Δ charts use receipt time"))
                 .font(.system(size: 11)).foregroundStyle(green)
             Button { if let onClose { onClose() } else { dismiss() } } label: { Image(systemName: "xmark").frame(width: 26, height: 26) }
                 .buttonStyle(.plain).accessibilityLabel("Close governance monitor")
@@ -452,8 +425,9 @@ struct GovernanceMonitorView: View {
     private var heartbeatPulse: Bool {
         Int(refreshed.timeIntervalSince1970) % 2 == 0
     }
-    /// A detector heartbeat, deliberately separate from task telemetry. It
-    /// proves the one-second polling loop is alive without fabricating work.
+    /// Liveness indicator for the one-second check, deliberately separate
+    /// from task telemetry: the pulse moves with the clock, not with data.
+    /// Its label says so, so it is never read as a chart.
     private func heartbeatTrace(width: CGFloat, height: CGFloat) -> some View {
         let phase = CGFloat(Int(refreshed.timeIntervalSince1970) % 12) / 11
         return Canvas { context, size in
@@ -473,7 +447,8 @@ struct GovernanceMonitorView: View {
         }
         .frame(width: width, height: height)
         .accessibilityElement()
-        .accessibilityLabel(os1Tr("1초 감지 heartbeat", "1-second detection heartbeat"))
+        .help(os1Tr("모니터 동작 표시 · 데이터 아님", "Monitor is running · not data"))
+        .accessibilityLabel(os1Tr("모니터 동작 표시(데이터 아님)", "Monitor liveness indicator (not data)"))
         .accessibilityValue(refreshed.formatted(date: .omitted, time: .standard))
     }
     private var controls: some View {
@@ -491,11 +466,11 @@ struct GovernanceMonitorView: View {
                     Picker(os1Tr("제공자", "Provider"), selection: $provider) { Text(os1Tr("전체", "All")).tag("전체"); Text("OpenAI").tag("codex"); Text("Anthropic").tag("claude") }.frame(width: 190)
                 }
             }
-            if section != .accounts, !rows.isEmpty {
+            if section != .accounts, !evidenceRows.isEmpty {
                 HStack(spacing: 10) {
                     Text(os1Tr("기준", "Baseline")).font(.system(size: 10, weight: .semibold)).foregroundStyle(muted)
                     Picker(os1Tr("운영 기준 경로", "Operating baseline route"), selection: $baseline) {
-                        ForEach(rows.filter { $0.attempts > 0 }) { row in Text(short(row.id)).tag(row.id) }
+                        ForEach(evidenceRows) { row in Text(short(row.id)).tag(row.id) }
                     }.labelsHidden().frame(maxWidth: 390)
                     Image(systemName: "arrow.right").foregroundStyle(muted)
                     Text(os1Tr("비교", "Comparison")).font(.system(size: 10, weight: .semibold)).foregroundStyle(muted)
@@ -504,6 +479,9 @@ struct GovernanceMonitorView: View {
                         ForEach(comparisons) { item in Text(short(item.id)).tag(item.id) }
                     }.labelsHidden().frame(maxWidth: 390)
                     Spacer()
+                    Text(os1Tr("경로 비교는 기록된 전체 근거 · 기간은 최신 여부만 판정",
+                               "Route comparison uses all recorded evidence · the period only decides freshness"))
+                        .font(.system(size: 9)).foregroundStyle(muted)
                 }
             }
         }
@@ -513,9 +491,14 @@ struct GovernanceMonitorView: View {
         case .live:
             compactMetrics
             liveActivityChart
-            deltaCharts
+            evidenceCharts(stacked: false)
             liveRow
         case .details:
+            panel(os1Tr("경로 비교 근거 · 영수증 시각", "Route comparison evidence · receipt time"),
+                  subtitle: os1Tr("각 matched 묶음의 마지막 시도가 끝난 시각에 누적 값을 찍고 선으로 잇습니다 · 점선은 마지막 근거 이후 지금까지",
+                                  "Each point is the cumulative value when a matched scope's last attempt ended, joined by a line · dashed from the last evidence to now")) {
+                evidenceCharts(stacked: true)
+            }
             taskMonitorTable
             routeTable
             DisclosureGroup(os1Tr("모델 비교 · 과거 matched 관측", "Model comparison · past matched observations")) { comparisonWorkbench; comparePanel }
@@ -537,13 +520,16 @@ struct GovernanceMonitorView: View {
         }.frame(maxWidth: .infinity, alignment: .leading).padding(15)
             .background(Color.white.opacity(0.045), in: RoundedRectangle(cornerRadius: 12))
     }
-    private func compactCard(_ title: String, _ value: String, _ note: String, color: Color = .white) -> some View {
+    private func compactCard(_ title: String, _ value: String, _ note: String, color: Color = .white,
+                             valueSize: CGFloat = 22) -> some View {
         VStack(alignment: .leading, spacing: 7) {
-            Text(title).font(.system(size: 10, weight: .medium)).foregroundStyle(muted)
-            Text(value).font(.system(size: 22, weight: .semibold, design: .rounded)).monospacedDigit().foregroundStyle(color)
-            Text(note).font(.system(size: 9)).foregroundStyle(muted).lineLimit(1)
+            Text(title).font(.system(size: 10, weight: .medium)).foregroundStyle(muted).lineLimit(1)
+            Text(value).font(.system(size: valueSize, weight: .semibold, design: .rounded)).monospacedDigit().foregroundStyle(color)
+                .lineLimit(1).minimumScaleFactor(0.7)
+            Text(note).font(.system(size: 9)).foregroundStyle(muted).lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
         }
-        .frame(maxWidth: .infinity, minHeight: 70, alignment: .leading)
+        .frame(maxWidth: .infinity, minHeight: 70, alignment: .topLeading)
         .padding(.horizontal, 14).padding(.vertical, 11)
         .background(Color.white.opacity(0.045), in: RoundedRectangle(cornerRadius: 10))
     }
@@ -556,43 +542,123 @@ struct GovernanceMonitorView: View {
         default: return os1Tr("전체 누적", "all-time")
         }
     }
+    private var allTimeAdoptionNote: String {
+        let rate = evidence.allTimeTerminal > 0 ? Double(evidence.allTimeAdopted) / Double(evidence.allTimeTerminal) : nil
+        return os1Tr("전체 누적 \(percent(rate)) (\(evidence.allTimeAdopted)/\(evidence.allTimeTerminal))",
+                     "all-time \(percent(rate)) (\(evidence.allTimeAdopted)/\(evidence.allTimeTerminal))")
+    }
     private var compactMetrics: some View {
-        HStack(spacing: 10) {
+        let cards = deltaCards
+        // A Grid keeps five equal columns; the stale card spans the three
+        // comparison columns so the first two cards keep their width.
+        return Grid(alignment: .topLeading, horizontalSpacing: 10) { GridRow {
             compactCard(os1Tr("전달 채택률 · \(periodScope)", "Delivery adoption · \(periodScope)"), percent(taskCompletionRate),
-                        os1Tr("채택 \(completed) / 종료 \(terminal.count) · 목표 성공과 별개",
-                              "Adopted \(completed) / finished \(terminal.count) · separate from goal success"), color: green)
-            compactCard(os1Tr("목표 검증 성공률", "Goal verification success rate"), percent(quality.rate),
-                        os1Tr("목표 판정 \(quality.eligible - quality.unknown)/\(quality.eligible)건 · 미판정은 —",
-                              "Goal verdicts \(quality.eligible - quality.unknown)/\(quality.eligible) · unjudged is —"), color: green)
-            compactCard(os1Tr("운영 토큰 차이 Δ", "Operating token difference Δ"), delta(selectedComparison?.tokenSavings),
-                        tokenCohortNote(selectedComparison),
-                        color: (selectedComparison?.tokenSavings ?? 0) >= 0 ? green : pink)
-            compactCard(os1Tr("요청 묶음 채택 Δ", "Request-scope adoption Δ"), percentagePoints(taskCompletionDelta),
-                        os1Tr("과거 재시도 묶음 · \(percent(selectedComparison?.baselineTaskCompletionRate)) → \(percent(selectedComparison?.candidateTaskCompletionRate))",
-                              "Past retry scopes · \(percent(selectedComparison?.baselineTaskCompletionRate)) → \(percent(selectedComparison?.candidateTaskCompletionRate))"),
-                        color: (taskCompletionDelta ?? 0) >= 0 ? green : pink)
-            compactCard(os1Tr("운영 채택/토큰 Δ", "Operating adoptions/token Δ"), delta(completionEfficiencyDelta),
-                        efficiencyCohortNote(selectedComparison),
-                        color: (completionEfficiencyDelta ?? 0) >= 0 ? green : pink)
+                        window == "전체"
+                            ? os1Tr("채택 \(completed) / 종료 \(terminal.count) · 목표 성공과 별개",
+                                    "Adopted \(completed) / finished \(terminal.count) · separate from goal success")
+                            : os1Tr("채택 \(completed) / 종료 \(terminal.count) · \(allTimeAdoptionNote)",
+                                    "Adopted \(completed) / finished \(terminal.count) · \(allTimeAdoptionNote)"), color: green)
+            compactCard(os1Tr("목표 검증", "Goal verification"), GovernanceMonitorText.goalValue(quality),
+                        quality.rate == nil
+                            ? os1Tr("목표 판정 영수증 아직 없음 · 채택 ≠ 목표 성공",
+                                    "No goal-verdict receipts yet · adoption ≠ goal success")
+                            : os1Tr("판정 \(quality.verifiedSuccesses + quality.verifiedFailures)건", "\(quality.verifiedSuccesses + quality.verifiedFailures) verdicts"),
+                        color: quality.rate == nil ? muted : green, valueSize: quality.rate == nil ? 18 : 22)
+            if cards.source == nil {
+                compactCard(os1Tr("경로 비교 Δ", "Route comparison Δ"), "—",
+                            os1Tr("같은 요청 묶음에서 두 경로가 실행된 기록이 없습니다.", "No request scope ran on two routes."),
+                            color: muted, valueSize: 18)
+                    .gridCellColumns(3)
+            } else if cards.isStale {
+                compactCard(os1Tr("경로 비교 Δ · \(pairLabel)", "Route comparison Δ · \(pairLabel)"), cards.staleTitle,
+                            cards.staleNote + os1Tr(" · 값은 상세에", " · values in Details"), color: .yellow, valueSize: 18)
+                    .gridCellColumns(3)
+            } else {
+                tokenCard(cards)
+                adoptionCard(cards)
+                efficiencyCard(cards)
+            }
+        } }
+    }
+    private var pairLabel: String {
+        guard let item = selectedComparison else { return "" }
+        let (base, cand) = GovernanceMonitorText.sideNames(baseline: item.baseline, candidate: item.id)
+        return "\(base) → \(cand)"
+    }
+    private func headlineText(_ headline: GovernanceDeltaHeadline, _ value: (Double) -> String) -> (String, CGFloat) {
+        switch headline {
+        case .unavailable: return ("—", 22)
+        case .stale(let since): return (GovernanceMonitorText.staleTitle(since: since), 15)
+        case .tooFew(let scopes): return (GovernanceMonitorText.tooFew(scopes: scopes), 15)
+        case .value(let number): return (value(number), 22)
         }
     }
-    private var deltaCharts: some View {
-        let trace = deltaTrace, changes = deltaChanges
-        return HStack(alignment: .top, spacing: 12) {
-            deltaChart(title: os1Tr("과거 운영 토큰 차이 Δ", "Past operating token difference Δ"), current: delta(selectedComparison?.tokenSavings), unit: "%",
-                       note: tokenCohortNote(selectedComparison) + os1Tr(" · 인과적 절약 아님", " · not causal savings"),
-                       evidence: evidenceAge(selectedComparison?.latestMeasuredEvidenceAt, defined: selectedComparison?.tokenSavings != nil),
-                       trace: tokenPoints(trace), changes: tokenPoints(changes),
-                       color: (selectedComparison?.tokenSavings ?? 0) >= 0 ? green : pink,
-                       emptyText: tokenDeltaEmptyText)
-            deltaChart(title: os1Tr("과거 요청 묶음 채택 Δ", "Past request-scope adoption Δ"), current: percentagePoints(taskCompletionDelta), unit: "pp",
-                       note: os1Tr("순차 재시도 묶음 · 독립 A/B·정확도 향상 아님",
-                                   "Sequential retry scopes · not an independent A/B or accuracy gain"),
-                       evidence: evidenceAge(selectedComparison?.latestEvidenceAt, defined: taskCompletionDelta != nil),
-                       trace: completionPoints(trace), changes: completionPoints(changes),
-                       color: (taskCompletionDelta ?? 0) >= 0 ? green : pink,
-                       emptyText: taskCompletionDelta == nil ? os1Tr("비교 가능한 실측 델타가 없습니다.", "No comparable measured delta.")
-                                                             : deltaSampleWaitText)
+    private func tokenCard(_ cards: GovernanceMonitorDeltaCards) -> some View {
+        let item = cards.source
+        let (text, size) = headlineText(cards.token) { GovernanceMonitorText.tokenChange(savings: $0) }
+        var note = item.map { GovernanceMonitorText.tokenCohort($0) } ?? ""
+        if case .value = cards.token {} else if let savings = item?.tokenSavings {
+            note = GovernanceMonitorText.tokenChange(savings: savings) + " · " + note
+        }
+        let color: Color = { if case .value(let v) = cards.token { return v >= 0 ? green : pink }; return muted }()
+        return compactCard(os1Tr("토큰 변화 Δ", "Token change Δ"), text, note + " · " + sessionResumeNote,
+                           color: color, valueSize: size)
+    }
+    private func adoptionCard(_ cards: GovernanceMonitorDeltaCards) -> some View {
+        let item = cards.source
+        if let item, item.completionDeltaIsSelectionBiased {
+            let (base, cand) = GovernanceMonitorText.sideNames(baseline: item.baseline, candidate: item.id)
+            return compactCard(os1Tr("\(base) 실패 후 \(cand)", "\(cand) after \(base) failed"),
+                               os1Tr("\(item.candidateCompletedScopes)/\(item.matchedScopes) 성공", "\(item.candidateCompletedScopes)/\(item.matchedScopes) succeeded"),
+                               os1Tr("모든 묶음에서 \(base)가 먼저 실패한 뒤 실행 · A/B 비교 아님\(item.latestEvidenceAt.map { " · " + GovernanceMonitorText.shortDate($0) } ?? "")",
+                                     "\(cand) ran only after \(base) failed in every scope · not an A/B\(item.latestEvidenceAt.map { " · " + GovernanceMonitorText.shortDate($0) } ?? "")"),
+                               color: .white, valueSize: 20)
+        }
+        let (text, size) = headlineText(cards.completion) { GovernanceMonitorText.percentagePoints($0) }
+        let color: Color = { if case .value(let v) = cards.completion { return v >= 0 ? green : pink }; return muted }()
+        let date = item?.latestEvidenceAt.map { " · " + GovernanceMonitorText.shortDate($0) } ?? ""
+        return compactCard(os1Tr("요청 묶음 채택 Δ", "Request-scope adoption Δ"), text,
+                           os1Tr("\(percent(item?.baselineTaskCompletionRate)) → \(percent(item?.candidateTaskCompletionRate)) · n=\(item?.matchedScopes ?? 0)\(date)",
+                                 "\(percent(item?.baselineTaskCompletionRate)) → \(percent(item?.candidateTaskCompletionRate)) · n=\(item?.matchedScopes ?? 0)\(date)"),
+                           color: color, valueSize: size)
+    }
+    private func efficiencyCard(_ cards: GovernanceMonitorDeltaCards) -> some View {
+        let (text, size) = headlineText(cards.efficiency) { delta($0) }
+        let color: Color = { if case .value(let v) = cards.efficiency { return v >= 0 ? green : pink }; return muted }()
+        return compactCard(os1Tr("채택/토큰 Δ", "Adoptions/token Δ"), text, efficiencyCohortNote(cards.source),
+                           color: color, valueSize: size)
+    }
+    /// Δ over evidence time for the selected pair: a connected line through
+    /// the cumulative value after each matched scope's receipt, then a dashed
+    /// line at the last value from that receipt to now.
+    @ViewBuilder private func evidenceCharts(stacked: Bool) -> some View {
+        let item = selectedComparison
+        let biased = item?.completionDeltaIsSelectionBiased == true
+        let sides = item.map { GovernanceMonitorText.sideNames(baseline: $0.baseline, candidate: $0.id) }
+        let token = evidenceChart(
+            title: os1Tr("토큰 변화 Δ · \(pairLabel)", "Token change Δ · \(pairLabel)"),
+            current: GovernanceMonitorText.tokenChange(savings: item?.tokenSavings),
+            note: (item.map { GovernanceMonitorText.tokenCohort($0) } ?? "") + " · " + os1Tr("인과적 절약 아님", "not causal savings"),
+            points: (item?.tokenEvidence ?? []).compactMap { point in point.value.map { GovernanceChartPoint(id: point.id, value: -$0 * 100) } },
+            unit: "%", color: (item?.tokenSavings ?? 0) >= 0 ? green : pink,
+            emptyText: item == nil ? os1Tr("같은 요청 묶음에서 두 경로가 실행된 기록이 없습니다.", "No request scope ran on two routes.")
+                : os1Tr("양쪽 토큰이 모두 측정된 묶음이 없습니다.", "No scope has tokens measured on both routes."),
+            stacked: stacked)
+        let completion = evidenceChart(
+            title: biased && sides != nil
+                ? os1Tr("누적 채택 Δ · \(sides!.0) 실패 후 \(sides!.1)", "Cumulative adoption Δ · \(sides!.1) after \(sides!.0) failed")
+                : os1Tr("요청 묶음 채택 Δ · \(pairLabel)", "Request-scope adoption Δ · \(pairLabel)"),
+            current: GovernanceMonitorText.percentagePoints(taskCompletionDelta),
+            note: "n=\(item?.matchedScopes ?? 0) · " + (biased ? os1Tr("선택 편향 · A/B 아님", "selection-biased · not an A/B")
+                                                       : os1Tr("순차 재시도 묶음 · 독립 A/B 아님", "sequential retry scopes · not an independent A/B")),
+            points: (item?.completionEvidence ?? []).compactMap { point in point.value.map { GovernanceChartPoint(id: point.id, value: $0 * 100) } },
+            unit: "pp", color: biased ? Color(white: 0.85) : ((taskCompletionDelta ?? 0) >= 0 ? green : pink),
+            emptyText: os1Tr("같은 요청 묶음에서 두 경로가 실행된 기록이 없습니다.", "No request scope ran on two routes."),
+            stacked: stacked)
+        if stacked {
+            VStack(alignment: .leading, spacing: 12) { completion; token }
+        } else {
+            HStack(alignment: .top, spacing: 12) { token; completion }
         }
     }
     private var liveActivityChart: some View {
@@ -615,8 +681,8 @@ struct GovernanceMonitorView: View {
                 Spacer()
                 HStack(spacing: 7) {
                     heartbeatTrace(width: 92, height: 18)
-                    Text(os1Tr("감지 \(refreshed.formatted(date: .omitted, time: .standard))",
-                               "Detected \(refreshed.formatted(date: .omitted, time: .standard))"))
+                    Text(os1Tr("모니터 확인 \(refreshed.formatted(date: .omitted, time: .standard))",
+                               "Monitor checked \(refreshed.formatted(date: .omitted, time: .standard))"))
                         .font(.system(size: 9, design: .monospaced))
                         .foregroundStyle(green)
                 }
@@ -691,64 +757,96 @@ struct GovernanceMonitorView: View {
         let span = max(1, high - low)
         return (low - span * 0.16)...(high + span * 0.16)
     }
-    /// `trace` is the held one-second line across the window; `changes` are the
-    /// instants a receipt change produced a new value (the only dots).
-    private func deltaChart(title: String, current: String, unit: String, note: String, evidence: String,
-                            trace: [GovernanceChartPoint], changes: [GovernanceChartPoint], color: Color,
-                            emptyText: String) -> some View {
-        let windowEnd = refreshed
-        let windowStart = deltaWindowStart
+    private func evidenceAxisTicks(from start: Date, to end: Date) -> [Date] {
+        let span = end.timeIntervalSince(start)
+        let interval: TimeInterval = span > 20 * 86_400 ? 7 * 86_400 : (span > 4 * 86_400 ? 2 * 86_400
+            : (span > 86_400 ? 43_200 : (span > 21_600 ? 10_800 : 3_600)))
+        return GovernanceActivityStrip.axisTicks(from: start, to: end, every: interval, edgeMargin: span * 0.04)
+    }
+    /// `points` are evidence points on receipt time, joined by a line (each
+    /// value holds until the next scope's receipt changes it). The dashed
+    /// segment holds the last value from the last receipt to now: no point
+    /// is drawn where no receipt exists.
+    private func evidenceChart(title: String, current: String, note: String, points: [GovernanceChartPoint],
+                               unit: String, color: Color, emptyText: String, stacked: Bool) -> some View {
+        let now = refreshed
+        let last = points.last
+        let start = points.first.map { min($0.id, now.addingTimeInterval(-3_600)) } ?? now.addingTimeInterval(-3_600)
+        let tail: [GovernanceChartPoint] = last.flatMap { last in
+            now > last.id ? [last, GovernanceChartPoint(id: now, value: last.value)] : nil
+        } ?? []
+        let ageDays = last.map { now.timeIntervalSince($0.id) / 86_400 } ?? 0
+        let tailLabel = last.map { last in
+            os1Tr("\(evidenceStamp(last.id)) 이후 새 근거 없음", "No new evidence since \(evidenceStamp(last.id))")
+        } ?? ""
+        let domain = chartDomain(points)
+        let symbol: CGFloat = points.count > 20 ? 10 : 28
         return VStack(alignment: .leading, spacing: 11) {
             HStack(alignment: .firstTextBaseline) {
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(title).font(.system(size: 12, weight: .semibold))
-                    Text(note).font(.system(size: 9)).foregroundStyle(muted)
+                    Text(title).font(.system(size: 12, weight: .semibold)).lineLimit(1)
+                    Text(note).font(.system(size: 9)).foregroundStyle(muted).lineLimit(2)
                 }
                 Spacer()
                 VStack(alignment: .trailing, spacing: 2) {
+                    // Evidence older than a week is history, not a live reading.
                     Text(current).font(.system(size: 22, weight: .semibold, design: .rounded))
-                        .monospacedDigit().foregroundStyle(color)
-                    if !evidence.isEmpty {
-                        Text(evidence).font(.system(size: 9)).foregroundStyle(muted)
+                        .monospacedDigit().foregroundStyle(last == nil || ageDays > 7 ? muted : color)
+                    if let last {
+                        Text(os1Tr("근거 \(points.count)점 · 마지막 \(evidenceStamp(last.id))",
+                                   "\(points.count) evidence points · last \(evidenceStamp(last.id))"))
+                            .font(.system(size: 9)).foregroundStyle(ageDays > 7 ? .yellow : muted)
                     }
                 }
             }
-            if trace.isEmpty {
+            if points.isEmpty {
                 VStack(spacing: 7) {
                     Image(systemName: "chart.xyaxis.line").font(.system(size: 24)).foregroundStyle(muted.opacity(0.55))
                     Text(emptyText)
                         .font(.system(size: 10)).foregroundStyle(muted)
                         .multilineTextAlignment(.center).padding(.horizontal, 24)
                 }
-                .frame(maxWidth: .infinity, minHeight: 155)
+                .frame(maxWidth: .infinity, minHeight: stacked ? 190 : 155)
             } else {
-                let deltaTicks = GovernanceActivityStrip.axisTicks(from: windowStart, to: windowEnd, every: 30,
-                                                                   edgeMargin: Self.deltaWindowSeconds * 0.04)
                 Chart {
                     RuleMark(y: .value(os1Tr("기준", "Baseline"), 0))
                         .foregroundStyle(Color.white.opacity(0.16))
                         .lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 4]))
-                    // Sample-and-hold: a value stays until the next one replaces it.
-                    ForEach(trace) { point in
-                        LineMark(x: .value(os1Tr("시간", "Time"), point.id), y: .value(os1Tr("델타", "Delta"), point.value))
-                            .interpolationMethod(.stepEnd)
-                            .foregroundStyle(color)
-                            .lineStyle(StrokeStyle(lineWidth: 2.2, lineCap: .round, lineJoin: .round))
-                        AreaMark(x: .value(os1Tr("시간", "Time"), point.id), yStart: .value(os1Tr("기준", "Baseline"), 0), yEnd: .value(os1Tr("델타", "Delta"), point.value))
+                    ForEach(points) { point in
+                        AreaMark(x: .value(os1Tr("시간", "Time"), point.id),
+                                 yStart: .value(os1Tr("기준", "Baseline"), 0), yEnd: .value(os1Tr("델타", "Delta"), point.value),
+                                 series: .value(os1Tr("계열", "Series"), "evidence"))
                             .interpolationMethod(.stepEnd)
                             .foregroundStyle(LinearGradient(colors: [color.opacity(0.24), color.opacity(0.015)], startPoint: .top, endPoint: .bottom))
+                        LineMark(x: .value(os1Tr("시간", "Time"), point.id), y: .value(os1Tr("델타", "Delta"), point.value),
+                                 series: .value(os1Tr("계열", "Series"), "evidence"))
+                            .interpolationMethod(.stepEnd)
+                            .foregroundStyle(color)
+                            .lineStyle(StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
+                        PointMark(x: .value(os1Tr("시간", "Time"), point.id), y: .value(os1Tr("델타", "Delta"), point.value))
+                            .foregroundStyle(color).symbolSize(symbol)
                     }
-                    ForEach(changes) { point in
-                        PointMark(x: .value(os1Tr("변경 시각", "Change time"), point.id), y: .value(os1Tr("변경 값", "Changed value"), point.value))
-                            .foregroundStyle(color).symbolSize(30)
+                    ForEach(tail) { point in
+                        LineMark(x: .value(os1Tr("시간", "Time"), point.id), y: .value(os1Tr("델타", "Delta"), point.value),
+                                 series: .value(os1Tr("계열", "Series"), "no-new-evidence"))
+                            .foregroundStyle(color.opacity(0.55))
+                            .lineStyle(StrokeStyle(lineWidth: 1.4, dash: [5, 4]))
+                    }
+                    if let end = tail.last {
+                        PointMark(x: .value(os1Tr("시간", "Time"), end.id), y: .value(os1Tr("델타", "Delta"), end.value))
+                            .symbol(.circle).symbolSize(16).foregroundStyle(color.opacity(0.55))
+                            .annotation(position: .top, alignment: .trailing, spacing: 4) {
+                                Text(tailLabel).font(.system(size: 9, weight: .medium)).foregroundStyle(.yellow)
+                            }
                     }
                 }
-                .chartXScale(domain: windowStart...windowEnd)
-                .chartYScale(domain: chartDomain(trace))
+                .chartXScale(domain: start...now)
+                .chartYScale(domain: domain)
                 .chartXAxis {
-                    AxisMarks(values: deltaTicks) { _ in
+                    AxisMarks(values: evidenceAxisTicks(from: start, to: now)) { _ in
                         AxisGridLine().foregroundStyle(Color.white.opacity(0.06))
-                        AxisValueLabel(format: .dateTime.hour().minute().second())
+                        AxisValueLabel(format: now.timeIntervalSince(start) > 2 * 86_400
+                                       ? .dateTime.month(.defaultDigits).day() : .dateTime.hour().minute())
                             .font(.system(size: 8)).foregroundStyle(muted)
                     }
                 }
@@ -763,35 +861,16 @@ struct GovernanceMonitorView: View {
                         }
                     }
                 }
-                .frame(height: 155)
+                .frame(height: stacked ? 190 : 155)
+                .accessibilityElement()
+                .accessibilityLabel(title)
+                .accessibilityValue(os1Tr("근거 \(points.count)점 · 현재 \(current) · \(tailLabel)",
+                                          "\(points.count) evidence points · current \(current) · \(tailLabel)"))
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(15)
         .background(Color.white.opacity(0.04), in: RoundedRectangle(cornerRadius: 12))
-    }
-    private var performanceMetrics: some View {
-        HStack(spacing: 10) {
-            compactCard(os1Tr("전달 채택률", "Delivery adoption rate"), percent(taskCompletionRate),
-                        os1Tr("채택 \(completed)/종료 \(terminal.count)건",
-                              "Adopted \(completed)/finished \(terminal.count)"), color: green)
-            compactCard(os1Tr("채택 · 재질문 미기록", "Adopted · no re-ask recorded"), terminal.isEmpty ? "—" : os1Tr("\(firstPass)건", "\(firstPass)"),
-                        os1Tr("목표 성공 판정 아님", "Not a goal-success verdict"))
-            compactCard(os1Tr("재질문 기록", "Re-asks recorded"), terminal.isEmpty ? "—" : os1Tr("\(retried)건", "\(retried)"),
-                        os1Tr("최종 채택과 별개", "Separate from final adoption"))
-            compactCard(os1Tr("관측 시간당 채택", "Adoptions per observed hour"), decimal(observedHours >= 1 ? Double(completed) / observedHours : nil),
-                        os1Tr("관측 1시간 이후 · 속도 인과 대조 아님", "After 1 observed hour · not a causal speed comparison"))
-        }
-    }
-    private func deltaCard(_ title: String, _ value: String, _ note: String, _ color: Color) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(title).font(.system(size: 10, weight: .medium)).foregroundStyle(muted)
-            Text(value).font(.system(size: 24, weight: .semibold, design: .rounded)).monospacedDigit().foregroundStyle(color)
-            Text(note).font(.system(size: 9)).foregroundStyle(muted).lineLimit(1)
-        }
-        .frame(maxWidth: .infinity, minHeight: 76, alignment: .leading)
-        .padding(.horizontal, 14).padding(.vertical, 11)
-        .background(Color.white.opacity(0.045), in: RoundedRectangle(cornerRadius: 10))
     }
     private var liveRow: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -804,9 +883,11 @@ struct GovernanceMonitorView: View {
                            "Last updated \(refreshed.formatted(date: .omitted, time: .standard))")).font(.system(size: 10, design: .monospaced)).foregroundStyle(muted)
             }
             ForEach(Array(active.enumerated()), id: \.offset) { _, label in Text(label).font(.system(size: 11)).foregroundStyle(pink) }
-            if tasks.contains(where: { !$0.isTerminal }) {
-                Text(os1Tr("미종료 영수증 \(tasks.filter { !$0.isTerminal }.count)건 · 중단·미확정 기록은 완료로 계산하지 않습니다.",
-                           "\(tasks.filter { !$0.isTerminal }.count) unfinished receipts · interrupted or unconfirmed records are not counted as complete.")).font(.system(size: 10)).foregroundStyle(muted)
+            let unfinished = tasks.filter { !$0.isTerminal }
+            if !unfinished.isEmpty {
+                let orphaned = GovernanceProcessLiveness.orphaned(unfinished).count
+                Text(os1Tr("미종료 영수증 \(unfinished.count)건 · 그중 실행 프로세스 없음 \(orphaned)건(중단됨) · 완료로 계산하지 않습니다.",
+                           "\(unfinished.count) unfinished receipts · \(orphaned) with no live process (interrupted) · not counted as complete.")).font(.system(size: 10)).foregroundStyle(muted)
             }
         }.padding(13).background(green.opacity(0.045), in: RoundedRectangle(cornerRadius: 10))
     }
@@ -882,7 +963,13 @@ struct GovernanceMonitorView: View {
         Text(text).lineLimit(1).truncationMode(.middle).frame(width: width, alignment: alignment)
     }
     private func taskStatus(_ task: GovernanceTask) -> (String, Color) {
-        if !task.isTerminal { return (os1Tr("영수증 대기", "Awaiting receipt"), .yellow) }
+        if !task.isTerminal {
+            // Display only: a "running" receipt whose process is gone (or
+            // whose PID now belongs to a later process) never finishes.
+            return GovernanceProcessLiveness.isAlive(pid: task.pid, taskStartedAt: task.startedAt)
+                ? (os1Tr("영수증 대기", "Awaiting receipt"), .yellow)
+                : (os1Tr("프로세스 없음", "No process"), muted)
+        }
         if task.isFirstPass { return (os1Tr("채택 · 재질문 미기록", "Adopted · no re-ask recorded"), green) }
         if task.isAdopted { return (os1Tr("재질문 후 채택", "Adopted after re-ask"), .yellow) }
         if task.disposition == "cancelled" { return (os1Tr("취소", "Cancelled"), muted) }
@@ -1035,21 +1122,6 @@ struct GovernanceMonitorView: View {
             content()
         }.padding(16).background(Color.white.opacity(0.035), in: RoundedRectangle(cornerRadius: 12))
     }
-    private var completionChart: some View {
-        panel(os1Tr("운영 채택 관측", "Operating adoption observations"),
-              subtitle: os1Tr("종료/채택 영수증 · 목표 정확도나 독립 성능 대조 아님",
-                              "Finish/adoption receipts · not goal accuracy or an independent performance comparison")) {
-            HStack(spacing: 10) {
-                deltaCard(os1Tr("현재 전달 채택률", "Current delivery adoption rate"), percent(taskCompletionRate),
-                          os1Tr("채택 \(completed) / 종료 \(terminal.count)",
-                                "Adopted \(completed) / finished \(terminal.count)"), green)
-                deltaCard(os1Tr("기준→비교", "Baseline→comparison"), percentagePoints(taskCompletionDelta),
-                          os1Tr("순차 재시도 묶음의 채택 관측", "Adoption observed in sequential retry scopes"), (taskCompletionDelta ?? 0) >= 0 ? green : pink)
-                deltaCard(os1Tr("채택당 토큰", "Tokens per adoption"), tokensPerCompletedTask.map { num(Int($0)) + os1Tr(" tok/채택", " tok/adoption") } ?? "—",
-                          os1Tr("실측 토큰·재시도 비용 포함", "Includes measured tokens and retry costs"), green)
-            }
-        }
-    }
     private var routeTable: some View {
         panel(os1Tr("실행 경로 비교", "Route comparison"),
               subtitle: os1Tr("모델명 + reasoning effort · 서로 다른 백엔드로 재시도한 작업은 mixed로 별도 계산",
@@ -1082,7 +1154,7 @@ struct GovernanceMonitorView: View {
                     Text(os1Tr("기준", "Baseline")).font(.system(size: 10, weight: .semibold)).foregroundStyle(muted)
                     Picker(os1Tr("기준 경로", "Baseline route"), selection: $baseline) {
                         if baseline.isEmpty { Text(os1Tr("기록 없음", "No records")).tag("") }
-                        ForEach(rows.filter { $0.attempts > 0 }) { row in Text(short(row.id)).tag(row.id) }
+                        ForEach(evidenceRows) { row in Text(short(row.id)).tag(row.id) }
                     }.labelsHidden().frame(maxWidth: 390)
                     Image(systemName: "arrow.right").foregroundStyle(muted)
                     Text(os1Tr("가정", "Assumed")).font(.system(size: 10, weight: .semibold)).foregroundStyle(muted)
@@ -1125,8 +1197,8 @@ struct GovernanceMonitorView: View {
                 if let item = selectedComparison {
                     HStack(spacing: 10) {
                         card(os1Tr("가정 토큰 차이", "Assumed token difference"), projectedDeltaText(projectedTokenDifference),
-                             os1Tr("\(scenarioTasks)개 요청 가정 · 실측 \(item.measuredScopes)/\(item.matchedScopes)묶음 · \(delta(item.tokenSavings))",
-                                   "\(scenarioTasks) requests assumed · measured \(item.measuredScopes)/\(item.matchedScopes) scopes · \(delta(item.tokenSavings))"), color: (projectedTokenDifference ?? 0) >= 0 ? green : pink)
+                             os1Tr("\(scenarioTasks)개 요청 가정 · 실측 \(item.measuredScopes)/\(item.matchedScopes)묶음 · 토큰 \(GovernanceMonitorText.tokenChange(savings: item.tokenSavings))",
+                                   "\(scenarioTasks) requests assumed · measured \(item.measuredScopes)/\(item.matchedScopes) scopes · tokens \(GovernanceMonitorText.tokenChange(savings: item.tokenSavings))"), color: (projectedTokenDifference ?? 0) >= 0 ? green : pink)
                         card(os1Tr("시도 채택률 변화", "Attempt adoption rate change"), String(format: "%+.1fpp", item.adoptionDelta * 100),
                              os1Tr("\(item.matchedScopes)묶음 · 목표 성공과 구별",
                                    "\(item.matchedScopes) scopes · distinct from goal success"), color: item.adoptionDelta >= 0 ? green : pink)
@@ -1165,7 +1237,7 @@ struct GovernanceMonitorView: View {
                 Text(os1Tr("기준 경로", "Baseline route")).font(.system(size: 11)).foregroundStyle(muted)
                 Picker(os1Tr("기준 경로", "Baseline route"), selection: $baseline) {
                     if baseline.isEmpty { Text(os1Tr("기록 없음", "No records")).tag("") }
-                    ForEach(rows.filter { $0.attempts > 0 }) { row in Text(short(row.id)).tag(row.id) }
+                    ForEach(evidenceRows) { row in Text(short(row.id)).tag(row.id) }
                 }.labelsHidden().frame(maxWidth: 520)
                 Spacer()
             }
@@ -1178,13 +1250,13 @@ struct GovernanceMonitorView: View {
                     VStack(alignment: .leading, spacing: 8) {
                         Text(short(item.id)).font(.system(size: 12, weight: .semibold))
                         HStack(spacing: 25) {
-                            Text(os1Tr("토큰 차이 추정 \(delta(item.tokenSavings))",
-                                       "Estimated token difference \(delta(item.tokenSavings))")).foregroundStyle((item.tokenSavings ?? 0) >= 0 ? green : pink)
+                            Text(os1Tr("토큰 변화 \(GovernanceMonitorText.tokenChange(savings: item.tokenSavings))",
+                                       "Token change \(GovernanceMonitorText.tokenChange(savings: item.tokenSavings))")).foregroundStyle((item.tokenSavings ?? 0) >= 0 ? green : pink)
                             Text(String(format: os1Tr("시도 채택률 차이 %+.1fpp", "Attempt adoption rate difference %+.1fpp"), item.adoptionDelta * 100)).foregroundStyle(item.adoptionDelta >= 0 ? green : pink)
                             Text(os1Tr("지연 단축 \(delta(item.latencySavings))", "Latency reduction \(delta(item.latencySavings))"))
                             Spacer()
-                            Text(os1Tr("\(item.matchedScopes)묶음 · 실측 \(item.measuredScopes) · 기준 \(item.baselineAttempts) / 비교 \(item.candidateAttempts)회",
-                                       "\(item.matchedScopes) scopes · \(item.measuredScopes) measured · baseline \(item.baselineAttempts) / comparison \(item.candidateAttempts) attempts")).foregroundStyle(muted)
+                            Text(os1Tr("\(item.matchedScopes)묶음 · 실측 \(item.measuredScopes) · 기준 \(item.baselineAttempts) / 비교 \(item.candidateAttempts)회 · 마지막 \(evidenceStamp(item.latestEvidenceAt))",
+                                       "\(item.matchedScopes) scopes · \(item.measuredScopes) measured · baseline \(item.baselineAttempts) / comparison \(item.candidateAttempts) attempts · last \(evidenceStamp(item.latestEvidenceAt))")).foregroundStyle(muted)
                         }.font(.system(size: 11)).monospacedDigit()
                     }.padding(12).background(Color.white.opacity(0.025), in: RoundedRectangle(cornerRadius: 8))
                 }
@@ -1192,35 +1264,6 @@ struct GovernanceMonitorView: View {
             Text(os1Tr("Governance 기여도: off/on 대조 실행 자료가 연결되기 전에는 미측정입니다. 과거 재시도는 입력·순서 차이가 있어 독립 A/B가 아닙니다.",
                        "Governance contribution: unmeasured until off/on comparison run data is connected. Past retries differ in input and order, so they are not an independent A/B."))
                 .font(.system(size: 10)).foregroundStyle(muted)
-        }
-    }
-    private var pairedPanel: some View {
-        panel(os1Tr("절약과 완료 · 동일 테스크 대조", "Savings and completion · same-task comparison"),
-              subtitle: os1Tr("토큰 절약과 실제 완료를 함께 비교 · off/on 대조 영수증 연결 전에는 미측정",
-                              "Compares token savings with actual completion · unmeasured until off/on comparison receipts are connected")) {
-            HStack(spacing: 10) {
-                card(os1Tr("실제 기준 대비 토큰 절약", "Token savings vs actual baseline"), "—", os1Tr("짝지은 대조 실행 없음", "No paired comparison runs"))
-                card(os1Tr("실행 완료율 변화 / 회귀", "Completion rate change / regression"), "—", os1Tr("같은 테스크·같은 판정 기준 필요", "Requires the same tasks and the same verdict criteria"))
-                card(os1Tr("종합 효율 향상", "Overall efficiency gain"), "—", os1Tr("성공 건수와 총비용을 함께 비교", "Compares successes with total cost"))
-            }
-            DisclosureGroup(os1Tr("엄밀한 계산 기준", "Strict calculation criteria")) {
-                VStack(alignment: .leading, spacing: 9) {
-                    Text(os1Tr("사전 고정한 동일 작업 집합: baseline A와 최적화 B를 각각 실행. 입력·환경·검증기·예산·측정 창을 고정하고, 실험에서 바꾸기로 한 경로만 변경합니다. 기준 실행을 추측하거나 자동 유료 호출하지 않습니다.",
-                               "A pre-fixed set of identical tasks: run baseline A and optimized B separately. Inputs, environment, verifiers, budget and measurement window stay fixed; only the route the experiment is meant to change is changed. Baseline runs are not guessed, and no paid calls are made automatically."))
-                    Text(os1Tr("Tₐ = Σ 모든 호출의 입력+출력 토큰 · 실패·재시도·평가·보조 호출 포함. Eₐ = 검증 성공 건수 Sₐ ÷ Tₐ × 1,000,000",
-                               "Tₐ = Σ input+output tokens of all calls · includes failed, retried, evaluation and auxiliary calls. Eₐ = verified successes Sₐ ÷ Tₐ × 1,000,000"))
-                    Text(os1Tr("토큰 절약 = 1 − Tᵦ/Tₐ · 실행 완료율 변화 = (Sᵦ−Sₐ)/N · 효율 향상 = Eᵦ/Eₐ − 1. 평균 절약률을 다시 평균하지 않습니다.",
-                               "Token savings = 1 − Tᵦ/Tₐ · completion rate change = (Sᵦ−Sₐ)/N · efficiency gain = Eᵦ/Eₐ − 1. Average savings rates are not averaged again."))
-                    Text(os1Tr("동일 작업에서 실패→성공 C와 성공→실패 B를 따로 셉니다. 순증 = C−B. 순증이 양수여도 회귀 B를 숨기지 않습니다.",
-                               "On identical tasks, failure→success C and success→failure B are counted separately. Net gain = C−B. A positive net gain does not hide regressions B."))
-                    Text(os1Tr("N=0, 기준 토큰=0, 기준 효율=0 또는 계측·목표 검증 누락이면 해당 비율은 —. 성공 0건은 측정된 0이며, 미검증은 0이 아닙니다. 진행 중 작업과 종료된 작업의 분모를 섞지 않습니다.",
-                               "If N=0, baseline tokens=0, baseline efficiency=0, or metering or goal verification is missing, that ratio is —. Zero successes is a measured 0; unverified is not 0. In-progress and finished tasks are not mixed in one denominator."))
-                    Text(os1Tr("관측 Pareto 개선: 토큰 비증가 + 완수 비감소 + 최소 하나 개선. 반대는 회귀, 방향이 엇갈리면 교환관계, 모두 같으면 변화 없음. 표본 분류가 통계적 유의성이나 무회귀를 보증하지 않습니다.",
-                               "Observed Pareto improvement: tokens not increased + completions not decreased + at least one improved. The opposite is a regression, mixed directions are a trade-off, and all equal is no change. Sample classification does not guarantee statistical significance or the absence of regressions."))
-                    Text(os1Tr("완전 관측 비율에는 Wilson 95% 구간, 짝지은 성공/실패에는 exact McNemar 검정. 실시간 반복 조회·적응적 튜닝 자료로 유의성이나 인과적 향상을 선언하지 않습니다. 비용 효율·지연은 별도 축으로 유지합니다.",
-                               "Wilson 95% intervals for fully observed rates; an exact McNemar test for paired successes/failures. Significance or causal gains are not declared from repeated live polling or adaptive-tuning data. Cost efficiency and latency are kept on separate axes."))
-                }.font(.system(size: 11)).foregroundStyle(muted).fixedSize(horizontal: false, vertical: true).padding(.top, 8)
-            }.font(.system(size: 12))
         }
     }
     private var tracePanel: some View {
@@ -1254,10 +1297,10 @@ struct GovernanceMonitorView: View {
                            "Result adopted = passed the OS1 run, output and save gates. Goal-achievement verification is separate. Per-goal test/user-approval receipts are not connected yet, so verified completion rate and verified efficiency are unmeasured."))
                 Text(os1Tr("입력 + 출력 토큰에 재시도·실패 비용을 포함합니다. 캐시는 입력에 포함된 부분이므로 다시 더하지 않습니다. 제공자별 토크나이저가 달라 교차 제공자 토큰 절약 비교는 하지 않습니다.",
                            "Input + output tokens include retry and failure costs. Cache is part of input, so it is not added again. Tokenizers differ by provider, so token savings are not compared across providers."))
-                Text(os1Tr("운영 토큰 차이·채택당 토큰·효율은 양쪽 시도가 모두 실측된 과거 요청 묶음만 계산합니다(실측 n/N). 미측정은 0이 아니라 제외입니다. 묶음 채택 Δ는 전체 matched 묶음 기준이며 독립 대조·목표 정확도 향상은 아닙니다.",
-                           "Operating token difference, tokens per adoption and efficiency are computed only over past request scopes where attempts on both sides were measured (measured n/N). Unmeasured is excluded, not 0. Scope adoption Δ is based on all matched scopes and is not an independent comparison or a goal-accuracy gain."))
-                Text(os1Tr("Δ 곡선은 Activity Monitor처럼 1초마다 영수증을 다시 확인해 현재 값을 이어 그립니다. 값이 그대로면 수평선이고, 점은 영수증 변경으로 값이 바뀐 시점에만 찍습니다. 1초 확인은 새 실험이나 새 측정 건수가 아니며, 값이 정의되지 않거나 감지가 끊긴 구간은 잇지 않습니다. '근거 최종 영수증'은 그 값을 만든 가장 최근 영수증의 시각입니다. Wilson 표시는 상관된 운영 표본의 명목 구간으로 일반 성능을 보증하지 않습니다.",
-                           "Like Activity Monitor, Δ curves re-read the receipts every second and draw the current value continuously. An unchanged value is a flat line; dots mark only the instants a receipt change produced a new value. A 1s re-read is not a new experiment or measurement count, and spans where the value is undefined or the detector stalled are not joined. 'Newest evidence receipt' is the time of the most recent receipt behind that value. Wilson figures are nominal intervals over correlated operating samples and do not guarantee general performance."))
+                Text(os1Tr("토큰 변화·채택당 토큰·효율은 양쪽 시도가 모두 실측된 과거 요청 묶음만 계산합니다(n). 토큰 변화는 비교 경로가 기준보다 쓴 토큰의 증감이며 −는 감소입니다. 미측정은 0이 아니라 제외입니다. 후속 시도가 같은 세션을 이어 쓰는 경우가 많아 경로 효과와 세션 재개 효과가 섞입니다. 모든 묶음에서 기준 경로가 먼저 실패한 뒤에만 비교 경로가 실행됐다면 채택 Δ는 선택 편향이며 'B가 A 실패 후 성공' 비율로 표시합니다.",
+                           "Token change, tokens per adoption and efficiency are computed only over past request scopes where attempts on both sides were measured (n). Token change is how many more or fewer tokens the comparison route used than the baseline; − means fewer. Unmeasured is excluded, not 0. A later attempt often resumes the same session, so the route effect is mixed with a warm start. When the comparison route ran only after the baseline failed in every scope, the adoption Δ is selection-biased and shown as 'B after A failed' successes."))
+                Text(os1Tr("Δ 그래프는 영수증 시각 기준입니다. 각 점은 matched 묶음의 마지막 시도가 끝난 시각의 누적 값이며 선으로 잇고, 마지막 근거부터 지금까지는 마지막 값을 점선으로만 이어 '새 근거 없음'을 표시합니다. 근거가 기간 시작(전체에서는 7일)보다 오래되면 상단 카드는 값 대신 '경로 비교 없음'을 표시하고, 측정 묶음이 \(GovernanceDeltaHeadline.minimumScopes)개 미만이면 'n이 너무 적음'으로 표시합니다. 모니터는 1초마다 영수증 폴더의 변경 시각을 확인하고 바뀐 파일만 다시 읽습니다. 헤더의 맥박 선은 모니터 동작 표시이며 데이터가 아닙니다. Wilson 표시는 상관된 운영 표본의 명목 구간으로 일반 성능을 보증하지 않습니다.",
+                           "Δ charts use receipt time. Each point is the cumulative value when a matched scope's last attempt ended, joined by a line; from the last evidence to now the last value continues only as a dashed line marked 'no new evidence'. When the newest evidence is older than the period start (7 days under All), the top cards show 'no route comparison' instead of a value, and with fewer than \(GovernanceDeltaHeadline.minimumScopes) measured scopes they show 'too few to compare'. The monitor checks the receipt folders' modification times every second and re-reads only changed files. The pulse in the header shows the monitor is running; it is not data. Wilson figures are nominal intervals over correlated operating samples and do not guarantee general performance."))
                 Text(os1Tr("과거 기록은 요청당 최대 16회 보관된 시도 표본입니다. 시각·테스크 종료가 없으므로 과거 실행 완료율과 실시간 추이는 소급 생성하지 않습니다. 새 테스크는 별도 원자적 기록으로 누적합니다. 확인된 결과 재전송은 기존 테스크에 합쳐 호출을 중복 계산하지 않습니다.",
                            "Past records are attempt samples, up to 16 kept per request. They carry no timestamps or task finish, so past completion rates and live trends are not generated retroactively. New tasks accumulate as separate atomic records. A re-sent confirmed result is merged into its existing task, so calls are not double-counted."))
                 Text(os1Tr("새 기록 \(snapshot.tasks.count)건 · 과거 시도 \(snapshot.historical.count)회 · 읽기/검증 거부 \(snapshot.rejectedRecords)건 · 표시 한도 초과 \(snapshot.omittedFiles)건 · 요금표 미연결: 토큰 절약 ≠ 금액 절약",

@@ -264,55 +264,80 @@ private func governanceActivityStripSelfTest() throws {
     }
 }
 
-/// The Δ charts must read like Activity Monitor: a value re-confirmed every
-/// second is one connected line to the current tick, not a lone dot that
-/// slides away, and the re-reads never become extra experiments. A receipt
-/// change adds a dot; a missing value or a stalled detector breaks the line.
-private func governanceDeltaTraceSelfTest() throws {
-    let t = Date(timeIntervalSince1970: 1_800_000_000)
-    var sampler = GovernanceMonitorDeltaSampler()
-    func tick(_ second: Double, _ evidence: String? = "cohort-1", token: Double? = 0.696,
-              completion: Double? = 0.373, context: String = "pair") {
-        sampler.observe(context: context, evidence: evidence, at: t.addingTimeInterval(second),
-                        tokenSavings: token, completionDelta: completion)
+/// Build 329 governance monitor, run by the staged `app-self-test` gate: the
+/// Δ figures sit on evidence time (one point per matched scope, the last one
+/// equal to the headline value, times strictly increasing), the monitor opens
+/// on the newest pair over a 7-day period, two-week-old evidence collapses the
+/// comparison cards into one stale card, thin evidence is "too few", a token
+/// cut reads as minus, and the goal card never shows a "0/N" ratio.
+private func governanceEvidenceMonitorSelfTest() throws {
+    func fail(_ message: String) -> Error { RunnerError.message("OS-1 governance monitor: " + message) }
+    guard GovernanceMonitorView.defaultWindow == "7일" else { throw fail("the period does not open on 7 days") }
+    let fm = FileManager.default
+    let root = fm.temporaryDirectory.appendingPathComponent("os1-governance-self-test-" + UUID().uuidString)
+    defer { try? fm.removeItem(at: root) }
+    let store = GovernanceActivityStore(root: root)
+    func scope(_ fill: Character) -> CompletionFeedbackScope {
+        CompletionFeedbackScope(objectiveSHA256: String(repeating: fill, count: 64), sourceSHA256: nil,
+            executorContractSHA256: String(repeating: "b", count: 64), assembledInputSHA256: String(repeating: "c", count: 64))
     }
-    func trace(at second: Double) -> [GovernanceDeltaPoint] {
-        let end = t.addingTimeInterval(second)
-        return sampler.history.trace(from: end.addingTimeInterval(-120), to: end, heldUntil: sampler.confirmedAt)
+    func task(_ bound: CompletionFeedbackScope, _ effort: String, adopted: Bool, tokens: Int?, at: Date) throws {
+        let id = UUID().uuidString.lowercased(), remote = UUID().uuidString.lowercased()
+        try store.begin(id: id, now: at)
+        let usage = tokens.map {
+            CompletionMeasuredUsage(inputTokens: $0, outputTokens: 0, cacheTokens: 0,
+                resource: CompletionUsageResourceMetadata(format: .codexRolloutJSONL, byteCount: 100,
+                    sha256: String(repeating: "e", count: 64), usageRecordCount: 1, accountingVersion: 2))
+        }
+        let observation = CompletionFeedbackObservation(executionID: remote, sequence: 1, provider: "codex", model: "gpt-test",
+            effort: effort, outcome: adopted ? .adopted : .qualityFailure, usage: usage, durationMS: 1_000)
+        try store.attempt(id: id, executionID: remote, sequence: 1, scope: bound, provider: "codex", model: "gpt-test",
+            effort: effort, startedAt: at.addingTimeInterval(0.1), observation: observation)
+        try store.finish(id: id, adopted: adopted, now: at.addingTimeInterval(2))
     }
-    for second in 0...180 { tick(Double(second)) }
-    let held = trace(at: 180)
-    guard sampler.history.points.count == 1, held.map(\.id) == [t.addingTimeInterval(60), t.addingTimeInterval(180)],
-          held.allSatisfy({ $0.tokenSavings == 0.696 && $0.taskCompletionDelta == 0.373 }) else {
-        throw RunnerError.message("OS-1 governance Δ chart does not hold an unchanged value as one line across the window")
+    // The luna shape: low always first and failed, medium later; 6 matched
+    // scopes, 2 fully measured, all of it two weeks old.
+    let now = Date()
+    let old = now.addingTimeInterval(-14 * 86_400)
+    for (index, fill) in ["1", "2", "3", "4", "5", "6"].enumerated() {
+        let at = old.addingTimeInterval(Double(index) * 600)
+        let measured = index < 2
+        try task(scope(Character(fill)), "low", adopted: false, tokens: measured ? 700_000 : nil, at: at)
+        try task(scope(Character(fill)), "medium", adopted: index % 2 == 0, tokens: measured ? 212_000 : nil, at: at.addingTimeInterval(120))
     }
-    tick(181, "cohort-2", token: 0.5)
-    tick(182, "cohort-2", token: 0.5)
-    let stepped = trace(at: 182)
-    guard sampler.history.points.count == 2, stepped.map(\.tokenSavings) == [0.696, 0.5, 0.5],
-          stepped.map(\.id) == [t.addingTimeInterval(62), t.addingTimeInterval(181), t.addingTimeInterval(182)] else {
-        throw RunnerError.message("OS-1 governance Δ chart does not step to a changed receipt value and hold it to now")
+    let snapshot = store.snapshot(legacyRoot: nil)
+    let allTime = snapshot.dashboardProjection(provider: nil, since: nil, includeHistorical: false, now: now)
+    guard let pair = allTime.defaultComparison(), pair.baseline == "codex / gpt-test / low", pair.id == "codex / gpt-test / medium" else {
+        throw fail("the default pair is not the newest comparison")
     }
-    tick(190, "cohort-2", token: 0.5)
-    guard sampler.history.points.map(\.id) == [t.addingTimeInterval(190)], trace(at: 190).count == 1 else {
-        throw RunnerError.message("OS-1 governance Δ chart bridged a span the detector did not observe")
+    guard pair.completionEvidence.count == 6, pair.tokenEvidence.count == 2,
+          zip(pair.completionEvidence, pair.completionEvidence.dropFirst()).allSatisfy({ $0.id < $1.id }),
+          pair.completionEvidence.last?.value == pair.taskCompletionDelta,
+          pair.tokenEvidence.last?.value == pair.tokenSavings else {
+        throw fail("the Δ series is not on evidence time or does not end at the headline value")
     }
-    tick(191, nil, token: nil, completion: nil)
-    guard sampler.history.points.isEmpty, trace(at: 191).isEmpty, sampler.confirmedAt == nil else {
-        throw RunnerError.message("OS-1 governance Δ chart kept a line after the value became undefined")
+    let week = now.addingTimeInterval(-604_800)
+    let period = snapshot.dashboardProjection(provider: nil, since: week, includeHistorical: false, now: now)
+    let periodPair = period.comparisonsByBaseline[pair.baseline]?.first { $0.id == pair.id }
+    let cards = GovernanceMonitorDeltaCards(period: periodPair, reference: pair, freshAfter: week)
+    guard periodPair == nil, cards.isStale, cards.staleTitle.contains(GovernanceMonitorText.shortDate(pair.latestEvidenceAt!)),
+          cards.staleNote.contains(GovernanceMonitorText.tokenChange(savings: pair.tokenSavings)) else {
+        throw fail("two-week-old evidence is shown as a current headline")
     }
-    tick(200, "cohort-3", token: 0.1)
-    tick(201, "cohort-3", token: 0.1)
-    tick(199, "cohort-4", token: 0.2)
-    tick(201, "cohort-5", token: 0.3)
-    guard sampler.history.points.map(\.id) == [t.addingTimeInterval(200), t.addingTimeInterval(201)],
-          sampler.history.points.last?.tokenSavings == 0.3 else {
-        throw RunnerError.message("OS-1 governance Δ chart went backwards in time or duplicated an instant")
+    let allCards = GovernanceMonitorDeltaCards(period: pair, reference: pair, freshAfter: week)
+    guard allCards.isStale else { throw fail("under All, evidence older than 7 days is not stale") }
+    let fresh = GovernanceMonitorDeltaCards(period: pair, reference: pair, freshAfter: old.addingTimeInterval(-60))
+    guard !fresh.isStale, fresh.token == .tooFew(scopes: 2), fresh.completion == .value(pair.taskCompletionDelta!) else {
+        throw fail("fresh n=2 tokens are not 'too few' or the 6-scope adoption Δ is hidden")
     }
-    tick(202, "cohort-5", token: 0.3, context: "other-pair")
-    guard sampler.history.points.count == 1, trace(at: 202).count == 1 else {
-        throw RunnerError.message("OS-1 governance Δ chart carried a line across a changed comparison pair")
+    guard pair.completionDeltaIsSelectionBiased, cards.adoptionSummary(pair).contains("3/6") else {
+        throw fail("a candidate that only ran after the baseline failed is not labelled as such")
     }
+    guard GovernanceMonitorText.tokenChange(savings: pair.tokenSavings) == "\u{2212}69.7%" else {
+        throw fail("a token cut does not read as minus: \(GovernanceMonitorText.tokenChange(savings: pair.tokenSavings))")
+    }
+    let goal = GovernanceMonitorText.goalValue(snapshot.quality(since: nil))
+    guard !goal.contains("0/"), !goal.contains("%") else { throw fail("the goal card shows a ratio without verdicts") }
 }
 
 @MainActor
@@ -10781,16 +10806,28 @@ private struct OS1DesktopApp: App {
         }
         if let flag = CommandLine.arguments.firstIndex(of: "--render-governance-preview") {
             do {
-                guard CommandLine.arguments.count > flag + 1 else { throw SourceContextError.invalid }
-                let output = URL(fileURLWithPath: CommandLine.arguments[flag + 1])
-                let initialSection = CommandLine.arguments.count > flag + 2 ? CommandLine.arguments[flag + 2] : "실시간"
-                // Optional: render as after N one-second ticks with no receipt change.
-                let elapsed = CommandLine.arguments.count > flag + 3 ? Int(CommandLine.arguments[flag + 3]) ?? 0 : 0
-                let content = GovernanceMonitorView(preview: true, snapshot: GovernanceActivityStore().snapshot(),
-                                                    previewSection: initialSection, previewElapsed: elapsed)
-                    .frame(width: 1080, height: 1250).environment(\.colorScheme, .dark)
+                // --render-governance-preview <out.png> [section] [--governance-root <dir>] [--height <points>]
+                // `--governance-root` reads a receipt folder copy instead of
+                // the owner's store (test-only: production never passes it;
+                // the legacy ledger is then not read either).
+                let args = Array(CommandLine.arguments[(flag + 1)...])
+                guard let outputPath = args.first, !outputPath.hasPrefix("--") else { throw SourceContextError.invalid }
+                let output = URL(fileURLWithPath: outputPath)
+                let initialSection = args.count > 1 && !args[1].hasPrefix("--") ? args[1] : "핵심"
+                func option(_ name: String) -> String? {
+                    args.firstIndex(of: name).flatMap { args.count > $0 + 1 ? args[$0 + 1] : nil }
+                }
+                let snapshot: GovernanceSnapshot
+                if let root = option("--governance-root") {
+                    snapshot = GovernanceActivityStore(root: URL(fileURLWithPath: root, isDirectory: true)).snapshot(legacyRoot: nil)
+                } else {
+                    snapshot = GovernanceActivityStore().snapshot()
+                }
+                let height = CGFloat(option("--height").flatMap(Double.init) ?? 1250)
+                let content = GovernanceMonitorView(preview: true, snapshot: snapshot, previewSection: initialSection)
+                    .frame(width: 1080, height: height).environment(\.colorScheme, .dark)
                 let view = NSHostingView(rootView: content)
-                view.frame = NSRect(x: 0, y: 0, width: 1080, height: 1250); view.layoutSubtreeIfNeeded()
+                view.frame = NSRect(x: 0, y: 0, width: 1080, height: height); view.layoutSubtreeIfNeeded()
                 guard let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { throw SourceContextError.invalid }
                 view.cacheDisplay(in: view.bounds, to: bitmap)
                 guard let png = bitmap.representation(using: .png, properties: [:]) else { throw SourceContextError.invalid }
@@ -11080,7 +11117,7 @@ private struct OS1DesktopApp: App {
                 try fixtureStoreIsolationSelfTest()
                 try reasoningVisibilitySelfTest()
                 try governanceActivityStripSelfTest()
-                try governanceDeltaTraceSelfTest()
+                try governanceEvidenceMonitorSelfTest()
                 try nativeProvenanceSelfTest()
                 try boundNativeLookupSelfTest()
                 try nativeProgressPresentationSelfTest()

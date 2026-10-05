@@ -161,70 +161,138 @@ public struct GovernanceComparison: Identifiable, Sendable {
     /// Nil when that evidence is untimestamped legacy ledger data.
     public var latestEvidenceAt: Date? = nil
     public var latestMeasuredEvidenceAt: Date? = nil
+    /// Summed measured tokens over the measured cohort (the numerator and
+    /// denominator of `tokenSavings`). Nil without measured usage.
+    public var baselineMeasuredTokens: Double? = nil
+    public var candidateMeasuredTokens: Double? = nil
+    /// Evidence-time series: cumulative token savings after each fully
+    /// measured scope, and cumulative completion Δ after each matched scope,
+    /// ordered by that scope's last attempt end. Untimestamped legacy scopes
+    /// are folded into the cumulative state before the first point. The last
+    /// point always equals `tokenSavings` / `taskCompletionDelta`.
+    public var tokenEvidence: [GovernanceEvidencePoint] = []
+    public var completionEvidence: [GovernanceEvidencePoint] = []
+    /// Matched scopes in which the baseline ran before the candidate's first
+    /// attempt and was never adopted: the candidate only ever ran after the
+    /// baseline failed. When this equals `matchedScopes`
+    /// the completion Δ is selection-biased and must not read as an A/B.
+    public var candidateAfterBaselineFailureScopes = 0
+    public var completionDeltaIsSelectionBiased: Bool {
+        matchedScopes > 0 && candidateAfterBaselineFailureScopes == matchedScopes
+    }
+    /// Matched scopes where each route completed (adopted at least once).
+    public var baselineCompletedScopes = 0
+    public var candidateCompletedScopes = 0
 }
 
-/// A short in-memory trace for the two operator-facing delta charts. It is
-/// intentionally session-local: historical receipts do not contain enough
-/// timestamped paired state to reconstruct a truthful old delta curve.
-public struct GovernanceDeltaPoint: Identifiable, Equatable, Sendable {
+/// One point of a comparison's evidence-time series: the cumulative value
+/// after the matched scope recorded at `id` (that scope's last attempt end)
+/// joined the cohort. Points sit on real receipt dates, so a frozen cohort
+/// shows as a line that stops at its last receipt, never as a fresh sample.
+public struct GovernanceEvidencePoint: Identifiable, Equatable, Sendable {
     public let id: Date
-    public let tokenSavings: Double?
-    public let taskCompletionDelta: Double?
-
-    public init(id: Date, tokenSavings: Double?, taskCompletionDelta: Double?) {
-        self.id = id
-        self.tokenSavings = tokenSavings
-        self.taskCompletionDelta = taskCompletionDelta
+    /// Cumulative token savings (`1 − candidate/baseline`) or completion Δ;
+    /// nil while the cumulative ratio is undefined (zero-token baseline).
+    public let value: Double?
+    /// Scopes in the cumulative cohort at this point (measured scopes for
+    /// the token series, matched scopes for the completion series).
+    public let scopes: Int
+    public init(id: Date, value: Double?, scopes: Int) {
+        self.id = id; self.value = value; self.scopes = scopes
     }
 }
 
-public struct GovernanceDeltaHistory: Equatable, Sendable {
-    public let capacity: Int
-    public private(set) var points: [GovernanceDeltaPoint]
+/// What an Overview Δ headline may show. The order of the checks is the
+/// contract: an undefined value is unavailable; evidence older than the
+/// freshness cutoff (or untimestamped) is stale and never presented as a
+/// current number; a defined, fresh value over fewer than `minimumScopes`
+/// scopes is "too few to compare"; only then is the value the headline.
+public enum GovernanceDeltaHeadline: Equatable, Sendable {
+    case unavailable
+    case stale(since: Date?)
+    case tooFew(scopes: Int)
+    case value(Double)
 
-    public init(capacity: Int = 120, points: [GovernanceDeltaPoint] = []) {
-        self.capacity = min(1_000, max(2, capacity))
-        self.points = Array(points.suffix(self.capacity))
+    public static let minimumScopes = 5
+
+    public static func evaluate(value: Double?, scopes: Int, latestEvidence: Date?, freshAfter cutoff: Date,
+                                minimum: Int = minimumScopes) -> GovernanceDeltaHeadline {
+        guard let value, value.isFinite else { return .unavailable }
+        guard let latestEvidence, latestEvidence >= cutoff else { return .stale(since: latestEvidence) }
+        guard scopes >= minimum else { return .tooFew(scopes: scopes) }
+        return .value(value)
     }
+}
 
-    public mutating func append(at date: Date, tokenSavings: Double?, taskCompletionDelta: Double?) {
-        guard date.timeIntervalSince1970.isFinite else { return }
-        let token = tokenSavings.flatMap { $0.isFinite ? $0 : nil }
-        let completion = taskCompletionDelta.flatMap { $0.isFinite ? $0 : nil }
-        guard token != nil || completion != nil else { return }
-        // Two values computed for the same instant: the later computation wins,
-        // so chart identities (the timestamp) stay unique.
-        if points.last?.id == date { points.removeLast() }
-        points.append(GovernanceDeltaPoint(id: date, tokenSavings: token, taskCompletionDelta: completion))
-        if points.count > capacity { points.removeFirst(points.count - capacity) }
+/// Owner-facing wording for the monitor's comparison figures. Kept beside
+/// the arithmetic so the sign, units and empty states are tested with it.
+public enum GovernanceMonitorText {
+    /// Savings are `1 − candidate/baseline`; a cut in tokens reads as a
+    /// minus. 0.696 → "−69.6%", −0.2 → "+20.0%".
+    public static func tokenChange(savings: Double?) -> String {
+        guard let savings, savings.isFinite else { return "—" }
+        let change = -savings * 100
+        let magnitude = String(format: "%.1f%%", abs(change))
+        if magnitude == "0.0%" { return "±0.0%" }
+        return (change < 0 ? "\u{2212}" : "+") + magnitude
     }
-
-    /// Activity-Monitor trace over `[start, end]`: each recorded value holds
-    /// until the next recorded value, and the newest one holds through
-    /// `heldUntil`, the last detector tick that re-read the receipts and found
-    /// it unchanged. The value already in effect when the window opens enters
-    /// at its left edge. Held samples are not new observations, and the trace
-    /// never extends a value past `heldUntil` or before its first record.
-    public func trace(from start: Date, to end: Date, heldUntil: Date?) -> [GovernanceDeltaPoint] {
-        guard start.timeIntervalSince1970.isFinite, end.timeIntervalSince1970.isFinite, start < end,
-              let newest = points.last, newest.id <= end else { return [] }
-        let holdEnd = min(end, max(newest.id, heldUntil.flatMap { $0.timeIntervalSince1970.isFinite ? $0 : nil } ?? newest.id))
-        var trace: [GovernanceDeltaPoint] = []
-        if let carried = points.last(where: { $0.id <= start }), holdEnd > start {
-            trace.append(GovernanceDeltaPoint(id: start, tokenSavings: carried.tokenSavings,
-                                              taskCompletionDelta: carried.taskCompletionDelta))
+    public static func percentagePoints(_ value: Double?) -> String {
+        guard let value, value.isFinite else { return "—" }
+        let points = value * 100
+        let magnitude = String(format: "%.1fpp", abs(points))
+        if magnitude == "0.0pp" { return "±0.0pp" }
+        return (points < 0 ? "\u{2212}" : "+") + magnitude
+    }
+    /// Token amount in the unit of `scale` (default: its own magnitude), so
+    /// a pair reads in one unit: "1.40M → 0.42M", not "1.40M → 424K".
+    public static func tokenAmount(_ value: Double, scale: Double? = nil) -> String {
+        let magnitude = abs(scale ?? value)
+        if magnitude >= 1_000_000_000 { return String(format: "%.2fB", value / 1_000_000_000) }
+        if magnitude >= 1_000_000 { return String(format: "%.2fM", value / 1_000_000) }
+        if magnitude >= 1_000 { return String(format: "%.0fK", value / 1_000) }
+        return String(format: "%.0f", value)
+    }
+    /// Month/day in the local calendar ("9/20"), identical in both languages.
+    public static func shortDate(_ date: Date, calendar: Calendar = .current) -> String {
+        let parts = calendar.dateComponents([.month, .day], from: date)
+        return "\(parts.month ?? 0)/\(parts.day ?? 0)"
+    }
+    /// "1.40M → 0.42M · n=2 · 9/20": measured totals, the cohort size and
+    /// the date of the newest receipt behind the token figure.
+    public static func tokenCohort(_ item: GovernanceComparison) -> String {
+        var parts: [String] = []
+        if let a = item.baselineMeasuredTokens, let b = item.candidateMeasuredTokens {
+            let scale = max(abs(a), abs(b))
+            parts.append("\(tokenAmount(a, scale: scale)) → \(tokenAmount(b, scale: scale))")
         }
-        trace += points.filter { $0.id > start }
-        if let last = trace.last, holdEnd > last.id {
-            trace.append(GovernanceDeltaPoint(id: holdEnd, tokenSavings: newest.tokenSavings,
-                                              taskCompletionDelta: newest.taskCompletionDelta))
-        }
-        return trace
+        parts.append("n=\(item.measuredScopes)")
+        if let date = item.latestMeasuredEvidenceAt { parts.append(shortDate(date)) }
+        return parts.joined(separator: " · ")
     }
-
-    public mutating func reset(at date: Date, tokenSavings: Double?, taskCompletionDelta: Double?) {
-        points.removeAll(keepingCapacity: true)
-        append(at: date, tokenSavings: tokenSavings, taskCompletionDelta: taskCompletionDelta)
+    public static func staleTitle(since: Date?) -> String {
+        guard let since else { return os1Tr("최근 경로 비교 없음", "No recent route comparison") }
+        let day = shortDate(since)
+        return os1Tr("\(day) 이후 경로 비교 없음", "No route comparison since \(day)")
+    }
+    public static var staleReason: String {
+        os1Tr("현재 라우팅은 요청당 경로 하나만 실행", "current routing runs one route per request")
+    }
+    public static func tooFew(scopes: Int) -> String {
+        os1Tr("n=\(scopes), 비교하기엔 너무 적음", "n=\(scopes), too few to compare")
+    }
+    /// Goal verdicts have no writer yet. The card says so instead of showing
+    /// a "0/N" ratio that reads as zero successes.
+    public static func goalValue(_ quality: GovernanceQualitySummary) -> String {
+        guard let rate = quality.rate else { return os1Tr("미연결", "Not connected") }
+        return String(format: "%.1f%%", rate * 100)
+    }
+    /// Route keys share provider and model on every effort-escalation pair;
+    /// then the effort alone names the side ("medium after low failed").
+    public static func sideNames(baseline: String, candidate: String) -> (String, String) {
+        let a = baseline.components(separatedBy: " / "), b = candidate.components(separatedBy: " / ")
+        if a.count == 3, b.count == 3, a[0] == b[0], a[1] == b[1] { return (a[2], b[2]) }
+        let display = { (route: String) in ProviderSurface.displayRouteKey(route).replacingOccurrences(of: " / ", with: " · ") }
+        return (display(baseline), display(candidate))
     }
 }
 
@@ -267,6 +335,61 @@ public struct GovernanceDashboardProjection: Sendable {
     public let quality: GovernanceQualitySummary
     public let observedTaskHours: Double
     public let comparisonsByBaseline: [String: [GovernanceComparison]]
+    /// Adopted and finished tasks over the whole history (same provider
+    /// filter), so a period card can name the all-time figure beside it.
+    public var allTimeAdopted = 0
+    public var allTimeTerminal = 0
+
+    /// The pair the monitor opens on: the comparison with the newest
+    /// evidence, then the most measured scopes, then the most matched
+    /// scopes. Remaining ties keep the route table order (baseline with the
+    /// most measured tokens first). Never chosen by token volume alone — that
+    /// picked a pair whose last receipt was two weeks old.
+    public func defaultComparison() -> GovernanceComparison? {
+        let order = Dictionary(rows.enumerated().map { ($1.id, $0) }, uniquingKeysWith: { first, _ in first })
+        let all = comparisonsByBaseline.values.flatMap { $0 }
+        return all.min { x, y in
+            let xd = x.latestEvidenceAt ?? .distantPast, yd = y.latestEvidenceAt ?? .distantPast
+            if xd != yd { return xd > yd }
+            if x.measuredScopes != y.measuredScopes { return x.measuredScopes > y.measuredScopes }
+            if x.matchedScopes != y.matchedScopes { return x.matchedScopes > y.matchedScopes }
+            let xo = order[x.baseline] ?? .max, yo = order[y.baseline] ?? .max
+            if xo != yo { return xo < yo }
+            let xc = order[x.id] ?? .max, yc = order[y.id] ?? .max
+            if xc != yc { return xc < yc }
+            return (x.baseline, x.id) < (y.baseline, y.id)
+        }
+    }
+}
+
+/// Display-only check for receipts still marked "running": is the process
+/// that began the task still alive? A PID that now belongs to a process
+/// started after the task (PID reuse) does not count. Never writes a
+/// receipt; the monitor only labels such tasks as unfinished.
+public enum GovernanceProcessLiveness {
+    /// Process start time for `pid`, or nil when no such process exists.
+    public static func startTime(pid: Int32) -> Date? {
+        guard pid > 0 else { return nil }
+        var info = kinfo_proc()
+        var size = MemoryLayout<kinfo_proc>.stride
+        var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_PID, pid]
+        guard sysctl(&mib, u_int(mib.count), &info, &size, nil, 0) == 0, size > 0,
+              info.kp_proc.p_pid == pid else { return nil }
+        let start = info.kp_proc.p_un.__p_starttime
+        return Date(timeIntervalSince1970: Double(start.tv_sec) + Double(start.tv_usec) / 1_000_000)
+    }
+    /// Alive when the PID exists and its process started no later than the
+    /// task (one second of slack for clock rounding).
+    public static func isAlive(pid: Int32, taskStartedAt: Date,
+                               startTime: (Int32) -> Date? = GovernanceProcessLiveness.startTime) -> Bool {
+        guard let started = startTime(pid) else { return false }
+        return started <= taskStartedAt.addingTimeInterval(1)
+    }
+    /// Running receipts whose process is gone: unfinished, never complete.
+    public static func orphaned(_ tasks: [GovernanceTask],
+                                startTime: (Int32) -> Date? = GovernanceProcessLiveness.startTime) -> [GovernanceTask] {
+        tasks.filter { !$0.isTerminal && !isAlive(pid: $0.pid, taskStartedAt: $0.startedAt, startTime: startTime) }
+    }
 }
 
 public struct GovernanceBucket: Identifiable, Sendable {
@@ -472,27 +595,29 @@ public struct GovernanceSnapshot: Sendable {
         let routeIDs = routeRows.map(\.id).filter {
             $0 != baseline && provider != nil && ProviderSurface.providerForRouteKey($0) == provider
         }
-        // When each timestamped receipt was recorded (attempt end). Legacy
-        // ledger observations carry no time and stay absent.
-        let recordedAt = Dictionary(tasks.flatMap(\.attempts).compactMap { attempt -> (String, Date)? in
-            guard let o = attempt.observation else { return nil }
-            return (attempt.id, attempt.startedAt.addingTimeInterval(Double(o.durationMS) / 1000))
-        }, uniquingKeysWith: { first, _ in first })
+        // When each timestamped receipt was recorded (attempt end) and when
+        // it started. Legacy ledger observations carry no time and stay absent.
+        let recordedAt = attemptRecordedAt()
+        let startedAt = Dictionary(tasks.flatMap(\.attempts).map { ($0.id, $0.startedAt) },
+                                   uniquingKeysWith: { first, _ in first })
+        func key(_ o: CompletionFeedbackObservation) -> String { o.executionID + ":" + String(o.sequence) }
         return routeIDs.compactMap { route in
-            var tokenA: [Double] = [], tokenB: [Double] = [], adoptionDeltas: [Double] = [], timeA: [Double] = [], timeB: [Double] = []
-            var completedA = 0, completedB = 0
-            var measuredCompletedA = 0, measuredCompletedB = 0
-            var count = 0, measured = 0, candidateN = 0, baselineN = 0
-            var latestEvidence: Date?, latestMeasuredEvidence: Date?
+            struct Scope {
+                var recordedAt: Date?
+                var aCompleted: Bool, bCompleted: Bool
+                var aTokens: Double?, bTokens: Double?
+                var adoptionDelta: Double
+                var aDuration: Double, bDuration: Double
+                var aAttempts: Int, bAttempts: Int
+                var candidateAfterBaselineFailure: Bool
+            }
+            var scopes: [Scope] = []
             for entries in grouped.values {
                 func select(_ key: String) -> [CompletionFeedbackObservation] {
                     entries.filter { $0.route == key }.map(\.observation)
                 }
                 let a = select(baseline), b = select(route)
                 guard !a.isEmpty, !b.isEmpty else { continue }
-                count += 1; baselineN += a.count; candidateN += b.count
-                let scopeRecordedAt = (a + b).compactMap { recordedAt[$0.executionID + ":" + String($0.sequence)] }.max()
-                if let scopeRecordedAt { latestEvidence = max(latestEvidence ?? scopeRecordedAt, scopeRecordedAt) }
                 // Written as small sub-expressions on purpose: as one line the
                 // adoption delta mixed Int/Double conversions, filters and
                 // division, and the CI toolchain gave up type-checking it.
@@ -500,54 +625,90 @@ public struct GovernanceSnapshot: Sendable {
                 let bAdopted: Int = b.filter { $0.outcome == .adopted }.count
                 let aRate: Double = Double(aAdopted) / Double(a.count)
                 let bRate: Double = Double(bAdopted) / Double(b.count)
-                adoptionDeltas.append(bRate - aRate)
-                let aCompleted = aAdopted > 0
-                let bCompleted = bAdopted > 0
-                completedA += aCompleted ? 1 : 0
-                completedB += bCompleted ? 1 : 0
                 let at = a.compactMap(Self.tokens), bt = b.compactMap(Self.tokens)
                 // Complete-case cohort: the scope enters the token sums only
                 // when every attempt on both routes was measured. A scope with
                 // an unmeasured attempt (typically a failed attempt whose usage
                 // was never captured) is left out rather than counted at zero.
-                if at.count == a.count, bt.count == b.count {
-                    measured += 1
-                    let atSum: Int = at.reduce(0, +)
-                    let btSum: Int = bt.reduce(0, +)
-                    tokenA.append(Double(atSum)); tokenB.append(Double(btSum))
-                    measuredCompletedA += aCompleted ? 1 : 0
-                    measuredCompletedB += bCompleted ? 1 : 0
-                    if let scopeRecordedAt {
-                        latestMeasuredEvidence = max(latestMeasuredEvidence ?? scopeRecordedAt, scopeRecordedAt)
-                    }
-                }
+                let measured = at.count == a.count && bt.count == b.count
+                let aStarts = a.compactMap { startedAt[key($0)] }, bStarts = b.compactMap { startedAt[key($0)] }
+                // The baseline ran (and, below, failed) before the candidate's
+                // first attempt. A later re-run of both (low → medium → … →
+                // low → medium) is still "candidate after baseline failure".
+                let ordered = aStarts.count == a.count && bStarts.count == b.count
+                    && aStarts.min()! < bStarts.min()!
                 let aDurationSum: Int = a.map(\.durationMS).reduce(0, +)
                 let bDurationSum: Int = b.map(\.durationMS).reduce(0, +)
-                timeA.append(Double(aDurationSum)); timeB.append(Double(bDurationSum))
+                scopes.append(Scope(recordedAt: (a + b).compactMap { recordedAt[key($0)] }.max(),
+                    aCompleted: aAdopted > 0, bCompleted: bAdopted > 0,
+                    aTokens: measured ? Double(at.reduce(0, +)) : nil, bTokens: measured ? Double(bt.reduce(0, +)) : nil,
+                    adoptionDelta: bRate - aRate, aDuration: Double(aDurationSum), bDuration: Double(bDurationSum),
+                    aAttempts: a.count, bAttempts: b.count,
+                    candidateAfterBaselineFailure: ordered && aAdopted == 0))
             }
-            guard count > 0 else { return nil }
-            let hasMeasuredUsage = measured > 0 && tokenA.count == measured && tokenB.count == measured
-            let baselineTokens = tokenA.reduce(0, +)
-            let candidateTokens = tokenB.reduce(0, +)
-            let baselineMeanTokens: Double? = hasMeasuredUsage ? baselineTokens / Double(measured) : nil
-            let candidateMeanTokens: Double? = hasMeasuredUsage ? candidateTokens / Double(measured) : nil
+            guard !scopes.isEmpty else { return nil }
+            // One accumulation order for the series and the final figures, so
+            // the last evidence point is exactly the headline value. Legacy
+            // (untimestamped) scopes come first and add no point of their own.
+            scopes.sort { ($0.recordedAt ?? .distantPast) < ($1.recordedAt ?? .distantPast) }
+            var count = 0, measured = 0, completedA = 0, completedB = 0
+            var measuredCompletedA = 0, measuredCompletedB = 0, baselineN = 0, candidateN = 0, biased = 0
+            var baselineTokens = 0.0, candidateTokens = 0.0, timeA = 0.0, timeB = 0.0, adoptionSum = 0.0
+            var latestEvidence: Date?, latestMeasuredEvidence: Date?
+            var tokenEvidence: [GovernanceEvidencePoint] = [], completionEvidence: [GovernanceEvidencePoint] = []
+            func push(_ point: GovernanceEvidencePoint, into series: inout [GovernanceEvidencePoint]) {
+                // Two scopes recorded at the same instant are one point: the
+                // later accumulation wins, so chart identities stay unique.
+                if series.last?.id == point.id { series.removeLast() }
+                series.append(point)
+            }
+            for scope in scopes {
+                count += 1; baselineN += scope.aAttempts; candidateN += scope.bAttempts
+                completedA += scope.aCompleted ? 1 : 0; completedB += scope.bCompleted ? 1 : 0
+                adoptionSum += scope.adoptionDelta; timeA += scope.aDuration; timeB += scope.bDuration
+                biased += scope.candidateAfterBaselineFailure ? 1 : 0
+                if let date = scope.recordedAt {
+                    latestEvidence = max(latestEvidence ?? date, date)
+                    push(GovernanceEvidencePoint(id: date, value: Double(completedB) / Double(count) - Double(completedA) / Double(count),
+                                                 scopes: count), into: &completionEvidence)
+                }
+                if let aTokens = scope.aTokens, let bTokens = scope.bTokens {
+                    measured += 1; baselineTokens += aTokens; candidateTokens += bTokens
+                    measuredCompletedA += scope.aCompleted ? 1 : 0
+                    measuredCompletedB += scope.bCompleted ? 1 : 0
+                    if let date = scope.recordedAt {
+                        latestMeasuredEvidence = max(latestMeasuredEvidence ?? date, date)
+                        push(GovernanceEvidencePoint(id: date,
+                            value: GovernanceStatistics.savings(baseline: baselineTokens, candidate: candidateTokens),
+                            scopes: measured), into: &tokenEvidence)
+                    }
+                }
+            }
+            let hasMeasuredUsage = measured > 0
             let baselineCompletionRate = Double(completedA) / Double(count)
             let candidateCompletionRate = Double(completedB) / Double(count)
             var comparison = GovernanceComparison(id: route, baseline: baseline, matchedScopes: count,
                 candidateAttempts: candidateN, baselineAttempts: baselineN,
                 tokenSavings: hasMeasuredUsage ? GovernanceStatistics.savings(baseline: baselineTokens, candidate: candidateTokens) : nil,
-                adoptionDelta: adoptionDeltas.reduce(0,+) / Double(count),
-                latencySavings: timeA.count == count ? GovernanceStatistics.savings(baseline: timeA.reduce(0,+), candidate: timeB.reduce(0,+)) : nil)
+                adoptionDelta: adoptionSum / Double(count),
+                latencySavings: GovernanceStatistics.savings(baseline: timeA, candidate: timeB))
             comparison.measuredScopes = measured
             comparison.measuredBaselineCompletions = measuredCompletedA
             comparison.measuredCandidateCompletions = measuredCompletedB
-            comparison.baselineMeanTokens = baselineMeanTokens
-            comparison.candidateMeanTokens = candidateMeanTokens
+            comparison.baselineMeanTokens = hasMeasuredUsage ? baselineTokens / Double(measured) : nil
+            comparison.candidateMeanTokens = hasMeasuredUsage ? candidateTokens / Double(measured) : nil
+            comparison.baselineMeasuredTokens = hasMeasuredUsage ? baselineTokens : nil
+            comparison.candidateMeasuredTokens = hasMeasuredUsage ? candidateTokens : nil
             comparison.baselineTaskCompletionRate = baselineCompletionRate
             comparison.candidateTaskCompletionRate = candidateCompletionRate
+            comparison.baselineCompletedScopes = completedA
+            comparison.candidateCompletedScopes = completedB
             comparison.taskCompletionDelta = candidateCompletionRate - baselineCompletionRate
             comparison.latestEvidenceAt = latestEvidence
             comparison.latestMeasuredEvidenceAt = hasMeasuredUsage ? latestMeasuredEvidence : nil
+            comparison.tokenEvidence = hasMeasuredUsage ? tokenEvidence : []
+            comparison.completionEvidence = completionEvidence
+            comparison.candidateAfterBaselineFailureScopes = biased
             if hasMeasuredUsage {
                 // Completions and tokens come from the same measured scopes, so
                 // a completion whose cost is unknown never inflates efficiency.
@@ -564,6 +725,30 @@ public struct GovernanceSnapshot: Sendable {
             }
             return comparison
         }
+    }
+
+    /// Ceiling the runtime applies to `durationMS` (main.swift caps an
+    /// attempt's recorded duration at one hour).
+    public static let recordedDurationCapMS = 3_600_000
+
+    /// When each timestamped attempt's receipt was recorded: start plus its
+    /// duration. A duration at the one-hour cap is a floor, not the real
+    /// length, so the last attempt of a finished task then uses the task's
+    /// end instead of understating how recent the evidence is.
+    public func attemptRecordedAt() -> [String: Date] {
+        var result: [String: Date] = [:]
+        for task in tasks {
+            for (index, attempt) in task.attempts.enumerated() {
+                guard let o = attempt.observation, result[attempt.id] == nil else { continue }
+                var end = attempt.startedAt.addingTimeInterval(Double(o.durationMS) / 1000)
+                if o.durationMS >= Self.recordedDurationCapMS, index == task.attempts.count - 1,
+                   let taskEnd = task.endedAt, taskEnd > end {
+                    end = taskEnd
+                }
+                result[attempt.id] = end
+            }
+        }
+        return result
     }
 
     public func dashboardProjection(provider: String?, since: Date?, includeHistorical: Bool,
@@ -584,10 +769,14 @@ public struct GovernanceSnapshot: Sendable {
             comparisons[row.id] = filtered.comparisons(baseline: row.id, since: since,
                                                        includeHistorical: includeHistorical)
         }
-        return GovernanceDashboardProjection(snapshot: filtered, tasks: tasks, terminalTasks: terminal,
+        var projection = GovernanceDashboardProjection(snapshot: filtered, tasks: tasks, terminalTasks: terminal,
             rows: rows, samples: samples, quality: filtered.quality(since: since),
             observedTaskHours: filtered.observedTaskHours(now: now, since: since),
             comparisonsByBaseline: comparisons)
+        let allTerminal = since == nil ? terminal : filtered.tasks.filter(\.isTerminal)
+        projection.allTimeTerminal = allTerminal.count
+        projection.allTimeAdopted = allTerminal.filter(\.isAdopted).count
+        return projection
     }
 
     public func timeline(since: Date, until: Date, bucketSeconds: Double) -> [GovernanceBucket] {

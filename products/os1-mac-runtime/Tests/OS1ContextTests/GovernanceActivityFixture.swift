@@ -4,6 +4,7 @@ import OS1Context
 func runGovernanceActivityFixtures() throws {
     runGovernanceStatisticsFixtures()
     try runGovernanceRuntimeFixtures()
+    try runGovernanceEvidenceFixtures()
     let fm = FileManager.default
     let root = fm.temporaryDirectory.resolvingSymlinksInPath().appendingPathComponent("governance-fixture-\(UUID())")
     try fm.createDirectory(at: root, withIntermediateDirectories: true)
@@ -160,37 +161,6 @@ func runGovernanceActivityFixtures() throws {
     rejects("unknown recovery cannot create task") { try store.deliveryAdopted(executionID:UUID().uuidString,sequence:1) }
     let serialized = String(data:try Data(contentsOf:store.root.appendingPathComponent(t1+".json")),encoding:.utf8)!
     check(!serialized.contains("prompt") && !serialized.contains("/Users/") && !serialized.contains("api_key"),"content free metadata")
-
-    var history = GovernanceDeltaHistory(capacity: 4)
-    history.append(at:start,tokenSavings:nil,taskCompletionDelta:nil)
-    check(history.points.isEmpty,"missing deltas do not become zero-valued chart points")
-    for index in 0..<7 {
-        history.append(at:start.addingTimeInterval(Double(index)),tokenSavings:Double(index)/100,
-                       taskCompletionDelta:Double(-index)/100)
-    }
-    check(history.points.count == 4 && history.points.first?.tokenSavings == 0.03,
-          "delta chart history remains bounded and retains newest exact samples")
-    history.reset(at:start.addingTimeInterval(10),tokenSavings:0.5,taskCompletionDelta:0)
-    check(history.points.count == 1 && history.points.first?.tokenSavings == 0.5 && history.points.first?.taskCompletionDelta == 0,
-          "filter context reset removes stale graph points before reseeding")
-    // Activity-Monitor trace: values hold until replaced and reach the last
-    // confirming tick, never beyond it, and nothing exists before the first record.
-    var held = GovernanceDeltaHistory()
-    held.append(at:start,tokenSavings:0.2,taskCompletionDelta:0.1)
-    held.append(at:start.addingTimeInterval(50),tokenSavings:-0.1,taskCompletionDelta:0.1)
-    let window = held.trace(from:start.addingTimeInterval(20),to:start.addingTimeInterval(140),heldUntil:start.addingTimeInterval(140))
-    check(window.map(\.id) == [start.addingTimeInterval(20),start.addingTimeInterval(50),start.addingTimeInterval(140)] &&
-          window.map(\.tokenSavings) == [0.2,-0.1,-0.1],
-          "trace carries the value in effect into the window and holds the newest value to the confirming tick")
-    check(held.trace(from:start.addingTimeInterval(20),to:start.addingTimeInterval(140),heldUntil:start.addingTimeInterval(90)).last?.id
-            == start.addingTimeInterval(90), "trace never extends a value past its last confirmation")
-    check(held.trace(from:start.addingTimeInterval(100),to:start.addingTimeInterval(220),heldUntil:start.addingTimeInterval(90)).isEmpty,
-          "a value last confirmed before the window opened draws nothing")
-    check(held.trace(from:start.addingTimeInterval(-60),to:start.addingTimeInterval(60),heldUntil:nil).first?.id == start,
-          "trace does not invent values before the first record")
-    held.append(at:start.addingTimeInterval(50),tokenSavings:0.4,taskCompletionDelta:0.1)
-    check(held.points.count == 2 && held.points.last?.tokenSavings == 0.4,
-          "a second value for the same instant replaces the first instead of duplicating the chart identity")
 
     let dashboardStore = GovernanceActivityStore(root:root.appendingPathComponent("dashboard"))
     func dashboardTask(_ model:String, adopted:Bool, input:Int, output:Int, offset:Double,
