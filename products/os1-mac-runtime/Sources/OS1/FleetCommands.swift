@@ -1,9 +1,14 @@
 import Foundation
+import OS1Context
 
 func fleetCommand(_ arguments: [String]) async throws -> Bool {
     guard let command = arguments.first else { return false }
     switch command {
-    case "fleet-self-test": try fleetSelfTest()
+    case "fleet-self-test":
+        // A fixture: its failure-notice check must not overwrite the failure
+        // file of a live run it was started in (OS1_FAILURE_FILE).
+        LiveRunEnvironment.detachCurrentProcess()
+        try fleetSelfTest()
             case "exo-doctor": try await exoDoctor(config: RuntimeConfig.load())
             case "exo-claude-hook": await runClaudeEXOHook()
             case "exo-codex-hook": await runCodexEXOHook()

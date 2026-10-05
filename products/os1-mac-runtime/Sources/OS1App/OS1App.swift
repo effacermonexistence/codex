@@ -1090,6 +1090,10 @@ private func parallelInteractionSelfTest() async throws {
             permissionProfile: "read_only", exitCode: 0, output: "answer " + name, stderr: "", durationMS: 600,
             nativeRecord: nil)])
     })
+    // Pin the admission cap this test asserts (four, below): it must not
+    // depend on the default or on any Settings value.
+    store.updateSettings { $0.parallelRunLimit = 4 }
+    try check(store.maximumConcurrentSessions == 4, "the pinned admission cap was not applied")
     let a = store.selectedSessionID!
     store.composer = "A1"; store.send()
     store.composer = "A2"; store.send()
@@ -1146,21 +1150,33 @@ private func parallelInteractionSelfTest() async throws {
     let restartRoot = root.appendingPathComponent("restart")
     try FileManager.default.createDirectory(at: restartRoot, withIntermediateDirectories: true)
     try FileManager.default.copyItem(at: root.appendingPathComponent("sessions.json"), to: restartRoot.appendingPathComponent("sessions.json"))
+    var restartStarts: [String] = []
     let restarted = SessionStore(storageRoot: restartRoot, runOperation: { submission, _, _, _, _ in
+        restartStarts.append(submission.request)
         try await Task.sleep(for: .milliseconds(100))
         throw RunnerError.message("restart fixture")
     })
+    try check(restarted.activeRuns.isEmpty && restarted.queuedSubmissions.count == 1,
+        "restart lost or replayed the persisted queue")
     let suspendedID = restarted.queuedSubmissions.first!.id
-    restarted.createSession(); restarted.composer = "unrelated new work"; restarted.send()
-    // Wait for the new work itself to finish (≈100 ms, much longer on a
-    // loaded Mac — a fixed 250 ms sleep failed the build-326 installer). A
-    // store that wrongly resumed the old queue afterwards still fails below:
-    // the suspended submission would have left the queue.
+    restarted.createSession(); let unrelated = restarted.selectedSessionID!
+    restarted.composer = "unrelated new work"; restarted.send()
+    try check(Set(restarted.activeRuns.keys) == [unrelated] && restarted.queuedSubmissions.map(\.id) == [suspendedID],
+        "new work did not start alone, or it started the old persisted queue")
+    // Wait for the new work's own completion — that is where the scheduler
+    // would wrongly pick the persisted queue up — instead of a fixed 250 ms
+    // sleep. Send-to-completion measured 270–320 ms in a debug build (the
+    // fixture itself sleeps 100 ms), so the fixed wait failed there on every
+    // run, and reportedly in 2 of 4 staged runs.
     let restartDeadline = Date().addingTimeInterval(15)
-    try await Task.sleep(for: .milliseconds(250))
-    while !restarted.activeRuns.isEmpty && Date() < restartDeadline { try await Task.sleep(for: .milliseconds(50)) }
-    try check(restarted.activeRuns.isEmpty && restarted.queuedSubmissions.map(\.id) == [suspendedID],
-        "new work must not implicitly resume an old persisted queue")
+    func unrelatedFinished() -> Bool {
+        restarted.activeRuns.isEmpty && restarted.sessions.first(where: { $0.id == unrelated })?.lastFailure != nil
+    }
+    while !unrelatedFinished() && Date() < restartDeadline { try await Task.sleep(for: .milliseconds(20)) }
+    try check(unrelatedFinished() && restartStarts == ["unrelated new work"]
+        && restarted.queuedSubmissions.map(\.id) == [suspendedID],
+        "new work must not implicitly resume an old persisted queue (active \(restarted.activeRuns.count), "
+        + "started \(restartStarts), queued \(restarted.queuedSubmissions.map(\.request)))")
     restarted.removeQueued(suspendedID)
     try check(restarted.queuedSubmissions.isEmpty, "cancelled persisted task remains queued")
     while !store.activeRuns.isEmpty && Date() < deadline { try await Task.sleep(for: .milliseconds(100)) }
@@ -1697,6 +1713,10 @@ private func queueForkInteractionSelfTest() async throws {
             revasDisposition: "adopted", sessionID: UUID().uuidString, permissionProfile: "read_only", exitCode: 0,
             output: "answer " + submission.request, stderr: "", durationMS: 0, nativeRecord: nil)])
     }, nativeSessionOpener: { _ in opens += 1; return false })
+    // The fork runs beside its parent, so this needs at least two slots; pin
+    // the cap rather than depend on the default or a Settings value.
+    store.updateSettings { $0.parallelRunLimit = 4 }
+    try check(store.maximumConcurrentSessions == 4, "the pinned admission cap was not applied")
     func finish(_ name: String) async throws {
         try await eventually { gates[name] != nil }
         gates.removeValue(forKey: name)!.resume()
@@ -1822,6 +1842,10 @@ private func steeringInteractionSelfTest() async throws {
             output: "정정을 적용한 fixture 답변", stderr: "", durationMS: 0, nativeRecord: nil)],
             persistedCorrectionIDs: mailbox.persistedIDs(submission.id))
     })
+    // A second, independent conversation starts while the parent is still
+    // gated (below): pin the cap instead of depending on the default.
+    store.updateSettings { $0.parallelRunLimit = 4 }
+    try check(store.maximumConcurrentSessions == 4, "the pinned admission cap was not applied")
     let original = "테스트 파일을 수정해. 운영 배포 금지."
     let correction = "그 말이 아니라, 다시 물어보지 말고 문맥상 명백한 오타를 처리해."
     let parent = store.selectedSessionID!
@@ -5586,12 +5610,16 @@ private final class SessionStore: ObservableObject {
     @Published var selectedSessionID: UUID?
     @Published var surface: ProviderChoice = .auto
     /// Codex-style user settings (language, backends). The file is the source
-    /// of truth for every OS-1 process; this copy drives the UI.
-    @Published var appSettings = OS1Settings.load()
+    /// of truth for every OS-1 process; this copy drives the UI. A fixture
+    /// store (custom storage root) starts from the defaults instead: build
+    /// 326 failed staging because every self-test store inherited the owner's
+    /// parallelRunLimit from settings.json.
+    @Published var appSettings: OS1Settings
     /// Which Codex and Claude accounts this Mac is signed in to. The runtime
     /// owns the file; the app reads it and asks the runtime to change it.
     /// No credential is ever held here — only labels and sign-in state.
-    @Published var accountBook = BackendAccounts.load()
+    /// A fixture store holds the provider defaults, never the owner's book.
+    @Published var accountBook: BackendAccountBook
     /// The provider whose sign-in is running, so its rail tile can say so.
     @Published var accountBusy: String?
     @Published var accountNotice: String?
@@ -5673,6 +5701,10 @@ private final class SessionStore: ObservableObject {
         nativeSessionOpener: @escaping NativeSessionOpener = { NSWorkspace.shared.open($0) }
     ) {
         customStorageRoot = storageRoot
+        // Only the live store reads the owner's files; a store with its own
+        // storage root is a fixture and must not depend on this Mac's state.
+        appSettings = storageRoot == nil ? OS1Settings.load() : OS1Settings()
+        accountBook = storageRoot == nil ? BackendAccounts.load() : BackendAccounts.normalized(BackendAccountBook())
         self.sourceAdmissionCheck = sourceAdmissionCheck
         self.sourceAdmissionFixture = storageRoot == nil ? nil : sourceAdmissionFixture
         self.nativeSessionOpener = nativeSessionOpener
@@ -9822,6 +9854,10 @@ private struct OS1DesktopApp: App {
         if CommandLine.arguments.contains(where: { $0.hasPrefix("--self-test") }) {
             setenv("OS1_INTERFACE_LANGUAGE", "ko", 1)
             OS1Localization.invalidate()
+            // A suite started inside a live run (staging, the release script,
+            // the installer) is a fixture, not part of that run: its children
+            // (the activity fixture) must not append to the owner's run journal.
+            LiveRunEnvironment.detachCurrentProcess()
         }
         if CommandLine.arguments.contains("--self-test-bound-native") {
             do { try boundNativeLookupSelfTest(); exit(EXIT_SUCCESS) }

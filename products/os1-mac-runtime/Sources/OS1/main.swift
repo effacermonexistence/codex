@@ -2096,6 +2096,7 @@ func commandOutput(
     currentDirectory: String? = nil,
     isProvider: Bool = false,
     environmentOverrides: [String: String] = [:],
+    removingEnvironment: Set<String> = [],
     onLaunch: (() -> Void)? = nil,
     onOutput: ((Data) -> Void)? = nil,
     interactiveStdin: ((FileHandle) -> Void)? = nil
@@ -2124,6 +2125,9 @@ func commandOutput(
     // No child — a provider run or a probe such as `claude auth status` —
     // inherits an enclosing agent session's identity (see ProviderExecutionEnvironment).
     environment = environment.filter { !ProviderExecutionEnvironment.foreignSessionVariable($0.key) }
+    // Inherited variables the caller withholds (a self-test child is not part
+    // of the live run that launched it); explicit markers and overrides still apply.
+    environment = environment.filter { !removingEnvironment.contains($0.key) }
     if isProvider { environment = ProviderExecutionEnvironment.marked(environment) }
     environment.merge(environmentOverrides) { _, new in new }
     process.environment = environment
@@ -13144,6 +13148,30 @@ func selfTest() throws {
                 SelfUpdate.decision(intent: intent(build: 126, state: "applying", lastAttempt: now.addingTimeInterval(-60)), installedBuild: 125, busy: false, now: now) == .applying &&
                 SelfUpdate.decision(intent: intent(build: 126, state: "applying", lastAttempt: now.addingTimeInterval(-20 * 60)), installedBuild: 125, busy: false, now: now) == .apply
         }()),
+        ("self-update staging runs its self-tests on the staged config, detached from the live run", {
+            let folder = FileManager.default.temporaryDirectory.appendingPathComponent("os1-staged-env-" + UUID().uuidString, isDirectory: true)
+            defer { try? FileManager.default.removeItem(at: folder) }
+            let app = folder.appendingPathComponent("OS-1 CLODEX.app", isDirectory: true)
+            let config = app.appendingPathComponent("Contents/Resources/config.json")
+            // A staged bundle without its own config is refused, never run on another config.
+            guard (try? stagedChildEnvironment(stagedApp: app.path)) == nil else { return false }
+            do {
+                try FileManager.default.createDirectory(at: config.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try Data("{}".utf8).write(to: config)
+                let child = try stagedChildEnvironment(stagedApp: app.path)
+                // A real child, launched while this process carries a live run's
+                // variables (inert paths): none of them may reach it.
+                let live = LiveRunEnvironment.variables.sorted()
+                let parent = ProcessInfo.processInfo.environment
+                for key in live { setenv(key, "/nonexistent-os1-live-run/" + key, 1) }
+                defer { for key in live { if let value = parent[key] { setenv(key, value, 1) } else { unsetenv(key) } } }
+                let printed = try commandOutput("/usr/bin/env", [], timeout: 10,
+                    environmentOverrides: child.overrides, removingEnvironment: child.removing)
+                let lines = String(decoding: printed.1, as: UTF8.self).split(separator: "\n").map(String.init)
+                return printed.0 == 0 && lines.contains("OS1_CONFIG=" + config.path)
+                    && !lines.contains { line in live.contains { line.hasPrefix($0 + "=") } }
+            } catch { return false }
+        }()),
         ("self-repair contract keeps the mechanical tail with OS-1 and forbids manual installs", {
             let card = SelfUpdate.capabilityCard(root: "/tmp/os1", installedVersion: os1RuntimeVersionString, installedBuild: 125,
                 sourceCommit: "abcdef1234567890", scope: "workspaceWrite", os1Executable: "/tmp/os1-bin")
@@ -13342,6 +13370,8 @@ struct OS1Main {
                     "source_archive_path": saved.url.path, "r2_downloaded": false, "production_changed": false,
                 ], options: [.sortedKeys]), as: UTF8.self))
             case "self-test":
+                // A fixture, never part of a live run it was started in.
+                LiveRunEnvironment.detachCurrentProcess()
                 try selfTest()
                 try await os1AttemptSourceSelfTest()
             case "browser-mcp": browserMCPCommand()

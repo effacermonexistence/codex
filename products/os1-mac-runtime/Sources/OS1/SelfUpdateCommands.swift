@@ -238,6 +238,20 @@ private func stageSelfUpdate(source: String?) throws {
     print("OS-1 self-update staged: build \(intent.build) (\(intent.version)) from \(root); checks \(intent.checks.joined(separator: ", ")). " + installNote)
 }
 
+/// How staging launches every self-test child. On the staged bundle's own
+/// config: the children used to get the installed app's config, so a staged
+/// config change was validated against the old one (build-release.sh already
+/// used the staged copy). And detached from the live run doing the staging:
+/// build 326's staged suites inherited the conversation's run variables and
+/// wrote fixture activity into the owner's run journal.
+func stagedChildEnvironment(stagedApp app: String) throws -> (overrides: [String: String], removing: Set<String>) {
+    let config = app + "/Contents/Resources/config.json"
+    guard FileManager.default.fileExists(atPath: config) else {
+        throw OS1Error.message("self-update stage: the staged app carries no Contents/Resources/config.json")
+    }
+    return (["OS1_CONFIG": config], LiveRunEnvironment.variables)
+}
+
 /// Builds the signed release for the tree at `root`, runs the release
 /// self-tests and writes the intent. The caller holds the source-write lease.
 func stageSelfUpdateRelease(root: String) throws -> SelfUpdate.Intent {
@@ -255,23 +269,23 @@ func stageSelfUpdateRelease(root: String) throws -> SelfUpdate.Intent {
         "Building the OS-1 self-update release for build \(build) · signed, universal"))
     // The release script cross-checks its own OS1_VERSION against the bundle's
     // short version and refuses to package when they differ; hand it the
-    // version this build actually carries.
+    // version this build actually carries. It also runs app self-tests, so,
+    // like every child below, it runs detached from the live run staging it.
     let built = try commandOutput("/bin/bash", [runtime + "/scripts/build-release.sh"], timeout: 1_800,
-        currentDirectory: runtime, environmentOverrides: ["OS1_VERSION": version])
+        currentDirectory: runtime, environmentOverrides: ["OS1_VERSION": version],
+        removingEnvironment: LiveRunEnvironment.variables)
     guard built.0 == 0 else { throw OS1Error.message("self-update stage: release build failed\n" + outputTail(built)) }
     let app = SelfUpdate.stagedAppURL(root: root).path
     let cli = app + "/Contents/Resources/os1"
     guard Int(plistValue(app + "/Contents/Info.plist", "CFBundleVersion") as? String ?? "") == build else {
         throw OS1Error.message("self-update stage: staged app does not carry build \(build)")
     }
-    let versionOutput = try commandOutput(cli, ["version"], timeout: 30)
+    let versionOutput = try commandOutput(cli, ["version"], timeout: 30, removingEnvironment: LiveRunEnvironment.variables)
     guard versionOutput.0 == 0, String(decoding: versionOutput.1, as: UTF8.self).contains("build\(build)") else {
         throw OS1Error.message("self-update stage: the `version` string in Sources/OS1/SelfUpdateCommands.swift must name build\(build) (staged CLI printed: \(String(decoding: versionOutput.1, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)))")
     }
     var checks = ["release-build: PASS", "version-string: PASS"]
-    var overrides: [String: String] = [:]
-    let config = installedAppURL.appendingPathComponent("Contents/Resources/config.json").path
-    if FileManager.default.fileExists(atPath: config) { overrides["OS1_CONFIG"] = config }
+    let child = try stagedChildEnvironment(stagedApp: app)
     // Every app suite that guards owner-facing behaviour runs on the staged
     // binary itself. The shell suite was missing here (and from the manual
     // routine) — which is how a composer that re-accepted file drops could
@@ -289,7 +303,8 @@ func stageSelfUpdateRelease(root: String) throws -> SelfUpdate.Intent {
     ] {
         RuntimeActivity.emit(.verifying, publicText: os1Tr("OS-1 자체 업데이트 build \(build) 검증 중 · \(label)",
                                                            "Verifying the OS-1 self-update for build \(build) · \(label)"))
-        let result = try commandOutput(executable, args, timeout: 600, currentDirectory: runtime, environmentOverrides: overrides)
+        let result = try commandOutput(executable, args, timeout: 600, currentDirectory: runtime,
+            environmentOverrides: child.overrides, removingEnvironment: child.removing)
         guard result.0 == 0 else { throw OS1Error.message("self-update stage: \(label) failed\n" + outputTail(result)) }
         checks.append("\(label): PASS")
     }

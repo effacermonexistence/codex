@@ -65,6 +65,15 @@ func runExecutionFixtures() throws {
     check(nested["CLAUDECODE"] == nil && nested["CLAUDE_CODE_SESSION_ID"] == nil && nested["CLAUDE_CODE_OAUTH_SCOPES"] == nil)
     check(nested["CODEX_THREAD_ID"] == nil && nested["CLAUDE_CONFIG_DIR"] == "/fixture/claude" && nested["CODEX_HOME"] == "/fixture/codex")
     check(nested["PATH"] == inherited["PATH"] && nested["OS1_INTERNAL_PROVIDER_EXECUTION"] == "1")
+    // A self-test child never carries the live run that launched it (build 326
+    // staging wrote fixture activity into the owner's run journal); settings
+    // that are not run identity pass through.
+    let configured = inherited.merging(["OS1_INTERFACE_LANGUAGE": "ko", "OS1_CONFIG": "/fixture/config.json"]) { _, new in new }
+    let liveRun = configured.merging(["OS1_EVENT_JOURNAL": "/fixture/journal", "OS1_ACTIVITY_FILE": "/fixture/activity",
+        "OS1_FAILURE_FILE": "/fixture/failure", "OS1_CANCEL_FILE": "/fixture/cancel", "OS1_SUBMISSION_ID": "fixture",
+        "OS1_SUBMISSION_STARTED_AT": "1", "OS1_CONVERSATION_ID": "fixture", "OS1_ALLOW_AUTHENTICATION": "1",
+        "OS1_INTERNAL_PROVIDER_EXECUTION": "1", "OS1_CHECKOUT_EXECUTION_ID": "fixture", "OS1_MEMORY_EXECUTION_ID": "fixture"]) { _, new in new }
+    check(LiveRunEnvironment.removed(from: liveRun) == configured)
     let root = FileManager.default.temporaryDirectory.appendingPathComponent("os1-outbox-fixture-" + UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }
     let data = Data("finished paid result".utf8)
