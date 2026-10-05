@@ -61,6 +61,12 @@ public struct PendingOS1Repair: Codable, Equatable, Sendable {
     public var failedGate: String?
     /// HEAD after the repair, when the repair committed its change.
     public var repairCommit: String?
+    /// This attempt's own window on OS-1's source (build 327 fix): HEAD when
+    /// it first took the exclusive source lease, and HEAD as it released it.
+    /// Only a move inside that window is this repair's commit; a commit another
+    /// conversation made between attempts never is. Reset at each attempt.
+    public var attemptStartCommit: String?
+    public var attemptEndCommit: String?
     public var repairBranch: String?
     public var repairPushed: Bool?
     /// The repair's own answer, when it produced one.
