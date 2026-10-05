@@ -5796,11 +5796,14 @@ private final class SessionStore: ObservableObject {
         // Read-only work never waits on the writer itself, but source-bound
         // reads also stay parked for a ready update's brief installation gate.
         guard sourceWriteAccess(next, session: session, root: root, home: home) != nil else { return false }
-        // A HOME write (shared access) is no longer parked behind a repair:
-        // its runtime runs a Claude attempt confined from OS-1's source with
-        // no lease, and makes a Codex attempt wait on the real shared lease.
-        // Only OS-1 writers still wait for each other here.
-        guard SourceWriteAdmission.parksBehindSourceWriter(access) else { return false }
+        // A HOME write that can run on Claude is no longer parked behind a
+        // repair (build 319): its runtime confines a Claude attempt from
+        // OS-1's source with no lease, and re-routes an "auto" Codex attempt
+        // to Claude rather than wait. Only OS-1 writers, and HOME writes that
+        // can only run on Codex (which would hold a run slot while waiting),
+        // still wait here.
+        let confinable = next.provider != .codex && next.claudeCapacity > 0
+        guard SourceWriteAdmission.parksBehindSourceWriter(access, confinable: confinable) else { return false }
         let admittedWriter = inFlightSubmissions.values.contains { candidate in
             sessions.first(where: { $0.id == candidate.sessionID }).map {
                 sourceWriteAccess(candidate, session: $0, root: root, home: home) == .exclusive
@@ -5808,9 +5811,10 @@ private final class SessionStore: ObservableObject {
         }
         // Admission precedes the child runtime's lock acquisition. Keep a
         // second repair queued even in that brief source-lock-free window.
-        if admittedWriter { return true }
+        if access == .exclusive, admittedWriter { return true }
+        if access == .shared, admittedWriter || queuedSourceWriterIsEligible(root: root, home: home) { return true }
         guard SourceWriteAdmission.availability(root: root, access: access, home: home) == .busy else { return false }
-        if SourceWriteAdmission.heldOnlyByReaders(root: root, home: home) { return false }
+        if access == .exclusive, SourceWriteAdmission.heldOnlyByReaders(root: root, home: home), !admittedWriter { return false }
         return true
     }
 
@@ -5821,6 +5825,15 @@ private final class SessionStore: ObservableObject {
               scope == .workspaceWrite || continuingWrite else { return nil }
         return SourceWriteAdmission.access(request: next.executionRequest, workspace: next.workspace,
             projectID: session.taskContext?.project?.projectID, writeScope: true, root: root, home: home)
+    }
+
+    private func queuedSourceWriterIsEligible(root: String, home: URL) -> Bool {
+        var seen = Set<UUID>()
+        return queuedSubmissions.contains { candidate in
+            guard seen.insert(candidate.sessionID).inserted, queueEligible(candidate, ignoringSource: true),
+                  let session = sessions.first(where: { $0.id == candidate.sessionID }) else { return false }
+            return sourceWriteAccess(candidate, session: session, root: root, home: home) == .exclusive
+        }
     }
 
     func sourceWaitingActivity(_ sessionID: UUID) -> RuntimeActivity? {
@@ -9390,19 +9403,29 @@ private func sourceWriterFairnessSelfTest() async throws {
     }
     try check(store.activeRuns[writerID] != nil && store.activeRuns[nextHomeID] == nil && store.queuedSubmissions.isEmpty &&
         dispatched == ["HOME first 파일 수정해", "SOURCE repair 파일 수정해", "HOME next 파일 수정해"],
-        "the freed slot runs the HOME follower beside the executing repair (the runtime confines or waits)")
+        "the freed slot runs the HOME follower beside the executing repair (its runtime confines it)")
+    // A HOME write pinned to Codex cannot run confined: its runtime would only
+    // wait for the repair, so it waits parked here and holds no run slot.
+    store.createSession(); let codexHomeID = store.selectedSessionID!
+    store.sessions[0].workspace = home.path
+    store.sessions[0].provider = .codex
+    store.composer = "HOME codex 파일 수정해"; store.send()
+    try check(store.activeRuns[codexHomeID] == nil && store.sourceWaitingActivity(codexHomeID)?.phase == .waitingForSource
+        && store.activeRuns.count == 1, "a Codex-pinned HOME write stays parked behind the repair without taking the free slot")
     store.createSession(); let siblingID = store.selectedSessionID!
     store.sessions[0].workspace = sibling.path
     store.composer = "SIBLING file 수정해"; store.send()
-    try check(store.activeRuns[siblingID] != nil, "actual sibling project bypasses source repair without changing source guard")
+    try check(store.activeRuns[siblingID] != nil,
+        "actual sibling project bypasses source repair, and a parked Codex HOME write does not hold its slot")
     while store.activeRuns[siblingID] != nil && Date() < deadline { try await Task.sleep(for: .milliseconds(20)) }
     releaseWriter = true
     while (!store.activeRuns.isEmpty || !store.queuedSubmissions.isEmpty) && Date() < deadline {
         store.resumeSourceWaitingSubmissions(); try await Task.sleep(for: .milliseconds(20))
     }
-    try check(store.activeRuns.isEmpty && store.queuedSubmissions.isEmpty, "writer and HOME follower reach terminal drain")
-    try check(dispatched == ["HOME first 파일 수정해", "SOURCE repair 파일 수정해", "HOME next 파일 수정해", "SIBLING file 수정해"],
-        "each request runs exactly once; repair, HOME follower and sibling are independent")
+    try check(store.activeRuns.isEmpty && store.queuedSubmissions.isEmpty, "writer and HOME followers reach terminal drain")
+    try check(dispatched == ["HOME first 파일 수정해", "SOURCE repair 파일 수정해", "HOME next 파일 수정해", "SIBLING file 수정해",
+                             "HOME codex 파일 수정해"],
+        "each request runs exactly once; the Codex HOME write resumes after the repair; the sibling is independent")
     releaseWriter = false
     store.createSession(); let idleWriterID = store.selectedSessionID!
     store.sessions[0].workspace = source.path

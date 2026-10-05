@@ -46,21 +46,59 @@ func runOS1SourceConfinementFixtures() throws {
         return String(cString: resolved)
     }
     let realLive = real(live), realAdmin = real(admin)
-    let protected = OS1SourceConfinement.protectedPaths(root: live.path)
-    check(protected == [realLive, realAdmin], "worktree admin dir is protected with the tree: \(protected)")
+    let fixtureHome = base.appendingPathComponent("home")
+    let dataVolume = "/System/Volumes/Data"
+    func primary(_ paths: [String]) -> [String] { paths.filter { !$0.hasPrefix(dataVolume + "/") } }
+    let protected = OS1SourceConfinement.protectedPaths(root: live.path, home: fixtureHome)
+    check(primary(protected) == [realLive, realAdmin], "worktree admin dir is protected with the tree: \(protected)")
     check(!protected.contains(real(common)),
         "the common git dir other worktrees share is never protected")
+    // /Users/… is also /System/Volumes/Data/Users/… (same inode, a second
+    // spelling realpath keeps): each protected path is protected under both.
+    for path in protected where path.hasPrefix(dataVolume + "/") {
+        check(primary(protected).contains(String(path.dropFirst(dataVolume.count))), "an alias names a protected path: \(path)")
+    }
+    if FileManager.default.fileExists(atPath: dataVolume + realLive) {
+        check(protected.contains(dataVolume + realLive) && protected.contains(dataVolume + realAdmin),
+            "the data-volume spelling of every protected path is protected too")
+    }
     // A relative gitdir is resolved against the worktree root.
     let relative = base.appendingPathComponent("relative tree")
     try FileManager.default.createDirectory(at: relative, withIntermediateDirectories: true)
     try Data("gitdir: ../main repo (2)/.git/worktrees/live\n".utf8).write(to: relative.appendingPathComponent(".git"))
-    check(OS1SourceConfinement.protectedPaths(root: relative.path).last == realAdmin, "relative gitdir resolves from the tree")
+    check(primary(OS1SourceConfinement.protectedPaths(root: relative.path, home: fixtureHome)).last == realAdmin,
+        "relative gitdir resolves from the tree")
     // A normal checkout (.git directory inside the tree) adds nothing.
     let plainRepo = base.appendingPathComponent("plain")
     try FileManager.default.createDirectory(at: plainRepo.appendingPathComponent(".git"), withIntermediateDirectories: true)
-    check(OS1SourceConfinement.protectedPaths(root: plainRepo.path).count == 1, "an in-tree .git dir is covered by the tree")
+    check(primary(OS1SourceConfinement.protectedPaths(root: plainRepo.path, home: fixtureHome)).count == 1,
+        "an in-tree .git dir is covered by the tree")
     check(OS1SourceConfinement.protectedPaths(root: base.appendingPathComponent("missing").path).isEmpty,
         "a missing root protects nothing, so the caller keeps the lease")
+
+    // The release output build-release.sh keeps outside the tree: the link's
+    // target, and the cache directory derived from the runtime folder even
+    // before (or while rebuilding) the link exists.
+    check(OS1SourceConfinement.releaseCacheKey(runtimeRoot: "/Users/LUA/Documents/Codex/OS1-queue-slot-visibility-build224/products/os1-mac-runtime")
+        == "26ddf870ec0dbc107d5f", "cache key is build-release.sh's `printf %s | shasum -a 256 | cut -c1-20`")
+    let releaseTree = base.appendingPathComponent("release tree")
+    let runtime = releaseTree.appendingPathComponent(SelfUpdate.runtimeRelativePath)
+    try FileManager.default.createDirectory(at: runtime, withIntermediateDirectories: true)
+    let cache = fixtureHome.appendingPathComponent("Library/Caches/OS-1/releases")
+        .appendingPathComponent(OS1SourceConfinement.releaseCacheKey(runtimeRoot: real(runtime)))
+    let elsewhere = base.appendingPathComponent("override output")
+    for folder in [cache, elsewhere] { try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true) }
+    try FileManager.default.createSymbolicLink(at: releaseTree.appendingPathComponent(SelfUpdate.releaseEntryRelativePath),
+        withDestinationURL: elsewhere)
+    let withRelease = primary(OS1SourceConfinement.protectedPaths(root: releaseTree.path, home: fixtureHome))
+    check(withRelease == [real(releaseTree), real(elsewhere), real(cache)],
+        "the release link's target and the derived cache directory are protected: \(withRelease)")
+    try FileManager.default.removeItem(at: releaseTree.appendingPathComponent(SelfUpdate.releaseEntryRelativePath))
+    check(primary(OS1SourceConfinement.protectedPaths(root: releaseTree.path, home: fixtureHome)) == [real(releaseTree), real(cache)],
+        "the cache directory is protected while the link is being recreated")
+    try FileManager.default.removeItem(at: cache)
+    check(primary(OS1SourceConfinement.protectedPaths(root: releaseTree.path, home: fixtureHome)) == [real(releaseTree)],
+        "a release directory that does not exist is not handed to the sandbox")
 
     // Per-attempt state.
     OS1SourceConfinement.activeRoots = protected
@@ -82,6 +120,14 @@ func runOS1SourceConfinementFixtures() throws {
         "a sibling folder with the same prefix is not protected")
     check(OS1SourceConfinement.isProtectedWriteDenial(denial("Bash", ["command": "echo x > '\(realLive)/f'"]), protectedPaths: protected),
         "a shell write naming the live tree is the confinement")
+    check(!OS1SourceConfinement.isProtectedWriteDenial(denial("Bash", ["command": "echo x > '\(realLive)-copy/f'"]), protectedPaths: protected),
+        "a shell command naming only a same-prefix sibling is a real denial")
+    check(!OS1SourceConfinement.isProtectedWriteDenial(denial("Bash", ["command": "cp a /mirror\(realLive)/f"]), protectedPaths: protected),
+        "a longer path that merely ends with the tree's path is a real denial")
+    let home = FileManager.default.homeDirectoryForCurrentUser.path
+    check(OS1SourceConfinement.isProtectedWriteDenial(denial("Bash", ["command": "touch $HOME/os1-live/x"]), protectedPaths: [home + "/os1-live"])
+        && OS1SourceConfinement.isProtectedWriteDenial(denial("Bash", ["command": "touch ~/os1-live/x"]), protectedPaths: [home + "/os1-live"]),
+        "a shell command naming the tree through $HOME or ~ is the confinement")
     check(!OS1SourceConfinement.isProtectedWriteDenial(denial("WebFetch", ["url": realLive]), protectedPaths: protected),
         "other tools stay real denials")
     check(!OS1SourceConfinement.isProtectedWriteDenial(denial("Edit", ["file_path": realLive + "/x"]), protectedPaths: []),
@@ -101,5 +147,18 @@ func runOS1SourceConfinementFixtures() throws {
         OS1SourceConfinement.instructions(protectedPaths: protected).contains(realLive) &&
         OS1SourceConfinement.instructions(protectedPaths: protected).contains("OS-1 소스 보호"),
         "backend instruction names the paths and the marker in both languages")
+    check(!OS1SourceConfinement.instructions(protectedPaths: protected).contains(dataVolume + "/"),
+        "the instruction lists each path once, not its data-volume spelling")
+    check(OS1SourceConfinement.instructions(protectedPaths: protected).contains("do every other part"),
+        "the backend does the rest of the request, so a repair never replays it")
+    check(!OS1SourceConfinement.instructions(protectedPaths: protected, escalates: false).contains(marker),
+        "without a repair to continue it (a workflow stage) no marker is asked for")
+    // Only the explicit marker hands an OS-1 change back.
+    check(OS1SourceConfinement.confinedAnswer(answer, confined: true) == ("OS-1의 Sources/OS1App/OS1App.swift를 고쳐야 합니다.", true),
+        "a confined answer with the marker hands back, stripped")
+    check(OS1SourceConfinement.confinedAnswer("다 했습니다.", confined: true) == ("다 했습니다.", false),
+        "a confined answer without the marker is an ordinary answer")
+    check(OS1SourceConfinement.confinedAnswer(answer, confined: false) == (answer, false),
+        "an unconfined answer is never read for the marker")
     print("Source confinement fixtures: \(checks) checks; model calls 0")
 }

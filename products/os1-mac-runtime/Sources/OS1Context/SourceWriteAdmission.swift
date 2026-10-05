@@ -52,15 +52,19 @@ public enum SourceWriteAdmission {
     }
 
     /// Whether a request needing `access` is parked in the app behind an
-    /// admitted OS-1 writer or an announced writer intent. Only OS-1 writers
-    /// still wait for each other here (build 319). A HOME request needing
-    /// shared access is admitted and its runtime decides: a Claude attempt
-    /// runs confined from OS-1's live source (`OS1SourceConfinement`) and
-    /// takes no lease, so it runs beside a repair; a Codex attempt still takes
-    /// the shared lease and waits for a repair inside the runtime, which keeps
-    /// the real lock the authority. Parking every HOME request here kept
-    /// confined tasks waiting for nothing ("왜 병렬로 실행이 안 되는데").
-    public static func parksBehindSourceWriter(_ access: Access) -> Bool { access == .exclusive }
+    /// admitted OS-1 writer or an announced writer intent. OS-1 writers still
+    /// wait for each other here. A HOME request needing shared access that
+    /// can run on Claude (`confinable`: not pinned to Codex, Claude capacity
+    /// left) is admitted (build 319) and its runtime decides: a Claude attempt
+    /// runs confined from OS-1's live source (`OS1SourceConfinement`) with no
+    /// lease, beside a repair; an "auto" attempt routed to Codex is re-routed
+    /// to Claude rather than wait. Parking those kept them waiting for nothing
+    /// ("왜 병렬로 실행이 안 되는데"). A request that can only run on Codex
+    /// would only wait for the repair inside the runtime, holding a run slot
+    /// that another task could use, so it stays parked here, as before.
+    public static func parksBehindSourceWriter(_ access: Access, confinable: Bool) -> Bool {
+        access == .exclusive || !confinable
+    }
 
     /// Observe ownership, never a file's age/existence. Open only an existing
     /// regular lock file, never create, truncate, replace or remove one.

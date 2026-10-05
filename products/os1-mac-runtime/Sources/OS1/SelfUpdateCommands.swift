@@ -619,12 +619,16 @@ struct OS1SourceWatch: Equatable {
     let fingerprint: String?
 
     /// Status, tracked diff and untracked contents of the runtime subtree.
+    /// Read-only on the tree: `--no-optional-locks` keeps `git status` from
+    /// refreshing the index under index.lock, which would fail a repair's
+    /// own `git add`/`commit` running at the same moment (build 319: a HOME
+    /// task's watch no longer always holds the shared lease).
     static func fingerprint(root: String) -> String? {
         guard let git = try? findExecutable("git") else { return nil }
         let runtime = SelfUpdate.runtimeRelativePath
-        guard let status = try? commandOutput(git, ["-C", root, "status", "--porcelain=v1", "-uall", "--", runtime], timeout: 20),
+        guard let status = try? commandOutput(git, ["--no-optional-locks", "-C", root, "status", "--porcelain=v1", "-uall", "--", runtime], timeout: 20),
               status.0 == 0, status.1.count <= 4_000_000,
-              let diff = try? commandOutput(git, ["-C", root, "diff", "HEAD", "--", runtime], timeout: 30), diff.0 == 0 else { return nil }
+              let diff = try? commandOutput(git, ["--no-optional-locks", "-C", root, "diff", "HEAD", "--", runtime], timeout: 30), diff.0 == 0 else { return nil }
         var data = status.1 + diff.1
         for line in String(decoding: status.1, as: UTF8.self).split(separator: "\n").prefix(500) where line.hasPrefix("?? ") {
             let url = URL(fileURLWithPath: root).appendingPathComponent(String(line.dropFirst(3)))
