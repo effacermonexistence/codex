@@ -21,6 +21,10 @@ public struct NativePublicRunLog: Codable, Equatable, Sendable {
         public var verb: String? = nil
         /// The action is a subagent's call, not the main turn's.
         public var nested: Bool? = nil
+        /// The action's latest state is a returned error, so a folded run of
+        /// calls can still say that one failed. Absent on prose and on actions
+        /// recorded by earlier builds (their line still says so).
+        public var failed: Bool? = nil
     }
     public let conversationID: UUID
     public let submissionID: UUID
@@ -34,6 +38,20 @@ public struct NativePublicRunLog: Codable, Equatable, Sendable {
     private var streamIdentities: [String: StreamIdentity] = [:]
     private var boundary = 0
     public private(set) var revision = 0
+    /// Each action id's latest entry, so a progress update that re-offers a
+    /// long run's every step (1,692 transitions in a real run) costs one
+    /// lookup per step, not a scan of the feed. Derived: never stored, and
+    /// rebuilt after a saved feed is loaded.
+    private var latestAction = ActionIndex()
+    private struct ActionIndex: Equatable, Sendable {
+        var position: [String: Int] = [:]
+        var indexed = 0
+        /// Derived from `entries`; two logs with the same entries are equal.
+        static func == (lhs: ActionIndex, rhs: ActionIndex) -> Bool { true }
+    }
+    private enum CodingKeys: String, CodingKey {
+        case conversationID, submissionID, requestSHA256, entries, snapshots, streamIdentities, boundary, revision
+    }
     public init(conversationID: UUID, submissionID: UUID, requestSHA256: String) {
         self.conversationID = conversationID; self.submissionID = submissionID; self.requestSHA256 = requestSHA256
     }
@@ -101,17 +119,24 @@ public struct NativePublicRunLog: Codable, Equatable, Sendable {
         return true
     }
     @discardableResult public mutating func observeAction(id: String, provider: String, surface: String?, text: String,
-                                                        verb: String? = nil, nested: Bool = false,
+                                                        verb: String? = nil, nested: Bool = false, failed: Bool = false,
                                                         receivedAt: Date) -> Bool {
         guard !id.isEmpty, id.utf8.count <= 256, !text.isEmpty, text.utf8.count <= 16_384,
               receivedAt.timeIntervalSince1970.isFinite, ["codex", "claude"].contains(provider) else { return false }
         // Append actual state transitions rather than rewriting earlier lines:
         // owner steering anchors must remain exact prefixes of this feed.
-        if let previous = entries.last(where: { $0.kind == .action && $0.actionID == id }), previous.text == text { return false }
+        // Bring the index up to the entries (a loaded feed starts unindexed).
+        for position in latestAction.indexed..<entries.count where entries[position].kind == .action {
+            if let action = entries[position].actionID { latestAction.position[action] = position }
+        }
+        latestAction.indexed = entries.count
+        if let previous = latestAction.position[id], entries[previous].text == text { return false }
         checkpoint()
+        latestAction.position[id] = entries.count
+        latestAction.indexed = entries.count + 1
         entries.append(Entry(id: UUID(), provider: provider, surface: surface, stream: id, origin: .nativeUI,
             kind: .action, actionID: id, text: text, receivedAt: receivedAt,
-            verb: verb.flatMap { Self.isVerbCode($0) ? $0 : nil }, nested: nested ? true : nil))
+            verb: verb.flatMap { Self.isVerbCode($0) ? $0 : nil }, nested: nested ? true : nil, failed: failed ? true : nil))
         revision += 1; return true
     }
     /// Opens and closes each entry's heading in `displayText`. Unicode
@@ -125,7 +150,7 @@ public struct NativePublicRunLog: Codable, Equatable, Sendable {
 
     /// Markers are presentation labels, not model-authored sentences. The
     /// native bytes themselves stay unchanged and the scored final is separate.
-    /// Each entry is a heading (role, route, label, action id, verb, nesting)
+    /// Each entry is a heading (role, route, label, action id, verb, nesting, error)
     /// and its text; `displaySegments` reads it back for the transcript.
     public var displayText: String {
         entries.map { entry in
@@ -135,7 +160,8 @@ public struct NativePublicRunLog: Codable, Equatable, Sendable {
                 : entry.kind == .candidate ? os1Tr("수신 후보 출력 · 미채택", "Received candidate output · not adopted")
                 : (entry.kind == .action ? os1Tr("네이티브 동작", "Native action") : os1Tr("공개 진행 출력", "Public progress output"))
             let role = entry.origin == .legacyUnattributed ? "u" : entry.kind == .candidate ? "c" : entry.kind == .action ? "a" : "p"
-            let fields = [role, name, label, entry.actionID ?? "", entry.verb ?? "", entry.nested == true ? "1" : ""]
+            let fields = [role, name, label, entry.actionID ?? "", entry.verb ?? "", entry.nested == true ? "1" : "",
+                          entry.failed == true ? "1" : ""]
             var heading = String.UnicodeScalarView([Self.headingOpen])
             for (index, field) in fields.enumerated() {
                 if index > 0 { heading.append(Self.fieldSeparator) }
@@ -157,6 +183,9 @@ public struct NativePublicRunLog: Codable, Equatable, Sendable {
         public let actionID: String?
         public let verb: String?
         public let nested: Bool
+        /// The action returned an error (by its recorded state or, in records
+        /// from earlier builds, by the state its line was received with).
+        public let failed: Bool
         /// Unicode-scalar offset of the entry's heading in the whole text.
         /// The feed only appends, so it stays put while the feed grows.
         public let offset: Int
@@ -194,7 +223,8 @@ public struct NativePublicRunLog: Codable, Equatable, Sendable {
         }
         var segments: [DisplaySegment] = []
         if let lead = text(scalars.startIndex, headings.first?.start ?? scalars.endIndex) {
-            segments.append(DisplaySegment(role: .unmarked, source: nil, actionID: nil, verb: nil, nested: false, offset: 0, text: lead))
+            segments.append(DisplaySegment(role: .unmarked, source: nil, actionID: nil, verb: nil, nested: false, failed: false,
+                offset: 0, text: lead))
         }
         for (position, heading) in headings.enumerated() {
             var end = position + 1 < headings.count ? headings[position + 1].start : scalars.endIndex
@@ -217,11 +247,17 @@ public struct NativePublicRunLog: Codable, Equatable, Sendable {
             }
             segments.append(DisplaySegment(role: role, source: field(1), actionID: role == .action ? field(3) : nil,
                 verb: role == .action ? field(4) : nil, nested: role == .action && field(5) == "1",
+                failed: role == .action && (field(6) == "1" || Self.saysFailed(body.trimmingCharacters(in: .whitespacesAndNewlines))),
                 offset: heading.offset, text: body))
         }
         return segments
     }
 
+    /// A feed line ends "— returned an error" (or "— 오류 반환"), possibly
+    /// followed by its child-call count; earlier records carry no flag.
+    private static func saysFailed(_ line: String) -> Bool {
+        line.range(of: #"— (오류 반환|returned an error)( · (하위 도구|child tool calls) [0-9]+)?$"#, options: .regularExpression) != nil
+    }
     private static func isStructural(_ scalar: Unicode.Scalar) -> Bool { scalar == headingOpen || scalar == headingClose }
     private static func withoutHeadings(_ text: String) -> String {
         guard text.unicodeScalars.contains(where: isStructural) else { return text }
@@ -239,7 +275,7 @@ public struct NativePublicRunLog: Codable, Equatable, Sendable {
             ["codex", "claude"].contains(entry.provider) && !entry.stream.isEmpty && entry.stream.utf8.count <= 512 &&
             !entry.text.isEmpty && entry.text.utf8.count <= 16_000_000 && entry.receivedAt.timeIntervalSince1970.isFinite &&
             (entry.kind == .action ? entry.origin == .nativeUI && entry.actionID != nil
-                : entry.origin != .nativeUI && entry.actionID == nil && entry.verb == nil && entry.nested == nil) &&
+                : entry.origin != .nativeUI && entry.actionID == nil && entry.verb == nil && entry.nested == nil && entry.failed == nil) &&
             (entry.verb.map(Self.isVerbCode) ?? true)
         } && snapshots.allSatisfy { !$0.key.isEmpty && $0.key.utf8.count <= 512 && $0.value.utf8.count <= 4_000_000 } &&
         streamIdentities.count <= 1_024 && streamIdentities.allSatisfy {

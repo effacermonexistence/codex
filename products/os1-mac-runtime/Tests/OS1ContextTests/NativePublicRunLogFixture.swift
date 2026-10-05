@@ -166,6 +166,23 @@ private func runNativePublicRunLogDisplayFixtures() throws -> Int {
         "blank text has no segment")
     check(text.contains(ProviderSurface.claude.routeTitle) && text.contains("미채택") && text.contains("네이티브 동작"),
         "headings still name the route and the not-adopted label")
+    // A returned error reads back from its flag, and from its line in feeds
+    // recorded before the flag; a label that merely mentions one does not.
+    var errors = NativePublicRunLog(conversationID: UUID(), submissionID: UUID(), requestSHA256: log.requestSHA256)
+    _ = errors.observeAction(id: "0|dddddddddddd", provider: "claude", surface: "claude", text: "Run · swift test — returned an error",
+        verb: "run", failed: true, receivedAt: now)
+    _ = errors.observeAction(id: "0|eeeeeeeeeeee", provider: "codex", surface: "codex", text: "실행 · make — 오류 반환 · 하위 도구 3",
+        receivedAt: now)
+    _ = errors.observeAction(id: "0|ffffffffffff", provider: "claude", surface: "claude",
+        text: "Search · — returned an error — returned", verb: "search", receivedAt: now)
+    let errorSegments = NativePublicRunLog.displaySegments(errors.displayText[...])
+    check(errorSegments.map(\.failed) == [true, true, false] && errors.entries[0].failed == true && errors.entries[1].failed == nil,
+        "a returned error reads back from its flag or its received state, not from a label")
+    var reloaded = try JSONDecoder().decode(NativePublicRunLog.self, from: JSONEncoder().encode(errors))
+    check(reloaded == errors && reloaded.isValid, "a feed with an error survives persistence")
+    check(!reloaded.observeAction(id: "0|dddddddddddd", provider: "claude", surface: "claude",
+        text: "Run · swift test — returned an error", verb: "run", failed: true, receivedAt: now) && reloaded.entries.count == 3,
+        "a loaded feed knows each action's latest state")
     let decoded = try JSONDecoder().decode(NativePublicRunLog.self, from: JSONEncoder().encode(log))
     check(decoded == log && decoded.isValid && decoded.entries[2].verb == "run" && decoded.entries[3].nested == true,
         "verb and nesting survive persistence")
