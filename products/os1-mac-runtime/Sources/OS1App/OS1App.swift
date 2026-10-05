@@ -5796,6 +5796,11 @@ private final class SessionStore: ObservableObject {
         // Read-only work never waits on the writer itself, but source-bound
         // reads also stay parked for a ready update's brief installation gate.
         guard sourceWriteAccess(next, session: session, root: root, home: home) != nil else { return false }
+        // A HOME write (shared access) is no longer parked behind a repair:
+        // its runtime runs a Claude attempt confined from OS-1's source with
+        // no lease, and makes a Codex attempt wait on the real shared lease.
+        // Only OS-1 writers still wait for each other here.
+        guard SourceWriteAdmission.parksBehindSourceWriter(access) else { return false }
         let admittedWriter = inFlightSubmissions.values.contains { candidate in
             sessions.first(where: { $0.id == candidate.sessionID }).map {
                 sourceWriteAccess(candidate, session: $0, root: root, home: home) == .exclusive
@@ -5803,10 +5808,9 @@ private final class SessionStore: ObservableObject {
         }
         // Admission precedes the child runtime's lock acquisition. Keep a
         // second repair queued even in that brief source-lock-free window.
-        if access == .exclusive, admittedWriter { return true }
-        if access == .shared, admittedWriter || queuedSourceWriterIsEligible(root: root, home: home) { return true }
+        if admittedWriter { return true }
         guard SourceWriteAdmission.availability(root: root, access: access, home: home) == .busy else { return false }
-        if access == .exclusive, SourceWriteAdmission.heldOnlyByReaders(root: root, home: home), !admittedWriter { return false }
+        if SourceWriteAdmission.heldOnlyByReaders(root: root, home: home) { return false }
         return true
     }
 
@@ -5817,15 +5821,6 @@ private final class SessionStore: ObservableObject {
               scope == .workspaceWrite || continuingWrite else { return nil }
         return SourceWriteAdmission.access(request: next.executionRequest, workspace: next.workspace,
             projectID: session.taskContext?.project?.projectID, writeScope: true, root: root, home: home)
-    }
-
-    private func queuedSourceWriterIsEligible(root: String, home: URL) -> Bool {
-        var seen = Set<UUID>()
-        return queuedSubmissions.contains { candidate in
-            guard seen.insert(candidate.sessionID).inserted, queueEligible(candidate, ignoringSource: true),
-                  let session = sessions.first(where: { $0.id == candidate.sessionID }) else { return false }
-            return sourceWriteAccess(candidate, session: session, root: root, home: home) == .exclusive
-        }
     }
 
     func sourceWaitingActivity(_ sessionID: UUID) -> RuntimeActivity? {
@@ -9373,23 +9368,29 @@ private func sourceWriterFairnessSelfTest() async throws {
     store.composer = "HOME next 파일 수정해"; store.send()
     try check(store.activeRuns.count == 1 && store.activeRuns[readerID] != nil && store.queuedSubmissions.count == 2,
         "cap-full repair stays queued without stopping the running reader")
-    try check(store.sourceWaitingActivity(nextHomeID)?.phase == .waitingForSource && store.globalSlotWait(nextHomeID) == nil,
-        "eligible queued repair parks new HOME readers rather than admitting a starvation stream")
+    // Build 319: a HOME write is never parked behind a repair in the app. Its
+    // runtime confines a Claude attempt from OS-1's source (no lease) and
+    // makes a Codex attempt wait on the real shared lease.
+    try check(store.sourceWaitingActivity(nextHomeID) == nil && store.globalSlotWait(nextHomeID) != nil,
+        "a HOME follower behind a queued repair waits only for a run slot, never for source access")
     store.updateSettings { $0.parallelRunLimit = 2 }
     try check(store.activeRuns[writerID]?.submissionID == writerSubmissionID && store.activeRuns.count == 2,
         "exactly one repair is admitted through a reader-only hold to announce writer intent")
-    try check(store.activeRuns[nextHomeID] == nil && store.queuedSubmissions.count == 1,
-        "shared HOME follower remains parked while repair enters runtime")
+    try check(store.activeRuns[nextHomeID] == nil && store.queuedSubmissions.count == 1 &&
+        store.sourceWaitingActivity(nextHomeID) == nil && store.globalSlotWait(nextHomeID) != nil,
+        "the HOME follower then waits for a free slot, not for the repair entering runtime")
     let deadline = Date().addingTimeInterval(8)
     while store.activeRuns[writerID]?.activity.phase != .waitingForSource && Date() < deadline { try await Task.sleep(for: .milliseconds(20)) }
     try check(SourceWriteAdmission.availability(root: source.path, access: .shared, home: home) == .busy,
         "runtime fixture owns actual writer intent while readers drain")
     releaseReader = true
-    while (store.activeRuns[readerID] != nil || store.activeRuns[writerID]?.activity.phase != .executing) && Date() < deadline {
+    while (store.activeRuns[readerID] != nil || store.activeRuns[writerID]?.activity.phase != .executing
+           || !dispatched.contains("HOME next 파일 수정해") || store.activeRuns[nextHomeID] != nil) && Date() < deadline {
         try await Task.sleep(for: .milliseconds(20))
     }
-    try check(store.activeRuns[writerID] != nil && store.activeRuns[nextHomeID] == nil && store.queuedSubmissions.count == 1,
-        "reader completion leaves HOME follower parked despite a free backend slot")
+    try check(store.activeRuns[writerID] != nil && store.activeRuns[nextHomeID] == nil && store.queuedSubmissions.isEmpty &&
+        dispatched == ["HOME first 파일 수정해", "SOURCE repair 파일 수정해", "HOME next 파일 수정해"],
+        "the freed slot runs the HOME follower beside the executing repair (the runtime confines or waits)")
     store.createSession(); let siblingID = store.selectedSessionID!
     store.sessions[0].workspace = sibling.path
     store.composer = "SIBLING file 수정해"; store.send()
@@ -9399,9 +9400,9 @@ private func sourceWriterFairnessSelfTest() async throws {
     while (!store.activeRuns.isEmpty || !store.queuedSubmissions.isEmpty) && Date() < deadline {
         store.resumeSourceWaitingSubmissions(); try await Task.sleep(for: .milliseconds(20))
     }
-    try check(store.activeRuns.isEmpty && store.queuedSubmissions.isEmpty, "writer and parked HOME follower reach terminal drain")
-    try check(dispatched == ["HOME first 파일 수정해", "SOURCE repair 파일 수정해", "SIBLING file 수정해", "HOME next 파일 수정해"],
-        "repair resumes exactly once before new HOME work; sibling remains independent")
+    try check(store.activeRuns.isEmpty && store.queuedSubmissions.isEmpty, "writer and HOME follower reach terminal drain")
+    try check(dispatched == ["HOME first 파일 수정해", "SOURCE repair 파일 수정해", "HOME next 파일 수정해", "SIBLING file 수정해"],
+        "each request runs exactly once; repair, HOME follower and sibling are independent")
     releaseWriter = false
     store.createSession(); let idleWriterID = store.selectedSessionID!
     store.sessions[0].workspace = source.path
@@ -9420,6 +9421,23 @@ private func sourceWriterFairnessSelfTest() async throws {
     try check(store.activeRuns.isEmpty && store.queuedSubmissions.isEmpty &&
         Array(dispatched.suffix(2)) == ["SOURCE repair idle 파일 수정해", "SOURCE repair follower 파일 수정해"],
         "queued idle-source repair resumes once after the admitted repair terminates")
+    // I8 stays: a staged build ready to install still parks a HOME write, so
+    // a stream of HOME work cannot keep that install from its idle moment.
+    let staged = SelfUpdate.Intent(build: 999, version: "fixture", sourceRoot: source.path, sourceCommit: nil,
+        stagedAppSHA256: "fixture-app", stagedCLISHA256: "fixture-cli", conversationID: nil, submissionID: nil, checks: [])
+    try SelfUpdate.save(staged, root: source.path)
+    store.createSession(); let gatedID = store.selectedSessionID!
+    store.sessions[0].workspace = home.path
+    store.composer = "HOME gated 파일 수정해"; store.send()
+    try check(store.activeRuns[gatedID] == nil && store.sourceWaitingActivity(gatedID)?.phase == .waitingForSource,
+        "a ready update still parks a HOME write before its install gate")
+    try FileManager.default.removeItem(at: SelfUpdate.intentURL(root: source.path))
+    let gateDeadline = Date().addingTimeInterval(8)
+    while (!store.activeRuns.isEmpty || !store.queuedSubmissions.isEmpty) && Date() < gateDeadline {
+        store.resumeSourceWaitingSubmissions(); try await Task.sleep(for: .milliseconds(20))
+    }
+    try check(store.queuedSubmissions.isEmpty && dispatched.last == "HOME gated 파일 수정해",
+        "the parked HOME write resumes once the update is gone")
     print("Source-writer fairness: \(checks) checks; real isolated flock probes; model calls 0")
 }
 

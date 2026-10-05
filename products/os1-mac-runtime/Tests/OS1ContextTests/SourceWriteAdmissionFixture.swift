@@ -43,6 +43,9 @@ func runSourceWriteAdmissionFixtures() throws {
     check(access(current) == .exclusive, "live source writer needs exclusive access")
     check(access(current.appendingPathComponent("products")) == .exclusive, "live source child is still exclusive")
     check(access(home) == .shared, "HOME retains source containment guard")
+    check(SourceWriteAdmission.parksBehindSourceWriter(.exclusive), "an OS-1 writer still waits for another OS-1 writer")
+    check(!SourceWriteAdmission.parksBehindSourceWriter(.shared),
+        "a HOME request is not parked behind a repair; its runtime confines Claude or waits on the lease for Codex")
     check(access(home, "파일 읽어", nil, false) == nil, "read-only request does not wait on source writer")
     let sibling = home.appendingPathComponent("website")
     check(access(sibling) == nil, "unrelated sibling workspace bypasses source lock")
@@ -86,4 +89,5 @@ func runSourceWriteAdmissionFixtures() throws {
     try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: lock)
     check(SourceWriteAdmission.probe(at: alias, access: .shared) == .unknown, "probe never follows a lock symlink")
     print("Source-write admission fixtures: \(checks) checks; model calls 0")
+    try runOS1SourceConfinementFixtures()
 }
