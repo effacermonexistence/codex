@@ -197,7 +197,17 @@ func runBackendRecoveryFixtures() throws {
     let pendingReadback = BackendRecovery.readbackPrompt(objective: "로고 바꿔", pendingOS1Repair: true)
     check(pendingReadback.contains(BackendRecovery.pendingOS1RepairNote) && BackendRecovery.isReadbackPrompt(pendingReadback)
         && pendingReadback.hasSuffix("OS1_EFFECTS: unknown") && pendingReadback.contains("로고 바꿔"),
-        "a readback with a pending OS-1 repair says OS-1 resumes it")
+        "a readback with a pending OS-1 repair names the pending OS-1 part")
+    // The readback never promises a resume OS-1 did not schedule: by default
+    // the OS-1 part continues on the owner's next message ("계속").
+    check(BackendRecovery.pendingOS1RepairNote.contains("계속") && !BackendRecovery.pendingOS1RepairNote.contains("직접 이어서 마무리하므로")
+        && !BackendRecovery.pendingOS1RepairNote.contains("resumes and finishes it itself"),
+        "the pending-repair note promises an automatic resume")
+    let resuming = BackendRecovery.readbackPrompt(objective: "로고 바꿔", pendingOS1Repair: true, pendingOS1RepairResuming: true)
+    check(resuming.contains(BackendRecovery.pendingOS1RepairResumingNote) && !resuming.contains(BackendRecovery.pendingOS1RepairNote),
+        "a scheduled resume is said only when OS-1 scheduled it")
+    check(!BackendRecovery.readbackPrompt(objective: "x", pendingOS1RepairResuming: true).contains(BackendRecovery.pendingOS1RepairResumingNote),
+        "no pending repair, no note")
     check(!BackendRecovery.readbackPrompt(objective: "x").contains(BackendRecovery.pendingOS1RepairNote),
         "a readback without a pending repair is unchanged")
     let recoveryPrompt = BackendRecovery.readbackPrompt(objective: "inspect existing delivery; do not redeploy")

@@ -21,7 +21,10 @@ import Darwin
 ///   a `running` record whose process is gone becomes `interrupted`.
 /// - `PendingOS1RepairStore().remove(id:)` — the owner cancelled the repair.
 /// A record in `staging_failed`, `interrupted` or `failed` is retried by the
-/// CLI on the conversation's next write request (`retryable`).
+/// CLI on the conversation's next write request about it (`retryable`,
+/// `OS1SelfReference.continuesPendingOS1Change`): staged again with no model
+/// call while its commit is in OS-1's source, dropped when the installed build
+/// already contains that commit, else repaired again.
 public struct PendingOS1Repair: Codable, Equatable, Sendable {
     public enum State: String, Codable, Sendable {
         case running
@@ -99,12 +102,14 @@ public struct PendingOS1Repair: Codable, Equatable, Sendable {
     }
 
     /// The process that wrote `running` is gone: the repair was interrupted.
-    public func effectiveState(isAlive: (Int32) -> Bool = PendingOS1Repair.processAlive) -> State {
-        state == .running && !isAlive(pid) ? .interrupted : state
+    /// One liveness rule for the CLI and the app (`writerAlive`): a reused pid
+    /// is not the writer.
+    public func effectiveState(isAlive: (PendingOS1Repair) -> Bool = PendingOS1Repair.writerAlive) -> State {
+        state == .running && !isAlive(self) ? .interrupted : state
     }
 
     /// A new write request in this conversation continues this repair.
-    public func retryable(isAlive: (Int32) -> Bool = PendingOS1Repair.processAlive) -> Bool {
+    public func retryable(isAlive: (PendingOS1Repair) -> Bool = PendingOS1Repair.writerAlive) -> Bool {
         [.stagingFailed, .interrupted, .failed].contains(effectiveState(isAlive: isAlive))
             && attempts < Self.maximumAutomaticAttempts
     }
@@ -120,6 +125,15 @@ public struct PendingOS1Repair: Codable, Equatable, Sendable {
         guard processAlive(record.pid) else { return false }
         guard let started = processStartTime(record.pid) else { return true }
         return started <= record.updatedAt.addingTimeInterval(2)
+    }
+
+    /// When this Mac last booted (`kern.boottime`), or nil when unreadable.
+    public static func systemBootTime() -> Date? {
+        var boot = timeval()
+        var size = MemoryLayout<timeval>.stride
+        var mib: [Int32] = [CTL_KERN, KERN_BOOTTIME]
+        guard sysctl(&mib, 2, &boot, &size, nil, 0) == 0, boot.tv_sec > 0 else { return nil }
+        return Date(timeIntervalSince1970: TimeInterval(boot.tv_sec) + TimeInterval(boot.tv_usec) / 1_000_000)
     }
 
     public static func processStartTime(_ pid: Int32) -> Date? {
@@ -195,8 +209,8 @@ public struct PendingOS1RepairStore: Sendable {
 
     /// App launch: a `running` record whose process is gone is `interrupted`.
     @discardableResult
-    public func reconcileInterrupted(isAlive: (Int32) -> Bool = PendingOS1Repair.processAlive, now: Date = Date()) -> [PendingOS1Repair] {
-        list().filter { $0.state == .running && !isAlive($0.pid) }.compactMap { record in
+    public func reconcileInterrupted(isAlive: (PendingOS1Repair) -> Bool = PendingOS1Repair.writerAlive, now: Date = Date()) -> [PendingOS1Repair] {
+        list().filter { $0.state == .running && !isAlive($0) }.compactMap { record in
             update(id: record.id, now: now) { $0.state = .interrupted }
         }
     }

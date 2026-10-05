@@ -451,6 +451,14 @@ func selfRepairStagingGate(_ error: Error) -> String {
 /// check); a release build or version mismatch cannot pass by running again.
 func selfRepairGateIsSelfTest(_ gate: String) -> Bool { gate.hasSuffix("self-test") || gate.contains("self-test-") }
 
+/// A remote-tracking ref already contains `commit` (read-only, no index lock).
+func gitCommitIsPushed(_ commit: String, root: String) -> Bool {
+    guard let git = try? findExecutable("git"),
+          let remote = try? commandOutput(git, ["--no-optional-locks", "-C", root, "branch", "-r", "--contains", commit], timeout: 20),
+          remote.0 == 0 else { return false }
+    return !String(decoding: remote.1, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+}
+
 /// Where a repair's change actually is: committed since `startHead` (and
 /// whether a remote-tracking ref already contains it), or left uncommitted.
 struct OS1RepairSourceState: Equatable {
@@ -466,16 +474,15 @@ struct OS1RepairSourceState: Equatable {
         guard let git = try? findExecutable("git") else {
             return OS1RepairSourceState(head: head, branch: nil, committed: false, pushed: false, uncommittedFiles: 0)
         }
-        let branch = (try? commandOutput(git, ["-C", root, "symbolic-ref", "--short", "-q", "HEAD"], timeout: 20))
+        // Read-only and lease-free (the repair's lease is already released):
+        // a plain `git status` would rewrite the index under index.lock and
+        // could fail another repair's `git add`/`git commit` beside it.
+        let branch = (try? commandOutput(git, ["--no-optional-locks", "-C", root, "symbolic-ref", "--short", "-q", "HEAD"], timeout: 20))
             .flatMap { $0.0 == 0 ? String(decoding: $0.1, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines) : nil }
             .flatMap { $0.isEmpty ? nil : $0 }
         let committed = head != nil && startHead != nil && head != startHead
-        var pushed = false
-        if committed, let head, let remote = try? commandOutput(git, ["-C", root, "branch", "-r", "--contains", head], timeout: 20),
-           remote.0 == 0 {
-            pushed = !String(decoding: remote.1, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        }
-        let status = (try? commandOutput(git, ["-C", root, "status", "--porcelain", "--", SelfUpdate.runtimeRelativePath], timeout: 60))
+        let pushed = committed && head.map { gitCommitIsPushed($0, root: root) } == true
+        let status = (try? commandOutput(git, ["--no-optional-locks", "-C", root, "status", "--porcelain", "--", SelfUpdate.runtimeRelativePath], timeout: 60))
             .flatMap { $0.0 == 0 ? String(decoding: $0.1, as: UTF8.self) : nil } ?? ""
         let uncommitted = SelfUpdate.sourceChanges(status.split(separator: "\n").map { String($0.dropFirst(3)) }).count
         return OS1RepairSourceState(head: head, branch: branch, committed: committed, pushed: pushed, uncommittedFiles: uncommitted)
@@ -497,6 +504,14 @@ struct OS1RepairSourceState: Equatable {
     }
 }
 
+/// The start commit of the pending repair this run is bound to, when it is
+/// still an ancestor of HEAD in `root` (nil when unbound or unrelated).
+func os1PendingRepairStartHead(root: String, binding: PendingOS1RepairContext.Binding? = PendingOS1RepairContext.current) -> String? {
+    guard let binding, let start = binding.store.load(id: binding.id)?.startCommit,
+          gitCommit(start, isContainedIn: root) else { return nil }
+    return start
+}
+
 /// OS-1 finishes its own repair. A backend's job ends when the source is
 /// changed and builds; the mechanical tail — version bump, signed release,
 /// self-tests, staging, commit, push — is OS-1's own, so completion never
@@ -505,11 +520,16 @@ struct OS1RepairSourceState: Equatable {
 /// A repair run binds its pending record (`PendingOS1RepairContext`): a
 /// staging failure is recorded there for a model-free retry, and the record is
 /// removed once the install intent is written.
-func completeOS1SelfRepair(root: String, objective: String, startedAt: Date, startHead: String? = nil, verifiedSourceReady: Bool = false,
+func completeOS1SelfRepair(root: String, objective: String, startedAt: Date, startHead runStartHead: String? = nil, verifiedSourceReady: Bool = false,
                            host: SelfRepairHost = SelfRepairHost()) -> SelfRepairCompletion {
     let runtime = URL(fileURLWithPath: root).appendingPathComponent(SelfUpdate.runtimeRelativePath).path
     let installed = host.installedBuild()
     guard let git = try? findExecutable("git") else { return .failed("git is not available") }
+    // A bound repair measures its change from the record's start, not from
+    // this run's HEAD: a retried repair whose earlier attempt already
+    // committed the change (then stopped before staging) finishes that
+    // commit instead of reporting "no source change" (build 327).
+    let startHead = os1PendingRepairStartHead(root: root) ?? runStartHead
     if let intent = SelfUpdate.loadIntent(root: root), intent.build > installed, intent.stagedAt >= startedAt {
         return .notApplicable("the task staged build \(intent.build) itself")
     }

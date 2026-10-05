@@ -54,7 +54,7 @@ func runPendingOS1RepairFixtures() throws {
         corrections: [], draftReport: "", sourceRoot: nil, startCommit: nil, now: start, pid: 999_999))
     check(store.load(id: other)?.effectiveState(isAlive: { _ in false }) == .interrupted, "a dead writer reads as interrupted")
     check(store.load(id: other)?.retryable(isAlive: { _ in true }) == false, "a live writer's repair is not taken over")
-    let reconciled = store.reconcileInterrupted(isAlive: { $0 != 999_999 })
+    let reconciled = store.reconcileInterrupted(isAlive: { $0.pid != 999_999 })
     check(reconciled.map(\.id) == [other] && store.load(id: other)?.state == .interrupted, "launch marks only the dead writer interrupted")
     check(store.list().count == 2, "every record is listed")
     check(!PendingOS1Repair.processAlive(0) && PendingOS1Repair.processAlive(getpid()), "the liveness probe")
@@ -72,9 +72,34 @@ func runPendingOS1RepairFixtures() throws {
     check(!PendingOS1Repair.writerAlive(reused), "a reused pid is not the writer")
     reused.updatedAt = Date()
     check(PendingOS1Repair.writerAlive(reused), "the running writer is alive")
+    // The CLI's own binding uses the same rule by default (build 327 fix):
+    // a running record whose pid now belongs to a process that started
+    // later is interrupted and retryable, not "still running".
+    var reusedRunning = reused
+    reusedRunning.state = .running
+    reusedRunning.updatedAt = Date(timeIntervalSince1970: 0)
+    check(reusedRunning.effectiveState() == .interrupted && reusedRunning.retryable(),
+        "the CLI's default liveness takes a reused pid for the writer")
+    reusedRunning.updatedAt = Date()
+    check(reusedRunning.effectiveState() == .running && !reusedRunning.retryable(), "a live writer's record is not retryable by default")
+    check(PendingOS1Repair.systemBootTime().map { $0 < Date() && $0 > Date(timeIntervalSince1970: 1_000_000_000) } == true,
+        "the boot time is readable")
     var exhausted = store.load(id: other)!
     exhausted.attempts = PendingOS1Repair.maximumAutomaticAttempts
     check(!exhausted.retryable(isAlive: { _ in false }), "automatic retries stop at the limit")
+
+    // A write request continues a pending OS-1 change only when it is about
+    // it (build 327 fix): retry phrasing, a short follow-up, or OS-1 itself.
+    let home = URL(fileURLWithPath: "/Users/fixture", isDirectory: true)
+    for continuing in ["아니 그래서 고치라니까?", "계속", "왜 안 됐냐", "밑에 너무 크거든 코덱스처럼 한 줄로", "retry",
+                       "고쳐", "마저 해", "설치 됐어?", "OS-1 사이드바 정렬을 왼쪽으로 바꾸고 아이콘 간격도 조금 넓혀줘. 그리고 대기열 표시도 코덱스처럼 한 줄로 정리해 줘 부탁해 정말로"] {
+        check(OS1SelfReference.continuesPendingOS1Change(continuing, home: home), "'\(continuing)' does not continue the pending OS-1 change")
+    }
+    for different in ["웹사이트 푸터 색 바꿔", "https://example.com 배포 상태 확인하고 다시 올려", "인스타 DM 자동응답 문구 고쳐",
+                      "omaragi.com 랜딩 헤더 계속 수정해", "~/Projects/shop/README.md 에 설치 방법 한 줄 추가해",
+                      String(repeating: "새 정리 작업을 해 줘 ", count: 9)] {
+        check(!OS1SelfReference.continuesPendingOS1Change(different, home: home), "'\(different)' was taken over by the pending OS-1 change")
+    }
 
     // Done or cancelled: the record is removed.
     store.remove(id: record.id)

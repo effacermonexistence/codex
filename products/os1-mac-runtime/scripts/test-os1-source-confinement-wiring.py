@@ -97,8 +97,14 @@ task = body(main, 'func runTask(\n', '/// Measured 2026-10-01')
 check('OS1ChangeEscalation.$available.withValue(escalationAvailable)' in task, 'the first run knows whether a hand-back continues')
 check('OS1RunAttemptRecorder.$current.withValue(draftAttempts)' in task,
       'the first run records its last attempt, so a rejected hand-back is not lost')
-check(re.search(r'os1HandBackDraft\(adopted: adoptedDraft,\s*rejectedAttempt: draftFailure == nil \? nil : draftAttempts\.last, cancelled: cancelled\)', task),
+check(re.search(r'os1HandBackDraft\(adopted: adoptedDraft,\s*rejectedAttempt: draftFailure == nil \? nil : draftAttempts\.last, cancelled: cancelled[,)]', task),
       'an adopted hand-back, or one REVAS did not adopt (build 327), escalates through the tested decision')
+check(re.search(r'cancelled: cancelled,\s*persistedCorrectionIDs: ExecutionSteering\.currentSubmission', task),
+      'a rejected, steered hand-back carries the corrections its steering persisted')
+check('OS1SelfReference.continuesPendingOS1Change(prompt' in task and 'runOwnerRequest(pendingNote: pending)' in task,
+      'a write request continues a pending OS-1 change only when it is about it; another task runs as itself')
+check('objective: os1PendingRepairObjective(current, newMessage: prompt)' in task,
+      'a retried repair is routed and verified against the recorded request, not the bare follow-up')
 check('if let draftFailure { throw draftFailure }' in task, 'a rejected draft that did not hand back fails as before')
 check('OS1RunAttemptRecorder.current?.reset()' in main and 'OS1RunAttemptRecorder.current?.record(deliveredStep)' in main
       and 'OS1RunAttemptRecorder.current?.settle(disposition: revasDisposition)' in main,
@@ -113,22 +119,28 @@ check('codexSessionID: nil, claudeSessionID: nil' in rerun, 'the repair starts f
 check('PendingOS1RepairContext.$current.withValue(' in rerun, 'the repair runs with its pending record bound for OS-1\'s completion')
 check('repairPrompt: os1RepairHandoffPrompt(request: prompt, corrections: corrections, draftReport: report)' in flat(task),
       'the repair gets the first run report and the owner corrections')
-cont = task[task.index('func continueAsOS1Repair('):task.index('// A new write request in a conversation whose OS-1 repair did not')]
-check(cont.index('try? pendingStore.save(record)') < cont.index('let repair = try await runOS1Repair(repairPrompt)'),
+cont = task[task.index('func continueAsOS1Repair('):task.index("/// The owner's request as itself")]
+check(cont.index('try? pendingStore.save(record)') < cont.index('let repair = try await runOS1Repair(repairPrompt, objective: objective)'),
       'the pending record is written before the repair starts')
 check('if adopted, let recordID { pendingStore.remove(id: recordID) }' in cont, 'an adopted repair removes the record')
 check('return mergedOS1Escalation(draft: draft, repair: repair' in cont, 'the owner sees both answers')
 check('return appendingOS1RepairNote(draft, cancelled: true' in cont, 'a cancelled repair is said plainly and removes the record')
 check('return os1RepairBlockedSummary(draft: draft, repairAnswer: answer,' in cont
-      and 'note: os1RepairFailureNote(record: record, reason: reason)' in cont,
+      and 'note: os1RepairFailureNote(record: record, reason: reason, staged: staged)' in cont
+      and 'persistedCorrectionIDs: steered)' in cont,
       'a failed repair shows its own answer and a precise note, never a complete turn')
-retry = task[task.index('// A new write request in a conversation whose OS-1 repair did not'):task.index('var adoptedDraft: RunSummary?')]
-check('let pending = pendingStore.load(id: recordID), pending.retryable()' in retry
+retry = task[task.index('// A new write request in a conversation whose OS-1 repair did not'):task.index('return try await runOwnerRequest(pendingNote: nil)')]
+check(task.index("/// The owner's request as itself") < task.index('// A new write request in a conversation whose OS-1 repair did not')
+      < task.index('return try await runOwnerRequest(pendingNote: nil)'), 'the pending-repair decision runs before any draft')
+check('var pending = pendingStore.load(id: recordID), pending.retryable()' in retry
       and '!ownerRequestRunsReadOnly(prompt, attachedSource: attached)' in retry,
       'a write request in a conversation with an unfinished repair continues it, before any draft runs')
 check('os1PendingRepairRetryPlan(pending, root: root, contains:' in retry and 'restagePendingOS1Repair(pending, root: restageRoot, store: pendingStore)' in retry,
-      'a staging-only failure is staged again first, with no model call')
-check('repairPrompt: os1PendingRepairPrompt(current, newMessage: prompt), existing: current)' in flat(retry),
+      'a repair whose commit is still in the source is staged again first, with no model call')
+check('installed: { root, commit in gitCommitIsInstalled(commit, root: root) }' in retry and 'case .alreadyInstalled(let commit):' in retry,
+      'a repair already in the installed build is dropped, never rebuilt')
+check('pending = os1PendingRepairForRetry(pending, store: pendingStore)' in retry, 'a dead writer\'s record is stored interrupted first')
+check('repairPrompt: os1PendingRepairPrompt(current, newMessage: prompt), objective: os1PendingRepairObjective(current, newMessage: prompt), existing: current)' in flat(retry),
       'otherwise the repair runs again (bound to OS-1) with the record and the new message')
 check('ownerRequestRunsReadOnly(prompt, attachedSource: attachedSource != nil)' in main,
       'the run scope and the retry decision share one read-only predicate')

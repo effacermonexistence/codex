@@ -123,6 +123,28 @@ public enum OS1SelfReference {
         return nil
     }
 
+    /// Retry / continue / "why isn't it done" phrasing about pending work.
+    static let pendingContinuationPattern = #"고쳐|고치라|고치라니까|고치래도|다시|계속|이어서|이어가|마저|마무리|왜\s*안\s*(?:돼|되|됐)|됐냐|됐어\?|됐니|설치|(?<![a-z])(?:retry|continue|resume|fix it|finish it|try again|install)(?![a-z])"#
+    static let urlPattern = #"https?://|(?<![a-z0-9])www\."#
+
+    /// A write request in a conversation whose change to OS-1 itself is still
+    /// pending (build 327) continues that change only when it is about it:
+    /// OS-1 itself is named or inferred, or it is retry/continue phrasing, or
+    /// it is a short follow-up ("왜 안 됐냐", "…한 줄로") that names no URL,
+    /// website, other product or outside path. A clearly different task
+    /// ("웹사이트 푸터 색 바꿔") runs as itself.
+    public static func continuesPendingOS1Change(_ followUp: String, os1Roots: [String] = [],
+                                                 home: URL = FileManager.default.homeDirectoryForCurrentUser) -> Bool {
+        if infer(request: followUp, projectless: true, os1Roots: os1Roots, home: home).bound { return true }
+        let words = OwnerIntentText.authorityText(PromptAttachments.textWithoutReferences(followUp))
+        let text = words.precomposedStringWithCanonicalMapping.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        let otherProject = PreparationIntent.detect(words)?.projectID.map { $0 != "os1-clodex" } == true
+        let foreign = matches(urlPattern, text) || foreignPatterns.contains { matches($0, text) } || otherProject
+            || foreignTargetPath(in: words, os1Roots: os1Roots, home: home.path) != nil
+        guard !foreign else { return false }
+        return matches(pendingContinuationPattern, text) || text.count <= 80
+    }
+
     /// Decide whether a request not bound to any project is about OS-1 itself.
     /// - request: the owner's words (the app's attachment block may follow).
     /// - projectless: the conversation folder is HOME or not a project checkout.
