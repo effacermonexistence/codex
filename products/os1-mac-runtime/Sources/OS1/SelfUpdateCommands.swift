@@ -89,7 +89,7 @@ func selfRepairCommand(_ arguments: [String]) async throws -> Bool {
 /// Shared with the runtime hook in main.swift.
 let selfRepairFailurePrefixText = "OS-1 self-repair could not complete: "
 
-let os1RuntimeVersionString = "OS-1 Runtime 0.9.253 (self-repair-build319)"
+let os1RuntimeVersionString = "OS-1 Runtime 0.9.254 (parallel-progress-build320)"
 
 func os1SourceWriteLeaseURL(root: String) throws -> URL {
     let directory = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".os1/self-update", isDirectory: true)
@@ -621,7 +621,7 @@ struct OS1SourceWatch: Equatable {
     /// Status, tracked diff and untracked contents of the runtime subtree.
     /// Read-only on the tree: `--no-optional-locks` keeps `git status` from
     /// refreshing the index under index.lock, which would fail a repair's
-    /// own `git add`/`commit` running at the same moment (build 319: a HOME
+    /// own `git add`/`commit` running at the same moment (build 320: a HOME
     /// task's watch no longer always holds the shared lease).
     static func fingerprint(root: String) -> String? {
         guard let git = try? findExecutable("git") else { return nil }

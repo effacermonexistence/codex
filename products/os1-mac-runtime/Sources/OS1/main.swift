@@ -1544,7 +1544,7 @@ func claudeArguments(
     confinedEscalates: Bool = true
 ) throws -> [String] {
     var arguments = ["-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages"]
-    // A HOME write task that holds no OS-1 source lease (build 319): its
+    // A HOME write task that holds no OS-1 source lease (build 320): its
     // backend must be unable to write OS-1's live tree, and is told so.
     let confined = permissionProfile == "workspace_write" && !confinedPaths.isEmpty
     let instructions = confined
@@ -6540,7 +6540,7 @@ private func execute(
         }
         defer { steerDriver?.processDidEnd() }
         // Set by the runtime when this attempt holds no OS-1 source lease
-        // (a HOME write task, build 319): the launch must confine the backend.
+        // (a HOME write task, build 320): the launch must confine the backend.
         let confinedPaths = confinedClaudeLaunchPaths(permissionProfile: ticket.permissionProfile)
         let confined = !confinedPaths.isEmpty
         // Only an owner request reruns a handed-back OS-1 change (runTask).
@@ -8002,7 +8002,7 @@ enum OS1ChangeEscalation {
 }
 
 /// A confined attempt (a HOME request's Claude backend, kept off OS-1's live
-/// source, build 319) handed the request's OS-1 part back with the marker.
+/// source, build 320) handed the request's OS-1 part back with the marker.
 /// The step output is already stripped of it; the flag is the signal.
 func confinedDraftRequiresOS1Change(_ summary: RunSummary) -> Bool {
     summary.steps.contains { $0.os1SourceConfined && $0.os1ChangeRequired }
@@ -8050,7 +8050,7 @@ enum OS1AttemptSourceStep: Equatable {
 }
 
 /// How one attempt of a write task whose folder contains OS-1's live tree
-/// keeps off it (build 319). A Claude attempt runs confined and takes no
+/// keeps off it (build 320). A Claude attempt runs confined and takes no
 /// lease, so it may run beside an OS-1 repair. Any other attempt holds the
 /// shared lease for its call — beside other HOME tasks, never beside a
 /// repair. When a repair holds or awaits the tree, the first attempt is
@@ -8219,7 +8219,7 @@ func runTask(
         && ReviewPass.applies(request: prompt)
     let reviewMonitorID = reviewable ? UUID().uuidString.lowercased() : nil
     // A HOME owner request may continue its handed-back OS-1 part as an OS-1
-    // repair (build 319). The first run and that repair are one owner task
+    // repair (build 320). The first run and that repair are one owner task
     // for governance accounting, as a draft and its review are.
     let escalationAvailable = workflowStage == nil && !requireReadOnly
     let escalationMonitorID = reviewMonitorID == nil && escalationAvailable && monitorTaskIDOverride == nil
@@ -8550,7 +8550,7 @@ func runTaskWithOwnerPolicy(
     // A write task in a folder that contains OS-1's live tree (HOME) can
     // still change OS-1; it must never write beside an OS-1 repair, whose
     // build would carry its half-written edits (the profile-menu repair of
-    // 2026-09-30 failed exactly so). Each attempt decides how (build 319): a
+    // 2026-09-30 failed exactly so). Each attempt decides how (build 320): a
     // Claude attempt runs confined so it cannot write OS-1's source and takes
     // no lease — beside a repair; a Codex attempt holds the shared lease for
     // its call — beside other HOME tasks, never beside a repair — and OS-1
@@ -9066,7 +9066,7 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
             throw OS1Error.message("라우팅된 Claude 모델·effort가 현재 계정의 모델 목록과 달라 유료 호출 전에 차단했습니다.")
         }
         // How this attempt keeps off OS-1's live source when the task's
-        // folder contains it (build 319). A Claude attempt is confined: its
+        // folder contains it (build 320). A Claude attempt is confined: its
         // backend cannot write the tree, so it takes no lease and may run
         // beside an OS-1 repair. Codex has no reliable subtree exclusion yet,
         // so a Codex attempt still takes the shared lease — and a verifier
@@ -9978,7 +9978,7 @@ func steeringProtocolSelfTest() throws {
     print("Steering protocol: \(checks) checks passed; native stdio ACK/reject/wrong-turn/EOF/persistence/dedup; model calls 0")
 }
 
-/// The runtime's per-attempt wiring for a HOME write task (build 319), on
+/// The runtime's per-attempt wiring for a HOME write task (build 320), on
 /// real flock leases: a Claude attempt beside a repair takes no lease; a
 /// contended "auto" first attempt is re-routed to Claude instead of waiting;
 /// otherwise it waits, and a ticket that aged meanwhile is replaced; a lease
@@ -10075,7 +10075,7 @@ func os1AttemptSourceSelfTest() async throws {
     try check(try await prepareOS1AttemptSource(provider: "codex", permissionProfile: "workspace_write", sharedLeaseRoot: nil,
         firstAttempt: true, claudeAlternative: { true }, ticketFresh: { true }, state: &state, acquireWaiting: noWait)
         == .proceed(confined: false, carriesEarlierWriter: false) && state.lease == nil, "no shared root, no lease")
-    print("OS-1 attempt source (build 319): \(checks) checks OK; real flock leases; model calls 0")
+    print("OS-1 attempt source (build 320): \(checks) checks OK; real flock leases; model calls 0")
 }
 
 func selfTest() throws {

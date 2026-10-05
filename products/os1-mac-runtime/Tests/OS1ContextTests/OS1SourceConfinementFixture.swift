@@ -3,7 +3,7 @@ import Foundation
 import OS1Context
 
 /// A HOME write task confined from OS-1's live source instead of holding its
-/// shared lease (build 319): the exact Claude settings, the protected paths of
+/// shared lease (build 320): the exact Claude settings, the protected paths of
 /// a worktree checkout, the per-attempt state and the escalation marker.
 func runOS1SourceConfinementFixtures() throws {
     var checks = 0

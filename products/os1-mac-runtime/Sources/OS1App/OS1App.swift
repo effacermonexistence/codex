@@ -5802,7 +5802,7 @@ private final class SessionStore: ObservableObject {
         // reads also stay parked for a ready update's brief installation gate.
         guard sourceWriteAccess(next, session: session, root: root, home: home) != nil else { return false }
         // A HOME write that can run on Claude is no longer parked behind a
-        // repair (build 319): its runtime confines a Claude attempt from
+        // repair (build 320): its runtime confines a Claude attempt from
         // OS-1's source with no lease, and re-routes an "auto" Codex attempt
         // to Claude rather than wait. Only OS-1 writers, and HOME writes that
         // can only run on Codex (which would hold a run slot while waiting),

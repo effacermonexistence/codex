@@ -55,7 +55,7 @@ public enum SourceWriteAdmission {
     /// admitted OS-1 writer or an announced writer intent. OS-1 writers still
     /// wait for each other here. A HOME request needing shared access that
     /// can run on Claude (`confinable`: not pinned to Codex, Claude capacity
-    /// left) is admitted (build 319) and its runtime decides: a Claude attempt
+    /// left) is admitted (build 320) and its runtime decides: a Claude attempt
     /// runs confined from OS-1's live source (`OS1SourceConfinement`) with no
     /// lease, beside a repair; an "auto" attempt routed to Codex is re-routed
     /// to Claude rather than wait. Parking those kept them waiting for nothing
