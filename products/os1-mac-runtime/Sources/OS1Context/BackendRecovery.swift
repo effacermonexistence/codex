@@ -215,6 +215,19 @@ public enum BackendRecovery {
         alreadyResumed != true
     }
 
+    /// The readback budget is saved as spent before dispatch, so a crash
+    /// cannot replay it. A readback that provably stopped before any model
+    /// call (the owner-policy refresh failed, OwnerPolicyRefresh
+    /// .preModelFailureExitStatus) spent nothing: its budget comes back, but
+    /// only once per failure, so a refresh that keeps failing holds instead
+    /// of looping. Explicit owner retries are unaffected.
+    public static func restoresReadbackBudget(stoppedBeforeModel: Bool, alreadyRestored: Bool?) -> Bool {
+        stoppedBeforeModel && alreadyRestored != true
+    }
+    /// That one automatic retry waits this long: right after a login, Notes
+    /// can take minutes to answer (2026-10-05: about 4 minutes).
+    public static let preModelReadbackRetryDelay: TimeInterval = 120
+
     /// Failed adoption must not erase a successfully persisted native response.
     /// This classification does not authorize replay or override remote verification.
     public static func rejectedAdoptionBlocker(exitCode: Int, output: String, persistence: String) -> BackendBlocker {

@@ -8257,12 +8257,169 @@ func loadCurrentOwnerPolicy() throws -> OwnerPolicySnapshot? {
         throw OS1Error.message(os1Tr("거버넌스 정책 동기화 도구가 설치되지 않아 호출하지 않았습니다. 기존 작업은 보존됩니다.",
                                      "The governance policy sync tool is missing, so it was not called. Existing work is preserved."))
     }
-    let (status, _, _) = try commandOutput("/usr/bin/python3", [helper.path], timeout: 50)
-    guard status == 0, let policy = try OwnerPolicySnapshot.load(root: root) else {
-        throw OS1Error.message(os1Tr("최신 거버넌스 원문 확인 또는 무결성 검증에 실패해 모델 호출 전에 보존했습니다.",
-                                     "Checking the latest governance original or verifying its integrity failed, so the request was preserved before any model call."))
+    return try refreshOwnerPolicy(helper: helper, root: root)
+}
+
+/// The owner-policy refresh did not certify a policy, so the run stopped
+/// before any routing or model call. `os1 run` exits with
+/// OwnerPolicyRefresh.preModelFailureExitStatus, which tells the app that
+/// this stop spent nothing (BackendRecovery.restoresReadbackBudget).
+struct OwnerPolicyRefreshFailure: Error, CustomStringConvertible {
+    var description: String {
+        os1Tr("최신 거버넌스 원문 확인 또는 무결성 검증에 실패해 모델 호출 전에 보존했습니다.",
+              "Checking the latest governance original or verifying its integrity failed, so the request was preserved before any model call.")
     }
+}
+
+/// The process exit status for an error that ends a CLI command.
+func cliExitStatus(for error: Error) -> Int32 {
+    error is OwnerPolicyRefreshFailure ? OwnerPolicyRefresh.preModelFailureExitStatus : 1
+}
+
+/// Runs the policy helper and loads what it certified; still fail-closed (no
+/// fallback to an older snapshot). A failed refresh, or one that needed its
+/// Notes retry, leaves a bounded local diagnostic — exit status and the
+/// helper's last stderr lines — so the cause is on record, not guessed.
+func refreshOwnerPolicy(helper: URL, root: URL,
+                        diagnostics: URL = FileManager.default.homeDirectoryForCurrentUser
+                            .appendingPathComponent("Library/Application Support/OS-1/diagnostics", isDirectory: true),
+                        timeout: Int = OwnerPolicyRefresh.helperTimeoutSeconds) throws -> OwnerPolicySnapshot {
+    let started = Date()
+    func record(_ outcome: String, status: Int32?, stderr: [String]) {
+        recordOwnerPolicyRefresh(outcome: outcome, status: status, stderr: stderr,
+                                 duration: Date().timeIntervalSince(started), root: diagnostics)
+    }
+    let status: Int32, errorOutput: Data
+    do {
+        (status, _, errorOutput) = try commandOutput("/usr/bin/python3", [helper.path], timeout: timeout)
+    } catch OS1Error.backendBlocked(let blocker) where blocker == .cancelled {
+        throw OS1Error.backendBlocked(.cancelled)
+    } catch {
+        // No answer within the helper's own limit, or it could not start.
+        record("no_answer", status: nil, stderr: [])
+        throw OwnerPolicyRefreshFailure()
+    }
+    let tail = OwnerPolicyRefresh.stderrTail(errorOutput)
+    guard status == 0 else {
+        record("refused", status: status, stderr: tail)
+        throw OwnerPolicyRefreshFailure()
+    }
+    guard let policy = try? OwnerPolicySnapshot.load(root: root) else {
+        record("snapshot_invalid", status: status, stderr: tail)
+        throw OwnerPolicyRefreshFailure()
+    }
+    if !tail.isEmpty { record("certified_with_notice", status: status, stderr: tail) }
     return policy
+}
+
+/// Bounded and secret-free: outcome, exit status, duration, the submission it
+/// belongs to and the helper's masked stderr tail. Never policy text or stdout.
+private func recordOwnerPolicyRefresh(outcome: String, status: Int32?, stderr: [String],
+                                      duration: TimeInterval, root: URL) {
+    let submission = ProcessInfo.processInfo.environment["OS1_SUBMISSION_ID"]
+        .flatMap(UUID.init(uuidString:))?.uuidString.lowercased()
+    let entry: [String: Any] = ["time": ISO8601DateFormatter().string(from: Date()),
+        "stage": "owner_policy_refresh", "outcome": outcome,
+        "exit_status": status.map { Int($0) as Any } ?? NSNull(),
+        "duration_ms": Int((duration * 1_000).rounded()), "submission_id": submission ?? "none",
+        "stderr_tail": stderr]
+    do {
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        let path = root.appendingPathComponent("owner-policy-refresh-\(UUID().uuidString.lowercased()).json")
+        try JSONSerialization.data(withJSONObject: entry, options: [.sortedKeys]).write(to: path, options: .atomic)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path.path)
+    } catch { /* A diagnostic never replaces the refresh's own failure. */ }
+}
+
+/// Build 327 regression: the helper's stderr was discarded, so the cause of
+/// the 2026-10-05 07:06 refusal had to be inferred. Fake helpers, temporary
+/// directories; no Notes, no network, no model call.
+func ownerPolicyRefreshSelfTest() throws {
+    let fileManager = FileManager.default
+    let root = fileManager.temporaryDirectory.appendingPathComponent("os1-policy-refresh-\(UUID().uuidString)")
+    let policy = root.appendingPathComponent("policy"), diagnostics = root.appendingPathComponent("diagnostics")
+    try fileManager.createDirectory(at: policy, withIntermediateDirectories: true)
+    defer { try? fileManager.removeItem(at: root) }
+    var checks = 0
+    func check(_ value: Bool, _ message: String) throws {
+        guard value else { throw OS1Error.message("Owner-policy refresh: " + message) }
+        checks += 1
+    }
+    func helper(_ body: String) throws -> URL {
+        let url = root.appendingPathComponent("helper-\(UUID().uuidString).py")
+        try Data(("import sys, time\n" + body + "\n").utf8).write(to: url)
+        return url
+    }
+    // The single diagnostic a case wrote, consumed so the next case starts empty.
+    func diagnostic() throws -> (entry: [String: Any], raw: String)? {
+        let names = (try? fileManager.contentsOfDirectory(atPath: diagnostics.path)) ?? []
+        defer { try? fileManager.removeItem(at: diagnostics) }
+        guard names.count == 1 else { return nil }
+        let data = try Data(contentsOf: diagnostics.appendingPathComponent(names[0]))
+        return ((try JSONSerialization.jsonObject(with: data) as? [String: Any]) ?? [:], String(decoding: data, as: UTF8.self))
+    }
+    func refresh(_ helper: URL, timeout: Int = 30) -> Result<OwnerPolicySnapshot, Error> {
+        Result { try refreshOwnerPolicy(helper: helper, root: policy, diagnostics: diagnostics, timeout: timeout) }
+    }
+    func refused(_ result: Result<OwnerPolicySnapshot, Error>) -> Bool {
+        if case .failure(let error) = result { return error is OwnerPolicyRefreshFailure }
+        return false
+    }
+    let timedOut = "Owner policy refresh rejected (CalledProcessError: osascript exit 1: 35:120: execution error: Notes got an error: AppleEvent timed out. (-1712)); retried once after 15 s; existing snapshot retained."
+    // 1. A refusal keeps the helper's stated cause; stdout (where policy text could be) is not recorded.
+    try check(refused(refresh(try helper("""
+        print("POLICY TEXT MUST NOT BE RECORDED", flush=True)
+        sys.stderr.write("Notes query failed (CalledProcessError: osascript exit 1: AppleEvent timed out. (-1712)); retrying once in 15 s.\\n")
+        raise SystemExit("\(timedOut)")
+        """))), "a non-zero helper exit must stop the run as a policy refusal")
+    guard let refusal = try diagnostic() else { throw OS1Error.message("Owner-policy refresh: refusal left no diagnostic") }
+    let refusalTail = refusal.entry["stderr_tail"] as? [String] ?? []
+    try check(refusal.entry["outcome"] as? String == "refused" && refusal.entry["exit_status"] as? Int == 1
+              && refusal.entry["stage"] as? String == "owner_policy_refresh", "refusal outcome/status: \(refusal.raw)")
+    try check(refusalTail.count == 2 && refusalTail.contains { $0.contains("(-1712)") }
+              && refusalTail.contains { $0.contains("retried once") }, "stderr tail lost the cause: \(refusalTail)")
+    try check(!refusal.raw.contains("POLICY TEXT"), "helper stdout leaked into the diagnostic")
+    // 2. A certified snapshot that needed the Notes retry is kept on record too.
+    let source = Data("REVAS fixture original\n".utf8), digest = OwnerPolicySnapshot.digest(source)
+    try source.write(to: policy.appendingPathComponent(digest + ".txt"))
+    try JSONSerialization.data(withJSONObject: ["schema": 1, "sourceSHA256": digest, "sourceFile": digest + ".txt",
+        "projectionSHA256": OwnerPolicySnapshot.digest(Data("route\nprojection".utf8)), "routing": "route",
+        "projection": "projection", "sourceID": "fixture", "sourceModified": "1",
+        "checkedAt": Date().timeIntervalSince1970]).write(to: policy.appendingPathComponent("active.json"))
+    let retried = refresh(try helper("""
+        sys.stderr.write("Notes query failed (TimeoutExpired: Notes did not answer within 20 s); retrying once in 15 s.\\n")
+        print("{}")
+        """))
+    try check((try? retried.get())?.sourceSHA256 == digest, "a retried, certified refresh must load the snapshot")
+    let notice = try diagnostic()
+    try check(notice?.entry["outcome"] as? String == "certified_with_notice"
+              && (notice?.entry["stderr_tail"] as? [String])?.first?.contains("retrying once") == true, "retry notice not recorded")
+    // 3. A quiet success writes nothing.
+    try check((try? refresh(try helper("print('{}')")).get())?.sourceSHA256 == digest, "quiet success must load the snapshot")
+    try check(!fileManager.fileExists(atPath: diagnostics.path), "a quiet success must not write a diagnostic")
+    // 4. Exit 0 without a loadable snapshot stays fail-closed.
+    try fileManager.removeItem(at: policy.appendingPathComponent("active.json"))
+    try check(refused(refresh(try helper("print('{}')"))), "exit 0 without a snapshot must be refused")
+    try check(try diagnostic()?.entry["outcome"] as? String == "snapshot_invalid", "invalid snapshot not recorded")
+    // 5. A helper that never answers is the same pre-model refusal, not a generic utility timeout.
+    try check(refused(refresh(try helper("time.sleep(30)"), timeout: 1)), "a silent helper must be a policy refusal")
+    let silent = try diagnostic()
+    try check(silent?.entry["outcome"] as? String == "no_answer" && silent?.entry["exit_status"] is NSNull, "no-answer not recorded")
+    // 6. The tail is bounded and masked.
+    try check(refused(refresh(try helper("""
+        for n in range(50): sys.stderr.write(("line %d " % n) + "x" * 900 + "\\n")
+        sys.stderr.write("--token fixture-credential-not-a-real-value\\n")
+        sys.exit(1)
+        """))), "a noisy helper must be refused")
+    let noisy = try diagnostic()
+    let noisyTail = noisy?.entry["stderr_tail"] as? [String] ?? []
+    try check(noisyTail.count == 6 && noisyTail.allSatisfy { $0.count <= NativeStepLabel.maximumCharacters }
+              && noisy?.raw.contains("fixture-credential") == false, "stderr tail unbounded or unmasked: \(noisyTail)")
+    // 7. `os1 run` tells the app this stop spent nothing.
+    try check(cliExitStatus(for: OwnerPolicyRefreshFailure()) == OwnerPolicyRefresh.preModelFailureExitStatus
+              && cliExitStatus(for: OS1Error.message("other")) == 1, "pre-model exit status")
+    try check(OwnerPolicyRefresh.helperTimeoutSeconds > 95, "the caller must outlast the helper's own 95 s budget")
+    print("OS-1 owner-policy refresh: \(checks) checks OK; fail-closed, stderr kept as a bounded diagnostic, pre-model exit status; Notes 0, model calls 0")
 }
 
 /// Whether a confined backend's handed-back OS-1 change continues as an
@@ -10416,6 +10573,7 @@ func selfTest() throws {
     try ManagedPreview.selfTest()
     try browserMCPSelfTest()
     try memoryMCPSelfTest()
+    try ownerPolicyRefreshSelfTest()
     let poisonedStage = "R2 원본을 새로 가져와 로그인해. QMGR 자료를 검색해."
     guard try r2RetrievalEvidence(poisonedStage, objective: nil) == nil else {
         throw OS1Error.message("nil owner retrieval decision reclassified stage handoff")
@@ -13596,7 +13754,7 @@ struct OS1Main {
             }
         } catch {
             fputs("OS-1 error: \(error)\n", stderr)
-            exit(1)
+            exit(cliExitStatus(for: error))
         }
     }
 }

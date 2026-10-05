@@ -12,6 +12,13 @@ func runBackendRecoveryFixtures() throws {
     check(!BackendRecovery.needsAutomaticReadback(attempted: true, verdictReconciled: true), "reconciled failure stays held across app upgrades")
     check(BackendRecovery.mayResumeAfterReadback(alreadyResumed: nil), "first verified none may resume")
     check(!BackendRecovery.mayResumeAfterReadback(alreadyResumed: true), "upgrade cannot replenish original execution budget")
+    check(BackendRecovery.restoresReadbackBudget(stoppedBeforeModel: true, alreadyRestored: nil),
+          "a readback stopped before any model call gives its budget back")
+    check(!BackendRecovery.restoresReadbackBudget(stoppedBeforeModel: true, alreadyRestored: true),
+          "only once per failure: a refresh that keeps failing must not loop")
+    check(!BackendRecovery.restoresReadbackBudget(stoppedBeforeModel: false, alreadyRestored: nil),
+          "a readback that may have reached a model keeps its budget spent")
+    check(BackendRecovery.preModelReadbackRetryDelay >= 60, "the one retry waits for Notes to finish starting")
     check(BackendRecovery.rejectedAdoptionBlocker(exitCode: 0, output: "saved answer", persistence: "verified") == .verificationRejected, "verified response is not an unknown execution")
     check(BackendRecovery.rejectedAdoptionBlocker(exitCode: 1, output: "partial", persistence: "verified") == .effectsUncertain, "failed execution remains uncertain")
     check(BackendRecovery.rejectedAdoptionBlocker(exitCode: 0, output: " \n", persistence: "verified") == .effectsUncertain, "empty response cannot establish success")

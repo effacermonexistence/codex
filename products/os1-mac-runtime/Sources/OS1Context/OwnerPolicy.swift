@@ -82,3 +82,24 @@ public enum OwnerPolicyContext {
     @TaskLocal public static var snapshot: OwnerPolicySnapshot?
     public static var instructions: String { snapshot?.instructions ?? "" }
 }
+
+/// The refresh the CLI runs (scripts/sync-owner-policy.py) before any routing
+/// or model call. It stays fail-closed; these are the pieces the CLI and the
+/// app share so a failed refresh is recorded and recognised as a stop that
+/// spent nothing.
+public enum OwnerPolicyRefresh {
+    /// The helper stops itself after 95 s, one Notes retry included; the
+    /// caller waits longer so the helper, not the caller, decides.
+    public static let helperTimeoutSeconds = 110
+    /// `os1 run` exits with this status (EX_TEMPFAIL) when the refresh failed:
+    /// the run stopped before any routing or model call.
+    public static let preModelFailureExitStatus: Int32 = 75
+    /// The last lines of the helper's stderr for the local diagnostics folder:
+    /// at most `lines` lines, each masked and capped (NativeStepLabel.redact).
+    /// The helper writes only its own error text there, never policy text.
+    public static func stderrTail(_ data: Data, lines: Int = 6) -> [String] {
+        let text = String(decoding: data.suffix(16_384), as: UTF8.self)
+        return Array(text.components(separatedBy: .newlines)
+            .compactMap { NativeStepLabel.redact($0) }.suffix(lines))
+    }
+}

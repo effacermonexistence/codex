@@ -1266,6 +1266,53 @@ private func parallelInteractionSelfTest() async throws {
     let failedReviewReload = SessionStore(storageRoot: failedReviewRoot)
     try check(failedReviewReload.selectedSession!.lastFailure?.recoveryAttempted == true &&
         failedReviewReload.selectedSession!.taskContext?.objective.requestText == "DEPLOY ONCE", "restart forgot recovery budget or objective")
+    // Build 327 (C3BC3C41, 2026-10-05 07:08): a readback that stopped at the
+    // owner-policy refresh, before any model call, spent nothing. Its one
+    // automatic readback stays available and runs once after a delay; a
+    // second such stop holds as before, so a failing refresh cannot loop.
+    let policyText = "OS-1 error: 최신 거버넌스 원문 확인 또는 무결성 검증에 실패해 모델 호출 전에 보존했습니다."
+    try check({ if case .ownerPolicyUnavailable(policyText) = OS1Runner.runFailure(
+                    status: OwnerPolicyRefresh.preModelFailureExitStatus, text: policyText) { return true }; return false }() &&
+              { if case .message("x") = OS1Runner.runFailure(status: 1, text: "x") { return true }; return false }(),
+              "only the policy refresh's exit status marks a stop before any model call")
+    var policyCalls: [PendingSubmission] = []
+    let policyRoot = root.appendingPathComponent("policy-readback")
+    let policyStore = SessionStore(storageRoot: policyRoot, runOperation: { submission, _, _, _, _ in
+        policyCalls.append(submission)
+        try await Task.sleep(for: .milliseconds(30))
+        if submission.readOnlyReconciliation != true {
+            throw RunnerError.backend(BackendFailureNotice(provider: "claude", sessionID: interruptedID,
+                blocker: .effectsUncertain, dispatchStage: .dispatched, permissionProfile: "workspace_write"))
+        }
+        throw RunnerError.ownerPolicyUnavailable(policyText)
+    })
+    let policySessionID = policyStore.selectedSessionID!
+    policyStore.composer = "DEPLOY AFTER REBOOT"; policyStore.send()
+    while !policyStore.activeRuns.isEmpty { try await Task.sleep(for: .milliseconds(30)) }
+    func policyReadbacks() -> Int { policyCalls.filter { $0.readOnlyReconciliation == true }.count }
+    var held = policyStore.sessions.first { $0.id == policySessionID }!.lastFailure
+    try check(policyCalls.count == 2 && policyReadbacks() == 1 && held?.request == "DEPLOY AFTER REBOOT",
+        "the interrupted write must get exactly one readback first")
+    try check(BackendRecovery.needsAutomaticReadback(attempted: held?.recoveryAttempted, verdictReconciled: held?.verdictReconciled)
+              && held?.readbackBudgetRestored == true && held?.readbackNotBefore != nil,
+        "a readback stopped by the policy refresh before any model call spent the automatic readback budget")
+    try check(policyStore.sessions.first { $0.id == policySessionID }!.messages.contains { $0.role == .system && $0.text.contains(policyText) },
+        "the policy refusal must stay visible in the conversation")
+    policyStore.resumeStaleReconciliations(now: Date())
+    try check(policyStore.activeRuns.isEmpty && policyCalls.count == 2, "the deferred readback ran before its delay")
+    let reloadedPolicy = SessionStore(storageRoot: policyRoot).sessions.first { $0.id == policySessionID }!.lastFailure
+    try check(reloadedPolicy?.readbackBudgetRestored == true && reloadedPolicy?.readbackNotBefore == held?.readbackNotBefore,
+        "a restart must keep the restored budget and its delay")
+    policyStore.resumeStaleReconciliations(now: Date().addingTimeInterval(BackendRecovery.preModelReadbackRetryDelay + 1))
+    while !policyStore.activeRuns.isEmpty { try await Task.sleep(for: .milliseconds(30)) }
+    held = policyStore.sessions.first { $0.id == policySessionID }!.lastFailure
+    try check(policyReadbacks() == 2 && !BackendRecovery.needsAutomaticReadback(attempted: held?.recoveryAttempted,
+              verdictReconciled: held?.verdictReconciled), "the deferred readback must run once, then a second refusal holds")
+    policyStore.resumeStaleReconciliations(now: Date().addingTimeInterval(3_600))
+    try check(policyStore.activeRuns.isEmpty && policyCalls.count == 3, "a refresh that keeps failing must not loop")
+    try check(held?.request == "DEPLOY AFTER REBOOT" &&
+              policyStore.sessions.first { $0.id == policySessionID }!.lastBackendFailure?.requiresReadback == true,
+        "the original request and its uncertain-effect hold must stay preserved for the owner's retry")
     // Readback must release admission before dispatching the preserved objective.
     for verified in [true, false] {
         var calls: [PendingSubmission] = []
@@ -4172,6 +4219,12 @@ private struct PendingSubmission: Identifiable, Codable, Equatable, Sendable {
     /// Historical receipt only; automatic reconciliation is contract-scoped,
     /// not replenished whenever an unrelated app build is installed.
     var reconciledUnderBuild: Int? = nil
+    /// Set when a readback stopped before any model call (the owner-policy
+    /// refresh failed) and gave this failure's automatic readback back —
+    /// once per failure (BackendRecovery.restoresReadbackBudget).
+    var readbackBudgetRestored: Bool? = nil
+    /// That one automatic retry does not start before this time.
+    var readbackNotBefore: Date? = nil
     /// Called only after the verified `none` gate. Keep original custody and
     /// outbox evidence, but execute the objective rather than redeliver the
     /// rejected artifact. Other effects verdicts never enter this transition.
@@ -5243,10 +5296,13 @@ private func boundNativeLookupSelfTest() throws {
 private enum RunnerError: LocalizedError {
     case message(String)
     case backend(BackendFailureNotice)
+    /// The owner-policy refresh failed, so the run stopped before any routing
+    /// or model call (OwnerPolicyRefresh.preModelFailureExitStatus).
+    case ownerPolicyUnavailable(String)
 
     var errorDescription: String? {
         switch self {
-        case .message(let value): return value
+        case .message(let value), .ownerPolicyUnavailable(let value): return value
         case .backend(let notice): return notice.blocker.message
         }
     }
@@ -5392,6 +5448,12 @@ private enum OS1Runner {
                 onActivity: onActivity
             )
         }.value
+    }
+
+    /// A failed `os1 run` that left no backend notice. The owner-policy
+    /// refresh's own exit status means it stopped before any model call.
+    static func runFailure(status: Int32, text: String) -> RunnerError {
+        status == OwnerPolicyRefresh.preModelFailureExitStatus ? .ownerPolicyUnavailable(text) : .message(text)
     }
 
     private static func executable() throws -> String {
@@ -5547,7 +5609,7 @@ private enum OS1Runner {
             }
             let fallback = String(decoding: outputData, as: UTF8.self)
                 .trimmingCharacters(in: .whitespacesAndNewlines)
-            throw RunnerError.message(errorText.isEmpty ? fallback : errorText)
+            throw runFailure(status: process.terminationStatus, text: errorText.isEmpty ? fallback : errorText)
         }
         do {
             return try JSONDecoder().decode(AppRunSummary.self, from: outputData)
@@ -7527,6 +7589,25 @@ private final class SessionStore: ObservableObject {
                         holdStatus = os1Tr("답변 도착 · 원격 검증 미채택 · 다음 메시지로 이어서 진행",
                                            "Answer arrived · not adopted by remote verification · continue with your next message")
                     }
+                    // The readback budget was saved as spent before dispatch.
+                    // This readback stopped at the owner-policy refresh, before
+                    // any model call: give the budget back once, with a delay.
+                    if let parent = submission.recoveryParentID, case .ownerPolicyUnavailable(_)? = error as? RunnerError,
+                       sessions[target].lastFailure?.id == parent,
+                       BackendRecovery.restoresReadbackBudget(stoppedBeforeModel: true,
+                           alreadyRestored: sessions[target].lastFailure?.readbackBudgetRestored) {
+                        let minutes = Int(BackendRecovery.preModelReadbackRetryDelay / 60)
+                        sessions[target].lastFailure?.verdictReconciled = nil
+                        sessions[target].lastFailure?.reconciledUnderBuild = nil
+                        sessions[target].lastFailure?.readbackBudgetRestored = true
+                        sessions[target].lastFailure?.readbackNotBefore = Date().addingTimeInterval(BackendRecovery.preModelReadbackRetryDelay)
+                        description += "\n" + os1Tr("모델 호출 전에 멈췄으므로 자동 상태 확인 기회는 그대로 두었습니다. \(minutes)분 뒤 한 번 다시 확인합니다.",
+                                                    "It stopped before any model call, so the automatic state check is kept: OS1 retries it once after \(minutes) minutes.")
+                        holdStatus = os1Tr("거버넌스 정책 확인 실패 · 모델 호출 없음 · \(minutes)분 뒤 한 번 자동 재확인",
+                                           "Governance policy check failed · no model call · OS1 re-checks once after \(minutes) minutes")
+                        appendTaskEvent(conversationID: submission.sessionID, kind: "readback_deferred",
+                            summary: "Readback stopped at the owner-policy refresh before any model call; its automatic readback stays available and runs once after \(Int(BackendRecovery.preModelReadbackRetryDelay)) s")
+                    }
                     sessions[target].messages.append(ChatMessage(
                         role: .system,
                         text: description.isEmpty ? os1Tr("OS-1 작업이 중단되었습니다. 다시 시도해 주세요.",
@@ -8374,6 +8455,7 @@ private final class SessionStore: ObservableObject {
         sessions[index].lastFailure?.recoveryAttempted = true
         sessions[index].lastFailure?.verdictReconciled = true
         sessions[index].lastFailure?.reconciledUnderBuild = installedBuildNumber
+        sessions[index].lastFailure?.readbackNotBefore = nil
         appendTaskEvent(conversationID: conversationID, kind: "reconciling", summary: "OS1 owns bounded read-only recovery of the original request")
         save() // persist the one-review budget before dispatch, including a crash
         start(readback)
@@ -8447,7 +8529,7 @@ private final class SessionStore: ObservableObject {
     /// read-only readback even when the failure predates this build (or the
     /// verdict contract): one readback per contract generation, and the
     /// OS1_EFFECTS verdict decides whether the objective resumes.
-    private func resumeStaleReconciliations() {
+    func resumeStaleReconciliations(now: Date = Date()) {
         // One readback at a time, and only while nothing else runs. After
         // build143 installed, every held failure was re-examined in the same
         // tick: seven Claude processes at once, all hitting an expired
@@ -8461,9 +8543,12 @@ private final class SessionStore: ObservableObject {
                   let failed = session.lastFailure, failed.recoveryParentID == nil,
                   BackendRecovery.needsAutomaticReadback(attempted: failed.recoveryAttempted,
                       verdictReconciled: failed.verdictReconciled),
+                  failed.readbackNotBefore.map({ $0 <= now }) ?? true,
                   !FileManager.default.fileExists(atPath: ExecutionCancellation.url(submissionID: failed.id).path) else { continue }
             appendTaskEvent(conversationID: session.id, kind: "stale_reconcile",
-                summary: "Held failure predates the verdict contract; running its read-only readback now")
+                summary: failed.readbackBudgetRestored == true
+                    ? "Readback stopped before any model call (owner-policy refresh); running its one retry now"
+                    : "Held failure predates the verdict contract; running its read-only readback now")
             beginReconciliation(conversationID: session.id)
             return
         }

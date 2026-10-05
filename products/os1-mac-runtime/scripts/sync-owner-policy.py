@@ -2,9 +2,58 @@
 """Refresh the latest explicitly named RCC engine note; no credentials or R2 writes.
 Atomic, private, content addressed. No model calls and no silent full-text truncation.
 """
-import fcntl, hashlib, json, math, os, pathlib, re, subprocess, time
-def osa(text):
-    return subprocess.run(['/usr/bin/osascript','-e',text],capture_output=True,text=True,timeout=20,check=True).stdout.rstrip('\n')
+import fcntl, hashlib, json, math, os, pathlib, re, subprocess, sys, time
+OSA_TIMEOUT_SECONDS = 20
+def osa(text, timeout=OSA_TIMEOUT_SECONDS):
+    return subprocess.run(['/usr/bin/osascript','-e',text],capture_output=True,text=True,timeout=timeout,check=True).stdout.rstrip('\n')
+
+# Notes can be slow to answer right after login while it finishes its iCloud
+# start-up (2026-10-05: two 15 s AppleEvent timeouts, then Notes answered in
+# 0.17 s three minutes later). Such a query failure is retried exactly once,
+# outside the refresh lock, inside one hard budget that the Swift caller
+# outlasts (OwnerPolicyRefresh.helperTimeoutSeconds). Integrity failures
+# (digest, tie, note changed during capture, missing anchors) and permission
+# errors are never retried; the policy stays fail-closed.
+RETRY_DELAY_SECONDS = 15
+REFRESH_BUDGET_SECONDS = 95
+# AppleEvent timed out, application isn't running, connection is invalid.
+TRANSIENT_NOTES_ERRORS = ('(-1712)', '(-600)', '(-609)')
+
+def transient_notes_failure(error):
+    if isinstance(error, subprocess.TimeoutExpired): return True
+    return isinstance(error, subprocess.CalledProcessError) and isinstance(error.stderr, str) \
+        and any(code in error.stderr for code in TRANSIENT_NOTES_ERRORS)
+
+def bounded_osa(deadline, clock=time.monotonic, run=osa):
+    # No single Notes query outlives the refresh budget.
+    def call(text):
+        remaining = deadline - clock()
+        if remaining < 1: raise subprocess.TimeoutExpired('osascript', 0)
+        return run(text, timeout=min(OSA_TIMEOUT_SECONDS, remaining))
+    return call
+
+def one_line(text, limit=200):
+    lines = [l.strip() for l in str(text).splitlines() if l.strip()]
+    line = ''.join(c if c.isprintable() else ' ' for c in (lines[-1] if lines else ''))
+    return line[:limit]
+
+def describe(error):
+    # The cause, bounded and on one line. osascript's stderr carries Apple's
+    # error text and code, never the note's text (that is stdout only).
+    if isinstance(error, subprocess.CalledProcessError):
+        cause = 'osascript exit '+str(error.returncode)+': '+one_line(error.stderr or '')
+    elif isinstance(error, subprocess.TimeoutExpired):
+        cause = 'Notes did not answer within '+str(int(error.timeout or 0))+' s'
+    elif isinstance(error, OSError):
+        cause = one_line(error.strerror or '')
+    else:
+        cause = one_line(error)
+    return type(error).__name__+': '+cause
+
+def failure_message(error, retried):
+    return ('Owner policy refresh rejected ('+describe(error)+')'
+            +('; retried once after '+str(RETRY_DELAY_SECONDS)+' s' if retried else '')
+            +'; existing snapshot retained.')
 def sha(s): return hashlib.sha256(s.encode()).hexdigest()
 def write(root, name, body):
     p=root/name; tmp=root/(name+'.'+str(os.getpid())+'.tmp')
@@ -83,13 +132,29 @@ def verified_cached_source(ROOT, old):
 # loader accepts a certification up to 24 h old; re-certify hourly.
 RECERTIFY_SECONDS = 3600
 
-def refresh(root, run_osa=osa, now=time.time):
+def refresh(root, run_osa=None, now=time.time, sleep=time.sleep, clock=time.monotonic,
+            report=lambda line: print(line, file=sys.stderr, flush=True)):
+    deadline = clock() + REFRESH_BUDGET_SECONDS
+    if run_osa is None: run_osa = bounded_osa(deadline, clock)
     root.mkdir(mode=0o700, parents=True, exist_ok=True)
     os.chmod(root, 0o700)
-    with open(root/"sync.lock", "a") as lock:
-        os.chmod(root/"sync.lock", 0o600)
-        fcntl.flock(lock, fcntl.LOCK_EX)
-        return refresh_locked(root, run_osa, now)
+    retried = False
+    while True:
+        try:
+            with open(root/"sync.lock", "a") as lock:
+                os.chmod(root/"sync.lock", 0o600)
+                fcntl.flock(lock, fcntl.LOCK_EX)
+                return refresh_locked(root, run_osa, now)
+        except subprocess.SubprocessError as error:
+            # Nothing is written before every query has answered, so a whole
+            # second attempt is safe. Exactly one, and only with time left.
+            if retried or not transient_notes_failure(error) \
+                    or deadline-clock() < RETRY_DELAY_SECONDS+OSA_TIMEOUT_SECONDS:
+                error.os1_retried = retried
+                raise
+            retried = True
+            report('Notes query failed ('+describe(error)+'); retrying once in '+str(RETRY_DELAY_SECONDS)+' s.')
+        sleep(RETRY_DELAY_SECONDS)
 
 def refresh_locked(ROOT, run_osa, now=time.time):
     active=ROOT/'active.json'
@@ -167,4 +232,4 @@ if __name__ == '__main__':
     try:
         print(json.dumps(refresh(pathlib.Path.home()/'.os1/owner-policy')))
     except (ValueError, OSError, subprocess.SubprocessError) as error:
-        raise SystemExit('Owner policy refresh rejected ('+type(error).__name__+'); existing snapshot retained.')
+        raise SystemExit(failure_message(error, getattr(error, 'os1_retried', False)))

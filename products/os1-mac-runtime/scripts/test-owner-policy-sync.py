@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Deterministic source-acquisition regressions. No Notes, network, or model calls."""
-import importlib.util, json, pathlib, subprocess, tempfile, unittest
+import importlib.util, json, pathlib, re, subprocess, tempfile, unittest
 spec=importlib.util.spec_from_file_location('policy_sync', pathlib.Path(__file__).with_name('sync-owner-policy.py'))
 m=importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
 ANCHORS=['CORE OPERATION','PART 1 — RCC CORE LAWS','PART 22A — MEMORY RECALL / PROVENANCE HARD GATE',
@@ -181,4 +181,100 @@ class Tests(unittest.TestCase):
         tied=[(FAST_ID,100.025636),(OTHER_ID,100.999541)]
         self.assertEqual(selected(tied),[FAST_ID,OTHER_ID])
         with self.assertRaises(ValueError):m.latest_note('\n'.join(note+'\t'+str(int(date)) for note,date in tied))
+    # A Notes query that times out right after login (2026-10-05: two 15 s
+    # AppleEvent timeouts while Notes finished its iCloud start-up) is retried
+    # once; an integrity failure never is, and a second failure fails closed.
+    def notes(self, answers, source=SOURCE):
+        self.sleeps=[]; self.reports=[]; self.index_reads=0; self.exports=0; queue=iter(answers)
+        def call(script):
+            if script==m.INDEX_SCRIPT:
+                self.index_reads+=1; answer=next(queue)
+                if isinstance(answer, BaseException): raise answer
+                return answer
+            self.exports+=1; return source
+        return call
+    def retrying_refresh(self, answers, source=SOURCE, clock=None):
+        def sleep(seconds):
+            # The wait happens outside the refresh lock: another OS-1 run can refresh meanwhile.
+            with open(self.root/'sync.lock','a') as other:
+                m.fcntl.flock(other, m.fcntl.LOCK_EX|m.fcntl.LOCK_NB); m.fcntl.flock(other, m.fcntl.LOCK_UN)
+            self.sleeps.append(seconds)
+        return m.refresh(self.root, self.notes(answers, source), m.time.time, sleep=sleep,
+                         clock=clock or (lambda: 0.0), report=self.reports.append)
+    def test_transient_notes_failure_retries_once_then_certifies(self):
+        for error in [APPLE_EVENT_TIMEOUT, NOT_RUNNING, CONNECTION_INVALID, subprocess.TimeoutExpired('osascript', 20)]:
+            self.capture(); record=json.loads((self.root/'active.json').read_text())
+            result=self.retrying_refresh([error, INDEX])
+            self.assertEqual((self.sleeps, self.index_reads, self.exports), ([15], 2, 0))
+            self.assertEqual(result['sourceSHA256'], record['sourceSHA256'])
+            self.assertEqual(len(self.reports), 1)
+            self.assertIn('retrying once', self.reports[0])
+    def test_transient_failure_before_first_capture_retries(self):
+        result=self.retrying_refresh([APPLE_EVENT_TIMEOUT, INDEX, INDEX])
+        self.assertEqual((self.sleeps, self.index_reads, self.exports), ([15], 3, 1))
+        self.assertEqual(result['sourceSHA256'], m.sha(SOURCE+'\n'))
+    def test_integrity_failure_is_never_retried(self):
+        self.capture(); p=self.root/'active.json'; before=p.read_bytes()
+        newer=INDEX.replace('100','101')
+        cases=[([INDEX+'\nx-coredata://other\t100'], ValueError),                  # tie
+               ([newer, INDEX.replace('100','102')], ValueError),                   # note changed during capture
+               ([AUTOMATION_DENIED], subprocess.CalledProcessError),                # permission, not transient
+               ([INDEX_CHANGED_DURING_READ], subprocess.CalledProcessError)]        # bulk-read race
+        for answers, error in cases:
+            with self.assertRaises(error): self.retrying_refresh(answers)
+            self.assertEqual((self.sleeps, p.read_bytes()), ([], before))
+        with self.assertRaises(SystemExit):
+            self.retrying_refresh([newer, newer], SOURCE.replace(ANCHORS[-1], 'REMOVED'))
+        self.assertEqual((self.sleeps, p.read_bytes()), ([], before))
+        record=json.loads(before); (self.root/record['sourceFile']).write_text('tampered')
+        with self.assertRaises(ValueError): self.retrying_refresh([APPLE_EVENT_TIMEOUT, INDEX])
+        self.assertEqual((self.sleeps, self.index_reads, p.read_bytes()), ([], 0, before))
+    def test_second_transient_failure_fails_closed(self):
+        self.capture(); p=self.root/'active.json'; before=p.read_bytes()
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.retrying_refresh([APPLE_EVENT_TIMEOUT, APPLE_EVENT_TIMEOUT, INDEX])
+        self.assertEqual((self.sleeps, self.index_reads, p.read_bytes()), ([15], 2, before))
+        with self.assertRaises(subprocess.CalledProcessError) as raised:
+            self.retrying_refresh([subprocess.TimeoutExpired('osascript', 20), APPLE_EVENT_TIMEOUT, INDEX])
+        self.assertIn('retried once', m.failure_message(raised.exception, raised.exception.os1_retried))
+        self.assertEqual((self.sleeps, self.index_reads, p.read_bytes()), ([15], 2, before))
+    def test_retry_stays_inside_the_refresh_budget(self):
+        self.capture(); p=self.root/'active.json'; before=p.read_bytes()
+        ticks=[0.0, m.REFRESH_BUDGET_SECONDS-m.RETRY_DELAY_SECONDS-m.OSA_TIMEOUT_SECONDS+1]
+        clock=lambda: ticks.pop(0) if len(ticks)>1 else ticks[0]
+        with self.assertRaises(subprocess.CalledProcessError): self.retrying_refresh([APPLE_EVENT_TIMEOUT, INDEX], clock=clock)
+        self.assertEqual((self.sleeps, p.read_bytes()), ([], before))
+        # The Swift caller outlasts the helper's own hard limit, so the helper decides.
+        swift=(pathlib.Path(__file__).resolve().parent.parent/'Sources/OS1Context/OwnerPolicy.swift').read_text()
+        caller=int(re.search(r'helperTimeoutSeconds = (\d+)', swift).group(1))
+        self.assertGreaterEqual(caller, m.REFRESH_BUDGET_SECONDS+10)
+    def test_each_notes_query_is_capped_by_the_remaining_budget(self):
+        seen=[]
+        def run(text, timeout): seen.append(timeout); return 'ok'
+        self.assertEqual(m.bounded_osa(100.0, lambda: 90.0, run)('script'), 'ok')
+        self.assertEqual(m.bounded_osa(100.0, lambda: 10.0, run)('script'), 'ok')
+        self.assertEqual(seen, [10.0, m.OSA_TIMEOUT_SECONDS])
+        with self.assertRaises(subprocess.TimeoutExpired): m.bounded_osa(100.0, lambda: 99.5, run)('script')
+        self.assertEqual(len(seen), 2)
+    def test_failure_message_names_the_cause_without_policy_text(self):
+        message=m.failure_message(APPLE_EVENT_TIMEOUT, retried=True)
+        self.assertIn('AppleEvent timed out. (-1712)', message); self.assertIn('retried once', message)
+        self.assertIn('existing snapshot retained', message)
+        long=subprocess.CalledProcessError(1, ['/usr/bin/osascript'], output=SOURCE, stderr='x'*5000+'\n'+SOURCE[:3000])
+        for error in [long, ValueError('Canonical note tie requires resolution'), OSError(2, 'No such file'),
+                      subprocess.TimeoutExpired('osascript', 20)]:
+            text=m.failure_message(error, retried=False)
+            self.assertLessEqual(len(text), 400); self.assertNotIn('\n', text)
+            self.assertNotIn('fixture rule', text); self.assertNotIn('retried once', text)
+        self.assertIn('Canonical note tie requires resolution', m.failure_message(ValueError('Canonical note tie requires resolution'), retried=False))
+APPLE_EVENT_TIMEOUT=subprocess.CalledProcessError(1, ['/usr/bin/osascript'], output='',
+    stderr='35:120: execution error: Notes got an error: AppleEvent timed out. (-1712)\n')
+NOT_RUNNING=subprocess.CalledProcessError(1, ['/usr/bin/osascript'], output='',
+    stderr='execution error: Notes got an error: Application isn’t running. (-600)\n')
+CONNECTION_INVALID=subprocess.CalledProcessError(1, ['/usr/bin/osascript'], output='',
+    stderr='execution error: Notes got an error: Connection is invalid. (-609)\n')
+AUTOMATION_DENIED=subprocess.CalledProcessError(1, ['/usr/bin/osascript'], output='',
+    stderr='execution error: Not authorized to send Apple events to Notes. (-1743)\n')
+INDEX_CHANGED_DURING_READ=subprocess.CalledProcessError(1, ['/usr/bin/osascript'], output='',
+    stderr='execution error: Canonical index changed during bulk read (-2700)\n')
 if __name__=='__main__': unittest.main()
