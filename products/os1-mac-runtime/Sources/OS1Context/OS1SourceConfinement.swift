@@ -50,14 +50,36 @@ public enum OS1SourceConfinement {
     public static func sourceWriteGuardProfile(protectedPaths: [String]) throws -> String {
         guard !protectedPaths.isEmpty, protectedPaths.allSatisfy({ $0.hasPrefix("/") && !$0.contains("\u{0}") && !$0.contains("\n") }) else { throw SourceGuardError.invalidPaths }
         func quoted(_ text: String) -> String { "\"" + text.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"") + "\"" }
+        // A subpath rule follows the path, not the folder: renaming any parent
+        // of a protected path moved the whole tree out from under the rule
+        // and every write through the new name succeeded (review of c687b9b,
+        // reproduced 2026-10-05). Claude's own sandbox denies unlinking and
+        // renaming every ancestor of a protected path; this guard is the only
+        // file-system protection of a full-access continuation, so it does
+        // the same. The data-volume spellings are protected paths too, so
+        // their ancestors are covered by the same loop.
         return "(version 1) (allow default) " + protectedPaths.map { "(deny file-write* (subpath " + quoted($0) + "))" }.joined(separator: " ")
+            + guardedAncestors(of: protectedPaths).map { " (deny file-write-unlink (literal " + quoted($0) + "))" }.joined()
+    }
+    /// Every parent folder of every protected path, outermost last, "/"
+    /// excluded, each once.
+    public static func guardedAncestors(of protectedPaths: [String]) -> [String] {
+        var ancestors: [String] = []
+        for path in protectedPaths {
+            var folder = (path as NSString).deletingLastPathComponent
+            while folder != "/", !folder.isEmpty {
+                if !ancestors.contains(folder) { ancestors.append(folder) }
+                folder = (folder as NSString).deletingLastPathComponent
+            }
+        }
+        return ancestors
     }
     public static func fullAccessInstructions(protectedPaths: [String]) -> String {
         let list = protectedPaths.filter { !$0.hasPrefix(dataVolume + "/") }.joined(separator: ", ")
         return """
 
-        FULL-ACCESS CONTINUATION: Claude's broad task sandbox is disabled for this same-session continuation. Only OS-1 source/admin/release paths (\(list)) remain write-protected by the source-only launch guard and file-tool deny rules. The shared source lease excludes OS-1 repairs, not unrelated user authorizations. Continue ONLY the previously sandbox-blocked non-OS-1 steps. Do not repeat completed edits, sends, payments, installs, mounts, deployments or pushes. Inspect partial state before retrying; unknown side effects are not permission to replay. Never use another path/process/service to bypass OS-1 source protection. If OS-1 itself needs changing, finish unrelated blocked steps then use [OS1_CHANGE_REQUIRED]; never request another full-access continuation. Existing owner approval/auth/terms requirements remain binding.
-        전체 권한 이어가기: 같은 Claude 세션에서 넓은 작업 샌드박스만 해제됐습니다. OS-1 소스·git 관리·릴리스 경로는 좁은 쓰기 가드로 계속 보호되고 공유 리스를 보유합니다. 샌드박스에 막혔던 비-OS-1 단계만 이어서 하세요. 이미 완료된 편집·전송·결제·설치·마운트·배포·푸시는 반복하지 말고 부분 실행 여부부터 확인하세요. 다른 경로·프로세스·서비스로 OS-1 보호를 우회하지 마세요. OS-1 수정이 필요하면 나머지 단계 뒤 [OS1_CHANGE_REQUIRED]로 넘기세요. 로그인·승인·약관 동의는 기존 소유자 권한 범위를 그대로 지키세요.
+        FULL-ACCESS CONTINUATION: Claude's broad task sandbox is disabled for this same-session continuation. Only OS-1 source/admin/release paths (\(list)) remain write-protected by the source-only launch guard and file-tool deny rules. The shared source lease excludes OS-1 repairs, not unrelated user authorizations. Continue ONLY the previously sandbox-blocked non-OS-1 steps. Do not repeat completed edits, sends, payments, installs, mounts, deployments or pushes. Inspect partial state before retrying; unknown side effects are not permission to replay. Never use another path/process/service to bypass OS-1 source protection. A tool cannot start its own macOS sandbox here (sandbox-exec fails with "Operation not permitted"): use its no-sandbox mode instead, e.g. `swift build --disable-sandbox` or `codex exec -s danger-full-access`; every child process still inherits the OS-1 source guard. If OS-1 itself needs changing, finish unrelated blocked steps then use [OS1_CHANGE_REQUIRED]; never request another full-access continuation. Existing owner approval/auth/terms requirements remain binding.
+        전체 권한 이어가기: 같은 Claude 세션에서 넓은 작업 샌드박스만 해제됐습니다. OS-1 소스·git 관리·릴리스 경로는 좁은 쓰기 가드로 계속 보호되고 공유 리스를 보유합니다. 샌드박스에 막혔던 비-OS-1 단계만 이어서 하세요. 이미 완료된 편집·전송·결제·설치·마운트·배포·푸시는 반복하지 말고 부분 실행 여부부터 확인하세요. 다른 경로·프로세스·서비스로 OS-1 보호를 우회하지 마세요. 여기서는 도구가 자체 macOS 샌드박스를 시작할 수 없으니(sandbox-exec가 "Operation not permitted"로 실패) 그 도구의 샌드박스 해제 모드를 쓰세요(예: `swift build --disable-sandbox`, `codex exec -s danger-full-access`). 모든 자식 프로세스는 OS-1 소스 가드를 그대로 물려받습니다. OS-1 수정이 필요하면 나머지 단계 뒤 [OS1_CHANGE_REQUIRED]로 넘기세요. 로그인·승인·약관 동의는 기존 소유자 권한 범위를 그대로 지키세요.
         """
     }
 

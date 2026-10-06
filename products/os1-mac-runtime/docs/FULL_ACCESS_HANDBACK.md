@@ -14,8 +14,17 @@ No version change, package/stage/apply/install/restart, model invocation or Expl
 6. Claude's broad sandbox is disabled for this attempt only. Existing Edit denies remain. A separate `/usr/bin/sandbox-exec` source-only profile allows default operations and denies `file-write*` solely for the existing literal OS-1 protected paths. The wrapper fails closed; it never silently launches Claude without this guard. The same runner retains stdin steering, cwd, environment handling, streaming and lifecycle hooks.
 7. The continuation receives the original request and prior available report, with a specific instruction to continue only blocked non-OS1 steps, inspect partial effects, and never repeat completed edits/sends/payments/installs/mounts/deploys/pushes. Owner OAuth, approvals, terms and payment authority remain separate.
 8. The resumed result must independently pass ordinary contracts/REVAS. A second full-access marker does not create another loop. Quota and predispatch recovery cannot expand the one-attempt limit or substitute another backend. Late cancellation is checked before adopting the merge or starting an OS1 repair.
-9. If both markers were present, initial and resumed reports/flags survive; OS1 repair follows only successful non-OS1 continuation. No source-watch auto-finisher/version/install is permitted inside full-access continuation. Unexpected source change blocks with unresolved writer attribution, rather than falsely claiming this task authored it.
+9. If both markers were present, initial and resumed reports/flags survive; OS1 repair follows only successful non-OS1 continuation, and an unfinished continuation keeps the OS-1 part as a pending record. No source-watch auto-finisher/version/install is permitted inside full-access continuation. Unexpected source change blocks with unresolved writer attribution, rather than falsely claiming this task authored it.
 10. Failure/cancellation returns a visible workflow-blocked answer with precise cause, first report (even when unadopted), available resumed result, and consumed steering receipt IDs. Governance adopted state stays false until the required continuation succeeds.
+
+## Review fixes (2026-10-05)
+
+- The source-only profile also denies `file-write-unlink` on every ancestor folder of every protected path (data-volume spellings included), as Claude's own sandbox does: renaming a parent folder no longer moves the live tree, its git admin folder or its release cache out from under the `subpath` rules. A fixture runs the parent rename and delete under the real profile and expects both to fail, while unrelated renames still work.
+- A nested `sandbox-exec` cannot start inside the guard (exit 71). The continuation instructions name each tool's own no-sandbox mode (`swift build --disable-sandbox`, `codex exec -s danger-full-access`) in both languages; children still inherit the source guard.
+- Stop after an adopted draft that handed back returns a cancelled notice (`os1CancelledHandBackSummary`) instead of a complete turn.
+- Both markers with an unfinished continuation: the notice says the OS-1 change was not started, and a `PendingOS1Repair` record (state `failed`, no attempt counted; an earlier retryable record is continued instead) lets "계속"/"고쳐" continue it. A cancelled continuation cancels the OS-1 part too.
+- The failure notice shows the first report once (only when no adopted step is kept, bounded to 6,000 characters) and labels kept steps `full-access-pending`; the OS-1 repair prompt carries each report once (`os1HandBackReport`).
+- `os1 self-test` keeps the fixture's real leases in its scratch folder (`OS1SourceLeaseDirectory`), never in `~/.os1/self-update`; guarded fixture commands read `/dev/null`.
 
 ## Protection boundary
 

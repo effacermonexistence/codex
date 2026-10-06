@@ -8546,16 +8546,93 @@ func mergedFullAccessContinuation(draft: RunSummary, resumed: RunSummary) -> Run
         monitorTaskID: resumed.monitorTaskID ?? draft.monitorTaskID, workflowBlocker: resumed.workflowBlocker)
 }
 
+/// What the owner sees when a full-access continuation does not finish. The
+/// first report appears once: as the kept answer when it was adopted (labelled
+/// with this stage for the app's receipt), else in the notice, bounded like
+/// `os1RepairBlockedSummary` (review of c687b9b, 2026-10-05). A draft that also
+/// handed back an OS-1 change says that change was not started — cancelled
+/// with the request, or, when `pendingRecordSaved`, kept on record so "계속"
+/// or "고쳐" in this conversation continues it.
 func fullAccessFailureSummary(draft: RunSummary, reason: String, resumed: RunStepSummary? = nil, cancelled: Bool = false,
-                              persistedCorrectionIDs: [UUID]? = nil) -> RunSummary {
-    let note = os1Tr("전체 권한 이어가기가 \(cancelled ? "취소됐습니다" : "완료되지 않았습니다"): \(reason). 이미 실행한 단계는 다시 실행하지 않았고 요청·결과를 보존했습니다.",
-                    "Full-access continuation \(cancelled ? "was cancelled" : "did not finish"): \(reason). Completed steps were not replayed; request and results were preserved.")
-    let report = draft.steps.last?.output ?? ""
-    let blocked = note + "\n\n" + report + (resumed.map { "\n\nContinuation result (not adopted):\n" + $0.output } ?? "")
-    return RunSummary(status: "workflow_blocked", steps: draft.steps.filter { $0.revasDisposition == "adopted" },
+                              persistedCorrectionIDs: [UUID]? = nil, pendingRecordSaved: Bool = false) -> RunSummary {
+    var blocked = os1Tr("전체 권한 이어가기가 \(cancelled ? "취소됐습니다" : "완료되지 않았습니다"): \(reason). 이미 실행한 단계는 다시 실행하지 않았고 요청·결과를 보존했습니다.",
+                       "Full-access continuation \(cancelled ? "was cancelled" : "did not finish"): \(reason). Completed steps were not replayed; request and results were preserved.")
+    if confinedDraftRequiresOS1Change(draft) {
+        blocked += " " + (cancelled
+            ? os1Tr("이 요청에 필요한 OS-1 자체 수정도 취소되어 시작하지 않았고 적용되지 않았습니다.",
+                    "The change to OS-1 itself this request needs was cancelled too: it was not started and is not applied.")
+            : pendingRecordSaved
+            ? os1Tr("이 요청에 필요한 OS-1 자체 수정은 시작하지 않았습니다. 이 대화에서 \"계속\" 또는 \"고쳐\"라고 보내면 OS-1이 이어서 진행합니다.",
+                    "The change to OS-1 itself this request needs was not started; send \"계속\" or \"고쳐\" in this conversation and OS-1 continues it.")
+            : os1Tr("이 요청에 필요한 OS-1 자체 수정은 시작하지 않았고 적용되지 않았습니다.",
+                    "The change to OS-1 itself this request needs was not started and is not applied."))
+    }
+    var steps = draft.steps.filter { $0.revasDisposition == "adopted" }
+    for index in steps.indices { steps[index].workflowStage = "full-access-pending" }
+    if steps.isEmpty, let shown = draft.steps.last?.output.trimmingCharacters(in: .whitespacesAndNewlines), !shown.isEmpty {
+        blocked += "\n\n" + os1Tr("첫 실행 보고:", "First execution report:") + "\n" + PendingOS1Repair.bounded(shown, limit: 6_000)
+    }
+    if let continued = resumed?.output.trimmingCharacters(in: .whitespacesAndNewlines), !continued.isEmpty {
+        blocked += "\n\n" + os1Tr("이어가기 결과 (미채택):", "Continuation result (not adopted):") + "\n"
+            + PendingOS1Repair.bounded(OS1SourceConfinement.strippingMarker(continued), limit: 6_000)
+    }
+    return RunSummary(status: "workflow_blocked", steps: steps,
         sourceContext: draft.sourceContext, taskContext: draft.taskContext,
         persistedCorrectionIDs: os1MergedCorrectionIDs(draft.persistedCorrectionIDs, persistedCorrectionIDs),
         monitorTaskID: draft.monitorTaskID, workflowBlocker: blocked)
+}
+
+/// Stop pressed after the first answer was adopted, before its hand-back
+/// continued (review of c687b9b, 2026-10-05): an adopted draft that still
+/// needs blocked steps continued or an OS-1 change says it was cancelled and
+/// not done, instead of coming back as complete. Nil when nothing was handed back.
+func os1CancelledHandBackSummary(adopted: RunSummary?) -> RunSummary? {
+    guard let adopted, adopted.status == "complete" else { return nil }
+    if fullAccessHandBackDraft(adopted: adopted, rejectedAttempt: nil, cancelled: false) != nil {
+        return fullAccessFailureSummary(draft: adopted, reason: os1Tr("막힌 단계를 이어가기 전에 요청이 취소됐습니다",
+            "the request was cancelled before the blocked steps continued"), cancelled: true)
+    }
+    guard confinedDraftRequiresOS1Change(adopted) else { return nil }
+    return appendingOS1RepairNote(adopted, cancelled: true, reason: "cancelled")
+}
+
+/// Both markers and a continuation that did not finish (review of c687b9b,
+/// 2026-10-05): the OS-1 part runs only after the blocked steps succeed, so it
+/// was never started — but it is kept, as build 327 keeps every unfinished OS-1
+/// part, so the conversation's "계속"/"고쳐" continues it. An earlier record of
+/// this conversation that may still be retried is continued, never replaced;
+/// one a live process is running is left alone (nil). A fresh record counts
+/// no attempt: none ran.
+func os1DeferredFullAccessRepair(store: PendingOS1RepairStore, recordID: String, conversationID: String?, submissionID: String?,
+                                 ownerRequest: String, corrections: [String], report: String, sourceRoot: String?, reason: String,
+                                 isAlive: (PendingOS1Repair) -> Bool = PendingOS1Repair.writerAlive) -> PendingOS1Repair? {
+    var record: PendingOS1Repair
+    if let earlier = os1HandBackContinuation(store: store, recordID: recordID, steering: corrections, report: report, isAlive: isAlive) {
+        record = earlier
+    } else {
+        if let existing = store.load(id: recordID), existing.effectiveState(isAlive: isAlive) == .running { return nil }
+        record = PendingOS1Repair(id: recordID, conversationID: conversationID, submissionID: submissionID, ownerRequest: ownerRequest,
+            corrections: corrections, draftReport: report, sourceRoot: sourceRoot, startCommit: nil)
+        record.state = .failed
+        record.attempts = 0
+        record.lastError = "The change to OS-1 itself was not started: the full-access continuation of the request's sandbox-blocked steps did not finish ("
+            + String(reason.prefix(300)) + ")."
+    }
+    return (try? store.save(record)) == nil ? nil : record
+}
+
+/// The report an OS-1 repair is handed: every attempt's answer once. A
+/// rejected first report that a later adopted step already carries (a
+/// successful full-access continuation shows it above its own answer) is not
+/// repeated, so the bounded prompt keeps what the continuation did (review of
+/// c687b9b, 2026-10-05).
+func os1HandBackReport(_ handBack: RunSummary) -> String {
+    let steps = handBack.steps.filter { ["adopted", "retry", "rejected"].contains($0.revasDisposition) }
+    return steps.indices.filter { index in
+        guard steps[index].revasDisposition != "adopted" else { return true }
+        let shown = OS1SourceConfinement.strippingMarker(steps[index].output).trimmingCharacters(in: .whitespacesAndNewlines)
+        return shown.isEmpty || !steps[(index + 1)...].contains { $0.revasDisposition == "adopted" && $0.output.contains(shown) }
+    }.map { steps[$0].output }.joined(separator: "\n\nPrior/continued execution report:\n")
 }
 
 /// A confined attempt (a HOME request's Claude backend, kept off OS-1's live
@@ -9420,6 +9497,32 @@ func runTask(
             // both answers. A repair that does not finish is said plainly,
             // kept as a pending record and continued on the next request.
             let cancelled = ExecutionCancellation.isCancelled || draftFailure.map { backendBlocker($0) == .cancelled } == true
+            // Stop after an adopted draft that handed something back: say it
+            // was cancelled and not done, never return it as complete.
+            if escalationAvailable, OS1FullAccessContinuation.sessionID == nil, ExecutionCancellation.isCancelled,
+               let cancelledHandBack = os1CancelledHandBackSummary(adopted: adoptedDraft) {
+                adopted = false
+                return cancelledHandBack
+            }
+            /// Corrections the first run took in (they already have receipts),
+            /// for a repair's fresh sessions or its pending record.
+            func takenCorrections() -> [String] {
+                let mailbox = ExecutionSteering()
+                return ExecutionSteering.currentSubmission.map { id in
+                    mailbox.inputs(id).filter { input in
+                        mailbox.receipt(input).map { $0.state == .persisted || $0.state == .accepted } == true
+                    }.map(\.text)
+                } ?? []
+            }
+            /// A draft that also needs an OS-1 change keeps it on record when
+            /// its continuation did not finish; true when the record exists.
+            func deferOS1Change(_ fullDraft: RunSummary, reason: String) -> Bool {
+                guard confinedDraftRequiresOS1Change(fullDraft), let recordID else { return false }
+                return os1DeferredFullAccessRepair(store: pendingStore, recordID: recordID,
+                    conversationID: environment["OS1_CONVERSATION_ID"], submissionID: ExecutionSteering.currentSubmission?.uuidString,
+                    ownerRequest: ownerPrompt ?? prompt, corrections: takenCorrections(), report: os1HandBackReport(fullDraft),
+                    sourceRoot: os1RepairRoot(), reason: reason) != nil
+            }
             if escalationAvailable, OS1FullAccessContinuation.sessionID == nil,
                let fullDraft = fullAccessHandBackDraft(adopted: adoptedDraft, rejectedAttempt: draftFailure == nil ? nil : draftAttempts.last,
                    cancelled: cancelled, persistedCorrectionIDs: ExecutionSteering.currentSubmission.map { ExecutionSteering().persistedIDs($0) }),
@@ -9454,14 +9557,19 @@ func runTask(
                             resumed: resumed.steps.last, cancelled: true, persistedCorrectionIDs: resumed.persistedCorrectionIDs)
                     }
                     guard resumed.status == "complete" else {
-                        return fullAccessFailureSummary(draft: fullDraft, reason: resumed.workflowBlocker ?? resumed.status, resumed: resumed.steps.last, persistedCorrectionIDs: resumed.persistedCorrectionIDs)
+                        let reason = resumed.workflowBlocker ?? resumed.status
+                        return fullAccessFailureSummary(draft: fullDraft, reason: reason, resumed: resumed.steps.last, persistedCorrectionIDs: resumed.persistedCorrectionIDs,
+                            pendingRecordSaved: deferOS1Change(fullDraft, reason: reason))
                     }
                     adoptedDraft = mergedFullAccessContinuation(draft: fullDraft, resumed: resumed)
                     draftFailure = nil; adopted = true
                 } catch {
-                    return fullAccessFailureSummary(draft: fullDraft, reason: String(describing: error), resumed: resumeAttempts.last,
-                        cancelled: ExecutionCancellation.isCancelled || backendBlocker(error) == .cancelled,
-                        persistedCorrectionIDs: ExecutionSteering.currentSubmission.map { ExecutionSteering().persistedIDs($0) })
+                    let resumeCancelled = ExecutionCancellation.isCancelled || backendBlocker(error) == .cancelled
+                    let reason = String(describing: error)
+                    return fullAccessFailureSummary(draft: fullDraft, reason: reason, resumed: resumeAttempts.last,
+                        cancelled: resumeCancelled,
+                        persistedCorrectionIDs: ExecutionSteering.currentSubmission.map { ExecutionSteering().persistedIDs($0) },
+                        pendingRecordSaved: !resumeCancelled && deferOS1Change(fullDraft, reason: reason))
                 }
             }
             if escalationAvailable, !ExecutionCancellation.isCancelled, let handBack = os1HandBackDraft(adopted: adoptedDraft,
@@ -9470,15 +9578,10 @@ func runTask(
                 RuntimeActivity.emit(.preparing, publicText: os1Tr(
                     "OS-1 자체 수정이 필요한 요청이라 OS-1 수리로 이어서 진행합니다.",
                     "This request needs a change to OS-1 itself, so it continues as an OS-1 repair."))
-                let report = handBack.steps.filter { ["adopted", "retry", "rejected"].contains($0.revasDisposition) }.map(\.output).joined(separator: "\n\nPrior/continued execution report:\n")
+                let report = os1HandBackReport(handBack)
                 // Corrections the first run took in never reach the fresh
                 // sessions by steering (they already have receipts).
-                let mailbox = ExecutionSteering()
-                let corrections = ExecutionSteering.currentSubmission.map { id in
-                    mailbox.inputs(id).filter { input in
-                        mailbox.receipt(input).map { $0.state == .persisted || $0.state == .accepted } == true
-                    }.map(\.text)
-                } ?? []
+                let corrections = takenCorrections()
                 // An earlier OS-1 change of this conversation that is still on
                 // record is continued, never overwritten (its commit, start
                 // and attempt count stay).
@@ -11460,8 +11563,22 @@ func fullAccessHandBackSelfTest() async throws {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent("os1-fullaccess-runtime-" + UUID().uuidString).resolvingSymlinksInPath()
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: root) }
+    // The fixture's real leases live in its own scratch folder, never in the
+    // owner's ~/.os1/self-update.
+    try await OS1SourceLeaseDirectory.$override.withValue(root.appendingPathComponent("leases", isDirectory: true)) {
+        try await fullAccessHandBackFixture(root: root)
+    }
+}
+
+private func fullAccessHandBackFixture(root: URL) async throws {
     let protected = root.appendingPathComponent("source")
     try FileManager.default.createDirectory(at: protected, withIntermediateDirectories: true)
+    let lock = try os1SourceWriteLeaseURL(root: protected.path)
+    defer {
+        try? FileManager.default.removeItem(at: lock)
+        try? FileManager.default.removeItem(at: lock.appendingPathExtension("writer-intent"))
+        OS1SourceConfinement.activeRoots = []
+    }
     let sourceFile = protected.appendingPathComponent("keep.txt")
     try Data("UNCHANGED".utf8).write(to: sourceFile)
     var checks = 0
@@ -11469,6 +11586,9 @@ func fullAccessHandBackSelfTest() async throws {
         guard condition else { throw OS1Error.message("Full-access handback fixture: " + label) }
         checks += 1
     }
+    let writerIntent = try os1SourceWriterIntentURL(root: protected.path)
+    try check(lock.path.hasPrefix(root.path + "/") && writerIntent.path.hasPrefix(root.path + "/"),
+        "the fixture's source lease and writer intent stay in its scratch folder, not ~/.os1/self-update")
     let session = UUID().uuidString.lowercased()
     func step(exit: Int32 = 0, provider: String = "claude", confined: Bool = true,
               disposition: String = "retry", marked: Bool = true) -> RunStepSummary {
@@ -11494,6 +11614,89 @@ func fullAccessHandBackSelfTest() async throws {
     let resumed = RunSummary(status: "complete", steps: [step(disposition: "adopted", marked: false)])
     let merged = mergedFullAccessContinuation(draft: draft, resumed: resumed)
     try check(confinedDraftRequiresOS1Change(merged) && merged.steps.count == 2 && merged.steps.last?.output.contains("Already installed fixture-one") == true, "both markers retain repair flag after fullaccess stage")
+    func either(_ text: String?, _ korean: String, _ english: String) -> Bool {
+        text.map { $0.contains(korean) || $0.contains(english) } == true
+    }
+    func occurrences(_ text: String, _ part: String) -> Int { text.components(separatedBy: part).count - 1 }
+
+    // The repair prompt carries the first report once (review defect 7): the
+    // merged continuation already shows it above what the continuation did.
+    var continued = step(disposition: "adopted", marked: false)
+    continued.output = "plugin-two completed once"
+    let mergedDistinct = mergedFullAccessContinuation(draft: draft, resumed: RunSummary(status: "complete", steps: [continued]))
+    let repairReport = os1HandBackReport(mergedDistinct)
+    try check(occurrences(repairReport, "Already installed fixture-one") == 1 && repairReport.contains("plugin-two completed once"),
+        "the OS-1 repair report carries the rejected first report once, beside the continuation: \(repairReport)")
+    try check(os1HandBackReport(draft).contains("Already installed fixture-one"), "a lone rejected hand-back is still the report")
+
+    // The failure notice shows the first report once (review defect 6): an
+    // adopted first report is the kept, stage-labelled answer, not repeated.
+    var resumedFailure = step(disposition: "rejected", marked: false)
+    resumedFailure.output = "continuation EPERM on plugin-two"
+    let adoptedFailure = fullAccessFailureSummary(draft: adopted, reason: "fixture EPERM", resumed: resumedFailure)
+    try check(adoptedFailure.status == "workflow_blocked" && adoptedFailure.steps.count == 1
+        && adoptedFailure.steps[0].workflowStage == "full-access-pending"
+        && adoptedFailure.workflowBlocker?.contains("Already installed fixture-one") == false
+        && adoptedFailure.workflowBlocker?.contains("continuation EPERM on plugin-two") == true,
+        "an adopted first report is kept once with a stage label: \(adoptedFailure.workflowBlocker ?? "")")
+    var longStep = step()
+    longStep.output = "HEAD-" + String(repeating: "x", count: 20_000) + "-TAIL"
+    let longFailure = fullAccessFailureSummary(draft: RunSummary(status: "handed_back", steps: [longStep]), reason: "fixture EPERM")
+    try check((longFailure.workflowBlocker?.count ?? 0) < 6_800 && longFailure.workflowBlocker?.contains("HEAD-") == true
+        && longFailure.workflowBlocker?.contains("-TAIL") == true, "a long first report is bounded to 6,000 characters in the notice")
+
+    // Both markers and a continuation that did not finish (review defect 5):
+    // the note says the OS-1 change was not started, and it stays on record.
+    try check(either(failure.workflowBlocker, "OS-1 자체 수정은 시작하지 않았고", "was not started and is not applied"),
+        "both markers: an unrecorded failure says the OS-1 change was not started")
+    let savedFailure = fullAccessFailureSummary(draft: draft, reason: "fixture EPERM", pendingRecordSaved: true)
+    try check(either(savedFailure.workflowBlocker, "\"계속\" 또는 \"고쳐\"", "send \"계속\" or \"고쳐\""),
+        "both markers: a recorded failure tells the owner how to continue the OS-1 change")
+    let cancelledFailure = fullAccessFailureSummary(draft: draft, reason: "fixture", cancelled: true, pendingRecordSaved: true)
+    try check(either(cancelledFailure.workflowBlocker, "OS-1 자체 수정도 취소되어", "was cancelled too"),
+        "both markers: a cancelled continuation cancels the OS-1 change too")
+    let notMarked = fullAccessFailureSummary(draft: RunSummary(status: "handed_back", steps: [{ var value = step(); value.os1ChangeRequired = false; return value }()]),
+        reason: "fixture EPERM")
+    try check(!either(notMarked.workflowBlocker, "OS-1 자체 수정", "change to OS-1 itself"), "no OS-1 change, no OS-1 note")
+    let store = PendingOS1RepairStore(root: root.appendingPathComponent("pending", isDirectory: true))
+    let recordID = UUID().uuidString.lowercased()
+    let deferred = os1DeferredFullAccessRepair(store: store, recordID: recordID, conversationID: recordID, submissionID: nil,
+        ownerRequest: "Install plugin-two and fix OS-1", corrections: ["also fix the label"], report: os1HandBackReport(draft),
+        sourceRoot: nil, reason: "fixture EPERM", isAlive: { _ in false })
+    let stored = store.load(id: recordID)
+    try check(deferred != nil && stored?.id == deferred?.id && stored?.state == .failed && stored?.attempts == 0
+        && stored?.retryable(isAlive: { _ in false }) == true && stored?.lastError?.contains("was not started") == true
+        && stored?.draftReport.contains("Already installed fixture-one") == true && stored?.corrections == ["also fix the label"],
+        "a deferred OS-1 change is a retryable record that counts no attempt")
+    try check(OS1SelfReference.continuesPendingOS1Change("계속") && OS1SelfReference.continuesPendingOS1Change("고쳐")
+        && os1PendingRepairRetryPlan(stored!, root: nil, contains: { _, _ in false }, isAlive: { _ in false }) == .repairAgain,
+        "\"계속\"/\"고쳐\" continue the deferred record as a repair")
+    var earlier = stored!
+    earlier.attempts = 2; earlier.repairCommit = "abc1234"
+    try store.save(earlier)
+    let continuedRecord = os1DeferredFullAccessRepair(store: store, recordID: recordID, conversationID: recordID, submissionID: nil,
+        ownerRequest: "later request", corrections: ["later"], report: "later report", sourceRoot: nil, reason: "x", isAlive: { _ in false })
+    try check(continuedRecord?.attempts == 2 && continuedRecord?.repairCommit == "abc1234" && continuedRecord?.ownerRequest == earlier.ownerRequest
+        && continuedRecord?.draftReport.contains("later report") == true, "an earlier retryable record is continued, never replaced")
+    earlier.state = .running
+    try store.save(earlier)
+    try check(os1DeferredFullAccessRepair(store: store, recordID: recordID, conversationID: recordID, submissionID: nil,
+        ownerRequest: "other", corrections: [], report: "other", sourceRoot: nil, reason: "x", isAlive: { _ in true }) == nil
+        && store.load(id: recordID) == earlier, "a record a live repair is running is left alone")
+
+    // Stop pressed after an adopted draft that handed back (review defect 4):
+    // cancelled and not done, never silently complete.
+    let cancelledBoth = os1CancelledHandBackSummary(adopted: adopted)
+    try check(cancelledBoth?.status == "workflow_blocked" && either(cancelledBoth?.workflowBlocker, "취소됐습니다", "was cancelled")
+        && either(cancelledBoth?.workflowBlocker, "OS-1 자체 수정도 취소되어", "was cancelled too"),
+        "a cancelled adopted full-access draft says the blocked steps and OS-1 change were cancelled")
+    var changeOnly = step(disposition: "adopted"); changeOnly.os1FullAccessRequired = false
+    let cancelledChange = os1CancelledHandBackSummary(adopted: RunSummary(status: "complete", steps: [changeOnly]))
+    try check(either(cancelledChange?.steps.last?.output, "OS-1 자체 수정은 취소되어", "was cancelled and not made"),
+        "a cancelled adopted OS-1 hand-back carries the cancelled note")
+    var plain = step(disposition: "adopted", marked: false); plain.os1ChangeRequired = false
+    try check(os1CancelledHandBackSummary(adopted: RunSummary(status: "complete", steps: [plain])) == nil
+        && os1CancelledHandBackSummary(adopted: nil) == nil, "an ordinary cancelled answer is untouched")
     var state = OS1AttemptSourceState(), waitCount = 0
     var writer = try tryAcquireOS1SourceWriteLease(root: protected.path)
     try check(writer != nil, "fixture writer lock acquired")

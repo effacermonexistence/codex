@@ -264,15 +264,34 @@ check('if ExecutionCancellation.isCancelled {' in full_handoff
       'late cancellation after resumed execution blocks adoption and source repair')
 check('if escalationAvailable, !ExecutionCancellation.isCancelled, let handBack = os1HandBackDraft(' in task,
       'source repair rechecks cancellation instead of using the earlier pre-resume snapshot')
-check('return fullAccessFailureSummary(draft: fullDraft, reason: resumed.workflowBlocker ?? resumed.status' in full_handoff
-      and 'return fullAccessFailureSummary(draft: fullDraft, reason: String(describing: error)' in full_handoff,
+check('let reason = resumed.workflowBlocker ?? resumed.status' in full_handoff
+      and 'return fullAccessFailureSummary(draft: fullDraft, reason: reason, resumed: resumed.steps.last' in full_handoff
+      and 'let reason = String(describing: error)' in full_handoff
+      and 'return fullAccessFailureSummary(draft: fullDraft, reason: reason, resumed: resumeAttempts.last' in full_handoff,
       'both incomplete and thrown resumes return a visible precise blocked summary')
+check('pendingRecordSaved: deferOS1Change(fullDraft, reason: reason))' in full_handoff
+      and 'pendingRecordSaved: !resumeCancelled && deferOS1Change(fullDraft, reason: reason))' in full_handoff,
+      'an OS-1 change behind an unfinished continuation is kept on record (never when cancelled)')
+defer_os1 = body(task, 'func deferOS1Change(', 'if escalationAvailable, OS1FullAccessContinuation.sessionID == nil,')
+check('guard confinedDraftRequiresOS1Change(fullDraft), let recordID else { return false }' in defer_os1
+      and 'os1DeferredFullAccessRepair(store: pendingStore, recordID: recordID' in defer_os1
+      and 'report: os1HandBackReport(fullDraft)' in defer_os1,
+      'the deferred OS-1 change is written to the conversation\'s pending record with its report')
+cancel_gate = task[task.index('let cancelled = ExecutionCancellation.isCancelled ||'):
+                   task.index('if escalationAvailable, OS1FullAccessContinuation.sessionID == nil,\n               let fullDraft')]
+check('ExecutionCancellation.isCancelled,\n               let cancelledHandBack = os1CancelledHandBackSummary(adopted: adoptedDraft)' in cancel_gate
+      and 'return cancelledHandBack' in cancel_gate,
+      'Stop after an adopted hand-back returns the cancelled note before either continuation is considered')
+check('let report = os1HandBackReport(handBack)' in task,
+      'the OS-1 repair prompt carries each attempt\'s report once')
 failure = body(main, 'func fullAccessFailureSummary(', '/// A confined attempt (a HOME request')
 check('RunSummary(status: "workflow_blocked"' in failure and 'workflowBlocker: blocked' in failure
       and 'Full-access continuation' in failure and '전체 권한 이어가기' in failure,
       'resume failure is surfaced in both languages and never reported as a complete turn')
-check('resumed.map' in failure and 'Continuation result (not adopted)' in failure,
-      'resume failure preserves the original blocked report and the returned continuation answer')
+check('if let continued = resumed?.output' in failure and 'Continuation result (not adopted)' in failure
+      and 'if steps.isEmpty, let shown = draft.steps.last?.output' in failure
+      and failure.count('PendingOS1Repair.bounded(') == 2 and 'workflowStage = "full-access-pending"' in failure,
+      'resume failure shows the first report once (bounded, only when no kept answer) and the bounded continuation answer')
 check('persistedCorrectionIDs: os1MergedCorrectionIDs(draft.persistedCorrectionIDs, persistedCorrectionIDs)' in failure,
       'failure retains steering corrections from both the first and resumed attempts')
 check('resumed: resumed.steps.last, cancelled: true, persistedCorrectionIDs: resumed.persistedCorrectionIDs' in full_handoff
@@ -299,4 +318,19 @@ check('Original owner authorization and exact scope remain binding' in prompt
       and 'no new login approval, terms or purchase authority is granted' in prompt,
       'full access never replaces owner authorization or external consent')
 
+guard_profile = body(confinement, 'public static func sourceWriteGuardProfile(', 'public static func fullAccessInstructions(')
+check('guardedAncestors(of: protectedPaths).map { " (deny file-write-unlink (literal " + quoted($0) + "))" }' in guard_profile,
+      'every ancestor of a protected path is undeletable and unrenameable under the source-only guard')
+instructions = body(confinement, 'public static func fullAccessInstructions(', 'static let fileWriteTools')
+check('swift build --disable-sandbox' in instructions and 'codex exec -s danger-full-access' in instructions
+      and 'every child process still inherits the OS-1 source guard' in instructions
+      and '샌드박스 해제 모드' in instructions,
+      'the continuation tells nested-sandbox tools to use their own no-sandbox mode, in both languages')
+fixture = (root / 'Tests/OS1ContextTests/OS1SourceConfinementFixture.swift').read_text()
+check('process.standardInput = FileHandle.nullDevice' in fixture,
+      'guarded fixture commands never read the terminal')
+self_test = body(main, 'func fullAccessHandBackSelfTest()', 'func selfTest()')
+check('OS1SourceLeaseDirectory.$override.withValue(' in self_test
+      and 'try? FileManager.default.removeItem(at: lock.appendingPathExtension("writer-intent"))' in self_test,
+      'the full-access self-test keeps its real leases out of ~/.os1/self-update and removes them')
 print(f'OS-1 source confinement wiring: {checks} checks PASS')

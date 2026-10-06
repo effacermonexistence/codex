@@ -92,8 +92,17 @@ let selfRepairFailurePrefixText = "OS-1 self-repair could not complete: "
 
 let os1RuntimeVersionString = "OS-1 Runtime 0.9.262 (self-repair-build328)"
 
+/// Where the source leases live. A fixture binds a scratch folder so its
+/// real flock leases on a temporary tree never leave lock files in the owner's
+/// `~/.os1/self-update` (every release build ran `os1 self-test`, review of
+/// c687b9b, 2026-10-05).
+enum OS1SourceLeaseDirectory {
+    @TaskLocal static var override: URL?
+}
+
 func os1SourceWriteLeaseURL(root: String) throws -> URL {
-    let directory = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".os1/self-update", isDirectory: true)
+    let directory = OS1SourceLeaseDirectory.override
+        ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".os1/self-update", isDirectory: true)
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
     let canonical = URL(fileURLWithPath: root).resolvingSymlinksInPath().standardizedFileURL.path
     return directory.appendingPathComponent("source-write-" + sha256Hex(Data(canonical.utf8)).prefix(16) + ".lock")

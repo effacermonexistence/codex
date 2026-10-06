@@ -221,6 +221,17 @@ func runOS1SourceConfinementFixtures() throws {
     check(resumedInstructions.contains("shared source lease") && resumedInstructions.contains("source-only launch guard")
         && resumedInstructions.contains("Existing owner approval/auth/terms requirements remain binding"),
         "continuation instructions preserve the source lease, source protection and owner approvals")
+    // A nested `sandbox-exec` cannot start inside the source guard (exit 71,
+    // "sandbox_apply: Operation not permitted"): SwiftPM and Codex must be
+    // told to use their own no-sandbox mode, still under the inherited guard.
+    check(resumedInstructions.contains("cannot start its own macOS sandbox")
+        && resumedInstructions.contains("swift build --disable-sandbox")
+        && resumedInstructions.contains("codex exec -s danger-full-access")
+        && resumedInstructions.contains("every child process still inherits the OS-1 source guard")
+        && resumedInstructions.contains("자체 macOS 샌드박스를 시작할 수 없으니")
+        && resumedInstructions.contains("샌드박스 해제 모드")
+        && resumedInstructions.contains("OS-1 소스 가드를 그대로 물려받습니다"),
+        "the continuation names each tool's no-sandbox mode in both languages")
     check(resumedInstructions.contains(marker) && !resumedInstructions.contains(fullMarker)
         && resumedInstructions.contains("never request another full-access continuation"),
         "a resumed session may hand back source repair but cannot escalate full access again")
@@ -267,12 +278,22 @@ func runOS1SourceConfinementFixtures() throws {
 
     // Real temporary subprocesses, not a paid model: prove the guard reaches
     // shell writes while plugin-style work outside the source remains usable.
-    func guarded(_ script: String, path: String) throws -> (status: Int32, output: String) {
+    // Never the test runner's terminal as input: when the guard blocked the
+    // delete, `rm` waited for an "override?" answer forever (review, 2026-10-05).
+    func guardedProcess(_ script: String, path: String, profile: String) -> (Process, Pipe) {
         let process = Process(), output = Pipe()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/sandbox-exec")
         process.arguments = ["-p", profile, "/bin/sh", "-c", script, "fixture", path]
+        process.standardInput = FileHandle.nullDevice
         process.standardOutput = output
         process.standardError = output
+        return (process, output)
+    }
+    let probe = guardedProcess("true", path: "/", profile: profile).0
+    check((probe.standardInput as? FileHandle) === FileHandle.nullDevice,
+        "a guarded fixture command reads /dev/null, never the terminal")
+    func guarded(_ script: String, path: String, profile: String = profile) throws -> (status: Int32, output: String) {
+        let (process, output) = guardedProcess(script, path: path, profile: profile)
         try process.run()
         process.waitUntilExit()
         return (process.terminationStatus, String(decoding: output.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self))
@@ -303,6 +324,42 @@ func runOS1SourceConfinementFixtures() throws {
     let aliasWrite = try guarded("printf bypass > \"$1\"", path: aliasTarget.path)
     check(aliasWrite.status != 0 && !FileManager.default.fileExists(atPath: aliasTarget.path),
         "source-only guard denies writes through a symlink into the source")
+    // Renaming a parent of a protected path moved the tree out from under
+    // its subpath rule: the write through the new name and the rename back
+    // both succeeded (review of c687b9b, reproduced 2026-10-05). Every
+    // ancestor is now undeletable and unrenameable; unrelated folders still
+    // rename.
+    let outer = base.appendingPathComponent("outer folder")
+    let inner = outer.appendingPathComponent("inner (2)")
+    let nested = inner.appendingPathComponent("nested tree/.git")
+    let sibling = outer.appendingPathComponent("sibling a")
+    for folder in [nested, sibling] { try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true) }
+    let head = nested.appendingPathComponent("HEAD")
+    try Data("ORIG".utf8).write(to: head)
+    let nestedProfile = try OS1SourceConfinement.sourceWriteGuardProfile(protectedPaths: [real(nested.deletingLastPathComponent())])
+    check(OS1SourceConfinement.guardedAncestors(of: [real(nested.deletingLastPathComponent())]).contains(real(inner))
+        && !OS1SourceConfinement.guardedAncestors(of: ["/a"]).contains("/"), "every ancestor except / is guarded")
+    for (index, parent) in [inner, outer].enumerated() {
+        let moved = parent.deletingLastPathComponent().appendingPathComponent("moved \(index)")
+        let relative = String(head.path.dropFirst(parent.path.count))
+        let bypass = try guarded("moved=\"$(dirname \"$1\")/moved \(index)\"; /bin/mv \"$1\" \"$moved\" || exit 3; "
+            + "printf bypass > \"$moved\(relative)\"; /bin/mv \"$moved\" \"$1\"", path: parent.path, profile: nestedProfile)
+        let kept = try String(contentsOf: head, encoding: .utf8)
+        check(bypass.status == 3 && kept == "ORIG" && FileManager.default.fileExists(atPath: head.path)
+            && !FileManager.default.fileExists(atPath: moved.path),
+            "renaming a parent of a protected path cannot move it out of the guard: \(parent.lastPathComponent)")
+    }
+    let renamedSibling = outer.appendingPathComponent("sibling b")
+    let unrelated = try guarded("parent=\"$(dirname \"$1\")\"; /bin/mv \"$1\" \"$parent/sibling b\" && /bin/mkdir \"$parent/made\"",
+        path: sibling.path, profile: nestedProfile)
+    check(unrelated.status == 0 && FileManager.default.fileExists(atPath: renamedSibling.path)
+        && FileManager.default.fileExists(atPath: outer.appendingPathComponent("made").path),
+        "unrelated folders beside a protected tree still rename and create: \(unrelated.output)")
+    for parent in [inner, outer] {
+        let remove = try guarded("/bin/rm -rf \"$1\"", path: parent.path, profile: nestedProfile)
+        check(remove.status != 0 && FileManager.default.fileExists(atPath: head.path),
+            "deleting a parent of a protected path is denied: \(parent.lastPathComponent)")
+    }
     print("Source confinement fixtures: \(checks) checks; model calls 0")
     try runPendingOS1RepairFixtures()
 }
