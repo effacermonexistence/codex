@@ -1,0 +1,23 @@
+{
+  "sourcePage": "https://www.builtrobotics.com/about/downloads",
+  "sourceAsset": "https://assets.builtrobotics.com/production/public/download/DJI_0155.jpg",
+  "sourceTitle": "An Aerial of an Autonomously Dug Trench",
+  "sourceDimensions": [
+    4000,
+    3000
+  ],
+  "cameraMetadata": {},
+  "sourceSha256": "6a3e742dd855b80dd33a0bb5574ab0861037f4f5eed4ad9b22d9014006faeff8",
+  "servedFile": "assets/media/usung-trench-aerial-v37.webp",
+  "servedDimensions": [
+    2200,
+    1650
+  ],
+  "servedSha256": "e3fe7e9f5515029f38a0675350a6f2746e6b108ef26f81e8ada1139c5c110dad",
+  "servedBytes": 6628378,
+  "transformation": "Original camera photograph resized in full frame with Lanczos. No scene generation, no logo overlay, no pixel retouch. Replaces the repeated 02/DECIDE piling photograph with a distinct overhead excavation scene.",
+  "generativeEditing": false,
+  "sourceUsageNotice": "Official media page specifies editorial/personal use, other use requires their permission; retained as source metadata.",
+  "sourceFile": "assets/media/built-trench-aerial-original.jpg",
+  "sourceBytes": 16546909
+}

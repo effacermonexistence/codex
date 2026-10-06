@@ -1,0 +1,32 @@
+[
+  {
+    "snapshot": "outputs/website/usung-media-v37/video/dependencies/sign-track.json",
+    "source": "outputs/website/usung-rework-v25/video-diagnosis/candidate/sign-track.json",
+    "sha256": "abfbfac32b3a627a4ade457a4a80683cdeda115585b65b9309211b72c1daa7f3"
+  },
+  {
+    "snapshot": "outputs/website/usung-media-v37/video/dependencies/sign-H-refined.json",
+    "source": "outputs/website/usung-rework-v25/video-diagnosis/candidate/sign-H-refined.json",
+    "sha256": "19f78f497aabe86f0fe2a2ee927550a8536265d2d01a24f53c3b3cd5c34e2172"
+  },
+  {
+    "snapshot": "outputs/website/usung-media-v37/video/dependencies/delivery-sign-edit-v25.py",
+    "source": "products/usung-corporate/baseline/original-media-v25/delivery-sign-edit.py",
+    "sha256": "12ba3c2c2de159a71e52b9535f3b6fae4db47a856d90fd518f167fc0e9a88637"
+  },
+  {
+    "snapshot": "outputs/website/usung-media-v37/video/dependencies/approved-usung-wordmark-A.png",
+    "source": "outputs/website/usung-reference-branding-v22/audit/approved-usung-wordmark.png",
+    "sha256": "b675090fc85c4aae5a86b4a343809da62bc384196ad63a65af0a2ad037fee41c"
+  },
+  {
+    "snapshot": "outputs/website/usung-media-v37/video/dependencies/canonical-transparent-wordmark-B.png",
+    "source": "products/usung-corporate/baseline/original-media-v36/canonical-transparent-wordmark.png",
+    "sha256": "58d18887d26c140019c90675bfa53596ce6846cafd529b45cef78616ff18872a"
+  },
+  {
+    "snapshot": "outputs/website/usung-media-v37/video/dependencies/accepted-delivery-v33.mp4",
+    "source": "products/usung-corporate/public/assets/media/usung-delivery-film-v33.mp4",
+    "sha256": "1347e5a85810d89e1f911361436492b04d43fe238736c423ec7a417d59abf9da"
+  }
+]

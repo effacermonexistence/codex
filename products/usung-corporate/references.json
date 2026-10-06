@@ -552,7 +552,7 @@
         "https://ep-turnerconstruction-prod-asdcetgubtducba3.z01.azurefd.net/uploads/jobsite-02.mp4?v=06e65",
         "https://ep-turnerconstruction-prod-asdcetgubtducba3.z01.azurefd.net/uploads/tech-01.mp4?v=887d3"
       ],
-      "used": true,
+      "used": false,
       "bytes": 9446393,
       "sha256": "1347e5a85810d89e1f911361436492b04d43fe238736c423ec7a417d59abf9da",
       "servedBytes": 9446393,
@@ -617,7 +617,7 @@
       "sourceFile": "assets/media/built-sunrise.jpg",
       "originalBytes": 723259,
       "originalSha256": "51124b57542c4eed9761f66ce5f79d7fa4f7bba8afd1ca8e46a4ad08ed6ba01b",
-      "used": true,
+      "used": false,
       "servedBytes": 2424738,
       "servedSha256": "123dd4dd98eaf0e64fcd86132bc8f9d4071ef85f79623b5435fc1189dcff2e32",
       "servedTransformation": "Owner-approved B corner: first-U pink extends to left stem edge with no contrasting strip. Original scene, dimensions, surface pose, light and alpha preserved; only measured corner pigment delta changed before encoding. No scene generation.",
@@ -679,10 +679,86 @@
         "verification": "baseline/original-media-v35/helmet-verification.json"
       },
       "durableVerification": "baseline/original-media-v36/wordmark-verification.json"
+    },
+    {
+      "file": "assets/media/usung-site-dawn-v37.webp",
+      "sourceFile": "assets/media/built-sunrise.jpg",
+      "originalBytes": 723259,
+      "originalSha256": "51124b57542c4eed9761f66ce5f79d7fa4f7bba8afd1ca8e46a4ad08ed6ba01b",
+      "used": true,
+      "servedBytes": 2425412,
+      "servedSha256": "63d078b1ef0d8eaca6f9d59e0a008d031fa0259e34e45b9d71684de6681f2344",
+      "servedTransformation": "Local source-photo retouch of complained rack-face reflection/wear, using adjacent same-metal donor grooves/grain; full native B USUNG wordmark with planar projection, shared measured source twilight/LED illumination and lens focus; original ARTEMIS cab-strip print removed in its measured pigment footprint and replaced by full native B USUNG.",
+      "acquisition": "local transformation of preserved original source",
+      "previousServed": {
+        "file": "assets/media/usung-site-dawn-v34.webp",
+        "sha256": "123dd4dd98eaf0e64fcd86132bc8f9d4071ef85f79623b5435fc1189dcff2e32"
+      },
+      "bytes": 2425412,
+      "sha256": "63d078b1ef0d8eaca6f9d59e0a008d031fa0259e34e45b9d71684de6681f2344",
+      "sourcePage": "https://www.builtrobotics.com/about/downloads",
+      "sourceAsset": "https://assets.builtrobotics.com/production/public/download/2024_01_26_BUILT_0261.jpg",
+      "durableVerification": "baseline/original-media-v37/photo-verification.json"
+    },
+    {
+      "file": "assets/media/built-trench-aerial-original.jpg",
+      "sourcePage": "https://www.builtrobotics.com/about/downloads",
+      "sourceAsset": "https://assets.builtrobotics.com/production/public/download/DJI_0155.jpg",
+      "used": false,
+      "bytes": 16546909,
+      "sha256": "6a3e742dd855b80dd33a0bb5574ab0861037f4f5eed4ad9b22d9014006faeff8",
+      "acquisition": "Official original JPEG from published media link, preserved unchanged"
+    },
+    {
+      "file": "assets/media/usung-trench-aerial-v37.webp",
+      "sourcePage": "https://www.builtrobotics.com/about/downloads",
+      "sourceAsset": "https://assets.builtrobotics.com/production/public/download/DJI_0155.jpg",
+      "used": true,
+      "bytes": 6628378,
+      "sha256": "e3fe7e9f5515029f38a0675350a6f2746e6b108ef26f81e8ada1139c5c110dad",
+      "servedBytes": 6628378,
+      "servedSha256": "e3fe7e9f5515029f38a0675350a6f2746e6b108ef26f81e8ada1139c5c110dad",
+      "servedTransformation": "Original camera photograph resized in full frame with Lanczos. No scene generation, no logo overlay, no pixel retouch. Replaces the repeated 02/DECIDE piling photograph with a distinct overhead excavation scene.",
+      "durableVerification": "baseline/original-media-v37/aerial-source-verification.json"
+    },
+    {
+      "file": "assets/media/usung-delivery-film-v37.mp4",
+      "sourcePage": "https://www.turnerconstruction.com/",
+      "sourceAsset": [
+        "https://ep-turnerconstruction-prod-asdcetgubtducba3.z01.azurefd.net/uploads/jobsite-01.mp4?v=dd733",
+        "https://ep-turnerconstruction-prod-asdcetgubtducba3.z01.azurefd.net/uploads/jobsite-02.mp4?v=06e65",
+        "https://ep-turnerconstruction-prod-asdcetgubtducba3.z01.azurefd.net/uploads/tech-01.mp4?v=887d3"
+      ],
+      "used": true,
+      "bytes": 10202322,
+      "sha256": "11cb367153ea4c6bad0cf405b2fa6cfc52e70931634e94618609804bfae950c4",
+      "servedBytes": 10202322,
+      "servedSha256": "11cb367153ea4c6bad0cf405b2fa6cfc52e70931634e94618609804bfae950c4",
+      "servedTransformation": "Subtract only old measured pigment operator from accepted currentdecodedpixels, then apply one sourcecontrast-matched subtractive B print through the stable plane. Existing cleanpanel field and camera flare retained; no new fit_bg panel substituted. The same82originalsign features throughout; robust direct anchor-to-frame camera transport composed with the full projective reference-plane mapping. Coupled 2x2 shape transport has a25frame sigma4continuous temporal fit; instantaneous translation is re-solved from observed print features each frame. Source-feature residuals validate approximation; no map acceptance switches or screen-space sizing.",
+      "acquisition": "Preserved original official source, deterministic local editing",
+      "previousServed": {
+        "file": "assets/media/usung-delivery-film-v33.mp4",
+        "sha256": "1347e5a85810d89e1f911361436492b04d43fe238736c423ec7a417d59abf9da"
+      },
+      "durableVerification": "baseline/original-media-v37/video/delivery-film-v37-verification.json"
+    },
+    {
+      "file": "assets/media/usung-delivery-film-v37-poster.webp",
+      "used": true,
+      "bytes": 238920,
+      "sha256": "4b53a00cc5520215c50e5c1181d0b8fa9605da4ed1b89d9f40a4d83a29e8d5b2",
+      "sourcePage": "https://www.turnerconstruction.com/",
+      "sourceAsset": [
+        "https://ep-turnerconstruction-prod-asdcetgubtducba3.z01.azurefd.net/uploads/jobsite-01.mp4?v=dd733",
+        "https://ep-turnerconstruction-prod-asdcetgubtducba3.z01.azurefd.net/uploads/jobsite-02.mp4?v=06e65",
+        "https://ep-turnerconstruction-prod-asdcetgubtducba3.z01.azurefd.net/uploads/tech-01.mp4?v=887d3"
+      ],
+      "servedTransformation": "Frame0 of corrected pre-encode delivery film, lossless WebP",
+      "durableVerification": "baseline/original-media-v37/video/delivery-film-v37-verification.json"
     }
   ],
   "layoutImplementation": "Original approved glass texture with slow continuous native deformation and localized cursor compression/inertial recovery; original reference diagrams and acquired photography/footage retained",
-  "brandingRevision": "2026-10-05-helmet-wordmark-v36",
+  "brandingRevision": "2026-10-05-smart-construction-media-v37",
   "photographicSceneGeneration": false,
   "abstractGlassArtwork": "Previously requested generated glass extension retained as the same unmodified PNG; v32 animates its existing pixels with continuous RGBA texture displacement, without new raster assets or video generation",
   "homeRevision": {
@@ -979,5 +1055,19 @@
     "variant": "B",
     "verification": "baseline/original-media-v35/helmet-verification.json",
     "scope": "two photographed helmet-front marks only"
-  }
+  },
+  "smartConstructionMediaCorrection": {
+    "revision": "2026-10-05-smart-construction-media-v37",
+    "duplicatedFutureStep": 1,
+    "replacement": "assets/media/usung-trench-aerial-v37.webp",
+    "closingPhoto": "assets/media/usung-site-dawn-v37.webp",
+    "noPhotographicSceneGeneration": true,
+    "photoVerification": "baseline/original-media-v37/photo-verification.json",
+    "aerialVerification": "baseline/original-media-v37/aerial-source-verification.json",
+    "scope": "Smart Construction duplicate photograph, two lower blue equipment label planes, and second-film sign wordmark temporal distortion; other media preserved",
+    "video": "assets/media/usung-delivery-film-v37.mp4",
+    "videoPoster": "assets/media/usung-delivery-film-v37-poster.webp",
+    "videoVerification": "baseline/original-media-v37/video/delivery-film-v37-verification.json"
+  },
+  "previousBrandingRevision": "2026-10-05-helmet-wordmark-v36"
 }

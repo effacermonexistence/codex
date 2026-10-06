@@ -1,0 +1,103 @@
+{
+  "source": "products/usung-corporate/public/assets/media/built-sunrise.jpg",
+  "sourceSha256": "51124b57542c4eed9761f66ce5f79d7fa4f7bba8afd1ca8e46a4ad08ed6ba01b",
+  "baseline": "products/usung-corporate/public/assets/media/usung-site-dawn-v34.webp",
+  "baselineSha256": "123dd4dd98eaf0e64fcd86132bc8f9d4071ef85f79623b5435fc1189dcff2e32",
+  "candidate": "products/usung-corporate/public/assets/media/usung-site-dawn-v37.webp",
+  "candidateSha256": "63d078b1ef0d8eaca6f9d59e0a008d031fa0259e34e45b9d71684de6681f2344",
+  "dimensions": [
+    2200,
+    1466
+  ],
+  "canonicalVector": "products/usung-corporate/src/brand.mjs",
+  "canonicalRaster": "products/usung-corporate/baseline/original-media-v36/canonical-transparent-wordmark.png",
+  "canonicalRasterSha256": "58d18887d26c140019c90675bfa53596ce6846cafd529b45cef78616ff18872a",
+  "nativePink": "#FF0F6F",
+  "variant": "B",
+  "wordmark": "USUNG",
+  "noGeneration": true,
+  "lossless": true,
+  "changedPixels": 1483,
+  "outsideAllowedEqualsBaseline": true,
+  "outsideCombinedMaskEqualsSource": true,
+  "existingEdgeClippedUUnchanged": true,
+  "method": "Local source-photo retouch of complained rack-face reflection/wear, using adjacent same-metal donor grooves/grain; full native B USUNG wordmark with planar projection, shared measured source twilight/LED illumination and lens focus; original ARTEMIS cab-strip print removed in its measured pigment footprint and replaced by full native B USUNG.",
+  "claimBoundary": "Rear pale streak is a photographed worn/reflected metal surface, not an established former brand or prior edit; local rack retouch is disclosed. No scene generation. Plane and illumination estimates are not calibrated camera geometry.",
+  "sourceOfficialUrl": "https://assets.builtrobotics.com/production/public/download/2024_01_26_BUILT_0261.jpg",
+  "officialSourceRetrieved": "2026-10-05",
+  "officialOriginalDimensions": [
+    5472,
+    3648
+  ],
+  "officialOriginalSha256": "7af3fb450de468e152b4faed2098d9588cb0b1691713cc4527abd6d515c56e80",
+  "repairs": [
+    {
+      "name": "rack",
+      "projectedCorners": [
+        [
+          1033.7,
+          1071
+        ],
+        [
+          1092,
+          1080.5
+        ],
+        [
+          1091.7,
+          1092.6
+        ],
+        [
+          1033.4,
+          1083.1
+        ]
+      ],
+      "lensSigmaPx": 0.62,
+      "whiteSourceBGR": [
+        184,
+        145,
+        88
+      ],
+      "printPixels": 921,
+      "oldPigmentPixels": 0
+    },
+    {
+      "name": "cab-strip",
+      "projectedCorners": [
+        [
+          1375.5,
+          1095.7
+        ],
+        [
+          1414.2,
+          1095.5
+        ],
+        [
+          1414.2,
+          1103.6
+        ],
+        [
+          1375.5,
+          1103.8
+        ]
+      ],
+      "lensSigmaPx": 0.54,
+      "whiteSourceBGR": [
+        151,
+        124,
+        76
+      ],
+      "printPixels": 480,
+      "oldPigmentPixels": 68
+    }
+  ],
+  "officialVsLocalSamePhotographComparison": {
+    "comparisonDimensions": [
+      220,
+      146
+    ],
+    "rgbMeanAbsoluteError": 0.5744603569946035,
+    "rgbCorrelation": 0.9999678474031183,
+    "relationship": "Current official high-resolution source and local resized JPEG depict the same photograph. Different encoding, dimensions and bytes; no byte identity is claimed. Current official hash differs from the v34 recorded download hash."
+  },
+  "durableScript": "products/usung-corporate/baseline/original-media-v37/repair-blue-photo.py"
+}

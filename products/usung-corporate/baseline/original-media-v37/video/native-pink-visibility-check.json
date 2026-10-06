@@ -1,0 +1,88 @@
+[
+  {
+    "frame": 0,
+    "mark": "upper",
+    "visiblePinkCorePixels": 2422,
+    "nativeBPrintGeometryFixed": true,
+    "photographedPinkMeanBGR": [
+      141.2914946325351,
+      129.09083402146985,
+      150.9277456647399
+    ],
+    "redExceedsGreenMean": true
+  },
+  {
+    "frame": 0,
+    "mark": "lower",
+    "visiblePinkCorePixels": 0,
+    "nativeBPrintGeometryFixed": true,
+    "visibility": "outside sourcecamera frame"
+  },
+  {
+    "frame": 30,
+    "mark": "upper",
+    "visiblePinkCorePixels": 2341,
+    "nativeBPrintGeometryFixed": true,
+    "photographedPinkMeanBGR": [
+      140.3366082870568,
+      128.36394703118324,
+      150.4318667236224
+    ],
+    "redExceedsGreenMean": true
+  },
+  {
+    "frame": 30,
+    "mark": "lower",
+    "visiblePinkCorePixels": 0,
+    "nativeBPrintGeometryFixed": true,
+    "visibility": "outside sourcecamera frame"
+  },
+  {
+    "frame": 96,
+    "mark": "upper",
+    "visiblePinkCorePixels": 2304,
+    "nativeBPrintGeometryFixed": true,
+    "photographedPinkMeanBGR": [
+      140.53038194444446,
+      128.2890625,
+      150.98263888888889
+    ],
+    "redExceedsGreenMean": true
+  },
+  {
+    "frame": 96,
+    "mark": "lower",
+    "visiblePinkCorePixels": 882,
+    "nativeBPrintGeometryFixed": true,
+    "photographedPinkMeanBGR": [
+      122.87301587301587,
+      111.07256235827664,
+      136.52267573696145
+    ],
+    "redExceedsGreenMean": true
+  },
+  {
+    "frame": 119,
+    "mark": "upper",
+    "visiblePinkCorePixels": 2298,
+    "nativeBPrintGeometryFixed": true,
+    "photographedPinkMeanBGR": [
+      141.5626631853786,
+      129.71627502175804,
+      151.55700609225414
+    ],
+    "redExceedsGreenMean": true
+  },
+  {
+    "frame": 119,
+    "mark": "lower",
+    "visiblePinkCorePixels": 878,
+    "nativeBPrintGeometryFixed": true,
+    "photographedPinkMeanBGR": [
+      124.09111617312072,
+      111.77220956719817,
+      137.75170842824602
+    ],
+    "redExceedsGreenMean": true
+  }
+]

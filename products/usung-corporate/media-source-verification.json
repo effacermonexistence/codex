@@ -1,6 +1,6 @@
 {
-  "release": "2026-10-05-helmet-wordmark-v36",
-  "previousRelease": "2026-10-05-helmet-surface-v35",
+  "release": "2026-10-05-smart-construction-media-v37",
+  "previousRelease": "2026-10-05-helmet-wordmark-v36",
   "photos": [
     {
       "source": "assets/media/built-rpd.jpg",
@@ -687,6 +687,164 @@
         "pixelIdenticalModels": []
       },
       "durableVerification": "baseline/original-media-v33/still-verification.json"
+    },
+    {
+      "source": "assets/media/built-sunrise.jpg",
+      "sourceSha256": "51124b57542c4eed9761f66ce5f79d7fa4f7bba8afd1ca8e46a4ad08ed6ba01b",
+      "served": "assets/media/usung-site-dawn-v37.webp",
+      "servedSha256": "63d078b1ef0d8eaca6f9d59e0a008d031fa0259e34e45b9d71684de6681f2344",
+      "servedBytes": 2425412,
+      "priorServed": "assets/media/usung-site-dawn-v34.webp",
+      "priorServedSha256": "123dd4dd98eaf0e64fcd86132bc8f9d4071ef85f79623b5435fc1189dcff2e32",
+      "sourceScenePreserved": true,
+      "outsideCombinedMaskIdentical": true,
+      "lossless": true,
+      "sourcePage": "https://www.builtrobotics.com/about/downloads",
+      "sourceAsset": "https://assets.builtrobotics.com/production/public/download/2024_01_26_BUILT_0261.jpg",
+      "transformation": "Local source-photo retouch of complained rack-face reflection/wear, using adjacent same-metal donor grooves/grain; full native B USUNG wordmark with planar projection, shared measured source twilight/LED illumination and lens focus; original ARTEMIS cab-strip print removed in its measured pigment footprint and replaced by full native B USUNG.",
+      "durableVerification": "baseline/original-media-v37/photo-verification.json",
+      "verification": {
+        "source": "products/usung-corporate/public/assets/media/built-sunrise.jpg",
+        "sourceSha256": "51124b57542c4eed9761f66ce5f79d7fa4f7bba8afd1ca8e46a4ad08ed6ba01b",
+        "baseline": "products/usung-corporate/public/assets/media/usung-site-dawn-v34.webp",
+        "baselineSha256": "123dd4dd98eaf0e64fcd86132bc8f9d4071ef85f79623b5435fc1189dcff2e32",
+        "candidate": "products/usung-corporate/public/assets/media/usung-site-dawn-v37.webp",
+        "candidateSha256": "63d078b1ef0d8eaca6f9d59e0a008d031fa0259e34e45b9d71684de6681f2344",
+        "dimensions": [
+          2200,
+          1466
+        ],
+        "canonicalVector": "products/usung-corporate/src/brand.mjs",
+        "canonicalRaster": "products/usung-corporate/baseline/original-media-v36/canonical-transparent-wordmark.png",
+        "canonicalRasterSha256": "58d18887d26c140019c90675bfa53596ce6846cafd529b45cef78616ff18872a",
+        "nativePink": "#FF0F6F",
+        "variant": "B",
+        "wordmark": "USUNG",
+        "noGeneration": true,
+        "lossless": true,
+        "changedPixels": 1483,
+        "outsideAllowedEqualsBaseline": true,
+        "outsideCombinedMaskEqualsSource": true,
+        "existingEdgeClippedUUnchanged": true,
+        "method": "Local source-photo retouch of complained rack-face reflection/wear, using adjacent same-metal donor grooves/grain; full native B USUNG wordmark with planar projection, shared measured source twilight/LED illumination and lens focus; original ARTEMIS cab-strip print removed in its measured pigment footprint and replaced by full native B USUNG.",
+        "claimBoundary": "Rear pale streak is a photographed worn/reflected metal surface, not an established former brand or prior edit; local rack retouch is disclosed. No scene generation. Plane and illumination estimates are not calibrated camera geometry.",
+        "sourceOfficialUrl": "https://assets.builtrobotics.com/production/public/download/2024_01_26_BUILT_0261.jpg",
+        "officialSourceRetrieved": "2026-10-05",
+        "officialOriginalDimensions": [
+          5472,
+          3648
+        ],
+        "officialOriginalSha256": "7af3fb450de468e152b4faed2098d9588cb0b1691713cc4527abd6d515c56e80",
+        "repairs": [
+          {
+            "name": "rack",
+            "projectedCorners": [
+              [
+                1033.7,
+                1071
+              ],
+              [
+                1092,
+                1080.5
+              ],
+              [
+                1091.7,
+                1092.6
+              ],
+              [
+                1033.4,
+                1083.1
+              ]
+            ],
+            "lensSigmaPx": 0.62,
+            "whiteSourceBGR": [
+              184,
+              145,
+              88
+            ],
+            "printPixels": 921,
+            "oldPigmentPixels": 0
+          },
+          {
+            "name": "cab-strip",
+            "projectedCorners": [
+              [
+                1375.5,
+                1095.7
+              ],
+              [
+                1414.2,
+                1095.5
+              ],
+              [
+                1414.2,
+                1103.6
+              ],
+              [
+                1375.5,
+                1103.8
+              ]
+            ],
+            "lensSigmaPx": 0.54,
+            "whiteSourceBGR": [
+              151,
+              124,
+              76
+            ],
+            "printPixels": 480,
+            "oldPigmentPixels": 68
+          }
+        ],
+        "officialVsLocalSamePhotographComparison": {
+          "comparisonDimensions": [
+            220,
+            146
+          ],
+          "rgbMeanAbsoluteError": 0.5744603569946035,
+          "rgbCorrelation": 0.9999678474031183,
+          "relationship": "Current official high-resolution source and local resized JPEG depict the same photograph. Different encoding, dimensions and bytes; no byte identity is claimed. Current official hash differs from the v34 recorded download hash."
+        },
+        "durableScript": "products/usung-corporate/baseline/original-media-v37/repair-blue-photo.py"
+      }
+    },
+    {
+      "source": "assets/media/built-trench-aerial-original.jpg",
+      "served": "assets/media/usung-trench-aerial-v37.webp",
+      "sourceSha256": "6a3e742dd855b80dd33a0bb5574ab0861037f4f5eed4ad9b22d9014006faeff8",
+      "servedSha256": "e3fe7e9f5515029f38a0675350a6f2746e6b108ef26f81e8ada1139c5c110dad",
+      "servedBytes": 6628378,
+      "sourcePage": "https://www.builtrobotics.com/about/downloads",
+      "sourceAsset": "https://assets.builtrobotics.com/production/public/download/DJI_0155.jpg",
+      "transformation": "Original camera photograph resized in full frame with Lanczos. No scene generation, no logo overlay, no pixel retouch. Replaces the repeated 02/DECIDE piling photograph with a distinct overhead excavation scene.",
+      "dimensions": [
+        2200,
+        1650
+      ],
+      "noGeneration": true,
+      "durableVerification": "baseline/original-media-v37/aerial-source-verification.json",
+      "verification": {
+        "sourcePage": "https://www.builtrobotics.com/about/downloads",
+        "sourceAsset": "https://assets.builtrobotics.com/production/public/download/DJI_0155.jpg",
+        "sourceTitle": "An Aerial of an Autonomously Dug Trench",
+        "sourceDimensions": [
+          4000,
+          3000
+        ],
+        "cameraMetadata": {},
+        "sourceSha256": "6a3e742dd855b80dd33a0bb5574ab0861037f4f5eed4ad9b22d9014006faeff8",
+        "servedFile": "assets/media/usung-trench-aerial-v37.webp",
+        "servedDimensions": [
+          2200,
+          1650
+        ],
+        "servedSha256": "e3fe7e9f5515029f38a0675350a6f2746e6b108ef26f81e8ada1139c5c110dad",
+        "servedBytes": 6628378,
+        "transformation": "Original camera photograph resized in full frame with Lanczos. No scene generation, no logo overlay, no pixel retouch. Replaces the repeated 02/DECIDE piling photograph with a distinct overhead excavation scene.",
+        "generativeEditing": false,
+        "sourceUsageNotice": "Official media page specifies editorial/personal use, other use requires their permission; retained as source metadata.",
+        "sourceFile": "assets/media/built-trench-aerial-original.jpg",
+        "sourceBytes": 16546909
+      }
     }
   ],
   "constructionVideos": [
@@ -1044,26 +1202,5060 @@
       "generatedScene": false,
       "nativeEditOnly": "sign company pigment local masks; geometry, lighting, camera motion, background, visitors, instructions retained. Structural and tablet footage unedited before crop/resize/encode.",
       "verification": {
-        "encoderExitCodes": [
-          0,
-          0
+        "status": "candidate-rendered-and-decoded-verified",
+        "sourceFile": "products/usung-corporate/baseline/original-media-v25/turner-jobsite-01.mp4",
+        "sourceSha256": "89957b2e1ade74b4c0b2fab57135b5611c16739596899cf03d8a02f1ee06d115",
+        "baselineFile": "products/usung-corporate/baseline/original-media-v37/video/dependencies/accepted-delivery-v33.mp4",
+        "baselineSha256": "1347e5a85810d89e1f911361436492b04d43fe238736c423ec7a417d59abf9da",
+        "servedIdentityReceipt": "products/usung-corporate/baseline/original-media-v37/video/served-video-identity.json",
+        "outputFile": "products/usung-corporate/public/assets/media/usung-delivery-film-v37.mp4",
+        "outputSha256": "11cb367153ea4c6bad0cf405b2fa6cfc52e70931634e94618609804bfae950c4",
+        "poster": "products/usung-corporate/public/assets/media/usung-delivery-film-v37-poster.webp",
+        "logoFile": "products/usung-corporate/baseline/original-media-v37/video/dependencies/canonical-transparent-wordmark-B.png",
+        "logoSha256": "58d18887d26c140019c90675bfa53596ce6846cafd529b45cef78616ff18872a",
+        "nativeCropWidthHeight": [
+          993,
+          207
         ],
-        "decodedFrameCount": 287,
-        "decodedShapesAllEqual": [
-          1080,
-          1920,
-          3
+        "nativeWordmarkRatio": 4.797101449275362,
+        "nativeCornerB": [
+          72.362,
+          23.072,
+          16.09,
+          15.987
         ],
+        "wordmarkPlacementInSignPlane": [
+          [
+            270,
+            152,
+            1110
+          ],
+          [
+            98,
+            687,
+            502
+          ]
+        ],
+        "fixedPlanePrintSizePerFrame": [
+          {
+            "width": 1110,
+            "height": 231
+          },
+          {
+            "width": 502,
+            "height": 105
+          }
+        ],
+        "frames": 287,
         "fps": 24,
-        "postersFromEncodedFrames": [
-          0,
-          120
+        "dimensions": [
+          1920,
+          1080
         ],
-        "outsideLocalSignMaskOriginalPixelEquality": "120 of 120 native frames asserted in sign_edit before downsample/encode",
-        "structureTabletPixelEditing": "zero; only selected native crop and downsample",
-        "elapsedSeconds": 74.67,
-        "ffmpegFullDecodeExitCode": 0,
-        "ffmpegFullDecodeErrorOutput": ""
+        "sourceSignFramesInclusive": [
+          0,
+          119
+        ],
+        "laterSceneFramesInclusive": [
+          120,
+          286
+        ],
+        "laterScenesPixelIdenticalBeforeEncode": true,
+        "outsideCompanyPigmentMasksPixelIdenticalBeforeEncodeAllFrames": true,
+        "maskMarginOutputPx": 0,
+        "sourceNativeOutsideMaskAssertions": "all120frames in original sign_edit passed",
+        "compositingMethod": "Subtract only old measured pigment operator from accepted currentdecodedpixels, then apply one sourcecontrast-matched subtractive B print through the stable plane. Existing cleanpanel field and camera flare retained; no new fit_bg panel substituted.",
+        "newPrintCannotBrightenBackgroundAllFrames": true,
+        "supersededCandidate": "The first candidate introduced pale letter tiles from a changed background fit and was rejected before integration. Only the corrected pigment-delta render identified by outputSha256 is served.",
+        "trackingMethod": "The same82originalsign features throughout; robust direct anchor-to-frame camera transport composed with the full projective reference-plane mapping. Coupled 2x2 shape transport has a25frame sigma4continuous temporal fit; instantaneous translation is re-solved from observed print features each frame. Source-feature residuals validate approximation; no map acceptance switches or screen-space sizing.",
+        "featureFitQuality": [
+          {
+            "frame": 0,
+            "trackedPoints": 82,
+            "inlierPoints": 37,
+            "medianResidualPx": 0.39913639426231384,
+            "maxInlierResidualPx": 0.7539622783660889,
+            "smoothedMedianResidualPx": 0.8444486260414124
+          },
+          {
+            "frame": 1,
+            "trackedPoints": 82,
+            "inlierPoints": 38,
+            "medianResidualPx": 0.33068346977233887,
+            "maxInlierResidualPx": 0.7892712354660034,
+            "smoothedMedianResidualPx": 0.7994704842567444
+          },
+          {
+            "frame": 2,
+            "trackedPoints": 82,
+            "inlierPoints": 38,
+            "medianResidualPx": 0.3249630928039551,
+            "maxInlierResidualPx": 0.6326949596405029,
+            "smoothedMedianResidualPx": 0.7959284782409668
+          },
+          {
+            "frame": 3,
+            "trackedPoints": 82,
+            "inlierPoints": 41,
+            "medianResidualPx": 0.4143208861351013,
+            "maxInlierResidualPx": 0.8171930313110352,
+            "smoothedMedianResidualPx": 0.742943525314331
+          },
+          {
+            "frame": 4,
+            "trackedPoints": 82,
+            "inlierPoints": 41,
+            "medianResidualPx": 0.3276313543319702,
+            "maxInlierResidualPx": 0.7461168169975281,
+            "smoothedMedianResidualPx": 0.7469013929367065
+          },
+          {
+            "frame": 5,
+            "trackedPoints": 82,
+            "inlierPoints": 41,
+            "medianResidualPx": 0.32271677255630493,
+            "maxInlierResidualPx": 0.720680832862854,
+            "smoothedMedianResidualPx": 0.7277979850769043
+          },
+          {
+            "frame": 6,
+            "trackedPoints": 82,
+            "inlierPoints": 41,
+            "medianResidualPx": 0.38639169931411743,
+            "maxInlierResidualPx": 0.7137898206710815,
+            "smoothedMedianResidualPx": 0.7193818688392639
+          },
+          {
+            "frame": 7,
+            "trackedPoints": 82,
+            "inlierPoints": 42,
+            "medianResidualPx": 0.3899952173233032,
+            "maxInlierResidualPx": 0.7807060480117798,
+            "smoothedMedianResidualPx": 0.7085874676704407
+          },
+          {
+            "frame": 8,
+            "trackedPoints": 82,
+            "inlierPoints": 43,
+            "medianResidualPx": 0.4142592251300812,
+            "maxInlierResidualPx": 0.7203500866889954,
+            "smoothedMedianResidualPx": 0.7065280675888062
+          },
+          {
+            "frame": 9,
+            "trackedPoints": 82,
+            "inlierPoints": 43,
+            "medianResidualPx": 0.3960843086242676,
+            "maxInlierResidualPx": 0.7947920560836792,
+            "smoothedMedianResidualPx": 0.7059657573699951
+          },
+          {
+            "frame": 10,
+            "trackedPoints": 82,
+            "inlierPoints": 41,
+            "medianResidualPx": 0.3278768062591553,
+            "maxInlierResidualPx": 0.7359065413475037,
+            "smoothedMedianResidualPx": 0.7310121059417725
+          },
+          {
+            "frame": 11,
+            "trackedPoints": 82,
+            "inlierPoints": 44,
+            "medianResidualPx": 0.4342897832393646,
+            "maxInlierResidualPx": 0.8057170510292053,
+            "smoothedMedianResidualPx": 0.705033540725708
+          },
+          {
+            "frame": 12,
+            "trackedPoints": 82,
+            "inlierPoints": 44,
+            "medianResidualPx": 0.3690625727176666,
+            "maxInlierResidualPx": 0.8016143441200256,
+            "smoothedMedianResidualPx": 0.7288779020309448
+          },
+          {
+            "frame": 13,
+            "trackedPoints": 82,
+            "inlierPoints": 43,
+            "medianResidualPx": 0.37976980209350586,
+            "maxInlierResidualPx": 0.682789146900177,
+            "smoothedMedianResidualPx": 0.7627598643302917
+          },
+          {
+            "frame": 14,
+            "trackedPoints": 82,
+            "inlierPoints": 45,
+            "medianResidualPx": 0.3744707703590393,
+            "maxInlierResidualPx": 0.7172079682350159,
+            "smoothedMedianResidualPx": 0.6980233788490295
+          },
+          {
+            "frame": 15,
+            "trackedPoints": 82,
+            "inlierPoints": 46,
+            "medianResidualPx": 0.3830185532569885,
+            "maxInlierResidualPx": 0.6217411756515503,
+            "smoothedMedianResidualPx": 0.6742928624153137
+          },
+          {
+            "frame": 16,
+            "trackedPoints": 82,
+            "inlierPoints": 47,
+            "medianResidualPx": 0.4818616211414337,
+            "maxInlierResidualPx": 0.8325849175453186,
+            "smoothedMedianResidualPx": 0.677117109298706
+          },
+          {
+            "frame": 17,
+            "trackedPoints": 82,
+            "inlierPoints": 47,
+            "medianResidualPx": 0.34095481038093567,
+            "maxInlierResidualPx": 0.6174309849739075,
+            "smoothedMedianResidualPx": 0.6185445785522461
+          },
+          {
+            "frame": 18,
+            "trackedPoints": 82,
+            "inlierPoints": 49,
+            "medianResidualPx": 0.379977822303772,
+            "maxInlierResidualPx": 0.6384559869766235,
+            "smoothedMedianResidualPx": 0.6158482432365417
+          },
+          {
+            "frame": 19,
+            "trackedPoints": 82,
+            "inlierPoints": 49,
+            "medianResidualPx": 0.38689541816711426,
+            "maxInlierResidualPx": 0.6590945720672607,
+            "smoothedMedianResidualPx": 0.5528397560119629
+          },
+          {
+            "frame": 20,
+            "trackedPoints": 82,
+            "inlierPoints": 46,
+            "medianResidualPx": 0.33549395203590393,
+            "maxInlierResidualPx": 0.7206658124923706,
+            "smoothedMedianResidualPx": 0.661188542842865
+          },
+          {
+            "frame": 21,
+            "trackedPoints": 82,
+            "inlierPoints": 49,
+            "medianResidualPx": 0.3801904022693634,
+            "maxInlierResidualPx": 0.689360499382019,
+            "smoothedMedianResidualPx": 0.6140156388282776
+          },
+          {
+            "frame": 22,
+            "trackedPoints": 82,
+            "inlierPoints": 48,
+            "medianResidualPx": 0.3380238115787506,
+            "maxInlierResidualPx": 0.6480603218078613,
+            "smoothedMedianResidualPx": 0.5903588533401489
+          },
+          {
+            "frame": 23,
+            "trackedPoints": 82,
+            "inlierPoints": 46,
+            "medianResidualPx": 0.3766460418701172,
+            "maxInlierResidualPx": 0.7039259076118469,
+            "smoothedMedianResidualPx": 0.6069022417068481
+          },
+          {
+            "frame": 24,
+            "trackedPoints": 82,
+            "inlierPoints": 46,
+            "medianResidualPx": 0.3708995282649994,
+            "maxInlierResidualPx": 0.669830322265625,
+            "smoothedMedianResidualPx": 0.5870813131332397
+          },
+          {
+            "frame": 25,
+            "trackedPoints": 82,
+            "inlierPoints": 46,
+            "medianResidualPx": 0.26649224758148193,
+            "maxInlierResidualPx": 0.7589829564094543,
+            "smoothedMedianResidualPx": 0.5376596450805664
+          },
+          {
+            "frame": 26,
+            "trackedPoints": 82,
+            "inlierPoints": 48,
+            "medianResidualPx": 0.3141181170940399,
+            "maxInlierResidualPx": 0.6943817734718323,
+            "smoothedMedianResidualPx": 0.5278733968734741
+          },
+          {
+            "frame": 27,
+            "trackedPoints": 82,
+            "inlierPoints": 47,
+            "medianResidualPx": 0.2718712091445923,
+            "maxInlierResidualPx": 0.7804332971572876,
+            "smoothedMedianResidualPx": 0.5206509828567505
+          },
+          {
+            "frame": 28,
+            "trackedPoints": 82,
+            "inlierPoints": 48,
+            "medianResidualPx": 0.3058072626590729,
+            "maxInlierResidualPx": 1.0131956338882446,
+            "smoothedMedianResidualPx": 0.517743706703186
+          },
+          {
+            "frame": 29,
+            "trackedPoints": 82,
+            "inlierPoints": 50,
+            "medianResidualPx": 0.27743667364120483,
+            "maxInlierResidualPx": 0.8863526582717896,
+            "smoothedMedianResidualPx": 0.47223860025405884
+          },
+          {
+            "frame": 30,
+            "trackedPoints": 82,
+            "inlierPoints": 50,
+            "medianResidualPx": 0.28426414728164673,
+            "maxInlierResidualPx": 0.8096891045570374,
+            "smoothedMedianResidualPx": 0.52284836769104
+          },
+          {
+            "frame": 31,
+            "trackedPoints": 82,
+            "inlierPoints": 54,
+            "medianResidualPx": 0.32485777139663696,
+            "maxInlierResidualPx": 0.7868461608886719,
+            "smoothedMedianResidualPx": 0.5400619506835938
+          },
+          {
+            "frame": 32,
+            "trackedPoints": 82,
+            "inlierPoints": 46,
+            "medianResidualPx": 0.3695167303085327,
+            "maxInlierResidualPx": 0.7498793005943298,
+            "smoothedMedianResidualPx": 0.6320295929908752
+          },
+          {
+            "frame": 33,
+            "trackedPoints": 82,
+            "inlierPoints": 49,
+            "medianResidualPx": 0.3508678078651428,
+            "maxInlierResidualPx": 0.7538061141967773,
+            "smoothedMedianResidualPx": 0.621285617351532
+          },
+          {
+            "frame": 34,
+            "trackedPoints": 82,
+            "inlierPoints": 52,
+            "medianResidualPx": 0.3521679639816284,
+            "maxInlierResidualPx": 0.7725045084953308,
+            "smoothedMedianResidualPx": 0.5572550296783447
+          },
+          {
+            "frame": 35,
+            "trackedPoints": 82,
+            "inlierPoints": 53,
+            "medianResidualPx": 0.3112650513648987,
+            "maxInlierResidualPx": 0.7699910402297974,
+            "smoothedMedianResidualPx": 0.5134800672531128
+          },
+          {
+            "frame": 36,
+            "trackedPoints": 82,
+            "inlierPoints": 52,
+            "medianResidualPx": 0.26111075282096863,
+            "maxInlierResidualPx": 0.7609009742736816,
+            "smoothedMedianResidualPx": 0.49856138229370117
+          },
+          {
+            "frame": 37,
+            "trackedPoints": 82,
+            "inlierPoints": 50,
+            "medianResidualPx": 0.29509592056274414,
+            "maxInlierResidualPx": 0.7971757054328918,
+            "smoothedMedianResidualPx": 0.46519118547439575
+          },
+          {
+            "frame": 38,
+            "trackedPoints": 82,
+            "inlierPoints": 51,
+            "medianResidualPx": 0.3267948031425476,
+            "maxInlierResidualPx": 0.854911744594574,
+            "smoothedMedianResidualPx": 0.4773256182670593
+          },
+          {
+            "frame": 39,
+            "trackedPoints": 82,
+            "inlierPoints": 50,
+            "medianResidualPx": 0.24510255455970764,
+            "maxInlierResidualPx": 0.7109990119934082,
+            "smoothedMedianResidualPx": 0.48716580867767334
+          },
+          {
+            "frame": 40,
+            "trackedPoints": 82,
+            "inlierPoints": 52,
+            "medianResidualPx": 0.35842132568359375,
+            "maxInlierResidualPx": 0.8267069458961487,
+            "smoothedMedianResidualPx": 0.4779144525527954
+          },
+          {
+            "frame": 41,
+            "trackedPoints": 82,
+            "inlierPoints": 53,
+            "medianResidualPx": 0.3615608811378479,
+            "maxInlierResidualPx": 0.8360658288002014,
+            "smoothedMedianResidualPx": 0.47776710987091064
+          },
+          {
+            "frame": 42,
+            "trackedPoints": 82,
+            "inlierPoints": 51,
+            "medianResidualPx": 0.30482473969459534,
+            "maxInlierResidualPx": 0.7520910501480103,
+            "smoothedMedianResidualPx": 0.5047330856323242
+          },
+          {
+            "frame": 43,
+            "trackedPoints": 82,
+            "inlierPoints": 52,
+            "medianResidualPx": 0.27359461784362793,
+            "maxInlierResidualPx": 0.7187917828559875,
+            "smoothedMedianResidualPx": 0.45194727182388306
+          },
+          {
+            "frame": 44,
+            "trackedPoints": 82,
+            "inlierPoints": 52,
+            "medianResidualPx": 0.265177845954895,
+            "maxInlierResidualPx": 0.7195271253585815,
+            "smoothedMedianResidualPx": 0.45991671085357666
+          },
+          {
+            "frame": 45,
+            "trackedPoints": 82,
+            "inlierPoints": 51,
+            "medianResidualPx": 0.29169654846191406,
+            "maxInlierResidualPx": 0.8185128569602966,
+            "smoothedMedianResidualPx": 0.4384170174598694
+          },
+          {
+            "frame": 46,
+            "trackedPoints": 82,
+            "inlierPoints": 51,
+            "medianResidualPx": 0.328069806098938,
+            "maxInlierResidualPx": 0.8451287150382996,
+            "smoothedMedianResidualPx": 0.48074302077293396
+          },
+          {
+            "frame": 47,
+            "trackedPoints": 82,
+            "inlierPoints": 53,
+            "medianResidualPx": 0.3332231640815735,
+            "maxInlierResidualPx": 0.9089900255203247,
+            "smoothedMedianResidualPx": 0.473531037569046
+          },
+          {
+            "frame": 48,
+            "trackedPoints": 82,
+            "inlierPoints": 54,
+            "medianResidualPx": 0.33889541029930115,
+            "maxInlierResidualPx": 0.7951766848564148,
+            "smoothedMedianResidualPx": 0.4434760808944702
+          },
+          {
+            "frame": 49,
+            "trackedPoints": 82,
+            "inlierPoints": 54,
+            "medianResidualPx": 0.3435938358306885,
+            "maxInlierResidualPx": 0.885375440120697,
+            "smoothedMedianResidualPx": 0.4569298028945923
+          },
+          {
+            "frame": 50,
+            "trackedPoints": 82,
+            "inlierPoints": 52,
+            "medianResidualPx": 0.22820846736431122,
+            "maxInlierResidualPx": 0.8289061784744263,
+            "smoothedMedianResidualPx": 0.46571478247642517
+          },
+          {
+            "frame": 51,
+            "trackedPoints": 82,
+            "inlierPoints": 51,
+            "medianResidualPx": 0.270954430103302,
+            "maxInlierResidualPx": 0.7344763875007629,
+            "smoothedMedianResidualPx": 0.4646955728530884
+          },
+          {
+            "frame": 52,
+            "trackedPoints": 82,
+            "inlierPoints": 53,
+            "medianResidualPx": 0.3361280858516693,
+            "maxInlierResidualPx": 0.7492424845695496,
+            "smoothedMedianResidualPx": 0.460077702999115
+          },
+          {
+            "frame": 53,
+            "trackedPoints": 82,
+            "inlierPoints": 53,
+            "medianResidualPx": 0.28844937682151794,
+            "maxInlierResidualPx": 0.7084566354751587,
+            "smoothedMedianResidualPx": 0.4688507616519928
+          },
+          {
+            "frame": 54,
+            "trackedPoints": 82,
+            "inlierPoints": 54,
+            "medianResidualPx": 0.39767134189605713,
+            "maxInlierResidualPx": 0.8301230669021606,
+            "smoothedMedianResidualPx": 0.522238552570343
+          },
+          {
+            "frame": 55,
+            "trackedPoints": 82,
+            "inlierPoints": 53,
+            "medianResidualPx": 0.3229958415031433,
+            "maxInlierResidualPx": 0.9337687492370605,
+            "smoothedMedianResidualPx": 0.4780024588108063
+          },
+          {
+            "frame": 56,
+            "trackedPoints": 82,
+            "inlierPoints": 52,
+            "medianResidualPx": 0.3166341185569763,
+            "maxInlierResidualPx": 0.920489490032196,
+            "smoothedMedianResidualPx": 0.4801437258720398
+          },
+          {
+            "frame": 57,
+            "trackedPoints": 82,
+            "inlierPoints": 52,
+            "medianResidualPx": 0.31908613443374634,
+            "maxInlierResidualPx": 0.8391144275665283,
+            "smoothedMedianResidualPx": 0.515596330165863
+          },
+          {
+            "frame": 58,
+            "trackedPoints": 82,
+            "inlierPoints": 52,
+            "medianResidualPx": 0.28259438276290894,
+            "maxInlierResidualPx": 0.7057855129241943,
+            "smoothedMedianResidualPx": 0.5088958144187927
+          },
+          {
+            "frame": 59,
+            "trackedPoints": 82,
+            "inlierPoints": 51,
+            "medianResidualPx": 0.2791818678379059,
+            "maxInlierResidualPx": 0.6968139410018921,
+            "smoothedMedianResidualPx": 0.45795774459838867
+          },
+          {
+            "frame": 60,
+            "trackedPoints": 82,
+            "inlierPoints": 51,
+            "medianResidualPx": 0.27027633786201477,
+            "maxInlierResidualPx": 0.6503356099128723,
+            "smoothedMedianResidualPx": 0.5172780752182007
+          },
+          {
+            "frame": 61,
+            "trackedPoints": 82,
+            "inlierPoints": 44,
+            "medianResidualPx": 0.2798393666744232,
+            "maxInlierResidualPx": 0.6403891444206238,
+            "smoothedMedianResidualPx": 0.5597668886184692
+          },
+          {
+            "frame": 62,
+            "trackedPoints": 82,
+            "inlierPoints": 46,
+            "medianResidualPx": 0.3023359179496765,
+            "maxInlierResidualPx": 0.6036705374717712,
+            "smoothedMedianResidualPx": 0.5661544799804688
+          },
+          {
+            "frame": 63,
+            "trackedPoints": 82,
+            "inlierPoints": 48,
+            "medianResidualPx": 0.3341900408267975,
+            "maxInlierResidualPx": 0.7672389149665833,
+            "smoothedMedianResidualPx": 0.5735934972763062
+          },
+          {
+            "frame": 64,
+            "trackedPoints": 82,
+            "inlierPoints": 46,
+            "medianResidualPx": 0.3669390380382538,
+            "maxInlierResidualPx": 0.8298829197883606,
+            "smoothedMedianResidualPx": 0.6098035573959351
+          },
+          {
+            "frame": 65,
+            "trackedPoints": 82,
+            "inlierPoints": 51,
+            "medianResidualPx": 0.3292214274406433,
+            "maxInlierResidualPx": 0.7601349353790283,
+            "smoothedMedianResidualPx": 0.5455940961837769
+          },
+          {
+            "frame": 66,
+            "trackedPoints": 82,
+            "inlierPoints": 49,
+            "medianResidualPx": 0.3516998589038849,
+            "maxInlierResidualPx": 0.7157444357872009,
+            "smoothedMedianResidualPx": 0.5982154607772827
+          },
+          {
+            "frame": 67,
+            "trackedPoints": 82,
+            "inlierPoints": 47,
+            "medianResidualPx": 0.4301023781299591,
+            "maxInlierResidualPx": 0.7966073751449585,
+            "smoothedMedianResidualPx": 0.6587268710136414
+          },
+          {
+            "frame": 68,
+            "trackedPoints": 82,
+            "inlierPoints": 46,
+            "medianResidualPx": 0.3888217806816101,
+            "maxInlierResidualPx": 0.9190320372581482,
+            "smoothedMedianResidualPx": 0.6554391384124756
+          },
+          {
+            "frame": 69,
+            "trackedPoints": 82,
+            "inlierPoints": 43,
+            "medianResidualPx": 0.31380167603492737,
+            "maxInlierResidualPx": 0.7606891989707947,
+            "smoothedMedianResidualPx": 0.658883273601532
+          },
+          {
+            "frame": 70,
+            "trackedPoints": 82,
+            "inlierPoints": 42,
+            "medianResidualPx": 0.40576595067977905,
+            "maxInlierResidualPx": 0.7460634112358093,
+            "smoothedMedianResidualPx": 0.7621251344680786
+          },
+          {
+            "frame": 71,
+            "trackedPoints": 82,
+            "inlierPoints": 42,
+            "medianResidualPx": 0.5218783020973206,
+            "maxInlierResidualPx": 0.8100219964981079,
+            "smoothedMedianResidualPx": 0.6886000633239746
+          },
+          {
+            "frame": 72,
+            "trackedPoints": 82,
+            "inlierPoints": 39,
+            "medianResidualPx": 0.3399640619754791,
+            "maxInlierResidualPx": 0.8307357430458069,
+            "smoothedMedianResidualPx": 0.7016439437866211
+          },
+          {
+            "frame": 73,
+            "trackedPoints": 82,
+            "inlierPoints": 42,
+            "medianResidualPx": 0.2913607954978943,
+            "maxInlierResidualPx": 0.7190230488777161,
+            "smoothedMedianResidualPx": 0.6020978689193726
+          },
+          {
+            "frame": 74,
+            "trackedPoints": 82,
+            "inlierPoints": 43,
+            "medianResidualPx": 0.39884257316589355,
+            "maxInlierResidualPx": 0.8620581030845642,
+            "smoothedMedianResidualPx": 0.6261633634567261
+          },
+          {
+            "frame": 75,
+            "trackedPoints": 82,
+            "inlierPoints": 39,
+            "medianResidualPx": 0.3841337561607361,
+            "maxInlierResidualPx": 0.9687713384628296,
+            "smoothedMedianResidualPx": 0.7439181208610535
+          },
+          {
+            "frame": 76,
+            "trackedPoints": 82,
+            "inlierPoints": 38,
+            "medianResidualPx": 0.3747692108154297,
+            "maxInlierResidualPx": 0.7284451127052307,
+            "smoothedMedianResidualPx": 0.8075664043426514
+          },
+          {
+            "frame": 77,
+            "trackedPoints": 82,
+            "inlierPoints": 36,
+            "medianResidualPx": 0.32331371307373047,
+            "maxInlierResidualPx": 0.7422657012939453,
+            "smoothedMedianResidualPx": 0.7783850431442261
+          },
+          {
+            "frame": 78,
+            "trackedPoints": 82,
+            "inlierPoints": 40,
+            "medianResidualPx": 0.27732229232788086,
+            "maxInlierResidualPx": 0.7249312400817871,
+            "smoothedMedianResidualPx": 0.6430213451385498
+          },
+          {
+            "frame": 79,
+            "trackedPoints": 82,
+            "inlierPoints": 47,
+            "medianResidualPx": 0.28286638855934143,
+            "maxInlierResidualPx": 0.8157538771629333,
+            "smoothedMedianResidualPx": 0.6154340505599976
+          },
+          {
+            "frame": 80,
+            "trackedPoints": 82,
+            "inlierPoints": 52,
+            "medianResidualPx": 0.35562843084335327,
+            "maxInlierResidualPx": 0.7426038980484009,
+            "smoothedMedianResidualPx": 0.520350456237793
+          },
+          {
+            "frame": 81,
+            "trackedPoints": 82,
+            "inlierPoints": 58,
+            "medianResidualPx": 0.36948055028915405,
+            "maxInlierResidualPx": 0.7933374047279358,
+            "smoothedMedianResidualPx": 0.4562142491340637
+          },
+          {
+            "frame": 82,
+            "trackedPoints": 82,
+            "inlierPoints": 60,
+            "medianResidualPx": 0.16456487774848938,
+            "maxInlierResidualPx": 0.8296599984169006,
+            "smoothedMedianResidualPx": 0.35421496629714966
+          },
+          {
+            "frame": 83,
+            "trackedPoints": 82,
+            "inlierPoints": 72,
+            "medianResidualPx": 0.18500670790672302,
+            "maxInlierResidualPx": 0.763376772403717,
+            "smoothedMedianResidualPx": 0.29765695333480835
+          },
+          {
+            "frame": 84,
+            "trackedPoints": 82,
+            "inlierPoints": 76,
+            "medianResidualPx": 0.1935533583164215,
+            "maxInlierResidualPx": 0.9076967239379883,
+            "smoothedMedianResidualPx": 0.185083270072937
+          },
+          {
+            "frame": 85,
+            "trackedPoints": 82,
+            "inlierPoints": 71,
+            "medianResidualPx": 0.24994756281375885,
+            "maxInlierResidualPx": 0.596501350402832,
+            "smoothedMedianResidualPx": 0.19819824397563934
+          },
+          {
+            "frame": 86,
+            "trackedPoints": 82,
+            "inlierPoints": 72,
+            "medianResidualPx": 0.21465668082237244,
+            "maxInlierResidualPx": 0.6482868194580078,
+            "smoothedMedianResidualPx": 0.18014323711395264
+          },
+          {
+            "frame": 87,
+            "trackedPoints": 82,
+            "inlierPoints": 72,
+            "medianResidualPx": 0.20421715080738068,
+            "maxInlierResidualPx": 0.5919018387794495,
+            "smoothedMedianResidualPx": 0.18578115105628967
+          },
+          {
+            "frame": 88,
+            "trackedPoints": 82,
+            "inlierPoints": 73,
+            "medianResidualPx": 0.2141953855752945,
+            "maxInlierResidualPx": 0.5489094853401184,
+            "smoothedMedianResidualPx": 0.1930287778377533
+          },
+          {
+            "frame": 89,
+            "trackedPoints": 82,
+            "inlierPoints": 73,
+            "medianResidualPx": 0.18825799226760864,
+            "maxInlierResidualPx": 0.7034677863121033,
+            "smoothedMedianResidualPx": 0.1836218237876892
+          },
+          {
+            "frame": 90,
+            "trackedPoints": 82,
+            "inlierPoints": 76,
+            "medianResidualPx": 0.2032698392868042,
+            "maxInlierResidualPx": 0.6435889601707458,
+            "smoothedMedianResidualPx": 0.21609291434288025
+          },
+          {
+            "frame": 91,
+            "trackedPoints": 82,
+            "inlierPoints": 72,
+            "medianResidualPx": 0.17741963267326355,
+            "maxInlierResidualPx": 0.5819491147994995,
+            "smoothedMedianResidualPx": 0.15948453545570374
+          },
+          {
+            "frame": 92,
+            "trackedPoints": 82,
+            "inlierPoints": 75,
+            "medianResidualPx": 0.2239825576543808,
+            "maxInlierResidualPx": 0.5029499530792236,
+            "smoothedMedianResidualPx": 0.22632375359535217
+          },
+          {
+            "frame": 93,
+            "trackedPoints": 82,
+            "inlierPoints": 73,
+            "medianResidualPx": 0.17976155877113342,
+            "maxInlierResidualPx": 0.5411657094955444,
+            "smoothedMedianResidualPx": 0.1849968135356903
+          },
+          {
+            "frame": 94,
+            "trackedPoints": 82,
+            "inlierPoints": 78,
+            "medianResidualPx": 0.20809397101402283,
+            "maxInlierResidualPx": 0.7135546207427979,
+            "smoothedMedianResidualPx": 0.20761537551879883
+          },
+          {
+            "frame": 95,
+            "trackedPoints": 82,
+            "inlierPoints": 72,
+            "medianResidualPx": 0.17519667744636536,
+            "maxInlierResidualPx": 0.6786530613899231,
+            "smoothedMedianResidualPx": 0.2022315263748169
+          },
+          {
+            "frame": 96,
+            "trackedPoints": 82,
+            "inlierPoints": 72,
+            "medianResidualPx": 0.16480019688606262,
+            "maxInlierResidualPx": 0.6788649559020996,
+            "smoothedMedianResidualPx": 0.19107630848884583
+          },
+          {
+            "frame": 97,
+            "trackedPoints": 82,
+            "inlierPoints": 74,
+            "medianResidualPx": 0.19381758570671082,
+            "maxInlierResidualPx": 0.5329442620277405,
+            "smoothedMedianResidualPx": 0.18488281965255737
+          },
+          {
+            "frame": 98,
+            "trackedPoints": 82,
+            "inlierPoints": 72,
+            "medianResidualPx": 0.1887003630399704,
+            "maxInlierResidualPx": 0.5948160290718079,
+            "smoothedMedianResidualPx": 0.1921525001525879
+          },
+          {
+            "frame": 99,
+            "trackedPoints": 82,
+            "inlierPoints": 75,
+            "medianResidualPx": 0.1733878254890442,
+            "maxInlierResidualPx": 0.6278935670852661,
+            "smoothedMedianResidualPx": 0.19599996507167816
+          },
+          {
+            "frame": 100,
+            "trackedPoints": 82,
+            "inlierPoints": 76,
+            "medianResidualPx": 0.17376261949539185,
+            "maxInlierResidualPx": 0.6141754984855652,
+            "smoothedMedianResidualPx": 0.1729799211025238
+          },
+          {
+            "frame": 101,
+            "trackedPoints": 82,
+            "inlierPoints": 72,
+            "medianResidualPx": 0.14878416061401367,
+            "maxInlierResidualPx": 0.5606920123100281,
+            "smoothedMedianResidualPx": 0.1646515130996704
+          },
+          {
+            "frame": 102,
+            "trackedPoints": 82,
+            "inlierPoints": 74,
+            "medianResidualPx": 0.16758450865745544,
+            "maxInlierResidualPx": 0.4329570233821869,
+            "smoothedMedianResidualPx": 0.16640393435955048
+          },
+          {
+            "frame": 103,
+            "trackedPoints": 82,
+            "inlierPoints": 76,
+            "medianResidualPx": 0.16152745485305786,
+            "maxInlierResidualPx": 0.571435809135437,
+            "smoothedMedianResidualPx": 0.17462243139743805
+          },
+          {
+            "frame": 104,
+            "trackedPoints": 82,
+            "inlierPoints": 77,
+            "medianResidualPx": 0.17726615071296692,
+            "maxInlierResidualPx": 0.5755047798156738,
+            "smoothedMedianResidualPx": 0.1861805021762848
+          },
+          {
+            "frame": 105,
+            "trackedPoints": 82,
+            "inlierPoints": 73,
+            "medianResidualPx": 0.14437387883663177,
+            "maxInlierResidualPx": 0.43643906712532043,
+            "smoothedMedianResidualPx": 0.1725004017353058
+          },
+          {
+            "frame": 106,
+            "trackedPoints": 82,
+            "inlierPoints": 72,
+            "medianResidualPx": 0.14292001724243164,
+            "maxInlierResidualPx": 0.5236351490020752,
+            "smoothedMedianResidualPx": 0.16866940259933472
+          },
+          {
+            "frame": 107,
+            "trackedPoints": 82,
+            "inlierPoints": 77,
+            "medianResidualPx": 0.15816926956176758,
+            "maxInlierResidualPx": 0.6202549338340759,
+            "smoothedMedianResidualPx": 0.1710318922996521
+          },
+          {
+            "frame": 108,
+            "trackedPoints": 82,
+            "inlierPoints": 79,
+            "medianResidualPx": 0.1537756621837616,
+            "maxInlierResidualPx": 0.5344834327697754,
+            "smoothedMedianResidualPx": 0.16746391355991364
+          },
+          {
+            "frame": 109,
+            "trackedPoints": 82,
+            "inlierPoints": 72,
+            "medianResidualPx": 0.15040692687034607,
+            "maxInlierResidualPx": 0.40414637327194214,
+            "smoothedMedianResidualPx": 0.19652505218982697
+          },
+          {
+            "frame": 110,
+            "trackedPoints": 82,
+            "inlierPoints": 79,
+            "medianResidualPx": 0.1539359986782074,
+            "maxInlierResidualPx": 0.3369073271751404,
+            "smoothedMedianResidualPx": 0.15712682902812958
+          },
+          {
+            "frame": 111,
+            "trackedPoints": 82,
+            "inlierPoints": 79,
+            "medianResidualPx": 0.19492626190185547,
+            "maxInlierResidualPx": 0.4555312395095825,
+            "smoothedMedianResidualPx": 0.20798738300800323
+          },
+          {
+            "frame": 112,
+            "trackedPoints": 82,
+            "inlierPoints": 77,
+            "medianResidualPx": 0.17460313439369202,
+            "maxInlierResidualPx": 0.45583638548851013,
+            "smoothedMedianResidualPx": 0.23407045006752014
+          },
+          {
+            "frame": 113,
+            "trackedPoints": 82,
+            "inlierPoints": 77,
+            "medianResidualPx": 0.1510278731584549,
+            "maxInlierResidualPx": 0.550909698009491,
+            "smoothedMedianResidualPx": 0.23030781745910645
+          },
+          {
+            "frame": 114,
+            "trackedPoints": 82,
+            "inlierPoints": 79,
+            "medianResidualPx": 0.13264170289039612,
+            "maxInlierResidualPx": 0.9849916696548462,
+            "smoothedMedianResidualPx": 0.16106978058815002
+          },
+          {
+            "frame": 115,
+            "trackedPoints": 82,
+            "inlierPoints": 77,
+            "medianResidualPx": 0.12521995604038239,
+            "maxInlierResidualPx": 0.36830437183380127,
+            "smoothedMedianResidualPx": 0.14181652665138245
+          },
+          {
+            "frame": 116,
+            "trackedPoints": 82,
+            "inlierPoints": 79,
+            "medianResidualPx": 0.10610657930374146,
+            "maxInlierResidualPx": 0.29725074768066406,
+            "smoothedMedianResidualPx": 0.15250897407531738
+          },
+          {
+            "frame": 117,
+            "trackedPoints": 82,
+            "inlierPoints": 75,
+            "medianResidualPx": 0.08622641861438751,
+            "maxInlierResidualPx": 0.23521225154399872,
+            "smoothedMedianResidualPx": 0.09546460211277008
+          },
+          {
+            "frame": 118,
+            "trackedPoints": 82,
+            "inlierPoints": 81,
+            "medianResidualPx": 0.09489608556032181,
+            "maxInlierResidualPx": 0.5191141366958618,
+            "smoothedMedianResidualPx": 0.11186297982931137
+          },
+          {
+            "frame": 119,
+            "trackedPoints": 82,
+            "inlierPoints": 82,
+            "medianResidualPx": 0,
+            "maxInlierResidualPx": 0,
+            "smoothedMedianResidualPx": 0.04120844230055809
+          }
+        ],
+        "temporalGeometry": {
+          "before": {
+            "projectedWidthMinMax": [
+              885.231689453125,
+              949.51416015625
+            ],
+            "projectedHeightMinMax": [
+              180.8997802734375,
+              190.13864135742188
+            ],
+            "projectedRatioMinMax": [
+              4.683885097503662,
+              5.195689678192139
+            ],
+            "maximumAdjacentWidthHeightRatioChanges": [
+              33.47607421875,
+              6.161346435546875,
+              0.3467826843261719
+            ],
+            "maximumSecondDifferenceWidthHeightRatio": [
+              33.1348876953125,
+              7.339508056640625,
+              0.3739142417907715
+            ]
+          },
+          "after": {
+            "projectedWidthMinMax": [
+              925.719970703125,
+              952.0400390625
+            ],
+            "projectedHeightMinMax": [
+              179.80189514160156,
+              184.39938354492188
+            ],
+            "projectedRatioMinMax": [
+              5.060410022735596,
+              5.247534275054932
+            ],
+            "maximumAdjacentWidthHeightRatioChanges": [
+              0.38372802734375,
+              0.536407470703125,
+              0.014974117279052734
+            ],
+            "maximumSecondDifferenceWidthHeightRatio": [
+              0.0594482421875,
+              0.1880645751953125,
+              0.005644321441650391
+            ]
+          }
+        },
+        "perFrame": [
+          {
+            "frame": 0,
+            "allowedMaskPixels": 54413,
+            "changedPixels": 41637,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": [
+              {
+                "part": 0,
+                "sourceInkContrastBGR": [
+                  24.380011602183032,
+                  28.921148569914337,
+                  31.60763000783058
+                ],
+                "transmission": 0.13164153516267899,
+                "reconstructedPixels": 55610
+              }
+            ]
+          },
+          {
+            "frame": 1,
+            "allowedMaskPixels": 55249,
+            "changedPixels": 42403,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": [
+              {
+                "part": 0,
+                "sourceInkContrastBGR": [
+                  24.34020533804852,
+                  29.09771252332601,
+                  31.438326106531036
+                ],
+                "transmission": 0.13159107591923344,
+                "reconstructedPixels": 56360
+              }
+            ]
+          },
+          {
+            "frame": 2,
+            "allowedMaskPixels": 55991,
+            "changedPixels": 42585,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": [
+              {
+                "part": 0,
+                "sourceInkContrastBGR": [
+                  24.40286762259626,
+                  29.230718833003365,
+                  31.636007734442785
+                ],
+                "transmission": 0.13220092122487195,
+                "reconstructedPixels": 57221
+              }
+            ]
+          },
+          {
+            "frame": 3,
+            "allowedMaskPixels": 56999,
+            "changedPixels": 43449,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": [
+              {
+                "part": 0,
+                "sourceInkContrastBGR": [
+                  24.37357123149036,
+                  29.443752838085928,
+                  31.664479728568978
+                ],
+                "transmission": 0.13252992836921748,
+                "reconstructedPixels": 58297
+              }
+            ]
+          },
+          {
+            "frame": 4,
+            "allowedMaskPixels": 57789,
+            "changedPixels": 43737,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": [
+              {
+                "part": 0,
+                "sourceInkContrastBGR": [
+                  24.507291598499705,
+                  29.500558313558884,
+                  31.759883637921405
+                ],
+                "transmission": 0.13297323031004651,
+                "reconstructedPixels": 59388
+              }
+            ]
+          },
+          {
+            "frame": 5,
+            "allowedMaskPixels": 58842,
+            "changedPixels": 44353,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": [
+              {
+                "part": 0,
+                "sourceInkContrastBGR": [
+                  24.543699901318504,
+                  29.771185932646887,
+                  31.900302062515564
+                ],
+                "transmission": 0.13366695797904024,
+                "reconstructedPixels": 60589
+              }
+            ]
+          },
+          {
+            "frame": 6,
+            "allowedMaskPixels": 59748,
+            "changedPixels": 44728,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": [
+              {
+                "part": 0,
+                "sourceInkContrastBGR": [
+                  24.29961335259256,
+                  29.951513534205176,
+                  32.013149462679266
+                ],
+                "transmission": 0.13374306410771628,
+                "reconstructedPixels": 61836
+              }
+            ]
+          },
+          {
+            "frame": 7,
+            "allowedMaskPixels": 61682,
+            "changedPixels": 46966,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": [
+              {
+                "part": 0,
+                "sourceInkContrastBGR": [
+                  24.727077570458817,
+                  29.862887587821433,
+                  32.37074319145185
+                ],
+                "transmission": 0.1348228036429955,
+                "reconstructedPixels": 63877
+              }
+            ]
+          },
+          {
+            "frame": 8,
+            "allowedMaskPixels": 63049,
+            "changedPixels": 48223,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": [
+              {
+                "part": 0,
+                "sourceInkContrastBGR": [
+                  24.546005456294083,
+                  30.077199076447812,
+                  32.1594641928625
+                ],
+                "transmission": 0.1345467732179913,
+                "reconstructedPixels": 65171
+              }
+            ]
+          },
+          {
+            "frame": 9,
+            "allowedMaskPixels": 64861,
+            "changedPixels": 50351,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": [
+              {
+                "part": 0,
+                "sourceInkContrastBGR": [
+                  24.566511848675006,
+                  30.205361711814305,
+                  32.15192254369195
+                ],
+                "transmission": 0.1347655753553198,
+                "reconstructedPixels": 66888
+              }
+            ]
+          },
+          {
+            "frame": 10,
+            "allowedMaskPixels": 65164,
+            "changedPixels": 49223,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": [
+              {
+                "part": 0,
+                "sourceInkContrastBGR": [
+                  24.542547377348683,
+                  30.17976820901093,
+                  32.47670550660831
+                ],
+                "transmission": 0.13519228076429135,
+                "reconstructedPixels": 67403
+              }
+            ]
+          },
+          {
+            "frame": 11,
+            "allowedMaskPixels": 66415,
+            "changedPixels": 50049,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": [
+              {
+                "part": 0,
+                "sourceInkContrastBGR": [
+                  24.409950286298198,
+                  30.22275797275924,
+                  32.46013183966687
+                ],
+                "transmission": 0.13502765906778963,
+                "reconstructedPixels": 68651
+              }
+            ]
+          },
+          {
+            "frame": 12,
+            "allowedMaskPixels": 67118,
+            "changedPixels": 50379,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": [
+              {
+                "part": 0,
+                "sourceInkContrastBGR": [
+                  24.24189373318012,
+                  30.14763335444715,
+                  32.47402084896939
+                ],
+                "transmission": 0.13467216734356072,
+                "reconstructedPixels": 69618
+              }
+            ]
+          },
+          {
+            "frame": 13,
+            "allowedMaskPixels": 68298,
+            "changedPixels": 51220,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": [
+              {
+                "part": 0,
+                "sourceInkContrastBGR": [
+                  24.18943467267627,
+                  30.193064261018634,
+                  32.45524283216665
+                ],
+                "transmission": 0.13463215777652954,
+                "reconstructedPixels": 70871
+              }
+            ]
+          },
+          {
+            "frame": 14,
+            "allowedMaskPixels": 69531,
+            "changedPixels": 52075,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": [
+              {
+                "part": 0,
+                "sourceInkContrastBGR": [
+                  24.083737896912595,
+                  29.981598419453576,
+                  32.41301776866965
+                ],
+                "transmission": 0.13407496757369894,
+                "reconstructedPixels": 72125
+              }
+            ]
+          },
+          {
+            "frame": 15,
+            "allowedMaskPixels": 71421,
+            "changedPixels": 54204,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": [
+              {
+                "part": 0,
+                "sourceInkContrastBGR": [
+                  23.892008170790888,
+                  29.89156441502854,
+                  32.34225211947813
+                ],
+                "transmission": 0.13352841039581018,
+                "reconstructedPixels": 74035
+              }
+            ]
+          },
+          {
+            "frame": 16,
+            "allowedMaskPixels": 72777,
+            "changedPixels": 54713,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": [
+              {
+                "part": 0,
+                "sourceInkContrastBGR": [
+                  23.55645063186472,
+                  29.616190257166608,
+                  32.29756120194486
+                ],
+                "transmission": 0.13251194122631965,
+                "reconstructedPixels": 75749
+              }
+            ]
+          },
+          {
+            "frame": 17,
+            "allowedMaskPixels": 74360,
+            "changedPixels": 55447,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": [
+              {
+                "part": 0,
+                "sourceInkContrastBGR": [
+                  23.217764991994386,
+                  29.26243639108722,
+                  32.07072405023351
+                ],
+                "transmission": 0.13108670609816298,
+                "reconstructedPixels": 77841
+              }
+            ]
+          },
+          {
+            "frame": 18,
+            "allowedMaskPixels": 77477,
+            "changedPixels": 58480,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": [
+              {
+                "part": 0,
+                "sourceInkContrastBGR": [
+                  23.15933294007442,
+                  29.04407306746907,
+                  31.995920537360504
+                ],
+                "transmission": 0.13054159154248682,
+                "reconstructedPixels": 81123
+              }
+            ]
+          },
+          {
+            "frame": 19,
+            "allowedMaskPixels": 78373,
+            "changedPixels": 57381,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": [
+              {
+                "part": 0,
+                "sourceInkContrastBGR": [
+                  22.899756468190006,
+                  28.88237893559655,
+                  31.9011192999331
+                ],
+                "transmission": 0.12974148016080567,
+                "reconstructedPixels": 82950
+              }
+            ]
+          },
+          {
+            "frame": 20,
+            "allowedMaskPixels": 81269,
+            "changedPixels": 59566,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": [
+              {
+                "part": 0,
+                "sourceInkContrastBGR": [
+                  22.866494255471054,
+                  28.95510593338082,
+                  32.06299543858506
+                ],
+                "transmission": 0.13005363663168518,
+                "reconstructedPixels": 86317
+              }
+            ]
+          },
+          {
+            "frame": 21,
+            "allowedMaskPixels": 84324,
+            "changedPixels": 62131,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": [
+              {
+                "part": 0,
+                "sourceInkContrastBGR": [
+                  22.793383186566416,
+                  29.12239696157539,
+                  32.20081192432227
+                ],
+                "transmission": 0.13041332104257997,
+                "reconstructedPixels": 90194
+              }
+            ]
+          },
+          {
+            "frame": 22,
+            "allowedMaskPixels": 87306,
+            "changedPixels": 64494,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": [
+              {
+                "part": 0,
+                "sourceInkContrastBGR": [
+                  22.764431409043937,
+                  29.21944636482101,
+                  32.55062923903236
+                ],
+                "transmission": 0.13106125118278653,
+                "reconstructedPixels": 94180
+              }
+            ]
+          },
+          {
+            "frame": 23,
+            "allowedMaskPixels": 89816,
+            "changedPixels": 65723,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": [
+              {
+                "part": 0,
+                "sourceInkContrastBGR": [
+                  22.8951999557962,
+                  29.66860868580808,
+                  32.84131440010847
+                ],
+                "transmission": 0.13241104347552365,
+                "reconstructedPixels": 97904
+              }
+            ]
+          },
+          {
+            "frame": 24,
+            "allowedMaskPixels": 93163,
+            "changedPixels": 67635,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": [
+              {
+                "part": 0,
+                "sourceInkContrastBGR": [
+                  22.925062003133633,
+                  30.38084341052378,
+                  32.99077424867248
+                ],
+                "transmission": 0.13379330180206186,
+                "reconstructedPixels": 102542
+              }
+            ]
+          },
+          {
+            "frame": 25,
+            "allowedMaskPixels": 97199,
+            "changedPixels": 71286,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": [
+              {
+                "part": 0,
+                "sourceInkContrastBGR": [
+                  23.090124015679606,
+                  30.658710935247512,
+                  33.18607143308071
+                ],
+                "transmission": 0.134782800595361,
+                "reconstructedPixels": 107498
+              }
+            ]
+          },
+          {
+            "frame": 26,
+            "allowedMaskPixels": 100047,
+            "changedPixels": 72884,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": [
+              {
+                "part": 0,
+                "sourceInkContrastBGR": [
+                  23.29509676367806,
+                  30.935616705576166,
+                  33.43395581167945
+                ],
+                "transmission": 0.13591421593943206,
+                "reconstructedPixels": 112326
+              }
+            ]
+          },
+          {
+            "frame": 27,
+            "allowedMaskPixels": 103229,
+            "changedPixels": 74605,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": [
+              {
+                "part": 0,
+                "sourceInkContrastBGR": [
+                  23.33063993700648,
+                  31.191533348033687,
+                  33.86419510551127
+                ],
+                "transmission": 0.13703312928767666,
+                "reconstructedPixels": 117372
+              }
+            ]
+          },
+          {
+            "frame": 28,
+            "allowedMaskPixels": 106135,
+            "changedPixels": 76423,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": [
+              {
+                "part": 0,
+                "sourceInkContrastBGR": [
+                  23.519971167176536,
+                  31.02261537005718,
+                  34.05638547491277
+                ],
+                "transmission": 0.13736274730565345,
+                "reconstructedPixels": 122326
+              }
+            ]
+          },
+          {
+            "frame": 29,
+            "allowedMaskPixels": 106245,
+            "changedPixels": 72350,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": [
+              {
+                "part": 0,
+                "sourceInkContrastBGR": [
+                  23.35875307306523,
+                  30.673201816614636,
+                  34.10802401170707
+                ],
+                "transmission": 0.13665113007966967,
+                "reconstructedPixels": 124381
+              }
+            ]
+          },
+          {
+            "frame": 30,
+            "allowedMaskPixels": 95706,
+            "changedPixels": 49007,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": [
+              {
+                "part": 0,
+                "sourceInkContrastBGR": [
+                  23.120886934681323,
+                  30.90623031415349,
+                  34.00259365358848
+                ],
+                "transmission": 0.13648017194174153,
+                "reconstructedPixels": 126871
+              }
+            ]
+          },
+          {
+            "frame": 31,
+            "allowedMaskPixels": 98563,
+            "changedPixels": 51152,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": [
+              {
+                "part": 0,
+                "sourceInkContrastBGR": [
+                  23.163905314977313,
+                  30.895772672301206,
+                  34.19353791898715
+                ],
+                "transmission": 0.13682669132754366,
+                "reconstructedPixels": 130419
+              }
+            ]
+          },
+          {
+            "frame": 32,
+            "allowedMaskPixels": 102959,
+            "changedPixels": 54845,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": [
+              {
+                "part": 0,
+                "sourceInkContrastBGR": [
+                  23.115462825464874,
+                  30.837132613874516,
+                  34.229594741920366
+                ],
+                "transmission": 0.13671657392443373,
+                "reconstructedPixels": 130464
+              }
+            ]
+          },
+          {
+            "frame": 33,
+            "allowedMaskPixels": 105168,
+            "changedPixels": 55939,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": [
+              {
+                "part": 0,
+                "sourceInkContrastBGR": [
+                  23.133868029490998,
+                  30.90182966463223,
+                  34.144419097768576
+                ],
+                "transmission": 0.13671335936727413,
+                "reconstructedPixels": 134321
+              }
+            ]
+          },
+          {
+            "frame": 34,
+            "allowedMaskPixels": 107159,
+            "changedPixels": 57264,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": [
+              {
+                "part": 0,
+                "sourceInkContrastBGR": [
+                  23.03220542345693,
+                  30.81123886709088,
+                  34.143181664742116
+                ],
+                "transmission": 0.13641337357409292,
+                "reconstructedPixels": 137332
+              }
+            ]
+          },
+          {
+            "frame": 35,
+            "allowedMaskPixels": 109274,
+            "changedPixels": 58984,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": [
+              {
+                "part": 0,
+                "sourceInkContrastBGR": [
+                  23.07760647825205,
+                  30.743409188457733,
+                  34.25133634127121
+                ],
+                "transmission": 0.13654628218291626,
+                "reconstructedPixels": 139836
+              }
+            ]
+          },
+          {
+            "frame": 36,
+            "allowedMaskPixels": 110914,
+            "changedPixels": 59675,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": [
+              {
+                "part": 0,
+                "sourceInkContrastBGR": [
+                  23.167950454126554,
+                  30.85513299178004,
+                  34.09241108219591
+                ],
+                "transmission": 0.13661316981101163,
+                "reconstructedPixels": 142507
+              }
+            ]
+          },
+          {
+            "frame": 37,
+            "allowedMaskPixels": 112836,
+            "changedPixels": 61145,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": [
+              {
+                "part": 0,
+                "sourceInkContrastBGR": [
+                  23.26282204497288,
+                  30.906347925121054,
+                  33.9859629240879
+                ],
+                "transmission": 0.13667462464214236,
+                "reconstructedPixels": 144348
+              }
+            ]
+          },
+          {
+            "frame": 38,
+            "allowedMaskPixels": 114259,
+            "changedPixels": 61989,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": [
+              {
+                "part": 0,
+                "sourceInkContrastBGR": [
+                  23.407483496526083,
+                  30.934605148649013,
+                  34.028310739775605
+                ],
+                "transmission": 0.13700837113945846,
+                "reconstructedPixels": 146527
+              }
+            ]
+          },
+          {
+            "frame": 39,
+            "allowedMaskPixels": 115792,
+            "changedPixels": 63402,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": [
+              {
+                "part": 0,
+                "sourceInkContrastBGR": [
+                  23.516839233198965,
+                  30.97469923190276,
+                  34.0246955615431
+                ],
+                "transmission": 0.13723447135913927,
+                "reconstructedPixels": 148663
+              }
+            ]
+          },
+          {
+            "frame": 40,
+            "allowedMaskPixels": 116842,
+            "changedPixels": 63919,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": [
+              {
+                "part": 0,
+                "sourceInkContrastBGR": [
+                  23.551815293328474,
+                  31.102255547080205,
+                  34.198468405139394
+                ],
+                "transmission": 0.13775587479929932,
+                "reconstructedPixels": 150903
+              }
+            ]
+          },
+          {
+            "frame": 41,
+            "allowedMaskPixels": 117568,
+            "changedPixels": 63881,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": [
+              {
+                "part": 0,
+                "sourceInkContrastBGR": [
+                  23.57039726579643,
+                  31.15082659621379,
+                  34.19249511869177
+                ],
+                "transmission": 0.13785072710186355,
+                "reconstructedPixels": 153339
+              }
+            ]
+          },
+          {
+            "frame": 42,
+            "allowedMaskPixels": 118262,
+            "changedPixels": 64169,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": [
+              {
+                "part": 0,
+                "sourceInkContrastBGR": [
+                  23.49415918107084,
+                  31.004306117373233,
+                  34.17936666588912
+                ],
+                "transmission": 0.1374850107974158,
+                "reconstructedPixels": 155583
+              }
+            ]
+          },
+          {
+            "frame": 43,
+            "allowedMaskPixels": 119089,
+            "changedPixels": 64098,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": [
+              {
+                "part": 0,
+                "sourceInkContrastBGR": [
+                  23.418803860859455,
+                  31.032151631753706,
+                  34.05011613001574
+                ],
+                "transmission": 0.1372109637560138,
+                "reconstructedPixels": 157035
+              }
+            ]
+          },
+          {
+            "frame": 44,
+            "allowedMaskPixels": 119972,
+            "changedPixels": 64259,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": [
+              {
+                "part": 0,
+                "sourceInkContrastBGR": [
+                  23.548619163173328,
+                  30.97471054456355,
+                  34.06700437286531
+                ],
+                "transmission": 0.13734935516372432,
+                "reconstructedPixels": 158767
+              }
+            ]
+          },
+          {
+            "frame": 45,
+            "allowedMaskPixels": 120397,
+            "changedPixels": 64842,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": [
+              {
+                "part": 0,
+                "sourceInkContrastBGR": [
+                  23.57972116248824,
+                  30.938906591246223,
+                  34.05426440697495
+                ],
+                "transmission": 0.13732231342745646,
+                "reconstructedPixels": 161090
+              }
+            ]
+          },
+          {
+            "frame": 46,
+            "allowedMaskPixels": 120937,
+            "changedPixels": 64812,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": [
+              {
+                "part": 0,
+                "sourceInkContrastBGR": [
+                  23.577316159270666,
+                  31.01920420034692,
+                  33.92556192979431
+                ],
+                "transmission": 0.13724353843319675,
+                "reconstructedPixels": 162767
+              }
+            ]
+          },
+          {
+            "frame": 47,
+            "allowedMaskPixels": 121443,
+            "changedPixels": 65083,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": [
+              {
+                "part": 0,
+                "sourceInkContrastBGR": [
+                  23.3967426784979,
+                  30.964745735320363,
+                  33.863891595479714
+                ],
+                "transmission": 0.13678353489813638,
+                "reconstructedPixels": 163810
+              }
+            ]
+          },
+          {
+            "frame": 48,
+            "allowedMaskPixels": 121778,
+            "changedPixels": 65017,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": [
+              {
+                "part": 0,
+                "sourceInkContrastBGR": [
+                  23.623932985867498,
+                  30.90330228452754,
+                  33.62910033307293
+                ],
+                "transmission": 0.13667648930770226,
+                "reconstructedPixels": 165274
+              }
+            ]
+          },
+          {
+            "frame": 49,
+            "allowedMaskPixels": 121988,
+            "changedPixels": 65159,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": [
+              {
+                "part": 0,
+                "sourceInkContrastBGR": [
+                  23.464032950042707,
+                  30.89356899811638,
+                  33.54921722993912
+                ],
+                "transmission": 0.13628964213658637,
+                "reconstructedPixels": 165945
+              }
+            ]
+          },
+          {
+            "frame": 50,
+            "allowedMaskPixels": 122063,
+            "changedPixels": 64916,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": [
+              {
+                "part": 0,
+                "sourceInkContrastBGR": [
+                  23.340974350354955,
+                  30.806752229168737,
+                  33.425835217764146
+                ],
+                "transmission": 0.13577296402680283,
+                "reconstructedPixels": 166721
+              }
+            ]
+          },
+          {
+            "frame": 51,
+            "allowedMaskPixels": 121928,
+            "changedPixels": 64946,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": [
+              {
+                "part": 0,
+                "sourceInkContrastBGR": [
+                  22.744471375246803,
+                  30.577860089577825,
+                  33.3057333400119
+                ],
+                "transmission": 0.13430707721680082,
+                "reconstructedPixels": 166808
+              }
+            ]
+          },
+          {
+            "frame": 52,
+            "allowedMaskPixels": 121808,
+            "changedPixels": 64810,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": [
+              {
+                "part": 0,
+                "sourceInkContrastBGR": [
+                  22.50012322358873,
+                  30.394455963788886,
+                  33.132567945775776
+                ],
+                "transmission": 0.13337542191186572,
+                "reconstructedPixels": 166888
+              }
+            ]
+          },
+          {
+            "frame": 53,
+            "allowedMaskPixels": 121748,
+            "changedPixels": 64300,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": [
+              {
+                "part": 0,
+                "sourceInkContrastBGR": [
+                  22.390098071631314,
+                  30.48402012097769,
+                  33.12497204883046
+                ],
+                "transmission": 0.1333319228549449,
+                "reconstructedPixels": 167252
+              }
+            ]
+          },
+          {
+            "frame": 54,
+            "allowedMaskPixels": 121354,
+            "changedPixels": 63051,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": [
+              {
+                "part": 0,
+                "sourceInkContrastBGR": [
+                  22.42735867968119,
+                  30.564840116296324,
+                  32.97538866410676
+                ],
+                "transmission": 0.133283081333464,
+                "reconstructedPixels": 167790
+              }
+            ]
+          },
+          {
+            "frame": 55,
+            "allowedMaskPixels": 122151,
+            "changedPixels": 64688,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": [
+              {
+                "part": 0,
+                "sourceInkContrastBGR": [
+                  22.419016141833765,
+                  30.583068659961654,
+                  32.913347710707
+                ],
+                "transmission": 0.13320222094961615,
+                "reconstructedPixels": 166882
+              }
+            ]
+          },
+          {
+            "frame": 56,
+            "allowedMaskPixels": 121728,
+            "changedPixels": 63797,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": [
+              {
+                "part": 0,
+                "sourceInkContrastBGR": [
+                  22.37027538327277,
+                  30.551837975830836,
+                  32.81308172801596
+                ],
+                "transmission": 0.13292278308080552,
+                "reconstructedPixels": 167089
+              }
+            ]
+          },
+          {
+            "frame": 57,
+            "allowedMaskPixels": 120697,
+            "changedPixels": 61378,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": [
+              {
+                "part": 0,
+                "sourceInkContrastBGR": [
+                  22.358088699844842,
+                  30.54214538738431,
+                  32.691261647069425
+                ],
+                "transmission": 0.13269999338650942,
+                "reconstructedPixels": 167600
+              }
+            ]
+          },
+          {
+            "frame": 58,
+            "allowedMaskPixels": 121107,
+            "changedPixels": 62481,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": [
+              {
+                "part": 0,
+                "sourceInkContrastBGR": [
+                  22.493193557232587,
+                  30.579614184453078,
+                  32.70090885691948
+                ],
+                "transmission": 0.1329825063544266,
+                "reconstructedPixels": 167164
+              }
+            ]
+          },
+          {
+            "frame": 59,
+            "allowedMaskPixels": 121014,
+            "changedPixels": 62711,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": [
+              {
+                "part": 0,
+                "sourceInkContrastBGR": [
+                  22.432760841029875,
+                  30.54055219820259,
+                  32.729319884365026
+                ],
+                "transmission": 0.1328722991063527,
+                "reconstructedPixels": 167072
+              }
+            ]
+          },
+          {
+            "frame": 60,
+            "allowedMaskPixels": 120710,
+            "changedPixels": 61884,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": [
+              {
+                "part": 0,
+                "sourceInkContrastBGR": [
+                  22.60445774969321,
+                  30.4955816388331,
+                  32.76124678609415
+                ],
+                "transmission": 0.13311827313894645,
+                "reconstructedPixels": 167165
+              }
+            ]
+          },
+          {
+            "frame": 61,
+            "allowedMaskPixels": 120508,
+            "changedPixels": 61972,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": [
+              {
+                "part": 0,
+                "sourceInkContrastBGR": [
+                  22.70806699623634,
+                  30.516513934532952,
+                  32.8321212116774
+                ],
+                "transmission": 0.1334212436317003,
+                "reconstructedPixels": 167356
+              }
+            ]
+          },
+          {
+            "frame": 62,
+            "allowedMaskPixels": 120360,
+            "changedPixels": 61874,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": [
+              {
+                "part": 0,
+                "sourceInkContrastBGR": [
+                  22.666259720936495,
+                  30.530281606570014,
+                  32.864031235823745
+                ],
+                "transmission": 0.13342724428423294,
+                "reconstructedPixels": 167312
+              }
+            ]
+          },
+          {
+            "frame": 63,
+            "allowedMaskPixels": 120292,
+            "changedPixels": 61419,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": [
+              {
+                "part": 0,
+                "sourceInkContrastBGR": [
+                  22.60682399122632,
+                  30.3987287317062,
+                  32.83265779319538
+                ],
+                "transmission": 0.1330824969242293,
+                "reconstructedPixels": 167152
+              }
+            ]
+          },
+          {
+            "frame": 64,
+            "allowedMaskPixels": 120843,
+            "changedPixels": 62600,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": [
+              {
+                "part": 0,
+                "sourceInkContrastBGR": [
+                  22.48385090075584,
+                  30.24855587660568,
+                  32.66918992342315
+                ],
+                "transmission": 0.1324055762802863,
+                "reconstructedPixels": 166744
+              }
+            ]
+          },
+          {
+            "frame": 65,
+            "allowedMaskPixels": 119926,
+            "changedPixels": 59684,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": [
+              {
+                "part": 0,
+                "sourceInkContrastBGR": [
+                  22.324819505990916,
+                  30.097094094152084,
+                  32.56065743308329
+                ],
+                "transmission": 0.13175592408252138,
+                "reconstructedPixels": 167063
+              }
+            ]
+          },
+          {
+            "frame": 66,
+            "allowedMaskPixels": 120939,
+            "changedPixels": 62360,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": [
+              {
+                "part": 0,
+                "sourceInkContrastBGR": [
+                  22.28822301600178,
+                  30.027744012236056,
+                  32.49082990939971
+                ],
+                "transmission": 0.1314834061048644,
+                "reconstructedPixels": 166538
+              }
+            ]
+          },
+          {
+            "frame": 67,
+            "allowedMaskPixels": 120774,
+            "changedPixels": 62231,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": [
+              {
+                "part": 0,
+                "sourceInkContrastBGR": [
+                  22.132253394868414,
+                  30.005883212894574,
+                  32.511580640368905
+                ],
+                "transmission": 0.13123987170253007,
+                "reconstructedPixels": 166556
+              }
+            ]
+          },
+          {
+            "frame": 68,
+            "allowedMaskPixels": 119982,
+            "changedPixels": 59428,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": [
+              {
+                "part": 0,
+                "sourceInkContrastBGR": [
+                  21.98133746186997,
+                  29.851547528894343,
+                  32.63972755150965
+                ],
+                "transmission": 0.13096529076321545,
+                "reconstructedPixels": 166767
+              }
+            ]
+          },
+          {
+            "frame": 69,
+            "allowedMaskPixels": 119313,
+            "changedPixels": 59138,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": [
+              {
+                "part": 0,
+                "sourceInkContrastBGR": [
+                  21.615660589129106,
+                  29.818589504638396,
+                  32.58690112710602
+                ],
+                "transmission": 0.13026535073003648,
+                "reconstructedPixels": 168309
+              }
+            ]
+          },
+          {
+            "frame": 70,
+            "allowedMaskPixels": 121388,
+            "changedPixels": 62779,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": [
+              {
+                "part": 0,
+                "sourceInkContrastBGR": [
+                  21.58464132656134,
+                  29.717553986722905,
+                  32.64647212047686
+                ],
+                "transmission": 0.1301529727655211,
+                "reconstructedPixels": 166214
+              }
+            ]
+          },
+          {
+            "frame": 71,
+            "allowedMaskPixels": 120381,
+            "changedPixels": 60767,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": [
+              {
+                "part": 0,
+                "sourceInkContrastBGR": [
+                  21.42430895394662,
+                  29.804252910007733,
+                  32.59980923897287
+                ],
+                "transmission": 0.12996646682624374,
+                "reconstructedPixels": 166919
+              }
+            ]
+          },
+          {
+            "frame": 72,
+            "allowedMaskPixels": 121140,
+            "changedPixels": 61129,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": [
+              {
+                "part": 0,
+                "sourceInkContrastBGR": [
+                  21.08766579336168,
+                  29.77915456858244,
+                  32.67817269158064
+                ],
+                "transmission": 0.1295271210132167,
+                "reconstructedPixels": 165159
+              }
+            ]
+          },
+          {
+            "frame": 73,
+            "allowedMaskPixels": 120564,
+            "changedPixels": 60846,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": [
+              {
+                "part": 0,
+                "sourceInkContrastBGR": [
+                  20.575555124482833,
+                  29.2291475482524,
+                  32.75648503201404
+                ],
+                "transmission": 0.12800184140271204,
+                "reconstructedPixels": 166363
+              }
+            ]
+          },
+          {
+            "frame": 74,
+            "allowedMaskPixels": 120242,
+            "changedPixels": 60125,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": [
+              {
+                "part": 0,
+                "sourceInkContrastBGR": [
+                  20.439556828483518,
+                  28.887510624775445,
+                  32.74121372295025
+                ],
+                "transmission": 0.12723764523443287,
+                "reconstructedPixels": 165688
+              }
+            ]
+          },
+          {
+            "frame": 75,
+            "allowedMaskPixels": 120467,
+            "changedPixels": 60478,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": [
+              {
+                "part": 0,
+                "sourceInkContrastBGR": [
+                  20.689996728047134,
+                  28.885290287425192,
+                  32.74411479746652
+                ],
+                "transmission": 0.12762697955494395,
+                "reconstructedPixels": 165122
+              }
+            ]
+          },
+          {
+            "frame": 76,
+            "allowedMaskPixels": 119481,
+            "changedPixels": 59708,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": [
+              {
+                "part": 0,
+                "sourceInkContrastBGR": [
+                  20.737599780331976,
+                  28.634951594293355,
+                  32.581376047346026
+                ],
+                "transmission": 0.12706035259220366,
+                "reconstructedPixels": 167382
+              }
+            ]
+          },
+          {
+            "frame": 77,
+            "allowedMaskPixels": 119712,
+            "changedPixels": 60113,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": [
+              {
+                "part": 0,
+                "sourceInkContrastBGR": [
+                  20.958955686502023,
+                  28.47792566020877,
+                  32.457866341558
+                ],
+                "transmission": 0.1269686010670834,
+                "reconstructedPixels": 166640
+              },
+              {
+                "part": 1,
+                "sourceInkContrastBGR": [
+                  30,
+                  30,
+                  30
+                ],
+                "transmission": 0.13953488372093023,
+                "reconstructedPixels": 0
+              }
+            ]
+          },
+          {
+            "frame": 78,
+            "allowedMaskPixels": 120076,
+            "changedPixels": 61155,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": [
+              {
+                "part": 0,
+                "sourceInkContrastBGR": [
+                  20.61598958277831,
+                  28.137227807151717,
+                  32.00124605042387
+                ],
+                "transmission": 0.1252007185121766,
+                "reconstructedPixels": 165596
+              },
+              {
+                "part": 1,
+                "sourceInkContrastBGR": [
+                  30,
+                  30,
+                  30
+                ],
+                "transmission": 0.13953488372093023,
+                "reconstructedPixels": 1
+              }
+            ]
+          },
+          {
+            "frame": 79,
+            "allowedMaskPixels": 119239,
+            "changedPixels": 60344,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": [
+              {
+                "part": 0,
+                "sourceInkContrastBGR": [
+                  20.013065491081505,
+                  27.616008731960477,
+                  31.47538789310076
+                ],
+                "transmission": 0.12264257692425232,
+                "reconstructedPixels": 167589
+              },
+              {
+                "part": 1,
+                "sourceInkContrastBGR": [
+                  30,
+                  30,
+                  30
+                ],
+                "transmission": 0.13953488372093023,
+                "reconstructedPixels": 147
+              }
+            ]
+          },
+          {
+            "frame": 80,
+            "allowedMaskPixels": 119863,
+            "changedPixels": 60841,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": [
+              {
+                "part": 0,
+                "sourceInkContrastBGR": [
+                  18.97781390582921,
+                  27.30253567806875,
+                  30.888300276913554
+                ],
+                "transmission": 0.11964131761366127,
+                "reconstructedPixels": 166080
+              },
+              {
+                "part": 1,
+                "sourceInkContrastBGR": [
+                  35.83940678494902,
+                  44.75417827336133,
+                  46.69812399984238
+                ],
+                "transmission": 0.1973514869118647,
+                "reconstructedPixels": 503
+              }
+            ]
+          },
+          {
+            "frame": 81,
+            "allowedMaskPixels": 122467,
+            "changedPixels": 62739,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": [
+              {
+                "part": 0,
+                "sourceInkContrastBGR": [
+                  18.503110631631756,
+                  27.327583316014994,
+                  30.500243483434858
+                ],
+                "transmission": 0.1183425386528397,
+                "reconstructedPixels": 162588
+              },
+              {
+                "part": 1,
+                "sourceInkContrastBGR": [
+                  36.1630474376411,
+                  44.83861053369591,
+                  48.06695902298196
+                ],
+                "transmission": 0.20010638293692865,
+                "reconstructedPixels": 954
+              }
+            ]
+          },
+          {
+            "frame": 82,
+            "allowedMaskPixels": 121538,
+            "changedPixels": 61353,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": [
+              {
+                "part": 0,
+                "sourceInkContrastBGR": [
+                  18.796043583625732,
+                  27.421177888602003,
+                  30.374557597790798
+                ],
+                "transmission": 0.11874694429460236,
+                "reconstructedPixels": 165452
+              },
+              {
+                "part": 1,
+                "sourceInkContrastBGR": [
+                  37.112981416134886,
+                  45.65427362694166,
+                  48.481349773425535
+                ],
+                "transmission": 0.20348620901783268,
+                "reconstructedPixels": 1561
+              }
+            ]
+          },
+          {
+            "frame": 83,
+            "allowedMaskPixels": 123567,
+            "changedPixels": 62806,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": [
+              {
+                "part": 0,
+                "sourceInkContrastBGR": [
+                  19.50825318501748,
+                  27.624478066509965,
+                  30.221557259032664
+                ],
+                "transmission": 0.11992912947373661,
+                "reconstructedPixels": 164106
+              },
+              {
+                "part": 1,
+                "sourceInkContrastBGR": [
+                  36.7936175516579,
+                  45.431252031737515,
+                  48.19457036580735
+                ],
+                "transmission": 0.20220068209178724,
+                "reconstructedPixels": 2236
+              }
+            ]
+          },
+          {
+            "frame": 84,
+            "allowedMaskPixels": 123688,
+            "changedPixels": 62488,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": [
+              {
+                "part": 0,
+                "sourceInkContrastBGR": [
+                  20.159912144669818,
+                  27.93566919919644,
+                  30.374805431747404
+                ],
+                "transmission": 0.12165951438079636,
+                "reconstructedPixels": 166506
+              },
+              {
+                "part": 1,
+                "sourceInkContrastBGR": [
+                  36.85203617715723,
+                  45.097801037393864,
+                  47.38051975326583
+                ],
+                "transmission": 0.2005121813454526,
+                "reconstructedPixels": 3013
+              }
+            ]
+          },
+          {
+            "frame": 85,
+            "allowedMaskPixels": 125110,
+            "changedPixels": 63512,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": [
+              {
+                "part": 0,
+                "sourceInkContrastBGR": [
+                  21.269427345987907,
+                  28.843329481100312,
+                  30.81471485354008
+                ],
+                "transmission": 0.12546894834205938,
+                "reconstructedPixels": 166826
+              },
+              {
+                "part": 1,
+                "sourceInkContrastBGR": [
+                  36.18536711492165,
+                  44.508062137987906,
+                  46.77229194435057
+                ],
+                "transmission": 0.1976212731740467,
+                "reconstructedPixels": 3823
+              }
+            ]
+          },
+          {
+            "frame": 86,
+            "allowedMaskPixels": 126709,
+            "changedPixels": 64872,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": [
+              {
+                "part": 0,
+                "sourceInkContrastBGR": [
+                  22.920222580871396,
+                  30.304098462034872,
+                  31.67760225863519
+                ],
+                "transmission": 0.13163088883959914,
+                "reconstructedPixels": 167129
+              },
+              {
+                "part": 1,
+                "sourceInkContrastBGR": [
+                  35.46298146273861,
+                  44.46887223346985,
+                  46.33114347093178
+                ],
+                "transmission": 0.1957565847552562,
+                "reconstructedPixels": 4761
+              }
+            ]
+          },
+          {
+            "frame": 87,
+            "allowedMaskPixels": 128490,
+            "changedPixels": 66253,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": [
+              {
+                "part": 0,
+                "sourceInkContrastBGR": [
+                  23.986819009756545,
+                  30.90474581682622,
+                  32.52915759032922
+                ],
+                "transmission": 0.13553600374715036,
+                "reconstructedPixels": 167603
+              },
+              {
+                "part": 1,
+                "sourceInkContrastBGR": [
+                  35.21037737809722,
+                  44.41313402788779,
+                  45.76576000653496
+                ],
+                "transmission": 0.1944019711822015,
+                "reconstructedPixels": 5880
+              }
+            ]
+          },
+          {
+            "frame": 88,
+            "allowedMaskPixels": 130684,
+            "changedPixels": 68020,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": [
+              {
+                "part": 0,
+                "sourceInkContrastBGR": [
+                  25.38246566189548,
+                  31.493199232751692,
+                  33.81719574471583
+                ],
+                "transmission": 0.1406090862625783,
+                "reconstructedPixels": 167743
+              },
+              {
+                "part": 1,
+                "sourceInkContrastBGR": [
+                  35.235025515456556,
+                  43.687453816632996,
+                  45.59343001454636
+                ],
+                "transmission": 0.19304792146765257,
+                "reconstructedPixels": 7169
+              }
+            ]
+          },
+          {
+            "frame": 89,
+            "allowedMaskPixels": 132485,
+            "changedPixels": 69977,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": [
+              {
+                "part": 0,
+                "sourceInkContrastBGR": [
+                  26.481243817452196,
+                  31.93202348341302,
+                  34.553001862619396
+                ],
+                "transmission": 0.1441337506410614,
+                "reconstructedPixels": 168630
+              },
+              {
+                "part": 1,
+                "sourceInkContrastBGR": [
+                  34.38782710376965,
+                  43.016302045474006,
+                  43.89136188421226
+                ],
+                "transmission": 0.18805502485807118,
+                "reconstructedPixels": 8571
+              }
+            ]
+          },
+          {
+            "frame": 90,
+            "allowedMaskPixels": 134281,
+            "changedPixels": 71497,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": [
+              {
+                "part": 0,
+                "sourceInkContrastBGR": [
+                  27.2153106137698,
+                  32.31756278231643,
+                  35.04586608264006
+                ],
+                "transmission": 0.1466337046181803,
+                "reconstructedPixels": 169929
+              },
+              {
+                "part": 1,
+                "sourceInkContrastBGR": [
+                  33.128856985251815,
+                  41.55330603704684,
+                  43.16295569999039
+                ],
+                "transmission": 0.18270561042215355,
+                "reconstructedPixels": 10017
+              }
+            ]
+          },
+          {
+            "frame": 91,
+            "allowedMaskPixels": 136234,
+            "changedPixels": 72607,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": [
+              {
+                "part": 0,
+                "sourceInkContrastBGR": [
+                  27.88245261537243,
+                  32.693846764455586,
+                  35.337549037537954
+                ],
+                "transmission": 0.14870364095715655,
+                "reconstructedPixels": 170890
+              },
+              {
+                "part": 1,
+                "sourceInkContrastBGR": [
+                  32.24496526671638,
+                  40.979325288728205,
+                  42.55666700458593
+                ],
+                "transmission": 0.17950536055818686,
+                "reconstructedPixels": 11532
+              }
+            ]
+          },
+          {
+            "frame": 92,
+            "allowedMaskPixels": 138335,
+            "changedPixels": 73167,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": [
+              {
+                "part": 0,
+                "sourceInkContrastBGR": [
+                  27.437279485283028,
+                  32.71869525408812,
+                  35.20206998143581
+                ],
+                "transmission": 0.1478419297997007,
+                "reconstructedPixels": 170391
+              },
+              {
+                "part": 1,
+                "sourceInkContrastBGR": [
+                  31.44143493878093,
+                  39.61594425566969,
+                  42.614893716429506
+                ],
+                "transmission": 0.1762360820323723,
+                "reconstructedPixels": 12937
+              }
+            ]
+          },
+          {
+            "frame": 93,
+            "allowedMaskPixels": 140379,
+            "changedPixels": 72788,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": [
+              {
+                "part": 0,
+                "sourceInkContrastBGR": [
+                  26.10411547163143,
+                  32.53696904387495,
+                  34.81494269194158
+                ],
+                "transmission": 0.1448930654379038,
+                "reconstructedPixels": 169414
+              },
+              {
+                "part": 1,
+                "sourceInkContrastBGR": [
+                  31.275903131208622,
+                  39.378949176212444,
+                  42.81224731687985
+                ],
+                "transmission": 0.17591798391364483,
+                "reconstructedPixels": 14386
+              }
+            ]
+          },
+          {
+            "frame": 94,
+            "allowedMaskPixels": 142716,
+            "changedPixels": 73349,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": [
+              {
+                "part": 0,
+                "sourceInkContrastBGR": [
+                  25.24669947671019,
+                  32.06314697143573,
+                  34.5102218773273
+                ],
+                "transmission": 0.14235669507825305,
+                "reconstructedPixels": 168559
+              },
+              {
+                "part": 1,
+                "sourceInkContrastBGR": [
+                  31.384009894753007,
+                  39.1367342909749,
+                  42.86064833582917
+                ],
+                "transmission": 0.17578510468458464,
+                "reconstructedPixels": 15823
+              }
+            ]
+          },
+          {
+            "frame": 95,
+            "allowedMaskPixels": 144981,
+            "changedPixels": 74565,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": [
+              {
+                "part": 0,
+                "sourceInkContrastBGR": [
+                  25.253403461811786,
+                  31.829252241707337,
+                  34.27979133321816
+                ],
+                "transmission": 0.1416472047081198,
+                "reconstructedPixels": 168155
+              },
+              {
+                "part": 1,
+                "sourceInkContrastBGR": [
+                  30.92221770111243,
+                  38.96057725741127,
+                  42.959020420596175
+                ],
+                "transmission": 0.17494855097537965,
+                "reconstructedPixels": 17211
+              }
+            ]
+          },
+          {
+            "frame": 96,
+            "allowedMaskPixels": 146963,
+            "changedPixels": 74907,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": [
+              {
+                "part": 0,
+                "sourceInkContrastBGR": [
+                  25.09637695953751,
+                  31.8759868326339,
+                  34.17068292441422
+                ],
+                "transmission": 0.14130704917300096,
+                "reconstructedPixels": 168766
+              },
+              {
+                "part": 1,
+                "sourceInkContrastBGR": [
+                  31.061284077197158,
+                  38.70896558574232,
+                  42.80508527163029
+                ],
+                "transmission": 0.17453540299933296,
+                "reconstructedPixels": 18793
+              }
+            ]
+          },
+          {
+            "frame": 97,
+            "allowedMaskPixels": 152021,
+            "changedPixels": 81715,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": [
+              {
+                "part": 0,
+                "sourceInkContrastBGR": [
+                  25.369749441903764,
+                  31.911781162835524,
+                  34.356500991773686
+                ],
+                "transmission": 0.14207446759149298,
+                "reconstructedPixels": 166141
+              },
+              {
+                "part": 1,
+                "sourceInkContrastBGR": [
+                  30.48755367610994,
+                  38.01078699347457,
+                  42.648554171445355
+                ],
+                "transmission": 0.17232076719539516,
+                "reconstructedPixels": 19980
+              }
+            ]
+          },
+          {
+            "frame": 98,
+            "allowedMaskPixels": 153923,
+            "changedPixels": 83240,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": [
+              {
+                "part": 0,
+                "sourceInkContrastBGR": [
+                  25.3949668911349,
+                  31.951095090854153,
+                  34.32223109138364
+                ],
+                "transmission": 0.14212138460988016,
+                "reconstructedPixels": 166576
+              },
+              {
+                "part": 1,
+                "sourceInkContrastBGR": [
+                  29.263164380184776,
+                  38.18552192936647,
+                  41.89766492386943
+                ],
+                "transmission": 0.16952922671848167,
+                "reconstructedPixels": 21478
+              }
+            ]
+          },
+          {
+            "frame": 99,
+            "allowedMaskPixels": 153925,
+            "changedPixels": 79070,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": [
+              {
+                "part": 0,
+                "sourceInkContrastBGR": [
+                  25.597365106289857,
+                  32.01154343197703,
+                  34.301545582063056
+                ],
+                "transmission": 0.1424968280935348,
+                "reconstructedPixels": 168967
+              },
+              {
+                "part": 1,
+                "sourceInkContrastBGR": [
+                  27.03101711897814,
+                  37.85696966874643,
+                  40.875524752798555
+                ],
+                "transmission": 0.16397443649693508,
+                "reconstructedPixels": 23149
+              }
+            ]
+          },
+          {
+            "frame": 100,
+            "allowedMaskPixels": 156984,
+            "changedPixels": 83064,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": [
+              {
+                "part": 0,
+                "sourceInkContrastBGR": [
+                  25.748709434481526,
+                  32.154267062076514,
+                  34.318607260073264
+                ],
+                "transmission": 0.1429791996226842,
+                "reconstructedPixels": 168018
+              },
+              {
+                "part": 1,
+                "sourceInkContrastBGR": [
+                  27.438049569621967,
+                  37.68508981754759,
+                  41.013160812507735
+                ],
+                "transmission": 0.1645524034103524,
+                "reconstructedPixels": 24506
+              }
+            ]
+          },
+          {
+            "frame": 101,
+            "allowedMaskPixels": 158988,
+            "changedPixels": 82360,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": [
+              {
+                "part": 0,
+                "sourceInkContrastBGR": [
+                  25.932759751339972,
+                  31.99695251482845,
+                  34.45278304415055
+                ],
+                "transmission": 0.14322867489971933,
+                "reconstructedPixels": 168113
+              },
+              {
+                "part": 1,
+                "sourceInkContrastBGR": [
+                  30.91659843627336,
+                  37.513403002689955,
+                  42.049179454195595
+                ],
+                "transmission": 0.17128555177233942,
+                "reconstructedPixels": 26150
+              }
+            ]
+          },
+          {
+            "frame": 102,
+            "allowedMaskPixels": 162199,
+            "changedPixels": 86023,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": [
+              {
+                "part": 0,
+                "sourceInkContrastBGR": [
+                  25.820888346887557,
+                  32.044849365116676,
+                  34.54952722225531
+                ],
+                "transmission": 0.14327948051823186,
+                "reconstructedPixels": 167395
+              },
+              {
+                "part": 1,
+                "sourceInkContrastBGR": [
+                  33.38958837321721,
+                  37.944980577237885,
+                  42.78082346412148
+                ],
+                "transmission": 0.1769230890148474,
+                "reconstructedPixels": 27420
+              }
+            ]
+          },
+          {
+            "frame": 103,
+            "allowedMaskPixels": 163151,
+            "changedPixels": 85867,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": [
+              {
+                "part": 0,
+                "sourceInkContrastBGR": [
+                  25.846197690579743,
+                  31.921363812129357,
+                  34.7096136233135
+                ],
+                "transmission": 0.14337546531166295,
+                "reconstructedPixels": 168055
+              },
+              {
+                "part": 1,
+                "sourceInkContrastBGR": [
+                  33.415225597133514,
+                  38.16749175826081,
+                  42.806161271332385
+                ],
+                "transmission": 0.17734709864608791,
+                "reconstructedPixels": 28752
+              }
+            ]
+          },
+          {
+            "frame": 104,
+            "allowedMaskPixels": 163896,
+            "changedPixels": 83967,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": [
+              {
+                "part": 0,
+                "sourceInkContrastBGR": [
+                  25.750656034996382,
+                  31.921109985745602,
+                  34.82139241942957
+                ],
+                "transmission": 0.14340024564367682,
+                "reconstructedPixels": 168519
+              },
+              {
+                "part": 1,
+                "sourceInkContrastBGR": [
+                  32.474952121784895,
+                  37.96094154965897,
+                  42.77755529367667
+                ],
+                "transmission": 0.17552472707770625,
+                "reconstructedPixels": 29757
+              }
+            ]
+          },
+          {
+            "frame": 105,
+            "allowedMaskPixels": 164302,
+            "changedPixels": 82364,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": [
+              {
+                "part": 0,
+                "sourceInkContrastBGR": [
+                  25.802183550887975,
+                  31.97796377366805,
+                  34.584503743213986
+                ],
+                "transmission": 0.14320100940739536,
+                "reconstructedPixels": 169134
+              },
+              {
+                "part": 1,
+                "sourceInkContrastBGR": [
+                  31.589719708009028,
+                  38.43823414966171,
+                  42.39139477664935
+                ],
+                "transmission": 0.17429356377413968,
+                "reconstructedPixels": 30830
+              }
+            ]
+          },
+          {
+            "frame": 106,
+            "allowedMaskPixels": 166150,
+            "changedPixels": 84386,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": [
+              {
+                "part": 0,
+                "sourceInkContrastBGR": [
+                  25.581270921851768,
+                  32.10303426254049,
+                  34.565231164970996
+                ],
+                "transmission": 0.14302253697575698,
+                "reconstructedPixels": 168608
+              },
+              {
+                "part": 1,
+                "sourceInkContrastBGR": [
+                  30.219260900377975,
+                  38.20074768080161,
+                  42.36219418276862
+                ],
+                "transmission": 0.17175535312240034,
+                "reconstructedPixels": 31454
+              }
+            ]
+          },
+          {
+            "frame": 107,
+            "allowedMaskPixels": 166915,
+            "changedPixels": 83962,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": [
+              {
+                "part": 0,
+                "sourceInkContrastBGR": [
+                  25.00293848310403,
+                  31.737547207116023,
+                  34.73445730985151
+                ],
+                "transmission": 0.14182161705437452,
+                "reconstructedPixels": 168310
+              },
+              {
+                "part": 1,
+                "sourceInkContrastBGR": [
+                  30.20707482424723,
+                  38.21807737759042,
+                  42.27821875091237
+                ],
+                "transmission": 0.17163313326007756,
+                "reconstructedPixels": 32131
+              }
+            ]
+          },
+          {
+            "frame": 108,
+            "allowedMaskPixels": 166222,
+            "changedPixels": 82200,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": [
+              {
+                "part": 0,
+                "sourceInkContrastBGR": [
+                  24.59273119701433,
+                  31.3618092320786,
+                  34.67494332794399
+                ],
+                "transmission": 0.14051082753028982,
+                "reconstructedPixels": 168461
+              },
+              {
+                "part": 1,
+                "sourceInkContrastBGR": [
+                  29.565877439337967,
+                  38.22641426849873,
+                  42.532407404924484
+                ],
+                "transmission": 0.17104604513606383,
+                "reconstructedPixels": 32795
+              }
+            ]
+          },
+          {
+            "frame": 109,
+            "allowedMaskPixels": 167971,
+            "changedPixels": 84829,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": [
+              {
+                "part": 0,
+                "sourceInkContrastBGR": [
+                  24.316093195985502,
+                  31.165091636119854,
+                  34.58838260743536
+                ],
+                "transmission": 0.1396427402163422,
+                "reconstructedPixels": 167665
+              },
+              {
+                "part": 1,
+                "sourceInkContrastBGR": [
+                  29.728351600604412,
+                  38.36242460298405,
+                  42.56822370321581
+                ],
+                "transmission": 0.17156434094078182,
+                "reconstructedPixels": 33020
+              }
+            ]
+          },
+          {
+            "frame": 110,
+            "allowedMaskPixels": 166139,
+            "changedPixels": 82809,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": [
+              {
+                "part": 0,
+                "sourceInkContrastBGR": [
+                  24.031470224550688,
+                  31.132018369057192,
+                  34.44718666177488
+                ],
+                "transmission": 0.1389312794657097,
+                "reconstructedPixels": 168509
+              },
+              {
+                "part": 1,
+                "sourceInkContrastBGR": [
+                  29.41032764392773,
+                  38.320694477840064,
+                  42.536445446303816
+                ],
+                "transmission": 0.17095731405902576,
+                "reconstructedPixels": 33294
+              }
+            ]
+          },
+          {
+            "frame": 111,
+            "allowedMaskPixels": 167511,
+            "changedPixels": 82822,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": [
+              {
+                "part": 0,
+                "sourceInkContrastBGR": [
+                  23.837845382463826,
+                  31.010090416776762,
+                  34.2619133328927
+                ],
+                "transmission": 0.1381548048560206,
+                "reconstructedPixels": 167673
+              },
+              {
+                "part": 1,
+                "sourceInkContrastBGR": [
+                  29.29294551832598,
+                  38.28675732108928,
+                  42.716509978241234
+                ],
+                "transmission": 0.17100188033745195,
+                "reconstructedPixels": 33119
+              }
+            ]
+          },
+          {
+            "frame": 112,
+            "allowedMaskPixels": 166124,
+            "changedPixels": 80323,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": [
+              {
+                "part": 0,
+                "sourceInkContrastBGR": [
+                  23.576810487686032,
+                  30.64081719347999,
+                  34.23459740713645
+                ],
+                "transmission": 0.13713523269504257,
+                "reconstructedPixels": 167990
+              },
+              {
+                "part": 1,
+                "sourceInkContrastBGR": [
+                  29.279972790794133,
+                  38.38916200128986,
+                  42.65048653719242
+                ],
+                "transmission": 0.17103817260352933,
+                "reconstructedPixels": 33171
+              }
+            ]
+          },
+          {
+            "frame": 113,
+            "allowedMaskPixels": 165746,
+            "changedPixels": 79351,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": [
+              {
+                "part": 0,
+                "sourceInkContrastBGR": [
+                  23.29539895030348,
+                  30.380493414027967,
+                  34.063055604910716
+                ],
+                "transmission": 0.13602937669649948,
+                "reconstructedPixels": 168199
+              },
+              {
+                "part": 1,
+                "sourceInkContrastBGR": [
+                  29.430874584337516,
+                  38.44313793357961,
+                  42.822548070836206
+                ],
+                "transmission": 0.17162257455620672,
+                "reconstructedPixels": 33217
+              }
+            ]
+          },
+          {
+            "frame": 114,
+            "allowedMaskPixels": 165763,
+            "changedPixels": 77788,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": [
+              {
+                "part": 0,
+                "sourceInkContrastBGR": [
+                  23.29170850984906,
+                  30.163745334253207,
+                  33.952354886486575
+                ],
+                "transmission": 0.13551598252804473,
+                "reconstructedPixels": 168413
+              },
+              {
+                "part": 1,
+                "sourceInkContrastBGR": [
+                  29.65411034557779,
+                  38.645698575542525,
+                  42.84589674380443
+                ],
+                "transmission": 0.17231892351151123,
+                "reconstructedPixels": 33231
+              }
+            ]
+          },
+          {
+            "frame": 115,
+            "allowedMaskPixels": 165668,
+            "changedPixels": 76470,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": [
+              {
+                "part": 0,
+                "sourceInkContrastBGR": [
+                  23.35158256147821,
+                  30.049238609524906,
+                  33.89545395617148
+                ],
+                "transmission": 0.1353430622126738,
+                "reconstructedPixels": 168447
+              },
+              {
+                "part": 1,
+                "sourceInkContrastBGR": [
+                  29.903248909286376,
+                  38.696711136787044,
+                  43.13098991424458
+                ],
+                "transmission": 0.17322627900824497,
+                "reconstructedPixels": 33234
+              }
+            ]
+          },
+          {
+            "frame": 116,
+            "allowedMaskPixels": 165506,
+            "changedPixels": 75634,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": [
+              {
+                "part": 0,
+                "sourceInkContrastBGR": [
+                  23.394217623300648,
+                  30.151323254288386,
+                  33.89635882053588
+                ],
+                "transmission": 0.13556883674127893,
+                "reconstructedPixels": 168188
+              },
+              {
+                "part": 1,
+                "sourceInkContrastBGR": [
+                  30.124797086654652,
+                  38.873976576403194,
+                  43.33660421238149
+                ],
+                "transmission": 0.17416337655106873,
+                "reconstructedPixels": 33288
+              }
+            ]
+          },
+          {
+            "frame": 117,
+            "allowedMaskPixels": 166112,
+            "changedPixels": 78369,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": [
+              {
+                "part": 0,
+                "sourceInkContrastBGR": [
+                  23.54218781297186,
+                  30.36372879980317,
+                  34.06299817061068
+                ],
+                "transmission": 0.13638591439284606,
+                "reconstructedPixels": 167954
+              },
+              {
+                "part": 1,
+                "sourceInkContrastBGR": [
+                  30.26049453139862,
+                  39.003104417712905,
+                  43.329746315358506
+                ],
+                "transmission": 0.1745633259914264,
+                "reconstructedPixels": 33190
+              }
+            ]
+          },
+          {
+            "frame": 118,
+            "allowedMaskPixels": 164368,
+            "changedPixels": 75056,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": [
+              {
+                "part": 0,
+                "sourceInkContrastBGR": [
+                  23.61638468356921,
+                  30.608264281280924,
+                  34.22322744993377
+                ],
+                "transmission": 0.13712849056555643,
+                "reconstructedPixels": 168573
+              },
+              {
+                "part": 1,
+                "sourceInkContrastBGR": [
+                  30.3345211910204,
+                  39.07407026943221,
+                  43.32196779279428
+                ],
+                "transmission": 0.17477606085774713,
+                "reconstructedPixels": 33307
+              }
+            ]
+          },
+          {
+            "frame": 119,
+            "allowedMaskPixels": 164026,
+            "changedPixels": 75597,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": [
+              {
+                "part": 0,
+                "sourceInkContrastBGR": [
+                  23.427266297189306,
+                  30.663843530300994,
+                  34.23826449558801
+                ],
+                "transmission": 0.13694476639236947,
+                "reconstructedPixels": 168423
+              },
+              {
+                "part": 1,
+                "sourceInkContrastBGR": [
+                  30.25070343969051,
+                  39.02270888257539,
+                  43.465881136866216
+                ],
+                "transmission": 0.17478960226222034,
+                "reconstructedPixels": 33294
+              }
+            ]
+          },
+          {
+            "frame": 120,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 121,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 122,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 123,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 124,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 125,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 126,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 127,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 128,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 129,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 130,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 131,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 132,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 133,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 134,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 135,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 136,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 137,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 138,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 139,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 140,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 141,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 142,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 143,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 144,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 145,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 146,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 147,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 148,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 149,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 150,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 151,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 152,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 153,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 154,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 155,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 156,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 157,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 158,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 159,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 160,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 161,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 162,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 163,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 164,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 165,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 166,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 167,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 168,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 169,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 170,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 171,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 172,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 173,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 174,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 175,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 176,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 177,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 178,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 179,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 180,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 181,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 182,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 183,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 184,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 185,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 186,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 187,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 188,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 189,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 190,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 191,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 192,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 193,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 194,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 195,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 196,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 197,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 198,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 199,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 200,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 201,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 202,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 203,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 204,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 205,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 206,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 207,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 208,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 209,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 210,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 211,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 212,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 213,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 214,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 215,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 216,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 217,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 218,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 219,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 220,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 221,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 222,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 223,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 224,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 225,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 226,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 227,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 228,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 229,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 230,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 231,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 232,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 233,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 234,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 235,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 236,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 237,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 238,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 239,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 240,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 241,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 242,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 243,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 244,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 245,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 246,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 247,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 248,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 249,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 250,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 251,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 252,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 253,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 254,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 255,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 256,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 257,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 258,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 259,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 260,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 261,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 262,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 263,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 264,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 265,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 266,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 267,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 268,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 269,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 270,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 271,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 272,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 273,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 274,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 275,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 276,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 277,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 278,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 279,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 280,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 281,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 282,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 283,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 284,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 285,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          },
+          {
+            "frame": 286,
+            "allowedMaskPixels": 0,
+            "changedPixels": 0,
+            "outsideMaskPixelIdenticalBeforeEncode": true,
+            "pigment": []
+          }
+        ],
+        "sceneGeneration": false,
+        "screenSpaceOverlay": false,
+        "color": "original sign substrate/grain and measured pigment transmission/defocus retained",
+        "encodingLimit": "H264 reencoding can alter decoded pixels outside the company mask; exact equality applies before encode.",
+        "nativePinkFinalDecodedChecks": [
+          {
+            "frame": 0,
+            "mark": "upper",
+            "visiblePinkCorePixels": 2422,
+            "nativeBPrintGeometryFixed": true,
+            "photographedPinkMeanBGR": [
+              141.2914946325351,
+              129.09083402146985,
+              150.9277456647399
+            ],
+            "redExceedsGreenMean": true
+          },
+          {
+            "frame": 0,
+            "mark": "lower",
+            "visiblePinkCorePixels": 0,
+            "nativeBPrintGeometryFixed": true,
+            "visibility": "outside sourcecamera frame"
+          },
+          {
+            "frame": 30,
+            "mark": "upper",
+            "visiblePinkCorePixels": 2341,
+            "nativeBPrintGeometryFixed": true,
+            "photographedPinkMeanBGR": [
+              140.3366082870568,
+              128.36394703118324,
+              150.4318667236224
+            ],
+            "redExceedsGreenMean": true
+          },
+          {
+            "frame": 30,
+            "mark": "lower",
+            "visiblePinkCorePixels": 0,
+            "nativeBPrintGeometryFixed": true,
+            "visibility": "outside sourcecamera frame"
+          },
+          {
+            "frame": 96,
+            "mark": "upper",
+            "visiblePinkCorePixels": 2304,
+            "nativeBPrintGeometryFixed": true,
+            "photographedPinkMeanBGR": [
+              140.53038194444446,
+              128.2890625,
+              150.98263888888889
+            ],
+            "redExceedsGreenMean": true
+          },
+          {
+            "frame": 96,
+            "mark": "lower",
+            "visiblePinkCorePixels": 882,
+            "nativeBPrintGeometryFixed": true,
+            "photographedPinkMeanBGR": [
+              122.87301587301587,
+              111.07256235827664,
+              136.52267573696145
+            ],
+            "redExceedsGreenMean": true
+          },
+          {
+            "frame": 119,
+            "mark": "upper",
+            "visiblePinkCorePixels": 2298,
+            "nativeBPrintGeometryFixed": true,
+            "photographedPinkMeanBGR": [
+              141.5626631853786,
+              129.71627502175804,
+              151.55700609225414
+            ],
+            "redExceedsGreenMean": true
+          },
+          {
+            "frame": 119,
+            "mark": "lower",
+            "visiblePinkCorePixels": 878,
+            "nativeBPrintGeometryFixed": true,
+            "photographedPinkMeanBGR": [
+              124.09111617312072,
+              111.77220956719817,
+              137.75170842824602
+            ],
+            "redExceedsGreenMean": true
+          }
+        ],
+        "nativePinkFirstFrameUpperVerified": true,
+        "firstFrameLowerMark": "physicallyoutsidecamera; B verified when visible at frames96 and119",
+        "posterSha256": "4b53a00cc5520215c50e5c1181d0b8fa9605da4ed1b89d9f40a4d83a29e8d5b2",
+        "geometryMetricDefinition": "temporalGeometry compares mean edge lengths of the same projected1110x231.4 sign-plane referencequad before/after; actualRasterPrintGeometry below uses both rendered rasterprint footprints.",
+        "actualRasterPrintGeometry": {
+          "upper": {
+            "before": {
+              "rangesWidthHeightRatio": [
+                [
+                  884.3260498046875,
+                  948.5445556640625
+                ],
+                [
+                  179.73544311523438,
+                  188.88497924804688
+                ],
+                [
+                  4.710136890411377,
+                  5.224647045135498
+                ]
+              ],
+              "maxAdjacentWidthHeightRatioChanges": [
+                33.45159912109375,
+                6.118316650390625,
+                0.3486976623535156
+              ],
+              "maxSecondDifferenceWidthHeightRatio": [
+                33.11370849609375,
+                7.2881011962890625,
+                0.37596893310546875
+              ]
+            },
+            "after": {
+              "rangesWidthHeightRatio": [
+                [
+                  924.8160400390625,
+                  951.10791015625
+                ],
+                [
+                  178.64459228515625,
+                  183.21292114257812
+                ],
+                [
+                  5.088222026824951,
+                  5.27636194229126
+                ]
+              ],
+              "maxAdjacentWidthHeightRatioChanges": [
+                0.3834228515625,
+                0.5329437255859375,
+                0.015055656433105469
+              ],
+              "maxSecondDifferenceWidthHeightRatio": [
+                0.05926513671875,
+                0.186920166015625,
+                0.005679130554199219
+              ]
+            }
+          },
+          "lower": {
+            "before": {
+              "rangesWidthHeightRatio": [
+                [
+                  545.9227294921875,
+                  598.3612060546875
+                ],
+                [
+                  113.443359375,
+                  135.22702026367188
+                ],
+                [
+                  4.242417335510254,
+                  4.812293529510498
+                ]
+              ],
+              "maxAdjacentWidthHeightRatioChanges": [
+                23.793212890625,
+                4.625030517578125,
+                0.35163211822509766
+              ],
+              "maxSecondDifferenceWidthHeightRatio": [
+                22.6099853515625,
+                6.1687774658203125,
+                0.38605213165283203
+              ]
+            },
+            "after": {
+              "rangesWidthHeightRatio": [
+                [
+                  546.0186767578125,
+                  562.5274658203125
+                ],
+                [
+                  112.87185668945312,
+                  116.01271057128906
+                ],
+                [
+                  4.759702682495117,
+                  4.934419631958008
+                ]
+              ],
+              "maxAdjacentWidthHeightRatioChanges": [
+                0.3011474609375,
+                0.3153076171875,
+                0.013775348663330078
+              ],
+              "maxSecondDifferenceWidthHeightRatio": [
+                0.05731201171875,
+                0.11246490478515625,
+                0.005247592926025391
+              ]
+            }
+          }
+        },
+        "dependencyManifest": "products/usung-corporate/baseline/original-media-v37/video/dependencies/dependency-snapshots.json",
+        "runtimeManifest": "products/usung-corporate/baseline/original-media-v37/video/dependencies/runtime-versions.json",
+        "reproductionRecipes": [
+          "products/usung-corporate/baseline/original-media-v37/video/stabilize-sign-plane.py",
+          "products/usung-corporate/baseline/original-media-v37/video/pigment-differential.py",
+          "products/usung-corporate/baseline/original-media-v37/video/render-stable-delivery.py"
+        ],
+        "visualQA": "Corrected preview030/096 preserves cleanpanel field and removes rejected pale tiles. Finaldecoded030/096 and finaldecoded contact saved for root final review.",
+        "durableScript": "products/usung-corporate/baseline/original-media-v37/video/render-stable-delivery.py"
       },
       "excludedWork": {
         "rejectedWideEdits": "SUNBELT RENTALS / JLG in full-frame wide salvage were rejected. No pixels from wide-edit.py output are used. Selected actual source structure crop excludes equipment and those marks; it contains no replacement USUNG glyph.",
@@ -1077,51 +6269,91 @@
           "action": "original pixels retained; no all-brands-removed claim"
         }
       ],
-      "artifacts": [
-        {
-          "file": "/Users/lua/Documents/Codex/usung-corporate-website/outputs/website/usung-rework-v25/video-diagnosis/candidate/usung-delivery-film-v25.mp4",
-          "bytes": 8662061,
-          "sha256": "cbe0e0548bb6c87df4d4ff4a82c13df6da29961be5f8da514a35c85906694067"
-        },
-        {
-          "file": "/Users/lua/Documents/Codex/usung-corporate-website/outputs/website/usung-rework-v25/video-diagnosis/candidate/usung-delivery-film-v25-source-comparator.mp4",
-          "bytes": 8721758,
-          "sha256": "0f10af7fbb69fc485b8178042e4c8bbf12d400e7b63550acb766538d016029b4"
-        }
-      ],
+      "artifacts": {
+        "video": "assets/media/usung-delivery-film-v37.mp4",
+        "poster": "assets/media/usung-delivery-film-v37-poster.webp",
+        "verification": "baseline/original-media-v37/video/delivery-film-v37-verification.json"
+      },
       "signGeometry": {
-        "sourceToRectifiedPlaneMatrices": "baseline/original-media-v25/delivery-sign-plane-matrices.json",
+        "sourceToRectifiedPlaneMatrices": "baseline/original-media-v37/video/stable-sign-plane.json",
         "rectifiedPlaneSize": [
           1600,
           920
         ],
-        "upperOldPigmentCandidateRegionXYWH": [
-          245,
-          75,
-          1215,
-          357
+        "wordmarkPlacementInSignPlane": [
+          [
+            270,
+            152,
+            1110
+          ],
+          [
+            98,
+            687,
+            502
+          ]
         ],
-        "lowerOldPigmentCandidateRegionXYWH": [
-          69,
-          670,
-          567,
-          149
+        "fixedPlanePrintSizePerFrame": [
+          {
+            "width": 1110,
+            "height": 231
+          },
+          {
+            "width": 502,
+            "height": 105
+          }
         ],
-        "upperUSUNGInsertXYWidth": [
-          270,
-          152,
-          1110
-        ],
-        "lowerUSUNGInsertXYWidth": [
-          98,
-          687,
-          502
-        ],
-        "ratio": "approved wordmark native ratio; no arbitrary stretch",
-        "planeTracking": "backward KLT source fence/sign plane, RANSAC homography plus source-plane ECC affine refinement",
-        "ECCMinimum": 0.9674941385587082,
-        "inlierMinimum": 519,
-        "localMaskRule": "old pigment contrast>5 inside old-company regions, dilate5+blur0.75; union with replacement glyph alpha>0.001; homography warp back to native source. Source pixels outside warped mask remain identical. No claim saved binary masks: method, matrices, exact source and implementation retained for reproduction."
+        "planeTracking": "The same82originalsign features throughout; robust direct anchor-to-frame camera transport composed with the full projective reference-plane mapping. Coupled 2x2 shape transport has a25frame sigma4continuous temporal fit; instantaneous translation is re-solved from observed print features each frame. Source-feature residuals validate approximation; no map acceptance switches or screen-space sizing.",
+        "featureResidualMaxMedianPx": 0.8444486260414124,
+        "temporalGeometry": {
+          "before": {
+            "projectedWidthMinMax": [
+              885.231689453125,
+              949.51416015625
+            ],
+            "projectedHeightMinMax": [
+              180.8997802734375,
+              190.13864135742188
+            ],
+            "projectedRatioMinMax": [
+              4.683885097503662,
+              5.195689678192139
+            ],
+            "maximumAdjacentWidthHeightRatioChanges": [
+              33.47607421875,
+              6.161346435546875,
+              0.3467826843261719
+            ],
+            "maximumSecondDifferenceWidthHeightRatio": [
+              33.1348876953125,
+              7.339508056640625,
+              0.3739142417907715
+            ]
+          },
+          "after": {
+            "projectedWidthMinMax": [
+              925.719970703125,
+              952.0400390625
+            ],
+            "projectedHeightMinMax": [
+              179.80189514160156,
+              184.39938354492188
+            ],
+            "projectedRatioMinMax": [
+              5.060410022735596,
+              5.247534275054932
+            ],
+            "maximumAdjacentWidthHeightRatioChanges": [
+              0.38372802734375,
+              0.536407470703125,
+              0.014974117279052734
+            ],
+            "maximumSecondDifferenceWidthHeightRatio": [
+              0.0594482421875,
+              0.1880645751953125,
+              0.005644321441650391
+            ]
+          }
+        }
       },
       "visualAudit": {
         "signNativeKeyFramesObserved": [
@@ -1169,9 +6401,9 @@
           "sha256": "19f78f497aabe86f0fe2a2ee927550a8536265d2d01a24f53c3b3cd5c34e2172"
         }
       ],
-      "served": "assets/media/usung-delivery-film-v33.mp4",
-      "servedSha256": "1347e5a85810d89e1f911361436492b04d43fe238736c423ec7a417d59abf9da",
-      "servedBytes": 9446393,
+      "served": "assets/media/usung-delivery-film-v37.mp4",
+      "servedSha256": "11cb367153ea4c6bad0cf405b2fa6cfc52e70931634e94618609804bfae950c4",
+      "servedBytes": 10202322,
       "sourcePage": "https://www.turnerconstruction.com/",
       "sourceAssets": [
         "https://ep-turnerconstruction-prod-asdcetgubtducba3.z01.azurefd.net/uploads/jobsite-01.mp4?v=dd733",
@@ -1179,146 +6411,12 @@
         "https://ep-turnerconstruction-prod-asdcetgubtducba3.z01.azurefd.net/uploads/tech-01.mp4?v=887d3"
       ],
       "sourceFile": "baseline/original-media-v25/sources.json",
-      "transformation": "Owner-approved B corner: first-U pink extends to left stem edge with no contrasting strip. Original scene, dimensions, surface pose, light and alpha preserved; only measured corner pigment delta changed before encoding. No scene generation.",
-      "servedPoster": "assets/media/usung-delivery-film-v33-poster.webp",
+      "transformation": "Subtract only old measured pigment operator from accepted currentdecodedpixels, then apply one sourcecontrast-matched subtractive B print through the stable plane. Existing cleanpanel field and camera flare retained; no new fit_bg panel substituted. The same82originalsign features throughout; robust direct anchor-to-frame camera transport composed with the full projective reference-plane mapping. Coupled 2x2 shape transport has a25frame sigma4continuous temporal fit; instantaneous translation is re-solved from observed print features each frame. Source-feature residuals validate approximation; no map acceptance switches or screen-space sizing.",
+      "servedPoster": "assets/media/usung-delivery-film-v37-poster.webp",
       "previousVerification": {
-        "status": "rendered-and-decoded",
-        "sources": [
-          {
-            "file": "baseline/original-media-v25/turner-jobsite-01.mp4",
-            "url": "https://ep-turnerconstruction-prod-asdcetgubtducba3.z01.azurefd.net/uploads/jobsite-01.mp4?v=dd733",
-            "sha256": "89957b2e1ade74b4c0b2fab57135b5611c16739596899cf03d8a02f1ee06d115",
-            "bytes": 3343499
-          },
-          {
-            "file": "baseline/original-media-v25/turner-jobsite-02.mp4",
-            "url": "https://ep-turnerconstruction-prod-asdcetgubtducba3.z01.azurefd.net/uploads/jobsite-02.mp4?v=06e65",
-            "sha256": "8bbe69e13074b00996e880f84f6d5d1c26453e47c5d49f89e54b8c9da659b6d3",
-            "bytes": 6195974
-          },
-          {
-            "file": "baseline/original-media-v25/turner-tech-01.mp4",
-            "url": "https://ep-turnerconstruction-prod-asdcetgubtducba3.z01.azurefd.net/uploads/tech-01.mp4?v=887d3",
-            "sha256": "32f5277b2f6c20e186dee385d32d9ec9febce834c68aec208ee6f68b07b0c4b9",
-            "bytes": 3258327
-          }
-        ],
-        "segments": [
-          {
-            "source": "turner-jobsite-01.mp4",
-            "sourceFrameRangeInclusive": [
-              0,
-              119
-            ],
-            "outputFrameRangeInclusive": [
-              0,
-              119
-            ],
-            "seconds": 5,
-            "operation": "local sign company pigment replacement",
-            "nativeCropXYWH": [
-              0,
-              0,
-              3840,
-              2160
-            ]
-          },
-          {
-            "source": "turner-jobsite-02.mp4",
-            "sourceFrameRangeInclusive": [
-              0,
-              47
-            ],
-            "outputFrameRangeInclusive": [
-              120,
-              167
-            ],
-            "seconds": 2,
-            "operation": "unaltered source crop",
-            "nativeCropXYWH": [
-              2208,
-              400,
-              1632,
-              918
-            ]
-          },
-          {
-            "source": "turner-tech-01.mp4",
-            "sourceFrameRangeInclusive": [
-              0,
-              118
-            ],
-            "outputFrameRangeInclusive": [
-              168,
-              286
-            ],
-            "seconds": 4.958333333333333,
-            "operation": "unaltered source downsample",
-            "nativeCropXYWH": [
-              0,
-              0,
-              3840,
-              2160
-            ]
-          }
-        ],
-        "output": {
-          "fps": 24,
-          "size": [
-            1920,
-            1080
-          ],
-          "framesWritten": 287,
-          "seconds": 11.958333333333334
-        },
-        "generatedScene": false,
-        "nativeEditOnly": "sign company pigment local masks; geometry, lighting, camera motion, background, visitors, instructions retained. Structural and tablet footage unedited before crop/resize/encode.",
-        "verification": {
-          "encoderExitCodes": [
-            0,
-            0
-          ],
-          "decodedFrameCount": 287,
-          "decodedShapesAllEqual": [
-            1080,
-            1920,
-            3
-          ],
-          "fps": 24,
-          "postersFromEncodedFrames": [
-            0,
-            120
-          ],
-          "outsideLocalSignMaskOriginalPixelEquality": "120 of 120 native frames asserted in sign_edit before downsample/encode",
-          "structureTabletPixelEditing": "zero; only selected native crop and downsample",
-          "elapsedSeconds": 74.67,
-          "ffmpegFullDecodeExitCode": 0,
-          "ffmpegFullDecodeErrorOutput": ""
-        },
-        "excludedWork": {
-          "rejectedWideEdits": "SUNBELT RENTALS / JLG in full-frame wide salvage were rejected. No pixels from wide-edit.py output are used. Selected actual source structure crop excludes equipment and those marks; it contains no replacement USUNG glyph.",
-          "modelSafety": "No JLG 460SJ model/safety decals are repainted. Equipment decals are outside the selected crop. Visitor sign instructions and border remain source pixels."
-        },
-        "retainedUnknown": [
-          {
-            "segment": "tablet",
-            "object": "small blue-white cooler badge in background",
-            "classification": "unreadable unknown; not asserted as company or safety label",
-            "action": "original pixels retained; no all-brands-removed claim"
-          }
-        ],
-        "artifacts": [
-          {
-            "file": "/Users/lua/Documents/Codex/usung-corporate-website/outputs/website/usung-rework-v25/video-diagnosis/candidate/usung-delivery-film-v25.mp4",
-            "bytes": 8662061,
-            "sha256": "cbe0e0548bb6c87df4d4ff4a82c13df6da29961be5f8da514a35c85906694067"
-          },
-          {
-            "file": "/Users/lua/Documents/Codex/usung-corporate-website/outputs/website/usung-rework-v25/video-diagnosis/candidate/usung-delivery-film-v25-source-comparator.mp4",
-            "bytes": 8721758,
-            "sha256": "0f10af7fbb69fc485b8178042e4c8bbf12d400e7b63550acb766538d016029b4"
-          }
-        ],
+        "served": "assets/media/usung-delivery-film-v33.mp4",
+        "sha256": "1347e5a85810d89e1f911361436492b04d43fe238736c423ec7a417d59abf9da",
+        "durableVerification": "baseline/original-media-v33/reference-media-v33-manifest.json",
         "signGeometry": {
           "sourceToRectifiedPlaneMatrices": "baseline/original-media-v25/delivery-sign-plane-matrices.json",
           "rectifiedPlaneSize": [
@@ -1352,67 +6450,25 @@
           "ECCMinimum": 0.9674941385587082,
           "inlierMinimum": 519,
           "localMaskRule": "old pigment contrast>5 inside old-company regions, dilate5+blur0.75; union with replacement glyph alpha>0.001; homography warp back to native source. Source pixels outside warped mask remain identical. No claim saved binary masks: method, matrices, exact source and implementation retained for reproduction."
-        },
-        "visualAudit": {
-          "signNativeKeyFramesObserved": [
-            0,
-            24,
-            48,
-            72,
-            96,
-            119
-          ],
-          "signAllNativeFramesPixelEqualityChecks": 120,
-          "structureAll48SelectedFramesObservedViaContactSheets": true,
-          "tabletAll119SelectedFramesObservedViaContactSheets": true,
-          "structureLabelsAtCropBoundary": "no visible company fragment or model/safety label on any of 48 selected crops; equipment bearing SUNBELT/JLG/460SJ is outside selected frame",
-          "tabletFrameTransform": "entire3840x2160 source downsampled, no new framing cuts, no pixel paint edits",
-          "signSourceCameraFraming": "first source frame naturally includes partial lower sign outside frame; unchanged native camera framing, no artificial crop. matchingframe0 poster therefore also naturally partially frames USUNG."
-        },
-        "photometricMethod": {
-          "sceneGenerated": false,
-          "upperLensDefocusSigmaPlanePixels": 1.9,
-          "lowerLensDefocusSigmaPlanePixels": 1.25,
-          "inkContrast": "measured per-source-frame old pigment difference from adjacent unprinted sign substrate; pink contrast attenuated by actual frame haze",
-          "substrate": "robust second-order polynomial illumination fit from adjacent unprinted source sign; source high-frequency grain contribution on altered pigment",
-          "outsideSourceSurface": "unchanged native pixels before downsample/encode"
-        },
-        "provenanceFiles": [
-          {
-            "file": "/Users/lua/Documents/Codex/usung-corporate-website/outputs/website/usung-rework-v25/video-diagnosis/candidate/usung-delivery-film-v25.jpg",
-            "bytes": 154393,
-            "sha256": "fee5726daceb3a46b2432fb4d214556c57c3d6cb3b39e2ff1fde6d8e5d44ecc7"
-          },
-          {
-            "file": "/Users/lua/Documents/Codex/usung-corporate-website/outputs/website/usung-rework-v25/video-diagnosis/candidate/usung-delivery-film-v25-wide.jpg",
-            "bytes": 310015,
-            "sha256": "939d2de413632aa6737da93c7406c09d01496865ab954e7c200c1b6c44cbfd3d"
-          },
-          {
-            "file": "/Users/lua/Documents/Codex/usung-corporate-website/outputs/website/usung-rework-v25/video-diagnosis/candidate/sign-edit.py",
-            "bytes": 4211,
-            "sha256": "12ba3c2c2de159a71e52b9535f3b6fae4db47a856d90fd518f167fc0e9a88637"
-          },
-          {
-            "file": "/Users/lua/Documents/Codex/usung-corporate-website/outputs/website/usung-rework-v25/video-diagnosis/candidate/sign-H-refined.json",
-            "bytes": 48766,
-            "sha256": "19f78f497aabe86f0fe2a2ee927550a8536265d2d01a24f53c3b3cd5c34e2172"
-          }
-        ],
-        "served": "assets/media/usung-delivery-film-v25.mp4",
-        "servedSha256": "cbe0e0548bb6c87df4d4ff4a82c13df6da29961be5f8da514a35c85906694067",
-        "servedBytes": 8662061,
-        "sourcePage": "https://www.turnerconstruction.com/",
-        "sourceAssets": [
-          "https://ep-turnerconstruction-prod-asdcetgubtducba3.z01.azurefd.net/uploads/jobsite-01.mp4?v=dd733",
-          "https://ep-turnerconstruction-prod-asdcetgubtducba3.z01.azurefd.net/uploads/jobsite-02.mp4?v=06e65",
-          "https://ep-turnerconstruction-prod-asdcetgubtducba3.z01.azurefd.net/uploads/tech-01.mp4?v=887d3"
-        ],
-        "sourceFile": "baseline/original-media-v25/sources.json",
-        "transformation": "sign company pigment local masks; geometry, lighting, camera motion, background, visitors, instructions retained. Structural and tablet footage unedited before crop/resize/encode.; selected original structural crop and source-frame montage.",
-        "servedPoster": "assets/media/usung-delivery-film-v25-poster.jpg"
+        }
       },
-      "durableVerification": "baseline/original-media-v33/reference-media-v33-manifest.json"
+      "durableVerification": "baseline/original-media-v37/video/delivery-film-v37-verification.json",
+      "previousServed": {
+        "file": "assets/media/usung-delivery-film-v33.mp4",
+        "sha256": "1347e5a85810d89e1f911361436492b04d43fe238736c423ec7a417d59abf9da"
+      },
+      "previousArtifacts": [
+        {
+          "file": "/Users/lua/Documents/Codex/usung-corporate-website/outputs/website/usung-rework-v25/video-diagnosis/candidate/usung-delivery-film-v25.mp4",
+          "bytes": 8662061,
+          "sha256": "cbe0e0548bb6c87df4d4ff4a82c13df6da29961be5f8da514a35c85906694067"
+        },
+        {
+          "file": "/Users/lua/Documents/Codex/usung-corporate-website/outputs/website/usung-rework-v25/video-diagnosis/candidate/usung-delivery-film-v25-source-comparator.mp4",
+          "bytes": 8721758,
+          "sha256": "0f10af7fbb69fc485b8178042e4c8bbf12d400e7b63550acb766538d016029b4"
+        }
+      ]
     }
   ],
   "imageGenerationUsedForThisRevision": false,
@@ -1743,5 +6799,18 @@
     "sourcePhotoUnchanged": true,
     "onlyTwoFrontMarks": true,
     "verification": "baseline/original-media-v35/helmet-verification.json"
+  },
+  "smartConstructionMediaCorrection": {
+    "revision": "2026-10-05-smart-construction-media-v37",
+    "duplicatedFutureStep": 1,
+    "replacement": "assets/media/usung-trench-aerial-v37.webp",
+    "closingPhoto": "assets/media/usung-site-dawn-v37.webp",
+    "noPhotographicSceneGeneration": true,
+    "photoVerification": "baseline/original-media-v37/photo-verification.json",
+    "aerialVerification": "baseline/original-media-v37/aerial-source-verification.json",
+    "scope": "Smart Construction duplicate photograph, two lower blue equipment label planes, and second-film sign wordmark temporal distortion; other media preserved",
+    "video": "assets/media/usung-delivery-film-v37.mp4",
+    "videoPoster": "assets/media/usung-delivery-film-v37-poster.webp",
+    "videoVerification": "baseline/original-media-v37/video/delivery-film-v37-verification.json"
   }
 }

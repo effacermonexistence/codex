@@ -1,0 +1,21 @@
+{
+  "schema": "usung-previous-deployment-recovery-v1",
+  "description": "Deployed v36 before v37 Smart Construction photo and sign-motion corrections; this record does not claim owner acceptance of the complete v36 site.",
+  "accountId": "d18c5d440fedbf100c4afd13b4b7a2c0",
+  "bucket": "omar-private-archive",
+  "manifestKey": "git-bundles/effacermonexistence/codex/runs/37389089263-1.json",
+  "manifestSha256": "0df5ffc0a450d99280ffcc784a975deea271f7b5ad9cde0a4ccfe4f461d572a9",
+  "bundleKey": "git-bundles/effacermonexistence/codex/f0a90304e60571eb2e1685a3bf2aa076172eea9b/37389089263-1.bundle",
+  "bundleBytes": 241031793,
+  "bundleSha256": "2d0aa24f8bc319866464919cbfd575b97f5ab0b50df383897274fe6f1ac16a98",
+  "fullR2ReadbackMatches": true,
+  "gitBundleVerifyExitCode": 0,
+  "sourceCommit": "f0a90304e60571eb2e1685a3bf2aa076172eea9b",
+  "sourceRef": "refs/heads/feat/usung-corporate-navigation",
+  "githubActionsRun": "https://github.com/effacermonexistence/codex/actions/runs/37389089263",
+  "uploadedAt": "2026-10-05T23:33:25.728Z",
+  "release": "2026-10-05-helmet-wordmark-v36",
+  "deploymentId": "ca03dcfa-edd9-4d76-bfd3-6ef198ed3a39",
+  "note": "Prior immutable Git backup preserved and read back; no duplicate v36 upload.",
+  "verifiedAtUtc": "2026-10-06T00:44:13.403336+00:00"
+}
