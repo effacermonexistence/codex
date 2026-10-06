@@ -2965,6 +2965,233 @@ private func attemptOwnershipSelfTest() async throws {
     print("Attempt ownership: \(checks) checks passed; model calls 0; no-work-line retry keeps its own feed/time, delivered saved result keeps the run's work")
 }
 
+/// Every attempt keeps its own work, one click away, printed once: a steered
+/// retry (a new request under the same submission) keeps its own feed beside
+/// the earlier attempt's, before and after a relaunch; a result not adopted
+/// because its steer was unconfirmed still carries its run's calls; and a
+/// blocked workflow's verified stage answer is not repeated as stopped output.
+@MainActor
+private func steeredAttemptWorkSelfTest() async throws {
+    var checks = 0
+    func check(_ condition: Bool, _ message: String) throws {
+        guard condition else { throw RunnerError.message("Steered attempt work: " + message) }; checks += 1
+    }
+    func eventually(_ seconds: Double = 10, line: Int = #line, _ condition: () -> Bool) async throws {
+        let end = Date().addingTimeInterval(seconds)
+        while !condition(), Date() < end { try await Task.sleep(for: .milliseconds(10)) }
+        try check(condition(), "scheduler deadline (test line \(line))")
+    }
+    func occurrences(_ needle: String, in text: String) -> Int { text.components(separatedBy: needle).count - 1 }
+    func document(_ store: SessionStore, openAll: Bool = false, live: String? = nil) -> String {
+        let messages = presentedMessages(store.selectedSession!)
+        return timelineAttributedDocument(messages: messages, queuedSubmissions: [], isRunning: live != nil, workspace: "/tmp",
+            expanded: openAll ? Set(messages.filter { $0.work != nil }.map { $0.id.uuidString + "-work" }) : [],
+            publicProgress: live, workLogStore: store.publicLogStore).string
+    }
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("os1-steered-attempt-work-" + UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let started = Date()
+    typealias Step = NativeExecutionProgress.Step
+    func progress(_ tag: String, count: Int = 3) -> NativeExecutionProgress {
+        let all = [
+            Step(id: "00000000\(tag)01", sequence: 2, tool: "Bash", scope: "main", verb: "run", label: "swift build \(tag)",
+                 state: .returned, startedAt: started, endedAt: started),
+            Step(id: "00000000\(tag)02", sequence: 4, tool: "Read", scope: "main", verb: "read", label: "Sources/\(tag).swift",
+                 state: .failed, startedAt: started, endedAt: started),
+            Step(id: "00000000\(tag)03", sequence: 6, tool: "Grep", scope: "main", verb: "search", label: "needle\(tag)",
+                 state: .returned, startedAt: started, endedAt: started),
+        ]
+        return NativeExecutionProgress(sequence: 6, kind: .toolReturned, tool: "Grep", scope: "main",
+            toolsRequested: count, toolsReturned: count, activeTools: 0, observedAt: started,
+            events: [.init(sequence: 6, kind: .toolReturned, tool: "Grep", scope: "main", observedAt: started)],
+            steps: Array(all.prefix(count)), stream: "00000000\(tag)aa")
+    }
+    func act(_ text: String, _ tag: String? = nil, count: Int = 3) -> RuntimeActivity {
+        RuntimeActivity(.executing, provider: "claude", surface: "claude", model: "fixture", effort: "max",
+            publicText: text, tool: tag == nil ? nil : "Grep", progress: tag.map { progress($0, count: count) },
+            publicTextOrigin: .nativeAssistant)
+    }
+    func summary(_ answer: String, persisted: [UUID]? = nil) -> AppRunSummary {
+        AppRunSummary(status: "complete", steps: [AppRunStep(sequence: 1, provider: "claude", action: "fixture",
+            model: "fixture", effort: "max", revasDisposition: "adopted", sessionID: UUID().uuidString,
+            permissionProfile: "workspace_write", exitCode: 0, output: answer, stderr: "", durationMS: 0, nativeRecord: nil)],
+            persistedCorrectionIDs: persisted)
+    }
+
+    // G1/G2/G3: a steered attempt fails; the owner retries in place. The
+    // retry runs the same submission under a new request (the correction).
+    func steeredRetry(_ tag: String, _ hex: String, many: Bool, complete: Bool) async throws {
+        let caseRoot = root.appendingPathComponent(tag)
+        let mail = ExecutionSteering(root: caseRoot.appendingPathComponent("run-steering"))
+        var attempt = 0
+        var gate: CheckedContinuation<Void, Never>?
+        let store = SessionStore(storageRoot: caseRoot, runOperation: { submission, _, _, _, onActivity in
+            attempt += 1
+            if attempt == 1 {
+                onActivity(act("\(tag)_A1_PROSE 첫 시도에서 빌드를 확인합니다.", "a" + hex))
+                await withCheckedContinuation { gate = $0 }
+                throw RunnerError.message("\(tag)_A1_STOP")
+            }
+            var text = "\(tag)_A2_PROSE 정정대로 다시 합니다."
+            onActivity(act(text, "b" + hex))
+            if many {
+                for index in 0..<10 {
+                    try? await Task.sleep(for: .milliseconds(20)); text += " 단계\(index)."; onActivity(act(text, "b" + hex))
+                }
+            }
+            try? await Task.sleep(for: .milliseconds(400))
+            if complete { return summary("\(tag)_A2_ANSWER 끝.", persisted: mail.persistedIDs(submission.id)) }
+            throw RunnerError.message("\(tag)_A2_STOP")
+        })
+        let id = store.selectedSessionID!
+        store.composer = "\(tag) 요청: 빌드를 고쳐."; store.send()
+        try await eventually { gate != nil && (store.activeRuns[id]?.publicRunLog?.entries.count ?? 0) >= 4 }
+        let submission = store.activeRuns[id]!.submissionID
+        try mail.open(submissionID: submission, threadID: tag, turnID: tag + "-turn")
+        try await eventually { store.canSteerSelectedRun }
+        store.composer = "그 말이 아니라, 테스트도 같이 돌려."; store.sendCorrectionToCurrentRun()
+        try await eventually { !mail.inputs(submission).isEmpty }
+        for input in mail.inputs(submission) { try mail.record(input, state: .persisted, threadID: tag, turnID: tag + "-turn") }
+        gate?.resume(); gate = nil
+        try await eventually { !store.isSessionRunning(id) }
+        store.retrySelectedFailure()
+        try await eventually(15) { attempt == 2 && !store.isSessionRunning(id) }
+        try await Task.sleep(for: .milliseconds(400))
+        let folded = document(store), opened = document(store, openAll: true)
+        let works = store.selectedSession!.messages.compactMap(\.work)
+        try check(works.count == 2 && Set(works.map(\.requestSHA256)).count == 2 && works.allSatisfy { $0.toolCalls == 3 },
+            "\(tag): each attempt of the steered submission does not hold its own work (\(works.map(\.toolCalls)))")
+        try check(occurrences("\(tag)_A1_PROSE", in: folded) == 1 && occurrences("\(tag)_A1_PROSE", in: opened) == 1,
+            "\(tag): the first attempt's stopped prose is lost or repeated after the retry")
+        try check(occurrences("\(tag)_A2_PROSE", in: opened) == 1 && !opened.contains("작업 기록을 더 이상 찾을 수 없습니다"),
+            "\(tag): the steered retry's own work was not saved")
+        try check(occurrences("동안 작업", in: folded) == 2, "\(tag): an attempt has no work line")
+        if complete {
+            let late = store.selectedSession!.messages.last { $0.role == .assistant }
+            try check(late?.text.hasPrefix("\(tag)_A2_ANSWER") == true && late?.work?.toolCalls == 3 && late?.work?.failedCalls == 1,
+                "\(tag): the late, not-adopted answer does not carry its run's calls and errors")
+        }
+    }
+    try await steeredRetry("g1", "1", many: false, complete: false)
+    try await steeredRetry("g2", "2", many: true, complete: false)
+    try await steeredRetry("g3", "3", many: false, complete: true)
+
+    // C: the backend finishes without persisting the steer: the answer is
+    // kept as a late result, not adopted, and its run's work stays with it.
+    do {
+        let caseRoot = root.appendingPathComponent("c")
+        let mail = ExecutionSteering(root: caseRoot.appendingPathComponent("run-steering"))
+        var gate: CheckedContinuation<Void, Never>?
+        let store = SessionStore(storageRoot: caseRoot, runOperation: { submission, _, _, _, onActivity in
+            onActivity(act("C_PROSE 빌드와 테스트를 확인하는 중입니다.", "c1"))
+            await withCheckedContinuation { gate = $0 }
+            return summary("C_ANSWER 끝난 답입니다.", persisted: mail.persistedIDs(submission.id))
+        })
+        let id = store.selectedSessionID!
+        store.composer = "C 요청: 테스트를 고쳐."; store.send()
+        try await eventually { gate != nil && (store.activeRuns[id]?.publicRunLog?.entries.count ?? 0) >= 4 }
+        let submission = store.activeRuns[id]!.submissionID
+        try mail.open(submissionID: submission, threadID: "c", turnID: "c-turn")
+        try await eventually { store.canSteerSelectedRun }
+        store.composer = "그 말이 아니라, 다른 테스트 파일도 같이 고쳐."; store.sendCorrectionToCurrentRun()
+        try await eventually { !mail.inputs(submission).isEmpty }
+        gate?.resume(); gate = nil
+        try await eventually { !store.isSessionRunning(id) }
+        let late = store.selectedSession!.messages.last { $0.role == .assistant }
+        let folded = document(store)
+        try check(store.selectedSession!.messages.contains { $0.role == .receipt && $0.text.hasPrefix("늦게 도착한 결과") } &&
+            late?.work?.toolCalls == 3 && late?.work?.failedCalls == 1 &&
+            occurrences("동안 작업", in: folded) == 1 && folded.contains("도구 호출 3회"),
+            "a late result kept after an unconfirmed steer has no work line for its run")
+        try check(occurrences("C_PROSE", in: document(store, openAll: true)) == 1, "the late result's opened work does not show its prose once")
+    }
+
+    // W: a workflow blocked after a verified stage: the stage answer shows
+    // once, with the run's work folded above it.
+    do {
+        let stage = "W_STAGE_OUTPUT 1단계 계획입니다. 파일 세 개를 고칩니다."
+        let store = SessionStore(storageRoot: root.appendingPathComponent("w"), runOperation: { _, _, _, _, onActivity in
+            onActivity(act(stage, "e5"))
+            try? await Task.sleep(for: .milliseconds(400))
+            var step = AppRunStep(sequence: 1, provider: "claude", action: "fixture", model: "fixture", effort: "max",
+                revasDisposition: "adopted", sessionID: UUID().uuidString, permissionProfile: "workspace_write", exitCode: 0,
+                output: stage, stderr: "", durationMS: 0,
+                nativeRecord: AppNativeRecord(turnID: nil, recordPath: nil, persistence: "verified", desktopVisibility: "background"))
+            step.workflowStage = "plan"
+            return AppRunSummary(status: "workflow_blocked", steps: [step], workflowBlocker: "W_BLOCKED 2단계 검증 실패")
+        })
+        let id = store.selectedSessionID!
+        store.composer = "W 요청"; store.send()
+        try await eventually { !store.isSessionRunning(id) && store.selectedSession!.messages.contains { $0.text.contains("W_BLOCKED") } }
+        let folded = document(store), opened = document(store, openAll: true)
+        let holder = store.selectedSession!.messages.first { $0.work != nil }
+        try check(occurrences("W_STAGE_OUTPUT", in: folded) == 1 && occurrences("W_STAGE_OUTPUT", in: opened) == 1 &&
+            !folded.contains("멈추기 전 받은 출력") && holder?.role == .assistant && holder?.work?.toolCalls == 3 &&
+            occurrences("동안 작업", in: folded) == 1,
+            "a blocked workflow prints its verified stage answer again as stopped output")
+    }
+
+    // F2: steer, failure, retry; the app quits during the retry; after the
+    // relaunch the owner retries: the interrupted attempt's output is the
+    // new attempt's, and the first attempt's stays its own.
+    do {
+        let caseRoot = root.appendingPathComponent("f2")
+        let mail = ExecutionSteering(root: caseRoot.appendingPathComponent("run-steering"))
+        var attempt = 0
+        var gate: CheckedContinuation<Void, Never>?
+        let store = SessionStore(storageRoot: caseRoot, runOperation: { _, _, _, _, onActivity in
+            attempt += 1
+            if attempt == 1 {
+                onActivity(act("F2_A1_PROSE 첫 시도.", "f3"))
+                await withCheckedContinuation { gate = $0 }
+                throw RunnerError.message("F2_A1_STOP")
+            }
+            onActivity(act("F2_A2_PROSE 재시도 중 앱이 종료됩니다.", "f4", count: 1))
+            await withCheckedContinuation { gate = $0 }
+            throw RunnerError.message("F2_A2_NEVER")
+        })
+        let id = store.selectedSessionID!
+        store.composer = "F2 요청"; store.send()
+        try await eventually { gate != nil && (store.activeRuns[id]?.publicRunLog?.entries.count ?? 0) >= 4 }
+        let submission = store.activeRuns[id]!.submissionID
+        try mail.open(submissionID: submission, threadID: "f", turnID: "f-turn")
+        try await eventually { store.canSteerSelectedRun }
+        store.composer = "그 말이 아니라, 로그도 남겨."; store.sendCorrectionToCurrentRun()
+        try await eventually { !mail.inputs(submission).isEmpty }
+        gate?.resume(); gate = nil
+        try await eventually { !store.isSessionRunning(id) }
+        store.retrySelectedFailure()
+        try await eventually { gate != nil && store.publicRunProgress(id)?.contains("F2_A2_PROSE") == true }
+        let interrupted = store.activeRuns[id]!.publicRunLog!.entries.count
+        try await Task.sleep(for: .milliseconds(600)) // the feed writer saves the retry's entries
+        store.flushPendingState()
+        // The app quits here; the retry never ends. Relaunch on what is on disk.
+        let copy = root.appendingPathComponent("f2-relaunched")
+        try FileManager.default.copyItem(at: caseRoot, to: copy)
+        gate?.resume(); gate = nil
+        var relaunchedGate: CheckedContinuation<Void, Never>?
+        let relaunched = SessionStore(storageRoot: copy, runOperation: { _, _, _, _, onActivity in
+            onActivity(act("F2_A3_PROSE 다시 시작합니다."))
+            await withCheckedContinuation { relaunchedGate = $0 }
+            return summary("F2_A3_ANSWER 끝.")
+        })
+        relaunched.select(id)
+        if let index = relaunched.selectedIndex { relaunched.sessions[index].lastBackendFailure = nil }
+        relaunched.retrySelectedFailure()
+        try await eventually { relaunchedGate != nil && relaunched.publicRunProgress(id)?.contains("F2_A3_PROSE") == true }
+        try check(relaunched.activeRuns[id]?.feedStart == 0 && (relaunched.activeRuns[id]?.publicRunLog?.entries.count ?? 0) > interrupted &&
+            relaunched.publicRunProgress(id)?.contains("F2_A2_PROSE") == true,
+            "after a relaunch the interrupted steered attempt's output is not the next attempt's")
+        relaunchedGate?.resume(); relaunchedGate = nil
+        try await eventually { !relaunched.isSessionRunning(id) }
+        let opened = document(relaunched, openAll: true)
+        try check(occurrences("F2_A1_PROSE", in: opened) == 1 && occurrences("F2_A2_PROSE", in: opened) == 1 &&
+            !opened.contains("작업 기록을 더 이상 찾을 수 없습니다") && relaunched.selectedSession!.messages.filter { $0.work != nil }.count == 2,
+            "after a relaunch an attempt's work is lost or repeated")
+    }
+    print("Steered attempt work: \(checks) checks OK; each request keeps its own feed, late and blocked runs keep their work once")
+}
+
 @MainActor
 private func replacementInteractionSelfTest() async throws {
     var checks = 0
@@ -6530,7 +6757,7 @@ private final class SessionStore: ObservableObject {
             $0.submissionID == submissionID && $0.requestSHA256 == requestSHA256 }) {
             return min(max(0, recorded.end), feedCount)
         }
-        return session.messages.compactMap(\.work).filter { $0.submissionID == submissionID }
+        return session.messages.compactMap(\.work).filter { $0.submissionID == submissionID && $0.requestSHA256 == requestSHA256 }
             .map { $0.entryEnd ?? feedCount }.max() ?? 0
     }
     /// Records where an attempt ended in its feed, once per submission and
@@ -8101,6 +8328,10 @@ private final class SessionStore: ObservableObject {
 
         Task {
             var pendingReadbackResume: PendingSubmission?
+            // Where a blocked workflow's verified stage answers begin: the
+            // run's work folds above the first of them, so a stage answer
+            // shown as verified is never printed again as stopped output.
+            var stageAnswersStart: Int?
             // Every way this run ends, an early return included, ends a repair
             // resume scheduled as this submission (build 327 fix).
             defer {
@@ -8203,6 +8434,7 @@ private final class SessionStore: ObservableObject {
                 if !currentSubmission || !semanticallyCurrent {
                     // A result arriving after a newer request or decision is
                     // preserved verbatim and never adopted as the current answer.
+                    let lateStart = sessions[target].messages.count
                     for step in visibleAdoptedSteps(summary.steps) {
                         let visibleOutput = step.output.trimmingCharacters(in: .whitespacesAndNewlines)
                         guard !visibleOutput.isEmpty else { continue }
@@ -8222,6 +8454,16 @@ private final class SessionStore: ObservableObject {
                         sessions[target].messages.append(ChatMessage(role: .system,
                             text: os1Tr("정정이 현재 작업에 전달됐는지 확인하지 못했습니다. 기존 결과와 정정을 보존했고 변경을 재실행하지 않았습니다.",
                                         "Couldn't confirm the correction reached the current task. The existing result and the correction were kept, and no changes were re-run.")))
+                    }
+                    // Not adopted, but still this run's: its calls, errors and
+                    // time fold above the late answer (or the note it left).
+                    let late = sessions[target].messages.indices.filter { $0 >= lateStart }
+                    if currentSubmission,
+                       let holder = late.first(where: { [.assistant, .system].contains(sessions[target].messages[$0].role) }),
+                       let run = activeRuns[submission.sessionID], run.submissionID == submission.id {
+                        let received = late.filter { sessions[target].messages[$0].role == .assistant }
+                            .map { sessions[target].messages[$0].text }.joined(separator: "\n\n")
+                        sessions[target].messages[holder].work = run.work(answer: received)
                     }
                 } else {
                 if summary.status == "source_pending", let result = summary.taskContext,
@@ -8256,6 +8498,7 @@ private final class SessionStore: ObservableObject {
                                 handedRevision: handedRevision) ?? result
                         }
                         if let source = summary.sourceContext { sessions[target].sourceContext = source }
+                        stageAnswersStart = sessions[target].messages.count
                         for step in visibleAdoptedSteps(summary.steps) where stepRecordIsVerified(step) {
                             if submission.recoveryParentID == nil,
                                !isChatLaneRoutePart(step),
@@ -8439,7 +8682,7 @@ private final class SessionStore: ObservableObject {
                 var holdStatus = "Needs attention"
                 if let target = sessions.firstIndex(where: { $0.id == submission.sessionID }) {
                     if submission.recoveryParentID == nil { sessions[target].lastFailure = inFlightSubmissions[submission.sessionID] ?? submission }
-                    let failureMessagesStart = sessions[target].messages.count
+                    let failureMessagesStart = min(stageAnswersStart ?? Int.max, sessions[target].messages.count)
                     if submission.recoveryParentID == nil, let failure = error as? RunnerError, case .backend(let notice) = failure {
                         sessions[target].lastBackendFailure = notice
                         if notice.deliveryID == nil, let progress = notice.publicProgress, !progress.isEmpty {
@@ -8554,7 +8797,7 @@ private final class SessionStore: ObservableObject {
             guard activeRuns[submission.sessionID]?.submissionID == submission.id else { save(); return }
             if let log = activeRuns[submission.sessionID]?.publicRunLog {
                 await publicLogWriter.enqueue(log, store: publicLogStore)
-                await publicLogWriter.flush(submission.id)
+                await publicLogWriter.flush(submission.id, requestSHA256: log.requestSHA256)
             }
             // Read this run's receipts while they still identify it, so no
             // bubble keeps claiming a hand-off that can no longer happen.
@@ -11254,6 +11497,7 @@ private struct OS1DesktopApp: App {
                     try await steeringPlacementSelfTest()
                     try await publicFeedCompletionSelfTest()
                     try await attemptOwnershipSelfTest()
+                    try await steeredAttemptWorkSelfTest()
                     try await replacementInteractionSelfTest()
                     try await failureAcknowledgementSelfTest()
                     exit(EXIT_SUCCESS)
@@ -16431,7 +16675,7 @@ private final class TurnWorkFeedCache: @unchecked Sendable {
     private let lock = NSLock()
     private var feeds: [String: (modified: Date, log: NativePublicRunLog)] = [:]
     func feed(_ work: TurnWork, store: NativePublicRunLogStore) -> NativePublicRunLog {
-        let file = store.root.appendingPathComponent(work.submissionID.uuidString.lowercased() + ".json").path
+        let file = store.readableFile(submissionID: work.submissionID, requestSHA256: work.requestSHA256).path
         let modified = (try? FileManager.default.attributesOfItem(atPath: file))?[.modificationDate] as? Date
         lock.lock(); defer { lock.unlock() }
         if let modified, let cached = feeds[file], cached.modified == modified,

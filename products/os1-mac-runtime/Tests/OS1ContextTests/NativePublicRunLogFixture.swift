@@ -74,7 +74,7 @@ func runNativePublicRunLogFixtures() throws {
     try store.save(log)
     check(store.load(conversationID: conversation, submissionID: submission, requestSHA256: hash) == log, "exact scoped persisted snapshot")
     check(store.load(conversationID: conversation, submissionID: UUID(), requestSHA256: hash).entries.isEmpty, "new submission has no stale progress")
-    let file = root.appendingPathComponent(submission.uuidString.lowercased() + ".json")
+    let file = store.file(submissionID: submission, requestSHA256: hash)
     let mode = try FileManager.default.attributesOfItem(atPath: file.path)[.posixPermissions] as? NSNumber
     check(mode?.intValue == 0o600, "private file mode")
     let alias = root.appendingPathComponent("alias")
@@ -89,11 +89,29 @@ func runNativePublicRunLogFixtures() throws {
     Task.detached {
         await writer.enqueue(newest, store: store)
         await writer.enqueue(old, store: store)
-        await writer.flush(submission)
+        await writer.flush(submission, requestSHA256: hash)
         semaphore.signal()
     }
     check(semaphore.wait(timeout: .now() + 5) == .success, "off-main writer terminated")
     check(store.load(conversationID: conversation, submissionID: submission, requestSHA256: hash) == newest, "older queued snapshot cannot overwrite newest")
+    // A steered retry runs the same submission under a new request: its
+    // feed starts at revision 0 and must neither be dropped behind the
+    // earlier attempt's revision nor replace the earlier attempt's feed.
+    let steeredHash = String(repeating: "b", count: 64)
+    var steered = NativePublicRunLog(conversationID: conversation, submissionID: submission, requestSHA256: steeredHash)
+    _ = steered.observe(provider: "claude", stream: "retry", text: "Steered retry text", candidate: false, origin: .nativeAssistant, receivedAt: now)
+    let steeredSnapshot = steered, retrySemaphore = DispatchSemaphore(value: 0)
+    Task.detached {
+        await writer.enqueue(steeredSnapshot, store: store)
+        await writer.flush(submission, requestSHA256: steeredHash)
+        retrySemaphore.signal()
+    }
+    check(retrySemaphore.wait(timeout: .now() + 5) == .success, "off-main writer terminated for the retry")
+    check(store.load(conversationID: conversation, submissionID: submission, requestSHA256: steeredHash) == steeredSnapshot &&
+          store.load(conversationID: conversation, submissionID: submission, requestSHA256: hash) == newest,
+          "each request of one submission keeps its own feed")
+    check(store.load(conversationID: conversation, submissionID: submission, requestSHA256: "../escape").entries.isEmpty,
+          "a request digest never names a path")
     typealias Step = NativeExecutionProgress.Step
     func progress(_ step: Step, _ sequence: Int) -> NativeExecutionProgress {
         NativeExecutionProgress(sequence: sequence, kind: .toolWorking, tool: step.tool, scope: "main", toolsRequested: 0,

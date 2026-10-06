@@ -298,9 +298,23 @@ public struct NativePublicRunLogStore: Sendable {
         self.root = root ?? FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Application Support/OS-1/public-run-progress", isDirectory: true)
     }
+    /// One feed per submission and request: a steered retry runs the same
+    /// submission under a new request, and must neither drop its own entries
+    /// nor overwrite the feed an earlier attempt's work line opens.
+    public func file(submissionID: UUID, requestSHA256: String) -> URL {
+        root.appendingPathComponent(submissionID.uuidString.lowercased() + "-" + requestSHA256 + ".json")
+    }
+    /// The file a feed is read from: its own, or one saved by an earlier
+    /// build under the submission alone (read only if its request matches).
+    public func readableFile(submissionID: UUID, requestSHA256: String) -> URL {
+        let own = file(submissionID: submissionID, requestSHA256: requestSHA256)
+        guard !FileManager.default.fileExists(atPath: own.path) else { return own }
+        return root.appendingPathComponent(submissionID.uuidString.lowercased() + ".json")
+    }
     public func load(conversationID: UUID, submissionID: UUID, requestSHA256: String) -> NativePublicRunLog {
         let fresh = NativePublicRunLog(conversationID: conversationID, submissionID: submissionID, requestSHA256: requestSHA256)
-        let file = root.appendingPathComponent(submissionID.uuidString.lowercased() + ".json")
+        guard requestSHA256.range(of: #"^[0-9a-f]{64}$"#, options: .regularExpression) != nil else { return fresh }
+        let file = readableFile(submissionID: submissionID, requestSHA256: requestSHA256)
         guard !root.isSymbolicLink, !file.isSymbolicLink,
               let attrs = try? FileManager.default.attributesOfItem(atPath: file.path),
               attrs[.type] as? FileAttributeType == .typeRegular,
@@ -314,7 +328,7 @@ public struct NativePublicRunLogStore: Sendable {
     public func save(_ value: NativePublicRunLog) throws {
         guard value.isValid, !root.isSymbolicLink else { throw CocoaError(.fileWriteInvalidFileName) }
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-        let file = root.appendingPathComponent(value.submissionID.uuidString.lowercased() + ".json")
+        let file = file(submissionID: value.submissionID, requestSHA256: value.requestSHA256)
         guard !file.isSymbolicLink else { throw CocoaError(.fileWriteInvalidFileName) }
         let bytes = try JSONEncoder().encode(value)
         guard bytes.count <= 16_000_000 else { throw CocoaError(.fileWriteOutOfSpace) }
@@ -324,27 +338,33 @@ public struct NativePublicRunLogStore: Sendable {
 }
 
 /// Ordered off-UI persistence. Multiple native deltas coalesce; stale queued
-/// snapshots can never overwrite a newer revision. Completion may flush.
+/// snapshots can never overwrite a newer revision of the same feed (one
+/// submission's request: each attempt under a new request has its own).
 public actor NativePublicRunLogWriter {
-    private var pending: [UUID: (NativePublicRunLog, NativePublicRunLogStore)] = [:]
-    private var persisted: [UUID: Int] = [:]
+    private struct Feed: Hashable { let submissionID: UUID; let requestSHA256: String }
+    private var pending: [Feed: (NativePublicRunLog, NativePublicRunLogStore)] = [:]
+    private var persisted: [Feed: Int] = [:]
     private var timer: Task<Void, Never>?
     public init() {}
     public func enqueue(_ log: NativePublicRunLog, store: NativePublicRunLogStore) {
-        guard log.revision > (persisted[log.submissionID] ?? -1),
-              log.revision >= (pending[log.submissionID]?.0.revision ?? -1) else { return }
-        pending[log.submissionID] = (log, store)
+        let feed = Feed(submissionID: log.submissionID, requestSHA256: log.requestSHA256)
+        guard log.revision > (persisted[feed] ?? -1),
+              log.revision >= (pending[feed]?.0.revision ?? -1) else { return }
+        pending[feed] = (log, store)
         if timer == nil {
             timer = Task { try? await Task.sleep(for: .milliseconds(250)); flushAll() }
         }
     }
-    public func flush(_ submissionID: UUID) {
-        guard let (log,store) = pending.removeValue(forKey: submissionID) else { return }
-        do { try store.save(log); persisted[submissionID] = log.revision } catch { }
+    public func flush(_ submissionID: UUID, requestSHA256: String) {
+        flush(Feed(submissionID: submissionID, requestSHA256: requestSHA256))
+    }
+    private func flush(_ feed: Feed) {
+        guard let (log, store) = pending.removeValue(forKey: feed) else { return }
+        do { try store.save(log); persisted[feed] = log.revision } catch { }
     }
     private func flushAll() {
         timer = nil
-        for id in Array(pending.keys) { flush(id) }
+        for feed in Array(pending.keys) { flush(feed) }
     }
 }
 
