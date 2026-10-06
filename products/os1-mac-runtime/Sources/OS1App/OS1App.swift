@@ -3278,8 +3278,8 @@ private func steeredAttemptWorkSelfTest() async throws {
     func steeredRetry(_ tag: String, _ hex: String, many: Bool, complete: Bool) async throws {
         let caseRoot = root.appendingPathComponent(tag)
         let mail = ExecutionSteering(root: caseRoot.appendingPathComponent("run-steering"))
-        var attempt = 0
-        var gate: CheckedContinuation<Void, Never>?
+        nonisolated(unsafe) var attempt = 0
+        nonisolated(unsafe) var gate: CheckedContinuation<Void, Never>?
         let store = SessionStore(storageRoot: caseRoot, runOperation: { submission, _, _, _, onActivity in
             attempt += 1
             if attempt == 1 {
@@ -3336,7 +3336,7 @@ private func steeredAttemptWorkSelfTest() async throws {
     do {
         let caseRoot = root.appendingPathComponent("c")
         let mail = ExecutionSteering(root: caseRoot.appendingPathComponent("run-steering"))
-        var gate: CheckedContinuation<Void, Never>?
+        nonisolated(unsafe) var gate: CheckedContinuation<Void, Never>?
         let store = SessionStore(storageRoot: caseRoot, runOperation: { submission, _, _, _, onActivity in
             onActivity(act("C_PROSE 빌드와 테스트를 확인하는 중입니다.", "c1"))
             await withCheckedContinuation { gate = $0 }
@@ -3392,8 +3392,8 @@ private func steeredAttemptWorkSelfTest() async throws {
     do {
         let caseRoot = root.appendingPathComponent("f2")
         let mail = ExecutionSteering(root: caseRoot.appendingPathComponent("run-steering"))
-        var attempt = 0
-        var gate: CheckedContinuation<Void, Never>?
+        nonisolated(unsafe) var attempt = 0
+        nonisolated(unsafe) var gate: CheckedContinuation<Void, Never>?
         let store = SessionStore(storageRoot: caseRoot, runOperation: { _, _, _, _, onActivity in
             attempt += 1
             if attempt == 1 {
