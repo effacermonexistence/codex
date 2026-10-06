@@ -16702,10 +16702,12 @@ private struct LiveRunMarkState: Equatable {
 
 private struct LiveRunMarkContent: View {
     let state: LiveRunMarkState
+    /// Only fixture hosts pin this; live hosts follow the Mac's setting.
+    var reduceMotionOverride: Bool? = nil
 
     var body: some View {
         RouteWorkingMark(session: state.session, motion: state.spec.motion, wanted: state.spec.wanted, held: state.spec.held,
-                         preview: state.preview)
+                         preview: state.preview, reduceMotionOverride: reduceMotionOverride)
             .frame(width: RunningSessionIndicator.slot.width, height: RunningSessionIndicator.slot.height)
             .frame(width: ClaudeWorkingMark.box, height: ClaudeWorkingMark.box)
             .accessibilityHidden(true)
@@ -18218,6 +18220,7 @@ private func liveRunRowSelfTest() throws {
     try check(overlay.state?.session == sessionID && overlay.state?.preview == nil &&
         overlay.state?.spec == LiveRunMarkSpec(motion: .claude, wanted: .code, held: false),
         "the mark view does not play this conversation's Claude code mark on its shared clock")
+    try check(overlay.rootView.reduceMotionOverride == nil, "a live host overrides the Mac's Reduce Motion setting")
     let markGlyph = layout.glyphIndexForCharacter(at: at)
     let markLine = layout.lineFragmentRect(forGlyphAt: markGlyph, effectiveRange: nil)
     let origin = textView.textContainerOrigin
@@ -18249,11 +18252,25 @@ private func liveRunRowSelfTest() throws {
     // In a window the mark plays, and its frames redraw the mark alone: the
     // transcript is not drawn again while it moves.
     _ = NSApplication.shared
-    let window = NSWindow(contentRect: NSRect(x: -20_000, y: -20_000, width: 1_000, height: 700), styleMask: [], backing: .buffered,
+    guard let screen = NSScreen.main ?? NSScreen.screens.first else {
+        throw RunnerError.message("Live run row: no drawable screen for the animation fixture")
+    }
+    // An off-screen, alpha-zero window is not a valid live scheduling
+    // fixture: older SwiftUI may suspend its timeline as occluded. Keep this
+    // fixture drawable without activating it or changing system settings.
+    let drawable = screen.visibleFrame
+    let windowOrigin = NSPoint(x: drawable.minX + max(0, (drawable.width - 1_000) / 2),
+                               y: drawable.minY + max(0, (drawable.height - 700) / 2))
+    let window = NSWindow(contentRect: NSRect(origin: windowOrigin, size: NSSize(width: 1_000, height: 700)), styleMask: [], backing: .buffered,
                           defer: false)
-    window.alphaValue = 0
-    window.orderFront(nil)
+    window.isReleasedWhenClosed = false
+    window.ignoresMouseEvents = true
+    window.alphaValue = 1
     window.contentView?.addSubview(scroll)
+    guard let markState = overlay.state else { throw RunnerError.message("Live run row: the fixture mark lost its state") }
+    overlay.rootView = LiveRunMarkContent(state: markState, reduceMotionOverride: false)
+    window.orderFront(nil)
+    defer { window.orderOut(nil); scroll.removeFromSuperview(); window.close() }
     RunLoop.main.run(until: Date().addingTimeInterval(0.3))
     window.displayIfNeeded()
     func shown() -> Data? {
@@ -18263,12 +18280,17 @@ private func liveRunRowSelfTest() throws {
     }
     let drawn = textView.drawPasses, first = shown()
     var frames = Set<Data>()
+    let samplingStarted = Date()
     for _ in 0..<12 {
         RunLoop.main.run(until: Date().addingTimeInterval(1.0 / 30))
         window.displayIfNeeded()
         if let frame = shown() { frames.insert(frame) }
     }
-    try check(first != nil && frames.count > 3, "the mark did not play in a window: \(frames.count) distinct frames")
+    let sampleDuration = Date().timeIntervalSince(samplingStarted)
+    let fixtureEnvironment = "visible=\(window.isVisible), occlusion=\(window.occlusionState.rawValue), systemReduceMotion=\(NSWorkspace.shared.accessibilityDisplayShouldReduceMotion), fixtureReduceMotion=false, samples=12, interval=1/30s, sampledSeconds=\(sampleDuration)"
+    print("Live run row animation surface: \(frames.count) distinct frames; \(fixtureEnvironment)")
+    try check(first != nil && frames.count > 3,
+        "the mark did not play in a window: \(frames.count) distinct frames; \(fixtureEnvironment)")
     try check(textView.drawPasses == drawn, "the mark's frames redrew the transcript \(textView.drawPasses - drawn) times")
 
     coordinator.render(view(61, running: false), in: scroll)
