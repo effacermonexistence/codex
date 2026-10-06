@@ -11791,6 +11791,113 @@ private func reasoningVisibilitySelfTest() throws {
 }
 
 @MainActor
+private func runningRouteMarkSelfTest() throws {
+    var checks = 0
+    func check(_ value: Bool, _ label: String) throws {
+        guard value else { throw RunnerError.message("Running route mark: " + label) }
+        checks += 1
+    }
+    // Only the recorded executed vendor picks the mark; anything else keeps OS-1's bars.
+    let routed: [(RuntimeActivity, ProviderSurface.Backend)] = [
+        (RuntimeActivity(.executing, provider: "claude"), .anthropic),
+        (RuntimeActivity(.executing, provider: "claude", surface: "claude-chat"), .anthropic),
+        (RuntimeActivity(.preparing, provider: " Claude \n", model: "claude-fixture"), .anthropic),
+        (RuntimeActivity(.executing, provider: "codex", model: "gpt-fixture"), .openAI),
+        (RuntimeActivity(.verifying, provider: "codex", surface: "gpt-chat"), .openAI)]
+    for (activity, vendor) in routed {
+        try check(RunningRouteMark(activity: activity).vendor == vendor,
+            "\(activity.provider ?? "-")/\(activity.surface ?? "-") draws the \(vendor.rawValue) mark")
+    }
+    let unrouted: [RuntimeActivity?] = [nil, RuntimeActivity(.routing), RuntimeActivity(.preparing),
+        RuntimeActivity(.executing, provider: "local"), RuntimeActivity(.executing, provider: "routing"),
+        RuntimeActivity(.waitingForSource, provider: "claude"), RuntimeActivity(.executing, model: "claude-fixture"),
+        RuntimeActivity(.executing, model: "gpt-fixture")]
+    for activity in unrouted {
+        try check(RunningRouteMark(activity: activity).vendor == nil, "an unrecorded route keeps OS-1's bars")
+    }
+
+    // Real pixels at 4x, independent of the Mac's reduce-motion setting.
+    func render<V: View>(_ mark: V) throws -> NSBitmapImageRep {
+        let content = mark.frame(width: 13, height: 14).scaleEffect(4, anchor: .topLeading)
+            .frame(width: 52, height: 56, alignment: .topLeading).background(Theme.background)
+        let view = NSHostingView(rootView: content)
+        view.frame = NSRect(x: 0, y: 0, width: 52, height: 56); view.layoutSubtreeIfNeeded()
+        guard let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { throw SourceContextError.invalid }
+        view.cacheDisplay(in: view.bounds, to: bitmap)
+        return bitmap
+    }
+    func bytes(_ bitmap: NSBitmapImageRep) -> [UInt8] {
+        Array(UnsafeBufferPointer(start: bitmap.bitmapData, count: bitmap.bytesPerRow * bitmap.pixelsHigh))
+    }
+    func rgb(_ bitmap: NSBitmapImageRep, _ x: Int, _ y: Int) -> (Double, Double, Double) {
+        guard let color = bitmap.colorAt(x: x, y: y)?.usingColorSpace(.sRGB) else { return (0, 0, 0) }
+        return (Double(color.redComponent), Double(color.greenComponent), Double(color.blueComponent))
+    }
+    func lit(_ bitmap: NSBitmapImageRep, _ x: Int, _ y: Int) -> Bool {
+        let (r, g, b) = rgb(bitmap, x, y); return max(r, g, b) > 0.12
+    }
+    /// Lit pixels, whether every one of them is pink, and the share of a ring
+    /// at 70% of the mark's radius left dark: none for a dot, the gaps between
+    /// rays for a spark.
+    func ink(_ bitmap: NSBitmapImageRep) -> (count: Int, pink: Bool, ringGaps: Double) {
+        var count = 0, pink = true, box = (minX: Int.max, minY: Int.max, maxX: Int.min, maxY: Int.min)
+        for y in 0..<bitmap.pixelsHigh { for x in 0..<bitmap.pixelsWide where lit(bitmap, x, y) {
+            let (r, g, b) = rgb(bitmap, x, y)
+            count += 1; pink = pink && r > g && b > g && r + 0.02 >= b
+            box = (min(box.minX, x), min(box.minY, y), max(box.maxX, x), max(box.maxY, y))
+        } }
+        guard count > 0 else { return (0, false, 0) }
+        let center = (x: Double(box.minX + box.maxX) / 2, y: Double(box.minY + box.maxY) / 2)
+        let radius = 0.7 * Double(min(box.maxX - box.minX, box.maxY - box.minY)) / 2
+        let samples = 96
+        let dark = (0..<samples).filter { index in
+            let angle = 2 * Double.pi * Double(index) / Double(samples)
+            return !lit(bitmap, Int((center.x + cos(angle) * radius).rounded()), Int((center.y + sin(angle) * radius).rounded()))
+        }.count
+        return (count, pink, Double(dark) / Double(samples))
+    }
+    // The spark opens at 0.8s of its 1.6s cycle; the dot is fullest at 0.75s of 1.5s.
+    let bud = try render(ClaudeSparkMark(time: 0)), spark = try render(ClaudeSparkMark(time: 0.8))
+    let smallDot = try render(GPTPulseMark(time: 0)), dot = try render(GPTPulseMark(time: 0.75))
+    let budInk = ink(bud), sparkInk = ink(spark), smallDotInk = ink(smallDot), dotInk = ink(dot)
+    try check([budInk, sparkInk, smallDotInk, dotInk].allSatisfy { $0.count > 40 && $0.pink }, "every mark is drawn in OS-1 pink")
+    try check(sparkInk.ringGaps > 0.2 && dotInk.ringGaps < 0.05,
+        "Claude draws a rayed spark and GPT a solid dot (ring gaps \(sparkInk.ringGaps) / \(dotInk.ringGaps))")
+    try check(Double(sparkInk.count) > Double(budInk.count) * 1.5, "the Claude spark opens from a bud (\(budInk.count) → \(sparkInk.count))")
+    try check(Double(dotInk.count) > Double(smallDotInk.count) * 2, "the GPT dot swells (\(smallDotInk.count) → \(dotInk.count))")
+    try check(bytes(try render(ClaudeSparkMark(time: 0.8))) == bytes(spark) && bytes(try render(GPTPulseMark(time: 0.75))) == bytes(dot),
+        "a mark at one moment of the run clock has stable pixels")
+    let quarter = bytes(try render(ClaudeSparkMark(time: 0.4)))
+    try check(quarter != bytes(bud) && quarter != bytes(spark), "the Claude spark moves between frames")
+
+    // The production indicator and sidebar row draw the executed vendor's mark.
+    let moment = Date(timeIntervalSinceReferenceDate: 1_000.8)
+    let claude = RuntimeActivity(.executing, provider: "claude", model: "claude-fixture", effort: "max")
+    let codex = RuntimeActivity(.executing, provider: "codex", model: "gpt-fixture", effort: "high")
+    let marks = try [claude, codex, RuntimeActivity(.routing)].map {
+        bytes(try render(RunningSessionIndicator(mark: RunningRouteMark(activity: $0), previewTime: moment)))
+    }
+    try check(marks[0] != marks[1] && marks[1] != marks[2] && marks[0] != marks[2], "Claude, GPT and routing marks differ")
+    func indicatorBox(_ activity: RuntimeActivity) throws -> [Double] {
+        let width = Theme.sidebarWidth - 20
+        let content = SessionRow(session: ConversationSession(title: "Route mark fixture", workspace: "/tmp"), selected: true,
+            activity: activity, previewTime: moment, action: {})
+            .frame(width: width, height: 132, alignment: .top).background(Theme.background).environment(\.colorScheme, .dark)
+        let view = NSHostingView(rootView: content)
+        view.frame = NSRect(x: 0, y: 0, width: width, height: 132); view.layoutSubtreeIfNeeded()
+        guard let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { throw SourceContextError.invalid }
+        view.cacheDisplay(in: view.bounds, to: bitmap)
+        // The mark's 13x14pt box sits after the row's 13pt inset in the first line.
+        let scale = Double(bitmap.pixelsWide) / Double(width)
+        return (Int(9 * scale)..<Int(25 * scale)).flatMap { y in (Int(13 * scale)..<Int(26 * scale)).map { x in
+            let (r, g, b) = rgb(bitmap, x, y); return r + g + b } }
+    }
+    let claudeBox = try indicatorBox(claude), codexBox = try indicatorBox(codex)
+    try check(zip(claudeBox, codexBox).filter { abs($0 - $1) > 0.3 }.count > 10, "the sidebar row shows which vendor runs it")
+    print("Running route mark: \(checks) checks passed; Claude spark, GPT dot and OS-1 bars at 4x pixels; model calls 0")
+}
+
+@MainActor
 private func renderShellPreview(to output: URL) throws {
     try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
     let root = FileManager.default.temporaryDirectory.appendingPathComponent("os1-shell-preview-" + UUID().uuidString)
@@ -12189,6 +12296,26 @@ private struct OS1DesktopApp: App {
                     guard let rowPNG = rowBitmap.representation(using: .png, properties: [:]) else { throw SourceContextError.invalid }
                     try rowPNG.write(to: output.appendingPathComponent("sidebar-\(index).png"))
                 }
+                // Each running mark across 1.6s at 4x: Claude's spark, the GPT dot, then OS-1's bars before routing.
+                let routes = [RuntimeActivity(.executing, provider: "claude"), RuntimeActivity(.executing, provider: "codex"),
+                              RuntimeActivity(.routing)]
+                let strip = VStack(alignment: .leading, spacing: 6) {
+                    ForEach(0..<routes.count, id: \.self) { route in
+                        HStack(spacing: 6) {
+                            ForEach(0..<16, id: \.self) { frame in
+                                RunningSessionIndicator(mark: RunningRouteMark(activity: routes[route]),
+                                    previewTime: started.addingTimeInterval(Double(frame) / 10))
+                            }
+                        }
+                    }
+                }.padding(6).scaleEffect(4, anchor: .topLeading)
+                    .frame(width: 1_240, height: 264, alignment: .topLeading).background(Theme.background)
+                let marks = NSHostingView(rootView: strip)
+                marks.frame = NSRect(x: 0, y: 0, width: 1_240, height: 264); marks.layoutSubtreeIfNeeded()
+                guard let markBitmap = marks.bitmapImageRepForCachingDisplay(in: marks.bounds) else { throw SourceContextError.invalid }
+                marks.cacheDisplay(in: marks.bounds, to: markBitmap)
+                guard let markPNG = markBitmap.representation(using: .png, properties: [:]) else { throw SourceContextError.invalid }
+                try markPNG.write(to: output.appendingPathComponent("route-marks.png"))
                 // A run with the backend's own steps under the request it works on, collapsed and opened.
                 let request = [ChatMessage(role: .user, text: os1Tr("진행 표시를 작게 접었다 펼 수 있게 해 줘.",
                     "Make the progress display small and collapsible."))]
@@ -12471,6 +12598,7 @@ private struct OS1DesktopApp: App {
             do {
                 try fixtureStoreIsolationSelfTest()
                 try reasoningVisibilitySelfTest()
+                try runningRouteMarkSelfTest()
                 try governanceActivityStripSelfTest()
                 try governanceMonitorRound2SelfTest()
                 try governanceEvidenceMonitorSelfTest()
@@ -15154,7 +15282,7 @@ private struct SessionRow: View {
         Button(action: action) {
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 4) {
-                    if activity != nil { RunningSessionIndicator(previewTime: previewTime) }
+                    if activity != nil { RunningSessionIndicator(mark: RunningRouteMark(activity: activity), previewTime: previewTime) }
                     if session.pinnedAt != nil { Image(systemName: "pin.fill").font(.system(size: 10)).foregroundStyle(Theme.pink) }
                     Text(session.title)
                         .font(.system(size: 13, weight: selected ? .semibold : .regular))
@@ -15315,18 +15443,108 @@ private struct SessionExecutionBadge: View {
 
 
 
+/// Which vendor's mark a running row draws, so the owner can tell a Claude run
+/// from a Codex run by the animation alone. Only the recorded executed route
+/// decides it, never a requested route or a model name; until the runtime
+/// records one, OS-1's own bars stay.
+private struct RunningRouteMark: Equatable {
+    let surface: ProviderSurface?
+
+    init(activity: RuntimeActivity?) {
+        guard let activity, activity.phase != .waitingForSource else { surface = nil; return }
+        surface = ProviderSurface.resolveExecuted(rawSurface: activity.surface, provider: activity.provider)
+    }
+
+    var vendor: ProviderSurface.Backend? { surface?.backend }
+    var label: String {
+        surface.map { os1Tr("\($0.routeTitle) 실행 중", "\($0.routeTitle) running") } ?? os1Tr("작업 실행 중", "Task running")
+    }
+}
+
+/// Position within a repeating cycle of `period` seconds, in 0..<1.
+private func routeMarkCycle(_ time: Double, period: Double) -> Double {
+    let cycle = (time / period).truncatingRemainder(dividingBy: 1)
+    return cycle < 0 ? cycle + 1 : cycle
+}
+
+/// 0 → 1 → 0 once per period, easing at both ends.
+private func routeMarkPulse(_ time: Double, period: Double) -> Double {
+    let x = 0.5 - 0.5 * cos(2 * Double.pi * routeMarkCycle(time, period: period))
+    return x * x * (3 - 2 * x)
+}
+
+/// Claude's spark in OS-1 pink: uneven rays that open from a small bud into
+/// the full spark and close again while the spark slowly turns.
+private struct ClaudeSparkShape: Shape {
+    /// Uneven reach and small tilts give the spark its hand-drawn outline.
+    private static let rays: [(reach: Double, tilt: Double)] = [
+        (1.00, 0), (0.74, 3), (0.93, -2), (0.70, 4), (0.98, -3), (0.78, 2),
+        (0.90, 0), (0.72, -4), (1.00, 3), (0.76, -2), (0.92, 2), (0.71, -3)]
+    /// Run-clock seconds; nil draws the still, fully open spark.
+    let time: Double?
+
+    func path(in rect: CGRect) -> Path {
+        let center = CGPoint(x: rect.midX, y: rect.midY)
+        let radius = min(rect.width, rect.height) / 2 - 0.8
+        let bloom = time.map { routeMarkPulse($0, period: 1.6) } ?? 1
+        let turn = 2 * Double.pi * (time.map { routeMarkCycle($0, period: 12.5) } ?? 0)
+        var path = Path()
+        for (index, ray) in Self.rays.enumerated() {
+            let step = Double(index) / Double(Self.rays.count)
+            // A light shimmer runs twice around the ring per cycle.
+            let shimmer = time.map { 0.5 + 0.5 * sin(2 * Double.pi * (routeMarkCycle($0, period: 0.8) - 2 * step)) } ?? 1
+            let reach = radius * ray.reach * (0.5 + 0.5 * bloom) * (0.86 + 0.14 * shimmer)
+            let angle = 2 * Double.pi * step + ray.tilt * Double.pi / 180 + turn
+            path.move(to: CGPoint(x: center.x + cos(angle) * radius * 0.1, y: center.y + sin(angle) * radius * 0.1))
+            path.addLine(to: CGPoint(x: center.x + cos(angle) * reach, y: center.y + sin(angle) * reach))
+        }
+        return path
+    }
+}
+
+private struct ClaudeSparkMark: View {
+    let time: Double?
+    var body: some View {
+        ZStack {
+            ClaudeSparkShape(time: time).stroke(Theme.pink, style: StrokeStyle(lineWidth: 1.35, lineCap: .round))
+            Circle().fill(Theme.pink).frame(width: 2.3, height: 2.3)
+        }
+    }
+}
+
+/// The GPT/Codex mark in OS-1 pink: one round dot that swells and shrinks,
+/// like ChatGPT's own working dot.
+private struct GPTPulseMark: View {
+    /// Run-clock seconds; nil draws the still, full dot.
+    let time: Double?
+    var body: some View {
+        let diameter = 10 * (0.6 + 0.4 * (time.map { routeMarkPulse($0, period: 1.5) } ?? 1))
+        Circle().fill(Theme.pink).frame(width: diameter, height: diameter)
+    }
+}
+
 private struct RunningSessionIndicator: View {
+    var mark = RunningRouteMark(activity: nil)
     var previewTime: Date? = nil
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     var body: some View {
-        TimelineView(.periodic(from: .now, by: reduceMotion ? 1 : 0.12)) { context in
+        // The vendor marks move continuously, so they tick faster than the bars.
+        TimelineView(.periodic(from: .now, by: reduceMotion ? 1 : (mark.vendor == nil ? 0.12 : 0.05))) { context in
             let time = (previewTime ?? context.date).timeIntervalSinceReferenceDate
-            HStack(spacing: 2) {
-                ForEach(0..<3) { index in
-                    Capsule().fill(Theme.pink).frame(width: 2,
-                        height: reduceMotion ? 7 : 3 + 9 * (0.5 + 0.5 * sin(time * 5 - Double(index))))
+            Group {
+                switch mark.vendor {
+                case .anthropic?: ClaudeSparkMark(time: reduceMotion ? nil : time)
+                case .openAI?: GPTPulseMark(time: reduceMotion ? nil : time)
+                case nil:
+                    HStack(spacing: 2) {
+                        ForEach(0..<3) { index in
+                            Capsule().fill(Theme.pink).frame(width: 2,
+                                height: reduceMotion ? 7 : 3 + 9 * (0.5 + 0.5 * sin(time * 5 - Double(index))))
+                        }
+                    }
                 }
-            }.frame(width: 13, height: 14).accessibilityLabel(os1Tr("작업 실행 중", "Task running"))
+            }
+            .frame(width: 13, height: 14).help(mark.label).accessibilityLabel(mark.label)
         }
     }
 }
