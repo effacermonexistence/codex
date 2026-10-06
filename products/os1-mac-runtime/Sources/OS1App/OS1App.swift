@@ -2965,6 +2965,261 @@ private func attemptOwnershipSelfTest() async throws {
     print("Attempt ownership: \(checks) checks passed; model calls 0; no-work-line retry keeps its own feed/time, delivered saved result keeps the run's work")
 }
 
+/// A retry or a saved result's delivery of a steered submission runs with its
+/// corrections folded in, so it is adopted like any other run once the
+/// backend shows them persisted (build 329 fix): it never stays "Late result ·
+/// not adopted" forever, and a delivered saved result is never printed twice.
+/// An unconfirmed correction still ends as a late result. An attempt the owner
+/// steered, then the app quit during, belongs to the next attempt after the
+/// relaunch, counted once.
+@MainActor
+private func steeredRetryAdoptionSelfTest() async throws {
+    var checks = 0
+    var failures: [String] = []
+    func check(_ condition: Bool, _ message: String) throws {
+        guard condition else { throw RunnerError.message(message) }; checks += 1
+    }
+    func eventually(_ seconds: Double = 10, line: Int = #line, _ condition: () -> Bool) async throws {
+        let end = Date().addingTimeInterval(seconds)
+        while !condition(), Date() < end { try await Task.sleep(for: .milliseconds(10)) }
+        try check(condition(), "scheduler deadline (test line \(line))")
+    }
+    // Each case reports on its own, so one run shows every case that fails.
+    func run(_ name: String, _ body: () async throws -> Void) async {
+        do { try await body() } catch { failures.append(name + ": " + error.localizedDescription) }
+    }
+    func occurrences(_ needle: String, in text: String) -> Int { text.components(separatedBy: needle).count - 1 }
+    func document(_ store: SessionStore, openAll: Bool = false) -> String {
+        let messages = presentedMessages(store.selectedSession!)
+        return timelineAttributedDocument(messages: messages, queuedSubmissions: [], isRunning: false, workspace: "/tmp",
+            expanded: openAll ? Set(messages.filter { $0.work != nil }.map { $0.id.uuidString + "-work" }) : [],
+            publicProgress: nil, workLogStore: store.publicLogStore).string
+    }
+    let lateReceipt = os1Tr("늦게 도착한 결과", "Late result")
+    func lateCount(_ store: SessionStore) -> Int {
+        store.selectedSession!.messages.filter { $0.role == .receipt && $0.text.hasPrefix(lateReceipt) }.count
+    }
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("os1-steered-retry-adoption-" + UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let started = Date()
+    typealias Step = NativeExecutionProgress.Step
+    func progress(_ tag: String, count: Int = 3) -> NativeExecutionProgress {
+        let all = [
+            Step(id: "00000000\(tag)01", sequence: 2, tool: "Bash", scope: "main", verb: "run", label: "swift build \(tag)",
+                 state: .returned, startedAt: started, endedAt: started),
+            Step(id: "00000000\(tag)02", sequence: 4, tool: "Read", scope: "main", verb: "read", label: "Sources/\(tag).swift",
+                 state: .failed, startedAt: started, endedAt: started),
+            Step(id: "00000000\(tag)03", sequence: 6, tool: "Grep", scope: "main", verb: "search", label: "needle\(tag)",
+                 state: .returned, startedAt: started, endedAt: started),
+        ]
+        return NativeExecutionProgress(sequence: 6, kind: .toolReturned, tool: "Grep", scope: "main",
+            toolsRequested: count, toolsReturned: count, activeTools: 0, observedAt: started,
+            events: [.init(sequence: 6, kind: .toolReturned, tool: "Grep", scope: "main", observedAt: started)],
+            steps: Array(all.prefix(count)), stream: "00000000\(tag)aa")
+    }
+    func act(_ text: String, _ tag: String? = nil, count: Int = 3) -> RuntimeActivity {
+        RuntimeActivity(.executing, provider: "claude", surface: "claude", model: "fixture", effort: "max",
+            publicText: text, tool: tag == nil ? nil : "Grep", progress: tag.map { progress($0, count: count) },
+            publicTextOrigin: .nativeAssistant)
+    }
+    func summary(_ answer: String, persisted: [UUID]?) -> AppRunSummary {
+        AppRunSummary(status: "complete", steps: [AppRunStep(sequence: 1, provider: "claude", action: "fixture",
+            model: "fixture", effort: "max", revasDisposition: "adopted", sessionID: UUID().uuidString,
+            permissionProfile: "workspace_write", exitCode: 0, output: answer, stderr: "", durationMS: 0, nativeRecord: nil)],
+            persistedCorrectionIDs: persisted)
+    }
+    /// Steers the store's running attempt; `persist` records the backend's
+    /// "persisted" receipt (an unconfirmed steer has none).
+    func steer(_ store: SessionStore, _ mail: ExecutionSteering, tag: String, persist: Bool) async throws -> UUID {
+        let id = store.selectedSessionID!
+        let submission = store.activeRuns[id]!.submissionID
+        try mail.open(submissionID: submission, threadID: tag, turnID: tag + "-turn")
+        try await eventually { store.canSteerSelectedRun }
+        store.composer = "그 말이 아니라, 테스트도 같이 돌려."; store.sendCorrectionToCurrentRun()
+        try await eventually { !mail.inputs(submission).isEmpty }
+        if persist {
+            for input in mail.inputs(submission) { try mail.record(input, state: .persisted, threadID: tag, turnID: tag + "-turn") }
+        }
+        return submission
+    }
+
+    // G4 / G5: a steered attempt fails; the owner retries. The backend
+    // reports the correction persisted (G4) or never persisted it (G5).
+    for persist in [true, false] {
+        let tag = persist ? "g4" : "g5"
+        await run(tag) {
+            let caseRoot = root.appendingPathComponent(tag)
+            let mail = ExecutionSteering(root: caseRoot.appendingPathComponent("run-steering"))
+            var attempt = 0
+            var gate: CheckedContinuation<Void, Never>?
+            let store = SessionStore(storageRoot: caseRoot, runOperation: { submission, _, _, _, onActivity in
+                attempt += 1
+                if attempt == 1 {
+                    onActivity(act("\(tag)_A1_PROSE 첫 시도.", "a" + String(tag.last!)))
+                    await withCheckedContinuation { gate = $0 }
+                    throw RunnerError.message("\(tag)_A1_STOP")
+                }
+                onActivity(act("\(tag)_A\(attempt)_PROSE 재시도.", "b" + String(tag.last!), count: 1))
+                try? await Task.sleep(for: .milliseconds(300))
+                return summary("\(tag)_A\(attempt)_ANSWER 끝.", persisted: mail.persistedIDs(submission.id))
+            })
+            let id = store.selectedSessionID!
+            store.composer = "\(tag) 요청"; store.send()
+            try await eventually { gate != nil && (store.activeRuns[id]?.publicRunLog?.entries.count ?? 0) >= 4 }
+            _ = try await steer(store, mail, tag: tag, persist: persist)
+            gate?.resume(); gate = nil
+            try await eventually { !store.isSessionRunning(id) }
+            store.retrySelectedFailure()
+            try await eventually { attempt == 2 && !store.isSessionRunning(id) }
+            let folded = document(store)
+            if persist {
+                try check(lateCount(store) == 0 && store.selectedSession!.lastFailure == nil &&
+                    store.selectedSession!.messages.last(where: { $0.role == .assistant })?.text.hasPrefix("g4_A2_ANSWER") == true &&
+                    occurrences("g4_A2_ANSWER", in: folded) == 1,
+                    "the retry of a steered submission whose correction the backend persisted is not adopted " +
+                    "(late receipts \(lateCount(store)), still failed \(store.selectedSession!.lastFailure != nil))")
+                try check(store.selectedSession!.messages.contains { $0.role == .system &&
+                    $0.text.hasPrefix(os1Tr("정정 1건", "Verified delivery of 1 correction")) },
+                    "the adopted retry does not say its correction was verified")
+            } else {
+                try check(lateCount(store) == 1 && store.selectedSession!.lastFailure != nil &&
+                    store.selectedSession!.lastFailure?.correctionIDs?.count == 1,
+                    "a retry whose correction was never persisted is adopted or loses its failure")
+            }
+        }
+    }
+
+    // DS / DSL: a steered attempt fails leaving a saved result (its preview
+    // shows it); "Deliver saved result" delivers it without a model re-run.
+    for persist in [true, false] {
+        let tag = persist ? "ds" : "dsl"
+        await run(tag) {
+            let caseRoot = root.appendingPathComponent(tag)
+            let saved = "\(tag.uppercased())_SAVED_RESULT 저장된 결과입니다."
+            let recordID = UUID().uuidString.lowercased() + "-1"
+            let artifact = try JSONSerialization.data(withJSONObject: ["provider": "claude", "permission_profile": "read_only",
+                "output": saved, "exit_code": 0] as [String: Any], options: .sortedKeys)
+            let savedStep: [String: Any] = ["sequence": 1, "provider": "claude", "action": "fixture", "effort": "max", "model": "fixture",
+                "session_id": UUID().uuidString, "revas_disposition": "rejected", "permission_profile": "read_only",
+                "exit_code": 0, "output": saved, "stderr": "", "duration_ms": 1]
+            try DeliveryOutbox(root: caseRoot.appendingPathComponent("execution-outbox")).save(DeliveryRecord(id: recordID,
+                apiURL: "https://fixture.invalid", deviceID: "fixture",
+                resultSHA256: SHA256.hash(data: artifact).map { String(format: "%02x", $0) }.joined(), artifact: artifact,
+                upload: Data(), submission: Data(), step: try JSONSerialization.data(withJSONObject: savedStep), source: nil, output: saved))
+            let mail = ExecutionSteering(root: caseRoot.appendingPathComponent("run-steering"))
+            var attempt = 0
+            var gate: CheckedContinuation<Void, Never>?
+            let store = SessionStore(storageRoot: caseRoot, runOperation: { submission, _, _, _, onActivity in
+                attempt += 1
+                if attempt == 1 {
+                    onActivity(act("\(tag)_PROSE 저장 전 확인.", persist ? "d1" : "d2"))
+                    await withCheckedContinuation { gate = $0 }
+                    throw RunnerError.backend(BackendFailureNotice(provider: "claude", sessionID: nil, blocker: .verificationRejected,
+                        dispatchStage: .dispatched, permissionProfile: "read_only", deliveryID: recordID, surface: "claude"))
+                }
+                guard submission.deliveryID == recordID else { throw RunnerError.message("\(tag) is not a delivery") }
+                return summary(saved, persisted: mail.persistedIDs(submission.id))
+            })
+            let id = store.selectedSessionID!
+            store.composer = "\(tag) 요청"; store.send()
+            try await eventually { gate != nil && (store.activeRuns[id]?.publicRunLog?.entries.count ?? 0) >= 4 }
+            _ = try await steer(store, mail, tag: tag, persist: persist)
+            gate?.resume(); gate = nil
+            try await eventually { attempt == 1 && !store.isSessionRunning(id) }
+            try check(store.selectedSession!.lastFailure?.deliveryID == recordID && occurrences(saved, in: document(store)) == 1,
+                "\(tag): the failed attempt's saved result is not previewed once")
+            store.retrySelectedFailure()
+            try await eventually { attempt == 2 && !store.isSessionRunning(id) }
+            if persist {
+                let folded = document(store)
+                try check(occurrences(saved, in: folded) == 1 && lateCount(store) == 0 && store.selectedSession!.lastFailure == nil &&
+                    folded.contains("도구 호출 3회"),
+                    "a delivered saved result of a steered submission is not adopted once with its run's calls " +
+                    "(shown \(occurrences(saved, in: folded))x, late \(lateCount(store)), still failed \(store.selectedSession!.lastFailure != nil))")
+            } else {
+                // Unconfirmed: kept, not adopted; still the one preview row.
+                try check(occurrences(saved, in: document(store)) == 1 && store.selectedSession!.lastFailure?.deliveryID == recordID,
+                    "an unconfirmed steered delivery prints the saved result twice (\(occurrences(saved, in: document(store)))x)")
+                store.retrySelectedFailure()
+                try await eventually { attempt == 3 && !store.isSessionRunning(id) }
+                let works = store.selectedSession!.messages.compactMap(\.work)
+                try check(occurrences(saved, in: document(store)) == 1 && works.count == 1 && works[0].toolCalls == 3 &&
+                    works[0].failedCalls == 1 && occurrences("\(tag)_PROSE", in: document(store, openAll: true)) == 1,
+                    "a second delivery prints the saved result again or repeats the run's work " +
+                    "(shown \(occurrences(saved, in: document(store)))x, works \(works.map(\.toolCalls)))")
+            }
+        }
+    }
+
+    // H: the owner steers a run (persisted); the app quits while it runs.
+    // After the relaunch the retry runs the steered request: the steered
+    // attempt's prose, calls and errors are this attempt's. Attempt 2 fails,
+    // attempt 3 completes: attempt 1's output is still counted once.
+    await run("h") {
+        let caseRoot = root.appendingPathComponent("h")
+        let mail = ExecutionSteering(root: caseRoot.appendingPathComponent("run-steering"))
+        var gate: CheckedContinuation<Void, Never>?
+        let store = SessionStore(storageRoot: caseRoot, runOperation: { _, _, _, _, onActivity in
+            onActivity(act("H_A1_PROSE 첫 시도에서 빌드를 확인합니다.", "e1"))
+            await withCheckedContinuation { gate = $0 }
+            throw RunnerError.message("H_A1_NEVER")
+        })
+        let id = store.selectedSessionID!
+        store.composer = "H 요청: 빌드를 고쳐."; store.send()
+        try await eventually { gate != nil && (store.activeRuns[id]?.publicRunLog?.entries.count ?? 0) >= 4 }
+        _ = try await steer(store, mail, tag: "h", persist: true)
+        try await Task.sleep(for: .milliseconds(600)) // the feed writer saves the steered attempt's entries
+        store.flushPendingState()
+        // The app quits here; the steered attempt never ends.
+        let copy = root.appendingPathComponent("h-relaunched")
+        try FileManager.default.copyItem(at: caseRoot, to: copy)
+        gate?.resume(); gate = nil
+        let relaunchedMail = ExecutionSteering(root: copy.appendingPathComponent("run-steering"))
+        var attempt = 1
+        var relaunchedGate: CheckedContinuation<Void, Never>?
+        let relaunched = SessionStore(storageRoot: copy, runOperation: { submission, _, _, _, onActivity in
+            attempt += 1
+            onActivity(act("H_A\(attempt)_PROSE 다시 시작합니다.", "e\(attempt)", count: 1))
+            if attempt == 2 {
+                await withCheckedContinuation { relaunchedGate = $0 }
+                throw RunnerError.message("H_A2_STOP")
+            }
+            try? await Task.sleep(for: .milliseconds(300))
+            return summary("H_A3_ANSWER 끝.", persisted: relaunchedMail.persistedIDs(submission.id))
+        })
+        relaunched.select(id)
+        if let index = relaunched.selectedIndex { relaunched.sessions[index].lastBackendFailure = nil }
+        relaunched.retrySelectedFailure()
+        try await eventually { relaunchedGate != nil && relaunched.publicRunProgress(id)?.contains("H_A2_PROSE") == true }
+        try check(relaunched.publicRunProgress(id)?.contains("H_A1_PROSE") == true &&
+            relaunched.publicRunProgress(id)?.contains("swift build e1") == true,
+            "after a relaunch the steered, interrupted attempt's output is not the next attempt's (live)")
+        relaunchedGate?.resume(); relaunchedGate = nil
+        try await eventually { attempt == 2 && !relaunched.isSessionRunning(id) }
+        let afterFailure = relaunched.selectedSession!.messages.compactMap(\.work)
+        try check(afterFailure.count == 1 && afterFailure[0].toolCalls == 4 && afterFailure[0].failedCalls == 1,
+            "the attempt after the relaunch does not hold the steered attempt's calls and errors (\(afterFailure.map(\.toolCalls)))")
+        relaunched.retrySelectedFailure()
+        try await eventually { attempt == 3 && !relaunched.isSessionRunning(id) }
+        let folded = document(relaunched), opened = document(relaunched, openAll: true)
+        let works = relaunched.selectedSession!.messages.compactMap(\.work)
+        try check(occurrences("H_A1_PROSE", in: opened) == 1 &&
+            occurrences("H_A2_PROSE", in: opened) == 1 && occurrences("H_A3_PROSE", in: opened) == 1 &&
+            works.map(\.toolCalls) == [4, 1] && works.map { $0.failedCalls ?? 0 } == [1, 0] &&
+            occurrences("동안 작업", in: folded) == 2 &&
+            !opened.contains("작업 기록을 더 이상 찾을 수 없습니다"),
+            "the steered, interrupted attempt's output is lost or counted twice " +
+            "(prose \(occurrences("H_A1_PROSE", in: opened))x, works \(works.map(\.toolCalls)))")
+        try check(lateCount(relaunched) == 0 && relaunched.selectedSession!.lastFailure == nil,
+            "the retry after the relaunch, whose correction the backend persisted, is not adopted")
+    }
+
+    guard failures.isEmpty else {
+        throw RunnerError.message("Steered retry adoption: " + failures.joined(separator: " | "))
+    }
+    print("Steered retry adoption: \(checks) checks OK; steered retries and deliveries adopt once confirmed, an unconfirmed steer stays late, a steered attempt the app quit during is the next attempt's")
+}
+
 /// Every attempt keeps its own work, one click away, printed once: a steered
 /// retry (a new request under the same submission) keeps its own feed beside
 /// the earlier attempt's, before and after a relaunch; a result not adopted
@@ -3069,7 +3324,7 @@ private func steeredAttemptWorkSelfTest() async throws {
         if complete {
             let late = store.selectedSession!.messages.last { $0.role == .assistant }
             try check(late?.text.hasPrefix("\(tag)_A2_ANSWER") == true && late?.work?.toolCalls == 3 && late?.work?.failedCalls == 1,
-                "\(tag): the late, not-adopted answer does not carry its run's calls and errors")
+                "\(tag): the steered retry's answer does not carry its run's calls and errors")
         }
     }
     try await steeredRetry("g1", "1", many: false, complete: false)
@@ -8283,6 +8538,14 @@ private final class SessionStore: ObservableObject {
         activeRuns[submission.sessionID] = ActiveRun(submissionID: submission.id, started: Date(),
             activity: RuntimeActivity(.preparing), provider: submission.provider == .auto ? nil : submission.provider,
             handedRevision: sessions[index].taskContext?.contextRevision, forkCheckpoint: checkpoint)
+        // A retry (or a saved result's delivery) of a steered submission runs
+        // its request with the corrections already folded in: it is current
+        // as of the revision it starts under, exactly as a live steer is as of
+        // its own. Its result is then adopted like any other, once the backend
+        // shows those corrections persisted; a later decision still makes it late.
+        if !(submission.correctionIDs ?? []).isEmpty {
+            activeRuns[submission.sessionID]?.correctionRevision = sessions[index].taskContext?.latestSemanticRevision
+        }
         let publicLogStore = self.publicLogStore
         var savedFeed = publicLogStore.load(conversationID: submission.sessionID,
             submissionID: submission.id, requestSHA256: SourceContextStore.digest(Data(submission.executionRequest.utf8)))
@@ -8301,10 +8564,40 @@ private final class SessionStore: ObservableObject {
             requestSHA256: savedFeed.requestSHA256, feedCount: savedFeed.entries.count)
         let feedStart = min(credited, savedFeed.entries.count)
         activeRuns[submission.sessionID]?.feedStart = feedStart
-        if feedStart < savedFeed.entries.count, let first = savedFeed.entries[feedStart...].first?.receivedAt,
-           let last = savedFeed.entries.last?.receivedAt {
-            activeRuns[submission.sessionID]?.inheritedSeconds = max(0, last.timeIntervalSince(first))
+        func span(_ entries: ArraySlice<NativePublicRunLog.Entry>) -> TimeInterval {
+            guard let first = entries.map(\.receivedAt).min(), let last = entries.map(\.receivedAt).max() else { return 0 }
+            return max(0, last.timeIntervalSince(first))
         }
+        var inheritedSeconds = span(savedFeed.entries[feedStart...])
+        // An attempt the owner steered, then the app quit during, saved its
+        // feed under the request it started with; this attempt runs the
+        // steered request. What no work line or recorded end of that feed
+        // holds is this attempt's, like output after the last end in its own
+        // feed: shown live, folded in its work, counted once.
+        // Only a steer changes a submission's request, so only a steered
+        // submission can have such a feed.
+        var consumed: [(sha: String, end: Int)] = []
+        for other in (submission.correctionIDs ?? []).isEmpty ? [] : publicLogStore.otherFeeds(conversationID: submission.sessionID, submissionID: submission.id,
+                                               excluding: savedFeed.requestSHA256) {
+            let held = Self.attemptFeedStart(sessions[index], submissionID: submission.id,
+                requestSHA256: other.requestSHA256, feedCount: other.entries.count)
+            guard held < other.entries.count else { continue }
+            let added = savedFeed.inherit(other, from: held)
+            inheritedSeconds += span(added[...])
+            consumed.append((other.requestSHA256, other.entries.count))
+        }
+        if !consumed.isEmpty {
+            activeRuns[submission.sessionID]?.publicRunLog = savedFeed
+            // Saved before the other feed is marked as held, so a quit in
+            // between leaves it held by nothing; the copies keep their ids,
+            // so a later attempt never takes it twice.
+            if (try? publicLogStore.save(savedFeed)) != nil {
+                for feed in consumed {
+                    Self.recordAttemptFeedEnd(&sessions[index], submissionID: submission.id, requestSHA256: feed.sha, end: feed.end)
+                }
+            }
+        }
+        activeRuns[submission.sessionID]?.inheritedSeconds = inheritedSeconds
         let startingStatus = submission.recoveryParentID != nil
             ? os1Tr("OS1이 중단된 작업 상태 확인 중", "OS1 checking the interrupted task's state")
             : os1Tr("OS1 작업 준비 중", "OS1 preparing the task")
@@ -8435,9 +8728,25 @@ private final class SessionStore: ObservableObject {
                     // A result arriving after a newer request or decision is
                     // preserved verbatim and never adopted as the current answer.
                     let lateStart = sessions[target].messages.count
+                    let previewID = submission.deliveryID.flatMap { UUID(uuidString: String($0.prefix(36))) }
+                    var heldByPreview = false
                     for step in visibleAdoptedSteps(summary.steps) {
                         let visibleOutput = step.output.trimmingCharacters(in: .whitespacesAndNewlines)
                         guard !visibleOutput.isEmpty else { continue }
+                        // A delivered saved result is already on screen as its
+                        // preview: that row is the result, never printed again,
+                        // and the run's work joins the work it already holds.
+                        if !heldByPreview, let previewID,
+                           let preview = sessions[target].messages.firstIndex(where: { $0.id == previewID && $0.role == .assistant }),
+                           sessions[target].messages[preview].text.trimmingCharacters(in: .whitespacesAndNewlines) == visibleOutput {
+                            heldByPreview = true
+                            if currentSubmission, let run = activeRuns[submission.sessionID], run.submissionID == submission.id {
+                                let current = run.work(answer: visibleOutput)
+                                sessions[target].messages[preview].work = sessions[target].messages[preview].work
+                                    .map { run.work(answer: visibleOutput, continuing: $0, current: current) } ?? current
+                            }
+                            continue
+                        }
                         sessions[target].messages.append(ChatMessage(role: .assistant, text: visibleOutput, provider: step.provider, executionSurface: step.executedSurface?.rawValue,
                             permissionProfile: step.permissionProfile, nativeRecordVerified: false))
                         sessions[target].messages.append(ChatMessage(role: .receipt,
@@ -8458,7 +8767,7 @@ private final class SessionStore: ObservableObject {
                     // Not adopted, but still this run's: its calls, errors and
                     // time fold above the late answer (or the note it left).
                     let late = sessions[target].messages.indices.filter { $0 >= lateStart }
-                    if currentSubmission,
+                    if currentSubmission, !heldByPreview,
                        let holder = late.first(where: { [.assistant, .system].contains(sessions[target].messages[$0].role) }),
                        let run = activeRuns[submission.sessionID], run.submissionID == submission.id {
                         let received = late.filter { sessions[target].messages[$0].role == .assistant }
@@ -11498,6 +11807,7 @@ private struct OS1DesktopApp: App {
                     try await publicFeedCompletionSelfTest()
                     try await attemptOwnershipSelfTest()
                     try await steeredAttemptWorkSelfTest()
+                    try await steeredRetryAdoptionSelfTest()
                     try await replacementInteractionSelfTest()
                     try await failureAcknowledgementSelfTest()
                     exit(EXIT_SUCCESS)

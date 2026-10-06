@@ -11048,7 +11048,18 @@ func resumeDelivery(_ identifier: String) async throws -> RunSummary {
         action: step.action, model: step.model, effort: step.effort, revasDisposition: "adopted", sessionID: step.sessionID,
         permissionProfile: step.permissionProfile, exitCode: step.exitCode, output: step.output, stderr: step.stderr,
         durationMS: step.durationMS, nativeRecord: native, surface: step.surface,
-        workflowStage: step.workflowStage, verifiedPreviewDelivery: step.verifiedPreviewDelivery)], sourceContext: record.source)
+        workflowStage: step.workflowStage, verifiedPreviewDelivery: step.verifiedPreviewDelivery)], sourceContext: record.source,
+        persistedCorrectionIDs: os1DeliveredCorrectionIDs(submissionID: record.submissionID))
+}
+
+/// The corrections the owner's steering persisted for the submission a saved
+/// result belongs to, as a run of that submission reports them when it ends:
+/// a delivered result of a steered run is verified exactly like the run would
+/// have been. A record without a submission carries none.
+func os1DeliveredCorrectionIDs(submissionID: String?, mailbox: ExecutionSteering = ExecutionSteering()) -> [UUID]? {
+    guard let id = submissionID.flatMap(UUID.init(uuidString:)) else { return nil }
+    let persisted = mailbox.persistedIDs(id)
+    return persisted.isEmpty ? nil : persisted
 }
 
 func printRunSummary(_ summary: RunSummary) {
@@ -14006,6 +14017,20 @@ func selfTest() throws {
                 && rejected.status == "workflow_blocked" && rejected.steps.isEmpty
                 && rejected.workflowBlocker?.contains("분홍 바는 OS-1 쪽 변경입니다.") == true
                 && os1RepairAnswer(step("x", selfRepairFailurePrefix + "only the note")) == nil
+        }()),
+        ("a delivered saved result reports the corrections its submission's steering persisted, and only those (build 329 fix)", {
+            let root = FileManager.default.temporaryDirectory.appendingPathComponent("os1-delivered-corrections-" + UUID().uuidString)
+            defer { try? FileManager.default.removeItem(at: root) }
+            let mailbox = ExecutionSteering(root: root)
+            let submission = UUID()
+            let persisted = SteeringInput(submissionID: submission, text: "그 말이 아니라, 로그도 남겨.")
+            let unconfirmed = SteeringInput(submissionID: submission, text: "그 말이 아니라, 테스트도.")
+            guard (try? mailbox.enqueue(persisted)) != nil, (try? mailbox.enqueue(unconfirmed)) != nil,
+                  (try? mailbox.record(persisted, state: .persisted, threadID: "t", turnID: "turn")) != nil,
+                  (try? mailbox.record(unconfirmed, state: .accepted, threadID: "t", turnID: "turn")) != nil else { return false }
+            return os1DeliveredCorrectionIDs(submissionID: submission.uuidString, mailbox: mailbox) == [persisted.id]
+                && os1DeliveredCorrectionIDs(submissionID: UUID().uuidString, mailbox: mailbox) == nil
+                && os1DeliveredCorrectionIDs(submissionID: nil, mailbox: mailbox) == nil
         }()),
         ("a rejected, steered hand-back keeps its correction ids and both answers; a staged build is never 'no change' (build 327 fix)", {
             func step(_ disposition: String, _ output: String) -> RunStepSummary {

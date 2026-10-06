@@ -56,6 +56,22 @@ public struct NativePublicRunLog: Codable, Equatable, Sendable {
         self.conversationID = conversationID; self.submissionID = submissionID; self.requestSHA256 = requestSHA256
     }
     public mutating func checkpoint() { boundary += 1 }
+    /// Takes over entries another attempt of this submission saved under a
+    /// different request (the attempt the owner steered, then the app quit
+    /// during it). Entries already here (same id) are never added twice, and
+    /// nothing later merges into them: the boundary moves past both feeds'.
+    /// Returns the entries added.
+    @discardableResult public mutating func inherit(_ other: NativePublicRunLog, from start: Int) -> [Entry] {
+        guard other.submissionID == submissionID, other.conversationID == conversationID,
+              other.requestSHA256 != requestSHA256 else { return [] }
+        let present = Set(entries.map(\.id))
+        let added = other.entries[min(max(0, start), other.entries.count)...].filter { !present.contains($0.id) }
+        guard !added.isEmpty else { return [] }
+        boundary = max(boundary, other.boundary) + 1
+        entries.append(contentsOf: added)
+        revision += 1
+        return added
+    }
     /// Missing/invalid optional progress must not give the same producer two
     /// text namespaces. Bind its first observed stream to its existing session
     /// fallback; only a change between two known streams starts a new segment.
@@ -324,6 +340,22 @@ public struct NativePublicRunLogStore: Sendable {
               value.isValid,
               value.belongs(conversationID: conversationID, submissionID: submissionID, requestSHA256: requestSHA256) else { return fresh }
         return value
+    }
+    /// The feeds this submission saved under other requests, oldest first.
+    /// Only this build's layout (`<submission>-<request>.json`) counts: a
+    /// feed saved by an earlier build under the submission alone is read only
+    /// for its own request.
+    public func otherFeeds(conversationID: UUID, submissionID: UUID, excluding requestSHA256: String) -> [NativePublicRunLog] {
+        let prefix = submissionID.uuidString.lowercased() + "-"
+        guard !root.isSymbolicLink,
+              let names = try? FileManager.default.contentsOfDirectory(atPath: root.path) else { return [] }
+        return names.sorted().compactMap { name -> NativePublicRunLog? in
+            guard name.hasPrefix(prefix), name.hasSuffix(".json") else { return nil }
+            let sha = String(name.dropFirst(prefix.count).dropLast(5))
+            guard sha != requestSHA256, sha.range(of: #"^[0-9a-f]{64}$"#, options: .regularExpression) != nil else { return nil }
+            let feed = load(conversationID: conversationID, submissionID: submissionID, requestSHA256: sha)
+            return feed.entries.isEmpty ? nil : feed
+        }.sorted { ($0.entries.first?.receivedAt ?? .distantPast) < ($1.entries.first?.receivedAt ?? .distantPast) }
     }
     public func save(_ value: NativePublicRunLog) throws {
         guard value.isValid, !root.isSymbolicLink else { throw CocoaError(.fileWriteInvalidFileName) }

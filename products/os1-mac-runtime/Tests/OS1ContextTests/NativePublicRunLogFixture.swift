@@ -131,6 +131,38 @@ func runNativePublicRunLogFixtures() throws {
     steps.merge(progress(Step(id: "000000000001", sequence: 5, tool: "plan", scope: "main", state: .observed, startedAt: now), 5))
     check(steps.entries[0].step.state == .returned, "returned never downgraded on poll")
     checks += try runNativePublicRunLogDisplayFixtures()
+    // A steered attempt the app quit during saved its feed under the request
+    // it started with; the next attempt runs the steered request and takes
+    // that feed over once, never merging its own output into it.
+    do {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("os1-feed-inherit-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = NativePublicRunLogStore(root: root)
+        let before = SourceContextStore.digest(Data("request".utf8)), after = SourceContextStore.digest(Data("request + correction".utf8))
+        var steered = NativePublicRunLog(conversationID: conversation, submissionID: submission, requestSHA256: before)
+        _ = steered.observe(provider: "claude", stream: "s", text: "Steered prose.", candidate: false, origin: .nativeAssistant, receivedAt: now)
+        _ = steered.observeAction(id: "a1", provider: "claude", surface: "claude", text: "Run · swift build", receivedAt: now)
+        try store.save(steered)
+        var other = NativePublicRunLog(conversationID: conversation, submissionID: UUID(), requestSHA256: before)
+        _ = other.observe(provider: "claude", stream: "s", text: "Another submission.", candidate: false, origin: .nativeAssistant, receivedAt: now)
+        try store.save(other)
+        let feeds = store.otherFeeds(conversationID: conversation, submissionID: submission, excluding: after)
+        check(feeds.count == 1 && feeds[0].requestSHA256 == before && feeds[0].entries.count == 2,
+            "only this submission's feeds under other requests are found")
+        check(store.otherFeeds(conversationID: conversation, submissionID: submission, excluding: before).isEmpty,
+            "a submission's own request is not another feed")
+        var next = NativePublicRunLog(conversationID: conversation, submissionID: submission, requestSHA256: after)
+        let revision = next.revision
+        check(next.inherit(feeds[0], from: 0).count == 2 && next.entries.map(\.id) == steered.entries.map(\.id) && next.revision > revision,
+            "the next attempt takes the steered attempt's entries over")
+        check(next.inherit(feeds[0], from: 0).isEmpty && next.entries.count == 2, "entries already taken over are never added twice")
+        check(next.inherit(next, from: 0).isEmpty && next.inherit(other, from: 0).isEmpty,
+            "a feed never takes over itself or another submission's")
+        _ = next.observe(provider: "claude", stream: "s", text: "Steered prose. New prose.", candidate: false, origin: .nativeAssistant, receivedAt: now)
+        check(next.entries.count == 3 && next.entries[0].text == "Steered prose.", "new output never merges into a taken-over entry")
+        check(next.isValid && (try? JSONDecoder().decode(NativePublicRunLog.self, from: JSONEncoder().encode(next))) == next,
+            "a feed with taken-over entries survives persistence")
+    }
     print("Native public run log fixtures: " + String(checks) + " checks passed; provider calls 0")
 }
 
