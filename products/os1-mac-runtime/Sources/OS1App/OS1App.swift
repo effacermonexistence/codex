@@ -11290,6 +11290,7 @@ private func renderComposerPreview(to output: URL) throws {
 @MainActor
 private func codexShellSelfTest() throws {
     try reasoningVisibilitySelfTest()
+    try runningRouteMarkSelfTest()
     try sourceWaitPresentationSelfTest()
     var checks = 0
     func check(_ condition: Bool, _ name: String) throws {
@@ -11790,6 +11791,186 @@ private func reasoningVisibilitySelfTest() throws {
     print("Reasoning visibility: \(checks) checks passed; production SessionRow pixels at \(Int(rowWidth))pt; model calls 0; live state writes 0")
 }
 
+/// A running mark rendered alone, `zoom` times its slot, on the sidebar background.
+@MainActor
+private func runningMarkBitmap<V: View>(_ mark: V, zoom: Double = 6) throws -> NSBitmapImageRep {
+    let slot = RunningSessionIndicator.slot
+    let size = CGSize(width: slot.width * zoom, height: slot.height * zoom)
+    let content = mark.frame(width: slot.width, height: slot.height).scaleEffect(zoom, anchor: .topLeading)
+        .frame(width: size.width, height: size.height, alignment: .topLeading).background(Theme.background)
+    let host = NSHostingView(rootView: content)
+    host.frame = NSRect(origin: .zero, size: size); host.layoutSubtreeIfNeeded()
+    guard let bitmap = host.bitmapImageRepForCachingDisplay(in: host.bounds) else { throw SourceContextError.invalid }
+    host.cacheDisplay(in: host.bounds, to: bitmap)
+    return bitmap
+}
+
+/// The task list tells the executed route by motion alone (build 332): the
+/// production marks are measured in real pixels, not just their inputs.
+@MainActor
+private func runningRouteMarkSelfTest() throws {
+    var checks = 0
+    func check(_ value: Bool, _ label: String) throws {
+        guard value else { throw RunnerError.message("Running route mark: " + label) }
+        checks += 1
+    }
+    let zoom = 6.0
+    let slot = (width: Double(RunningSessionIndicator.slot.width), height: Double(RunningSessionIndicator.slot.height))
+    func bytes(_ bitmap: NSBitmapImageRep) -> [UInt8] {
+        Array(UnsafeBufferPointer(start: bitmap.bitmapData, count: bitmap.bytesPerRow * bitmap.pixelsHigh))
+    }
+    /// Brightest channel and whether the pixel is pink, at a point of the slot.
+    func sample(_ bitmap: NSBitmapImageRep, _ x: Double, _ y: Double) -> (value: Double, pink: Bool) {
+        let scale = Double(bitmap.pixelsWide) / (slot.width * zoom)
+        let px = min(bitmap.pixelsWide - 1, max(0, Int(x * zoom * scale))), py = min(bitmap.pixelsHigh - 1, max(0, Int(y * zoom * scale)))
+        guard let color = bitmap.colorAt(x: px, y: py)?.usingColorSpace(.sRGB) else { return (0, false) }
+        let (r, g, b) = (Double(color.redComponent), Double(color.greenComponent), Double(color.blueComponent))
+        return (max(r, g, b), r > g + 0.05 && b > g + 0.02)
+    }
+    /// Runs of lit columns across a horizontal band of the slot: one per dot or bar.
+    func blobs(_ bitmap: NSBitmapImageRep, band: ClosedRange<Double>) -> [(start: Double, width: Double, pink: Bool)] {
+        var runs: [(start: Double, width: Double, pink: Bool)] = []
+        let step = 1 / (zoom * 2)
+        var x = 0.0, open: (start: Double, pink: Bool)?
+        while x < slot.width {
+            var lit = false, pink = true
+            for y in stride(from: band.lowerBound, through: band.upperBound, by: step) {
+                let pixel = sample(bitmap, x, y)
+                if pixel.value > 0.45 { lit = true; pink = pink && pixel.pink }
+            }
+            if lit, open == nil { open = (x, pink) }
+            if lit, let current = open, !pink { open = (current.start, false) }
+            if !lit, let current = open { runs.append((current.start, x - current.start, current.pink)); open = nil }
+            x += step
+        }
+        if let current = open { runs.append((current.start, slot.width - current.start, current.pink)) }
+        return runs
+    }
+    let middle = slot.height / 2
+    let band = (middle - 3)...(middle + 3)
+
+    // Claude: three pink dots; big-small-big, then the middle is the big one.
+    let opening = blobs(try runningMarkBitmap(ClaudeDotsMark(frame: 0)), band: band)
+    try check(opening.count == 3 && opening.allSatisfy { $0.pink }, "Claude's mark is three pink dots (\(opening.count))")
+    try check(opening[0].width > opening[1].width * 1.2 && opening[2].width > opening[1].width * 1.2,
+        "the loop opens big, small, big (\(opening.map { String(format: "%.2f", $0.width) }))")
+    let gathered = blobs(try runningMarkBitmap(ClaudeDotsMark(frame: 18)), band: band)
+    try check(gathered.count == 3 && gathered[1].width > gathered[0].width * 1.2 && gathered[1].width > gathered[2].width * 1.2,
+        "halfway the middle dot is the big one")
+    let openingRight: Double = opening[2].start + opening[2].width
+    let gatheredRight: Double = gathered[2].start + gathered[2].width
+    try check(gathered[0].start > opening[0].start + 1.5 && gatheredRight < openingRight - 1.5, "the outer dots slide in")
+    let dotsCenter: Double = (opening[0].start + openingRight) / 2
+    try check(abs(dotsCenter - slot.width / 2) < 0.6, "the dots are centered in the slot")
+
+    // Codex: a pink 270° band over a dim track, turning clockwise.
+    let center = (x: slot.width / 2, y: slot.height / 2), radius = CodexWorkingRing.centerRadius
+    func ring(_ bitmap: NSBitmapImageRep, clock degrees: Double) -> (value: Double, pink: Bool) {
+        let angle = degrees * Double.pi / 180
+        return sample(bitmap, center.x + radius * sin(angle), center.y - radius * cos(angle))
+    }
+    let atRest = try runningMarkBitmap(CodexRingMark(angle: 0))
+    for degrees in [30.0, 90, 150, 210, 250] {
+        let pixel = ring(atRest, clock: degrees)
+        try check(pixel.value > 0.6 && pixel.pink, "the band covers \(Int(degrees))° clockwise from 12 o'clock at rest")
+    }
+    for degrees in [290.0, 315, 340] {
+        let pixel = ring(atRest, clock: degrees)
+        try check(pixel.value > 0.12 && pixel.value < 0.45, "only the 30% track shows at \(Int(degrees))° (gap at 9 to 12)")
+    }
+    try check(sample(atRest, center.x, center.y).value < 0.12, "the ring is hollow")
+    let quarter = try runningMarkBitmap(CodexRingMark(angle: 90))
+    try check(ring(quarter, clock: 45).value < 0.45 && ring(quarter, clock: 315).value > 0.6, "a quarter turn moves the gap clockwise")
+    try check(abs(ring(atRest, clock: 0).value - ring(atRest, clock: 180).value) < 0.5
+              && sample(atRest, center.x + CodexWorkingRing.outerRadius + 0.6, center.y).value < 0.12,
+        "the band stays inside its 5.33-point radius")
+
+    // OS-1's bars until a route is recorded.
+    let bars = blobs(try runningMarkBitmap(RunningRouteMark(motion: .os1, time: nil)), band: band)
+    try check(bars.count == 3 && bars.allSatisfy { $0.width < 3 && $0.pink }, "unrouted work keeps OS-1's three pink bars")
+
+    // The production indicator: vendor motion moves, Reduce Motion holds it.
+    let claude = RuntimeActivity(.executing, provider: "claude", model: "claude-opus-5-5", effort: "max")
+    let codex = RuntimeActivity(.executing, provider: "codex", model: "gpt-6.1-sol", effort: "ultra")
+    let routing = RuntimeActivity(.routing)
+    let moment = Date(timeIntervalSinceReferenceDate: 1_000)
+    func indicator(_ activity: RuntimeActivity, _ seconds: Double, still: Bool) throws -> [UInt8] {
+        bytes(try runningMarkBitmap(RunningSessionIndicator(activity: activity, previewTime: moment.addingTimeInterval(seconds),
+                                                             reduceMotionOverride: still)))
+    }
+    for activity in [claude, codex] {
+        try check(try indicator(activity, 0, still: false) != indicator(activity, 0.3, still: false),
+            "\(activity.provider!) moves over time")
+        try check(try indicator(activity, 0, still: true) == indicator(activity, 0.3, still: true),
+            "\(activity.provider!) holds still under Reduce Motion")
+    }
+    try check(try indicator(claude, 0.01, still: false) == indicator(claude, 0.02, still: false),
+        "Claude holds each 1/30 s frame instead of blending")
+    try check(try indicator(codex, 0.01, still: false) == indicator(codex, 0.02, still: false), "the ring steps, it does not glide")
+    try check(RunningSessionIndicator.label(claude).contains("Claude Code") && RunningSessionIndicator.label(codex).contains("Codex")
+              && RunningSessionIndicator.label(routing) == os1Tr("작업 실행 중", "Task running"), "the mark is labeled with its route")
+
+    // The sidebar row shows the route by motion alone, and the title never moves.
+    let rowWidth = Double(Theme.sidebarWidth - 20)
+    func row(_ activity: RuntimeActivity) throws -> NSBitmapImageRep {
+        let content = SessionRow(session: ConversationSession(title: "Route mark fixture", workspace: "/tmp"), selected: false,
+            activity: activity, previewTime: moment, action: {})
+            .frame(width: rowWidth, height: 132, alignment: .top).background(Theme.background).environment(\.colorScheme, .dark)
+        let host = NSHostingView(rootView: content)
+        host.frame = NSRect(x: 0, y: 0, width: rowWidth, height: 132); host.layoutSubtreeIfNeeded()
+        guard let bitmap = host.bitmapImageRepForCachingDisplay(in: host.bounds) else { throw SourceContextError.invalid }
+        host.cacheDisplay(in: host.bounds, to: bitmap)
+        return bitmap
+    }
+    func region(_ bitmap: NSBitmapImageRep, x: Range<Double>, y: Range<Double>) -> [Double] {
+        let scale = Double(bitmap.pixelsWide) / rowWidth
+        return (Int(y.lowerBound * scale)..<Int(y.upperBound * scale)).flatMap { py in
+            (Int(x.lowerBound * scale)..<Int(x.upperBound * scale)).map { px in
+                (bitmap.colorAt(x: px, y: py)?.usingColorSpace(.sRGB)).map { Double($0.redComponent + $0.greenComponent + $0.blueComponent) } ?? 0
+            }
+        }
+    }
+    let rows = try [claude, codex, routing].map(row)
+    let slotEnd: Double = 13 + slot.width
+    let marks = rows.map { region($0, x: 13..<slotEnd, y: 9..<25) }
+    func differ(_ a: [Double], _ b: [Double]) -> Bool { zip(a, b).filter { abs($0 - $1) > 0.3 }.count > 10 }
+    try check(differ(marks[0], marks[1]) && differ(marks[1], marks[2]) && differ(marks[0], marks[2]),
+        "Claude, Codex and unrouted rows draw different marks")
+    let titles = rows.map { region($0, x: slotEnd..<rowWidth, y: 9..<25) }
+    try check(titles[0] == titles[1] && titles[1] == titles[2], "the title stays in place whichever mark runs")
+    print("Running route mark: \(checks) checks passed; Claude dots, Codex ring and OS-1 bars in real pixels; model calls 0")
+}
+
+/// Every running mark across one loop, enlarged, for review.
+@MainActor
+private func runningMarksPreviewPNG() throws -> Data {
+    let zoom = 6.0, slot = RunningSessionIndicator.slot, columns = 12
+    let rows: [(RunningRouteMotion, (Int) -> Double)] = [
+        (.claude, { Double($0) * ClaudeWorkingDots.period / Double(columns) + 0.001 }),
+        (.codex, { Double($0) * CodexWorkingRing.period / Double(columns) + 0.001 }),
+        (.os1, { Double($0) * 0.1 }),
+    ]
+    let cell = CGSize(width: slot.width * zoom + 12, height: slot.height * zoom + 12)
+    let size = CGSize(width: cell.width * Double(columns), height: cell.height * Double(rows.count))
+    let content = VStack(spacing: 0) {
+        ForEach(0..<rows.count, id: \.self) { index in
+            HStack(spacing: 0) {
+                ForEach(0..<columns, id: \.self) { column in
+                    RunningRouteMark(motion: rows[index].0, time: rows[index].1(column))
+                        .frame(width: slot.width, height: slot.height).scaleEffect(zoom)
+                        .frame(width: cell.width, height: cell.height)
+                }
+            }
+        }
+    }.frame(width: size.width, height: size.height).background(Theme.background)
+    let host = NSHostingView(rootView: content)
+    host.frame = NSRect(origin: .zero, size: size); host.layoutSubtreeIfNeeded()
+    guard let bitmap = host.bitmapImageRepForCachingDisplay(in: host.bounds) else { throw SourceContextError.invalid }
+    host.cacheDisplay(in: host.bounds, to: bitmap)
+    guard let png = bitmap.representation(using: .png, properties: [:]) else { throw SourceContextError.invalid }
+    return png
+}
+
 @MainActor
 private func renderShellPreview(to output: URL) throws {
     try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
@@ -12189,6 +12370,8 @@ private struct OS1DesktopApp: App {
                     guard let rowPNG = rowBitmap.representation(using: .png, properties: [:]) else { throw SourceContextError.invalid }
                     try rowPNG.write(to: output.appendingPathComponent("sidebar-\(index).png"))
                 }
+                // Every running mark across one loop, enlarged: Claude's dots, the Codex ring, OS-1's bars.
+                try runningMarksPreviewPNG().write(to: output.appendingPathComponent("route-marks.png"))
                 // A run with the backend's own steps under the request it works on, collapsed and opened.
                 let request = [ChatMessage(role: .user, text: os1Tr("진행 표시를 작게 접었다 펼 수 있게 해 줘.",
                     "Make the progress display small and collapsible."))]
@@ -12471,6 +12654,7 @@ private struct OS1DesktopApp: App {
             do {
                 try fixtureStoreIsolationSelfTest()
                 try reasoningVisibilitySelfTest()
+                try runningRouteMarkSelfTest()
                 try governanceActivityStripSelfTest()
                 try governanceMonitorRound2SelfTest()
                 try governanceEvidenceMonitorSelfTest()
@@ -15154,7 +15338,7 @@ private struct SessionRow: View {
         Button(action: action) {
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 4) {
-                    if activity != nil { RunningSessionIndicator(previewTime: previewTime) }
+                    if activity != nil { RunningSessionIndicator(activity: activity, previewTime: previewTime) }
                     if session.pinnedAt != nil { Image(systemName: "pin.fill").font(.system(size: 10)).foregroundStyle(Theme.pink) }
                     Text(session.title)
                         .font(.system(size: 13, weight: selected ? .semibold : .regular))
@@ -15315,19 +15499,102 @@ private struct SessionExecutionBadge: View {
 
 
 
+/// The running mark in front of a task's title: OS-1's bars until a route is
+/// recorded, then the executed vendor's own working motion in OS-1 pink
+/// (`RunningRouteMotion`). One fixed slot, so the title never moves when the
+/// route is chosen.
 private struct RunningSessionIndicator: View {
+    var activity: RuntimeActivity? = nil
     var previewTime: Date? = nil
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// Fixtures pin Reduce Motion; nil follows the Mac's setting.
+    var reduceMotionOverride: Bool? = nil
+    @Environment(\.accessibilityReduceMotion) private var systemReduceMotion
+    static let slot = CGSize(width: ClaudeWorkingDots.box, height: 14)
+
     var body: some View {
-        TimelineView(.periodic(from: .now, by: reduceMotion ? 1 : 0.12)) { context in
-            let time = (previewTime ?? context.date).timeIntervalSinceReferenceDate
+        let motion = RunningRouteMotion(activity: activity)
+        Group {
+            if reduceMotionOverride ?? systemReduceMotion {
+                RunningRouteMark(motion: motion, time: nil)
+            } else {
+                // One fixed origin: every row ticks at the same instants and an
+                // activity update never shifts a row's phase.
+                TimelineView(.periodic(from: Date(timeIntervalSinceReferenceDate: 0), by: motion.tick)) { context in
+                    RunningRouteMark(motion: motion, time: (previewTime ?? context.date).timeIntervalSinceReferenceDate)
+                }
+            }
+        }
+        .frame(width: Self.slot.width, height: Self.slot.height)
+        .help(Self.label(activity))
+        .accessibilityElement()
+        .accessibilityLabel(Self.label(activity))
+    }
+
+    static func label(_ activity: RuntimeActivity?) -> String {
+        guard RunningRouteMotion(activity: activity) != .os1, let activity,
+              let route = ProviderSurface.resolveExecuted(rawSurface: activity.surface, provider: activity.provider)
+        else { return os1Tr("작업 실행 중", "Task running") }
+        return os1Tr("\(route.routeTitle) 실행 중", "\(route.routeTitle) running")
+    }
+}
+
+/// One frame of a running mark at `time` seconds of the shared clock; nil
+/// draws the still pose.
+private struct RunningRouteMark: View {
+    let motion: RunningRouteMotion
+    let time: Double?
+
+    var body: some View {
+        switch motion {
+        case .claude: ClaudeDotsMark(frame: time.map(ClaudeWorkingDots.frame(at:)) ?? ClaudeWorkingDots.restFrame)
+        case .codex: CodexRingMark(angle: time.map(CodexWorkingRing.angle(at:)) ?? 0)
+        case .os1:
             HStack(spacing: 2) {
                 ForEach(0..<3) { index in
                     Capsule().fill(Theme.pink).frame(width: 2,
-                        height: reduceMotion ? 7 : 3 + 9 * (0.5 + 0.5 * sin(time * 5 - Double(index))))
+                        height: time.map { 3 + 9 * (0.5 + 0.5 * sin($0 * 5 - Double(index))) } ?? 7)
                 }
-            }.frame(width: 13, height: 14).accessibilityLabel(os1Tr("작업 실행 중", "Task running"))
+            }
         }
+    }
+}
+
+/// Claude's three working dots: one held frame of the measured loop, drawn in
+/// the 20-point box the source uses, centered on the slot.
+private struct ClaudeDotsMark: View {
+    let frame: Int
+
+    var body: some View {
+        Canvas { context, size in
+            let scale = ClaudeWorkingDots.box / ClaudeWorkingDots.sourceUnit
+            let originX = (size.width - ClaudeWorkingDots.box) / 2
+            let centerY = size.height / 2 + (ClaudeWorkingDots.centerY - ClaudeWorkingDots.sourceUnit / 2) * scale
+            for dot in ClaudeWorkingDots.dots(frame: frame) {
+                let diameter = dot.diameter * scale
+                context.fill(Path(ellipseIn: CGRect(x: originX + dot.x * scale - diameter / 2, y: centerY - diameter / 2,
+                                                   width: diameter, height: diameter)), with: .color(Theme.pink))
+            }
+        }
+    }
+}
+
+/// The Codex working ring: a 270° band over a 30% track with flat ends,
+/// turned `angle` degrees clockwise from its rest pose (gap at 9 to 12).
+private struct CodexRingMark: View {
+    let angle: Double
+
+    var body: some View {
+        let diameter = 2 * CodexWorkingRing.centerRadius
+        let band = StrokeStyle(lineWidth: CodexWorkingRing.bandWidth, lineCap: .butt)
+        ZStack {
+            Circle().stroke(Theme.pink.opacity(CodexWorkingRing.trackOpacity), style: band)
+            // A circle's path starts at 3 o'clock and runs clockwise; turned a
+            // quarter back, the band runs from 12 o'clock through 3 and 6 to 9.
+            Circle().trim(from: 0, to: CodexWorkingRing.arcFraction).stroke(Theme.pink, style: band)
+                .rotationEffect(.degrees(-90))
+        }
+        .frame(width: diameter, height: diameter)
+        .rotationEffect(.degrees(angle))
     }
 }
 

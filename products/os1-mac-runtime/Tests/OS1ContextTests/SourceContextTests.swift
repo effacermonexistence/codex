@@ -168,6 +168,7 @@ final class SourceContextTests {
         try runLocalizationFixtures()
         try runUnlimitedSlotSettingsFixtures()
         try runRunAdmissionFixtures()
+        try runRunningRouteMotionFixtures()
         try runAttachmentFixtures()
         try runProjectMaterialFixtures()
         try runRegisteredSourceFixtures()
