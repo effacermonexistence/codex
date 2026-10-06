@@ -8607,8 +8607,12 @@ func os1DeferredFullAccessRepair(store: PendingOS1RepairStore, recordID: String,
                                  ownerRequest: String, corrections: [String], report: String, sourceRoot: String?, reason: String,
                                  isAlive: (PendingOS1Repair) -> Bool = PendingOS1Repair.writerAlive) -> PendingOS1Repair? {
     var record: PendingOS1Repair
-    if let earlier = os1HandBackContinuation(store: store, recordID: recordID, steering: corrections, report: report, isAlive: isAlive) {
+    if let earlier = os1HandBackContinuation(store: store, recordID: recordID, steering: corrections + [ownerRequest],
+                                             report: report, isAlive: isAlive) {
+        // The new request's OS-1 change is not made yet: "계속"/"고쳐" must
+        // repair it, not restage (or call installed) the earlier commit alone.
         record = earlier
+        record.pendingModelWork = true
     } else {
         if let existing = store.load(id: recordID), existing.effectiveState(isAlive: isAlive) == .running { return nil }
         record = PendingOS1Repair(id: recordID, conversationID: conversationID, submissionID: submissionID, ownerRequest: ownerRequest,
@@ -8810,7 +8814,7 @@ func os1PendingRepairRetryPlan(_ record: PendingOS1Repair, root: String?, contai
                                unfinishedEdits: (_ root: String) -> Bool = { _ in false },
                                isAlive: (PendingOS1Repair) -> Bool = PendingOS1Repair.writerAlive) -> OS1PendingRepairRetry {
     let state = record.effectiveState(isAlive: isAlive)
-    guard state != .running, let commit = record.repairCommit, let root else { return .repairAgain }
+    guard state != .running, record.pendingModelWork != true, let commit = record.repairCommit, let root else { return .repairAgain }
     if installed(root, commit) { return .alreadyInstalled(commit: commit) }
     guard contains(root, commit) else { return .repairAgain }
     // A model-free restage never ships unfinished work: a repair that failed
@@ -11678,6 +11682,15 @@ private func fullAccessHandBackFixture(root: URL) async throws {
         ownerRequest: "later request", corrections: ["later"], report: "later report", sourceRoot: nil, reason: "x", isAlive: { _ in false })
     try check(continuedRecord?.attempts == 2 && continuedRecord?.repairCommit == "abc1234" && continuedRecord?.ownerRequest == earlier.ownerRequest
         && continuedRecord?.draftReport.contains("later report") == true, "an earlier retryable record is continued, never replaced")
+    // The merged request's own OS-1 change is still to be made: its text is
+    // kept, and "계속" repairs instead of restaging or calling the earlier
+    // commit installed (review of 2e665c7).
+    try check(continuedRecord?.corrections.contains("later request") == true && continuedRecord?.pendingModelWork == true
+        && os1PendingRepairRetryPlan(continuedRecord!, root: "/os1", contains: { _, _ in true }, installed: { _, _ in true },
+                                     isAlive: { _ in false }) == .repairAgain
+        && os1PendingRepairRetryPlan({ var plain = continuedRecord!; plain.pendingModelWork = nil; return plain }(), root: "/os1",
+                                     contains: { _, _ in true }, installed: { _, _ in true }, isAlive: { _ in false }) == .alreadyInstalled(commit: "abc1234"),
+        "a merged deferred OS-1 change makes the next retry a model repair, not a restage of the earlier commit")
     earlier.state = .running
     try store.save(earlier)
     try check(os1DeferredFullAccessRepair(store: store, recordID: recordID, conversationID: recordID, submissionID: nil,

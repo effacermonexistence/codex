@@ -69,6 +69,12 @@ public struct PendingOS1Repair: Codable, Equatable, Sendable {
     public var attemptEndCommit: String?
     public var repairBranch: String?
     public var repairPushed: Bool?
+    /// A later request in the conversation handed back another OS-1 change
+    /// that no repair has made yet (a failed full-access continuation merged
+    /// into this record). The next retry is then a model repair — measured
+    /// from the original start, so the earlier commit is staged with it —
+    /// never a model-free restage of the earlier commit alone.
+    public var pendingModelWork: Bool?
     /// The repair's own answer, when it produced one.
     public var repairReport: String?
     public var createdAt: Date
