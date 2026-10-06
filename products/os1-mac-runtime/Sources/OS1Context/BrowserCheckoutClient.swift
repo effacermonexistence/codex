@@ -233,9 +233,19 @@ public enum CheckoutTurn {
         let value = request.precomposedStringWithCanonicalMapping.lowercased()
         let names = ["os-1 checkout", "os1 checkout", "os1-checkout", "os-1 체크아웃", "os1 체크아웃"]
         let optOut = ["쓰지 마", "쓰지마", "사용하지", "하지 마", "하지마", "제외", "중단", "do not", "don't", "without", "disable"]
-        let useRequested = names.contains { name in
-            [name + "으로", name + "을 사용", name + "를 사용", "use " + name,
-             "use the " + name, "using " + name, "via " + name].contains(where: value.contains)
+        var useRequested = false
+        for name in names {
+            let phrases: [String] = [
+                name + "으로", name + "을 사용", name + "를 사용", "use " + name,
+                "use the " + name, "using " + name, "via " + name,
+            ]
+            for phrase in phrases {
+                if value.contains(phrase) {
+                    useRequested = true
+                    break
+                }
+            }
+            if useRequested { break }
         }
         return useRequested && !optOut.contains(where: value.contains)
     }

@@ -186,6 +186,30 @@ func runBrowserCheckoutFixtures() throws {
           "an explicit rejection cannot attach the legacy helper")
     check(!CheckoutTurn.explicitlyRequested("OS-1 Checkout 상태 확인", workspaceWrite: false),
           "read-only scope cannot enable the write helper")
+    let checkoutNames = ["os-1 checkout", "os1 checkout", "os1-checkout", "os-1 체크아웃", "os1 체크아웃"]
+    for name in checkoutNames {
+        let requests: [String] = [
+            name + "으로 진행해", name + "을 사용해", name + "를 사용해", "use " + name,
+            "use the " + name, "using " + name, "via " + name,
+        ]
+        for request in requests {
+            check(CheckoutTurn.explicitlyRequested(request, workspaceWrite: true), "explicit helper selection: \(request)")
+            check(!CheckoutTurn.explicitlyRequested(request, workspaceWrite: false), "read-only explicit selection is refused: \(request)")
+        }
+        check(!CheckoutTurn.explicitlyRequested("\(name) source status", workspaceWrite: true),
+              "a bare helper mention is not selection: \(name)")
+        let optOuts = ["쓰지 마", "쓰지마", "사용하지", "하지 마", "하지마", "제외", "중단", "do not", "don't", "without", "disable"]
+        for optOut in optOuts {
+            check(!CheckoutTurn.explicitlyRequested("use \(name); \(optOut)", workspaceWrite: true),
+                  "opt-out overrides explicit selection: \(optOut) / \(name)")
+        }
+    }
+    check(CheckoutTurn.explicitlyRequested("USE THE OS-1 CHECKOUT", workspaceWrite: true), "explicit selection is case-insensitive")
+    check(CheckoutTurn.explicitlyRequested("OS1 체크아웃으로 진행해".decomposedStringWithCanonicalMapping, workspaceWrite: true),
+          "explicit Korean selection preserves canonical Unicode normalization")
+    check(!CheckoutTurn.explicitlyRequested("use OS-1 Checkout; DISABLE", workspaceWrite: true), "opt-out is case-insensitive")
+    check(!CheckoutTurn.explicitlyRequested("buy the domain and purchase checkout", workspaceWrite: true),
+          "purchase language does not opt into the legacy helper")
     check(OwnerAuthorityActions.capabilityCard.contains("existing tools")
           && OwnerAuthorityActions.capabilityCard.contains("completed by the owner")
           && !OwnerAuthorityActions.capabilityCard.contains("Do not drive a browser"),
