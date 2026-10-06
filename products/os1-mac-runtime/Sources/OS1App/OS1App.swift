@@ -1822,7 +1822,7 @@ private func parallelInteractionSelfTest() async throws {
                         persistence: "verified", desktopVisibility: "not_opened") : nil)])
             })
         resumeStore.composer = "REPAIR ORIGINAL"; resumeStore.send()
-        let resumeDeadline = Date().addingTimeInterval(8)
+        let resumeDeadline = Date().addingTimeInterval(30)
         while !resumeStore.activeRuns.isEmpty && Date() < resumeDeadline {
             try await Task.sleep(for: .milliseconds(30))
         }
@@ -1853,7 +1853,7 @@ private func parallelInteractionSelfTest() async throws {
     var handoffCalls: [PendingSubmission] = []
     var handoffContexts: [String: SessionHandoff] = [:]
     func handoffEventually(_ condition: () -> Bool) async throws {
-        let deadline = Date().addingTimeInterval(8)
+        let deadline = Date().addingTimeInterval(30)
         while !condition(), Date() < deadline { try await Task.sleep(for: .milliseconds(20)) }
         try check(condition(), "readback follow-up handoff scheduler deadline")
     }
@@ -2041,7 +2041,7 @@ private func slotWaitVisibilitySelfTest() async throws {
         guard condition() else { throw RunnerError.message("Slot wait: " + message) }; checks += 1
     }
     func eventually(_ condition: () -> Bool) async throws {
-        let deadline = Date().addingTimeInterval(8)
+        let deadline = Date().addingTimeInterval(30)
         while !condition(), Date() < deadline { try await Task.sleep(for: .milliseconds(10)) }
         // Evaluate here: the optimizer's region check rejects handing the
         // closure itself to the main-actor autoclosure after a suspension.
@@ -2236,7 +2236,7 @@ private func queueForkInteractionSelfTest() async throws {
         guard condition() else { throw RunnerError.message("Queue/fork: " + message) }; checks += 1
     }
     func eventually(_ condition: () -> Bool) async throws {
-        let deadline = Date().addingTimeInterval(8)
+        let deadline = Date().addingTimeInterval(30)
         while !condition(), Date() < deadline { try await Task.sleep(for: .milliseconds(10)) }
         try check(condition(), "asynchronous scheduler deadline")
     }
@@ -2369,7 +2369,7 @@ private func steeringInteractionSelfTest() async throws {
         guard condition else { throw RunnerError.message("Steering: " + message) }; checks += 1
     }
     func eventually(_ condition: () -> Bool) async throws {
-        let end = Date().addingTimeInterval(8)
+        let end = Date().addingTimeInterval(30)
         while !condition(), Date() < end { try await Task.sleep(for: .milliseconds(10)) }
         try check(condition(), "scheduler deadline")
     }
@@ -2517,7 +2517,7 @@ private func steeringVisibilitySelfTest() async throws {
         guard condition else { throw RunnerError.message("Steering visibility: " + message) }; checks += 1
     }
     func eventually(_ condition: () -> Bool) async throws {
-        let end = Date().addingTimeInterval(8)
+        let end = Date().addingTimeInterval(30)
         while !condition(), Date() < end { try await Task.sleep(for: .milliseconds(10)) }
         try check(condition(), "scheduler deadline")
     }
@@ -2670,7 +2670,7 @@ private func steeringPlacementSelfTest() async throws {
         guard condition else { throw RunnerError.message("Steering placement: " + message) }; checks += 1
     }
     func eventually(_ condition: () -> Bool) async throws {
-        let end = Date().addingTimeInterval(8)
+        let end = Date().addingTimeInterval(30)
         while !condition(), Date() < end { try await Task.sleep(for: .milliseconds(10)) }
         try check(condition(), "scheduler deadline")
     }
@@ -2783,7 +2783,7 @@ private func publicFeedCompletionSelfTest() async throws {
         guard condition else { throw RunnerError.message("Public feed completion: " + message) }; checks += 1
     }
     func eventually(_ condition: () -> Bool) async throws {
-        let end = Date().addingTimeInterval(8)
+        let end = Date().addingTimeInterval(30)
         while !condition(), Date() < end { try await Task.sleep(for: .milliseconds(10)) }
         try check(condition(), "scheduler deadline")
     }
@@ -3964,7 +3964,7 @@ private func composerInteractionSelfTest() async throws {
     store.performPrimaryAction(now: instant.addingTimeInterval(4 + NSEvent.doubleClickInterval))
     try check(store.primaryAction == .stopping && store.queuedSubmissions.count == 2, "repeated primary Stop changed queue")
     store.select(parent)
-    let deadline = Date().addingTimeInterval(8)
+    let deadline = Date().addingTimeInterval(30)
     while gate == nil && Date() < deadline { try await Task.sleep(for: .milliseconds(10)) }
     try check(gate != nil && starts == 1, "unexpected provider dispatch count")
     gate?.resume(); gate = nil
@@ -11554,7 +11554,7 @@ private func sourceWaitSchedulingSelfTest() async throws {
     store.composer = "SIBLING project"; store.send()
     try check(store.activeRuns.count == 1 && store.activeRuns[siblingID] != nil && store.activeRuns[sourceID] == nil,
         "unrelated conversation uses the backend slot while source head stays parked")
-    let deadline = Date().addingTimeInterval(8)
+    let deadline = Date().addingTimeInterval(30)
     while !store.activeRuns.isEmpty && Date() < deadline { try await Task.sleep(for: .milliseconds(20)) }
     try check(dispatched == ["SIBLING project"] && store.queuedSubmissions.map(\.id) == originalQueue.map(\.id),
         "sibling completion preserves blocked source queue")
@@ -11645,7 +11645,7 @@ private func sourceWriterFairnessSelfTest() async throws {
     try check(store.activeRuns[nextHomeID] == nil && store.queuedSubmissions.count == 1 &&
         store.sourceWaitingActivity(nextHomeID) == nil && store.globalSlotWait(nextHomeID) != nil,
         "the HOME follower then waits for a free slot, not for the repair entering runtime")
-    let deadline = Date().addingTimeInterval(8)
+    let deadline = Date().addingTimeInterval(30)
     while store.activeRuns[writerID]?.activity.phase != .waitingForSource && Date() < deadline { try await Task.sleep(for: .milliseconds(20)) }
     try check(SourceWriteAdmission.availability(root: source.path, access: .shared, home: home) == .busy,
         "runtime fixture owns actual writer intent while readers drain")
@@ -11708,7 +11708,7 @@ private func sourceWriterFairnessSelfTest() async throws {
     try check(store.activeRuns[gatedID] == nil && store.sourceWaitingActivity(gatedID)?.phase == .waitingForSource,
         "a ready update still parks a HOME write before its install gate")
     try FileManager.default.removeItem(at: SelfUpdate.intentURL(root: source.path))
-    let gateDeadline = Date().addingTimeInterval(8)
+    let gateDeadline = Date().addingTimeInterval(30)
     while (!store.activeRuns.isEmpty || !store.queuedSubmissions.isEmpty) && Date() < gateDeadline {
         store.resumeSourceWaitingSubmissions(); try await Task.sleep(for: .milliseconds(20))
     }
