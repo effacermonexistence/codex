@@ -6530,14 +6530,27 @@ private func execute(
         AttemptLatencyTrace.mark("instructions_ready")
         let chatOverrides = gptChat ? CodexChatLane.overrides(configToml: try? String(contentsOf:
             FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex/config.toml"), encoding: .utf8)) : []
+        let codexSubmissionID: UUID? = gptChat ? nil : ExecutionSteering.currentSubmission
+        var codexConfigOverrides: [String] = []
+        if let extendedWindowOverride = CodexContextBudget.extendedWindowOverride(model: model) {
+            codexConfigOverrides.append(extendedWindowOverride)
+        }
+        codexConfigOverrides.append(contentsOf: codexLeanInstructionOverrides())
+        codexConfigOverrides.append(contentsOf: chatOverrides)
+        if let memoryTurn {
+            codexConfigOverrides.append(contentsOf: MemoryPaging.codexOverrides(memoryTurn, executable: currentOS1Executable()))
+        }
+        if let contextBudget {
+            codexConfigOverrides.append("model_auto_compact_token_limit=\(contextBudget.softLimitTokens)")
+            codexConfigOverrides.append("model_auto_compact_token_limit_scope=\"total\"")
+        }
+        if CheckoutTurn.enabled && !gptChat && ticket.permissionProfile == "workspace_write" {
+            codexConfigOverrides.append(contentsOf: CheckoutTurn.codexConfigOverrides(
+                os1Executable: currentOS1Executable(), executionID: ticket.executionID))
+        }
         let appServer = try CodexAppServerClient(executable: codex, workspace: codexWorkspace,
-            submissionID: gptChat ? nil : ExecutionSteering.currentSubmission,
-            configOverrides: (CodexContextBudget.extendedWindowOverride(model: model).map { [$0] } ?? [])
-                + codexLeanInstructionOverrides() + chatOverrides
-                + (memoryTurn.map { MemoryPaging.codexOverrides($0, executable: currentOS1Executable()) } ?? [])
-                + (contextBudget.map { ["model_auto_compact_token_limit=\($0.softLimitTokens)", "model_auto_compact_token_limit_scope=\"total\""] } ?? [])
-                + (CheckoutTurn.enabled && !gptChat && ticket.permissionProfile == "workspace_write"
-                    ? CheckoutTurn.codexConfigOverrides(os1Executable: currentOS1Executable(), executionID: ticket.executionID) : []))
+            submissionID: codexSubmissionID,
+            configOverrides: codexConfigOverrides)
         defer { appServer.close() }
         try appServer.initialize(deadline: deadline)
         AttemptLatencyTrace.mark("codex_initialized")
