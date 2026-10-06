@@ -166,6 +166,8 @@ final class SourceContextTests {
         try runBackendWindowFocusFixtures()
         try runSelfUpdateFixtures()
         try runLocalizationFixtures()
+        try runUnlimitedSlotSettingsFixtures()
+        try runRunAdmissionFixtures()
         try runAttachmentFixtures()
         try runProjectMaterialFixtures()
         try runRegisteredSourceFixtures()
