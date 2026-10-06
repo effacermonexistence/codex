@@ -58,7 +58,7 @@ public struct RouteFanout: Equatable, Sendable {
     static let routingTalk = #"라우팅\s*(?:이|가|은|는|도|만)?\s*(?:(?:잘|제대로|다|안|못)\s*)?(?:되|돼|됐|된|됨|됩)|라우팅(?:이|가|은|는)(?![가-힣])"#
     /// Routing words, not content: removed from each part before it is sent.
     static let chatter = [
-        #"라우팅\s*(?:을|도)?\s*(?:시켜서|시켜|해서|해봐|해줘|해)?"#,
+        #"라우팅\s*(?:을|도)?\s*(?:시켜(?:서|봐줘|봐|줘|라|보고)?|해(?:서|봐|줘)?)?"#,
         #"(?:답변?|결과|응답)\s*(?:을|를|도)?\s*(?:받아와|받아서|받아봐|가져와|알려줘|줘)"#,
         #"시켜(?:보고|서|봐|라|줘|고)?|시키(?:라고|고|라)"#,
         #"(?:보내|넘겨|전달해)(?:서|봐|줘|고|라)?|전달하고"#,
@@ -86,10 +86,18 @@ public struct RouteFanout: Equatable, Sendable {
     static let workTerms = ["함수", "클래스", "버그", "구현", "작성", "추가", "리팩토링", "리팩터링", "빌드", "배포",
                             "커밋", "푸시", "설치", "테스트", "refactor", "implement", "build", "deploy", "commit",
                             "push", "install", "fix", "bug", "function", "class", "test"]
+    /// "하나씩", "각각": each listed name gets the next part, in order (owner,
+    /// 2026-10-06: "클로드랑 클로드 코드 GPT 코덱스 다 라우팅 하나씩 시켜봐. 1 plus 1,
+    /// 2 plus 2, 3 plus 3, 4 plus 4." reached Claude Code alone: no name carried
+    /// a particle, so nothing was a destination).
+    static let distributive = #"하나씩|한\s?개씩|한\s?문제씩|각각|각자|차례(?:대)?로|순서대로|(?<![A-Za-z])(?:one\s+each|respectively)(?![A-Za-z])"#
+    /// A routing that already happened is a report or complaint, not an order.
+    static let reportedRouting = #"보냈|넘겼|시켰|맡겼|돌렸|넘어갔|전달했|전달됐|라우팅\s*(?:이|가)?\s*(?:됐|된|안\s|못\s)|(?<![A-Za-z])(?:sent|routed)(?![A-Za-z])"#
 
     public static func plan(_ prompt: String) -> RouteFanout? {
         let text = prompt.precomposedStringWithCanonicalMapping.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, text.count <= maximumCharacters, !text.contains("```") else { return nil }
+        guard clauses(text).contains(where: { !mentions(in: $0).isEmpty }) else { return pairedPlan(text) }
         var targets: [Target] = []
         var frameBefore: [String] = [], frameAfter: [String] = []
         var sawTarget = false
@@ -123,9 +131,15 @@ public struct RouteFanout: Equatable, Sendable {
                     guard let previous = targets.last?.payload else { return nil }
                     payload = previous
                 }
-                // A listed name is asked the same part as the name carrying the particle.
-                for destination in mention.destinations {
-                    targets.append(Target(surface: destination.surface, mention: destination.text, payload: payload))
+                // A listed name is asked the same part as the name carrying the
+                // particle, unless the owner hands them out one each ("GPT랑
+                // 클로드한테 각각 1+1, 2+2"): then the n-th name gets the n-th part.
+                let shares = mention.destinations.count > 1 && raw.range(of: distributive, options: [.regularExpression, .caseInsensitive]) != nil
+                    ? items(payload) : [payload]
+                if shares.count > 1, shares.count != mention.destinations.count { return nil }
+                for (position, destination) in mention.destinations.enumerated() {
+                    targets.append(Target(surface: destination.surface, mention: destination.text,
+                                          payload: shares.count > 1 ? shares[position] : payload))
                 }
             }
             if found.count > 1, !nameFirst {
@@ -160,6 +174,114 @@ public struct RouteFanout: Equatable, Sendable {
         if words.isEmpty || words.allSatisfy(filler) { return false }
         if words.count == 1, words[0].range(of: #"[가-힣](?:은|는|을|를)$"#, options: .regularExpression) != nil { return false }
         return true
+    }
+
+    /// No name carries a particle, but one sentence lists the routes and hands
+    /// out one part each ("클로드랑 클로드 코드 GPT 코덱스 다 라우팅 하나씩 시켜봐"),
+    /// and the parts come as a list of exactly as many items right after it (or
+    /// right before it, or one per following sentence): the n-th name gets the
+    /// n-th part. Anything else stays one request: a count that does not match,
+    /// a name anywhere else, a roster with other words in it.
+    static func pairedPlan(_ text: String) -> RouteFanout? {
+        let parts = clauses(text)
+        let rosters = parts.indices.compactMap { index in roster(parts[index], in: text).map { (index: index, names: $0) } }
+        guard rosters.count == 1, let found = rosters.first, found.names.count >= 2, found.names.count <= maximumTargets else { return nil }
+        let at = found.index, count = found.names.count
+        for index in parts.indices where index != at {
+            if containsName(parts[index]) { return nil }
+        }
+        var candidates: [(clauses: [Int], items: [String])] = []
+        if at + 1 < parts.count { candidates.append(([at + 1], items(parts[at + 1]))) }
+        if at > 0 { candidates.append(([at - 1], items(parts[at - 1]))) }
+        if at + count < parts.count {
+            let following = Array((at + 1)...(at + count))
+            if following.allSatisfy({ items(parts[$0]).count == 1 }) { candidates.append((following, following.map { parts[$0] })) }
+        }
+        guard let chosen = candidates.first(where: { $0.items.count == count }) else { return nil }
+        let targets = zip(found.names, chosen.items).map { name, item in
+            Target(surface: name.surface, mention: name.text, payload: strip(item))
+        }
+        for target in targets {
+            let payload = target.payload
+            guard !payload.isEmpty, payload.count <= maximumPayloadCharacters,
+                  payload.unicodeScalars.contains(where: { CharacterSet.alphanumerics.contains($0) }),
+                  payload.range(of: negation, options: [.regularExpression, .caseInsensitive]) == nil,
+                  payload.range(of: routingTalk, options: .regularExpression) == nil,
+                  !ClaudeChatLane.needsWorkspaceMaterial(payload),
+                  !containsWorkTerm(payload), answerable(payload) else { return nil }
+        }
+        let frame = parts.indices.filter { $0 != at && !chosen.clauses.contains($0) }.map { parts[$0] }
+        return RouteFanout(targets: targets, frame: frame)
+    }
+
+    /// The names of a roster sentence, in order, or nil when the sentence is
+    /// anything more than names, "하나씩"/"각각" and routing words: an order to
+    /// route (not a report, a complaint, a question or a refusal).
+    static func roster(_ clause: String, in text: String) -> [(surface: ProviderSurface, text: String)]? {
+        guard clause.range(of: distributive, options: [.regularExpression, .caseInsensitive]) != nil,
+              clause.range(of: routingVerbs, options: [.regularExpression, .caseInsensitive]) != nil
+                || clause.range(of: #"(?<![A-Za-z])ask(?![A-Za-z])"#, options: [.regularExpression, .caseInsensitive]) != nil,
+              clause.range(of: reportedRouting, options: [.regularExpression, .caseInsensitive]) == nil,
+              clause.range(of: routingTalk, options: .regularExpression) == nil,
+              clause.range(of: negation, options: [.regularExpression, .caseInsensitive]) == nil,
+              // "…하나씩 시켜볼까?": a question about routing is not an order.
+              text.range(of: NSRegularExpression.escapedPattern(for: clause) + #"\s*[?？]"#, options: .regularExpression) == nil
+        else { return nil }
+        let nameAlternatives = names.map { "(\($0.pattern))" }.joined(separator: "|")
+        let separator = #"(?:\#(conjunction)|\s+)"#
+        let boundary = #"(?=$|\s|[,，、/·&]|이랑|랑|하고|와|과)"#
+        guard let first = try? NSRegularExpression(pattern: "(?<![A-Za-z0-9가-힣\\-])(?:\(nameAlternatives))\(boundary)", options: [.caseInsensitive]),
+              let next = try? NSRegularExpression(pattern: "^(?:\(nameAlternatives))\(boundary)", options: [.caseInsensitive]),
+              let sep = try? NSRegularExpression(pattern: "^\(separator)", options: [.caseInsensitive]),
+              let start = first.firstMatch(in: clause, range: NSRange(clause.startIndex..., in: clause)),
+              let startRange = Range(start.range, in: clause) else { return nil }
+        func surface(of match: NSTextCheckingResult) -> ProviderSurface? {
+            (1...names.count).first { match.range(at: $0).location != NSNotFound }.map { names[$0 - 1].surface }
+        }
+        var found: [(surface: ProviderSurface, text: String)] = []
+        var cursor = startRange.lowerBound
+        var match: NSTextCheckingResult? = start
+        while let current = match, let range = Range(current.range, in: clause), let kind = surface(of: current) {
+            var end = range.upperBound
+            var written = String(clause[range])
+            // The joining word ("랑", ", ") stays with the name it follows, as written.
+            if let joined = sep.firstMatch(in: clause, options: [.anchored], range: NSRange(end..., in: clause)),
+               let joinedRange = Range(joined.range, in: clause) {
+                written += String(clause[joinedRange]).trimmingCharacters(in: .whitespaces)
+                end = joinedRange.upperBound
+            }
+            found.append((kind, written.trimmingCharacters(in: CharacterSet(charactersIn: " ,，、/·&"))))
+            cursor = end
+            guard found.count <= maximumTargets else { return nil }
+            match = next.firstMatch(in: clause, options: [.anchored], range: NSRange(cursor..., in: clause))
+                .flatMap { $0.range.location == NSRange(cursor..., in: clause).location ? $0 : nil }
+            if match != nil, end == range.upperBound { return nil } // two names with nothing between them
+        }
+        // Around the list: nothing but filler, "하나씩"/"각각" and routing words.
+        let around = String(clause[clause.startIndex..<startRange.lowerBound]) + " " + String(clause[cursor...])
+        let rest = strip(around.replacingOccurrences(of: distributive, with: " ", options: [.regularExpression, .caseInsensitive]))
+        let leftover = rest.lowercased().split(whereSeparator: { $0.isWhitespace || ",.?!~:".contains($0) }).map(String.init)
+        // Verb endings a routing word leaves behind ("시켜봐줘" → "줘").
+        let endings: Set<String> = ["봐", "줘", "봐줘", "라", "요", "주세요", "줄래", "ask", "send", "route", "please"]
+        guard leftover.allSatisfy({ fillers.contains($0) || endings.contains($0) }) else { return nil }
+        return found
+    }
+
+    /// A route named anywhere, with or without a particle.
+    static func containsName(_ text: String) -> Bool {
+        names.contains { name in
+            text.range(of: "(?<![A-Za-z0-9가-힣\\-])(?:\(name.pattern))(?![A-Za-z0-9\\-])",
+                       options: [.regularExpression, .caseInsensitive]) != nil
+        }
+    }
+
+    /// A comma list's items ("1 plus 1, 2 plus 2"). A thousands separator
+    /// ("1,000") is not a comma between items.
+    static func items(_ text: String) -> [String] {
+        text.replacingOccurrences(of: #"\s*(?:(?<![0-9])[,，、]|[,，、](?![0-9]{3}(?![0-9])))\s*"#, with: "\u{1}", options: .regularExpression)
+            .components(separatedBy: "\u{1}")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
     }
 
     struct Mention {
@@ -298,6 +420,32 @@ public struct RouteFanout: Equatable, Sendable {
         checks.append(("list beside a name", surfaces("GPT하고 Codex한테 1+1, Claude Code한테 2+2")
             == ["gpt-chat:1+1", "codex:1+1", "claude:2+2"]))
         checks.append(("part before a list", surfaces("1+2 지피티와 클로드 코드한테.") == ["gpt-chat:1+2", "claude:1+2"]))
+        // One each, in order (owner, 2026-10-06): no particle anywhere, the
+        // parts in the next sentence.
+        let oneEach = "그럼 클로드랑 클로드 코드 GPT 코덱스 다 라우팅 하나씩 시켜봐. 1 plus 1, 2 plus 2, 3 plus 3, 4 plus 4."
+        checks.append(("one each, in order", surfaces(oneEach) == ["claude-chat:1 plus 1", "claude:2 plus 2", "gpt-chat:3 plus 3", "codex:4 plus 4"]))
+        checks.append(("one each names as written", plan(oneEach)?.targets.map(\.mention) == ["클로드랑", "클로드 코드", "GPT", "코덱스"]))
+        checks.append(("one each has no frame", plan(oneEach)?.frame == []))
+        checks.append(("comma roster with 각각", surfaces("GPT, 코덱스, 클로드 각각 물어봐. 1+1, 2+2, 3+3")
+            == ["gpt-chat:1+1", "codex:2+2", "claude-chat:3+3"]))
+        checks.append(("parts before the roster", surfaces("1+1, 2+2. 클로드랑 GPT 하나씩 시켜봐.") == ["claude-chat:1+1", "gpt-chat:2+2"]))
+        checks.append(("one part per sentence", surfaces("클로드랑 코덱스 하나씩 시켜봐. 1+1. 2+2.") == ["claude-chat:1+1", "codex:2+2"]))
+        checks.append(("english one each", surfaces("Ask Claude Code and GPT one each. 1+1, 2+2.") == ["claude:1+1", "gpt-chat:2+2"]))
+        checks.append(("thousands stay whole", surfaces("클로드랑 GPT 하나씩 시켜봐. 1,000+1, 2,500*2") == ["claude-chat:1,000+1", "gpt-chat:2,500*2"]))
+        let framed = "자 이번엔 이렇게 해보자. 클로드랑 GPT 하나씩 시켜봐줘. 1+1, 2+2. 답변 받아와."
+        checks.append(("one each keeps its frame", surfaces(framed) == ["claude-chat:1+1", "gpt-chat:2+2"]
+            && plan(framed)?.frame == ["자 이번엔 이렇게 해보자", "답변 받아와"]))
+        checks.append(("listed names one each", surfaces("GPT랑 클로드한테 각각 1+1, 2+2 물어봐") == ["gpt-chat:1+1", "claude-chat:2+2"]))
+        checks.append(("listed names, one shared part", surfaces("GPT랑 클로드한테 각각 1+1 물어봐") == ["gpt-chat:1+1", "claude-chat:1+1"]))
+        for prompt in ["클로드랑 GPT 하나씩 시켜봐. 1+1, 2+2, 3+3", "클로드랑 GPT 시켜봐. 1+1, 2+2",
+                       "클로드랑 GPT 비교해서 하나씩 시켜봐. 1+1, 2+2", "클로드랑 GPT 하나씩 보냈어? 1+1, 2+2",
+                       "클로드랑 GPT 하나씩 라우팅이 안 돼. 1+1, 2+2", "클로드랑 GPT 하나씩 시키지 마. 1+1, 2+2",
+                       "클로드랑 코덱스 하나씩 시켜봐. 버그 고쳐, 테스트 작성해", "클로드랑 GPT 하나씩 시켜봐. 1+1, 코덱스 버전",
+                       "클로드 하나씩 시켜봐. 1+1", "클로드랑 GPT 하나씩 시켜봐. 코덱스랑 클로드 하나씩 시켜봐. 1+1, 2+2",
+                       "클로드랑 GPT 하나씩 시켜볼까? 1+1, 2+2", "클로드랑 GPT 하나씩 시켜줄래?", "GPT랑 클로드한테 각각 1+1, 2+2, 3+3 물어봐",
+                       "클로드랑 GPT 하나씩 라우팅 시켜봐", "클로드 코드랑 코덱스 각각 써봤는데 어때. 장점, 단점"] {
+            checks.append(("no one-each split: \(prompt)", plan(prompt) == nil))
+        }
         for prompt in ["GPT랑 비교해서 클로드한테 1+1 물어봐", "GPT랑 코덱스랑 클로드한테는 안 갔잖아", "코덱스랑 클로드한테 라우팅이 이상해",
                        "GPT랑 클로드한테 라우팅 되게 해줘", "GPT랑 클로드한테 1+2 보냈어?", "코덱스랑 클로드한테 이 함수 만들어줘",
                        "GPT랑 클로드한테 이런 거 해봐", "코덱스랑 클로드한테 시키지 말고 GPT한테 시켜", "코덱스랑 클로드한테 일 좀 시켜",
