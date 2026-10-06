@@ -1,0 +1,39 @@
+{
+  "release": "2026-10-05-smart-construction-media-v37",
+  "sourceCommit": "24d93a3bb9628acdc15b0f252c5911d6b44b8900",
+  "deploymentId": "4f46f723-1052-4c14-8642-2793edeaadf6",
+  "bucket": "omar-private-archive",
+  "latestKey": "usung-corporate/latest.json",
+  "manifestKey": "usung-corporate/releases/20261006T011432Z/24d93a3bb9628acdc15b0f252c5911d6b44b8900/manifest.json",
+  "manifestSha256": "f305da14bf86e81eb7f3ebb6f0a5e46a4f9f17cc2257ce8e5ab3373a50592b20",
+  "packageSha256": "36f7dade2fa508d465dd6c7c45c7bf39e6c168fd801a8d964f5e4cd21bc024a3",
+  "partCount": 18,
+  "filesVerified": 297,
+  "restoredServerHealth": {
+    "status": "ok",
+    "site": "usung-corporate",
+    "release": "2026-10-05-smart-construction-media-v37",
+    "languages": 31
+  },
+  "routes": [
+    {
+      "route": "/",
+      "status": 200
+    },
+    {
+      "route": "/ai/",
+      "status": 200
+    },
+    {
+      "route": "/smart-construction/",
+      "status": 200
+    },
+    {
+      "route": "/physical-ai/",
+      "status": 200
+    }
+  ],
+  "generatedLocalizedPages": 124,
+  "fullR2ReadbackAndRestoreDrillPassed": true,
+  "verificationKey": "usung-corporate/releases/20261006T011432Z/24d93a3bb9628acdc15b0f252c5911d6b44b8900/verification/20261006T011906Z-2c1f0b16ac1aa96c65eee7e89133ee4e0dc53eda1c6062bc0d8b962754beeed9/restore-drill.json"
+}

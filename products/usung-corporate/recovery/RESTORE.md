@@ -66,6 +66,8 @@ The observed 286,913,926-byte v37 single PUT failed with `fetch failed` while it
 
 ## Fetch the latest saved USUNG release
 
+`PREVIOUS_V37.json` preserves the fixed manifest key and SHA256 for the earlier v37 recovery point. It remains available after a newer release updates `usung-corporate/latest.json`. Use its recorded immutable manifest with the older-release command below when the owner specifically requests v37.
+
 This command only reads R2 and stages a fresh restored directory:
 
 ```sh

@@ -1,0 +1,118 @@
+{
+  "source": "products/usung-corporate/public/assets/media/built-sunrise.jpg",
+  "sourceSha256": "51124b57542c4eed9761f66ce5f79d7fa4f7bba8afd1ca8e46a4ad08ed6ba01b",
+  "baseline": "products/usung-corporate/public/assets/media/usung-site-dawn-v37.webp",
+  "baselineSha256": "63d078b1ef0d8eaca6f9d59e0a008d031fa0259e34e45b9d71684de6681f2344",
+  "candidate": "products/usung-corporate/public/assets/media/usung-site-dawn-v38.webp",
+  "candidateSha256": "df6cc7a113b3c8c4a0f9315e7a186adf5f6bee51c1232bb5b95bc28389796643",
+  "dimensions": [
+    2200,
+    1466
+  ],
+  "screenshot": "/Users/lua/Desktop/Screenshot 2026-10-05 at 7.09.37 PM.png",
+  "target": "White glare on boom panel immediately beside worklight, original coordinates approximately x1314–1355 y583–639.",
+  "causeEvidence": {
+    "originalSourceCrop": [
+      1250,
+      510,
+      1420,
+      690
+    ],
+    "originalVsV37ChangedPixels": 0,
+    "observed": "The exact visible white patch is present in both original photograph and accepted v37, pixel for pixel.",
+    "inferred": "Photographed bright illumination/reflection beside visible boom worklight; no Codex erasure or original logo identified in this area."
+  },
+  "method": "Mask-confined adjacent source-pixel retouch. Real reddish upper-boom paint rectified and remapped at native texture scale, measured lower-boom colour shift, low diffuse light using photographed lamp tint, source seam optical contrast transferred under corrected illumination, original edge antialias estimated by source-row contrast. No generated texture or new logo. Narrow original glare footprint only.",
+  "noGeneration": true,
+  "sourceRetouch": true,
+  "underlyingPaintEstimate": true,
+  "lossless": true,
+  "allowedPolygon": [
+    [
+      1284.0,
+      546.0
+    ],
+    [
+      1338.0,
+      546.0
+    ],
+    [
+      1361.0,
+      582.0
+    ],
+    [
+      1361.0,
+      640.0
+    ],
+    [
+      1347.0,
+      658.0
+    ],
+    [
+      1339.0,
+      651.0
+    ],
+    [
+      1306.0,
+      598.0
+    ],
+    [
+      1289.0,
+      570.0
+    ]
+  ],
+  "sourcePaintDonorQuad": [
+    [
+      1194.0,
+      395.0
+    ],
+    [
+      1227.0,
+      395.0
+    ],
+    [
+      1246.0,
+      424.0
+    ],
+    [
+      1213.0,
+      424.0
+    ]
+  ],
+  "sourcePaintToneDonor": [
+    1358,
+    648,
+    1370,
+    660
+  ],
+  "sourceWorklightTintDonor": [
+    1370,
+    606,
+    1380,
+    616
+  ],
+  "rectifiedDonorDimensions": [
+    33,
+    29
+  ],
+  "sourcePaintColourShiftBGR": [
+    -2.0,
+    1.0,
+    9.0
+  ],
+  "changedPixels": 2990,
+  "allowedPixels": 4075,
+  "outsideAllowedPixelsCompared": 3221125,
+  "outsideAllowedEqualsV37": true,
+  "outsideCombinedMaskEqualsOriginal": true,
+  "worklightCablesAndProtectedPixelsEqualV37": true,
+  "acceptedV37RackCabMarksUnchanged": true,
+  "acceptedV37OtherMediaUnchanged": true,
+  "decodedOutputEqualsPreEncode": true,
+  "integrationState": "Exact candidate integrated after root local zoom/context/page review; owner review remains separate.",
+  "rootIndependentMaskCheck": {
+    "changedPixels": 2990,
+    "outsideAllowedEqualsV37": true,
+    "protectedWorklightAndCablesEqualV37": true
+  }
+}

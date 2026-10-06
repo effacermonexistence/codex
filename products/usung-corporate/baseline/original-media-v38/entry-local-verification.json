@@ -1,0 +1,20 @@
+{
+  "schema": "usung-entry-v38-observation",
+  "baseline": "24d93a3bb9628acdc15b0f252c5911d6b44b8900",
+  "observations": {
+    "Safari_before_fix_reload_no_hash_scrollbar": 1,
+    "Safari_local_home_scrollbar_before_reload": 0.4017563,
+    "Safari_local_home_scrollbar_after_reload": 0,
+    "IAB_home_scrollY_before_reload": 2160,
+    "IAB_home_scrollY_after_reload": 0,
+    "IAB_history_return_scrollY": 0,
+    "IAB_contact_hash": "#contact",
+    "IAB_contact_settled_scrollY": 3091.5,
+    "IAB_contact_settled_top": 53.8125,
+    "IAB_construction_entry_scrollY": 0,
+    "IAB_same_document_contact_scrollY": 3091.5,
+    "IAB_same_document_back_scrollY": 0,
+    "IAB_same_document_back_hash": ""
+  },
+  "note": "Observed through CUA UI; intentional section anchors preserved. Final production verification pending."
+}
