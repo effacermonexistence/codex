@@ -836,6 +836,7 @@ struct RunStepSummary: Codable {
     /// marker; `runTask` continues that part once as an OS-1 repair.
     /// In-process only.
     var os1ChangeRequired: Bool = false
+    var os1FullAccessRequired: Bool = false
 
     enum CodingKeys: String, CodingKey {
         case sequence, provider, action, model, effort, output, stderr
@@ -876,6 +877,7 @@ struct ProviderExecution {
     var driftApplication: DriftApplication? = nil
     /// A confined backend handed a change to OS-1 itself back (the marker).
     var os1ChangeRequired: Bool = false
+    var os1FullAccessRequired: Bool = false
 
     /// The same execution with OS-1's own completion note appended to the
     /// answer, before the artifact is hashed and delivered.
@@ -888,7 +890,7 @@ struct ProviderExecution {
             durationMS: a.durationMS, workspaceBeforeHash: a.workspaceBeforeHash, workspaceAfterHash: a.workspaceAfterHash,
             nativeRecord: a.nativeRecord)
         return ProviderExecution(artifact: artifact, sessionID: sessionID, nativeRecord: nativeRecord, surface: surface,
-                                 driftApplication: driftApplication, os1ChangeRequired: os1ChangeRequired)
+                                 driftApplication: driftApplication, os1ChangeRequired: os1ChangeRequired, os1FullAccessRequired: os1FullAccessRequired)
     }
 }
 
@@ -1558,13 +1560,14 @@ func claudeArguments(
     memoryConfiguration: String? = nil,
     streamInput: Bool = false,
     confinedPaths: [String] = [],
-    confinedEscalates: Bool = true
+    confinedEscalates: Bool = true,
+    fullAccessProtectedPaths: [String] = []
 ) throws -> [String] {
     var arguments = ["-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages"]
     // A HOME write task that holds no OS-1 source lease (build 320): its
     // backend must be unable to write OS-1's live tree, and is told so.
     let confined = permissionProfile == "workspace_write" && !confinedPaths.isEmpty
-    let instructions = confined
+    let instructions = !fullAccessProtectedPaths.isEmpty ? instructions + OS1SourceConfinement.fullAccessInstructions(protectedPaths: fullAccessProtectedPaths) : confined
         ? instructions + OS1SourceConfinement.instructions(protectedPaths: confinedPaths, escalates: confinedEscalates)
         : instructions
     if sourceContextOnly && permissionProfile == "read_only" {
@@ -1590,7 +1593,9 @@ func claudeArguments(
         } else { permissions += ["--allowedTools", "mcp__os1_memory__memory_query"] }
     }
     arguments += permissions
-    if confined { arguments += ["--settings", OS1SourceConfinement.claudeSettings(protectedPaths: confinedPaths)] }
+    if !fullAccessProtectedPaths.isEmpty {
+        arguments += ["--settings", OS1SourceConfinement.claudeFullAccessSettings(protectedPaths: fullAccessProtectedPaths)]
+    } else if confined { arguments += ["--settings", OS1SourceConfinement.claudeSettings(protectedPaths: confinedPaths)] }
     if let model { arguments += ["--model", model] }
     arguments += [
         "--effort", effort,
@@ -6469,6 +6474,7 @@ private func execute(
     var validateCandidate: (() throws -> Void)?
     // A confined Claude run handing the request back as an OS-1 change.
     var os1ChangeRequired = false
+    var os1FullAccessRequired = false
     let hasPreloadedR2Evidence = preloadedR2Evidence != nil
     let evidenceDirective = sourceExecutionDirective(preloadedR2Evidence, required: sourceUseRequired)
     let readinessDirective = asksRecoveryReadiness(lockedObjective) ? """
@@ -6741,7 +6747,7 @@ private func execute(
         let contextBudget = try memoryTurn.map { try pagingBudget(manifest: $0, provider: "claude", model: model,
             previousID: previousSessionID, prompt: prompt, instructions: instructions,
             forceFresh: manuallyFresh || sourceOnly || chatLane || previousSessionID == nil || previousMeasured == nil) }
-        let rotateContext = memoryTurn != nil && (manuallyFresh || contextBudget?.action == .rotateSession ||
+        let rotateContext = OS1FullAccessContinuation.sessionID == nil && memoryTurn != nil && (manuallyFresh || contextBudget?.action == .rotateSession ||
             (previousSessionID != nil && previousMeasured == nil))
         if let memoryTurn, let previousSessionID,
            let path = claudeTranscriptPath(sessionID: previousSessionID),
@@ -6761,10 +6767,14 @@ private func execute(
         } != nil
         // A chat-mode turn starts its own session: resuming a full Claude Code
         // thread would reload everything this lane exists to leave out.
-        let requestedSessionID = (previousSessionID == nil || desktopOwnsPrevious || sourceOnly || chatLane || rotateContext)
+        let pinnedResumeID = OS1FullAccessContinuation.sessionID
+        if pinnedResumeID != nil && (ticket.permissionProfile != "workspace_write" || desktopOwnsPrevious || previousSessionID != pinnedResumeID) {
+            throw OS1Error.message("Full-access handback cannot safely resume the exact original Claude session; no substitute session was started.")
+        }
+        let requestedSessionID = pinnedResumeID ?? ((previousSessionID == nil || desktopOwnsPrevious || sourceOnly || chatLane || rotateContext)
             ? UUID().uuidString.lowercased()
-            : previousSessionID!
-        let startsNewSession = previousSessionID == nil || desktopOwnsPrevious || sourceOnly || chatLane || rotateContext
+            : previousSessionID!)
+        let startsNewSession = pinnedResumeID == nil && (previousSessionID == nil || desktopOwnsPrevious || sourceOnly || chatLane || rotateContext)
         let activeSessionID = requestedSessionID
         defer {
             if let memoryTurn, let path = claudeTranscriptPath(sessionID: activeSessionID),
@@ -6815,7 +6825,8 @@ private func execute(
         // Set by the runtime when this attempt holds no OS-1 source lease
         // (a HOME write task, build 320): the launch must confine the backend.
         let confinedPaths = confinedClaudeLaunchPaths(permissionProfile: ticket.permissionProfile)
-        let confined = !confinedPaths.isEmpty
+        let fullAccessPaths = OS1FullAccessContinuation.protectedPaths
+        let confined = !confinedPaths.isEmpty || !fullAccessPaths.isEmpty
         // Only an owner request reruns a handed-back OS-1 change (runTask).
         let handBackEscalates = OS1ChangeEscalation.available
         var arguments = try claudeArguments(
@@ -6833,7 +6844,8 @@ private func execute(
             memoryConfiguration: try memoryTurn.map { try MemoryPaging.claudeConfiguration($0, executable: currentOS1Executable()) },
             streamInput: steerDriver != nil,
             confinedPaths: confinedPaths,
-            confinedEscalates: handBackEscalates
+            confinedEscalates: handBackEscalates,
+            fullAccessProtectedPaths: fullAccessPaths
         )
         if projectlessRead && !sourceOnly && !chatLane { arguments.insert("--safe-mode", at: 1) }
         if CheckoutTurn.enabled && ticket.permissionProfile == "workspace_write" && !sourceOnly && !chatLane {
@@ -6844,9 +6856,10 @@ private func execute(
         var revision = 0
         var relayedResultCount = 0
         let raw: (Int32, Data, Data)
+        let launch = try fullAccessPaths.isEmpty ? (claude, arguments) : fullAccessResumeArguments(executable: claude, arguments: arguments, protectedPaths: fullAccessPaths)
         do { raw = try commandOutput(
-            claude,
-            arguments,
+            launch.0,
+            launch.1,
             timeout: timeout,
             idleTimeout: idleTimeout.map(TimeInterval.init),
             currentDirectory: executionWorkspace,
@@ -6902,8 +6915,14 @@ private func execute(
         let resultData = stream.result ?? raw.1
         onUsage?(CompletionUsageParser.parseClaudeResult(resultData))
         let parsed: ClaudePrintResult
-        do { parsed = try parseClaudeCommandResult(raw.0, resultData, requestedSessionID: activeSessionID,
-                                                    boundedShell: ticket.permissionProfile == "read_only", confinedPaths: confinedPaths) }
+        do {
+        if !fullAccessPaths.isEmpty, raw.0 != 0, (try? JSONSerialization.jsonObject(with: resultData)) == nil {
+            let diagnostic = String(decoding: raw.2, as: UTF8.self).components(separatedBy: .newlines).suffix(3)
+                .compactMap { NativeStepLabel.redactKeepingEnd($0) }.joined(separator: " · ")
+            throw OS1Error.message("Full-access Claude continuation failed before a structured session result (exit \(raw.0)): \(diagnostic.isEmpty ? "no stderr diagnostic" : diagnostic)")
+        }
+        parsed = try parseClaudeCommandResult(raw.0, resultData, requestedSessionID: activeSessionID,
+                                                    boundedShell: ticket.permissionProfile == "read_only", confinedPaths: Array(Set(confinedPaths + fullAccessPaths))) }
         catch {
             let object = (try? JSONSerialization.jsonObject(with: resultData)) as? [String: Any]
             let rawProgress = object?["session_id"] as? String == activeSessionID ? (object?["result"] as? String ?? stream.text) : stream.text
@@ -6931,9 +6950,10 @@ private func execute(
         // are skipped; drift, configuration, source-contract and presentation
         // checks still apply. Without that rerun (a workflow stage, an
         // internal run) every check applies as to any other answer.
-        let handled = OS1SourceConfinement.confinedAnswer(String(decoding: parsed.output, as: UTF8.self), confined: confined)
+        let handled = OS1SourceConfinement.handBackAnswer(String(decoding: parsed.output, as: UTF8.self), protected: confined)
         os1ChangeRequired = handled.changeRequired
-        let handsBack = os1ChangeRequired && handBackEscalates
+        os1FullAccessRequired = handled.fullAccessRequired && handBackEscalates && OS1FullAccessContinuation.sessionID == nil
+        let handsBack = (os1ChangeRequired || os1FullAccessRequired) && handBackEscalates
         let answer = confined ? Data(handled.text.utf8) : parsed.output
         let outputIssues = outputContractIssues(answer, prompt: lockedObjective, snapshotOnly: hasPreloadedR2Evidence)
         let rejectedConfiguration = claudeOutputMisclassifiedRuntimeConfiguration(answer)
@@ -6959,6 +6979,9 @@ private func execute(
                 .reduce(lockedObjective) { ExecutionSteering.continuation(original: $0, correction: $1.text) }
         } ?? lockedObjective
         validateCandidate = {
+        if OS1FullAccessContinuation.sessionID != nil && handled.fullAccessRequired {
+            throw OS1Error.message("Full-access continuation still reported a blocked step; it was not repeated or marked complete.")
+        }
         if !handsBack, UnifiedExecution.requestsManualBackendHandoff(String(decoding: answer, as: UTF8.self), request: correctedObjective) {
             throw OS1Error.backendBlocked(BackendBlocker.reported(in: String(decoding: answer, as: UTF8.self)) ?? .incomplete)
         }
@@ -7029,7 +7052,7 @@ private func execute(
         nativeRecord: nativeRecord,
         surface: executedSurface?.rawValue,
         driftApplication: driftApplication,
-        os1ChangeRequired: os1ChangeRequired
+        os1ChangeRequired: os1ChangeRequired, os1FullAccessRequired: os1FullAccessRequired
     )
     AttemptLatencyTrace.mark("candidate_built")
     do { try validateCandidate?() }
@@ -8472,6 +8495,69 @@ enum OS1ChangeEscalation {
     @TaskLocal static var available = false
 }
 
+/// One-hop same-session handback. Task-local state never survives as a saved
+/// permission or applies to another owner request / signed ticket.
+enum OS1FullAccessContinuation {
+    @TaskLocal static var sessionID: String?
+    @TaskLocal static var protectedPaths: [String] = []
+}
+
+func fullAccessHandBackDraft(adopted: RunSummary?, rejectedAttempt: RunStepSummary?, cancelled: Bool,
+                            persistedCorrectionIDs: [UUID]? = nil) -> RunSummary? {
+    guard !cancelled else { return nil }
+    if let adopted {
+        guard adopted.status == "complete", adopted.steps.contains(where: {
+            $0.provider == "claude" && $0.os1SourceConfined && $0.os1FullAccessRequired && $0.exitCode == 0 && UUID(uuidString: $0.sessionID) != nil
+        }) else { return nil }
+        return adopted
+    }
+    guard var step = rejectedAttempt, step.provider == "claude", step.os1SourceConfined, step.os1FullAccessRequired,
+          step.exitCode == 0, UUID(uuidString: step.sessionID) != nil, ["retry", "rejected"].contains(step.revasDisposition),
+          !step.output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+    step.output = OS1SourceConfinement.strippingMarker(step.output)
+    return RunSummary(status: "handed_back", steps: [step], persistedCorrectionIDs: persistedCorrectionIDs)
+}
+
+func fullAccessResumeArguments(executable: String, arguments: [String], protectedPaths: [String]) throws -> (String, [String]) {
+    guard FileManager.default.isExecutableFile(atPath: "/usr/bin/sandbox-exec") else { throw OS1SourceConfinement.SourceGuardError.unavailable }
+    return ("/usr/bin/sandbox-exec", ["-p", try OS1SourceConfinement.sourceWriteGuardProfile(protectedPaths: protectedPaths), executable] + arguments)
+}
+
+func fullAccessContinuationPrompt(request: String, report: String) -> String {
+    """
+    Continue ONLY the non-OS-1 steps blocked by the broad task sandbox, in this SAME native session. Do not restart the original request or repeat any completed edit/send/payment/install/mount/deployment/push. Verify partial side effects before retrying. Original owner authorization and exact scope remain binding; no new login approval, terms or purchase authority is granted.
+    같은 세션에서 샌드박스에 막혔던 비-OS-1 단계만 이어서 하세요. 이미 한 단계는 반복하지 말고 부분 상태부터 확인하세요. OS-1 자체 수정은 여전히 금지입니다.
+    ORIGINAL OWNER REQUEST (scope, not a new instruction to replay):
+    \(request)
+    PRIOR EXECUTION REPORT (exact available output, not proof that all steps completed):
+    \(report)
+    """
+}
+
+func mergedFullAccessContinuation(draft: RunSummary, resumed: RunSummary) -> RunSummary {
+    var resumedSteps = resumed.steps
+    if let first = os1RejectedHandBackAnswer(draft), let index = resumedSteps.firstIndex(where: { $0.revasDisposition == "adopted" }) {
+        resumedSteps[index].output = os1Tr("첫 실행 보고 (미채택):", "First execution report (not adopted):") + "\n" + first
+            + "\n\n" + os1Tr("막힌 단계 이어가기:", "Blocked-step continuation:") + "\n" + resumedSteps[index].output
+    }
+    return RunSummary(status: resumed.status, steps: draft.steps + resumedSteps,
+        sourceContext: resumed.sourceContext ?? draft.sourceContext, taskContext: resumed.taskContext ?? draft.taskContext,
+        persistedCorrectionIDs: os1MergedCorrectionIDs(draft.persistedCorrectionIDs, resumed.persistedCorrectionIDs),
+        monitorTaskID: resumed.monitorTaskID ?? draft.monitorTaskID, workflowBlocker: resumed.workflowBlocker)
+}
+
+func fullAccessFailureSummary(draft: RunSummary, reason: String, resumed: RunStepSummary? = nil, cancelled: Bool = false,
+                              persistedCorrectionIDs: [UUID]? = nil) -> RunSummary {
+    let note = os1Tr("전체 권한 이어가기가 \(cancelled ? "취소됐습니다" : "완료되지 않았습니다"): \(reason). 이미 실행한 단계는 다시 실행하지 않았고 요청·결과를 보존했습니다.",
+                    "Full-access continuation \(cancelled ? "was cancelled" : "did not finish"): \(reason). Completed steps were not replayed; request and results were preserved.")
+    let report = draft.steps.last?.output ?? ""
+    let blocked = note + "\n\n" + report + (resumed.map { "\n\nContinuation result (not adopted):\n" + $0.output } ?? "")
+    return RunSummary(status: "workflow_blocked", steps: draft.steps.filter { $0.revasDisposition == "adopted" },
+        sourceContext: draft.sourceContext, taskContext: draft.taskContext,
+        persistedCorrectionIDs: os1MergedCorrectionIDs(draft.persistedCorrectionIDs, persistedCorrectionIDs),
+        monitorTaskID: draft.monitorTaskID, workflowBlocker: blocked)
+}
+
 /// A confined attempt (a HOME request's Claude backend, kept off OS-1's live
 /// source, build 320) handed the request's OS-1 part back with the marker.
 /// The step output is already stripped of it; the flag is the signal.
@@ -8993,7 +9079,7 @@ enum OS1AttemptSourceStep: Equatable {
 /// re-routed to Claude rather than waiting (`claudeAlternative`), and a
 /// ticket that went stale while it waited is replaced before use.
 func prepareOS1AttemptSource(
-    provider: String, permissionProfile: String, sharedLeaseRoot: String?, firstAttempt: Bool,
+    provider: String, permissionProfile: String, sharedLeaseRoot: String?, firstAttempt: Bool, fullAccess: Bool = false,
     claudeAlternative: () async -> Bool, ticketFresh: () -> Bool, state: inout OS1AttemptSourceState,
     protectedPaths: (String) -> [String] = { OS1SourceConfinement.protectedPaths(root: $0) },
     tryAcquire: (String) throws -> ExclusiveHookLease? = tryAcquireOS1SourceSharedLease,
@@ -9009,7 +9095,7 @@ func prepareOS1AttemptSource(
         state.leaseCarriesWriter = false
     }
     switch OS1SourceConfinement.attemptGuard(provider: provider, permissionProfile: permissionProfile,
-                                             sharedLeaseRoot: sharedLeaseRoot, protectedPaths: protectedPaths) {
+                                             sharedLeaseRoot: sharedLeaseRoot, fullAccess: fullAccess, protectedPaths: protectedPaths) {
     case .unguarded:
         return .proceed(confined: false, carriesEarlierWriter: false)
     case .confined(let paths):
@@ -9025,7 +9111,7 @@ func prepareOS1AttemptSource(
             if let lease = try tryAcquire(root) {
                 state.lease = lease
             } else {
-                if firstAttempt, state.claudeReroutesLeft > 0, await claudeAlternative() {
+                if !fullAccess, firstAttempt, state.claudeReroutesLeft > 0, await claudeAlternative() {
                     state.claudeReroutesLeft -= 1
                     return .reroute(preferClaude: true)
                 }
@@ -9116,7 +9202,7 @@ func appendingOS1RepairNote(_ summary: RunSummary, cancelled: Bool, reason: Stri
 
 /// The owner never sees the escalation marker, whichever answer is returned.
 func strippingOS1ChangeMarker(_ summary: RunSummary) -> RunSummary {
-    guard summary.steps.contains(where: { OS1SourceConfinement.containsMarker($0.output) }) else { return summary }
+    guard summary.steps.contains(where: { OS1SourceConfinement.containsMarker($0.output) || $0.output.contains(OS1SourceConfinement.fullAccessRequiredMarker) }) else { return summary }
     let steps = summary.steps.map { step -> RunStepSummary in
         var step = step
         step.output = OS1SourceConfinement.strippingMarker(step.output)
@@ -9334,13 +9420,57 @@ func runTask(
             // both answers. A repair that does not finish is said plainly,
             // kept as a pending record and continued on the next request.
             let cancelled = ExecutionCancellation.isCancelled || draftFailure.map { backendBlocker($0) == .cancelled } == true
-            if escalationAvailable, let handBack = os1HandBackDraft(adopted: adoptedDraft,
+            if escalationAvailable, OS1FullAccessContinuation.sessionID == nil,
+               let fullDraft = fullAccessHandBackDraft(adopted: adoptedDraft, rejectedAttempt: draftFailure == nil ? nil : draftAttempts.last,
+                   cancelled: cancelled, persistedCorrectionIDs: ExecutionSteering.currentSubmission.map { ExecutionSteering().persistedIDs($0) }),
+               let native = fullDraft.steps.last(where: { $0.os1FullAccessRequired && $0.provider == "claude" }) {
+                adopted = false // a required continuation is not complete yet
+                let resumeAttempts = OS1RunAttemptRecorder()
+                do {
+                    guard let root = OS1SourceWatch.containedRoot(workspace: workspace) else {
+                        throw OS1Error.message("OS-1 protected source root is unavailable; full-access resume was not started.")
+                    }
+                    let protected = OS1SourceConfinement.protectedPaths(root: root)
+                    _ = try OS1SourceConfinement.sourceWriteGuardProfile(protectedPaths: protected)
+                    RuntimeActivity.emit(.preparing, provider: "claude", publicText: os1Tr(
+                        "샌드박스에 막힌 단계만 같은 Claude 세션에서 이어갑니다. OS-1 소스 보호와 공유 리스는 유지합니다.",
+                        "Continuing only sandbox-blocked steps in the same Claude session; OS-1 source protection and shared lease remain."))
+                    let resumed = try await OS1FullAccessContinuation.$sessionID.withValue(native.sessionID) {
+                        try await OS1FullAccessContinuation.$protectedPaths.withValue(protected) {
+                            try await OS1RunAttemptRecorder.$current.withValue(resumeAttempts) {
+                                try await OS1ChangeEscalation.$available.withValue(true) {
+                                    try await runTaskWithOwnerPolicy(prompt: fullAccessContinuationPrompt(request: ownerPrompt ?? prompt, report: native.output),
+                                        workspace: workspace, providerPreference: "claude", context: context,
+                                        codexSessionID: nil, claudeSessionID: native.sessionID, codexCapacity: 0, claudeCapacity: claudeCapacity,
+                                        progress: progress, desktopReveal: desktopReveal, requireReadOnly: false,
+                                        routingTaskOverride: routingTaskOverride, workflowStage: nil, ownerPrompt: ownerPrompt ?? prompt,
+                                        monitorTaskIDOverride: ownerMonitorID ?? monitorTaskIDOverride, heldOS1SourceRoot: nil, preflight: preflight)
+                                }
+                            }
+                        }
+                    }
+                    if ExecutionCancellation.isCancelled {
+                        return fullAccessFailureSummary(draft: fullDraft, reason: "Cancellation after resumed execution; no follow-up repair started.",
+                            resumed: resumed.steps.last, cancelled: true, persistedCorrectionIDs: resumed.persistedCorrectionIDs)
+                    }
+                    guard resumed.status == "complete" else {
+                        return fullAccessFailureSummary(draft: fullDraft, reason: resumed.workflowBlocker ?? resumed.status, resumed: resumed.steps.last, persistedCorrectionIDs: resumed.persistedCorrectionIDs)
+                    }
+                    adoptedDraft = mergedFullAccessContinuation(draft: fullDraft, resumed: resumed)
+                    draftFailure = nil; adopted = true
+                } catch {
+                    return fullAccessFailureSummary(draft: fullDraft, reason: String(describing: error), resumed: resumeAttempts.last,
+                        cancelled: ExecutionCancellation.isCancelled || backendBlocker(error) == .cancelled,
+                        persistedCorrectionIDs: ExecutionSteering.currentSubmission.map { ExecutionSteering().persistedIDs($0) })
+                }
+            }
+            if escalationAvailable, !ExecutionCancellation.isCancelled, let handBack = os1HandBackDraft(adopted: adoptedDraft,
                    rejectedAttempt: draftFailure == nil ? nil : draftAttempts.last, cancelled: cancelled,
                    persistedCorrectionIDs: ExecutionSteering.currentSubmission.map { ExecutionSteering().persistedIDs($0) }) {
                 RuntimeActivity.emit(.preparing, publicText: os1Tr(
                     "OS-1 자체 수정이 필요한 요청이라 OS-1 수리로 이어서 진행합니다.",
                     "This request needs a change to OS-1 itself, so it continues as an OS-1 repair."))
-                let report = handBack.steps.last(where: { ["adopted", "retry", "rejected"].contains($0.revasDisposition) })?.output ?? ""
+                let report = handBack.steps.filter { ["adopted", "retry", "rejected"].contains($0.revasDisposition) }.map(\.output).joined(separator: "\n\nPrior/continued execution report:\n")
                 // Corrections the first run took in never reach the fresh
                 // sessions by steering (they already have receipts).
                 let mailbox = ExecutionSteering()
@@ -9699,7 +9829,7 @@ func runTaskWithOwnerPolicy(
             os1PendingRepairRecordAttemptEnd(binding, head: gitHead(root))
         }
     }
-    if resolvedScope == .workspaceWrite,
+    if resolvedScope == .workspaceWrite, OS1FullAccessContinuation.sessionID == nil,
        let os1Root = LocalProjectWorkspace.root(containing: canonicalWorkspace, projectID: "os1-clodex") {
         if heldOS1SourceRoot.map({ URL(fileURLWithPath: $0).resolvingSymlinksInPath().standardizedFileURL.path }) != URL(fileURLWithPath: os1Root).resolvingSymlinksInPath().standardizedFileURL.path { os1SourceLease = try acquireOS1SourceWriteLease(root: os1Root) }
         os1StartHead = gitHead(os1Root)
@@ -9737,6 +9867,12 @@ func runTaskWithOwnerPolicy(
             // and an unconfined attempt reads it under its own lease anyway.
             os1Source.watch = OS1SourceWatch.capture(workspace: canonicalWorkspace)
         }
+    }
+    if OS1FullAccessContinuation.sessionID != nil {
+        guard resolvedScope == .workspaceWrite, let guardedRoot = OS1FullAccessContinuation.protectedPaths.first else {
+            throw OS1Error.message("Full-access continuation lost its source scope; no backend was started.")
+        }
+        os1SharedLeaseRoot = guardedRoot
     }
     let pinnedEvidence = try (requireReadOnly || !requestsFreshSource(objectiveRequest)) ? attachedSource.map { try loadSource($0) } : nil
     let discussesPinnedProvenance = pinnedEvidence != nil && RegisteredProjectSource.discussesAttachedProvenance(objectiveRequest)
@@ -10179,7 +10315,7 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
     // warranted; uncertain writes must never be replayed implicitly.
     // A review is one attempt: its draft is already adopted, so a failed
     // review returns that draft instead of paying for another try.
-    var attemptLimit = workflowStage == .implementation || readOnlyReview ? 1 :
+    var attemptLimit = OS1FullAccessContinuation.sessionID != nil || workflowStage == .implementation || readOnlyReview ? 1 :
         (requireReadOnly ? min(2, config.maximumSteps) : config.maximumSteps)
     var quotaBudgetExtended = false
     var step = 0
@@ -10262,8 +10398,12 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
         // behind a repair happens here, after routing: an "auto" first
         // attempt is re-routed to a confined Claude backend instead, and a
         // ticket that aged past its lifetime meanwhile is replaced.
+        if OS1FullAccessContinuation.sessionID != nil && (ticket.provider != "claude" || ticket.permissionProfile != "workspace_write") {
+            throw OS1Error.message("Full-access continuation requires the same Claude write lane; no alternate backend was started.")
+        }
         let sourceStep = try await prepareOS1AttemptSource(provider: ticket.provider,
             permissionProfile: ticket.permissionProfile, sharedLeaseRoot: os1SharedLeaseRoot, firstAttempt: steps.isEmpty,
+            fullAccess: OS1FullAccessContinuation.sessionID != nil,
             claudeAlternative: {
                 guard providerPreference == "auto", claudeCapacity > 0 else { return false }
                 if claudeInventoryDeferred {
@@ -10303,7 +10443,7 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
             step -= 1
             continue
         case .proceed(let confined, let carriesEarlierWriter):
-            attemptConfined = confined
+            attemptConfined = confined || !OS1FullAccessContinuation.protectedPaths.isEmpty
             attemptCarriesEarlierWriter = carriesEarlierWriter
         }
         OS1RunAttemptRecorder.current?.reset()
@@ -10390,7 +10530,7 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
                     idleTimeout: config.providerIdleTimeoutSeconds,
                     trustedCodexModels: codexInventoryObservedAt.map { Date().timeIntervalSince($0) < 120 } == true
                         ? codexCatalog.models : nil,
-                    providerSessionID: nativeSessions[ticket.provider] ?? nil,
+                    providerSessionID: OS1FullAccessContinuation.sessionID ?? (nativeSessions[ticket.provider] ?? nil),
                     model: model,
                     effort: effort,
                     executorContract: config.executorContract,
@@ -10469,7 +10609,7 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
                         modelScoped: modelScoped)
                     // A review never moves to another model: only the measured
                     // reviewer counts, and the adopted draft is the fallback.
-                    if quotaLimit > attemptLimit, !readOnlyReview {
+                    if OS1FullAccessContinuation.sessionID == nil, quotaLimit > attemptLimit, !readOnlyReview {
                         quotaBudgetExtended = true
                         attemptLimit = quotaLimit
                     }
@@ -10611,7 +10751,7 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
                     let expandedLimit = BackendRecovery.undispatchedAttemptLimit(requested: providerPreference,
                         stage: dispatchStage, blocker: safeBlocker, step: step, limit: attemptLimit,
                         alreadyExtended: quotaBudgetExtended, alternateAvailable: alternateAvailable)
-                    if expandedLimit > attemptLimit { quotaBudgetExtended = true; attemptLimit = expandedLimit }
+                    if OS1FullAccessContinuation.sessionID == nil, expandedLimit > attemptLimit { quotaBudgetExtended = true; attemptLimit = expandedLimit }
                     sourceRecoveryProvider = BackendRecovery.alternate(requested: providerPreference,
                         failed: ticket.provider, permission: ticket.permissionProfile, blocker: safeBlocker,
                         codexAvailable: !codexCatalog.models.isEmpty && codexCapacity > 0,
@@ -10659,6 +10799,12 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
         OS1SourceConfinement.activeRoots = []
         let unboundOS1SourceChanged = unboundOS1SourceChangeObserved(confined: attemptConfined,
             carriesEarlierWriter: attemptCarriesEarlierWriter, watch: os1Source.watch)
+        if OS1FullAccessContinuation.sessionID != nil, os1Source.watch?.changed() == true {
+            let reason = "Protected OS-1 source changed during the continuation; writer attribution is unresolved. Changes and results were preserved; no self-update, install or replay was started."
+            execution = execution.appendingOutput(reason)
+            attemptFailure = reason
+            terminalPermissionFailure = OS1Error.message(reason)
+        }
         if execution.artifact.exitCode == 0, attemptFailure == nil {
             os1Source.lease = nil
             os1Source.leaseCarriesWriter = false
@@ -10669,7 +10815,7 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
         // self-repair task can never end with the fix living only in the
         // working tree — which is exactly how the rail fix of 2026-09-16 was
         // "done" twice and never reached the owner's screen.
-        if previewDeploymentTarget == nil, TaskWorkflow.permitsSelfUpdate(stage: workflowStage, finalVerdict: nil), attemptFailure == nil, dispatchStage == .dispatched, execution.artifact.exitCode == 0,
+        if OS1FullAccessContinuation.sessionID == nil, previewDeploymentTarget == nil, TaskWorkflow.permitsSelfUpdate(stage: workflowStage, finalVerdict: nil), attemptFailure == nil, dispatchStage == .dispatched, execution.artifact.exitCode == 0,
            ticket.permissionProfile == "workspace_write",
            let os1Root = LocalProjectWorkspace.root(containing: canonicalWorkspace, projectID: "os1-clodex") {
             switch completeOS1SelfRepair(root: os1Root, objective: prompt, startedAt: attemptStartedAt, startHead: os1StartHead) {
@@ -10687,7 +10833,7 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
                 attemptFailure = note
                 terminalPermissionFailure = OS1Error.message(note)
             }
-        } else if let os1SourceWatch = os1Source.watch, TaskWorkflow.permitsSelfUpdate(stage: workflowStage, finalVerdict: nil), attemptFailure == nil,
+        } else if OS1FullAccessContinuation.sessionID == nil, let os1SourceWatch = os1Source.watch, TaskWorkflow.permitsSelfUpdate(stage: workflowStage, finalVerdict: nil), attemptFailure == nil,
                   dispatchStage == .dispatched, execution.artifact.exitCode == 0, ticket.permissionProfile == "workspace_write",
                   unboundOS1SourceChanged {
             // Not bound to OS-1, yet OS-1's source changed: never leave a fix
@@ -10782,6 +10928,7 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
         var deliveredStep = pendingStep
         deliveredStep.os1SourceConfined = attemptConfined
         deliveredStep.os1ChangeRequired = attemptConfined && execution.os1ChangeRequired
+        deliveredStep.os1FullAccessRequired = attemptConfined && execution.os1FullAccessRequired
         OS1RunAttemptRecorder.current?.record(deliveredStep)
         if let failure = terminalPermissionFailure {
             // Reporting a failed artifact must not change a terminal denial
@@ -10918,7 +11065,7 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
                 source: sourceContext)
         }
         RuntimeActivity.emit(revasDisposition == "adopted" ? .syncing : .routing, provider: ticket.provider, surface: execution.surface)
-        let adoptedRecord = revasDisposition == "adopted"
+        let adoptedRecord = revasDisposition == "adopted" && !execution.os1FullAccessRequired
             ? publishAdoptedNativeRecord(
                 execution.nativeRecord,
                 provider: ticket.provider,
@@ -10950,7 +11097,8 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
                 surface: execution.surface,
                 verifiedPreviewDelivery: verifiedPreviewDelivery,
                 os1SourceConfined: attemptConfined,
-                os1ChangeRequired: attemptConfined && execution.os1ChangeRequired
+                os1ChangeRequired: attemptConfined && execution.os1ChangeRequired,
+                os1FullAccessRequired: attemptConfined && execution.os1FullAccessRequired
             ))
         }
         if route.status == "failed" {
@@ -11284,6 +11432,90 @@ func os1AttemptSourceSelfTest() async throws {
         firstAttempt: true, claudeAlternative: { true }, ticketFresh: { true }, state: &state, acquireWaiting: noWait)
         == .proceed(confined: false, carriesEarlierWriter: false) && state.lease == nil, "no shared root, no lease")
     print("OS-1 attempt source (build 320): \(checks) checks OK; real flock leases; model calls 0")
+}
+
+/// Real argument/lease/process regression with an inert local backend. This
+/// never routes a task, refreshes auth, touches live sessions or calls a model.
+func fullAccessHandBackSelfTest() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("os1-fullaccess-runtime-" + UUID().uuidString).resolvingSymlinksInPath()
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let protected = root.appendingPathComponent("source")
+    try FileManager.default.createDirectory(at: protected, withIntermediateDirectories: true)
+    let sourceFile = protected.appendingPathComponent("keep.txt")
+    try Data("UNCHANGED".utf8).write(to: sourceFile)
+    var checks = 0
+    func check(_ condition: Bool, _ label: String) throws {
+        guard condition else { throw OS1Error.message("Full-access handback fixture: " + label) }
+        checks += 1
+    }
+    let session = UUID().uuidString.lowercased()
+    func step(exit: Int32 = 0, provider: String = "claude", confined: Bool = true,
+              disposition: String = "retry", marked: Bool = true) -> RunStepSummary {
+        var value = RunStepSummary(sequence: 1, provider: provider, action: "agent_run", model: "fixture", effort: "high",
+            revasDisposition: disposition, sessionID: session, permissionProfile: "workspace_write", exitCode: exit,
+            output: "Already installed fixture-one; plugin-two blocked by sandbox.", stderr: "", durationMS: 1, nativeRecord: nil)
+        value.os1SourceConfined = confined; value.os1FullAccessRequired = marked; value.os1ChangeRequired = marked
+        return value
+    }
+    let draft = fullAccessHandBackDraft(adopted: nil, rejectedAttempt: step(), cancelled: false)!
+    try check(draft.status == "handed_back" && draft.steps[0].sessionID == session, "unadopted exit0 marker retains exact native ID")
+    for value in [step(exit: 1), step(provider: "codex"), step(confined: false), step(disposition: "verification_pending"), step(marked: false)] {
+        try check(fullAccessHandBackDraft(adopted: nil, rejectedAttempt: value, cancelled: false) == nil, "ineligible result must not continue")
+    }
+    try check(fullAccessHandBackDraft(adopted: nil, rejectedAttempt: step(), cancelled: true) == nil, "cancelled marker must not continue")
+    let adopted = RunSummary(status: "complete", steps: [step(disposition: "adopted")])
+    try check(fullAccessHandBackDraft(adopted: adopted, rejectedAttempt: nil, cancelled: false) != nil, "adopted marker can continue")
+    let prompt = fullAccessContinuationPrompt(request: "Install fixture-one and plugin-two", report: draft.steps[0].output)
+    try check(prompt.contains("ONLY") && prompt.contains("Do not restart") && prompt.contains("Already installed fixture-one"), "completed side-effect report constrains continuation")
+    let failure = fullAccessFailureSummary(draft: draft, reason: "fixture EPERM")
+    try check(failure.status == "workflow_blocked" && failure.workflowBlocker?.contains("fixture EPERM") == true &&
+        failure.workflowBlocker?.contains("Already installed fixture-one") == true, "rejected first report and exact blocker visible")
+    let resumed = RunSummary(status: "complete", steps: [step(disposition: "adopted", marked: false)])
+    let merged = mergedFullAccessContinuation(draft: draft, resumed: resumed)
+    try check(confinedDraftRequiresOS1Change(merged) && merged.steps.count == 2 && merged.steps.last?.output.contains("Already installed fixture-one") == true, "both markers retain repair flag after fullaccess stage")
+    var state = OS1AttemptSourceState(), waitCount = 0
+    var writer = try tryAcquireOS1SourceWriteLease(root: protected.path)
+    try check(writer != nil, "fixture writer lock acquired")
+    let prepared = try await prepareOS1AttemptSource(provider: "claude", permissionProfile: "workspace_write",
+        sharedLeaseRoot: protected.path, firstAttempt: true, fullAccess: true, claudeAlternative: { true }, ticketFresh: { true },
+        state: &state, protectedPaths: { _ in [protected.path] }, acquireWaiting: { path in
+            waitCount += 1; writer = nil; return try acquireOS1SourceSharedLease(root: path)
+        }, capture: { OS1SourceWatch(root: $0, head: nil, fingerprint: nil) })
+    try check(prepared == .proceed(confined: false, carriesEarlierWriter: false) && waitCount == 1 && state.lease != nil &&
+        OS1SourceConfinement.activeRoots.isEmpty, "fullaccess waits shared lease; cannot reroute into broad sandbox")
+    let deniedWriter = try tryAcquireOS1SourceWriteLease(root: protected.path)
+    try check(deniedWriter == nil, "fullaccess lease excludes concurrent source repair")
+    let fake = root.appendingPathComponent("fake-claude.py")
+    let trace = root.appendingPathComponent("launch.json")
+    let fixtureEncoder = JSONEncoder(); fixtureEncoder.outputFormatting = [.withoutEscapingSlashes]
+    let fakeCode = """
+    #!/usr/bin/python3
+    import sys, json, pathlib
+    args=sys.argv[1:]
+    sid=args[args.index('--resume')+1]
+    settings=json.loads(args[args.index('--settings')+1])
+    pathlib.Path(\(String(decoding: try fixtureEncoder.encode(trace.path), as: UTF8.self))).write_text(json.dumps({'session':sid,'sandbox':settings['sandbox']['enabled'],'new_session':'--session-id' in args}))
+    pathlib.Path(\(String(decoding: try fixtureEncoder.encode(root.appendingPathComponent("plugins-installed-fixture").path), as: UTF8.self))).write_text('only blocked step')
+    print(json.dumps({'type':'result','session_id':sid,'is_error':False,'result':'plugin-two completed once','permission_denials':[]}))
+    """
+    try Data(fakeCode.utf8).write(to: fake); try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: fake.path)
+    let args = try claudeArguments(model: "fixture", effort: "high", instructions: "fixture", sessionID: session,
+        startNewSession: false, title: "fixture", permissionProfile: "workspace_write", prompt: prompt,
+        fullAccessProtectedPaths: [protected.path])
+    let launch = try fullAccessResumeArguments(executable: fake.path, arguments: args, protectedPaths: [protected.path])
+    let raw = try commandOutput(launch.0, launch.1, timeout: 10, currentDirectory: root.path)
+    let parsed = try parseClaudeCommandResult(raw.0, raw.1, requestedSessionID: session)
+    let observed = try JSONSerialization.jsonObject(with: Data(contentsOf: trace)) as! [String: Any]
+    try check(parsed.sessionID == session && parsed.output == Data("plugin-two completed once".utf8), "actual wrapped fake backend resumed original session")
+    try check(observed["sandbox"] as? Bool == false && observed["new_session"] as? Bool == false, "actual args disable broad sandbox, never fork")
+    let keptSource = try String(contentsOf: sourceFile, encoding: .utf8)
+    try check(keptSource == "UNCHANGED", "source preserved through wrapped continuation")
+    state.lease = nil
+    let releasedWriter = try tryAcquireOS1SourceWriteLease(root: protected.path)
+    try check(releasedWriter != nil, "source lease released after terminal fixture")
+    try check(OS1FullAccessContinuation.sessionID == nil && OS1FullAccessContinuation.protectedPaths.isEmpty, "continuation authority cannot persist outside its task")
+    print("OS-1 full-access handback: \(checks) checks PASS; actual fake backend/shared lease, paid calls 0")
 }
 
 func selfTest() throws {
@@ -14874,11 +15106,14 @@ struct OS1Main {
                 ], options: [.sortedKeys]), as: UTF8.self))
             case "self-test-claude-steering":
                 try claudeSteeringSelfTest()
+            case "full-access-handback-self-test":
+                try await fullAccessHandBackSelfTest()
             case "self-test":
                 // A fixture, never part of a live run it was started in.
                 LiveRunEnvironment.detachCurrentProcess()
                 try selfTest()
                 try await os1AttemptSourceSelfTest()
+                try await fullAccessHandBackSelfTest()
             case "browser-mcp": browserMCPCommand()
             case "memory-mcp": memoryMCPCommand()
             case "drift-policy-status":
