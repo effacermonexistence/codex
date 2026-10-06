@@ -26,7 +26,7 @@ node recovery.mjs seal \
   --out /absolute/private/path/to/new-seal
 ```
 
-The command uses `git archive` of that fixed product tree, produces `usung-corporate.tar.gz`, and rejects compressed packages above 300 MiB. It safely extracts the archive, inventories every regular file's relative path/bytes/mode/SHA256, copies these three recovery tools, creates `manifest.json`, verifies the full inventory, builds the four routes in every language, starts the restored server on an unused local port, checks actual health/release/language count and the four HTTP routes, verifies local asset references and unchanged media, then stops that temporary server. `pre-upload-drill.json` records the result. Nothing is uploaded by `seal`.
+The command uses `git archive` of that fixed product tree, produces `usung-corporate.tar.gz`, and rejects compressed packages above 300 MiB. It safely extracts the archive, inventories every regular file's relative path/bytes/mode/SHA256, copies these three recovery tools, splits the same archive into 16 MiB parts, records each index/key/bytes/SHA256 and the full archive hash, verifies their ordered combined hash, creates `manifest.json`, verifies the full inventory, builds the four routes in every language, starts the restored server on an unused local port, checks actual health/release/language count and the four HTTP routes, verifies local asset references and unchanged media, then stops that temporary server. `pre-upload-drill.json` records the result. Nothing is uploaded by `seal`.
 
 `manifest.json` fixes the source commit, source ref, release, deployment, account/bucket, package key/bytes/SHA256, every source file, and the companion tool hashes. Its own SHA256 is carried by the final pointer, avoiding a circular manifest hash.
 
@@ -40,9 +40,29 @@ node recovery.mjs publish \
   --sealed /absolute/private/path/to/new-seal
 ```
 
-The command checks the exact account and repository Wrangler pin. It uploads the archive, fixed manifest and three tools to their dated commit prefix, downloads their **full bytes** again, compares SHA256, extracts the downloaded archive into a fresh directory, verifies **every file**, builds and serves the restored release, and runs the actual health/route drill. It uploads a separately hashed immutable verification receipt. Only then does it write `usung-corporate/latest.json`, download that pointer and verify its bytes. Existing immutable objects are reused only if their full downloaded hashes match; conflicting objects are never overwritten. No secret values or credential files are logged or stored.
+The command checks the exact account and repository Wrangler pin. It uploads each small immutable part, downloads its **full bytes** again and verifies that part's bytes/SHA256. It streams the downloaded parts in manifest index order into the original full archive, verifies its whole bytes/SHA256, safely extracts it into a fresh directory, verifies **every file**, builds and serves the restored release, and runs the actual health/route drill. It then uploads/readbacks the fixed manifest, three tools and a separately hashed immutable verification receipt. Only then does it write `usung-corporate/latest.json`, download that pointer and verify its bytes. Existing immutable objects are reused only if their full downloaded hashes match; conflicting objects are never overwritten. No secret values or credential files are logged or stored.
 
 Keep `manifest.json`, its SHA256, package SHA256, the exact R2 keys and the readback receipt with the production release record. A successful PUT alone is not the completion condition.
+
+## Chunk transport and retry behavior
+
+The package remains one ordinary gzip archive of the full fixed source tree, bounded to 300 MiB. Chunking changes **transport and R2 storage**, without changing the archive bytes, full SHA256, file inventory or restored source. This is separate immutable R2 objects, not an R2 multipart-upload transaction. In a chunked manifest, `package.key` names the reconstructed archive logically; it is **not a required full-size R2 object**. The physical stored objects are `package.parts`:
+
+```json
+{
+  "transport": "immutable-object-parts-v1",
+  "partBytes": 16777216,
+  "parts": [
+    {"index": 1, "key": "RELEASE_PREFIX/parts/part-00001.bin", "bytes": 16777216, "sha256": "PART_SHA256"}
+  ]
+}
+```
+
+The validator requires a contiguous index sequence, exact prefix/key names, exact nonfinal part sizes, a correctly sized final part and a sum matching whole package bytes. An optional `seal --part-bytes` accepts 1–16 MiB; 16 MiB is the default. The full-size archive is reconstructed locally only after each downloaded part matches its hash. New publication never sends a body larger than 16 MiB. Fetch and local verification remain compatible with older single-object packets. Existing large single objects may be reused after their full GET/hash verification, but a missing large single object cannot be newly PUT by this version; reseal it with chunk transport.
+
+A transient small-object PUT/readback failure gets at most four attempts. Each retry first GETs that exact immutable key: a matching object is reused, a differing object stops publication, and only a confirmed absent object may be PUT. This covers unknown prior PUT outcomes without overwriting conflicting data. Authentication/permission errors and hash conflicts are not retried. The final mutable latest pointer is not blindly retried; an uncertain pointer write requires exact-key readback before repeating. Progress and retries go to stderr; stdout remains one JSON result suitable for a receipt.
+
+The observed 286,913,926-byte v37 single PUT failed with `fetch failed` while its exact key stayed absent. Root verified a 16 MiB PUT and full GET readback with SHA256 `31bf5b7b093ad68c604d8135aae8cbecdbde22f4583758437c3801d7651e3b77`. This motivated smaller transport bodies; it did not change the accepted source archive or claim the earlier single upload succeeded.
 
 ## Fetch the latest saved USUNG release
 
@@ -64,7 +84,7 @@ node recovery.mjs fetch \
   --out /absolute/private/path/to/new-restoration
 ```
 
-`fetch` checks the fixed manifest hash/identity, downloads the exact package, verifies package bytes/hash, refuses unsafe archive entries or nonempty destinations, verifies all file hashes/modes, builds and serves the restored source, and saves a new `restore-drill.json`. The result is `new-restoration/restored/usung-corporate/`. It does not activate production.
+`fetch` checks the fixed manifest hash/identity. For chunked manifests it downloads/validates every part and streams them in order into the exact full archive; old single-object manifests are still supported. It verifies whole package bytes/hash and refuses unsafe archive entries or nonempty destinations, verifies all file hashes/modes, builds and serves the restored source, and saves a new `restore-drill.json`. The result is `new-restoration/restored/usung-corporate/`. It does not activate production.
 
 To verify an already-downloaded packet without any R2 access:
 
