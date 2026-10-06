@@ -1438,6 +1438,23 @@ private func unlimitedRunAdmissionSelfTest() async throws {
     try check(source.submissionIDs.last == heldID && waiting.isSessionRunning(a), "normal resumes held ID once while source waiter remains")
     source.released = true; try await eventually { waiting.activeRuns.isEmpty && waiting.queuedSubmissions.isEmpty }
 
+    // Resuming a paused queue while every slot is taken starts nothing; the
+    // owner's resume must still survive a restart.
+    let slot = Control(), resumed = make("resume-persist", slot)
+    resumed.updateSettings { $0.parallelRunLimit = 1 }
+    resumed.composer = "HOLD_SLOT"; resumed.send()
+    try await eventually { slot.started == ["HOLD_SLOT"] }
+    resumed.createSession(); let pausedID = resumed.selectedSessionID!
+    resumed.composer = "AFTER_RESUME"; resumed.send()
+    resumed.pauseQueue(pausedID); resumed.resumeQueue(pausedID)
+    try check(resumed.queuedSubmissions.count == 1 && slot.started == ["HOLD_SLOT"], "resume under a full slot starts nothing")
+    let reopenedControl = Control(); reopenedControl.released = true
+    let reopened = make("resume-persist", reopenedControl)
+    try check(reopened.sessions.first(where: { $0.id == pausedID })?.queuePaused == false,
+        "a resumed queue stays resumed across a restart even when no slot was free")
+    slot.released = true; try await eventually { resumed.activeRuns.isEmpty && resumed.queuedSubmissions.isEmpty }
+    try check(slot.started == ["HOLD_SLOT", "AFTER_RESUME"], "the resumed request ran once after the slot freed")
+
     // Direct send admitted from cached normal but the final start sees warning.
     // This exercises real park/release, not just the pure function.
     let raced = Control(), race = make("race", raced)
@@ -7072,7 +7089,7 @@ private final class SessionStore: ObservableObject {
     }
     /// Existing runs are untouched. A maintenance tick/tests may only admit
     /// requests preserved in the queue after pressure becomes normal again.
-    func resumeAdmissionWaiters() { runNextQueuedSubmissionIfNeeded() }
+    func resumeAdmissionWaiters() { runNextQueuedSubmissionIfNeeded(persistIdle: false) }
     /// Raw JSON of conversations this build could not decode, carried through
     /// every save so nothing is lost while the cause is fixed.
     private var unreadableSessions: [PreservedSession] = []
@@ -9533,14 +9550,17 @@ private final class SessionStore: ObservableObject {
         save()
     }
 
-    private func runNextQueuedSubmissionIfNeeded() {
+    /// `persistIdle: false` is only the maintenance tick's: an idle queue is
+    /// not reserialized every three seconds. Every other caller keeps the
+    /// save it relies on even when nothing starts (`resumeQueue` persists
+    /// the owner's un-pause this way while every slot is taken).
+    private func runNextQueuedSubmissionIfNeeded(persistIdle: Bool = true) {
         // A queued turn in A must not block ready work in B. Within A the
         // first queued turn is the only eligible one, and context is built now.
         // While a staged build waits for running work, the queue keeps its
         // order and runs after the install (`endSelfUpdateHold` resumes it if
         // the install is abandoned).
         refreshRunAdmissionPressure()
-        guard !queuedSubmissions.isEmpty else { return }
         var changed = false
         while selfUpdateHold == nil,
               let index = queuedSubmissions.firstIndex(where: { next in
@@ -9554,7 +9574,7 @@ private final class SessionStore: ObservableObject {
             changed = true
             if sessions.contains(where: { $0.id == next.sessionID }) { start(next, admission: decision) }
         }
-        if changed { save() }
+        if changed || persistIdle { save() }
     }
 
     func togglePin(_ id: UUID) {

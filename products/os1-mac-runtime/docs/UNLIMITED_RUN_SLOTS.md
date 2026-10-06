@@ -15,7 +15,7 @@ Scope: application admission and settings only. No app version change, stage/app
 - The queue pump samples per iteration and passes the SAME admission snapshot into start, so removing a queue item does not race a second pressure sample. A rejected direct start parks its exact submission, with no payload loss.
 - Optional `admissionDeferred` is queue custody for a start already requested by a caller. It only releases the matching original failed-request/read-only-readback hold; pause/edit/source/other failure gates stay in force. It is cleared from the in-flight copy and does not authorize another action or provider.
 - Registered-source/backend recovery snapshot admission before spending their existing retry budget. Retry payload and attempt/feed logic are unchanged.
-- Existing three-second maintenance resamples and resumes preserved work after pressure clears. Empty queues are not reserialized every tick.
+- Existing three-second maintenance resamples and resumes preserved work after pressure clears. Only that tick skips the save when nothing starts (`persistIdle: false`), so an idle queue is not reserialized every tick; every other queue-pump caller keeps its unconditional save (`resumeQueue` persists the owner's un-pause through it while every slot is taken).
 - Settings picker has Unlimited plus1...64. Unlimited labels display `N running` / `실행 N개`, never a fake denominator. Finite-only slot wait positions and memory reasons remain separate, without hiding paused/source/restart/failure holds.
 
 ## Deliberate boundaries
