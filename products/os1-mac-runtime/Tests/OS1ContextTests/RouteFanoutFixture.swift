@@ -31,6 +31,14 @@ func runRouteFanoutFixtures() throws {
     check(listed?.targets.map(\.payload) == ["1+2", "1+2", "1+2", "1+2"], "every listed surface is sent the same part, without the hedge")
     check(listed?.targets.map(\.mention) == ["GPT랑", "코덱스랑", "클로드랑", "클로드 코드한테"], "each name is kept as written")
     check(listed?.executionOrder == [0, 1, 2, 3], "listed executors run in the owner's order")
+    // Owner, 2026-10-06: no name carried a particle, so the whole sentence
+    // reached Claude Code alone. "하나씩" hands out the next sentence's parts in order.
+    let oneEach = RouteFanout.plan("그럼 클로드랑 클로드 코드 GPT 코덱스 다 라우팅 하나씩 시켜봐. 1 plus 1, 2 plus 2, 3 plus 3, 4 plus 4.")
+    check(oneEach?.targets.map(\.surface) == [.claudeChat, .claude, .gptChat, .codex], "one each reaches all four surfaces in the owner's order")
+    check(oneEach?.targets.map(\.payload) == ["1 plus 1", "2 plus 2", "3 plus 3", "4 plus 4"], "the n-th name gets the n-th part")
+    check(oneEach?.targets.allSatisfy { $0.surface.gatewayPreference != nil } == true, "every one-each part executes")
+    check(oneEach?.executionOrder == [0, 1, 2, 3], "one-each executors run in the owner's order")
+    check(RouteFanout.plan("클로드랑 GPT 하나씩 시켜봐. 1+1, 2+2, 3+3") == nil, "a count that does not match never splits")
     // Real owner texts that mention several backends but ask no question of them.
     for text in [
         "그리고 클로드한테도 넘기게 해 왜 코덱스한테만 넘기냐? 항상 전체적으로 토큰 다 감시해야 돼",
