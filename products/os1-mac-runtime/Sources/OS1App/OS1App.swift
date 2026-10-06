@@ -11791,10 +11791,11 @@ private func reasoningVisibilitySelfTest() throws {
     print("Reasoning visibility: \(checks) checks passed; production SessionRow pixels at \(Int(rowWidth))pt; model calls 0; live state writes 0")
 }
 
-/// A running mark rendered alone, `zoom` times its slot, on the sidebar background.
+/// A running mark rendered alone, `zoom` times its slot (or `size`), on the
+/// sidebar background.
 @MainActor
-private func runningMarkBitmap<V: View>(_ mark: V, zoom: Double = 6) throws -> NSBitmapImageRep {
-    let slot = RunningSessionIndicator.slot
+private func runningMarkBitmap<V: View>(_ mark: V, size slot: CGSize = RunningSessionIndicator.slot,
+                                        zoom: Double = 6) throws -> NSBitmapImageRep {
     let size = CGSize(width: slot.width * zoom, height: slot.height * zoom)
     let content = mark.frame(width: slot.width, height: slot.height).scaleEffect(zoom, anchor: .topLeading)
         .frame(width: size.width, height: size.height, alignment: .topLeading).background(Theme.background)
@@ -11805,8 +11806,41 @@ private func runningMarkBitmap<V: View>(_ mark: V, zoom: Double = 6) throws -> N
     return bitmap
 }
 
-/// The task list tells the executed route by motion alone (build 332): the
-/// production marks are measured in real pixels, not just their inputs.
+/// How a running mark's pixel reads: its brightest channel and whether it is
+/// Claude's clay, the Codex ring's gray or OS-1's pink.
+private struct RouteMarkPixel {
+    let value: Double
+    let clay: Bool
+    let gray: Bool
+    let pink: Bool
+
+    init(_ color: NSColor?) {
+        guard let color = color?.usingColorSpace(.sRGB) else { value = 0; clay = false; gray = false; pink = false; return }
+        let (r, g, b) = (Double(color.redComponent), Double(color.greenComponent), Double(color.blueComponent))
+        value = max(r, g, b)
+        clay = r > g + 0.15 && g > b + 0.03
+        gray = max(abs(r - g), abs(g - b), abs(r - b)) < 0.03
+        pink = r > g + 0.05 && b > g + 0.02
+    }
+}
+
+/// A running conversation's step, as the native progress reports it (self-tests only).
+private func routeMarkActivity(provider: String, tool: String? = nil, verb: String? = nil, label: String? = nil,
+                               at moment: Date) -> RuntimeActivity {
+    guard let tool else { return RuntimeActivity(.executing, provider: provider, surface: provider, timestamp: moment) }
+    let step = NativeExecutionProgress.Step(id: "000000000001", sequence: 1, tool: tool, scope: "main", verb: verb, label: label,
+                                            startedAt: moment)
+    let progress = NativeExecutionProgress(sequence: 1, kind: .toolStarted, tool: tool, scope: "main", toolsRequested: 1,
+        toolsReturned: 0, activeTools: 1, observedAt: moment,
+        events: [.init(sequence: 1, kind: .toolStarted, tool: tool, scope: "main", observedAt: moment)], steps: [step],
+        stream: "0000000000aa")
+    return RuntimeActivity(.executing, provider: provider, surface: provider, timestamp: moment, tool: tool, progress: progress)
+}
+
+/// The task list tells the executed route by motion alone: Claude's clay mark
+/// as Claude draws it (measured frames, the body the run's step asks for),
+/// the Codex ring in its gray, OS-1's pink bars until a route is recorded.
+/// The production marks are measured in real pixels, not just their inputs.
 @MainActor
 private func runningRouteMarkSelfTest() throws {
     var checks = 0
@@ -11819,15 +11853,13 @@ private func runningRouteMarkSelfTest() throws {
     func bytes(_ bitmap: NSBitmapImageRep) -> [UInt8] {
         Array(UnsafeBufferPointer(start: bitmap.bitmapData, count: bitmap.bytesPerRow * bitmap.pixelsHigh))
     }
-    /// Brightest channel and whether the pixel is pink, at a point of the slot.
-    func sample(_ bitmap: NSBitmapImageRep, _ x: Double, _ y: Double) -> (value: Double, pink: Bool) {
-        let scale = Double(bitmap.pixelsWide) / (slot.width * zoom)
+    /// The pixel at a point (in points) of a mark drawn `width` points wide (the slot's by default).
+    func sample(_ bitmap: NSBitmapImageRep, _ x: Double, _ y: Double, width: Double? = nil) -> RouteMarkPixel {
+        let scale = Double(bitmap.pixelsWide) / ((width ?? slot.width) * zoom)
         let px = min(bitmap.pixelsWide - 1, max(0, Int(x * zoom * scale))), py = min(bitmap.pixelsHigh - 1, max(0, Int(y * zoom * scale)))
-        guard let color = bitmap.colorAt(x: px, y: py)?.usingColorSpace(.sRGB) else { return (0, false) }
-        let (r, g, b) = (Double(color.redComponent), Double(color.greenComponent), Double(color.blueComponent))
-        return (max(r, g, b), r > g + 0.05 && b > g + 0.02)
+        return RouteMarkPixel(bitmap.colorAt(x: px, y: py))
     }
-    /// Runs of lit columns across a horizontal band of the slot: one per dot or bar.
+    /// Runs of lit columns across a horizontal band of the slot: one per bar.
     func blobs(_ bitmap: NSBitmapImageRep, band: ClosedRange<Double>) -> [(start: Double, width: Double, pink: Bool)] {
         var runs: [(start: Double, width: Double, pink: Bool)] = []
         let step = 1 / (zoom * 2)
@@ -11849,34 +11881,66 @@ private func runningRouteMarkSelfTest() throws {
     let middle = slot.height / 2
     let band = (middle - 3)...(middle + 3)
 
-    // Claude: three pink dots; big-small-big, then the middle is the big one.
-    let opening = blobs(try runningMarkBitmap(ClaudeDotsMark(frame: 0)), band: band)
-    try check(opening.count == 3 && opening.allSatisfy { $0.pink }, "Claude's mark is three pink dots (\(opening.count))")
-    try check(opening[0].width > opening[1].width * 1.2 && opening[2].width > opening[1].width * 1.2,
-        "the loop opens big, small, big (\(opening.map { String(format: "%.2f", $0.width) }))")
-    let gathered = blobs(try runningMarkBitmap(ClaudeDotsMark(frame: 18)), band: band)
-    try check(gathered.count == 3 && gathered[1].width > gathered[0].width * 1.2 && gathered[1].width > gathered[2].width * 1.2,
-        "halfway the middle dot is the big one")
-    let openingRight: Double = opening[2].start + opening[2].width
-    let gatheredRight: Double = gathered[2].start + gathered[2].width
-    try check(gathered[0].start > opening[0].start + 1.5 && gatheredRight < openingRight - 1.5, "the outer dots slide in")
-    let dotsCenter: Double = (opening[0].start + openingRight) / 2
-    try check(abs(dotsCenter - slot.width / 2) < 0.6, "the dots are centered in the slot")
+    // Claude: each frame is the union of its measured ellipses, in clay, in
+    // Claude's 20-point box. Points well inside a shape are clay, points well
+    // outside every shape are the background, across every sheet the mark plays.
+    let box = ClaudeWorkingMark.box, unit = ClaudeWorkingMark.sourceUnit
+    let boxSize = CGSize(width: box, height: box)
+    func clayMark(_ frame: ClaudeWorkingMark.Frame) throws -> NSBitmapImageRep {
+        try runningMarkBitmap(ClaudeClayMark(frame: frame), size: boxSize, zoom: zoom)
+    }
+    var stages: [ClaudeWorkingMark.Stage] = [.grow]
+    for body in ClaudeWorkingMark.Body.allCases { stages += [.enter(body), .loop(body), .exit(body)] }
+    var measured = 0
+    for stage in stages {
+        let count = ClaudeWorkingMark.sheet(stage).count
+        for index in Set([0, count / 2, count - 1]).sorted() {
+            let frame = ClaudeWorkingMark.Frame(stage: stage, index: index)
+            let bitmap = try clayMark(frame)
+            let margin = 2.0, step = box / 40
+            var wrong: [String] = []
+            func within(_ shape: ClaudeWorkingMark.Ellipse, _ u: Double, _ v: Double, grownBy grow: Double) -> Bool {
+                let a = (u - shape.x) / (shape.rx + grow), b = (v - shape.y) / (shape.ry + grow)
+                return a * a + b * b <= 1
+            }
+            for y in stride(from: step / 2, to: box, by: step) {
+                for x in stride(from: step / 2, to: box, by: step) {
+                    let (u, v) = (x / box * unit, y / box * unit)
+                    let deep = frame.ellipses.contains { $0.rx > margin && $0.ry > margin && within($0, u, v, grownBy: -margin) }
+                    let clear = !frame.ellipses.contains { within($0, u, v, grownBy: margin) }
+                    let pixel = sample(bitmap, x, y, width: box)
+                    if deep, !(pixel.clay && pixel.value > 0.75) { wrong.append(String(format: "inside %.1f,%.1f", x, y)) }
+                    if clear, pixel.value > 0.06 { wrong.append(String(format: "outside %.1f,%.1f", x, y)) }
+                    if deep || clear { measured += 1 }
+                }
+            }
+            try check(wrong.isEmpty, "\(stage.sheetName) frame \(index) is not its measured shape in clay: \(wrong.prefix(4))")
+        }
+    }
+    // Grow opens on Claude's 7-point dot, centered in the box.
+    let dot = try clayMark(ClaudeWorkingMark.Frame(stage: .grow, index: 0))
+    let lit = stride(from: 0.05, to: box, by: 0.1).filter { sample(dot, $0, box / 2, width: box).value > 0.45 }
+    try check(abs(Double(lit.count) * 0.1 - ClaudeWorkingMark.dotDiameter) < 0.45
+              && abs(((lit.first ?? 0) + (lit.last ?? 0)) / 2 - box / 2) < 0.3,
+        "the mark does not open on the centered 7-point dot (\(lit.count) tenths)")
+    // Each body holds a shape of its own (Reduce Motion's still frame).
+    let stills = try ClaudeWorkingMark.Body.allCases.map { try bytes(clayMark(ClaudeWorkingMark.still($0))) }
+    try check(Set(stills.map { $0.hashValue }).count == stills.count, "two bodies hold the same still shape")
 
-    // Codex: a pink 270° band over a dim track, turning clockwise.
+    // Codex: a gray 270° band over a dim track, turning clockwise.
     let center = (x: slot.width / 2, y: slot.height / 2), radius = CodexWorkingRing.centerRadius
-    func ring(_ bitmap: NSBitmapImageRep, clock degrees: Double) -> (value: Double, pink: Bool) {
+    func ring(_ bitmap: NSBitmapImageRep, clock degrees: Double) -> RouteMarkPixel {
         let angle = degrees * Double.pi / 180
         return sample(bitmap, center.x + radius * sin(angle), center.y - radius * cos(angle))
     }
     let atRest = try runningMarkBitmap(CodexRingMark(angle: 0))
     for degrees in [30.0, 90, 150, 210, 250] {
         let pixel = ring(atRest, clock: degrees)
-        try check(pixel.value > 0.6 && pixel.pink, "the band covers \(Int(degrees))° clockwise from 12 o'clock at rest")
+        try check(pixel.value > 0.6 && pixel.gray, "the gray band covers \(Int(degrees))° clockwise from 12 o'clock at rest")
     }
     for degrees in [290.0, 315, 340] {
         let pixel = ring(atRest, clock: degrees)
-        try check(pixel.value > 0.12 && pixel.value < 0.45, "only the 30% track shows at \(Int(degrees))° (gap at 9 to 12)")
+        try check(pixel.value > 0.12 && pixel.value < 0.45 && pixel.gray, "only the 30% gray track shows at \(Int(degrees))° (gap at 9 to 12)")
     }
     try check(sample(atRest, center.x, center.y).value < 0.12, "the ring is hollow")
     let quarter = try runningMarkBitmap(CodexRingMark(angle: 90))
@@ -11894,27 +11958,48 @@ private func runningRouteMarkSelfTest() throws {
     let codex = RuntimeActivity(.executing, provider: "codex", model: "gpt-6.1-sol", effort: "ultra")
     let routing = RuntimeActivity(.routing)
     let moment = Date(timeIntervalSinceReferenceDate: 1_000)
-    func indicator(_ activity: RuntimeActivity, _ seconds: Double, still: Bool) throws -> [UInt8] {
+    func indicator(_ activity: RuntimeActivity, _ seconds: Double, still: Bool = false) throws -> [UInt8] {
         bytes(try runningMarkBitmap(RunningSessionIndicator(activity: activity, previewTime: moment.addingTimeInterval(seconds),
-                                                             reduceMotionOverride: still)))
+                                                             previewStart: moment, reduceMotionOverride: still)))
     }
     for activity in [claude, codex] {
-        try check(try indicator(activity, 0, still: false) != indicator(activity, 0.3, still: false),
-            "\(activity.provider!) moves over time")
+        try check(try indicator(activity, 0) != indicator(activity, 0.3), "\(activity.provider!) moves over time")
         try check(try indicator(activity, 0, still: true) == indicator(activity, 0.3, still: true),
             "\(activity.provider!) holds still under Reduce Motion")
     }
-    try check(try indicator(claude, 0.01, still: false) == indicator(claude, 0.02, still: false),
-        "Claude holds each 1/30 s frame instead of blending")
-    try check(try indicator(codex, 0.01, still: false) == indicator(codex, 0.02, still: false), "the ring steps, it does not glide")
+    try check(try indicator(claude, 0.01) == indicator(claude, 0.02), "Claude holds each 1/30 s frame instead of blending")
+    try check(try indicator(codex, 0.01) == indicator(codex, 0.02), "the ring steps, it does not glide")
+    try check(try indicator(claude, 0, still: true) == bytes(runningMarkBitmap(ClaudeClayMark(frame: ClaudeWorkingMark.still(.think)))),
+        "Reduce Motion does not hold the thinking body's still frame")
+    // The mark plays the body the run's latest step asks for, frame for frame.
+    let asked: [(RuntimeActivity, ClaudeWorkingMark.Body)] = [
+        (routeMarkActivity(provider: "claude", at: moment), .think),
+        (routeMarkActivity(provider: "claude", tool: "Read", verb: "read", label: "Sources/OS1App/OS1App.swift", at: moment), .read),
+        (routeMarkActivity(provider: "claude", tool: "Bash", verb: "run", label: "swift build", at: moment), .code),
+        (routeMarkActivity(provider: "claude", tool: "Bash", label: "List the build products", at: moment), .read),
+        (routeMarkActivity(provider: "claude", tool: "WebSearch", at: moment), .search),
+        (routeMarkActivity(provider: "claude", tool: "Edit", verb: "edit", label: "Sources/OS1App/OS1App.swift", at: moment), .write),
+    ]
+    var played: [(frame: ClaudeWorkingMark.Frame, pixels: [UInt8])] = []
+    for (activity, body) in asked {
+        try check(ClaudeWorkingMark.body(progress: activity.progress) == body, "a \(activity.tool ?? "thinking") step does not ask for \(body)")
+        let expected = RouteMarkPreview(start: moment, time: moment.addingTimeInterval(1.5)).clay(body)
+        let pixels = try indicator(activity, 1.5)
+        try check(expected.stage == .loop(body) && pixels == bytes(runningMarkBitmap(ClaudeClayMark(frame: expected))),
+            "the mark does not play \(body)'s loop 1.5 s after it appears")
+        played.append((expected, pixels))
+    }
+    for (a, b) in zip(played.indices, played.indices.dropFirst()) where played[a].frame.ellipses != played[b].frame.ellipses {
+        try check(played[a].pixels != played[b].pixels, "two bodies draw the same pixels")
+    }
     try check(RunningSessionIndicator.label(claude).contains("Claude Code") && RunningSessionIndicator.label(codex).contains("Codex")
               && RunningSessionIndicator.label(routing) == os1Tr("작업 실행 중", "Task running"), "the mark is labeled with its route")
 
-    // The sidebar row shows the route by motion alone, and the title never moves.
+    // The sidebar row shows the route by motion and color alone, and the title never moves.
     let rowWidth = Double(Theme.sidebarWidth - 20)
     func row(_ activity: RuntimeActivity) throws -> NSBitmapImageRep {
         let content = SessionRow(session: ConversationSession(title: "Route mark fixture", workspace: "/tmp"), selected: false,
-            activity: activity, previewTime: moment, action: {})
+            activity: activity, previewTime: moment.addingTimeInterval(1.5), previewStart: moment, action: {})
             .frame(width: rowWidth, height: 132, alignment: .top).background(Theme.background).environment(\.colorScheme, .dark)
         let host = NSHostingView(rootView: content)
         host.frame = NSRect(x: 0, y: 0, width: rowWidth, height: 132); host.layoutSubtreeIfNeeded()
@@ -11922,42 +12007,50 @@ private func runningRouteMarkSelfTest() throws {
         host.cacheDisplay(in: host.bounds, to: bitmap)
         return bitmap
     }
-    func region(_ bitmap: NSBitmapImageRep, x: Range<Double>, y: Range<Double>) -> [Double] {
+    func region(_ bitmap: NSBitmapImageRep, x: Range<Double>, y: Range<Double>) -> [RouteMarkPixel] {
         let scale = Double(bitmap.pixelsWide) / rowWidth
         return (Int(y.lowerBound * scale)..<Int(y.upperBound * scale)).flatMap { py in
-            (Int(x.lowerBound * scale)..<Int(x.upperBound * scale)).map { px in
-                (bitmap.colorAt(x: px, y: py)?.usingColorSpace(.sRGB)).map { Double($0.redComponent + $0.greenComponent + $0.blueComponent) } ?? 0
-            }
+            (Int(x.lowerBound * scale)..<Int(x.upperBound * scale)).map { px in RouteMarkPixel(bitmap.colorAt(x: px, y: py)) }
         }
     }
     let rows = try [claude, codex, routing].map(row)
     let slotEnd: Double = 13 + slot.width
-    let marks = rows.map { region($0, x: 13..<slotEnd, y: 9..<25) }
-    func differ(_ a: [Double], _ b: [Double]) -> Bool { zip(a, b).filter { abs($0 - $1) > 0.3 }.count > 10 }
-    try check(differ(marks[0], marks[1]) && differ(marks[1], marks[2]) && differ(marks[0], marks[2]),
-        "Claude, Codex and unrouted rows draw different marks")
-    let titles = rows.map { region($0, x: slotEnd..<rowWidth, y: 9..<25) }
+    let marks = rows.map { region($0, x: 13..<slotEnd, y: 6..<28).filter { $0.value > 0.45 } }
+    try check(marks[0].count > 20 && marks[0].allSatisfy(\.clay), "the Claude row's mark is not all clay")
+    try check(marks[1].count > 20 && marks[1].allSatisfy(\.gray), "the Codex row's mark is not all gray")
+    try check(marks[2].count > 20 && marks[2].allSatisfy(\.pink), "the unrouted row's mark is not OS-1's pink")
+    let titles = rows.map { region($0, x: slotEnd..<rowWidth, y: 9..<25).map(\.value) }
     try check(titles[0] == titles[1] && titles[1] == titles[2], "the title stays in place whichever mark runs")
-    print("Running route mark: \(checks) checks passed; Claude dots, Codex ring and OS-1 bars in real pixels; model calls 0")
+    print("Running route mark: \(checks) checks passed; Claude's clay mark from \(measured) measured points across \(stages.count) sheets, the gray Codex ring and OS-1's bars in real pixels; model calls 0")
 }
 
-/// Every running mark across one loop, enlarged, for review.
+/// Every running mark, enlarged, for review: each of Claude's sheets across
+/// its frames, then the Codex ring and OS-1's bars across one turn.
 @MainActor
 private func runningMarksPreviewPNG() throws -> Data {
-    let zoom = 6.0, slot = RunningSessionIndicator.slot, columns = 12
-    let rows: [(RunningRouteMotion, (Int) -> Double)] = [
-        (.claude, { Double($0) * ClaudeWorkingDots.period / Double(columns) + 0.001 }),
-        (.codex, { Double($0) * CodexWorkingRing.period / Double(columns) + 0.001 }),
-        (.os1, { Double($0) * 0.1 }),
-    ]
-    let cell = CGSize(width: slot.width * zoom + 12, height: slot.height * zoom + 12)
-    let size = CGSize(width: cell.width * Double(columns), height: cell.height * Double(rows.count))
+    let zoom = 4.0, box = ClaudeWorkingMark.box, columns = 12, label = 96.0
+    var rows: [(name: String, mark: (Int) -> RunningRouteMark)] = []
+    var stages: [ClaudeWorkingMark.Stage] = [.grow]
+    for body in ClaudeWorkingMark.Body.allCases { stages += [.enter(body), .loop(body), .exit(body)] }
+    for stage in stages {
+        let count = ClaudeWorkingMark.sheet(stage).count
+        rows.append((stage.sheetName, { column in
+            RunningRouteMark(motion: .claude, time: nil,
+                clay: ClaudeWorkingMark.Frame(stage: stage, index: min(count - 1, column * count / columns)))
+        }))
+    }
+    rows.append(("codex", { RunningRouteMark(motion: .codex, time: Double($0) * CodexWorkingRing.period / Double(columns) + 0.001) }))
+    rows.append(("os1", { RunningRouteMark(motion: .os1, time: Double($0) * 0.1) }))
+    let cell = CGSize(width: box * zoom + 8, height: box * zoom + 8)
+    let size = CGSize(width: label + cell.width * Double(columns), height: cell.height * Double(rows.count))
     let content = VStack(spacing: 0) {
         ForEach(0..<rows.count, id: \.self) { index in
             HStack(spacing: 0) {
+                Text(rows[index].name).font(.system(size: 12, design: .monospaced)).foregroundStyle(Theme.muted)
+                    .frame(width: label, alignment: .leading).padding(.leading, 8)
                 ForEach(0..<columns, id: \.self) { column in
-                    RunningRouteMark(motion: rows[index].0, time: rows[index].1(column))
-                        .frame(width: slot.width, height: slot.height).scaleEffect(zoom)
+                    rows[index].mark(column)
+                        .frame(width: box, height: box).scaleEffect(zoom)
                         .frame(width: cell.width, height: cell.height)
                 }
             }
@@ -12352,15 +12445,15 @@ private struct OS1DesktopApp: App {
                     let rowContent = VStack(spacing: 4) {
                         SessionRow(session: ConversationSession(title: "연구 자료 분석", workspace: "/tmp"), selected: true,
                             activity: RuntimeActivity(.executing, provider: "claude", model: "claude-fixture", effort: "max"), queuedCount: 1,
-                            previewTime: started.addingTimeInterval(elapsed), action: {})
+                            previewTime: started.addingTimeInterval(elapsed), previewStart: started, action: {})
                         SessionRow(session: ConversationSession(title: "자동화 복원 검토", workspace: "/tmp"), selected: false,
                             activity: RuntimeActivity(.executing, provider: "codex", model: "gpt-6.1-sol", effort: "ultra"),
-                            previewTime: started.addingTimeInterval(elapsed), action: {})
+                            previewTime: started.addingTimeInterval(elapsed), previewStart: started, action: {})
                         SessionRow(session: ConversationSession(title: "새 라우팅 요청", workspace: "/tmp"), selected: false,
-                            activity: RuntimeActivity(.routing), previewTime: started.addingTimeInterval(elapsed), action: {})
+                            activity: RuntimeActivity(.routing), previewTime: started.addingTimeInterval(elapsed), previewStart: started, action: {})
                         SessionRow(session: ConversationSession(title: "추론 기록이 없는 실행", workspace: "/tmp"), selected: false,
                             activity: RuntimeActivity(.executing, provider: "codex", model: "fixture"),
-                            previewTime: started.addingTimeInterval(elapsed), action: {})
+                            previewTime: started.addingTimeInterval(elapsed), previewStart: started, action: {})
                         SessionRow(session: ConversationSession(title: "완료한 대화", workspace: "/tmp"), selected: false, action: {})
                     }.frame(width: Theme.sidebarWidth - 20, height: 480).background(Theme.background).environment(\.colorScheme, .dark)
                     let rows = NSHostingView(rootView: rowContent)
@@ -12370,7 +12463,7 @@ private struct OS1DesktopApp: App {
                     guard let rowPNG = rowBitmap.representation(using: .png, properties: [:]) else { throw SourceContextError.invalid }
                     try rowPNG.write(to: output.appendingPathComponent("sidebar-\(index).png"))
                 }
-                // Every running mark across one loop, enlarged: Claude's dots, the Codex ring, OS-1's bars.
+                // Every running mark, enlarged: each of Claude's sheets, the Codex ring, OS-1's bars.
                 try runningMarksPreviewPNG().write(to: output.appendingPathComponent("route-marks.png"))
                 // A run with the backend's own steps under the request it works on, collapsed and opened.
                 let request = [ChatMessage(role: .user, text: os1Tr("진행 표시를 작게 접었다 펼 수 있게 해 줘.",
@@ -12383,7 +12476,7 @@ private struct OS1DesktopApp: App {
                 let firstCalls = NativePublicRunLog.displaySegments(feedText[...]).first { $0.role == .action }
                 for (name, expanded) in [("feed-folded", Set<String>()), ("feed-opened", Set(firstCalls.map { ["\(liveFeedKey)-tools-\($0.offset)"] } ?? []))] {
                     try transcriptPreviewPNG(timelineAttributedDocument(messages: request, queuedSubmissions: [], isRunning: true,
-                        workspace: "/tmp", expanded: expanded, publicProgress: feedText, liveRun: run))
+                        workspace: "/tmp", expanded: expanded, publicProgress: feedText, liveRun: run), markPreview: RouteMarkPreview(run))
                         .write(to: output.appendingPathComponent(name + ".png"))
                 }
                 // The finished run: its work folded above the answer, then opened.
@@ -12409,8 +12502,9 @@ private struct OS1DesktopApp: App {
                 let errorGroup = NativePublicRunLog.displaySegments(longText[...]).filter { $0.role == .action }.dropFirst(6).first
                 for (name, expanded) in [("feed-long-folded", Set<String>()),
                                          ("feed-long-opened", Set(errorGroup.map { ["\(liveFeedKey)-tools-\($0.offset)"] } ?? []))] {
+                    let longRun = liveRunFixture(started: started, elapsed: 427)
                     try transcriptPreviewPNG(timelineAttributedDocument(messages: request, queuedSubmissions: [], isRunning: true,
-                        workspace: "/tmp", expanded: expanded, publicProgress: longText, liveRun: liveRunFixture(started: started, elapsed: 427)))
+                        workspace: "/tmp", expanded: expanded, publicProgress: longText, liveRun: longRun), markPreview: RouteMarkPreview(longRun))
                         .write(to: output.appendingPathComponent(name + ".png"))
                 }
                 try workStore.save(long)
@@ -12455,7 +12549,7 @@ private struct OS1DesktopApp: App {
                                          ("feed-steered-opened", Set(steeredGroup.map { ["\(liveFeedKey)-tools-\($0.offset)"] } ?? []))] {
                     try transcriptPreviewPNG(timelineAttributedDocument(messages: request + [steer], queuedSubmissions: [], isRunning: true,
                         workspace: "/tmp", expanded: expanded, publicProgress: steered.displayText, progressAnchors: [steer.id: anchor],
-                        liveRun: run)).write(to: output.appendingPathComponent(name + ".png"))
+                        liveRun: run), markPreview: RouteMarkPreview(run)).write(to: output.appendingPathComponent(name + ".png"))
                 }
                 print(output.path); exit(EXIT_SUCCESS)
             } catch { fputs("\(error.localizedDescription)\n", stderr); exit(EXIT_FAILURE) }
@@ -15319,6 +15413,8 @@ private struct SessionRow: View {
     /// Full queue reason for the tooltip when the subtitle is abbreviated.
     var queueHelp: String? = nil
     var previewTime: Date? = nil
+    /// When the previewed run's mark appeared (previews only).
+    var previewStart: Date? = nil
     let action: () -> Void
     @State private var isHovering = false
 
@@ -15338,7 +15434,10 @@ private struct SessionRow: View {
         Button(action: action) {
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 4) {
-                    if activity != nil { RunningSessionIndicator(activity: activity, previewTime: previewTime) }
+                    if activity != nil {
+                        RunningSessionIndicator(session: session.id, activity: activity, previewTime: previewTime,
+                            previewStart: previewStart)
+                    }
                     if session.pinnedAt != nil { Image(systemName: "pin.fill").font(.system(size: 10)).foregroundStyle(Theme.pink) }
                     Text(session.title)
                         .font(.system(size: 13, weight: selected ? .semibold : .regular))
@@ -15500,34 +15599,29 @@ private struct SessionExecutionBadge: View {
 
 
 /// The running mark in front of a task's title: OS-1's bars until a route is
-/// recorded, then the executed vendor's own working motion in OS-1 pink
-/// (`RunningRouteMotion`). One fixed slot, so the title never moves when the
-/// route is chosen.
+/// recorded, then the executed route's own working mark in its own app's
+/// color (`RunningRouteMotion`). One fixed slot, so the title never moves when
+/// the route is chosen.
 private struct RunningSessionIndicator: View {
+    /// The conversation whose playhead Claude's mark plays.
+    var session: UUID? = nil
     var activity: RuntimeActivity? = nil
+    /// Previews draw this moment of a mark that appeared at `previewStart`.
     var previewTime: Date? = nil
+    var previewStart: Date? = nil
     /// Fixtures pin Reduce Motion; nil follows the Mac's setting.
     var reduceMotionOverride: Bool? = nil
-    @Environment(\.accessibilityReduceMotion) private var systemReduceMotion
-    static let slot = CGSize(width: ClaudeWorkingDots.box, height: 14)
+    static let slot = CGSize(width: ClaudeWorkingMark.box, height: 14)
 
     var body: some View {
-        let motion = RunningRouteMotion(activity: activity)
-        Group {
-            if reduceMotionOverride ?? systemReduceMotion {
-                RunningRouteMark(motion: motion, time: nil)
-            } else {
-                // One fixed origin: every row ticks at the same instants and an
-                // activity update never shifts a row's phase.
-                TimelineView(.periodic(from: Date(timeIntervalSinceReferenceDate: 0), by: motion.tick)) { context in
-                    RunningRouteMark(motion: motion, time: (previewTime ?? context.date).timeIntervalSinceReferenceDate)
-                }
-            }
-        }
-        .frame(width: Self.slot.width, height: Self.slot.height)
-        .help(Self.label(activity))
-        .accessibilityElement()
-        .accessibilityLabel(Self.label(activity))
+        RouteWorkingMark(session: session, motion: RunningRouteMotion(activity: activity),
+            wanted: ClaudeWorkingMark.body(progress: activity?.progress),
+            preview: previewTime.map { RouteMarkPreview(start: previewStart ?? $0, time: $0) },
+            reduceMotionOverride: reduceMotionOverride)
+            .frame(width: Self.slot.width, height: Self.slot.height)
+            .help(Self.label(activity))
+            .accessibilityElement()
+            .accessibilityLabel(Self.label(activity))
     }
 
     static func label(_ activity: RuntimeActivity?) -> String {
@@ -15538,15 +15632,87 @@ private struct RunningSessionIndicator: View {
     }
 }
 
-/// One frame of a running mark at `time` seconds of the shared clock; nil
-/// draws the still pose.
+/// A fixed moment of a running mark, for previews and self-tests: the mark
+/// appeared at `start` and is drawn at `time`, never from the shared clock.
+private struct RouteMarkPreview: Equatable {
+    let start: Date
+    let time: Date
+
+    init(start: Date, time: Date) { self.start = start; self.time = time }
+    /// A live run's mark at the second its row shows.
+    init(_ run: LiveRunPresentation) { self.init(start: run.started, time: run.now) }
+
+    func clay(_ wanted: ClaudeWorkingMark.Body) -> ClaudeWorkingMark.Frame {
+        var player = ClaudeWorkingMark.Player(at: start.timeIntervalSinceReferenceDate, wanted: wanted)
+        return player.frame(at: time.timeIntervalSinceReferenceDate, wanted: wanted)
+    }
+}
+
+/// Claude's marks' playheads, one per running conversation, shared by the
+/// task list and the live row so both draw the same frame.
+@MainActor
+private final class ClaudeMarkPlayheads {
+    static let shared = ClaudeMarkPlayheads()
+    /// A mark drawn without a conversation still keeps one playhead.
+    static let unkeyed = UUID()
+    private var players = ClaudeWorkingMark.Players<UUID>()
+
+    func mount(_ key: UUID?) { players.mount(key ?? Self.unkeyed, at: Date().timeIntervalSinceReferenceDate) }
+    func unmount(_ key: UUID?) { players.unmount(key ?? Self.unkeyed, at: Date().timeIntervalSinceReferenceDate) }
+    func frame(_ key: UUID?, at time: TimeInterval, wanted: ClaudeWorkingMark.Body) -> ClaudeWorkingMark.Frame {
+        players.frame(key ?? Self.unkeyed, at: time, wanted: wanted)
+    }
+}
+
+/// A running mark as it moves, wherever it is drawn: OS-1's bars until a
+/// route is recorded, Claude's clay mark playing the body the run's latest
+/// step asks for, or the gray Codex ring. Every mark shares one clock; a
+/// held mark (Reduce Motion, or a stop being confirmed) shows its still pose.
+private struct RouteWorkingMark: View {
+    let session: UUID?
+    let motion: RunningRouteMotion
+    let wanted: ClaudeWorkingMark.Body
+    /// A stop being confirmed: the mark holds still, dimmed.
+    var held = false
+    var preview: RouteMarkPreview? = nil
+    var reduceMotionOverride: Bool? = nil
+    @Environment(\.accessibilityReduceMotion) private var systemReduceMotion
+
+    var body: some View {
+        Group {
+            if held || (reduceMotionOverride ?? systemReduceMotion) {
+                RunningRouteMark(motion: motion, time: nil, clay: ClaudeWorkingMark.still(wanted))
+            } else if let preview {
+                RunningRouteMark(motion: motion, time: preview.time.timeIntervalSinceReferenceDate,
+                    clay: motion == .claude ? preview.clay(wanted) : ClaudeWorkingMark.still(wanted))
+            } else {
+                // One fixed origin: every mark ticks at the same instants and an
+                // activity update never shifts a mark's phase.
+                TimelineView(.periodic(from: Date(timeIntervalSinceReferenceDate: 0), by: motion.tick)) { context in
+                    let time = context.date.timeIntervalSinceReferenceDate
+                    RunningRouteMark(motion: motion, time: time, clay: motion == .claude
+                        ? ClaudeMarkPlayheads.shared.frame(session, at: time, wanted: wanted) : ClaudeWorkingMark.still(wanted))
+                }
+            }
+        }
+        .opacity(held ? 0.45 : 1)
+        .onAppear { if preview == nil { ClaudeMarkPlayheads.shared.mount(session) } }
+        .onDisappear { if preview == nil { ClaudeMarkPlayheads.shared.unmount(session) } }
+        // Another conversation's mark is another mark: it grows on its own.
+        .id(session)
+    }
+}
+
+/// One frame of a running mark: the ring and the bars at `time` seconds of the
+/// shared clock (nil draws their still pose), Claude's mark at `clay`.
 private struct RunningRouteMark: View {
     let motion: RunningRouteMotion
     let time: Double?
+    var clay = ClaudeWorkingMark.still(.default)
 
     var body: some View {
         switch motion {
-        case .claude: ClaudeDotsMark(frame: time.map(ClaudeWorkingDots.frame(at:)) ?? ClaudeWorkingDots.restFrame)
+        case .claude: ClaudeClayMark(frame: clay)
         case .codex: CodexRingMark(angle: time.map(CodexWorkingRing.angle(at:)) ?? 0)
         case .os1:
             HStack(spacing: 2) {
@@ -15559,38 +15725,45 @@ private struct RunningRouteMark: View {
     }
 }
 
-/// Claude's three working dots: one held frame of the measured loop, drawn in
-/// the 20-point box the source uses, centered on the slot.
-private struct ClaudeDotsMark: View {
-    let frame: Int
+/// An sRGB color from a `0xRRGGBB` constant.
+private func routeMarkColor(_ rgb: UInt32) -> Color {
+    Color(.sRGB, red: Double(rgb >> 16 & 0xFF) / 255, green: Double(rgb >> 8 & 0xFF) / 255, blue: Double(rgb & 0xFF) / 255)
+}
+
+/// One held frame of Claude's working mark: the union of its measured
+/// ellipses in clay, in the 20-point box Claude draws it in, centered on the
+/// slot (a shorter slot lets it overflow, as Claude's line does).
+private struct ClaudeClayMark: View {
+    let frame: ClaudeWorkingMark.Frame
 
     var body: some View {
-        Canvas { context, size in
-            let scale = ClaudeWorkingDots.box / ClaudeWorkingDots.sourceUnit
-            let originX = (size.width - ClaudeWorkingDots.box) / 2
-            let centerY = size.height / 2 + (ClaudeWorkingDots.centerY - ClaudeWorkingDots.sourceUnit / 2) * scale
-            for dot in ClaudeWorkingDots.dots(frame: frame) {
-                let diameter = dot.diameter * scale
-                context.fill(Path(ellipseIn: CGRect(x: originX + dot.x * scale - diameter / 2, y: centerY - diameter / 2,
-                                                   width: diameter, height: diameter)), with: .color(Theme.pink))
+        Canvas { context, _ in
+            let scale = ClaudeWorkingMark.box / ClaudeWorkingMark.sourceUnit
+            var shape = Path()
+            for ellipse in frame.ellipses {
+                shape.addEllipse(in: CGRect(x: (ellipse.x - ellipse.rx) * scale, y: (ellipse.y - ellipse.ry) * scale,
+                                            width: 2 * ellipse.rx * scale, height: 2 * ellipse.ry * scale))
             }
+            context.fill(shape, with: .color(routeMarkColor(ClaudeWorkingMark.clay)))
         }
+        .frame(width: ClaudeWorkingMark.box, height: ClaudeWorkingMark.box)
     }
 }
 
-/// The Codex working ring: a 270° band over a 30% track with flat ends,
-/// turned `angle` degrees clockwise from its rest pose (gap at 9 to 12).
+/// The Codex working ring in its gray: a 270° band over a 30% track with flat
+/// ends, turned `angle` degrees clockwise from its rest pose (gap at 9 to 12).
 private struct CodexRingMark: View {
     let angle: Double
 
     var body: some View {
         let diameter = 2 * CodexWorkingRing.centerRadius
         let band = StrokeStyle(lineWidth: CodexWorkingRing.bandWidth, lineCap: .butt)
+        let gray = routeMarkColor(CodexWorkingRing.gray)
         ZStack {
-            Circle().stroke(Theme.pink.opacity(CodexWorkingRing.trackOpacity), style: band)
+            Circle().stroke(gray.opacity(CodexWorkingRing.trackOpacity), style: band)
             // A circle's path starts at 3 o'clock and runs clockwise; turned a
             // quarter back, the band runs from 12 o'clock through 3 and 6 to 9.
-            Circle().trim(from: 0, to: CodexWorkingRing.arcFraction).stroke(Theme.pink, style: band)
+            Circle().trim(from: 0, to: CodexWorkingRing.arcFraction).stroke(gray, style: band)
                 .rotationEffect(.degrees(-90))
         }
         .frame(width: diameter, height: diameter)
@@ -15806,6 +15979,9 @@ private extension NSAttributedString.Key {
     /// as a disclosure triangle, collapsed or expanded.
     static let os1DisclosureLabel = NSAttributedString.Key("com.omaragi.os1.disclosure-label")
     static let os1DisclosureOpen = NSAttributedString.Key("com.omaragi.os1.disclosure-open")
+    /// On the space the live row reserves for its running mark: what the
+    /// mark draws (`LiveRunMarkSpec`).
+    static let os1LiveRunMark = NSAttributedString.Key("com.omaragi.os1.live-run-mark")
 }
 
 /// Inline attachment cards for the owner's files. Images get bounded
@@ -16279,6 +16455,13 @@ private final class ContinuousTranscriptTextView: NSTextView {
     var completeTranscript = ""
     var progressSession: UUID?
     var progressText: String?
+    /// The live row's running mark, in a layer of its own over the space the
+    /// row reserves for it: its 30 frames a second never redraw this view.
+    private(set) var liveRunMark: LiveRunMarkHost?
+    /// Previews draw the mark at a fixed moment, not the shared clock.
+    var liveRunMarkPreview: RouteMarkPreview?
+    /// Display passes so far: the mark's frames add none.
+    private(set) var drawPasses = 0
 
     /// A folded line is a link whose text ends in "▸"/"▾": VoiceOver would
     /// say "black right-pointing small triangle, link". It is announced as
@@ -16327,9 +16510,56 @@ private final class ContinuousTranscriptTextView: NSTextView {
         if abs(textContainerInset.width - centeredInset) > 0.5 {
             textContainerInset = NSSize(width: centeredInset, height: 34)
         }
+        // A reflow moves the live row's line; the next layout pass follows it.
+        if liveRunMark != nil { needsLayout = true }
+    }
+
+    override func layout() {
+        super.layout()
+        placeLiveRunMark()
+    }
+
+    /// Puts the live row's mark over the space its row reserves, centered on
+    /// the line as Claude centers its box, or removes it once no row carries
+    /// one. Only the mark's own view changes; the text is not redrawn.
+    func placeLiveRunMark() {
+        var found: (spec: LiveRunMarkSpec, location: Int)?
+        if let storage = textStorage, storage.length > 0 {
+            storage.enumerateAttribute(.os1LiveRunMark, in: NSRange(location: 0, length: storage.length), options: .reverse) { value, range, stop in
+                guard let spec = value as? LiveRunMarkSpec else { return }
+                found = (spec, range.location); stop.pointee = true
+            }
+        }
+        guard let found, let layoutManager else {
+            liveRunMark?.removeFromSuperview(); liveRunMark = nil
+            return
+        }
+        layoutManager.ensureLayout(forCharacterRange: NSRange(location: found.location, length: 1))
+        let glyph = layoutManager.glyphIndexForCharacter(at: found.location)
+        let line = layoutManager.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
+        let position = layoutManager.location(forGlyphAt: glyph)
+        let box = ClaudeWorkingMark.box
+        let frame = NSRect(x: textContainerOrigin.x + line.minX + position.x,
+                           y: textContainerOrigin.y + line.minY + position.y - LiveRunMarkSpec.centerAboveBaseline - box / 2,
+                           width: box, height: box)
+        let state = LiveRunMarkState(session: progressSession, spec: found.spec, preview: liveRunMarkPreview)
+        let mark: LiveRunMarkHost
+        if let existing = liveRunMark {
+            mark = existing
+            if mark.state != state { mark.state = state; mark.rootView = LiveRunMarkContent(state: state) }
+        } else {
+            mark = LiveRunMarkHost(rootView: LiveRunMarkContent(state: state))
+            mark.state = state
+            // A fixed box: its frames never ask this view for a layout pass.
+            mark.sizingOptions = []
+            addSubview(mark)
+            liveRunMark = mark
+        }
+        if mark.frame != frame { mark.frame = frame }
     }
 
     override func draw(_ dirtyRect: NSRect) {
+        drawPasses += 1
         drawMessageBackgrounds(in: dirtyRect)
         super.draw(dirtyRect)
         if let progressSession { ActivityDisplayTiming.didDraw(session: progressSession, text: progressText) }
@@ -16445,6 +16675,35 @@ private final class ContinuousTranscriptTextView: NSTextView {
         path.lineWidth = 1
         path.stroke()
     }
+}
+
+/// What the live row's mark view shows: the conversation whose playhead it
+/// plays, the row's spec, and a preview's fixed moment.
+private struct LiveRunMarkState: Equatable {
+    let session: UUID?
+    let spec: LiveRunMarkSpec
+    let preview: RouteMarkPreview?
+}
+
+private struct LiveRunMarkContent: View {
+    let state: LiveRunMarkState
+
+    var body: some View {
+        RouteWorkingMark(session: state.session, motion: state.spec.motion, wanted: state.spec.wanted, held: state.spec.held,
+                         preview: state.preview)
+            .frame(width: RunningSessionIndicator.slot.width, height: RunningSessionIndicator.slot.height)
+            .frame(width: ClaudeWorkingMark.box, height: ClaudeWorkingMark.box)
+            .accessibilityHidden(true)
+    }
+}
+
+/// The live row's mark view: clicks go through it to the transcript, and it
+/// says nothing to VoiceOver (the row's text already says the run's state).
+private final class LiveRunMarkHost: NSHostingView<LiveRunMarkContent> {
+    var state: LiveRunMarkState?
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+    override func isAccessibilityElement() -> Bool { false }
+    override func accessibilityChildren() -> [Any]? { [] }
 }
 
 private struct TranscriptRenderInput: Equatable {
@@ -16601,6 +16860,7 @@ private struct ContinuousTranscriptView: NSViewRepresentable {
             textView.textStorage?.setAttributedString(document)
             renderCache.invalidate(); lastInput = nil; appliedProgress = nil
             textView.needsDisplay = true
+            textView.needsLayout = true
             if let origin { scroll?.contentView.scroll(to: origin) }
             return true
         }
@@ -16648,6 +16908,8 @@ private struct ContinuousTranscriptView: NSViewRepresentable {
             textView.progressSession = view.isRunning ? view.sessionID : nil
             textView.progressText = view.publicProgress
             textView.needsDisplay = true
+            // The live row's mark follows its line at the next layout pass.
+            textView.needsLayout = true
             if !changingSession, selection.location != NSNotFound {
                 let boundedLocation = min(selection.location, documentLength)
                 let boundedLength = min(selection.length, documentLength - boundedLocation)
@@ -17341,7 +17603,62 @@ private struct LiveRunPresentation: Equatable {
     }
     func at(_ date: Date) -> Self { Self(activity: activity, steps: steps, started: started, stopping: stopping, now: date) }
     var seconds: Int { Int(now.timeIntervalSince(started).rounded()) }
-    var elapsed: String { "\(seconds / 60):" + String(format: "%02d", seconds % 60) }
+    /// The run's clock as Claude writes it beside its mark: narrow units, the
+    /// leading empty ones left out ("4s", "1m 0s", "1h 2m 3s").
+    var elapsed: String {
+        let hours = seconds / 3600, minutes = seconds % 3600 / 60, rest = seconds % 60
+        if hours > 0 { return os1Tr("\(hours)시간 \(minutes)분 \(rest)초", "\(hours)h \(minutes)m \(rest)s") }
+        if minutes > 0 { return os1Tr("\(minutes)분 \(rest)초", "\(minutes)m \(rest)s") }
+        return os1Tr("\(rest)초", "\(rest)s")
+    }
+}
+
+/// What the live row's running mark draws, carried on the space the row
+/// reserves for it: the executed route's motion, the body the run's latest
+/// step asks for, and whether a stop is being confirmed (the mark holds,
+/// dimmed). The transcript view draws the mark over that space in a layer of
+/// its own, so the mark's frames never redraw the transcript's text.
+private final class LiveRunMarkSpec: NSObject {
+    /// Claude's 20-point box and the 12 points it leaves before the elapsed
+    /// time (`w-[20px] me-[calc(12px_-_var(--cds-gap-xs))]` plus the gap).
+    static let advance: CGFloat = ClaudeWorkingMark.box + 12
+    /// The row's clock, which the mark is centered on.
+    static var clockFont: NSFont { .monospacedDigitSystemFont(ofSize: 13, weight: .regular) }
+    /// Claude's box sits centered on the clock's digits (measured on its
+    /// working row: the box's center is the digits' center within 0.01 pt),
+    /// half the digits' cap height above the baseline.
+    static var centerAboveBaseline: CGFloat { clockFont.capHeight / 2 }
+
+    let motion: RunningRouteMotion
+    let wanted: ClaudeWorkingMark.Body
+    let held: Bool
+
+    init(motion: RunningRouteMotion, wanted: ClaudeWorkingMark.Body, held: Bool) {
+        self.motion = motion; self.wanted = wanted; self.held = held
+    }
+
+    convenience init(_ run: LiveRunPresentation) {
+        self.init(motion: RunningRouteMotion(activity: run.activity), wanted: ClaudeWorkingMark.body(progress: run.activity.progress),
+                  held: run.stopping)
+    }
+
+    override func isEqual(_ object: Any?) -> Bool {
+        guard let other = object as? LiveRunMarkSpec else { return false }
+        return motion == other.motion && wanted == other.wanted && held == other.held
+    }
+
+    override var hash: Int {
+        var hasher = Hasher()
+        hasher.combine(motion); hasher.combine(wanted); hasher.combine(held)
+        return hasher.finalize()
+    }
+
+    /// The reserved space: one figure space as wide as the box and its gap.
+    var space: NSAttributedString {
+        let font = Self.clockFont
+        let width = NSAttributedString(string: "\u{2007}", attributes: [.font: font]).size().width
+        return NSAttributedString(string: "\u{2007}", attributes: [.font: font, .kern: Self.advance - width, .os1LiveRunMark: self])
+    }
 }
 
 /// A received label on one line: breaks flattened and a long middle elided,
@@ -17539,22 +17856,19 @@ private func liveRunRow(_ run: LiveRunPresentation, expanded: Bool) -> NSAttribu
     let waitingStep = NativeStepPresentation.latestWaitingText(activity)
     let row = NSMutableAttributedString()
 
-    // The dot breathes with the clock; it holds still while stopping or
-    // when the owner reduces motion.
-    let dotFont = NSFont.systemFont(ofSize: 9)
-    let steady = run.stopping || NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
-    row.append(piece("●  ", dotFont, run.stopping ? muted
-        : TimelinePalette.pink.withAlphaComponent(steady || run.seconds % 2 == 0 ? 1 : 0.4)))
+    // The executed route's own working mark with the run's clock right beside
+    // it, as Claude shows a working turn ("••• 4s"); the transcript view
+    // draws the mark over the space reserved here.
+    row.append(LiveRunMarkSpec(run).space)
+    row.append(piece(run.elapsed + "   ", LiveRunMarkSpec.clockFont))
     let label = run.stopping ? os1Tr("작업 중지 확인 중", "Confirming task stop") : activity.label
-    // Gray like Codex's "Working for": the pulse is the dot, not the label.
+    // Gray like Codex's "Working for": the motion is the mark, not the label.
     let toggle = NSMutableAttributedString(attributedString:
         TranscriptMarkdown.detailLink(label + (expanded ? "  ▾" : "  ▸"), key: liveRunDetailKey, color: TimelinePalette.detail))
     toggle.addAttributes([.font: NSFont.systemFont(ofSize: 13, weight: .medium),
         .toolTip: expanded ? os1Tr("진행 단계 접기", "Collapse the run's steps") : os1Tr("진행 단계 펼쳐보기", "Expand the run's steps")],
         range: NSRange(location: 0, length: toggle.length))
     row.append(toggle)
-    row.append(piece("   " + os1Tr("\(run.elapsed) 경과", "\(run.elapsed) elapsed"),
-        NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .regular)))
     let meta = NSFont.systemFont(ofSize: 12)
     if let waitingStep {
         // The backend's own words for the call it is on, as Claude Code shows them.
@@ -17569,8 +17883,8 @@ private func liveRunRow(_ run: LiveRunPresentation, expanded: Bool) -> NSAttribu
     }
     guard expanded else { return row }
 
-    // Opened: one paragraph per line, under the label.
-    let indent = piece("●  ", dotFont).size().width
+    // Opened: one paragraph per line, under the clock.
+    let indent = LiveRunMarkSpec.advance
     var previousStyle: NSParagraphStyle?
     func line(_ parts: [NSAttributedString], wrapIndent: CGFloat? = nil, tabs: [CGFloat] = [], before: CGFloat = 0,
               toolTip: String? = nil) {
@@ -17701,13 +18015,27 @@ private func liveRunFixture(started: Date, elapsed: TimeInterval = 58, publicTex
 private func liveRunPreviewPNG(_ run: LiveRunPresentation, expanded: Bool, messages: [ChatMessage] = [],
                                width: CGFloat = 1_000) throws -> Data {
     try transcriptPreviewPNG(timelineAttributedDocument(messages: messages, queuedSubmissions: [], isRunning: true, workspace: "/tmp",
-        liveRun: run, liveRunExpanded: expanded), width: width)
+        liveRun: run, liveRunExpanded: expanded), width: width, markPreview: RouteMarkPreview(run))
 }
 
 /// A transcript document exactly as the conversation lays it out, for the preview.
 @MainActor
-private func transcriptPreviewPNG(_ document: NSAttributedString, width: CGFloat = 1_000) throws -> Data {
+private func transcriptPreviewPNG(_ document: NSAttributedString, width: CGFloat = 1_000,
+                                  markPreview: RouteMarkPreview? = nil) throws -> Data {
+    guard let png = try transcriptSnapshot(document, width: width, markPreview: markPreview).bitmap
+        .representation(using: .png, properties: [:]) else { throw SourceContextError.invalid }
+    return png
+}
+
+/// A transcript document drawn as the conversation draws it, its live row's
+/// mark included (at the preview's moment, or at the run's first frame), and
+/// where that mark sits in points from the top left.
+@MainActor
+private func transcriptSnapshot(_ document: NSAttributedString, width: CGFloat = 1_000,
+                                markPreview: RouteMarkPreview? = nil) throws -> (bitmap: NSBitmapImageRep, mark: NSRect?) {
     let view = ContinuousTranscriptTextView(frame: NSRect(x: 0, y: 0, width: width, height: 200))
+    view.liveRunMarkPreview = markPreview ?? RouteMarkPreview(start: Date(timeIntervalSinceReferenceDate: 0),
+                                                             time: Date(timeIntervalSinceReferenceDate: 0))
     view.drawsBackground = false
     view.linkTextAttributes = TimelinePalette.linkAttributes
     view.isEditable = false
@@ -17726,10 +18054,11 @@ private func transcriptPreviewPNG(_ document: NSAttributedString, width: CGFloat
     view.setFrameSize(NSSize(width: width, height: height))
     let surface = TranscriptSnapshotSurface(frame: view.bounds)
     surface.addSubview(view)
+    view.placeLiveRunMark()
+    surface.layoutSubtreeIfNeeded()
     guard let bitmap = surface.bitmapImageRepForCachingDisplay(in: surface.bounds) else { throw SourceContextError.invalid }
     surface.cacheDisplay(in: surface.bounds, to: bitmap)
-    guard let png = bitmap.representation(using: .png, properties: [:]) else { throw SourceContextError.invalid }
-    return png
+    return (bitmap, view.liveRunMark?.frame)
 }
 
 /// The run's activity is the transcript's last row: one line until opened,
@@ -17751,9 +18080,12 @@ private func liveRunRowSelfTest() throws {
     let run = liveRunFixture(started: started, publicText: "PRIVATE_PROMPT THINKING TOOL_ARGS TOOL_RESULT")
     func second(_ value: TimeInterval) -> Date { started.addingTimeInterval(value) }
 
-    // The clock shows the run's whole second, never the one before or a negative one.
-    try check(run.at(second(3.9995)).elapsed == "0:04" && run.at(second(4.3)).elapsed == "0:04" &&
-        run.at(second(65)).elapsed == "1:05" && run.at(second(-5)).elapsed == "0:00", "elapsed clock is not the run's whole second")
+    // The clock shows the run's whole second, never the one before or a
+    // negative one, in Claude's narrow units.
+    try check(run.at(second(3.9995)).elapsed == os1Tr("4초", "4s") && run.at(second(4.3)).elapsed == os1Tr("4초", "4s") &&
+        run.at(second(65)).elapsed == os1Tr("1분 5초", "1m 5s") && run.at(second(-5)).elapsed == os1Tr("0초", "0s") &&
+        run.at(second(60)).elapsed == os1Tr("1분 0초", "1m 0s") && run.at(second(3_723)).elapsed == os1Tr("1시간 2분 3초", "1h 2m 3s"),
+        "elapsed clock is not the run's whole second in narrow units")
     let ticks = LiveRunTicks(started: started).entries(from: second(2.5), mode: .normal)
     try check([ticks.next(), ticks.next(), ticks.next()] == [second(2), second(3), second(4)],
         "ticks are not one per whole second of the run")
@@ -17767,8 +18099,18 @@ private func liveRunRowSelfTest() throws {
     try check(rows.count == 7 && waiting.count == 1 && NativeStepPresentation.latestWaitingText(run.activity) == waiting[0].text,
         "fixture does not have one waiting step among seven")
     try check(!collapsed.string.contains("\n") && collapsed.string.contains(run.activity.label) &&
-        collapsed.string.contains("0:58 경과") && collapsed.string.contains(waiting[0].text),
-        "collapsed row is not one line of state, clock and the current step")
+        collapsed.string.contains(waiting[0].text), "collapsed row is not one line of state, clock and the current step")
+    // The route's own mark leads the row, the clock right beside it ("••• 4s"):
+    // a reserved space as wide as Claude's box and gap, never a pink dot.
+    func mark(_ row: NSAttributedString) -> LiveRunMarkSpec? {
+        row.length > 0 ? row.attribute(.os1LiveRunMark, at: 0, effectiveRange: nil) as? LiveRunMarkSpec : nil
+    }
+    try check(!collapsed.string.contains("●") && collapsed.string.hasPrefix("\u{2007}" + os1Tr("58초", "58s") + "   "),
+        "the row does not open with its mark and the clock beside it: \(collapsed.string.prefix(12))")
+    try check(abs(collapsed.attributedSubstring(from: NSRange(location: 0, length: 1)).size().width - LiveRunMarkSpec.advance) < 0.5,
+        "the mark's space is not Claude's 20-point box and 12-point gap")
+    try check(mark(collapsed) == LiveRunMarkSpec(motion: .claude, wanted: .code, held: false),
+        "a Claude run waiting on swift build does not draw Claude's code mark")
     try check(rows.filter { $0.waitingSince == nil }.allSatisfy { !collapsed.string.contains($0.text) } &&
         !collapsed.string.contains(NativeStepPresentation.footer), "collapsed row lists finished steps or the footer")
     var links: [URL] = []
@@ -17789,11 +18131,14 @@ private func liveRunRowSelfTest() throws {
     let stopping = liveRunRow(LiveRunPresentation(activity: run.activity, steps: run.steps, started: started, stopping: true,
         now: run.now), expanded: false)
     try check(stopping.string.contains("작업 중지 확인 중") && !stopping.string.contains(run.activity.label), "a stop request is not shown")
+    try check(mark(stopping)?.held == true, "a stop being confirmed keeps the mark moving")
     let quiet = LiveRunPresentation(activity: RuntimeActivity(.executing, provider: "codex", timestamp: started), started: started,
         now: second(65))
     try check(liveRunRow(quiet, expanded: false).string.contains("마지막 신호 65초 전"), "a quiet run hides how long since its last signal")
+    try check(mark(liveRunRow(quiet, expanded: false))?.motion == .codex, "a Codex run does not draw the Codex ring")
     let source = LiveRunPresentation(activity: RuntimeActivity(.waitingForSource, provider: "codex", timestamp: started, tool: "Bash"),
         started: started)
+    try check(mark(liveRunRow(source, expanded: false))?.motion == .os1, "a run without an executed route draws a vendor mark")
     try check(liveRunRow(source, expanded: true).string.contains("백엔드는 아직 시작하지 않았습니다") &&
         !liveRunRow(source, expanded: true).string.contains("요청 "), "a source wait claims backend work")
 
@@ -17820,7 +18165,7 @@ private func liveRunRowSelfTest() throws {
         let reference = timelineAttributedDocument(messages: history, queuedSubmissions: [], isRunning: true, workspace: "/tmp",
             publicProgress: input.publicProgress, liveRun: input.liveRun)
         try check(joined.isEqual(to: reference), "cached live row differs from a full render at \(tick)s")
-        try check(joined.string.contains(input.liveRun!.elapsed + " 경과"), "a tick did not advance the clock")
+        try check(joined.string.contains("\u{2007}" + input.liveRun!.elapsed + "   "), "a tick did not advance the clock")
     }
     try check(cache.prefixBuildCount == 1 && cache.progressBuildCount == 1, "ticks reparsed the history or live output")
 
@@ -17841,6 +18186,37 @@ private func liveRunRowSelfTest() throws {
     let footer = NativeStepPresentation.footer
     coordinator.render(view(58), in: scroll)
     try check(textView.string == full(58, expanded: false), "the live row does not start collapsed")
+    // The mark plays in a view of its own over the space the row reserves:
+    // at the row's start, centered on its line, the clock 12 points after
+    // it, and clicks and VoiceOver go through it to the row.
+    func markLocation() -> Int? {
+        guard let storage = textView.textStorage, storage.length > 0 else { return nil }
+        var found: Int?
+        storage.enumerateAttribute(.os1LiveRunMark, in: NSRange(location: 0, length: storage.length)) { value, range, stop in
+            if value is LiveRunMarkSpec { found = range.location; stop.pointee = true }
+        }
+        return found
+    }
+    scroll.layoutSubtreeIfNeeded()
+    guard let overlay = textView.liveRunMark, overlay.superview === textView, let at = markLocation(),
+          let layout = textView.layoutManager else { throw RunnerError.message("Live run row: the row's mark has no view of its own") }
+    try check(overlay.state?.session == sessionID && overlay.state?.preview == nil &&
+        overlay.state?.spec == LiveRunMarkSpec(motion: .claude, wanted: .code, held: false),
+        "the mark view does not play this conversation's Claude code mark on its shared clock")
+    let markGlyph = layout.glyphIndexForCharacter(at: at)
+    let markLine = layout.lineFragmentRect(forGlyphAt: markGlyph, effectiveRange: nil)
+    let origin = textView.textContainerOrigin
+    let markX = origin.x + markLine.minX + layout.location(forGlyphAt: markGlyph).x
+    let clockX = origin.x + markLine.minX + layout.location(forGlyphAt: layout.glyphIndexForCharacter(at: at + 1)).x
+    let baseline = origin.y + markLine.minY + layout.location(forGlyphAt: markGlyph).y
+    try check(overlay.frame.size == NSSize(width: ClaudeWorkingMark.box, height: ClaudeWorkingMark.box) &&
+        abs(overlay.frame.minX - markX) < 0.5 && abs(clockX - overlay.frame.maxX - 12) < 0.5,
+        "the mark is not a 20-point box at the row's start with the clock 12 points after it: \(overlay.frame), clock at \(clockX)")
+    try check(abs(overlay.frame.midY - (baseline - LiveRunMarkSpec.centerAboveBaseline)) < 0.5 &&
+        overlay.frame.midY > origin.y + markLine.minY && overlay.frame.midY < origin.y + markLine.maxY,
+        "the mark is not centered on its line")
+    try check(overlay.hitTest(NSPoint(x: overlay.frame.midX, y: overlay.frame.midY)) == nil && !overlay.isAccessibilityElement(),
+        "the mark takes the row's clicks or VoiceOver")
     try check(coordinator.textView(textView, clickedOnLink: toggle, at: 0) && textView.string == full(58, expanded: true),
         "clicking the row did not open it in place")
     coordinator.render(view(59), in: scroll)
@@ -17851,9 +18227,76 @@ private func liveRunRowSelfTest() throws {
     try check(textView.string == full(60, expanded: false) && !textView.string.contains(footer), "a tick reopened the row")
     try check(coordinator.renderCache.prefixBuildCount == 1 && coordinator.renderCache.progressBuildCount == 1,
         "opening, closing or a tick re-rendered the history")
+    scroll.layoutSubtreeIfNeeded()
+    try check(textView.liveRunMark === overlay && textView.subviews.filter { $0 is LiveRunMarkHost }.count == 1,
+        "a tick or a click replaced the mark view instead of keeping it playing")
+
+    // In a window the mark plays, and its frames redraw the mark alone: the
+    // transcript is not drawn again while it moves.
+    _ = NSApplication.shared
+    let window = NSWindow(contentRect: NSRect(x: -20_000, y: -20_000, width: 1_000, height: 700), styleMask: [], backing: .buffered,
+                          defer: false)
+    window.alphaValue = 0
+    window.orderFront(nil)
+    window.contentView?.addSubview(scroll)
+    RunLoop.main.run(until: Date().addingTimeInterval(0.3))
+    window.displayIfNeeded()
+    func shown() -> Data? {
+        guard let bitmap = overlay.bitmapImageRepForCachingDisplay(in: overlay.bounds), bitmap.bitmapData != nil else { return nil }
+        overlay.cacheDisplay(in: overlay.bounds, to: bitmap)
+        return bitmap.bitmapData.map { Data(bytes: $0, count: bitmap.bytesPerRow * bitmap.pixelsHigh) }
+    }
+    let drawn = textView.drawPasses, first = shown()
+    var frames = Set<Data>()
+    for _ in 0..<12 {
+        RunLoop.main.run(until: Date().addingTimeInterval(1.0 / 30))
+        window.displayIfNeeded()
+        if let frame = shown() { frames.insert(frame) }
+    }
+    try check(first != nil && frames.count > 3, "the mark did not play in a window: \(frames.count) distinct frames")
+    try check(textView.drawPasses == drawn, "the mark's frames redrew the transcript \(textView.drawPasses - drawn) times")
+
     coordinator.render(view(61, running: false), in: scroll)
-    try check(!textView.string.contains("경과") && textView.string.contains("LIVE_ROW_REQUEST_SENTINEL"), "the live row outlived its run")
-    print("Live run row: \(checks) checks PASS; one line at the transcript end, opens in place, row-only redraw per second; model calls 0")
+    scroll.layoutSubtreeIfNeeded()
+    try check(!roles(textView.attributedString()).contains("liveRun") && markLocation() == nil && textView.liveRunMark == nil &&
+        !textView.subviews.contains { $0 is LiveRunMarkHost } && textView.string.contains("LIVE_ROW_REQUEST_SENTINEL"),
+        "the live row or its mark outlived its run")
+    window.orderOut(nil)
+    scroll.removeFromSuperview()
+
+    // In pixels, where the pink dot was: Claude's clay mark for a Claude run,
+    // the gray ring for a Codex run and OS-1's bars while no route has run,
+    // each with its clock 12 points on.
+    func lead(_ row: LiveRunPresentation) throws -> (clay: Int, gray: Int, pink: Int, gap: CGFloat) {
+        let shot = try transcriptSnapshot(timelineAttributedDocument(messages: [], queuedSubmissions: [], isRunning: true,
+            workspace: "/tmp", liveRun: row), width: 1_000, markPreview: RouteMarkPreview(row))
+        guard let mark = shot.mark else { throw RunnerError.message("Live run row: the drawn row has no mark") }
+        let scale = CGFloat(shot.bitmap.pixelsWide) / 1_000
+        let rows = Int((mark.minY * scale).rounded(.down))..<Int((mark.maxY * scale).rounded(.up))
+        var clay = 0, gray = 0, pink = 0
+        for y in rows {
+            for x in Int((mark.minX * scale).rounded(.down))..<Int((mark.maxX * scale).rounded(.up)) {
+                let pixel = RouteMarkPixel(shot.bitmap.colorAt(x: x, y: y))
+                guard pixel.value > 0.45 else { continue }
+                if pixel.clay { clay += 1 } else if pixel.gray { gray += 1 } else if pixel.pink { pink += 1 }
+            }
+        }
+        var gap = CGFloat.infinity
+        scan: for x in Int(((mark.maxX + 1) * scale).rounded(.up))..<Int(((mark.maxX + 30) * scale).rounded(.down)) {
+            for y in rows where RouteMarkPixel(shot.bitmap.colorAt(x: x, y: y)).value > 0.3 {
+                gap = CGFloat(x) / scale - mark.maxX; break scan
+            }
+        }
+        return (clay, gray, pink, gap)
+    }
+    let claudeLead = try lead(run), codexLead = try lead(quiet), routingLead = try lead(source)
+    try check(claudeLead.clay > 20 && claudeLead.gray == 0 && claudeLead.pink == 0,
+        "a Claude run's row does not draw Claude's clay mark: \(claudeLead)")
+    try check(codexLead.gray > 20 && codexLead.clay == 0 && codexLead.pink == 0, "a Codex run's row does not draw the gray ring: \(codexLead)")
+    try check(routingLead.pink > 20 && routingLead.clay == 0, "a run with no route yet does not draw OS-1's bars: \(routingLead)")
+    try check([claudeLead, codexLead, routingLead].allSatisfy { (11.5...14.5).contains($0.gap) },
+        "the clock's ink is not 12 points after the mark: \([claudeLead.gap, codexLead.gap, routingLead.gap])")
+    print("Live run row: \(checks) checks PASS; one line at the transcript end led by the route's own mark and its clock, opens in place, row-only redraw per second, mark frames redraw the mark alone; model calls 0")
 }
 
 /// A run's public feed as the backend reports it: prose, twelve calls of
