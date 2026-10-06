@@ -68,13 +68,25 @@ check('acquireOS1SourceSharedLease(' not in production and 'acquireWaiting: (Str
 check('let confinedPaths = confinedClaudeLaunchPaths(permissionProfile: ticket.permissionProfile)' in main,
       'the Claude launch reads the per-attempt protected paths')
 launch = flat(body(main, 'var arguments = try claudeArguments(\n            model: nativeModel.invocation,', 'if projectlessRead'))
-check('confinedPaths: confinedPaths, confinedEscalates: handBackEscalates )' in launch,
+check('confinedPaths: confinedPaths, confinedEscalates: handBackEscalates,' in launch,
       'the protected paths reach the Claude arguments')
+check('fullAccessProtectedPaths: fullAccessPaths' in launch,
+      'the resumed launch receives the same source-only protected paths')
 check('let handBackEscalates = OS1ChangeEscalation.available' in main, 'the launch knows whether a hand-back continues')
-check('if confined { arguments += ["--settings", OS1SourceConfinement.claudeSettings(protectedPaths: confinedPaths)] }' in main,
+check('else if confined { arguments += ["--settings", OS1SourceConfinement.claudeSettings(protectedPaths: confinedPaths)] }' in main,
       'a confined launch carries the probed sandbox settings')
-check(len(re.findall(r'confinedPaths: confinedPaths\)', main)) >= 1 and 'boundedShell: ticket.permissionProfile == "read_only", confinedPaths: confinedPaths)' in main,
-      'the result parser knows the protected paths')
+check('boundedShell: ticket.permissionProfile == "read_only", confinedPaths: Array(Set(confinedPaths + fullAccessPaths))' in main,
+      'the result parser knows protected paths in both confined and source-only full-access launches')
+parser_try = body(main, 'let parsed: ClaudePrintResult\n        do {', '\n        catch {')
+parser_catch = body(main, '\n        catch {\n            let object = (try? JSONSerialization.jsonObject(with: resultData))',
+                    '// A confined run that needs a change to OS-1 itself')
+check('if !fullAccessPaths.isEmpty, raw.0 != 0' in parser_try
+      and 'Full-access Claude continuation failed before a structured session result' in parser_try
+      and 'NativeStepLabel.redactKeepingEnd' in parser_try
+      and 'var rejection = interruptedExecution(' in parser_catch
+      and 'sessionID: activeSessionID, publicProgress: progress' in parser_catch
+      and 'throw rejection' in parser_catch,
+      'non-JSON full-access diagnostics stay inside parse custody so interrupted output/native progress survives')
 check('func confinedClaudeLaunchPaths(permissionProfile: String) -> [String] {\n    permissionProfile == "workspace_write" ? OS1SourceConfinement.activeRoots : []' in main,
       'only a write ticket is confined; the read-only lane keeps its own settings')
 
@@ -82,7 +94,8 @@ check('func confinedClaudeLaunchPaths(permissionProfile: String) -> [String] {\n
 check('os1ChangeRequired = handled.changeRequired' in main, 'the hand-back is the marker only')
 check('protectedWriteDenied ||' not in main and '|| parsed.protectedWriteDenied' not in main,
       'a denied protected write never triggers a rerun')
-check('let handsBack = os1ChangeRequired && handBackEscalates' in main, 'checks are relaxed only when a repair follows')
+check('let handsBack = (os1ChangeRequired || os1FullAccessRequired) && handBackEscalates' in main,
+      'checks are relaxed only when a source repair or bounded full-access continuation follows')
 check('validateCandidate = {' in main and 'validateCandidate = os1ChangeRequired ? nil' not in main,
       'a handed-back answer is still validated')
 
@@ -166,5 +179,124 @@ check('let confinable = next.provider != .codex && next.claudeCapacity > 0' in a
 check('releaseCacheKey(runtimeRoot:' in confinement and 'SelfUpdate.releaseEntryRelativePath' in confinement,
       'the release output outside the tree is protected')
 check('try await os1AttemptSourceSelfTest()' in main, '`os1 self-test` runs the per-attempt wiring on real leases')
+
+# 10. The broad-sandbox escape resumes only the exact original native session,
+# under the shared source lease, retaining a narrow OS-1 source write guard.
+full_gate = body(main, 'func fullAccessHandBackDraft(', 'func fullAccessResumeArguments(')
+check('guard !cancelled else { return nil }' in full_gate, 'a cancelled request never receives full-access continuation')
+check(full_gate.count('$0.exitCode == 0') == 1 and 'step.exitCode == 0' in full_gate,
+      'both adopted and rejected full-access hand-backs require successful backend exit')
+check('step.provider == "claude"' in full_gate and 'step.os1SourceConfined' in full_gate
+      and 'step.os1FullAccessRequired' in full_gate and '["retry", "rejected"].contains(step.revasDisposition)' in full_gate,
+      'a REVAS-unadopted hand-back is accepted only from a delivered, protected Claude marker attempt')
+check('UUID(uuidString: step.sessionID) != nil' in full_gate and 'UUID(uuidString: $0.sessionID) != nil' in full_gate,
+      'full-access cannot substitute a fresh session for a missing native session ID')
+check('!step.output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty' in full_gate,
+      'an empty rejected hand-back is not treated as a blocked-step report')
+
+full_handoff = task[task.index('if escalationAvailable, OS1FullAccessContinuation.sessionID == nil,'):
+                    task.index('if escalationAvailable, !ExecutionCancellation.isCancelled, let handBack = os1HandBackDraft(')]
+check('fullAccessHandBackDraft(adopted: adoptedDraft, rejectedAttempt: draftFailure == nil ? nil : draftAttempts.last' in full_handoff,
+      'the full-access decision inspects a rejected delivery, not only REVAS-adopted output')
+check('OS1FullAccessContinuation.$sessionID.withValue(native.sessionID)' in full_handoff
+      and 'claudeSessionID: native.sessionID' in full_handoff,
+      'the continuation carries the exact original Claude native session ID end to end')
+check('providerPreference: "claude"' in full_handoff and 'codexSessionID: nil' in full_handoff and 'codexCapacity: 0' in full_handoff,
+      'a full-access hand-back stays on Claude instead of switching backends')
+check('OS1FullAccessContinuation.$protectedPaths.withValue(protected)' in full_handoff
+      and 'sourceWriteGuardProfile(protectedPaths: protected)' in full_handoff,
+      'source-only protection is validated and carried before launching a continuation')
+check('heldOS1SourceRoot: nil' in full_handoff,
+      'the resumed run cannot pretend that a caller already owns the source lease')
+check('fullAccess: OS1FullAccessContinuation.sessionID != nil' in loop,
+      'the resumed runtime requests the shared source lease instead of broad sandbox confinement')
+check('guard resolvedScope == .workspaceWrite, let guardedRoot = OS1FullAccessContinuation.protectedPaths.first' in home
+      and 'os1SharedLeaseRoot = guardedRoot' in home,
+      'the full-access shared lease is bound to the exact source root even if normal project binding changes')
+check('if OS1FullAccessContinuation.sessionID != nil && (ticket.provider != "claude" || ticket.permissionProfile != "workspace_write")' in main,
+      'a remote route cannot convert the same-session continuation into another provider or read-only lane')
+check('var attemptLimit = OS1FullAccessContinuation.sessionID != nil ||' in main,
+      'the full-access continuation has one attempt and cannot implicitly replay a rejected writer')
+check('if OS1FullAccessContinuation.sessionID == nil, quotaLimit > attemptLimit, !readOnlyReview' in main
+      and 'if OS1FullAccessContinuation.sessionID == nil, expandedLimit > attemptLimit' in main,
+      'quota and undispatched recovery cannot expand the single full-access attempt budget')
+source_prepare = body(main, 'func prepareOS1AttemptSource(', '/// A signed ticket still has')
+check('sharedLeaseRoot: sharedLeaseRoot, fullAccess: fullAccess, protectedPaths: protectedPaths' in flat(source_prepare),
+      'the full-access flag reaches the tested attempt guard')
+check('if !fullAccess, firstAttempt, state.claudeReroutesLeft > 0' in source_prepare,
+      'a resumed full-access wait cannot reroute itself back into the broad sandbox')
+check('os1FullAccessRequired = handled.fullAccessRequired && handBackEscalates && OS1FullAccessContinuation.sessionID == nil' in main,
+      'a resumed backend cannot create a second full-access loop')
+check('if OS1FullAccessContinuation.sessionID != nil && handled.fullAccessRequired {' in main
+      and 'Full-access continuation still reported a blocked step' in main,
+      'a repeated full-access marker fails explicitly instead of completing or re-running')
+check('deliveredStep.os1FullAccessRequired = attemptConfined && execution.os1FullAccessRequired' in main,
+      'the delivered attempt retains the full-access marker even if REVAS rejects it')
+check('let adoptedRecord = revasDisposition == "adopted" && !execution.os1FullAccessRequired' in main,
+      'a handed-back native session is not concurrently given to Claude Desktop before its resume')
+
+native = body(main, 'let pinnedResumeID = OS1FullAccessContinuation.sessionID', 'let activeSessionID = requestedSessionID')
+check('previousSessionID != pinnedResumeID' in native and 'desktopOwnsPrevious' in native
+      and 'ticket.permissionProfile != "workspace_write"' in native,
+      'native resume rejects wrong session, Desktop ownership and non-write tickets')
+check('let requestedSessionID = pinnedResumeID ??' in native and 'let startsNewSession = pinnedResumeID == nil' in native,
+      'full-access pins native identity and forces --resume rather than --session-id')
+arguments = body(main, 'func claudeArguments(', 'func claudePermissionArguments(')
+check('arguments += ["--resume", sessionID]' in arguments,
+      'the actual Claude argument builder emits --resume for the continued session')
+check('OS1SourceConfinement.claudeFullAccessSettings(protectedPaths: fullAccessProtectedPaths)' in arguments,
+      'only the resumed source-protected branch disables Claude broad sandbox settings')
+wrapper = body(main, 'func fullAccessResumeArguments(', 'func fullAccessContinuationPrompt(')
+check('isExecutableFile(atPath: "/usr/bin/sandbox-exec")' in wrapper
+      and 'OS1SourceConfinement.SourceGuardError.unavailable' in wrapper,
+      'missing source-only guard fails closed instead of running unprotected')
+check('try OS1SourceConfinement.sourceWriteGuardProfile(protectedPaths: protectedPaths), executable] + arguments' in wrapper,
+      'the source-only guard wraps the actual Claude executable and its complete argument list')
+check('let launch = try fullAccessPaths.isEmpty ? (claude, arguments) : fullAccessResumeArguments(' in main
+      and re.search(r'do \{ raw = try commandOutput\(\s*launch\.0,\s*launch\.1,', main),
+      'the guarded launch, not an unused wrapper, is the executed command')
+check('providerSessionID: OS1FullAccessContinuation.sessionID ??' in main,
+      'the pinned original identity reaches execute despite REVAS-native-session adoption rules')
+check(full_handoff.index('let resumed =') < full_handoff.index('guard resumed.status == "complete"'),
+      'continuation result is checked before joining the owner answer or source-repair hand-back')
+check('if ExecutionCancellation.isCancelled {' in full_handoff
+      and full_handoff.index('if ExecutionCancellation.isCancelled {') < full_handoff.index('adoptedDraft = mergedFullAccessContinuation'),
+      'late cancellation after resumed execution blocks adoption and source repair')
+check('if escalationAvailable, !ExecutionCancellation.isCancelled, let handBack = os1HandBackDraft(' in task,
+      'source repair rechecks cancellation instead of using the earlier pre-resume snapshot')
+check('return fullAccessFailureSummary(draft: fullDraft, reason: resumed.workflowBlocker ?? resumed.status' in full_handoff
+      and 'return fullAccessFailureSummary(draft: fullDraft, reason: String(describing: error)' in full_handoff,
+      'both incomplete and thrown resumes return a visible precise blocked summary')
+failure = body(main, 'func fullAccessFailureSummary(', '/// A confined attempt (a HOME request')
+check('RunSummary(status: "workflow_blocked"' in failure and 'workflowBlocker: blocked' in failure
+      and 'Full-access continuation' in failure and '전체 권한 이어가기' in failure,
+      'resume failure is surfaced in both languages and never reported as a complete turn')
+check('resumed.map' in failure and 'Continuation result (not adopted)' in failure,
+      'resume failure preserves the original blocked report and the returned continuation answer')
+check('persistedCorrectionIDs: os1MergedCorrectionIDs(draft.persistedCorrectionIDs, persistedCorrectionIDs)' in failure,
+      'failure retains steering corrections from both the first and resumed attempts')
+check('resumed: resumed.steps.last, cancelled: true, persistedCorrectionIDs: resumed.persistedCorrectionIDs' in full_handoff
+      and 'resumed: resumed.steps.last, persistedCorrectionIDs: resumed.persistedCorrectionIDs' in full_handoff
+      and 'persistedCorrectionIDs: ExecutionSteering.currentSubmission.map { ExecutionSteering().persistedIDs($0) }' in full_handoff,
+      'cancelled, incomplete and thrown continuations carry their actual persisted steering receipts')
+merged = body(main, 'func mergedFullAccessContinuation(', 'func fullAccessFailureSummary(')
+check('os1RejectedHandBackAnswer(draft)' in merged and 'First execution report (not adopted)' in merged,
+      'successful continuation still shows the first report when REVAS did not adopt that report')
+check('adoptedDraft = mergedFullAccessContinuation(draft: fullDraft, resumed: resumed)' in full_handoff,
+      'the merged-report helper reaches the owner-visible answer, not only unit fixtures')
+check('if OS1FullAccessContinuation.sessionID != nil, os1Source.watch?.changed() == true' in main
+      and 'no self-update, install or replay was started' in main,
+      'a detected protected-source mutation blocks continuation rather than claiming or installing it')
+check('if OS1FullAccessContinuation.sessionID == nil, previewDeploymentTarget == nil' in main
+      and 'else if OS1FullAccessContinuation.sessionID == nil, let os1SourceWatch' in main,
+      'full-access non-OS-1 work cannot enter either OS-1 self-update finisher')
+prompt = body(main, 'func fullAccessContinuationPrompt(', 'func fullAccessFailureSummary(')
+check('Continue ONLY the non-OS-1 steps blocked' in prompt and 'SAME native session' in prompt
+      and 'Do not restart the original request or repeat any completed' in prompt
+      and 'Verify partial side effects before retrying' in prompt,
+      'the handoff continues only blocked steps after side-effect inspection, never the whole request')
+check('Original owner authorization and exact scope remain binding' in prompt
+      and 'no new login approval, terms or purchase authority is granted' in prompt,
+      'full access never replaces owner authorization or external consent')
 
 print(f'OS-1 source confinement wiring: {checks} checks PASS')
