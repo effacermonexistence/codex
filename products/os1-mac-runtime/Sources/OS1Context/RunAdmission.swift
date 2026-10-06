@@ -32,6 +32,9 @@ public enum RunAdmission {
         public let occupiedCount: Int
     }
 
+    /// Slot-bearing runs allowed while memory pressure is at "warning".
+    public static let warningCeiling = 4
+
     public static func occupiedCount(activeRuns: Int, waitingForSourceRuns: Int = 0) -> Int {
         let active = max(0, activeRuns)
         return active - min(active, max(0, waitingForSourceRuns))
@@ -43,16 +46,19 @@ public enum RunAdmission {
     public static func decide(limit: Int?, activeRuns: Int, waitingForSourceRuns: Int = 0,
                               memoryPressure: MemoryPressure) -> Decision {
         let occupied = occupiedCount(activeRuns: activeRuns, waitingForSourceRuns: waitingForSourceRuns)
+        // Memory pressure caps how many runs may occupy slots; it never holds
+        // the first one (OS-1 would otherwise stop all work while a local
+        // model keeps the Mac at "warning"): critical admits only when none
+        // runs, warning falls back to the pre-build-330 default of 4.
         let reason: HoldReason?
-        switch memoryPressure {
-        case .warning: reason = .memoryWarning
-        case .critical: reason = .memoryCritical
-        case .normal, .unknown:
-            if let limit, occupied >= min(64, max(1, limit)) {
-                reason = .slotLimit
-            } else {
-                reason = nil
-            }
+        if memoryPressure == .critical, occupied >= 1 {
+            reason = .memoryCritical
+        } else if memoryPressure == .warning, occupied >= warningCeiling {
+            reason = .memoryWarning
+        } else if let limit, occupied >= min(64, max(1, limit)) {
+            reason = .slotLimit
+        } else {
+            reason = nil
         }
         return Decision(admitted: reason == nil, reason: reason, occupiedCount: occupied)
     }

@@ -1381,6 +1381,9 @@ private func unlimitedRunAdmissionSelfTest() async throws {
         var submissionIDs: [UUID] = []
         var reads = 0
         var warnAtRead: Int?
+        /// The level `warnAtRead` switches to (build 330: pressure caps
+        /// occupancy, so a hold needs an occupied slot).
+        var warnLevel: RunAdmission.MemoryPressure = .warning
     }
     let root = FileManager.default.temporaryDirectory.appendingPathComponent("os1-unlimited-admission-" + UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }
@@ -1403,7 +1406,7 @@ private func unlimitedRunAdmissionSelfTest() async throws {
                 stderr: "", durationMS: 1, nativeRecord: nil)])
         }, memoryPressureSampler: {
             control.reads += 1
-            return control.warnAtRead.map { control.reads >= $0 ? .warning : control.pressure } ?? control.pressure
+            return control.warnAtRead.map { control.reads >= $0 ? control.warnLevel : control.pressure } ?? control.pressure
         })
     }
     let many = Control(), unlimited = make("unlimited", many)
@@ -1429,7 +1432,9 @@ private func unlimitedRunAdmissionSelfTest() async throws {
     source.pressure = .warning
     waiting.createSession(); waiting.composer = "PRESSURE_HELD"; waiting.send()
     let heldID = waiting.queuedSubmissions.first!.id
-    try check(waiting.queuedSubmissions.count == 1 && waiting.runAdmission.reason == .memoryWarning, "warning queues the new request with explicit reason")
+    // One slot is occupied, so this cap holds the request on its own; pressure
+    // caps occupancy (build 330) instead of stopping every new run.
+    try check(waiting.queuedSubmissions.count == 1 && waiting.runAdmission.reason == .slotLimit, "a full cap queues the new request with explicit reason")
     try check(waiting.activeRuns.count == 2 && !waiting.activeRuns.values.contains(where: { $0.cancellationRequested }), "warning never cancels existing runs")
     source.pressure = .critical; waiting.resumeAdmissionWaiters()
     try check(waiting.runAdmission.reason == .memoryCritical && waiting.queuedSubmissions.first?.id == heldID, "critical preserves exact queued request")
@@ -1459,13 +1464,18 @@ private func unlimitedRunAdmissionSelfTest() async throws {
     // This exercises real park/release, not just the pure function.
     let raced = Control(), race = make("race", raced)
     race.updateSettings { $0.parallelRunLimit = nil }
+    race.composer = "RACE_HOLD"; race.send()
+    try await eventually { raced.started == ["RACE_HOLD"] }
+    raced.warnLevel = .critical
     raced.warnAtRead = raced.reads + 2
+    race.createSession()
     race.composer = "RACE_EXACT_PAYLOAD"; race.send()
-    try check(race.activeRuns.isEmpty && race.queuedSubmissions.count == 1 && raced.started.isEmpty, "pressure changed between send and start, request preserved")
+    try check(race.activeRuns.count == 1 && race.queuedSubmissions.count == 1 && raced.started == ["RACE_HOLD"],
+        "pressure changed between send and start, request preserved")
     let raceID = race.queuedSubmissions.first!.id
     raced.warnAtRead = nil; raced.released = true; race.resumeAdmissionWaiters()
-    try await eventually { raced.started.count == 1 && race.activeRuns.isEmpty }
-    try check(raced.submissionIDs == [raceID] && race.queuedSubmissions.isEmpty, "raced request is delivered exactly once")
+    try await eventually { raced.started.count == 2 && race.activeRuns.isEmpty }
+    try check(raced.submissionIDs.last == raceID && race.queuedSubmissions.isEmpty, "raced request is delivered exactly once")
 
     // Retry/readback custody is already authorized before admission, but its
     // original failure must not block that exact queued resume forever.
@@ -1476,13 +1486,18 @@ private func unlimitedRunAdmissionSelfTest() async throws {
         workspace: root.path, codexCapacity: 100, claudeCapacity: 100, readOnlyReconciliation: nil)
     let sessionIndex = retry.sessions.firstIndex(where: { $0.id == sessionID })!
     retry.sessions[sessionIndex].lastFailure = original
+    // One run occupies a slot, so pressure (build 330) can hold the retry.
+    retry.createSession(); retry.composer = "RETRY_HOLD"; retry.send()
+    try await eventually { retryControl.started == ["RETRY_HOLD"] }
+    retry.select(sessionID)
+    retryControl.warnLevel = .critical
     retryControl.warnAtRead = retryControl.reads + 1
     retry.retrySelectedFailure()
     try check(retry.queuedSubmissions.count == 1 && retry.queuedSubmissions.first?.id == original.id,
         "exact Retry waits rather than disappearing when final admission warns")
     retryControl.warnAtRead = nil; retryControl.released = true; retry.resumeAdmissionWaiters()
-    try await eventually { retryControl.started.count == 1 && retry.activeRuns.isEmpty }
-    try check(retryControl.submissionIDs == [original.id], "Retry admission custody survives failure hold and executes once")
+    try await eventually { retryControl.started.count == 2 && retry.activeRuns.isEmpty }
+    try check(retryControl.submissionIDs.last == original.id, "Retry admission custody survives failure hold and executes once")
     print("Unlimited run admission: \(checks) checks PASS; eight parallel starts, source wait exclusion, pressure hold/recovery/races; paid calls 0")
 }
 

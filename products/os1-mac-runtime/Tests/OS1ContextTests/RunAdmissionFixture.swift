@@ -19,15 +19,25 @@ func runRunAdmissionFixtures() throws {
             waitingForSourceRuns: 2, memoryPressure: .normal)
         check(waiter.admitted && waiter.occupiedCount == boundary - 1,
             "\(label) excludes source-lease waiters, freeing a slot for another conversation")
+        // Pressure caps occupancy but never holds the first run (build 330).
         for pressure: RunAdmission.MemoryPressure in [.warning, .critical] {
             for active in [0, boundary, boundary + 8] {
-                let decision = RunAdmission.decide(limit: limit, activeRuns: active,
+                let idle = RunAdmission.decide(limit: limit, activeRuns: active,
                     waitingForSourceRuns: active, memoryPressure: pressure)
-                check(!decision.admitted, "\(label) \(pressure) holds new work even with no occupied slots")
-                check(decision.occupiedCount == 0, "\(label) pressure does not change source-waiter accounting")
-                check(decision.reason == (pressure == .warning ? .memoryWarning : .memoryCritical),
-                    "\(label) pressure reason is exposed")
+                check(idle.admitted && idle.occupiedCount == 0,
+                    "\(label) \(pressure) still admits a run when only source waiters exist")
             }
+        }
+        let criticalBusy = RunAdmission.decide(limit: limit, activeRuns: 1, memoryPressure: .critical)
+        check(!criticalBusy.admitted && criticalBusy.reason == .memoryCritical,
+            "\(label) critical holds a second run")
+        let ceiling = RunAdmission.warningCeiling
+        let warningBelow = RunAdmission.decide(limit: limit, activeRuns: min(ceiling, boundary) - 1, memoryPressure: .warning)
+        check(warningBelow.admitted, "\(label) warning admits below the warning ceiling and the limit")
+        if limit == nil || boundary > ceiling {
+            let warningAt = RunAdmission.decide(limit: limit, activeRuns: ceiling, memoryPressure: .warning)
+            check(!warningAt.admitted && warningAt.reason == .memoryWarning,
+                "\(label) warning holds new work at the warning ceiling")
         }
         let unavailable = RunAdmission.decide(limit: limit, activeRuns: boundary - 1, memoryPressure: .unknown)
         check(unavailable.admitted, "\(label) missing telemetry does not permanently strand new work")
