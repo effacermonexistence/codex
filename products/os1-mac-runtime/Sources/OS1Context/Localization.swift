@@ -48,31 +48,65 @@ public struct OS1Settings: Codable, Equatable, Sendable {
         }
     }
 
-    /// Conversations OS-1 may run at the same time. Until this was settable the
-    /// cap was a fixed 4: once four runs were active every other conversation
-    /// waited, which looked like "OS-1 does not run in parallel". Optional so
-    /// older settings files still decode; read it through `parallelRuns`.
+    /// Conversations OS-1 may run at the same time. Nil means no slot cap;
+    /// admission still applies the runtime's memory-pressure guard. Read this
+    /// through `parallelRuns` to normalize an explicitly selected finite cap.
     public var parallelRunLimit: Int? = nil
 
-    /// Supported range for `parallelRunLimit`. One conversation at a time is a
-    /// deliberate serial mode; the upper bound keeps a raised cap from starting
-    /// more backend turns than a desktop machine and its quotas can carry.
-    public static let parallelRunRange = 1...12
-    public static let defaultParallelRuns = 4
+    /// Explicit finite choices. Unlimited is a separate nil state, never a
+    /// large integer sentinel that can accidentally become a slot cap.
+    public static let parallelRunRange = 1...64
+    public static let defaultParallelRuns: Int? = nil
 
-    /// The cap actually applied: an unset or out-of-range value never disables
-    /// admission or removes the bound.
-    public static func clampedParallelRuns(_ value: Int?) -> Int {
+    /// Preserve unlimited while bounding a hand-edited finite value.
+    public static func clampedParallelRuns(_ value: Int?) -> Int? {
         guard let value else { return defaultParallelRuns }
         return min(max(value, parallelRunRange.lowerBound), parallelRunRange.upperBound)
     }
 
-    public var parallelRuns: Int { OS1Settings.clampedParallelRuns(parallelRunLimit) }
+    public var parallelRuns: Int? { OS1Settings.clampedParallelRuns(parallelRunLimit) }
 
     public init(interfaceLanguage: String = "en", outputLanguage: String = "auto", showCodex: Bool = true) {
         self.interfaceLanguage = interfaceLanguage
         self.outputLanguage = outputLanguage
         self.showCodex = showCodex
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case interfaceLanguage, outputLanguage, showCodex
+        case burnCodexBeforeReset, codexBurnLeadHours
+        case openAISurface, anthropicSurface
+        case parallelRunLimit, parallelRunLimitVersion
+    }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        interfaceLanguage = try values.decodeIfPresent(String.self, forKey: .interfaceLanguage) ?? "en"
+        outputLanguage = try values.decodeIfPresent(String.self, forKey: .outputLanguage) ?? "auto"
+        showCodex = try values.decodeIfPresent(Bool.self, forKey: .showCodex) ?? true
+        burnCodexBeforeReset = try values.decodeIfPresent(Bool.self, forKey: .burnCodexBeforeReset)
+        codexBurnLeadHours = try values.decodeIfPresent(Int.self, forKey: .codexBurnLeadHours)
+        openAISurface = try values.decodeIfPresent(String.self, forKey: .openAISurface)
+        anthropicSurface = try values.decodeIfPresent(String.self, forKey: .anthropicSurface)
+        let version = try values.decodeIfPresent(Int.self, forKey: .parallelRunLimitVersion) ?? 1
+        let limit = try values.decodeIfPresent(Int.self, forKey: .parallelRunLimit)
+        // The old maximum (12) represented "as parallel as possible". Only an
+        // old-format 12 migrates; 1...11 were deliberate owner choices. A
+        // settings-only format marker distinguishes a newly chosen finite 12.
+        parallelRunLimit = version < 2 && limit == 12 ? nil : Self.clampedParallelRuns(limit)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(interfaceLanguage, forKey: .interfaceLanguage)
+        try values.encode(outputLanguage, forKey: .outputLanguage)
+        try values.encode(showCodex, forKey: .showCodex)
+        try values.encodeIfPresent(burnCodexBeforeReset, forKey: .burnCodexBeforeReset)
+        try values.encodeIfPresent(codexBurnLeadHours, forKey: .codexBurnLeadHours)
+        try values.encodeIfPresent(openAISurface, forKey: .openAISurface)
+        try values.encodeIfPresent(anthropicSurface, forKey: .anthropicSurface)
+        try values.encodeIfPresent(parallelRuns, forKey: .parallelRunLimit)
+        try values.encode(2, forKey: .parallelRunLimitVersion)
     }
 
     public var burnPolicy: QuotaWindowPolicy.Settings {
@@ -90,8 +124,8 @@ public struct OS1Settings: Codable, Equatable, Sendable {
         var settings = value
         settings.interfaceLanguage = normalizedInterfaceLanguage(settings.interfaceLanguage)
         if settings.outputLanguage.isEmpty || settings.outputLanguage.count > 40 { settings.outputLanguage = "auto" }
-        // A hand-edited file must not be able to serialize or flood execution.
-        if let limit = settings.parallelRunLimit { settings.parallelRunLimit = clampedParallelRuns(limit) }
+        // Normalize finite values without replacing the unlimited state.
+        settings.parallelRunLimit = clampedParallelRuns(settings.parallelRunLimit)
         // A hand-edited surface must not survive as written: resolve it through
         // its own tile so the stored value and the routed value cannot differ.
         for backend in ProviderSurface.Backend.allCases {
