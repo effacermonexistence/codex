@@ -10750,7 +10750,8 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
             resultSHA256: resultHash, artifact: artifactData, upload: try JSONEncoder().encode(upload),
             submission: try JSONEncoder().encode(submission), step: try JSONEncoder().encode(pendingStep),
             source: sourceContext, output: artifact.output, localRejection: attemptFailure,
-            driftApplication: execution.driftApplication, driftSteered: driftAttemptWasSteered)
+            driftApplication: execution.driftApplication, driftSteered: driftAttemptWasSteered,
+            persistedCorrectionIDs: os1DeliveredCorrectionIDs(submissionID: ExecutionSteering.currentSubmission?.uuidString))
         // Custody must succeed before the first network write. Never discard a
         // finished paid result in a temporary process-output directory.
         try DeliveryOutbox().save(delivery)
@@ -11049,7 +11050,15 @@ func resumeDelivery(_ identifier: String) async throws -> RunSummary {
         permissionProfile: step.permissionProfile, exitCode: step.exitCode, output: step.output, stderr: step.stderr,
         durationMS: step.durationMS, nativeRecord: native, surface: step.surface,
         workflowStage: step.workflowStage, verifiedPreviewDelivery: step.verifiedPreviewDelivery)], sourceContext: record.source,
-        persistedCorrectionIDs: os1DeliveredCorrectionIDs(submissionID: record.submissionID))
+        persistedCorrectionIDs: os1DeliveryCorrectionIDs(record))
+}
+
+/// The corrections a delivered saved result verifies against: those its own
+/// producing run had persisted when the record was saved — never corrections
+/// a later attempt of the submission persisted, which this result never saw.
+func os1DeliveryCorrectionIDs(_ record: DeliveryRecord) -> [UUID]? {
+    guard let ids = record.persistedCorrectionIDs, !ids.isEmpty else { return nil }
+    return ids
 }
 
 /// The corrections the owner's steering persisted for the submission a saved
@@ -14018,7 +14027,7 @@ func selfTest() throws {
                 && rejected.workflowBlocker?.contains("분홍 바는 OS-1 쪽 변경입니다.") == true
                 && os1RepairAnswer(step("x", selfRepairFailurePrefix + "only the note")) == nil
         }()),
-        ("a delivered saved result reports the corrections its submission's steering persisted, and only those (build 329 fix)", {
+        ("a delivered saved result reports only the corrections its own run had persisted when it was saved (build 329 fix)", {
             let root = FileManager.default.temporaryDirectory.appendingPathComponent("os1-delivered-corrections-" + UUID().uuidString)
             defer { try? FileManager.default.removeItem(at: root) }
             let mailbox = ExecutionSteering(root: root)
@@ -14028,9 +14037,21 @@ func selfTest() throws {
             guard (try? mailbox.enqueue(persisted)) != nil, (try? mailbox.enqueue(unconfirmed)) != nil,
                   (try? mailbox.record(persisted, state: .persisted, threadID: "t", turnID: "turn")) != nil,
                   (try? mailbox.record(unconfirmed, state: .accepted, threadID: "t", turnID: "turn")) != nil else { return false }
+            func record(_ ids: [UUID]?) -> DeliveryRecord {
+                DeliveryRecord(id: UUID().uuidString + "-1", apiURL: "https://fixture.invalid", deviceID: "fixture",
+                    resultSHA256: "", artifact: Data(), upload: Data(), submission: Data(), step: Data(), source: nil,
+                    output: "", persistedCorrectionIDs: ids)
+            }
+            // A result saved before the correction existed carries none, so its
+            // delivery never claims the correction the mailbox later persisted.
+            let savedBefore = record(nil)
+            let savedAfter = record(os1DeliveredCorrectionIDs(submissionID: submission.uuidString, mailbox: mailbox))
             return os1DeliveredCorrectionIDs(submissionID: submission.uuidString, mailbox: mailbox) == [persisted.id]
                 && os1DeliveredCorrectionIDs(submissionID: UUID().uuidString, mailbox: mailbox) == nil
                 && os1DeliveredCorrectionIDs(submissionID: nil, mailbox: mailbox) == nil
+                && os1DeliveryCorrectionIDs(savedBefore) == nil
+                && os1DeliveryCorrectionIDs(savedAfter) == [persisted.id]
+                && os1DeliveryCorrectionIDs(record([])) == nil
         }()),
         ("a rejected, steered hand-back keeps its correction ids and both answers; a staged build is never 'no change' (build 327 fix)", {
             func step(_ disposition: String, _ output: String) -> RunStepSummary {
