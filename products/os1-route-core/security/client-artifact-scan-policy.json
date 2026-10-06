@@ -38,7 +38,20 @@
       "3e3dbe24f9812025ab9c44171f2eb3fbfeb7d5693ddec1bdc97f235944a6fb75",
       "f49c6a7490cb5306045ca3a947c53bdf20d3730ccce063a39e4f601ea3d511fe",
       "cc2bb401e7897d11049267c8563d58cba8c90e11769bb4f342a375b72a67f677",
-      "a9c2c295255a763e6d4b2684f491b36e699954692f852e970cdbbc6b7aabc124"
+      "a9c2c295255a763e6d4b2684f491b36e699954692f852e970cdbbc6b7aabc124",
+      "78e688e0b4a48fd199b56935fe8a1ee023db7009b59eb4be957982914093c3cb",
+      "49923e09515f11b44d44dfba34d57cdb2600f78b75f05b769868dde4d8edf1c1",
+      "f15ed64fbd7ffb10895301f632ff4b44607afeb8ece69d8f4609a869d66805a1",
+      "544d29cbe06d6bdfee2fb905c669937bef09378f21b2d37370e3ca6187cd732d",
+      "7a8009cf17abf2f6e1c328b8adbe0a504d0d853327f4c81fd4e86d7be9f53990",
+      "b0f5889df63ef2b940f85980724565caa475d187f6cdb6b71ca56d7f9c608bee",
+      "29d367c73eba105a4cfe54167c1e25c337768ed40360a86a5de9ce1db170c677",
+      "c82a900ac2eb52f88d127da5f2ee2edcf6ea2641bbeeba6913e40d537c58d8ea",
+      "3a699314cebf67e37d72cd50926bf933434341230657e574d65e9c4661a7283c",
+      "084fb04a9135ce8d8a440e3ca785640516b87b82622d31d5e24357d647529785",
+      "02f1d09f1259f506b8fa5e899d657e72604271bbabc7e39374e53cc85c0978e8",
+      "f4af7fe5cbb4f1d2a3db22ecd6e59c52b3b94669a0b414b3c5b20ca7b88d5f21",
+      "b23dab16c67dd09d06ad6d1be69f7f5ed45622904b037e68c51631f79eba31d9"
     ]
   },
   "publicTokenProvenance": {
@@ -71,6 +84,123 @@
       "description": "Exact public Swift compiler type encoding for BundleManager; no Mach-O, symbol-prefix or section-wide exemption.",
       "publicToken": "_TtC9SwiftMathP33_8258232E753A187089D8181EFE1F648A13BundleManager",
       "source": "https://github.com/mgriebling/SwiftMath/blob/fa8244ed032f4a1ade4cb0571bf87d2f1a9fd2d7/Sources/SwiftMath/MathRender/MTFont.swift"
+    },
+    "78e688e0b4a48fd199b56935fe8a1ee023db7009b59eb4be957982914093c3cb": {
+      "description": "Exact public-source Swift compiler type encoding for MetadataCommandResult; no Mach-O, symbol-prefix or section-wide exemption.",
+      "publicToken": "_TtC3OS1P33_90FD1202E5AB6C92E2BD550036EAC8EF21MetadataCommandResult",
+      "demangledPublicType": "OS1.(MetadataCommandResult in _90FD1202E5AB6C92E2BD550036EAC8EF)",
+      "source": "products/os1-mac-runtime/Sources/OS1/ModelAvailability.swift",
+      "sourceRevision": "2040dfad95ab205d8302e857321a70605d0b0127",
+      "sourceSHA256": "bb9cfc258ae24ab3b094be25e15cbd149e2f96de4324b3ebe281ae069346db10",
+      "sourceURL": "https://github.com/effacermonexistence/codex/blob/2040dfad95ab205d8302e857321a70605d0b0127/products/os1-mac-runtime/Sources/OS1/ModelAvailability.swift"
+    },
+    "49923e09515f11b44d44dfba34d57cdb2600f78b75f05b769868dde4d8edf1c1": {
+      "description": "Exact public-source Swift compiler type encoding for LegacyOwnershipMetadataCache; no Mach-O, symbol-prefix or section-wide exemption.",
+      "publicToken": "_TtC10OS1ContextP33_B8D377A181BBF91EAFDA2C31545E04AB28LegacyOwnershipMetadataCache",
+      "demangledPublicType": "OS1Context.(LegacyOwnershipMetadataCache in _B8D377A181BBF91EAFDA2C31545E04AB)",
+      "source": "products/os1-mac-runtime/Sources/OS1Context/ManagedNativeTurns.swift",
+      "sourceRevision": "2040dfad95ab205d8302e857321a70605d0b0127",
+      "sourceSHA256": "1a5b32e7d130a8a5c8e892b9f15ea04a224c0a8063858b8675c20b22f42c0be8",
+      "sourceURL": "https://github.com/effacermonexistence/codex/blob/2040dfad95ab205d8302e857321a70605d0b0127/products/os1-mac-runtime/Sources/OS1Context/ManagedNativeTurns.swift"
+    },
+    "f15ed64fbd7ffb10895301f632ff4b44607afeb8ece69d8f4609a869d66805a1": {
+      "description": "Exact public-source Swift compiler type encoding for RedactionCache; no Mach-O, symbol-prefix or section-wide exemption.",
+      "publicToken": "_TtCO10OS1Context15NativeStepLabelP33_3432AD60D3C6B1B9BAA76861858047E814RedactionCache",
+      "demangledPublicType": "OS1Context.NativeStepLabel.(RedactionCache in _3432AD60D3C6B1B9BAA76861858047E8)",
+      "source": "products/os1-mac-runtime/Sources/OS1Context/NativeStepLabel.swift",
+      "sourceRevision": "2040dfad95ab205d8302e857321a70605d0b0127",
+      "sourceSHA256": "e40098899001f0a25eb79d891b2c1c155e2859a932ea9b269280588cfe26266d",
+      "sourceURL": "https://github.com/effacermonexistence/codex/blob/2040dfad95ab205d8302e857321a70605d0b0127/products/os1-mac-runtime/Sources/OS1Context/NativeStepLabel.swift"
+    },
+    "544d29cbe06d6bdfee2fb905c669937bef09378f21b2d37370e3ca6187cd732d": {
+      "description": "Exact public-source Swift compiler type encoding for LiveRunMarkHost; no Mach-O, symbol-prefix or section-wide exemption.",
+      "publicToken": "_TtC6OS1AppP33_E4338E7CE7A60E44AE4AAB89C865B63315LiveRunMarkHost",
+      "demangledPublicType": "OS1App.(LiveRunMarkHost in _E4338E7CE7A60E44AE4AAB89C865B633)",
+      "source": "products/os1-mac-runtime/Sources/OS1App/OS1App.swift",
+      "sourceRevision": "2040dfad95ab205d8302e857321a70605d0b0127",
+      "sourceSHA256": "29c02176e1533b50fb6c1dd5b85422d2910e654e406895a496693559b99b6058",
+      "sourceURL": "https://github.com/effacermonexistence/codex/blob/2040dfad95ab205d8302e857321a70605d0b0127/products/os1-mac-runtime/Sources/OS1App/OS1App.swift"
+    },
+    "7a8009cf17abf2f6e1c328b8adbe0a504d0d853327f4c81fd4e86d7be9f53990": {
+      "description": "Exact public-source Swift compiler type encoding for TranscriptRenderCache; no Mach-O, symbol-prefix or section-wide exemption.",
+      "publicToken": "_TtC6OS1AppP33_E4338E7CE7A60E44AE4AAB89C865B63321TranscriptRenderCache",
+      "demangledPublicType": "OS1App.(TranscriptRenderCache in _E4338E7CE7A60E44AE4AAB89C865B633)",
+      "source": "products/os1-mac-runtime/Sources/OS1App/OS1App.swift",
+      "sourceRevision": "2040dfad95ab205d8302e857321a70605d0b0127",
+      "sourceSHA256": "29c02176e1533b50fb6c1dd5b85422d2910e654e406895a496693559b99b6058",
+      "sourceURL": "https://github.com/effacermonexistence/codex/blob/2040dfad95ab205d8302e857321a70605d0b0127/products/os1-mac-runtime/Sources/OS1App/OS1App.swift"
+    },
+    "b0f5889df63ef2b940f85980724565caa475d187f6cdb6b71ca56d7f9c608bee": {
+      "description": "Exact public-source Swift compiler type encoding for LiveRunMarkSpec; no Mach-O, symbol-prefix or section-wide exemption.",
+      "publicToken": "_TtC6OS1AppP33_E4338E7CE7A60E44AE4AAB89C865B63315LiveRunMarkSpec",
+      "demangledPublicType": "OS1App.(LiveRunMarkSpec in _E4338E7CE7A60E44AE4AAB89C865B633)",
+      "source": "products/os1-mac-runtime/Sources/OS1App/OS1App.swift",
+      "sourceRevision": "2040dfad95ab205d8302e857321a70605d0b0127",
+      "sourceSHA256": "29c02176e1533b50fb6c1dd5b85422d2910e654e406895a496693559b99b6058",
+      "sourceURL": "https://github.com/effacermonexistence/codex/blob/2040dfad95ab205d8302e857321a70605d0b0127/products/os1-mac-runtime/Sources/OS1App/OS1App.swift"
+    },
+    "29d367c73eba105a4cfe54167c1e25c337768ed40360a86a5de9ce1db170c677": {
+      "description": "Exact public-source Swift compiler type encoding for Phases in interactionSelfTest; no Mach-O, symbol-prefix or section-wide exemption.",
+      "publicToken": "_TtCF6OS1AppP33_E4338E7CE7A60E44AE4AAB89C865B63319interactionSelfTestFzT_T_L_6Phases",
+      "demangledPublicType": "Phases #1 in OS1App.(interactionSelfTest in _E4338E7CE7A60E44AE4AAB89C865B633)() throws -> ()",
+      "source": "products/os1-mac-runtime/Sources/OS1App/OS1App.swift",
+      "sourceRevision": "2040dfad95ab205d8302e857321a70605d0b0127",
+      "sourceSHA256": "29c02176e1533b50fb6c1dd5b85422d2910e654e406895a496693559b99b6058",
+      "sourceURL": "https://github.com/effacermonexistence/codex/blob/2040dfad95ab205d8302e857321a70605d0b0127/products/os1-mac-runtime/Sources/OS1App/OS1App.swift"
+    },
+    "c82a900ac2eb52f88d127da5f2ee2edcf6ea2641bbeeba6913e40d537c58d8ea": {
+      "description": "Exact public-source Swift compiler type encoding for Control in unlimitedRunAdmissionSelfTest; no Mach-O, symbol-prefix or section-wide exemption.",
+      "publicToken": "_TtCF6OS1AppP33_E4338E7CE7A60E44AE4AAB89C865B63329unlimitedRunAdmissionSelfTestFzZT_T_L_7Control",
+      "demangledPublicType": "Control #1 in OS1App.(unlimitedRunAdmissionSelfTest in _E4338E7CE7A60E44AE4AAB89C865B633)() async throws -> ()",
+      "source": "products/os1-mac-runtime/Sources/OS1App/OS1App.swift",
+      "sourceRevision": "2040dfad95ab205d8302e857321a70605d0b0127",
+      "sourceSHA256": "29c02176e1533b50fb6c1dd5b85422d2910e654e406895a496693559b99b6058",
+      "sourceURL": "https://github.com/effacermonexistence/codex/blob/2040dfad95ab205d8302e857321a70605d0b0127/products/os1-mac-runtime/Sources/OS1App/OS1App.swift"
+    },
+    "3a699314cebf67e37d72cd50926bf933434341230657e574d65e9c4661a7283c": {
+      "description": "Exact public-source Swift compiler type encoding for Gate in restartResumeSelfTest; no Mach-O, symbol-prefix or section-wide exemption.",
+      "publicToken": "_TtCF6OS1AppP33_E4338E7CE7A60E44AE4AAB89C865B63321restartResumeSelfTestFzZT_T_L_4Gate",
+      "demangledPublicType": "Gate #1 in OS1App.(restartResumeSelfTest in _E4338E7CE7A60E44AE4AAB89C865B633)() async throws -> ()",
+      "source": "products/os1-mac-runtime/Sources/OS1App/OS1App.swift",
+      "sourceRevision": "2040dfad95ab205d8302e857321a70605d0b0127",
+      "sourceSHA256": "29c02176e1533b50fb6c1dd5b85422d2910e654e406895a496693559b99b6058",
+      "sourceURL": "https://github.com/effacermonexistence/codex/blob/2040dfad95ab205d8302e857321a70605d0b0127/products/os1-mac-runtime/Sources/OS1App/OS1App.swift"
+    },
+    "084fb04a9135ce8d8a440e3ca785640516b87b82622d31d5e24357d647529785": {
+      "description": "Exact public-source Swift compiler type encoding for StoreBox in restartResumeSelfTest; no Mach-O, symbol-prefix or section-wide exemption.",
+      "publicToken": "_TtCF6OS1AppP33_E4338E7CE7A60E44AE4AAB89C865B63321restartResumeSelfTestFzZT_T_L_8StoreBox",
+      "demangledPublicType": "StoreBox #1 in OS1App.(restartResumeSelfTest in _E4338E7CE7A60E44AE4AAB89C865B633)() async throws -> ()",
+      "source": "products/os1-mac-runtime/Sources/OS1App/OS1App.swift",
+      "sourceRevision": "2040dfad95ab205d8302e857321a70605d0b0127",
+      "sourceSHA256": "29c02176e1533b50fb6c1dd5b85422d2910e654e406895a496693559b99b6058",
+      "sourceURL": "https://github.com/effacermonexistence/codex/blob/2040dfad95ab205d8302e857321a70605d0b0127/products/os1-mac-runtime/Sources/OS1App/OS1App.swift"
+    },
+    "02f1d09f1259f506b8fa5e899d657e72604271bbabc7e39374e53cc85c0978e8": {
+      "description": "Exact public-source Swift compiler type encoding for IdentityNoRedirect; no Mach-O, symbol-prefix or section-wide exemption.",
+      "publicToken": "_TtC6OS1AppP33_445611FD29629811A3D322CC1EB99A7718IdentityNoRedirect",
+      "demangledPublicType": "OS1App.(IdentityNoRedirect in _445611FD29629811A3D322CC1EB99A77)",
+      "source": "products/os1-mac-runtime/Sources/OS1App/OS1IdentityModel.swift",
+      "sourceRevision": "2040dfad95ab205d8302e857321a70605d0b0127",
+      "sourceSHA256": "4dbe375886d4cacf43bd20b253a044f7da28f05ba38a7be2c6b6d4d6ec49786d",
+      "sourceURL": "https://github.com/effacermonexistence/codex/blob/2040dfad95ab205d8302e857321a70605d0b0127/products/os1-mac-runtime/Sources/OS1App/OS1IdentityModel.swift"
+    },
+    "f4af7fe5cbb4f1d2a3db22ecd6e59c52b3b94669a0b414b3c5b20ca7b88d5f21": {
+      "description": "Exact public-source Swift compiler type encoding for IdentityFixtureStorage; no Mach-O, symbol-prefix or section-wide exemption.",
+      "publicToken": "_TtC6OS1AppP33_2A427E9A7A2D1AB50981FA42536DC08722IdentityFixtureStorage",
+      "demangledPublicType": "OS1App.(IdentityFixtureStorage in _2A427E9A7A2D1AB50981FA42536DC087)",
+      "source": "products/os1-mac-runtime/Sources/OS1App/ProfileMenuVerification.swift",
+      "sourceRevision": "2040dfad95ab205d8302e857321a70605d0b0127",
+      "sourceSHA256": "0763a10ad613faf2456d666fd50c04df7c8767d1d43edd5f9215320ce2b0d1d0",
+      "sourceURL": "https://github.com/effacermonexistence/codex/blob/2040dfad95ab205d8302e857321a70605d0b0127/products/os1-mac-runtime/Sources/OS1App/ProfileMenuVerification.swift"
+    },
+    "b23dab16c67dd09d06ad6d1be69f7f5ed45622904b037e68c51631f79eba31d9": {
+      "description": "Exact public-source Swift compiler type encoding for IdentityFixtureAuthenticator; no Mach-O, symbol-prefix or section-wide exemption.",
+      "publicToken": "_TtC6OS1AppP33_2A427E9A7A2D1AB50981FA42536DC08728IdentityFixtureAuthenticator",
+      "demangledPublicType": "OS1App.(IdentityFixtureAuthenticator in _2A427E9A7A2D1AB50981FA42536DC087)",
+      "source": "products/os1-mac-runtime/Sources/OS1App/ProfileMenuVerification.swift",
+      "sourceRevision": "2040dfad95ab205d8302e857321a70605d0b0127",
+      "sourceSHA256": "0763a10ad613faf2456d666fd50c04df7c8767d1d43edd5f9215320ce2b0d1d0",
+      "sourceURL": "https://github.com/effacermonexistence/codex/blob/2040dfad95ab205d8302e857321a70605d0b0127/products/os1-mac-runtime/Sources/OS1App/ProfileMenuVerification.swift"
     }
   }
 }
