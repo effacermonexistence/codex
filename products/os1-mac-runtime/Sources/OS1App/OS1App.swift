@@ -270,6 +270,7 @@ private func governanceActivityStripSelfTest() throws {
 /// on the newest pair over a 7-day period, two-week-old evidence collapses the
 /// comparison cards into one stale card, thin evidence is "too few", a token
 /// cut reads as minus, and the goal card never shows a "0/N" ratio.
+@MainActor
 private func governanceEvidenceMonitorSelfTest() throws {
     func fail(_ message: String) -> Error { RunnerError.message("OS-1 governance monitor: " + message) }
     guard GovernanceMonitorView.defaultWindow == "7일" else { throw fail("the period does not open on 7 days") }
@@ -11920,8 +11921,13 @@ private func runningRouteMarkSelfTest() throws {
     // Grow opens on Claude's 7-point dot, centered in the box.
     let dot = try clayMark(ClaudeWorkingMark.Frame(stage: .grow, index: 0))
     let lit = stride(from: 0.05, to: box, by: 0.1).filter { sample(dot, $0, box / 2, width: box).value > 0.45 }
-    try check(abs(Double(lit.count) * 0.1 - ClaudeWorkingMark.dotDiameter) < 0.45
-              && abs(((lit.first ?? 0) + (lit.last ?? 0)) / 2 - box / 2) < 0.3,
+    let observedDiameter: Double = Double(lit.count) * 0.1
+    let firstLit: Double = lit.first ?? 0
+    let lastLit: Double = lit.last ?? 0
+    let observedCenter: Double = (firstLit + lastLit) / 2
+    let diameterMatches = abs(observedDiameter - ClaudeWorkingMark.dotDiameter) < 0.45
+    let centerMatches = abs(observedCenter - box / 2) < 0.3
+    try check(diameterMatches && centerMatches,
         "the mark does not open on the centered 7-point dot (\(lit.count) tenths)")
     // Each body holds a shape of its own (Reduce Motion's still frame).
     let stills = try ClaudeWorkingMark.Body.allCases.map { try bytes(clayMark(ClaudeWorkingMark.still($0))) }
@@ -15714,14 +15720,23 @@ private struct RunningRouteMark: View {
         switch motion {
         case .claude: ClaudeClayMark(frame: clay)
         case .codex: CodexRingMark(angle: time.map(CodexWorkingRing.angle(at:)) ?? 0)
-        case .os1:
-            HStack(spacing: 2) {
-                ForEach(0..<3) { index in
-                    Capsule().fill(Theme.pink).frame(width: 2,
-                        height: time.map { 3 + 9 * (0.5 + 0.5 * sin($0 * 5 - Double(index))) } ?? 7)
-                }
+        case .os1: os1Bars
+        }
+    }
+
+    private var os1Bars: some View {
+        HStack(spacing: 2) {
+            ForEach(0..<3) { index in
+                Capsule().fill(Theme.pink).frame(width: 2, height: barHeight(index))
             }
         }
+    }
+
+    private func barHeight(_ index: Int) -> CGFloat {
+        guard let time else { return 7 }
+        let phase: Double = time * 5 - Double(index)
+        let wave: Double = 0.5 + 0.5 * sin(phase)
+        return CGFloat(3 + 9 * wave)
     }
 }
 
@@ -18739,9 +18754,13 @@ private func nativeProgressPresentationSelfTest() throws {
         guard value else { throw RunnerError.message("Native progress presentation: " + label) }; checks += 1
     }
     let stamp = Date(timeIntervalSince1970: 1_800_000_000)
-    let events = (17...28).map { i in
-        NativeExecutionProgress.Event(sequence: i, kind: i == 28 ? .toolReturned : .processing,
-            tool: i == 28 ? "Bash" : "Read", scope: "main", observedAt: stamp.addingTimeInterval(Double(i)))
+    var events: [NativeExecutionProgress.Event] = []
+    for i in 17...28 {
+        let kind: NativeExecutionProgress.Kind = i == 28 ? .toolReturned : .processing
+        let tool = i == 28 ? "Bash" : "Read"
+        let observedAt = stamp.addingTimeInterval(Double(i))
+        events.append(NativeExecutionProgress.Event(sequence: i, kind: kind,
+            tool: tool, scope: "main", observedAt: observedAt))
     }
     let progress = NativeExecutionProgress(sequence: 28, kind: .toolReturned, tool: "Bash", scope: "main",
         toolsRequested: 2, toolsReturned: 1, activeTools: 1, observedAt: stamp.addingTimeInterval(28), events: events)
@@ -18753,10 +18772,13 @@ private func nativeProgressPresentationSelfTest() throws {
     try check(view.receivedAt == progress.observedAt && view.rows.last?.receivedAt == progress.observedAt,
         "phase/poll timestamp substituted for receipt timestamp")
     try check(view.rows.last?.label == "도구 반환 · Bash", "return called success")
-    try check(!view.rows.map(\.label).joined().contains("PRIVATE") && !view.rows.map(\.label).joined().contains("완료"),
+    let rowLabels = view.rows.map { $0.label }.joined()
+    try check(!rowLabels.contains("PRIVATE") && !rowLabels.contains("완료"),
         "private content or completion invented")
     let same = NativeProgressPresentation(activity: activity)
-    try check(same.receivedAt == view.receivedAt && same.rows.map(\.id) == view.rows.map(\.id),
+    let sameRowIDs = same.rows.map { $0.id }
+    let originalRowIDs = view.rows.map { $0.id }
+    try check(same.receivedAt == view.receivedAt && sameRowIDs == originalRowIDs,
         "poll generated independent observations")
     let legacy = NativeProgressPresentation(activity: RuntimeActivity(.executing, provider: "claude", timestamp: stamp, tool: "Edit"))
     try check(!legacy.typed && legacy.counts == nil && legacy.receivedAt == stamp,

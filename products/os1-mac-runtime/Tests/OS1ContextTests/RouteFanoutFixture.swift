@@ -39,6 +39,16 @@ func runRouteFanoutFixtures() throws {
     check(oneEach?.targets.allSatisfy { $0.surface.gatewayPreference != nil } == true, "every one-each part executes")
     check(oneEach?.executionOrder == [0, 1, 2, 3], "one-each executors run in the owner's order")
     check(RouteFanout.plan("클로드랑 GPT 하나씩 시켜봐. 1+1, 2+2, 3+3") == nil, "a count that does not match never splits")
+    let distribution = RouteFanout.plan("GPT한테 사과 10개를 3명에게 하나씩 나눠주면 몇 개 남아? 클로드한테 2+2")
+    check(distribution?.targets.first?.payload == "사과 10개를 3명에게 하나씩 나눠주면 몇 개 남아", "distributive words inside a question survive routing")
+    check(RouteFanout.plan("GPT한테 하나씩 세어 보면 몇 개야? 클로드한테 2+2")?.targets.first?.payload == "하나씩 세어 보면 몇 개야", "a meaningful distributive at the start of a question survives")
+    check(RouteFanout.plan("GPT한테 하나씩 1+1, Codex한테 2+2")?.targets.map(\.payload) == ["1+1", "2+2"], "an unambiguous arithmetic route prefix is removed")
+    check(RouteFanout.plan("클로드랑 GPT 하나씩 시켜봐. 1 plus 1 2 plus 2")?.targets.map(\.payload) == ["1 plus 1", "2 plus 2"], "dictated parts require a nonempty separator")
+    check(RouteFanout.plan("클로드랑 GPT 하나씩 시켜봐. 1+12+2") == nil, "adjacent digits never become separate expressions")
+    let hostile = "클로드랑 GPT 하나씩 시켜봐. " + (0..<40).map { String(1234 + $0 * 13) }.joined(separator: "+") + " 얼마야"
+    let parseStarted = Date()
+    check(RouteFanout.plan(hostile) == nil, "a long arithmetic question stays whole")
+    check(Date().timeIntervalSince(parseStarted) < 1, "invalid arithmetic suffix does not cause nested backtracking")
     // Real owner texts that mention several backends but ask no question of them.
     for text in [
         "그리고 클로드한테도 넘기게 해 왜 코덱스한테만 넘기냐? 항상 전체적으로 토큰 다 감시해야 돼",

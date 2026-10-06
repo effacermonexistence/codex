@@ -152,8 +152,14 @@ public struct RouteFanout: Equatable, Sendable {
                     raw = String(clause[start..<mention.range.lowerBound])
                 }
                 if raw.range(of: routingTalk, options: .regularExpression) != nil { return nil }
-                // A stray "하나씩" is not part of the question ("GPT한테 하나씩 1+1, Codex한테 2+2").
-                var payload = strip(raw.replacingOccurrences(of: distributive, with: " ", options: [.regularExpression, .caseInsensitive]))
+                // Remove a route-prefix marker only when what follows is a
+                // whole arithmetic part. Inside a question, "하나씩" is content
+                // (e.g. distributing apples), not routing chatter.
+                var payload = strip(raw)
+                if let marker = payload.range(of: "^(?:\(distributive))\\s+", options: [.regularExpression, .caseInsensitive]) {
+                    let remainder = String(payload[marker.upperBound...])
+                    if selfContained(remainder) { payload = remainder }
+                }
                 if payload.range(of: repeatPrevious, options: [.regularExpression, .caseInsensitive]) != nil {
                     guard let previous = targets.last?.payload else { return nil }
                     payload = previous
@@ -379,11 +385,29 @@ public struct RouteFanout: Equatable, Sendable {
     /// The expressions of a text that is nothing but expressions, joined by
     /// spaces, "이랑", "하고" or "and"; nil otherwise.
     static func expressionRun(_ text: String) -> [String]? {
-        let joiner = #"\s*(?:이랑|랑|하고|and|그리고)?\s*"#
-        guard text.range(of: "^\\s*\(expression)(?:\(joiner)\(expression))+\\s*$", options: [.regularExpression, .caseInsensitive]) != nil,
-              let regex = try? NSRegularExpression(pattern: expression, options: [.caseInsensitive]) else { return nil }
-        return regex.matches(in: text, range: NSRange(text.startIndex..., in: text))
-            .compactMap { Range($0.range, in: text).map { String(text[$0]) } }
+        let value = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let part = try? NSRegularExpression(pattern: expression, options: [.caseInsensitive]),
+              let separator = try? NSRegularExpression(pattern: #"(?:\s+(?:(?:이랑|랑|하고|and|그리고)\s*)?|\s*(?:이랑|랑|하고|and|그리고)\s*)"#,
+                                                      options: [.caseInsensitive]) else { return nil }
+        let length = value.utf16.count
+        var cursor = 0, result: [String] = []
+        // Consume one expression and a nonempty separator at a time. A full
+        // nested regex with an empty joiner can repartition digits forever
+        // when a long arithmetic chain ends in a non-expression question.
+        while cursor < length {
+            guard let match = part.firstMatch(in: value, options: [.anchored], range: NSRange(location: cursor, length: length - cursor)),
+                  match.range.location == cursor, match.range.length > 0,
+                  let range = Range(match.range, in: value) else { return nil }
+            result.append(String(value[range]))
+            guard result.count <= maximumTargets else { return nil }
+            cursor = NSMaxRange(match.range)
+            if cursor == length { break }
+            guard let gap = separator.firstMatch(in: value, options: [.anchored], range: NSRange(location: cursor, length: length - cursor)),
+                  gap.range.location == cursor, gap.range.length > 0 else { return nil }
+            cursor = NSMaxRange(gap.range)
+            guard cursor < length else { return nil }
+        }
+        return result.count >= 2 ? result : nil
     }
 
     /// A part sent alone must be one whole arithmetic expression (with at most
