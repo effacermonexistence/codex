@@ -867,6 +867,8 @@ struct RunSummary: Codable {
     /// Governance task id of this run; the app charges an owner retry to it.
     var monitorTaskID: String? = nil
     var workflowBlocker: String? = nil
+    /// Public bounded execution tree; executable worker inputs remain private.
+    var agentTask: ParallelAgentTask.Snapshot? = nil
 }
 
 struct ProviderExecution {
@@ -9436,6 +9438,21 @@ func runTask(
     let policy = try loadCurrentOwnerPolicy()
     AttemptLatencyTrace.mark("policy")
     let namedPaths = RequestNamedPaths.extract((ownerPrompt.map { $0 + "\n" } ?? "") + prompt)
+    if ParallelAgentRuntime.readOnlyAgent {
+        // Runtime-owned child flag defeats recursive repair/workflow and any
+        // permission request inside model-generated instructions or context.
+        return try await OwnerPolicyContext.$snapshot.withValue(policy) {
+            // Planner/worker words are not owner authority for extra paths.
+            try await RequestObservation.$namedPaths.withValue([]) {
+                try await runTaskWithOwnerPolicy(prompt: prompt, workspace: workspace,
+                    providerPreference: providerPreference, context: context,
+                    codexSessionID: nil, claudeSessionID: nil,
+                    codexCapacity: codexCapacity, claudeCapacity: claudeCapacity,
+                    progress: progress, desktopReveal: .never, requireReadOnly: true,
+                    preflight: preflight, readOnlyReview: true)
+            }
+        }
+    }
     // The owner's own deep code explanation, routed by OS-1: a Codex answer is
     // checked against the code by Claude before it is shown (ReviewPass). The
     // draft and its review are one owner task for governance accounting.
@@ -15513,6 +15530,18 @@ struct OS1Main {
                 try selfTest()
                 try await os1AttemptSourceSelfTest()
                 try await fullAccessHandBackSelfTest()
+                try await parallelAgentCoordinatorSelfTest()
+            case "self-test-parallel-agents":
+                LiveRunEnvironment.detachCurrentProcess()
+                try await parallelAgentCoordinatorSelfTest()
+            case "parallel-agent-child-watch-fixture":
+                // Local cancellation fixture only: no account/model/backend.
+                try ParallelAgentRuntime.prepareChild()
+                while !ExecutionCancellation.isCancelled { try await Task.sleep(nanoseconds: 100_000_000) }
+                if let path = ProcessInfo.processInfo.environment["OS1_AGENT_CHILD_READY_FILE"] {
+                    try Data("cancelled\n".utf8).write(to: URL(fileURLWithPath: path).deletingLastPathComponent().appendingPathComponent("watch-finished"), options: .atomic)
+                }
+                print("{\"cancelled\":true}")
             case "browser-mcp": browserMCPCommand()
             case "memory-mcp": memoryMCPCommand()
             case "drift-policy-status":
@@ -15602,6 +15631,7 @@ struct OS1Main {
                 var outputFormat = "text"
                 var desktopReveal = DesktopRevealMode.never
                 var requireReadOnly = false
+                var parallelAgentChild = false
                 var index = 1
                 while index < arguments.count {
                     switch arguments[index] {
@@ -15636,11 +15666,18 @@ struct OS1Main {
                         desktopReveal = mode; index += 2
                     case "--read-only-reconciliation":
                         requireReadOnly = true; index += 1
+                    case "--parallel-agent-child":
+                        parallelAgentChild = true; index += 1
                     default: throw OS1Error.message("Unknown OS-1 argument")
                     }
                 }
                 guard let workspace, let prompt, !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                     throw OS1Error.message("Both --workspace and --prompt are required")
+                }
+                if parallelAgentChild {
+                    requireReadOnly = true
+                    codexSessionID = nil; claudeSessionID = nil
+                    try ParallelAgentRuntime.prepareChild()
                 }
                 // The rail offers both surfaces of both vendors. Only the
                 // executors reach the gateway; a handoff never asks for a route.
@@ -15648,6 +15685,7 @@ struct OS1Main {
                     throw OS1Error.message("--provider must be "
                         + ProviderSurface.allCases.map(\.rawValue).joined(separator: ", "))
                 }
+                if parallelAgentChild { try ParallelAgentRuntime.requireChildSurface(surface) }
                 if surface == .chatgpt {
                     let summary = try runChatGPTHandoff(prompt: prompt, workspace: workspace)
                     if outputFormat == "json" {
@@ -15705,7 +15743,22 @@ struct OS1Main {
                     TaskWorkflow.shouldDecompose(prompt, scope: ScopeResolution.resolve(prompt).scope,
                         projectID: boundProjectID) &&
                     PreparationIntent.detect(prompt)?.preparationOnly != true
-                let summary = try await (workflow ? runWorkflowTask(
+                let summary: RunSummary
+                if ParallelAgentRuntime.shouldPlan(prompt, workspace: workspace, requireReadOnly: requireReadOnly, surface: surface) {
+                    summary = try await runParallelAgentTask(prompt: prompt, workspace: workspace,
+                        providerPreference: providerPreference, context: sessionContext,
+                        codexSessionID: codexSessionID, claudeSessionID: claudeSessionID,
+                        codexCapacity: codexCapacity, claudeCapacity: claudeCapacity,
+                        progress: outputFormat == "text", desktopReveal: desktopReveal, workflow: workflow)
+                } else if parallelAgentChild {
+                    summary = try await ParallelAgentRuntime.$readOnlyAgent.withValue(true) {
+                        try await runTask(prompt: prompt, workspace: workspace, providerPreference: providerPreference,
+                            context: sessionContext, codexSessionID: nil, claudeSessionID: nil,
+                            codexCapacity: codexCapacity, claudeCapacity: claudeCapacity,
+                            progress: outputFormat == "text", desktopReveal: .never, requireReadOnly: true)
+                    }
+                } else {
+                summary = try await (workflow ? runWorkflowTask(
                     prompt: prompt, workspace: workspace, providerPreference: providerPreference,
                     context: sessionContext, codexSessionID: codexSessionID,
                     claudeSessionID: claudeSessionID, codexCapacity: codexCapacity,
@@ -15724,6 +15777,7 @@ struct OS1Main {
                     desktopReveal: desktopReveal,
                     requireReadOnly: requireReadOnly
                 ))
+                }
                 if outputFormat == "json" {
                     let encoder = JSONEncoder()
                     encoder.outputFormatting = [.withoutEscapingSlashes]

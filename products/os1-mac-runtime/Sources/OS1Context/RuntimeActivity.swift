@@ -25,7 +25,10 @@ public struct RuntimeActivity: Codable, Equatable, Sendable {
     public let nativeSessionID: String?
     /// Native lifecycle metadata, not generated assistant prose or a verdict.
     public let progress: NativeExecutionProgress?
-    public init(_ phase: Phase, provider: String? = nil, surface: String? = nil, model: String? = nil, effort: String? = nil, timestamp: Date = Date(), publicText: String? = nil, tool: String? = nil, nativeSessionID: String? = nil, progress: NativeExecutionProgress? = nil, publicTextOrigin: PublicTextOrigin? = nil) {
+    /// Optional OS-1-owned graph. Native Agent/Task observations are separate
+    /// telemetry and cannot mint scheduled workers or task-success receipts.
+    public let agentTask: ParallelAgentTask.Snapshot?
+    public init(_ phase: Phase, provider: String? = nil, surface: String? = nil, model: String? = nil, effort: String? = nil, timestamp: Date = Date(), publicText: String? = nil, tool: String? = nil, nativeSessionID: String? = nil, progress: NativeExecutionProgress? = nil, publicTextOrigin: PublicTextOrigin? = nil, agentTask: ParallelAgentTask.Snapshot? = nil) {
         self.phase = phase; self.timestamp = timestamp
         // A source lease is acquired before dispatch. Never carry an earlier
         // turn's executed route or native session into this pre-backend wait.
@@ -41,10 +44,11 @@ public struct RuntimeActivity: Codable, Equatable, Sendable {
         self.tool = phase == .waitingForSource ? nil : tool
         self.nativeSessionID = (phase == .waitingForSource ? nil : nativeSessionID).flatMap { UUID(uuidString: $0)?.uuidString.lowercased() }
         self.progress = phase == .waitingForSource ? nil : progress.flatMap { $0.isValid ? $0 : nil }
+        self.agentTask = agentTask.flatMap { try? $0.validated() }
     }
 
     private enum CodingKeys: String, CodingKey {
-        case phase, provider, surface, model, effort, timestamp, publicText, tool, nativeSessionID, waitingReason, progress, publicTextOrigin
+        case phase, provider, surface, model, effort, timestamp, publicText, tool, nativeSessionID, waitingReason, progress, publicTextOrigin, agentTask
     }
     /// Decoder flag: skip `progress`. `emit` reads the previous snapshot on
     /// every event only for its route fields; decoding its step ring would
@@ -75,7 +79,10 @@ public struct RuntimeActivity: Codable, Equatable, Sendable {
             // an older/unknown/malformed progress schema is encountered.
             progress: decoder.userInfo[Self.routeOnlyKey] as? Bool == true ? nil
                 : try? values.decode(NativeExecutionProgress.self, forKey: .progress),
-            publicTextOrigin: try? values.decode(PublicTextOrigin.self, forKey: .publicTextOrigin))
+            publicTextOrigin: try? values.decode(PublicTextOrigin.self, forKey: .publicTextOrigin),
+            // A corrupt/newer optional graph never hides valid public activity.
+            agentTask: decoder.userInfo[Self.routeOnlyKey] as? Bool == true ? nil
+                : try? values.decode(ParallelAgentTask.Snapshot.self, forKey: .agentTask))
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -95,6 +102,7 @@ public struct RuntimeActivity: Codable, Equatable, Sendable {
         try values.encodeIfPresent(tool, forKey: .tool)
         try values.encodeIfPresent(nativeSessionID, forKey: .nativeSessionID)
         try values.encodeIfPresent(progress, forKey: .progress)
+        try values.encodeIfPresent(agentTask, forKey: .agentTask)
     }
     public var label: String {
         switch phase {
@@ -136,20 +144,36 @@ public struct RuntimeActivity: Codable, Equatable, Sendable {
         let sameRoute = sameProvider && phase != .waitingForSource && previous?.phase != .waitingForSource &&
             (surface == nil || surface == previous?.surface)
         let retained = sameRoute && [.verifying, .syncing].contains(phase) ? previous?.publicText : nil
-        func activity(_ progress: NativeExecutionProgress?) -> Self {
+        // No graph path means no graph I/O. A child process has its own
+        // submission identity and cannot attach a foreign parent snapshot.
+        let environment = ProcessInfo.processInfo.environment
+        let graph: ParallelAgentTask.Snapshot? = {
+            guard let path = environment["OS1_AGENT_TASK_FILE"],
+                  let conversation = environment["OS1_CONVERSATION_ID"].flatMap(UUID.init(uuidString:)),
+                  let submission = environment["OS1_SUBMISSION_ID"].flatMap(UUID.init(uuidString:)) else { return nil }
+            return try? ParallelAgentTask.loadBound(path: path, conversationID: conversation, submissionID: submission)
+        }()
+        func activity(_ progress: NativeExecutionProgress?, graph: ParallelAgentTask.Snapshot?) -> Self {
             Self(phase, provider: provider,
                 surface: surface ?? (sameRoute ? previous?.surface : nil),
                 model: model ?? (sameRoute ? previous?.model : nil), effort: effort ?? (sameRoute ? previous?.effort : nil),
                 publicText: publicText ?? retained, tool: tool,
                 nativeSessionID: nativeSessionID ?? (sameRoute ? previous?.nativeSessionID : nil),
                 progress: progress,
-                publicTextOrigin: publicText == nil ? (retained == nil ? nil : previous?.publicTextOrigin) : publicTextOrigin)
+                publicTextOrigin: publicText == nil ? (retained == nil ? nil : previous?.publicTextOrigin) : publicTextOrigin,
+                agentTask: graph)
         }
-        guard var data = try? JSONEncoder().encode(activity(progress)) else { return }
+        guard var data = try? JSONEncoder().encode(activity(progress, graph: graph)) else { return }
         // The app ignores an activity file over 150,000 bytes, which would
         // also hide the public text. Step labels are the first thing to go.
         if data.count > activityStepBudgetBytes, let progress, progress.steps != nil,
-           let lean = try? JSONEncoder().encode(activity(progress.replacing(steps: nil, backendStatus: progress.backendStatus))) {
+           let lean = try? JSONEncoder().encode(activity(progress.replacing(steps: nil, backendStatus: progress.backendStatus), graph: graph)) {
+            data = lean
+        }
+        // Optional graph must not suppress the existing public prose/route
+        // path when the combined activity reaches the observer's read budget.
+        if data.count > activityStepBudgetBytes, graph != nil,
+           let lean = try? JSONEncoder().encode(activity(progress?.replacing(steps: nil, backendStatus: progress?.backendStatus), graph: nil)) {
             data = lean
         }
         // Best-effort display telemetry must not fail or change execution.

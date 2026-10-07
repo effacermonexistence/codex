@@ -5698,6 +5698,9 @@ private struct ConversationSession: Codable, Identifiable, Sendable {
     /// OS-1 owned shared task state (objective, decisions, project baseline,
     /// bound sources, backend bindings, executions). Migrated on load.
     var taskContext: TaskContext?
+    /// Last bounded, session-owned observed agent graph. Optional and lossy so
+    /// legacy/future telemetry cannot make the conversation unreadable.
+    @AgentTaskSnapshotField var agentTask: ParallelAgentTask.Snapshot? = nil
     var queuePaused: Bool?
     var forkedFrom: ConversationForkOrigin?
     var completedForkCheckpoint: ConversationForkCheckpoint?
@@ -6889,6 +6892,7 @@ private struct AppRunSummary: Decodable, Sendable {
     /// Governance task id of this run, so an owner retry can be charged to it.
     var monitorTaskID: String? = nil
     var workflowBlocker: String? = nil
+    @AgentTaskSnapshotField var agentTask: ParallelAgentTask.Snapshot? = nil
 }
 
 private struct NativeIngestionOutcome: Sendable {
@@ -7407,6 +7411,7 @@ private final class SessionStore: ObservableObject {
         let started: Date
         var activity: RuntimeActivity
         var provider: ProviderChoice?
+        var agentTask: ParallelAgentTask.Snapshot? = nil
         /// Task-context revision handed to this run; a result is adopted only
         /// if no objective/decision change happened after it.
         var handedRevision: Int? = nil
@@ -7501,6 +7506,7 @@ private final class SessionStore: ObservableObject {
     @Published private var dictationSendLatch = DictationSendLatch()
     private var inFlightSubmissions: [UUID: PendingSubmission] = [:]
     private var sessionStatuses: [UUID: String] = [:]
+    private var agentTaskSavedAt: [UUID: Date] = [:]
     private let runOperation: RunOperation
     private let sourceAdmissionCheck: ((PendingSubmission, ConversationSession) -> Bool)?
     private let sourceAdmissionFixture: (root: String, home: URL)?
@@ -7508,6 +7514,9 @@ private final class SessionStore: ObservableObject {
     private var sourceAdmissionRootCachedAt: Date?
     @Published var sessions: [ConversationSession] = []
     @Published var selectedSessionID: UUID?
+    /// Inspector selection is presentation only. It must never select,
+    /// submit, resume or cancel a conversation.
+    @Published var requestedInspectorSessionID: UUID?
     @Published var surface: ProviderChoice = .auto
     /// Codex-style user settings (language, backends). The file is the source
     /// of truth for every OS-1 process; this copy drives the UI. A fixture
@@ -7738,6 +7747,56 @@ private final class SessionStore: ObservableObject {
     var selectedSession: ConversationSession? {
         guard let index = selectedIndex else { return nil }
         return sessions[index]
+    }
+
+    func toggleAgentTaskInspector(_ id: UUID) {
+        guard sessions.contains(where: { $0.id == id }) else { return }
+        requestedInspectorSessionID = requestedInspectorSessionID == id ? nil : id
+    }
+
+    var inspectedAgentTaskSession: ConversationSession? {
+        sessions.first(where: { $0.id == requestedInspectorSessionID })
+    }
+
+    func agentTaskSnapshot(for id: UUID) -> ParallelAgentTask.Snapshot? {
+        if let active = activeRuns[id] {
+            // A newer run with no plan must not display the previous run's
+            // terminal graph as if it were live.
+            return active.agentTask.flatMap {
+                try? $0.validated(conversationID: id, submissionID: active.submissionID)
+            }
+        }
+        if inFlightSubmissions[id] != nil { return nil }
+        return sessions.first(where: { $0.id == id })?.agentTask.flatMap {
+            try? $0.validated(conversationID: id)
+        }
+    }
+
+    @discardableResult
+    func receiveAgentTask(_ snapshot: ParallelAgentTask.Snapshot, submission: PendingSubmission,
+                          terminal: Bool = false) -> Bool {
+        guard activeRuns[submission.sessionID]?.submissionID == submission.id,
+              let graph = try? snapshot.validated(conversationID: submission.sessionID,
+                  submissionID: submission.id, requestSHA256: appSHA256Hex(submission.executionRequest)) else { return false }
+        if let previous = activeRuns[submission.sessionID]?.agentTask {
+            guard previous.planID == graph.planID, graph.updatedAt >= previous.updatedAt else { return false }
+        }
+        guard let index = sessions.firstIndex(where: { $0.id == submission.sessionID }) else { return false }
+        if terminal && !graph.nodes.allSatisfy({ $0.state.isTerminal }) { return false }
+        let prior = sessions[index].agentTask
+        sessions[index].agentTask = graph
+        activeRuns[submission.sessionID]?.agentTask = graph
+        // Preserve real graph custody across GUI restarts without rewriting
+        // a large session store on every native progress tick. Lifecycle and
+        // final changes save immediately; progress-only changes coalesce.
+        let lifecycleChanged = prior?.planID != graph.planID || prior?.nodes.map(\.state) != graph.nodes.map(\.state)
+        let now = Date()
+        let progressSaveDue = agentTaskSavedAt[submission.sessionID].map({ now.timeIntervalSince($0) >= 1 }) ?? true
+        if terminal || lifecycleChanged || progressSaveDue {
+            agentTaskSavedAt[submission.sessionID] = now
+            save()
+        }
+        return true
     }
 
     var selectedSessionQueueCount: Int {
@@ -9263,6 +9322,9 @@ private final class SessionStore: ObservableObject {
                             guard let self, self.activeRuns[submission.sessionID]?.submissionID == submission.id else { return }
                             ActivityDisplayTiming.receive(session: submission.sessionID, submission: submission.id, activity: activity)
                             self.activeRuns[submission.sessionID]?.activity = activity
+                            if let graph = activity.agentTask {
+                                self.receiveAgentTask(graph, submission: submission)
+                            }
                             self.activeRuns[submission.sessionID]?.nativeSteps.merge(activity.progress,
                                 provider: activity.provider, surface: activity.surface)
                             var publicLogChanged = false
@@ -9381,6 +9443,9 @@ private final class SessionStore: ObservableObject {
                         sessions[target].messages[holder].work = run.work(answer: received)
                     }
                 } else {
+                if let graph = summary.agentTask {
+                    receiveAgentTask(graph, submission: submission, terminal: true)
+                }
                 if summary.status == "source_pending", let result = summary.taskContext,
                    result.conversationID == submission.sessionID, result.sourcePreparation?.canLookForRegistration == true,
                    summary.steps.allSatisfy({ $0.provider == "local" && $0.action == "source_preparation_pending" }) {
@@ -9595,6 +9660,9 @@ private final class SessionStore: ObservableObject {
                 }
             } catch {
                 var holdStatus = "Needs attention"
+                if let graph = activeRuns[submission.sessionID]?.agentTask {
+                    receiveAgentTask(graph, submission: submission, terminal: true)
+                }
                 if let target = sessions.firstIndex(where: { $0.id == submission.sessionID }) {
                     if submission.recoveryParentID == nil { sessions[target].lastFailure = inFlightSubmissions[submission.sessionID] ?? submission }
                     let failureMessagesStart = min(stageAnswersStart ?? Int.max, sessions[target].messages.count)
@@ -12580,6 +12648,39 @@ private struct OS1DesktopApp: App {
             do { try boundNativeLookupSelfTest(); exit(EXIT_SUCCESS) }
             catch { fputs("\(error.localizedDescription)\n", stderr); exit(EXIT_FAILURE) }
         }
+        if CommandLine.arguments.contains("--self-test-agent-tree") {
+            Task { @MainActor in
+                do { try await agentTaskTreeSelfTest(); exit(EXIT_SUCCESS) }
+                catch { fputs("\(error.localizedDescription)\n", stderr); exit(EXIT_FAILURE) }
+            }
+            NSApplication.shared.run()
+            exit(EXIT_FAILURE)
+        }
+        if let flag = CommandLine.arguments.firstIndex(of: "--preview-agent-tree-window") {
+            // This branch never reaches the installed-app guard, production
+            // SessionStore, profile restoration or provider/account launch.
+            LiveRunEnvironment.detachCurrentProcess()
+            do {
+                guard [flag + 1, flag + 2].contains(CommandLine.arguments.count) else { throw SourceContextError.invalid }
+                let mode = CommandLine.arguments.count == flag + 2 ? CommandLine.arguments[flag + 1] : "live"
+                try startAgentTaskTreePreviewWindow(mode: mode)
+                NSApplication.shared.run()
+                exit(EXIT_SUCCESS)
+            } catch { fputs("\(error.localizedDescription)\n", stderr); exit(EXIT_FAILURE) }
+        }
+        if let flag = CommandLine.arguments.firstIndex(of: "--render-agent-tree-preview") {
+            LiveRunEnvironment.detachCurrentProcess()
+            Task { @MainActor in
+                do {
+                    guard [flag + 2, flag + 3].contains(CommandLine.arguments.count) else { throw SourceContextError.invalid }
+                    let mode = CommandLine.arguments.count == flag + 3 ? CommandLine.arguments[flag + 2] : "live"
+                    try await renderAgentTaskTreePreview(to: URL(fileURLWithPath: CommandLine.arguments[flag + 1], isDirectory: true), mode: mode)
+                    exit(EXIT_SUCCESS)
+                } catch { fputs("\(error.localizedDescription)\n", stderr); exit(EXIT_FAILURE) }
+            }
+            NSApplication.shared.run()
+            exit(EXIT_FAILURE)
+        }
         if CommandLine.arguments.contains("--self-test-native-progress") {
             do { try nativeProgressPresentationSelfTest(); exit(EXIT_SUCCESS) }
             catch { fputs("\(error.localizedDescription)\n", stderr); exit(EXIT_FAILURE) }
@@ -13201,7 +13302,7 @@ private struct OS1DesktopApp: App {
                 // Keep identity regressions in the standard release self-test,
                 // not only behind the focused development diagnostic.
                 Task { @MainActor in
-                    do { try await profileMenuSelfTest(); exit(EXIT_SUCCESS) }
+                    do { try await agentTaskTreeSelfTest(); try await profileMenuSelfTest(); exit(EXIT_SUCCESS) }
                     catch { fputs("\(error.localizedDescription)\n", stderr); exit(EXIT_FAILURE) }
                 }
                 NSApplication.shared.run()
@@ -14104,7 +14205,7 @@ private struct RootView: View {
                 // Keep the conversation mounted: toggling must not reset draft, scroll, queue or run.
                 HStack(spacing: 0) {
                     if store.surface == .auto {
-                        SessionSidebar(store: store)
+                        SessionSidebar(store: store, onToggleAgentTask: { store.toggleAgentTaskInspector($0) })
                         Rectangle().fill(Theme.border).frame(width: 1)
                         VStack(spacing: 0) {
                             BrowserToggleBar(visible: browser.visible) { browser.visible.toggle() }
@@ -14129,6 +14230,13 @@ private struct RootView: View {
             if browser.visible {
                 OS1BrowserPanel(page: browser.page(browserKey), close: { browser.visible = false })
                     .id(browserKey)
+            }
+            if let session = store.inspectedAgentTaskSession {
+                AgentTaskTreeView(snapshot: store.agentTaskSnapshot(for: session.id), sessionTitle: session.title,
+                    isLive: store.isSessionRunning(session.id),
+                    onClose: { store.requestedInspectorSessionID = nil })
+                    .id(session.id)
+                    .frame(minWidth: 300, idealWidth: 360, maxWidth: 520, maxHeight: .infinity)
             }
             }
         }
@@ -15551,6 +15659,7 @@ private func acceptSidebarDrop(_ items: [NSItemProvider], prefix: String, action
 
 private struct SessionSidebar: View {
     @ObservedObject var store: SessionStore
+    var onToggleAgentTask: ((UUID) -> Void)? = nil
     @FocusState private var searching: Bool
     @State private var showMonitor = false
 
@@ -15634,7 +15743,9 @@ private struct SessionSidebar: View {
                             queuedCount: queuedCount,
                             queueStatus: idleQueue ? store.sidebarQueueStatus(session.id) : nil,
                             slotWait: idleQueue && store.globalSlotWait(session.id) != nil,
-                            queueHelp: idleQueue ? store.queueReason(session.id) : nil
+                            queueHelp: idleQueue ? store.queueReason(session.id) : nil,
+                            onToggleAgentTask: onToggleAgentTask.map { toggle in { toggle(session.id) } },
+                            agentTreeOpen: store.requestedInspectorSessionID == session.id
                         ) { store.select(session.id) }
                         .contextMenu {
                             Button(session.pinnedAt == nil ? os1Tr("상단에 고정", "Pin to top") : os1Tr("고정 해제", "Unpin")) { store.togglePin(session.id) }
@@ -15846,6 +15957,8 @@ private struct SessionRow: View {
     var previewTime: Date? = nil
     /// When the previewed run's mark appeared (previews only).
     var previewStart: Date? = nil
+    var onToggleAgentTask: (() -> Void)? = nil
+    var agentTreeOpen = false
     let action: () -> Void
     @State private var isHovering = false
 
@@ -15920,15 +16033,6 @@ private struct SessionRow: View {
             .contentShape(Rectangle())
             .background(rowShape.fill(rowFill))
             .overlay(rowShape.stroke(rowBorder, lineWidth: selected ? 1 : 0.75))
-            .overlay(alignment: .leading) {
-                if selected {
-                    Capsule()
-                        .fill(Theme.pink)
-                        .frame(width: 3)
-                        .padding(.vertical, 7)
-                        .padding(.leading, 4)
-                }
-            }
             .overlay(alignment: .bottom) {
                 if !selected {
                     Rectangle().fill(Theme.border.opacity(0.5)).frame(height: 1)
@@ -15937,9 +16041,379 @@ private struct SessionRow: View {
             .clipShape(rowShape)
         }
         .buttonStyle(.plain)
+        // A separate hit target, not a Button nested in the row's Button.
+        // Opening an inspector must not select a different session or run it.
+        .overlay(alignment: .trailing) {
+            if selected {
+                AgentTreeMarkerButton(expanded: agentTreeOpen, action: onToggleAgentTask ?? {})
+                    .frame(width: 14).frame(maxHeight: .infinity)
+                    .padding(.trailing, 1)
+                    .allowsHitTesting(onToggleAgentTask != nil)
+            }
+        }
         .onHover { isHovering = $0 }
         .accessibilityValue(selected ? os1Tr("선택됨", "Selected") : os1Tr("선택 안 됨", "Not selected"))
     }
+}
+
+/// A public-telemetry fixture, never a claimed provider execution.
+private func agentTaskTreeFixture(conversationID: UUID = UUID(), submissionID: UUID = UUID(),
+                                  request: String = "Inspect independent source and test evidence") -> ParallelAgentTask.Snapshot {
+    let stamp = Date(timeIntervalSince1970: 1_790_000_000)
+    let root = UUID(), planner = UUID(), left = UUID(), right = UUID(), primary = UUID()
+    return ParallelAgentTask.Snapshot(conversationID: conversationID, submissionID: submissionID,
+        requestSHA256: appSHA256Hex(request), rootNodeID: root, objective: request,
+        createdAt: stamp, updatedAt: stamp.addingTimeInterval(3), maxParallelism: 2, nodes: [
+            .init(id: root, title: "OS-1 coordinator", role: .coordinator, state: .running,
+                provider: "local", startedAt: stamp),
+            .init(id: planner, parentID: root, title: "Decompose the bounded task", role: .planner, state: .succeeded,
+                provider: "codex", model: "fixture-model", effort: "high", startedAt: stamp,
+                finishedAt: stamp.addingTimeInterval(1), resultSummary: "Two independent read-only evidence tasks"),
+            .init(id: left, parentID: root, dependencies: [planner], title: "Inspect implementation evidence", role: .worker,
+                state: .running, provider: "codex", model: "fixture-model", effort: "high",
+                nativeSessionID: UUID().uuidString, workerSubmissionID: UUID(), startedAt: stamp.addingTimeInterval(2),
+                progressText: "Fixture read-tool event observed", tool: "Read"),
+            .init(id: right, parentID: root, dependencies: [planner], title: "Inspect regression evidence", role: .worker),
+            .init(id: primary, parentID: root, dependencies: [left, right], title: "Converge evidence and execute the primary task", role: .primary),
+        ])
+}
+
+private func terminalAgentTaskTreeFixture(_ input: ParallelAgentTask.Snapshot) -> ParallelAgentTask.Snapshot {
+    var graph = input
+    graph.updatedAt = graph.updatedAt.addingTimeInterval(2)
+    for index in graph.nodes.indices {
+        graph.nodes[index].state = .succeeded
+        graph.nodes[index].startedAt = graph.nodes[index].startedAt ?? graph.createdAt.addingTimeInterval(2)
+        graph.nodes[index].finishedAt = graph.updatedAt
+        graph.nodes[index].resultSummary = "Mock-runtime node result; no provider was called"
+    }
+    return graph
+}
+
+@MainActor
+private func agentTaskTreeSelfTest() async throws {
+    var checks = 0
+    func check(_ condition: @autoclosure () -> Bool, _ message: String) throws {
+        guard condition() else { throw RunnerError.message("Agent tree: " + message) }
+        checks += 1
+    }
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("os1-agent-tree-" + UUID().uuidString)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    var capturedSubmission: PendingSubmission?, liveGraph: ParallelAgentTask.Snapshot?
+    var fixtureExecutorCalls = 0
+    let store = SessionStore(storageRoot: root, runOperation: { submission, _, _, _, onActivity in
+        fixtureExecutorCalls += 1; capturedSubmission = submission
+        let graph = agentTaskTreeFixture(conversationID: submission.sessionID, submissionID: submission.id,
+            request: submission.executionRequest)
+        liveGraph = graph
+        onActivity(RuntimeActivity(.executing, provider: "codex", model: "fixture-model", effort: "high", agentTask: graph))
+        try await Task.sleep(for: .milliseconds(350))
+        return AppRunSummary(status: "complete", steps: [AppRunStep(sequence: 1, provider: "codex", action: "fixture",
+            model: "fixture-model", effort: "high", revasDisposition: "adopted", sessionID: UUID().uuidString,
+            permissionProfile: "read_only", exitCode: 0, output: "Mock primary result", stderr: "", durationMS: 1,
+            nativeRecord: nil)], agentTask: terminalAgentTaskTreeFixture(graph))
+    }, nativeSessionOpener: { _ in false })
+    let sessionID = store.selectedSessionID!
+    try check(store.requestedInspectorSessionID == nil && store.agentTaskSnapshot(for: sessionID) == nil, "legacy/no-plan starts hidden and empty")
+    store.composer = "Inspect the fixture records in parallel without editing files"; store.send()
+    let deadline = Date().addingTimeInterval(5)
+    while store.agentTaskSnapshot(for: sessionID) == nil && Date() < deadline {
+        try await Task.sleep(for: .milliseconds(10))
+    }
+    guard let graph = liveGraph, let submission = capturedSubmission else { throw RunnerError.message("Agent tree: mock runtime was not observed") }
+    try check(store.agentTaskSnapshot(for: sessionID)?.planID == graph.planID, "actual activity callback must reach session-owned graph")
+    try check(store.sessions.first(where: { $0.id == sessionID })?.agentTask?.nodes.contains(where: { $0.state == .running }) == true,
+              "live observation is preserved without claiming terminal completion")
+    let observedReload = SessionStore(storageRoot: root, nativeSessionOpener: { _ in false })
+    try check(observedReload.sessions.first(where: { $0.id == sessionID })?.agentTask?.nodes.contains(where: { $0.state == .running }) == true,
+              "GUI reload preserves observed running state without fabricating interruption or success")
+    var wrong = graph; wrong.conversationID = UUID()
+    try check(!store.receiveAgentTask(wrong, submission: submission), "foreign conversation graph rejected")
+    wrong = graph; wrong.submissionID = UUID()
+    try check(!store.receiveAgentTask(wrong, submission: submission), "foreign submission graph rejected")
+    wrong = graph; wrong.requestSHA256 = String(repeating: "f", count: 64)
+    try check(!store.receiveAgentTask(wrong, submission: submission), "foreign request hash rejected")
+    wrong = graph; wrong.planID = UUID()
+    try check(!store.receiveAgentTask(wrong, submission: submission), "same parent cannot silently replace its active plan")
+    wrong = graph; wrong.updatedAt = graph.updatedAt.addingTimeInterval(-0.5)
+    try check(!store.receiveAgentTask(wrong, submission: submission), "stale telemetry rejected")
+    try check(!store.receiveAgentTask(graph, submission: submission, terminal: true), "running nodes cannot be persisted as a terminal graph")
+    let roots = AgentTaskTreePresentation.rows(graph, expanded: [])
+    let branches = AgentTaskTreePresentation.rows(graph, expanded: [graph.rootNodeID])
+    try check(roots.count == graph.nodes.count && branches.count == graph.nodes.count, "compact root details preserve the recorded split topology")
+    try check(branches.filter { $0.depth == 1 }.count == graph.nodes.count - 1, "DAG dependencies do not create extra children")
+    let pending = graph.nodes.first { $0.state == .pending }!
+    try check(AgentTaskTreePresentation.route(pending).contains("관측") || AgentTaskTreePresentation.route(pending).contains("not observed"), "pending executor not fabricated")
+
+    store.createSession(); let unrelated = store.selectedSessionID!
+    store.composer = "untouched second-session draft"
+    let queuedBefore = store.queuedSubmissions
+    store.toggleAgentTaskInspector(sessionID)
+    try check(store.requestedInspectorSessionID == sessionID && store.selectedSessionID == unrelated,
+              "inspector is bound separately from current conversation selection")
+    try check(store.composer == "untouched second-session draft" && store.queuedSubmissions == queuedBefore,
+              "opening inspector preserves composer and queue")
+    store.toggleAgentTaskInspector(sessionID)
+    try check(store.requestedInspectorSessionID == nil, "repeated marker click collapses")
+    store.toggleAgentTaskInspector(UUID())
+    try check(store.requestedInspectorSessionID == nil, "unknown session cannot open an inspector")
+
+    while !store.activeRuns.isEmpty && Date() < deadline { try await Task.sleep(for: .milliseconds(20)) }
+    try check(store.activeRuns.isEmpty && fixtureExecutorCalls == 1, "mock execution drained exactly once")
+    try check(store.sessions.first(where: { $0.id == sessionID })?.agentTask?.nodes.allSatisfy({ $0.state.isTerminal }) == true,
+              "bound terminal summary survives run removal")
+    let reloaded = SessionStore(storageRoot: root, nativeSessionOpener: { _ in false })
+    try check(reloaded.agentTaskSnapshot(for: sessionID)?.planID == graph.planID, "terminal graph survives session-store reload")
+    try check(reloaded.selectedSessionID != nil, "legacy session state remains readable")
+    reloaded.activeRuns[sessionID] = .init(submissionID: UUID(), started: Date(), activity: RuntimeActivity(.preparing))
+    try check(reloaded.agentTaskSnapshot(for: sessionID) == nil, "new nonparallel run does not inherit an old terminal graph")
+    reloaded.activeRuns.removeValue(forKey: sessionID)
+    try check(reloaded.agentTaskSnapshot(for: sessionID)?.planID == graph.planID, "recorded prior graph remains available as history")
+    var original = try JSONSerialization.jsonObject(with: JSONEncoder().encode(store.sessions.first { $0.id == sessionID }!)) as! [String: Any]
+    original["agentTask"] = ["schema": 999, "nodes": "malformed optional telemetry"]
+    let malformed = try JSONDecoder().decode(ConversationSession.self, from: JSONSerialization.data(withJSONObject: original))
+    try check(malformed.id == sessionID && malformed.agentTask == nil && !malformed.messages.isEmpty,
+              "malformed optional graph does not hide its conversation")
+    original.removeValue(forKey: "agentTask")
+    let legacy = try JSONDecoder().decode(ConversationSession.self, from: JSONSerialization.data(withJSONObject: original))
+    try check(legacy.agentTask == nil && legacy.id == sessionID, "missing historical graph remains nil")
+    let preview = try agentTreePreviewFixture(root: root.appendingPathComponent("window-fixture"))
+    configureAgentTreePreview(preview.store, sessionID: preview.id, graph: preview.graph, mode: .collapsed)
+    try check(preview.store.requestedInspectorSessionID == nil && preview.store.isSessionRunning(preview.id),
+              "visible fixture collapsed mode hides only inspector, not fake-execution state")
+    configureAgentTreePreview(preview.store, sessionID: preview.id, graph: preview.graph, mode: .empty)
+    try check(preview.store.requestedInspectorSessionID == preview.id && preview.store.agentTaskSnapshot(for: preview.id) == nil
+        && preview.store.queuedSubmissions.isEmpty, "visible fixture empty mode is isolated, no plan or queue fabricated")
+
+    // Production row, native marker, actual mouse down/up. No global input
+    // injection: events are consumed only by this off-screen fixture window.
+    let row = SessionRow(session: ConversationSession(id: sessionID, title: "Agent marker fixture", workspace: root.path),
+        selected: true, onToggleAgentTask: { store.toggleAgentTaskInspector(sessionID) }, action: {
+            store.select(sessionID)
+        }).frame(width: Theme.sidebarWidth - 20, height: 70).environment(\.colorScheme, .dark)
+    let rowHost = NSHostingView(rootView: row)
+    let rowWindow = agentTreeFixtureWindow(host: rowHost, size: CGSize(width: Theme.sidebarWidth - 20, height: 70))
+    defer { rowWindow.orderOut(nil); rowWindow.close() }
+    await agentTreeFixtureLayout(rowHost)
+    guard let marker = agentTreeFixtureButtons(rowHost).compactMap({ $0 as? AgentTreeMarkerNSButton }).first else {
+        throw RunnerError.message("Agent tree: production right marker was not mounted")
+    }
+    let markerFrame = marker.convert(marker.bounds, to: rowHost)
+    try check(markerFrame.midX > rowHost.bounds.width * 0.9, "pink marker is on RIGHT, not left")
+    try agentTreeFixtureMouseClick(marker)
+    try check(store.requestedInspectorSessionID == sessionID && store.selectedSessionID == unrelated,
+              "mouse marker opens inspector without invoking row selection")
+    try agentTreeFixtureMouseClick(marker)
+    try check(store.requestedInspectorSessionID == nil, "second actual marker click closes inspector")
+
+    let disclosure = AgentTaskTreeDisclosure(planID: graph.planID)
+    var headerClosed = false
+    let treeHost = NSHostingView(rootView: AgentTaskTreeView(snapshot: graph, sessionTitle: "Runtime fixture",
+        onClose: { headerClosed = true }, disclosure: disclosure).frame(width: 380, height: 720).environment(\.colorScheme, .dark))
+    let treeWindow = agentTreeFixtureWindow(host: treeHost, size: CGSize(width: 380, height: 720))
+    defer { treeWindow.orderOut(nil); treeWindow.close() }
+    await agentTreeFixtureLayout(treeHost)
+    guard let nativeHeader = agentTreeFixtureHeader(treeHost) else { throw RunnerError.message("Agent tree: native header missing") }
+    try check(nativeHeader.sessionField.stringValue == "Runtime fixture" && !nativeHeader.captionField.stringValue.isEmpty,
+              "native header fields keep exact session title and localized caption")
+    guard let headerPixels = nativeHeader.bitmapImageRepForCachingDisplay(in: nativeHeader.bounds) else {
+        throw RunnerError.message("Agent tree: native header pixels unavailable")
+    }
+    nativeHeader.cacheDisplay(in: nativeHeader.bounds, to: headerPixels)
+    var captionPixels = 0, titlePixels = 0
+    for y in 0..<headerPixels.pixelsHigh {
+        for x in 0..<headerPixels.pixelsWide {
+            guard let color = headerPixels.colorAt(x: x, y: y)?.usingColorSpace(.sRGB) else { continue }
+            if RouteMarkPixel(color).pink && color.redComponent > 0.5 { captionPixels += 1 }
+            if x < headerPixels.pixelsWide * 3 / 4 &&
+                min(color.redComponent, color.greenComponent, color.blueComponent) > 0.85 && RouteMarkPixel(color).gray {
+                titlePixels += 1
+            }
+        }
+    }
+    try check(captionPixels > 20 && titlePixels > 20, "actual native header bitmap paints caption and session text")
+    let worker = graph.nodes.first { $0.role == .worker }!
+    guard let workerButton = agentTreeFixtureButtons(treeHost).first(where: {
+        $0.accessibilityIdentifier() == "os1.agent-tree.node." + worker.id.uuidString.lowercased()
+    }) else { throw RunnerError.message("Agent tree: worker disclosure button missing") }
+    try agentTreeFixtureMouseClick(workerButton)
+    try check(disclosure.expanded.contains(worker.id), "actual node click expands details")
+    await agentTreeFixtureLayout(treeHost)
+    try agentTreeFixtureMouseClick(workerButton)
+    try check(!disclosure.expanded.contains(worker.id), "repeated node click collapses details")
+    try agentTreeFixtureMouseClick(nativeHeader.closeButton)
+    try check(headerClosed, "actual native header close button invokes only its supplied close handler")
+    print("Agent task tree: \(checks) checks PASS; actual mock-runtime callback/final-summary binding, native mouse events, RIGHT marker, disclosure, legacy isolation; provider calls 0; live session writes 0")
+}
+
+@MainActor
+private func agentTreeFixtureWindow<V: View>(host: NSHostingView<V>, size: CGSize) -> NSWindow {
+    let window = NSWindow(contentRect: NSRect(origin: NSPoint(x: -10_000, y: -10_000), size: size),
+        styleMask: [.titled], backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    window.contentView = host; host.frame = NSRect(origin: .zero, size: size)
+    window.makeKeyAndOrderFront(nil)
+    return window
+}
+
+@MainActor
+private func agentTreeFixtureLayout(_ view: NSView) async {
+    view.layoutSubtreeIfNeeded()
+    view.needsDisplay = true
+    view.window?.displayIfNeeded()
+    try? await Task.sleep(for: .milliseconds(25))
+    view.layoutSubtreeIfNeeded()
+}
+
+@MainActor
+private func agentTreeFixtureButtons(_ view: NSView) -> [NSButton] {
+    (view as? NSButton).map { [$0] } ?? view.subviews.flatMap(agentTreeFixtureButtons)
+}
+
+@MainActor
+private func agentTreeFixtureHeader(_ view: NSView) -> AgentTreeNativeHeaderView? {
+    if let header = view as? AgentTreeNativeHeaderView { return header }
+    return view.subviews.lazy.compactMap(agentTreeFixtureHeader).first
+}
+
+@MainActor
+private func agentTreeFixtureMouseClick(_ button: NSButton) throws {
+    guard let window = button.window else { throw RunnerError.message("Agent tree: fixture button has no window") }
+    let point = button.convert(NSPoint(x: button.bounds.midX, y: button.bounds.midY), to: nil)
+    let stamp = ProcessInfo.processInfo.systemUptime
+    guard let down = NSEvent.mouseEvent(with: .leftMouseDown, location: point, modifierFlags: [], timestamp: stamp,
+        windowNumber: window.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 1),
+          let up = NSEvent.mouseEvent(with: .leftMouseUp, location: point, modifierFlags: [], timestamp: stamp + 0.01,
+        windowNumber: window.windowNumber, context: nil, eventNumber: 2, clickCount: 1, pressure: 0)
+    else { throw RunnerError.message("Agent tree: fixture mouse events unavailable") }
+    NSApplication.shared.postEvent(up, atStart: true)
+    button.mouseDown(with: down)
+}
+
+@MainActor
+private func renderAgentTaskTreePreview(to output: URL, mode: String = "live") async throws {
+    guard ["live", "collapsed", "empty", "expanded"].contains(mode) else { throw SourceContextError.invalid }
+    try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true,
+        attributes: [.posixPermissions: 0o700])
+    let graph = try agentTaskTreeFixture().validated()
+    for (name, snapshot, _) in [("agent-tree-live.png", Optional(graph), true),
+                                      ("agent-tree-collapsed.png", Optional(graph), false),
+                                      ("agent-tree-empty.png", Optional<ParallelAgentTask.Snapshot>.none, false),
+                                      ("agent-tree-expanded.png", Optional(graph), true)] where name == "agent-tree-\(mode).png" {
+        let expandedIDs: Set<UUID> = name == "agent-tree-expanded.png" ? Set(graph.nodes.filter { $0.role == .worker }.prefix(1).map(\.id)) : []
+        let disclosure = AgentTaskTreeDisclosure(planID: snapshot?.planID, initiallyExpanded: expandedIDs)
+        let host = NSHostingView(rootView: AgentTaskTreeView(snapshot: snapshot, sessionTitle: "Bounded runtime fixture", isLive: name == "agent-tree-live.png" || name == "agent-tree-expanded.png",
+            onClose: {}, disclosure: disclosure).frame(width: 380, height: 720).environment(\.colorScheme, .dark))
+        let window = agentTreeFixtureWindow(host: host, size: CGSize(width: 380, height: 720))
+        defer { window.orderOut(nil); window.close() }
+        await agentTreeFixtureLayout(host)
+        guard let bitmap = host.bitmapImageRepForCachingDisplay(in: host.bounds) else { throw SourceContextError.invalid }
+        host.cacheDisplay(in: host.bounds, to: bitmap)
+        guard let png = bitmap.representation(using: .png, properties: [:]) else { throw SourceContextError.invalid }
+        try png.write(to: output.appendingPathComponent(name), options: .atomic)
+    }
+    print("Rendered production agent task tree: \(output.path); synthetic bounded snapshots, provider calls 0; no live state")
+}
+
+private enum AgentTreePreviewMode: String, CaseIterable { case live, collapsed, empty }
+
+@MainActor
+private func agentTreePreviewFixture(root: URL) throws -> (store: SessionStore, id: UUID, graph: ParallelAgentTask.Snapshot) {
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+    let store = SessionStore(storageRoot: root, runOperation: { _, _, _, _, _ in
+        throw RunnerError.message("The isolated UI fixture never dispatches a provider.")
+    }, nativeSessionOpener: { _ in false })
+    let id = store.selectedSessionID!
+    store.sessions[0].title = "Source-bound agent tree fixture"
+    store.sessions[0].workspace = root.path
+    let graph = try agentTaskTreeFixture(conversationID: id).validated()
+    return (store, id, graph)
+}
+
+@MainActor
+private func configureAgentTreePreview(_ store: SessionStore, sessionID: UUID,
+                                       graph: ParallelAgentTask.Snapshot, mode: AgentTreePreviewMode) {
+    guard let index = store.sessions.firstIndex(where: { $0.id == sessionID }) else { return }
+    if mode == .empty {
+        store.activeRuns.removeValue(forKey: sessionID)
+        store.sessions[index].agentTask = nil
+    } else {
+        store.sessions[index].agentTask = graph
+        store.activeRuns[sessionID] = .init(submissionID: graph.submissionID, started: graph.createdAt,
+            activity: RuntimeActivity(.executing, provider: "codex", model: "fixture-model", effort: "high", agentTask: graph),
+            provider: .codex, agentTask: graph)
+    }
+    store.requestedInspectorSessionID = mode == .collapsed ? nil : sessionID
+}
+
+@MainActor
+private struct AgentTreeWindowFixture: View {
+    @ObservedObject var store: SessionStore
+    let id: UUID
+    let graph: ParallelAgentTask.Snapshot
+    @State var mode: AgentTreePreviewMode
+    var body: some View {
+        VStack(spacing: 0) {
+            Picker("Fixture state", selection: $mode) {
+                ForEach(AgentTreePreviewMode.allCases, id: \.rawValue) { mode in Text(mode.rawValue).tag(mode) }
+            }.pickerStyle(.segmented).frame(width: 320).padding(12)
+                .accessibilityIdentifier("os1.agent-tree.fixture-state")
+            HStack(alignment: .top, spacing: 16) {
+                if let session = store.sessions.first(where: { $0.id == id }) {
+                    VStack(alignment: .leading, spacing: 12) {
+                        SessionRow(session: session, selected: true, activity: store.activeRuns[id]?.activity,
+                            onToggleAgentTask: { store.toggleAgentTaskInspector(id) },
+                            agentTreeOpen: store.requestedInspectorSessionID == id, action: { store.select(id) })
+                        Text("UI fixture · no provider calls")
+                            .font(.system(size: 11)).foregroundStyle(Theme.muted)
+                        Spacer()
+                    }.frame(width: Theme.sidebarWidth - 20).padding(12)
+                }
+                if store.requestedInspectorSessionID == id {
+                    AgentTaskTreeView(snapshot: store.agentTaskSnapshot(for: id), sessionTitle: "Source-bound agent tree fixture",
+                        isLive: store.isSessionRunning(id), onClose: { store.requestedInspectorSessionID = nil })
+                        .frame(width: 380).frame(maxHeight: .infinity)
+                } else { Spacer(minLength: 380) }
+            }
+        }.background(Theme.background).environment(\.colorScheme, .dark)
+        .onChange(of: mode) { mode in configureAgentTreePreview(store, sessionID: id, graph: graph, mode: mode) }
+    }
+}
+
+@MainActor
+private final class AgentTreePreviewWindowDelegate: NSObject, NSWindowDelegate {
+    let root: URL
+    init(root: URL) { self.root = root }
+    func windowWillClose(_ notification: Notification) {
+        try? FileManager.default.removeItem(at: root)
+        NSApplication.shared.terminate(nil)
+    }
+}
+
+@MainActor private var agentTreePreviewWindow: NSWindow?
+@MainActor private var agentTreePreviewDelegate: AgentTreePreviewWindowDelegate?
+
+@MainActor
+private func startAgentTaskTreePreviewWindow(mode raw: String) throws {
+    guard let mode = AgentTreePreviewMode(rawValue: raw) else { throw SourceContextError.invalid }
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("os1-agent-tree-visible-fixture-" + UUID().uuidString)
+    let fixture = try agentTreePreviewFixture(root: root)
+    configureAgentTreePreview(fixture.store, sessionID: fixture.id, graph: fixture.graph, mode: mode)
+    NSApplication.shared.setActivationPolicy(.regular)
+    let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 680, height: 780),
+        styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    window.title = "OS-1 Agent Tree Fixture — \(getpid())"
+    window.contentView = NSHostingView(rootView: AgentTreeWindowFixture(store: fixture.store, id: fixture.id, graph: fixture.graph, mode: mode))
+    let delegate = AgentTreePreviewWindowDelegate(root: root)
+    window.delegate = delegate; agentTreePreviewDelegate = delegate; agentTreePreviewWindow = window
+    window.center(); window.makeKeyAndOrderFront(nil)
+    NSApplication.shared.activate(ignoringOtherApps: true)
+    let receipt: [String: Any] = ["pid": Int(getpid()), "windowTitle": window.title,
+        "fixtureRoot": root.path, "state": mode.rawValue, "providerCalls": 0, "liveState": false]
+    print(String(decoding: try JSONSerialization.data(withJSONObject: receipt, options: [.sortedKeys]), as: UTF8.self))
+    fflush(stdout)
 }
 
 private extension RuntimeActivity {
