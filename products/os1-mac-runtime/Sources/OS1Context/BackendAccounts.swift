@@ -3,7 +3,11 @@ import Foundation
 /// Owner-visible backend sign-ins (owner order 2026-09-24: "코덱스 로그인,
 /// 클로드 로그인 … 여러 계정 로그인 가능하도록").
 ///
-/// OS-1 never reads, stores, copies or forwards a provider credential. An
+/// Agent execution never reads, stores, copies or forwards a provider credential.
+/// Owner-initiated Codex-native dictation is the narrow exception: its lazy
+/// CLI IPC receives an authorization token only in memory for the fixed
+/// OpenAI dictation endpoints. It never reads/copies an auth cache or persists,
+/// logs, exports, or sends a token to another destination. An
 /// account here is a label plus the home directory that the provider's own
 /// CLI writes its login into — `CODEX_HOME` for Codex, `CLAUDE_CONFIG_DIR`
 /// for Claude Code. The secret stays wherever that CLI puts it (file or

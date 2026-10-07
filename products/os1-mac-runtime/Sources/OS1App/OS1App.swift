@@ -5,7 +5,6 @@ import Foundation
 import ImageIO
 import OS1Context
 import SQLite3
-@preconcurrency import Speech
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -3905,15 +3904,23 @@ private func composerInteractionSelfTest() async throws {
         ("draft", true, true, .idle, .queue), ("", false, false, .listening, .send),
         ("", true, false, .listening, .queue), ("draft", true, true, .listening, .queue),
         ("draft", true, false, .authorizing, .finalizing),
-        ("draft", true, false, .finalizing, .finalizing),
-        ("", true, false, .transcribing, .finalizing)
+        ("draft", true, false, .finalizing, .queue),
+        ("", true, false, .transcribing, .queue),
+        ("", false, false, .finalizing, .send),
+        ("", false, false, .transcribing, .send)
     ]
     for (draft, running, stopping, voice, expected) in fixtures {
         try check(ComposerPrimaryAction.resolve(draft: draft, running: running, stopping: stopping, voice: voice) == expected,
             "state mismatch: \(expected.rawValue)")
     }
     try check(!ComposerPrimaryAction.disabledSend.enabled && !ComposerPrimaryAction.stopping.enabled &&
-        !ComposerPrimaryAction.finalizing.enabled, "pending controls must be disabled")
+        !ComposerPrimaryAction.finalizing.enabled && !ComposerPrimaryAction.dictationSendPending.enabled,
+        "permission and latched-send controls must be disabled")
+    try check(ComposerPrimaryAction.resolve(draft: "", running: false, stopping: false,
+        voice: .transcribing, voiceSendPending: true) == .dictationSendPending,
+        "a pending dictation send must not accept a second click")
+    checks += try dictationSendLatchSelfTest()
+    checks += try await voiceDictationControllerSelfTest()
     let root = FileManager.default.temporaryDirectory.appendingPathComponent("os1-composer-" + UUID().uuidString)
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: root) }
@@ -4001,12 +4008,99 @@ private enum VoiceDictationPhase: Equatable {
     case transcribing
 }
 
-private enum ComposerPrimaryAction: String, CaseIterable {
-    case disabledSend, send, queue, steer, stop, stopping, finalizing
+/// A send gesture while the final transcript is pending is an intent, not a
+/// submission of the current partial draft. Tickets invalidate late callbacks
+/// on cancellation/session changes and can be consumed only once, after idle.
+private struct DictationSendLatch {
+    struct Ticket: Equatable {
+        let id = UUID()
+        let sessionID: UUID
+    }
+    private(set) var pending: Ticket?
 
-    static func resolve(draft: String, running: Bool, stopping: Bool, voice: VoiceDictationPhase) -> Self {
-        if [.authorizing, .finalizing, .transcribing].contains(voice) { return .finalizing }
-        if voice == .listening || !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+    mutating func request(sessionID: UUID) -> Ticket? {
+        guard pending == nil else { return nil }
+        let ticket = Ticket(sessionID: sessionID)
+        pending = ticket
+        return ticket
+    }
+
+    mutating func consume(_ ticket: Ticket, currentSessionID: UUID?, phase: VoiceDictationPhase) -> Bool {
+        guard pending == ticket, phase == .idle else { return false }
+        pending = nil
+        return currentSessionID == ticket.sessionID
+    }
+
+    mutating func cancel() { pending = nil }
+}
+
+@MainActor
+private func dictationSendLatchSelfTest() throws -> Int {
+    var checks = 0
+    func check(_ condition: Bool, _ message: String) throws {
+        guard condition else { throw RunnerError.message("Dictation send: " + message) }; checks += 1
+    }
+    var latch = DictationSendLatch()
+    let original = UUID(), other = UUID()
+    var selected: UUID? = original
+    var phase = VoiceDictationPhase.transcribing
+    var draft = "보존할 초안"
+    let rawDraft = draft
+    var sends: [String] = []
+    var finishRegistrations = 0
+    var completion: (() -> Void)?
+    func request() {
+        guard let session = selected, let ticket = latch.request(sessionID: session) else { return }
+        finishRegistrations += 1
+        completion = {
+            guard latch.consume(ticket, currentSessionID: selected, phase: phase) else { return }
+            sends.append(draft)
+        }
+    }
+    request(); request(); request()
+    try check(finishRegistrations == 1 && sends.isEmpty && draft == rawDraft,
+        "stop/finish then repeated Send must latch once without sending or editing the partial draft")
+    completion?()
+    try check(sends.isEmpty && latch.pending != nil, "send ran before the final transcript reached idle")
+    draft = rawDraft + " 마지막 단어"
+    phase = .idle
+    completion?(); completion?()
+    try check(sends == [draft] && latch.pending == nil, "final transcript must send exactly once after idle")
+
+    // Cancellation restores the raw draft independently of this submission
+    // latch. A retained late completion must not re-submit that restored text.
+    phase = .finalizing; draft = rawDraft; request()
+    let cancelledCompletion = completion
+    latch.cancel(); phase = .idle
+    cancelledCompletion?()
+    try check(sends.count == 1 && draft == rawDraft, "cancel allowed a late send or changed the raw draft")
+
+    phase = .transcribing; request()
+    let previousSessionCompletion = completion
+    latch.cancel(); selected = other; phase = .idle
+    previousSessionCompletion?()
+    selected = original
+    previousSessionCompletion?()
+    try check(sends.count == 1 && draft == rawDraft, "session change/back revived an old send")
+
+    phase = .transcribing; request()
+    cancelledCompletion?(); previousSessionCompletion?()
+    try check(latch.pending != nil && sends.count == 1, "old callbacks consumed a newer voice intent")
+    draft = rawDraft + " 새 받아쓰기"; phase = .idle; completion?()
+    try check(sends == [rawDraft + " 마지막 단어", draft], "new dictation was blocked by cancelled intent")
+    return checks
+}
+
+private enum ComposerPrimaryAction: String, CaseIterable {
+    case disabledSend, send, queue, steer, stop, stopping, finalizing, dictationSendPending
+
+    static func resolve(draft: String, running: Bool, stopping: Bool, voice: VoiceDictationPhase,
+                        voiceSendPending: Bool = false) -> Self {
+        if voice == .authorizing { return .finalizing }
+        if voice != .idle {
+            return voiceSendPending ? .dictationSendPending : (running ? .queue : .send)
+        }
+        if !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return running ? .queue : .send
         }
         return running ? (stopping ? .stopping : .stop) : .disabledSend
@@ -4016,7 +4110,7 @@ private enum ComposerPrimaryAction: String, CaseIterable {
         switch self {
         case .stop, .stopping: return "stop.fill"
         case .queue: return "text.line.last.and.arrowtriangle.forward"
-        case .finalizing: return "ellipsis"
+        case .finalizing, .dictationSendPending: return "ellipsis"
         case .send, .disabledSend, .steer: return "arrow.up"
         }
     }
@@ -4028,6 +4122,7 @@ private enum ComposerPrimaryAction: String, CaseIterable {
         case .stop: return os1Tr("작업 중지", "Stop task")
         case .stopping: return os1Tr("작업 중지 확인 중", "Confirming task stop")
         case .finalizing: return os1Tr("음성 입력 처리 중", "Processing voice input")
+        case .dictationSendPending: return os1Tr("받아쓰기 완료 후 보내기", "Send when dictation finishes")
         }
     }
     var help: String {
@@ -4038,55 +4133,60 @@ private enum ComposerPrimaryAction: String, CaseIterable {
         case .stop: return os1Tr("현재 대화의 작업 중지 · ⌘.", "Stop this conversation's task · ⌘.")
         case .stopping: return os1Tr("중지 확인을 기다립니다 · 입력과 대기열은 보존됩니다", "Waiting for stop confirmation · input and queue are preserved")
         case .finalizing: return os1Tr("음성 입력을 마무리하고 있습니다", "Finishing voice input")
+        case .dictationSendPending: return os1Tr("전송 요청을 보존했습니다 · 받아쓰기 완료 후 한 번 보냅니다", "Send requested · sends once after the final transcript is ready")
         }
     }
 }
 
-private struct LocalWhisperConfiguration: Sendable {
-    let executableURL: URL
-    let modelID: String
-}
+/// One recording owns its PCM and stream-send chain. It touches neither other
+/// applications nor a local ASR model. Stop drains the final captured block.
+private final class CodexAudioCapture: @unchecked Sendable {
+    private let lock = NSLock()
+    private var accepting = true
+    private var recording = Data()
+    private var gain = CodexDictationGain()
+    private var tail: Task<Void, Never>?
+    private var lastLevel = Date.distantPast
+    private let send: @Sendable (Data) async -> Void
+    private let level: @Sendable (CGFloat) -> Void
+    private let failure: @Sendable () -> Void
+    static let maximumRecordingBytes = 64 * 1_024 * 1_024
 
-private struct LocalWhisperResult: Decodable {
-    let text: String
-}
-
-/// AVAudioEngine calls its tap on a realtime queue. This explicitly Sendable
-/// bridge owns either the live Speech request or the local recording file and
-/// prevents the controller's MainActor isolation from leaking into that queue.
-private final class SpeechAudioBufferSink: @unchecked Sendable {
-    private let request: SFSpeechAudioBufferRecognitionRequest?
-    private let audioFile: AVAudioFile?
-    private let onLevel: @Sendable (CGFloat) -> Void
-    private var lastLevelUpdate = Date.distantPast
-
-    init(
-        request: SFSpeechAudioBufferRecognitionRequest? = nil,
-        audioFile: AVAudioFile? = nil,
-        onLevel: @escaping @Sendable (CGFloat) -> Void
-    ) {
-        self.request = request
-        self.audioFile = audioFile
-        self.onLevel = onLevel
+    init(send: @escaping @Sendable (Data) async -> Void, level: @escaping @Sendable (CGFloat) -> Void,
+         failure: @escaping @Sendable () -> Void) {
+        self.send = send; self.level = level; self.failure = failure
     }
-
     nonisolated func append(_ buffer: AVAudioPCMBuffer) {
-        request?.append(buffer)
-        try? audioFile?.write(from: buffer)
-        guard Date().timeIntervalSince(lastLevelUpdate) >= 0.075,
-              let samples = buffer.floatChannelData?[0] else { return }
-        lastLevelUpdate = Date()
-        let frameCount = Int(buffer.frameLength)
-        guard frameCount > 0 else { return }
-        var sum: Float = 0
-        for index in 0..<frameCount {
-            let sample = samples[index]
-            sum += sample * sample
+        lock.lock()
+        guard accepting, let channel = buffer.floatChannelData?[0], buffer.frameLength > 0 else { lock.unlock(); return }
+        let samples = Array(UnsafeBufferPointer(start: channel, count: Int(buffer.frameLength)))
+        do {
+            let raw = try CodexNativeDictation.pcm16(interleavedSamples: samples, channels: 1)
+            guard recording.count <= Self.maximumRecordingBytes - raw.count else { throw CodexDictationError.messageTooLarge }
+            recording.append(raw)
+            let normalized = try gain.process(monoSamples: samples)
+            let previous = tail, operation = send
+            tail = Task { await previous?.value; guard !Task.isCancelled else { return }; await operation(normalized) }
+            var publishLevel: CGFloat?
+            if Date().timeIntervalSince(lastLevel) >= 0.075 {
+                lastLevel = Date()
+                let rms = sqrt(samples.reduce(0.0) { $0 + Double($1) * Double($1) } / Double(samples.count))
+                publishLevel = CGFloat(max(0, min(1, (20 * log10(max(rms, 0.00001)) + 52) / 52)))
+            }
+            lock.unlock()
+            if let publishLevel { level(publishLevel) }
+        } catch {
+            accepting = false; lock.unlock(); failure()
         }
-        let rms = sqrt(sum / Float(frameCount))
-        let decibels = 20 * log10(max(rms, 0.000_01))
-        let normalized = CGFloat(max(0, min(1, (decibels + 52) / 52)))
-        onLevel(normalized)
+    }
+    func finish() -> (Data, Task<Void, Never>?) {
+        lock.lock(); defer { lock.unlock() }
+        accepting = false
+        return (recording, tail)
+    }
+    func discard() {
+        lock.lock(); defer { lock.unlock() }
+        accepting = false; recording.removeAll(); tail?.cancel(); tail = nil
     }
 }
 
@@ -4095,542 +4195,487 @@ private final class VoiceDictationController: ObservableObject {
     @Published private(set) var phase: VoiceDictationPhase = .idle
     @Published private(set) var level: CGFloat = 0
     @Published private(set) var elapsedSeconds = 0
-
     private let audioEngine = AVAudioEngine()
-    private var recognitionRequest: SFSpeechAudioBufferRecognitionRequest?
-    private var recognitionTask: SFSpeechRecognitionTask?
-    private var audioBufferSink: SpeechAudioBufferSink?
+    private let credential: CodexNativeDictation.Credential
+    private let transport: any CodexDictationTransport
+    private var session: CodexDictationSession?
+    private var capture: CodexAudioCapture?
+    private var startTask: Task<Void, Error>?
+    private var finishTask: Task<Void, Never>?
     private var elapsedTimer: Timer?
-    private var finishTimeoutTask: Task<Void, Never>?
-    private var restartTask: Task<Void, Never>?
-    private var localTranscriptionTask: Task<Void, Never>?
-    private var localProcessCancellation: VoiceProcessCancellation?
-    private var localWhisper: LocalWhisperConfiguration?
-    private var localRecordingURL: URL?
-    private var baseText = ""
-    private var committedTranscript = ""
-    private var currentTranscript = ""
-    private var lastPublishedText = ""
-    private var lastDictatedText = ""
+    private var tapInstalled = false
+    private var generation = 0
+    private var sampleRate = 0
+    private var baseText = "", currentTranscript = "", lastPublishedText = "", lastDictatedText = ""
     private var onReadComposer: (() -> String)?
     private var onTranscript: ((String) -> Void)?
     private var onFailure: ((String) -> Void)?
     private var onFinish: (() -> Void)?
-    private var tapInstalled = false
-    private var wantsRecording = false
-    private var recognitionGeneration = 0
-    private var consecutiveRecoveryCount = 0
 
+    init(credential: @escaping CodexNativeDictation.Credential = CodexDictationAuthorization.credential(),
+         transport: any CodexDictationTransport = CodexDictationURLSessionTransport()) {
+        self.credential = credential; self.transport = transport
+    }
     var isActive: Bool { phase != .idle }
     var isRecording: Bool { phase == .listening }
     var isAuthorizing: Bool { phase == .authorizing }
     var isFinalizing: Bool { phase == .finalizing || phase == .transcribing }
-    var engineLabel: String { localWhisper == nil ? "Apple speech" : "Local Whisper" }
+    var engineLabel: String { "Codex dictation" }
     var statusLabel: String {
         switch phase {
-        case .idle: return "Voice"
-        case .authorizing: return "Starting…"
-        case .listening: return "Listening"
-        case .finalizing: return "Finishing…"
-        case .transcribing: return "Transcribing…"
+        case .idle: "Voice"
+        case .authorizing: "Starting…"
+        case .listening: "Listening"
+        case .finalizing, .transcribing: "Transcribing…"
         }
     }
-    var elapsedLabel: String {
-        String(format: "%d:%02d", elapsedSeconds / 60, elapsedSeconds % 60)
-    }
+    var elapsedLabel: String { String(format: "%d:%02d", elapsedSeconds / 60, elapsedSeconds % 60) }
 
-    func toggle(
-        initialText: String,
-        readComposer: (() -> String)? = nil,
-        onTranscript: @escaping (String) -> Void,
-        onFailure: @escaping (String) -> Void
-    ) {
-        if isActive {
-            finish()
-            return
+    func toggle(initialText: String, readComposer: (() -> String)? = nil,
+                onTranscript: @escaping (String) -> Void, onFailure: @escaping (String) -> Void) {
+        if isActive { finish(); return }
+        baseText = initialText; lastPublishedText = initialText; lastDictatedText = ""; currentTranscript = ""
+        onReadComposer = readComposer; self.onTranscript = onTranscript; self.onFailure = onFailure; onFinish = nil
+        phase = .authorizing; elapsedSeconds = 0; generation += 1
+        let epoch = generation
+        Task { await authorizeAndStart(epoch: epoch) }
+    }
+    private func authorizeAndStart(epoch: Int) async {
+        let permitted: Bool
+        switch AVCaptureDevice.authorizationStatus(for: .audio) {
+        case .authorized: permitted = true
+        case .notDetermined: permitted = await AVCaptureDevice.requestAccess(for: .audio)
+        default: permitted = false
         }
-        baseText = initialText
-        lastPublishedText = initialText
-        lastDictatedText = ""
-        onReadComposer = readComposer
-        committedTranscript = ""
-        currentTranscript = ""
-        localWhisper = nil
-        localRecordingURL = nil
-        self.onTranscript = onTranscript
-        self.onFailure = onFailure
-        self.onFinish = nil
-        wantsRecording = true
-        phase = .authorizing
-        elapsedSeconds = 0
-        startElapsedTimer()
-        recognitionGeneration += 1
-        let generation = recognitionGeneration
-        Task { await authorizeAndStart(generation: generation) }
+        guard generation == epoch, phase == .authorizing else { return }
+        guard permitted else {
+            fail(os1Tr("OS-1의 마이크 권한이 꺼져 있습니다. 기존 입력은 보존했습니다.",
+                       "OS-1 microphone access is off. Your draft is preserved.")); return
+        }
+        do {
+            let format = audioEngine.inputNode.outputFormat(forBus: 0)
+            guard format.sampleRate.isFinite, format.sampleRate >= 1, format.sampleRate <= 384_000,
+                  format.channelCount > 0, format.commonFormat == .pcmFormatFloat32, !format.isInterleaved else {
+                throw CodexDictationError.invalidAudio
+            }
+            sampleRate = Int(format.sampleRate.rounded())
+            let live = CodexDictationSession(sampleRate: sampleRate, transport: transport,
+                credential: credential, onTranscript: { [weak self] text in
+                    Task { @MainActor [weak self] in
+                        guard let self, self.generation == epoch, self.isActive else { return }
+                        self.currentTranscript = text; _ = self.publishTranscript()
+                    }
+                })
+            session = live
+            let starting = Task { [weak self] in
+                do { try await live.start() }
+                catch {
+                    if let reason = error as? CodexDictationError,
+                       [.credentialUnavailable, .invalidCredential].contains(reason),
+                       let self, self.generation == epoch, self.isActive {
+                        self.fail(reason.localizedDescription)
+                    }
+                    throw error
+                }
+            }
+            startTask = starting
+            let sink = CodexAudioCapture(send: { bytes in
+                do { try await starting.value; try await live.appendPCM16(bytes) } catch { /* same recording retained for native HTTP fallback */ }
+            }, level: { [weak self] value in
+                Task { @MainActor [weak self] in
+                    guard let self, self.generation == epoch, self.phase == .listening else { return }; self.level = value
+                }
+            }, failure: { [weak self] in
+                Task { @MainActor [weak self] in
+                    guard let self, self.generation == epoch, self.isActive else { return }
+                    self.fail(CodexDictationError.invalidAudio.localizedDescription)
+                }
+            })
+            capture = sink
+            audioEngine.inputNode.installTap(onBus: 0, bufferSize: 2_048, format: format) { buffer, _ in sink.append(buffer) }
+            tapInstalled = true; audioEngine.prepare(); try audioEngine.start()
+            phase = .listening; startElapsedTimer()
+        } catch {
+            fail((error as? CodexDictationError ?? .invalidAudio).localizedDescription)
+        }
     }
-
-    /// Finish keeps the recognition task alive briefly so the final spoken
-    /// words reach the composer. This is deliberately different from cancel.
+    /// Insert and Send share one recording. A Send while finishing upgrades
+    /// its pending action; it never submits an unfinished partial transcript.
     func finish(onComplete: (() -> Void)? = nil) {
         if let onComplete { onFinish = onComplete }
         guard isActive, !isFinalizing else { return }
-        wantsRecording = false
-        if let configuration = localWhisper, let recordingURL = localRecordingURL {
-            phase = .transcribing
-            stopAudioCapture()
-            transcribeLocally(configuration: configuration, recordingURL: recordingURL)
-            return
-        }
-        phase = .finalizing
-        stopAudioCapture()
-        let generation = recognitionGeneration
-        finishTimeoutTask?.cancel()
-        finishTimeoutTask = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 900_000_000)
-            guard !Task.isCancelled, let self,
-                  self.phase == .finalizing,
-                  self.recognitionGeneration == generation else { return }
-            self.completeFinalization()
+        guard phase == .listening, let capture, let live = session, let starting = startTask else { return }
+        phase = .transcribing; stopAudioCapture()
+        let (pcm, drain) = capture.finish(), epoch = generation, rate = sampleRate
+        let credential = credential, transport = transport
+        finishTask = Task { [weak self] in
+            do {
+                await drain?.value; try Task.checkCancellation()
+                let transcript: String
+                do { try await starting.value; transcript = try await live.finish() }
+                catch {
+                    try Task.checkCancellation()
+                    // Codex's native batch path, using the exact same PCM,
+                    // not an Apple/local engine or a second microphone capture.
+                    let wav = try CodexNativeDictation.wav(pcm16: pcm, sampleRate: rate)
+                    transcript = try await CodexNativeDictation.transcribe(wav: wav, credential: credential, transport: transport)
+                }
+                try Task.checkCancellation()
+                guard let self, self.generation == epoch, self.phase == .transcribing else { return }
+                guard !transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw CodexDictationError.emptyTranscript }
+                self.currentTranscript = transcript
+                guard self.publishTranscript() else { return }
+                self.completeFinalization()
+            } catch {
+                guard let self, self.generation == epoch, self.isActive else { return }
+                self.fail((error as? CodexDictationError ?? .transportFailed).localizedDescription)
+            }
         }
     }
-
-    /// Cancel is lossless: it restores the exact text that existed before the
-    /// microphone was started.
     func cancel() {
         guard isActive else { return }
         let current = onReadComposer?() ?? lastPublishedText
-        let restore = DictationDraft.replacing(current: current, previous: lastPublishedText,
+        let restored = DictationDraft.replacing(current: current, previous: lastPublishedText,
             dictated: lastDictatedText, replacement: "", initial: baseText) ?? current
-        let transcriptHandler = onTranscript
-        resetRecognition(cancelTask: true)
-        phase = .idle
-        level = 0
-        elapsedSeconds = 0
-        transcriptHandler?(restore)
-        clearCallbacks()
+        let handler = onTranscript
+        reset(); phase = .idle; level = 0; elapsedSeconds = 0; clearCallbacks(); handler?(restored)
     }
-
-    /// Session changes and view teardown use cancellation so a late Speech
-    /// callback can never write into a different composer.
-    func stop() {
-        cancel()
-    }
-
+    func stop() { cancel() }
     private func stopAudioCapture() {
         if audioEngine.isRunning { audioEngine.stop() }
-        if tapInstalled {
-            audioEngine.inputNode.removeTap(onBus: 0)
-            tapInstalled = false
-        }
-        recognitionRequest?.endAudio()
-        audioBufferSink = nil
+        if tapInstalled { audioEngine.inputNode.removeTap(onBus: 0); tapInstalled = false }
     }
-
-    private func resetRecognition(cancelTask: Bool) {
-        wantsRecording = false
-        recognitionGeneration += 1
-        restartTask?.cancel()
-        restartTask = nil
-        finishTimeoutTask?.cancel()
-        finishTimeoutTask = nil
-        localTranscriptionTask?.cancel()
-        localTranscriptionTask = nil
-        localProcessCancellation?.cancel()
-        localProcessCancellation = nil
-        stopAudioCapture()
-        if cancelTask { recognitionTask?.cancel() }
-        recognitionTask = nil
-        recognitionRequest = nil
-        audioBufferSink = nil
-        elapsedTimer?.invalidate()
-        elapsedTimer = nil
-        removeLocalRecording()
+    private func reset() {
+        generation += 1; stopAudioCapture()
+        elapsedTimer?.invalidate(); elapsedTimer = nil
+        finishTask?.cancel(); finishTask = nil; startTask?.cancel(); startTask = nil
+        capture?.discard(); capture = nil
+        if let session { Task { await session.cancel() } }; session = nil
     }
-
-    private func authorizeAndStart(generation: Int) async {
-        let microphoneGranted: Bool
-        switch AVCaptureDevice.authorizationStatus(for: .audio) {
-        case .notDetermined:
-            microphoneGranted = await AVCaptureDevice.requestAccess(for: .audio)
-        case .authorized:
-            microphoneGranted = true
-        default:
-            microphoneGranted = false
-        }
-        guard phase == .authorizing, wantsRecording, recognitionGeneration == generation else { return }
-        guard microphoneGranted else {
-            fail("Microphone access is off. Allow OS-1 CLODEX in System Settings → Privacy & Security → Microphone.")
-            return
-        }
-
-        let configuration = await Task.detached {
-            Self.localWhisperConfiguration()
-        }.value
-        guard phase == .authorizing, wantsRecording, recognitionGeneration == generation else { return }
-        if let configuration {
-            do {
-                localWhisper = configuration
-                try startLocalWhisperCapture()
-                return
-            } catch {
-                stopAudioCapture()
-                localWhisper = nil
-                removeLocalRecording()
-            }
-        }
-
-        let speechStatus: SFSpeechRecognizerAuthorizationStatus
-        switch SFSpeechRecognizer.authorizationStatus() {
-        case .notDetermined:
-            speechStatus = await withCheckedContinuation { continuation in
-                SFSpeechRecognizer.requestAuthorization { status in
-                    continuation.resume(returning: status)
-                }
-            }
-        case let existing:
-            speechStatus = existing
-        }
-        guard phase == .authorizing, wantsRecording, recognitionGeneration == generation else { return }
-        guard speechStatus == .authorized else {
-            fail("Local Whisper is unavailable and Speech Recognition access is off. Install Handy or allow OS-1 CLODEX in System Settings → Privacy & Security → Speech Recognition.")
-            return
-        }
-
-        do {
-            try startRecognition()
-        } catch {
-            fail("Voice input could not start: \(error.localizedDescription)")
-        }
-    }
-
-    nonisolated private static func localWhisperConfiguration() -> LocalWhisperConfiguration? {
-        let fileManager = FileManager.default
-        let home = fileManager.homeDirectoryForCurrentUser
-        let executableCandidates = [
-            URL(fileURLWithPath: "/Applications/Handy.app/Contents/MacOS/handy"),
-            home.appendingPathComponent("Applications/Handy.app/Contents/MacOS/handy"),
-        ]
-        guard let executableURL = executableCandidates.first(where: {
-            fileManager.isExecutableFile(atPath: $0.path)
-        }) else { return nil }
-
-        let support = home.appendingPathComponent("Library/Application Support/com.pais.handy")
-        let settingsURL = support.appendingPathComponent("settings_store.json")
-        guard let data = try? Data(contentsOf: settingsURL),
-              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let settings = root["settings"] as? [String: Any],
-              let modelID = settings["selected_model"] as? String,
-              !modelID.isEmpty else { return nil }
-        // Model IDs are logical identifiers, NOT filenames (e.g. medium ->
-        // whisper-medium-q4_1.bin). Resolve using the installed engine's catalog.
-        guard let catalog = try? VoiceProcess.run(executable: executableURL,
-            arguments: ["--list-models", "--json"], cancellation: VoiceProcessCancellation(), timeout: 8),
-            let resolved = LocalVoiceModelCatalog.resolve(selectedID: modelID, data: catalog,
-                directory: support.appendingPathComponent("models")) else { return nil }
-        return LocalWhisperConfiguration(executableURL: executableURL, modelID: resolved)
-    }
-
-    private func startLocalWhisperCapture() throws {
-        let inputNode = audioEngine.inputNode
-        let format = inputNode.outputFormat(forBus: 0)
-        guard format.sampleRate > 0, format.channelCount > 0 else {
-            throw RunnerError.message("No microphone audio format is available.")
-        }
-        let directory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("os1-dictation-\(UUID().uuidString)", isDirectory: true)
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        let recordingURL = directory.appendingPathComponent("recording.caf")
-        let audioFile = try AVAudioFile(forWriting: recordingURL, settings: format.settings)
-        localRecordingURL = recordingURL
-        let bufferSink = SpeechAudioBufferSink(audioFile: audioFile) { @Sendable [weak self] value in
-            Task { @MainActor [weak self] in
-                guard let self, self.phase == .listening else { return }
-                self.level = max(value, self.level * 0.62)
-            }
-        }
-        audioBufferSink = bufferSink
-        inputNode.installTap(
-            onBus: 0,
-            bufferSize: 1_024,
-            format: format,
-            block: { @Sendable [bufferSink] buffer, _ in
-                bufferSink.append(buffer)
-            }
-        )
-        tapInstalled = true
-        audioEngine.prepare()
-        try audioEngine.start()
-        phase = .listening
-        recognitionGeneration += 1
-    }
-
-    private func startRecognition() throws {
-        let locale = preferredDictationLocale()
-        guard let recognizer = SFSpeechRecognizer(locale: locale),
-              recognizer.isAvailable, recognizer.supportsOnDeviceRecognition else {
-            throw RunnerError.message(os1Tr("이 언어의 기기 내 받아쓰기를 사용할 수 없습니다. 로컬 Whisper 모델을 준비해 주세요. 녹음은 외부 서버로 보내지 않았습니다.",
-                                            "On-device dictation isn't available for this language. Set up a local Whisper model. The recording was not sent to any external server."))
-        }
-
-        recognitionTask?.cancel()
-        recognitionTask = nil
-        let request = SFSpeechAudioBufferRecognitionRequest()
-        request.requiresOnDeviceRecognition = true
-        request.shouldReportPartialResults = true
-        request.taskHint = .dictation
-        request.contextualStrings = [
-            "OS-1", "OmarAGI", "Codex", "Claude Code", "RCC", "REVAS",
-            "Luna", "Terra", "Sol", "GitHub", "Cloudflare", "레바스", "코덱스", "클로드"
-        ]
-        if #available(macOS 13.0, *) {
-            request.addsPunctuation = true
-        }
-        recognitionRequest = request
-        let bufferSink = SpeechAudioBufferSink(request: request) { @Sendable [weak self] value in
-            Task { @MainActor [weak self] in
-                guard let self, self.phase == .listening else { return }
-                self.level = max(value, self.level * 0.62)
-            }
-        }
-        audioBufferSink = bufferSink
-
-        let inputNode = audioEngine.inputNode
-        let format = inputNode.outputFormat(forBus: 0)
-        guard format.sampleRate > 0, format.channelCount > 0 else {
-            throw RunnerError.message("No microphone audio format is available.")
-        }
-        inputNode.installTap(
-            onBus: 0,
-            bufferSize: 1_024,
-            format: format,
-            block: { @Sendable [bufferSink] buffer, _ in
-                bufferSink.append(buffer)
-            }
-        )
-        tapInstalled = true
-        audioEngine.prepare()
-        try audioEngine.start()
-        phase = .listening
-
-        recognitionGeneration += 1
-        let generation = recognitionGeneration
-        recognitionTask = recognizer.recognitionTask(with: request) { @Sendable [weak self] result, error in
-            let transcript = result?.bestTranscription.formattedString
-            let isFinal = result?.isFinal ?? false
-            let errorMessage = error?.localizedDescription
-            Task { @MainActor [weak self] in
-                guard let self else { return }
-                guard self.phase != .idle,
-                      self.recognitionGeneration == generation else { return }
-                if let transcript, !transcript.isEmpty {
-                    self.currentTranscript = transcript
-                    self.consecutiveRecoveryCount = 0
-                    self.publishTranscript()
-                }
-                if isFinal {
-                    self.commitCurrentSegment()
-                    if self.wantsRecording {
-                        self.restartAfterFinalResult()
-                    } else {
-                        self.completeFinalization()
-                    }
-                } else if let errorMessage {
-                    if self.wantsRecording, self.consecutiveRecoveryCount < 3 {
-                        self.consecutiveRecoveryCount += 1
-                        self.commitCurrentSegment()
-                        self.restartAfterFinalResult(delayNanoseconds: 220_000_000)
-                    } else if self.phase == .finalizing {
-                        self.completeFinalization()
-                    } else {
-                        self.fail("Voice input stopped: \(errorMessage)")
-                    }
-                }
-            }
-        }
-    }
-
-    /// Speech may finalize a segment after a pause. Keep the microphone UI and
-    /// user intent active while transparently rolling into a fresh segment.
-    private func restartAfterFinalResult(delayNanoseconds: UInt64 = 120_000_000) {
-        guard wantsRecording else { return }
-        recognitionGeneration += 1
-        stopAudioCapture()
-        recognitionTask = nil
-        recognitionRequest = nil
-        phase = .listening
-        restartTask?.cancel()
-        restartTask = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: delayNanoseconds)
-            guard !Task.isCancelled, let self, self.wantsRecording else { return }
-            do {
-                try self.startRecognition()
-            } catch {
-                self.fail("Voice input could not continue: \(error.localizedDescription)")
-            }
-        }
-    }
-
-    private func transcribeLocally(
-        configuration: LocalWhisperConfiguration,
-        recordingURL: URL
-    ) {
-        let generation = recognitionGeneration
-        localTranscriptionTask?.cancel()
-        localProcessCancellation?.cancel()
-        let cancellation = VoiceProcessCancellation()
-        localProcessCancellation = cancellation
-        localTranscriptionTask = Task { [weak self] in
-            do {
-                let transcript = try await Task.detached(priority: .userInitiated) {
-                    try Self.performLocalWhisperTranscription(
-                        configuration: configuration,
-                        recordingURL: recordingURL,
-                        cancellation: cancellation
-                    )
-                }.value
-                guard !Task.isCancelled, let self,
-                      self.phase == .transcribing,
-                      self.recognitionGeneration == generation else { return }
-                self.currentTranscript = transcript
-                self.publishTranscript()
-                self.completeFinalization()
-            } catch {
-                guard !Task.isCancelled, let self,
-                      self.phase == .transcribing,
-                      self.recognitionGeneration == generation else { return }
-                self.fail("Local Whisper could not transcribe this recording: \(error.localizedDescription)")
-            }
-        }
-    }
-
-    nonisolated private static func performLocalWhisperTranscription(
-        configuration: LocalWhisperConfiguration,
-        recordingURL: URL,
-        cancellation: VoiceProcessCancellation
-    ) throws -> String {
-        let waveURL = recordingURL.deletingLastPathComponent().appendingPathComponent("recording.wav")
-        defer { try? FileManager.default.removeItem(at: recordingURL.deletingLastPathComponent()) }
-
-        _ = try VoiceProcess.run(
-            executable: URL(fileURLWithPath: "/usr/bin/afconvert"),
-            arguments: [
-                "-f", "WAVE", "-d", "LEI16@16000", "-c", "1",
-                recordingURL.path, waveURL.path,
-            ], cancellation: cancellation, timeout: 30
-        )
-        let output = try VoiceProcess.run(
-            executable: configuration.executableURL,
-            arguments: [
-                "--transcribe-file", waveURL.path,
-                "--model", configuration.modelID,
-                "--json",
-            ], cancellation: cancellation
-        )
-        let decoder = JSONDecoder()
-        let result: LocalWhisperResult
-        if let decoded = try? decoder.decode(LocalWhisperResult.self, from: output) {
-            result = decoded
-        } else if let line = String(data: output, encoding: .utf8)?
-            .split(separator: "\n")
-            .reversed()
-            .first(where: { $0.first == "{" }),
-            let data = String(line).data(using: .utf8) {
-            result = try decoder.decode(LocalWhisperResult.self, from: data)
-        } else {
-            throw RunnerError.message("Handy returned an unreadable transcription result.")
-        }
-        let transcript = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !transcript.isEmpty else {
-            throw RunnerError.message("No speech was detected.")
-        }
-        return transcript
-    }
-
-    private func removeLocalRecording() {
-        guard let localRecordingURL else { return }
-        try? FileManager.default.removeItem(at: localRecordingURL.deletingLastPathComponent())
-        self.localRecordingURL = nil
-    }
-
-    private func preferredDictationLocale() -> Locale {
-        let preferred = Locale.preferredLanguages
-        if let korean = preferred.first(where: { $0.lowercased().hasPrefix("ko") }) {
-            return Locale(identifier: korean)
-        }
-        return Locale.current
-    }
-
-    private func publishTranscript() {
-        let dictated = dictationText(committed: committedTranscript, current: currentTranscript)
+    @discardableResult
+    private func publishTranscript() -> Bool {
         let current = onReadComposer?() ?? lastPublishedText
         guard let merged = DictationDraft.replacing(current: current, previous: lastPublishedText,
-            dictated: lastDictatedText, replacement: dictated, initial: baseText) else {
-            // A user edited the owned dictation span. User input wins; stop
-            // rather than overwrite it with a late recognition callback.
-            let failure = onFailure
-            resetRecognition(cancelTask: true)
-            phase = .idle; level = 0
-            clearCallbacks()
-            failure?(os1Tr("직접 수정한 입력을 보존하고 받아쓰기를 멈췄습니다.", "Kept your edits and stopped dictation."))
-            return
+            dictated: lastDictatedText, replacement: currentTranscript, initial: baseText) else {
+            fail(os1Tr("직접 수정한 입력을 보존하고 받아쓰기를 멈췄습니다.", "Kept your edits and stopped dictation.")); return false
         }
-        lastPublishedText = merged
-        lastDictatedText = dictated
-        onTranscript?(merged)
+        lastPublishedText = merged; lastDictatedText = currentTranscript; onTranscript?(merged); return true
     }
-
-    private func commitCurrentSegment() {
-        guard !currentTranscript.isEmpty else { return }
-        committedTranscript = dictationText(committed: committedTranscript, current: currentTranscript)
-        currentTranscript = ""
-        publishTranscript()
-    }
-
     private func completeFinalization() {
-        guard phase != .idle else { return }
-        commitCurrentSegment()
         let completion = onFinish
-        resetRecognition(cancelTask: true)
-        phase = .idle
-        level = 0
-        clearCallbacks()
-        completion?()
+        reset(); phase = .idle; level = 0; clearCallbacks(); completion?()
     }
-
+    private func fail(_ message: String) {
+        let failure = onFailure
+        reset(); phase = .idle; level = 0; clearCallbacks(); failure?(message)
+    }
+    private func clearCallbacks() {
+        onTranscript = nil; onReadComposer = nil; onFailure = nil; onFinish = nil
+        baseText = ""; currentTranscript = ""; lastPublishedText = ""; lastDictatedText = ""
+    }
     private func startElapsedTimer() {
         elapsedTimer?.invalidate()
         elapsedTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
-                guard let self, self.phase != .idle else { return }
-                self.elapsedSeconds += 1
+                guard let self, self.isActive else { return }; self.elapsedSeconds += 1
                 if self.elapsedSeconds >= 300 && self.phase == .listening { self.finish() }
             }
         }
     }
+}
 
-    private func clearCallbacks() {
-        onTranscript = nil
-        onReadComposer = nil
-        lastPublishedText = ""
-        lastDictatedText = ""
-        onFailure = nil
-        onFinish = nil
-        baseText = ""
-        committedTranscript = ""
-        currentTranscript = ""
-        localWhisper = nil
-        consecutiveRecoveryCount = 0
+// MARK: - Native dictation controller fixtures (no microphone/network/account access)
+// Entered only from --self-test-composer. The production controller, capture,
+// session, finalizer, draft merger and send latch are the objects under test.
+private actor VoiceControllerFixtureSocket: CodexDictationSocket {
+    private var incoming: [Data] = []
+    private var waiter: CheckedContinuation<Data, Error>?
+    private var sent: [Data] = []
+    private var closed = false
+    func send(_ data: Data) async throws {
+        guard !closed else { throw CodexDictationError.cancelled }
+        sent.append(data)
+    }
+    func receive() async throws -> Data {
+        if !incoming.isEmpty { return incoming.removeFirst() }
+        guard !closed else { throw CodexDictationError.cancelled }
+        return try await withCheckedThrowingContinuation { waiter = $0 }
+    }
+    func close() async {
+        guard !closed else { return }; closed = true
+        let pending = waiter; waiter = nil
+        pending?.resume(throwing: CodexDictationError.cancelled)
+    }
+    func push(_ data: Data) {
+        guard !closed else { return }
+        if let pending = waiter { waiter = nil; pending.resume(returning: data) }
+        else { incoming.append(data) }
+    }
+    func messageTypes() -> [String] {
+        sent.compactMap { (try? JSONSerialization.jsonObject(with: $0) as? [String: Any])?["type"] as? String }
+    }
+}
+
+private actor VoiceControllerFixtureTransport: CodexDictationTransport {
+    let socket = VoiceControllerFixtureSocket()
+    private var connections: [URLRequest] = [], posts: [URLRequest] = []
+    private var rejectConnection = false, holdPost = false
+    private var postWaiter: CheckedContinuation<Void, Never>?
+    private var response = CodexDictationHTTPResponse(data: Data("{\"text\":\"fallback final\"}".utf8), statusCode: 200)
+    func configureFallback(text: String, status: Int = 200, hold: Bool = false) throws {
+        rejectConnection = true; holdPost = hold
+        response = CodexDictationHTTPResponse(
+            data: try JSONSerialization.data(withJSONObject: ["text": text]), statusCode: status)
+    }
+    func connect(_ request: URLRequest) async throws -> any CodexDictationSocket {
+        connections.append(request)
+        guard !rejectConnection else { throw CodexDictationError.transportFailed }
+        return socket
+    }
+    func post(_ request: URLRequest) async throws -> CodexDictationHTTPResponse {
+        posts.append(request)
+        if holdPost { await withCheckedContinuation { postWaiter = $0 } }
+        return response
+    }
+    func releasePost() { holdPost = false; postWaiter?.resume(); postWaiter = nil }
+    func postRequests() -> [URLRequest] { posts }
+    func connectionCount() -> Int { connections.count }
+}
+
+private actor VoiceControllerFixtureCredential {
+    private(set) var calls = 0
+    func load() -> String { calls += 1; return "os1-controller-fixture-only" }
+}
+
+@MainActor
+private final class VoiceControllerFixtureDraft {
+    var text: String
+    var failures: [String] = [], sends: [String] = []
+    var sendPhases: [VoiceDictationPhase] = []
+    var latch = DictationSendLatch()
+    var selectedSessionID = UUID()
+    init(_ text: String) { self.text = text }
+    func requestSend(_ controller: VoiceDictationController) {
+        guard let ticket = latch.request(sessionID: selectedSessionID) else { return }
+        controller.finish { [weak self, weak controller] in
+            guard let self, let controller,
+                  self.latch.consume(ticket, currentSessionID: self.selectedSessionID, phase: controller.phase) else { return }
+            self.sends.append(self.text); self.sendPhases.append(controller.phase)
+        }
+    }
+    func cancel(_ controller: VoiceDictationController, stop: Bool = false) {
+        latch.cancel()
+        if stop { controller.stop() } else { controller.cancel() }
+    }
+}
+
+private extension VoiceDictationController {
+    /// Inject already-created in-memory capture/session objects. This does not
+    /// call toggle/authorizeAndStart, inputNode, a permission API or a credential
+    /// store. Every subsequent finish/cancel/fail runs the production method.
+    func installControllerFixture(draft: VoiceControllerFixtureDraft, samples: [Float]) throws -> Data {
+        guard CommandLine.arguments.contains("--self-test-composer"), !isActive, session == nil,
+              !tapInstalled, samples.allSatisfy(\.isFinite), !samples.isEmpty else {
+            throw RunnerError.message("Voice controller fixture installation outside its isolated self-test")
+        }
+        generation += 1; let epoch = generation
+        sampleRate = 48_000; baseText = draft.text; lastPublishedText = draft.text
+        currentTranscript = ""; lastDictatedText = ""; onFinish = nil
+        onReadComposer = { [weak draft] in draft?.text ?? "" }
+        onTranscript = { [weak draft] in draft?.text = $0 }
+        onFailure = { [weak draft] message in draft?.failures.append(message); draft?.latch.cancel() }
+        let live = CodexDictationSession(sampleRate: sampleRate, transport: transport, credential: credential,
+            onTranscript: { [weak self] text in
+                Task { @MainActor [weak self] in
+                    guard let self, self.generation == epoch, self.isActive else { return }
+                    self.currentTranscript = text; _ = self.publishTranscript()
+                }
+            }, finishTimeout: 2)
+        session = live
+        let starting = Task { try await live.start() }; startTask = starting
+        let sink = CodexAudioCapture(send: { bytes in
+            do { try await starting.value; try await live.appendPCM16(bytes) } catch { }
+        }, level: { _ in }, failure: { [weak self] in
+            Task { @MainActor [weak self] in
+                guard let self, self.generation == epoch, self.isActive else { return }
+                self.fail(CodexDictationError.invalidAudio.localizedDescription)
+            }
+        })
+        capture = sink; phase = .listening
+        guard let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 48_000,
+                                         channels: 1, interleaved: false),
+              let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(samples.count)),
+              let channel = buffer.floatChannelData?[0] else { throw CodexDictationError.invalidAudio }
+        buffer.frameLength = AVAudioFrameCount(samples.count)
+        for (index, sample) in samples.enumerated() { channel[index] = sample }
+        sink.append(buffer)
+        return try CodexNativeDictation.pcm16(interleavedSamples: samples, channels: 1)
+    }
+    var controllerFixtureCallbacksCleared: Bool {
+        onFinish == nil && onTranscript == nil && onReadComposer == nil && onFailure == nil &&
+        session == nil && capture == nil && startTask == nil && finishTask == nil && !tapInstalled
+    }
+    var controllerFixtureFinalizer: Task<Void, Never>? { finishTask }
+}
+
+@MainActor
+private func voiceDictationControllerSelfTest() async throws -> Int {
+    guard CommandLine.arguments.contains("--self-test-composer") else {
+        throw RunnerError.message("Voice controller fixtures require --self-test-composer")
+    }
+    var checks = 0
+    func check(_ condition: Bool, _ message: String) throws {
+        guard condition else { throw RunnerError.message("Voice controller: " + message) }; checks += 1
+    }
+    func wait(_ condition: @MainActor () async -> Bool, _ message: String) async throws {
+        let deadline = ProcessInfo.processInfo.systemUptime + 3
+        while !(await condition()) {
+            guard ProcessInfo.processInfo.systemUptime < deadline else {
+                throw RunnerError.message("Voice controller deadline: " + message)
+            }
+            try await Task.sleep(for: .milliseconds(1))
+        }
+    }
+    func event(_ type: String, text: String? = nil, revision: Int = 1) throws -> Data {
+        var value: [String: Any] = ["type": type, "sequence_no": revision]
+        if let text { value["utterance_id"] = "fixture-u"; value["revision"] = revision; value["text"] = text }
+        else { value["session"] = ["session_id": "fixture-server", "status": type == "session.started" ? "active" : "closed"] }
+        return try JSONSerialization.data(withJSONObject: value)
+    }
+    func start(_ transport: VoiceControllerFixtureTransport) async throws {
+        try await wait({ await transport.socket.messageTypes().contains("session.start") }, "session start")
+        await transport.socket.push(try event("session.started"))
+        try await wait({ await transport.socket.messageTypes().contains("audio.append") }, "captured audio append")
+    }
+    func finalize(_ transport: VoiceControllerFixtureTransport, text: String) async throws {
+        try await wait({ await transport.socket.messageTypes().contains("session.close") }, "close request")
+        await transport.socket.push(try event("transcript.final", text: text, revision: 2))
+        await transport.socket.push(try event("session.updated", revision: 3))
+    }
+    let samples: [Float] = [-0.05, 0, 0.01, 0.1, -0.2, 0.5]
+
+    // Stop/Insert followed by Send upgrades the SAME finalizer. Repeated clicks
+    // must not submit a partial, start another recording or close twice.
+    do {
+        let wire = VoiceControllerFixtureTransport(), auth = VoiceControllerFixtureCredential()
+        let controller = VoiceDictationController(credential: { await auth.load() }, transport: wire)
+        let draft = VoiceControllerFixtureDraft("보존 초안")
+        _ = try controller.installControllerFixture(draft: draft, samples: samples)
+        defer { draft.cancel(controller) }
+        try await start(wire)
+        await wire.socket.push(try event("transcript.segment", text: "중간"))
+        try await wait({ draft.text == "보존 초안 중간" }, "partial transcript")
+        controller.finish(); draft.requestSend(controller); draft.requestSend(controller); controller.finish()
+        try check(controller.phase == .transcribing && draft.sends.isEmpty && draft.latch.pending != nil,
+                  "finishing send was not latched, or submitted a partial")
+        try await finalize(wire, text: "최종 마지막 단어")
+        try await wait({ controller.phase == .idle }, "final transcript adoption")
+        try check(draft.sends == ["보존 초안 최종 마지막 단어"] && draft.sendPhases == [.idle] && draft.latch.pending == nil,
+                  "send did not use final transcript exactly once after idle")
+        try check(await wire.socket.messageTypes().filter { $0 == "session.close" }.count == 1,
+                  "repeated finish created more than one stream close")
+        let posts = await wire.postRequests(), authCalls = await auth.calls
+        try check(posts.isEmpty && authCalls == 1, "successful stream used fallback or extra authorization")
+        try check(controller.controllerFixtureCallbacksCleared && draft.failures.isEmpty, "success retained callbacks or failed")
     }
 
-    private func fail(_ message: String) {
-        commitCurrentSegment()
-        let failure = onFailure
-        resetRecognition(cancelTask: true)
-        phase = .idle
-        level = 0
-        clearCallbacks()
-        failure?(message)
+    // Cancellation restores only dictation-owned text and drops late frames.
+    do {
+        let wire = VoiceControllerFixtureTransport(), auth = VoiceControllerFixtureCredential()
+        let controller = VoiceDictationController(credential: { await auth.load() }, transport: wire)
+        let draft = VoiceControllerFixtureDraft("원문")
+        _ = try controller.installControllerFixture(draft: draft, samples: samples)
+        defer { draft.cancel(controller) }
+        try await start(wire)
+        await wire.socket.push(try event("transcript.segment", text: "취소할 부분"))
+        try await wait({ draft.text == "원문 취소할 부분" }, "cancel partial")
+        draft.requestSend(controller); draft.cancel(controller)
+        await wire.socket.push(try event("transcript.final", text: "늦은 결과", revision: 2))
+        await Task.yield()
+        try check(controller.phase == .idle && draft.text == "원문" && draft.sends.isEmpty && draft.latch.pending == nil,
+                  "cancel kept dictated partial or delivered late send")
+        try check(controller.controllerFixtureCallbacksCleared, "cancel retained finalization callbacks")
     }
+
+    // Editing inside the dictation-owned span relinquishes ownership. The
+    // actual production publishTranscript -> fail path must preserve edits.
+    do {
+        let wire = VoiceControllerFixtureTransport(), auth = VoiceControllerFixtureCredential()
+        let controller = VoiceDictationController(credential: { await auth.load() }, transport: wire)
+        let draft = VoiceControllerFixtureDraft("초안")
+        _ = try controller.installControllerFixture(draft: draft, samples: samples)
+        defer { draft.cancel(controller) }
+        try await start(wire)
+        await wire.socket.push(try event("transcript.segment", text: "음성 부분"))
+        try await wait({ draft.text == "초안 음성 부분" }, "edit-conflict partial")
+        draft.text = "초안 직접 고친 문장"; draft.requestSend(controller)
+        try await finalize(wire, text: "최종 결과")
+        try await wait({ controller.phase == .idle }, "edit conflict failure")
+        try check(draft.text == "초안 직접 고친 문장" && draft.sends.isEmpty && draft.failures.count == 1,
+                  "manual-edit conflict overwrote draft, sent, or failed repeatedly")
+        try check(draft.latch.pending == nil && controller.controllerFixtureCallbacksCleared,
+                  "manual-edit failure retained send intent or callbacks")
+    }
+
+    // The actual failed stream routes to native HTTP with the SAME raw PCM
+    // and sample rate; no other recognizer or second recording is injected.
+    do {
+        let wire = VoiceControllerFixtureTransport(), auth = VoiceControllerFixtureCredential()
+        try await wire.configureFallback(text: "배치 최종")
+        let controller = VoiceDictationController(credential: { await auth.load() }, transport: wire)
+        let draft = VoiceControllerFixtureDraft("배치 초안")
+        let pcm = try controller.installControllerFixture(draft: draft, samples: samples)
+        defer { draft.cancel(controller) }
+        draft.requestSend(controller)
+        try await wait({ controller.phase == .idle }, "native HTTP fallback")
+        let posts = await wire.postRequests()
+        let wav = try CodexNativeDictation.wav(pcm16: pcm, sampleRate: 48_000)
+        try check(posts.count == 1 && posts[0].url == CodexNativeDictation.transcriptionURL &&
+                  posts[0].httpBody?.range(of: wav) != nil, "fallback did not use exact captured WAV at native endpoint")
+        let authCalls = await auth.calls
+        try check(draft.sends == ["배치 초안 배치 최종"] && draft.failures.isEmpty && authCalls == 2,
+                  "native fallback did not finalize once using fixture authorization")
+        try check(controller.controllerFixtureCallbacksCleared && draft.latch.pending == nil,
+                  "fallback success retained callbacks or intent")
+    }
+
+    // A pending HTTP result is intentionally delivered AFTER session stop.
+    // The production cancellation/generation check must discard that result.
+    do {
+        let wire = VoiceControllerFixtureTransport(), auth = VoiceControllerFixtureCredential()
+        try await wire.configureFallback(text: "늦은 배치 결과", hold: true)
+        let controller = VoiceDictationController(credential: { await auth.load() }, transport: wire)
+        let draft = VoiceControllerFixtureDraft("세션 원문")
+        _ = try controller.installControllerFixture(draft: draft, samples: samples)
+        defer { draft.cancel(controller) }
+        draft.requestSend(controller)
+        try await wait({ await wire.postRequests().count == 1 }, "held fallback request")
+        let cancelledFinalizer = controller.controllerFixtureFinalizer
+        draft.cancel(controller, stop: true); draft.selectedSessionID = UUID(); draft.text = "다른 세션 초안"
+        await wire.releasePost()
+        await cancelledFinalizer?.value
+        try check(controller.phase == .idle && draft.text == "다른 세션 초안" && draft.sends.isEmpty && draft.failures.isEmpty,
+                  "session stop delivered late transcript, send or error")
+        try check(draft.latch.pending == nil && controller.controllerFixtureCallbacksCleared,
+                  "session stop retained pending intent/callback")
+    }
+
+    for (text, status) in [(" \n", 200), ("ignored", 503)] {
+        let wire = VoiceControllerFixtureTransport(), auth = VoiceControllerFixtureCredential()
+        try await wire.configureFallback(text: text, status: status)
+        let controller = VoiceDictationController(credential: { await auth.load() }, transport: wire)
+        let draft = VoiceControllerFixtureDraft("오류 원문")
+        _ = try controller.installControllerFixture(draft: draft, samples: samples)
+        defer { draft.cancel(controller) }
+        draft.requestSend(controller)
+        try await wait({ controller.phase == .idle }, "empty/error finalizer")
+        try check(draft.text == "오류 원문" && draft.sends.isEmpty && draft.failures.count == 1,
+                  "empty/error finalizer sent or changed original draft")
+        try check(draft.latch.pending == nil && controller.controllerFixtureCallbacksCleared,
+                  "empty/error finalizer did not clear intent and callbacks")
+    }
+    print("Native dictation controller: \(checks) checks passed; microphone 0, network 0, account reads 0; actual finish/cancel/fail/PCM fallback")
+    return checks
 }
 
 private struct NativeSessionSummary: Identifiable, Sendable {
@@ -7116,6 +7161,7 @@ private final class SessionStore: ObservableObject {
         }
     }
     private var primarySubmissionTimes: [UUID: Date] = [:]
+    @Published private var dictationSendLatch = DictationSendLatch()
     private var inFlightSubmissions: [UUID: PendingSubmission] = [:]
     private var sessionStatuses: [UUID: String] = [:]
     private let runOperation: RunOperation
@@ -7735,6 +7781,7 @@ private final class SessionStore: ObservableObject {
 
     func createSession(provider: ProviderChoice? = nil) {
         showArchived = false
+        cancelDictationSendIntent()
         voiceDictation.stop()
         let inherited = provider ?? selectedSession?.provider ?? .auto
         let session = ConversationSession(
@@ -7749,6 +7796,7 @@ private final class SessionStore: ObservableObject {
     }
 
     func select(_ id: UUID) {
+        cancelDictationSendIntent()
         voiceDictation.stop()
         selectedSessionID = id
         composer = selectedSession?.draft ?? ""
@@ -7810,6 +7858,7 @@ private final class SessionStore: ObservableObject {
         preservingCurrent: Bool,
         resetSearch: Bool
     ) {
+        cancelDictationSendIntent()
         voiceDictation.stop()
         let previousSurface = surface
         let previousSelection = selectedNativeSessionID
@@ -8134,6 +8183,7 @@ private final class SessionStore: ObservableObject {
     }
 
     func toggleVoiceDictation() {
+        if !voiceDictation.isActive { cancelDictationSendIntent() }
         voiceDictation.toggle(
             initialText: composer,
             readComposer: { [weak self] in self?.composer ?? "" },
@@ -8141,6 +8191,7 @@ private final class SessionStore: ObservableObject {
                 self?.composer = value
             },
             onFailure: { [weak self] message in
+                self?.cancelDictationSendIntent()
                 self?.alertMessage = message
             }
         )
@@ -8153,22 +8204,38 @@ private final class SessionStore: ObservableObject {
     @discardableResult
     func cancelVoiceDictation() -> Bool {
         guard voiceDictation.isActive else { return false }
+        cancelDictationSendIntent()
         voiceDictation.cancel()
         return true
     }
 
     func stopVoiceDictation() {
+        cancelDictationSendIntent()
         voiceDictation.stop()
+    }
+
+    private func cancelDictationSendIntent() {
+        if dictationSendLatch.pending != nil { dictationSendLatch.cancel() }
     }
 
     func send() {
         refreshRunAdmissionPressure()
         let submitTimestamp = Date()
-        // Match the disabled primary button while permission/transcription is
-        // pending. Recording's existing finish callback invokes send once idle.
-        guard ![VoiceDictationPhase.authorizing, .finalizing, .transcribing].contains(voiceDictation.phase) else { return }
+        // Permission is not a recording. Finalization/transcription, however,
+        // accepts one send intent instead of dropping an immediate Return.
+        guard voiceDictation.phase != .authorizing else { return }
         if voiceDictation.isActive {
-            voiceDictation.finish { [weak self] in self?.send() }
+            guard let sessionID = selectedSessionID,
+                  let ticket = dictationSendLatch.request(sessionID: sessionID) else { return }
+            voiceDictation.finish { [weak self] in
+                guard let self,
+                      self.dictationSendLatch.consume(ticket, currentSessionID: self.selectedSessionID,
+                                                      phase: self.voiceDictation.phase) else { return }
+                // The eventual send becomes Stop; protect the second half of
+                // a click at completion time, not at the earlier recording stop.
+                self.primarySubmissionTimes[sessionID] = Date()
+                self.send()
+            }
             return
         }
         let request = composedRequest(from: composer)
@@ -8290,7 +8357,8 @@ private final class SessionStore: ObservableObject {
         // Ordinary follow-up text always queues while running; the button
         // only switches to Steer when the composer text itself reads as an
         // explicit correction of the live turn, matching send()'s own check.
-        let normal = ComposerPrimaryAction.resolve(draft: composedRequest(from: composer), running: isRunning, stopping: isStopping, voice: voiceDictation.phase)
+        let normal = ComposerPrimaryAction.resolve(draft: composedRequest(from: composer), running: isRunning,
+            stopping: isStopping, voice: voiceDictation.phase, voiceSendPending: dictationSendLatch.pending != nil)
         return normal == .queue && canSteerSelectedRun &&
             ExecutionSteering.isDirectCorrection(composer) ? .steer : normal
     }
@@ -8595,7 +8663,7 @@ private final class SessionStore: ObservableObject {
             if let submitted = primarySubmissionTimes[id],
                now.timeIntervalSince(submitted) < NSEvent.doubleClickInterval + 0.1 { return }
             cancelSelectedRun()
-        case .disabledSend, .stopping, .finalizing: break
+        case .disabledSend, .stopping, .finalizing, .dictationSendPending: break
         }
     }
 
@@ -17324,7 +17392,7 @@ private struct VoiceDictationControl: View {
                             .clipShape(Circle())
                     }
                     .buttonStyle(.plain)
-                    .disabled(controller.isFinalizing)
+                    .disabled(controller.isAuthorizing || controller.isFinalizing)
                     .help("Use this transcript")
                     .accessibilityLabel("Finish voice input")
                 }
@@ -19028,6 +19096,7 @@ private struct ConversationQueueView: View {
 
 private struct ComposerPrimaryButton: View {
     let action: ComposerPrimaryAction
+    var labelOverride: String? = nil
     let activate: () -> Void
     var body: some View {
         Button(action: activate) {
@@ -19039,8 +19108,23 @@ private struct ComposerPrimaryButton: View {
                 .clipShape(Circle())
         }
         .buttonStyle(.plain).disabled(!action.enabled)
-        .help(action.help).accessibilityLabel(action.label)
+        .help(labelOverride ?? action.help).accessibilityLabel(labelOverride ?? action.label)
         .accessibilityIdentifier("os1.composer.primary")
+    }
+}
+
+/// Voice phase is its own observable object. Observe it here as well as the
+/// store so a stop→transcribing transition refreshes the primary send control
+/// even before any transcript changes the composer's text.
+private struct DictationAwarePrimaryButton: View {
+    @ObservedObject var store: SessionStore
+    @ObservedObject var voice: VoiceDictationController
+
+    var body: some View {
+        let action = store.primaryAction
+        let voiceLabel = voice.isActive && [.send, .queue].contains(action)
+            ? os1Tr("전사하고 보내기", "Transcribe and send") : nil
+        ComposerPrimaryButton(action: action, labelOverride: voiceLabel) { store.performPrimaryAction() }
     }
 }
 
@@ -19133,7 +19217,7 @@ private struct ComposerView: View {
                             .accessibilityLabel(store.canSteerSelectedRun ? os1Tr("현재 작업에 반영", "Apply to current task") : os1Tr("중지 후 추가 지시로 이어가기", "Stop and continue with the new instruction"))
                             .accessibilityIdentifier("os1.composer.steer")
                     }
-                    ComposerPrimaryButton(action: store.primaryAction) { store.performPrimaryAction() }
+                    DictationAwarePrimaryButton(store: store, voice: store.voiceDictation)
                         .contextMenu {
                             Button(store.canSteerSelectedRun ? os1Tr("현재 작업에 반영", "Apply to current task") : os1Tr("중지 후 추가 지시로 이어가기", "Stop and continue with the new instruction")) { store.sendCorrectionToCurrentRun() }
                                 .disabled(!store.isRunning || store.isStopping || store.composer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
