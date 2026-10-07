@@ -17,6 +17,8 @@ public enum StatusCheckIn {
     static let checkOpener = #"^(?:(?:자|야|그럼|일단|한번|아니)\s*)*(?:(?:라우팅|이거|그거)\s*(?:이|가)?\s*)?(?:잘\s*)?(?:되는지|됐는지|작동하는지)\s*(?:한번\s*)?확인해\s?(?:보자|볼까)$"#
     /// Sentences that carry no order: "야", "그래서", "근데", "뭐야", "짧게 대답해줘".
     static let neutral = #"^(?:(?:야|아니|그래서|근데|뭐야|아|음|도대체|진짜|그럼|너|지금)\s*)+$|^(?:그냥\s*)?(?:예\s*아니오로\s*|짧게\s*)?(?:대답|답|말)해\s?줘$"#
+    /// A command ending, the same test the chat lane uses for questions.
+    static let command = #"(?:봐|줘|해|라|자|빼|가져와|와봐|깔아|돌려)(?=[\s.,~?]|$)"#
     public static let maximumCharacters = 80
 
     /// "되는지 확인해보자. 되냐?", "다 한 거야?", "설치됐어?", "아직 333이야?",
@@ -30,6 +32,8 @@ public enum StatusCheckIn {
         guard !text.isEmpty, text.count <= maximumCharacters, !text.contains("\n"), !text.contains("/"),
               text.range(of: asking, options: [.regularExpression, .caseInsensitive]) != nil,
               !RouteFanout.containsName(text),
+              // "사파리 쓰면 안 되냐?": may I, not is it done.
+              text.range(of: #"면\s*안\s*(?:되|돼)"#, options: .regularExpression) == nil,
               text.range(of: RouteFanout.expression, options: [.regularExpression, .caseInsensitive]) == nil else { return false }
         var sentences: [(text: String, asked: Bool)] = []
         var current = ""
@@ -46,11 +50,27 @@ public enum StatusCheckIn {
         if !current.trimmingCharacters(in: .whitespaces).isEmpty { sentences.append((current.trimmingCharacters(in: .whitespaces), false)) }
         return !sentences.isEmpty && sentences.allSatisfy { sentence in
             let value = sentence.text.replacingOccurrences(of: #"(?:\s+(?:도대체|진짜|지금|그래서|그럼))+$"#, with: "", options: .regularExpression)
+            if value.range(of: checkOpener, options: .regularExpression) != nil
+                || value.range(of: neutral, options: .regularExpression) != nil { return true }
+            // "그럼 실제로 해봐 다 되는지": a command anywhere is work, whatever the ending.
+            if value.range(of: command, options: .regularExpression) != nil { return false }
             return sentence.asked || value.range(of: questionEnding, options: .regularExpression) != nil
                 || value.range(of: #"^(?:is|are|was|did|does|has|have)\s"#, options: .regularExpression) != nil
-                || value.range(of: checkOpener, options: .regularExpression) != nil
-                || value.range(of: neutral, options: .regularExpression) != nil
         }
+    }
+
+    /// Things outside OS-1 that only a tool can check now.
+    static let externalSubject = #"사이트|웹|배포|서버|r2|알투|깃허브|기타보|기탑|github|(?<![A-Za-z])pr(?![A-Za-z])|머지|merge|푸시|push|커밋|commit|백업|backup|연결|connect|도메인|domain|링크|url|railway|레일웨이|cloudflare|클라우드플레어|인스타|instagram|scv|결제|payment|데이터베이스|database|(?<![A-Za-z])db(?![A-Za-z])|deploy|site|server"#
+
+    /// A check-in the status card answers by itself: about OS-1 or the last
+    /// change in this conversation, naming nothing outside it. It runs on the
+    /// chat lane, the model without the coding agent's 900 KB of instructions
+    /// and tools: with the card, the full lane still thought 165 s at max
+    /// effort over an 87k-token prompt to say "334 is installed" (2026-10-07).
+    /// A check-in about a site, a deployment or a connection keeps a lane
+    /// that can look.
+    public static func answersFromCard(_ request: String) -> Bool {
+        matches(request) && request.lowercased().range(of: externalSubject, options: [.regularExpression, .caseInsensitive]) == nil
     }
 
     public struct Staged: Equatable, Sendable {
@@ -130,13 +150,20 @@ public enum StatusCheckIn {
         for text in ["설치됐어? 안 됐으면 깔아", "되나? 안 되면 롤백해", "어디까지 했어? 이어서 해", "진행 중인 작업 계속 해",
                      "작동하는지 시간 재봐", "되는지 빌드하고 테스트 돌려", "라우팅 되는지 다시 테스트해봐", "아직 333이면 apply 해",
                      "is it installed? if not, build it", "did it work? test it again", "1+1 GPT한테. 2+2 Codex한테. 되나?",
-                     "QMGR 통합해야 되니까 스키마 좀 짜봐", "PR 머지됐어? 안 됐으면 머지해", "되는지 테스트해봐", "진행 중인 거 취소해"] {
+                     "QMGR 통합해야 되니까 스키마 좀 짜봐", "PR 머지됐어? 안 됐으면 머지해", "되는지 테스트해봐", "진행 중인 거 취소해",
+                     "그럼 실제로 해봐 다 되는지", "그거 설명 좀 해봐 어디까지 진행됐는지", "야 크롬 말고 사파리 쓰면 안 되냐?"] {
             check(!matches(text), "an order is not a check-in: \(text)")
         }
         for text in ["이거 고쳐", "되는지 확인하고 안 되면 고쳐", "라우팅 되게 해줘", "클로드랑 GPT 하나씩 시켜봐. 1+1, 2+2. 되나?",
                      "OS-1 설치해", "그럼 클로드랑 클로드 코드 GPT 코덱스 다 라우팅 하나씩 시켜봐. 1 plus 1, 2 plus 2, 3 plus 3, 4 plus 4.",
                      "RCC가 뭐야?", "~/Library 정리해", String(repeating: "되나? ", count: 30)] {
             check(!matches(text), "not a check-in: \(text.prefix(40))")
+        }
+        for text in ["되는지 확인해보자. 되냐?", "다 한 거야?", "설치됐어?", "아직 333이야?", "야 너 지금 작동하냐?"] {
+            check(answersFromCard(text), "the card answers: \(text)")
+        }
+        for text in ["배포 됐냐?", "사이트 살아있어?", "야 너 R2 연결 돼있냐?", "푸시 됐어?", "PR 머지됐어?", "설치됐어? 안 됐으면 깔아"] {
+            check(!answersFromCard(text), "needs a look: \(text)")
         }
         let stagedAt = Date(timeIntervalSince1970: 1_791_000_000)
         let intent = SelfUpdate.Intent(build: 334, version: "0.9.268", sourceRoot: "/tmp/os1-side", sourceCommit: "d5799590681d96e5e",
