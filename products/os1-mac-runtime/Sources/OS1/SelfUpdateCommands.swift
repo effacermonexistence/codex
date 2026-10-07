@@ -5,7 +5,7 @@ import OS1HookSupport
 /// `os1 self-update stage --source <root>`: build, verify and hand a new
 /// OS-1 build to the running app. `os1 self-update apply [--root <root>]`:
 /// install a staged build through the verified local installer (the app
-/// launches this detached when idle). `os1 self-update status`: read-only.
+/// launches this detached when idle). `os1 self-update status` and `check-in`: read-only.
 func selfUpdateCommand(_ arguments: [String]) async throws -> Bool {
     guard arguments.first == "self-update" else { return false }
     let subcommand = arguments.count > 1 ? arguments[1] : "status"
@@ -23,8 +23,10 @@ func selfUpdateCommand(_ arguments: [String]) async throws -> Bool {
     case "stage": try stageSelfUpdate(source: options["source"])
     case "apply": try applySelfUpdate(root: options["root"])
     case "status": try printSelfUpdateStatus(root: options["root"])
+    // The card a check-in question is answered from, exactly as the backend sees it.
+    case "check-in": print(statusCheckInCard())
     case "sync-live": try syncLiveOS1Source()
-    default: throw OS1Error.message("self-update: expected stage, apply, status or sync-live")
+    default: throw OS1Error.message("self-update: expected stage, apply, status, check-in or sync-live")
     }
     return true
 }
@@ -207,6 +209,33 @@ func gitHead(_ root: String) -> String? {
           let result = try? commandOutput(git, ["-C", root, "rev-parse", "HEAD"], timeout: 20), result.0 == 0 else { return nil }
     let text = String(decoding: result.1, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
     return text.range(of: "^[0-9a-f]{40}$", options: .regularExpression) != nil ? text : nil
+}
+
+/// The install state a check-in is answered from (see `StatusCheckIn`).
+func statusCheckInCard() -> String {
+    let installed = installedOS1Build()
+    let registered = Set(LocalProjectWorkspace.candidates(projectID: "os1-clodex").map { URL(fileURLWithPath: $0).standardizedFileURL.path })
+    func subject(_ root: String?, _ commit: String?) -> String? {
+        guard let commit, let git = try? findExecutable("git") else { return nil }
+        for candidate in [root].compactMap({ $0 }) + Array(registered) where FileManager.default.fileExists(atPath: candidate) {
+            if let result = try? commandOutput(git, ["-C", candidate, "log", "-1", "--format=%s", commit], timeout: 5), result.0 == 0 {
+                let text = String(decoding: result.1, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+                if !text.isEmpty { return text }
+            }
+        }
+        return nil
+    }
+    let outcomes = SelfUpdate.outcomes()
+    let installedOutcome = outcomes.last { $0.success && $0.intent.build == installed }
+    let staged = StatusCheckIn.stagedIntents(installedBuild: installed).map { intent in
+        StatusCheckIn.Staged(intent: intent, automatic: registered.contains(URL(fileURLWithPath: intent.sourceRoot).standardizedFileURL.path),
+                             subject: subject(intent.sourceRoot, intent.sourceCommit))
+    }
+    // The installed app's own version: this CLI may be a staged or debug build.
+    let version = plistValue(installedAppURL.appendingPathComponent("Contents/Info.plist").path, "CFBundleShortVersionString") as? String
+    return StatusCheckIn.card(installedVersion: "OS-1 \(version ?? "unknown version")", installedBuild: installed,
+        installedSubject: installedOutcome.flatMap { subject($0.intent.sourceRoot, $0.intent.sourceCommit) },
+        staged: staged, outcomes: outcomes, hold: SelfUpdate.activeHold())
 }
 
 private func outputTail(_ result: (Int32, Data, Data), limit: Int = 3_000) -> String {

@@ -10317,6 +10317,11 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
     if ReadOnlyLookup.relevant(request: objectiveRequest, context: context) {
         workspaceContext += "\n" + ReadOnlyLookup.capabilityCard
     }
+    // A check-in ("되는지 확인해보자. 되냐?") is answered from the install state,
+    // never re-proved by building (2026-10-07: 8 minutes for "아직 333").
+    if StatusCheckIn.matches(objectiveRequest) {
+        workspaceContext += "\n" + statusCheckInCard()
+    }
     if let target = previewDeploymentTarget { workspaceContext += "\n" + target.contract }
     if let validation = TaskWorkflow.validationContract(ownerRequest: objectiveRequest, scope: resolvedScope) {
         workspaceContext += "\n" + validation

@@ -173,6 +173,8 @@ final class SourceContextTests {
         try runProjectMaterialFixtures()
         try runRegisteredSourceFixtures()
         try runRouteFanoutFixtures()
+        try StatusCheckIn.selfTest()
+        print("Status check-in: self-test passed")
         try runConversationalQuestionFixtures()
         try runWebsiteDeliveryRelevanceFixtures()
         try runReadOnlyLookupFixtures()
