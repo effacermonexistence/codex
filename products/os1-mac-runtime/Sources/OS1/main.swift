@@ -2236,7 +2236,7 @@ func commandOutput(
 func findExecutable(_ name: String) throws -> String {
     if name == "wrangler" { return try managedR2Executable() }
     let home = FileManager.default.homeDirectoryForCurrentUser.path
-    let candidates = [
+    let candidates = BackendSetup.providerExecutableCandidates(provider: name, homePath: home) + [
         "\(home)/.local/bin/\(name)",
         ["node", "npm"].contains(name) ? "\(home)/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/\(name)" : "",
         "/opt/homebrew/bin/\(name)",
@@ -2461,6 +2461,32 @@ func runClaudeLoginInTerminal(home: URL? = nil, deadlineSeconds: Int = 300) thro
     // Which account signs in: an added account has its own config directory,
     // and the default one keeps the CLI's own.
     let configDirectory = home?.path ?? backendAccountEnvironment("claude")["CLAUDE_CONFIG_DIR"]
+    func currentState() -> BackendSetupState {
+        BackendAccountCommands.setupProbe(provider: "claude",
+            home: configDirectory.map { URL(fileURLWithPath: $0) } ?? BackendAccounts.defaultHome(provider: "claude"),
+            isDefault: configDirectory == nil, accountID: "login").state
+    }
+    // Connection setup adopts the provider's existing login. A transport or
+    // malformed status cannot justify a new OAuth flow that clears it.
+    let prior = currentState()
+    if prior == .signedIn { return (0, Data(), Data()) }
+    guard prior == .signedOut else {
+        throw OS1Error.message(os1Tr("Claude 로그인 상태를 확인하지 못했습니다. 기존 로그인을 바꾸지 않았습니다. 상태 확인을 다시 시도하세요.",
+            "The Claude sign-in state could not be verified. The existing login was not changed; retry the status check."))
+    }
+    let loginRoot = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/OS-1/auth-flows")
+    let loginLease = try BackendLoginLease(root: loginRoot, provider: "claude", accountIdentity: configDirectory ?? "default")
+    defer { withExtendedLifetime(loginLease) {} }
+    let leaseDeadline = Date().addingTimeInterval(TimeInterval(deadlineSeconds))
+    while !loginLease.tryAcquire() {
+        if ExecutionCancellation.isCancelled { throw OS1Error.backendBlocked(.cancelled) }
+        if currentState() == .signedIn { return (0, Data(), Data()) }
+        guard Date() < leaseDeadline else { throw ConnectionFailure.authentication }
+        Thread.sleep(forTimeInterval: 1)
+    }
+    let afterLease = currentState()
+    if afterLease == .signedIn { return (0, Data(), Data()) }
+    guard afterLease == .signedOut else { throw ConnectionFailure.unavailable }
     // Starting `claude auth login` clears the stored session immediately, so a
     // flow the owner never finishes turns "expired" into "no credential at
     // all". Never stack a second window on top of a pending one: wait for the
@@ -2557,19 +2583,58 @@ func runCodexLogin(home: URL? = nil, deadlineSeconds: Int = 300) throws -> (Int3
                                                 attributes: [.posixPermissions: 0o700])
     }
     environment["OS1_INTERNAL_PROVIDER_EXECUTION"] = "1"
-    func signedIn() -> Bool {
+    func currentState() -> BackendSetupState {
         guard let status = try? commandOutput(codex, ["login", "status"], timeout: 15,
-                                              environmentOverrides: environment) else { return false }
-        return status.0 == 0 && String(decoding: status.1, as: UTF8.self).lowercased().contains("logged in")
+                                              environmentOverrides: environment) else { return .unverified }
+        return BackendSetup.parseStatus(provider: "codex", executablePath: codex,
+            accountID: "login", exitCode: status.0, stdout: status.1, stderr: status.2).state
     }
-    if signedIn() { return (0, Data(), Data()) }
-    var launch = ["nohup", quotedShellArgument(codex), "login"]
-    for (key, value) in environment.sorted(by: { $0.key < $1.key }) {
-        launch.insert("\(key)=\(quotedShellArgument(value))", at: 0)
+    let prior = currentState()
+    if prior == .signedIn { return (0, Data(), Data()) }
+    guard prior == .signedOut else {
+        throw OS1Error.message(os1Tr("Codex 로그인 상태를 확인하지 못했습니다. 기존 로그인을 바꾸지 않았습니다. 상태 확인을 다시 시도하세요.",
+            "The Codex sign-in state could not be verified. The existing login was not changed; retry the status check."))
     }
-    let command = "env " + launch.joined(separator: " ") + " > /dev/null 2>&1 &"
-    let launched = try commandOutput("/bin/sh", ["-c", command], timeout: 20)
-    guard launched.0 == 0 else { throw ConnectionFailure.unavailable }
+    let loginRoot = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/OS-1/auth-flows")
+    let loginLease = try BackendLoginLease(root: loginRoot, provider: "codex", accountIdentity: environment["CODEX_HOME"] ?? "default")
+    defer { withExtendedLifetime(loginLease) {} }
+    let leaseDeadline = Date().addingTimeInterval(TimeInterval(deadlineSeconds))
+    while !loginLease.tryAcquire() {
+        if ExecutionCancellation.isCancelled { throw OS1Error.backendBlocked(.cancelled) }
+        if currentState() == .signedIn { return (0, Data(), Data()) }
+        guard Date() < leaseDeadline else { throw ConnectionFailure.authentication }
+        Thread.sleep(forTimeInterval: 1)
+    }
+    let afterLease = currentState()
+    if afterLease == .signedIn { return (0, Data(), Data()) }
+    guard afterLease == .signedOut else { throw ConnectionFailure.unavailable }
+    // Own the login child instead of detaching it with nohup. A cancelled or
+    // timed-out Connect must stop its callback process before releasing the
+    // lease, or the next Connect would stack a second official login.
+    let login = Process()
+    login.executableURL = URL(fileURLWithPath: codex)
+    login.arguments = ["login"]
+    login.currentDirectoryURL = FileManager.default.homeDirectoryForCurrentUser
+    var loginEnvironment = ProviderExecutionEnvironment.marked(ProcessInfo.processInfo.environment)
+    let nodeDirectory = FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent(".cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin").path
+    loginEnvironment["PATH"] = [nodeDirectory, "/opt/homebrew/bin", "/usr/local/bin",
+                                loginEnvironment["PATH"] ?? "/usr/bin:/bin"].joined(separator: ":")
+    loginEnvironment.merge(environment) { _, new in new }
+    login.environment = loginEnvironment
+    login.standardOutput = FileHandle.nullDevice
+    login.standardError = FileHandle.nullDevice
+    login.standardInput = FileHandle.nullDevice
+    try login.run()
+    defer {
+        if login.isRunning {
+            login.terminate()
+            let cleanupDeadline = Date().addingTimeInterval(2)
+            while login.isRunning && Date() < cleanupDeadline { Thread.sleep(forTimeInterval: 0.05) }
+            if login.isRunning { _ = Darwin.kill(login.processIdentifier, SIGKILL) }
+        }
+        login.waitUntilExit()
+    }
     RuntimeActivity.emit(.authorizing,
         publicText: os1Tr("공식 Codex 로그인을 열었습니다. 브라우저에서 승인하면 그대로 이어집니다.",
                           "The official Codex sign-in is open. Approve it in the browser and it continues on its own."),
@@ -2578,7 +2643,8 @@ func runCodexLogin(home: URL? = nil, deadlineSeconds: Int = 300) throws -> (Int3
     while Date() < deadline {
         if ExecutionCancellation.isCancelled { throw OS1Error.backendBlocked(.cancelled) }
         Thread.sleep(forTimeInterval: 3)
-        if signedIn() { return (0, Data(), Data()) }
+        if currentState() == .signedIn { return (0, Data(), Data()) }
+        if !login.isRunning { break }
     }
     throw ConnectionFailure.authentication
 }
@@ -15322,6 +15388,7 @@ func usage() {
       os1 doctor
       os1 self-test
       os1 accounts list [--json]
+      os1 accounts discover --json
       os1 accounts login --provider codex|claude [--id ACCOUNT] [--new] [--label NAME]
       os1 accounts use|logout|forget --provider codex|claude [--id ACCOUNT]
       os1 fleet-snapshot

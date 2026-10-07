@@ -156,6 +156,7 @@ final class SourceContextTests {
         try runCodexSessionIndexFixtures()
         try runBackendHealthFixtures()
         try runBackendAccountsFixtures()
+        try runBackendSetupFixtures()
         try runGovernanceLearningFixtures()
         try runRequestNamedPathsFixtures()
         try runProviderActivityWatchdogFixtures()
