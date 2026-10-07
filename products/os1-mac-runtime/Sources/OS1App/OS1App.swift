@@ -4164,6 +4164,12 @@ private final class CodexAudioCapture: @unchecked Sendable {
          failure: @escaping @Sendable () -> Void) {
         self.send = send; self.level = level; self.failure = failure
     }
+    // AVFAudio invokes this on its audio service queue, not MainActor. Form
+    // the closure here rather than in the MainActor UI controller: otherwise
+    // Swift 6 traps at closure entry before append can copy the audio buffer.
+    nonisolated func makeTapCallback() -> @Sendable (AVAudioPCMBuffer, AVAudioTime) -> Void {
+        { [self] buffer, _ in append(buffer) }
+    }
     nonisolated func append(_ buffer: AVAudioPCMBuffer) {
         lock.lock()
         guard accepting, let channel = buffer.floatChannelData?[0], buffer.frameLength > 0 else { lock.unlock(); return }
@@ -4300,7 +4306,7 @@ private final class VoiceDictationController: ObservableObject {
                 }
             })
             capture = sink
-            audioEngine.inputNode.installTap(onBus: 0, bufferSize: 2_048, format: format) { buffer, _ in sink.append(buffer) }
+            audioEngine.inputNode.installTap(onBus: 0, bufferSize: 2_048, format: format, block: sink.makeTapCallback())
             tapInstalled = true; audioEngine.prepare(); try audioEngine.start()
             phase = .listening; startElapsedTimer()
         } catch {
@@ -4395,6 +4401,33 @@ private final class VoiceDictationController: ObservableObject {
 // MARK: - Native dictation controller fixtures (no microphone/network/account access)
 // Entered only from --self-test-composer. The production controller, capture,
 // session, finalizer, draft merger and send latch are the objects under test.
+private actor VoiceTapFixtureLedger {
+    private var blocks: [Data] = []
+    func append(_ bytes: Data) { blocks.append(bytes) }
+    func snapshot() -> [Data] { blocks }
+}
+
+// Exercise the EXACT callback handed to AVFAudio on a non-main dispatch
+// queue. Synthetic buffers only: no inputNode, permissions, account or network.
+nonisolated private func invokeVoiceTapFixture(
+    _ callback: @escaping @Sendable (AVAudioPCMBuffer, AVAudioTime) -> Void, samples: [Float]
+) async throws {
+    try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+        DispatchQueue(label: "com.omaragi.os1.fixture.audio-tap").async {
+            guard let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 48_000,
+                                             channels: 1, interleaved: false),
+                  let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(samples.count)),
+                  let channel = buffer.floatChannelData?[0] else {
+                continuation.resume(throwing: CodexDictationError.invalidAudio); return
+            }
+            buffer.frameLength = AVAudioFrameCount(samples.count)
+            for (index, sample) in samples.enumerated() { channel[index] = sample }
+            callback(buffer, AVAudioTime(sampleTime: 0, atRate: 48_000))
+            continuation.resume()
+        }
+    }
+}
+
 private actor VoiceControllerFixtureSocket: CodexDictationSocket {
     private var incoming: [Data] = []
     private var waiter: CheckedContinuation<Data, Error>?
@@ -4561,6 +4594,29 @@ private func voiceDictationControllerSelfTest() async throws -> Int {
         await transport.socket.push(try event("session.updated", revision: 3))
     }
     let samples: [Float] = [-0.05, 0, 0.01, 0.1, -0.2, 0.5]
+
+    // Regression: build335 crashed before append, in a MainActor-inherited
+    // AVAudioNodeTapBlock. Construct the shared callback from MainActor here,
+    // invoke it off-main, and verify synchronous ownership/order/late buffers.
+    do {
+        let ledger = VoiceTapFixtureLedger()
+        let sink = CodexAudioCapture(send: { await ledger.append($0) }, level: { _ in }, failure: {})
+        let callback = sink.makeTapCallback()
+        let second: [Float] = [0.25, -0.25, 0, 1, -1]
+        try await invokeVoiceTapFixture(callback, samples: samples)
+        try await invokeVoiceTapFixture(callback, samples: second)
+        let (raw, drain) = sink.finish(); await drain?.value
+        let expected = try CodexNativeDictation.pcm16(interleavedSamples: samples + second, channels: 1)
+        try check(raw == expected, "background audio tap lost or reordered synchronous PCM")
+        var gain = CodexDictationGain()
+        let expectedBlocks = try [gain.process(monoSamples: samples), gain.process(monoSamples: second)]
+        try check(await ledger.snapshot() == expectedBlocks, "background audio tap send chain failed to drain in order")
+        try await invokeVoiceTapFixture(callback, samples: samples)
+        try check(sink.finish().0 == raw, "audio callback accepted a late buffer after finish")
+        sink.discard()
+        try await invokeVoiceTapFixture(callback, samples: samples)
+        try check(sink.finish().0.isEmpty, "audio callback accepted a late buffer after discard")
+    }
 
     // Stop/Insert followed by Send upgrades the SAME finalizer. Repeated clicks
     // must not submit a partial, start another recording or close twice.
