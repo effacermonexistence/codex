@@ -19,7 +19,10 @@ private func XCTAssertThrowsError<T>(_ value: @autoclosure () throws -> T) {
 @main
 final class SourceContextTests {
     static func main() throws {
+        codexDictationAuthorizationChildIfRequested()
         voiceProcessChildIfRequested()
+        if CommandLine.arguments.contains("--codex-dictation-auth-only") { try runCodexDictationAuthorizationFixtures(); return }
+        if CommandLine.arguments.contains("--codex-native-dictation-only") { try runCodexNativeDictationFixtures(); return }
         let bounded = "관련 회귀 테스트를 실행하고 실제 결과를 products/os1-mac-runtime/QUOTA-FALLBACK-VERIFICATION.md에 기록하세요. 새로운 기능이나 다른 제품 수정은 하지 마세요."
         XCTAssertEqual(ScopeResolution.resolve(bounded).scope, .workspaceWrite)
         XCTAssertFalse(ScopeResolution.resolve(bounded).prohibitions.contains("do not modify files"))
@@ -147,6 +150,8 @@ final class SourceContextTests {
         print("SCV source key: 3 boundary checks passed (content-addressed source, mismatched key, non-source)")
         try runResearchBundleFixtures()
         try runVoiceProcessFixtures()
+        try runCodexNativeDictationFixtures()
+        try runCodexDictationAuthorizationFixtures()
         try runTakeoverFixtures()
         try runCodexSessionIndexFixtures()
         try runBackendHealthFixtures()

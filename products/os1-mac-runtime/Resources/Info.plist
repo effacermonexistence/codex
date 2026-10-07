@@ -19,16 +19,14 @@
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>0.9.268</string>
+	<string>0.9.269</string>
 	<key>CFBundleVersion</key>
-	<string>334</string>
+	<string>335</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>13.0</string>
 	<key>NSHighResolutionCapable</key>
 	<true/>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>OS-1 uses the microphone to turn your voice into task text with a local Whisper engine when available.</string>
-	<key>NSSpeechRecognitionUsageDescription</key>
-	<string>OS-1 uses speech recognition to transcribe dictated tasks.</string>
+	<string>OS-1 records your voice when you start dictation and sends it to OpenAI for Codex-native transcription using your existing Codex sign-in.</string>
 </dict>
 </plist>
