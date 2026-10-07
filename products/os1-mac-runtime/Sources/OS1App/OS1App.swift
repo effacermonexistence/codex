@@ -4035,59 +4035,67 @@ private struct DictationSendLatch {
 }
 
 @MainActor
+private final class DictationSendLatchFixtureState {
+    var latch = DictationSendLatch()
+    var selected: UUID?
+    var phase = VoiceDictationPhase.transcribing
+    var draft = "보존할 초안"
+    var sends: [String] = []
+    var finishRegistrations = 0
+    var completion: (@MainActor () -> Void)?
+
+    init(selected: UUID) { self.selected = selected }
+
+    func request() {
+        guard let session = selected, let ticket = latch.request(sessionID: session) else { return }
+        finishRegistrations += 1
+        completion = { [weak self] in
+            guard let self, self.latch.consume(ticket, currentSessionID: self.selected, phase: self.phase) else { return }
+            self.sends.append(self.draft)
+        }
+    }
+}
+
+@MainActor
 private func dictationSendLatchSelfTest() throws -> Int {
     var checks = 0
     func check(_ condition: Bool, _ message: String) throws {
         guard condition else { throw RunnerError.message("Dictation send: " + message) }; checks += 1
     }
-    var latch = DictationSendLatch()
     let original = UUID(), other = UUID()
-    var selected: UUID? = original
-    var phase = VoiceDictationPhase.transcribing
-    var draft = "보존할 초안"
-    let rawDraft = draft
-    var sends: [String] = []
-    var finishRegistrations = 0
-    var completion: (@MainActor () -> Void)?
-    @MainActor func request() {
-        guard let session = selected, let ticket = latch.request(sessionID: session) else { return }
-        finishRegistrations += 1
-        completion = {
-            guard latch.consume(ticket, currentSessionID: selected, phase: phase) else { return }
-            sends.append(draft)
-        }
-    }
-    request(); request(); request()
-    try check(finishRegistrations == 1 && sends.isEmpty && draft == rawDraft,
+    let state = DictationSendLatchFixtureState(selected: original)
+    let rawDraft = state.draft
+    state.request(); state.request(); state.request()
+    try check(state.finishRegistrations == 1 && state.sends.isEmpty && state.draft == rawDraft,
         "stop/finish then repeated Send must latch once without sending or editing the partial draft")
-    completion?()
-    try check(sends.isEmpty && latch.pending != nil, "send ran before the final transcript reached idle")
-    draft = rawDraft + " 마지막 단어"
-    phase = .idle
-    completion?(); completion?()
-    try check(sends == [draft] && latch.pending == nil, "final transcript must send exactly once after idle")
+    state.completion?()
+    try check(state.sends.isEmpty && state.latch.pending != nil, "send ran before the final transcript reached idle")
+    state.draft = rawDraft + " 마지막 단어"
+    state.phase = .idle
+    state.completion?(); state.completion?()
+    try check(state.sends == [state.draft] && state.latch.pending == nil, "final transcript must send exactly once after idle")
 
     // Cancellation restores the raw draft independently of this submission
     // latch. A retained late completion must not re-submit that restored text.
-    phase = .finalizing; draft = rawDraft; request()
-    let cancelledCompletion = completion
-    latch.cancel(); phase = .idle
+    state.phase = .finalizing; state.draft = rawDraft; state.request()
+    let cancelledCompletion = state.completion
+    state.latch.cancel(); state.phase = .idle
     cancelledCompletion?()
-    try check(sends.count == 1 && draft == rawDraft, "cancel allowed a late send or changed the raw draft")
+    try check(state.sends.count == 1 && state.draft == rawDraft, "cancel allowed a late send or changed the raw draft")
 
-    phase = .transcribing; request()
-    let previousSessionCompletion = completion
-    latch.cancel(); selected = other; phase = .idle
+    state.phase = .transcribing; state.request()
+    let previousSessionCompletion = state.completion
+    state.latch.cancel(); state.selected = other; state.phase = .idle
     previousSessionCompletion?()
-    selected = original
+    state.selected = original
     previousSessionCompletion?()
-    try check(sends.count == 1 && draft == rawDraft, "session change/back revived an old send")
+    try check(state.sends.count == 1 && state.draft == rawDraft, "session change/back revived an old send")
 
-    phase = .transcribing; request()
+    state.phase = .transcribing; state.request()
     cancelledCompletion?(); previousSessionCompletion?()
-    try check(latch.pending != nil && sends.count == 1, "old callbacks consumed a newer voice intent")
-    draft = rawDraft + " 새 받아쓰기"; phase = .idle; completion?()
-    try check(sends == [rawDraft + " 마지막 단어", draft], "new dictation was blocked by cancelled intent")
+    try check(state.latch.pending != nil && state.sends.count == 1, "old callbacks consumed a newer voice intent")
+    state.draft = rawDraft + " 새 받아쓰기"; state.phase = .idle; state.completion?()
+    try check(state.sends == [rawDraft + " 마지막 단어", state.draft], "new dictation was blocked by cancelled intent")
     return checks
 }
 
