@@ -178,6 +178,27 @@ export const backupPagingState = ({ supportRoot, recoveryRoot }) => {
 export const binaryRollbackPermitted = ({ appStopped, pagingQuiesced: quiesced, anyBinaryMoved }) =>
   appStopped === true && quiesced === true && anyBinaryMoved === true;
 
+// Discover only OS-1 process names, then inspect only those PIDs. A local
+// upgrade has no authority to read another application's process arguments.
+// A failed discovery is not proof of quiescence; only pgrep's no-match status
+// and the candidate-exited ps status may produce an empty inventory.
+export const os1ProcessRows = (execute = spawnSync) => {
+  const options = { encoding: 'utf8', timeout: 60000, maxBuffer: 1024 * 1024,
+    stdio: ['ignore', 'pipe', 'pipe'] };
+  // Include ancestors as well: a self-update can be launched by OS-1 itself.
+  const names = execute('/usr/bin/pgrep', ['-a', '-x', '(OS1App|os1)'], options);
+  assert(!names.error, 'OS-1 PID discovery failed');
+  if (names.status === 1) return [];
+  assert.equal(names.status, 0, 'OS-1 PID discovery failed');
+  const ids = names.stdout.trim().split(/\s+/);
+  assert(ids.length && ids.every(id => /^[1-9]\d*$/.test(id)), 'invalid OS-1 PID inventory');
+  const rows = execute('/bin/ps', ['-p', [...new Set(ids)].join(','), '-o', 'pid=,args='], options);
+  assert(!rows.error, 'OS-1 process inspection failed');
+  if (rows.status === 1) return []; // All discovered candidates exited.
+  assert.equal(rows.status, 0, 'OS-1 process inspection failed');
+  return rows.stdout.split('\n').filter(line => line.trim());
+};
+
 async function install() {
 
 const [sourceArg, recoveryArg, expectedBuild, ...options] = process.argv.slice(2);
@@ -221,7 +242,7 @@ const launchApp = () => execFileSync('/usr/bin/open', ['-g', app], {
 });
 const hash = file => createHash('sha256').update(fs.readFileSync(file)).digest('hex');
 const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
-const appPIDs = () => run('/bin/ps', ['-axo', 'pid=,args=']).split('\n').flatMap(line => {
+const appPIDs = () => os1ProcessRows().flatMap(line => {
   const match = line.trim().match(/^(\d+)\s+(.*)$/);
   return match && match[2] === path.join(app, 'Contents/MacOS/OS1App') ? [Number(match[1])] : [];
 });
@@ -241,13 +262,13 @@ const idle = () => {
   }
 };
 // Legacy staged GUI copies can overwrite the same session store. Do not install through an unquiesced writer.
-const foreignWriters = () => run('/bin/ps', ['-axo', 'pid=,args=']).split('\n').filter(line => {
+const foreignWriters = () => os1ProcessRows().filter(line => {
   const match = line.trim().match(/^(\d+)\s+(.*)$/);
   return match && match[2].endsWith('/Contents/MacOS/OS1App') && match[2] !== path.join(app, 'Contents/MacOS/OS1App');
 });
 // A provider-owned memory MCP child can outlive its GUI. Do not snapshot a
 // store still being served, kill that child, or assume GUI idle means no writer.
-const memoryWriters = () => run('/bin/ps', ['-axo', 'pid=,args=']).split('\n').filter(line => {
+const memoryWriters = () => os1ProcessRows().filter(line => {
   const match = line.trim().match(/^(\d+)\s+(.*)$/);
   return match && Number(match[1]) !== process.pid && /(?:^|\/)(?:os1|OS1App)\s+memory-mcp(?:\s|$)/.test(match[2]);
 });
