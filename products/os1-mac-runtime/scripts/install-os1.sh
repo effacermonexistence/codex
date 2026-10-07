@@ -92,6 +92,15 @@ verify_unnotarized_beta_package() {
     expected_payload_files=22
     expected_component_files=25
   fi
+  # 0.9.274 packages the owned browser microphone document. Keep the
+  # immutable older recovery package counts rather than weakening the gate.
+  local requires_browser_capture=0
+  if (( 10#$release_major > 0 || 10#$release_minor > 9 ||
+        (10#$release_minor == 9 && 10#$release_patch >= 274) )); then
+    expected_payload_files=23
+    expected_component_files=26
+    requires_browser_capture=1
+  fi
 
   pkgutil --expand-full "$package_path" "$expanded_root" || {
     echo "OS-1 beta verification could not expand the package." >&2
@@ -130,6 +139,12 @@ verify_unnotarized_beta_package() {
     echo "OS-1 beta verification refused a policy helper in a legacy release." >&2
     return 1
   fi
+  if (( requires_browser_capture )); then
+    [[ -f "$app_path/Contents/Resources/CodexDictationCapture.html" &&
+       ! -L "$app_path/Contents/Resources/CodexDictationCapture.html" ]] || {
+      echo "OS-1 beta verification requires the browser capture document." >&2; return 1;
+    }
+  fi
   [[ "$(/usr/bin/xmllint --xpath 'string(/pkg-info/@identifier)' "$package_info")" == "com.omaragi.os1" &&
      "$(/usr/bin/xmllint --xpath 'string(/pkg-info/@version)' "$package_info")" == "$manifest_version" &&
      "$(/usr/bin/xmllint --xpath 'string(/pkg-info/@install-location)' "$package_info")" == "/" &&
@@ -160,6 +175,7 @@ verify_unnotarized_beta_package() {
       "Applications/OS-1 CLODEX.app/Contents/Resources/Codex.png"|\
       "Applications/OS-1 CLODEX.app/Contents/Resources/ClaudeCode.png"|\
       "Applications/OS-1 CLODEX.app/Contents/Resources/Constellation.png"|\
+      "Applications/OS-1 CLODEX.app/Contents/Resources/CodexDictationCapture.html"|\
       "Applications/OS-1 CLODEX.app/Contents/Resources/OmarAGI.icns"|\
       "Applications/OS-1 CLODEX.app/Contents/Resources/config.json"|\
       "Applications/OS-1 CLODEX.app/Contents/Info.plist"|\
