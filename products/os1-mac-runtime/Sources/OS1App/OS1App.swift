@@ -3921,6 +3921,7 @@ private func composerInteractionSelfTest() async throws {
         "a pending dictation send must not accept a second click")
     checks += try dictationSendLatchSelfTest()
     checks += try await voiceDictationControllerSelfTest()
+    checks += try await voiceStoreSendSelfTest()
     let root = FileManager.default.temporaryDirectory.appendingPathComponent("os1-composer-" + UUID().uuidString)
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: root) }
@@ -4515,16 +4516,21 @@ private extension VoiceDictationController {
     /// call toggle/authorizeAndStart, inputNode, a permission API or a credential
     /// store. Every subsequent finish/cancel/fail runs the production method.
     func installControllerFixture(draft: VoiceControllerFixtureDraft, samples: [Float]) throws -> Data {
+        try installControllerFixture(initialText: draft.text, readComposer: { [weak draft] in draft?.text ?? "" },
+            publish: { [weak draft] in draft?.text = $0 },
+            failure: { [weak draft] message in draft?.failures.append(message); draft?.latch.cancel() }, samples: samples)
+    }
+    func installControllerFixture(initialText: String, readComposer: @escaping () -> String,
+                                  publish: @escaping (String) -> Void, failure: @escaping (String) -> Void,
+                                  samples: [Float]) throws -> Data {
         guard CommandLine.arguments.contains("--self-test-composer"), !isActive, session == nil,
               !tapInstalled, samples.allSatisfy(\.isFinite), !samples.isEmpty else {
             throw RunnerError.message("Voice controller fixture installation outside its isolated self-test")
         }
         generation += 1; let epoch = generation
-        sampleRate = 48_000; baseText = draft.text; lastPublishedText = draft.text
+        sampleRate = 48_000; baseText = initialText; lastPublishedText = initialText
         currentTranscript = ""; lastDictatedText = ""; onFinish = nil
-        onReadComposer = { [weak draft] in draft?.text ?? "" }
-        onTranscript = { [weak draft] in draft?.text = $0 }
-        onFailure = { [weak draft] message in draft?.failures.append(message); draft?.latch.cancel() }
+        onReadComposer = readComposer; onTranscript = publish; onFailure = failure
         let live = CodexDictationSession(sampleRate: sampleRate, transport: transport, credential: credential,
             onTranscript: { [weak self] text in
                 Task { @MainActor [weak self] in
@@ -4739,6 +4745,113 @@ private func voiceDictationControllerSelfTest() async throws -> Int {
                   "empty/error finalizer did not clear intent and callbacks")
     }
     print("Native dictation controller: \(checks) checks passed; microphone 0, network 0, account reads 0; actual finish/cancel/fail/PCM fallback")
+    return checks
+}
+
+private extension SessionStore {
+    func installVoiceStoreFixture(samples: [Float]) throws {
+        cancelDictationSendIntent()
+        _ = try voiceDictation.installControllerFixture(initialText: composer,
+            readComposer: { [weak self] in self?.composer ?? "" },
+            publish: { [weak self] in self?.composer = $0 },
+            failure: { [weak self] message in self?.cancelDictationSendIntent(); self?.alertMessage = message }, samples: samples)
+    }
+    var voiceStoreFixtureSendPending: Bool { dictationSendLatch.pending != nil }
+}
+@MainActor
+private final class VoiceStoreFixtureDispatch {
+    var requests: [String] = []
+    var busy: CheckedContinuation<Void, Never>?
+}
+@MainActor
+private func voiceStoreSendSelfTest() async throws -> Int {
+    guard CommandLine.arguments.contains("--self-test-composer") else {
+        throw RunnerError.message("Voice store fixture requires isolated composer self-test")
+    }
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("os1-voice-store-" + UUID().uuidString)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    var checks = 0
+    func check(_ value: Bool, _ message: String) throws {
+        guard value else { throw RunnerError.message("Voice store: " + message) }; checks += 1
+    }
+    func wait(_ value: @MainActor () async -> Bool, _ message: String) async throws {
+        let end = Date().addingTimeInterval(4)
+        while !(await value()) {
+            guard Date() < end else { throw RunnerError.message("Voice store deadline: " + message) }
+            try await Task.sleep(for: .milliseconds(1))
+        }
+    }
+    func event(_ type: String, text: String? = nil, revision: Int = 1) throws -> Data {
+        var value: [String: Any] = ["type": type, "sequence_no": revision]
+        if let text { value["utterance_id"] = "fixture-store"; value["revision"] = revision; value["text"] = text }
+        else { value["session"] = ["session_id": "fixture-store", "status": type == "session.started" ? "active" : "closed"] }
+        return try JSONSerialization.data(withJSONObject: value)
+    }
+    for scenario in ["listening", "after-insert", "insert-only", "cancel", "switch", "busy"] {
+        let wire = VoiceControllerFixtureTransport(), auth = VoiceControllerFixtureCredential()
+        let voice = VoiceDictationController(credential: { await auth.load() }, transport: wire)
+        let dispatch = VoiceStoreFixtureDispatch()
+        let store = SessionStore(storageRoot: root.appendingPathComponent(scenario), runOperation: { submission, _, _, _, _ in
+            dispatch.requests.append(submission.request)
+            if submission.request == "BUSY" { await withCheckedContinuation { dispatch.busy = $0 } }
+            return AppRunSummary(status: "complete", steps: [AppRunStep(sequence: 1, provider: "claude", action: "fixture",
+                model: "fixture", effort: "max", revasDisposition: "adopted", sessionID: UUID().uuidString,
+                permissionProfile: "workspace_write", exitCode: 0, output: "fixture reply", stderr: "", durationMS: 0, nativeRecord: nil)])
+        }, voiceDictation: voice)
+        defer { store.stopVoiceDictation(); dispatch.busy?.resume(); dispatch.busy = nil }
+        let original = store.selectedSessionID!
+        store.createSession(); let other = store.selectedSessionID!; store.select(original)
+        if scenario == "busy" {
+            store.composer = "BUSY"; store.performPrimaryAction()
+            try await wait({ dispatch.busy != nil }, "busy turn started")
+        }
+        store.composer = "보존 초안"
+        try store.installVoiceStoreFixture(samples: [-0.05, 0, 0.1, -0.2, 0.5])
+        try await wait({ await wire.socket.messageTypes().contains("session.start") }, "voice start")
+        await wire.socket.push(try event("session.started"))
+        try await wait({ await wire.socket.messageTypes().contains("audio.append") }, "voice audio")
+        await wire.socket.push(try event("transcript.segment", text: "중간", revision: 2))
+        try await wait({ store.composer == "보존 초안 중간" }, "partial composer")
+        if scenario == "after-insert" || scenario == "insert-only" { store.finishVoiceDictation() }
+        if scenario != "insert-only" {
+            // The exact method called by the production primary button.
+            store.performPrimaryAction(); store.performPrimaryAction()
+            try check(store.voiceStoreFixtureSendPending && dispatch.requests == (scenario == "busy" ? ["BUSY"] : []),
+                      "primary activation sent a partial or lost its one-shot intent")
+        }
+        if scenario == "cancel" { _ = store.cancelVoiceDictation() }
+        if scenario == "switch" { store.select(other) }
+        if scenario == "cancel" || scenario == "switch" {
+            await wire.socket.push(try event("transcript.final", text: "늦은 결과", revision: 3))
+            try await Task.sleep(for: .milliseconds(20))
+            try check(dispatch.requests.isEmpty && !store.voiceStoreFixtureSendPending && !voice.isActive,
+                      "cancel/session switch dispatched a late transcript")
+            continue
+        }
+        try await wait({ await wire.socket.messageTypes().contains("session.close") }, "one finalizer")
+        await wire.socket.push(try event("transcript.final", text: "최종 마지막 단어", revision: 3))
+        await wire.socket.push(try event("session.updated", revision: 4))
+        try await wait({ !voice.isActive }, "final voice state")
+        let expected = "보존 초안 최종 마지막 단어"
+        if scenario == "insert-only" {
+            try check(dispatch.requests.isEmpty && store.composer == expected && !store.voiceStoreFixtureSendPending,
+                      "explicit transcribe-only sent unexpectedly")
+        } else if scenario == "busy" {
+            try check(dispatch.requests == ["BUSY"] && store.queuedSubmissions.map(\.request) == [expected] && store.composer.isEmpty,
+                      "voice send did not queue exactly once behind the active turn")
+            store.removeQueued(store.queuedSubmissions[0].id)
+            dispatch.busy?.resume(); dispatch.busy = nil
+            try await wait({ !store.isRunning }, "busy fixture completion")
+        } else {
+            try await wait({ dispatch.requests.count == 1 && !store.isRunning }, "real store dispatch")
+            try check(dispatch.requests == [expected] && store.composer.isEmpty && !store.voiceStoreFixtureSendPending,
+                      "final text did not dispatch exactly once without a second Send")
+        }
+        try check(await wire.socket.messageTypes().filter { $0 == "session.close" }.count == 1,
+                  "duplicate primary activation repeated voice finalization")
+    }
+    print("Voice primary/store integration: \(checks) checks PASS; one activation sends final text once; insert/cancel/switch/queue preserved; microphone/auth/network/model calls 0")
     return checks
 }
 
@@ -7362,13 +7475,14 @@ private final class SessionStore: ObservableObject {
     private var frontierMonitorTask: Task<Void, Never>?
     private var frontierMonitor: FrontierNewsMonitor?
 
-    let voiceDictation = VoiceDictationController()
+    let voiceDictation: VoiceDictationController
 
     private let fileManager = FileManager.default
 
     init(
         storageRoot: URL? = nil,
         runOperation: RunOperation? = nil,
+        voiceDictation: VoiceDictationController? = nil,
         sourceAdmissionCheck: ((PendingSubmission, ConversationSession) -> Bool)? = nil,
         sourceAdmissionFixture: (root: String, home: URL)? = nil,
         memoryPressureSampler: (() -> RunAdmission.MemoryPressure)? = nil,
@@ -7376,6 +7490,7 @@ private final class SessionStore: ObservableObject {
         nativeSessionOpener: @escaping NativeSessionOpener = { NSWorkspace.shared.open($0) }
     ) {
         customStorageRoot = storageRoot
+        self.voiceDictation = voiceDictation ?? VoiceDictationController()
         self.memoryPressureSampler = memoryPressureSampler ?? (storageRoot == nil ? { RunMemoryPressure.current() } : { .normal })
         observedMemoryPressure = self.memoryPressureSampler()
         selfUpdateHome = storageRoot ?? FileManager.default.homeDirectoryForCurrentUser
@@ -17448,17 +17563,17 @@ private struct VoiceDictationControl: View {
                     .frame(minWidth: 52, alignment: .leading)
 
                     Button(action: finish) {
-                        Image(systemName: "checkmark")
-                            .font(.system(size: 12, weight: .bold))
-                            .foregroundStyle(Color.black.opacity(0.86))
-                            .frame(width: 32, height: 32)
-                            .background(Theme.pink)
-                            .clipShape(Circle())
+                        Label(os1Tr("전사만", "Transcribe only"), systemImage: "stop.fill")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(Theme.text)
+                            .padding(.horizontal, 8).frame(height: 30)
+                            .background(Theme.background, in: Capsule())
                     }
                     .buttonStyle(.plain)
                     .disabled(controller.isAuthorizing || controller.isFinalizing)
-                    .help("Use this transcript")
-                    .accessibilityLabel("Finish voice input")
+                    .help(os1Tr("녹음을 마치고 입력만 합니다 · 보내지 않습니다", "Stop and insert the transcript without sending"))
+                    .accessibilityLabel(os1Tr("전사만", "Transcribe only"))
+                    .accessibilityIdentifier("os1.voice.insert")
                 }
                 .padding(.horizontal, 7)
                 .padding(.vertical, 5)
@@ -19161,15 +19276,20 @@ private struct ConversationQueueView: View {
 private struct ComposerPrimaryButton: View {
     let action: ComposerPrimaryAction
     var labelOverride: String? = nil
+    var visibleLabel: String? = nil
     let activate: () -> Void
     var body: some View {
         Button(action: activate) {
-            Image(systemName: action.icon)
-                .font(.system(size: 14, weight: .bold))
-                .foregroundStyle(Color.black.opacity(0.86))
-                .frame(width: 32, height: 32)
-                .background(Theme.pink.opacity(action.enabled ? 1 : 0.45))
-                .clipShape(Circle())
+            HStack(spacing: 6) {
+                Image(systemName: action.icon).font(.system(size: 14, weight: .bold))
+                if let visibleLabel { Text(visibleLabel).font(.system(size: 11, weight: .semibold)).lineLimit(1) }
+            }
+            .foregroundStyle(Color.black.opacity(0.86))
+            .padding(.horizontal, visibleLabel == nil ? 0 : 10)
+            .frame(minWidth: 32, minHeight: 32)
+            .fixedSize(horizontal: true, vertical: false)
+            .background(Theme.pink.opacity(action.enabled ? 1 : 0.45))
+            .clipShape(Capsule())
         }
         .buttonStyle(.plain).disabled(!action.enabled)
         .help(labelOverride ?? action.help).accessibilityLabel(labelOverride ?? action.label)
@@ -19186,9 +19306,14 @@ private struct DictationAwarePrimaryButton: View {
 
     var body: some View {
         let action = store.primaryAction
-        let voiceLabel = voice.isActive && [.send, .queue].contains(action)
-            ? os1Tr("전사하고 보내기", "Transcribe and send") : nil
-        ComposerPrimaryButton(action: action, labelOverride: voiceLabel) { store.performPrimaryAction() }
+        let voiceLabel: String? = voice.isActive
+            ? (action == .dictationSendPending
+                ? os1Tr("전사 후 자동 전송", "Sending after transcription")
+                : action == .finalizing ? os1Tr("시작 중…", "Starting…")
+                : os1Tr("전사하고 보내기", "Transcribe and send")) : nil
+        ComposerPrimaryButton(action: action, labelOverride: voiceLabel, visibleLabel: voiceLabel) {
+            store.performPrimaryAction()
+        }
     }
 }
 
