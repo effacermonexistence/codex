@@ -4775,6 +4775,9 @@ private func voiceStoreSendSelfTest() async throws -> Int {
     func check(_ value: Bool, _ message: String) throws {
         guard value else { throw RunnerError.message("Voice store: " + message) }; checks += 1
     }
+    // Keep the actual production hosting view alive until its send fixture
+    // completes; disposing a composer intentionally cancels active dictation.
+    var renderedHosts: [NSView] = []
     func wait(_ value: @MainActor () async -> Bool, _ message: String) async throws {
         let end = Date().addingTimeInterval(4)
         while !(await value()) {
@@ -4813,6 +4816,22 @@ private func voiceStoreSendSelfTest() async throws -> Int {
         try await wait({ await wire.socket.messageTypes().contains("audio.append") }, "voice audio")
         await wire.socket.push(try event("transcript.segment", text: "중간", revision: 2))
         try await wait({ store.composer == "보존 초안 중간" }, "partial composer")
+        if scenario == "listening" {
+            let hosting = NSHostingView(rootView: ComposerView(store: store, session: store.selectedSession!))
+            hosting.frame = NSRect(x: 0, y: 0, width: 740, height: 260)
+            hosting.layoutSubtreeIfNeeded()
+            guard let bitmap = hosting.bitmapImageRepForCachingDisplay(in: hosting.bounds) else {
+                throw RunnerError.message("Voice composer fixture could not render")
+            }
+            hosting.cacheDisplay(in: hosting.bounds, to: bitmap)
+            guard let png = bitmap.representation(using: .png, properties: [:]) else {
+                throw RunnerError.message("Voice composer fixture could not encode")
+            }
+            let image = FileManager.default.temporaryDirectory.appendingPathComponent("os1-voice-send-ui-" + UUID().uuidString + ".png")
+            try png.write(to: image, options: .atomic)
+            renderedHosts.append(hosting)
+            print("Rendered production voice composer fixture: \(image.path); synthetic dictation, no live microphone/account/provider access")
+        }
         if scenario == "after-insert" || scenario == "insert-only" { store.finishVoiceDictation() }
         if scenario != "insert-only" {
             // The exact method called by the production primary button.
@@ -4851,7 +4870,8 @@ private func voiceStoreSendSelfTest() async throws -> Int {
         try check(await wire.socket.messageTypes().filter { $0 == "session.close" }.count == 1,
                   "duplicate primary activation repeated voice finalization")
     }
-    print("Voice primary/store integration: \(checks) checks PASS; one activation sends final text once; insert/cancel/switch/queue preserved; microphone/auth/network/model calls 0")
+    _ = renderedHosts.count
+    print("Voice primary/store integration: \(checks) checks PASS; one activation sends final text once; insert/cancel/switch/queue preserved; live microphone/account/network/model calls 0")
     return checks
 }
 
