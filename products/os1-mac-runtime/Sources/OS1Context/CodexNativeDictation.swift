@@ -113,15 +113,30 @@ public enum CodexNativeDictation {
     public static func transcriptionRequest(wav: Data, bearerToken: String, language: String? = nil,
                                              boundary: String = "os1-" + UUID().uuidString) throws -> URLRequest {
         guard wav.count >= 44, wav.prefix(4) == Data("RIFF".utf8),
-              wav.subdata(in: 8..<12) == Data("WAVE".utf8), !boundary.isEmpty, boundary.utf8.count <= 128,
+              wav.subdata(in: 8..<12) == Data("WAVE".utf8) else { throw CodexDictationError.invalidRequest }
+        return try transcriptionRequest(audio: wav, contentType: "audio/wav", bearerToken: bearerToken,
+                                        language: language, boundary: boundary)
+    }
+
+    /// Codex's ordinary batch lane uploads the browser MediaRecorder Blob,
+    /// not raw hardware PCM. Keep the browser-selected MIME/codec intact.
+    public static func transcriptionRequest(audio: Data, contentType: String, bearerToken: String,
+                                             language: String? = nil,
+                                             boundary: String = "os1-" + UUID().uuidString) throws -> URLRequest {
+        let mime = contentType.split(separator: ";", maxSplits: 1).first.map(String.init)?.lowercased() ?? ""
+        guard !audio.isEmpty, audio.count <= 16 * 1_024 * 1_024,
+              ["audio/webm", "audio/mp4", "audio/ogg", "audio/wav", "audio/aac", "audio/x-m4a"].contains(mime),
+              contentType.utf8.count <= 128, contentType.unicodeScalars.allSatisfy({ (32...126).contains($0.value) }),
+              !boundary.isEmpty, boundary.utf8.count <= 128,
               boundary.unicodeScalars.allSatisfy({ CharacterSet.alphanumerics.contains($0) || $0 == "-" }) else {
             throw CodexDictationError.invalidRequest
         }
         let bearer = try token(bearerToken), language = try normalizedLanguage(language)
+        let suffix = mime == "audio/x-m4a" ? "m4a" : String(mime.dropFirst("audio/".count))
         var body = Data()
         func text(_ value: String) { body.append(Data(value.utf8)) }
-        text("--\(boundary)\r\nContent-Disposition: form-data; name=\"file\"; filename=\"codex.wav\"\r\nContent-Type: audio/wav\r\n\r\n")
-        body.append(wav); text("\r\n")
+        text("--\(boundary)\r\nContent-Disposition: form-data; name=\"file\"; filename=\"codex.\(suffix)\"\r\nContent-Type: \(contentType)\r\n\r\n")
+        body.append(audio); text("\r\n")
         if let language { text("--\(boundary)\r\nContent-Disposition: form-data; name=\"language\"\r\n\r\n\(language)\r\n") }
         text("--\(boundary)--\r\n")
         var request = URLRequest(url: transcriptionURL, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 30)
@@ -129,6 +144,9 @@ public enum CodexNativeDictation {
         request.setValue("Bearer " + bearer, forHTTPHeaderField: "Authorization")
         request.setValue("multipart/form-data; boundary=" + boundary, forHTTPHeaderField: "Content-Type")
         request.setValue("OS-1 Native Dictation", forHTTPHeaderField: "User-Agent")
+        request.setValue("Codex Desktop", forHTTPHeaderField: "originator")
+        if let preferred = Locale.preferredLanguages.first { request.setValue(preferred, forHTTPHeaderField: "Accept-Language") }
+        // Native proxy integrity/attachment flags are not forged here.
         return request
     }
 
@@ -137,6 +155,7 @@ public enum CodexNativeDictation {
         request.setValue("Bearer " + (try token(bearerToken)), forHTTPHeaderField: "Authorization")
         request.setValue(protocols.joined(separator: ", "), forHTTPHeaderField: "Sec-WebSocket-Protocol")
         request.setValue("OS-1 Native Dictation", forHTTPHeaderField: "User-Agent")
+        if let preferred = Locale.preferredLanguages.first { request.setValue(preferred, forHTTPHeaderField: "Accept-Language") }
         return request
     }
 
@@ -158,11 +177,20 @@ public enum CodexNativeDictation {
     public static func transcribe(wav: Data, language: String? = nil,
                                  credential: Credential = unconfiguredCredential,
                                  transport: any CodexDictationTransport) async throws -> String {
+        guard wav.count >= 44, wav.prefix(4) == Data("RIFF".utf8), wav.subdata(in: 8..<12) == Data("WAVE".utf8) else {
+            throw CodexDictationError.invalidRequest
+        }
+        return try await transcribe(audio: wav, contentType: "audio/wav", language: language,
+                                    credential: credential, transport: transport)
+    }
+    public static func transcribe(audio: Data, contentType: String, language: String? = nil,
+                                 credential: Credential = unconfiguredCredential,
+                                 transport: any CodexDictationTransport) async throws -> String {
         do {
             try Task.checkCancellation()
             let bearer = try await credential()
             try Task.checkCancellation()
-            let request = try transcriptionRequest(wav: wav, bearerToken: bearer, language: language)
+            let request = try transcriptionRequest(audio: audio, contentType: contentType, bearerToken: bearer, language: language)
             let response = try await transport.post(request)
             try Task.checkCancellation()
             guard (200...299).contains(response.statusCode) else { throw CodexDictationError.serverRejected }

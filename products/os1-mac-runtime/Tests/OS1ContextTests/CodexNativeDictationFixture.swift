@@ -245,6 +245,16 @@ private func codexNativeDictationFixtureChecks() async throws {
     try check(!bodyText.contains(token), "credential never appears in request body")
     let noLanguage = try CodexNativeDictation.transcriptionRequest(wav: wav, bearerToken: token, boundary: "os1-fixture")
     try check(!String(decoding: noLanguage.httpBody ?? Data(), as: UTF8.self).contains("name=\"language\""), "absent language remains absent")
+    let encodedBrowser = Data([0, 0, 0, 24, 0x66, 0x74, 0x79, 0x70, 1, 2, 3, 4])
+    let browserRequest = try CodexNativeDictation.transcriptionRequest(audio: encodedBrowser,
+        contentType: "audio/mp4;codecs=mp4a.40.2", bearerToken: token, boundary: "os1-browser-fixture")
+    let browserBody = browserRequest.httpBody ?? Data(), browserText = String(decoding: browserBody, as: UTF8.self)
+    try check(browserBody.range(of: encodedBrowser) != nil && browserText.contains("filename=\"codex.mp4\""), "native browser encoding retained")
+    try check(browserText.contains("Content-Type: audio/mp4;codecs=mp4a.40.2") && !browserText.contains("name=\"model\""), "browser MIME retained; no invented ASR model")
+    try check(browserRequest.value(forHTTPHeaderField: "originator") == "Codex Desktop", "native batch originator metadata")
+    try check(browserRequest.value(forHTTPHeaderField: "X-OpenAI-Attach-Integrity-State") == nil, "native proxy integrity is not forged")
+    try rejects(.invalidRequest) { _ = try CodexNativeDictation.transcriptionRequest(audio: encodedBrowser, contentType: "video/mp4", bearerToken: token) }
+    try rejects(.invalidRequest) { _ = try CodexNativeDictation.transcriptionRequest(audio: encodedBrowser, contentType: "audio/mp4\r\nInjected: yes", bearerToken: token) }
     try rejects(.invalidCredential) { _ = try CodexNativeDictation.transcriptionRequest(wav: wav, bearerToken: "") }
     try rejects(.invalidCredential) { _ = try CodexNativeDictation.transcriptionRequest(wav: wav, bearerToken: "fixture\r\nInjected: yes") }
     try rejects(.invalidRequest) { _ = try CodexNativeDictation.transcriptionRequest(wav: wav, bearerToken: token, boundary: "bad\r\nboundary") }

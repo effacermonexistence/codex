@@ -1,0 +1,481 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' blob:; worker-src blob:; connect-src 'none'; media-src blob:; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'">
+  <meta name="referrer" content="no-referrer">
+  <title>Owned dictation capture</title>
+</head>
+<body>
+<script>
+(() => {
+  "use strict";
+
+  // This bridge belongs only to the native application's private main frame.
+  const TRUSTED_ORIGIN = "https://os1-dictation.invalid";
+  const trustedFrame = () => {
+    try { return window.top === window && location.origin === TRUSTED_ORIGIN; }
+    catch (_) { return false; }
+  };
+  if (!trustedFrame()) return;
+
+  const MAX_ENVELOPE_BYTES = 16 * 1024 * 1024;
+  const MAX_BASE64_CHARACTERS = MAX_ENVELOPE_BYTES - 4096;
+  const MAX_ENCODED_AUDIO_BYTES = Math.floor(MAX_BASE64_CHARACTERS / 4) * 3;
+  const START_DEADLINE_MS = 6500;
+  const FINISH_DEADLINE_MS = 12000;
+  const FLUSH_DEADLINE_MS = 1500;
+  const RECORDER_STOP_DEADLINE_MS = 6000;
+  const ENCODE_DEADLINE_MS = 3000;
+  const encoder = new TextEncoder();
+  const knownErrors = new Set([
+    "capture_cancelled", "capture_busy", "capture_not_ready", "capture_unsupported",
+    "capture_start_timeout", "capture_finish_timeout", "capture_state_invalid",
+    "permission_denied", "microphone_unavailable", "microphone_ended",
+    "audio_context_not_running", "worklet_flush_timeout", "recorder_error",
+    "recorder_paused", "recorder_stopped_early", "recorder_stop_timeout",
+    "encoded_audio_empty", "encoded_audio_too_large", "encoded_audio_invalid",
+    "encoded_audio_read_timeout", "encoded_audio_read_failed", "mime_unsupported",
+    "mime_mismatch", "bridge_unavailable", "capture_failed"
+  ]);
+  let configuration = null;
+  let activeRun = null;
+
+  const failure = code => Object.assign(new Error(code), { captureCode: code });
+  const errorCode = error => {
+    if (error && knownErrors.has(error.captureCode)) return error.captureCode;
+    // Only the error class is inspected; exception messages never cross the bridge.
+    switch (error && error.name) {
+      case "NotAllowedError": case "SecurityError": return "permission_denied";
+      case "NotFoundError": case "NotReadableError": return "microphone_unavailable";
+      case "NotSupportedError": return "capture_unsupported";
+      case "InvalidStateError": return "capture_state_invalid";
+      case "AbortError": return "capture_cancelled";
+      default: return "capture_failed";
+    }
+  };
+  const owns = run => trustedFrame() && activeRun === run && !run.cancelled &&
+    configuration === run.configuration && configuration.nonce === run.nonce &&
+    configuration.generation === run.generation;
+  const requireOwned = run => { if (!owns(run)) throw failure("capture_cancelled"); };
+  const stopOwnedStream = stream => {
+    if (!stream) return;
+    for (const track of stream.getTracks()) { try { track.stop(); } catch (_) {} }
+  };
+
+  function post(run, event, payload) {
+    requireOwned(run);
+    const envelope = { nonce: run.nonce, generation: run.generation, event, payload };
+    if (encoder.encode(JSON.stringify(envelope)).byteLength > MAX_ENVELOPE_BYTES) {
+      throw failure("encoded_audio_too_large");
+    }
+    const handler = window.webkit && window.webkit.messageHandlers &&
+      window.webkit.messageHandlers.os1Capture;
+    if (!handler || typeof handler.postMessage !== "function") throw failure("bridge_unavailable");
+    try { handler.postMessage(envelope); }
+    catch (_) { throw failure("bridge_unavailable"); }
+  }
+
+  function cleanup(run, terminalPhase) {
+    if (!run || run.cancelled) return;
+    run.cancelled = true;
+    run.phase = terminalPhase;
+    if (activeRun === run) activeRun = null;
+    run.resolveAbort();
+    for (const timer of run.timers) clearTimeout(timer);
+    run.timers.clear();
+    if (run.recorder) {
+      run.recorder.onstart = null;
+      run.recorder.ondataavailable = null;
+      run.recorder.onerror = null;
+      run.recorder.onstop = null;
+      run.recorder.onpause = null;
+      try { if (run.recorder.state !== "inactive") run.recorder.stop(); } catch (_) {}
+    }
+    if (run.reader) {
+      run.reader.onload = null;
+      run.reader.onerror = null;
+      run.reader.onabort = null;
+      try { if (run.reader.readyState === FileReader.LOADING) run.reader.abort(); } catch (_) {}
+    }
+    for (const [track, listener] of run.trackListeners) track.removeEventListener("ended", listener);
+    run.trackListeners.length = 0;
+    // The stream is acquired by this run, never a global microphone or another capture.
+    stopOwnedStream(run.stream);
+    if (run.meter) {
+      try { run.meter.port.postMessage({ type: "cancel" }); } catch (_) {}
+      run.meter.port.onmessage = null;
+      try { run.meter.port.close(); } catch (_) {}
+    }
+    if (run.oscillator) { try { run.oscillator.stop(); } catch (_) {} }
+    for (const node of [run.source, run.meter, run.silentGain, run.oscillator,
+      run.syntheticGain, run.syntheticDestination]) {
+      if (node) { try { node.disconnect(); } catch (_) {} }
+    }
+    if (run.context) {
+      run.context.onstatechange = null;
+      try { run.context.close().catch(() => {}); } catch (_) {}
+    }
+    if (run.workletURL) URL.revokeObjectURL(run.workletURL);
+    run.workletURL = null;
+    run.chunks.length = 0;
+    run.byteCount = 0;
+    run.flushResolver = null;
+    run.stopResolver = null;
+    run.stream = null;
+    run.recorder = null;
+    run.reader = null;
+    run.source = null;
+    run.meter = null;
+    run.silentGain = null;
+    run.oscillator = null;
+    run.syntheticGain = null;
+    run.syntheticDestination = null;
+    run.context = null;
+  }
+
+  function failRun(run, code) {
+    if (!owns(run)) return false;
+    const sanitized = knownErrors.has(code) ? code : "capture_failed";
+    try { post(run, "error", { code: sanitized }); } catch (_) {}
+    cleanup(run, "failed");
+    return false;
+  }
+
+  async function deadline(run, operation, milliseconds, timeoutCode) {
+    requireOwned(run);
+    let timer;
+    const timeout = new Promise((_, reject) => {
+      timer = setTimeout(() => reject(failure(timeoutCode)), milliseconds);
+      run.timers.add(timer);
+    });
+    const aborted = run.abortPromise.then(() => { throw failure("capture_cancelled"); });
+    try { return await Promise.race([operation, timeout, aborted]); }
+    finally { clearTimeout(timer); run.timers.delete(timer); }
+  }
+
+  // Accept only actual audio encodings. No caller-provided codec is requested.
+  function checkedMime(value) {
+    const mime = typeof value === "string" ? value.trim() : "";
+    if (!/^audio\/(?:webm|ogg|mp4|wav)(?:\s*;\s*codecs\s*=\s*(?:"[a-z0-9._,+ \-]+"|[a-z0-9._,+\-]+))?$/i.test(mime)) {
+      throw failure("mime_unsupported");
+    }
+    return mime;
+  }
+  const mimeBase = mime => mime.split(";", 1)[0].trim().toLowerCase();
+
+  function metadata(run) {
+    const result = {
+      captureFrontend: "webkit-owned",
+      audioContextSampleRate: String(run.sampleRate),
+      synthetic: run.synthetic ? "true" : "false",
+      sampleRate: "unknown",
+      channelCount: "unknown",
+      echoCancellation: "unknown",
+      noiseSuppression: "unknown",
+      autoGainControl: "unknown"
+    };
+    const track = run.stream && run.stream.getAudioTracks()[0];
+    let settings = {};
+    try { if (track && typeof track.getSettings === "function") settings = track.getSettings(); }
+    catch (_) {}
+    for (const name of ["sampleRate", "channelCount"]) {
+      if (typeof settings[name] === "number" && Number.isFinite(settings[name]) && settings[name] > 0) {
+        result[name] = String(settings[name]);
+      }
+    }
+    for (const name of ["echoCancellation", "noiseSuppression", "autoGainControl"]) {
+      if (typeof settings[name] === "boolean") result[name] = String(settings[name]);
+    }
+    if (run.mimeType) result.recorderMimeType = run.mimeType;
+    return result;
+  }
+
+  const workletSource = `
+    class OwnedMonoMeter extends AudioWorkletProcessor {
+      constructor() {
+        super();
+        this.block = new Float32Array(2048);
+        this.used = 0;
+        this.cancelled = false;
+        this.port.onmessage = event => {
+          const message = event.data;
+          if (!message || this.cancelled) return;
+          if (message.type === "flush") {
+            this.emitLevel();
+            this.port.postMessage({ type: "flushed", requestId: message.requestId });
+          } else if (message.type === "cancel") {
+            this.cancelled = true;
+            this.used = 0;
+            this.block.fill(0);
+          }
+        };
+      }
+      emitLevel() {
+        if (this.used === 0) return;
+        let sum = 0;
+        for (let i = 0; i < this.used; i++) sum += this.block[i] * this.block[i];
+        const value = Math.sqrt(sum / this.used);
+        this.port.postMessage({ type: "level", value: Number.isFinite(value) ? value : 0 });
+        this.block.fill(0);
+        this.used = 0;
+      }
+      process(inputs, outputs) {
+        // The analysis branch must never play captured audio through speakers.
+        for (const output of outputs) for (const channel of output) channel.fill(0);
+        if (this.cancelled) return false;
+        const mono = inputs[0] && inputs[0][0];
+        if (mono) for (let i = 0; i < mono.length; i++) {
+          this.block[this.used++] = Number.isFinite(mono[i]) ? mono[i] : 0;
+          if (this.used === this.block.length) this.emitLevel();
+        }
+        return true;
+      }
+    }
+    registerProcessor("os1-owned-mono-meter", OwnedMonoMeter);
+  `;
+
+  async function acquireAndBegin(run) {
+    if (typeof window.MediaRecorder !== "function" || typeof window.AudioContext !== "function" ||
+        typeof window.AudioWorkletNode !== "function") throw failure("capture_unsupported");
+    if (!run.synthetic) {
+      if (!navigator.mediaDevices || typeof navigator.mediaDevices.getUserMedia !== "function") {
+        throw failure("capture_unsupported");
+      }
+      const audioConstraints = { channelCount: 1 };
+      let supported = {};
+      try {
+        if (typeof navigator.mediaDevices.getSupportedConstraints === "function") {
+          supported = navigator.mediaDevices.getSupportedConstraints();
+        }
+      } catch (_) {}
+      for (const name of ["echoCancellation", "noiseSuppression", "autoGainControl"]) {
+        if (supported[name] === true) audioConstraints[name] = true;
+      }
+      // A permission request cannot be aborted. Its late result is still ours to stop.
+      run.stream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraints, video: false })
+        .then(stream => {
+          if (!owns(run)) { stopOwnedStream(stream); throw failure("capture_cancelled"); }
+          return stream;
+        });
+      requireOwned(run);
+    }
+    run.context = new AudioContext();
+    if (!run.context.audioWorklet) throw failure("capture_unsupported");
+    run.sampleRate = run.context.sampleRate;
+    if (!Number.isSafeInteger(run.sampleRate) || run.sampleRate <= 0) throw failure("capture_state_invalid");
+    run.context.onstatechange = () => {
+      if (owns(run) && (run.phase === "recording" || run.phase === "finishing") &&
+          run.context.state !== "running") failRun(run, "audio_context_not_running");
+    };
+    if (run.synthetic) {
+      // Native code permits this mode only for its explicit composer self-test.
+      // It never requests microphone access or uses a physical input device.
+      run.syntheticDestination = run.context.createMediaStreamDestination();
+      run.syntheticDestination.channelCount = 1;
+      run.syntheticDestination.channelCountMode = "explicit";
+      run.oscillator = run.context.createOscillator();
+      run.oscillator.type = "sine";
+      run.oscillator.frequency.value = 440;
+      run.syntheticGain = run.context.createGain();
+      run.syntheticGain.gain.value = 0.05;
+      run.oscillator.connect(run.syntheticGain);
+      run.syntheticGain.connect(run.syntheticDestination);
+      run.stream = run.syntheticDestination.stream;
+      run.oscillator.start();
+    }
+    if (!run.stream || run.stream.getAudioTracks().length === 0) throw failure("microphone_unavailable");
+    for (const track of run.stream.getTracks()) {
+      const listener = () => { if (owns(run)) failRun(run, "microphone_ended"); };
+      track.addEventListener("ended", listener);
+      run.trackListeners.push([track, listener]);
+      if (track.readyState !== "live") throw failure("microphone_ended");
+    }
+    const moduleURL = URL.createObjectURL(new Blob([workletSource], { type: "text/javascript" }));
+    run.workletURL = moduleURL;
+    try { await run.context.audioWorklet.addModule(moduleURL); }
+    finally {
+      URL.revokeObjectURL(moduleURL);
+      if (run.workletURL === moduleURL) run.workletURL = null;
+    }
+    requireOwned(run);
+    run.source = run.context.createMediaStreamSource(run.stream);
+    run.meter = new AudioWorkletNode(run.context, "os1-owned-mono-meter", {
+      numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [1],
+      channelCount: 1, channelCountMode: "explicit", channelInterpretation: "speakers"
+    });
+    run.meter.port.onmessage = event => {
+      if (!owns(run)) return;
+      const message = event.data;
+      if (!message) return;
+      if (message.type === "flushed" && message.requestId === run.flushRequestId && run.flushResolver) {
+        const resolve = run.flushResolver;
+        run.flushResolver = null;
+        resolve();
+      } else if (message.type === "level" && run.phase === "recording" &&
+                 typeof message.value === "number" && Number.isFinite(message.value)) {
+        try { post(run, "level", { value: Math.max(0, Math.min(1, message.value)) }); }
+        catch (error) { failRun(run, errorCode(error)); }
+      }
+    };
+    run.silentGain = run.context.createGain();
+    run.silentGain.gain.value = 0;
+    run.source.connect(run.meter);
+    run.meter.connect(run.silentGain);
+    run.silentGain.connect(run.context.destination);
+    run.recorder = new MediaRecorder(run.stream);
+    run.recorder.ondataavailable = event => {
+      if (!owns(run) || !event.data || event.data.size === 0) return;
+      try {
+        if (event.data.type) {
+          const mime = checkedMime(event.data.type);
+          if (run.mimeType && mimeBase(mime) !== mimeBase(run.mimeType)) throw failure("mime_mismatch");
+          if (!run.mimeType) run.mimeType = mime;
+        }
+        if (!Number.isSafeInteger(event.data.size) || event.data.size < 0) throw failure("encoded_audio_invalid");
+        run.byteCount += event.data.size;
+        if (run.byteCount > MAX_ENCODED_AUDIO_BYTES) throw failure("encoded_audio_too_large");
+        run.chunks.push(event.data);
+      } catch (error) { failRun(run, errorCode(error)); }
+    };
+    run.recorder.onerror = () => { if (owns(run)) failRun(run, "recorder_error"); };
+    run.recorder.onpause = () => { if (owns(run)) failRun(run, "recorder_paused"); };
+    run.recorder.onstop = () => {
+      if (!owns(run)) return;
+      if (run.phase !== "finishing") { failRun(run, "recorder_stopped_early"); return; }
+      if (run.stopResolver) {
+        const resolve = run.stopResolver;
+        run.stopResolver = null;
+        resolve();
+      }
+    };
+    await run.context.resume();
+    requireOwned(run);
+    if (run.context.state !== "running") throw failure("audio_context_not_running");
+    const started = new Promise(resolve => { run.recorder.onstart = resolve; });
+    // Default MediaRecorder encoding, in-memory bounded chunks, no custom gain.
+    run.recorder.start(250);
+    await started;
+    requireOwned(run);
+    run.recorder.onstart = null;
+    if (run.recorder.state !== "recording" || run.context.state !== "running") {
+      throw failure("capture_state_invalid");
+    }
+    if (run.recorder.mimeType) {
+      const mime = checkedMime(run.recorder.mimeType);
+      if (run.mimeType && mimeBase(mime) !== mimeBase(run.mimeType)) throw failure("mime_mismatch");
+      run.mimeType = mime;
+    }
+  }
+
+  async function start(synthetic) {
+    if (!trustedFrame() || !configuration) return false;
+    if (activeRun) { failRun(activeRun, "capture_busy"); return false; }
+    if (typeof synthetic !== "boolean") return false;
+    const run = {
+      configuration, nonce: configuration.nonce, generation: configuration.generation,
+      synthetic, cancelled: false, phase: "starting", sampleRate: 0, mimeType: "",
+      stream: null, context: null, source: null, meter: null, silentGain: null,
+      oscillator: null, syntheticGain: null, syntheticDestination: null,
+      recorder: null, reader: null, workletURL: null, chunks: [], byteCount: 0,
+      timers: new Set(), trackListeners: [], flushRequestId: 0,
+      flushResolver: null, stopResolver: null, startPromise: null, finishPromise: null
+    };
+    run.abortPromise = new Promise(resolve => { run.resolveAbort = resolve; });
+    activeRun = run;
+    run.startPromise = deadline(run, acquireAndBegin(run), START_DEADLINE_MS, "capture_start_timeout")
+      .then(() => {
+        requireOwned(run);
+        run.phase = "recording";
+        post(run, "ready", { sampleRate: run.sampleRate, metadata: metadata(run) });
+        return true;
+      })
+      .catch(error => failRun(run, errorCode(error)));
+    return run.startPromise;
+  }
+
+  async function finishRecording(run) {
+    requireOwned(run);
+    const flushed = new Promise(resolve => { run.flushResolver = resolve; });
+    run.flushRequestId += 1;
+    run.meter.port.postMessage({ type: "flush", requestId: run.flushRequestId });
+    await deadline(run, flushed, FLUSH_DEADLINE_MS, "worklet_flush_timeout");
+    requireOwned(run);
+    if (run.recorder.state !== "recording") throw failure("capture_state_invalid");
+    const stopped = new Promise(resolve => { run.stopResolver = resolve; });
+    run.recorder.stop();
+    // Final dataavailable precedes stop. Keep every owned track alive until both arrive.
+    await deadline(run, stopped, RECORDER_STOP_DEADLINE_MS, "recorder_stop_timeout");
+    requireOwned(run);
+    const contentType = checkedMime(run.recorder.mimeType || run.mimeType);
+    if (run.mimeType && mimeBase(contentType) !== mimeBase(run.mimeType)) throw failure("mime_mismatch");
+    run.mimeType = contentType;
+    const blob = new Blob(run.chunks, { type: contentType });
+    if (blob.size === 0) throw failure("encoded_audio_empty");
+    if (blob.size > MAX_ENCODED_AUDIO_BYTES) throw failure("encoded_audio_too_large");
+    const finalMetadata = metadata(run);
+    for (const [track, listener] of run.trackListeners) track.removeEventListener("ended", listener);
+    run.trackListeners.length = 0;
+    stopOwnedStream(run.stream);
+    const encoded = new Promise((resolve, reject) => {
+      run.reader = new FileReader();
+      run.reader.onload = () => {
+        if (!owns(run)) { reject(failure("capture_cancelled")); return; }
+        const value = run.reader.result;
+        if (typeof value !== "string") { reject(failure("encoded_audio_read_failed")); return; }
+        const comma = value.indexOf(",");
+        if (comma < 0) { reject(failure("encoded_audio_read_failed")); return; }
+        const base64 = value.slice(comma + 1);
+        if (base64.length === 0 || !/^[A-Za-z0-9+/]*={0,2}$/.test(base64) || base64.length % 4 !== 0) {
+          reject(failure("encoded_audio_invalid")); return;
+        }
+        if (base64.length > MAX_BASE64_CHARACTERS) { reject(failure("encoded_audio_too_large")); return; }
+        resolve(base64);
+      };
+      run.reader.onerror = () => reject(failure("encoded_audio_read_failed"));
+      run.reader.onabort = () => reject(failure("capture_cancelled"));
+      run.reader.readAsDataURL(blob);
+    });
+    const base64 = await deadline(run, encoded, ENCODE_DEADLINE_MS, "encoded_audio_read_timeout");
+    requireOwned(run);
+    post(run, "finished", { base64, contentType, sampleRate: run.sampleRate, metadata: finalMetadata });
+    return true;
+  }
+
+  async function finish() {
+    const run = activeRun;
+    if (!run || !owns(run)) return false;
+    if (run.finishPromise) return run.finishPromise;
+    if (run.phase !== "recording") return failRun(run, "capture_not_ready");
+    run.phase = "finishing";
+    run.finishPromise = deadline(run, finishRecording(run), FINISH_DEADLINE_MS, "capture_finish_timeout")
+      .then(() => {
+        requireOwned(run);
+        cleanup(run, "finished");
+        return true;
+      })
+      .catch(error => failRun(run, errorCode(error)));
+    return run.finishPromise;
+  }
+
+  function cancel() {
+    if (!trustedFrame()) return false;
+    if (activeRun) cleanup(activeRun, "cancelled");
+    return true;
+  }
+
+  function configure(nonce, generation) {
+    if (!trustedFrame()) return false;
+    cancel();
+    configuration = null;
+    if (typeof nonce !== "string" || nonce.length < 16 || nonce.length > 256 ||
+        !Number.isSafeInteger(generation) || generation < 0) return false;
+    configuration = Object.freeze({ nonce, generation });
+    return true;
+  }
+
+  window.OS1CodexCapture = Object.freeze({ configure, start, finish, cancel });
+})();
+</script>
+</body>
+</html>

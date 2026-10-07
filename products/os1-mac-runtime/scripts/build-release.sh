@@ -8,6 +8,7 @@ python3 "$script_dir/check-startup-isolation.py"
 python3 "$script_dir/test-memory-paging-wiring.py"
 python3 "$script_dir/test-codex-audio-tap-wiring.py"
 python3 "$script_dir/test-voice-send-ui-wiring.py"
+python3 "$script_dir/test-browser-dictation-wiring.py"
 node "$script_dir/test-memory-paging-recovery.mjs"
 python3 "$script_dir/test-backend-window-focus.py"
 python3 "$script_dir/test-os1-source-confinement-wiring.py"
@@ -147,7 +148,7 @@ plutil -replace CFBundleVersion -string "$(plutil -extract CFBundleVersion raw -
 
 install -m 0644 "$runtime_root/Resources/Info.plist" \
   "$stage_dir/Applications/OS-1 CLODEX.app/Contents/Info.plist"
-for resource in OmarAGI.png Codex.png ClaudeCode.png Constellation.png; do
+for resource in OmarAGI.png Codex.png ClaudeCode.png Constellation.png CodexDictationCapture.html; do
   install -m 0644 "$runtime_root/Resources/$resource" \
     "$stage_dir/Applications/OS-1 CLODEX.app/Contents/Resources/$resource"
 done
@@ -177,6 +178,7 @@ while IFS= read -r payload_file; do
     "Applications/OS-1 CLODEX.app/Contents/Resources/Codex.png"|\
     "Applications/OS-1 CLODEX.app/Contents/Resources/ClaudeCode.png"|\
     "Applications/OS-1 CLODEX.app/Contents/Resources/Constellation.png"|\
+    "Applications/OS-1 CLODEX.app/Contents/Resources/CodexDictationCapture.html"|\
     "Applications/OS-1 CLODEX.app/Contents/Resources/OmarAGI.icns"|\
     "Applications/OS-1 CLODEX.app/Contents/Resources/config.json"|\
     "Applications/OS-1 CLODEX.app/Contents/Info.plist"|\
@@ -300,6 +302,7 @@ while IFS= read -r payload_file; do
     "Applications/OS-1 CLODEX.app/Contents/Resources/Codex.png"|\
     "Applications/OS-1 CLODEX.app/Contents/Resources/ClaudeCode.png"|\
     "Applications/OS-1 CLODEX.app/Contents/Resources/Constellation.png"|\
+    "Applications/OS-1 CLODEX.app/Contents/Resources/CodexDictationCapture.html"|\
     "Applications/OS-1 CLODEX.app/Contents/Resources/OmarAGI.icns"|\
     "Applications/OS-1 CLODEX.app/Contents/Resources/config.json"|\
     "Applications/OS-1 CLODEX.app/Contents/Info.plist"|\

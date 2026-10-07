@@ -7,6 +7,7 @@ import OS1Context
 import SQLite3
 import SwiftUI
 import UniformTypeIdentifiers
+import WebKit
 
 private enum ProviderChoice: String, CaseIterable, Codable, Identifiable, Sendable {
     case auto
@@ -4217,6 +4218,16 @@ private final class VoiceDictationController: ObservableObject {
     private var capture: CodexAudioCapture?
     private var startTask: Task<Void, Error>?
     private var finishTask: Task<Void, Never>?
+    private var browserAuthTask: Task<String, Error>?
+    private let browserCaptureEnabled: Bool
+    private var suppliedBrowserMicrophone: CodexBrowserMicrophone?
+    private lazy var loadedBrowserMicrophone: CodexBrowserMicrophone? = {
+        if let suppliedBrowserMicrophone { return suppliedBrowserMicrophone }
+        guard browserCaptureEnabled else { return nil }
+        guard let path = Bundle.main.resourceURL?.appendingPathComponent("CodexDictationCapture.html"),
+              let html = try? String(contentsOf: path, encoding: .utf8) else { return nil }
+        return CodexBrowserMicrophone(html: html)
+    }()
     private var elapsedTimer: Timer?
     private var tapInstalled = false
     private var generation = 0
@@ -4228,9 +4239,16 @@ private final class VoiceDictationController: ObservableObject {
     private var onFinish: (() -> Void)?
 
     init(credential: @escaping CodexNativeDictation.Credential = CodexDictationAuthorization.credential(),
-         transport: any CodexDictationTransport = CodexDictationURLSessionTransport()) {
+         transport: any CodexDictationTransport = CodexDictationURLSessionTransport(),
+         browserMicrophone: CodexBrowserMicrophone? = nil) {
         self.credential = credential; self.transport = transport
+        suppliedBrowserMicrophone = browserMicrophone
+        let fixtureFlags: Set<String> = ["--self-test", "--self-test-composer", "--self-test-profile", "--self-test-parallel",
+            "--self-test-queue-fork", "--self-test-sidebar-queue", "--self-test-steering", "--self-test-shell",
+            "--self-test-bound-native", "--self-test-native-progress", "--self-test-fixture-store-probe"]
+        browserCaptureEnabled = browserMicrophone != nil || fixtureFlags.isDisjoint(with: CommandLine.arguments)
     }
+    var browserCaptureView: WKWebView? { loadedBrowserMicrophone?.webView }
     var isActive: Bool { phase != .idle }
     var isRecording: Bool { phase == .listening }
     var isAuthorizing: Bool { phase == .authorizing }
@@ -4266,6 +4284,26 @@ private final class VoiceDictationController: ObservableObject {
         guard permitted else {
             fail(os1Tr("OS-1의 마이크 권한이 꺼져 있습니다. 기존 입력은 보존했습니다.",
                        "OS-1 microphone access is off. Your draft is preserved.")); return
+        }
+        // A real native lane: processed browser mono MediaStream -> whole
+        // MediaRecorder Blob -> /transcribe. Do not invent the native streaming
+        // feature flag or silently substitute raw hardware PCM for that Blob.
+        if browserCaptureEnabled {
+            guard let browser = loadedBrowserMicrophone else { fail(CodexDictationError.invalidAudio.localizedDescription); return }
+            let credential = credential
+            let auth = Task { try await credential() }; browserAuthTask = auth
+            do {
+                try await browser.start { [weak self] value in
+                    guard let self, self.generation == epoch, self.isActive else { return }; self.level = value
+                }
+                _ = try await auth.value
+                guard generation == epoch, phase == .authorizing else { browser.cancel(); return }
+                phase = .listening; startElapsedTimer()
+            } catch {
+                guard generation == epoch, isActive else { return }
+                fail((error as? CodexDictationError ?? .invalidAudio).localizedDescription)
+            }
+            return
         }
         do {
             let format = audioEngine.inputNode.outputFormat(forBus: 0)
@@ -4319,6 +4357,31 @@ private final class VoiceDictationController: ObservableObject {
     func finish(onComplete: (() -> Void)? = nil) {
         if let onComplete { onFinish = onComplete }
         guard isActive, !isFinalizing else { return }
+        if browserCaptureEnabled {
+            guard phase == .listening, let browser = loadedBrowserMicrophone, let auth = browserAuthTask else { return }
+            phase = .transcribing
+            let epoch = generation, transport = transport
+            finishTask = Task { [weak self] in
+                do {
+                    let recording = try await browser.finish()
+                    let bearer = try await auth.value
+                    try Task.checkCancellation()
+                    let text = try await CodexNativeDictation.transcribe(audio: recording.data,
+                        contentType: recording.contentType, credential: { bearer }, transport: transport)
+                    try Task.checkCancellation()
+                    guard let self, self.generation == epoch, self.phase == .transcribing else { return }
+                    guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw CodexDictationError.emptyTranscript }
+                    self.currentTranscript = text
+                    guard self.publishTranscript() else { return }
+                    self.saveBrowserCaptureReceipt(recording: recording, characters: text.count)
+                    self.completeFinalization()
+                } catch {
+                    guard let self, self.generation == epoch, self.isActive else { return }
+                    self.fail((error as? CodexDictationError ?? .transportFailed).localizedDescription)
+                }
+            }
+            return
+        }
         guard phase == .listening, let capture, let live = session, let starting = startTask else { return }
         phase = .transcribing; stopAudioCapture()
         let (pcm, drain) = capture.finish(), epoch = generation, rate = sampleRate
@@ -4362,10 +4425,28 @@ private final class VoiceDictationController: ObservableObject {
     }
     private func reset() {
         generation += 1; stopAudioCapture()
+        loadedBrowserMicrophone?.cancel(); browserAuthTask?.cancel(); browserAuthTask = nil
         elapsedTimer?.invalidate(); elapsedTimer = nil
         finishTask?.cancel(); finishTask = nil; startTask?.cancel(); startTask = nil
         capture?.discard(); capture = nil
         if let session { Task { await session.cancel() } }; session = nil
+    }
+    private func saveBrowserCaptureReceipt(recording: CodexBrowserRecording, characters: Int) {
+        guard !CommandLine.arguments.contains("--self-test-composer") else { return }
+        // Own non-secret metadata only; never persist audio, words or a token.
+        let root = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".os1/dictation")
+        let value: [String: Any] = ["schema": 1, "recordedAt": ISO8601DateFormatter().string(from: Date()),
+            "capture": "owned-browser-media-stream", "route": "native-full-recording-transcribe",
+            "nativeStreamingFeatureState": "not imported; native batch branch used", "contentType": recording.contentType,
+            "audioBytes": recording.data.count, "sampleRate": recording.sampleRate, "metadata": recording.metadata,
+            "transcriptCharacters": characters, "audioStored": false, "transcriptStoredInReceipt": false,
+            "model": "not exposed", "success": true]
+        do {
+            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+            let path = root.appendingPathComponent("last-capture-receipt.json")
+            try JSONSerialization.data(withJSONObject: value, options: [.sortedKeys, .prettyPrinted]).write(to: path, options: .atomic)
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path.path)
+        } catch { /* Optional receipt failure cannot drop recognized words. */ }
     }
     @discardableResult
     private func publishTranscript() -> Bool {
@@ -4560,9 +4641,23 @@ private extension VoiceDictationController {
     }
     var controllerFixtureCallbacksCleared: Bool {
         onFinish == nil && onTranscript == nil && onReadComposer == nil && onFailure == nil &&
-        session == nil && capture == nil && startTask == nil && finishTask == nil && !tapInstalled
+        session == nil && capture == nil && startTask == nil && finishTask == nil && browserAuthTask == nil && !tapInstalled
     }
     var controllerFixtureFinalizer: Task<Void, Never>? { finishTask }
+    func installBrowserControllerFixture(initialText: String, readComposer: @escaping () -> String,
+                                         publish: @escaping (String) -> Void, failure: @escaping (String) -> Void) async throws {
+        guard CommandLine.arguments.contains("--self-test-composer"), browserCaptureEnabled,
+              !isActive, let browser = loadedBrowserMicrophone else { throw CodexDictationError.invalidState }
+        generation += 1; let epoch = generation
+        baseText = initialText; lastPublishedText = initialText; currentTranscript = ""; lastDictatedText = ""
+        onReadComposer = readComposer; onTranscript = publish; onFailure = failure; onFinish = nil
+        phase = .authorizing
+        let credential = credential; let auth = Task { try await credential() }; browserAuthTask = auth
+        try await browser.startSyntheticForFixture { [weak self] value in
+            guard let self, self.generation == epoch, self.isActive else { return }; self.level = value
+        }
+        _ = try await auth.value; phase = .listening
+    }
 }
 
 @MainActor
@@ -4757,6 +4852,12 @@ private extension SessionStore {
             failure: { [weak self] message in self?.cancelDictationSendIntent(); self?.alertMessage = message }, samples: samples)
     }
     var voiceStoreFixtureSendPending: Bool { dictationSendLatch.pending != nil }
+    func installBrowserStoreFixture() async throws {
+        cancelDictationSendIntent()
+        try await voiceDictation.installBrowserControllerFixture(initialText: composer,
+            readComposer: { [weak self] in self?.composer ?? "" }, publish: { [weak self] in self?.composer = $0 },
+            failure: { [weak self] message in self?.cancelDictationSendIntent(); self?.alertMessage = message })
+    }
 }
 @MainActor
 private final class VoiceStoreFixtureDispatch {
@@ -4869,6 +4970,45 @@ private func voiceStoreSendSelfTest() async throws -> Int {
         }
         try check(await wire.socket.messageTypes().filter { $0 == "session.close" }.count == 1,
                   "duplicate primary activation repeated voice finalization")
+    }
+    // Real owned-browser MediaRecorder -> production finalizer -> real store
+    // Send. Only the transcription/result executor is mocked, not the capture.
+    do {
+        let path = Bundle.main.resourceURL?.appendingPathComponent("CodexDictationCapture.html")
+        let sourcePath = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().appendingPathComponent("Resources/CodexDictationCapture.html")
+        let html = try String(contentsOf: (path.flatMap { FileManager.default.fileExists(atPath: $0.path) ? $0 : nil }) ?? sourcePath, encoding: .utf8)
+        let browser = CodexBrowserMicrophone(html: html)
+        let captureWindow = NSWindow(contentRect: NSRect(x: -10_000, y: -10_000, width: 20, height: 20),
+                                     styleMask: [], backing: .buffered, defer: false)
+        captureWindow.isReleasedWhenClosed = false; captureWindow.contentView = browser.webView
+        captureWindow.orderFront(nil)
+        defer { captureWindow.close() }
+        let wire = VoiceControllerFixtureTransport(), auth = VoiceControllerFixtureCredential()
+        try await wire.configureFallback(text: "브라우저 최종 마지막 단어")
+        let voice = VoiceDictationController(credential: { await auth.load() }, transport: wire, browserMicrophone: browser)
+        let dispatch = VoiceStoreFixtureDispatch()
+        let store = SessionStore(storageRoot: root.appendingPathComponent("browser-batch"), runOperation: { submission, _, _, _, _ in
+            dispatch.requests.append(submission.request)
+            return AppRunSummary(status: "complete", steps: [AppRunStep(sequence: 1, provider: "claude", action: "fixture",
+                model: "fixture", effort: "max", revasDisposition: "adopted", sessionID: UUID().uuidString,
+                permissionProfile: "workspace_write", exitCode: 0, output: "fixture reply", stderr: "", durationMS: 0, nativeRecord: nil)])
+        }, voiceDictation: voice)
+        defer { store.stopVoiceDictation() }
+        store.composer = "보존 초안"
+        try await store.installBrowserStoreFixture()
+        try await Task.sleep(for: .milliseconds(600))
+        store.performPrimaryAction(); store.performPrimaryAction()
+        try check(store.voiceStoreFixtureSendPending && dispatch.requests.isEmpty, "browser sent before final recorder data")
+        try await wait({ !voice.isActive && dispatch.requests.count == 1 && !store.isRunning }, "browser final dispatch")
+        let posts = await wire.postRequests(), connections = await wire.connectionCount()
+        try check(posts.count == 1 && connections == 0, "browser batch forced streaming or repeated provider request")
+        let body = posts[0].httpBody ?? Data(), text = String(decoding: body, as: UTF8.self)
+        try check(body.count > 64 && text.contains("Content-Type: audio/") && !text.contains("filename=\"codex.wav\""),
+                  "browser recording was replaced by raw PCM WAV")
+        try check(dispatch.requests == ["보존 초안 브라우저 최종 마지막 단어"] && store.composer.isEmpty && !store.voiceStoreFixtureSendPending,
+                  "browser final text was not sent exactly once without confirmation")
+        try check(await auth.calls == 1 && voice.controllerFixtureCallbacksCleared, "browser retained auth/finalizer or re-read account")
     }
     _ = renderedHosts.count
     print("Voice primary/store integration: \(checks) checks PASS; one activation sends final text once; insert/cancel/switch/queue preserved; live microphone/account/network/model calls 0")
@@ -17617,7 +17757,19 @@ private struct VoiceDictationControl: View {
             }
         }
         .animation(.easeInOut(duration: 0.16), value: controller.isActive)
+        .background {
+            if let webView = controller.browserCaptureView {
+                CodexMicrophoneDocumentView(webView: webView)
+                    .frame(width: 2, height: 2).opacity(0.001).allowsHitTesting(false).accessibilityHidden(true)
+            }
+        }
     }
+}
+
+private struct CodexMicrophoneDocumentView: NSViewRepresentable {
+    let webView: WKWebView
+    func makeNSView(context: Context) -> WKWebView { webView }
+    func updateNSView(_ view: WKWebView, context: Context) {}
 }
 
 /// Lifecycle metadata is NOT assistant speech or a task-success verdict.
