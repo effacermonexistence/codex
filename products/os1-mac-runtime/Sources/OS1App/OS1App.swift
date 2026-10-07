@@ -7524,6 +7524,8 @@ private final class SessionStore: ObservableObject {
     @Published var accountBusy: String?
     @Published var accountNotice: String?
     @Published var accountsOpen = false
+    @Published var backendSetup: BackendSetupSnapshot?
+    private var backendSetupRefreshing = false
     private var accountObserver: NSObjectProtocol?
     @Published var composer = "" {
         didSet {
@@ -10874,9 +10876,18 @@ private final class SessionStore: ObservableObject {
 
     /// Read-only: asks each provider's own status command who is signed in.
     func refreshAccounts() async {
-        guard customStorageRoot == nil else { return }
-        _ = try? await BackendAccountRunner.run(["accounts", "list", "--json"], timeout: 90)
-        accountBook = BackendAccounts.load()
+        guard customStorageRoot == nil, !backendSetupRefreshing, accountBusy == nil else { return }
+        backendSetupRefreshing = true
+        defer { backendSetupRefreshing = false }
+        do {
+            let text = try await BackendAccountRunner.run(["accounts", "discover", "--json"], timeout: 35)
+            let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .iso8601
+            let snapshot = try decoder.decode(BackendSetupSnapshot.self, from: Data(text.utf8))
+            backendSetup = snapshot
+            accountBook = snapshot.book
+        } catch {
+            backendSetup = nil
+        }
     }
 
     func signIn(provider: String, accountID: String? = nil, newLabel: String? = nil) async {
@@ -10904,7 +10915,10 @@ private final class SessionStore: ObservableObject {
         guard accountObserver == nil, customStorageRoot == nil else { return }
         accountObserver = NotificationCenter.default.addObserver(
             forName: BackendAccountsModel.changed, object: nil, queue: .main) { [weak self] _ in
-            MainActor.assumeIsolated { self?.accountBook = BackendAccounts.load() }
+            MainActor.assumeIsolated {
+                self?.accountBook = BackendAccounts.load()
+                Task { await self?.refreshAccounts() }
+            }
         }
     }
 
@@ -13309,7 +13323,7 @@ private struct BackendAccountsView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack {
-                Text(os1Tr("백엔드 계정", "Backend accounts")).font(.headline)
+                Text(os1Tr("Codex · Claude Code 연결", "Connect Codex · Claude Code")).font(.headline)
                 Spacer()
                 Button(os1Tr("닫기", "Close")) { store.accountsOpen = false }.keyboardShortcut(.cancelAction)
             }
@@ -13318,7 +13332,8 @@ private struct BackendAccountsView: View {
             ScrollView {
                 BackendAccountsPanel(model: model,
                                      providers: store.appSettings.showCodex ? BackendAccounts.providers
-                                        : BackendAccounts.providers.filter { $0 != "codex" })
+                                        : BackendAccounts.providers.filter { $0 != "codex" },
+                                     onContinue: { store.accountsOpen = false })
                     .padding(18)
             }
         }
@@ -14374,8 +14389,8 @@ private struct ProviderRail: View {
 
     private func backendTile(_ provider: ProviderChoice) -> some View {
         let account = store.activeAccount(for: provider)
-        // Never claim a backend is signed out before its own status
-        // command has answered: an unverified account reads as fine.
+        // Unknown status is not logout. It routes to the connection checklist
+        // rather than silently opening another OAuth flow.
         let verified = account.map { $0.verifiedAt == nil || $0.signedIn } ?? true
         let linked: Bool = provider == .codex
             ? store.selectedSession?.codexSessionID != nil
@@ -14393,7 +14408,10 @@ private struct ProviderRail: View {
         ) {
             // A signed-out backend cannot run anything, so the tile
             // offers the sign-in instead of an empty session list.
-            if !verified { store.accountsOpen = true } else { store.inspectBackend(provider) }
+            if let status = store.backendSetup?.providers.first(where: { $0.provider == provider.rawValue }),
+               status.state != .signedIn {
+                store.accountsOpen = true
+            } else if !verified { store.accountsOpen = true } else { store.inspectBackend(provider) }
         }
         .contextMenu {
             surfaceMenu(for: provider)
@@ -16358,6 +16376,23 @@ private struct WelcomeView: View {
                             .background(Theme.panelRaised, in: RoundedRectangle(cornerRadius: 10))
                     }.buttonStyle(.plain).foregroundStyle(Theme.muted)
                 }
+            }
+            VStack(spacing: 8) {
+                if let setup = store.backendSetup {
+                    HStack(spacing: 18) {
+                        ForEach(setup.providers.filter { $0.provider != "codex" || store.appSettings.showCodex }) { provider in
+                            Label(BackendAccountsStyle.title(provider.provider) + " · " +
+                                (provider.state == .signedIn ? os1Tr("연결됨", "Connected") : os1Tr("연결 확인 필요", "Check connection")),
+                                  systemImage: provider.state == .signedIn ? "checkmark.circle.fill" : "circle")
+                                .font(.system(size: 11)).foregroundStyle(provider.state == .signedIn ? Theme.pink : Theme.muted)
+                        }
+                    }
+                }
+                Button(os1Tr("Codex · Claude 연결", "Connect Codex · Claude")) { store.accountsOpen = true }
+                    .buttonStyle(.bordered)
+                    .accessibilityIdentifier("os1.welcome.connect")
+                Text(os1Tr("기존 로그인 자동 사용 · 하나만 연결해도 시작 · GitHub는 선택 사항", "Reuse existing sign-ins · one agent is enough · GitHub optional"))
+                    .font(.system(size: 10)).foregroundStyle(Theme.muted)
             }
             }
             Spacer()

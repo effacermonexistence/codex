@@ -80,6 +80,11 @@ for forbidden in ['activateIgnoringOtherApps', 'orderFrontRegardless', 'NSApp.ac
 # 6. Every call that can bring an application forward is a known, explicit site.
 # A new one changes this list and has to be reviewed against the policy above.
 allowed = {
+    'Sources/OS1App/BackendAccountsPanel.swift': {
+        # Explicit owner-pressed installation guide, never discovery/login
+        # polling or backend routing. Opens documentation, not a backend app.
+        'if let text = connection?.installURL, let url = URL(string: text) { NSWorkspace.shared.open(url) }',
+    },
     'Sources/OS1App/BrowserPanel.swift': {
         'Button { if let url = BrowserNavigation.url(page.address) { NSWorkspace.shared.open(url) } }',
     },

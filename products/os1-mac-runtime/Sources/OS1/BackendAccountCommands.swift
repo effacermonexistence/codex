@@ -45,6 +45,7 @@ func claudeProjectsRoot() -> URL {
 enum BackendAccountCommands {
     static let usage = """
     os1 accounts list [--json]
+    os1 accounts discover --json
     os1 accounts login --provider codex|claude [--id <account>] [--new] [--label <name>]
     os1 accounts use --provider codex|claude --id <account>
     os1 accounts logout --provider codex|claude [--id <account>]
@@ -72,6 +73,7 @@ enum BackendAccountCommands {
 
         switch subcommand {
         case "list": try list(json: flags.contains("json"))
+        case "discover": try discover()
         case "login": try login(provider: try provider(options), id: options["id"],
                                 label: options["label"], forceNew: flags.contains("new"))
         case "use": try use(provider: try provider(options), id: try required(options, "id"))
@@ -110,23 +112,26 @@ enum BackendAccountCommands {
 
     /// The provider's own status command, run exactly as runs see the account.
     /// Read-only: it starts no login and makes no model call.
-    static func probe(provider: String, home: URL, isDefault: Bool) -> (signedIn: Bool, detail: String?) {
-        let environment = accountEnvironment(provider: provider, home: home, isDefault: isDefault)
-        if provider == "claude" {
-            guard let executable = try? findExecutable("claude"),
-                  let output = try? commandOutput(executable, ["auth", "status", "--json"], timeout: 12,
-                                                  environmentOverrides: environment),
-                  let status = (try? JSONSerialization.jsonObject(with: output.1)) as? [String: Any],
-                  let loggedIn = status["loggedIn"] as? Bool else { return (false, nil) }
-            let account = (status["email"] as? String) ?? (status["subscriptionType"] as? String)
-            return (loggedIn, loggedIn ? account : nil)
+    static func setupProbe(provider: String, home: URL, isDefault: Bool,
+                           accountID: String, checkedAt: Date = Date()) -> BackendSetupProvider {
+        guard let executable = try? findExecutable(provider) else {
+            return BackendSetupProvider(provider: provider, executablePath: nil, state: .missing,
+                checkedAt: checkedAt, accountID: accountID, detail: "The native executable was not found.")
         }
-        guard let executable = try? findExecutable("codex"),
-              let output = try? commandOutput(executable, ["login", "status"], timeout: 12,
-                                              environmentOverrides: environment) else { return (false, nil) }
-        let text = String(decoding: output.1 + output.2, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
-        let signedIn = output.0 == 0 && text.lowercased().contains("logged in")
-        return (signedIn, signedIn ? text.components(separatedBy: .newlines).first : nil)
+        let environment = accountEnvironment(provider: provider, home: home, isDefault: isDefault)
+        let arguments = provider == "claude" ? ["auth", "status", "--json"] : ["login", "status"]
+        guard let output = try? commandOutput(executable, arguments, timeout: 12,
+                                              environmentOverrides: environment) else {
+            return BackendSetupProvider(provider: provider, executablePath: executable, state: .unverified,
+                checkedAt: checkedAt, accountID: accountID, detail: "The native sign-in status check did not finish.")
+        }
+        return BackendSetup.parseStatus(provider: provider, executablePath: executable,
+            accountID: accountID, exitCode: output.0, stdout: output.1, stderr: output.2, checkedAt: checkedAt)
+    }
+
+    static func probe(provider: String, home: URL, isDefault: Bool) -> (signedIn: Bool, detail: String?) {
+        let result = setupProbe(provider: provider, home: home, isDefault: isDefault, accountID: "probe")
+        return (result.state == .signedIn, result.signedInAs)
     }
 
     /// Refreshes every account's sign-in state from the provider CLIs.
@@ -134,13 +139,57 @@ enum BackendAccountCommands {
         var updated = BackendAccounts.normalized(book)
         for position in updated.accounts.indices {
             let account = updated.accounts[position]
-            let result = probe(provider: account.provider, home: BackendAccounts.homeURL(for: account),
-                               isDefault: account.isDefault)
-            updated.accounts[position].signedIn = result.signedIn
-            updated.accounts[position].signedInAs = result.detail
-            updated.accounts[position].verifiedAt = Date()
+            let result = setupProbe(provider: account.provider, home: BackendAccounts.homeURL(for: account),
+                                    isDefault: account.isDefault, accountID: account.id)
+            updated = BackendSetup.applying([result], to: updated)
         }
         return updated
+    }
+
+    /// Initial setup checks only the selected account for each provider, in
+    /// parallel. Native status commands make no model call or auth mutation.
+    /// The metadata merge preserves inactive accounts and any account selection
+    /// made while a slow status command was running.
+    private static func discover() throws {
+        let initial = BackendAccounts.load()
+        let collected = SetupChecks()
+        let group = DispatchGroup()
+        for provider in BackendAccounts.providers {
+            let account = BackendAccounts.active(provider: provider, in: initial)
+            group.enter()
+            DispatchQueue.global(qos: .userInitiated).async {
+                let check = setupProbe(provider: provider, home: BackendAccounts.homeURL(for: account),
+                    isDefault: account.isDefault, accountID: account.id)
+                collected.append(check)
+                group.leave()
+            }
+        }
+        group.wait()
+        let checks = collected.values()
+        let latest = BackendAccounts.load()
+        let stillActive = checks.filter { latest.active[$0.provider] == $0.accountID }
+        let book = BackendSetup.applying(stillActive, to: latest)
+        if book != latest { try BackendAccounts.save(book); BackendAccountState.shared.invalidate() }
+        let providers = BackendAccounts.providers.compactMap { provider -> BackendSetupProvider? in
+            guard let checked = checks.first(where: { $0.provider == provider }) else { return nil }
+            let active = BackendAccounts.active(provider: provider, in: book)
+            if active.id == checked.accountID { return checked }
+            return BackendSetupProvider(provider: provider, executablePath: checked.executablePath,
+                state: .unverified, checkedAt: Date(), accountID: active.id,
+                detail: "The selected account changed during the check. Refresh to verify it.")
+        }
+        let snapshot = BackendSetupSnapshot(book: book, providers: providers, checkedAt: Date())
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+        print(String(decoding: try encoder.encode(snapshot), as: UTF8.self))
+    }
+
+    private final class SetupChecks: @unchecked Sendable {
+        private let lock = NSLock()
+        private var checks: [BackendSetupProvider] = []
+        func append(_ value: BackendSetupProvider) { lock.lock(); checks.append(value); lock.unlock() }
+        func values() -> [BackendSetupProvider] { lock.lock(); defer { lock.unlock() }; return checks }
     }
 
     private static func list(json: Bool) throws {
@@ -280,17 +329,12 @@ enum BackendAccountCommands {
             outcome = .failure(error)
         }
 
-        let state = probe(provider: provider, home: home, isDefault: account.isDefault)
-        var updated = BackendAccounts.load()
-        if let position = updated.accounts.firstIndex(where: { $0.id == account.id }) {
-            updated.accounts[position].signedIn = state.signedIn
-            updated.accounts[position].signedInAs = state.detail
-            updated.accounts[position].verifiedAt = Date()
-        }
-        if state.signedIn { updated.active[provider] = account.id }
+        let state = setupProbe(provider: provider, home: home, isDefault: account.isDefault, accountID: account.id)
+        var updated = BackendSetup.applying([state], to: BackendAccounts.load())
+        if state.state == .signedIn { updated.active[provider] = account.id }
         try BackendAccounts.save(updated)
         BackendAccountState.shared.invalidate()
-        guard state.signedIn else {
+        guard state.state == .signedIn else {
             if case .failure(let error) = outcome, !(error is ConnectionFailure) { throw error }
             throw OS1Error.message(os1Tr("\(provider == "claude" ? "Claude Code" : "Codex") 로그인이 확인되지 않았습니다. 브라우저에서 승인을 마쳤는지 확인하고 다시 시도하세요.",
                                          "The \(provider == "claude" ? "Claude Code" : "Codex") sign-in was not confirmed. Check that you finished approving it in the browser, then try again."))

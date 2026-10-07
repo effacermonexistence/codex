@@ -19,9 +19,16 @@ final class BackendAccountsModel: ObservableObject {
     /// Where the book comes from. The owner's accounts file by default; a
     /// preview passes an empty book so a render never reads owner state.
     private let load: () -> BackendAccountBook
+    private let runner: @MainActor ([String], TimeInterval) async throws -> String
+    @Published private(set) var setup: BackendSetupSnapshot?
+    @Published private(set) var refreshing = false
 
-    init(load: @escaping () -> BackendAccountBook = { BackendAccounts.load() }) {
+    init(load: @escaping () -> BackendAccountBook = { BackendAccounts.load() },
+         runner: @escaping @MainActor ([String], TimeInterval) async throws -> String = {
+             try await BackendAccountRunner.run($0, timeout: $1)
+         }) {
         self.load = load
+        self.runner = runner
         book = load()
     }
     /// The provider whose sign-in is running, so its row can say so.
@@ -32,12 +39,33 @@ final class BackendAccountsModel: ObservableObject {
 
     /// Read-only: asks each provider's own status command who is signed in.
     func refresh() async {
-        _ = try? await BackendAccountRunner.run(["accounts", "list", "--json"], timeout: 90)
-        book = load()
+        guard !refreshing, busy == nil else { return }
+        refreshing = true
+        defer { refreshing = false }
+        do {
+            let text = try await runner(["accounts", "discover", "--json"], 35)
+            let decoder = JSONDecoder()
+            decoder.dateDecodingStrategy = .iso8601
+            let snapshot = try decoder.decode(BackendSetupSnapshot.self, from: Data(text.utf8))
+            setup = snapshot
+            book = snapshot.book
+            notice = nil
+        } catch {
+            // A stale green row must never survive a failed current check.
+            setup = nil
+            notice = os1Tr("연결 상태를 확인하지 못했습니다. 기존 로그인은 변경하지 않았습니다. 다시 확인하세요.",
+                           "Connection check failed. Existing sign-ins were not changed. Refresh to try again.")
+        }
         NotificationCenter.default.post(name: Self.changed, object: nil)
     }
 
     func signIn(provider: String, accountID: String? = nil, newLabel: String? = nil) async {
+        guard busy == nil, !refreshing else { return }
+        if newLabel == nil, let found = setup?.providers.first(where: { $0.provider == provider }),
+           accountID == nil || found.accountID == accountID {
+            if found.state == .signedIn { return }
+            guard found.state == .signedOut else { await refresh(); return }
+        }
         var arguments = ["accounts", "login", "--provider", provider]
         if let accountID { arguments += ["--id", accountID] }
         if let newLabel { arguments += ["--new", "--label", newLabel] }
@@ -57,16 +85,24 @@ final class BackendAccountsModel: ObservableObject {
     }
 
     private func run(_ arguments: [String], provider: String, timeout: TimeInterval) async {
+        guard busy == nil, !refreshing else { return }
         busy = provider
         notice = nil
-        defer { busy = nil }
+        var failure: String?
         do {
-            _ = try await BackendAccountRunner.run(arguments, timeout: timeout)
+            _ = try await runner(arguments, timeout)
         } catch {
-            notice = error.localizedDescription
+            failure = error.localizedDescription
         }
         book = load()
+        busy = nil
+        await refresh()
+        if let failure { notice = failure }
         NotificationCenter.default.post(name: Self.changed, object: nil)
+    }
+
+    func connection(_ provider: String) -> BackendSetupProvider? {
+        setup?.providers.first { $0.provider == provider }
     }
 }
 
@@ -164,6 +200,7 @@ struct BackendAccountsPanel: View {
     /// The design-time preview has no runtime to ask, so it shows state only.
     var readOnly = false
     var providers: [String] = BackendAccounts.providers
+    var onContinue: (() -> Void)? = nil
     @State private var addingProvider: String?
     @State private var newLabel = ""
 
@@ -174,25 +211,43 @@ struct BackendAccountsPanel: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(spacing: 10) {
-                Text(os1Tr("계정 · 로그인 상태", "Accounts · sign-in state"))
+                Text(os1Tr("에이전트 연결", "Connect your agents"))
                     .font(.system(size: 14, weight: .semibold))
                 Spacer()
-                if model.busy != nil { ProgressView().controlSize(.small) }
+                if model.busy != nil || model.refreshing { ProgressView().controlSize(.small) }
                 Button(os1Tr("새로 확인", "Refresh")) { Task { await model.refresh() } }
-                    .disabled(readOnly || model.busy != nil)
+                    .disabled(readOnly || model.busy != nil || model.refreshing)
             }
+            Text(os1Tr("이미 설치하고 로그인한 Codex·Claude Code를 자동으로 연결합니다. 둘 중 하나만 연결해도 시작할 수 있습니다. GitHub 연결은 로컬 사용에 필요하지 않습니다.",
+                       "OS-1 detects installed Codex and Claude Code and reuses their existing sign-ins. Connect either one to start. GitHub is not required for local use."))
+                .font(.system(size: 12)).foregroundStyle(muted).fixedSize(horizontal: false, vertical: true)
             ForEach(providers, id: \.self) { provider in
                 providerCard(provider)
             }
             if let notice = model.notice {
                 Text(notice).font(.system(size: 11)).foregroundStyle(Color.orange).textSelection(.enabled)
             }
+            if let onContinue, providers.contains(where: { model.connection($0)?.state == .signedIn }) {
+                Button(os1Tr("연결된 에이전트로 시작", "Continue with connected agent"), action: onContinue)
+                    .buttonStyle(.borderedProminent)
+                    .accessibilityIdentifier("os1.setup.continue")
+            }
             Text(os1Tr("로그인은 각 제공자의 공식 창에서 진행됩니다. OS-1은 계정 이름과 로그인 여부만 기록하고 토큰은 보지 않습니다. 계정마다 별도의 홈을 쓰므로 한 Mac에서 여러 계정을 번갈아 쓸 수 있습니다.",
                        "Each sign-in runs in that provider's own official flow. OS-1 records only the account name and whether it is signed in — never a token. Each account has its own home, so several accounts can share one Mac."))
                 .font(.system(size: 10)).foregroundStyle(muted)
                 .fixedSize(horizontal: false, vertical: true)
         }
-        .task { if !readOnly { await model.refresh() } }
+        .task {
+            guard !readOnly else { return }
+            await model.refresh()
+            // Detect a sign-in/install completed outside the panel without
+            // opening OAuth or making inference calls. One probe at a time.
+            while !Task.isCancelled {
+                do { try await Task.sleep(for: .seconds(10)) } catch { return }
+                guard !Task.isCancelled else { return }
+                if providers.contains(where: { model.connection($0)?.state != .signedIn }) { await model.refresh() }
+            }
+        }
     }
 
     @ViewBuilder
@@ -207,6 +262,7 @@ struct BackendAccountsPanel: View {
                 Spacer()
             }
             .padding(.bottom, 2)
+            connectionRow(provider)
             ForEach(rows) { row in accountRow(provider: provider, row: row) }
             addRow(provider)
         }
@@ -216,6 +272,44 @@ struct BackendAccountsPanel: View {
                                     set: { if !$0 { addingProvider = nil } })) {
             addSheet(provider)
         }
+    }
+
+    @ViewBuilder
+    private func connectionRow(_ provider: String) -> some View {
+        let connection = model.connection(provider)
+        let state = connection?.state ?? .unverified
+        HStack(spacing: 10) {
+            VStack(alignment: .leading, spacing: 4) {
+                Label(os1Tr("설치", "Installed"), systemImage: connection?.executablePath != nil ? "checkmark.circle.fill" : "circle")
+                Label(state == .signedIn ? os1Tr("로그인 연결됨", "Sign-in connected") :
+                        state == .signedOut ? os1Tr("로그인 필요", "Sign-in needed") :
+                        state == .missing ? os1Tr("설치 필요", "Installation needed") : os1Tr("상태 미확인", "Status unconfirmed"),
+                      systemImage: state == .signedIn ? "checkmark.circle.fill" : "circle")
+                if let method = connection?.authMethod, method.contains("api") || method == "third_party" {
+                    Text(os1Tr("API/외부 제공사 인증 · 해당 제공사의 청구 설정 사용", "API/external-provider authentication · provider billing applies"))
+                        .foregroundStyle(Color.orange)
+                }
+            }.font(.system(size: 11)).foregroundStyle(state == .signedIn ? BackendAccountsStyle.tint(provider) : muted)
+            Spacer()
+            if model.busy == provider {
+                Text(os1Tr("공식 로그인 승인 대기", "Waiting for official sign-in approval")).font(.system(size: 11))
+            } else if state == .signedIn {
+                Text(os1Tr("연결됨", "Connected")).font(.system(size: 11, weight: .semibold))
+            } else if state == .missing {
+                Button(os1Tr("설치 안내 열기", "Open installation guide")) {
+                    if let text = connection?.installURL, let url = URL(string: text) { NSWorkspace.shared.open(url) }
+                }.disabled(readOnly).controlSize(.small)
+            } else if state == .signedOut {
+                Button(os1Tr("\(BackendAccountsStyle.title(provider)) 연결", "Connect \(BackendAccountsStyle.title(provider))")) {
+                    Task { await model.signIn(provider: provider, accountID: connection?.accountID) }
+                }.disabled(readOnly || model.busy != nil || model.refreshing).controlSize(.small)
+            } else {
+                Button(os1Tr("다시 확인", "Check again")) { Task { await model.refresh() } }
+                    .disabled(readOnly || model.busy != nil || model.refreshing).controlSize(.small)
+            }
+        }
+        .padding(.vertical, 8)
+        .accessibilityIdentifier("os1.setup.\(provider)")
     }
 
     @ViewBuilder
@@ -243,11 +337,12 @@ struct BackendAccountsPanel: View {
                     .foregroundStyle(BackendAccountsStyle.tint(provider))
                     .accessibilityLabel(os1Tr("사용 중", "In use"))
             }
-            Button(row.signedIn ? os1Tr("다시 로그인", "Sign in again") : os1Tr("로그인", "Sign in")) {
+            Button(row.signedIn ? os1Tr("연결됨", "Connected") : os1Tr("로그인", "Sign in")) {
                 Task { await model.signIn(provider: provider, accountID: row.id) }
             }
             .controlSize(.small)
-            .disabled(readOnly || model.busy != nil)
+            .disabled(readOnly || row.signedIn || model.busy != nil || model.refreshing ||
+                (active && model.connection(provider)?.state != .signedOut))
             if row.signedIn {
                 Button(os1Tr("로그아웃", "Sign out")) { Task { await model.signOut(provider: provider, id: row.id) } }
                     .controlSize(.small).disabled(readOnly || model.busy != nil)
@@ -318,4 +413,59 @@ struct BackendAccountsPanel: View {
         }
         .padding(18).frame(width: 380)
     }
+}
+
+/// Uses fake status JSON only. No native auth, credentials, models, live
+/// account store, or session store is opened by this UI regression.
+@MainActor
+func backendSetupSurfaceSelfTest() async throws {
+    @MainActor final class Fixture {
+        var calls: [[String]] = []
+        var fail = false
+        var state: BackendSetupState = .signedIn
+        let book = BackendAccounts.normalized(BackendAccountBook())
+        func run(_ args: [String], _ timeout: TimeInterval) async throws -> String {
+            calls.append(args)
+            try await Task.sleep(for: .milliseconds(30))
+            if fail { throw BackendAccountRunnerError.message("fixture failure") }
+            let now = Date(timeIntervalSince1970: 100)
+            let snapshot = BackendSetupSnapshot(book: book, providers: [
+                BackendSetupProvider(provider: "codex", executablePath: "/fixture/codex", state: state,
+                                     checkedAt: now, accountID: "codex.default"),
+                BackendSetupProvider(provider: "claude", executablePath: nil, state: .missing,
+                                     checkedAt: now, accountID: "claude.default")
+            ], checkedAt: now)
+            let encoder = JSONEncoder(); encoder.dateEncodingStrategy = .iso8601
+            return String(decoding: try encoder.encode(snapshot), as: UTF8.self)
+        }
+    }
+    let fixture = Fixture()
+    let model = BackendAccountsModel(load: { fixture.book }, runner: fixture.run)
+    func check(_ value: Bool, _ name: String) throws {
+        guard value else { throw BackendAccountRunnerError.message("Backend setup UI: " + name) }
+    }
+    async let first: Void = model.refresh()
+    async let second: Void = model.refresh()
+    _ = await (first, second)
+    try check(fixture.calls.count == 1, "repeated refresh must be single-flight")
+    try check(model.connection("codex")?.state == .signedIn && model.connection("claude")?.state == .missing,
+              "one connected agent and one missing agent stay distinct")
+    await model.signIn(provider: "codex", accountID: "codex.default")
+    try check(fixture.calls.count == 1, "a connected account must not restart login")
+    fixture.state = .unverified
+    await model.refresh()
+    await model.signIn(provider: "codex", accountID: "codex.default")
+    try check(fixture.calls.allSatisfy { $0 == ["accounts", "discover", "--json"] },
+              "unknown status may refresh but never trigger OAuth")
+    fixture.fail = true
+    await model.refresh()
+    try check(model.setup == nil && model.notice != nil && model.book == fixture.book,
+              "failed check clears stale connected badge but preserves account metadata")
+    let view = BackendAccountsPanel(model: model, readOnly: true, onContinue: {})
+    let rendered = NSHostingView(rootView: view)
+    rendered.frame = NSRect(x: 0, y: 0, width: 580, height: 620)
+    rendered.layoutSubtreeIfNeeded()
+    try check(fixture.calls.allSatisfy { $0 == ["accounts", "discover", "--json"] },
+              "preview must not start an install or sign-in")
+    print("Backend setup UI: single-flight / native-login reuse / unknown-state / preview fixtures PASS; model calls 0")
 }

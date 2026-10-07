@@ -40,6 +40,7 @@ private func profileCheck(_ value: Bool, _ label: String) throws {
 
 @MainActor
 func profileMenuSelfTest() async throws {
+    try await backendSetupSurfaceSelfTest()
     var checks = 0
     func check(_ value: Bool, _ label: String) throws { try profileCheck(value, label); checks += 1 }
     func rejects(_ label: String, _ body: () throws -> Void) throws {
