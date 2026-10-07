@@ -60,10 +60,10 @@ public struct RouteFanout: Equatable, Sendable {
     static let chatter = [
         #"라우팅\s*(?:을|도)?\s*(?:시켜(?:서|봐줘|봐|줘|라|보고)?|해(?:서|봐|줘)?)?"#,
         #"(?:답변?|결과|응답)\s*(?:을|를|도|은|는|이|가)?\s*(?:좀\s*|다\s*|빨리\s*|각각\s*)*(?:받아와줘|받아와|받아서|받아봐|가져와줘|가져와|알려줘|보여줘|줘)"#,
-        #"시켜(?:보고|서|봐|라|줘|고)?|시키(?:라고|고|라)"#,
+        #"시켜(?:봐봐|봐바|보고|서|봐|라|줘|고)?|시키(?:라고|고|라)|돌려(?:봐|줘|서|라)?"#,
         #"(?:보내|넘겨|전달해)(?:서|봐|줘|고|라)?|전달하고"#,
         #"물어(?:봐줘|보고|봐서|봐|볼래)|질문해(?:줘|봐)?"#,
-        #"(?:해봐|해 봐|해줘|해라|해보자|하라고|해)(?=\s|$)"#,
+        #"(?:해봐봐|해봐|해 봐|해줘|해라|해보자|해보고|하라고|해)(?=\s|$)"#,
         #"각각|제발|\bsend\b|\bask\b"#,
     ]
     /// Short negation ("안 갔잖아", "안돼", "못 받았어") counts as well as the long form.
@@ -98,41 +98,50 @@ public struct RouteFanout: Equatable, Sendable {
     static let rosterVerb = #"(?:라우팅\s*(?:을|도)?\s*)?(?:시켜|돌려|맡겨|넘겨|보내|물어|전달해|질문해|던져|뿌려|내)\s?(?:봐줘|봐요|봐라|봐봐|봐바|봐|보자|볼래|보세요|줘봐|줘요|줘|주세요|줄래|서|라|보고)?|(?:라우팅\s*)?해\s?(?:봐줘|봐봐|봐|보자|줘|라|주세요)(?=\s|$)|(?<![가-힣])(?:줘\s?봐|부탁해)|(?<![A-Za-z])(?:ask|send|route)(?![A-Za-z])"#
     /// What may stand around the names and that order: openers, "다", counts,
     /// verb endings. No question word ("왜 클로드랑 GPT 하나씩 시켜" is a complaint).
-    static let rosterWords: Set<String> = ["그럼", "자", "야", "그러면", "이번엔", "이번에", "이번에도", "이제", "다", "모두", "전부",
+    static let rosterWords: Set<String> = ["그럼", "자", "야", "너", "그러면", "이번엔", "이번에", "이번에도", "이제", "다", "모두", "전부",
                                            "둘", "셋", "넷", "다섯", "여섯", "일곱", "여덟", "두", "세", "네", "개", "좀", "한번", "그냥",
                                            "일단", "바로", "지금", "같이", "따로", "봐", "줘", "봐줘", "요", "주세요", "줄래", "오케이",
-                                           "음", "아", "좋아", "그래", "다시", "더", "한", "번", "순서대로", "차례로", "차례대로",
-                                           "문제", "질문", "계산", "풀게", "to", "각각", "어", "그", "뭐냐", "근데", "이번에는", "한번만",
-                                           "나눠서", "산수", "덧셈", "이거", "주실래요", "봐봐", "봐바",
+                                           "음", "아", "좋아", "그래", "다시", "한", "번", "순서대로", "차례로", "차례대로",
+                                           "문제", "질문", "계산", "풀게", "to", "각각", "어", "그", "근데", "이번에는", "한번만",
+                                           "나눠서", "산수", "덧셈", "주실래요", "봐봐", "봐바", "그니까", "그러니까", "랑", "이랑", "하고",
+                                           "빨리", "얼른", "가자",
                                            "please", "ok", "okay", "all", "of", "them"]
     /// "…, 2+2 답변 받아와": the request to return the answers, after the last part.
     static let trailingReturn = #"\s*(?:답변?|결과|응답)\s*(?:을|를|도)?\s*(?:좀\s*|다\s*|빨리\s*)*(?:받아와(?:줘|요)?|받아줘|받아서\s*보여줘|가져와(?:줘|요)?|알려줘(?:요)?|보여줘(?:요)?)\s*$"#
-    /// The words a sentence beside the parts may be made of, and nothing else:
-    /// openers, the order to route, the request to return the answers, a test
-    /// announcement. A side sentence is never sent, so anything else in it (a
-    /// complaint, a correction, a report, a hypothetical, a follow-up order)
-    /// keeps the request whole rather than being dropped (hunt of build 334:
-    /// "이렇게 보냈는데 왜 하나만 와?", "아니 반대로", "그 다음에 로그 파일 지워"
-    /// split before; "라우팅 테스트야", "답이 뭔지 말해줘" were lost to a deny list).
-    static let frameWords: Set<String> = rosterWords.union([
-        "라우팅", "시켜", "시켜서", "시켜봐", "시켜봐줘", "시켜줘", "시켜보자", "보내", "보내줘", "보내봐", "보내서", "물어봐",
-        "물어봐줘", "물어보자", "돌려", "돌려봐", "돌려줘", "던져봐", "맡겨", "맡겨봐", "해", "해봐", "해줘", "해보자", "해서", "각각",
-        "답", "답변", "결과", "응답", "받아와", "받아와줘", "받아서", "받아", "받아봐", "가져와", "가져와줘", "알려줘", "알려",
-        "보여줘", "말해", "말해줘", "뭔지", "맞는지", "그리고", "각자", "빨리", "얼른", "하나라도", "작성되면", "나오면", "오면",
-        "끝나면", "도착하면", "테스트", "테스트야", "테스트다", "간다", "가자", "갈게", "확인", "확인해", "확인해보자", "확인해볼게",
-        "확인해봐", "보자", "볼게", "잘", "됐는지", "되는지", "내가", "하나만", "하나", "요청해볼게", "요청해", "요청할게", "요청",
-        "시험", "시험해보자", "추가로", "간단한", "간단하게", "간단히", "거", "걸로", "이런거", "이런", "쓸", "거야", "그니까",
-        "그러니까", "hey", "quick", "test", "testing", "routing", "check", "get", "the", "answers", "answer", "results",
-        "back", "tell", "show", "me", "both", "each", "separately", "and",
-    ])
-    /// Phrases read as one harmless word before the words are checked: a build
-    /// announcement ("빌드 332 들어갔으니까", "OS-1 새로 설치했어") and a return
-    /// condition ("안 되면 말해", "헷갈리지 않게 따로 받아와").
-    static let framePhrases = [
-        #"(?:(?:빌드|build|배포|설치|업데이트|os-?1)\s*(?:[0-9]+\s*)?(?:새로\s*)?)+(?:끝났으니까|끝났어|들어갔으니까|들어갔어|깔렸으니까|깔렸어|됐으니까|됐어|했으니까|했어|완료됐어|완료)"#,
-        #"(?:빌드|build)\s*[0-9]+"#,
-        #"(?:안|못)\s*(?:되면|받으면|오면|나오면)"#,
-        #"(?:헷갈리|오래\s*걸리)지\s*않게"#,
+    static let opener = #"(?:자|야|음|아|그럼|오케이|좋아|그래|그니까|이번엔|이번에|이제|일단|hey|ok|okay)"#
+    static let tryVerb = #"해\s?(?:보자|볼게|봐|볼까)"#
+    /// The sentences that may stand beside the parts, each matched whole. A
+    /// side sentence is never sent, so anything else (a complaint, a question,
+    /// a correction, a deferral, a follow-up order) keeps the request whole.
+    /// Whole sentences, not allowed words: words that are each harmless make
+    /// "그냥 내가 해", "빌드 336 끝나면 시켜", "그리고 테스트 다 돌려" (second
+    /// hunt of build 334); a deny list lost "라우팅 테스트야" and "답이 뭔지 말해줘"
+    /// (first hunt).
+    /// Only before the parts: "자 내가 하나만 요청해볼게", "추가로 하나 더" (after
+    /// them, "하나 더" asks for more).
+    static let leadingFrameTemplates: [String] = [
+        "^(?:\(opener)[\\s,]*)*(?:내가\\s*)?(?:하나만?\\s*)?요청(?:해\\s?볼게|할게)$",
+        #"^(?:추가로\s*)?하나\s*더$"#,
+    ]
+    static let frameTemplates: [String] = [
+        // An opener alone: "음", "Hey,", "오케이".
+        "^(?:\(opener)[\\s,]*)+$",
+        // A test announcement: "자 테스트 해보자", "라우팅 테스트야", "음 라우팅 테스트 간다",
+        // "야 라우팅 잘 됐는지 일단 확인해 보자", "라우팅 확인", "라우팅 잘 되는지 보자".
+        "^(?:\(opener)[\\s,]*)*(?:라우팅\\s*(?:이|가)?\\s*)?(?:잘\\s*)?(?:(?:되는지|됐는지)\\s*)?(?:일단\\s*|한번\\s*)?(?:(?:테스트|확인|시험)(?:\\s*(?:야|다|중|간다|가자)|\\s*(?:한번\\s*)?\(tryVerb))?|보자)$",
+        #"^(?:(?:hey|ok|okay)[\s,]*)*(?:quick\s+)?(?:routing\s+)?test(?:ing)?$"#,
+        // A build announcement: "빌드 332 들어갔으니까 확인해보자", "빌드 335 테스트야", "OS-1 새로 설치했어".
+        "^(?:\(opener)[\\s,]*)*(?:(?:빌드|build)\\s*[0-9]+\\s*(?:테스트(?:야|다)?|(?:들어갔|깔렸|설치됐|설치했)(?:으니까|어))|(?:os-?1\\s*)?(?:새로\\s*)?(?:설치|업데이트)(?:했|됐)(?:어|으니까))(?:\\s*(?:라우팅\\s*)?(?:확인|테스트)\\s*\(tryVerb))?$",
+        // The owner's own openers: "자 내가 하나만 요청해볼게", "추가로 하나 더", "간단한 거".
+        #"^간단한\s*(?:거|걸로)$"#,
+        // The order to route alone: "보내", "시켜봐", "라우팅 해봐".
+        "^(?:\(opener)[\\s,]*)*(?:라우팅\\s*(?:을\\s*)?)?(?:시켜|보내|물어|돌려|던져|맡겨|해)\\s?(?:봐줘|봐|줘|라|보자)?$",
+        // The request to return the answers: "라우팅 시켜서 답변 받아와", "답이 뭔지 말해줘",
+        // "헷갈리지 않게 따로 받아와", "답변 작성되면 알려줘", "그리고 결과 맞는지 말해".
+        #"^(?:(?:그리고|각각|각자|둘\s*다|다|빨리|얼른|따로|헷갈리지\s*않게)\s*)*(?:라우팅\s*(?:을\s*)?(?:시켜서|해서)\s*)?(?:(?:답변?|결과|응답)(?:이|가|을|를|도|은|는)?\s*)?(?:(?:좀|다|빨리|얼른|각각|따로)\s*)*(?:(?:작성되면|나오면|오면|끝나면|도착하면)\s*(?:바로\s*)?)?(?:받아와(?:줘|요)?|받아줘|받아서\s*보여줘|가져와(?:줘|요)?|알려줘(?:요)?|보여줘(?:요)?|(?:뭔지\s*|맞는지\s*)?말해(?:줘)?)$"#,
+        #"^(?:다\s*)?(?:끝나면|나오면|오면)\s*(?:답변?|결과)(?:을|를|도)?\s*(?:(?:좀|다)\s*)*(?:알려줘|보여줘|말해줘?|받아와)$"#,
+        // A return condition: "안 되면 말해", "하나라도 못 받으면 알려줘".
+        #"^(?:하나라도\s*)?(?:안|못)\s*(?:되면|받으면|오면|나오면)\s*(?:바로\s*)?(?:말해(?:줘)?|알려줘(?:요)?)$"#,
     ]
     /// One arithmetic expression ("1+1", "1 plus 1", "2 곱하기 3", "1,000 × 2").
     static let expression = #"(?:[0-9]{1,3}(?:,[0-9]{3})+|[0-9]+)(?:\.[0-9]+)?(?:\s*(?:[-+*/×÷^%]|plus|minus|times|x|divided\s+by|더하기|빼기|곱하기|나누기|플러스|마이너스)\s*(?:[0-9]{1,3}(?:,[0-9]{3})+|[0-9]+)(?:\.[0-9]+)?)+"#
@@ -148,13 +157,13 @@ public struct RouteFanout: Equatable, Sendable {
         // own names ("GPT랑 코덱스 하나씩 시켜봐. 1+1은 GPT한테, 2+2는 코덱스한테.").
         if let paired = pairing(text) { return paired.plan }
         var targets: [Target] = []
-        var frameBefore: [String] = [], frameAfter: [String] = [], sideSentences: [String] = []
+        var frameBefore: [String] = [], frameAfter: [String] = [], sideSentences: [(text: String, leading: Bool)] = []
         var sawTarget = false
         for clause in clauses(text) {
             let found = mentions(in: clause)
             if found.isEmpty {
                 if sawTarget { frameAfter.append(clause) } else { frameBefore.append(clause) }
-                sideSentences.append(clause)
+                sideSentences.append((clause, !sawTarget))
                 continue
             }
             // A clause without a name between two named ones: whose is it?
@@ -167,7 +176,7 @@ public struct RouteFanout: Equatable, Sendable {
             // 2+2" sent GPT "음" and shifted every part one route down).
             let openerIsFrame = !strip(opener).isEmpty && benignFrame(opener)
             let nameFirst = (strip(opener).isEmpty || openerIsFrame) && found.count > 1
-            if nameFirst, openerIsFrame { frameBefore.append(opener); sideSentences.append(opener) }
+            if nameFirst, openerIsFrame { frameBefore.append(opener); sideSentences.append((opener, targets.isEmpty)) }
             for (index, mention) in found.enumerated() {
                 let raw: String
                 if found.count == 1 {
@@ -181,6 +190,9 @@ public struct RouteFanout: Equatable, Sendable {
                     raw = String(clause[start..<mention.range.lowerBound])
                 }
                 if raw.range(of: routingTalk, options: .regularExpression) != nil { return nil }
+                // In a sentence that ends with "?", only a bare part may stand
+                // ("2+2는?"); anything more asks about it ("2+2 이런 거 라우팅 해?").
+                if endsWithQuestionMark(clause, in: text), !selfContained(raw.trimmingCharacters(in: CharacterSet(charactersIn: " ,，"))) { return nil }
                 var payload = part(raw)
                 if payload.range(of: repeatPrevious, options: [.regularExpression, .caseInsensitive]) != nil {
                     guard let previous = targets.last?.payload else { return nil }
@@ -194,14 +206,14 @@ public struct RouteFanout: Equatable, Sendable {
             }
             if found.count > 1, !nameFirst {
                 let tail = String(clause[found[found.count - 1].range.upperBound...])
-                if !strip(tail).isEmpty { sideSentences.append(tail); frameAfter.append(strip(tail)) }
+                if !strip(tail).isEmpty { sideSentences.append((tail, false)); frameAfter.append(strip(tail)) }
             }
         }
         guard targets.count >= 2, targets.count <= maximumTargets else { return nil }
         // Every side sentence is known to be harmless; a roster naming exactly
         // these routes is one too.
         let surfaces = targets.map(\.surface)
-        for sentence in sideSentences where !benignFrame(sentence, roster: surfaces) { return nil }
+        for sentence in sideSentences where !sideSentence(sentence.text, in: text, roster: surfaces, leading: sentence.leading) { return nil }
         for target in targets where !acceptable(target.payload) || !arithmetic(target.payload) { return nil }
         if ambiguousNumbers(targets.map(\.payload)) { return nil }
         return RouteFanout(targets: targets, frame: frameBefore + frameAfter)
@@ -216,7 +228,7 @@ public struct RouteFanout: Equatable, Sendable {
         let edges = [
             "^(?:\(distributive))\\s*|\\s*(?:\(distributive))$",
             #"^(?:(?:야|자|그럼|음|오케이|그리고|그 다음에|그다음|and|then|주고|묻고|던지고|던져서)\s+)+"#,
-            #"\s+(?:그리고|하고|and|then|주고|묻고|던지고)$"#,
+            #"\s+(?:그리고|하고|and|then|주고|묻고|던지고|좀|빨리|얼른)$"#,
         ]
         for _ in 0..<2 {
             for pattern in edges {
@@ -239,39 +251,45 @@ public struct RouteFanout: Equatable, Sendable {
         return list.count >= 2 && list.allSatisfy(selfContained)
     }
 
-    /// Parts that are all "a-b" or "a/b" may be ranges, shards or dates handed
-    /// out ("맡겨 1-10, 11-20", "1/2, 2/2", "10/7, 10/8"), not sums to answer.
+    /// Parts that are all "a-b", "a/b" or "AxB" may be ranges, shards, dates or
+    /// sizes handed out ("맡겨 1-10, 11-20", "1/2, 2/2", "10/7, 10/8",
+    /// "1920x1080, 1280x720"), not sums to answer.
     static func ambiguousNumbers(_ payloads: [String]) -> Bool {
         let operators = #"[-+*/×÷^%]|plus|minus|times|(?<![A-Za-z])x(?![A-Za-z])|divided\s+by|더하기|빼기|곱하기|나누기|플러스|마이너스"#
         guard let regex = try? NSRegularExpression(pattern: operators, options: [.caseInsensitive]) else { return false }
         let found = payloads.flatMap { payload in
-            regex.matches(in: payload, range: NSRange(payload.startIndex..., in: payload))
-                .compactMap { Range($0.range, in: payload).map { payload[$0].lowercased() } }
+            regex.matches(in: payload, range: NSRange(payload.startIndex..., in: payload)).compactMap { match -> String? in
+                guard let range = Range(match.range, in: payload) else { return nil }
+                let value = payload[range].lowercased()
+                // "1920x1080", "4x4": an unspaced x between digits is a size.
+                if value == "x", range.lowerBound > payload.startIndex, range.upperBound < payload.endIndex,
+                   payload[payload.index(before: range.lowerBound)].isNumber, payload[range.upperBound].isNumber { return "size" }
+                return value
+            }
         }
-        return !found.isEmpty && found.allSatisfy { $0 == "-" || $0 == "/" }
+        return !found.isEmpty && found.allSatisfy { ["-", "/", "size"].contains($0) }
     }
 
-    /// A sentence beside the parts that is made only of `frameWords`: an opener,
-    /// the order to route, the request to return the answers, a test or build
-    /// announcement. With `roster`, a sentence listing exactly those routes with
-    /// "하나씩" counts as one ("GPT랑 코덱스 하나씩 시켜봐" before named parts).
-    static func benignFrame(_ sentence: String, roster: [ProviderSurface] = []) -> Bool {
-        var value = sentence.lowercased()
+    /// A sentence beside the parts that matches one of `frameTemplates` whole.
+    /// With `roster`, a sentence listing exactly those routes with "하나씩"
+    /// counts as one ("GPT랑 코덱스 하나씩 시켜봐" before named parts).
+    static func benignFrame(_ sentence: String, roster: [ProviderSurface] = [], leading: Bool = false) -> Bool {
+        let value = sentence.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: " \t.,!。"))
         if !roster.isEmpty, value.range(of: distributive, options: [.regularExpression, .caseInsensitive]) != nil,
            let run = nameRun(in: value), Set(run.names.map(\.surface)) == Set(roster) {
-            value.removeSubrange(run.range)
-            value = value.replacingOccurrences(of: distributive, with: " ", options: [.regularExpression, .caseInsensitive])
+            var rest = value
+            rest.removeSubrange(run.range)
+            return onlyRosterWords(rest.replacingOccurrences(of: distributive, with: " ", options: [.regularExpression, .caseInsensitive]))
         }
         if containsName(value) { return false }
-        for phrase in framePhrases {
-            value = value.replacingOccurrences(of: phrase, with: " ", options: [.regularExpression, .caseInsensitive])
-        }
-        return value.split(whereSeparator: { $0.isWhitespace || ",.?!~:：;\"'()…“”‘’".contains($0) }).allSatisfy { token in
-            let word = String(token)
-            if frameWords.contains(word) { return true }
-            let stem = word.replacingOccurrences(of: #"(?:이|가|은|는|을|를|도|만|요|로|으로)$"#, with: "", options: .regularExpression)
-            return stem != word && frameWords.contains(stem)
-        }
+        return (leading ? frameTemplates + leadingFrameTemplates : frameTemplates)
+            .contains { value.range(of: $0, options: [.regularExpression, .caseInsensitive]) != nil }
+    }
+
+    /// A side sentence the owner ended with a question mark asks something;
+    /// it is never framing ("…1+1, 2+2. 근데 배포 했어?").
+    static func sideSentence(_ sentence: String, in text: String, roster: [ProviderSurface] = [], leading: Bool = false) -> Bool {
+        !endsWithQuestionMark(sentence.trimmingCharacters(in: .whitespaces), in: text) && benignFrame(sentence, roster: roster, leading: leading)
     }
 
     /// The checks every part must pass before it is sent alone.
@@ -335,7 +353,7 @@ public struct RouteFanout: Equatable, Sendable {
         var sources: [(clauses: [Int], items: [String])] = []
         if let inline = found.value.items { sources.append(([], inline)) }
         if at + 1 < parts.count, let list = partList(parts[at + 1], count: count) { sources.append(([at + 1], list)) }
-        if at > 0, ((at + 1)..<parts.count).allSatisfy({ benignFrame(parts[$0]) }), let list = partList(parts[at - 1], count: count) {
+        if at > 0, ((at + 1)..<parts.count).allSatisfy({ sideSentence(parts[$0], in: listed) }), let list = partList(parts[at - 1], count: count) {
             sources.append(([at - 1], list))
         }
         if at + count < parts.count {
@@ -346,7 +364,7 @@ public struct RouteFanout: Equatable, Sendable {
         }
         guard sources.count == 1, let chosen = sources.first else { return whole }
         let rest = parts.indices.filter { $0 != at && !chosen.clauses.contains($0) }
-        guard rest.allSatisfy({ benignFrame(parts[$0]) }) else { return whole }
+        guard rest.allSatisfy({ sideSentence(parts[$0], in: listed, leading: $0 < at) }) else { return whole }
         let targets = zip(names, chosen.items).map { name, item in
             Target(surface: name.surface, mention: name.text, payload: strip(item))
         }
@@ -388,11 +406,13 @@ public struct RouteFanout: Equatable, Sendable {
         // 1+1 2+2"): the sentence still says nothing else, or it is unclear.
         // The parts may sit before the names, between them and the order, or after it.
         var found: [String]?
-        for segment in [prefix, middle, tail] {
+        for (index, segment) in [prefix, middle, tail].enumerated() {
             let cleaned = segment.replacingOccurrences(of: distributive, with: " ", options: [.regularExpression, .caseInsensitive])
                 .replacingOccurrences(of: #"라우팅"#, with: " ", options: .regularExpression)
                 .trimmingCharacters(in: CharacterSet(charactersIn: " :：,，\t"))
-            if onlyRosterWords(cleaned) { continue }
+            // Before the names, the owner's test opener may stand too
+            // ("자 테스트 한번 해보자 클로드랑 GPT 하나씩 시켜봐 1+1 2+2").
+            if onlyRosterWords(cleaned) || (index == 0 && benignFrame(cleaned)) { continue }
             // "줘 1+1 2+2", "음 1+1이랑 2+2", "1+1 2+2 빨리": openers and verb
             // endings around the parts are the sentence's, not a part's.
             guard found == nil, let list = partList(trimmingRosterWords(cleaned), count: run.names.count) else { return unclear }
@@ -453,22 +473,26 @@ public struct RouteFanout: Equatable, Sendable {
     static func onlyRosterWords(_ text: String) -> Bool {
         let value = strip(text).lowercased()
             .replacingOccurrences(of: #"[0-9]+\s?개"#, with: " ", options: .regularExpression)
+            .replacingOccurrences(of: #"한\s?번만?\s*더|다시\s*한\s?번"#, with: " ", options: .regularExpression)
         return value.split(whereSeparator: { $0.isWhitespace || ",.?!~:：".contains($0) }).allSatisfy { rosterWord(String($0)) }
     }
 
-    /// An opener, a count, the order to route, a test or return word ("둘한테",
-    /// "문제를" with their particle).
+    /// An opener, a count or a verb ending, with its particle ("둘한테", "문제를").
     static func rosterWord(_ word: String) -> Bool {
-        if frameWords.contains(word) { return true }
+        if rosterWords.contains(word) { return true }
         let stem = word.replacingOccurrences(of: #"(?:한테|에게|이|가|은|는|을|를|도|만|요)$"#, with: "", options: .regularExpression)
-        return stem != word && (frameWords.contains(stem) || stem.range(of: #"^[0-9]+\s?개$"#, options: .regularExpression) != nil)
+        return stem != word && (rosterWords.contains(stem) || stem.range(of: #"^[0-9]+\s?개$"#, options: .regularExpression) != nil)
     }
 
-    /// The text between the first and the last word that is not a roster word.
+    /// Words that may follow the parts inside the roster sentence ("1+1 2+2 빨리").
+    static let trailingRosterWords: Set<String> = ["그리고", "빨리", "얼른", "각각", "좀", "다", "줘", "봐", "요", "please"]
+
+    /// The parts with the openers before them and the endings after them removed.
     static func trimmingRosterWords(_ text: String) -> String {
         var words = text.split(whereSeparator: \.isWhitespace).map(String.init)
-        while let first = words.first, rosterWord(first.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: ",.:："))) { words.removeFirst() }
-        while let last = words.last, rosterWord(last.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: ",.:："))) { words.removeLast() }
+        func word(_ value: String) -> String { value.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: ",.:：")) }
+        while let first = words.first, rosterWord(word(first)) { words.removeFirst() }
+        while let last = words.last, trailingRosterWords.contains(word(last)) { words.removeLast() }
         return words.joined(separator: " ")
     }
 
@@ -477,6 +501,7 @@ public struct RouteFanout: Equatable, Sendable {
     /// that many expressions.
     static func partList(_ text: String, count: Int) -> [String]? {
         let value = text.replacingOccurrences(of: trailingReturn, with: "", options: .regularExpression)
+            .replacingOccurrences(of: #"\s+(?:그리고|and)\s*$"#, with: "", options: [.regularExpression, .caseInsensitive])
         // "1+1 2+2 그리고 3+3": each item may itself be a run of expressions.
         var list = items(value).flatMap { item in selfContained(item) ? [item] : (expressionRun(item) ?? [item]) }
         guard list.count == count, list.allSatisfy(selfContained) else { return nil }
@@ -744,6 +769,12 @@ public struct RouteFanout: Equatable, Sendable {
             ("그럼 GPT랑 코덱스한테 1+1 물어봐", ["gpt-chat:1+1", "codex:1+1"]),
             ("GPT랑 코덱스 하나씩 시켜봐. 1+1은 GPT한테, 2+2는 코덱스한테.", ["gpt-chat:1+1", "codex:2+2"]),
             ("자 이번엔 GPT랑 클로드 하나씩. 1+1 GPT한테, 2+2 클로드한테.", ["gpt-chat:1+1", "claude-chat:2+2"]),
+            // Second hunt: the owner's dictation, an opener only before the parts, a spaced "x".
+            ("그럼 클로드랑 클로드 코드 GPT 코덱스 다 라우팅 하나씩 시켜 봐 1 plus 1 2 plus 2 3 plus 3 4 plus 4",
+             ["claude-chat:1 plus 1", "claude:2 plus 2", "gpt-chat:3 plus 3", "codex:4 plus 4"]),
+            ("추가로 하나 더. 3+3 GPT한테. 4+4 클로드한테.", ["gpt-chat:3+3", "claude-chat:4+4"]),
+            ("코덱스랑 클로드 코드 하나씩 시켜봐. 10 - 3, 7 x 8", ["codex:10 - 3", "claude:7 x 8"]),
+            ("GPT한테 1+1, 코덱스한테 2+2 좀 해봐", ["gpt-chat:1+1", "codex:2+2"]),
         ] {
             checks.append(("framed split: \(prompt)", surfaces(prompt) == expected))
         }
@@ -762,7 +793,14 @@ public struct RouteFanout: Equatable, Sendable {
                        "코덱스한테 3개, 클로드 코드한테 2개 남았대", "클로드랑 GPT 하나씩 맡겨. 1-10, 11-20.", "클로드랑 GPT 하나씩 맡겨 1/2, 2/2",
                        "클로드랑 GPT 하나씩 맡겨. 10/7, 10/8.", "클로드랑 GPT 하나씩 시켜봐 5+5,100+100,7+7", "1+1 GPT한테 2+2 코덱스한테 3+3",
                        "클로드한테 1+1, 코덱스한테 2+2, GPT 3+3", "GPT랑 클로드한테 1+1 해봐 라는 말이 무슨 뜻이야", "GPT랑 코덱스한테 1+2 하면 같은 답 나오겠지",
-                       "GPT한테 라우팅 시켜봐 원리가 뭔지, Codex한테 2+2", "GPT한테 1+1, 클로드한테 2+2 이런 식으로 앞으로 자동으로 나눠줘"] {
+                       "GPT한테 라우팅 시켜봐 원리가 뭔지, Codex한테 2+2", "GPT한테 1+1, 클로드한테 2+2 이런 식으로 앞으로 자동으로 나눠줘",
+                       // Second hunt: each word harmless, the sentence a retraction, deferral, order or question.
+                       "클로드랑 GPT 하나씩 시켜봐. 1+1, 2+2. 그냥 내가 해.", "클로드랑 GPT 하나씩 시켜봐. 1+1, 2+2. 아 일단 하나만 해.",
+                       "클로드랑 GPT 하나씩 시켜봐. 1+1, 2+2. 빌드 336 끝나면 시켜.", "테스트 끝나면 클로드랑 GPT 하나씩 1+1, 2+2",
+                       "클로드랑 GPT 하나씩 시켜봐. 1+1, 2+2. 그리고 테스트 다 돌려.", "클로드랑 GPT 하나씩 시켜봐. 1+1, 2+2. 근데 배포 했어?",
+                       "1+1 GPT한테. 2+2 코덱스한테. 아 그냥 하나로 보내.", "1+1 GPT한테. 2+2 코덱스한테. 이런 거 세 개 더 시켜.",
+                       "GPT한테 1+1 코덱스한테 2+2 이런 거 라우팅 해?", "클로드랑 GPT 하나씩 시켜봐. 1+1, 2+2. 하나 더.",
+                       "클로드 코드랑 코덱스 하나씩 맡겨. 1920x1080, 1280x720.", "근데 클로드랑 GPT 하나씩 1+1이랑 2+2 이거 뭐냐"] {
             checks.append(("no framed split: \(prompt)", plan(prompt) == nil))
         }
         checks.append(("각각 shares the whole list", surfaces("GPT랑 클로드한테 각각 1+1, 2+2, 3+3 물어봐")
