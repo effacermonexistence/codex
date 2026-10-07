@@ -16409,7 +16409,6 @@ private func startAgentTaskTreePreviewWindow(mode raw: String) throws {
     let delegate = AgentTreePreviewWindowDelegate(root: root)
     window.delegate = delegate; agentTreePreviewDelegate = delegate; agentTreePreviewWindow = window
     window.center(); window.makeKeyAndOrderFront(nil)
-    NSApplication.shared.activate(ignoringOtherApps: true)
     let receipt: [String: Any] = ["pid": Int(getpid()), "windowTitle": window.title,
         "fixtureRoot": root.path, "state": mode.rawValue, "providerCalls": 0, "liveState": false]
     print(String(decoding: try JSONSerialization.data(withJSONObject: receipt, options: [.sortedKeys]), as: UTF8.self))
