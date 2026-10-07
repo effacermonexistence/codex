@@ -182,19 +182,29 @@ export const binaryRollbackPermitted = ({ appStopped, pagingQuiesced: quiesced, 
 // upgrade has no authority to read another application's process arguments.
 // A failed discovery is not proof of quiescence; only pgrep's no-match status
 // and the candidate-exited ps status may produce an empty inventory.
-export const os1ProcessRows = (execute = spawnSync) => {
+export const os1ProcessRows = (execute = spawnSync, isGone = pid => {
+  try { process.kill(pid, 0); return false; }
+  catch (error) { if (error.code === 'ESRCH') return true; throw error; }
+}) => {
   const options = { encoding: 'utf8', timeout: 60000, maxBuffer: 1024 * 1024,
     stdio: ['ignore', 'pipe', 'pipe'] };
   // Include ancestors as well: a self-update can be launched by OS-1 itself.
   const names = execute('/usr/bin/pgrep', ['-a', '-x', '(OS1App|os1)'], options);
   assert(!names.error, 'OS-1 PID discovery failed');
-  if (names.status === 1) return [];
+  if (names.status === 1) {
+    assert(!names.stdout.trim() && !names.stderr?.trim(), 'OS-1 PID discovery returned diagnostics');
+    return [];
+  }
   assert.equal(names.status, 0, 'OS-1 PID discovery failed');
   const ids = names.stdout.trim().split(/\s+/);
   assert(ids.length && ids.every(id => /^[1-9]\d*$/.test(id)), 'invalid OS-1 PID inventory');
   const rows = execute('/bin/ps', ['-p', [...new Set(ids)].join(','), '-o', 'pid=,args='], options);
   assert(!rows.error, 'OS-1 process inspection failed');
-  if (rows.status === 1) return []; // All discovered candidates exited.
+  if (rows.status === 1) {
+    assert(!rows.stdout.trim() && !rows.stderr?.trim() && ids.every(id => isGone(Number(id))),
+      'OS-1 process inspection failed without proof that candidates exited');
+    return [];
+  }
   assert.equal(rows.status, 0, 'OS-1 process inspection failed');
   return rows.stdout.split('\n').filter(line => line.trim());
 };

@@ -19,7 +19,16 @@ check(() => assert.equal(rows.length, 2));
 check(() => assert.deepEqual(os1ProcessRows(inventory([{ status: 1, stdout: '' }])), []));
 check(() => assert.deepEqual(os1ProcessRows(inventory([
   { status: 0, stdout: '41\n' }, { status: 1, stdout: '' },
-])), []));
+]), () => true), []));
+check(() => assert.throws(() => os1ProcessRows(inventory([
+  { status: 0, stdout: '41\n' }, { status: 1, stdout: '' },
+]), () => false)));
+check(() => assert.throws(() => os1ProcessRows(inventory([
+  { status: 0, stdout: '41\n' }, { status: 1, stdout: '', stderr: 'fixture diagnostic' },
+]), () => true)));
+check(() => assert.throws(() => os1ProcessRows(inventory([
+  { status: 1, stdout: '41\n' },
+]))));
 for (const result of [
   { status: 2, stdout: '' }, { status: null, error: new Error('fixture failure') },
   { status: 0, stdout: '41 all\n' }, { status: 0, stdout: '' },
