@@ -1673,10 +1673,10 @@ func parseClaudePrintResult(_ data: Data, requestedSessionID: String, boundedShe
         throw OS1Error.message("Claude did not return the requested persistent session ID")
     }
 
-    // In the bounded read-only lane (dontAsk + prefix allow rules) a denial is
-    // the bound doing its job, not a policy verdict: the answer is judged on
-    // its content and must name what it could not run.
-    let allDenials = boundedShell ? [] : (object["permission_denials"] as? [[String: Any]] ?? [])
+    // A disallowed write denial is the bound doing its job. Denial of an
+    // approved inspection is an incomplete execution, not normal success.
+    let rawDenials = object["permission_denials"] as? [[String: Any]] ?? []
+    let allDenials = boundedShell ? rawDenials.filter(ClaudeReadOnlyShell.isAllowedInspectionDenial) : rawDenials
     // In a confined run a write into OS-1's protected source is denied by
     // design: that is the request needing an OS-1 change, which OS-1 then
     // runs as its own repair, not a policy verdict on the task.
@@ -2260,7 +2260,7 @@ func findExecutable(_ name: String) throws -> String {
     throw OS1Error.message("Required command is missing: \(name)")
 }
 
-private let managedWranglerVersion = "4.127.1" // repository-pinned dependency
+let managedWranglerVersion = "4.127.1" // repository-pinned dependency
 
 private func managedR2Executable() throws -> String {
     let root = FileManager.default.homeDirectoryForCurrentUser
@@ -6545,7 +6545,7 @@ private func execute(
     // a shell-bound objective is not refused here; the backend is told the
     // bound so it verifies what it can and names what it could not run.
     let boundedShellDirective = ticket.provider == "claude" && ticket.permissionProfile == "read_only" &&
-        preloadedR2Evidence == nil && promptRequiresShellCapability(lockedObjective) ? ClaudeReadOnlyShell.directive : ""
+        preloadedR2Evidence == nil && executedSurface == .claude ? ClaudeReadOnlyShell.directive : ""
     let manuallyFresh = memoryTurn.map { MemoryContextMeter.wantsFresh(conversationID: $0.conversationID) } ?? false
     let result: (Int32, Data, Data)
     let sessionID: String
@@ -6945,6 +6945,11 @@ private func execute(
                                                                          executionID: ticket.executionID), at: 1)
         }
         let stream = ExecutionStream(claudeSessionID: activeSessionID, workspace: executionWorkspace)
+        if ticket.permissionProfile == "read_only", !sourceOnly, !chatLane {
+            RuntimeActivity.emit(.preparing, provider: "claude", model: model, effort: effort,
+                publicText: os1Tr("읽기 점검 레인 · 기존 인증의 GitHub/R2 조회 허용 · 쓰기와 MCP 도구는 별도로 제한됩니다(로그아웃 아님).",
+                    "Read-only inspection · existing authenticated GitHub/R2 reads enabled · writes and MCP tools are separately scoped, not signed out."))
+        }
         var revision = 0
         var relayedResultCount = 0
         let raw: (Int32, Data, Data)
@@ -7005,6 +7010,17 @@ private func execute(
         }
         AttemptLatencyTrace.mark("provider_exited")
         let resultData = stream.result ?? raw.1
+        // Tool-result diagnostics may be absent from the final success-shaped
+        // envelope. Read only this execution window in the exact active native
+        // record; the stream admits only IDs it already observed on transport.
+        if ticket.permissionProfile == "read_only", let path = claudeTranscriptPath(sessionID: activeSessionID),
+           let handle = try? FileHandle(forReadingFrom: URL(fileURLWithPath: path)) {
+            defer { try? handle.close() }
+            if let end = try? handle.seekToEnd() {
+                try? handle.seek(toOffset: end > 2_000_000 ? end - 2_000_000 : 0)
+                if let bytes = try? handle.read(upToCount: 2_000_000) { stream.inspectClaudeNativeResults(bytes, since: started) }
+            }
+        }
         onUsage?(CompletionUsageParser.parseClaudeResult(resultData))
         let parsed: ClaudePrintResult
         do {
@@ -7012,6 +7028,12 @@ private func execute(
             let diagnostic = String(decoding: raw.2, as: UTF8.self).components(separatedBy: .newlines).suffix(3)
                 .compactMap { NativeStepLabel.redactKeepingEnd($0) }.joined(separator: " · ")
             throw OS1Error.message("Full-access Claude continuation failed before a structured session result (exit \(raw.0)): \(diagnostic.isEmpty ? "no stderr diagnostic" : diagnostic)")
+        }
+        if ticket.permissionProfile == "read_only", !stream.claudeInspectionNetworkDenials.isEmpty {
+            let hosts = Array(Set(stream.claudeInspectionNetworkDenials.map(\.host))).sorted()
+            throw OS1Error.toolPermissionDenied(
+                provider: os1Tr("Claude 실행 네트워크 (로그인 만료 아님)", "Claude execution network (not expired authentication)"),
+                tools: hosts, count: stream.claudeInspectionNetworkDenials.count)
         }
         parsed = try parseClaudeCommandResult(raw.0, resultData, requestedSessionID: activeSessionID,
                                                     boundedShell: ticket.permissionProfile == "read_only", confinedPaths: Array(Set(confinedPaths + fullAccessPaths))) }
@@ -12780,6 +12802,17 @@ func selfTest() throws {
     // denial keeps the answer instead of becoming a terminal policy verdict.
     let boundedLaneKeepsAnswer = (try? parseClaudePrintResult(deniedClaudeResult, requestedSessionID: claudeSessionID, boundedShell: true))?
         .output == Data("approval required".utf8)
+    // Missing permission for an explicitly permitted inspection is not a
+    // successful read-only result, and cannot be repaired by another model.
+    let deniedInspection = try JSONSerialization.data(withJSONObject: [
+        "type": "result", "session_id": claudeSessionID, "is_error": false, "result": "Everything works",
+        "permission_denials": [["tool_name": "WebFetch", "tool_input": ["url": "https://api.github.com"]]]
+    ])
+    var blockedInspection = false
+    do { _ = try parseClaudePrintResult(deniedInspection, requestedSessionID: claudeSessionID, boundedShell: true) }
+    catch { blockedInspection = (error as? OS1Error)?.isTerminalPermissionFailure == true }
+    guard blockedInspection else { throw OS1Error.message("An approved read-only inspection denial must not be adopted") }
+    try ConnectionStatusCommand.selfTest()
     // Counts (2 -> 3 in the incident) and a success-shaped answer cannot
     // change a permission failure into a retryable model-quality failure.
     for (tools, isError) in [(["WebFetch", "WebSearch"], false),
@@ -15454,6 +15487,7 @@ struct OS1Main {
                 guard arguments.count == 2 else { throw OS1Error.message("Expected stored result identifier") }
                 let summary = try await resumeDelivery(arguments[1])
                 print(String(decoding: try JSONEncoder().encode(summary), as: UTF8.self))
+            case "connection-status": try ConnectionStatusCommand.run(arguments)
             case "r2-tool-path": print(try managedR2Executable())
             case "source-register":
                 guard arguments.count == 3, arguments[1] == "scv-instagram", arguments[2].hasPrefix("/") else {
