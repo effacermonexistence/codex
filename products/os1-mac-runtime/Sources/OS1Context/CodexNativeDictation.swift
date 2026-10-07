@@ -44,6 +44,7 @@ public protocol CodexDictationTransport: Sendable {
 public enum CodexNativeDictation {
     public typealias Credential = @Sendable () async throws -> String
     public static let maximumBufferBytes = 4_194_304
+    public static let maximumSocketMessageBytes = 8_388_608
     public static let transcriptionURL = URL(string: "https://chatgpt.com/backend-api/transcribe")!
     public static let streamingURL = URL(string: "wss://chatgpt.com/backend-api/dictation/stream?dictation_surface=composer")!
     public static let protocols = ["chatgpt-dictation", "codex-desktop"]
@@ -221,7 +222,7 @@ public final class CodexDictationURLSessionTransport: CodexDictationTransport, @
     public func connect(_ request: URLRequest) async throws -> any CodexDictationSocket {
         guard request.url == CodexNativeDictation.streamingURL else { throw CodexDictationError.invalidRequest }
         let task = session.webSocketTask(with: request)
-        task.maximumMessageSize = CodexNativeDictation.maximumBufferBytes
+        task.maximumMessageSize = CodexNativeDictation.maximumSocketMessageBytes
         task.resume()
         return URLSessionSocket(task: task)
     }
@@ -400,7 +401,7 @@ public actor CodexDictationSession {
         do {
             while terminal == nil, !Task.isCancelled {
                 let data = try await socket.receive()
-                guard data.count <= CodexNativeDictation.maximumBufferBytes else { throw CodexDictationError.messageTooLarge }
+                guard data.count <= CodexNativeDictation.maximumSocketMessageBytes else { throw CodexDictationError.messageTooLarge }
                 let event: Event
                 do { event = try JSONDecoder().decode(Event.self, from: data) }
                 catch { throw CodexDictationError.invalidResponse }

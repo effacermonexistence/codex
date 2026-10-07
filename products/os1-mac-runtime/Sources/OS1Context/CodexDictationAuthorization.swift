@@ -57,13 +57,15 @@ public enum CodexDictationAuthorization {
     /// Metadata-only confinement; never inspect a helper app's files or auth.
     private static func outsideHandyTrustDomain(_ url: URL) -> Bool {
         guard url.isFileURL else { return false }
-        for path in [url.standardizedFileURL, url.standardizedFileURL.resolvingSymlinksInPath()] {
-            if path.pathComponents.contains(where: {
+        func denied(_ path: URL) -> Bool {
+            path.pathComponents.contains(where: {
                 let component = $0.lowercased()
-                return component == "handy" || component == "handy.app" || component == ".handy"
-            }) { return false }
+                return ["handy", "handy.app", ".handy", "com.pais.handy"].contains(component)
+            })
         }
-        return true
+        let lexical = url.standardizedFileURL
+        guard !denied(lexical) else { return false }
+        return !denied(lexical.resolvingSymlinksInPath())
     }
 }
 

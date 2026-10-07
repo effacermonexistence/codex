@@ -685,7 +685,7 @@ private func codexNativeDictationFixtureChecks() async throws {
         transport: DictationFixtureTransport(socket: tooLargeSocket), credential: { token }, finishTimeout: 2)
     try await tooLargeSession.start()
     let tooLargeWaiter = Task { try await tooLargeSession.finish() }
-    await tooLargeSocket.enqueue(Data(repeating: 65, count: 4_194_305))
+    await tooLargeSocket.enqueue(Data(repeating: 65, count: CodexNativeDictation.maximumSocketMessageBytes + 1))
     try await rejectsAsync(.messageTooLarge) { _ = try await tooLargeWaiter.value }
     try check(await tooLargeSocket.closeCalls == 1, "oversized response closes session exactly once")
 

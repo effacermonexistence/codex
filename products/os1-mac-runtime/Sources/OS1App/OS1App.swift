@@ -4048,8 +4048,8 @@ private func dictationSendLatchSelfTest() throws -> Int {
     let rawDraft = draft
     var sends: [String] = []
     var finishRegistrations = 0
-    var completion: (() -> Void)?
-    func request() {
+    var completion: (@MainActor () -> Void)?
+    @MainActor func request() {
         guard let session = selected, let ticket = latch.request(sessionID: session) else { return }
         finishRegistrations += 1
         completion = {
