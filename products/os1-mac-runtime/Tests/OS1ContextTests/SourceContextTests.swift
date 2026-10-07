@@ -23,6 +23,7 @@ final class SourceContextTests {
         voiceProcessChildIfRequested()
         if CommandLine.arguments.contains("--codex-dictation-auth-only") { try runCodexDictationAuthorizationFixtures(); return }
         if CommandLine.arguments.contains("--codex-native-dictation-only") { try runCodexNativeDictationFixtures(); return }
+        if CommandLine.arguments.contains("--inspection-network-denial-only") { try runClaudeInspectionNetworkDenialFixtures(); return }
         let bounded = "관련 회귀 테스트를 실행하고 실제 결과를 products/os1-mac-runtime/QUOTA-FALLBACK-VERIFICATION.md에 기록하세요. 새로운 기능이나 다른 제품 수정은 하지 마세요."
         XCTAssertEqual(ScopeResolution.resolve(bounded).scope, .workspaceWrite)
         XCTAssertFalse(ScopeResolution.resolve(bounded).prohibitions.contains("do not modify files"))
@@ -138,6 +139,7 @@ final class SourceContextTests {
         try runDriftPolicyFixtures()
         try runBackendRecoveryFixtures()
         try runExecutionFixtures()
+        try runClaudeInspectionNetworkDenialFixtures()
         try runFrontierMonitorFixtures()
         XCTAssertEqual(try SCVProjectMaterials.contextMember(Data(repeating: 65, count: 86_174)).utf8.count, 86_174)
         XCTAssertThrowsError(try SCVProjectMaterials.contextMember(Data(repeating: 65, count: 128_001)))

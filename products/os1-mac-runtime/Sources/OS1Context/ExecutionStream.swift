@@ -38,6 +38,21 @@ public final class ExecutionStream {
     /// Claude tool id -> state key, for system task events that name a tool
     /// by id only. Grows with `toolStates` and shares its cap.
     private var claudeToolKeys: [String: String] = [:]
+    /// Only requests whose root session was explicitly bound to this owned
+    /// transport can contribute execution-permission failure metadata.
+    private var claudeInspectionBashRequests = Set<String>()
+    private var claudeInspectionRequestOrder: [String: Int] = [:]
+    private var claudeInspectionTrustedHelpers: [String: Bool] = [:]
+    private var claudeInspectionResolvedThrough: [String: Int] = [:]
+    private var claudeInspectionDenialOverflow = false
+    public struct ClaudeInspectionNetworkDenial: Equatable, Sendable {
+        public let host: String
+        public let toolUseID: String
+    }
+    /// Native Bash sandbox diagnostics, not assistant claims. Retain only a
+    /// bounded approved host and tool identity; raw commands/results never
+    /// reach the public answer or progress. A new stream starts empty.
+    public private(set) var claudeInspectionNetworkDenials: [ClaudeInspectionNetworkDenial] = []
     private var backendStatus: String?
     /// Random per stream: the app starts a new step segment when it changes
     /// (a retry, a fallback, the next route), not when a sequence goes down.
@@ -96,6 +111,75 @@ public final class ExecutionStream {
 
     private static func safeID(_ value: String) -> Bool {
         value.range(of: #"^[A-Za-z0-9_-]{1,160}$"#, options: .regularExpression) != nil
+    }
+    private func bindClaudeInspectionRequest(id: String?, name: String, ownedRoot: Bool, input: [String: Any]? = nil) {
+        guard ownedRoot, name == "Bash", let id, Self.safeID(id),
+              toolStates["claude:main:" + id]?.returned != true,
+              claudeInspectionBashRequests.contains(id) || claudeInspectionBashRequests.count < 50_000 else { return }
+        if claudeInspectionBashRequests.insert(id).inserted { claudeInspectionRequestOrder[id] = claudeInspectionBashRequests.count }
+        if let command = input?["command"] as? String {
+            let trusted = command == "os1 connection-status --json"
+            // Only the exact fixed helper can resolve diagnostics. Retain a
+            // bool, never the command; a changed duplicate cannot gain trust.
+            claudeInspectionTrustedHelpers[id] = (claudeInspectionTrustedHelpers[id] ?? true) && trusted
+        }
+    }
+    private static func claudeToolResultText(_ block: [String: Any]) -> String? {
+        if let text = block["content"] as? String { return text }
+        guard let content = block["content"] as? [[String: Any]], content.count <= 8 else { return nil }
+        return content.compactMap { $0["type"] as? String == "text" ? $0["text"] as? String : nil }.joined(separator: "\n")
+    }
+    private func observeClaudeInspectionRecovery(_ block: [String: Any], id: String, ownedRoot: Bool,
+                                                failed: Bool, boundNativeReturn: Bool = false) {
+        guard ownedRoot, !failed, !claudeInspectionDenialOverflow,
+              claudeInspectionTrustedHelpers[id] == true, let order = claudeInspectionRequestOrder[id],
+              let state = toolStates["claude:main:" + id], state.name == "Bash", !state.returned || boundNativeReturn,
+              let text = Self.claudeToolResultText(block), text.utf8.count <= 16_384,
+              let values = try? JSONSerialization.jsonObject(with: Data(text.utf8)) as? [[String: Any]], values.count == 2,
+              Set(values.compactMap { $0["service"] as? String }) == Set(["github", "r2"]),
+              values.allSatisfy({ Set($0.keys) == Set(["service", "state", "check", "detail"]) }) else { return }
+        for value in values {
+            guard let service = value["service"] as? String, value["state"] as? String == "available",
+                  value["check"] as? String == (service == "github" ? "GET /user" : "bucket metadata") else { continue }
+            claudeInspectionResolvedThrough[service] = max(claudeInspectionResolvedThrough[service] ?? 0, order)
+            claudeInspectionNetworkDenials.removeAll {
+                Self.claudeInspectionService($0.host) == service && (claudeInspectionRequestOrder[$0.toolUseID] ?? Int.max) < order
+            }
+        }
+    }
+    private static func claudeInspectionService(_ host: String) -> String {
+        ["api.github.com", "github.com"].contains(host) ? "github" : "r2"
+    }
+    private func observeClaudeInspectionDenial(_ block: [String: Any], id: String, ownedRoot: Bool,
+                                              booleanErrorFlag: Bool, boundNativeReturn: Bool = false) {
+        let key = "claude:main:" + id
+        // A shell wrapper/pipeline can return exit 0 and is_error=false while
+        // the native result still carries a sandbox denial. The closed native
+        // diagnostic establishes observed enforcement, not a human decision;
+        // either explicit boolean flag qualifies, a missing/numeric one does not.
+        guard ownedRoot, booleanErrorFlag,
+              claudeInspectionBashRequests.contains(id),
+              let state = toolStates[key], state.name == "Bash", !state.returned || boundNativeReturn else { return }
+        guard let resultText = Self.claudeToolResultText(block) else { return }
+        // Tool diagnostics end the native result. Inspect a bounded suffix,
+        // never user/assistant text, file content, thinking or command input.
+        let text = String(resultText.suffix(65_536))
+        guard let blocks = try? NSRegularExpression(pattern: #"(?m)^<sandbox_violations>\r?$([\s\S]*?)^</sandbox_violations>\r?$"#),
+              let denial = try? NSRegularExpression(pattern: #"(?m)^deny network-outbound ([A-Za-z0-9.-]+):443 \(user denied\)\r?$"#) else { return }
+        let ns = text as NSString
+        for diagnostic in blocks.matches(in: text, range: NSRange(location: 0, length: ns.length)).prefix(8) {
+            for match in denial.matches(in: text, range: diagnostic.range(at: 1)).prefix(8) {
+                let host = ns.substring(with: match.range(at: 1)).lowercased()
+                guard ClaudeReadOnlyShell.inspectionHosts.contains(host) else { continue }
+                let order = claudeInspectionRequestOrder[id] ?? Int.max
+                guard order > (claudeInspectionResolvedThrough[Self.claudeInspectionService(host)] ?? 0) else { continue }
+                let item = ClaudeInspectionNetworkDenial(host: host, toolUseID: id)
+                if !claudeInspectionNetworkDenials.contains(item) {
+                    guard claudeInspectionNetworkDenials.count < 8 else { claudeInspectionDenialOverflow = true; return }
+                    claudeInspectionNetworkDenials.append(item)
+                }
+            }
+        }
     }
     private func observe(_ kind: NativeExecutionProgress.Kind, tool name: String? = nil, scope: String = "main",
                          steps change: ((inout [Step], Int, Date) -> Void)? = nil) {
@@ -312,6 +396,44 @@ public final class ExecutionStream {
         }
         buffer.removeAll()
     }
+    /// After the provider returns, inspect its exact active-session transcript
+    /// for tool diagnostics omitted by stdout. A transcript cannot create a
+    /// request identity: every eligible Bash ID was already seen on THIS owned
+    /// stream. Only main-session user tool returns from this execution window
+    /// are examined. No source, assistant, earlier-turn or sidechain text is
+    /// adopted, and only bounded host/ID metadata survives.
+    public func inspectClaudeNativeResults(_ data: Data, since: Date) {
+        guard let expectedClaudeSessionID, !invalidClaudeBinding,
+              !claudeInspectionBashRequests.isEmpty else { return }
+        let fractional = ISO8601DateFormatter()
+        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let integral = ISO8601DateFormatter()
+        integral.formatOptions = [.withInternetDateTime]
+        let records = data.suffix(2_000_000).split(separator: 10).suffix(1_000)
+        for record in records {
+            guard let row = try? JSONSerialization.jsonObject(with: Data(record)) as? [String: Any],
+                  row["type"] as? String == "user",
+                  let nativeSession = row["sessionId"] as? String,
+                  UUID(uuidString: nativeSession)?.uuidString.lowercased() == expectedClaudeSessionID,
+                  let sidechain = row["isSidechain"] as? NSNumber,
+                  CFGetTypeID(sidechain) == CFBooleanGetTypeID(), !sidechain.boolValue,
+                  row["parent_tool_use_id"] == nil || row["parent_tool_use_id"] is NSNull,
+                  let stamp = row["timestamp"] as? String,
+                  let timestamp = fractional.date(from: stamp) ?? integral.date(from: stamp), timestamp >= since,
+                  let blocks = (row["message"] as? [String: Any])?["content"] as? [[String: Any]] else { continue }
+            for block in blocks.prefix(64) {
+                guard block["type"] as? String == "tool_result", let id = block["tool_use_id"] as? String,
+                      let failureFlag = block["is_error"] as? NSNumber,
+                      CFGetTypeID(failureFlag) == CFBooleanGetTypeID() else { continue }
+                // This metadata-only path does not replay tool lifecycle or
+                // make a final answer. A stdout return may already be recorded.
+                observeClaudeInspectionRecovery(block, id: id, ownedRoot: true, failed: failureFlag.boolValue,
+                                                boundNativeReturn: true)
+                observeClaudeInspectionDenial(block, id: id, ownedRoot: true, booleanErrorFlag: true,
+                                              boundNativeReturn: true)
+            }
+        }
+    }
     private func ingestClaudeObject(_ o: [String: Any]) {
         // A known execution binds every supplied session identity. Missing
         // identities in native metadata stay on this owned transport; an
@@ -333,6 +455,8 @@ public final class ExecutionStream {
             guard Self.safeID(parent) else { claudeStreamDamaged = true; return }
             scope = "subagent:" + String(CompletionFeedbackScope.digest(Data(parent.utf8)).prefix(12))
         } else { scope = "main" }
+        let ownedClaudeRoot = parent == nil && expectedClaudeSessionID != nil &&
+            (o["session_id"] as? String).flatMap { UUID(uuidString: $0)?.uuidString.lowercased() } == expectedClaudeSessionID
         let type = o["type"] as? String ?? ""
         if type == "command_lifecycle" {
             guard parent == nil, let raw = o["command_uuid"] as? String, let id = UUID(uuidString: raw)?.uuidString.lowercased(),
@@ -376,12 +500,18 @@ public final class ExecutionStream {
             for block in content {
                 if type == "assistant", ["tool_use", "server_tool_use"].contains(block["type"] as? String ?? ""),
                    let name = block["name"] as? String {
+                    bindClaudeInspectionRequest(id: block["id"] as? String, name: name,
+                                                ownedRoot: ownedClaudeRoot && block["type"] as? String == "tool_use",
+                                                input: block["input"] as? [String: Any])
                     toolRequest(id: block["id"] as? String, name: name, scope: scope, provider: "claude",
                         extract: Self.safeTool(name) ? NativeStepLabel.claude(tool: name, input: block["input"] as? [String: Any],
                                                                               workspace: workspace) : nil)
                 } else if type == "user", block["type"] as? String == "tool_result", let id = block["tool_use_id"] as? String {
                     let failureFlag = block["is_error"] as? NSNumber
                     let failed = failureFlag.map { CFGetTypeID($0) == CFBooleanGetTypeID() && $0.boolValue } ?? false
+                    let booleanErrorFlag = failureFlag.map { CFGetTypeID($0) == CFBooleanGetTypeID() } ?? false
+                    if booleanErrorFlag { observeClaudeInspectionRecovery(block, id: id, ownedRoot: ownedClaudeRoot, failed: failed) }
+                    observeClaudeInspectionDenial(block, id: id, ownedRoot: ownedClaudeRoot, booleanErrorFlag: booleanErrorFlag)
                     toolReturn(id: id, scope: scope, provider: "claude", failed: failed)
                 }
             }
@@ -395,6 +525,9 @@ public final class ExecutionStream {
             case "content_block_start":
                 if let block = event["content_block"] as? [String: Any],
                    ["tool_use", "server_tool_use"].contains(block["type"] as? String ?? ""), let name = block["name"] as? String {
+                    bindClaudeInspectionRequest(id: block["id"] as? String, name: name,
+                                                ownedRoot: ownedClaudeRoot && block["type"] as? String == "tool_use",
+                                                input: block["input"] as? [String: Any])
                     toolRequest(id: block["id"] as? String, name: name, scope: scope, provider: "claude")
                 }
             case "message_stop":
