@@ -3227,6 +3227,7 @@ func claudeChatLane(provider: String, permission: String, hasSource: Bool, objec
     provider == "claude" && permission == "read_only" && !hasSource
         && (ClaudeChatLane.selfContainedTextOperation(objective)
             || ClaudeChatLane.conversationalQuestion(objective)
+            || StatusCheckIn.answersFromCard(objective)
             || (ClaudeChatLane.ownerSelected && !ClaudeChatLane.namesMachineMaterial(objective)))
         && !promptRequiresShellCapability(objective)
         && RequestNamedPaths.extract(objective).isEmpty
@@ -3293,6 +3294,18 @@ func providerSurfaceRoutingSelfTest() throws {
         claudeChatLane(provider: "claude", permission: "read_only", hasSource: false, objective: sideQuestion)))
     checks.append(("and the GPT chat lane",
         codexChatLane(provider: "codex", permission: "read_only", hasSource: false, objective: sideQuestion)))
+    // A check-in the status card answers takes the chat lane, and asks for it
+    // (2026-10-07: "되는지 확인해보자. 되냐?" thought 165 s on the full lane).
+    checks.append(("a card check-in takes the Claude chat lane",
+        claudeChatLane(provider: "claude", permission: "read_only", hasSource: false, objective: "되는지 확인해보자. 되냐?")
+            && ownerRequestRunsReadOnly("되는지 확인해보자. 되냐?", attachedSource: false)))
+    checks.append(("a check-in about a deployment keeps a lane that can look",
+        !claudeChatLane(provider: "claude", permission: "read_only", hasSource: false, objective: "배포 됐냐?")))
+    checks.append(("an order beside a check-in keeps the full lane",
+        !claudeChatLane(provider: "claude", permission: "read_only", hasSource: false, objective: "설치됐어? 안 됐으면 깔아")
+            && !ownerRequestRunsReadOnly("설치됐어? 안 됐으면 깔아", attachedSource: false)))
+    checks.append(("\"했냐고\" still wants work, not a chat answer",
+        !claudeChatLane(provider: "claude", permission: "read_only", hasSource: false, objective: "그래서 했냐고")))
     checks.append(("a question that may need a lookup keeps the agent",
         !claudeChatLane(provider: "claude", permission: "read_only", hasSource: false, objective: "usungco.com 등록돼 있어?")))
     checks.append(("a conversational question with an attached source keeps the agent",
@@ -9790,7 +9803,10 @@ func ownerRequestRunsReadOnly(_ prompt: String, attachedSource: Bool) -> Bool {
     // lock (2026-10-02; every such turn ran write-authorized in HOME).
     let readOnlyQuestion = !attachedSource
         && ClaudeChatLane.readOnlyAnswer(prompt) && !promptRequiresShellCapability(prompt)
-    return selfContainedText || readOnlyQuestion
+    // A check-in the status card answers ("되는지 확인해보자. 되냐?") asks for
+    // the chat lane too: the answer is the install state, already attached.
+    let cardCheckIn = !attachedSource && StatusCheckIn.answersFromCard(prompt) && !promptRequiresShellCapability(prompt)
+    return selfContainedText || readOnlyQuestion || cardCheckIn
 }
 
 func runTaskWithOwnerPolicy(
