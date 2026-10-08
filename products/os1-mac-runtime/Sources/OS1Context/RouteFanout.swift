@@ -108,7 +108,7 @@ public struct RouteFanout: Equatable, Sendable {
                                            "please", "ok", "okay", "all", "of", "them"]
     /// "…, 2+2 답변 받아와": the request to return the answers, after the last part.
     static let trailingReturn = #"\s*(?:답변?|결과|응답)\s*(?:을|를|도)?\s*(?:좀\s*|다\s*|빨리\s*)*(?:받아와(?:줘|요)?|받아줘|받아서\s*보여줘|가져와(?:줘|요)?|알려줘(?:요)?|보여줘(?:요)?)\s*$"#
-    static let opener = #"(?:자|야|음|아|그럼|오케이|좋아|그래|그니까|이번엔|이번에|이제|일단|hey|ok|okay)"#
+    static let opener = #"(?:자|야|음|아|그|그럼|오케이|좋아|그래|그니까|이번엔|이번에|이제|일단|hey|ok|okay)"#
     static let tryVerb = #"해\s?(?:보자|볼게|봐|볼까)"#
     /// The sentences that may stand beside the parts, each matched whole. A
     /// side sentence is never sent, so anything else (a complaint, a question,
@@ -122,6 +122,9 @@ public struct RouteFanout: Equatable, Sendable {
     static let leadingFrameTemplates: [String] = [
         "^(?:\(opener)[\\s,]*)*(?:내가\\s*)?(?:하나만?\\s*)?요청(?:해\\s?볼게|할게)$",
         #"^(?:추가로\s*)?하나\s*더$"#,
+        // Owner's bounded routing check, not an instruction to inspect some
+        // unspecified workspace object. Whole sentence, leading position only.
+        #"^그것\s+좀\s+보자$"#,
     ]
     static let frameTemplates: [String] = [
         // An opener alone: "음", "Hey,", "오케이".
@@ -199,10 +202,22 @@ public struct RouteFanout: Equatable, Sendable {
                     guard let previous = targets.last?.payload else { return nil }
                     payload = previous
                 }
-                // A listed name is asked the same part as the name carrying the
-                // particle; handing out one part each is `pairing`'s.
-                for destination in mention.destinations {
-                    targets.append(Target(surface: destination.surface, mention: destination.text, payload: payload))
+                // A direct shared-particle order with N names and N arithmetic
+                // parts hands them out in order even without saying "하나씩".
+                // One part remains a broadcast; unequal lists do not guess.
+                // Explicit parallel/각각 broadcasts retain their existing rule.
+                let sharedImperative = mention.destinations.count > 1 && !hasExplicitBroadcast(clause)
+                    && clause.range(of: rosterVerb, options: [.regularExpression, .caseInsensitive]) != nil
+                if sharedImperative, !selfContained(payload) {
+                    guard let parts = partList(payload, count: mention.destinations.count),
+                          !ambiguousNumbers(parts) else { return nil }
+                    for (destination, item) in zip(mention.destinations, parts) {
+                        targets.append(Target(surface: destination.surface, mention: destination.text, payload: item))
+                    }
+                } else {
+                    for destination in mention.destinations {
+                        targets.append(Target(surface: destination.surface, mention: destination.text, payload: payload))
+                    }
                 }
             }
             if found.count > 1, !nameFirst {
@@ -228,9 +243,26 @@ public struct RouteFanout: Equatable, Sendable {
         let value = prompt.precomposedStringWithCanonicalMapping.lowercased()
         guard value.count <= 24_000,
               value.range(of: negation, options: [.regularExpression, .caseInsensitive]) == nil,
-              value.range(of: #"병렬|parallel|동시에|하나\s*씩|각각"#, options: [.regularExpression, .caseInsensitive]) != nil,
               value.range(of: rosterVerb, options: [.regularExpression, .caseInsensitive]) != nil else { return false }
-        return Set(providerNames(in: value).map(\.surface)).count >= 2
+        guard Set(providerNames(in: value).map(\.surface)).count >= 2 else { return false }
+        if hasExplicitBroadcast(value) || value.range(of: distributive, options: [.regularExpression, .caseInsensitive]) != nil {
+            return true
+        }
+        // A shared dative particle is itself a destination-list cue. The
+        // caller must not require the owner to add the word "parallel".
+        return clauses(value).contains { clause in
+            guard !endsWithQuestionMark(clause, in: value),
+                  clause.range(of: reportedRouting, options: [.regularExpression, .caseInsensitive]) == nil,
+                  clause.range(of: routingTalk, options: [.regularExpression, .caseInsensitive]) == nil,
+                  clause.range(of: rosterVerb, options: [.regularExpression, .caseInsensitive]) != nil,
+                  let first = mentions(in: clause).first, first.destinations.count >= 2 else { return false }
+            let before = String(clause[..<first.range.lowerBound]).trimmingCharacters(in: .whitespaces)
+            return strip(before).isEmpty || benignFrame(before) || onlyRosterWords(before)
+        }
+    }
+
+    private static func hasExplicitBroadcast(_ prompt: String) -> Bool {
+        prompt.range(of: #"병렬|parallel|동시에|각각"#, options: [.regularExpression, .caseInsensitive]) != nil
     }
 
     /// The child CLI accepts exactly the same bounded self-contained grammar
@@ -255,7 +287,7 @@ public struct RouteFanout: Equatable, Sendable {
     /// cannot disappear when expressions are extracted. Speech-number repair
     /// is confined to this validated arithmetic-only grammar.
     private static func parallelBroadcast(_ original: String) -> RouteFanout? {
-        guard requestsProviderFanout(original),
+        guard hasExplicitBroadcast(original), requestsProviderFanout(original),
               original.range(of: distributive, options: [.regularExpression, .caseInsensitive]) == nil,
               !containsWorkTerm(original),
               original.range(of: reportedRouting, options: [.regularExpression, .caseInsensitive]) == nil else { return nil }
@@ -301,7 +333,7 @@ public struct RouteFanout: Equatable, Sendable {
         var value = strip(raw)
         let edges = [
             "^(?:\(distributive))\\s*|\\s*(?:\(distributive))$",
-            #"^(?:(?:야|자|그럼|음|오케이|그리고|그 다음에|그다음|and|then|주고|묻고|던지고|던져서)\s+)+"#,
+            #"^(?:(?:야|자|그|그럼|음|오케이|그리고|그 다음에|그다음|and|then|주고|묻고|던지고|던져서)\s+)+"#,
             #"\s+(?:그리고|하고|and|then|주고|묻고|던지고|좀|빨리|얼른)$"#,
         ]
         for _ in 0..<2 {

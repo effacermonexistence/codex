@@ -1,3 +1,5 @@
+> Historical v54 policy record, not the current owner execution contract. See `routing-quality-constrained-20261008.md` for the later quality-constrained correction.
+
 # Routing architecture — RCC policy v54 and the owner contract (2026-10-02)
 
 Owner objective (2026-10-02): whatever OS-1 is asked — a build or a small task — the result must feel like

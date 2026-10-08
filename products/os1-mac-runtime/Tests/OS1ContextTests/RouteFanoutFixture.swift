@@ -55,6 +55,31 @@ func runRouteFanoutFixtures() throws {
     ] { check(RouteFanout.plan(rejected) == nil, "parallel broadcast never drops extra or unsafe content: \(rejected.prefix(50))") }
     check(RouteFanout.requestsProviderFanout("GPT랑 Codex 병렬로 로그 조사 돌려봐"), "unclear provider payload preserves provider intent without authorizing dispatch")
     check(!RouteFanout.requestsProviderFanout("GPT랑 Codex 차이가 뭐야?"), "comparison is not a parallel request")
+    let sharedOrder = "그것 좀 보자. 그 챗GPT랑 클로드랑 클로드 코드랑 코덱스한테 1+1, 2+2, 3+3, 4+4 시켜봐. 라우팅 되는지 보자."
+    for request in [sharedOrder.precomposedStringWithCanonicalMapping, sharedOrder.decomposedStringWithCanonicalMapping] {
+        let four = RouteFanout.plan(request)
+        check(four?.targets.map(\.surface) == [.chatgpt, .claudeChat, .claude, .codex], "shared-particle imperative keeps four named surfaces for NFC and NFD")
+        check(four?.targets.map(\.payload) == ["1+1", "2+2", "3+3", "4+4"], "matched expressions go to the named routes in order without a required magic word")
+        check(four?.frame == ["그것 좀 보자", "라우팅 되는지 보자"], "bounded framing is recorded, not executed as research")
+        check(RouteFanout.requestsProviderFanout(request), "shared imperative opts out of unrelated project planning")
+        check(four?.targets.first?.surface.isExecutor == false, "true ChatGPT remains an external handoff, never secretly GPT through Codex")
+    }
+    check(RouteFanout.plan("그 GPT랑 클로드한테 1+1, 2+2 시켜봐")?.targets.map(\.payload) == ["1+1", "2+2"], "leading spoken 그 is framing at an arithmetic roster")
+    check(RouteFanout.plan("GPT랑 클로드한테 1+1 시켜봐")?.targets.map(\.payload) == ["1+1", "1+1"], "one expression remains a broadcast")
+    check(RouteFanout.plan("GPT랑 클로드한테 각각 1+1, 2+2 물어봐")?.targets.map(\.payload) == ["1+1, 2+2", "1+1, 2+2"], "explicit broadcast stays broadcast, not an implicit distributive rewrite")
+    for rejected in [
+        "그것 좀 보자. 그 챗GPT랑 클로드랑 클로드 코드랑 코덱스한테 1+1, 2+2 시켜봐",
+        "그것 좀 보자. 그 GPT랑 Codex한테 1+1, 2+2, 3+3 시켜봐",
+        "그 GPT랑 Codex한테 1+1, 2+2 시켜봐. 로그도 찾아봐",
+        "그 GPT랑 Codex한테 1+1, 2+2 시켜봐. README.md 수정해",
+        "그 GPT랑 Codex한테 1+1, 2+2 시켜봐. 배포해",
+        "그 GPT랑 Codex한테 1+1, 2+2 시키지 마",
+        "그 GPT랑 Codex한테 1+1, 2+2 보냈어?",
+        "왜 GPT랑 Codex한테 1+1, 2+2 시켜?",
+    ] { check(RouteFanout.plan(rejected) == nil, "no implicit assignment for ambiguous or non-answer-only order: \(rejected.prefix(55))") }
+    for complaint in ["그 GPT랑 Codex한테 1+1, 2+2 시키지 마", "그 GPT랑 Codex한테 1+1, 2+2 보냈어?", "왜 GPT랑 Codex한테 1+1, 2+2 시켜?"] {
+        check(!RouteFanout.requestsProviderFanout(complaint), "negation, report and question do not gain multi-route dispatch intent")
+    }
     check(RouteFanout.plan("클로드랑 GPT 하나씩 시켜봐. 1+1, 2+2, 3+3") == nil, "a count that does not match never splits")
     // A question in words is never cut: the whole request reaches one route
     // with its "하나씩" (hunt of build 334: word parts read the same as complaints).

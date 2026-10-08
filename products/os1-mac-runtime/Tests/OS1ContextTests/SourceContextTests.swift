@@ -284,7 +284,11 @@ final class SourceContextTests {
             XCTAssertEqual(stage.preferredModelsByProvider([codex, []]), Set(codex))
             XCTAssertTrue(stage.preferredModelsByProvider([[], []]).isEmpty)
         }
-        XCTAssertEqual(TaskWorkflow.verification.preferredEfforts(["low", "medium", "high"]), ["high"])
+        // Stage labels must not hide native tuples before signed RCC admission.
+        for stage in TaskWorkflow.allCases {
+            XCTAssertEqual(stage.preferredEfforts(["low", "medium", "high", "ultra"]), ["low", "medium", "high", "ultra"])
+            XCTAssertEqual(stage.preferredEfforts([]), [])
+        }
         XCTAssertEqual(TaskWorkflow.implementation.preferredEfforts(["low", "high"]), ["low", "high"])
         XCTAssertEqual(TaskWorkflow.verdict("checked\nOS1_WORKFLOW_VERDICT: PASS"), true)
         XCTAssertNil(TaskWorkflow.verdict("OS1_WORKFLOW_VERDICT: PASS\nOS1_WORKFLOW_VERDICT: BLOCK"))

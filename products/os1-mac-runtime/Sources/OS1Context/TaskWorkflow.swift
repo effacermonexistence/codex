@@ -108,16 +108,10 @@ public enum TaskWorkflow: String, Codable, Sendable, CaseIterable {
     }
 
 
-    /// Which models a stage may use. Since RCC v47 (owner 2026-09-30: "벤치마크
-    /// 기준이야", "휴리스틱 시스템이면 실패") the signed router ranks models by
-    /// published benchmarks and exact per-token prices, so a stage no longer
-    /// filters models through a fixed name ladder — that ladder put Claude
-    /// Fable above Opus 5.5, which beats it on every published benchmark at
-    /// 40 % of the price. A stage keeps its effort preference
-    /// (`preferredEfforts`); the router's quality floor admits each
-    /// provider's best available model (RCC v54), and the conversation's
-    /// capacity mix picks the provider. Every observed model of every
-    /// provider stays a candidate.
+    /// A stage describes the task, not a model/effort proof. Send every
+    /// currently executable tuple to the signed RCC admission and cost gate.
+    /// An architecture/verification label alone cannot remove a qualified
+    /// inexpensive route or manufacture an explicit maximum request.
     public func preferredModelsByProvider(_ inventories: [[String]]) -> Set<String> {
         Set(inventories.joined())
     }
@@ -128,27 +122,20 @@ public enum TaskWorkflow: String, Codable, Sendable, CaseIterable {
     }
 
     public func preferredEfforts(_ efforts: [String]) -> [String] {
-        let selected: [String]
-        switch self {
-        case .architecture, .verification:
-            selected = efforts.filter { ["high", "xhigh", "max", "ultra"].contains($0) }
-            return selected.isEmpty ? efforts.suffix(1).map { $0 } : selected
-        case .implementation:
-            // Keep the router's capability floor satisfiable. Prefer cheaper efforts
-            // by order, but never remove a required high-effort tuple.
-            return efforts.filter { ["low", "medium"].contains($0) } +
-                efforts.filter { !["low", "medium"].contains($0) }
-        }
+        // Do not preempt server-side quality admission with a stage-name
+        // heuristic. Native availability and explicit owner constraints are
+        // still enforced; the signed router owns the quality/cost decision.
+        efforts
     }
 
     public var routeTask: String {
         switch self {
         case .architecture:
-            return "Complex software architecture and root-cause analysis. Route to the strongest available reasoning tier; inspect source and logs and execute necessary bounded preparation; output a bounded implementation contract."
+            return "Complex software architecture and root-cause analysis. Use the least costly quality-admitted available execution; inspect source and logs and execute necessary bounded preparation; output a bounded implementation contract."
         case .implementation:
             return "Bounded software implementation in the authorized workspace. Route to the lowest eligible observed coding tier, not an unverified price claim; apply the architecture contract, run deterministic tests, and avoid unrelated work."
         case .verification:
-            return "Independent complex software verification. Route to the strongest available reasoning tier; execute tests and inspect actual diff and downstream effect; report PASS or BLOCK."
+            return "Independent complex software verification. Use the least costly quality-admitted available execution; execute tests and inspect actual diff and downstream effect; report PASS or BLOCK."
         }
     }
 
