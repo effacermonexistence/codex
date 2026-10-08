@@ -367,7 +367,20 @@ done < <(find "$expanded_payload" -type f -print | sort)
 expanded_scripts="$audit_dir/expanded/OS-1-component.pkg/Scripts"
 [[ "$(find "$expanded_scripts" -type f -print | wc -l | tr -d ' ')" == "1" ]]
 [[ -f "$expanded_scripts/postinstall" ]]
-node "$repository_root/products/os1-route-core/scripts/client-artifact-scan.mjs" \
+# The exact public producing Git identity is release metadata, not a secret.
+# Keep the canonical scanner intact; only this clean build's verified commit
+# token receives a fingerprint exception. Other high-entropy values still fail.
+readonly scan_policy="$audit_dir/source-bound-scan-policy.json"
+python3 - "$repository_root/products/os1-route-core/security/client-artifact-scan-policy.json" "$scan_policy" "$source_commit" "$source_input_clean" <<'PYSCAN'
+import hashlib,json,pathlib,re,sys
+policy=json.loads(pathlib.Path(sys.argv[1]).read_text()); commit=sys.argv[3]
+if sys.argv[4]=='1':
+    if re.fullmatch(r'[0-9a-f]{40}',commit) is None: raise SystemExit('Invalid source commit for release scan')
+    fingerprint=hashlib.sha256(commit.encode()).hexdigest()
+    if fingerprint not in policy['entropy']['allowedTokenSha256']: policy['entropy']['allowedTokenSha256'].append(fingerprint)
+pathlib.Path(sys.argv[2]).write_text(json.dumps(policy,sort_keys=True))
+PYSCAN
+OS1_CLIENT_SCAN_POLICY_PATH="$scan_policy" node "$repository_root/products/os1-route-core/scripts/client-artifact-scan.mjs" \
   "$audit_dir/expanded"
 
 readonly package_sha256="$(shasum -a 256 "$final_pkg" | awk '{print $1}')"
