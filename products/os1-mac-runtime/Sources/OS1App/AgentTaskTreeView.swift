@@ -254,10 +254,15 @@ struct AgentTaskTreeView: View {
     let sessionTitle: String
     let isLive: Bool
     let onClose: () -> Void
+    /// Opening a separate inspector is distinct from inline disclosure. The
+    /// controller binds this callback to the exact session/plan being shown.
+    let onInspectNode: ((ParallelAgentTask.Node) -> Void)?
     @StateObject private var disclosure: AgentTaskTreeDisclosure
     init(snapshot: ParallelAgentTask.Snapshot?, sessionTitle: String, isLive: Bool = false, onClose: @escaping () -> Void,
-         disclosure: AgentTaskTreeDisclosure? = nil) {
+         disclosure: AgentTaskTreeDisclosure? = nil,
+         onInspectNode: ((ParallelAgentTask.Node) -> Void)? = nil) {
         self.snapshot = snapshot; self.sessionTitle = sessionTitle; self.isLive = isLive; self.onClose = onClose
+        self.onInspectNode = onInspectNode
         _disclosure = StateObject(wrappedValue: disclosure ?? AgentTaskTreeDisclosure(planID: snapshot?.planID))
     }
     private var validated: ParallelAgentTask.Snapshot? { snapshot.flatMap { try? $0.validated() } }
@@ -327,10 +332,21 @@ struct AgentTaskTreeView: View {
                     Text(node.title).font(.system(size: 12, weight: .semibold)).lineLimit(3)
                     Text(node.role.rawValue + " · " + AgentTaskTreePresentation.stateTitle(node.state))
                         .font(.system(size: 10)).foregroundStyle(stateColor(node.state))
-                }.contentShape(Rectangle()).onTapGesture { disclosure.toggle(node.id) }
+                }.contentShape(Rectangle()).onTapGesture {
+                    if let onInspectNode { onInspectNode(node) } else { disclosure.toggle(node.id) }
+                }
                 Spacer(minLength: 0)
+                if let onInspectNode {
+                    AgentTaskInspectNodeButton(nodeID: node.id, title: node.title) { onInspectNode(node) }
+                        .frame(width: 24, height: 24)
+                }
             }
             Text(AgentTaskTreePresentation.route(node)).font(.system(size: 10)).foregroundStyle(AgentTreeStyle.muted)
+            if let scope = node.scope {
+                Text(scope == .readOnly ? os1Tr("읽기 전용 준비 작업", "Read-only preparation")
+                    : os1Tr("쓰기 범위", "Write scope") + " · " + scope.rawValue)
+                    .font(.system(size: 10)).foregroundStyle(AgentTreeStyle.muted)
+            }
             if let progress = node.progressText { Text(progress).font(.system(size: 11)).lineLimit(open ? nil : 2) }
             if open { nodeDetails(node, graph: graph) }
         }
@@ -347,6 +363,9 @@ struct AgentTaskTreeView: View {
     private func nodeDetails(_ node: ParallelAgentTask.Node, graph: ParallelAgentTask.Snapshot) -> some View {
         Divider().overlay(AgentTreeStyle.border)
         detail(os1Tr("목표", "Objective"), [.coordinator, .primary].contains(node.role) ? graph.objective : node.title)
+        if let scope = node.scope { detail(os1Tr("실제 범위", "Actual scope"), scope.rawValue) }
+        if let workspace = node.workspace { detail(os1Tr("작업 공간", "Workspace"), workspace) }
+        if let paths = node.ownedPaths, !paths.isEmpty { detail(os1Tr("소유 쓰기 경로", "Owned write paths"), paths.joined(separator: "\n")) }
         if !node.dependencies.isEmpty {
             detail(os1Tr("의존 노드", "Dependencies"), node.dependencies.map { id in
                 graph.nodes.first(where: { $0.id == id })?.title ?? String(id.uuidString.prefix(8))

@@ -152,6 +152,7 @@ public struct RouteFanout: Equatable, Sendable {
     public static func plan(_ prompt: String) -> RouteFanout? {
         let text = prompt.precomposedStringWithCanonicalMapping.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, text.count <= maximumCharacters, !text.contains("```") else { return nil }
+        if let broadcast = parallelBroadcast(text) { return broadcast }
         // A sentence that hands out one part per listed name decides the
         // request alone (paired, or kept whole) unless the parts carry their
         // own names ("GPT랑 코덱스 하나씩 시켜봐. 1+1은 GPT한테, 2+2는 코덱스한테.").
@@ -217,6 +218,79 @@ public struct RouteFanout: Equatable, Sendable {
         for target in targets where !acceptable(target.payload) || !arithmetic(target.payload) { return nil }
         if ambiguousNumbers(targets.map(\.payload)) { return nil }
         return RouteFanout(targets: targets, frame: frameBefore + frameAfter)
+    }
+
+    /// A positive request for several provider surfaces, even if its payload is
+    /// too ambiguous to split. It must not be recast as a project/research DAG.
+    /// This detector grants no dispatch authority: `plan` still validates every
+    /// exact self-contained part before making a fan-out plan.
+    public static func requestsProviderFanout(_ prompt: String) -> Bool {
+        let value = prompt.precomposedStringWithCanonicalMapping.lowercased()
+        guard value.count <= 24_000,
+              value.range(of: negation, options: [.regularExpression, .caseInsensitive]) == nil,
+              value.range(of: #"병렬|parallel|동시에|하나\s*씩|각각"#, options: [.regularExpression, .caseInsensitive]) != nil,
+              value.range(of: rosterVerb, options: [.regularExpression, .caseInsensitive]) != nil else { return false }
+        return Set(providerNames(in: value).map(\.surface)).count >= 2
+    }
+
+    /// The child CLI accepts exactly the same bounded self-contained grammar
+    /// as this parser, not arbitrary text selected by a parent process.
+    public static func isSafeFanoutPayload(_ payload: String) -> Bool {
+        acceptable(payload) && arithmetic(payload) && !ambiguousNumbers([payload])
+    }
+
+    private static func providerNames(in text: String) -> [(range: Range<String.Index>, surface: ProviderSurface, text: String)] {
+        let alternatives = names.map { "(\($0.pattern))" }.joined(separator: "|")
+        let boundary = #"(?=$|\s|[,，、/·&:：.!?]|이랑|랑|하고|와|과|한테|에게|께)"#
+        guard let regex = try? NSRegularExpression(pattern: "(?<![A-Za-z0-9가-힣\\-])(?:\(alternatives))\(boundary)", options: [.caseInsensitive]) else { return [] }
+        return regex.matches(in: text, range: NSRange(text.startIndex..., in: text)).compactMap { match in
+            guard let group = (1...names.count).first(where: { match.range(at: $0).location != NSNotFound }),
+                  let range = Range(match.range, in: text) else { return nil }
+            return (range, names[group - 1].surface, String(text[range]))
+        }
+    }
+
+    /// Explicit parallel smoke requests broadcast their arithmetic parts. The
+    /// whole remainder is checked, so an extra filesystem/research instruction
+    /// cannot disappear when expressions are extracted. Speech-number repair
+    /// is confined to this validated arithmetic-only grammar.
+    private static func parallelBroadcast(_ original: String) -> RouteFanout? {
+        guard requestsProviderFanout(original),
+              original.range(of: distributive, options: [.regularExpression, .caseInsensitive]) == nil,
+              !containsWorkTerm(original),
+              original.range(of: reportedRouting, options: [.regularExpression, .caseInsensitive]) == nil else { return nil }
+        var text = original
+        for (word, number) in [("제로", "0"), ("원", "1"), ("투", "2"), ("쓰리", "3"), ("포", "4"),
+                               ("파이브", "5"), ("식스", "6"), ("세븐", "7"), ("에이트", "8"), ("나인", "9")] {
+            text = text.replacingOccurrences(of: "(?<![가-힣A-Za-z0-9])\(word)(?![가-힣A-Za-z0-9])", with: number,
+                                             options: [.regularExpression, .caseInsensitive])
+        }
+        let rosters = clauses(text).compactMap { clause -> [(surface: ProviderSurface, text: String)]? in
+            guard let run = nameRun(in: clause) else { return nil }; return run.names
+        }
+        guard let selected = rosters.last, (2...maximumTargets).contains(selected.count),
+              Set(selected.map(\.surface)).count == selected.count,
+              rosters.allSatisfy({ Set($0.map(\.surface)).isSubset(of: Set(selected.map(\.surface))) }),
+              let expressionRegex = try? NSRegularExpression(pattern: expression, options: [.caseInsensitive]) else { return nil }
+        let matches = expressionRegex.matches(in: text, range: NSRange(text.startIndex..., in: text))
+        let expressions = matches.compactMap { match -> String? in
+            guard let range = Range(match.range, in: text) else { return nil }
+            var result = String(text[range])
+            result = result.replacingOccurrences(of: #"\s*(?:plus|플러스|더하기)\s*"#, with: "+", options: [.regularExpression, .caseInsensitive])
+            return result
+        }
+        guard !expressions.isEmpty, expressions.count <= maximumTargets,
+              expressions.allSatisfy(selfContained), !ambiguousNumbers(expressions) else { return nil }
+        var remainder = text
+        for match in matches.reversed() { if let range = Range(match.range, in: remainder) { remainder.removeSubrange(range) } }
+        for name in providerNames(in: remainder).reversed() { remainder.removeSubrange(name.range) }
+        remainder = strip(remainder)
+        remainder = remainder.replacingOccurrences(of: #"병렬로|병렬|parallel|동시에|간단한\s*(?:거|것|걸)|이런\s*(?:거|것|걸)|이\s?거|아니|(?<![가-힣A-Za-z])뭐(?![가-힣A-Za-z])|각각|네\s*개|[2-8]\s*개|[.。!?]"#,
+                                                    with: " ", options: [.regularExpression, .caseInsensitive])
+        guard onlyRosterWords(remainder) else { return nil }
+        let payload = expressions.joined(separator: ", ")
+        guard acceptable(payload), arithmetic(payload) else { return nil }
+        return RouteFanout(targets: selected.map { Target(surface: $0.surface, mention: $0.text, payload: payload) }, frame: [])
     }
 
     /// The text before or after a name, made into the part it carries: the

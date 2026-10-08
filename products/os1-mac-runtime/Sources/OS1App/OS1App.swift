@@ -5950,6 +5950,9 @@ private struct PendingSubmission: Identifiable, Codable, Equatable, Sendable {
     var deliveryID: String? = nil
     var savedResultNeedsReview: Bool? = nil
     var preflightOnly: Bool? = true
+    /// The exact prompt handed to this attempt, before later steering changes
+    /// executionRequest. Parallel parent custody must use that stable binding.
+    var dispatchedRequestSHA256: String? = nil
     // Internal recovery is a phase of the original request, never a synthetic
     // user turn or a replacement objective. Optional for older session stores.
     var recoveryParentID: UUID? = nil
@@ -7404,6 +7407,113 @@ private enum OS1Runner {
     }
 }
 
+/// A bound graph and its still-held exclusive lease establish custody, not
+/// completion or Process reattachment. No PID guessing or blocking lock wait.
+private enum LiveParallelParentCustody {
+    struct Observation {
+        let snapshot: ParallelAgentTask.Snapshot
+        let ownerBusy: Bool
+    }
+    static func observe(_ submission: PendingSubmission, root: URL) -> Observation? {
+        guard submission.recoveryParentID == nil else { return nil }
+        let dispatched = submission.dispatchedRequestSHA256 ?? appSHA256Hex(submission.amendedRequest.map {
+            ExecutionSteering.continuation(original: $0, correction: submission.request)
+        } ?? submission.request)
+        let graphURL = root.appendingPathComponent(submission.id.uuidString + ".json")
+        guard let graph = try? ParallelAgentTask.loadBound(path: graphURL.path, conversationID: submission.sessionID,
+            submissionID: submission.id, requestSHA256: dispatched) else { return nil }
+        let lockURL = root.appendingPathComponent(submission.id.uuidString + ".lock")
+        let fd = open(lockURL.path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW)
+        guard fd >= 0 else { return nil }
+        defer { close(fd) }
+        var info = stat()
+        guard fstat(fd, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG,
+              info.st_uid == getuid(), info.st_nlink == 1, (info.st_mode & 0o077) == 0 else { return nil }
+        if flock(fd, LOCK_SH | LOCK_NB) == 0 {
+            _ = flock(fd, LOCK_UN)
+            return Observation(snapshot: graph, ownerBusy: false)
+        }
+        guard errno == EWOULDBLOCK || errno == EAGAIN else { return nil }
+        return Observation(snapshot: graph, ownerBusy: true)
+    }
+}
+
+@MainActor
+private func parallelParentCustodySelfTest() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("os1-parallel-custody-" + UUID().uuidString)
+    let graphRoot = root.appendingPathComponent("agent-tasks")
+    try FileManager.default.createDirectory(at: graphRoot, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+    try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: root.path)
+    defer { try? FileManager.default.removeItem(at: root) }
+    var checks = 0
+    func check(_ value: Bool, _ text: String) throws {
+        guard value else { throw RunnerError.message("Parallel parent custody: " + text) }; checks += 1
+    }
+    let conversation = UUID(), message = ChatMessage(role: .user, text: "Inspect independent sources in parallel"), now = Date()
+    var pending = PendingSubmission(sessionID: conversation, userMessageID: message.id, request: message.text,
+        provider: .auto, workspace: root.path, codexCapacity: 100, claudeCapacity: 100)
+    pending.preflightOnly = false; pending.dispatchedRequestSHA256 = appSHA256Hex(pending.executionRequest)
+    let graphNode = UUID(), worker = UUID()
+    var graph = try ParallelAgentTask.Snapshot(conversationID: conversation, submissionID: pending.id,
+        requestSHA256: pending.dispatchedRequestSHA256!, rootNodeID: graphNode, objective: pending.request,
+        createdAt: now, updatedAt: now, maxParallelism: 2, nodes: [
+            .init(id: graphNode, title: "Owner task", role: .coordinator, state: .running, startedAt: now),
+            .init(id: worker, parentID: graphNode, title: "Observed worker", role: .worker,
+                state: .running, provider: "claude", startedAt: now),
+        ]).validated()
+    let graphURL = graphRoot.appendingPathComponent(pending.id.uuidString + ".json")
+    try ParallelAgentTask.saveBound(graph, path: graphURL.path)
+    let lockURL = graphRoot.appendingPathComponent(pending.id.uuidString + ".lock")
+    let writer = open(lockURL.path, O_CREAT | O_RDWR | O_NOFOLLOW | O_CLOEXEC, 0o600)
+    guard writer >= 0 else { throw RunnerError.message("Fixture owner lock unavailable") }
+    defer { _ = flock(writer, LOCK_UN); close(writer) }
+    try check(flock(writer, LOCK_EX | LOCK_NB) == 0, "fixture owns actual exclusive lease")
+    try check(LiveParallelParentCustody.observe(pending, root: graphRoot)?.ownerBusy == true, "bound active parent lease detected")
+    var wrong = pending; wrong.request = "Unrelated request"; wrong.dispatchedRequestSHA256 = nil
+    try check(LiveParallelParentCustody.observe(wrong, root: graphRoot) == nil, "foreign request hash cannot inherit custody")
+    var steered = pending; steered.liveCorrections = ["Keep the original objective"]
+    try check(LiveParallelParentCustody.observe(steered, root: graphRoot)?.ownerBusy == true, "later steering preserves initial dispatch hash")
+    let foreign = PendingSubmission(id: pending.id, sessionID: UUID(), userMessageID: message.id, request: message.text,
+        provider: .auto, workspace: root.path, codexCapacity: 100, claudeCapacity: 100)
+    try check(LiveParallelParentCustody.observe(foreign, root: graphRoot) == nil, "foreign conversation rejected")
+    let held = ChatMessage(role: .user, text: "Preserve this queued follow-up")
+    let queued = PendingSubmission(sessionID: conversation, userMessageID: held.id, request: held.text,
+        provider: .auto, workspace: root.path, codexCapacity: 100, claudeCapacity: 100)
+    var session = ConversationSession(id: conversation, title: "Custody fixture", workspace: root.path)
+    session.messages = [message, held]; session.lastFailure = pending
+    session.lastBackendFailure = BackendFailureNotice(provider: "claude", sessionID: nil, blocker: .effectsUncertain, dispatchStage: .dispatched)
+    try JSONEncoder().encode(SessionEnvelope(schema: 4, sessions: [session], queued: [queued], inFlight: [pending]))
+        .write(to: root.appendingPathComponent("sessions.json"), options: .atomic)
+    var modelCalls = 0
+    let store = SessionStore(storageRoot: root, runOperation: { _, _, _, _, _ in
+        modelCalls += 1; throw RunnerError.message("No fixture backend should dispatch")
+    }, nativeSessionOpener: { _ in false })
+    store.select(conversation)
+    try check(store.isSessionRunning(conversation) && store.activeRuns.isEmpty, "restart preserves live external custody without fake Process reattachment")
+    try check(store.agentTaskSnapshot(for: conversation)?.submissionID == pending.id, "bound graph remains inspectable")
+    store.reconcileSelectedFailure(); store.resumeStaleReconciliations()
+    try await Task.sleep(for: .milliseconds(25))
+    try check(modelCalls == 0 && store.queuedSubmissions.map(\.id) == [queued.id], "busy parent suppresses readback and preserves queue")
+    store.togglePin(conversation)
+    let saved = try JSONDecoder().decode(SessionEnvelope.self, from: Data(contentsOf: root.appendingPathComponent("sessions.json")))
+    try check(saved.inFlight?.map(\.id) == [pending.id] && saved.sessions[0].messages.map(\.id) == [message.id, held.id],
+        "original in-flight identity and transcript survive save")
+    graph.updatedAt = now.addingTimeInterval(1)
+    for i in graph.nodes.indices { graph.nodes[i].state = .succeeded; graph.nodes[i].finishedAt = graph.updatedAt }
+    try ParallelAgentTask.saveBound(graph, path: graphURL.path)
+    store.refreshExternalParallelCustody()
+    try check(store.isSessionRunning(conversation) && store.agentTaskSnapshot(for: conversation)?.nodes.allSatisfy({ $0.state.isTerminal }) == true,
+        "terminal graph does not override a still-held writer lease")
+    try check(flock(writer, LOCK_UN) == 0, "fixture writer releases lease")
+    try check(LiveParallelParentCustody.observe(pending, root: graphRoot)?.ownerBusy == false, "released parent distinguished from busy owner")
+    store.refreshExternalParallelCustody()
+    try check(!store.isSessionRunning(conversation) && store.selectedSession?.lastFailure?.id == pending.id && modelCalls == 0,
+        "release without result stays unresolved, never completion or replay")
+    try check(store.queuedSubmissions.map(\.id) == [queued.id] && store.selectedSession?.messages.map(\.id) == [message.id, held.id],
+        "release preserves original messages and queued follow-up")
+    print("Parallel parent custody: \(checks) checks PASS; actual private lock, exact binding, restart/readback/queue preservation; provider calls 0; live state writes 0")
+}
+
 @MainActor
 private final class SessionStore: ObservableObject {
     struct ActiveRun {
@@ -7474,7 +7584,7 @@ private final class SessionStore: ObservableObject {
     @Published private(set) var observedMemoryPressure: RunAdmission.MemoryPressure = .unknown
     var waitingForSourceRunCount: Int { activeRuns.values.filter { $0.activity.phase == .waitingForSource }.count }
     var runAdmission: RunAdmission.Decision {
-        RunAdmission.decide(limit: appSettings.parallelRuns, activeRuns: activeRuns.count,
+        RunAdmission.decide(limit: appSettings.parallelRuns, activeRuns: activeRuns.count + externallyOwnedParallelSubmissions.count,
             waitingForSourceRuns: waitingForSourceRunCount, memoryPressure: observedMemoryPressure)
     }
     var canStartAdditionalRun: Bool { runAdmission.admitted }
@@ -7505,6 +7615,10 @@ private final class SessionStore: ObservableObject {
     private var primarySubmissionTimes: [UUID: Date] = [:]
     @Published private var dictationSendLatch = DictationSendLatch()
     private var inFlightSubmissions: [UUID: PendingSubmission] = [:]
+    /// Original submissions owned by another surviving runtime after the GUI
+    /// restarted. Metadata custody only: no synthetic ActiveRun or Process.
+    private var externallyOwnedParallelSubmissions: [UUID: PendingSubmission] = [:]
+    private var unconfirmedParallelCustody: Set<UUID> = []
     private var sessionStatuses: [UUID: String] = [:]
     private var agentTaskSavedAt: [UUID: Date] = [:]
     private let runOperation: RunOperation
@@ -7517,6 +7631,7 @@ private final class SessionStore: ObservableObject {
     /// Inspector selection is presentation only. It must never select,
     /// submit, resume or cancel a conversation.
     @Published var requestedInspectorSessionID: UUID?
+    @Published var openAgentTaskInspectorSessionIDs: Set<UUID> = []
     @Published var surface: ProviderChoice = .auto
     /// Codex-style user settings (language, backends). The file is the source
     /// of truth for every OS-1 process; this copy drives the UI. A fixture
@@ -7751,7 +7866,30 @@ private final class SessionStore: ObservableObject {
 
     func toggleAgentTaskInspector(_ id: UUID) {
         guard sessions.contains(where: { $0.id == id }) else { return }
-        requestedInspectorSessionID = requestedInspectorSessionID == id ? nil : id
+        let wasOpen = AgentTaskInspectorWindows.shared.hasWindow(conversationID: id)
+        if !wasOpen { requestedInspectorSessionID = id; openAgentTaskInspectorSessionIDs.insert(id) }
+        AgentTaskInspectorWindows.shared.toggle(state: agentTaskInspectorState(id), onClose: { [weak self] in
+            self?.openAgentTaskInspectorSessionIDs.remove(id)
+            if self?.requestedInspectorSessionID == id { self?.requestedInspectorSessionID = nil }
+        })
+        if wasOpen {
+            openAgentTaskInspectorSessionIDs.remove(id)
+            if requestedInspectorSessionID == id { requestedInspectorSessionID = nil }
+        }
+    }
+
+    private func agentTaskInspectorState(_ id: UUID) -> AgentTaskInspectorState {
+        AgentTaskInspectorState(conversationID: id, snapshot: agentTaskSnapshot(for: id),
+            sessionTitle: sessions.first(where: { $0.id == id })?.title ?? os1Tr("작업", "Task"),
+            isLive: isSessionRunning(id) && !unconfirmedParallelCustody.contains(id))
+    }
+
+    func refreshAgentTaskInspectorWindows() {
+        // Navigation is read-only. An unrelated conversation becoming selected
+        // must not redirect an open inspector or dispatch another backend.
+        for session in sessions where AgentTaskInspectorWindows.shared.hasWindow(conversationID: session.id) {
+            AgentTaskInspectorWindows.shared.update(state: agentTaskInspectorState(session.id))
+        }
     }
 
     var inspectedAgentTaskSession: ConversationSession? {
@@ -7764,6 +7902,11 @@ private final class SessionStore: ObservableObject {
             // terminal graph as if it were live.
             return active.agentTask.flatMap {
                 try? $0.validated(conversationID: id, submissionID: active.submissionID)
+            }
+        }
+        if let original = externallyOwnedParallelSubmissions[id] {
+            return sessions.first(where: { $0.id == id })?.agentTask.flatMap {
+                try? $0.validated(conversationID: id, submissionID: original.id)
             }
         }
         if inFlightSubmissions[id] != nil { return nil }
@@ -7796,7 +7939,90 @@ private final class SessionStore: ObservableObject {
             agentTaskSavedAt[submission.sessionID] = now
             save()
         }
+        AgentTaskInspectorWindows.shared.update(state: agentTaskInspectorState(submission.sessionID))
         return true
+    }
+
+    private var parallelAgentTaskRoot: URL {
+        (customStorageRoot ?? fileManager.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/OS-1", isDirectory: true))
+            .appendingPathComponent("agent-tasks", isDirectory: true)
+    }
+
+    private var parallelParentWaitingText: String {
+        os1Tr("원래 병렬 실행이 이 요청을 계속 소유하고 있습니다 · 기존 결과 영수증을 기다립니다 · 재실행하지 않음",
+              "Original parallel execution still owns this request · waiting for its result receipt · not re-running")
+    }
+
+    /// Used by recovery/start gates as well as startup polling. Never turn a
+    /// model readback into evidence that the original writer stopped.
+    private func originalParallelParentIsBusy(_ submission: PendingSubmission) -> Bool {
+        guard LiveParallelParentCustody.observe(submission, root: parallelAgentTaskRoot)?.ownerBusy == true else { return false }
+        sessionStatuses[submission.sessionID] = parallelParentWaitingText
+        if selectedSessionID == submission.sessionID { statusText = parallelParentWaitingText }
+        return true
+    }
+
+    /// Read the existing bounded graph/outbox; do not resume an agent or claim
+    /// its output is complete merely because the GUI has no owned Process.
+    func refreshExternalParallelCustody() {
+        var changed = false
+        for index in sessions.indices {
+            let conversationID = sessions[index].id
+            guard activeRuns[conversationID] == nil,
+                  let candidate = externallyOwnedParallelSubmissions[conversationID]
+                    ?? inFlightSubmissions[conversationID] ?? sessions[index].lastFailure,
+                  candidate.recoveryParentID == nil else { continue }
+            let observed = LiveParallelParentCustody.observe(candidate, root: parallelAgentTaskRoot)
+            if let observed, observed.ownerBusy {
+                unconfirmedParallelCustody.remove(conversationID)
+                if externallyOwnedParallelSubmissions[conversationID] == nil {
+                    externallyOwnedParallelSubmissions[conversationID] = candidate
+                    inFlightSubmissions[conversationID] = candidate
+                    changed = true
+                }
+                if sessions[index].agentTask != observed.snapshot {
+                    sessions[index].agentTask = observed.snapshot
+                    changed = true
+                }
+                sessionStatuses[conversationID] = parallelParentWaitingText
+                if selectedSessionID == conversationID { statusText = parallelParentWaitingText }
+                continue
+            }
+            if observed == nil, externallyOwnedParallelSubmissions[conversationID] != nil {
+                unconfirmedParallelCustody.insert(conversationID)
+                sessionStatuses[conversationID] = os1Tr("원래 실행의 소유권을 현재 확인하지 못했습니다 · 요청·대기열 보존 · 재실행 보류",
+                    "Original execution custody cannot currently be confirmed · request and queue preserved · replay held")
+                if selectedSessionID == conversationID { statusText = sessionStatuses[conversationID]! }
+                continue // missing evidence is not proof that the writer died
+            }
+            guard let original = externallyOwnedParallelSubmissions.removeValue(forKey: conversationID) else { continue }
+            unconfirmedParallelCustody.remove(conversationID)
+            if inFlightSubmissions[conversationID]?.id == original.id { inFlightSubmissions.removeValue(forKey: conversationID) }
+            var recovered = original
+            if let observed { sessions[index].agentTask = observed.snapshot }
+            let outbox = DeliveryOutbox(root: customStorageRoot?.appendingPathComponent("execution-outbox"))
+            if let result = outbox.forSubmission(original.id.uuidString) {
+                recovered.deliveryID = result.id
+                let verdict = result.response.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }?["status"] as? String
+                recovered.savedResultNeedsReview = result.localRejection != nil || (verdict != nil && verdict != "complete")
+                sessions[index].lastBackendFailure = BackendFailureNotice(provider: sessions[index].lastProvider ?? "codex",
+                    sessionID: nil, blocker: .deliveryPending, dispatchStage: .dispatched, source: result.source, deliveryID: result.id)
+                sessions[index].lastFailure = recovered
+                _ = restoreSavedFailurePreview(&sessions[index], result: result)
+                sessionStatuses[conversationID] = os1Tr("원래 실행 결과가 저장됐습니다 · 기존 전달/검토 경로로 확인합니다 · 모델 재실행 없음",
+                    "Original result is saved · use the existing delivery/review path · no model re-run")
+            } else {
+                sessions[index].lastBackendFailure = BackendFailureNotice(provider: sessions[index].lastProvider ?? "codex",
+                    sessionID: nil, blocker: .effectsUncertain, dispatchStage: .dispatched)
+                sessionStatuses[conversationID] = os1Tr("원래 실행의 소유권이 끝났지만 결과 영수증은 미확인입니다 · 원문과 대기열 보존",
+                    "Original execution released custody but its result receipt is unconfirmed · request and queue preserved")
+            }
+            sessions[index].lastFailure = recovered
+            if selectedSessionID == conversationID { statusText = sessionStatuses[conversationID]! }
+            changed = true
+        }
+        if changed { save() }
     }
 
     var selectedSessionQueueCount: Int {
@@ -7805,7 +8031,7 @@ private final class SessionStore: ObservableObject {
     }
 
     func isSessionRunning(_ sessionID: UUID) -> Bool {
-        activeRuns[sessionID] != nil
+        activeRuns[sessionID] != nil || externallyOwnedParallelSubmissions[sessionID] != nil
     }
 
     /// Non-nil only when the global admission cap is the sole thing holding
@@ -7953,6 +8179,9 @@ private final class SessionStore: ObservableObject {
     /// conversation's current run ends (owner and failure holds still apply).
     private func queueEligible(_ next: PendingSubmission, ignoringRun: Bool = false, ignoringSource: Bool = false) -> Bool {
         guard let session = sessions.first(where: { $0.id == next.sessionID }) else { return false }
+        if let original = externallyOwnedParallelSubmissions[next.sessionID]
+            ?? (activeRuns[next.sessionID] == nil ? inFlightSubmissions[next.sessionID] ?? session.lastFailure : nil),
+           originalParallelParentIsBusy(original) { return false }
         return (ignoringRun || !isSessionRunning(next.sessionID)) && session.queuePaused != true &&
             ((session.lastFailure == nil && session.lastBackendFailure == nil && session.taskContext?.sourcePreparation == nil) ||
              (next.startNextRequested == true && mayAdvancePastFailure(next, session: session)) ||
@@ -9069,8 +9298,28 @@ private final class SessionStore: ObservableObject {
 
     private func start(_ originalSubmission: PendingSubmission, admission: RunAdmission.Decision? = nil) {
         let submission: PendingSubmission = {
-            var value = originalSubmission; value.admissionDeferred = nil; return value
+            var value = originalSubmission; value.admissionDeferred = nil
+            value.dispatchedRequestSHA256 = appSHA256Hex(value.executionRequest)
+            return value
         }()
+        if activeRuns[submission.sessionID] == nil,
+           let session = sessions.first(where: { $0.id == submission.sessionID }),
+           let original = externallyOwnedParallelSubmissions[submission.sessionID]
+                ?? inFlightSubmissions[submission.sessionID] ?? session.lastFailure,
+           originalParallelParentIsBusy(original) {
+            externallyOwnedParallelSubmissions[submission.sessionID] = original
+            inFlightSubmissions[submission.sessionID] = original
+            // A scheduler race must not drop a user turn. Never enqueue a
+            // speculative internal readback or a replay of the owned original.
+            if submission.recoveryParentID == nil, submission.id != original.id,
+               !queuedSubmissions.contains(where: { $0.id == submission.id }) {
+                queuedSubmissions.insert(submission, at: queuedSubmissions.firstIndex(where: {
+                    $0.sessionID == submission.sessionID
+                }) ?? queuedSubmissions.count)
+            }
+            save()
+            return
+        }
         if admission == nil { refreshRunAdmissionPressure() }
         let decision = admission ?? runAdmission
         if !decision.admitted {
@@ -10759,6 +11008,8 @@ private final class SessionStore: ObservableObject {
         beginReconciliation(conversationID: failed.sessionID)
     }
     private func beginReconciliation(conversationID: UUID) {
+        if let failed = sessions.first(where: { $0.id == conversationID })?.lastFailure,
+           originalParallelParentIsBusy(failed) { return }
         // The one-review budget is spent only when the readback can start.
         guard !isSessionRunning(conversationID), canStartAdditionalRun, selfUpdateHold == nil,
               let index = sessions.firstIndex(where: { $0.id == conversationID }),
@@ -10791,6 +11042,8 @@ private final class SessionStore: ObservableObject {
     /// main-actor state, so it cannot block.
     var maintenanceLoopRunning: Bool { maintenanceTask != nil }
     func runMaintenanceTick() {
+        refreshExternalParallelCustody()
+        refreshAgentTaskInspectorWindows()
         // The installer verifies a quiescent store after relaunch. Its live PID
         // lease suppresses automatic recovery only; a crashed installer cannot
         // leave a permanent hold. User requests retain their normal gates.
@@ -10859,6 +11112,7 @@ private final class SessionStore: ObservableObject {
     private func automaticReadbackEligible(_ session: ConversationSession) -> Bool {
         guard session.lastBackendFailure?.requiresReadback == true,
               let failed = session.lastFailure, failed.recoveryParentID == nil else { return false }
+        guard !originalParallelParentIsBusy(failed) else { return false }
         return !FileManager.default.fileExists(atPath: ExecutionCancellation.url(submissionID: failed.id).path)
     }
     /// A conversation stuck behind an uncertain-effect failure gets its
@@ -11240,6 +11494,13 @@ private final class SessionStore: ObservableObject {
                 }
                 queuedSubmissions.removeAll { $0.sessionID == pending.sessionID && corrections.map(\.id).contains($0.userMessageID) }
             }
+            if let observed = LiveParallelParentCustody.observe(recovered, root: parallelAgentTaskRoot), observed.ownerBusy {
+                externallyOwnedParallelSubmissions[pending.sessionID] = recovered
+                inFlightSubmissions[pending.sessionID] = recovered
+                sessions[index].agentTask = observed.snapshot
+                sessionStatuses[pending.sessionID] = parallelParentWaitingText
+                continue // original runtime owns it; never invent an interrupted Process
+            }
             if let result = DeliveryOutbox(root: customStorageRoot?.appendingPathComponent("execution-outbox"))
                 .forSubmission(pending.id.uuidString) {
                 recovered.deliveryID = result.id
@@ -11261,6 +11522,7 @@ private final class SessionStore: ObservableObject {
         // an input still waiting in the queue keeps its state, and the rest
         // settle against their own run's receipts.
         for index in sessions.indices {
+            if externallyOwnedParallelSubmissions[sessions[index].id] != nil { continue }
             settleSteeringDelivery(conversationID: sessions[index].id,
                                    submissionID: sessions[index].lastFailure?.id)
         }
@@ -14231,13 +14493,6 @@ private struct RootView: View {
                 OS1BrowserPanel(page: browser.page(browserKey), close: { browser.visible = false })
                     .id(browserKey)
             }
-            if let session = store.inspectedAgentTaskSession {
-                AgentTaskTreeView(snapshot: store.agentTaskSnapshot(for: session.id), sessionTitle: session.title,
-                    isLive: store.isSessionRunning(session.id),
-                    onClose: { store.requestedInspectorSessionID = nil })
-                    .id(session.id)
-                    .frame(minWidth: 300, idealWidth: 360, maxWidth: 520, maxHeight: .infinity)
-            }
             }
         }
         .sheet(isPresented: $store.accountsOpen) { BackendAccountsView(store: store) }
@@ -15745,7 +16000,7 @@ private struct SessionSidebar: View {
                             slotWait: idleQueue && store.globalSlotWait(session.id) != nil,
                             queueHelp: idleQueue ? store.queueReason(session.id) : nil,
                             onToggleAgentTask: onToggleAgentTask.map { toggle in { toggle(session.id) } },
-                            agentTreeOpen: store.requestedInspectorSessionID == session.id
+                            agentTreeOpen: store.openAgentTaskInspectorSessionIDs.contains(session.id)
                         ) { store.select(session.id) }
                         .contextMenu {
                             Button(session.pinnedAt == nil ? os1Tr("상단에 고정", "Pin to top") : os1Tr("고정 해제", "Unpin")) { store.togglePin(session.id) }
@@ -16092,6 +16347,8 @@ private func terminalAgentTaskTreeFixture(_ input: ParallelAgentTask.Snapshot) -
 
 @MainActor
 private func agentTaskTreeSelfTest() async throws {
+    try await parallelParentCustodySelfTest()
+    try await inspectorWindowSelfTest()
     var checks = 0
     func check(_ condition: @autoclosure () -> Bool, _ message: String) throws {
         guard condition() else { throw RunnerError.message("Agent tree: " + message) }

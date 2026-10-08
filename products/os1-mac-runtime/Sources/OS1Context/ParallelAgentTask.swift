@@ -6,6 +6,8 @@ import Darwin
 /// The runtime owns process launch, native-session custody and cancellation.
 public enum ParallelAgentTask {
     public static let maximumWorkers = 3
+    /// Explicit native-route fanout may expose eight nodes; planner drafts stay bounded at three.
+    public static let maximumWorkerNodes = 8
     public static let maximumNodes = 12
     public static let maximumSnapshotBytes = 64_000
     public enum Role: String, Codable, Sendable { case coordinator, planner, worker, primary }
@@ -36,16 +38,22 @@ public enum ParallelAgentTask {
         public var title: String
         public var instruction: String
         public var dependencies: [String]
-        public init(id: String, title: String, instruction: String, dependencies: [String] = []) {
+        public var scope: TaskContext.Scope
+        public var ownedPaths: [String]
+        public init(id: String, title: String, instruction: String, dependencies: [String] = [],
+                    scope: TaskContext.Scope = .readOnly, ownedPaths: [String] = []) {
             self.id = id; self.title = title; self.instruction = instruction; self.dependencies = dependencies
+            self.scope = scope; self.ownedPaths = ownedPaths
         }
-        private enum CodingKeys: String, CodingKey { case id, title, instruction, dependencies }
+        private enum CodingKeys: String, CodingKey { case id, title, instruction, dependencies, scope, ownedPaths }
         public init(from decoder: Decoder) throws {
-            try exactKeys(decoder, ["id", "title", "instruction", "dependencies"])
+            try exactKeys(decoder, ["id", "title", "instruction", "dependencies", "scope", "ownedPaths"])
             let c = try decoder.container(keyedBy: CodingKeys.self)
             self.init(id: try c.decode(String.self, forKey: .id), title: try c.decode(String.self, forKey: .title),
                       instruction: try c.decode(String.self, forKey: .instruction),
-                      dependencies: try c.decodeIfPresent([String].self, forKey: .dependencies) ?? [])
+                      dependencies: try c.decodeIfPresent([String].self, forKey: .dependencies) ?? [],
+                      scope: try c.decodeIfPresent(TaskContext.Scope.self, forKey: .scope) ?? .readOnly,
+                      ownedPaths: try c.decodeIfPresent([String].self, forKey: .ownedPaths) ?? [])
         }
     }
     public struct Draft: Codable, Equatable, Sendable {
@@ -62,8 +70,10 @@ public enum ParallelAgentTask {
             guard (2...maximumWorkers).contains(tasks.count), Set(tasks.map(\.id)).count == tasks.count,
                   tasks.allSatisfy({ slug($0.id) && nonempty($0.title, maximum: 120) &&
                       nonempty($0.instruction, maximum: 6_000) && $0.dependencies.count <= maximumWorkers &&
-                      Set($0.dependencies).count == $0.dependencies.count && !$0.dependencies.contains($0.id) })
+                      Set($0.dependencies).count == $0.dependencies.count && !$0.dependencies.contains($0.id) &&
+                      validOwnership(scope: $0.scope, paths: $0.ownedPaths, dependencies: $0.dependencies.count) })
             else { throw Failure.invalidDraft }
+            guard disjointOwnership(tasks.filter { $0.scope == .workspaceWrite }.map(\.ownedPaths)) else { throw Failure.invalidDraft }
             try validateDAG(Dictionary(uniqueKeysWithValues: tasks.map { ($0.id, $0.dependencies) }), failure: .invalidDraft)
             return self
         }
@@ -78,10 +88,21 @@ public enum ParallelAgentTask {
         public var instruction: String
         public var dependencies: [UUID]
         public var scope: TaskContext.Scope
+        public var ownedPaths: [String]
         public init(id: UUID = UUID(), slug: String, title: String, instruction: String,
-                    dependencies: [UUID] = [], scope: TaskContext.Scope = .readOnly) {
+                    dependencies: [UUID] = [], scope: TaskContext.Scope = .readOnly, ownedPaths: [String] = []) {
             self.id = id; self.slug = slug; self.title = title; self.instruction = instruction
-            self.dependencies = dependencies; self.scope = scope
+            self.dependencies = dependencies; self.scope = scope; self.ownedPaths = ownedPaths
+        }
+        private enum CodingKeys: String, CodingKey { case id, slug, title, instruction, dependencies, scope, ownedPaths }
+        public init(from decoder: Decoder) throws {
+            try exactKeys(decoder, ["id", "slug", "title", "instruction", "dependencies", "scope", "ownedPaths"])
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            self.init(id: try c.decode(UUID.self, forKey: .id), slug: try c.decode(String.self, forKey: .slug),
+                title: try c.decode(String.self, forKey: .title), instruction: try c.decode(String.self, forKey: .instruction),
+                dependencies: try c.decodeIfPresent([UUID].self, forKey: .dependencies) ?? [],
+                scope: try c.decodeIfPresent(TaskContext.Scope.self, forKey: .scope) ?? .readOnly,
+                ownedPaths: try c.decodeIfPresent([String].self, forKey: .ownedPaths) ?? [])
         }
     }
     public struct Plan: Codable, Equatable, Sendable {
@@ -112,10 +133,16 @@ public enum ParallelAgentTask {
                   (1...maximumWorkers).contains(maxParallelism), scope != .fullAccess,
                   nonempty(originalInstruction, maximum: 64_000), safeAbsolutePath(workspace),
                   Set(ids).count == ids.count, Set(workers.map(\.slug)).count == workers.count,
-                  workers.allSatisfy({ $0.scope == .readOnly && slug($0.slug) && nonempty($0.title, maximum: 120) &&
+                  workers.allSatisfy({ ($0.scope != .workspaceWrite || scope == .workspaceWrite) &&
+                      validOwnership(scope: $0.scope, paths: $0.ownedPaths, dependencies: $0.dependencies.count) && slug($0.slug) && nonempty($0.title, maximum: 120) &&
                       nonempty($0.instruction, maximum: 6_000) && Set($0.dependencies).count == $0.dependencies.count &&
                       $0.dependencies.count <= maximumWorkers && !$0.dependencies.contains($0.id) })
             else { throw Failure.invalidPlan }
+            // Dependent write pipelines need a separate snapshot/merge boundary;
+            // never claim a child saw another candidate's unmerged files.
+            guard !workers.contains(where: { $0.scope == .workspaceWrite }) || workers.allSatisfy({ $0.dependencies.isEmpty })
+            else { throw Failure.invalidPlan }
+            guard disjointOwnership(workers.filter { $0.scope == .workspaceWrite }.map(\.ownedPaths)) else { throw Failure.invalidPlan }
             try validateDAG(Dictionary(uniqueKeysWithValues: workers.map { ($0.id, $0.dependencies) }), failure: .invalidPlan)
             return self
         }
@@ -131,6 +158,7 @@ public enum ParallelAgentTask {
         public var role: Role
         public var state: State
         public var provider: String?
+        public var surface: String?
         public var model: String?
         public var effort: String?
         public var nativeSessionID: String?
@@ -141,35 +169,45 @@ public enum ParallelAgentTask {
         public var tool: String?
         public var resultSummary: String?
         public var failureSummary: String?
+        public var scope: TaskContext.Scope?
+        public var workspace: String?
+        public var ownedPaths: [String]?
+        public var nativeProgress: NativeExecutionProgress?
         public init(id: UUID = UUID(), parentID: UUID? = nil, dependencies: [UUID] = [], title: String,
-                    role: Role, state: State = .pending, provider: String? = nil, model: String? = nil,
+                    role: Role, state: State = .pending, provider: String? = nil, surface: String? = nil, model: String? = nil,
                     effort: String? = nil, nativeSessionID: String? = nil, workerSubmissionID: UUID? = nil,
                     startedAt: Date? = nil, finishedAt: Date? = nil, progressText: String? = nil, tool: String? = nil,
-                    resultSummary: String? = nil, failureSummary: String? = nil) {
+                    resultSummary: String? = nil, failureSummary: String? = nil, scope: TaskContext.Scope? = nil,
+                    workspace: String? = nil, ownedPaths: [String]? = nil, nativeProgress: NativeExecutionProgress? = nil) {
             self.id = id; self.parentID = parentID; self.dependencies = dependencies; self.title = title
-            self.role = role; self.state = state; self.provider = provider; self.model = model; self.effort = effort
+            self.role = role; self.state = state; self.provider = provider; self.surface = surface; self.model = model; self.effort = effort
             self.nativeSessionID = nativeSessionID; self.workerSubmissionID = workerSubmissionID
             self.startedAt = startedAt; self.finishedAt = finishedAt; self.progressText = progressText; self.tool = tool
             self.resultSummary = resultSummary; self.failureSummary = failureSummary
+            self.scope = scope; self.workspace = workspace; self.ownedPaths = ownedPaths; self.nativeProgress = nativeProgress
         }
         private enum CodingKeys: String, CodingKey {
-            case id, parentID, dependencies, title, role, state, provider, model, effort, nativeSessionID
-            case workerSubmissionID, startedAt, finishedAt, progressText, tool, resultSummary, failureSummary
+            case id, parentID, dependencies, title, role, state, provider, surface, model, effort, nativeSessionID
+            case workerSubmissionID, startedAt, finishedAt, progressText, tool, resultSummary, failureSummary, scope, workspace, ownedPaths, nativeProgress
         }
         public init(from decoder: Decoder) throws {
-            try exactKeys(decoder, ["id", "parentID", "dependencies", "title", "role", "state", "provider", "model",
+            try exactKeys(decoder, ["id", "parentID", "dependencies", "title", "role", "state", "provider", "surface", "model",
                 "effort", "nativeSessionID", "workerSubmissionID", "startedAt", "finishedAt", "progressText", "tool",
-                "resultSummary", "failureSummary"])
+                "resultSummary", "failureSummary", "scope", "workspace", "ownedPaths", "nativeProgress"])
             let c = try decoder.container(keyedBy: CodingKeys.self)
             self.init(id: try c.decode(UUID.self, forKey: .id), parentID: try c.decodeIfPresent(UUID.self, forKey: .parentID),
                 dependencies: try c.decode([UUID].self, forKey: .dependencies), title: try c.decode(String.self, forKey: .title),
                 role: try c.decode(Role.self, forKey: .role), state: try c.decode(State.self, forKey: .state),
-                provider: try c.decodeIfPresent(String.self, forKey: .provider), model: try c.decodeIfPresent(String.self, forKey: .model),
+                provider: try c.decodeIfPresent(String.self, forKey: .provider), surface: try c.decodeIfPresent(String.self, forKey: .surface), model: try c.decodeIfPresent(String.self, forKey: .model),
                 effort: try c.decodeIfPresent(String.self, forKey: .effort), nativeSessionID: try c.decodeIfPresent(String.self, forKey: .nativeSessionID),
                 workerSubmissionID: try c.decodeIfPresent(UUID.self, forKey: .workerSubmissionID),
                 startedAt: try c.decodeIfPresent(Date.self, forKey: .startedAt), finishedAt: try c.decodeIfPresent(Date.self, forKey: .finishedAt),
                 progressText: try c.decodeIfPresent(String.self, forKey: .progressText), tool: try c.decodeIfPresent(String.self, forKey: .tool),
-                resultSummary: try c.decodeIfPresent(String.self, forKey: .resultSummary), failureSummary: try c.decodeIfPresent(String.self, forKey: .failureSummary))
+                resultSummary: try c.decodeIfPresent(String.self, forKey: .resultSummary), failureSummary: try c.decodeIfPresent(String.self, forKey: .failureSummary),
+                scope: try c.decodeIfPresent(TaskContext.Scope.self, forKey: .scope),
+                workspace: try c.decodeIfPresent(String.self, forKey: .workspace),
+                ownedPaths: try c.decodeIfPresent([String].self, forKey: .ownedPaths),
+                nativeProgress: try? c.decode(NativeExecutionProgress.self, forKey: .nativeProgress))
         }
     }
 
@@ -220,7 +258,7 @@ public enum ParallelAgentTask {
                   nodes.filter({ $0.role == .coordinator }).count == 1,
                   nodes.filter({ $0.role == .planner }).count <= 1, nodes.filter({ $0.role == .primary }).count <= 2,
                   nodes.filter({ $0.role == .primary && !$0.state.isTerminal }).count <= 1,
-                  nodes.filter({ $0.role == .worker }).count <= maximumWorkers,
+                  nodes.filter({ $0.role == .worker }).count <= maximumWorkerNodes,
                   let root = nodes.first(where: { $0.id == rootNodeID }), root.role == .coordinator,
                   root.parentID == nil, root.dependencies.isEmpty,
                   nodes.filter({ $0.role == .worker && $0.state == .running }).count <= maxParallelism
@@ -248,6 +286,7 @@ public enum ParallelAgentTask {
                       node.dependencies.allSatisfy({ ids.contains($0) && $0 != node.id && $0 != rootNodeID }),
                       optional(node.model, maximum: 128), optional(node.effort, maximum: 32),
                       node.provider.map({ ["codex", "claude", "local"].contains($0) }) ?? true,
+                      node.surface.map({ ProviderSurface(rawValue: $0) != nil }) ?? true,
                       node.nativeSessionID.map({ UUID(uuidString: $0) != nil }) ?? true,
                       node.tool.map(NativeExecutionProgress.safeToolName) ?? true,
                       optional(node.progressText, maximum: 500), optional(node.resultSummary, maximum: 1_000),
@@ -260,13 +299,17 @@ public enum ParallelAgentTask {
                       node.state != .running || node.startedAt != nil,
                       node.state != .succeeded || node.startedAt != nil,
                       node.role == .worker || node.workerSubmissionID == nil,
-                      node.workerSubmissionID.map({ $0 != submissionID }) ?? true
+                      node.workerSubmissionID.map({ $0 != submissionID }) ?? true,
+                      node.scope != .fullAccess, node.workspace.map(safeAbsolutePath) ?? true,
+                      (node.ownedPaths?.count ?? 0) <= 12, node.ownedPaths?.allSatisfy(relativeOwnedPath) ?? true,
+                      node.nativeProgress.map({ $0.isValid }) ?? true
                 else { throw Failure.invalidSnapshot }
                 node.title = publicText(node.title, maximum: 120) ?? "Task"
                 node.progressText = node.progressText.flatMap { publicText($0, maximum: 500) }
                 node.resultSummary = node.resultSummary.flatMap { publicText($0, maximum: 1_000) }
                 node.failureSummary = node.failureSummary.flatMap { publicText($0, maximum: 500) }
                 node.nativeSessionID = node.nativeSessionID.flatMap { UUID(uuidString: $0)?.uuidString.lowercased() }
+                node.nativeProgress = node.nativeProgress.flatMap(boundedProgress)
                 copy.nodes[i] = node
             }
             let submissions = nodes.compactMap(\.workerSubmissionID)
@@ -279,7 +322,8 @@ public enum ParallelAgentTask {
             let root = Node(id: plan.rootNodeID, title: "Parallel task", role: .coordinator)
             let planner = Node(id: plan.plannerNodeID, parentID: plan.rootNodeID, title: "Task planning", role: .planner)
             let workers = plan.workers.map { Node(id: $0.id, parentID: plan.rootNodeID,
-                dependencies: [plan.plannerNodeID] + $0.dependencies, title: $0.title, role: .worker) }
+                dependencies: [plan.plannerNodeID] + $0.dependencies, title: $0.title, role: .worker,
+                scope: $0.scope, ownedPaths: $0.ownedPaths) }
             let primary = Node(id: plan.primaryNodeID, parentID: plan.rootNodeID, dependencies: plan.workers.map(\.id),
                 title: "Primary execution", role: .primary)
             return try Self(planID: plan.planID, conversationID: plan.conversationID, submissionID: plan.submissionID,
@@ -345,13 +389,13 @@ public enum ParallelAgentTask {
     public static func readyWorkerIDs(in snapshot: Snapshot, limit: Int? = nil) throws -> [UUID] {
         let snapshot = try snapshot.validated()
         let workers = snapshot.nodes.filter { $0.role == .worker }
-        guard (2...maximumWorkers).contains(workers.count), limit.map({ (0...maximumWorkers).contains($0) }) ?? true
+        guard (2...maximumWorkerNodes).contains(workers.count), limit.map({ (0...maximumWorkerNodes).contains($0) }) ?? true
         else { throw Failure.invalidSnapshot }
         guard snapshot.nodes.first(where: { $0.id == snapshot.rootNodeID })?.state == .running else { return [] }
         let byID = Dictionary(uniqueKeysWithValues: snapshot.nodes.map { ($0.id, $0) })
         let available = max(0, snapshot.maxParallelism - workers.filter { $0.state == .running }.count)
         return workers.filter { $0.state == .pending && $0.dependencies.allSatisfy { byID[$0]?.state == .succeeded } }
-            .prefix(min(available, limit ?? maximumWorkers)).map(\.id)
+            .prefix(min(available, limit ?? maximumWorkerNodes)).map(\.id)
     }
 
     /// Heuristic masking is shared with existing native public progress. Never
@@ -359,6 +403,19 @@ public enum ParallelAgentTask {
     public static func publicText(_ raw: String, maximum: Int = 500) -> String? {
         let bounded = String(raw.prefix(max(0, min(maximum, 2_048))))
         return NativeStepLabel.redact(bounded).map { String($0.prefix(maximum)) }
+    }
+    /// The child's own progress journal retains its full bounded ring. The
+    /// multi-child snapshot preserves current counters/events and only the
+    /// newest step ring that fits each node's display budget.
+    private static func boundedProgress(_ progress: NativeExecutionProgress) -> NativeExecutionProgress? {
+        guard progress.isValid else { return nil }
+        var steps = Array((progress.steps ?? []).suffix(8))
+        while true {
+            let candidate = progress.replacing(steps: steps, backendStatus: progress.backendStatus)
+            if let bytes = try? JSONEncoder().encode(candidate), bytes.count <= 5_500 { return candidate }
+            guard !steps.isEmpty else { return nil }
+            steps.removeFirst()
+        }
     }
 
     public static func loadBound(path: String, conversationID: UUID, submissionID: UUID,
@@ -413,6 +470,39 @@ public enum ParallelAgentTask {
         }
         return (fd, url.lastPathComponent)
     }
+    /// Lexical ownership only. The executor also checks Git paths and symlink ancestors.
+    public static func relativeOwnedPath(_ path: String) -> Bool {
+        guard !path.isEmpty, !path.hasPrefix("/"), path.utf8.count <= 1_024,
+              !path.contains("\\"), !path.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) })
+        else { return false }
+        let parts = path.split(separator: "/", omittingEmptySubsequences: false)
+        let forbidden = Set([".git", ".os1", ".claude", ".codex", "agents.md", "claude.md", "handy",
+            ".github", "scripts", "tests", "test", "policy", "policies", "config", "configuration", "signing",
+            "release", "version", "info.plist", "package.swift", "package.resolved", "main.swift", "os1app.swift",
+            "ownerpolicy.swift", "runtimeconfig.swift", "taskcontext.swift", "parallelagenttask.swift",
+            "sourcewriteadmission.swift", "os1sourceconfinement.swift", "selfupdate.swift", "selfupdatecommands.swift",
+            "parallelagentcoordinator.swift", "parallelprojectworkspace.swift"])
+        guard parts.allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." && !forbidden.contains($0.lowercased()) }),
+              !parts.contains(where: { $0.lowercased().contains("validator") || $0.lowercased().contains("governance") ||
+                $0.lowercased().contains("selfupdate") || $0.lowercased().contains("permission") || $0.lowercased().contains("credential") }) else { return false }
+        return true
+    }
+    public static func disjointOwnership(_ sets: [[String]]) -> Bool {
+        for i in sets.indices { for j in sets.indices where j > i {
+            for a in sets[i] { for b in sets[j] {
+                if a == b || a.hasPrefix(b + "/") || b.hasPrefix(a + "/") { return false }
+            }}
+        }}
+        return true
+    }
+    private static func validOwnership(scope: TaskContext.Scope, paths: [String], dependencies: Int) -> Bool {
+        switch scope {
+        case .readOnly: return paths.isEmpty
+        case .workspaceWrite: return dependencies == 0 && !paths.isEmpty && paths.count <= 12 &&
+            Set(paths).count == paths.count && paths.allSatisfy(relativeOwnedPath) && disjointOwnership(paths.map { [$0] })
+        case .fullAccess: return false
+        }
+    }
     private static func safeAbsolutePath(_ path: String) -> Bool {
         path.hasPrefix("/") && path.utf8.count <= 4_096 && !path.contains("\0") && !path.contains("\\") &&
             path.split(separator: "/", omittingEmptySubsequences: false).dropFirst().allSatisfy { !$0.isEmpty && $0 != "." && $0 != ".." }
@@ -446,5 +536,5 @@ public enum ParallelAgentTask {
         let c = try decoder.container(keyedBy: AnyKey.self)
         guard c.allKeys.allSatisfy({ keys.contains($0.stringValue) }) else { throw Failure.invalidSnapshot }
     }
-    private static let maximumParallelism = maximumWorkers
+    private static let maximumParallelism = maximumWorkerNodes
 }

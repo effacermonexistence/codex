@@ -51,7 +51,11 @@ check(re.search(r'os1SharedLeaseRoot = containedRoot\s*\}\s*else\s*\{[^}]*os1Sou
 check(main.count('OS1SourceWatch.capture(') == 1, 'no other unleased watch of the live tree')
 
 # 2. Each attempt decides confinement or lease after routing, through the tested helper.
-loop = body(main, 'let sourceStep = try await prepareOS1AttemptSource(', 'let startData = Data(["os1-attempt-start-v1"')
+loop = body(main, 'let sourceStep: OS1AttemptSourceStep =', 'let startData = Data(["os1-attempt-start-v1"')
+check('ParallelAgentRuntime.isolatedWriter != nil' in loop and '.proceed(confined: false, carriesEarlierWriter: false)' in loop,
+      'only a validated private isolated writer bypasses live-source attempt custody')
+check('canonicalWorkspace == grant.workspace' in main and 'executionWorkspace != grant.workspace' in main,
+      'isolated writer cannot rebind to the live source tree')
 check('provider: ticket.provider' in loop and 'permissionProfile: ticket.permissionProfile' in loop
       and 'sharedLeaseRoot: os1SharedLeaseRoot' in loop and 'firstAttempt: steps.isEmpty' in loop
       and 'state: &os1Source' in loop, 'the attempt decision gets this ticket, the live root and the run state')
@@ -215,9 +219,9 @@ check('guard resolvedScope == .workspaceWrite, let guardedRoot = OS1FullAccessCo
       'the full-access shared lease is bound to the exact source root even if normal project binding changes')
 check('if OS1FullAccessContinuation.sessionID != nil && (ticket.provider != "claude" || ticket.permissionProfile != "workspace_write")' in main,
       'a remote route cannot convert the same-session continuation into another provider or read-only lane')
-check('var attemptLimit = OS1FullAccessContinuation.sessionID != nil ||' in main,
+check('OS1FullAccessContinuation.sessionID != nil || workflowStage == .implementation || readOnlyReview ? 1 :' in main,
       'the full-access continuation has one attempt and cannot implicitly replay a rejected writer')
-check('if OS1FullAccessContinuation.sessionID == nil, quotaLimit > attemptLimit, !readOnlyReview' in main
+check('OS1FullAccessContinuation.sessionID == nil, quotaLimit > attemptLimit, !readOnlyReview' in main
       and 'if OS1FullAccessContinuation.sessionID == nil, expandedLimit > attemptLimit' in main,
       'quota and undispatched recovery cannot expand the single full-access attempt budget')
 source_prepare = body(main, 'func prepareOS1AttemptSource(', '/// A signed ticket still has')
@@ -306,8 +310,8 @@ check('adoptedDraft = mergedFullAccessContinuation(draft: fullDraft, resumed: re
 check('if OS1FullAccessContinuation.sessionID != nil, os1Source.watch?.changed() == true' in main
       and 'no self-update, install or replay was started' in main,
       'a detected protected-source mutation blocks continuation rather than claiming or installing it')
-check('if OS1FullAccessContinuation.sessionID == nil, previewDeploymentTarget == nil' in main
-      and 'else if OS1FullAccessContinuation.sessionID == nil, let os1SourceWatch' in main,
+check('if ParallelAgentRuntime.isolatedWriter == nil, OS1FullAccessContinuation.sessionID == nil, previewDeploymentTarget == nil' in main
+      and 'else if ParallelAgentRuntime.isolatedWriter == nil, OS1FullAccessContinuation.sessionID == nil, let os1SourceWatch' in main,
       'full-access non-OS-1 work cannot enter either OS-1 self-update finisher')
 prompt = body(main, 'func fullAccessContinuationPrompt(', 'func fullAccessFailureSummary(')
 check('Continue ONLY the non-OS-1 steps blocked' in prompt and 'SAME native session' in prompt

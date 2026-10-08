@@ -38,6 +38,23 @@ func runRouteFanoutFixtures() throws {
     check(oneEach?.targets.map(\.payload) == ["1 plus 1", "2 plus 2", "3 plus 3", "4 plus 4"], "the n-th name gets the n-th part")
     check(oneEach?.targets.allSatisfy { $0.surface.gatewayPreference != nil } == true, "every one-each part executes")
     check(oneEach?.executionOrder == [0, 1, 2, 3], "one-each executors run in the owner's order")
+    let screenshot = "GPT랑 코덱스랑 클로드랑 다 병렬로 간단한 거 돌려봐. 아니 뭐 GPT랑 코덱스 클로드 코드 클로드 이거 네 개 병렬로 뭐 원 플러스 원 투 플러스 투 이런 거 돌려봐."
+    let broadcast = RouteFanout.plan(screenshot)
+    check(broadcast?.targets.map(\.surface) == [.gptChat, .codex, .claude, .claudeChat], "the screenshot's final four-surface roster is preserved")
+    check(broadcast?.targets.map(\.payload) == Array(repeating: "1+1, 2+2", count: 4), "self-contained dictated sums are broadcast; no log-search task is invented")
+    check(RouteFanout.requestsProviderFanout(screenshot), "provider fanout bypasses a project/research planner")
+    check(RouteFanout.plan("GPT랑 Codex 병렬로 1+1, 2+2 돌려봐")?.targets.count == 2, "explicit parallel arithmetic broadcast")
+    for rejected in [
+        "GPT랑 Codex 병렬로 1+1 돌려봐. 로그를 다 찾아봐",
+        "GPT랑 Codex 병렬로 버그 고쳐줘",
+        "GPT랑 Codex 병렬로 1+1 돌려봐. 그리고 배포해",
+        "GPT랑 Codex 병렬로 1-10, 11-20 돌려봐",
+        "GPT랑 Codex 병렬로 하지 마. 1+1",
+        "GPT랑 Codex 병렬로 1+1 돌렸어?",
+        "GPT랑 Codex 병렬로 1+1 돌려봐. Claude랑 Claude Code로 2+2 돌려봐",
+    ] { check(RouteFanout.plan(rejected) == nil, "parallel broadcast never drops extra or unsafe content: \(rejected.prefix(50))") }
+    check(RouteFanout.requestsProviderFanout("GPT랑 Codex 병렬로 로그 조사 돌려봐"), "unclear provider payload preserves provider intent without authorizing dispatch")
+    check(!RouteFanout.requestsProviderFanout("GPT랑 Codex 차이가 뭐야?"), "comparison is not a parallel request")
     check(RouteFanout.plan("클로드랑 GPT 하나씩 시켜봐. 1+1, 2+2, 3+3") == nil, "a count that does not match never splits")
     // A question in words is never cut: the whole request reaches one route
     // with its "하나씩" (hunt of build 334: word parts read the same as complaints).

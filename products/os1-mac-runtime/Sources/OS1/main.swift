@@ -334,6 +334,14 @@ func executableProviderPreference(requested: String, prompt: String, codexAvaila
                                   evidenceSupplied: Bool = false, scope: TaskContext.Scope? = nil,
                                   codexUnavailableReason: String? = nil,
                                   claudeUnavailableReason: (() -> String?)? = nil) throws -> String {
+    if ConcurrentRouteFanoutRuntime.child {
+        guard let expected = ConcurrentRouteFanoutRuntime.expectedSurface,
+              requested == expected.gatewayPreference,
+              (requested == "codex" ? codexAvailable : claudeAvailable) else {
+            throw OS1Error.message("Explicit parallel provider unavailable; target kept without a substitute call")
+        }
+        return requested
+    }
     // Only the read-only Claude lane lacks a shell. When OS-1 itself supplies
     // the verified evidence, or the ticket carries a write profile, the
     // objective is not shell-bound and either backend may execute it.
@@ -3292,7 +3300,9 @@ private func sourceAnswerWorkspace() throws -> String {
 /// request that fails one before any model is called, so an explicit choice can
 /// never turn into the expensive full lane behind the owner's back.
 func claudeChatLane(provider: String, permission: String, hasSource: Bool, objective: String) -> Bool {
-    provider == "claude" && permission == "read_only" && !hasSource
+    if ConcurrentRouteFanoutRuntime.child,
+       let expected = ConcurrentRouteFanoutRuntime.expectedSurface, !expected.forcesChatLane { return false }
+    return provider == "claude" && permission == "read_only" && !hasSource
         && (ClaudeChatLane.selfContainedTextOperation(objective)
             || ClaudeChatLane.conversationalQuestion(objective)
             || StatusCheckIn.answersFromCard(objective)
@@ -6536,13 +6546,33 @@ private func execute(
     memoryTurn: MemoryExecutionManifest? = nil
 ) throws -> ProviderExecution {
     AttemptLatencyTrace.mark("execute_entered")
+    if ConcurrentRouteFanoutRuntime.child {
+        guard ticket.permissionProfile == "read_only", RouteFanout.isSafeFanoutPayload(objectivePrompt ?? prompt) else {
+            throw OS1Error.message("Answer-only fan-out rejected a non-read-only ticket before native dispatch")
+        }
+    }
+    if let grant = ParallelAgentRuntime.isolatedWriter {
+        guard LocalProjectWorkspace.executionPath(workspace) == grant.workspace,
+              ticket.permissionProfile == "workspace_write" else {
+            throw OS1Error.message("Isolated implementation lost its exact workspace/write ticket")
+        }
+    }
     let started = Date()
     let lockedObjective = objectivePrompt ?? prompt
     let executedSurface = executedProviderSurface(provider: ticket.provider, permission: ticket.permissionProfile,
         hasSource: preloadedR2Evidence != nil, objective: lockedObjective)
+    if ConcurrentRouteFanoutRuntime.child {
+        guard let expected = ConcurrentRouteFanoutRuntime.expectedSurface,
+              ticket.provider == expected.gatewayPreference, executedSurface == expected else {
+            throw OS1Error.message("Explicit parallel target is unavailable; no alternate surface was executed")
+        }
+    }
     let executionWorkspace = try providerExecutionWorkspace(provider: ticket.provider,
         permission: ticket.permissionProfile, hasSource: preloadedR2Evidence != nil, workspace: workspace,
         objective: lockedObjective)
+    if let grant = ParallelAgentRuntime.isolatedWriter, executionWorkspace != grant.workspace {
+        throw OS1Error.message("Native provider workspace differs from the isolated write capability")
+    }
     // Claude's read-only lane carries a bounded shell (ClaudeReadOnlyShell):
     // a shell-bound objective is not refused here; the backend is told the
     // bound so it verifies what it can and names what it could not run.
@@ -9438,7 +9468,7 @@ func runTask(
     let policy = try loadCurrentOwnerPolicy()
     AttemptLatencyTrace.mark("policy")
     let namedPaths = RequestNamedPaths.extract((ownerPrompt.map { $0 + "\n" } ?? "") + prompt)
-    if ParallelAgentRuntime.readOnlyAgent {
+    if ParallelAgentRuntime.readOnlyAgent || ParallelAgentRuntime.isolatedWriter != nil || ConcurrentRouteFanoutRuntime.child {
         // Runtime-owned child flag defeats recursive repair/workflow and any
         // permission request inside model-generated instructions or context.
         return try await OwnerPolicyContext.$snapshot.withValue(policy) {
@@ -9448,8 +9478,9 @@ func runTask(
                     providerPreference: providerPreference, context: context,
                     codexSessionID: nil, claudeSessionID: nil,
                     codexCapacity: codexCapacity, claudeCapacity: claudeCapacity,
-                    progress: progress, desktopReveal: .never, requireReadOnly: true,
-                    preflight: preflight, readOnlyReview: true)
+                    progress: progress, desktopReveal: .never,
+                    requireReadOnly: ParallelAgentRuntime.readOnlyAgent,
+                    preflight: preflight, readOnlyReview: ParallelAgentRuntime.readOnlyAgent)
             }
         }
     }
@@ -9979,7 +10010,9 @@ func runTaskWithOwnerPolicy(
     // cannot disagree; every other request keeps the executable envelope.
     // A review (ReviewPass) reads the code and changes nothing: it asks for a
     // read-only ticket, so Claude runs with its read-only tool set.
-    let resolvedScope = (workflowStage == nil && !requireReadOnly
+    let resolvedScope = ConcurrentRouteFanoutRuntime.child ? TaskContext.Scope.readOnly :
+        ParallelAgentRuntime.isolatedWriter != nil ? TaskContext.Scope.workspaceWrite :
+        (workflowStage == nil && !requireReadOnly
                          && ownerRequestRunsReadOnly(prompt, attachedSource: attachedSource != nil)) || readOnlyReview
         ? TaskContext.Scope.readOnly
         : ScopeResolution.delegationScope(internalReadOnly: internalReadOnly)
@@ -10001,7 +10034,7 @@ func runTaskWithOwnerPolicy(
         readOnly: requireReadOnly)
     let localProjectID = projectBinding.projectID
     var canonicalWorkspace = requestedWorkspace
-    if let localProjectID, LocalProjectWorkspace.root(containing: requestedWorkspace, projectID: localProjectID) == nil {
+    if let localProjectID, ParallelAgentRuntime.isolatedWriter == nil, LocalProjectWorkspace.root(containing: requestedWorkspace, projectID: localProjectID) == nil {
         // A write first heals a live tree a side-worktree install left behind
         // (2026-10-04); read-only work (internal or a read-only ticket) never
         // moves a tree.
@@ -10041,7 +10074,7 @@ func runTaskWithOwnerPolicy(
     }
     // A readback observes the previous operation; it must never mint a new
     // deployment identity or ask the backend to redeploy just to match it.
-    let previewDeploymentTarget = PreviewTargetBinding.shouldBindNewDeployment(request: objectiveRequest, readOnly: requireReadOnly)
+    let previewDeploymentTarget = ParallelAgentRuntime.isolatedWriter == nil && PreviewTargetBinding.shouldBindNewDeployment(request: objectiveRequest, readOnly: requireReadOnly)
         ? try await PreviewDeploymentTarget.resolve(request: objectiveRequest, requestID: executionID) : nil
     if let target = previewDeploymentTarget {
         canonicalWorkspace = target.workspace
@@ -10051,9 +10084,26 @@ func runTaskWithOwnerPolicy(
                                                            "Confirmed the actual source folder of the requested local preview: \(target.workspace)"))
     }
     canonicalWorkspace = LocalProjectWorkspace.executionPath(canonicalWorkspace)
+    if let grant = ParallelAgentRuntime.isolatedWriter {
+        guard canonicalWorkspace == grant.workspace, resolvedScope == .workspaceWrite else {
+            throw OS1Error.message("Isolated worker execution cannot rebind the parent or another project")
+        }
+    }
     var isDirectory: ObjCBool = false
     guard FileManager.default.fileExists(atPath: canonicalWorkspace, isDirectory: &isDirectory), isDirectory.boolValue else {
         throw OS1Error.message("Workspace directory does not exist")
+    }
+    // Every OS-1 original-project writer honors the same parent integration
+    // lease. Private granted worktrees intentionally run concurrently; the
+    // parent's final executor retains its already-held lease without reentry.
+    // Acquire before OS-1 source custody to keep one lock ordering everywhere.
+    var originalProjectLease: ExclusiveHookLease?
+    defer { withExtendedLifetime(originalProjectLease) {} }
+    if resolvedScope == .workspaceWrite, ParallelAgentRuntime.isolatedWriter == nil,
+       let identity = try ParallelProjectWorkspace.projectLeaseRoot(workspace: canonicalWorkspace),
+       ParallelAgentRuntime.originalProjectLeaseRoot != identity {
+        originalProjectLease = try ParallelProjectWorkspace.acquireOriginalProjectLease(
+            workspace: canonicalWorkspace)?.lease
     }
     // RCC applies to OS-1 itself: writes into OS-1's own source tree are
     // serialized behind one cross-process lease so concurrent OS-1-driven
@@ -10070,7 +10120,7 @@ func runTaskWithOwnerPolicy(
             os1PendingRepairRecordAttemptEnd(binding, head: gitHead(root))
         }
     }
-    if resolvedScope == .workspaceWrite, OS1FullAccessContinuation.sessionID == nil,
+    if ParallelAgentRuntime.isolatedWriter == nil, resolvedScope == .workspaceWrite, OS1FullAccessContinuation.sessionID == nil,
        let os1Root = LocalProjectWorkspace.root(containing: canonicalWorkspace, projectID: "os1-clodex") {
         if heldOS1SourceRoot.map({ URL(fileURLWithPath: $0).resolvingSymlinksInPath().standardizedFileURL.path }) != URL(fileURLWithPath: os1Root).resolvingSymlinksInPath().standardizedFileURL.path { os1SourceLease = try acquireOS1SourceWriteLease(root: os1Root) }
         os1StartHead = gitHead(os1Root)
@@ -10096,7 +10146,7 @@ func runTaskWithOwnerPolicy(
     var os1Source = OS1AttemptSourceState()
     defer { withExtendedLifetime(os1Source.lease) {} }
     var os1SharedLeaseRoot: String?
-    if resolvedScope == .workspaceWrite, previewDeploymentTarget == nil, os1StartHead == nil,
+    if ParallelAgentRuntime.isolatedWriter == nil, resolvedScope == .workspaceWrite, previewDeploymentTarget == nil, os1StartHead == nil,
        let containedRoot = OS1SourceWatch.containedRoot(workspace: canonicalWorkspace) {
         if heldOS1SourceRoot.map({ URL(fileURLWithPath: $0).resolvingSymlinksInPath().standardizedFileURL.path }) != URL(fileURLWithPath: containedRoot).resolvingSymlinksInPath().standardizedFileURL.path {
             os1SharedLeaseRoot = containedRoot
@@ -10402,7 +10452,7 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
     // OS-1 working on OS-1: the backend gets the self-repair contract (how a
     // write task must finish: stage, never install by hand) and a read-only
     // task can answer capability questions truthfully.
-    if previewDeploymentTarget == nil, let os1Root = LocalProjectWorkspace.root(containing: canonicalWorkspace, projectID: "os1-clodex") {
+    if ParallelAgentRuntime.isolatedWriter == nil, previewDeploymentTarget == nil, let os1Root = LocalProjectWorkspace.root(containing: canonicalWorkspace, projectID: "os1-clodex") {
         workspaceContext += "\n" + SelfUpdate.capabilityCard(root: os1Root, installedVersion: os1RuntimeVersionString,
             installedBuild: installedOS1Build(), sourceCommit: gitHead(os1Root), scope: "\(resolvedScope)",
             os1Executable: currentOS1Executable())
@@ -10561,7 +10611,7 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
     // warranted; uncertain writes must never be replayed implicitly.
     // A review is one attempt: its draft is already adopted, so a failed
     // review returns that draft instead of paying for another try.
-    var attemptLimit = OS1FullAccessContinuation.sessionID != nil || workflowStage == .implementation || readOnlyReview ? 1 :
+    var attemptLimit = ParallelAgentRuntime.isolatedWriter != nil || ConcurrentRouteFanoutRuntime.child || OS1FullAccessContinuation.sessionID != nil || workflowStage == .implementation || readOnlyReview ? 1 :
         (requireReadOnly ? min(2, config.maximumSteps) : config.maximumSteps)
     var quotaBudgetExtended = false
     var step = 0
@@ -10647,7 +10697,9 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
         if OS1FullAccessContinuation.sessionID != nil && (ticket.provider != "claude" || ticket.permissionProfile != "workspace_write") {
             throw OS1Error.message("Full-access continuation requires the same Claude write lane; no alternate backend was started.")
         }
-        let sourceStep = try await prepareOS1AttemptSource(provider: ticket.provider,
+        let sourceStep: OS1AttemptSourceStep = ParallelAgentRuntime.isolatedWriter != nil
+            ? .proceed(confined: false, carriesEarlierWriter: false)
+            : try await prepareOS1AttemptSource(provider: ticket.provider,
             permissionProfile: ticket.permissionProfile, sharedLeaseRoot: os1SharedLeaseRoot, firstAttempt: steps.isEmpty,
             fullAccess: OS1FullAccessContinuation.sessionID != nil,
             claudeAlternative: {
@@ -10855,7 +10907,7 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
                         modelScoped: modelScoped)
                     // A review never moves to another model: only the measured
                     // reviewer counts, and the adopted draft is the fallback.
-                    if OS1FullAccessContinuation.sessionID == nil, quotaLimit > attemptLimit, !readOnlyReview {
+                    if ParallelAgentRuntime.isolatedWriter == nil, !ConcurrentRouteFanoutRuntime.child, OS1FullAccessContinuation.sessionID == nil, quotaLimit > attemptLimit, !readOnlyReview {
                         quotaBudgetExtended = true
                         attemptLimit = quotaLimit
                     }
@@ -10990,7 +11042,7 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
                 if safeBlocker.requiresReconciliation, terminalPermissionFailure == nil {
                     terminalPermissionFailure = .backendBlocked(safeBlocker)
                 }
-                if backendBlocker(error) != nil {
+                if backendBlocker(error) != nil, ParallelAgentRuntime.isolatedWriter == nil, !ConcurrentRouteFanoutRuntime.child {
                     let alternateAvailable = ticket.provider == "codex"
                         ? hasClaudeExecutable && claudeCapacity > 0
                         : !codexCatalog.models.isEmpty && codexCapacity > 0
@@ -11061,7 +11113,7 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
         // self-repair task can never end with the fix living only in the
         // working tree — which is exactly how the rail fix of 2026-09-16 was
         // "done" twice and never reached the owner's screen.
-        if OS1FullAccessContinuation.sessionID == nil, previewDeploymentTarget == nil, TaskWorkflow.permitsSelfUpdate(stage: workflowStage, finalVerdict: nil), attemptFailure == nil, dispatchStage == .dispatched, execution.artifact.exitCode == 0,
+        if ParallelAgentRuntime.isolatedWriter == nil, OS1FullAccessContinuation.sessionID == nil, previewDeploymentTarget == nil, TaskWorkflow.permitsSelfUpdate(stage: workflowStage, finalVerdict: nil), attemptFailure == nil, dispatchStage == .dispatched, execution.artifact.exitCode == 0,
            ticket.permissionProfile == "workspace_write",
            let os1Root = LocalProjectWorkspace.root(containing: canonicalWorkspace, projectID: "os1-clodex") {
             switch completeOS1SelfRepair(root: os1Root, objective: prompt, startedAt: attemptStartedAt, startHead: os1StartHead) {
@@ -11079,7 +11131,7 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
                 attemptFailure = note
                 terminalPermissionFailure = OS1Error.message(note)
             }
-        } else if OS1FullAccessContinuation.sessionID == nil, let os1SourceWatch = os1Source.watch, TaskWorkflow.permitsSelfUpdate(stage: workflowStage, finalVerdict: nil), attemptFailure == nil,
+        } else if ParallelAgentRuntime.isolatedWriter == nil, OS1FullAccessContinuation.sessionID == nil, let os1SourceWatch = os1Source.watch, TaskWorkflow.permitsSelfUpdate(stage: workflowStage, finalVerdict: nil), attemptFailure == nil,
                   dispatchStage == .dispatched, execution.artifact.exitCode == 0, ticket.permissionProfile == "workspace_write",
                   unboundOS1SourceChanged {
             // Not bound to OS-1, yet OS-1's source changed: never leave a fix
@@ -15531,9 +15583,11 @@ struct OS1Main {
                 try await os1AttemptSourceSelfTest()
                 try await fullAccessHandBackSelfTest()
                 try await parallelAgentCoordinatorSelfTest()
+                try await concurrentRouteFanoutSelfTest()
             case "self-test-parallel-agents":
                 LiveRunEnvironment.detachCurrentProcess()
                 try await parallelAgentCoordinatorSelfTest()
+                try await concurrentRouteFanoutSelfTest()
             case "parallel-agent-child-watch-fixture":
                 // Local cancellation fixture only: no account/model/backend.
                 try ParallelAgentRuntime.prepareChild()
@@ -15632,6 +15686,8 @@ struct OS1Main {
                 var desktopReveal = DesktopRevealMode.never
                 var requireReadOnly = false
                 var parallelAgentChild = false
+                var parallelFanoutChild = false
+                var parallelWriteGrantPath: String?
                 var index = 1
                 while index < arguments.count {
                     switch arguments[index] {
@@ -15668,16 +15724,33 @@ struct OS1Main {
                         requireReadOnly = true; index += 1
                     case "--parallel-agent-child":
                         parallelAgentChild = true; index += 1
+                    case "--parallel-fanout-child":
+                        parallelFanoutChild = true; index += 1
+                    case "--parallel-write-grant" where index + 1 < arguments.count:
+                        parallelWriteGrantPath = arguments[index + 1]; index += 2
                     default: throw OS1Error.message("Unknown OS-1 argument")
                     }
                 }
                 guard let workspace, let prompt, !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                     throw OS1Error.message("Both --workspace and --prompt are required")
                 }
-                if parallelAgentChild {
-                    requireReadOnly = true
+                guard !(parallelAgentChild && parallelFanoutChild), parallelWriteGrantPath == nil || parallelAgentChild else {
+                    throw OS1Error.message("Invalid parallel child capability combination")
+                }
+                var validatedWriteGrant: ParallelProjectWriteGrant?
+                if parallelAgentChild || parallelFanoutChild {
                     codexSessionID = nil; claudeSessionID = nil
                     try ParallelAgentRuntime.prepareChild()
+                    if let grantPath = parallelWriteGrantPath {
+                        validatedWriteGrant = try ParallelProjectWorkspace.validateChildGrant(
+                            path: grantPath, workspace: workspace, instruction: prompt)
+                        requireReadOnly = false
+                    } else {
+                        requireReadOnly = parallelAgentChild
+                    }
+                    if parallelFanoutChild, !RouteFanout.isSafeFanoutPayload(prompt) {
+                        throw OS1Error.message("Fan-out child requires a bounded self-contained arithmetic payload")
+                    }
                 }
                 // The rail offers both surfaces of both vendors. Only the
                 // executors reach the gateway; a handoff never asks for a route.
@@ -15686,6 +15759,9 @@ struct OS1Main {
                         + ProviderSurface.allCases.map(\.rawValue).joined(separator: ", "))
                 }
                 if parallelAgentChild { try ParallelAgentRuntime.requireChildSurface(surface) }
+                if parallelFanoutChild, ![ProviderSurface.gptChat, .codex, .claude, .claudeChat, .chatgpt].contains(surface) {
+                    throw OS1Error.message("Fan-out child requires an executable native surface")
+                }
                 if surface == .chatgpt {
                     let summary = try runChatGPTHandoff(prompt: prompt, workspace: workspace)
                     if outputFormat == "json" {
@@ -15724,9 +15800,9 @@ struct OS1Main {
                 // A request that names a route for each of its parts runs each
                 // part there ("1+1 GPT한테. 2+2 Codex한테. …"), instead of the
                 // whole sentence reaching the router as one request.
-                if surface == .auto, !requireReadOnly, let fanout = RouteFanout.plan(prompt) {
-                    let summary = try await runRouteFanout(fanout, workspace: workspace, context: try readSessionContext(contextPath),
-                        codexSessionID: codexSessionID, claudeSessionID: claudeSessionID,
+                if !parallelAgentChild, !parallelFanoutChild, surface == .auto, !requireReadOnly, let fanout = RouteFanout.plan(prompt) {
+                    let summary = try await runConcurrentRouteFanout(fanout, originalPrompt: prompt,
+                        workspace: workspace, context: try readSessionContext(contextPath),
                         progress: outputFormat == "text", desktopReveal: desktopReveal)
                     if outputFormat == "json" {
                         let encoder = JSONEncoder()
@@ -15744,19 +15820,45 @@ struct OS1Main {
                         projectID: boundProjectID) &&
                     PreparationIntent.detect(prompt)?.preparationOnly != true
                 let summary: RunSummary
-                if ParallelAgentRuntime.shouldPlan(prompt, workspace: workspace, requireReadOnly: requireReadOnly, surface: surface) {
-                    summary = try await runParallelAgentTask(prompt: prompt, workspace: workspace,
+                if parallelAgentChild {
+                    summary = try await ParallelAgentRuntime.$isolatedWriter.withValue(validatedWriteGrant) {
+                        try await ParallelAgentRuntime.$readOnlyAgent.withValue(validatedWriteGrant == nil) {
+                            try await runTask(prompt: prompt, workspace: workspace, providerPreference: providerPreference,
+                                context: sessionContext, codexSessionID: nil, claudeSessionID: nil,
+                                codexCapacity: codexCapacity, claudeCapacity: claudeCapacity,
+                                progress: outputFormat == "text", desktopReveal: .never,
+                                requireReadOnly: validatedWriteGrant == nil)
+                        }
+                    }
+                } else if parallelFanoutChild {
+                    summary = try await ConcurrentRouteFanoutRuntime.$child.withValue(true) {
+                        try await ConcurrentRouteFanoutRuntime.$expectedSurface.withValue(surface) {
+                        try await runTask(prompt: prompt, workspace: workspace, providerPreference: providerPreference,
+                            context: sessionContext, codexSessionID: nil, claudeSessionID: nil,
+                            codexCapacity: codexCapacity, claudeCapacity: claudeCapacity,
+                            progress: outputFormat == "text", desktopReveal: .never)
+                        }
+                    }
+                } else if !RouteFanout.requestsProviderFanout(prompt),
+                    ParallelAgentRuntime.shouldPlan(prompt, workspace: workspace, requireReadOnly: requireReadOnly, surface: surface) {
+                    // Use the same existing registered project binding as the
+                    // ordinary executor, without healing/moving a source tree.
+                    // HOME is not an implementation workspace merely because
+                    // the conversation lives there; unresolved bindings retain
+                    // read-only preparation and the original executor.
+                    let binding = localProjectBinding(request: prompt,
+                        workspace: LocalProjectWorkspace.executionPath(workspace), namedProjectID: nil,
+                        boundProjectID: boundProjectID, readOnly: true)
+                    let planningWorkspace: String
+                    if let projectID = binding.projectID,
+                       let resolved = resolveLocalProjectWorkspace(projectID: projectID, requested: workspace) {
+                        planningWorkspace = resolved.workspace
+                    } else { planningWorkspace = workspace }
+                    summary = try await runParallelAgentTask(prompt: prompt, workspace: planningWorkspace,
                         providerPreference: providerPreference, context: sessionContext,
                         codexSessionID: codexSessionID, claudeSessionID: claudeSessionID,
                         codexCapacity: codexCapacity, claudeCapacity: claudeCapacity,
                         progress: outputFormat == "text", desktopReveal: desktopReveal, workflow: workflow)
-                } else if parallelAgentChild {
-                    summary = try await ParallelAgentRuntime.$readOnlyAgent.withValue(true) {
-                        try await runTask(prompt: prompt, workspace: workspace, providerPreference: providerPreference,
-                            context: sessionContext, codexSessionID: nil, claudeSessionID: nil,
-                            codexCapacity: codexCapacity, claudeCapacity: claudeCapacity,
-                            progress: outputFormat == "text", desktopReveal: .never, requireReadOnly: true)
-                    }
                 } else {
                 summary = try await (workflow ? runWorkflowTask(
                     prompt: prompt, workspace: workspace, providerPreference: providerPreference,
