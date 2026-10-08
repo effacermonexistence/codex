@@ -196,7 +196,7 @@ check('mismatch' in fixtures and ('prose' in fixtures.lower() or 'model' in fixt
 # source gate does not claim OS-level sandbox enforcement: it checks artifact
 # custody and delegates detailed mutation/failure cases to behavioral tests.
 runtime_code = lexical(runtime_evaluate, strings=True)
-frozen_var = re.search(r'let\s+(\w+)\s*=\s*try\s+frozenCandidate\s*\(', runtime_code)
+frozen_var = re.search(r'\b(\w+)\s*=\s*try\s+frozenCandidate\s*\(', runtime_code)
 payload = re.search(r'TaskQualityCheckerInput\s*\((.*?)\)', runtime_code, re.S)
 check(frozen_var is not None and payload is not None
       and re.search(r'\bworkspace\s*:\s*' + re.escape(frozen_var.group(1)) + r'\.path\b', payload.group(1)) is not None,
@@ -207,6 +207,32 @@ check('workspaceAfterHash' in runtime_evaluate and ('workspaceHash' in runtime_e
       'checker path must recheck the producing workspace hash against the recorded artifact')
 check(not re.search(r'\b(?:findExecutable|runTask|runWorkflowTask|runParallelAgentTask)\s*\(', lexical(runtime, strings=True)),
       'quality checker bridge must not invoke another provider or model workflow')
+
+# A partial pre-existing test recipe may veto an observed regression, never
+# certify an unmeasured task/reference floor. Freeze both test identities and
+# the production workspace before model execution; check two separate copies.
+prepare_code = lexical(function(runtime, 'prepare'), strings=True)
+check(re.search(r'\bPreparedTaskQuality\.prepare\s*\([^;]*\bworkspace\s*:\s*observedWorkspace', code, re.S) is not None,
+      'production preparation must bind the actual producing workspace')
+check('PythonRegressionSnapshot.acquire' in prepare_code and 'workspace: workspace' in prepare_code,
+      'partial recipe acquisition must occur in pre-dispatch preparation')
+check('fullCoverage: false' in function(runtime, 'prepare') and 'referenceProfiles: []' in function(runtime, 'prepare')
+      and 'reference: nil' in function(runtime, 'prepare'),
+      'partial test observations must not synthesize full coverage or frontier parity')
+check('snapshot.originalTests' in runtime_code and 'bytes.write' in runtime_code,
+      'original pre-dispatch test bytes must be restored into the original-suite copy')
+check('candidateSuite = try frozenCandidate' in runtime_code and 'candidateWorkspace: candidateSuite?.path' in runtime_code,
+      'the candidate test suite must run against a separate copied artifact')
+check('partial.original_unittest' in runtime and 'partial.candidate_unittest' in runtime
+      and 'copiedPythonRegressionLaunch' in runtime_code,
+      'both partial suites must produce observations through the bounded copied-artifact execution path')
+check('captureDirectory: runRoot' in runtime_code,
+      'constrained checker stdout/stderr must remain inside its allowed scratch boundary')
+check('captureDirectory ?? FileManager.default.temporaryDirectory' in function(main, 'commandOutput'),
+      'optional constrained capture must preserve the default for unrelated execution paths')
+check('allowRegressionAcquisition: !qualityRegressionAcquisitionAttempted' in code
+      and 'frozenQualityWorkspace == observedWorkspace ? frozenQualityRegression : nil' in code,
+      'retry must reuse first test custody only for the same workspace, never reacquire model-rewritten tests')
 
 if failures:
     for failure in failures:

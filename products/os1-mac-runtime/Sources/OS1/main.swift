@@ -2118,9 +2118,13 @@ func commandOutput(
     onLaunch: (() -> Void)? = nil,
     onOutput: ((Data) -> Void)? = nil,
     interactiveStdin: ((FileHandle) -> Void)? = nil,
-    releaseAfterFinalAnswer: (() -> Bool)? = nil
+    releaseAfterFinalAnswer: (() -> Bool)? = nil,
+    captureDirectory: URL? = nil
 ) throws -> (Int32, Data, Data) {
-    let temporary = FileManager.default.temporaryDirectory.appendingPathComponent("os1-process-\(UUID().uuidString)")
+    // Constrained checkers must write their inherited capture handles inside
+    // the same scratch boundary; unrelated callers retain the existing default.
+    let temporary = (captureDirectory ?? FileManager.default.temporaryDirectory)
+        .appendingPathComponent("os1-process-\(UUID().uuidString)")
     try FileManager.default.createDirectory(at: temporary, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
     defer { try? FileManager.default.removeItem(at: temporary) }
     let stdoutURL = temporary.appendingPathComponent("stdout")
@@ -10595,6 +10599,11 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
     recordRoutingInput(request, ticket: route.ticket, source: sourceContext)
     var steps: [RunStepSummary] = []
     var failedCandidates = Set<String>()
+    // Retry may change the execution context, not the authority of tests a
+    // previous candidate rewrote. Keep first-dispatch custody for this request.
+    var frozenQualityRegression: PythonRegressionSnapshot?
+    var frozenQualityWorkspace: String?
+    var qualityRegressionAcquisitionAttempted = false
     var quotaUnavailableProviders = Set<String>()
     var lastLocalFailure: String?
     var sourceBackendSwitched = false
@@ -10782,7 +10791,14 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
         let preparedQuality = try? PreparedTaskQuality.prepare(objective: objectiveRequest,
             contextSHA256: attemptInputSHA256, sourceSHA256: sourceContext?.sha256,
             startTreeSHA256: beforeHash, scope: resolvedScope,
-            referencePolicySHA256: qualityPolicySHA256)
+            referencePolicySHA256: qualityPolicySHA256, workspace: observedWorkspace,
+            frozenRegression: frozenQualityWorkspace == observedWorkspace ? frozenQualityRegression : nil,
+            allowRegressionAcquisition: !qualityRegressionAcquisitionAttempted)
+        if !qualityRegressionAcquisitionAttempted {
+            frozenQualityRegression = preparedQuality?.frozenRegressionSnapshot
+            frozenQualityWorkspace = observedWorkspace
+            qualityRegressionAcquisitionAttempted = true
+        }
         let attemptStartedAt = Date()
         let monitorScope = CompletionFeedbackScope(objectiveSHA256: feedbackScope.objectiveSHA256,
             sourceSHA256: feedbackScope.sourceSHA256, executorContractSHA256: feedbackScope.executorContractSHA256,
