@@ -7910,9 +7910,17 @@ private final class SessionStore: ObservableObject {
             }
         }
         if inFlightSubmissions[id] != nil { return nil }
-        return sessions.first(where: { $0.id == id })?.agentTask.flatMap {
-            try? $0.validated(conversationID: id)
-        }
+        guard let session = sessions.first(where: { $0.id == id }) else { return nil }
+        if let saved = session.agentTask.flatMap({ try? $0.validated(conversationID: id) }) { return saved }
+        // Historical display only. Legacy producers could change the saved
+        // request wording after dispatch, so its current hash cannot recover
+        // an old graph. Exact conversation+submission custody still applies.
+        // Active/external/in-flight cases above NEVER enter this fallback.
+        guard let original = session.lastFailure, original.sessionID == id,
+              original.recoveryParentID == nil else { return nil }
+        return try? ParallelAgentTask.loadBound(path: parallelAgentTaskRoot
+            .appendingPathComponent(original.id.uuidString + ".json").path,
+            conversationID: id, submissionID: original.id)
     }
 
     @discardableResult
@@ -16438,6 +16446,35 @@ private func agentTaskTreeSelfTest() async throws {
     try check(reloaded.agentTaskSnapshot(for: sessionID) == nil, "new nonparallel run does not inherit an old terminal graph")
     reloaded.activeRuns.removeValue(forKey: sessionID)
     try check(reloaded.agentTaskSnapshot(for: sessionID)?.planID == graph.planID, "recorded prior graph remains available as history")
+    let historicalRoot = root.appendingPathComponent("inactive-history")
+    let historical = SessionStore(storageRoot: historicalRoot, nativeSessionOpener: { _ in false })
+    let historicalID = historical.selectedSessionID!
+    var recorded = terminalAgentTaskTreeFixture(graph); recorded.conversationID = historicalID
+    let historicalGraphRoot = historicalRoot.appendingPathComponent("agent-tasks")
+    try FileManager.default.createDirectory(at: historicalGraphRoot, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+    let historicalGraphPath = historicalGraphRoot.appendingPathComponent(recorded.submissionID.uuidString + ".json").path
+    try ParallelAgentTask.saveBound(recorded, path: historicalGraphPath)
+    var legacyFailure = PendingSubmission(id: recorded.submissionID, sessionID: historicalID, userMessageID: UUID(),
+        request: "Legacy saved wording changed after its actual dispatch", provider: .auto,
+        workspace: historicalRoot.path, codexCapacity: 100, claudeCapacity: 100)
+    legacyFailure.preflightOnly = false
+    historical.sessions[0].lastFailure = legacyFailure
+    try check(historical.sessions[0].agentTask == nil && historical.agentTaskSnapshot(for: historicalID)?.planID == recorded.planID,
+        "inactive legacy failure retrieves only its exact historical graph without current-request hash")
+    let historyView = AgentTaskInspectorState(conversationID: historicalID, snapshot: historical.agentTaskSnapshot(for: historicalID),
+        sessionTitle: "Recorded fixture", isLive: historical.isSessionRunning(historicalID))
+    try check(!historyView.isLive && historyView.snapshot?.submissionID == recorded.submissionID,
+        "historical display does not claim current execution")
+    historical.activeRuns[historicalID] = .init(submissionID: UUID(), started: Date(), activity: RuntimeActivity(.preparing))
+    try check(historical.agentTaskSnapshot(for: historicalID) == nil, "new active run cannot inherit historical fallback")
+    historical.activeRuns.removeValue(forKey: historicalID)
+    var foreignHistory = recorded; foreignHistory.conversationID = UUID()
+    try ParallelAgentTask.saveBound(foreignHistory, path: historicalGraphPath)
+    try check(historical.agentTaskSnapshot(for: historicalID) == nil, "historical fallback rejects foreign conversation")
+    foreignHistory = recorded; foreignHistory.submissionID = UUID()
+    try ParallelAgentTask.saveBound(foreignHistory, path: historicalGraphPath)
+    try check(historical.agentTaskSnapshot(for: historicalID) == nil, "historical fallback rejects foreign submission")
+    try ParallelAgentTask.saveBound(recorded, path: historicalGraphPath)
     var original = try JSONSerialization.jsonObject(with: JSONEncoder().encode(store.sessions.first { $0.id == sessionID }!)) as! [String: Any]
     original["agentTask"] = ["schema": 999, "nodes": "malformed optional telemetry"]
     let malformed = try JSONDecoder().decode(ConversationSession.self, from: JSONSerialization.data(withJSONObject: original))
