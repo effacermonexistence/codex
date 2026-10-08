@@ -165,7 +165,7 @@ func taskQualityReferencePolicySHA256(config: RuntimeConfig) -> String {
     // Declared reference identities, not a name-based claim of automatic future
     // frontier discovery. Any model/effort/instruction-contract change expires
     // matching prior evidence. No comparison is synthesized from this declaration.
-    let fields = ["os1-task-quality-reference-v1", "codex:gpt-6-astra:ultra", "claude:claude-opus-5-5:max",
+    let fields = ["os1-task-quality-reference-v1", "codex:gpt-6-astra:ultra", "claude:claude-fable-5-1:max",
                   config.executorContract.sha256, OwnerPolicyContext.snapshot?.sourceSHA256 ?? "no-owner-policy",
                   OwnerPolicyContext.snapshot?.projectionSHA256 ?? "no-owner-projection"]
     return TaskQualityEvidence.digest(Data(fields.joined(separator: "\n").utf8))

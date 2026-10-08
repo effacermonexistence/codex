@@ -56,3 +56,9 @@ No new paid model comparison was run. Consequently this repair does not establis
 - Private archive initial PUT had a transient transport error; absence checked, exact bounded retry and full remote readback succeeded.
 
 Actual private release/install/R2 receipts record activation times and hashes. A branch push is not a merge; a restore drill is not live data replacement; a declaration is not executed comparison.
+
+## Reference correction after current primary-source verification
+
+On 2026-10-08, the current official Anthropic choosing-model guide identifies Fable5.1 as the highest generally available capability, distinct from the Opus5.5 recommendation for most workloads. The subsequent policy supersedes the Claude reference with `claude-fable-5-1/max`; it does not force that model for every execution. Earlier Opus baseline records remain historical and must not be labeled current strongest-Claude proof. The added Oct8 Notes block was separately captured (runtime source SHA `63b767ba9445aee366c1bfa73722055afc72e1a7b943aac4c5ef800283501834`); its scope/burden enforcement adds no new routing primitive.
+
+Source: https://platform.claude.com/docs/en/about-claude/models/choosing-a-model
