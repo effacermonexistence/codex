@@ -204,12 +204,12 @@
       "sourceURL": "https://github.com/effacermonexistence/codex/blob/2040dfad95ab205d8302e857321a70605d0b0127/products/os1-mac-runtime/Sources/OS1App/ProfileMenuVerification.swift"
     },
     "8fb392747ff78834ed9e35b886548bfc4b28c35f3efbb28ac1a662f95657f191": {
-      "description": "Exact compiler-emitted non-secret diagnostic source path prefix for the public build343 OS1App.swift. No path-prefix, Mach-O-region or arbitrary high-entropy exemption. Source bytes and immutable source revision verified before adoption.",
+      "description": "Exact compiler-emitted non-secret diagnostic source path prefix for the public build344 OS1App.swift. No path-prefix, Mach-O-region or arbitrary high-entropy exemption. Source bytes and immutable source revision verified before adoption.",
       "publicToken": "/Users/LUA/Documents/Codex/OS1-parallel-observability-20261007/products/os1-mac-runtime/Sources/OS1App/OS1App",
       "source": "products/os1-mac-runtime/Sources/OS1App/OS1App.swift",
-      "sourceRevision": "8344b4320ddf580fe74f3ee5d98f8603c5ef4274",
-      "sourceSHA256": "871deda27fb11ee02e8786f45c779cb7683c2e610bc363447e4567c3966575ef",
-      "sourceURL": "https://github.com/effacermonexistence/codex/blob/8344b4320ddf580fe74f3ee5d98f8603c5ef4274/products/os1-mac-runtime/Sources/OS1App/OS1App.swift"
+      "sourceRevision": "ac747fb184a60d1885a03de89d57586a01ba718d",
+      "sourceSHA256": "1f961ccb26fbc5758b35a0dabb7d94b027cf1aa9f6d7ecedd05d4945bb359e52",
+      "sourceURL": "https://github.com/effacermonexistence/codex/blob/ac747fb184a60d1885a03de89d57586a01ba718d/products/os1-mac-runtime/Sources/OS1App/OS1App.swift"
     }
   }
 }
