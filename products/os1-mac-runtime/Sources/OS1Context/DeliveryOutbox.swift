@@ -17,6 +17,7 @@ public struct DeliveryRecord: Codable, Sendable {
     public let localRejection: String?
     public let driftApplication: DriftApplication?
     public let driftSteered: Bool?
+    public var taskQuality: TaskQualityEvidence.Evaluation?
     public var response: Data?
     /// The corrections the producing run's submission had persisted when this
     /// result was saved (build 329). A delivery is verified against these, not
@@ -26,13 +27,13 @@ public struct DeliveryRecord: Codable, Sendable {
     public var persistedCorrectionIDs: [UUID]?
     public init(id: String, apiURL: String, deviceID: String, resultSHA256: String,
                 artifact: Data, upload: Data, submission: Data, step: Data, source: SourceReference?, output: String,
-                localRejection: String? = nil, driftApplication: DriftApplication? = nil, driftSteered: Bool? = nil,
+                localRejection: String? = nil, taskQuality: TaskQualityEvidence.Evaluation? = nil, driftApplication: DriftApplication? = nil, driftSteered: Bool? = nil,
                 persistedCorrectionIDs: [UUID]? = nil) {
         self.persistedCorrectionIDs = persistedCorrectionIDs
         self.id = id; self.apiURL = apiURL; self.deviceID = deviceID; self.resultSHA256 = resultSHA256
         self.artifact = artifact; self.upload = upload; self.submission = submission
         self.step = step; self.source = source; self.output = output
-        self.localRejection = localRejection
+        self.localRejection = localRejection; self.taskQuality = taskQuality
         self.driftApplication = driftApplication; self.driftSteered = driftSteered
         submissionID = ProcessInfo.processInfo.environment["OS1_SUBMISSION_ID"].flatMap { UUID(uuidString:$0)?.uuidString }
     }
@@ -82,7 +83,8 @@ public struct DeliveryOutbox {
         guard bytes.count <= 8_000_000 else { throw CocoaError(.fileReadCorruptFile) }
         let value = try JSONDecoder().decode(DeliveryRecord.self, from: bytes)
         let hash = SHA256.hash(data: value.artifact).map { String(format: "%02x", $0) }.joined()
-        guard value.id == id, hash == value.resultSHA256 else { throw CocoaError(.fileReadCorruptFile) }
+        guard value.id == id, hash == value.resultSHA256,
+              value.taskQuality.map({ $0.artifactSHA256 == hash }) ?? true else { throw CocoaError(.fileReadCorruptFile) }
         return value
     }
 }

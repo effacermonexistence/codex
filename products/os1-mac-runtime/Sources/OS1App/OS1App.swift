@@ -5566,6 +5566,7 @@ private struct ChatMessage: Codable, Identifiable, Equatable, Sendable {
     /// Receipts record native readback; false on an assistant message marks
     /// provisional custody only. Absent on historical adopted messages.
     let nativeRecordVerified: Bool?
+    let taskQuality: TaskQualityEvidence.Evaluation?
     /// Set when the message was read back from a bound native session rather
     /// than sent or adopted through OS-1 (provider:recordID).
     let nativeIngestedID: String?
@@ -5590,6 +5591,7 @@ private struct ChatMessage: Codable, Identifiable, Equatable, Sendable {
         permissionProfile: String? = nil,
         timestamp: Date = Date(),
         nativeRecordVerified: Bool? = nil,
+        taskQuality: TaskQualityEvidence.Evaluation? = nil,
         nativeIngestedID: String? = nil
     ) {
         self.id = id
@@ -5603,6 +5605,7 @@ private struct ChatMessage: Codable, Identifiable, Equatable, Sendable {
         self.permissionProfile = permissionProfile
         self.timestamp = timestamp
         self.nativeRecordVerified = nativeRecordVerified
+        self.taskQuality = taskQuality
         self.nativeIngestedID = nativeIngestedID
     }
 }
@@ -6081,6 +6084,7 @@ private struct AppRunStep: Decodable, Sendable {
     var verifiedPreviewDelivery: VerifiedPreviewDelivery? = nil
     /// On a review's answer: the draft it checked against the code.
     var reviewedDraft: String? = nil
+    var taskQuality: TaskQualityEvidence.Evaluation? = nil
 
     enum CodingKeys: String, CodingKey {
         case sequence, provider, action, model, effort, output, stderr, surface
@@ -6093,6 +6097,7 @@ private struct AppRunStep: Decodable, Sendable {
         case verifiedPreviewDelivery = "verified_preview_delivery"
         case workflowStage = "workflow_stage"
         case reviewedDraft = "reviewed_draft"
+        case taskQuality = "task_quality"
     }
 
     /// Explicit lane evidence only. Display fallback must not become stored
@@ -6307,13 +6312,26 @@ private func nativeRecordReceipt(_ step: AppRunStep) -> String {
 
 /// The ordinary step receipt stays unchanged. A fan-out's final receipt owns
 /// the whole request, not just the local summarizer that happened to run last.
+private func taskQualityReceiptStatus(_ quality: TaskQualityEvidence.Evaluation) -> String {
+    switch quality.state {
+    case .executionOnly, .unverified: return os1Tr("과제 품질 미검증", "Task quality unverified")
+    case .taskContractVerified: return os1Tr("과제 계약 검증됨 · 기준 비교 없음", "Task contract verified · no reference comparison")
+    case .referenceEquivalent: return os1Tr("고정 기준과 동등", "Equivalent to locked reference")
+    case .referenceAbove: return os1Tr("고정 기준보다 우위", "Above locked reference")
+    case .mismatch: return os1Tr("과제 품질 검사 실패", "Task quality check failed")
+    }
+}
+
 private func executionReceipt(_ step: AppRunStep, source: SourceReference? = nil) -> String {
     let control = "\(step.routeTitle) · \(step.executionDetail) · \(backendTierLabel(action: step.action, provider: step.provider)) · \(step.model ?? "provider default") · \(step.effort) reasoning · \(step.revasDisposition == "control_verified" ? "OS-1 control verified" : "REVAS adopted") · \(step.reviewedDraft.map { os1Tr("\($0) 초안을 코드와 대조해 검토", "checked the \($0) draft against the code") + " · " } ?? "")\(nativeRecordReceipt(step)) · \(step.workflowStage.map { "workflow \($0) · " } ?? "")step \(step.sequence) · \(step.durationMS / 1_000)s · exit \(step.exitCode)" +
         (step.provider != "local" && source != nil ? " · source snapshot delivered: \(source!.sha256)" : "")
+    let quality = step.taskQuality.map { "\nTask quality: \($0.state.rawValue) · \($0.reason) · artifact \($0.artifactSHA256)" }
+        ?? "\nTask quality: historical execution-only record; no reference comparison is recorded"
+    let qualityControl = control + quality
     guard step.action == "route_fanout", step.provider == "local", stepRecordIsVerified(step),
           let path = step.nativeRecord?.recordPath,
-          let record = boundRouteFanoutRecord(path: URL(fileURLWithPath: path), id: step.sessionID, output: step.output) else { return control }
-    return routeFanoutDetails(record) + os1Tr("\n\nOS-1 제어 기록\n", "\n\nOS-1 control record\n") + control
+          let record = boundRouteFanoutRecord(path: URL(fileURLWithPath: path), id: step.sessionID, output: step.output) else { return qualityControl }
+    return routeFanoutDetails(record) + os1Tr("\n\nOS-1 제어 기록\n", "\n\nOS-1 control record\n") + qualityControl
 }
 
 /// No prose or selected tile is execution authority. Read only the private,
@@ -6861,7 +6879,7 @@ private func savedResultReceipt(_ result: DeliveryRecord, id: UUID = UUID(), tim
                   "step \(step.sequence)", "\(step.durationMS / 1_000)s", "exit \(step.exitCode)"]
     }
     return ChatMessage(id: id, role: .receipt, text: parts.joined(separator: " · "),
-        provider: step?.provider, executionSurface: step?.executedSurface?.rawValue, permissionProfile: step?.permissionProfile, timestamp: timestamp, nativeRecordVerified: verified)
+        provider: step?.provider, executionSurface: step?.executedSurface?.rawValue, permissionProfile: step?.permissionProfile, timestamp: timestamp, nativeRecordVerified: verified, taskQuality: result.taskQuality)
 }
 
 /// Refresh only the visible receipt for a saved failed attempt. Original chat
@@ -9854,7 +9872,8 @@ private final class SessionStore: ObservableObject {
                         executionSurface: step.executedSurface?.rawValue,
                         permissionProfile: step.permissionProfile,
                         nativeRecordVerified: stepRecordIsVerified(step) &&
-                            (step.revasDisposition == "adopted" || step.provider == "local")
+                            (step.revasDisposition == "adopted" || step.provider == "local"),
+                        taskQuality: step.taskQuality
                     ))
                 }
                 sessions[target].updatedAt = Date()
@@ -13385,7 +13404,7 @@ private struct OS1DesktopApp: App {
                             permissionProfile: step.permissionProfile))
                         preview.messages.append(ChatMessage(role: .receipt,
                             text: executionReceipt(step, source: summary.sourceContext),
-                            provider: step.provider, executionSurface: step.executedSurface?.rawValue, nativeRecordVerified: stepRecordIsVerified(step)))
+                            provider: step.provider, executionSurface: step.executedSurface?.rawValue, nativeRecordVerified: stepRecordIsVerified(step), taskQuality: step.taskQuality))
                     }
                     session = preview // in-memory only; never added to the user's sessions
                 } else {
@@ -17563,7 +17582,7 @@ private func timelineAttributedDocument(
             let status = message.nativeRecordVerified == true
                 ? os1Tr("실행 기록 확인됨", "Execution record verified") : os1Tr("실행 기록 미확인", "Execution record unverified")
             let details = NSMutableAttributedString(attributedString: TranscriptMarkdown.detailLink(
-                "\(status) · \(show ? os1Tr("세부 정보 접기", "Hide details") : os1Tr("세부 정보 보기", "Show details"))", key: key,
+                "\(status)\(message.taskQuality.map { " · " + taskQualityReceiptStatus($0) } ?? "") · \(show ? os1Tr("세부 정보 접기", "Hide details") : os1Tr("세부 정보 보기", "Show details"))", key: key,
                 color: TimelinePalette.detail))
             if show {
                 details.append(NSAttributedString(string: os1Tr("\u{2028}백엔드 실행 기록의 확인 여부입니다. 답변의 정확성이나 과제 완수를 보증하지 않습니다.\u{2028}",

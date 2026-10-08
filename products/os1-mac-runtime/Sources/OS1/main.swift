@@ -836,6 +836,8 @@ struct RunStepSummary: Codable {
     var ownerPolicyProjectionSHA256: String? = OwnerPolicyContext.snapshot?.projectionSHA256
     /// On a review's answer: the draft it checked ("codex · gpt-6-astra · high").
     var reviewedDraft: String? = nil
+    /// Exact task/checker evidence, independent of native transport adoption.
+    var taskQuality: TaskQualityEvidence.Evaluation? = nil
     /// This attempt ran confined from OS-1's live source instead of holding
     /// its shared lease (`OS1SourceConfinement`). In-process only: never
     /// encoded, so a resumed delivery is never escalated.
@@ -860,6 +862,7 @@ struct RunStepSummary: Codable {
         case ownerPolicySourceSHA256 = "owner_policy_source_sha256"
         case ownerPolicyProjectionSHA256 = "owner_policy_projection_sha256"
         case reviewedDraft = "reviewed_draft"
+        case taskQuality = "task_quality"
     }
 }
 
@@ -7785,8 +7788,10 @@ func completionCandidateKey(provider: String, model: String, effort: String, per
     [provider, model, effort, permission].joined(separator: "\u{0}")
 }
 
-func completionLocallyAdoptable(failure: String?, exitCode: Int32, output: String, persistence: String) -> Bool {
-    failure == nil && exitCode == 0 && !output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+func completionLocallyAdoptable(failure: String?, exitCode: Int32, output: String, persistence: String,
+                               taskQuality: TaskQualityEvidence.Evaluation? = nil) -> Bool {
+    if taskQuality?.state == .mismatch { return false }
+    return failure == nil && exitCode == 0 && !output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
         persistence == "verified"
 }
 
@@ -10771,6 +10776,13 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
         let attemptInputSHA256 = CompletionFeedbackScope.inputDigest(assembledInput: attemptPrompt,
             codexSessionID: nativeSessions["codex"] ?? nil, claudeSessionID: nativeSessions["claude"] ?? nil,
             workspace: canonicalWorkspace)
+        // Freeze an exact trusted checker before the model can edit its workspace.
+        // No contract is fabricated from model prose or a generic test-suite pass.
+        let qualityPolicySHA256 = taskQualityReferencePolicySHA256(config: config)
+        let preparedQuality = try? PreparedTaskQuality.prepare(objective: objectiveRequest,
+            contextSHA256: attemptInputSHA256, sourceSHA256: sourceContext?.sha256,
+            startTreeSHA256: beforeHash, scope: resolvedScope,
+            referencePolicySHA256: qualityPolicySHA256)
         let attemptStartedAt = Date()
         let monitorScope = CompletionFeedbackScope(objectiveSHA256: feedbackScope.objectiveSHA256,
             sourceSHA256: feedbackScope.sourceSHA256, executorContractSHA256: feedbackScope.executorContractSHA256,
@@ -11164,6 +11176,20 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
         AttemptLatencyTrace.mark("artifact_ready")
         let artifactData = try JSONEncoder().encode(artifact)
         let resultHash = sha256Hex(artifactData)
+        let taskQuality: TaskQualityEvidence.Evaluation
+        if let closed = TaskQualityEvidence.evaluateClosedTask(objective: objectiveRequest, output: artifact.output,
+            artifactSHA256: resultHash, executionVerified: artifact.exitCode == 0 && artifact.nativeRecord.isVerified) {
+            taskQuality = closed
+        } else if let preparedQuality {
+            taskQuality = (try? preparedQuality.evaluate(artifact: artifact, artifactSHA256: resultHash,
+                contextSHA256: attemptInputSHA256, workspace: observedWorkspace, executionID: ticket.executionID))
+                ?? TaskQualityEvidence.Evaluation(state: .unverified, reason: "Frozen task checker could not produce a bound receipt",
+                    contractSHA256: preparedQuality.envelope.contract.sha256, artifactSHA256: resultHash,
+                    requiredCheckIDs: preparedQuality.envelope.contract.requiredCheckIDs, failedCheckIDs: [])
+        } else { taskQuality = unresolvedTaskQuality(artifactSHA256: resultHash) }
+        if taskQuality.state == .mismatch {
+            attemptFailure = "OS1_TASK_QUALITY_MISMATCH: " + taskQuality.failedCheckIDs.joined(separator: ",")
+        }
         RuntimeActivity.emit(.verifying, provider: ticket.provider, surface: execution.surface, model: model, effort: effort,
             publicText: artifact.output)
         AttemptLatencyTrace.mark("artifact_output_published")
@@ -11189,11 +11215,11 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
             model: model, effort: effort, revasDisposition: "verification_pending", sessionID: execution.sessionID,
             permissionProfile: ticket.permissionProfile, exitCode: artifact.exitCode, output: artifact.output,
             stderr: artifact.stderr, durationMS: artifact.durationMS, nativeRecord: execution.nativeRecord,
-            surface: execution.surface, verifiedPreviewDelivery: verifiedPreviewDelivery)
+            surface: execution.surface, verifiedPreviewDelivery: verifiedPreviewDelivery, taskQuality: taskQuality)
         var delivery = DeliveryRecord(id: "\(ticket.executionID)-\(ticket.sequence)", apiURL: config.apiURL, deviceID: id,
             resultSHA256: resultHash, artifact: artifactData, upload: try JSONEncoder().encode(upload),
             submission: try JSONEncoder().encode(submission), step: try JSONEncoder().encode(pendingStep),
-            source: sourceContext, output: artifact.output, localRejection: attemptFailure,
+            source: sourceContext, output: artifact.output, localRejection: attemptFailure, taskQuality: taskQuality,
             driftApplication: execution.driftApplication, driftSteered: driftAttemptWasSteered,
             persistedCorrectionIDs: os1DeliveredCorrectionIDs(submissionID: ExecutionSteering.currentSubmission?.uuidString))
         // Custody must succeed before the first network write. Never discard a
@@ -11241,7 +11267,7 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
             throw failure
         }
         let locallyAdoptable = completionLocallyAdoptable(failure: attemptFailure,
-            exitCode: artifact.exitCode, output: artifact.output, persistence: execution.nativeRecord.persistence)
+            exitCode: artifact.exitCode, output: artifact.output, persistence: execution.nativeRecord.persistence, taskQuality: taskQuality)
         if route.status == "complete", !locallyAdoptable, sourceRecoveryProvider == nil, terminalPermissionFailure == nil,
            step < attemptLimit, ticket.permissionProfile == "read_only" || postCheckRetry, let diagnostic = attemptFailure,
            !artifact.output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -11300,7 +11326,11 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
             adopted: revasDisposition == "adopted")
         recordCompletionAttempt(store: feedbackStore, scope: feedbackScope, ticket: ticket,
             model: model, effort: effort,
-            outcome: revasDisposition == "adopted" ? .adopted : completionFailureOutcome(attemptFailure),
+            // Native delivery is useful measured usage, but is not a successful
+            // quality sample when exact completion/reference evidence is absent.
+            outcome: revasDisposition == "adopted"
+                ? (taskQuality.taskCompletionVerified ? .adopted : .verificationUnavailable)
+                : completionFailureOutcome(attemptFailure),
             usage: attemptUsage, startedAt: attemptStartedAt, source: sourceContext, monitorTaskID: monitorTaskID, monitorScope: monitorScope, surface: attemptSurface?.rawValue)
         attemptRecorded = true
         if revasDisposition != "adopted",
@@ -11394,7 +11424,7 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
                 durationMS: artifact.durationMS,
                 nativeRecord: adoptedRecord,
                 surface: execution.surface,
-                verifiedPreviewDelivery: verifiedPreviewDelivery,
+                verifiedPreviewDelivery: verifiedPreviewDelivery, taskQuality: taskQuality,
                 os1SourceConfined: attemptConfined,
                 os1ChangeRequired: attemptConfined && execution.os1ChangeRequired,
                 os1FullAccessRequired: attemptConfined && execution.os1FullAccessRequired
@@ -11429,11 +11459,16 @@ func resumeDelivery(_ identifier: String) async throws -> RunSummary {
     guard record.apiURL == config.apiURL, record.deviceID == id else { throw OS1Error.message(os1Tr("저장된 결과의 계정·서버 경계가 다릅니다. 재전송하지 않았습니다.",
                                                                                                     "The saved result belongs to a different account/server boundary. It was not resent.")) }
     let step = try JSONDecoder().decode(RunStepSummary.self, from: record.step)
+    guard record.taskQuality?.state != .mismatch, step.taskQuality?.state != .mismatch else {
+        throw OS1Error.message("Saved result failed its frozen task-quality contract; the original was preserved and was not re-run")
+    }
     let artifact = try JSONDecoder().decode(Artifact.self, from: record.artifact)
     let submission = try JSONDecoder().decode(ResultSubmission.self, from: record.submission)
     let upload = try JSONDecoder().decode(ArtifactUpload.self, from: record.upload)
     guard submission.resultHash == record.resultSHA256, upload.resultHash == record.resultSHA256,
           artifact.output == record.output, step.output == artifact.output, step.exitCode == artifact.exitCode,
+          record.taskQuality == step.taskQuality,
+          record.taskQuality.map({ $0.artifactSHA256 == record.resultSHA256 }) ?? true,
           step.provider == artifact.provider, step.permissionProfile == artifact.permissionProfile,
           step.sequence == submission.ticket.sequence, step.action == artifact.action,
           step.model == artifact.model, step.effort == artifact.effort,
@@ -11466,8 +11501,9 @@ func resumeDelivery(_ identifier: String) async throws -> RunSummary {
             dispatchStage: .dispatched, source: record.source, permissionProfile: step.permissionProfile, deliveryID: record.id, surface: step.surface).emit()
         throw error
     }
-    guard route.status == "complete", step.exitCode == 0, !step.output.isEmpty,
-          step.nativeRecord?.persistence == "verified" else {
+    guard route.status == "complete", completionLocallyAdoptable(failure: record.localRejection,
+          exitCode: step.exitCode, output: step.output, persistence: step.nativeRecord?.persistence ?? "unverified",
+          taskQuality: step.taskQuality) else {
         throw OS1Error.message(os1Tr("저장된 답변이 검증에서 채택되지 않았습니다. 새 모델 실행은 하지 않았고 원본을 보존했습니다.",
                                      "The saved answer was not adopted by verification. No new model run was started, and the original is preserved."))
     }
@@ -11495,7 +11531,7 @@ func resumeDelivery(_ identifier: String) async throws -> RunSummary {
         action: step.action, model: step.model, effort: step.effort, revasDisposition: "adopted", sessionID: step.sessionID,
         permissionProfile: step.permissionProfile, exitCode: step.exitCode, output: step.output, stderr: step.stderr,
         durationMS: step.durationMS, nativeRecord: native, surface: step.surface,
-        workflowStage: step.workflowStage, verifiedPreviewDelivery: step.verifiedPreviewDelivery)], sourceContext: record.source,
+        workflowStage: step.workflowStage, verifiedPreviewDelivery: step.verifiedPreviewDelivery, taskQuality: step.taskQuality)], sourceContext: record.source,
         persistedCorrectionIDs: os1DeliveryCorrectionIDs(record))
 }
 
@@ -11533,13 +11569,16 @@ func printRunSummary(_ summary: RunSummary) {
                 + (record.recordPath.map { " · \($0)" } ?? "")
                 + " · desktop: \(record.desktopVisibility)")
         }
+        if let quality = step.taskQuality {
+            print("task quality: \(quality.state.rawValue) · \(quality.reason)")
+        }
         if !step.output.isEmpty { print(step.output) }
         if step.exitCode != 0 && !step.stderr.isEmpty {
             fputs("\(step.stderr)\n", stderr)
         }
     }
     if summary.status == "complete" {
-        print("\nOS-1 completed with \(adopted.count) adopted result(s)")
+        print("\nOS-1 returned \(adopted.count) execution-adopted result(s); task/reference quality is recorded separately")
     } else {
         print("\nOS-1 held: \(summary.workflowBlocker ?? summary.status)")
     }
@@ -11957,6 +11996,7 @@ func selfTest() throws {
             else { unsetenv(key) }
         }
     }
+    try taskQualityRuntimeSelfTest()
     try ManagedPreview.selfTest()
     try browserMCPSelfTest()
     try memoryMCPSelfTest()
@@ -15576,6 +15616,9 @@ struct OS1Main {
                 try claudeSteeringSelfTest()
             case "full-access-handback-self-test":
                 try await fullAccessHandBackSelfTest()
+            case "self-test-task-quality":
+                LiveRunEnvironment.detachCurrentProcess()
+                try taskQualityRuntimeSelfTest()
             case "self-test":
                 // A fixture, never part of a live run it was started in.
                 LiveRunEnvironment.detachCurrentProcess()

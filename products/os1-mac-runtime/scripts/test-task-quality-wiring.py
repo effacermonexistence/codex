@@ -1,0 +1,216 @@
+#!/usr/bin/env python3
+"""Model-free source wiring regression for task/reference quality adoption.
+
+This is a structural call-site gate, not a runtime quality proof or merge
+approval. It only reads this checkout. Behavioral/hash/prose adversaries belong
+to TaskQualityFixture.swift; real checker evidence stays in private custody.
+"""
+import re
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+failures = []
+checks = 0
+
+
+def check(value, message):
+    global checks
+    checks += 1
+    if not value:
+        failures.append(message)
+
+
+def load(relative):
+    p = ROOT / relative
+    if not p.is_file():
+        failures.append('missing production source: ' + relative)
+        return ''
+    return p.read_text(encoding='utf-8')
+
+
+def lexical(source, strings=False):
+    """Preserve offsets while removing comments; optionally mask strings.
+
+    Enough Swift lexical handling for nested comments and raw/multiline strings
+    so a prose comment mentioning a quality call cannot satisfy wiring tests.
+    """
+    out = list(source)
+    string_start = re.compile(r'(#{0,8})("""|")')
+    i = 0
+    while i < len(source):
+        if source.startswith('//', i):
+            end = source.find('\n', i)
+            end = len(source) if end < 0 else end
+            out[i:end] = ' ' * (end - i)
+            i = end
+        elif source.startswith('/*', i):
+            start, depth = i, 1
+            i += 2
+            while i < len(source) and depth:
+                if source.startswith('/*', i):
+                    depth += 1
+                    i += 2
+                elif source.startswith('*/', i):
+                    depth -= 1
+                    i += 2
+                else:
+                    i += 1
+            out[start:i] = ' ' * (i - start)
+        else:
+            match = string_start.match(source, i)
+            if not match:
+                i += 1
+                continue
+            hashes, quotes = match.groups()
+            start = i
+            i += len(hashes) + len(quotes)
+            ending = quotes + hashes
+            while i < len(source):
+                if source.startswith(ending, i):
+                    i += len(ending)
+                    break
+                if not hashes and source[i] == '\\':
+                    i += 2
+                else:
+                    i += 1
+            if strings:
+                out[start:i] = ' ' * (i - start)
+    return ''.join(out)
+
+
+def function(source, name):
+    masked = lexical(source, strings=True)
+    found = re.search(r'\bfunc\s+' + re.escape(name) + r'\s*\(', masked)
+    if not found:
+        return ''
+    opening = masked.find('{', found.end())
+    if opening < 0:
+        return ''
+    depth = 1
+    i = opening + 1
+    while i < len(masked) and depth:
+        depth += (masked[i] == '{') - (masked[i] == '}')
+        i += 1
+    return lexical(source[opening + 1:i - 1]) if depth == 0 else ''
+
+
+def region(source, start, end):
+    a = source.find(start)
+    if a < 0:
+        return ''
+    b = source.find(end, a + len(start))
+    return source[a:b] if b >= 0 else ''
+
+
+main = load('Sources/OS1/main.swift')
+runtime = load('Sources/OS1/TaskQualityRuntime.swift')
+quality = load('Sources/OS1Context/TaskQuality.swift')
+app = load('Sources/OS1App/OS1App.swift')
+fixtures = load('Tests/OS1ContextTests/TaskQualityFixture.swift')
+loop = function(main, 'runTaskWithOwnerPolicy')
+resume = function(main, 'resumeDelivery')
+local_gate = function(main, 'completionLocallyAdoptable')
+printed = function(main, 'printRunSummary')
+ui_receipt = function(app, 'executionReceipt')
+runtime_evaluate = function(runtime, 'evaluate')
+code = lexical(loop, strings=True)
+
+# A module existing (or a self-test mentioning it) does not establish use on
+# the actual execution path. Pin pre-dispatch preparation and per-result use.
+check(bool(loop), 'actual owner-policy execution loop must be inspectable')
+prepare_match = re.search(r'\bPreparedTaskQuality\.prepare\s*\(', code)
+dispatch_match = re.search(r'\bexecute\s*\(\s*ticket\s*:\s*ticket', code)
+check(prepare_match is not None, 'owner-policy loop must prepare an exact task-quality contract')
+check(prepare_match is not None and dispatch_match is not None and prepare_match.start() < dispatch_match.start(),
+      'task-quality contract must be frozen before native result generation')
+evaluation = re.search(r'\b(?:evaluateTaskQuality|evaluateQualityArtifact)\s*\(|\b\w+\??\.evaluate\s*\(\s*artifact\s*:', code)
+pending_pos = code.find('let pendingStep =')
+outbox_pos = code.find('DeliveryOutbox().save(delivery)')
+check(evaluation is not None, 'actual loop must evaluate the produced artifact, not leave an unused module')
+check(evaluation is not None and pending_pos >= 0 and evaluation.start() < pending_pos,
+      'quality evaluation must precede the pending step serialized into custody')
+check(evaluation is not None and outbox_pos >= 0 and evaluation.start() < outbox_pos,
+      'quality evaluation must precede the first outbox save/adoption delivery')
+
+pending = region(loop, 'let pendingStep =', 'var delivery =')
+check(re.search(r'\btaskQuality\s*:', lexical(pending, strings=True)) is not None,
+      'the pending execution step must carry the observed task-quality assessment')
+check('step: try JSONEncoder().encode(pendingStep)' in loop,
+      'saved delivery custody must serialize the quality-bearing pending step')
+check(re.search(r'\btaskQuality\s*:', lexical(region(loop, 'steps.append(RunStepSummary(', '\n    let adopted ='), strings=True)) is not None,
+      'final execution step must retain quality instead of dropping it after remote verification')
+
+# Remote completion cannot bypass a locally observed required failure. Missing
+# quality may retain a visible execution-only result but cannot create parity.
+check(re.search(r'if\s+taskQuality\.state\s*==\s*\.mismatch\s*\{\s*attemptFailure\s*=', code) is not None,
+      'observed task-quality mismatch must become a real local result failure')
+direct_quality_gate = re.search(r'let\s+locallyAdoptable\s*=\s*completionLocallyAdoptable\([^)]*\)\s*&&\s*taskQuality\.state\s*!=\s*\.mismatch', code, re.S) is not None
+helper_quality_gate = (
+    re.search(r'let\s+locallyAdoptable\s*=\s*completionLocallyAdoptable\([^)]*\btaskQuality\s*:\s*taskQuality', code, re.S) is not None
+    and re.search(r'if\s+taskQuality\??\.state\s*==\s*\.mismatch\s*\{\s*return\s+false', lexical(local_gate, strings=True)) is not None
+)
+check(direct_quality_gate or helper_quality_gate,
+      'actual local adoption result must reject task-quality mismatch')
+check(re.search(r'let\s+revasDisposition\s*=\s*route\.status\s*==\s*"complete"\s*&&\s*locallyAdoptable', lexical(loop)) is not None,
+      'remote complete must still depend on the quality-constrained local adoption result')
+check(re.search(r'guard\s+record\.taskQuality\?\.state\s*!=\s*\.mismatch\s*,\s*step\.taskQuality\?\.state\s*!=\s*\.mismatch\s+else\s*\{', lexical(resume, strings=True)) is not None,
+      'saved-result delivery must reject both stored mismatched assessments')
+check('record.taskQuality == step.taskQuality' in resume and '$0.artifactSHA256 == record.resultSHA256' in resume,
+      'saved-result quality must remain bound to the exact saved step/artifact')
+check('taskQuality: step.taskQuality' in re.sub(r'\s+', ' ', resume),
+      'saved-result reconstruction must preserve quality metadata for presentation')
+
+# Optional legacy fields stay readable; no generic text assertion or reference
+# model setting can manufacture an evidence receipt.
+step = region(main, 'struct RunStepSummary: Codable', '\nstruct RunSummary:')
+check(re.search(r'var\s+taskQuality\s*:\s*TaskQualityEvidence\.Evaluation\?', lexical(step, strings=True)) is not None,
+      'runtime step needs an optional typed assessment, including legacy-unresolved absence')
+check(re.search(r'case\s+taskQuality\s*=\s*"task_quality"', lexical(step)) is not None,
+      'runtime assessment must survive the encoded saved-step interface')
+check('taskQuality' in lexical(app, strings=True) and 'task_quality' in app,
+      'app decoder must read the runtime assessment instead of inferring quality from prose')
+check('unresolvedTaskQuality' in lexical(loop, strings=True),
+      'missing exact checker must be explicitly execution-only/unresolved')
+check('executionOnly' in runtime and '.observedCheckerReceipt' in runtime,
+      'quality source must be checker observations, not native transport or a generated assertion')
+check('contract.fullCoverage' in quality and 'reference.proofMode != .dev' in quality,
+      'incomplete/dev reference evidence must not become production reference parity')
+check('required_task_check_failed' in quality and 'below_reference_on_required_check' in quality,
+      'required failure and below-reference regression must remain distinct blocking states')
+check('referenceParityVerified' in quality and 'taskCompletionVerified' in quality,
+      'execution, checked task completion, and reference parity are separate states')
+
+# Both receipt surfaces must actually consume typed state. A status=complete
+# label alone is execution custody, not a verified objective-quality statement.
+check('taskQuality' in lexical(printed, strings=True), 'CLI result presentation must consume typed task quality')
+check('taskQuality' in lexical(ui_receipt, strings=True), 'app receipt presentation must consume typed task quality')
+check('.verificationUnavailable' in loop and 'taskQuality.taskCompletionVerified' in loop,
+      'execution-only output cannot train a task-quality success as though it were verified')
+check('taskCompletionVerified' in fixtures and 'referenceParityVerified' in fixtures,
+      'behavioral fixtures must assert task-vs-reference separation')
+check('mismatch' in fixtures and ('prose' in fixtures.lower() or 'model' in fixtures.lower()),
+      'behavioral fixtures must cover mismatch and model-prose non-authority')
+
+# Frozen checker execution cannot certify a workspace it changed itself. This
+# source gate does not claim OS-level sandbox enforcement: it checks artifact
+# custody and delegates detailed mutation/failure cases to behavioral tests.
+runtime_code = lexical(runtime_evaluate, strings=True)
+frozen_var = re.search(r'let\s+(\w+)\s*=\s*try\s+frozenCandidate\s*\(', runtime_code)
+payload = re.search(r'TaskQualityCheckerInput\s*\((.*?)\)', runtime_code, re.S)
+check(frozen_var is not None and payload is not None
+      and re.search(r'\bworkspace\s*:\s*' + re.escape(frozen_var.group(1)) + r'\.path\b', payload.group(1)) is not None,
+      'checker input must receive the actual frozen candidate path, never the live workspace')
+check(frozen_var is not None and re.search(r'\bfrozenCandidate\s*\(\s*workspace\s*:\s*workspace\s*,\s*paths\s*:\s*envelope\.workspacePaths\s*,\s*into\s*:\s*runRoot', runtime_code) is not None,
+      'checker must copy only the explicitly bounded declared artifact paths')
+check('workspaceAfterHash' in runtime_evaluate and ('workspaceHash' in runtime_evaluate or 'observedStateHash' in runtime_evaluate),
+      'checker path must recheck the producing workspace hash against the recorded artifact')
+check(not re.search(r'\b(?:findExecutable|runTask|runWorkflowTask|runParallelAgentTask)\s*\(', lexical(runtime, strings=True)),
+      'quality checker bridge must not invoke another provider or model workflow')
+
+if failures:
+    for failure in failures:
+        print('OS-1 task quality wiring: FAILED: ' + failure, file=sys.stderr)
+    print(f'OS-1 task quality wiring: {checks - len(failures)}/{checks} structural checks passed', file=sys.stderr)
+    sys.exit(1)
+print(f'OS-1 task quality wiring: {checks} structural checks passed; no provider calls or live-state writes')

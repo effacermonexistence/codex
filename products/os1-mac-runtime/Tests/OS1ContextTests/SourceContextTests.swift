@@ -25,6 +25,8 @@ final class SourceContextTests {
         if CommandLine.arguments.contains("--codex-native-dictation-only") { try runCodexNativeDictationFixtures(); return }
         if CommandLine.arguments.contains("--inspection-network-denial-only") { try runClaudeInspectionNetworkDenialFixtures(); return }
         if CommandLine.arguments.contains("--parallel-agent-task-only") { try runParallelAgentTaskFixtures(); return }
+        if CommandLine.arguments.contains("--task-quality-only") { try runTaskQualityFixtures(); return }
+        try runTaskQualityFixtures()
         let bounded = "관련 회귀 테스트를 실행하고 실제 결과를 products/os1-mac-runtime/QUOTA-FALLBACK-VERIFICATION.md에 기록하세요. 새로운 기능이나 다른 제품 수정은 하지 마세요."
         XCTAssertEqual(ScopeResolution.resolve(bounded).scope, .workspaceWrite)
         XCTAssertFalse(ScopeResolution.resolve(bounded).prohibitions.contains("do not modify files"))
