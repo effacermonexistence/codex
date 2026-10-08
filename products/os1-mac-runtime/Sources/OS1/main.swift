@@ -1329,7 +1329,23 @@ func providerOutputDeclaresCapabilityFailure(_ data: Data, prompt: String, evide
     // bounded read-only shell lane, which is told to name what it could not run.
     guard (!promptRequestsCapabilityExplanation(prompt) && !diagnosisOnly) || repairRequested,
           !asksRecoveryReadiness(prompt), !((evidenceSupplied || boundedShell) && !repairRequested) else { return false }
-    let output = String(decoding: data, as: UTF8.self).precomposedStringWithCanonicalMapping.lowercased()
+    var output = String(decoding: data, as: UTF8.self).precomposedStringWithCanonicalMapping.lowercased()
+    // A voluntarily attempted VCS check is not a required execution capability
+    // for a non-VCS request. Keep the diagnostic in the original answer; only
+    // exclude its narrowly identified non-repository line from refusal routing.
+    let affirmativeRequest = request.replacingOccurrences(
+        of: #"(?i)\b(?:do not|don't|no)\b[^.\n]*"#, with: "", options: .regularExpression)
+    let requiresVCS = affirmativeRequest.range(
+        of: #"(?i)\b(?:git|github|gitlab|commit|push|pull|clone)\b|깃|커밋|푸시"#,
+        options: .regularExpression) != nil
+    if !requiresVCS {
+        output = output.components(separatedBy: .newlines).filter { line in
+            let ancillaryCheck = line.contains("git diff --check")
+            let nonRepository = line.contains("not a git repository") || line.contains("not a git repo") ||
+                line.range(of: #"git\s*저장소[^.\n]{0,24}(?:아니|없)"#, options: .regularExpression) != nil
+            return !(ancillaryCheck && nonRepository)
+        }.joined(separator: "\n")
+    }
     let markers = [
         "툴이 배정 안", "도구가 배정 안", "도구가 없", "도구가 전혀 없", "툴이 없", "권한이 없", "권한이 없어", "권한이 필요",
         "실행할 수 없", "진행할 수 없", "접근할 수 없", "재검증은 못", "조회할 수 없", "직접 할 수 없",
@@ -13702,6 +13718,30 @@ func selfTest() throws {
         ("successful output allowed", !providerOutputDeclaresCapabilityFailure(
             Data("R2 원문과 최신 GitHub 상태를 검증했고 결과는 다음과 같습니다.".utf8),
             prompt: incidentPrompt
+        )),
+        ("optional non-repository VCS check does not reject a completed repair", !providerOutputDeclaresCapabilityFailure(
+            Data("수정했습니다. 테스트 15개 통과.\n`git diff --check`는 이 디렉터리가 Git 저장소가 아니어서 실행할 수 없었습니다.".utf8),
+            prompt: "패키지 버그 고치고 회귀 테스트 추가해. Do not commit or push."
+        )),
+        ("optional VCS diagnostic is normalization invariant", !providerOutputDeclaresCapabilityFailure(
+            Data("테스트 통과.\ngit diff --check는 Git 저장소가 아니어서 실행할 수 없었습니다.".decomposedStringWithCanonicalMapping.utf8),
+            prompt: "패키지 수정해"
+        )),
+        ("explicit VCS requirement remains blocking", providerOutputDeclaresCapabilityFailure(
+            Data("git diff --check cannot run: not a git repository.".utf8),
+            prompt: "Fix it and run git diff --check."
+        )),
+        ("required commit is not washed by optional check", providerOutputDeclaresCapabilityFailure(
+            Data("git diff --check cannot run: not a git repository.".utf8),
+            prompt: "Fix it and commit the result."
+        )),
+        ("independent required capability failure remains blocking", providerOutputDeclaresCapabilityFailure(
+            Data("git diff --check cannot run: not a git repository.\nI cannot run the required regression tests.".utf8),
+            prompt: "Fix it and run the regression tests. No commits."
+        )),
+        ("unexplained Git failure is not dismissed", providerOutputDeclaresCapabilityFailure(
+            Data("git diff --check cannot run because permission is unavailable.".utf8),
+            prompt: "Fix it and run tests."
         )),
         // 2026-09-24: a readback that honestly named what it could not verify
         // was rejected because the quoted old objective said "고쳐".
