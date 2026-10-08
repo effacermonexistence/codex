@@ -6249,6 +6249,19 @@ private func requestedProvider(for request: String, configured: ProviderChoice) 
     return configured == .auto ? (explicitlyRequestedProvider(in: request) ?? .auto) : configured
 }
 
+/// The owner's explicit retry may predate the exact fan-out parser. Re-resolve
+/// only a supported self-contained request; a saved result or recovery readback
+/// never authorizes new provider calls. Keep the original turn and request intact.
+private func routeFanoutRetrySubmission(_ original: PendingSubmission) -> PendingSubmission {
+    guard original.deliveryID == nil, original.savedResultNeedsReview != true,
+          original.readOnlyReconciliation != true, original.recoveryParentID == nil,
+          RouteFanout.plan(original.executionRequest) != nil else { return original }
+    var retry = original
+    retry.provider = .auto
+    retry.surfaceRaw = nil
+    return retry
+}
+
 /// The conversation's latest answer came from a bounded chat lane (GPT or
 /// Claude chat, no tools): a side question, not a read-only work objective.
 private func lastAnswerWasBoundedChat(_ session: ConversationSession) -> Bool {
@@ -6344,7 +6357,7 @@ private func boundRouteFanoutRecord(path: URL, id: String, output: String) -> Ro
           let size = attrs[.size] as? NSNumber, size.intValue <= 1_000_000,
           let data = try? Data(contentsOf: path), data.count <= 1_000_000,
           let record = try? JSONDecoder().decode(RouteFanoutRecord.self, from: data),
-          [1, 2].contains(record.schema), record.operation == "route_fanout", !record.modelInvoked,
+          [1, 2].contains(record.schema),
           record.operationID == id.lowercased(),
           [output, output + "\n", output + "\r\n"].contains(where: { appSHA256Hex($0) == record.resultSHA256 }),
           !record.routes.isEmpty, record.routes.count <= 64,
@@ -6368,6 +6381,41 @@ private func boundRouteFanoutRecord(path: URL, id: String, output: String) -> Ro
                       provider: $0.provider)?.rawValue == $0.surface)
               }
           }) else { return nil }
+    switch record.operation {
+    case "route_fanout":
+        // The legacy local controller did not itself invoke a model. Retain
+        // its original bit semantics, including schema-1 evidence limits.
+        guard !record.modelInvoked else { return nil }
+    case "concurrent_route_fanout":
+        guard record.schema == 2, (2...RouteFanout.maximumTargets).contains(record.routes.count),
+              record.modelInvoked == RouteFanoutRecord.observedNativeInvocation(in: record.routes),
+              record.routes.allSatisfy({ route in
+                  guard route.resultSHA256 != nil else { return true }
+                  // An answer belongs to this exact requested surface. A
+                  // failed/substituted attempt is evidence, not its completion.
+                  guard route.failure == nil, route.handoffReceipt == nil,
+                        route.executedSurface == route.surface,
+                        ProviderSurface(rawValue: route.surface)?.gatewayPreference == route.provider,
+                        let sessionID = route.sessionID, UUID(uuidString: sessionID) != nil,
+                        route.permissionProfile == "read_only", route.exitCode == 0,
+                        route.revasDisposition == "adopted", let native = route.nativeRecord,
+                        native.isVerified,
+                        // Claude's verified transcript is keyed by its native
+                        // session UUID; that protocol has no separate turn ID.
+                        (route.provider == "claude" || native.turnID.flatMap(UUID.init(uuidString:)) != nil),
+                        native.recordPath?.isEmpty == false else { return false }
+                  return (route.attempts ?? []).contains { attempt in
+                      attempt.provider == route.provider && attempt.surface == route.executedSurface &&
+                      attempt.sessionID == route.sessionID && attempt.model == route.model &&
+                      attempt.action == route.action && attempt.effort == route.effort &&
+                      attempt.permissionProfile == route.permissionProfile && attempt.exitCode == route.exitCode &&
+                      attempt.durationMS == route.durationMS && attempt.revasDisposition == route.revasDisposition &&
+                      attempt.resultSHA256 == route.resultSHA256 && attempt.nativeRecord == native
+                  }
+              }) else { return nil }
+    default:
+        return nil
+    }
     return record
 }
 
@@ -6521,6 +6569,110 @@ private func routeFanoutDetailsSelfTest() throws {
     let link = root.appendingPathComponent("receipt-link.json")
     try FileManager.default.createSymbolicLink(at: link, withDestinationURL: path)
     try check(boundRouteFanoutRecord(path: link, id: id.uuidString, output: output) == nil, "symlink receipt")
+
+    let concurrentRoutes = routes.map { route in
+        let attempt = route.attempts![0]
+        let native = route.provider == "claude"
+            ? RouteFanoutNativeRecordEvidence(turnID: nil, recordPath: attempt.nativeRecord?.recordPath,
+                persistence: "verified", desktopVisibility: "native_record_only")
+            : attempt.nativeRecord
+        return RouteFanoutRouteEvidence(index: route.index, surface: route.surface, executionIndex: route.executionIndex,
+            payload: route.payload, payloadSHA256: route.payloadSHA256, provider: route.provider,
+            executedSurface: route.executedSurface, sessionID: route.sessionID, model: route.model,
+            action: attempt.action, effort: attempt.effort, permissionProfile: "read_only", exitCode: attempt.exitCode,
+            durationMS: attempt.durationMS, revasDisposition: attempt.revasDisposition, nativeRecord: native,
+            resultSHA256: route.resultSHA256, attempts: [RouteFanoutAttemptEvidence(sequence: attempt.sequence,
+                provider: attempt.provider, action: attempt.action, model: attempt.model, effort: attempt.effort,
+                revasDisposition: attempt.revasDisposition, sessionID: attempt.sessionID, permissionProfile: "read_only",
+                exitCode: attempt.exitCode, durationMS: attempt.durationMS, surface: attempt.surface,
+                nativeRecord: native, resultSHA256: attempt.resultSHA256)])
+    }
+    func concurrent(_ routes: [RouteFanoutRouteEvidence], invoked: Bool, schema: Int = 2) -> RouteFanoutRecord {
+        RouteFanoutRecord(schema: schema, operationID: id.uuidString.lowercased(), operation: "concurrent_route_fanout",
+            modelInvoked: invoked, frame: plan.frame, resultSHA256: appSHA256Hex(output), routes: routes)
+    }
+    try write(concurrent(Array(concurrentRoutes.reversed()), invoked: true))
+    try check(stepRecordIsVerified(step) && executionReceipt(step).contains("라우팅 경로 4개"),
+        "concurrent receipt reaches the existing verified detail path")
+    try check(concurrentRoutes.filter { $0.provider == "claude" }.allSatisfy { $0.nativeRecord?.turnID == nil } &&
+        boundRouteFanoutRecord(path: path, id: id.uuidString, output: output) != nil,
+        "genuine Claude transcript protocol permits no separate native turn ID")
+    try check(boundRouteFanoutRecord(path: path, id: id.uuidString, output: output + " changed") == nil,
+        "concurrent altered summary rejected")
+    try write(concurrent(concurrentRoutes, invoked: false))
+    try check(boundRouteFanoutRecord(path: path, id: id.uuidString, output: output) == nil,
+        "concurrent observed native invocation cannot be marked false")
+    try write(concurrent(concurrentRoutes, invoked: true, schema: 1))
+    try check(boundRouteFanoutRecord(path: path, id: id.uuidString, output: output) == nil,
+        "concurrent schema-1 cannot invent missing execution fields")
+    let changedTuple = RouteFanoutRouteEvidence(index: 1, surface: concurrentRoutes[0].surface,
+        payload: concurrentRoutes[0].payload, payloadSHA256: concurrentRoutes[0].payloadSHA256,
+        provider: concurrentRoutes[0].provider, executedSurface: concurrentRoutes[0].executedSurface,
+        sessionID: concurrentRoutes[0].sessionID, model: concurrentRoutes[0].model,
+        action: concurrentRoutes[0].action, effort: "low", permissionProfile: "read_only", exitCode: 0,
+        durationMS: concurrentRoutes[0].durationMS, revasDisposition: "adopted", nativeRecord: concurrentRoutes[0].nativeRecord,
+        resultSHA256: concurrentRoutes[0].resultSHA256, attempts: concurrentRoutes[0].attempts)
+    try write(concurrent([changedTuple] + Array(concurrentRoutes.dropFirst()), invoked: true))
+    try check(boundRouteFanoutRecord(path: path, id: id.uuidString, output: output) == nil,
+        "concurrent adopted tuple must match its native attempt")
+    let first = concurrentRoutes[0], originalAttempt = first.attempts![0]
+    let missingCodexTurn = RouteFanoutNativeRecordEvidence(turnID: nil, recordPath: first.nativeRecord?.recordPath,
+        persistence: "verified", desktopVisibility: "native_record_only")
+    let missingTurnAttempt = RouteFanoutAttemptEvidence(sequence: originalAttempt.sequence,
+        provider: originalAttempt.provider, action: originalAttempt.action, model: originalAttempt.model, effort: originalAttempt.effort,
+        revasDisposition: originalAttempt.revasDisposition, sessionID: originalAttempt.sessionID,
+        permissionProfile: originalAttempt.permissionProfile, exitCode: originalAttempt.exitCode, durationMS: originalAttempt.durationMS,
+        surface: originalAttempt.surface, nativeRecord: missingCodexTurn, resultSHA256: originalAttempt.resultSHA256)
+    let missingTurnRoute = RouteFanoutRouteEvidence(index: first.index, surface: first.surface, payload: first.payload,
+        payloadSHA256: first.payloadSHA256, provider: first.provider, executedSurface: first.executedSurface,
+        sessionID: first.sessionID, model: first.model, action: first.action, effort: first.effort,
+        permissionProfile: first.permissionProfile, exitCode: first.exitCode, durationMS: first.durationMS,
+        revasDisposition: first.revasDisposition, nativeRecord: missingCodexTurn, resultSHA256: first.resultSHA256,
+        attempts: [missingTurnAttempt])
+    try write(concurrent([missingTurnRoute] + Array(concurrentRoutes.dropFirst()), invoked: true))
+    try check(boundRouteFanoutRecord(path: path, id: id.uuidString, output: output) == nil,
+        "Codex native invocation still requires its protocol's turn UUID")
+    let native = concurrentRoutes[0].nativeRecord!
+    let rejectedNative = RouteFanoutAttemptEvidence(sequence: 1, provider: "codex", action: "fixture-native",
+        model: "fixture-model", effort: "high", revasDisposition: "rejected", sessionID: concurrentRoutes[0].sessionID!,
+        permissionProfile: "read_only", exitCode: 1, durationMS: 50, surface: "codex", nativeRecord: native,
+        resultSHA256: appSHA256Hex("rejected native output"))
+    let failedRows = [RouteFanoutRouteEvidence(index: 1, surface: "codex", payloadSHA256: appSHA256Hex("1+1"),
+        failure: "Rejected result", attempts: [rejectedNative]),
+        RouteFanoutRouteEvidence(index: 2, surface: "claude", payloadSHA256: appSHA256Hex("2+2"), failure: "Quota before invocation")]
+    try write(concurrent(failedRows, invoked: true))
+    try check(boundRouteFanoutRecord(path: path, id: id.uuidString, output: output) != nil,
+        "rejected observed native invocation remains evidence, not an adopted answer")
+    let preflightRows = failedRows.map { RouteFanoutRouteEvidence(index: $0.index, surface: $0.surface,
+        payloadSHA256: $0.payloadSHA256, failure: "No observed native invocation") }
+    try write(concurrent(preflightRows, invoked: false))
+    try check(boundRouteFanoutRecord(path: path, id: id.uuidString, output: output) != nil,
+        "preflight failures remain truthful zero-model control records")
+    try write(concurrent(preflightRows, invoked: true))
+    try check(boundRouteFanoutRecord(path: path, id: id.uuidString, output: output) == nil,
+        "preflight prose cannot manufacture native invocation")
+    try write(RouteFanoutRecord(operationID: id.uuidString.lowercased(), modelInvoked: true,
+        resultSHA256: appSHA256Hex(output), routes: routes))
+    try check(boundRouteFanoutRecord(path: path, id: id.uuidString, output: output) == nil,
+        "legacy controller bit semantics remain unchanged")
+
+    var oldFailure = PendingSubmission(sessionID: UUID(), userMessageID: UUID(), request: request,
+        provider: .claude, workspace: root.path, codexCapacity: 100, claudeCapacity: 100)
+    oldFailure.configuredProvider = .auto; oldFailure.surfaceRaw = "claude"; oldFailure.preflightOnly = false
+    let historyBytes = try JSONEncoder().encode(oldFailure)
+    let retry = routeFanoutRetrySubmission(oldFailure)
+    try check(retry.id == oldFailure.id && retry.userMessageID == oldFailure.userMessageID && retry.request == request &&
+        retry.provider == .auto && retry.runtimeSurface == "auto" && RouteFanout.plan(retry.executionRequest)?.targets.count == 4,
+        "legacy single-provider failure re-resolves supported retry into four-route dispatch")
+    try check(try JSONEncoder().encode(oldFailure) == historyBytes,
+        "retry preserves the original historical submission without fabricating an agent graph")
+    var savedFailure = oldFailure; savedFailure.deliveryID = "saved-result"
+    try check(routeFanoutRetrySubmission(savedFailure) == savedFailure, "saved-result delivery never causes new fan-out")
+    var readbackFailure = oldFailure; readbackFailure.recoveryParentID = UUID()
+    try check(routeFanoutRetrySubmission(readbackFailure) == readbackFailure, "recovery readback is not provider fan-out")
+    let ordinaryFailure = PendingSubmission(sessionID: oldFailure.sessionID, userMessageID: UUID(), request: "이 버그를 고쳐",
+        provider: .claude, workspace: root.path, codexCapacity: 100, claudeCapacity: 100)
+    try check(routeFanoutRetrySubmission(ordinaryFailure) == ordinaryFailure, "ordinary failed work retains its configured route")
 
     let legacyRoutes = routes.map { RouteFanoutRouteEvidence(index: $0.index, surface: $0.surface,
         payloadSHA256: $0.payloadSHA256, provider: $0.provider, executedSurface: $0.executedSurface,
@@ -11007,7 +11159,7 @@ private final class SessionStore: ObservableObject {
         }
         // An explicit retry stays in OS-1 and keeps the original user turn
         // and source. Never automatically replay an uncertain write.
-        start(failed)
+        start(routeFanoutRetrySubmission(failed))
     }
 
     func cancelSelectedRun() {

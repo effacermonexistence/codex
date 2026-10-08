@@ -7890,6 +7890,12 @@ func routeFanoutContinuesSession(requested: ProviderSurface, actual: ProviderSur
     !requested.forcesChatLane && requested.gatewayPreference == provider && actual?.forcesChatLane == false
 }
 
+/// A requested fan-out that cannot be bound is an input/route failure, not
+/// authority for one model to investigate or repair OS-1 itself.
+func blocksUnboundRouteFanout(_ prompt: String, agentChild: Bool, fanoutChild: Bool) -> Bool {
+    !agentChild && !fanoutChild && RouteFanout.requestsProviderFanout(prompt)
+}
+
 struct RouteFanoutOutcome {
     let index: Int
     let target: RouteFanout.Target
@@ -8237,6 +8243,12 @@ func routeFanoutSummarySelfTest() throws {
         ("failure shown", lines.count > 4 && lines[4].contains("Claude Code") && lines[4].contains("quota")),
         ("framing reported, not sent", text.contains("답변 받아와") || text.contains("Not sent")),
         ("chat-lane selection settable", selected && ClaudeChatLane.ownerSelected == previous),
+        ("unconsumed explicit fanout cannot enter single-model execution",
+            blocksUnboundRouteFanout("GPT랑 코덱스랑 클로드랑 클로드 코드한테 1+1 이런거 해봐.", agentChild: false, fanoutChild: false)),
+        ("fanout children cannot recursively become coordinators",
+            !blocksUnboundRouteFanout("GPT랑 코덱스랑 클로드랑 클로드 코드한테 1+1 이런거 해봐.", agentChild: false, fanoutChild: true)
+            && !blocksUnboundRouteFanout("GPT랑 코덱스랑 클로드랑 클로드 코드한테 1+1 이런거 해봐.", agentChild: true, fanoutChild: false)),
+        ("ordinary task remains ordinary", !blocksUnboundRouteFanout("패키지 버그를 고치고 회귀 테스트를 추가해", agentChild: false, fanoutChild: false)),
         ("a substitute answer is shown, not counted", substitutedLines.first?.contains("1/3") == true
             && substitutedLines.count > 2 && substitutedLines[2].contains("→ 4") && substitutedLines[2].hasSuffix("(substitute)")),
     ]
@@ -15912,6 +15924,11 @@ struct OS1Main {
                         printRunSummary(summary)
                     }
                     return
+                }
+                if blocksUnboundRouteFanout(prompt, agentChild: parallelAgentChild, fanoutChild: parallelFanoutChild) {
+                    throw OS1Error.message(os1Tr(
+                        "여러 경로 실행 요청이 현재 실행 모드에서 병렬 계획에 연결되지 않아 모델 호출 전에 멈췄습니다. 요청은 보존했습니다. 자동 라우팅을 선택하고 ‘GPT: 1+1, Codex: 2+2, Claude Code: 3+3, Claude: 4+4’처럼 각 경로와 내용을 명시해 주세요. 단일 모델 조사나 자가수리로 바꾸지 않았습니다.",
+                        "The requested fan-out was not bound to a parallel plan in this execution mode, so OS-1 stopped before model dispatch and preserved the request. Use Auto and name each route and payload explicitly. It was not replaced with a single-model investigation or self-repair."))
                 }
                 let sessionContext = try readSessionContext(contextPath)
                 let boundProjectID = try SessionHandoff.decode(sessionContext).taskContext?.project?.projectID

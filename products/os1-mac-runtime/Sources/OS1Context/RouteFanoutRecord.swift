@@ -28,6 +28,28 @@ public struct RouteFanoutRecord: Codable, Equatable, Sendable {
         self.routes = routes
     }
 
+    /// Provider invocation is observed independently of result adoption. The
+    /// two native adapters expose different receipts: Codex has a turn UUID;
+    /// Claude proves the current turn through its fresh/pinned session and
+    /// persisted transcript probe, and legitimately has no turn UUID.
+    public static func observedNativeInvocation(in routes: [RouteFanoutRouteEvidence]) -> Bool {
+        func observed(provider: String?, sessionID: String?, native: RouteFanoutNativeRecordEvidence?) -> Bool {
+            guard let native, native.persistence == "verified", let path = native.recordPath,
+                  !path.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
+            switch provider {
+            case "codex": return native.turnID.flatMap(UUID.init(uuidString:)) != nil
+            case "claude": return sessionID.flatMap(UUID.init(uuidString:)) != nil
+            default: return false
+            }
+        }
+        return routes.contains { route in
+            observed(provider: route.provider, sessionID: route.sessionID, native: route.nativeRecord) ||
+                (route.attempts ?? []).contains { attempt in
+                    observed(provider: attempt.provider, sessionID: attempt.sessionID, native: attempt.nativeRecord)
+                }
+        }
+    }
+
     enum CodingKeys: String, CodingKey {
         case schema, operation, frame, routes
         case operationID = "operation_id"

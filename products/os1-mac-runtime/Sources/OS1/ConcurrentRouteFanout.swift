@@ -125,6 +125,11 @@ func runConcurrentRouteFanout(_ plan: RouteFanout, originalPrompt: String, works
                     let (_, step) = try verifiedFanoutAnswer(result, target: target)
                     outcome.adopted = step
                     try await graph.finish(ids[index], state: .succeeded, step: step)
+                    // The parent already verified the exact native surface,
+                    // custody and adoption. Inspector details expose only a
+                    // bounded/redacted excerpt of that returned public answer,
+                    // never an expected answer reconstructed from the request.
+                    try await graph.describe(ids[index], resultSummary: step.output)
                 } catch {
                     outcome.failure = "No matching verified answer for the requested surface."
                     try? await graph.finish(ids[index], state: .failed, failure: outcome.failure)
@@ -139,9 +144,10 @@ func runConcurrentRouteFanout(_ plan: RouteFanout, originalPrompt: String, works
                            failure: allAnswered ? nil : "One or more requested surfaces have no verified answer.")
     let output = routeFanoutSummary(plan: plan, outcomes: outcomes)
     let operationID = UUID().uuidString.lowercased(), receiptURL = custody.appendingPathComponent("fanout-receipt.json")
+    let routeEvidence = outcomes.map(routeFanoutRouteEvidence)
     let receipt = RouteFanoutRecord(operationID: operationID, operation: "concurrent_route_fanout",
-        checkedAt: ISO8601DateFormatter().string(from: Date()), modelInvoked: outcomes.contains { $0.adopted != nil }, frame: plan.frame,
-        resultSHA256: sha256Hex(Data(output.utf8)), routes: outcomes.map(routeFanoutRouteEvidence))
+        checkedAt: ISO8601DateFormatter().string(from: Date()), modelInvoked: RouteFanoutRecord.observedNativeInvocation(in: routeEvidence), frame: plan.frame,
+        resultSHA256: sha256Hex(Data(output.utf8)), routes: routeEvidence)
     let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
     let bytes = try encoder.encode(receipt)
     try bytes.write(to: receiptURL, options: .withoutOverwriting)
@@ -183,9 +189,12 @@ func concurrentRouteFanoutSelfTest() async throws {
     provider='codex' if surface in ['codex','gpt-chat'] else 'claude'
     step={'sequence':1,'provider':provider,'action':'fixture_read','model':'fixture-'+surface,'effort':'none','revas_disposition':'adopted',
       'session_id':native,'permission_profile':'read_only','exit_code':0,'output':index+' result','stderr':'','duration_ms':100,'surface':surface,
-      'native_record':{'turn_id':str(uuid.uuid4()),'record_path':record,'persistence':'verified','desktop_visibility':'not_revealed'}}
+      'native_record':{'turn_id':str(uuid.uuid4()) if provider=='codex' else None,'record_path':record,'persistence':'verified','desktop_visibility':'not_revealed'}}
+    if mode=='native_rejected': step['revas_disposition']='rejected'
+    if mode=='no_native': step['revas_disposition']='rejected';step['native_record']=None
+    if mode=='bounded_answer': step['output']='public answer ghp_'+('s'*40)+' '+('x'*2500)
     open(os.path.join(barrier,index+'.finished'),'w').write(str(time.time()))
-    print(json.dumps({'status':'complete','steps':[step]}))
+    print(json.dumps({'status':'partial' if mode in ['native_rejected','no_native'] else 'complete','steps':[step]}))
     """#
     try Data(source.utf8).write(to: script)
     let keys = ["OS1_SUBMISSION_ID", "OS1_CONVERSATION_ID", "OS1_CANCEL_FILE", "OS1_ACTIVITY_FILE", "OS1_EVENT_JOURNAL", "OS1_AGENT_TASK_FILE"]
@@ -232,6 +241,15 @@ func concurrentRouteFanoutSelfTest() async throws {
     try check(workers.count == 4 && workers.allSatisfy { $0.state == .succeeded }, "all real dispatched child nodes terminal")
     try check(Set(workers.compactMap(\.workerSubmissionID)).count == 4 && Set(workers.compactMap(\.nativeSessionID)).count == 4, "no child/native identity reuse")
     try check(workers.compactMap(\.surface) == plan.targets.map { $0.surface.rawValue }, "actual surfaces retained in stable target order")
+    try check(workers.map(\.resultSummary) == ["0 result", "1 result", "2 result", "3 result"], "clickable child graph preserves actual verified answers instead of generic custody captions")
+    func receiptModelInvoked(_ root: URL) throws -> Bool {
+        guard let files = FileManager.default.enumerator(at: root, includingPropertiesForKeys: nil) else { throw OS1Error.message("Fanout receipt enumeration failed") }
+        let receipts = files.compactMap { $0 as? URL }.filter { $0.lastPathComponent == "fanout-receipt.json" }
+        guard receipts.count == 1 else { throw OS1Error.message("Fanout receipt custody not unique") }
+        return try JSONDecoder().decode(RouteFanoutRecord.self, from: Data(contentsOf: receipts[0])).modelInvoked
+    }
+    try check(try receiptModelInvoked(successRoot), "verified Codex and genuine Claude nil-turn transcripts prove model invocation")
+
     try check(success.steps.filter { $0.provider != "local" }.map(\.output) == ["0 result", "1 result", "2 result", "3 result"], "completion order cannot reorder requested results")
     let barrier = successRoot.appendingPathComponent("barrier")
     let starts = try (0..<4).map { Double(try String(contentsOf: barrier.appendingPathComponent("\($0).started"), encoding: .utf8))! }
@@ -240,6 +258,17 @@ func concurrentRouteFanoutSelfTest() async throws {
     let path = successRoot.appendingPathComponent("graphs/" + submission.uuidString + ".json").path
     try check(try ParallelAgentTask.loadBound(path: path, conversationID: conversation, submissionID: submission, requestSHA256: graph.requestSHA256) == graph, "persisted graph exact readback")
     try check((try? ParallelAgentTask.loadBound(path: path, conversationID: UUID(), submissionID: submission)) == nil, "foreign conversation cannot adopt graph")
+    let (rejectedNative, _, _, rejectedRoot) = try await run("native_rejected")
+    try check(rejectedNative.status == "partial" && rejectedNative.agentTask?.nodes.filter { $0.role == .worker }.allSatisfy { $0.state == .failed } == true,
+              "returned rejected native answers do not become succeeded graph nodes")
+    try check(try receiptModelInvoked(rejectedRoot), "all-rejected but verified native attempts still count invocation")
+    let (noNative, _, _, noNativeRoot) = try await run("no_native")
+    let noNativeObserved = try receiptModelInvoked(noNativeRoot)
+    try check(noNative.status == "partial" && !noNativeObserved, "launched processes and session IDs without native proof never imply model invocation")
+    let (boundedAnswer, _, _, _) = try await run("bounded_answer")
+    let excerpts = boundedAnswer.agentTask?.nodes.filter { $0.role == .worker }.compactMap(\.resultSummary) ?? []
+    try check(excerpts.count == 4 && excerpts.allSatisfy { $0.count <= 1_000 && $0.hasPrefix("public answer") }, "public result excerpts remain bounded through existing graph redaction")
+    try check(excerpts.allSatisfy { !$0.contains("ghp_" + String(repeating: "s", count: 40)) }, "existing public redaction removes token-like content from child result details")
     let (cancelled, _, _, _) = try await run("cancel")
     try check(cancelled.status == "cancelled" && cancelled.agentTask?.nodes.allSatisfy(\.state.isTerminal) == true,
               "cancellation drains every owned process and graph node")
