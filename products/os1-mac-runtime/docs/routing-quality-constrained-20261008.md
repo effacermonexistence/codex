@@ -47,5 +47,5 @@ the private routing bundle and installed config: the public contract compiles it
 from `Config/production.json`. A private decision alone does not establish downstream ticket acceptance.
 The routing-only live check verifies the resulting Ed25519 ticket and exact model/effort startup tuple.
 
-Current local client build: 345 / 0.9.279. Private policy: v60.
+Current local client build: 345 / 0.9.279. Private policy: v61.
 These are independently versioned components of one execution contract.
