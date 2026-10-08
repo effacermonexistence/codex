@@ -6659,12 +6659,12 @@ private func routeFanoutDetailsSelfTest() throws {
     var oldFailure = PendingSubmission(sessionID: UUID(), userMessageID: UUID(), request: request,
         provider: .claude, workspace: root.path, codexCapacity: 100, claudeCapacity: 100)
     oldFailure.configuredProvider = .auto; oldFailure.surfaceRaw = "claude"; oldFailure.preflightOnly = false
-    let historyBytes = try JSONEncoder().encode(oldFailure)
+    let originalHistory = oldFailure
     let retry = routeFanoutRetrySubmission(oldFailure)
     try check(retry.id == oldFailure.id && retry.userMessageID == oldFailure.userMessageID && retry.request == request &&
         retry.provider == .auto && retry.runtimeSurface == "auto" && RouteFanout.plan(retry.executionRequest)?.targets.count == 4,
         "legacy single-provider failure re-resolves supported retry into four-route dispatch")
-    try check(try JSONEncoder().encode(oldFailure) == historyBytes,
+    try check(oldFailure == originalHistory,
         "retry preserves the original historical submission without fabricating an agent graph")
     var savedFailure = oldFailure; savedFailure.deliveryID = "saved-result"
     try check(routeFanoutRetrySubmission(savedFailure) == savedFailure, "saved-result delivery never causes new fan-out")
