@@ -10988,6 +10988,17 @@ private final class SessionStore: ObservableObject {
         cancelRun(id)
     }
     private func cancelRun(_ id: UUID) {
+        // A restarted GUI has no Process to terminate, but the runtime still
+        // owns this exact submission. Use its existing cancellation channel;
+        // keep custody and the queue held until its real owner releases them.
+        if let original = externallyOwnedParallelSubmissions[id] {
+            do {
+                try ExecutionCancellation.request(submissionID: original.id)
+                sessionStatuses[id] = os1Tr("원래 병렬 작업 중지 중 · 기록과 변경은 보존합니다", "Stopping the original parallel task · records and changes are kept")
+                if selectedSessionID == id { statusText = sessionStatuses[id]! }
+            } catch { alertMessage = os1Tr("원래 병렬 작업의 중지 요청을 저장하지 못했습니다.", "Couldn't save the original parallel task's stop request.") }
+            return
+        }
         guard let active = activeRuns[id], !active.cancellationRequested else { return }
         do {
             try ExecutionCancellation.request(submissionID: active.submissionID)

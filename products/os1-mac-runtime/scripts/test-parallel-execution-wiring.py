@@ -32,4 +32,6 @@ check('ticket.provider == expected.gatewayPreference, executedSurface == expecte
 check('ParallelAgentRuntime.isolatedWriter == nil, !ConcurrentRouteFanoutRuntime.child, OS1FullAccessContinuation.sessionID == nil, quotaLimit' in main, 'quota never expands child retry budget')
 check(main.index('var originalProjectLease: ExclusiveHookLease?') < main.index('var os1SourceLease: ExclusiveHookLease?'), 'generic original writer locks before OS-1 source custody')
 check('ParallelAgentRuntime.originalProjectLeaseRoot != identity' in main, 'parent primary never reacquires own lease')
+stop = app[app.index('private func cancelRun(_ id: UUID)'):app.index('func reconcileSelectedFailure()',app.index('private func cancelRun(_ id: UUID)'))]
+check('externallyOwnedParallelSubmissions[id]' in stop and 'ExecutionCancellation.request(submissionID: original.id)' in stop, 'restart-held original can be explicitly cancelled without Process reattachment')
 print(f'Parallel execution wiring: {checks} checks PASS; structural checks only, provider calls 0')

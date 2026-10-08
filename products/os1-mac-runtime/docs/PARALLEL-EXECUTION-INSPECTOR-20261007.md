@@ -30,7 +30,7 @@ Full Codex/Claude Code and bounded GPT/Claude chat remain distinct execution sur
 A normal-level native window shows the parent objective, worker dependency relations, actual state, provider/model/effort, execution scope, isolated workspace/owned paths and observed progress. Selecting a node opens a keyed adjacent detail window. Native nested scope IDs are shown only when present in actual native progress events; opaque IDs do not establish native model identity or completed work. No fake percentages or child relationships are created. Windows are placed right-adjacent where the screen permits and clamped/cascaded inside the visible screen otherwise. Passive telemetry never fronts a window or resumes a model. Closing inspectors closes their detail chain, not the work. New plans invalidate old detail windows.
 
 ## GUI restart custody
-A GUI restart is not proof that its coordinator stopped. The app verifies the exact conversation/submission/dispatch hash and existing private parent lock. A busy original parent is observed separately (not a fabricated Process/ActiveRun), same-conversation reconciliation/replay stays held, and its recorded graph remains inspectable. On lease release the existing outbox is consulted first; missing output remains uncertain. The owner-authorized stop of prior runs retained 245 conversations and 7 queued entries; this is not permission to replay them.
+A GUI restart is not proof that its coordinator stopped. The app verifies the exact conversation/submission/dispatch hash and existing private parent lock. A busy original parent is observed separately (not a fabricated Process/ActiveRun), same-conversation reconciliation/replay stays held, and its recorded graph remains inspectable. The Stop control uses that exact original submission cancellation channel and retains custody until actual release. On lease release the existing outbox is consulted first; missing output remains uncertain. The owner-authorized stop of prior runs retained 245 conversations and 7 queued entries; this is not permission to replay them.
 
 ## Focused verification boundary
 - Debug compile/typecheck: PASS.
@@ -38,7 +38,7 @@ A GUI restart is not proof that its coordinator stopped. The app verifies the ex
 - Real local subprocess fixtures: 68 coordinator/isolation checks + 11 explicit-fanout checks PASS. Includes four-process overlap, target-order preservation, distinct identities, cancellation, parent death, two Git writers, committed/untracked patch capture, owned-path refusal and original mutation refusal.
 - GUI restart custody: 14 actual lock/private-store checks PASS.
 - Actual production window/button fixtures: 25 inspector + 35 existing tree checks PASS. Source-to-surface binding, native-scope drilldown, plan invalidation and passive-focus boundary covered.
-- Structural wiring: 18 checks PASS; supplements, not substitutes for executed fixtures.
+- Structural wiring: 19 checks PASS; supplements, not substitutes for executed fixtures.
 - Backend focus: 1,137 structural checks PASS.
 - Provider calls for these tests: 0. No fresh paid-model demonstration was generated.
 - Final installed/runtime and recovery receipts are separate artifacts. A source commit or this document is not installation proof.
