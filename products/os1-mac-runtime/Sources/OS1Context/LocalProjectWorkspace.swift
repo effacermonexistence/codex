@@ -66,10 +66,18 @@ public enum LocalProjectWorkspace {
     /// Never fall back to a known stale tree for a self-update.
     public static func resolve(projectID: String, requested: String,
                                home: URL = FileManager.default.homeDirectoryForCurrentUser,
+                               additionalCandidates: [String] = [],
                                isCurrent: ((String) -> Bool)? = nil) -> Resolution? {
         let requestedRoot = root(containing: requested, projectID: projectID).map(executionPath)
+        let localHome = executionPath(home.path)
+        // Installed-bundle source hints are candidates, not Codex trust grants.
+        // They remain local marked roots and cross the same current-state gate.
+        let additional = additionalCandidates.map(executionPath).filter {
+            $0.hasPrefix(localHome + "/") && !$0.contains("/.os1/fleet/jobs/")
+                && root(containing: $0, projectID: projectID).map(executionPath) == $0
+        }
         var seen = Set<String>()
-        let found = ([requestedRoot].compactMap { $0 } + candidates(projectID: projectID, home: home).map(executionPath))
+        let found = ([requestedRoot].compactMap { $0 } + additional + candidates(projectID: projectID, home: home).map(executionPath))
             .filter { seen.insert($0).inserted }
             .filter { isCurrent?($0) ?? true }
         guard !found.isEmpty else { return nil }
@@ -82,6 +90,7 @@ public enum LocalProjectWorkspace {
             if $0 == $1 { return false }
             if $0 == requestedRoot { return true }
             if $1 == requestedRoot { return false }
+            if additional.contains($0) != additional.contains($1) { return additional.contains($0) }
             let lhs = changedAt($0), rhs = changedAt($1)
             return lhs == rhs ? $0 < $1 : lhs > rhs
         }

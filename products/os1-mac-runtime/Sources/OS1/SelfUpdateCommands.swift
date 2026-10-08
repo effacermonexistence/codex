@@ -92,7 +92,7 @@ func selfRepairCommand(_ arguments: [String]) async throws -> Bool {
 /// Shared with the runtime hook in main.swift.
 let selfRepairFailurePrefixText = "OS-1 self-repair could not complete: "
 
-let os1RuntimeVersionString = "OS-1 Runtime 0.9.281 (current-reference-build347)"
+let os1RuntimeVersionString = "OS-1 Runtime 0.9.282 (converged-source-build348)"
 
 /// Where the source leases live. A fixture binds a scratch folder so its
 /// real flock leases on a temporary tree never leave lock files in the owner's
@@ -812,21 +812,157 @@ func localProjectBinding(request: String, workspace: String, namedProjectID: Str
     return LocalProjectBinding(projectID: inference.bound ? "os1-clodex" : nil, inference: inference)
 }
 
-/// Source commit of the installed build, when OS-1 installed it itself.
-func installedOS1SourceCommit() -> String? {
+private enum InstalledOS1SourceMetadata: Equatable {
+    case absent
+    case invalid
+    case verified(commit: String, root: String)
+}
+
+/// Source identity is sealed in the installed app only when the release was
+/// built from a clean tree. A dirty self-repair deliberately omits these keys:
+/// its existing post-commit installation outcome remains the authority.
+private func installedOS1SourceMetadata(_ plist: [String: Any], home: URL,
+                                        signatureVerified: () -> Bool,
+                                        sourceMatches: (String, String) -> Bool) -> InstalledOS1SourceMetadata {
+    let keys = ["OS1SourceCommit", "OS1SourceRoot", "OS1SourceRepository", "OS1SourceTreeClean"]
+    guard keys.contains(where: { plist[$0] != nil }) else { return .absent }
+    guard plist["CFBundleIdentifier"] as? String == "com.omaragi.os1",
+          plist["OS1SourceTreeClean"] as? Bool == true,
+          plist["OS1SourceRepository"] as? String == "effacermonexistence/codex",
+          let commit = plist["OS1SourceCommit"] as? String,
+          commit.range(of: "^[0-9a-f]{40}$", options: .regularExpression) != nil,
+          let supplied = plist["OS1SourceRoot"] as? String, supplied.hasPrefix("/"),
+          signatureVerified() else { return .invalid }
+    let root = LocalProjectWorkspace.executionPath(supplied)
+    guard root.hasPrefix(LocalProjectWorkspace.executionPath(home.path) + "/"),
+          !root.contains("/.os1/fleet/jobs/"), sourceMatches(root, commit) else { return .invalid }
+    return .verified(commit: commit, root: root)
+}
+
+/// Physical git evidence, not a marker alone or a recently touched index.
+/// Read-only: never fetches, registers trust, moves a branch or touches dirt.
+private func os1SourceRootMatches(_ root: String, commit: String) -> Bool {
+    guard LocalProjectWorkspace.root(containing: root, projectID: "os1-clodex")
+            .map(LocalProjectWorkspace.executionPath) == root,
+          let git = try? findExecutable("git"),
+          let top = try? commandOutput(git, ["--no-optional-locks", "-C", root, "rev-parse", "--show-toplevel"], timeout: 10), top.0 == 0,
+          LocalProjectWorkspace.executionPath(String(decoding: top.1, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)) == root,
+          let remote = try? commandOutput(git, ["--no-optional-locks", "-C", root, "remote", "get-url", "origin"], timeout: 10), remote.0 == 0 else { return false }
+    let origin = String(decoding: remote.1, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+    guard ["https://github.com/effacermonexistence/codex", "https://github.com/effacermonexistence/codex.git",
+           "git@github.com:effacermonexistence/codex.git", "ssh://git@github.com/effacermonexistence/codex.git"].contains(origin) else { return false }
+    return (try? commandOutput(git, ["--no-optional-locks", "-C", root, "merge-base", "--is-ancestor", commit, "HEAD"], timeout: 10))?.0 == 0
+}
+
+private func installedOS1SourceMetadata() -> InstalledOS1SourceMetadata {
+    let path = installedAppURL.appendingPathComponent("Contents/Info.plist")
+    guard FileManager.default.fileExists(atPath: path.path) else { return .absent }
+    guard let data = try? Data(contentsOf: path), data.count <= 200_000,
+          let plist = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any] else { return .invalid }
+    return installedOS1SourceMetadata(plist, home: FileManager.default.homeDirectoryForCurrentUser,
+        signatureVerified: { (try? commandOutput("/usr/bin/codesign", ["--verify", "--strict", installedAppURL.path], timeout: 20))?.0 == 0 },
+        sourceMatches: os1SourceRootMatches)
+}
+
+private func recordedOS1InstalledSourceCommit() -> String? {
     let installed = installedOS1Build()
-    return SelfUpdate.outcomes().last(where: { $0.success && $0.intent.build == installed })?.intent.sourceCommit
+    guard let commit = SelfUpdate.outcomes().last(where: { $0.success && $0.intent.build == installed })?.intent.sourceCommit,
+          commit.range(of: "^[0-9a-f]{40}$", options: .regularExpression) != nil else { return nil }
+    return commit
+}
+
+private func selectedOS1SourceCommit(_ metadata: InstalledOS1SourceMetadata, recorded: String?) -> String? {
+    switch metadata {
+    case .verified(let commit, _): return commit
+    case .absent:
+        guard let recorded, recorded.range(of: "^[0-9a-f]{40}$", options: .regularExpression) != nil else { return nil }
+        return recorded
+    case .invalid: return nil
+    }
+}
+
+/// External verified installations now carry the same source binding as
+/// OS-1's own installs. Corrupt present metadata cannot fall back to history.
+func installedOS1SourceCommit() -> String? {
+    selectedOS1SourceCommit(installedOS1SourceMetadata(), recorded: recordedOS1InstalledSourceCommit())
+}
+
+/// Scratch-only physical source and metadata fixture. No live conversation,
+/// queue, credentials, Codex trust registration, installation or model call.
+func installedOS1SourceIdentitySelfTest() -> Bool {
+    let files = FileManager.default
+    let home = files.temporaryDirectory.appendingPathComponent("os1-installed-source-" + UUID().uuidString)
+    let live = home.appendingPathComponent("current-source"), old = home.appendingPathComponent("stale-source")
+    defer { try? files.removeItem(at: home) }
+    guard let git = try? findExecutable("git") else { return false }
+    func run(_ root: URL, _ args: [String]) -> Bool {
+        (try? commandOutput(git, ["-C", root.path] + args, timeout: 20))?.0 == 0
+    }
+    do {
+        try files.createDirectory(at: live.appendingPathComponent(SelfUpdate.runtimeRelativePath), withIntermediateDirectories: true)
+        let marker = live.appendingPathComponent(SelfUpdate.runtimeRelativePath + "/Package.swift")
+        try Data("// fixture marker\n".utf8).write(to: marker)
+        guard run(live, ["init", "-q"]), run(live, ["add", "-A"]),
+              run(live, ["-c", "user.name=OS1 Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-q", "-m", "initial"]),
+              run(live, ["remote", "add", "origin", "https://github.com/effacermonexistence/codex.git"]),
+              (try? commandOutput(git, ["clone", "--quiet", "--no-hardlinks", live.path, old.path], timeout: 20))?.0 == 0,
+              run(old, ["remote", "set-url", "origin", "https://github.com/effacermonexistence/codex.git"]) else { return false }
+        try Data("// newer source\n".utf8).write(to: marker)
+        guard run(live, ["add", "-A"]),
+              run(live, ["-c", "user.name=OS1 Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-q", "-m", "current"]),
+              let commit = gitHead(live.path), let previous = gitHead(old.path) else { return false }
+        let root = LocalProjectWorkspace.executionPath(live.path)
+        let signed: [String: Any] = ["CFBundleIdentifier": "com.omaragi.os1", "OS1SourceCommit": commit,
+            "OS1SourceRoot": root, "OS1SourceRepository": "effacermonexistence/codex", "OS1SourceTreeClean": true]
+        func classify(_ value: [String: Any], signed signature: Bool = true) -> InstalledOS1SourceMetadata {
+            installedOS1SourceMetadata(value, home: home, signatureVerified: { signature }, sourceMatches: os1SourceRootMatches)
+        }
+        let external = classify(signed)
+        guard external == .verified(commit: commit, root: root),
+              selectedOS1SourceCommit(external, recorded: nil) == commit,
+              selectedOS1SourceCommit(external, recorded: previous) == commit,
+              selectedOS1SourceCommit(classify([:]), recorded: commit) == commit,
+              selectedOS1SourceCommit(classify([:]), recorded: nil) == nil else { return false }
+        // HOME has no registered Codex projects. The installed source hint
+        // resolves it without adding config or granting backend trust.
+        guard let resolved = LocalProjectWorkspace.resolve(projectID: "os1-clodex", requested: old.path, home: home,
+                additionalCandidates: [root], isCurrent: { os1SourceRootMatches($0, commit: commit) }),
+              resolved.workspace == root, !resolved.fromRequestedWorkspace,
+              !files.fileExists(atPath: home.appendingPathComponent(".codex/config.toml").path) else { return false }
+        var stale = signed; stale["OS1SourceRoot"] = old.path
+        var malformed = signed; malformed["OS1SourceCommit"] = "not-a-commit"
+        var dirty = signed; dirty["OS1SourceTreeClean"] = false
+        var foreign = signed; foreign["OS1SourceRepository"] = "other/repository"
+        for invalid in [classify(stale), classify(malformed), classify(dirty), classify(foreign), classify(signed, signed: false)] {
+            guard invalid == .invalid, selectedOS1SourceCommit(invalid, recorded: previous) == nil else { return false }
+        }
+        // An actual repair's uncommitted edit remains untouched; its installed
+        // baseline commit still belongs to this source lineage.
+        try Data("// pending repair preserved\n".utf8).write(to: marker)
+        let preserved = try Data(contentsOf: marker)
+        return classify(signed) == external && preserved == Data("// pending repair preserved\n".utf8)
+    } catch { return false }
 }
 
 /// A registered root is current when it already contains the installed
 /// build's source commit, so a stale clone never outranks the live tree just
 /// because its index was touched more recently.
 func resolveLocalProjectWorkspace(projectID: String, requested: String) -> LocalProjectWorkspace.Resolution? {
-    guard projectID == "os1-clodex", let commit = installedOS1SourceCommit(), let git = try? findExecutable("git") else {
+    guard projectID == "os1-clodex" else {
         return LocalProjectWorkspace.resolve(projectID: projectID, requested: requested)
     }
-    return LocalProjectWorkspace.resolve(projectID: projectID, requested: requested) { root in
-        (try? commandOutput(git, ["-C", root, "merge-base", "--is-ancestor", commit, "HEAD"], timeout: 10))?.0 == 0
+    let metadata = installedOS1SourceMetadata()
+    let commit: String
+    let extra: [String]
+    switch metadata {
+    case .verified(let installed, let root): commit = installed; extra = [root]
+    case .absent:
+        guard let installed = recordedOS1InstalledSourceCommit() else { return nil }
+        commit = installed; extra = []
+    case .invalid: return nil
+    }
+    return LocalProjectWorkspace.resolve(projectID: projectID, requested: requested, additionalCandidates: extra) {
+        os1SourceRootMatches($0, commit: commit)
     }
 }
 
@@ -1070,7 +1206,20 @@ func uncommittedOS1SourceDiagnostic(root: String) -> String? {
 /// Staging a checkout that lacks the installed build's source commit would
 /// install older code under a newer build number (a stale copy such as a
 /// dated folder, or a tree behind the build that is running).
-func staleOS1SourceDiagnostic(root: String, installedCommit: String? = installedOS1SourceCommit()) -> String? {
+func staleOS1SourceDiagnostic(root: String) -> String? {
+    let metadata = installedOS1SourceMetadata()
+    if metadata == .invalid {
+        return "refusing to stage \(root): the installed app's present source identity is invalid or conflicts with its physical source. No historical outcome or stale checkout can replace that binding; the working changes are preserved."
+    }
+    let commit = selectedOS1SourceCommit(metadata, recorded: recordedOS1InstalledSourceCommit())
+    if commit == nil && installedOS1Build() > 0 {
+        return "refusing to stage \(root): the installed build has no verified source commit. Bind a verified external installation or matching self-install outcome before self-repair; the working changes are preserved."
+    }
+    return staleOS1SourceDiagnostic(root: root, installedCommit: commit)
+}
+
+/// Explicit evidence overload also serves isolated fixtures with no install.
+func staleOS1SourceDiagnostic(root: String, installedCommit: String?) -> String? {
     guard let installedCommit, let git = try? findExecutable("git"),
           let result = try? commandOutput(git, ["-C", root, "merge-base", "--is-ancestor", installedCommit, "HEAD"], timeout: 20),
           result.0 != 0 else { return nil }

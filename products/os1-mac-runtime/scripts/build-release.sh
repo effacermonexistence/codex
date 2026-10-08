@@ -4,6 +4,36 @@ set -euo pipefail
 readonly script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 readonly runtime_root="$(cd "$script_dir/.." && pwd -P)"
 readonly repository_root="$(cd "$runtime_root/../.." && pwd -P)"
+readonly source_key="$(printf '%s' "$runtime_root" | shasum -a 256 | cut -c1-20)"
+readonly source_commit="$(git --no-optional-locks -C "$repository_root" rev-parse HEAD)"
+[[ "$source_commit" =~ ^[0-9a-f]{40}$ ]] || { echo 'Release source has no exact Git commit.' >&2; exit 1; }
+readonly source_origin="$(git --no-optional-locks -C "$repository_root" remote get-url origin)"
+case "$source_origin" in
+  https://github.com/effacermonexistence/codex|https://github.com/effacermonexistence/codex.git|git@github.com:effacermonexistence/codex.git|ssh://git@github.com/effacermonexistence/codex.git) ;;
+  *) echo 'Release source repository identity does not match effacermonexistence/codex.' >&2; exit 1 ;;
+esac
+source_tree_is_clean() {
+  python3 - "$repository_root" "$HOME/Library/Caches/OS-1/releases/$source_key" <<'PY'
+import pathlib, subprocess, sys
+root=pathlib.Path(sys.argv[1]); generated="products/os1-mac-runtime/release"
+result=subprocess.run(["git","--no-optional-locks","-C",str(root),"status","--porcelain=v1","-z","--untracked-files=all"],capture_output=True,check=True)
+parts=result.stdout.split(b"\0"); clean=True; i=0
+while i < len(parts):
+    entry=parts[i]; i+=1
+    if not entry: continue
+    code=entry[:2]; path=entry[3:].decode("utf-8","surrogateescape")
+    if b"R" in code or b"C" in code:
+        i+=1  # A rename/copy is source mutation, never a generated-link exemption.
+        clean=False; continue
+    link=root/generated
+    if path==generated and link.is_symlink() and link.resolve()==pathlib.Path(sys.argv[2]).resolve(): continue
+    clean=False
+print("1" if clean else "0")
+PY
+}
+# Capture before tests/builds and before release/ is rewritten. Dirty automatic
+# self-repairs are stamped only by their later post-commit install outcome.
+readonly source_input_clean="$(source_tree_is_clean)"
 python3 "$script_dir/check-startup-isolation.py"
 python3 "$script_dir/test-task-quality-wiring.py"
 python3 "$script_dir/test-memory-paging-wiring.py"
@@ -24,7 +54,6 @@ readonly release_mode="${OS1_RELEASE_MODE:-development}"
 # Keep generated release payloads outside synchronized Documents; retain the
 # checkout's established release/ entry point for self-update consumers.
 readonly release_entry="$runtime_root/release"
-readonly source_key="$(printf '%s' "$runtime_root" | shasum -a 256 | cut -c1-20)"
 readonly output_dir="${OS1_RELEASE_OUTPUT_DIR:-$HOME/Library/Caches/OS-1/releases/$source_key}"
 readonly stage_dir="$output_dir/stage"
 readonly audit_dir="$output_dir/audit"
@@ -149,6 +178,19 @@ plutil -replace CFBundleVersion -string "$(plutil -extract CFBundleVersion raw -
 
 install -m 0644 "$runtime_root/Resources/Info.plist" \
   "$stage_dir/Applications/OS-1 CLODEX.app/Contents/Info.plist"
+readonly staged_info="$stage_dir/Applications/OS-1 CLODEX.app/Contents/Info.plist"
+for key in OS1SourceCommit OS1SourceRoot OS1SourceRepository OS1SourceTreeClean; do
+  plutil -remove "$key" "$staged_info" 2>/dev/null || true
+done
+if [[ "$source_input_clean" == "1" ]]; then
+  [[ "$(git --no-optional-locks -C "$repository_root" rev-parse HEAD)" == "$source_commit" && "$(source_tree_is_clean)" == "1" ]] || {
+    echo 'Clean release source changed during the build; refusing a false source identity.' >&2; exit 1;
+  }
+  plutil -insert OS1SourceCommit -string "$source_commit" "$staged_info"
+  plutil -insert OS1SourceRoot -string "$repository_root" "$staged_info"
+  plutil -insert OS1SourceRepository -string effacermonexistence/codex "$staged_info"
+  plutil -insert OS1SourceTreeClean -bool true "$staged_info"
+fi
 for resource in OmarAGI.png Codex.png ClaudeCode.png Constellation.png CodexDictationCapture.html; do
   install -m 0644 "$runtime_root/Resources/$resource" \
     "$stage_dir/Applications/OS-1 CLODEX.app/Contents/Resources/$resource"

@@ -131,10 +131,10 @@ public struct RouteFanout: Equatable, Sendable {
         "^(?:\(opener)[\\s,]*)+$",
         // A test announcement: "자 테스트 해보자", "라우팅 테스트야", "음 라우팅 테스트 간다",
         // "야 라우팅 잘 됐는지 일단 확인해 보자", "라우팅 확인", "라우팅 잘 되는지 보자".
-        "^(?:\(opener)[\\s,]*)*(?:라우팅\\s*(?:이|가)?\\s*)?(?:잘\\s*)?(?:(?:되는지|됐는지)\\s*)?(?:일단\\s*|한번\\s*)?(?:(?:테스트|확인|시험)(?:\\s*(?:야|다|중|간다|가자)|\\s*(?:한번\\s*)?\(tryVerb))?|보자)$",
+        "^(?:\(opener)[\\s,]*)*(?:라우팅\\s*(?:이|가)?\\s*)?(?:잘\\s*)?(?:(?:되는지|됐는지)\\s*)?(?:일단\\s*|한번\\s*)?(?:(?:테스트|확인|시험|체크)(?:\\s*(?:야|다|중|간다|가자|하자|하고자)|\\s*(?:한번\\s*)?\(tryVerb))?|보자)$",
         #"^(?:(?:hey|ok|okay)[\s,]*)*(?:quick\s+)?(?:routing\s+)?test(?:ing)?$"#,
         // A build announcement: "빌드 332 들어갔으니까 확인해보자", "빌드 335 테스트야", "OS-1 새로 설치했어".
-        "^(?:\(opener)[\\s,]*)*(?:(?:빌드|build)\\s*[0-9]+\\s*(?:테스트(?:야|다)?|(?:들어갔|깔렸|설치됐|설치했)(?:으니까|어))|(?:os-?1\\s*)?(?:새로\\s*)?(?:설치|업데이트)(?:했|됐)(?:어|으니까))(?:\\s*(?:라우팅\\s*)?(?:확인|테스트)\\s*\(tryVerb))?$",
+        "^(?:\(opener)[\\s,]*)*(?:(?:빌드|build)\\s*[0-9]+\\s*(?:테스트(?:야|다)?|(?:들어갔|깔렸|설치됐|설치했)(?:으니까|어))|(?:os-?1\\s*)?(?:새로\\s*)?(?:설치|업데이트)(?:했|됐)(?:어|으니까))(?:\\s*(?:라우팅\\s*)?(?:확인|테스트|체크)\\s*\(tryVerb))?$",
         // The owner's own openers: "자 내가 하나만 요청해볼게", "추가로 하나 더", "간단한 거".
         #"^간단한\s*(?:거|걸로)$"#,
         // The order to route alone: "보내", "시켜봐", "라우팅 해봐".
@@ -152,9 +152,38 @@ public struct RouteFanout: Equatable, Sendable {
     /// ("1+1은?", "2+2는 뭐야", "3+3=?"); a date or a phone number is not one.
     static let wholePart = "^\\s*" + expression + #"(?:\s*(?:은|는|이|가|을|를))?(?:\s*(?:뭐야|몇이야|얼마야|뭐지|뭐|몇|얼마))?\s*(?:=\s*)?\??\s*$"#
 
+    /// Numbers read aloud inside an expression ("원 플러스 원", "one plus one").
+    /// Sino-Korean 일, 이, 삼 are left out: "이" is also "this".
+    static let spokenNumbers: [(word: String, digits: String)] = [
+        ("제로|zero", "0"), ("원|one|하나", "1"), ("투|two|둘", "2"), ("쓰리|스리|three|셋", "3"),
+        ("포|four|넷", "4"), ("파이브|five|다섯", "5"), ("식스|six|여섯", "6"), ("세븐|seven|일곱", "7"),
+        ("에잇|에이트|eight|여덟", "8"), ("나인|nine|아홉", "9"), ("텐|ten|열", "10"),
+    ]
+    /// "병렬로", "동시에", "다", "in parallel": every listed name runs the
+    /// same parts (owner, 2026-10-07: "GPT랑 코덱스 클로드 코드 클로드 이거 네 개
+    /// 병렬로 뭐 원 플러스 원 투 플러스 투 이런 거 돌려봐" reached Claude Code alone:
+    /// no name carried a particle and nothing said "하나씩").
+    static let broadcastMarker = #"병렬|동시에|똑같이|(?<![가-힣])(?:다|모두|전부|각각|각자)(?![가-힣])|(?<![A-Za-z])(?:in\s+parallel|at\s+once|simultaneously|both|all)(?![A-Za-z])"#
+    /// The owner's count of the routes ("네 개", "넷", "둘 다", "both"); it must
+    /// match the names listed. Carrying the particle ("네 개한테", "넷한테"), it
+    /// makes the whole list before it the destination.
+    static let routeCount = #"(?<![가-힣0-9])(?:(두|세|네|다섯|여섯|일곱|여덟|[2-8])\s?개(?:를|가|\s?(?:한테|에게|께)(?:는|도|만)?)?|(둘|셋|넷|다섯|여섯|일곱|여덟)(?:이서|이|다|\s?(?:한테|에게|께)(?:는|도|만)?)?)(?![가-힣0-9])|(?<![A-Za-z])(both)(?![A-Za-z])"#
+    /// Words that ask every listed route the same parts: the markers, "둘다",
+    /// "같이", "같은 거", "the same".
+    static let sameParts = broadcastMarker + #"|(?<![가-힣])(?:둘|셋|넷|다섯|여섯|일곱|여덟)\s?다(?![가-힣])|같이|같은|(?<![A-Za-z])the\s+same(?![A-Za-z])"#
+    /// What may stand beside the names, the marker and the order besides
+    /// roster words ("이거", "뭐", "간단한 거").
+    static let broadcastFiller = #"병렬\s?로(?![가-힣])|병렬|동시에|똑같이|다\s?같이|(?<![가-힣])각자(?![가-힣])|(?<![가-힣])(?:이거|이것|이걸)(?:로|를|을|도|으로)?(?![가-힣])|(?<![가-힣])뭐(?![가-힣])|(?<![가-힣])(?:간단한|쉬운|이런|요런|그런|같은)\s?(?:거|걸|것)(?:로|으로)?(?![가-힣])|(?<![A-Za-z])(?:in\s+parallel|at\s+once|simultaneously|both|all|the\s+same)(?![A-Za-z])"#
+    /// "아니 (뭐) …": the sentence replaces the one before it. "아니다", "아니야"
+    /// and "아니면" are not corrections.
+    static let correction = #"^(?:아\s*)?아니(?:\s*,\s*|\s+)(?:(?:뭐|그러니까|그니까|내\s*말은|그게\s*아니라|그게\s*아니고)(?:\s*,\s*|\s+))?"#
+
     public static func plan(_ prompt: String) -> RouteFanout? {
-        let text = prompt.precomposedStringWithCanonicalMapping.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty, text.count <= maximumCharacters, !text.contains("```") else { return nil }
+        let written = prompt.precomposedStringWithCanonicalMapping.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !written.isEmpty, written.count <= maximumCharacters, !written.contains("```") else { return nil }
+        // Normalize numbers only inside an explicitly bounded mathematical expression.
+        let text = spokenArithmetic(written)
+        if let counted = broadcasting(text) { return counted.plan }
         if let broadcast = parallelBroadcast(text) { return broadcast }
         // A sentence that hands out one part per listed name decides the
         // request alone (paired, or kept whole) unless the parts carry their
@@ -243,9 +272,13 @@ public struct RouteFanout: Equatable, Sendable {
         let value = prompt.precomposedStringWithCanonicalMapping.lowercased()
         guard value.count <= 24_000,
               value.range(of: negation, options: [.regularExpression, .caseInsensitive]) == nil,
-              value.range(of: rosterVerb, options: [.regularExpression, .caseInsensitive]) != nil else { return false }
+              clauses(value).contains(where: { clause in
+                  !endsWithQuestionMark(clause, in: value)
+                      && clause.range(of: rosterVerb, options: [.regularExpression, .caseInsensitive]) != nil
+              }) else { return false }
         guard Set(providerNames(in: value).map(\.surface)).count >= 2 else { return false }
-        if hasExplicitBroadcast(value) || value.range(of: distributive, options: [.regularExpression, .caseInsensitive]) != nil {
+        if hasExplicitBroadcast(value) || value.range(of: distributive, options: [.regularExpression, .caseInsensitive]) != nil
+            || !routeCounts(in: value).isEmpty {
             return true
         }
         // A shared dative particle is itself a destination-list cue. The
@@ -302,6 +335,7 @@ public struct RouteFanout: Equatable, Sendable {
         }
         guard let selected = rosters.last, (2...maximumTargets).contains(selected.count),
               Set(selected.map(\.surface)).count == selected.count,
+              routeCounts(in: text).allSatisfy({ $0 == selected.count }),
               rosters.allSatisfy({ Set($0.map(\.surface)).isSubset(of: Set(selected.map(\.surface))) }),
               let expressionRegex = try? NSRegularExpression(pattern: expression, options: [.caseInsensitive]) else { return nil }
         let matches = expressionRegex.matches(in: text, range: NSRange(text.startIndex..., in: text))
@@ -525,6 +559,196 @@ public struct RouteFanout: Equatable, Sendable {
             found = list
         }
         return Roster(names: run.names, items: found, clear: true)
+    }
+
+    /// The numbers of each spoken expression as digits: "원 플러스 원 투 플러스 투"
+    /// → "1 플러스 1 2 플러스 2". Only inside an expression, so "원래", "하나씩",
+    /// "추가로 하나 더" and "만 원" stay as written.
+    static func spokenArithmetic(_ text: String) -> String {
+        let word = "(?<![A-Za-z0-9가-힣.])(?:" + spokenNumbers.map(\.word).joined(separator: "|") + "|[0-9]+(?:\\.[0-9]+)?)"
+            + "(?=$|[^A-Za-z0-9가-힣]|(?:은|는|이|가|을|를)(?![가-힣]))"
+        let operation = #"\s*(?:[-+*/×÷^%]|plus|minus|times|x|divided\s+by|더하기|빼기|곱하기|나누기|플러스|마이너스)\s*"#
+        guard let run = try? NSRegularExpression(pattern: word + "(?:" + operation + word + ")+", options: [.caseInsensitive]) else { return text }
+        var result = text
+        for match in run.matches(in: text, range: NSRange(text.startIndex..., in: text)).reversed() {
+            guard let range = Range(match.range, in: result) else { continue }
+            var spoken = String(result[range])
+            for (pattern, digits) in spokenNumbers {
+                spoken = spoken.replacingOccurrences(of: "(?<![A-Za-z0-9가-힣])(?:\(pattern))(?![A-Za-z0-9가-힣])", with: digits,
+                                                     options: [.regularExpression, .caseInsensitive])
+            }
+            if spoken != String(result[range]) {
+                spoken = spoken.replacingOccurrences(of: #"\s*(?:plus|플러스|더하기)\s*"#, with: "+", options: [.regularExpression, .caseInsensitive])
+            }
+            result.replaceSubrange(range, with: spoken)
+        }
+        return result
+    }
+
+    struct Broadcast {
+        /// Each route once, in the owner's order.
+        let names: [(surface: ProviderSurface, text: String)]
+        /// Parts written inside the sentence itself.
+        let items: [String]?
+        /// Names, the marker, a matching count, the order to route, possibly
+        /// the parts, and nothing else.
+        let clear: Bool
+    }
+
+    /// A sentence with a run of two or more names and "병렬로", "동시에", "다",
+    /// a count or "in parallel" (nil otherwise); clear only when it says nothing
+    /// more, like a `roster`, and every count matches the routes listed.
+    static func broadcast(_ clause: String, in text: String, requireMarker: Bool = true) -> Broadcast? {
+        guard clause.range(of: distributive, options: [.regularExpression, .caseInsensitive]) == nil,
+              !requireMarker || clause.range(of: broadcastMarker, options: [.regularExpression, .caseInsensitive]) != nil
+                || !routeCounts(in: clause).isEmpty,
+              let run = nameRun(in: clause), run.names.count >= 2 else { return nil }
+        // A route listed twice runs once.
+        var names: [(surface: ProviderSurface, text: String)] = []
+        for name in run.names where !names.contains(where: { $0.surface == name.surface }) { names.append(name) }
+        let unclear = Broadcast(names: names, items: nil, clear: false)
+        guard names.count >= 2, names.count <= maximumTargets,
+              clause.range(of: reportedRouting, options: [.regularExpression, .caseInsensitive]) == nil,
+              clause.range(of: routingTalk, options: .regularExpression) == nil,
+              clause.range(of: negation, options: [.regularExpression, .caseInsensitive]) == nil,
+              !endsWithQuestionMark(clause, in: text) else { return unclear }
+        var prefix = String(clause[clause.startIndex..<run.range.lowerBound])
+        let after = String(clause[run.range.upperBound...])
+        var middle = after, tail = ""
+        if let verb = after.range(of: rosterVerb, options: [.regularExpression, .caseInsensitive]) {
+            middle = String(after[after.startIndex..<verb.lowerBound])
+            tail = String(after[verb.upperBound...])
+        } else if let verb = prefix.range(of: rosterVerb, options: [.regularExpression, .caseInsensitive]) {
+            prefix.removeSubrange(verb) // "Ask GPT and Claude in parallel: 1+1"
+        }
+        var found: [String]?
+        var counts: [Int] = []
+        for (index, segment) in [prefix, middle, tail].enumerated() {
+            counts += routeCounts(in: segment)
+            let cleaned = segment.replacingOccurrences(of: routeCount, with: " ", options: [.regularExpression, .caseInsensitive])
+                .replacingOccurrences(of: broadcastFiller, with: " ", options: [.regularExpression, .caseInsensitive])
+                .replacingOccurrences(of: #"라우팅"#, with: " ", options: .regularExpression)
+                .trimmingCharacters(in: CharacterSet(charactersIn: " :：,，\t"))
+            // An opener before the names, "답변 받아와" after the order.
+            if onlyRosterWords(cleaned) || (index != 1 && benignFrame(cleaned)) { continue }
+            guard found == nil, let list = broadcastParts(trimmingRosterWords(cleaned)) else { return unclear }
+            found = list
+        }
+        guard counts.allSatisfy({ $0 == names.count }) else { return unclear }
+        return Broadcast(names: names, items: found, clear: true)
+    }
+
+    /// The counts a text gives ("네 개" → 4, "둘 다" → 2).
+    static func routeCounts(in text: String) -> [Int] {
+        guard let regex = try? NSRegularExpression(pattern: routeCount, options: [.caseInsensitive]) else { return [] }
+        let numbers = ["두": 2, "둘": 2, "세": 3, "셋": 3, "네": 4, "넷": 4, "다섯": 5, "여섯": 6, "일곱": 7, "여덟": 8, "both": 2]
+        return regex.matches(in: text, range: NSRange(text.startIndex..., in: text)).compactMap { match -> Int? in
+            for group in 1...3 where match.range(at: group).location != NSNotFound {
+                guard let range = Range(match.range(at: group), in: text) else { continue }
+                let word = text[range].lowercased()
+                return numbers[word] ?? Int(word)
+            }
+            return nil
+        }
+    }
+
+    /// The clause after "아니 (뭐)", or nil when it corrects nothing.
+    static func correctionBody(_ clause: String) -> String? {
+        guard let range = clause.range(of: correction, options: .regularExpression) else { return nil }
+        let body = String(clause[range.upperBound...]).trimmingCharacters(in: .whitespaces)
+        return body.isEmpty ? nil : body
+    }
+
+    /// The parts every listed route is asked: one or more whole expressions,
+    /// without "답변 받아와" or a hedge ("이런 거") after them.
+    static func broadcastParts(_ text: String) -> [String]? {
+        let value = text.replacingOccurrences(of: trailingReturn, with: "", options: .regularExpression)
+            .replacingOccurrences(of: #"\s+(?:그리고|and)\s*$"#, with: "", options: [.regularExpression, .caseInsensitive])
+            .replacingOccurrences(of: #"(?<=\S)\s+(?:이런|요런|그런|저런|같은)\s?(?:거|것|걸)(?:로|으로)?$"#, with: "", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let list = items(value).flatMap { item in selfContained(item) ? [item] : (expressionRun(item) ?? [item]) }
+        guard !list.isEmpty, list.count <= maximumTargets, list.allSatisfy(selfContained) else { return nil }
+        // "5+5,100+100,7+7": both readings of a comma are parts; unclear.
+        let commas = value.components(separatedBy: CharacterSet(charactersIn: ",，、"))
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+        if commas != list, commas.allSatisfy(selfContained) { return nil }
+        return list
+    }
+
+    /// One sentence lists the routes with no particle and no "하나씩" and runs
+    /// them all ("GPT랑 코덱스 클로드 코드 클로드 이거 네 개 병렬로 원 플러스 원 투
+    /// 플러스 투 이런 거 돌려봐"): every listed route is asked the same parts.
+    /// Decided here like `pairing` (nil: no such sentence, the ordinary path
+    /// decides), on the same positive evidence:
+    /// - the last such sentence decides; "아니 (뭐) …" replaces the ones before
+    ///   it, which may only be earlier drafts of the order or an opener;
+    ///   without a correction, a second such sentence keeps the request whole;
+    /// - the parts come from exactly one place: inside that sentence, the
+    ///   sentence right after it, or (uncorrected, when nothing but "답변
+    ///   받아와" follows) the sentence right before it;
+    /// - every other sentence only asks for the answers back, and none names a route;
+    /// - a count, exactly as many parts as routes and no word asking them all
+    ///   the same hand out one part each, in order: "코덱스, GPT, 클로드 코드, 클로드
+    ///   네 개한테 원 플러스 원, 투 플러스 투, 쓰리 플러스 쓰리, 포 플러스 포, 해봐"
+    ///   (owner, 2026-10-08) reached Claude Code alone.
+    static func broadcasting(_ text: String) -> Pairing? {
+        let listed = text.replacingOccurrences(of: #"(?m)^[ \t]*(?:[0-9]{1,2}[.)]|[-*•·])[ \t]+"#, with: "", options: .regularExpression)
+        let parts = clauses(listed)
+        // A name with its particle is the ordinary path's to decide.
+        guard !parts.contains(where: { !mentions(in: $0).isEmpty }) else { return nil }
+        let found = parts.indices.compactMap { index -> (index: Int, corrected: Bool, value: Broadcast)? in
+            let body = correctionBody(parts[index])
+            return broadcast(body ?? parts[index], in: listed).map { (index, body != nil, $0) }
+        }
+        guard let decider = found.last else { return nil }
+        let whole = Pairing(plan: nil)
+        guard decider.value.clear else { return whole }
+        let at = decider.index
+        var replaced: Set<Int> = []
+        if decider.corrected {
+            for index in 0..<at {
+                if let draft = broadcast(correctionBody(parts[index]) ?? parts[index], in: listed, requireMarker: false), draft.clear {
+                    replaced.insert(index)
+                } else if !sideSentence(parts[index], in: listed, leading: true) {
+                    return whole
+                }
+            }
+        } else if found.count > 1 {
+            return whole
+        }
+        for index in parts.indices where index != at && !replaced.contains(index) {
+            if containsName(parts[index]) { return whole }
+        }
+        var sources: [(clause: Int?, items: [String])] = []
+        if let inline = decider.value.items { sources.append((nil, inline)) }
+        if at + 1 < parts.count, let list = broadcastParts(parts[at + 1]) { sources.append((at + 1, list)) }
+        if !decider.corrected, at > 0, ((at + 1)..<parts.count).allSatisfy({ sideSentence(parts[$0], in: listed) }),
+           let list = broadcastParts(parts[at - 1]) {
+            sources.append((at - 1, list))
+        }
+        guard sources.count == 1, let chosen = sources.first else { return whole }
+        let rest = parts.indices.filter { $0 != at && $0 != chosen.clause && !replaced.contains($0) }
+        guard rest.allSatisfy({ sideSentence(parts[$0], in: listed, leading: $0 < at) }) else { return whole }
+        let names = decider.value.names, order = correctionBody(parts[at]) ?? parts[at]
+        let frame = parts.indices.filter { $0 != at && $0 != chosen.clause }.map { parts[$0] }
+        // A replaced draft that said "병렬로" may still mean it: the same parts.
+        let same = ([order] + replaced.map { parts[$0] })
+            .contains { $0.range(of: sameParts, options: [.regularExpression, .caseInsensitive]) != nil }
+        if !same, !routeCounts(in: order).isEmpty, chosen.items.count != 1 {
+            // A counted imperative with several parts means one each. A
+            // mismatched count is ambiguous, never an invented broadcast.
+            guard chosen.items.count == names.count else { return whole }
+            let targets = zip(names, chosen.items).map { name, item in
+                Target(surface: name.surface, mention: name.text, payload: strip(item))
+            }
+            guard targets.allSatisfy({ acceptable($0.payload) && arithmetic($0.payload) }),
+                  !ambiguousNumbers(targets.map(\.payload)) else { return whole }
+            return Pairing(plan: RouteFanout(targets: targets, frame: frame))
+        }
+        let payload = chosen.items.map(strip).joined(separator: ", ")
+        guard acceptable(payload), arithmetic(payload), !ambiguousNumbers([payload]) else { return whole }
+        let targets = names.map { Target(surface: $0.surface, mention: $0.text, payload: payload) }
+        return Pairing(plan: RouteFanout(targets: targets, frame: frame))
     }
 
     /// The first run of two or more names joined only by "랑", "하고", ",",

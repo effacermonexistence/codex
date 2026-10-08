@@ -108,5 +108,34 @@ func runRouteFanoutFixtures() throws {
     for text in ["GPT랑 코덱스랑 클로드한테는 안 갔잖아", "코덱스랑 클로드한테 라우팅이 이상해", "GPT랑 클로드한테 1+2 보냈어?"] {
         check(RouteFanout.plan(text) == nil, "no list split: \(text.prefix(40))")
     }
+    // Owner's installed-UI dictation: count carries the particle; NFC/NFD must
+    // preserve four independent routes, not create a single research task.
+    let countedOwner = "야 한번 체크해 보자. 야. 체크하고자. 라우팅해 봐. 코덱스, GPT, 클로드 코드, 클로드 네 개한테 원 플러스 원, 투 플러스 투, 쓰리 플러스 쓰리, 포 플러스 포, 해봐."
+    for request in [countedOwner.precomposedStringWithCanonicalMapping, countedOwner.decomposedStringWithCanonicalMapping] {
+        let counted = RouteFanout.plan(request)
+        check(counted?.targets.map(\.surface) == [.codex, .gptChat, .claude, .claudeChat], "spoken counted roster preserves all four destinations NFC/NFD")
+        check(counted?.targets.map(\.payload) == ["1+1", "2+2", "3+3", "4+4"], "counted spoken expressions map one per route in order")
+        check(counted?.executionOrder == [0, 1, 2, 3], "counted executors keep owner order")
+        check(counted?.frame == ["야 한번 체크해 보자", "야", "체크하고자", "라우팅해 봐"], "check announcement is framing, never an execution task")
+        check(RouteFanout.requestsProviderFanout(request), "counted request bypasses project planning without magic parallel wording")
+    }
+    check(RouteFanout.plan("GPT랑 클로드 이거 네 개 병렬로 1+1 돌려봐") == nil, "explicit route count must match roster")
+    check(RouteFanout.plan("코덱스, GPT 두 개한테 병렬로 1+1, 2+2 해봐")?.targets.map(\.payload) == ["1+1, 2+2", "1+1, 2+2"], "explicit parallel marker still broadcasts counted lists")
+    check(RouteFanout.plan("코덱스, ChatGPT 두 개한테 원 플러스 원, 투 플러스 투 해봐")?.targets.first(where: { $0.surface == .chatgpt })?.surface.isExecutor == false, "counted real ChatGPT remains an external handoff")
+    check(RouteFanout.plan("Codex, GPT 두 개한테 원래 하나씩 추가로 하나 더 만 원 해봐") == nil, "spoken-number decoding never invents arithmetic from non-mathematical words")
+    check(RouteFanout.plan("Codex, GPT two each one plus one, two plus two 해봐") == nil, "unsupported count language is never silently invented")
+    for rejected in [
+        "코덱스, GPT 두 개한테 원 플러스 원, 투 플러스 투 해봐. 로그도 찾아봐",
+        "코덱스, GPT 두 개한테 원 플러스 원, 투 플러스 투 해봐. README.md 수정해",
+        "코덱스, GPT 두 개한테 원 플러스 원, 투 플러스 투 해봐. 배포해",
+        "코덱스, GPT 세 개한테 원 플러스 원, 투 플러스 투 해봐",
+        "코덱스, GPT 두 개한테 원 플러스 원, 투 플러스 투, 쓰리 플러스 쓰리 해봐",
+        "코덱스, GPT, 클로드, 클로드 코드 네 개한테 원 플러스 원, 투 플러스 투 해봐",
+        "GPT랑 클로드한테 이거 네 개 병렬로 1+1 돌려봐",
+        "코덱스, GPT 두 개한테 원 플러스 원, 투 플러스 투 하지 마",
+        "코덱스, GPT 두 개한테 원 플러스 원, 투 플러스 투 보냈어?",
+        "왜 코덱스, GPT 두 개한테 원 플러스 원, 투 플러스 투 시켜?",
+        "코덱스, GPT 두 개한테 1-10, 11-20 해봐",
+    ] { check(RouteFanout.plan(rejected) == nil, "spoken/count framing cannot discard unsafe, negated, reported or ambiguous content: \(rejected.prefix(50))") }
     print("Route fan-out: \(count) checks passed")
 }

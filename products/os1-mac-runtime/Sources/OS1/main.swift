@@ -11996,6 +11996,7 @@ func selfTest() throws {
             else { unsetenv(key) }
         }
     }
+    guard installedOS1SourceIdentitySelfTest() else { throw OS1Error.message("Installed source identity fixture failed") }
     try taskQualityRuntimeSelfTest()
     try ManagedPreview.selfTest()
     try browserMCPSelfTest()

@@ -62,3 +62,9 @@ Actual private release/install/R2 receipts record activation times and hashes. A
 On 2026-10-08, the current official Anthropic choosing-model guide identifies Fable5.1 as the highest generally available capability, distinct from the Opus5.5 recommendation for most workloads. The subsequent policy supersedes the Claude reference with `claude-fable-5-1/max`; it does not force that model for every execution. Earlier Opus baseline records remain historical and must not be labeled current strongest-Claude proof. The added Oct8 Notes block was separately captured (runtime source SHA `63b767ba9445aee366c1bfa73722055afc72e1a7b943aac4c5ef800283501834`); its scope/burden enforcement adds no new routing primitive.
 
 Source: https://platform.claude.com/docs/en/about-claude/models/choosing-a-model
+
+## Converged-source release 348
+
+An actual concurrent OS-1 repair used a checkout at build342 lineage, without build346's quality changes, to stage another build347. The normal stop control was used after preserving its four modified source files and existing requests/results. Its bounded spoken-number/count-particle fanout work was integrated into the authoritative current source while retaining all previously accepted fanout tests. No Handy state was touched.
+
+Clean releases now stamp producing source commit/root/repository in the signed bundle. Dirty self-repair releases do not falsely stamp the preceding HEAD and retain their existing post-commit outcome authority. Current source selection checks actual repository/commit/marker identity, including the verified installed root without granting a Codex trust permission. Malformed/unrecorded identity cannot silently choose an old checkout.
