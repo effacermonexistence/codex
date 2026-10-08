@@ -371,13 +371,16 @@ expanded_scripts="$audit_dir/expanded/OS-1-component.pkg/Scripts"
 # Keep the canonical scanner intact; only this clean build's verified commit
 # token receives a fingerprint exception. Other high-entropy values still fail.
 readonly scan_policy="$audit_dir/source-bound-scan-policy.json"
-python3 - "$repository_root/products/os1-route-core/security/client-artifact-scan-policy.json" "$scan_policy" "$source_commit" "$source_input_clean" <<'PYSCAN'
+python3 - "$repository_root/products/os1-route-core/security/client-artifact-scan-policy.json" "$scan_policy" "$source_commit" "$source_input_clean" "$repository_root" <<'PYSCAN'
 import hashlib,json,pathlib,re,sys
 policy=json.loads(pathlib.Path(sys.argv[1]).read_text()); commit=sys.argv[3]
 if sys.argv[4]=='1':
     if re.fullmatch(r'[0-9a-f]{40}',commit) is None: raise SystemExit('Invalid source commit for release scan')
-    fingerprint=hashlib.sha256(commit.encode()).hexdigest()
-    if fingerprint not in policy['entropy']['allowedTokenSha256']: policy['entropy']['allowedTokenSha256'].append(fingerprint)
+    root=str(pathlib.Path(sys.argv[5]).resolve())
+    if not root.startswith(str(pathlib.Path.home())+'/'): raise SystemExit('Source root outside approved HOME')
+    for token in [commit,root]:
+        fingerprint=hashlib.sha256(token.encode()).hexdigest()
+        if fingerprint not in policy['entropy']['allowedTokenSha256']: policy['entropy']['allowedTokenSha256'].append(fingerprint)
 pathlib.Path(sys.argv[2]).write_text(json.dumps(policy,sort_keys=True))
 PYSCAN
 OS1_CLIENT_SCAN_POLICY_PATH="$scan_policy" node "$repository_root/products/os1-route-core/scripts/client-artifact-scan.mjs" \
