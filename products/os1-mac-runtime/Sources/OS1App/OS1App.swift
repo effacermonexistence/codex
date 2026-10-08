@@ -7287,6 +7287,54 @@ private func compactSessionAge(_ date: Date) -> String {
     return date.formatted(date: .abbreviated, time: .omitted)
 }
 
+/// Foundation.Process converts argument strings to filesystem decomposition on
+/// macOS. The request is semantic UTF-8 data, not a path: hand its bytes across
+/// the existing private I/O directory instead of silently changing its digest.
+private func bytePreservingRuntimeRequest(_ request: String, in directory: URL) throws -> URL {
+    let bytes = Data(request.utf8)
+    guard bytes.count <= 8 * 1_024 * 1_024 else { throw RunnerError.message("OS-1 request exceeds the private transport limit.") }
+    let url = directory.appendingPathComponent("request.utf8")
+    try bytes.write(to: url, options: [.atomic, .completeFileProtectionUnlessOpen])
+    try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+    guard try Data(contentsOf: url) == bytes else { throw RunnerError.message("OS-1 request transport readback failed.") }
+    return url
+}
+
+/// Uses actual Foundation.Process and harmless system tools, never a provider.
+private func runtimeRequestTransportSelfTest() throws {
+    let fm = FileManager.default
+    let root = fm.temporaryDirectory.appendingPathComponent("os1-request-transport-" + UUID().uuidString)
+    try fm.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+    defer { try? fm.removeItem(at: root) }
+    var checks = 0
+    func check(_ value: Bool, _ label: String) throws {
+        guard value else { throw RunnerError.message("Request file transport: " + label) }; checks += 1
+    }
+    func capture(_ executable: String, _ arguments: [String]) throws -> Data {
+        let process = Process(), output = Pipe()
+        process.executableURL = URL(fileURLWithPath: executable); process.arguments = arguments
+        process.currentDirectoryURL = root; process.standardOutput = output; process.standardError = FileHandle.nullDevice
+        try process.run(); process.waitUntilExit()
+        guard process.terminationStatus == 0 else { throw RunnerError.message("Request file transport: system probe failed") }
+        return output.fileHandleForReading.readDataToEndOfFile()
+    }
+    let composed = "야 한글 routing é"
+    let decomposed = composed.decomposedStringWithCanonicalMapping
+    try check(Data(composed.utf8) != Data(decomposed.utf8), "fixture must distinguish NFC and NFD bytes")
+    for request in [composed, decomposed, " \t한글 🧑‍💻 😀  +  e\u{301}\n\n"] {
+        let url = try bytePreservingRuntimeRequest(request, in: root)
+        let attrs = try fm.attributesOfItem(atPath: url.path)
+        try check((attrs[.posixPermissions] as? NSNumber)?.intValue == 0o600, "request file stays private")
+        try check(try Data(contentsOf: url) == Data(request.utf8), "request file readback preserves exact bytes")
+        try check(try capture("/bin/cat", [url.path]) == Data(request.utf8),
+            "real child file transport preserves normalization, whitespace and emoji")
+    }
+    let rawArgument = try capture("/usr/bin/printf", ["%s", composed])
+    try check(String(decoding: rawArgument, as: UTF8.self).precomposedStringWithCanonicalMapping == composed,
+        "raw argv observation must be canonically equivalent, not a different request")
+    print("Request file transport: \(checks) checks PASS; raw argv bytes \(rawArgument == Data(composed.utf8) ? "unchanged" : "normalized by Foundation"); exact file bytes preserved; provider calls 0")
+}
+
 private enum OS1Runner {
     static func pinNativeSession(id: String, pinned: Bool, before: String?) async throws {
         try await Task.detached(priority: .userInitiated) {
@@ -7470,10 +7518,11 @@ private enum OS1Runner {
                   surface.backend?.rawValue == provider.rawValue else { return provider.rawValue }
             return surface.rawValue
         }()
+        let requestURL = try bytePreservingRuntimeRequest(prompt, in: temporary)
         var arguments = [
             "run",
             "--workspace", workspace,
-            "--prompt", prompt,
+            "--request-file", requestURL.path,
             "--provider", routedSurface,
             "--output-format", "json",
         ]
@@ -13738,6 +13787,7 @@ private struct OS1DesktopApp: App {
                 try savedFailurePreviewSelfTest()
                 try providerIntentSelfTest()
                 try routeFanoutDetailsSelfTest()
+                try runtimeRequestTransportSelfTest()
                 try taskContextSelfTest()
                 try memoryPagingHandoffSelfTest()
                 try interactionSelfTest()

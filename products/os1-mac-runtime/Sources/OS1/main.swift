@@ -5259,6 +5259,57 @@ func observedStateHash(_ workspace: String, named: [String] = RequestObservation
     return sha256Hex(material)
 }
 
+/// Process.arguments may canonically decompose Unicode on macOS. GUI requests
+/// use a private regular UTF-8 file so source/request fingerprints keep their
+/// original bytes; this does not normalize any hash or weaken graph binding.
+func readRunRequestFile(_ path: String) throws -> String {
+    let fd = Darwin.open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW)
+    guard fd >= 0 else { throw OS1Error.message("Private request file could not be opened") }
+    let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
+    defer { try? handle.close() }
+    var before = stat()
+    guard fstat(fd, &before) == 0, (before.st_mode & S_IFMT) == S_IFREG,
+          before.st_uid == getuid(), before.st_nlink == 1, (before.st_mode & 0o077) == 0,
+          before.st_size > 0, before.st_size <= 8_000_000 else {
+        throw OS1Error.message("Request input must be a bounded private owner-controlled regular file")
+    }
+    let bytes = try handle.readToEnd() ?? Data()
+    var after = stat()
+    guard fstat(fd, &after) == 0, before.st_size == after.st_size,
+          before.st_mtimespec.tv_sec == after.st_mtimespec.tv_sec,
+          before.st_mtimespec.tv_nsec == after.st_mtimespec.tv_nsec,
+          bytes.count == before.st_size, let text = String(data: bytes, encoding: .utf8) else {
+        throw OS1Error.message("Request input changed or was not exact UTF-8")
+    }
+    return text
+}
+
+func runRequestFileSelfTest() throws {
+    let fm = FileManager.default
+    let root = fm.temporaryDirectory.appendingPathComponent("os1-request-file-" + UUID().uuidString)
+    try fm.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+    defer { try? fm.removeItem(at: root) }
+    let file = root.appendingPathComponent("request.utf8")
+    let text = "야 네 경로에 각각 1+1을 보내줘.\n  Keep whitespace 🧭  "
+    for sample in [text.precomposedStringWithCanonicalMapping, text.decomposedStringWithCanonicalMapping] {
+        let bytes = Data(sample.utf8)
+        try bytes.write(to: file, options: .atomic)
+        try fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
+        guard Data(try readRunRequestFile(file.path).utf8) == bytes else {
+            throw OS1Error.message("Private request transport altered source bytes")
+        }
+    }
+    try fm.setAttributes([.posixPermissions: 0o644], ofItemAtPath: file.path)
+    guard (try? readRunRequestFile(file.path)) == nil else { throw OS1Error.message("Public request file was admitted") }
+    try fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
+    try Data([0xff]).write(to: file)
+    guard (try? readRunRequestFile(file.path)) == nil else { throw OS1Error.message("Invalid UTF-8 request was admitted") }
+    let link = root.appendingPathComponent("linked-request")
+    try fm.createSymbolicLink(at: link, withDestinationURL: file)
+    guard (try? readRunRequestFile(link.path)) == nil else { throw OS1Error.message("Symlink request was admitted") }
+    print("Private request input: NFC/NFD bytes, whitespace/emoji, private mode, invalid UTF-8 and symlink gates PASS; model calls 0")
+}
+
 func readSessionContext(_ path: String?) throws -> String? {
     guard let path else { return nil }
     let url = URL(fileURLWithPath: path).standardizedFileURL
@@ -8114,6 +8165,7 @@ func routeFanoutSummary(plan: RouteFanout, outcomes: [RouteFanoutOutcome]) -> St
 }
 
 func routeFanoutSummarySelfTest() throws {
+    try runRequestFileSelfTest()
     guard let plan = RouteFanout.plan("1+1 GPT한테. 2+2 Codex한테. 3+3 ChatGPT한테. 4+4 Claudecode한테. 답변 받아와.") else {
         throw OS1Error.message("Route fan-out summary: plan missing")
     }
@@ -15806,7 +15858,11 @@ struct OS1Main {
                     case "--workspace" where index + 1 < arguments.count:
                         workspace = arguments[index + 1]; index += 2
                     case "--prompt" where index + 1 < arguments.count:
+                        guard prompt == nil else { throw OS1Error.message("Conflicting request inputs") }
                         prompt = arguments[index + 1]; index += 2
+                    case "--request-file" where index + 1 < arguments.count:
+                        guard prompt == nil else { throw OS1Error.message("Conflicting request inputs") }
+                        prompt = try readRunRequestFile(arguments[index + 1]); index += 2
                     case "--provider" where index + 1 < arguments.count:
                         providerPreference = arguments[index + 1]; index += 2
                     case "--context-file" where index + 1 < arguments.count:
@@ -15844,7 +15900,7 @@ struct OS1Main {
                     }
                 }
                 guard let workspace, let prompt, !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-                    throw OS1Error.message("Both --workspace and --prompt are required")
+                    throw OS1Error.message("Both --workspace and one request input (--prompt or --request-file) are required")
                 }
                 guard !(parallelAgentChild && parallelFanoutChild), parallelWriteGrantPath == nil || parallelAgentChild else {
                     throw OS1Error.message("Invalid parallel child capability combination")
