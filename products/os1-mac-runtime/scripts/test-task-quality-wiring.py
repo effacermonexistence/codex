@@ -106,6 +106,7 @@ def region(source, start, end):
 main = load('Sources/OS1/main.swift')
 runtime = load('Sources/OS1/TaskQualityRuntime.swift')
 quality = load('Sources/OS1Context/TaskQuality.swift')
+activity = load('Sources/OS1Context/RuntimeActivity.swift')
 app = load('Sources/OS1App/OS1App.swift')
 fixtures = load('Tests/OS1ContextTests/TaskQualityFixture.swift')
 loop = function(main, 'runTaskWithOwnerPolicy')
@@ -184,6 +185,56 @@ check('TaskQualityCorrection.prompt(objective: objectiveRequest' in correction_c
 check('guard route.ticket?.permissionProfile == ticket.permissionProfile' in correction_code
       and 'step < config.maximumSteps' in correction_code,
       'corrective dispatch must preserve authorized scope and the existing bounded step budget')
+
+# Retaining an old SID is insufficient if Auto can issue another provider's
+# ticket. Pin the actual admitted tuple by excluding all others in the signed
+# request, then check the returned ticket before the next native execution.
+check('let correctionTuple = correction.action == .escalateReference ? reference! : (ticket.provider, model, effort)' in correction_code
+      and 'let nextPreference = correctionTuple.0' in correction_code,
+      'first correction must retain the actual provider/model/effort, reference escalation must be a distinct bounded action')
+check(re.search(r'correctionCodexModels\s*=\s*correctionTuple\.0\s*==.*?codexCatalog\.models\s*\.filter\s*\{\s*\$0\.slug\s*==\s*correctionTuple\.1\s*&&\s*\$0\.supportedEfforts\.contains\(correctionTuple\.2\)\s*\}.*?supportedEfforts:\s*\[correctionTuple\.2\]', correction_code, re.S) is not None,
+      'Codex correction capabilities must contain only the already available exact model and effort')
+check(re.search(r'nextContext\?\.availableClaudeModels\s*=\s*correctionTuple\.0\s*==.*?claudeCatalog\s*\.filter\s*\{\s*\$0\.model\s*==\s*correctionTuple\.1\s*&&\s*\$0\.supportedEfforts\.contains\(correctionTuple\.2\)\s*\}.*?supportedEfforts:\s*\[correctionTuple\.2\]', correction_code, re.S) is not None,
+      'Claude correction capabilities must contain only the already available exact model and effort')
+check(re.search(r'StartExecutionRequest\(\s*task:\s*request\.task,\s*providerPreference:\s*nextPreference,.*?availableCodexModels:\s*correctionCodexModels,\s*executionContext:\s*nextContext', correction_code, re.S) is not None,
+      'signed corrective route must bind the constrained tuple without rewriting the original routing objective')
+check('sourceUTF8Bytes: existing.sourceUTF8Bytes' in correction_code
+      and 'historyUTF8Bytes: existing.historyUTF8Bytes' in correction_code
+      and 'governedDelegation: existing.governedDelegation' in correction_code,
+      'tuple pinning must retain source/history/delegation metadata instead of reducing the envelope')
+issued_tuple = re.search(r'guard\s+let\s+nextTicket\s*=\s*route\.ticket,.*?nextTicket\.provider\s*==\s*correctionTuple\.0,\s*profile\.model\s*==\s*correctionTuple\.1,\s*profile\.effort\s*==\s*correctionTuple\.2\s+else\s*\{\s*throw', correction_code, re.S)
+check(issued_tuple is not None and correction_dispatch is not None and correction_continue is not None
+      and correction_dispatch.start() < issued_tuple.start() < correction_continue.start(),
+      'issued signed ticket must match the pinned provider/model/effort before corrective native execution')
+
+# Native quality and the immutable raw artifact precede mechanical self-update.
+# A version bump/commit/staging note must not alter the checked model artifact.
+mechanical = region(loop,
+                    'if route.status == "complete", locallyAdoptable, ParallelAgentRuntime.isolatedWriter == nil',
+                    'try OwnerPolicyContext.snapshot?.verifyOriginal()')
+mechanical_code = lexical(mechanical, strings=True)
+mechanical_call = re.search(r'\bcompleteOS1SelfRepair\s*\(', code)
+adoption_veto = re.search(r'guard\s+route\.status\s*!=\s*"complete"\s*\|\|\s*locallyAdoptable\s*\|\|\s*sourceRecoveryProvider\s*!=\s*nil\s+else', lexical(loop))
+check(mechanical_call is not None and evaluation is not None and outbox_pos >= 0 and adoption_veto is not None
+      and evaluation.start() < outbox_pos < adoption_veto.start() < mechanical_call.start(),
+      'mechanical self-repair staging must follow quality evaluation, immutable outbox custody and the adoption veto')
+check(len(re.findall(r'\bcompleteOS1SelfRepair\s*\(', code)) == 1 and bool(mechanical)
+      and 'completeOS1SelfRepair' in mechanical_code,
+      'no earlier single-turn self-repair staging may bypass the actual quality/adoption gate')
+check('route.status == "complete", locallyAdoptable' in lexical(mechanical)
+      and 'attemptFailure == nil' in mechanical_code,
+      'mechanical staging requires actual remote and local adoption, never native exit alone')
+check('.appendingOutput(' not in mechanical_code and 'execution =' not in mechanical_code,
+      'mechanical staging must not rewrite raw model output, artifact identity or its producing workspace hash')
+emit_signature = re.search(r'\bfunc\s+emit\s*\(([^{}]+)\)\s*\{', lexical(activity, strings=True))
+emit_system_default = emit_signature is not None and re.search(
+    r'publicTextOrigin:\s*PublicTextOrigin\s*=\s*\.systemStatus', emit_signature.group(1)) is not None
+mechanical_origins = re.findall(r'publicTextOrigin:\s*\.(\w+)', mechanical_code)
+check('RuntimeActivity.emit' in mechanical_code and emit_system_default
+      and all(origin == 'systemStatus' for origin in mechanical_origins),
+      'self-repair staging note must be separate OS-1 control telemetry, not attributed to the native model')
+check('throw OS1Error.message' in mechanical_code,
+      'mechanical staging failure must stop after retaining original result custody')
 
 pending = region(loop, 'let pendingStep =', 'var delivery =')
 check(re.search(r'\btaskQuality\s*:', lexical(pending, strings=True)) is not None,

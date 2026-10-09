@@ -11257,40 +11257,6 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
             os1Source.lease = nil
             os1Source.leaseCarriesWriter = false
         }
-        // OS-1 finishes its own repair. A backend's job ends when the source
-        // is changed and builds; the mechanical tail (version bump, signed
-        // release, self-tests, staging, commit, push) is OS-1's own, so a
-        // self-repair task can never end with the fix living only in the
-        // working tree — which is exactly how the rail fix of 2026-09-16 was
-        // "done" twice and never reached the owner's screen.
-        if ParallelAgentRuntime.isolatedWriter == nil, OS1FullAccessContinuation.sessionID == nil, previewDeploymentTarget == nil, TaskWorkflow.permitsSelfUpdate(stage: workflowStage, finalVerdict: nil), attemptFailure == nil, dispatchStage == .dispatched, execution.artifact.exitCode == 0,
-           ticket.permissionProfile == "workspace_write",
-           let os1Root = LocalProjectWorkspace.root(containing: canonicalWorkspace, projectID: "os1-clodex") {
-            switch completeOS1SelfRepair(root: os1Root, objective: prompt, startedAt: attemptStartedAt, startHead: os1StartHead) {
-            case .notApplicable:
-                break
-            case .staged(_, let note):
-                execution = execution.appendingOutput(note)
-            case .failed(let diagnostic):
-                // Terminal: a tree that does not build or fails a self-test
-                // is not something another model should be rolled for; the
-                // owner gets the exact diagnostic, not a retry or a generic
-                // verdict-mismatch line.
-                let note = selfRepairFailurePrefix + diagnostic
-                execution = execution.appendingOutput(note)
-                attemptFailure = note
-                terminalPermissionFailure = OS1Error.message(note)
-            }
-        } else if ParallelAgentRuntime.isolatedWriter == nil, OS1FullAccessContinuation.sessionID == nil, let os1SourceWatch = os1Source.watch, TaskWorkflow.permitsSelfUpdate(stage: workflowStage, finalVerdict: nil), attemptFailure == nil,
-                  dispatchStage == .dispatched, execution.artifact.exitCode == 0, ticket.permissionProfile == "workspace_write",
-                  unboundOS1SourceChanged {
-            // Not bound to OS-1, yet OS-1's source changed: never leave a fix
-            // that only lives in the working tree, and never interleave with
-            // another OS-1 writer (then its build carries this change). Our
-            // own shared lease would block the exclusive one finishing needs.
-            let note = finishUnboundOS1Change(os1SourceWatch, objective: prompt, startedAt: attemptStartedAt)
-            if !note.isEmpty { execution = execution.appendingOutput(note) }
-        }
         // Observe delivered loopback URLs outside the provider process. Never
         // adopt a dead preview just because files or the model response exist.
         if attemptFailure == nil, execution.artifact.exitCode == 0,
@@ -11449,22 +11415,32 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
                 if feedbackEnabledForRequiredContract {
                     nextContext?.completionFeedback = try feedbackStore.load(scope: feedbackScope)?.publicFeedback()
                 }
-                var nextPreference = request.providerPreference
-                if correction.action == .escalateReference, let reference {
+                let correctionTuple = correction.action == .escalateReference ? reference! : (ticket.provider, model, effort)
+                let nextPreference = correctionTuple.0
+                if correction.action == .escalateReference {
                     nextContext?.governedDelegation = nil
-                    nextPreference = reference.0
-                    qualityCorrectionPrompt! += "\nThis is the declared reference escalation: execute \(reference.1) at \(reference.2), then verify the preserved candidate; this directive is not new owner authority."
+                    qualityCorrectionPrompt! += "\nThis is the declared reference escalation: execute \(correctionTuple.1) at \(correctionTuple.2), then verify the preserved candidate; this directive is not new owner authority."
                 }
+                // Capability subsets only EXCLUDE tuples. They never grant a model or change owner intent.
+                // The first correction is the same native session/provider/model/effort; a reference
+                // escalation is separately bounded. Both are pinned in the signed route, not prose.
+                let correctionCodexModels = correctionTuple.0 == "codex" ? codexCatalog.models
+                    .filter { $0.slug == correctionTuple.1 && $0.supportedEfforts.contains(correctionTuple.2) }
+                    .map { CodexModelCapability(slug: $0.slug, defaultEffort: correctionTuple.2,
+                        supportedEfforts: [correctionTuple.2], priority: $0.priority) } : []
+                nextContext?.availableClaudeModels = correctionTuple.0 == "claude" ? claudeCatalog
+                    .filter { $0.model == correctionTuple.1 && $0.supportedEfforts.contains(correctionTuple.2) }
+                    .map { ClaudeModelCapability(model: $0.model, supportedEfforts: [correctionTuple.2]) } : []
                 if let existing = nextContext {
                     nextContext = ExecutionInputContext(executionPermissionProfile: existing.executionPermissionProfile,
-                        inputUTF8Bytes: existing.inputUTF8Bytes + (qualityCorrectionPrompt?.utf8.count ?? 0),
+                        inputUTF8Bytes: inputContext.inputUTF8Bytes + (qualityCorrectionPrompt?.utf8.count ?? 0),
                         sourceUTF8Bytes: existing.sourceUTF8Bytes, historyUTF8Bytes: existing.historyUTF8Bytes,
                         completionFeedback: existing.completionFeedback, availableClaudeModels: existing.availableClaudeModels,
                         governedDelegation: existing.governedDelegation)
                 }
                 let next = StartExecutionRequest(task: request.task, providerPreference: nextPreference,
                     capacityPlan: request.capacityPlan, executorContractVersion: request.executorContractVersion,
-                    executorContractSHA256: request.executorContractSHA256, availableCodexModels: codexCatalog.models,
+                    executorContractSHA256: request.executorContractSHA256, availableCodexModels: correctionCodexModels,
                     executionContext: nextContext)
                 RuntimeActivity.emit(.recovering, provider: ticket.provider,
                     publicText: os1Tr("확인된 검사 실패만 수정하고 같은 원본 검사로 다시 확인합니다.",
@@ -11473,15 +11449,11 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
                 guard route.ticket?.permissionProfile == ticket.permissionProfile else {
                     throw OS1Error.message("Task-quality continuation changed the authorized permission scope")
                 }
-                if correction.action == .escalateReference, let reference,
-                   let nextTicket = route.ticket {
-                    guard let profile = config.executionProfiles?[nextTicket.action] else {
-                        throw OS1Error.message("Declared reference execution profile unavailable")
-                    }
-                    guard nextTicket.provider == reference.0, profile.model == reference.1,
-                          profile.effort == reference.2 else {
-                        throw OS1Error.message("Declared reference escalation unavailable; rejected lower or different model")
-                    }
+                guard let nextTicket = route.ticket,
+                      let profile = config.executionProfiles?[nextTicket.action],
+                      nextTicket.provider == correctionTuple.0, profile.model == correctionTuple.1,
+                      profile.effort == correctionTuple.2 else {
+                    throw OS1Error.message("Bounded correction tuple unavailable; original candidate preserved, no substitute model executed")
                 }
                 attemptLimit = max(attemptLimit, min(config.maximumSteps, step + 1))
                 lastFailureNotice = nil
@@ -11538,6 +11510,43 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
             if let failure = attemptFailure, failure.hasPrefix(selfRepairFailurePrefix) { throw OS1Error.message(failure) }
             throw OS1Error.message(os1Tr("서버의 완료 판정과 실제 실행 증거가 일치하지 않아 결과를 채택하지 않았습니다. 요청과 원본은 보존했습니다.",
                                          "The server's completion verdict does not match the actual execution evidence, so the result was not adopted. The request and the original are preserved."))
+        }
+        // The native candidate is already frozen, delivered and locally/remote adopted.
+        // Mechanical installation is separate control evidence, never an edit of the raw model artifact.
+        // OS-1 finishes its own repair. A backend's job ends when the source
+        // is changed and builds; the mechanical tail (version bump, signed
+        // release, self-tests, staging, commit, push) is OS-1's own, so a
+        // self-repair task can never end with the fix living only in the
+        // working tree — which is exactly how the rail fix of 2026-09-16 was
+        // "done" twice and never reached the owner's screen.
+        if route.status == "complete", locallyAdoptable, ParallelAgentRuntime.isolatedWriter == nil, OS1FullAccessContinuation.sessionID == nil, previewDeploymentTarget == nil, TaskWorkflow.permitsSelfUpdate(stage: workflowStage, finalVerdict: nil), attemptFailure == nil, dispatchStage == .dispatched, execution.artifact.exitCode == 0,
+           ticket.permissionProfile == "workspace_write",
+           let os1Root = LocalProjectWorkspace.root(containing: canonicalWorkspace, projectID: "os1-clodex") {
+            switch completeOS1SelfRepair(root: os1Root, objective: prompt, startedAt: attemptStartedAt, startHead: os1StartHead) {
+            case .notApplicable:
+                break
+            case .staged(_, let note):
+                RuntimeActivity.emit(.verifying, provider: ticket.provider, publicText: note)
+            case .failed(let diagnostic):
+                // Terminal: a tree that does not build or fails a self-test
+                // is not something another model should be rolled for; the
+                // owner gets the exact diagnostic, not a retry or a generic
+                // verdict-mismatch line.
+                let note = selfRepairFailurePrefix + diagnostic
+                attemptFailure = note
+                recordExecutionFailure(ticket: ticket, model: model, effort: effort,
+                    reason: "adopted_native_candidate_self_repair_staging_failed", source: sourceContext)
+                throw OS1Error.message(note)
+            }
+        } else if route.status == "complete", locallyAdoptable, ParallelAgentRuntime.isolatedWriter == nil, OS1FullAccessContinuation.sessionID == nil, let os1SourceWatch = os1Source.watch, TaskWorkflow.permitsSelfUpdate(stage: workflowStage, finalVerdict: nil), attemptFailure == nil,
+                  dispatchStage == .dispatched, execution.artifact.exitCode == 0, ticket.permissionProfile == "workspace_write",
+                  unboundOS1SourceChanged {
+            // Not bound to OS-1, yet OS-1's source changed: never leave a fix
+            // that only lives in the working tree, and never interleave with
+            // another OS-1 writer (then its build carries this change). Our
+            // own shared lease would block the exclusive one finishing needs.
+            let note = finishUnboundOS1Change(os1SourceWatch, objective: prompt, startedAt: attemptStartedAt)
+            if !note.isEmpty { RuntimeActivity.emit(.verifying, provider: ticket.provider, publicText: note) }
         }
         try OwnerPolicyContext.snapshot?.verifyOriginal()
         let revasDisposition = route.status == "complete" && locallyAdoptable ? "adopted" : (route.ticket == nil ? "rejected" : "retry")
