@@ -59,6 +59,62 @@ enum ParallelAgentRuntime {
         return result
     }
 
+    /// Runtime-owned intermediate-task description, not a planner permission
+    /// grant or a final quality certificate. Never inherit it from the parent's
+    /// environment: only the coordinator may produce it for this exact child.
+    static func writeGovernedDelegation(_ delegation: GovernedDelegation, directory: URL) throws -> URL {
+        try delegation.validate()
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+        let bytes = try encoder.encode(delegation)
+        guard bytes.count <= 32_768 else { throw ParallelAgentTask.Failure.unsafePath }
+        return try writePrivateChildFile(bytes, name: "governed-delegation.json", directory: directory)
+    }
+
+    /// The native CLI already accepts a byte-preserving private request file.
+    /// Reuse it for derived child instructions too: macOS argv may otherwise
+    /// decompose Korean and invalidate an isolated writer's exact grant hash.
+    static func losslessChildArguments(_ arguments: [String], directory: URL) throws -> [String] {
+        guard arguments.first == "run",
+              arguments.contains("--parallel-agent-child") || arguments.contains("--parallel-fanout-child"),
+              let promptIndex = arguments.firstIndex(of: "--prompt") else { return arguments }
+        guard arguments.indices.contains(promptIndex + 1) else { throw ParallelAgentTask.Failure.invalidPlan }
+        let path = try writePrivateChildFile(Data(arguments[promptIndex + 1].utf8), name: "request.utf8", directory: directory)
+        var result = arguments
+        result[promptIndex] = "--request-file"; result[promptIndex + 1] = path.path
+        return result
+    }
+
+    private static func writePrivateChildFile(_ bytes: Data, name: String, directory: URL) throws -> URL {
+        guard ["governed-delegation.json", "request.utf8"].contains(name),
+              !bytes.isEmpty, bytes.count <= 8_000_000 else { throw ParallelAgentTask.Failure.unsafePath }
+        var directoryInfo = stat()
+        guard lstat(directory.path, &directoryInfo) == 0,
+              (directoryInfo.st_mode & S_IFMT) == S_IFDIR, directoryInfo.st_uid == getuid(),
+              (directoryInfo.st_mode & 0o077) == 0 else { throw ParallelAgentTask.Failure.unsafePath }
+        let path = directory.appendingPathComponent(name)
+        let fd = Darwin.open(path.path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0o600)
+        guard fd >= 0 else { throw ParallelAgentTask.Failure.unsafePath }
+        var succeeded = false
+        defer { Darwin.close(fd); if !succeeded { _ = Darwin.unlink(path.path) } }
+        var fileInfo = stat()
+        guard fstat(fd, &fileInfo) == 0, (fileInfo.st_mode & S_IFMT) == S_IFREG,
+              fileInfo.st_uid == getuid(), fileInfo.st_nlink == 1,
+              (fileInfo.st_mode & 0o777) == 0o600 else { throw ParallelAgentTask.Failure.unsafePath }
+        try bytes.withUnsafeBytes { buffer in
+            guard let base = buffer.baseAddress else { throw ParallelAgentTask.Failure.unsafePath }
+            var written = 0
+            while written < bytes.count {
+                let count = Darwin.write(fd, base.advanced(by: written), bytes.count - written)
+                if count < 0 && errno == EINTR { continue }
+                guard count > 0 else { throw ParallelAgentTask.Failure.unsafePath }
+                written += count
+            }
+        }
+        guard fsync(fd) == 0 else { throw ParallelAgentTask.Failure.unsafePath }
+        succeeded = true
+        return path
+    }
+
     nonisolated(unsafe) private static var parentWatch: DispatchSourceTimer?
     static func prepareChild() throws {
         guard let submission = ExecutionSteering.currentSubmission else { throw OS1Error.message("Agent child identity missing") }
@@ -145,6 +201,7 @@ struct ParallelChildResult: Sendable {
 func executeParallelChild(id: UUID, executable: URL, arguments: [String], workspace: String,
                                   directory: URL, cancellation: @escaping @Sendable () -> Bool,
                                   writeWorkspace: ParallelProjectWorkspace? = nil, writeWorker: ParallelAgentTask.WorkerSpec? = nil,
+                                  governedDelegation: GovernedDelegation? = nil,
                                   observed: @escaping @Sendable (UUID, RuntimeActivity?) async -> Void) async -> ParallelChildResult {
     let submissionID = UUID()
     do {
@@ -171,10 +228,17 @@ func executeParallelChild(id: UUID, executable: URL, arguments: [String], worksp
                 childSubmissionID: submissionID, executable: executable, directory: directory)
             effectiveArguments += ["--parallel-write-grant", grant.path]
         }
-        process.arguments = effectiveArguments
+        process.arguments = try ParallelAgentRuntime.losslessChildArguments(effectiveArguments, directory: directory)
         process.currentDirectoryURL = URL(fileURLWithPath: workspace, isDirectory: true)
         process.environment = ParallelAgentRuntime.childEnvironment(base: ProcessInfo.processInfo.environment,
             directory: directory, submissionID: submissionID, conversationID: UUID())
+        if let governedDelegation {
+            guard (governedDelegation.scope == .isolatedWorkspaceWrite) == (writeWorkspace != nil && writeWorker != nil) else {
+                throw ParallelAgentTask.Failure.bindingMismatch
+            }
+            let path = try ParallelAgentRuntime.writeGovernedDelegation(governedDelegation, directory: directory)
+            process.environment?["OS1_GOVERNED_DELEGATION_FILE"] = path.path
+        }
         process.environment?["PWD"] = workspace
         process.standardOutput = stdout; process.standardError = stderr
         let exit = ParallelProcessExit()
@@ -477,6 +541,8 @@ func runParallelAgentTask(prompt: String, workspace: String, providerPreference:
             arguments: hooks?.arguments("planner", plannerPrompt, plannerDirectory) ?? parallelChildArguments(prompt: plannerPrompt, workspace: workspace, contextPath: contextPath,
                 provider: providerPreference, codexCapacity: codexCapacity, claudeCapacity: claudeCapacity),
             workspace: workspace, directory: plannerDirectory, cancellation: { ExecutionCancellation.isCancelled || signalCancellation.requested },
+            governedDelegation: GovernedDelegation(role: .planner, scope: .readOnly,
+                parentTask: prompt, parentObjectiveSHA256: requestSHA),
             observed: { submission, activity in try? await graph.observe(plannerID, submission: submission, activity: activity) })
         if planner.cancelled { throw OS1Error.backendBlocked(.cancelled) }
         var plan: ParallelAgentTask.Plan?
@@ -549,6 +615,9 @@ func runParallelAgentTask(prompt: String, workspace: String, providerPreference:
                             await executeParallelChild(id: id, executable: executable, arguments: args,
                                 workspace: workerWorkspace, directory: directory, cancellation: { ExecutionCancellation.isCancelled || signalCancellation.requested },
                                 writeWorkspace: grantedProject, writeWorker: worker.scope == .workspaceWrite ? worker : nil,
+                                governedDelegation: GovernedDelegation(role: .worker,
+                                    scope: worker.scope == .workspaceWrite ? .isolatedWorkspaceWrite : .readOnly,
+                                    parentTask: prompt, parentObjectiveSHA256: requestSHA),
                                 observed: { submission, activity in try? await graph.observe(id, submission: submission, activity: activity) })
                         }
                     }
@@ -658,13 +727,62 @@ func parallelAgentCoordinatorSelfTest() async throws {
     }
     let sentinel = ["HOME": NSHomeDirectory(), "PATH": "/usr/bin:/bin", "OS1_AGENT_TASK_FILE": "/foreign-graph",
         "OS1_EVENT_JOURNAL": "/root-journal", "OS1_SUBMISSION_ID": "root", "OS1_ALLOW_AUTHENTICATION": "1",
+        "OS1_GOVERNED_DELEGATION_FILE": "/foreign-delegation.json",
         "OPENAI_API_KEY": "fixture-secret", "GH_TOKEN": "fixture-secret", "OS1_PENDING_REPAIR": "root",
         "CODEX_HOME": "/fixture-codex-account", "CLAUDE_CONFIG_DIR": "/fixture-claude-account", "OS1_CONFIG": "/fixture-staged-config"]
     let child = ParallelAgentRuntime.childEnvironment(base: sentinel, directory: root, submissionID: UUID(), conversationID: UUID())
     try check(child["CODEX_HOME"] == sentinel["CODEX_HOME"] && child["CLAUDE_CONFIG_DIR"] == sentinel["CLAUDE_CONFIG_DIR"] && child["OS1_CONFIG"] == sentinel["OS1_CONFIG"], "account homes and staged runtime config preserved without credential copying")
     try check(child["GH_TOKEN"] == nil && child["OPENAI_API_KEY"] == nil, "provider credentials not copied")
     try check(child["OS1_AGENT_TASK_FILE"] == nil && child["OS1_PENDING_REPAIR"] == nil && child["OS1_ALLOW_AUTHENTICATION"] == nil, "root graph/repair/auth flags not inherited")
+    try check(child["OS1_GOVERNED_DELEGATION_FILE"] == nil, "delegation cannot be inherited from a parent environment")
     try check(child["OS1_EVENT_JOURNAL"] != sentinel["OS1_EVENT_JOURNAL"] && child["OS1_SUBMISSION_ID"] != "root", "own journal and submission")
+    let ownerPrompt = "현재 원본 목표를 보존해. Read sources A and B; do not change the owner objective. 🧭"
+    let ownerSHA = sha256Hex(Data(ownerPrompt.utf8))
+    let delegationDirectory = root.appendingPathComponent("delegation", isDirectory: true)
+    try FileManager.default.createDirectory(at: delegationDirectory, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+    let delegationPath = try ParallelAgentRuntime.writeGovernedDelegation(
+        GovernedDelegation(role: .planner, scope: .readOnly, parentTask: ownerPrompt, parentObjectiveSHA256: ownerSHA),
+        directory: delegationDirectory)
+    let delegationBytes = try Data(contentsOf: delegationPath)
+    let delegation = try JSONDecoder().decode(GovernedDelegation.self, from: delegationBytes)
+    let delegationObject = try JSONSerialization.jsonObject(with: delegationBytes) as! [String: Any]
+    let delegationAttributes = try FileManager.default.attributesOfItem(atPath: delegationPath.path)
+    try check(delegation.parentTask.utf8.elementsEqual(ownerPrompt.utf8) && delegation.parentObjectiveSHA256 == ownerSHA,
+        "delegation retains exact original NFC UTF-8, not the planner/worker rewritten prompt")
+    try check(Set(delegationObject.keys) == Set(["role", "scope", "parent_task", "parent_objective_sha256", "requires_parent_verification"]) &&
+        delegation.requiresParentVerification && delegation.role == .planner && delegation.scope == .readOnly,
+        "exact bounded candidate-only five-field delegation protocol")
+    try check((delegationAttributes[.posixPermissions] as? NSNumber)?.intValue == 0o600 &&
+        delegationAttributes[.type] as? FileAttributeType == .typeRegular &&
+        delegationPath.deletingLastPathComponent() == delegationDirectory,
+        "private regular metadata exists only inside exact child activity custody")
+    var overwriteRejected = false
+    do { _ = try ParallelAgentRuntime.writeGovernedDelegation(delegation, directory: delegationDirectory) } catch { overwriteRejected = true }
+    try check(overwriteRejected && (try Data(contentsOf: delegationPath)) == delegationBytes, "metadata creation cannot overwrite prior custody")
+    let writerDirectory = root.appendingPathComponent("writer-delegation", isDirectory: true)
+    try FileManager.default.createDirectory(at: writerDirectory, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+    let writerPath = try ParallelAgentRuntime.writeGovernedDelegation(
+        GovernedDelegation(role: .worker, scope: .isolatedWorkspaceWrite, parentTask: ownerPrompt, parentObjectiveSHA256: ownerSHA), directory: writerDirectory)
+    let writer = try JSONDecoder().decode(GovernedDelegation.self, from: Data(contentsOf: writerPath))
+    try check(writer.role == .worker && writer.scope == .isolatedWorkspaceWrite && writer.parentObjectiveSHA256 == ownerSHA,
+        "isolated writer metadata preserves the same original objective, never full_access")
+    var fullAccessObject = delegationObject
+    fullAccessObject["scope"] = "full_access"
+    let fullAccessBytes = try JSONSerialization.data(withJSONObject: fullAccessObject)
+    try check((try? JSONDecoder().decode(GovernedDelegation.self, from: fullAccessBytes)) == nil,
+        "delegation schema cannot introduce full-access execution")
+    let ungranted = await executeParallelChild(id: UUID(), executable: URL(fileURLWithPath: "/usr/bin/true"), arguments: [],
+        workspace: root.path, directory: root.appendingPathComponent("ungranted-writer"), cancellation: { false },
+        governedDelegation: writer, observed: { _, _ in })
+    try check(!ungranted.launched && ungranted.status != 0 &&
+        !FileManager.default.fileExists(atPath: root.appendingPathComponent("ungranted-writer/governed-delegation.json").path),
+        "isolated-writing metadata is never issued without the existing validated private write grant")
+    let linkedDirectory = root.appendingPathComponent("linked-delegation", isDirectory: true)
+    try FileManager.default.createDirectory(at: linkedDirectory, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+    try FileManager.default.createSymbolicLink(at: linkedDirectory.appendingPathComponent("governed-delegation.json"), withDestinationURL: delegationPath)
+    var linkRejected = false
+    do { _ = try ParallelAgentRuntime.writeGovernedDelegation(delegation, directory: linkedDirectory) } catch { linkRejected = true }
+    try check(linkRejected && (try Data(contentsOf: delegationPath)) == delegationBytes, "metadata cannot follow a symlink into another child")
     for surface in [ProviderSurface.chatgpt, .gptChat, .claudeChat] {
         var rejected = false
         do { try ParallelAgentRuntime.requireChildSurface(surface) } catch { rejected = true }
@@ -675,6 +793,20 @@ func parallelAgentCoordinatorSelfTest() async throws {
     let args = parallelChildArguments(prompt: "write everything", workspace: root.path, contextPath: nil,
         provider: "auto", codexCapacity: 30, claudeCapacity: 100)
     try check(args.contains("--parallel-agent-child") && args.contains("--read-only-reconciliation") && !args.contains("--codex-session-id"), "read-only flags and fresh natives enforced")
+    for sample in [ownerPrompt.precomposedStringWithCanonicalMapping, ownerPrompt.decomposedStringWithCanonicalMapping] {
+        let transportDirectory = root.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: transportDirectory, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+        let nativeArguments = parallelChildArguments(prompt: sample, workspace: root.path, contextPath: nil,
+            provider: "auto", codexCapacity: 30, claudeCapacity: 100, scope: .workspaceWrite)
+        let lossless = try ParallelAgentRuntime.losslessChildArguments(nativeArguments, directory: transportDirectory)
+        guard let inputIndex = lossless.firstIndex(of: "--request-file"), lossless.indices.contains(inputIndex + 1) else {
+            throw OS1Error.message("Native child did not use existing lossless request-file transport")
+        }
+        let transported = try readRunRequestFile(lossless[inputIndex + 1])
+        try check(!lossless.contains("--prompt") && Data(transported.utf8) == Data(sample.utf8) &&
+            sha256Hex(Data(transported.utf8)) == sha256Hex(Data(sample.utf8)),
+            "native child NFC/NFD bytes and isolated writer instruction grant hash remain exact")
+    }
     let script = root.appendingPathComponent("barrier.py")
     let source = """
     import os,sys,time,json
@@ -689,7 +821,8 @@ func parallelAgentCoordinatorSelfTest() async throws {
     overlap=time.time()
     time.sleep(.15)
     print(json.dumps({'pid':os.getpid(),'start':begin,'barrier':overlap,'finish':time.time(),
-      'submission':os.environ.get('OS1_SUBMISSION_ID'),'rootGraph':os.environ.get('OS1_AGENT_TASK_FILE')}))
+      'submission':os.environ.get('OS1_SUBMISSION_ID'),'rootGraph':os.environ.get('OS1_AGENT_TASK_FILE'),
+      'delegation':os.environ.get('OS1_GOVERNED_DELEGATION_FILE')}))
     """
     try Data(source.utf8).write(to: script)
     let ids = [UUID(), UUID()]
@@ -710,6 +843,7 @@ func parallelAgentCoordinatorSelfTest() async throws {
     let starts = values.compactMap { $0["start"] as? Double }, finishes = values.compactMap { $0["finish"] as? Double }
     try check(starts.max()! < finishes.min()!, "barrier-proven real execution overlap")
     try check(Set(results.map(\.workerSubmissionID)).count == 2 && values.allSatisfy { $0["rootGraph"] is NSNull }, "worker parent-binding isolation")
+    try check(values.allSatisfy { $0["delegation"] is NSNull }, "ordinary child/fanout transport does not acquire a governed-delegation role")
     try check(values.allSatisfy { v in (v["pid"] as? Int).map { kill(Int32($0), 0) != 0 } ?? false }, "workers reaped")
     let cancelStart = Date()
     let sleeper = root.appendingPathComponent("cancel.py")
@@ -787,10 +921,19 @@ private func parallelAgentCoordinatorEndToEndSelfTest(root: URL) async throws ->
     try fm.createDirectory(at: folder, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
     let script = folder.appendingPathComponent("fake-native.py")
     let source = """
-    import os,sys,time,json,uuid,hashlib
+    import os,sys,time,json,uuid,hashlib,stat
     os.setpgid(0,0) if os.getpgrp()!=os.getpid() else None
-    role,instruction,directory,barrier,mode=sys.argv[1:]
+    role,instruction,directory,barrier,mode,ownerpath=sys.argv[1:]
+    ownerbytes=open(ownerpath,'rb').read()
     sid=os.environ['OS1_SUBMISSION_ID']; begin=time.time()
+    delegationpath=os.environ.get('OS1_GOVERNED_DELEGATION_FILE')
+    if delegationpath!=os.path.join(directory,'governed-delegation.json'): sys.exit(90)
+    metadata= os.lstat(delegationpath)
+    if not stat.S_ISREG(metadata.st_mode) or stat.S_IMODE(metadata.st_mode)!=0o600 or metadata.st_uid!=os.getuid(): sys.exit(91)
+    delegation=json.load(open(delegationpath))
+    if set(delegation)!= {'role','scope','parent_task','parent_objective_sha256','requires_parent_verification'}: sys.exit(92)
+    if delegation['role']!=role or delegation['scope']!='read_only' or delegation['requires_parent_verification'] is not True: sys.exit(93)
+    if delegation['parent_task'].encode()!=ownerbytes or delegation['parent_objective_sha256']!=hashlib.sha256(ownerbytes).hexdigest(): sys.exit(94)
     ready={'submissionID':sid,'pid':os.getpid(),'pgid':os.getpgrp(),'binarySHA256':hashlib.sha256(open('/usr/bin/python3','rb').read()).hexdigest()}
     open(os.environ['OS1_AGENT_CHILD_READY_FILE'],'w').write(json.dumps(ready))
     isjoin='JOIN_AFTER_PREPARATION' in instruction
@@ -842,15 +985,24 @@ private func parallelAgentCoordinatorEndToEndSelfTest(root: URL) async throws ->
         setenv("OS1_CANCEL_FILE", cancel.path, 1)
         setenv("OS1_ACTIVITY_FILE", runRoot.appendingPathComponent("parent-activity.json").path, 1)
         setenv("OS1_EVENT_JOURNAL", runRoot.appendingPathComponent("parent-events.jsonl").path, 1)
-        let prompt = "Research in parallel and analyze two independent source areas, then produce the original requested artifact with verified dependencies."
+        let prompt = "Research in parallel and analyze two independent source areas, then produce the original requested artifact with verified dependencies. 현재 원본 목표를 유지해. 🧭"
+        // Process.arguments canonically decomposes Korean on macOS. The
+        // authority fixture must use frozen UTF-8 bytes, not an argv rewrite.
+        let ownerPromptPath = barrier.appendingPathComponent("owner-request.utf8")
+        try Data(prompt.utf8).write(to: ownerPromptPath, options: .withoutOverwriting)
+        try fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: ownerPromptPath.path)
         guard ParallelAgentRuntime.shouldPlan(prompt, workspace: root.path, requireReadOnly: false, surface: .codex) else {
             throw OS1Error.message("Automatic eligible hook did not admit the fixture")
         }
         let nativePath = runRoot.appendingPathComponent("primary-native.json")
         let hooks = ParallelCoordinatorFixtureHooks(root: runRoot.appendingPathComponent("graphs"), executable: URL(fileURLWithPath: "/usr/bin/python3"),
-            arguments: { role, instruction, directory in [script.path, role, instruction, directory.path, barrier.path, mode] },
+            arguments: { role, instruction, directory in [script.path, role, instruction, directory.path, barrier.path, mode, ownerPromptPath.path] },
             primary: { original, context in
                 guard original == prompt else { throw OS1Error.message("Primary owner objective was replaced") }
+                guard ProcessInfo.processInfo.environment["OS1_GOVERNED_DELEGATION_FILE"] == old["OS1_GOVERNED_DELEGATION_FILE"],
+                      !ParallelAgentRuntime.readOnlyAgent, ParallelAgentRuntime.isolatedWriter == nil else {
+                    throw OS1Error.message("Primary inherited an intermediate governed-delegation role")
+                }
                 try Data("fixture primary receipt\n".utf8).write(to: nativePath)
                 let step = RunStepSummary(sequence: 1, provider: "codex", action: "fixture_primary", model: "fixture-native", effort: "none",
                     revasDisposition: "adopted", sessionID: UUID().uuidString, permissionProfile: "read_only", exitCode: 0,
@@ -879,6 +1031,19 @@ private func parallelAgentCoordinatorEndToEndSelfTest(root: URL) async throws ->
     try check(snapshot.nodes.filter { $0.role == .worker && $0.state == .succeeded }.count == 3, "actual coordinator dispatched three graph nodes")
     try check(snapshot.nodes.first { $0.id == snapshot.rootNodeID }?.state == .succeeded && snapshot.nodes.first { $0.role == .primary }?.state == .succeeded,
         "primary and root terminal adopted")
+    let successfulCustody = successRoot.appendingPathComponent("graphs")
+        .appendingPathComponent(submission.uuidString + "-private").appendingPathComponent(snapshot.planID.uuidString)
+    let childMetadataPaths = [successfulCustody.appendingPathComponent("planner/governed-delegation.json")] +
+        snapshot.nodes.filter { $0.role == .worker }.map { successfulCustody.appendingPathComponent($0.id.uuidString).appendingPathComponent("governed-delegation.json") }
+    let childMetadata = try childMetadataPaths.map { try JSONDecoder().decode(GovernedDelegation.self, from: Data(contentsOf: $0)) }
+    try check(childMetadata.count == 4 && childMetadata.filter { $0.role == .planner }.count == 1 &&
+        childMetadata.filter { $0.role == .worker }.count == 3 && childMetadata.allSatisfy { $0.scope == .readOnly && $0.requiresParentVerification },
+        "actual planner and every read-only worker receive bounded candidate-only roles")
+    try check(Set(childMetadata.map(\.parentObjectiveSHA256)) == Set([snapshot.requestSHA256]) &&
+        childMetadata.allSatisfy { sha256Hex(Data($0.parentTask.utf8)) == snapshot.requestSHA256 && $0.parentTask.contains("현재 원본 목표를 유지해") },
+        "all children retain the one original owner objective SHA, not rewritten or sibling instructions")
+    try check(!fm.fileExists(atPath: successfulCustody.appendingPathComponent("primary/governed-delegation.json").path),
+        "primary final integration never receives delegated low-cost qualification metadata")
     let barrier = try fm.contentsOfDirectory(at: successRoot, includingPropertiesForKeys: nil).first { $0.lastPathComponent.hasPrefix("barrier-") }!
     let names = try fm.contentsOfDirectory(atPath: barrier.path)
     let starts = try names.filter { $0.hasSuffix(".started") && UUID(uuidString: String($0.dropLast(8))) != nil }.map { Double(try String(contentsOf: barrier.appendingPathComponent($0)))! }

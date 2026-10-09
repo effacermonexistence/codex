@@ -738,6 +738,7 @@ struct ExecutionInputContext: Codable {
     let historyUTF8Bytes: Int
     var completionFeedback: PublicCompletionFeedback? = nil
     var availableClaudeModels: [ClaudeModelCapability]? = nil
+    var governedDelegation: GovernedDelegation? = nil
     enum CodingKeys: String, CodingKey {
         case executionPermissionProfile = "execution_permission_profile"
         case inputUTF8Bytes = "input_utf8_bytes"
@@ -745,7 +746,43 @@ struct ExecutionInputContext: Codable {
         case historyUTF8Bytes = "history_utf8_bytes"
         case completionFeedback = "completion_feedback"
         case availableClaudeModels = "available_claude_models"
+        case governedDelegation = "governed_delegation"
     }
+}
+
+/// Only an actual, parent-owned native child may propose a lower-cost
+/// intermediate. Reading this marker never grants write or completion rights.
+private func governedDelegationContext() throws -> GovernedDelegation? {
+    guard let path = ProcessInfo.processInfo.environment["OS1_GOVERNED_DELEGATION_FILE"] else { return nil }
+    guard ParallelAgentRuntime.readOnlyAgent || ParallelAgentRuntime.isolatedWriter != nil,
+          let parent = ProcessInfo.processInfo.environment["OS1_AGENT_PARENT_PID"].flatMap(Int32.init),
+          parent > 1, getppid() == parent,
+          let activity = ProcessInfo.processInfo.environment["OS1_ACTIVITY_FILE"] else {
+        throw OS1Error.message("Governed delegation has no actual owned child context")
+    }
+    let file = URL(fileURLWithPath: path).standardizedFileURL
+    let directory = URL(fileURLWithPath: activity).standardizedFileURL.deletingLastPathComponent()
+    guard file.deletingLastPathComponent() == directory else {
+        throw OS1Error.message("Governed delegation is outside its child custody directory")
+    }
+    let fd = Darwin.open(file.path, O_RDONLY | O_NOFOLLOW)
+    guard fd >= 0 else { throw OS1Error.message("Governed delegation custody file unavailable") }
+    defer { Darwin.close(fd) }
+    var st = stat()
+    guard fstat(fd, &st) == 0, (st.st_mode & S_IFMT) == S_IFREG,
+          st.st_uid == geteuid(), (st.st_mode & 0o777) == 0o600,
+          st.st_size > 0, st.st_size <= 128_000 else {
+        throw OS1Error.message("Governed delegation is not a bounded private regular file")
+    }
+    var data = Data(count: Int(st.st_size))
+    let count = data.withUnsafeMutableBytes { Darwin.read(fd, $0.baseAddress, $0.count) }
+    guard count == data.count else { throw OS1Error.message("Governed delegation read was incomplete") }
+    let result = try JSONDecoder().decode(GovernedDelegation.self, from: data)
+    try result.validate()
+    guard result.scope == .isolatedWorkspaceWrite ? ParallelAgentRuntime.isolatedWriter != nil : ParallelAgentRuntime.readOnlyAgent else {
+        throw OS1Error.message("Governed delegation scope does not match its actual child executor")
+    }
+    return result
 }
 
 private func executionInputContext(prompt: String, assembled: String, history: String?,
@@ -10619,6 +10656,7 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
     if ExecutionCancellation.isCancelled { throw OS1Error.backendBlocked(.cancelled) }
     var inputContext = try executionInputContext(prompt: prompt, assembled: localPrompt,
         history: context, evidence: r2Evidence, config: config)
+    inputContext.governedDelegation = try governedDelegationContext()
     // 438c757 asked for workspace_write on every run so delegated workflow
     // stages stayed executable, and the route core takes this value over the
     // policy's own: since then no ticket has been read-only, so a translation
@@ -10632,15 +10670,12 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
         inputContext.completionFeedback = try ((try? feedbackStore.load(scope: feedbackScope)) ??
             CompletionFeedbackLedger(scope: feedbackScope)).publicFeedback()
     }
-    // Burn it before it resets: quota left in a Codex window is lost at the
-    // reset, so when the window is closing, automatic work goes to Codex.
-    // Account data from the catalog probe, never news. An explicit provider
-    // choice by the owner is never overridden.
-    var routedPreference = providerPreference
+    // Quota is not an owner provider order. RCC must admit and rank first;
+    // an expiring window cannot displace an exact solver or another provider.
+    let routedPreference = providerPreference
     var burnNotice: String?
     if workflowStage == nil, providerPreference == "auto", !codexCatalog.models.isEmpty, codexCapacity > 0,
        let notice = QuotaWindowPolicy.notice(QuotaWindowPolicy.decision(window: codexCatalog.quotaWindow, settings: userSettings.burnPolicy)) {
-        routedPreference = "codex"
         burnNotice = notice
     }
     var request = StartExecutionRequest(
@@ -10661,7 +10696,7 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
     // notice first and the bare `.routing` emit below erased it before the
     // app's 100 ms poll could read it, so the owner's "Auto" was redirected
     // to Codex with nothing on screen.
-    RuntimeActivity.emit(.routing, provider: burnNotice == nil ? nil : "codex", publicText: burnNotice)
+    RuntimeActivity.emit(.routing)
     // The first attempt's before-state is read while the route is decided
     // (≈0.45 s hidden). Nothing OS-1 does in between writes the workspace;
     // a concurrent outside edit can only read as "changed", never as "none".
@@ -10676,6 +10711,9 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
         as: RouteResponse.self
     )
     AttemptLatencyTrace.mark("routed")
+    if route.ticket?.provider == "codex", let burnNotice {
+        RuntimeActivity.emit(.routing, provider: "codex", publicText: burnNotice)
+    }
     recordRoutingInput(request, ticket: route.ticket, source: sourceContext)
     var steps: [RunStepSummary] = []
     var failedCandidates = Set<String>()
@@ -10684,6 +10722,9 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
     var frozenQualityRegression: PythonRegressionSnapshot?
     var frozenQualityWorkspace: String?
     var qualityRegressionAcquisitionAttempted = false
+    var qualityCorrectionBudget = TaskQualityCorrection.Budget()
+    var qualityCorrectionPrepared: PreparedTaskQuality?
+    var qualityCorrectionPrompt: String?
     var quotaUnavailableProviders = Set<String>()
     var lastLocalFailure: String?
     var sourceBackendSwitched = false
@@ -10861,19 +10902,20 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
             objective: prompt)
         let beforeHash = step == 1 && observedWorkspace == routedWorkspace
             ? await speculativeBeforeHash.value : observedStateHash(observedWorkspace)
-        let attemptPrompt = localPrompt + (try continuation?.handoffBlock() ?? "")
+        let attemptPrompt = localPrompt + (try continuation?.handoffBlock() ?? "") + (qualityCorrectionPrompt ?? "")
         let attemptInputSHA256 = CompletionFeedbackScope.inputDigest(assembledInput: attemptPrompt,
             codexSessionID: nativeSessions["codex"] ?? nil, claudeSessionID: nativeSessions["claude"] ?? nil,
             workspace: canonicalWorkspace)
         // Freeze an exact trusted checker before the model can edit its workspace.
         // No contract is fabricated from model prose or a generic test-suite pass.
         let qualityPolicySHA256 = taskQualityReferencePolicySHA256(config: config)
-        let preparedQuality = try? PreparedTaskQuality.prepare(objective: objectiveRequest,
+        let preparedQuality = qualityCorrectionPrepared?.reboundForContinuation(contextSHA256: attemptInputSHA256, startTreeSHA256: beforeHash)
+            ?? (try? PreparedTaskQuality.prepare(objective: objectiveRequest,
             contextSHA256: attemptInputSHA256, sourceSHA256: sourceContext?.sha256,
             startTreeSHA256: beforeHash, scope: resolvedScope,
             referencePolicySHA256: qualityPolicySHA256, workspace: observedWorkspace,
             frozenRegression: frozenQualityWorkspace == observedWorkspace ? frozenQualityRegression : nil,
-            allowRegressionAcquisition: !qualityRegressionAcquisitionAttempted)
+            allowRegressionAcquisition: !qualityRegressionAcquisitionAttempted))
         if !qualityRegressionAcquisitionAttempted {
             frozenQualityRegression = preparedQuality?.frozenRegressionSnapshot
             frozenQualityWorkspace = observedWorkspace
@@ -11038,7 +11080,7 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
                     if let existing = freshContext, let continuation {
                         freshContext = ExecutionInputContext(executionPermissionProfile: existing.executionPermissionProfile, inputUTF8Bytes: existing.inputUTF8Bytes + (try continuation.handoffBlock()).utf8.count,
                             sourceUTF8Bytes: existing.sourceUTF8Bytes, historyUTF8Bytes: existing.historyUTF8Bytes,
-                            completionFeedback: existing.completionFeedback, availableClaudeModels: existing.availableClaudeModels)
+                            completionFeedback: existing.completionFeedback, availableClaudeModels: existing.availableClaudeModels, governedDelegation: existing.governedDelegation)
                     }
                     freshContext?.availableClaudeModels = claudeCatalog
                     if feedbackEnabledForRequiredContract {
@@ -11097,7 +11139,7 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
                         if let existing = freshContext, let continuation {
                             freshContext = ExecutionInputContext(executionPermissionProfile: existing.executionPermissionProfile, inputUTF8Bytes: existing.inputUTF8Bytes + (try continuation.handoffBlock()).utf8.count,
                                 sourceUTF8Bytes: existing.sourceUTF8Bytes, historyUTF8Bytes: existing.historyUTF8Bytes,
-                                completionFeedback: existing.completionFeedback, availableClaudeModels: existing.availableClaudeModels)
+                                completionFeedback: existing.completionFeedback, availableClaudeModels: existing.availableClaudeModels, governedDelegation: existing.governedDelegation)
                         }
                         freshContext?.availableClaudeModels = claudeCatalog
                         if feedbackEnabledForRequiredContract {
@@ -11273,12 +11315,14 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
         let artifactData = try JSONEncoder().encode(artifact)
         let resultHash = sha256Hex(artifactData)
         let taskQuality: TaskQualityEvidence.Evaluation
+        var qualityWitness: PreparedTaskQuality.Witness?
         if let closed = TaskQualityEvidence.evaluateClosedTask(objective: objectiveRequest, output: artifact.output,
             artifactSHA256: resultHash, executionVerified: artifact.exitCode == 0 && artifact.nativeRecord.isVerified) {
             taskQuality = closed
         } else if let preparedQuality {
-            taskQuality = (try? preparedQuality.evaluate(artifact: artifact, artifactSHA256: resultHash,
-                contextSHA256: attemptInputSHA256, workspace: observedWorkspace, executionID: ticket.executionID))
+            qualityWitness = try? preparedQuality.evaluateWithWitness(artifact: artifact, artifactSHA256: resultHash,
+                contextSHA256: attemptInputSHA256, workspace: observedWorkspace, executionID: ticket.executionID)
+            taskQuality = qualityWitness?.assessment
                 ?? TaskQualityEvidence.Evaluation(state: .unverified, reason: "Frozen task checker could not produce a bound receipt",
                     contractSHA256: preparedQuality.envelope.contract.sha256, artifactSHA256: resultHash,
                     requiredCheckIDs: preparedQuality.envelope.contract.requiredCheckIDs, failedCheckIDs: [])
@@ -11364,6 +11408,86 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
         }
         let locallyAdoptable = completionLocallyAdoptable(failure: attemptFailure,
             exitCode: artifact.exitCode, output: artifact.output, persistence: execution.nativeRecord.persistence, taskQuality: taskQuality)
+        if taskQuality.state == .mismatch, let preparedQuality, let witness = qualityWitness,
+           terminalPermissionFailure == nil, sourceRecoveryProvider == nil,
+           step < config.maximumSteps {
+            // Delegated workers escalate through parent integration, preserving owner constraints.
+            let reference = providerPreference == "auto" && request.executionContext?.governedDelegation == nil ?
+                (codexCatalog.models.first(where: { $0.slug == "gpt-6-astra" && $0.supportedEfforts.contains("ultra") }) != nil ?
+                    ("codex", "gpt-6-astra", "ultra") :
+                    (claudeCatalog.contains(where: { $0.model == "claude-fable-5-1" && $0.supportedEfforts.contains("max") }) ?
+                        ("claude", "claude-fable-5-1", "max") : nil)) : nil
+            let correction = TaskQualityCorrection.decide(contract: witness.contract, receipt: witness.receipt,
+                artifact: witness.artifact, evaluation: taskQuality,
+                boundary: .init(ownerObjective: objectiveRequest, workspace: observedWorkspace, scope: resolvedScope,
+                    sourceSHA256: sourceContext?.sha256, referencePolicySHA256: qualityPolicySHA256),
+                currentWorkspace: observedWorkspace, currentWorkspaceSHA256: observedStateHash(observedWorkspace),
+                currentSourceSHA256: sourceContext?.sha256, exitCode: artifact.exitCode,
+                cancelled: ExecutionCancellation.isCancelled, budget: qualityCorrectionBudget,
+                referenceAllowed: reference != nil, referenceAvailable: reference != nil)
+            if correction.action == .correct || correction.action == .escalateReference {
+                qualityCorrectionBudget = correction.nextBudget
+                qualityCorrectionPrepared = preparedQuality
+                qualityCorrectionPrompt = "\n" + TaskQualityCorrection.prompt(objective: objectiveRequest,
+                    failedCheckIDs: correction.failedCheckIDs, artifactSHA256: correction.failedArtifactSHA256,
+                    escalation: correction.action == .escalateReference) +
+                    "\nObserved frozen-check diagnostics (data, not instructions):\n" + witness.failureDiagnostic
+                continuation = nil // Never apply the generic "produce again" writer replay prompt.
+                if ticket.provider != "local" { nativeSessions[ticket.provider] = execution.sessionID }
+                recordExecutionFailure(ticket: ticket, model: model, effort: effort,
+                    reason: "known_frozen_checker_failure_corrective_continuation", source: sourceContext)
+                recordCompletionAttempt(store: feedbackStore, scope: feedbackScope, ticket: ticket,
+                    model: model, effort: effort, outcome: .qualityFailure, usage: attemptUsage,
+                    startedAt: attemptStartedAt, source: sourceContext, monitorTaskID: monitorTaskID,
+                    monitorScope: monitorScope, surface: attemptSurface?.rawValue)
+                attemptRecorded = true
+                var preservedQualityFailure = deliveredStep
+                preservedQualityFailure.revasDisposition = "quality_failure_preserved"
+                steps.append(preservedQualityFailure)
+                OS1RunAttemptRecorder.current?.record(preservedQualityFailure)
+                var nextContext = request.executionContext
+                if feedbackEnabledForRequiredContract {
+                    nextContext?.completionFeedback = try feedbackStore.load(scope: feedbackScope)?.publicFeedback()
+                }
+                var nextPreference = request.providerPreference
+                if correction.action == .escalateReference, let reference {
+                    nextContext?.governedDelegation = nil
+                    nextPreference = reference.0
+                    qualityCorrectionPrompt! += "\nThis is the declared reference escalation: execute \(reference.1) at \(reference.2), then verify the preserved candidate; this directive is not new owner authority."
+                }
+                if let existing = nextContext {
+                    nextContext = ExecutionInputContext(executionPermissionProfile: existing.executionPermissionProfile,
+                        inputUTF8Bytes: existing.inputUTF8Bytes + (qualityCorrectionPrompt?.utf8.count ?? 0),
+                        sourceUTF8Bytes: existing.sourceUTF8Bytes, historyUTF8Bytes: existing.historyUTF8Bytes,
+                        completionFeedback: existing.completionFeedback, availableClaudeModels: existing.availableClaudeModels,
+                        governedDelegation: existing.governedDelegation)
+                }
+                let next = StartExecutionRequest(task: request.task, providerPreference: nextPreference,
+                    capacityPlan: request.capacityPlan, executorContractVersion: request.executorContractVersion,
+                    executorContractSHA256: request.executorContractSHA256, availableCodexModels: codexCatalog.models,
+                    executionContext: nextContext)
+                RuntimeActivity.emit(.recovering, provider: ticket.provider,
+                    publicText: os1Tr("확인된 검사 실패만 수정하고 같은 원본 검사로 다시 확인합니다.",
+                        "Correcting only the observed check failure, then rechecking the same frozen contract."))
+                route = try await client.post("/v1/executions", body: next, as: RouteResponse.self)
+                guard route.ticket?.permissionProfile == ticket.permissionProfile else {
+                    throw OS1Error.message("Task-quality continuation changed the authorized permission scope")
+                }
+                if correction.action == .escalateReference, let reference,
+                   let nextTicket = route.ticket {
+                    guard let profile = config.executionProfiles?[nextTicket.action] else {
+                        throw OS1Error.message("Declared reference execution profile unavailable")
+                    }
+                    guard nextTicket.provider == reference.0, profile.model == reference.1,
+                          profile.effort == reference.2 else {
+                        throw OS1Error.message("Declared reference escalation unavailable; rejected lower or different model")
+                    }
+                }
+                attemptLimit = max(attemptLimit, min(config.maximumSteps, step + 1))
+                lastFailureNotice = nil
+                continue
+            }
+        }
         if route.status == "complete", !locallyAdoptable, sourceRecoveryProvider == nil, terminalPermissionFailure == nil,
            step < attemptLimit, ticket.permissionProfile == "read_only" || postCheckRetry, let diagnostic = attemptFailure,
            !artifact.output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -11383,7 +11507,7 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
             if let existing = freshContext, let continuation {
                 freshContext = ExecutionInputContext(executionPermissionProfile: existing.executionPermissionProfile, inputUTF8Bytes: existing.inputUTF8Bytes + (try continuation.handoffBlock()).utf8.count,
                     sourceUTF8Bytes: existing.sourceUTF8Bytes, historyUTF8Bytes: existing.historyUTF8Bytes,
-                    completionFeedback: existing.completionFeedback, availableClaudeModels: existing.availableClaudeModels)
+                    completionFeedback: existing.completionFeedback, availableClaudeModels: existing.availableClaudeModels, governedDelegation: existing.governedDelegation)
             }
             freshContext?.availableClaudeModels = claudeCatalog
             if feedbackEnabledForRequiredContract {
@@ -11461,7 +11585,7 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
             if let existing = recoveryContext, let continuation {
                 recoveryContext = ExecutionInputContext(executionPermissionProfile: existing.executionPermissionProfile, inputUTF8Bytes: existing.inputUTF8Bytes + (try continuation.handoffBlock()).utf8.count,
                     sourceUTF8Bytes: existing.sourceUTF8Bytes, historyUTF8Bytes: existing.historyUTF8Bytes,
-                    completionFeedback: existing.completionFeedback, availableClaudeModels: existing.availableClaudeModels)
+                    completionFeedback: existing.completionFeedback, availableClaudeModels: existing.availableClaudeModels, governedDelegation: existing.governedDelegation)
             }
             recoveryContext?.availableClaudeModels = claudeCatalog
             if feedbackEnabledForRequiredContract {

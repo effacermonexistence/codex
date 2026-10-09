@@ -7,6 +7,13 @@ import Darwin
 /// a second benchmark service or a model-authored 'tests passed' assertion.
 /// A missing contract is an explicit unresolved quality state.
 struct PreparedTaskQuality {
+    struct Witness {
+        let assessment: TaskQualityEvidence.Evaluation
+        let contract: TaskQualityEvidence.Contract
+        let receipt: TaskQualityEvidence.Receipt?
+        let artifact: TaskQualityEvidence.ObservedArtifact
+        let failureDiagnostic: String
+    }
     struct Envelope: Codable {
         let contract: TaskQualityEvidence.Contract
         let checkerSHA256: String
@@ -80,6 +87,24 @@ struct PreparedTaskQuality {
 
     func evaluate(artifact: Artifact, artifactSHA256: String, contextSHA256: String,
                   workspace: String, executionID: String, runsRoot: URL = Self.root) throws -> TaskQualityEvidence.Evaluation {
+        try evaluateWithWitness(artifact: artifact, artifactSHA256: artifactSHA256, contextSHA256: contextSHA256,
+            workspace: workspace, executionID: executionID, runsRoot: runsRoot).assessment
+    }
+
+    /// Rebind only the host's continuation input/tree. The original checker,
+    /// required obligations, coverage and reference evidence are immutable.
+    /// A changed comparison context cannot manufacture reference parity.
+    func reboundForContinuation(contextSHA256: String, startTreeSHA256: String) -> Self {
+        var contract = envelope.contract
+        contract.contextSHA256 = contextSHA256
+        contract.startTreeSHA256 = startTreeSHA256
+        return Self(envelope: Envelope(contract: contract, checkerSHA256: envelope.checkerSHA256,
+            timeoutSeconds: envelope.timeoutSeconds, workspacePaths: envelope.workspacePaths),
+            checkerBytes: checkerBytes, referencePolicySHA256: referencePolicySHA256, partialRegression: partialRegression)
+    }
+
+    func evaluateWithWitness(artifact: Artifact, artifactSHA256: String, contextSHA256: String,
+                  workspace: String, executionID: String, runsRoot: URL = Self.root) throws -> Witness {
         let c = envelope.contract
         if !envelope.workspacePaths.isEmpty, observedStateHash(workspace) != artifact.workspaceAfterHash {
             throw OS1Error.message("Task-quality candidate changed after the execution artifact was captured")
@@ -171,7 +196,17 @@ struct PreparedTaskQuality {
         for name in ["stdout.json", "stderr.txt", "assessment.json"] {
             try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: runRoot.appendingPathComponent(name).path)
         }
-        return assessment
+        let rawRows = (try? JSONSerialization.jsonObject(with: result.1)) as? [[String: Any]] ?? []
+        let failedIDs = Set(assessment.failedCheckIDs)
+        let diagnostic = rawRows.filter { row in
+            (row["checkID"] as? String).map(failedIDs.contains) ?? false
+        }.prefix(4).map { row in
+            let stderr = String((row["stderr"] as? String ?? "").suffix(4_000))
+            let lines = stderr.split(separator: "\n").suffix(12).compactMap { NativeStepLabel.redact(String($0)) }
+            return (row["checkID"] as? String ?? "failed_check") + ":\n" + lines.joined(separator: "\n")
+        }.joined(separator: "\n")
+        return Witness(assessment: assessment, contract: c, receipt: receipt, artifact: observed,
+            failureDiagnostic: String(diagnostic.prefix(8_000)))
     }
 }
 
@@ -572,6 +607,92 @@ func taskQualityRuntimeSelfTest() throws {
     guard partialPass.state == .unverified, !partialPass.referenceParityVerified else {
         throw OS1Error.message("Partial suite pass fabricated complete task coverage or reference parity")
     }
+    // An actually failed copied-suite witness authorizes one continuation of
+    // the completed candidate, not a replay or a model-authored acceptance test.
+    let sourcePath = python.appendingPathComponent("README.md")
+    let sourceBytes = try Data(contentsOf: sourcePath)
+    let sourceSHA = TaskQualityEvidence.digest(sourceBytes)
+    let correctionStartTree = observedStateHash(python.path)
+    guard let correctionPrepared = try PreparedTaskQuality.prepare(objective: pythonObjective,
+        contextSHA256: h, sourceSHA256: sourceSHA, startTreeSHA256: correctionStartTree,
+        scope: .workspaceWrite, referencePolicySHA256: h, workspace: python.path,
+        frozenRegression: partial.frozenRegressionSnapshot, allowRegressionAcquisition: false,
+        rootURL: root.appendingPathComponent("no-registered-contract")) else {
+        throw OS1Error.message("Correction lost original frozen unittest custody")
+    }
+    let rejectedSourceBytes = Data("value = 3\n".utf8)
+    try rejectedSourceBytes.write(to: module)
+    let failedWriter = Artifact(provider: "codex", action: "fixture_completed_writer", permissionProfile: "workspace_write",
+        model: "fixture", effort: "low", executorContractVersion: "fixture", executorContractSHA256: h,
+        exitCode: 0, output: "Completed local candidate; checker must decide, not this prose.", stderr: "", durationMS: 1,
+        workspaceBeforeHash: correctionStartTree, workspaceAfterHash: observedStateHash(python.path),
+        nativeRecord: NativeRecordEvidence(turnID: UUID().uuidString, recordPath: nil, persistence: "verified", desktopVisibility: "fixture"))
+    let failedWriterBytes = try encoder.encode(failedWriter)
+    let failedWriterSHA = TaskQualityEvidence.digest(failedWriterBytes)
+    let failedWriterPath = root.appendingPathComponent("correction-rejected-artifact.json")
+    let failedSourcePath = root.appendingPathComponent("correction-rejected-module.py")
+    try failedWriterBytes.write(to: failedWriterPath, options: .withoutOverwriting)
+    try rejectedSourceBytes.write(to: failedSourcePath, options: .withoutOverwriting)
+    for path in [failedWriterPath, failedSourcePath] {
+        try fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path.path)
+    }
+    let failedWitness = try correctionPrepared.evaluateWithWitness(artifact: failedWriter, artifactSHA256: failedWriterSHA,
+        contextSHA256: h, workspace: python.path, executionID: UUID().uuidString, runsRoot: root)
+    let boundary = TaskQualityCorrection.Boundary(ownerObjective: pythonObjective, workspace: python.path,
+        scope: .workspaceWrite, sourceSHA256: sourceSHA, referencePolicySHA256: h)
+    let correction = TaskQualityCorrection.decide(contract: failedWitness.contract, receipt: failedWitness.receipt,
+        artifact: failedWitness.artifact, evaluation: failedWitness.assessment, boundary: boundary,
+        currentWorkspace: python.path, currentWorkspaceSHA256: observedStateHash(python.path),
+        currentSourceSHA256: TaskQualityEvidence.digest(try Data(contentsOf: sourcePath)), exitCode: 0, cancelled: false)
+    guard failedWitness.assessment.state == .mismatch,
+          failedWitness.assessment.failedCheckIDs == ["partial.original_unittest", "partial.candidate_unittest"],
+          correction.action == .correct, correction.nextBudget.correctiveAttempts == 1,
+          correction.failedArtifactSHA256 == failedWriterSHA, correction.preservesFailedArtifact,
+          !correction.grantsReferenceParity else {
+        throw OS1Error.message("Actual failed writer witness did not authorize exactly one bounded preserved correction")
+    }
+    let correctionInput = TaskQualityCorrection.prompt(objective: pythonObjective,
+        failedCheckIDs: correction.failedCheckIDs, artifactSHA256: failedWriterSHA)
+    let continuationSHA = TaskQualityEvidence.digest(Data(("fixture-context\n" + correctionInput).utf8))
+    let continuation = correctionPrepared.reboundForContinuation(contextSHA256: continuationSHA,
+        startTreeSHA256: failedWriter.workspaceAfterHash)
+    guard continuation.envelope.contract.objectiveSHA256 == failedWitness.contract.objectiveSHA256,
+          continuation.envelope.contract.sourceSHA256 == sourceSHA,
+          continuation.envelope.contract.contextSHA256 == continuationSHA,
+          continuation.envelope.contract.startTreeSHA256 == failedWriter.workspaceAfterHash,
+          continuation.envelope.contract.requiredCheckIDs == failedWitness.contract.requiredCheckIDs,
+          continuation.envelope.contract.verifierCodeSHA256 == failedWitness.contract.verifierCodeSHA256,
+          continuation.checkerBytes == correctionPrepared.checkerBytes,
+          continuation.frozenRegressionSnapshot?.originalTests == correctionPrepared.frozenRegressionSnapshot?.originalTests,
+          !continuation.envelope.contract.fullCoverage, continuation.envelope.contract.reference == nil else {
+        throw OS1Error.message("Continuation rebind changed frozen checker, original source, coverage or reference authority")
+    }
+    try Data("value = 2\n".utf8).write(to: module)
+    let correctedWriter = Artifact(provider: "codex", action: "fixture_corrective_continuation", permissionProfile: "workspace_write",
+        model: "fixture", effort: "low", executorContractVersion: "fixture", executorContractSHA256: h,
+        exitCode: 0, output: "Corrected only the known failed module; original tests unchanged.", stderr: "", durationMS: 1,
+        workspaceBeforeHash: failedWriter.workspaceAfterHash, workspaceAfterHash: observedStateHash(python.path),
+        nativeRecord: NativeRecordEvidence(turnID: UUID().uuidString, recordPath: nil, persistence: "verified", desktopVisibility: "fixture"))
+    let correctedWriterSHA = TaskQualityEvidence.digest(try encoder.encode(correctedWriter))
+    let correctedWitness = try continuation.evaluateWithWitness(artifact: correctedWriter, artifactSHA256: correctedWriterSHA,
+        contextSHA256: continuationSHA, workspace: python.path, executionID: UUID().uuidString, runsRoot: root)
+    let terminalCorrection = TaskQualityCorrection.decide(contract: correctedWitness.contract, receipt: correctedWitness.receipt,
+        artifact: correctedWitness.artifact, evaluation: correctedWitness.assessment, boundary: boundary,
+        currentWorkspace: python.path, currentWorkspaceSHA256: observedStateHash(python.path), currentSourceSHA256: sourceSHA,
+        exitCode: 0, cancelled: false, budget: correction.nextBudget)
+    guard correctedWitness.receipt?.checks.allSatisfy({ $0.status == .passed }) == true,
+          Set(correctedWitness.receipt?.checks.map(\.checkID) ?? []) == Set(continuation.envelope.contract.requiredCheckIDs),
+          correctedWitness.receipt?.binding.contextSHA256 == continuationSHA,
+          correctedWitness.receipt?.binding.sourceSHA256 == sourceSHA,
+          correctedWitness.receipt?.contractSHA256 == continuation.envelope.contract.sha256,
+          correctedWitness.assessment.state == .unverified, correctedWitness.assessment.failedCheckIDs.isEmpty,
+          !correctedWitness.assessment.referenceParityVerified, terminalCorrection.action == .none,
+          correctedWriterSHA != failedWriterSHA,
+          try Data(contentsOf: originalTest) == originalBytes, try Data(contentsOf: sourcePath) == sourceBytes,
+          try Data(contentsOf: failedWriterPath) == failedWriterBytes,
+          try Data(contentsOf: failedSourcePath) == rejectedSourceBytes else {
+        throw OS1Error.message("Bounded correction lost failed custody, weakened original tests, or promoted a partial pass to reference parity")
+    }
     try Data("import missing_os1_fixture_dependency\n".utf8).write(to: originalTest)
     let missingDependency = try pythonAssessment()
     guard missingDependency.state == .unverified, missingDependency.failedCheckIDs.isEmpty else {
@@ -580,4 +701,5 @@ func taskQualityRuntimeSelfTest() throws {
     try originalBytes.write(to: originalTest)
     print("OS-1 task-quality runtime: copied-artifact pass/fail, raw preservation, no fabricated parity, current/legacy summary roundtrip PASS; model calls 0")
     print("OS-1 partial unittest runtime: frozen-original + actual candidate suites, added-failure veto, weakened/deleted-test + retry-custody preservation, partial-pass/setup unverified PASS; model calls 0")
+    print("OS-1 quality continuation: actual failed writer witness → one correction → frozen checker/context-tree rebind → real partial-suite pass; rejected artifact preserved, no reference parity; model calls 0")
 }

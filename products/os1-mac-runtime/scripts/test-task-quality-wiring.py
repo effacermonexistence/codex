@@ -113,7 +113,7 @@ resume = function(main, 'resumeDelivery')
 local_gate = function(main, 'completionLocallyAdoptable')
 printed = function(main, 'printRunSummary')
 ui_receipt = function(app, 'executionReceipt')
-runtime_evaluate = function(runtime, 'evaluate')
+runtime_evaluate = function(runtime, 'evaluateWithWitness')
 code = lexical(loop, strings=True)
 
 # A module existing (or a self-test mentioning it) does not establish use on
@@ -124,7 +124,7 @@ dispatch_match = re.search(r'\bexecute\s*\(\s*ticket\s*:\s*ticket', code)
 check(prepare_match is not None, 'owner-policy loop must prepare an exact task-quality contract')
 check(prepare_match is not None and dispatch_match is not None and prepare_match.start() < dispatch_match.start(),
       'task-quality contract must be frozen before native result generation')
-evaluation = re.search(r'\b(?:evaluateTaskQuality|evaluateQualityArtifact)\s*\(|\b\w+\??\.evaluate\s*\(\s*artifact\s*:', code)
+evaluation = re.search(r'\b(?:evaluateTaskQuality|evaluateQualityArtifact)\s*\(|\b\w+\??\.evaluateWithWitness\s*\(\s*artifact\s*:', code)
 pending_pos = code.find('let pendingStep =')
 outbox_pos = code.find('DeliveryOutbox().save(delivery)')
 check(evaluation is not None, 'actual loop must evaluate the produced artifact, not leave an unused module')
@@ -132,6 +132,58 @@ check(evaluation is not None and pending_pos >= 0 and evaluation.start() < pendi
       'quality evaluation must precede the pending step serialized into custody')
 check(evaluation is not None and outbox_pos >= 0 and evaluation.start() < outbox_pos,
       'quality evaluation must precede the first outbox save/adoption delivery')
+check('evaluateWithWitness' in lexical(function(runtime, 'evaluate'), strings=True)
+      and '.assessment' in lexical(function(runtime, 'evaluate'), strings=True),
+      'legacy evaluation wrapper must delegate to the same actual checker/witness and return its assessment')
+
+# A known checker failure authorizes a bounded correction of the completed
+# candidate. The exact witness and failed artifact must survive before the
+# next native execution; continuation is not a generic writer replay.
+correction = region(loop,
+                    'if taskQuality.state == .mismatch, let preparedQuality, let witness = qualityWitness,',
+                    'if route.status == "complete", !locallyAdoptable')
+correction_code = lexical(correction, strings=True)
+decision_match = re.search(r'\bTaskQualityCorrection\.decide\s*\(', correction_code)
+correction_dispatch = re.search(r'\bclient\.post\s*\(', correction_code)
+correction_continue = re.search(r'\bcontinue\b', correction_code)
+decision_in_loop = re.search(r'\bTaskQualityCorrection\.decide\s*\(', code)
+check(evaluation is not None and decision_in_loop is not None and evaluation.start() < decision_in_loop.start(),
+      'actual produced-artifact witness must precede the correction decision')
+check(re.search(r'TaskQualityCorrection\.decide\(\s*contract:\s*witness\.contract,\s*receipt:\s*witness\.receipt,\s*artifact:\s*witness\.artifact,\s*evaluation:\s*taskQuality', correction_code, re.S) is not None,
+      'correction must consume the actual frozen checker contract/receipt/artifact, not a fabricated failure label')
+check(decision_match is not None and correction_dispatch is not None and correction_continue is not None
+      and decision_match.start() < correction_dispatch.start() < correction_continue.start()
+      and 'correction.action == .correct || correction.action == .escalateReference' in correction_code,
+      'continuation dispatch and loop continuation require a real approved correction decision first')
+check(decision_in_loop is not None and outbox_pos >= 0 and outbox_pos < decision_in_loop.start(),
+      'immutable failed artifact and pending step must enter delivery custody before any corrective dispatch')
+preservation = re.search(r'var\s+preservedQualityFailure\s*=\s*deliveredStep.*?steps\.append\(preservedQualityFailure\).*?OS1RunAttemptRecorder\.current\?\.record\(preservedQualityFailure\)', correction_code, re.S)
+check(preservation is not None and correction_dispatch is not None and preservation.end() < correction_dispatch.start()
+      and 'preservedQualityFailure.revasDisposition = "quality_failure_preserved"' in lexical(correction),
+      'rejected original step must remain explicitly preserved and recorded before corrective continuation')
+check('qualityCorrectionBudget = correction.nextBudget' in correction_code
+      and 'budget: qualityCorrectionBudget' in correction_code
+      and 'qualityCorrectionPrepared = preparedQuality' in correction_code
+      and 'continuation = nil' in correction_code,
+      'correction must retain frozen checker/bounded budget and disable the generic writer replay handoff')
+check('nativeSessions[ticket.provider] = execution.sessionID' in correction_code
+      and re.search(r'providerSessionID:\s*OS1FullAccessContinuation\.sessionID\s*\?\?\s*\(nativeSessions\[ticket\.provider\]\s*\?\?\s*nil\)', code) is not None,
+      'corrective native execution must resume the exact retained session rather than replacing completed work')
+rebound = re.search(r'qualityCorrectionPrepared\?\.reboundForContinuation\(\s*contextSHA256:\s*attemptInputSHA256,\s*startTreeSHA256:\s*beforeHash\)', code)
+rebind_code = lexical(function(runtime, 'reboundForContinuation'), strings=True)
+check(rebound is not None and dispatch_match is not None and rebound.start() < dispatch_match.start()
+      and 'contract.contextSHA256 = contextSHA256' in rebind_code
+      and 'contract.startTreeSHA256 = startTreeSHA256' in rebind_code
+      and 'checkerBytes: checkerBytes' in rebind_code and 'partialRegression: partialRegression' in rebind_code,
+      'continuation must bind the new input/tree before native dispatch without replacing the frozen original checker')
+check('TaskQualityCorrection.prompt(objective: objectiveRequest' in correction_code
+      and 'failedCheckIDs: correction.failedCheckIDs' in correction_code
+      and 'artifactSHA256: correction.failedArtifactSHA256' in correction_code
+      and 'witness.failureDiagnostic' in correction_code,
+      'correction instructions must preserve the original objective and only the actual bound failure diagnostics')
+check('guard route.ticket?.permissionProfile == ticket.permissionProfile' in correction_code
+      and 'step < config.maximumSteps' in correction_code,
+      'corrective dispatch must preserve authorized scope and the existing bounded step budget')
 
 pending = region(loop, 'let pendingStep =', 'var delivery =')
 check(re.search(r'\btaskQuality\s*:', lexical(pending, strings=True)) is not None,
