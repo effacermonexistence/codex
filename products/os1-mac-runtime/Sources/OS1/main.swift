@@ -6865,12 +6865,19 @@ private func nativeTransportAdmissionSelfTest() throws {
             model: "fixture-model", effort: "low", contract: contract, quotaContext: quota, now: now,
             forbiddenPools: forbidden); return false } catch { return true }
     }
-    let exhausted = ProviderQuotaContext(observedAt: formatter.string(from: now), providers: [
+    // ISO8601DateFormatter rounds fractional milliseconds. Serializing `now`
+    // can produce a slightly FUTURE observation, correctly treated as unknown
+    // by the real gate. Use a stable already-observed fixture instant instead.
+    let observed = Date(timeIntervalSince1970: floor(now.timeIntervalSince1970) - 1)
+    let exhausted = ProviderQuotaContext(observedAt: formatter.string(from: observed), providers: [
         .init(provider: "codex", state: "exhausted", remainingPercent: 0,
               resetsAt: formatter.string(from: now.addingTimeInterval(80)), source: "native_account_rate_limits")])
-    guard denied(surface: .gptChat, forbidden: [.openAICodex]), denied(surface: .chatgpt),
-          denied(surface: .claudeChat), denied(surface: .gptChat, quota: exhausted) else {
-        throw OS1Error.message("Actual transport/pool/exhaustion gate failed before dispatch")
+    let checks = [("forbidden Codex pool", denied(surface: .gptChat, forbidden: [.openAICodex])),
+        ("consumer ChatGPT is not Codex", denied(surface: .chatgpt)),
+        ("Claude is not Codex", denied(surface: .claudeChat)), ("fresh exhaustion", denied(surface: .gptChat, quota: exhausted))]
+    guard checks.allSatisfy(\.1) else {
+        throw OS1Error.message("Actual transport/pool/exhaustion gate failed before dispatch: " +
+            checks.filter { !$0.1 }.map(\.0).joined(separator: ", "))
     }
     let root = FileManager.default.temporaryDirectory.appendingPathComponent("os1-local-response-" + UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }
