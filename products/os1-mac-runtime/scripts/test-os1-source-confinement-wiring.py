@@ -310,9 +310,9 @@ check('adoptedDraft = mergedFullAccessContinuation(draft: fullDraft, resumed: re
 check('if OS1FullAccessContinuation.sessionID != nil, os1Source.watch?.changed() == true' in main
       and 'no self-update, install or replay was started' in main,
       'a detected protected-source mutation blocks continuation rather than claiming or installing it')
-check('if ParallelAgentRuntime.isolatedWriter == nil, OS1FullAccessContinuation.sessionID == nil, previewDeploymentTarget == nil' in main
-      and 'else if ParallelAgentRuntime.isolatedWriter == nil, OS1FullAccessContinuation.sessionID == nil, let os1SourceWatch' in main,
-      'full-access non-OS-1 work cannot enter either OS-1 self-update finisher')
+check(re.search(r'\bif\s+route\.status == "complete",\s*locallyAdoptable,\s*ParallelAgentRuntime\.isolatedWriter == nil,\s*OS1FullAccessContinuation\.sessionID == nil,\s*previewDeploymentTarget == nil', main)
+      and re.search(r'\belse if\s+route\.status == "complete",\s*locallyAdoptable,\s*ParallelAgentRuntime\.isolatedWriter == nil,\s*OS1FullAccessContinuation\.sessionID == nil,\s*let os1SourceWatch', main),
+      'full-access non-OS-1 work cannot enter either adopted OS-1 self-update finisher')
 prompt = body(main, 'func fullAccessContinuationPrompt(', 'func fullAccessFailureSummary(')
 check('Continue ONLY the non-OS-1 steps blocked' in prompt and 'SAME native session' in prompt
       and 'Do not restart the original request or repeat any completed' in prompt
