@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 import OS1Context
 
 /// OS-1 repairing OS-1: the intent left by `self-update stage`, the app's
@@ -61,6 +62,113 @@ func runSelfUpdateFixtures() throws {
     check(aliased?.workspace == currentPath && aliased?.alternates.isEmpty == true, "symlink and registered source deduplicate by canonical identity")
     try Data().write(to: config)
     check(LocalProjectWorkspace.resolve(projectID: "os1-clodex", requested: stale.path, home: workspaceHome, isCurrent: { _ in false }) == nil, "sole stale requested checkout cannot bypass installed-source floor")
+
+    // Exact activated source is discoverable even without a Codex trust entry.
+    // Every app, repository, outcome and HOME below is a disposable fixture.
+    let activationHome = URL(fileURLWithPath: LocalProjectWorkspace.executionPath(root.appendingPathComponent("activation-home").path))
+    let activeSource = activationHome.appendingPathComponent("Documents/current-source")
+    let activatedApp = SelfUpdate.installedAppURL(home: activationHome)
+    let activeMarker = activeSource.appendingPathComponent(SelfUpdate.runtimeRelativePath + "/Package.swift")
+    try FileManager.default.createDirectory(at: activeMarker.deletingLastPathComponent(), withIntermediateDirectories: true)
+    try Data("// fixture activation source\n".utf8).write(to: activeMarker)
+    func fixtureGit(_ arguments: [String]) throws -> String {
+        let process = Process(), pipe = Pipe()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+        process.arguments = ["-C", activeSource.path] + arguments
+        process.environment = ["HOME": activationHome.path, "PATH": "/usr/bin:/bin", "LC_ALL": "C",
+                               "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": "/dev/null"]
+        process.standardInput = FileHandle.nullDevice; process.standardOutput = pipe; process.standardError = FileHandle.nullDevice
+        try process.run(); let data = pipe.fileHandleForReading.readDataToEndOfFile(); process.waitUntilExit()
+        guard process.terminationStatus == 0 else { throw CocoaError(.fileReadUnknown) }
+        return String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+    _ = try fixtureGit(["init", "-q"])
+    _ = try fixtureGit(["add", "-A"])
+    _ = try fixtureGit(["-c", "user.name=OS1 Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "activation source"])
+    _ = try fixtureGit(["remote", "add", "origin", "https://github.com/effacermonexistence/codex.git"])
+    let activatedCommit = try fixtureGit(["rev-parse", "HEAD"])
+    for directory in ["Contents/MacOS", "Contents/Resources"] {
+        try FileManager.default.createDirectory(at: activatedApp.appendingPathComponent(directory), withIntermediateDirectories: true)
+    }
+    let appBytes = Data("fixture installed GUI\n".utf8), cliBytes = Data("fixture installed CLI\n".utf8)
+    let activatedAppExecutable = activatedApp.appendingPathComponent("Contents/MacOS/OS1App")
+    let activatedCLI = activatedApp.appendingPathComponent("Contents/Resources/os1")
+    try appBytes.write(to: activatedAppExecutable); try cliBytes.write(to: activatedCLI)
+    func writeActivatedBuild(_ build: Int) throws {
+        try PropertyListSerialization.data(fromPropertyList: ["CFBundleVersion": String(build)], format: .xml, options: 0)
+            .write(to: activatedApp.appendingPathComponent("Contents/Info.plist"))
+    }
+    try writeActivatedBuild(354)
+    func digest(_ bytes: Data) -> String { SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined() }
+    let appHash = digest(appBytes), cliHash = digest(cliBytes)
+    func saveActivated(build: Int = 354, source: String? = nil, commit: String? = activatedCommit,
+                       app: String? = nil, cli: String? = nil, success: Bool = true) throws {
+        let intent = SelfUpdate.Intent(build: build, version: "fixture", sourceRoot: source ?? activeSource.path,
+            sourceCommit: commit, stagedAppSHA256: app ?? appHash, stagedCLISHA256: cli ?? cliHash,
+            stagedAt: now, conversationID: nil, submissionID: nil, checks: [])
+        try SelfUpdate.saveOutcome(SelfUpdate.Outcome(id: "activated-fixture", intent: intent, success: success,
+            receiptPath: nil, error: success ? nil : "fixture install failed", summary: "fixture", completedAt: now), home: activationHome)
+    }
+    func hasActivated() -> Bool { LocalProjectWorkspace.candidates(projectID: "os1-clodex", home: activationHome).contains(activeSource.path) }
+    try saveActivated()
+    check(LocalProjectWorkspace.registeredRoots(home: activationHome).isEmpty && hasActivated(),
+          "exact successfully activated source is a candidate without a Codex trust registration")
+    check(!FileManager.default.fileExists(atPath: activationHome.appendingPathComponent(".codex/config.toml").path),
+          "activation discovery never creates Codex config or trust")
+    check(LocalProjectWorkspace.candidates(projectID: "unrelated-project", home: activationHome).isEmpty,
+          "activation receipt never contributes roots for another project")
+    check(LocalProjectWorkspace.resolve(projectID: "os1-clodex", requested: activationHome.path, home: activationHome,
+        isCurrent: { $0 == activeSource.path })?.workspace == activeSource.path, "HOME resolves the exact activated source through its existing current-state gate")
+    check(LocalProjectWorkspace.resolve(projectID: "os1-clodex", requested: activationHome.path, home: activationHome,
+        isCurrent: { _ in false }) == nil, "activation candidate never bypasses downstream source floor")
+    for (label, mutate) in [
+        ("wrong installed build", { try saveActivated(build: 353) }),
+        ("wrong installed app hash", { try saveActivated(app: String(repeating: "0", count: 64)) }),
+        ("wrong embedded CLI hash", { try saveActivated(cli: String(repeating: "0", count: 64)) }),
+        ("failed outcome", { try saveActivated(success: false) }),
+        ("missing source commit", { try saveActivated(commit: nil) }),
+        ("nonexistent source commit", { try saveActivated(commit: String(repeating: "0", count: 40)) }),
+        ("malformed source commit", { try saveActivated(commit: "HEAD") }),
+        ("relative source root", { try saveActivated(source: "Documents/current-source") }),
+        ("noncanonical source root", { try saveActivated(source: activeSource.path + "/../current-source") }),
+        ("source outside fixture HOME", { try saveActivated(source: stale.path) }),
+        ("fleet job source", { try saveActivated(source: activationHome.appendingPathComponent(".os1/fleet/jobs/source").path) }),
+        ("temporary source", { try saveActivated(source: activationHome.appendingPathComponent("tmp/source").path) }),
+    ] as [(String, () throws -> Void)] {
+        try mutate(); check(!hasActivated(), label + " cannot supply an activated source")
+    }
+    try saveActivated()
+    _ = try fixtureGit(["remote", "set-url", "origin", "https://github.com/foreign/codex.git"])
+    check(!hasActivated(), "foreign repository cannot supply the activated source")
+    _ = try fixtureGit(["remote", "set-url", "origin", "https://github.com/effacermonexistence/codex.git"])
+    try FileManager.default.removeItem(at: activeMarker)
+    check(!hasActivated(), "missing OS-1 marker blocks activation source")
+    try Data("// fixture activation source\n".utf8).write(to: activeMarker)
+    try Data("fixture newer commit\n".utf8).write(to: activeSource.appendingPathComponent("new.txt"))
+    _ = try fixtureGit(["add", "-A"])
+    _ = try fixtureGit(["-c", "user.name=OS1 Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "newer"])
+    check(hasActivated(), "recorded producing commit may be an ancestor of the current source HEAD")
+    let detachedCommit = try fixtureGit(["rev-parse", "HEAD"])
+    _ = try fixtureGit(["reset", "--hard", activatedCommit])
+    try saveActivated(commit: detachedCommit)
+    check(!hasActivated(), "a producing commit absent from source HEAD ancestry is stale")
+    try saveActivated()
+    try Data("different installed GUI\n".utf8).write(to: activatedAppExecutable)
+    check(!hasActivated(), "changed physical installed binary invalidates the outcome binding")
+    try appBytes.write(to: activatedAppExecutable)
+    try writeActivatedBuild(355)
+    check(!hasActivated(), "old activated receipt does not describe a newer installation")
+    try writeActivatedBuild(354)
+    check(hasActivated(), "only the matching current installed build and binaries re-admit its source")
+    let activationConfig = activationHome.appendingPathComponent(".codex/config.toml")
+    try FileManager.default.createDirectory(at: activationConfig.deletingLastPathComponent(), withIntermediateDirectories: true)
+    let registeredBytes = Data("[projects.\(String(reflecting: activeSource.path))]\ntrust_level = \"trusted\"\n".utf8)
+    try registeredBytes.write(to: activationConfig)
+    check(LocalProjectWorkspace.registeredRoots(home: activationHome) == [activeSource.path],
+          "registeredRoots remains exactly the existing Codex project table")
+    check(LocalProjectWorkspace.candidates(projectID: "os1-clodex", home: activationHome) == [activeSource.path],
+          "the activated root and a matching registered root are deduplicated")
+    check(try Data(contentsOf: activationConfig) == registeredBytes, "discovery never rewrites an existing Codex trust entry")
 
     let checkoutA = root.appendingPathComponent("a").path
     let checkoutB = root.appendingPathComponent("b").path
