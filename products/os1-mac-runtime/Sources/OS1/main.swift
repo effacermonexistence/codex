@@ -1627,7 +1627,8 @@ func claudeArguments(
     streamInput: Bool = false,
     confinedPaths: [String] = [],
     confinedEscalates: Bool = true,
-    fullAccessProtectedPaths: [String] = []
+    fullAccessProtectedPaths: [String] = [],
+    managedDelegation: Bool = ParallelAgentRuntime.managedDelegation
 ) throws -> [String] {
     var arguments = ["-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages"]
     // A HOME write task that holds no OS-1 source lease (build 320): its
@@ -1658,7 +1659,9 @@ func claudeArguments(
             permissions[index + 1] += ",mcp__os1_memory__memory_query"
         } else { permissions += ["--allowedTools", "mcp__os1_memory__memory_query"] }
     }
-    arguments += permissions
+    // Managed delegation only (ParallelAgentRuntime): the coordinator's children
+    // and primary lose the CLI's own sub-agent tools; existing denies are kept.
+    arguments += ParallelAgentRuntime.claudeDenyArguments(permissions, managed: managedDelegation)
     if !fullAccessProtectedPaths.isEmpty {
         arguments += ["--settings", OS1SourceConfinement.claudeFullAccessSettings(protectedPaths: fullAccessProtectedPaths)]
     } else if confined { arguments += ["--settings", OS1SourceConfinement.claudeSettings(protectedPaths: confinedPaths)] }
@@ -6770,6 +6773,9 @@ private func execute(
             codexConfigOverrides.append(contentsOf: CheckoutTurn.codexConfigOverrides(
                 os1Executable: currentOS1Executable(), executionID: ticket.executionID))
         }
+        // Managed delegation only (ParallelAgentRuntime): this OS-1-owned app
+        // server runs with Codex's own multi-agent features off per process.
+        codexConfigOverrides = ParallelAgentRuntime.codexDelegationOverrides(codexConfigOverrides)
         let appServer = try CodexAppServerClient(executable: codex, workspace: codexWorkspace,
             submissionID: codexSubmissionID,
             configOverrides: codexConfigOverrides)
@@ -13748,6 +13754,34 @@ func selfTest() throws {
           !writingArguments.contains("--safe-mode"), !writingArguments.contains("--strict-mcp-config") else {
         throw OS1Error.message("Source-only context isolation must not change workspace execution or subscription authentication")
     }
+    // Managed delegation (ParallelAgentRuntime, 2026-10-08): inside the coordinator's scope the native CLI loses
+    // only its own sub-agent tools (Agent/Task); existing denies stay, and outside the scope, or with the flag
+    // explicitly off, every argument is byte-identical. The variadic deny value is always followed by a named option.
+    let managedProbe = try ParallelAgentRuntime.$managedDelegation.withValue(true) {
+        try claudeArguments(model: "sonnet", effort: "medium", instructions: claudeInstructions, sessionID: claudeSessionID,
+            startNewSession: true, title: "OS-1 Claude probe", permissionProfile: "read_only", prompt: claudeProbePrompt)
+    }
+    let managedWriter = try ParallelAgentRuntime.$managedDelegation.withValue(true) {
+        try claudeArguments(model: "sonnet", effort: "medium", instructions: claudeInstructions, sessionID: claudeSessionID,
+            startNewSession: true, title: "workspace", permissionProfile: "workspace_write", prompt: claudeProbePrompt, sourceContextOnly: true)
+    }
+    let managedExplicitlyOff = try ParallelAgentRuntime.$managedDelegation.withValue(true) {
+        try claudeArguments(model: "sonnet", effort: "medium", instructions: claudeInstructions, sessionID: claudeSessionID,
+            startNewSession: true, title: "OS-1 Claude probe", permissionProfile: "read_only", prompt: claudeProbePrompt, managedDelegation: false)
+    }
+    let managedExplicitlyOn = try claudeArguments(model: "sonnet", effort: "medium", instructions: claudeInstructions, sessionID: claudeSessionID,
+        startNewSession: true, title: "workspace", permissionProfile: "workspace_write", prompt: claudeProbePrompt, sourceContextOnly: true,
+        managedDelegation: true)
+    let managedProbeDelta = zip(managedProbe, claudeProbeArguments).filter { $0 != $1 }
+    guard managedProbe.count == claudeProbeArguments.count, managedProbeDelta.map({ $0.0 }) == ["mcp__*,Agent,Task"],
+          managedProbeDelta.map({ $0.1 }) == ["mcp__*"], !claudeProbeArguments.contains(where: { $0.contains("Agent,Task") }),
+          let managedDeny = managedWriter.firstIndex(of: "--disallowedTools"), managedWriter[managedDeny + 1] == "Agent,Task",
+          managedWriter[managedDeny + 2].hasPrefix("--"), managedWriter.count == writingArguments.count + 2,
+          managedWriter.filter({ !writingArguments.contains($0) }) == ["--disallowedTools", "Agent,Task"],
+          !writingArguments.contains("--disallowedTools"), managedExplicitlyOff == claudeProbeArguments, managedExplicitlyOn == managedWriter,
+          !ParallelAgentRuntime.managedDelegation else {
+        throw OS1Error.message("Managed delegation must deny only the hidden sub-agent tools, and only inside its scope")
+    }
     let memoryConfig = "{\"mcpServers\":{\"os1_memory\":{\"command\":\"/fixture/os1\",\"args\":[\"memory-mcp\"]}}}"
     for (profile, sourceOnly) in [("read_only", true), ("read_only", false), ("workspace_write", true), ("workspace_write", false)] {
         let args = try claudeArguments(model: "sonnet", effort: "medium", instructions: "fixture",
@@ -16127,7 +16161,11 @@ struct OS1Main {
                     PreparationIntent.detect(prompt)?.preparationOnly != true
                 let summary: RunSummary
                 if parallelAgentChild {
-                    summary = try await ParallelAgentRuntime.$isolatedWriter.withValue(validatedWriteGrant) {
+                    // An actual OS-1 child (read-only agent or isolated writer)
+                    // runs inside the managed delegation scope: no hidden
+                    // recursive native sub-agents (ParallelAgentRuntime).
+                    summary = try await ParallelAgentRuntime.$managedDelegation.withValue(true) {
+                    try await ParallelAgentRuntime.$isolatedWriter.withValue(validatedWriteGrant) {
                         try await ParallelAgentRuntime.$readOnlyAgent.withValue(validatedWriteGrant == nil) {
                             try await runTask(prompt: prompt, workspace: workspace, providerPreference: providerPreference,
                                 context: sessionContext, codexSessionID: nil, claudeSessionID: nil,
@@ -16135,6 +16173,7 @@ struct OS1Main {
                                 progress: outputFormat == "text", desktopReveal: .never,
                                 requireReadOnly: validatedWriteGrant == nil)
                         }
+                    }
                     }
                 } else if parallelFanoutChild {
                     summary = try await ConcurrentRouteFanoutRuntime.$child.withValue(true) {

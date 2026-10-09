@@ -11,6 +11,40 @@ enum ParallelAgentRuntime {
     /// Swift-scoped self-test transport injection. No environment or owner CLI
     /// can select it, and production ticket/receipt verification is unchanged.
     @TaskLocal static var fixtureHooks: ParallelCoordinatorFixtureHooks?
+    /// Managed delegation (2026-10-08, installed build 353): the coordinator's
+    /// own children and its primary, including the planner-rejected fallback,
+    /// run inside OS-1's graph. Inside that scope the native CLIs must not
+    /// spawn their own hidden sub-agents (Claude `Agent`/`Task`, Codex
+    /// multi-agent features): the observed fallback primary ran two built-in
+    /// Explore agents on another model, bypassing OS-1 routing, custody and
+    /// the inspector. Outside the scope every manual or non-governed backend
+    /// argument stays byte-identical; the scope never grants a tool, a path or
+    /// a permission, and it never touches global CLI configuration.
+    @TaskLocal static var managedDelegation = false
+    static let managedClaudeDeniedTools = ["Agent", "Task"]
+    static let managedCodexOverrides = ["features.multi_agent=false", "features.multi_agent_v2=false"]
+
+    /// Claude CLI permission arguments: keep every existing denied tool and add
+    /// the sub-agent tools only inside the managed scope. `--disallowedTools` is
+    /// variadic, so claudeArguments always follows it with a named option.
+    static func claudeDenyArguments(_ permissions: [String], managed: Bool = ParallelAgentRuntime.managedDelegation) -> [String] {
+        guard managed else { return permissions }
+        var result = permissions
+        if let index = result.firstIndex(of: "--disallowedTools"), result.indices.contains(index + 1) {
+            let existing = result[index + 1].split(separator: ",").map(String.init)
+            result[index + 1] = (existing + managedClaudeDeniedTools.filter { !existing.contains($0) }).joined(separator: ",")
+        } else {
+            result += ["--disallowedTools", managedClaudeDeniedTools.joined(separator: ",")]
+        }
+        return result
+    }
+
+    /// Codex app-server `-c` overrides for the OS-1-owned process only: the
+    /// same scope switches Codex's multi-agent features off per process. The
+    /// owner's global config and every other Codex launch are untouched.
+    static func codexDelegationOverrides(_ overrides: [String], managed: Bool = ParallelAgentRuntime.managedDelegation) -> [String] {
+        managed ? overrides + managedCodexOverrides.filter { !overrides.contains($0) } : overrides
+    }
 
     static func shouldPlan(_ prompt: String, workspace: String, requireReadOnly: Bool, surface: ProviderSurface) -> Bool {
         guard !requireReadOnly, [.auto, .codex, .claude].contains(surface), !readOnlyAgent,
@@ -433,6 +467,24 @@ private func validateParallelDraftPaths(_ draft: ParallelAgentTask.Draft, worksp
     }
 }
 
+/// Documented protocol-shape normalization only. An explicitly `read_only`
+/// task may list read-target hints in `ownedPaths`; hints are never authority,
+/// so the list is cleared before strict validation and every clearing is
+/// recorded beside the preserved raw output. Unknown or missing scope, write
+/// ownership, writer overlap, element types and JSON validity stay exactly as
+/// the strict decoder judges them: nothing else is normalized into acceptance.
+private func clearReadOnlyOwnedPathHints(_ tasks: [Any]) -> (tasks: [Any], actions: [String]) {
+    var actions: [String] = []
+    let shaped: [Any] = tasks.map { entry in
+        guard var task = entry as? [String: Any], task["scope"] as? String == TaskContext.Scope.readOnly.rawValue,
+              let hints = task["ownedPaths"] as? [String], !hints.isEmpty else { return entry }
+        task["ownedPaths"] = [String]()
+        actions.append("read_only_owned_paths_cleared:" + ((task["id"] as? String) ?? "") + ":" + hints.joined(separator: ","))
+        return task
+    }
+    return (shaped, actions)
+}
+
 private func parallelDraft(_ output: String, directory: URL) throws -> ParallelAgentTask.Draft {
     // Preserve producer bytes before any documented protocol-only normalization.
     let raw = Data(output.utf8)
@@ -445,12 +497,21 @@ private func parallelDraft(_ output: String, directory: URL) throws -> ParallelA
     if normalized.hasPrefix("```json\n"), normalized.hasSuffix("\n```") {
         normalized = String(normalized.dropFirst(8).dropLast(4)); actions.append("single_json_fence")
     }
-    try JSONEncoder().encode(actions).write(to: directory.appendingPathComponent("planner-normalization.json"), options: .atomic)
+    var noUsefulSplit = false
+    var shapedTasks: [Any]?
     if let object = try? JSONSerialization.jsonObject(with: Data(normalized.utf8)) as? [String: Any],
-       Set(object.keys) == Set(["tasks"]), let tasks = object["tasks"] as? [Any], tasks.isEmpty {
-        throw ParallelPlannerChoice.noUsefulSplit
+       Set(object.keys) == Set(["tasks"]), let tasks = object["tasks"] as? [Any] {
+        if tasks.isEmpty {
+            noUsefulSplit = true
+        } else {
+            let hints = clearReadOnlyOwnedPathHints(tasks)
+            if !hints.actions.isEmpty { actions += hints.actions; shapedTasks = hints.tasks }
+        }
     }
-    return try JSONDecoder().decode(ParallelAgentTask.Draft.self, from: Data(normalized.utf8)).validated()
+    try JSONEncoder().encode(actions).write(to: directory.appendingPathComponent("planner-normalization.json"), options: .atomic)
+    if noUsefulSplit { throw ParallelPlannerChoice.noUsefulSplit }
+    let document = try shapedTasks.map { try JSONSerialization.data(withJSONObject: ["tasks": $0]) } ?? Data(normalized.utf8)
+    return try JSONDecoder().decode(ParallelAgentTask.Draft.self, from: document).validated()
 }
 
 /// One original owner request, isolated read-only preparation branches, then
@@ -687,18 +748,19 @@ func runParallelAgentTask(prompt: String, workspace: String, providerPreference:
             }
         }
         defer { primaryObserver.cancel() }
-        var summary: RunSummary
-        if let hooks {
-            summary = try await hooks.primary(prompt, augmented)
-        } else {
-        summary = try await ParallelAgentRuntime.$originalProjectLeaseRoot.withValue(writeProject?.leaseRoot) {
-        try await (workflow ? runWorkflowTask(prompt: prompt, workspace: workspace, providerPreference: providerPreference,
-            context: augmented, codexSessionID: codexSessionID, claudeSessionID: claudeSessionID,
-            codexCapacity: codexCapacity, claudeCapacity: claudeCapacity, progress: progress, desktopReveal: desktopReveal)
-            : runTask(prompt: prompt, workspace: workspace, providerPreference: providerPreference,
-                context: augmented, codexSessionID: codexSessionID, claudeSessionID: claudeSessionID,
-                codexCapacity: codexCapacity, claudeCapacity: claudeCapacity, progress: progress, desktopReveal: desktopReveal))
-        }
+        // The primary, planned or planner-rejected fallback, is the one in-process
+        // native run of the owner objective. It stays inside the managed scope so
+        // the native CLI cannot spawn hidden sub-agents around OS-1's graph.
+        var summary: RunSummary = try await ParallelAgentRuntime.$managedDelegation.withValue(true) { () async throws -> RunSummary in
+            if let hooks { return try await hooks.primary(prompt, augmented) }
+            return try await ParallelAgentRuntime.$originalProjectLeaseRoot.withValue(writeProject?.leaseRoot) {
+                try await (workflow ? runWorkflowTask(prompt: prompt, workspace: workspace, providerPreference: providerPreference,
+                    context: augmented, codexSessionID: codexSessionID, claudeSessionID: claudeSessionID,
+                    codexCapacity: codexCapacity, claudeCapacity: claudeCapacity, progress: progress, desktopReveal: desktopReveal)
+                    : runTask(prompt: prompt, workspace: workspace, providerPreference: providerPreference,
+                        context: augmented, codexSessionID: codexSessionID, claudeSessionID: claudeSessionID,
+                        codexCapacity: codexCapacity, claudeCapacity: claudeCapacity, progress: progress, desktopReveal: desktopReveal))
+            }
         }
         primaryObserver.cancel()
         await primaryObserver.value
@@ -869,6 +931,86 @@ func parallelAgentCoordinatorSelfTest() async throws {
     let valid = "{\"tasks\":[{\"id\":\"a\",\"title\":\"Inspect A\",\"instruction\":\"Inspect source A\",\"dependencies\":[]},{\"id\":\"b\",\"title\":\"Inspect B\",\"instruction\":\"Inspect source B\",\"dependencies\":[]}]}"
     try check(try parallelDraft(valid, directory: draftDir).tasks.count == 2, "strict two-worker draft")
     try check((try? parallelDraft("Ben.\nLuaIsHere :3\n```json\n" + valid + "\n```", directory: draftDir))?.tasks.count == 2, "documented normalization only")
+    // Regression (2026-10-08, installed build 353): the actual codex gpt-6-luna/low planner returned two valid
+    // read_only inspections whose ownedPaths carried the same read-target hint. The strict decoder rejected the
+    // whole plan and the expensive primary ran alone. These are the captured planner-output.txt bytes, not a
+    // regenerated plan; see docs/PARALLEL-EXECUTION-INSPECTOR-20261007.md.
+    let capturedReadOnlyHints = #"{"tasks":[{"id":"parallel-path","title":"Inspect parallel preparation path","instruction":"Read the current OS-1 source implementing parallel preparation and native child input. Identify evidence for conditional low-cost candidates, lossless request files, and preservation of the original SHA. Report exact source paths and observed behavior; do not modify anything.","dependencies":[],"scope":"read_only","ownedPaths":["products/os1-mac-runtime/Sources/"]},{"id":"quality-adoption","title":"Inspect quality and adoption path","instruction":"Read current OS-1 source for parent authority and verification, the single correction attempt for a completed writer with an actual frozen-check failure, parent-owned delegate escalation, raw failure/frozen-check preservation, and quality/outbox/adoption ordering before installation self-repair. Report exact source paths and observed behavior; do not modify anything.","dependencies":[],"scope":"read_only","ownedPaths":["products/os1-mac-runtime/Sources/"]}]}"#
+    try check(sha256Hex(Data(capturedReadOnlyHints.utf8)) == "8ab5c46963a19a8aeed308a1bfbcae1dddf8902f88330bfd20896b6dd187315e",
+        "captured failed planner output is byte-exact, not regenerated")
+    let hintDir = root.appendingPathComponent("draft-read-only-hints")
+    try FileManager.default.createDirectory(at: hintDir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+    func normalizationRecord() throws -> [String] {
+        try JSONDecoder().decode([String].self, from: Data(contentsOf: hintDir.appendingPathComponent("planner-normalization.json")))
+    }
+    let hinted = try parallelDraft(capturedReadOnlyHints, directory: hintDir)
+    try check(hinted.tasks.map(\.id) == ["parallel-path", "quality-adoption"] &&
+        hinted.tasks.allSatisfy { $0.scope == .readOnly && $0.ownedPaths.isEmpty && $0.dependencies.isEmpty },
+        "explicit read_only ownedPaths are non-authoritative hints: cleared, scope/order/instructions kept, plan accepted")
+    try check(hinted.tasks.map(\.instruction) == ["Read the current OS-1 source implementing parallel preparation and native child input. Identify evidence for conditional low-cost candidates, lossless request files, and preservation of the original SHA. Report exact source paths and observed behavior; do not modify anything.",
+        "Read current OS-1 source for parent authority and verification, the single correction attempt for a completed writer with an actual frozen-check failure, parent-owned delegate escalation, raw failure/frozen-check preservation, and quality/outbox/adoption ordering before installation self-repair. Report exact source paths and observed behavior; do not modify anything."],
+        "reshaping the document never rewrites the planner's instructions")
+    try check(try Data(contentsOf: hintDir.appendingPathComponent("planner-output.txt")) == Data(capturedReadOnlyHints.utf8),
+        "raw planner bytes stay preserved beside the recorded normalization")
+    try check(try normalizationRecord() == ["read_only_owned_paths_cleared:parallel-path:products/os1-mac-runtime/Sources/",
+        "read_only_owned_paths_cleared:quality-adoption:products/os1-mac-runtime/Sources/"],
+        "each cleared hint is recorded per task with its original paths")
+    try check((try? parallelDraft("Ben.\nLuaIsHere :3\n```json\n" + capturedReadOnlyHints + "\n```", directory: hintDir))?.tasks.allSatisfy { $0.ownedPaths.isEmpty } == true &&
+        (try normalizationRecord()).count == 4, "hint clearing composes with the documented header/fence normalization")
+    let readHint = "{\"id\":\"r\",\"title\":\"Inspect\",\"instruction\":\"Inspect sources\",\"dependencies\":[],\"scope\":\"read_only\",\"ownedPaths\":[\"src/\"]}"
+    func writerTask(_ id: String, _ scope: String?, _ owned: String) -> String {
+        "{\"id\":\"" + id + "\",\"title\":\"Change\",\"instruction\":\"Implement\",\"dependencies\":[]," +
+            (scope.map { "\"scope\":\"" + $0 + "\"," } ?? "") + "\"ownedPaths\":" + owned + "}"
+    }
+    let mixed = try parallelDraft("{\"tasks\":[" + writerTask("w", "workspace_write", "[\"src/feature.swift\"]") + "," + readHint + "]}", directory: hintDir)
+    try check(mixed.tasks.first(where: { $0.id == "w" })?.ownedPaths == ["src/feature.swift"] && mixed.tasks.first(where: { $0.id == "w" })?.scope == .workspaceWrite &&
+        mixed.tasks.first(where: { $0.id == "r" })?.ownedPaths == [] && mixed.tasks.first(where: { $0.id == "r" })?.scope == .readOnly,
+        "writer ownership and scope are untouched while only the reader hint is cleared")
+    let stillRejected: [(String, String)] = [
+        ("unknown scope with paths", "{\"tasks\":[" + writerTask("a", "full_access", "[\"src/\"]") + "," + readHint + "]}"),
+        ("an unrecognized scope word", "{\"tasks\":[" + writerTask("a", "read_only_hint", "[\"src/\"]") + "," + readHint + "]}"),
+        ("missing scope with paths (not explicitly read_only)", "{\"tasks\":[" + writerTask("a", nil, "[\"src/\"]") + "," + readHint + "]}"),
+        ("missing write ownership", "{\"tasks\":[" + writerTask("a", "workspace_write", "[]") + "," + readHint + "]}"),
+        ("overlapping writers", "{\"tasks\":[" + writerTask("a", "workspace_write", "[\"src/feature.swift\"]") + "," + writerTask("b", "workspace_write", "[\"src/feature.swift\"]") + "," + readHint + "]}"),
+        ("a read_only hint whose element is not a path string", "{\"tasks\":[" + writerTask("a", "read_only", "[1]") + "," + readHint + "]}"),
+        ("a hinted reader with a scope-less writer-style sibling", "{\"tasks\":[" + writerTask("a", nil, "[\"src/feature.swift\"]") + "," + readHint + "]}"),
+        ("truncated JSON", String(capturedReadOnlyHints.dropLast())),
+    ]
+    for (label, draft) in stillRejected {
+        try check((try? parallelDraft(draft, directory: hintDir)) == nil, "read-only hint clearing never normalizes " + label + " into acceptance")
+    }
+    try check(try normalizationRecord() == [], "unparseable planner output records no transformation")
+    // Regression (2026-10-08, installed build 353): after the plan above was rejected, the fallback primary let the
+    // native Claude CLI spawn two built-in Explore sub-agents on another model (operator-observed: claude-opus-5-5,
+    // 172 tool calls), bypassing OS-1 routing and the graph. Managed delegation is a TaskLocal scope only: outside
+    // it every argument stays byte-identical; inside it only the hidden sub-agent surfaces are switched off.
+    try check(!ParallelAgentRuntime.managedDelegation, "managed delegation is off outside the coordinator scope")
+    let readOnlyPermissions = ["--permission-mode", "dontAsk", "--tools", "Read,Glob,Grep,WebSearch,WebFetch,Bash",
+        "--allowedTools", "Read,Glob,Grep", "--disallowedTools", "mcp__*", "--settings", "{}"]
+    try check(ParallelAgentRuntime.claudeDenyArguments(readOnlyPermissions) == readOnlyPermissions &&
+        ParallelAgentRuntime.claudeDenyArguments(["--permission-mode", "bypassPermissions"]) == ["--permission-mode", "bypassPermissions"] &&
+        ParallelAgentRuntime.codexDelegationOverrides(["model_auto_compact_token_limit=1"]) == ["model_auto_compact_token_limit=1"],
+        "non-governed backend arguments are untouched outside the managed scope")
+    try await ParallelAgentRuntime.$managedDelegation.withValue(true) {
+        try check(ParallelAgentRuntime.managedDelegation, "managed delegation flag is visible inside its scope")
+        try check(ParallelAgentRuntime.claudeDenyArguments(readOnlyPermissions) == ["--permission-mode", "dontAsk",
+            "--tools", "Read,Glob,Grep,WebSearch,WebFetch,Bash", "--allowedTools", "Read,Glob,Grep",
+            "--disallowedTools", "mcp__*,Agent,Task", "--settings", "{}"],
+            "the existing Claude deny list is preserved and extended in place; tool and allow lists are untouched")
+        try check(ParallelAgentRuntime.claudeDenyArguments(["--permission-mode", "bypassPermissions"]) ==
+            ["--permission-mode", "bypassPermissions", "--disallowedTools", "Agent,Task"],
+            "a profile without a deny list gains only the sub-agent deny: no new tool, path or permission")
+        try check(ParallelAgentRuntime.claudeDenyArguments(["--disallowedTools", "mcp__*,Agent,Task"]) == ["--disallowedTools", "mcp__*,Agent,Task"] &&
+            ParallelAgentRuntime.claudeDenyArguments(["--disallowedTools"]) == ["--disallowedTools", "--disallowedTools", "Agent,Task"],
+            "the managed deny is idempotent and never rewrites a malformed deny option")
+        try check(ParallelAgentRuntime.codexDelegationOverrides(["model_auto_compact_token_limit=1"]) ==
+            ["model_auto_compact_token_limit=1", "features.multi_agent=false", "features.multi_agent_v2=false"] &&
+            NativeAgentTools.codexAppServerArguments(overrides: ParallelAgentRuntime.codexDelegationOverrides([])) ==
+            ["app-server", "-c", "features.multi_agent=false", "-c", "features.multi_agent_v2=false"] &&
+            ParallelAgentRuntime.codexDelegationOverrides(ParallelAgentRuntime.codexDelegationOverrides([])).count == 2,
+            "the OS-1-owned Codex app server gets per-process multi-agent off, idempotently; global config is untouched")
+    }
+    try check(!ParallelAgentRuntime.managedDelegation, "managed delegation does not leak out of its scope")
     let currentExecutable = (Bundle.main.executableURL ?? URL(fileURLWithPath: CommandLine.arguments[0])).resolvingSymlinksInPath()
     let escape = await executeParallelChild(id: UUID(), executable: currentExecutable,
         arguments: parallelChildArguments(prompt: "Open ChatGPT and reveal the workspace", workspace: root.path, contextPath: nil,
@@ -1003,6 +1145,9 @@ private func parallelAgentCoordinatorEndToEndSelfTest(root: URL) async throws ->
                       !ParallelAgentRuntime.readOnlyAgent, ParallelAgentRuntime.isolatedWriter == nil else {
                     throw OS1Error.message("Primary inherited an intermediate governed-delegation role")
                 }
+                guard ParallelAgentRuntime.managedDelegation else {
+                    throw OS1Error.message("Primary (planned or fallback) ran outside the managed delegation scope")
+                }
                 try Data("fixture primary receipt\n".utf8).write(to: nativePath)
                 let step = RunStepSummary(sequence: 1, provider: "codex", action: "fixture_primary", model: "fixture-native", effort: "none",
                     revasDisposition: "adopted", sessionID: UUID().uuidString, permissionProfile: "read_only", exitCode: 0,
@@ -1027,6 +1172,7 @@ private func parallelAgentCoordinatorEndToEndSelfTest(root: URL) async throws ->
     }
     let submission = UUID(), conversation = UUID(), successRoot = folder.appendingPathComponent("success")
     let success = try await run(mode: "success", submission: submission, conversation: conversation, runRoot: successRoot)
+    try check(!ParallelAgentRuntime.managedDelegation, "managed delegation scope ends with the coordinator")
     guard let snapshot = success.agentTask else { throw OS1Error.message("Terminal graph absent") }
     try check(snapshot.nodes.filter { $0.role == .worker && $0.state == .succeeded }.count == 3, "actual coordinator dispatched three graph nodes")
     try check(snapshot.nodes.first { $0.id == snapshot.rootNodeID }?.state == .succeeded && snapshot.nodes.first { $0.role == .primary }?.state == .succeeded,

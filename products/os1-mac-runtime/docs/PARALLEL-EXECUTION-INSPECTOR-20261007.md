@@ -53,3 +53,32 @@ Independently implemented patterns; Superset source is ELv2, not copied.
 - https://arxiv.org/abs/2210.03629
 - https://arxiv.org/abs/2310.01798
 These support separate execution/custody, external feedback and explicit verification, not universal reliability or model-quality guarantees.
+
+## Current implementation (build 353 source, 2026-10-08)
+
+The sections above record the 2026-10-07 design and its verification boundary and are unchanged. This section describes the executed path in the current source (`Sources/OS1/ParallelAgentCoordinator.swift`, `Sources/OS1/main.swift`) and two defects observed in one real use of installed build 353.
+
+### Executed path
+- Planner and workers are conditional low-cost candidates. `ParallelAgentRuntime.shouldPlan` gates the graph; the planner is a read-only `GovernedDelegation` whose prompt states that `ownedPaths` "is a candidate relative ownership list only, never authority. The runtime retains all authority." Workers return "preparatory evidence" or "a candidate patch; the parent alone integrates". Nothing a child returns is reference parity or a quality certificate.
+- The parent retains original authority. A rejected plan finishes the planner node `failed` with "Planner candidate rejected; original execution preserved." and the graph switches to the fallback primary; a failed worker or a failed integration also falls back, keeping private candidates. The primary runs the original owner prompt through the existing `runTask`/`runWorkflowTask`, with adopted preparation marked "PREPARATION EVIDENCE ONLY" and subordinate to later owner steering. The primary is adopted only on `complete`, exit code 0 and a verified native record.
+- Native child input is lossless. `losslessChildArguments` replaces the child's `--prompt` with a private `request.utf8` (`--request-file`), so macOS argv cannot decompose Korean and break an isolated writer's grant hash; each child's `governed-delegation.json` carries `parentObjectiveSHA256` of the original owner request bytes.
+- Quality correction and the self-repair tail belong to the parent and run after quality/outbox/adoption; see `TASK_QUALITY_ADOPTION_BUILD346.md`, "Current implementation".
+
+### Observed defect 1: valid read-only plan rejected for owned-path hints
+Submission `CF4E4E9C-2D7A-4BE8-88D2-7AFCB91F2D0D`, plan `AFA3435E-D13D-4368-A6B9-246E6D6A95FC`, 2026-10-08. The planner child (activity: provider `codex`, model `gpt-6-luna`, effort `low`) returned two valid `read_only` inspections, each with `ownedPaths: ["products/os1-mac-runtime/Sources/"]`. The preserved `planner/planner-output.txt` has SHA-256 `8ab5c46963a19a8aeed308a1bfbcae1dddf8902f88330bfd20896b6dd187315e`; `planner-normalization.json` recorded `[]`. The strict decoder rejected the whole plan, the planner node ended `failed` with "Planner candidate rejected; original execution preserved.", and the expensive primary ran alone.
+
+Repair (`clearReadOnlyOwnedPathHints` inside `parallelDraft`): for a task that is explicitly `scope: "read_only"`, a nonempty `ownedPaths` is a non-authoritative read-target hint. The list is cleared before strict validation and each clearing is recorded beside the raw output as `read_only_owned_paths_cleared:<task id>:<original paths>`; the planner's instructions, order and scopes are never rewritten and `planner-output.txt` keeps the producer bytes. Nothing else is normalized into acceptance: unknown or unrecognized scope, a scope-less task with paths, missing write ownership, overlapping writers, non-string path elements and truncated JSON are still rejected, and unparseable output records no transformation. The coordinator fixture replays the captured bytes (SHA above) as the regression; the plan was not regenerated.
+
+### Observed defect 2: hidden native sub-agents in the fallback primary
+In the same submission the fallback primary (graph node "Primary fallback · original task", started 2026-10-08 19:16 local, cancelled by the operator about 24 minutes later) let the native Claude CLI spawn its own built-in sub-agents. Operator-observed, not re-derived locally: two Explore agents on `claude-opus-5-5` with 172 tool calls. Those children bypassed OS-1 model routing, the governed graph, custody and the inspector.
+
+Repair (`ParallelAgentRuntime.managedDelegation`, one `@TaskLocal`): the scope is set for actual OS-1 children (`--parallel-agent-child`, read-only agent or isolated writer, in `main.swift`) and for the coordinator's primary, planned or fallback. Inside the scope only:
+- Claude: `claudeArguments` passes the permission arguments through `claudeDenyArguments`, which keeps every existing denied tool and adds `Agent,Task` to `--disallowedTools` (read-only lane: `mcp__*,Agent,Task` in place; write lane: a new `--disallowedTools Agent,Task`, always followed by a named option).
+- Codex: the OS-1-owned app-server process gets `-c features.multi_agent=false -c features.multi_agent_v2=false` appended to its config overrides.
+Outside the scope every argument is byte-identical. No `~/.claude` settings, Codex global config, desktop settings, model/effort profile, authentication or manual backend behavior is changed, and no tool, path or permission is granted.
+
+### Verification boundary for this section
+- Debug build of all products and the model-free fixtures: `os1 self-test` covers the coordinator fixture (captured-plan regression, hint counterexamples, TaskLocal scope, Claude/Codex argument shape) and the `claudeArguments` regression (managed deny only inside the scope, explicit flag on/off, variadic placement).
+- Observed 2026-10-08 on this source: `swift build` of all products complete; `os1 self-test` exit 0 with the permission-orchestration self-test OK, parallel task agents 108 checks PASS, concurrent route fan-out 18 checks, provider calls 0. The fixtures need the real temporary directory and must run outside a nested sandbox.
+- CLI capability only: Claude Code 2.1.290 lists `--disallowedTools <tools...>`; `codex -c features.multi_agent=false -c features.multi_agent_v2=false features list` reports `multi_agent` and `multi_agent_v2` as `false` (codex-cli 0.160.1).
+- Not verified here: a live model run showing the native CLIs withholding sub-agents under these flags; no new model test or benchmark was generated. The tool-call count is operator-reported. The installation receipt is produced by the OS-1 host and is separate from this document.
