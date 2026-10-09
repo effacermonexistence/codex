@@ -380,7 +380,12 @@ try {
     ['composer', path.join(app, 'Contents/MacOS/OS1App'), ['--self-test-composer']],
     ['steering', path.join(app, 'Contents/MacOS/OS1App'), ['--self-test-steering']],
   ]) {
-    fs.writeFileSync(path.join(recovery, `${label}-test.log`), run(exe, args), { mode: 0o600 });
+    // The complete model-free CLI suite now takes ~60s on the measured Air.
+    // This bound is ONLY local validation; never change provider/action deadlines.
+    const validationTimeoutMS = label === 'runtime' ? 180000 : 60000;
+    const validationStarted = Date.now();
+    fs.writeFileSync(path.join(recovery, `${label}-test.log`), run(exe, args, validationTimeoutMS), { mode: 0o600 });
+    (receipt.validationTimings ??= {})[label] = { elapsedMS: Date.now() - validationStarted, timeoutMS: validationTimeoutMS };
     receipt.checks.push(`${label}: PASS`);
   }
   // Content equality, not byte equality: a relaunched app (the user reopening
