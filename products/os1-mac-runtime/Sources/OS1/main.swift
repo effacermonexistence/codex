@@ -155,6 +155,7 @@ struct ActiveCodexCatalog {
     /// The account's longest unreset quota window, for the burn policy and
     /// the health card. Nil when the account probe did not report one.
     var quotaWindow: CodexQuotaWindow? = nil
+    var quotaSnapshot: BackendHealth.QuotaSnapshot? = nil
 }
 
 /// Health of the local backends as this preflight observed them. The Claude
@@ -164,10 +165,11 @@ struct ActiveCodexCatalog {
 /// emptied the catalog; a failed probe is never reported as a quota wait.
 func observedBackendHealth(claudeCatalog: [ClaudeModelCapability], codexCatalog: ActiveCodexCatalog,
                            workspace: String, claudeLimitedOnly: Bool = false,
+                           claudeQuota: BackendHealth.QuotaSnapshot? = nil,
                            receipts: URL = ClaudeQuotaBackoff.defaultDirectory,
                            authProbe: ((String) -> ModelAvailability.ClaudeAuthProbe)? = nil,
                            now: Date = Date()) -> BackendHealth {
-    let claude: BackendHealth.Backend
+    var claude: BackendHealth.Backend
     let modelLimited = ClaudeQuotaBackoff.activeModels(directory: receipts, now: now).joined(separator: ", ")
     if ClaudeQuotaBackoff.active(at: receipts.appendingPathComponent(ClaudeQuotaBackoff.defaultURL.lastPathComponent), now: now) != nil {
         claude = BackendHealth.Backend(state: .quotaExhausted,
@@ -192,9 +194,21 @@ func observedBackendHealth(claudeCatalog: [ClaudeModelCapability], codexCatalog:
         case .failed(let detail): claude = BackendHealth.Backend(state: .probeFailed, detail: detail)
         }
     }
-    let codex = BackendHealth.codexBackend(modelCount: codexCatalog.models.count, source: codexCatalog.source,
+    if let quota = claudeQuota, let remaining = quota.effectiveRemaining(accountID: quota.accountID, now: now) {
+        if remaining == 0, claude.usable {
+            claude = BackendHealth.Backend(state: .quotaExhausted,
+                detail: "Native Claude plan quota exhausted", recoversAt: quota.limitingReset(accountID: quota.accountID, now: now))
+        }
+        claude.quota = quota; claude.windowUsedPercent = 100 - remaining
+        claude.windowResetsAt = quota.limitingReset(accountID: quota.accountID, now: now)
+    }
+    var codex = BackendHealth.codexBackend(modelCount: codexCatalog.models.count, source: codexCatalog.source,
         resetsAt: codexCatalog.quotaResetsAt, executablePresent: (try? findExecutable("codex")) != nil,
         window: codexCatalog.quotaWindow)
+    if let quota = codexCatalog.quotaSnapshot, let remaining = quota.effectiveRemaining(accountID: quota.accountID, now: now) {
+        codex.quota = quota; codex.windowUsedPercent = 100 - remaining
+        codex.windowResetsAt = quota.limitingReset(accountID: quota.accountID, now: now)
+    }
     return BackendHealth(claude: claude, codex: codex, checkedAt: now)
 }
 
@@ -238,8 +252,10 @@ func probeBackendHealth(workspace: String, config: RuntimeConfig) -> BackendHeal
             ?? ActiveCodexCatalog(models: [], source: "native account metadata unavailable"))
         : ActiveCodexCatalog(models: [], source: BackendHealth.disabledCatalogSource)
     let claude = (try? ModelAvailability.claudeCatalogs(workspace: workspace, config: config)) ?? (configured: [], routable: [])
+    let claudeQuota = ModelAvailability.claudeQuota(workspace: workspace)
     let health = observedBackendHealth(claudeCatalog: claude.routable, codexCatalog: codex, workspace: workspace,
-                                       claudeLimitedOnly: !claude.configured.isEmpty && claude.routable.isEmpty)
+                                       claudeLimitedOnly: !claude.configured.isEmpty && claude.routable.isEmpty,
+                                       claudeQuota: claudeQuota)
     try? health.save()
     return health
 }
@@ -307,7 +323,7 @@ func executableCodexCatalog(_ catalog: ActiveCodexCatalog, config: RuntimeConfig
     // Keep the account's quota facts: dropping them here hid the reset time
     // from health and would hide the window from the burn policy.
     return ActiveCodexCatalog(models: models, source: catalog.source, quotaResetsAt: catalog.quotaResetsAt,
-                              quotaWindow: catalog.quotaWindow)
+                              quotaWindow: catalog.quotaWindow, quotaSnapshot: catalog.quotaSnapshot)
 }
 
 /// Why the Claude Code rail cannot run, with the owner's fix when there is
@@ -739,6 +755,8 @@ struct ExecutionInputContext: Codable {
     var completionFeedback: PublicCompletionFeedback? = nil
     var availableClaudeModels: [ClaudeModelCapability]? = nil
     var governedDelegation: GovernedDelegation? = nil
+    var conversationalSurface: ConversationalSurfaceContext? = nil
+    var providerQuota: ProviderQuotaContext? = nil
     enum CodingKeys: String, CodingKey {
         case executionPermissionProfile = "execution_permission_profile"
         case inputUTF8Bytes = "input_utf8_bytes"
@@ -747,7 +765,108 @@ struct ExecutionInputContext: Codable {
         case completionFeedback = "completion_feedback"
         case availableClaudeModels = "available_claude_models"
         case governedDelegation = "governed_delegation"
+        case conversationalSurface = "conversational_surface"
+        case providerQuota = "provider_quota"
     }
+}
+
+/// A bounded response needs neither coding-agent authority nor reference effort.
+struct ConversationalSurfaceContext: Codable {
+    let kind: String
+    let objectiveSHA256: String
+    let toolsAllowed = false
+    let requiresExternalEvidence = false
+    enum CodingKeys: String, CodingKey {
+        case kind, objectiveSHA256 = "objective_sha256", toolsAllowed = "tools_allowed"
+        case requiresExternalEvidence = "requires_external_evidence"
+    }
+}
+struct ProviderQuotaContext: Codable {
+    let schema = 1
+    let observedAt: String
+    let providers: [Row]
+    struct Row: Codable {
+        let provider: String
+        let state: String
+        let remainingPercent: Double?
+        let resetsAt: String?
+        let source: String
+        enum CodingKeys: String, CodingKey {
+            case provider, state, source, remainingPercent = "remaining_percent", resetsAt = "resets_at"
+        }
+        func encode(to encoder: Encoder) throws {
+            var c = encoder.container(keyedBy: CodingKeys.self)
+            try c.encode(provider, forKey: .provider); try c.encode(state, forKey: .state); try c.encode(source, forKey: .source)
+            if let remainingPercent { try c.encode(remainingPercent, forKey: .remainingPercent) } else { try c.encodeNil(forKey: .remainingPercent) }
+            if let resetsAt { try c.encode(resetsAt, forKey: .resetsAt) } else { try c.encodeNil(forKey: .resetsAt) }
+        }
+    }
+    enum CodingKeys: String, CodingKey { case schema, observedAt = "observed_at", providers }
+}
+
+/// This predicate owns both chat admission and native no-tool execution.
+/// A source carried by a previous turn cannot author a new response check.
+func availabilityCheckIn(_ request: String) -> Bool {
+    StatusCheckIn.answersFromCard(request) && !promptRequiresShellCapability(request) &&
+        RequestNamedPaths.extract(request).isEmpty && ImageInput.encodeAll(in: request).isEmpty
+}
+func boundedConversationKind(_ request: String, hasSource: Bool, scope: TaskContext.Scope,
+                             workflow: TaskWorkflow?, delegated: Bool) -> String? {
+    guard scope == .readOnly, workflow == nil, !delegated, !hasSource,
+          !promptRequiresShellCapability(request), RequestNamedPaths.extract(request).isEmpty,
+          ImageInput.encodeAll(in: request).isEmpty else { return nil }
+    if availabilityCheckIn(request) { return "availability_checkin" }
+    return ClaudeChatLane.conversationalQuestion(request) ? "smalltalk" : nil
+}
+
+func providerQuotaContext(codex: BackendHealth.QuotaSnapshot?, claude: BackendHealth.QuotaSnapshot?,
+                          codexAccountID: String, claudeAccountID: String, now: Date = Date()) -> ProviderQuotaContext? {
+    let formatter = ISO8601DateFormatter()
+    var dates: [Date] = []
+    let rows: [ProviderQuotaContext.Row] = [("codex", codex, codexAccountID, "native_account_rate_limits"),
+        ("claude", claude, claudeAccountID, "native_get_usage")].compactMap { provider, snapshot, accountID, source in
+        guard let snapshot, snapshot.isFresh(accountID: accountID, now: now),
+              let remaining = snapshot.effectiveRemaining(accountID: accountID, now: now) else { return nil }
+        dates.append(snapshot.observedAt)
+        return ProviderQuotaContext.Row(provider: provider, state: remaining == 0 ? "exhausted" : "available",
+            remainingPercent: remaining, resetsAt: snapshot.limitingReset(accountID: accountID, now: now).map(formatter.string), source: source)
+    }
+    guard let earliest = dates.min(), !rows.isEmpty else { return nil }
+    return ProviderQuotaContext(observedAt: formatter.string(from: earliest), providers: rows)
+}
+func quotaRoutingNotice(_ packet: ProviderQuotaContext?) -> String? {
+    guard let packet else { return nil }
+    return os1Tr("실제 남은 구독 한도", "Observed remaining plan quota") + ": " + ["codex", "claude"].map { provider in
+        let name = provider == "codex" ? "Codex" : "Claude"
+        guard let row = packet.providers.first(where: { $0.provider == provider }), let remaining = row.remainingPercent else {
+            return name + " " + os1Tr("미확인", "unknown")
+        }
+        return name + " " + String(format: "%.0f%%", remaining)
+    }.joined(separator: " · ") + os1Tr(" · 배분 설정과 다른 실측값", " · native observations, not configured allocation")
+}
+
+func quotaPacketNeedsRefresh(_ packet: ProviderQuotaContext?, now: Date = Date()) -> Bool {
+    guard let packet else { return false }
+    let formatter = ISO8601DateFormatter()
+    guard let observed = formatter.date(from: packet.observedAt) else { return true }
+    if now < observed || now.timeIntervalSince(observed) >= 60 { return true }
+    return packet.providers.contains { row in row.resetsAt.flatMap(formatter.date).map { $0 <= now } ?? false }
+}
+/// A long lease wait/retry must not reuse the initial quota timestamp. This
+/// reuses the existing unpaid health collector; no model or credential lookup
+/// is introduced. Unknown on failed refresh, never relabel stale data fresh.
+func refreshedQuotaRequest(_ request: StartExecutionRequest) async -> StartExecutionRequest {
+    guard quotaPacketNeedsRefresh(request.executionContext?.providerQuota) else { return request }
+    guard let workspace = try? sourceAnswerWorkspace(), let config = try? RuntimeConfig.load() else {
+        var copy = request; copy.executionContext?.providerQuota = nil; return copy
+    }
+    let health = await Task.detached(priority: .utility) { probeBackendHealth(workspace: workspace, config: config) }.value
+    let accounts = BackendAccounts.load()
+    var copy = request
+    copy.executionContext?.providerQuota = providerQuotaContext(codex: health.codex.quota, claude: health.claude.quota,
+        codexAccountID: BackendAccounts.active(provider: "codex", in: accounts).id,
+        claudeAccountID: BackendAccounts.active(provider: "claude", in: accounts).id)
+    return copy
 }
 
 /// Only an actual, parent-owned native child may propose a lower-cost
@@ -3421,6 +3540,40 @@ func providerSurfaceRoutingSelfTest() throws {
     let translate = "다음 문장을 영문으로 번역해줘: 내일 회의를 오후 3시로 옮겨도 될까요?"
     let fileWork = "README.md를 번역해서 README.en.md로 저장해"
     var checks: [(String, Bool)] = []
+    let exactCheckIn = "야 나 한번 체크해 볼게. 너 되냐?"
+    checks.append(("exact composed owner response check is readonly GPT chat, not a repair",
+        availabilityCheckIn(exactCheckIn) && ownerRequestRunsReadOnly(exactCheckIn, attachedSource: false) &&
+        codexChatLane(provider: "codex", permission: "read_only", hasSource: false, objective: exactCheckIn) &&
+        boundedConversationKind(exactCheckIn, hasSource: false, scope: .readOnly, workflow: nil, delegated: false) == "availability_checkin"))
+    checks.append(("conversation metadata cannot bypass writer, workflow, delegate or source gates",
+        boundedConversationKind(exactCheckIn, hasSource: false, scope: .workspaceWrite, workflow: nil, delegated: false) == nil &&
+        boundedConversationKind(exactCheckIn, hasSource: false, scope: .readOnly, workflow: .implementation, delegated: false) == nil &&
+        boundedConversationKind(exactCheckIn, hasSource: false, scope: .readOnly, workflow: nil, delegated: true) == nil &&
+        boundedConversationKind(exactCheckIn, hasSource: true, scope: .readOnly, workflow: nil, delegated: false) == nil))
+    checks.append(("explicit shell inspection remains an agent",
+        !availabilityCheckIn("너 되냐? 셸 명령 실행해서 확인해") &&
+        boundedConversationKind("너 되냐? 셸 명령 실행해서 확인해", hasSource: false, scope: .readOnly, workflow: nil, delegated: false) == nil))
+    let quotaNow = Date(timeIntervalSince1970: 4_000_000_000), reset = quotaNow.addingTimeInterval(600)
+    let cq = BackendHealth.QuotaSnapshot(accountID: "fixture-codex", observedAt: quotaNow, source: .codexNative,
+        windows: [.init(bucket: "weekly", usedPercent: 39, resetsAt: reset)])
+    let aq = BackendHealth.QuotaSnapshot(accountID: "fixture-claude", observedAt: quotaNow, source: .claudeNative,
+        windows: [.init(bucket: "weekly_all", usedPercent: 99, resetsAt: reset),
+                  .init(bucket: "weekly_scoped", usedPercent: 6, resetsAt: reset, model: "Fable")])
+    let packet = providerQuotaContext(codex: cq, claude: aq, codexAccountID: "fixture-codex", claudeAccountID: "fixture-claude", now: quotaNow)
+    checks.append(("global native quota bounds model-specific window, without capacity confusion",
+        packet?.providers.map(\.remainingPercent) == [61, 1] && packet?.providers.map(\.state) == ["available", "available"]))
+    checks.append(("stale, reset-crossed and mismatched accounts never supply quota defaults",
+        providerQuotaContext(codex: cq, claude: aq, codexAccountID: "other", claudeAccountID: "other", now: quotaNow) == nil &&
+        providerQuotaContext(codex: cq, claude: aq, codexAccountID: "fixture-codex", claudeAccountID: "fixture-claude", now: quotaNow.addingTimeInterval(121)) == nil))
+    let emptyPacket = ProviderQuotaContext(observedAt: "2096-10-02T07:06:40Z", providers: [
+        .init(provider: "claude", state: "unknown", remainingPercent: nil, resetsAt: nil, source: "native_get_usage")])
+    let emptyJSON = try JSONSerialization.jsonObject(with: JSONEncoder().encode(emptyPacket)) as? [String: Any]
+    let emptyRow = (emptyJSON?["providers"] as? [[String: Any]])?.first
+    checks.append(("unknown serializes as explicit null, not zero or full quota",
+        emptyRow?["remaining_percent"] is NSNull && emptyRow?["resets_at"] is NSNull))
+    checks.append(("long waiting/retry refreshes native quota, not stale percentages",
+        !quotaPacketNeedsRefresh(nil, now: quotaNow) && !quotaPacketNeedsRefresh(packet, now: quotaNow) &&
+        quotaPacketNeedsRefresh(packet, now: quotaNow.addingTimeInterval(60))))
 
     // Without an owner selection the lane keeps its narrow auto-trigger.
     checks.append(("auto trigger still answers a self-contained text operation",
@@ -5554,7 +5707,7 @@ final class CodexAppServerClient: @unchecked Sendable {
     /// Unpaid account/model/quota metadata only. One writer sends this fixed
     /// whitelist, and one reader retains every reply ID despite reordering.
     /// No thread, turn, approval grant, or inference is started by this batch.
-    func catalogMetadata(deadline: Date) throws -> (models: [CodexModelCapability], rateLimits: [String: Any]?) {
+    func catalogMetadata(deadline: Date) throws -> (models: [CodexModelCapability], rateLimits: [String: Any]?, quotaObservedAt: Date?) {
         var collected = CodexMetadataReplies(firstID: nextRequestID)
         nextRequestID += CodexMetadataReplies.methods.count
         for id in collected.expected.keys.sorted() {
@@ -5595,7 +5748,7 @@ final class CodexAppServerClient: @unchecked Sendable {
             guard seen.insert(cursor).inserted else { throw OS1Error.message("Repeated model-list cursor") }
             page = try request("model/list", params: ["limit": 100, "includeHidden": false, "cursor": cursor], deadline: deadline)
         }
-        return (ModelAvailability.codexRows(rows), collected.optionalRateLimits)
+        return (ModelAvailability.codexRows(rows), collected.optionalRateLimits, collected.rateLimitsObservedAt)
     }
 
     // Metadata only: never starts/resumes a turn or acquires its writer.
@@ -7889,7 +8042,12 @@ private func recordRoutingInput(_ request: StartExecutionRequest, ticket: Ticket
         "owner_policy_projection_sha256": OwnerPolicyContext.snapshot?.projectionSHA256 ?? "none",
         "owner_policy_scope": "local preflight, backend instructions, local postflight; remote RCC engine separately pinned",
         "completion_feedback_enabled": input.completionFeedback != nil,
-        "completion_feedback_observations": input.completionFeedback?.observations.count ?? 0]
+        "completion_feedback_observations": input.completionFeedback?.observations.count ?? 0,
+        "conversational_surface_kind": input.conversationalSurface?.kind ?? "none",
+        "conversational_surface_objective_sha256": input.conversationalSurface?.objectiveSHA256 ?? "none",
+        "execution_permission_profile": input.executionPermissionProfile ?? "unknown",
+        "configured_capacity_plan_not_quota": ["codex": request.capacityPlan.codex, "claude": request.capacityPlan.claude],
+        "provider_quota": input.providerQuota.flatMap { try? JSONSerialization.jsonObject(with: JSONEncoder().encode($0)) } ?? NSNull()]
     do {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         let path = root.appendingPathComponent("routing-input-\(ticket.executionID).json")
@@ -10108,8 +10266,11 @@ func runTaskWithOwnerPolicy(
     let handoff = try SessionHandoff.decode(context)
     let objectiveRequest = TaskWorkflow.objectiveRequest(owner: ownerPrompt, executionPrompt: prompt)
     let sourceDetached = detachesConversationSource(objectiveRequest)
-    let context: String? = sourceDetached || handoff.transcript.isEmpty ? nil : handoff.transcript
-    let attachedSource = sourceDetached ? nil : handoff.source
+    let responseCheckIn = workflowStage == nil && !requireReadOnly && availabilityCheckIn(objectiveRequest)
+    // Detach only this delivery from old repair/source context; retained task
+    // sources, native sessions and the original conversation remain untouched.
+    let context: String? = sourceDetached || responseCheckIn || handoff.transcript.isEmpty ? nil : handoff.transcript
+    let attachedSource = sourceDetached || responseCheckIn ? nil : handoff.source
     let objectiveStartedAt = Date()
     let executionID = UUID().uuidString.lowercased()
     let monitorTaskID = monitorTaskIDOverride ?? executionID
@@ -10161,11 +10322,12 @@ func runTaskWithOwnerPolicy(
     // 코덱스 기준으로 고쳐") binds OS-1 too, so OS-1 can finish the repair.
     // `forcedProjectID`: a confined HOME request handed back as a change to
     // OS-1 itself reruns bound to OS-1 (runTask), as if the owner named it.
-    let projectBinding = localProjectBinding(request: TaskWorkflow.preparationRequest(owner: ownerPrompt, stagePrompt: prompt),
+    let projectBinding = responseCheckIn ? LocalProjectBinding(projectID: nil, inference: nil) :
+        localProjectBinding(request: TaskWorkflow.preparationRequest(owner: ownerPrompt, stagePrompt: prompt),
         workspace: requestedWorkspace, namedProjectID: forcedProjectID ?? preparation?.projectID, boundProjectID: taskState.project?.projectID,
         readOnly: requireReadOnly)
     let localProjectID = projectBinding.projectID
-    var canonicalWorkspace = requestedWorkspace
+    var canonicalWorkspace = responseCheckIn ? try sourceAnswerWorkspace() : requestedWorkspace
     if let localProjectID, ParallelAgentRuntime.isolatedWriter == nil, LocalProjectWorkspace.root(containing: requestedWorkspace, projectID: localProjectID) == nil {
         // A write first heals a live tree a side-worktree install left behind
         // (2026-10-04); read-only work (internal or a read-only ticket) never
@@ -10485,6 +10647,9 @@ func runTaskWithOwnerPolicy(
         ?? PreflightInventory.start(workspace: canonicalWorkspace, config: config, showCodex: userSettings.showCodex)
     let codexProbe = inventory.codex
     let claudeProbe = inventory.claude
+    let quotaWorkspace = canonicalWorkspace
+    let claudeQuotaProbe: Task<BackendHealth.QuotaSnapshot?, Never>? = claudeCapacity > 0 && providerPreference != "codex"
+        ? Task.detached(priority: .utility) { ModelAvailability.claudeQuota(workspace: quotaWorkspace) } : nil
     let prepared: PreparedGateway? = await inventory.gateway?.value ?? nil
     let key: SigningKey
     let id: String
@@ -10517,6 +10682,7 @@ func runTaskWithOwnerPolicy(
     let claudeCatalogs = claudeInventoryDeferred
         ? (configured: [ClaudeModelCapability](), routable: [ClaudeModelCapability]()) : await claudeProbe.value
     AttemptLatencyTrace.mark("required_inventory_ready")
+    let observedClaudeQuota = await claudeQuotaProbe?.value
     var observedClaudeCatalog = claudeCatalogs.routable
     let claudeLimitedOnly = !claudeCatalogs.configured.isEmpty && claudeCatalogs.routable.isEmpty
     // Owner's rule: a dead-backend preflight is a repair trigger, not a dead
@@ -10525,7 +10691,7 @@ func runTaskWithOwnerPolicy(
     // by itself once a backend is back.
     if codexCatalog.models.isEmpty, observedClaudeCatalog.isEmpty, publicDeterministicExpression(prompt) == nil {
         let health = observedBackendHealth(claudeCatalog: observedClaudeCatalog, codexCatalog: codexCatalog,
-                                           workspace: canonicalWorkspace, claudeLimitedOnly: claudeLimitedOnly)
+                                           workspace: canonicalWorkspace, claudeLimitedOnly: claudeLimitedOnly, claudeQuota: observedClaudeQuota)
         try? health.save()
         RuntimeActivity.emit(.recovering, publicText: health.publicSummary)
         let repair = selfRepairBackends(health: health, codexCatalog: codexCatalog, workspace: canonicalWorkspace, config: config)
@@ -10542,7 +10708,7 @@ func runTaskWithOwnerPolicy(
     } else if !claudeInventoryDeferred {
         // Never persist unobserved alternative health as disconnected.
         try? observedBackendHealth(claudeCatalog: observedClaudeCatalog, codexCatalog: codexCatalog,
-                                   workspace: canonicalWorkspace, claudeLimitedOnly: claudeLimitedOnly).save()
+                                   workspace: canonicalWorkspace, claudeLimitedOnly: claudeLimitedOnly, claudeQuota: observedClaudeQuota).save()
     }
     // The signed router receives only stage-eligible native model/effort
     // tuples. A stage directive in prose alone would not enforce this policy.
@@ -10559,7 +10725,7 @@ func runTaskWithOwnerPolicy(
                 defaultEffort: efforts.contains(row.defaultEffort) ? row.defaultEffort : efforts[0],
                 supportedEfforts: efforts, priority: row.priority)
         }, source: codexCatalog.source, quotaResetsAt: codexCatalog.quotaResetsAt,
-            quotaWindow: codexCatalog.quotaWindow)
+            quotaWindow: codexCatalog.quotaWindow, quotaSnapshot: codexCatalog.quotaSnapshot)
         observedClaudeCatalog = observedClaudeCatalog.compactMap { row in
             guard selected.contains(row.model) else { return nil }
             let efforts = workflowStage.preferredEfforts(row.supportedEfforts)
@@ -10601,7 +10767,7 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
     let activeTaskBlock = memoryTurn == nil ? taskContext.handoffBlock() : try MemoryPaging.activeBlock(taskContext,
         budgetTokens: pagingConfig.activeStateBudgetTokens, currentRequest: prompt, root: MemoryPaging.defaultRoot, boundProjectID: memoryTurn?.projectID)
     if memoryTurn != nil { try MemoryPaging.archiveTaskState(taskContext, workspace: workspace, boundProjectID: memoryTurn?.projectID) }
-    let sourcePayload = try retainedSourcePayload(taskContext, primary: sourceContext, evidence: r2Evidence,
+    let sourcePayload = responseCheckIn ? nil : try retainedSourcePayload(taskContext, primary: sourceContext, evidence: r2Evidence,
         paging: memoryTurn != nil, includeFreshEvidence: repairedSource || !reuseSource)
     // Website work only: the cards steered plain questions into building pages.
     if resolvedScope == .workspaceWrite, WebsiteDelivery.relevant(request: objectiveRequest, context: context) {
@@ -10629,7 +10795,12 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
     if let validation = TaskWorkflow.validationContract(ownerRequest: objectiveRequest, scope: resolvedScope) {
         workspaceContext += "\n" + validation
     }
-    let localPrompt = try providerPrompt(current: prompt, context: repairedContext,
+    let localPrompt = responseCheckIn ? [
+        "CURRENT USER REQUEST (not an instruction to inspect or change the machine):", objectiveRequest,
+        statusCheckInCard(),
+        "Answer the response check briefly. This response demonstrates request receipt and a model response, not whole-system, account, connector, tool or task readiness. No tools, commands, source lookup, plugin inventory or implied completion claims. Do not reinterpret the request as a repair.",
+        userSettings.outputLanguageDirective,
+    ].joined(separator: "\n\n") : try providerPrompt(current: prompt, context: repairedContext,
         r2Evidence: sourcePayload, taskContext: activeTaskBlock, workspaceContext: workspaceContext,
         languageDirective: userSettings.outputLanguageDirective)
     // The quoted original operation is context, not a second execute request.
@@ -10638,9 +10809,12 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
     // The routing task is what the private router classifies and what
     // completion feedback is keyed on; build 245 appended a fixed surface
     // directive here, which changed every task's classification and key.
+    let conversationKind = boundedConversationKind(objectiveRequest, hasSource: r2Evidence != nil,
+        scope: resolvedScope, workflow: workflowStage,
+        delegated: ParallelAgentRuntime.readOnlyAgent || ParallelAgentRuntime.isolatedWriter != nil || ConcurrentRouteFanoutRuntime.child)
     let routingTask = ScopeResolution.delegationRoutingObjective(
-        routingTaskOverride ?? (requireReadOnly ? statusReconciliationRoutingTask
-            : sourceAwareRoutingTask(prompt, evidence: r2Evidence)), internalReadOnly: internalReadOnly)
+        routingTaskOverride ?? (conversationKind != nil ? objectiveRequest : (requireReadOnly ? statusReconciliationRoutingTask
+            : sourceAwareRoutingTask(prompt, evidence: r2Evidence))), internalReadOnly: internalReadOnly)
     let feedbackStore = CompletionFeedbackStore()
     func instructionFeedbackScope(_ instructions: String, input: String, codexID: String?, claudeID: String?) -> CompletionFeedbackScope {
         CompletionFeedbackScope(objectiveSHA256: sha256Hex(Data(routingTask.utf8)), sourceSHA256: sourceContext?.sha256,
@@ -10663,6 +10837,10 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
     var inputContext = try executionInputContext(prompt: prompt, assembled: localPrompt,
         history: context, evidence: r2Evidence, config: config)
     inputContext.governedDelegation = try governedDelegationContext()
+    if let conversationKind {
+        inputContext.conversationalSurface = ConversationalSurfaceContext(kind: conversationKind,
+            objectiveSHA256: sha256Hex(Data(routingTask.utf8)))
+    }
     // 438c757 asked for workspace_write on every run so delegated workflow
     // stages stayed executable, and the route core takes this value over the
     // policy's own: since then no ticket has been read-only, so a translation
@@ -10672,6 +10850,10 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
     // (`readOnlyQuestion`) — and leave every other run exactly as it was.
     inputContext.executionPermissionProfile = resolvedScope == .readOnly ? "read_only" : "workspace_write"
     inputContext.availableClaudeModels = claudeCatalog
+    let quotaAccounts = BackendAccounts.load()
+    inputContext.providerQuota = providerQuotaContext(codex: codexCatalog.quotaSnapshot, claude: observedClaudeQuota,
+        codexAccountID: BackendAccounts.active(provider: "codex", in: quotaAccounts).id,
+        claudeAccountID: BackendAccounts.active(provider: "claude", in: quotaAccounts).id)
     if feedbackEnabledForRequiredContract {
         inputContext.completionFeedback = try ((try? feedbackStore.load(scope: feedbackScope)) ??
             CompletionFeedbackLedger(scope: feedbackScope)).publicFeedback()
@@ -10711,13 +10893,17 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
     let observedNamedPaths = RequestObservation.namedPaths
     let speculativeBeforeHash = Task.detached { observedStateHash(routedWorkspace, named: observedNamedPaths) }
     AttemptLatencyTrace.mark("route_request")
+    request = await refreshedQuotaRequest(request)
+    inputContext = request.executionContext ?? inputContext
     var route: RouteResponse = try await client.post(
         "/v1/executions",
         body: request,
         as: RouteResponse.self
     )
     AttemptLatencyTrace.mark("routed")
-    if route.ticket?.provider == "codex", let burnNotice {
+    if let provider = route.ticket?.provider, let notice = quotaRoutingNotice(inputContext.providerQuota) {
+        RuntimeActivity.emit(.routing, provider: provider, publicText: notice)
+    } else if route.ticket?.provider == "codex", let burnNotice {
         RuntimeActivity.emit(.routing, provider: "codex", publicText: burnNotice)
     }
     recordRoutingInput(request, ticket: route.ticket, source: sourceContext)
@@ -10780,6 +10966,8 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
                         capacityPlan: request.capacityPlan, executorContractVersion: request.executorContractVersion,
                         executorContractSHA256: request.executorContractSHA256, availableCodexModels: request.availableCodexModels,
                         executionContext: inputContext)
+                    request = await refreshedQuotaRequest(request)
+                    inputContext = request.executionContext ?? inputContext
                     route = try await client.post("/v1/executions", body: request, as: RouteResponse.self)
                     continue
                 }
@@ -10873,10 +11061,14 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
                     executorContractSHA256: routedRequest.executorContractSHA256,
                     availableCodexModels: routedRequest.availableCodexModels, executionContext: inputContext)
             }
+            request = await refreshedQuotaRequest(request)
+            inputContext = request.executionContext ?? inputContext
             route = try await client.post("/v1/executions", body: request, as: RouteResponse.self)
             if preferClaude, route.ticket == nil {
                 // No Claude route after all: route as before and wait.
                 request = routedRequest
+                request = await refreshedQuotaRequest(request)
+                inputContext = request.executionContext ?? inputContext
                 route = try await client.post("/v1/executions", body: request, as: RouteResponse.self)
             }
             step -= 1
@@ -11086,13 +11278,16 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
                     if let existing = freshContext, let continuation {
                         freshContext = ExecutionInputContext(executionPermissionProfile: existing.executionPermissionProfile, inputUTF8Bytes: existing.inputUTF8Bytes + (try continuation.handoffBlock()).utf8.count,
                             sourceUTF8Bytes: existing.sourceUTF8Bytes, historyUTF8Bytes: existing.historyUTF8Bytes,
-                            completionFeedback: existing.completionFeedback, availableClaudeModels: existing.availableClaudeModels, governedDelegation: existing.governedDelegation)
+                            completionFeedback: existing.completionFeedback, availableClaudeModels: existing.availableClaudeModels, governedDelegation: existing.governedDelegation,
+                        conversationalSurface: existing.conversationalSurface, providerQuota: existing.providerQuota)
                     }
                     freshContext?.availableClaudeModels = claudeCatalog
+                    freshContext?.conversationalSurface = inputContext.conversationalSurface
+                    freshContext?.providerQuota = inputContext.providerQuota
                     if feedbackEnabledForRequiredContract {
                         freshContext?.completionFeedback = try feedbackStore.load(scope: feedbackScope)?.publicFeedback()
                     }
-                    let next = StartExecutionRequest(task: request.task, providerPreference: nextPreference,
+                    var next = StartExecutionRequest(task: request.task, providerPreference: nextPreference,
                         capacityPlan: request.capacityPlan, executorContractVersion: request.executorContractVersion,
                         executorContractSHA256: request.executorContractSHA256, availableCodexModels: codexCatalog.models,
                         executionContext: freshContext)
@@ -11103,6 +11298,9 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
                                 "Claude \(model) reached its model limit. Excluding only this model for one hour and re-routing the same request to the remaining models (\(remaining.joined(separator: " · "))). Sign-in is not changed.")
                         : os1Tr("\(ticket.provider) 사용량 한도에 도달했습니다. 같은 요청을 \(nextPreference)로 이어갑니다. 로그인은 변경하지 않습니다.",
                                 "\(ticket.provider) reached its usage limit. Continuing the same request on \(nextPreference). Sign-in is not changed."))
+                    next = await refreshedQuotaRequest(next)
+                    inputContext = next.executionContext ?? inputContext
+                    request = next
                     route = try await client.post("/v1/executions", body: next, as: RouteResponse.self)
                     guard let nextTicket = route.ticket, nextTicket.permissionProfile == ticket.permissionProfile,
                           nextPreference == "auto" ? ["claude", "codex"].contains(nextTicket.provider)
@@ -11145,17 +11343,23 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
                         if let existing = freshContext, let continuation {
                             freshContext = ExecutionInputContext(executionPermissionProfile: existing.executionPermissionProfile, inputUTF8Bytes: existing.inputUTF8Bytes + (try continuation.handoffBlock()).utf8.count,
                                 sourceUTF8Bytes: existing.sourceUTF8Bytes, historyUTF8Bytes: existing.historyUTF8Bytes,
-                                completionFeedback: existing.completionFeedback, availableClaudeModels: existing.availableClaudeModels, governedDelegation: existing.governedDelegation)
+                                completionFeedback: existing.completionFeedback, availableClaudeModels: existing.availableClaudeModels, governedDelegation: existing.governedDelegation,
+                        conversationalSurface: existing.conversationalSurface, providerQuota: existing.providerQuota)
                         }
                         freshContext?.availableClaudeModels = claudeCatalog
+                    freshContext?.conversationalSurface = inputContext.conversationalSurface
+                    freshContext?.providerQuota = inputContext.providerQuota
                         if feedbackEnabledForRequiredContract {
                             freshContext?.completionFeedback = try feedbackStore.load(scope: feedbackScope)?.publicFeedback()
                         }
-                        let next = StartExecutionRequest(task: request.task, providerPreference: "codex",
+                        var next = StartExecutionRequest(task: request.task, providerPreference: "codex",
                             capacityPlan: request.capacityPlan, executorContractVersion: request.executorContractVersion,
                             executorContractSHA256: request.executorContractSHA256, availableCodexModels: codexCatalog.models,
                             executionContext: freshContext)
                         RuntimeActivity.emit(.recovering)
+                        next = await refreshedQuotaRequest(next)
+                        inputContext = next.executionContext ?? inputContext
+                        request = next
                         route = try await client.post("/v1/executions", body: next, as: RouteResponse.self)
                         guard route.ticket?.permissionProfile == ticket.permissionProfile,
                               route.ticket?.provider == "codex" else { throw error }
@@ -11442,15 +11646,19 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
                         inputUTF8Bytes: inputContext.inputUTF8Bytes + (qualityCorrectionPrompt?.utf8.count ?? 0),
                         sourceUTF8Bytes: existing.sourceUTF8Bytes, historyUTF8Bytes: existing.historyUTF8Bytes,
                         completionFeedback: existing.completionFeedback, availableClaudeModels: existing.availableClaudeModels,
-                        governedDelegation: existing.governedDelegation)
+                        governedDelegation: existing.governedDelegation,
+                        conversationalSurface: existing.conversationalSurface, providerQuota: existing.providerQuota)
                 }
-                let next = StartExecutionRequest(task: request.task, providerPreference: nextPreference,
+                var next = StartExecutionRequest(task: request.task, providerPreference: nextPreference,
                     capacityPlan: request.capacityPlan, executorContractVersion: request.executorContractVersion,
                     executorContractSHA256: request.executorContractSHA256, availableCodexModels: correctionCodexModels,
                     executionContext: nextContext)
                 RuntimeActivity.emit(.recovering, provider: ticket.provider,
                     publicText: os1Tr("확인된 검사 실패만 수정하고 같은 원본 검사로 다시 확인합니다.",
                         "Correcting only the observed check failure, then rechecking the same frozen contract."))
+                next = await refreshedQuotaRequest(next)
+                inputContext = next.executionContext ?? inputContext
+                request = next
                 route = try await client.post("/v1/executions", body: next, as: RouteResponse.self)
                 guard route.ticket?.permissionProfile == ticket.permissionProfile else {
                     throw OS1Error.message("Task-quality continuation changed the authorized permission scope")
@@ -11485,17 +11693,23 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
             if let existing = freshContext, let continuation {
                 freshContext = ExecutionInputContext(executionPermissionProfile: existing.executionPermissionProfile, inputUTF8Bytes: existing.inputUTF8Bytes + (try continuation.handoffBlock()).utf8.count,
                     sourceUTF8Bytes: existing.sourceUTF8Bytes, historyUTF8Bytes: existing.historyUTF8Bytes,
-                    completionFeedback: existing.completionFeedback, availableClaudeModels: existing.availableClaudeModels, governedDelegation: existing.governedDelegation)
+                    completionFeedback: existing.completionFeedback, availableClaudeModels: existing.availableClaudeModels, governedDelegation: existing.governedDelegation,
+                        conversationalSurface: existing.conversationalSurface, providerQuota: existing.providerQuota)
             }
             freshContext?.availableClaudeModels = claudeCatalog
+                    freshContext?.conversationalSurface = inputContext.conversationalSurface
+                    freshContext?.providerQuota = inputContext.providerQuota
             if feedbackEnabledForRequiredContract {
                 freshContext?.completionFeedback = try feedbackStore.load(scope: feedbackScope)?.publicFeedback()
             }
-            let next = StartExecutionRequest(task: request.task, providerPreference: request.providerPreference,
+            var next = StartExecutionRequest(task: request.task, providerPreference: request.providerPreference,
                 capacityPlan: request.capacityPlan, executorContractVersion: request.executorContractVersion,
                 executorContractSHA256: request.executorContractSHA256, availableCodexModels: codexCatalog.models,
                 executionContext: freshContext)
             RuntimeActivity.emit(.recovering)
+            next = await refreshedQuotaRequest(next)
+            inputContext = next.executionContext ?? inputContext
+            request = next
             route = try await client.post("/v1/executions", body: next, as: RouteResponse.self)
             guard route.ticket?.permissionProfile == ticket.permissionProfile else {
                 throw OS1Error.message(os1Tr("서버의 완료 판정과 실제 실행 증거가 일치하지 않아 결과를 채택하지 않았습니다. 요청과 원본은 보존했습니다.",
@@ -11600,18 +11814,24 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
             if let existing = recoveryContext, let continuation {
                 recoveryContext = ExecutionInputContext(executionPermissionProfile: existing.executionPermissionProfile, inputUTF8Bytes: existing.inputUTF8Bytes + (try continuation.handoffBlock()).utf8.count,
                     sourceUTF8Bytes: existing.sourceUTF8Bytes, historyUTF8Bytes: existing.historyUTF8Bytes,
-                    completionFeedback: existing.completionFeedback, availableClaudeModels: existing.availableClaudeModels, governedDelegation: existing.governedDelegation)
+                    completionFeedback: existing.completionFeedback, availableClaudeModels: existing.availableClaudeModels, governedDelegation: existing.governedDelegation,
+                        conversationalSurface: existing.conversationalSurface, providerQuota: existing.providerQuota)
             }
             recoveryContext?.availableClaudeModels = claudeCatalog
+                    recoveryContext?.conversationalSurface = inputContext.conversationalSurface
+                    recoveryContext?.providerQuota = inputContext.providerQuota
             if feedbackEnabledForRequiredContract {
                 recoveryContext?.completionFeedback = try ((try? feedbackStore.load(scope: feedbackScope)) ??
                     CompletionFeedbackLedger(scope: feedbackScope)).publicFeedback()
             }
-            let recoveryRequest = StartExecutionRequest(task: request.task,
+            var recoveryRequest = StartExecutionRequest(task: request.task,
                 providerPreference: recovery, capacityPlan: request.capacityPlan,
                 executorContractVersion: request.executorContractVersion,
                 executorContractSHA256: request.executorContractSHA256,
                 availableCodexModels: request.availableCodexModels, executionContext: recoveryContext)
+            recoveryRequest = await refreshedQuotaRequest(recoveryRequest)
+            inputContext = recoveryRequest.executionContext ?? inputContext
+            request = recoveryRequest
             route = try await client.post("/v1/executions", body: recoveryRequest, as: RouteResponse.self)
             recordRoutingInput(recoveryRequest, ticket: route.ticket, source: sourceContext)
             guard BackendRecovery.recoveryTicketMatches(provider: route.ticket?.provider, permission: route.ticket?.permissionProfile,
@@ -11681,7 +11901,6 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
     adoptedResultReturned = true
     return finishedRun(adopted)
 }
-
 func resumeDelivery(_ identifier: String) async throws -> RunSummary {
     let config = try RuntimeConfig.load()
     let id = try deviceID()

@@ -17293,7 +17293,7 @@ private struct ExecutionMenu: View {
         }.menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
             .disabled(store.isRunning)
             .help(os1Tr("RCC 모델·추론 자동 선택 · Codex \(session.effectiveCodexCapacity)% / Claude \(session.effectiveClaudeCapacity)%",
-                        "RCC picks the model and reasoning automatically · Codex \(session.effectiveCodexCapacity)% / Claude \(session.effectiveClaudeCapacity)%"))
+                        "RCC selects automatically · Configured allocation (not remaining quota): Codex \(session.effectiveCodexCapacity)% / Claude \(session.effectiveClaudeCapacity)%"))
             .accessibilityLabel(os1Tr("실행 모델 및 라우팅 설정", "Execution model and routing settings"))
     }
 }

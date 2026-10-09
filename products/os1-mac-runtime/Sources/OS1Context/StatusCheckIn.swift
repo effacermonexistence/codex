@@ -9,16 +9,25 @@ import Foundation
 /// the answer first; a deeper check is offered, not run.
 public enum StatusCheckIn {
     /// The ways the owner asks after state.
-    static let asking = #"되나|되냐|되니|됐나|됐냐|됐어|됐니|됐음|되는\s?거|되는지|됐는지|돼\s?\?|작동(?:해|하|되|돼|중)|돌아가(?:냐|나|\?|는지)|다\s?(?:했|한\s?거|됐|끝났)|했냐|끝났|설치\s?(?:됐|된|했|됨|돼)|깔렸|깔려\s?있|들어갔|반영\s?(?:됐|된)|적용\s?(?:됐|된)|연결\s?(?:돼|됐|된)|어떻게\s?(?:됐|된)|어디까지|진행\s?(?:상황|중)|하는\s?중|뭐\s?하고\s?있|몇\s?번\s?빌드|아직(?:도)?\s?(?:[0-9]{3}|안|하는)|살아\s?있|(?<![A-Za-z])(?:is it|did it|does it)\s+(?:done|work|working|installed|finished)|(?<![A-Za-z])status(?![A-Za-z])"#
+    static let asking = #"되나|되냐|되니|됐나|됐냐|됐어|됐니|됐음|되는\s?거|되는지|됐는지|돼\s?\?|작동(?:해|하|되|돼|중)|돌아가(?:냐|나|\?|는지)|다\s?(?:했|한\s?거|됐|끝났)|했냐|끝났|설치\s?(?:됐|된|했|됨|돼)|깔렸|깔려\s?있|들어갔|반영\s?(?:됐|된)|적용\s?(?:됐|된)|연결\s?(?:돼|됐|된)|어떻게\s?(?:됐|된)|어디까지|진행\s?(?:상황|중)|하는\s?중|뭐\s?하고\s?있|몇\s?번\s?빌드|아직(?:도)?\s?(?:[0-9]{3}|안|하는)|살아\s?있|(?<![A-Za-z])(?:is it|did it|does it|does this|are you|is everything)\s+(?:done|work|working|installed|finished|alive|there)|(?<![A-Za-z])status(?![A-Za-z])"#
     /// A sentence that ends the way a question does, with or without "?"
     /// (voice dictation drops it): "됐냐", "설치 됨", "어떻게 된 거야".
     static let questionEnding = #"(?:냐|니|나|까|거야|건가|건지|이야|인가|는지|됐어|했어|됨|됐음|했음|임|중이야|거지|맞지|맞아)$"#
     /// "되는지 확인해보자": the owner's own way to open a check-in.
     static let checkOpener = #"^(?:(?:자|야|그럼|일단|한번|아니)\s*)*(?:(?:라우팅|이거|그거)\s*(?:이|가)?\s*)?(?:잘\s*)?(?:되는지|됐는지|작동하는지)\s*(?:한번\s*)?확인해\s?(?:보자|볼까)$"#
+    /// The owner checking the response, not ordering the agent to inspect a
+    /// workspace: "야 나 한번 체크해 볼게. 너 되냐?" (build 355). Strip only
+    /// this opener so ASR without punctuation still leaves the actual state
+    /// question to validate. "너 체크해봐" is deliberately not an opener.
+    static let selfCheckOpener = #"^(?:(?:자|야|그럼|일단|아니|지금)\s*)*(?:(?:내가|나는|나|제가)\s*)?(?:한\s?번\s*)?(?:체크|확인)\s?해\s?(?:보자|볼까|볼게|볼께)(?=\s|$)|^(?:(?:hey|ok|okay|well|so)[\s,]*)*(?:let\s+me\s+check|i(?:'ll|\s+will)\s+check|let'?s\s+check)(?:\s+(?:once|quickly))?(?=\s|$)"#
     /// Sentences that carry no order: "야", "그래서", "근데", "뭐야", "짧게 대답해줘".
     static let neutral = #"^(?:(?:야|아니|그래서|근데|뭐야|아|음|도대체|진짜|그럼|너|지금)\s*)+$|^(?:그냥\s*)?(?:예\s*아니오로\s*|짧게\s*)?(?:대답|답|말)해\s?줘$"#
     /// A command ending, the same test the chat lane uses for questions.
     static let command = #"(?:봐|줘|해|라|자|빼|가져와|와봐|깔아|돌려)(?=[\s.,~?]|$)"#
+    /// A question-shaped request to run tools is still work, in either
+    /// language. Unlike "is it installed?", "can you install it?" orders a
+    /// new state; unlike a self-check opener, "check the logs" asks for reads.
+    static let toolCommand = #"(?:터미널|셸|쉘|명령|로그|파일|스크립트)\s*(?:에서|로|을|를)|(?<![A-Za-z])(?:can|could|would|will)\s+you\s+(?:run|execute|build|compile|test|fix|repair|install|deploy|delete|remove|restart|reset|inspect|read|check)\b|(?<![A-Za-z])(?:run|execute|compile|restart|reset|inspect|read)\s|(?<![A-Za-z])check\s+(?:the\s+)?(?:shell|terminal|logs?|files?|scripts?)\b"#
     public static let maximumCharacters = 80
 
     /// "되는지 확인해보자. 되냐?", "다 한 거야?", "설치됐어?", "아직 333이야?",
@@ -49,18 +58,23 @@ public enum StatusCheckIn {
         }
         if !current.trimmingCharacters(in: .whitespaces).isEmpty { sentences.append((current.trimmingCharacters(in: .whitespaces), false)) }
         return !sentences.isEmpty && sentences.allSatisfy { sentence in
-            let value = sentence.text.replacingOccurrences(of: #"(?:\s+(?:도대체|진짜|지금|그래서|그럼))+$"#, with: "", options: .regularExpression)
+            let withoutOpener = sentence.text.replacingOccurrences(of: selfCheckOpener, with: "", options: .regularExpression)
+                .trimmingCharacters(in: .whitespaces)
+            if withoutOpener.isEmpty && withoutOpener != sentence.text { return true }
+            let value = withoutOpener.replacingOccurrences(of: #"(?:\s+(?:도대체|진짜|지금|그래서|그럼))+$"#, with: "", options: .regularExpression)
             if value.range(of: checkOpener, options: .regularExpression) != nil
                 || value.range(of: neutral, options: .regularExpression) != nil { return true }
             // "그럼 실제로 해봐 다 되는지": a command anywhere is work, whatever the ending.
-            if value.range(of: command, options: .regularExpression) != nil { return false }
+            if value.range(of: command, options: .regularExpression) != nil
+                || value.range(of: toolCommand, options: .regularExpression) != nil
+                || ScopeResolution.resolve(value).scope == .workspaceWrite { return false }
             return sentence.asked || value.range(of: questionEnding, options: .regularExpression) != nil
                 || value.range(of: #"^(?:is|are|was|did|does|has|have)\s"#, options: .regularExpression) != nil
         }
     }
 
     /// Things outside OS-1 that only a tool can check now.
-    static let externalSubject = #"사이트|웹|배포|서버|r2|알투|깃허브|기타보|기탑|github|(?<![A-Za-z])pr(?![A-Za-z])|머지|merge|푸시|push|커밋|commit|백업|backup|연결|connect|도메인|domain|링크|url|railway|레일웨이|cloudflare|클라우드플레어|인스타|instagram|scv|결제|payment|데이터베이스|database|(?<![A-Za-z])db(?![A-Za-z])|deploy|site|server"#
+    static let externalSubject = #"사이트|웹|배포|서버|r2|알투|깃허브|기타보|기탑|github|(?<![A-Za-z])pr(?![A-Za-z])|머지|merge|푸시|push|커밋|commit|백업|backup|연결|connect|도메인|domain|링크|url|railway|레일웨이|cloudflare|클라우드플레어|인스타|instagram|scv|결제|payment|데이터베이스|database|(?<![A-Za-z])db(?![A-Za-z])|deploy|site|server|터미널|셸|쉘|명령|로그|파일|스크립트|(?<![A-Za-z])(?:shell|terminal|command|logs?|files?|scripts?)(?![A-Za-z])"#
 
     /// A check-in the status card answers by itself: about OS-1 or the last
     /// change in this conversation, naming nothing outside it. It runs on the
@@ -139,7 +153,10 @@ public enum StatusCheckIn {
         var failed: [String] = []
         func check(_ value: Bool, _ name: String) { if !value { failed.append(name) } }
         for text in ["되는지 확인해보자. 되냐?", "되는지 확인해보자. 되나?", "뭐 하고 있는 거야 다 한 거야 뭐야 어떻게 된 거야 도대체.",
-                     "야 너 지금 작동하냐?", "설치됐어?", "아직 333이야?", "다 끝났어?", "is it working?", "did it work"] {
+                     "야 너 지금 작동하냐?", "설치됐어?", "아직 333이야?", "다 끝났어?", "is it working?", "did it work",
+                     "야 나 한번 체크해 볼게. 너 되냐?", "너 잘 되냐", "한번 체크해보자 되냐",
+                     "야 나 한번 체크해볼게 너 되냐", "야 내가 한 번 확인해볼께 너 잘 되냐",
+                     "Hey, let me check. Are you working?", "let me check are you working", "let's check. does this work?"] {
             check(matches(text), "check-in: \(text)")
         }
         for text in ["그래서 설치 됨 안 됨", "야 너 R2 연결 돼있냐?", "아직도 333이야?", "지금 몇 번 빌드 깔려 있어?", "아까 시켜둔 거 끝났냐?",
@@ -151,7 +168,11 @@ public enum StatusCheckIn {
                      "작동하는지 시간 재봐", "되는지 빌드하고 테스트 돌려", "라우팅 되는지 다시 테스트해봐", "아직 333이면 apply 해",
                      "is it installed? if not, build it", "did it work? test it again", "1+1 GPT한테. 2+2 Codex한테. 되나?",
                      "QMGR 통합해야 되니까 스키마 좀 짜봐", "PR 머지됐어? 안 됐으면 머지해", "되는지 테스트해봐", "진행 중인 거 취소해",
-                     "그럼 실제로 해봐 다 되는지", "그거 설명 좀 해봐 어디까지 진행됐는지", "야 크롬 말고 사파리 쓰면 안 되냐?"] {
+                     "그럼 실제로 해봐 다 되는지", "그거 설명 좀 해봐 어디까지 진행됐는지", "야 크롬 말고 사파리 쓰면 안 되냐?",
+                     "야 너 한번 체크해봐. 되냐?", "한번 체크해보자 되냐? 안 되면 고쳐",
+                     "야 나 한번 체크해 볼게. 터미널에서 실제로 확인해줘. 너 되냐?",
+                     "너 잘 되냐? 셸로 상태를 확인해", "너 되냐? 터미널에서 ps aux로 확인할 수 있어?",
+                     "Are you working? Can you run a shell check?", "let me check. are you working? inspect the logs"] {
             check(!matches(text), "an order is not a check-in: \(text)")
         }
         for text in ["이거 고쳐", "되는지 확인하고 안 되면 고쳐", "라우팅 되게 해줘", "클로드랑 GPT 하나씩 시켜봐. 1+1, 2+2. 되나?",
@@ -159,10 +180,13 @@ public enum StatusCheckIn {
                      "RCC가 뭐야?", "~/Library 정리해", String(repeating: "되나? ", count: 30)] {
             check(!matches(text), "not a check-in: \(text.prefix(40))")
         }
-        for text in ["되는지 확인해보자. 되냐?", "다 한 거야?", "설치됐어?", "아직 333이야?", "야 너 지금 작동하냐?"] {
+        for text in ["되는지 확인해보자. 되냐?", "다 한 거야?", "설치됐어?", "아직 333이야?", "야 너 지금 작동하냐?",
+                     "야 나 한번 체크해 볼게. 너 되냐?", "너 잘 되냐", "한번 체크해보자 되냐",
+                     "Hey, let me check. Are you working?", "let me check are you working"] {
             check(answersFromCard(text), "the card answers: \(text)")
         }
-        for text in ["배포 됐냐?", "사이트 살아있어?", "야 너 R2 연결 돼있냐?", "푸시 됐어?", "PR 머지됐어?", "설치됐어? 안 됐으면 깔아"] {
+        for text in ["배포 됐냐?", "사이트 살아있어?", "야 너 R2 연결 돼있냐?", "푸시 됐어?", "PR 머지됐어?", "설치됐어? 안 됐으면 깔아",
+                     "야 나 한번 체크해 볼게. 서버 되냐?", "너 되냐? Can you check the shell?", "로그에는 작동 중이야?"] {
             check(!answersFromCard(text), "needs a look: \(text)")
         }
         let stagedAt = Date(timeIntervalSince1970: 1_791_000_000)

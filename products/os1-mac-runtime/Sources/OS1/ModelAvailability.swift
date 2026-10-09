@@ -8,6 +8,7 @@ struct CodexMetadataReplies {
     static let methods = ["account/read", "model/list", "account/rateLimits/read"]
     let expected: [Int: String]
     private(set) var replies: [String: [String: Any]] = [:]
+    private(set) var rateLimitsObservedAt: Date?
     init(firstID: Int) {
         expected = Dictionary(uniqueKeysWithValues: Self.methods.enumerated().map { (firstID + $0.offset, $0.element) })
     }
@@ -23,6 +24,9 @@ struct CodexMetadataReplies {
             throw OS1Error.message("Invalid native metadata response")
         }
         replies[method] = message
+        if method == "account/rateLimits/read", message["error"] == nil, message["result"] is [String: Any] {
+            rateLimitsObservedAt = Date()
+        }
         return true
     }
     func required(_ method: String) throws -> [String: Any] {
@@ -54,6 +58,97 @@ private final class MetadataCommandResult: @unchecked Sendable {
         lock.lock(); defer { lock.unlock() }
         guard let result else { throw OS1Error.message("Native metadata command did not finish") }
         return try result.get()
+    }
+}
+
+/// Fixed native metadata protocol only: initialize, then get_usage. No user
+/// message is ever sent. skip_behaviors prevents a seven-day transcript scan;
+/// only the provider's public plan windows enter the returned snapshot.
+private final class ClaudeQuotaMetadataControl: @unchecked Sendable {
+    private let lock = NSLock()
+    private let initializeID = UUID().uuidString
+    private let usageID = UUID().uuidString
+    private var writer: FileHandle?
+    private var buffer = Data()
+    private var requestedUsage = false
+    private var closed = false
+    private var received: (body: [String: Any], observedAt: Date)?
+    private func send(_ id: String, _ request: [String: Any]) {
+        guard let writer, let data = try? JSONSerialization.data(withJSONObject:
+            ["type": "control_request", "request_id": id, "request": request]) else { closeLocked(); return }
+        do { try writer.write(contentsOf: data + Data([10])) } catch { closeLocked() }
+    }
+    private func closeLocked() {
+        closed = true; try? writer?.close(); writer = nil
+    }
+    func start(_ writer: FileHandle) {
+        lock.lock(); defer { lock.unlock() }
+        self.writer = writer
+        send(initializeID, ["subtype": "initialize"])
+    }
+    func receive(_ bytes: Data) {
+        lock.lock(); defer { lock.unlock() }
+        guard !closed, buffer.count + bytes.count <= 512_000 else { closeLocked(); return }
+        buffer.append(bytes)
+        while let end = buffer.firstIndex(of: 10) {
+            let line = Data(buffer[..<end]); buffer.removeSubrange(...end)
+            guard let message = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
+                  message["type"] as? String == "control_response",
+                  let response = message["response"] as? [String: Any],
+                  let id = response["request_id"] as? String else { continue }
+            if id == initializeID, !requestedUsage {
+                guard response["subtype"] as? String == "success" else { closeLocked(); return }
+                requestedUsage = true
+                send(usageID, ["subtype": "get_usage", "skip_behaviors": true])
+                // The quota-only wait is bounded independently of startup.
+                DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 3) { [self] in finish() }
+            } else if id == usageID, requestedUsage {
+                if response["subtype"] as? String == "success", let body = response["response"] as? [String: Any] {
+                    received = (body, Date())
+                }
+                closeLocked(); return
+            }
+        }
+    }
+    func finish() { lock.lock(); defer { lock.unlock() }; closeLocked() }
+    func snapshot(accountID: String) -> BackendHealth.QuotaSnapshot? {
+        lock.lock(); defer { lock.unlock() }
+        guard let received else { return nil }
+        return BackendHealth.QuotaSnapshot.claudeUsage(received.body, accountID: accountID, observedAt: received.observedAt)
+    }
+    static func fixtureChecks() -> [Bool] {
+        var checks: [Bool] = []
+        let control = ClaudeQuotaMetadataControl(), pipe = Pipe()
+        defer { control.finish(); try? pipe.fileHandleForReading.close() }
+        func frame(_ id: String, subtype: String = "success", body: [String: Any] = [:]) -> Data {
+            (try? JSONSerialization.data(withJSONObject: ["type": "control_response", "response":
+                ["request_id": id, "subtype": subtype, "response": body]]))! + Data([10])
+        }
+        control.start(pipe.fileHandleForWriting)
+        let initialize = (try? JSONSerialization.jsonObject(with: pipe.fileHandleForReading.availableData)) as? [String: Any]
+        checks.append(initialize?["type"] as? String == "control_request" &&
+            (initialize?["request"] as? [String: Any])?["subtype"] as? String == "initialize")
+        control.receive(frame(control.initializeID))
+        let usage = (try? JSONSerialization.jsonObject(with: pipe.fileHandleForReading.availableData)) as? [String: Any]
+        let request = usage?["request"] as? [String: Any]
+        checks.append(request?["subtype"] as? String == "get_usage" && request?["skip_behaviors"] as? Bool == true)
+        control.receive(frame("wrong-response-id", body: ["rate_limits_available": true]))
+        checks.append(control.snapshot(accountID: "claude.default") == nil)
+        let body: [String: Any] = ["rate_limits_available": true, "rate_limits": ["limits": [
+            ["kind": "weekly_all", "percent": 99, "resets_at": "2099-01-01T00:00:00Z", "scope": NSNull(),
+             "severity": "critical", "is_active": true]]]]
+        let result = frame(control.usageID, body: body), middle = result.count / 2
+        control.receive(Data(result.prefix(middle)))
+        checks.append(control.snapshot(accountID: "claude.default") == nil)
+        control.receive(Data(result.dropFirst(middle)))
+        checks.append(control.snapshot(accountID: "claude.default")?.effectiveRemaining(accountID: "claude.default") == 1)
+        let unsupported = ClaudeQuotaMetadataControl(), other = Pipe()
+        unsupported.start(other.fileHandleForWriting)
+        _ = other.fileHandleForReading.availableData
+        unsupported.receive(frame(unsupported.initializeID, subtype: "error"))
+        checks.append(unsupported.snapshot(accountID: "claude.default") == nil)
+        unsupported.finish(); try? other.fileHandleForReading.close()
+        return checks
     }
 }
 
@@ -93,6 +188,28 @@ struct NativeClaudeModel {
 }
 
 enum ModelAvailability {
+    /// Unpaid, no-prompt plan metadata. A same-account fresh cache avoids another
+    /// CLI trip. Timeout, absent rows, unsupported control and account switches
+    /// all return unknown, not 0% or 100% remaining and not an auth failure.
+    static func claudeQuota(workspace: String) -> BackendHealth.QuotaSnapshot? {
+        let book = BackendAccounts.load()
+        let accountID = BackendAccounts.active(provider: "claude", in: book).id
+        if let cached = BackendHealth.load(maxAge: 60)?.claude.quota,
+           cached.isFresh(accountID: accountID, maxAge: 60) { return cached }
+        let environment = BackendAccounts.environment(provider: "claude", in: book)
+        let control = ClaudeQuotaMetadataControl()
+        defer { control.finish() }
+        guard let executable = try? findExecutable("claude"),
+              let output = try? commandOutput(executable, ["--safe-mode", "--print", "--input-format", "stream-json",
+                "--output-format", "stream-json", "--verbose", "--strict-mcp-config", "--mcp-config",
+                "{\"mcpServers\":{}}", "--tools", "", "--no-session-persistence"],
+                timeout: 8, currentDirectory: workspace, isProvider: true, environmentOverrides: environment,
+                onOutput: { control.receive($0) }, interactiveStdin: { control.start($0) }),
+              output.0 == 0,
+              BackendAccounts.active(provider: "claude", in: BackendAccounts.load()).id == accountID,
+              BackendAccounts.environment(provider: "claude", in: BackendAccounts.load()) == environment else { return nil }
+        return control.snapshot(accountID: accountID)
+    }
     static func selfTest() throws {
         let daybreak: [String: Any] = ["model": "gpt-daybreak-blue-latest", "defaultReasoningEffort": "high",
             "supportedReasoningEfforts": [["reasoningEffort": "high"], ["reasoningEffort": "ultra"]]]
@@ -128,7 +245,7 @@ enum ModelAvailability {
             !deferAlternateInventory(preference: "claude", codexReady: true, workflow: false),
             !deferAlternateInventory(preference: "codex", codexReady: false, workflow: false),
             !deferAlternateInventory(preference: "codex", codexReady: true, workflow: true),
-        ] + metadataReplyChecks()
+        ] + metadataReplyChecks() + ClaudeQuotaMetadataControl.fixtureChecks()
         guard checks.allSatisfy({ $0 }) else { throw OS1Error.message("Model availability regression failed") }
         print("OS-1 account model metadata: \(checks.count) checks OK")
     }
@@ -138,6 +255,7 @@ enum ModelAvailability {
         var ordered = CodexMetadataReplies(firstID: 10)
         do {
             _ = try ordered.receive(response(12, ["rateLimits": [:]]))
+            checks.append(ordered.rateLimitsObservedAt != nil)
             _ = try ordered.receive(response(11, ["data": []]))
             checks.append(!ordered.requiredReceived && !ordered.complete)
             _ = try ordered.receive(response(10, ["account": ["type": "chatgpt"]]))
@@ -149,6 +267,7 @@ enum ModelAvailability {
         var missing = CodexMetadataReplies(firstID: 20)
         do {
             _ = try missing.receive(response(21, ["data": []]))
+            checks.append(missing.rateLimitsObservedAt == nil)
             checks.append(!missing.requiredReceived && !missing.complete)
             do { _ = try missing.required("account/read"); checks.append(false) } catch { checks.append(true) }
             checks.append(try !missing.receive(response(99, [:])))
@@ -357,13 +476,16 @@ enum ModelAvailability {
     }
 
     static func codexCatalog(workspace: String, config: RuntimeConfig) throws -> ActiveCodexCatalog {
-        let accountEnvironment = backendAccountEnvironment("codex")
+        let accountBook = BackendAccounts.load()
+        let accountID = BackendAccounts.active(provider: "codex", in: accountBook).id
+        let accountEnvironment = BackendAccounts.environment(provider: "codex", in: accountBook)
         let probe = try CodexAppServerClient(executable: findExecutable("codex"), workspace: workspace)
         defer { probe.close() }
         let deadline = Date().addingTimeInterval(12)
         try probe.initialize(deadline: deadline)
         let metadata = try probe.catalogMetadata(deadline: deadline)
-        guard BackendAccounts.environment(provider: "codex", in: BackendAccounts.load()) == accountEnvironment else {
+        guard BackendAccounts.active(provider: "codex", in: BackendAccounts.load()).id == accountID,
+              BackendAccounts.environment(provider: "codex", in: BackendAccounts.load()) == accountEnvironment else {
             throw OS1Error.message("Codex account selection changed during inventory")
         }
         var catalog = executableCodexCatalog(ActiveCodexCatalog(models: metadata.models,
@@ -373,7 +495,12 @@ enum ModelAvailability {
         var notes: [String] = []
         var quotaResetsAt: Date?
         var quotaWindow: CodexQuotaWindow?
+        var quotaSnapshot: BackendHealth.QuotaSnapshot?
         if let limits = metadata.rateLimits {
+            if let observedAt = metadata.quotaObservedAt {
+                quotaSnapshot = BackendHealth.QuotaSnapshot.codexRateLimits(limits, accountID: accountID,
+                    models: Set(metadata.models.map(\.slug)), observedAt: observedAt)
+            }
             // The longest unreset window: what the burn policy and the health
             // card show as "N% used, resets at".
             quotaWindow = CodexQuota.generalWindow(limits)
@@ -404,6 +531,7 @@ enum ModelAvailability {
             }
         }
         let source = notes.isEmpty ? catalog.source : catalog.source + " · " + notes.joined(separator: "; ")
-        return ActiveCodexCatalog(models: catalog.models, source: source, quotaResetsAt: quotaResetsAt, quotaWindow: quotaWindow)
+        return ActiveCodexCatalog(models: catalog.models, source: source, quotaResetsAt: quotaResetsAt,
+                                  quotaWindow: quotaWindow, quotaSnapshot: quotaSnapshot)
     }
 }

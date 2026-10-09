@@ -17,6 +17,14 @@ func runConversationalQuestionFixtures() throws {
         "왜 그렇게 생각해?",
         "둘 중에 뭐가 더 나아?",
         "what does co mean?",
+        // Build 355's exact misroute and composed bilingual/ASR variants: a
+        // self-check announcement is not an instruction to launch an agent.
+        "야 나 한번 체크해 볼게. 너 되냐?",
+        "너 잘 되냐",
+        "한번 체크해보자 되냐",
+        "야 나 한번 체크해볼게 너 되냐",
+        "Hey, let me check. Are you working?",
+        "let me check are you working",
     ] {
         check(ClaudeChatLane.conversationalQuestion(question), "chat lane: \(question)")
     }
@@ -43,10 +51,22 @@ func runConversationalQuestionFixtures() throws {
         "그러면 QMGR 통합하려면 어떻게 해야 되는데 스키마 짜봐 Objective function은 QMGR 통합이야",
         "거기서 QM이랑 GR 통합하는 자료가 있거든? 가져와봐",
         "유성 코는 무슨 뜻인지",
+        "야 너 한번 체크해봐. 되냐?",
+        "너 잘 되냐? 터미널에서 실제로 확인해줘",
+        "Are you working? Can you run a shell check?",
+        "야 나 한번 체크해 볼게. 서버 되냐?",
     ] {
         check(!ClaudeChatLane.conversationalQuestion(request), "agent keeps: \(request.prefix(40))")
     }
     check(!ClaudeChatLane.conversationalQuestion(String(repeating: "왜 그래? ", count: 40)), "a long message keeps the agent")
+    // Classification consumes the current objective, never old routing output.
+    // The same availability turn stays chat-shaped after a previous full-agent
+    // task; the native wiring additionally verifies detachment and read scope.
+    let previousAgentContext = "assistant: Claude Code / Fable 5.1 / max; inspect source and run a tool call."
+    let currentCheckIn = "야 나 한번 체크해 볼게. 너 되냐?"
+    check(!ClaudeChatLane.conversationalQuestion(previousAgentContext), "prior work context does not itself qualify")
+    check(ClaudeChatLane.conversationalQuestion(currentCheckIn) && StatusCheckIn.answersFromCard(currentCheckIn),
+          "current objective stays a check-in independent of prior agent route")
     // 2026-10-02: a question that changes nothing runs on the read-only agent
     // (web lookups, no write authority, no OS-1 source lock); the domain
     // conversation's questions ran write-authorized and waited behind a repair.

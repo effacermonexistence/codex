@@ -96,3 +96,45 @@ describe("governed delegated execution context", () => {
     expect(await completionFeedbackMatchesTask(valid, "ordinary old task")).toBe(true);
   });
 });
+
+
+describe("bounded conversation and observed quota wire", () => {
+  const prompt = "야 나 한번 체크해 볼게. 너 되냐?";
+  const conversation = { kind: "availability_checkin", objective_sha256: createHash("sha256").update(prompt, "utf8").digest("hex"),
+    tools_allowed: false, requires_external_evidence: false };
+  const context = { input_utf8_bytes: 500, source_utf8_bytes: 0, history_utf8_bytes: 0,
+    execution_permission_profile: "read_only", conversational_surface: conversation };
+  it("preserves exact chat declaration and rejects hash/object strengthening", async () => {
+    expect(validExecutionContext(context)).toBe(true);
+    expect(await completionFeedbackMatchesTask(context as any, prompt)).toBe(true);
+    expect(await completionFeedbackMatchesTask(context as any, prompt.normalize("NFD"))).toBe(false);
+    expect(await completionFeedbackMatchesTask(context as any, prompt + " ")).toBe(false);
+    expect(validExecutionContext({ ...context, execution_permission_profile: "workspace_write" })).toBe(false);
+    expect(validExecutionContext({ ...context, source_utf8_bytes: 1 })).toBe(false);
+    expect(validExecutionContext({ ...context, governed_delegation: delegation })).toBe(false);
+  });
+  for (const surface of [null, { ...conversation, kind: "code" }, { ...conversation, tools_allowed: true },
+    { ...conversation, requires_external_evidence: true }, { ...conversation, objective_sha256: "not a hash" },
+    { ...conversation, parity_verified: true }, { ...conversation, kind: ["smalltalk"] }]) {
+    it(`blocks invalid conversation ${JSON.stringify(surface)}`, () => expect(validExecutionContext({ ...context, conversational_surface: surface })).toBe(false));
+  }
+  const quota = { schema: 1, observed_at: "2026-10-09T04:46:23Z", providers: [
+    { provider: "codex", state: "available", remaining_percent: 61, resets_at: "2026-10-14T07:29:57Z", source: "native_account_rate_limits" },
+    { provider: "claude", state: "available", remaining_percent: 1, resets_at: "2026-10-12T00:00:00Z", source: "native_get_usage" },
+  ] };
+  it("keeps actual 61/1 account headroom and unknown null distinct", () => {
+    expect(validExecutionContext({ ...context, provider_quota: quota })).toBe(true);
+    expect(validExecutionContext({ ...context, provider_quota: { ...quota, providers: [{ ...quota.providers[1], state: "unknown", remaining_percent: null }] } })).toBe(true);
+  });
+  for (const badQuota of [null, { ...quota, schema: 2 }, { ...quota, observed_at: "yesterday" },
+    { ...quota, providers: [] }, { ...quota, providers: [quota.providers[0], quota.providers[0]] },
+    { ...quota, providers: [{ ...quota.providers[0], remaining_percent: 101 }] },
+    { ...quota, providers: [{ ...quota.providers[0], remaining_percent: "61" }] },
+    { ...quota, providers: [{ ...quota.providers[0], remaining_percent: true }] },
+    { ...quota, providers: [{ ...quota.providers[0], state: "unknown" }] },
+    { ...quota, providers: [{ ...quota.providers[0], state: "exhausted", remaining_percent: 1 }] },
+    { ...quota, providers: [{ ...quota.providers[1], source: "native_account_rate_limits" }] },
+    { ...quota, providers: [{ ...quota.providers[0], quota_scope: "fable-only" }] }, { ...quota, grants_models: true }]) {
+    it(`blocks invalid quota ${JSON.stringify(badQuota)}`, () => expect(validExecutionContext({ ...context, provider_quota: badQuota })).toBe(false));
+  }
+});

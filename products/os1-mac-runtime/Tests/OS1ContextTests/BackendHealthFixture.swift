@@ -65,6 +65,104 @@ func runBackendHealthFixtures() throws {
     let quotaFallback = BackendHealth(claude: BackendHealth.Backend(state: .quotaExhausted), codex: BackendHealth.Backend(state: .usable), checkedAt: now)
     check(quotaFallback.repairSteps.isEmpty, "quota is not an authentication repair")
 
+    // Native plan metadata is separate from the configured 30/100 capacity mix.
+    let formatter = ISO8601DateFormatter()
+    let quotaReset = now.addingTimeInterval(600)
+    func window(_ kind: String, _ percent: Any, model: String? = nil, active: Bool = false,
+                reset: Date? = quotaReset) -> [String: Any] {
+        ["kind": kind, "percent": percent, "severity": "normal", "is_active": active,
+         "resets_at": reset.map { formatter.string(from: $0) as Any } ?? NSNull(),
+         "scope": model.map { ["model": ["display_name": $0], "surface": NSNull()] as Any } ?? NSNull()]
+    }
+    func usage(_ rows: [[String: Any]]) -> [String: Any] {
+        ["rate_limits_available": true, "rate_limits": ["limits": rows]]
+    }
+    let nativeQuota = BackendHealth.QuotaSnapshot.claudeUsage(usage([
+        window("session", 14), window("weekly_all", 99, active: true),
+        window("weekly_scoped", 6, model: "Fable")]), accountID: "claude.default", observedAt: now)!
+    check(nativeQuota.source == .claudeNative && nativeQuota.windows.count == 3, "native server windows preserved")
+    check(nativeQuota.effectiveRemaining(accountID: "claude.default", model: "claude-fable-5-1[1m]", now: now) == 1,
+          "global weekly 1% constrains Fable's separate 94%, never replaced by model headroom")
+    check(nativeQuota.effectiveRemaining(accountID: "claude.default", now: now) == 1 &&
+          nativeQuota.limitingReset(accountID: "claude.default", now: now) == quotaReset, "provider summary uses all general windows")
+    check(nativeQuota.isFresh(accountID: "claude.default", now: now.addingTimeInterval(120)), "snapshot bounded to 120 seconds")
+    check(nativeQuota.effectiveRemaining(accountID: "claude.default", now: now.addingTimeInterval(121)) == nil,
+          "stale quota is unknown, not full or exhausted")
+    check(nativeQuota.effectiveRemaining(accountID: "another-account", now: now) == nil, "account selection binds the observation")
+    check(!nativeQuota.isFresh(accountID: "claude.default", now: now.addingTimeInterval(-1)), "future quota timestamp is unknown")
+    let scopedQuota = BackendHealth.QuotaSnapshot.claudeUsage(usage([
+        window("weekly_all", 20), window("weekly_scoped", 100, model: "Fable")]), accountID: "claude.default", observedAt: now)!
+    check(scopedQuota.effectiveRemaining(accountID: "claude.default", model: "fable", now: now) == 0,
+          "matching model exhaustion is hard, even when general quota remains")
+    check(scopedQuota.effectiveRemaining(accountID: "claude.default", model: "opus", now: now) == 80,
+          "other model's scoped limit does not block Opus")
+    let nonHeadline = BackendHealth.QuotaSnapshot.claudeUsage(usage([
+        window("session", 100, active: false), window("weekly_all", 20, active: true)]), accountID: "claude.default", observedAt: now)!
+    check(nonHeadline.effectiveRemaining(accountID: "claude.default", now: now) == 0,
+          "is_active is display metadata, not permission to ignore another general limit")
+    let soon = BackendHealth.QuotaSnapshot.claudeUsage(usage([
+        window("session", 99, reset: now.addingTimeInterval(1))]), accountID: "claude.default", observedAt: now)!
+    check(soon.effectiveRemaining(accountID: "claude.default", now: now.addingTimeInterval(1)) == nil,
+          "reset crossing invalidates quota; no inferred replenishment")
+    let noReset = BackendHealth.QuotaSnapshot.claudeUsage(usage([window("session", 0, reset: nil)]),
+        accountID: "claude.default", observedAt: now)!
+    check(noReset.effectiveRemaining(accountID: "claude.default", now: now) == 100 &&
+          noReset.limitingReset(accountID: "claude.default", now: now) == nil, "observed zero usage differs from unknown reset")
+    check(BackendHealth.QuotaSnapshot.claudeUsage(["rate_limits_available": true,
+        "rate_limits": ["five_hour": ["utilization": 14]]], accountID: "claude.default", observedAt: now) == nil,
+          "legacy utilization bars without live rows are not fresh quota evidence")
+    check(BackendHealth.QuotaSnapshot.claudeUsage(["rate_limits_available": false,
+        "rate_limits": ["limits": [window("session", 14)]]], accountID: "claude.default", observedAt: now) == nil,
+          "API-key/non-plan lane is unknown")
+    check(BackendHealth.QuotaSnapshot.claudeUsage(usage([]), accountID: "claude.default", observedAt: now) == nil,
+          "empty rows do not mean 100% available")
+    for value in [true, 101, -1, "99", NSNull()] as [Any] {
+        check(BackendHealth.QuotaSnapshot.claudeUsage(usage([window("session", value)]), accountID: "claude.default", observedAt: now) == nil,
+              "invalid percent cannot enter a quota snapshot")
+    }
+    var unknownScope = window("weekly_scoped", 100)
+    unknownScope["scope"] = ["unrecognized": "future surface"]
+    check(BackendHealth.QuotaSnapshot.claudeUsage(usage([unknownScope]), accountID: "claude.default", observedAt: now) == nil,
+          "unknown scope cannot be widened to all models")
+    var badDate = window("session", 99); badDate["resets_at"] = "not-a-date"
+    check(BackendHealth.QuotaSnapshot.claudeUsage(usage([badDate]), accountID: "claude.default", observedAt: now) == nil,
+          "invalid reset remains unknown")
+    check(BackendHealth.QuotaSnapshot.claudeUsage(usage(Array(repeating: window("session", 0), count: 65)),
+        accountID: "claude.default", observedAt: now) == nil, "bounded native quota rows")
+    var quotaBackend = BackendHealth.Backend(state: .usable); quotaBackend.quota = nativeQuota
+    let quotaHealth = BackendHealth(claude: quotaBackend, codex: .init(state: .usable), checkedAt: now)
+    let roundTrip = try JSONDecoder().decode(BackendHealth.self, from: JSONEncoder().encode(quotaHealth))
+    check(roundTrip == quotaHealth, "public optional quota metadata round-trips without credentials")
+    var crossingBackend = BackendHealth.Backend(state: .usable); crossingBackend.quota = soon
+    check(BackendHealth(claude: crossingBackend, codex: .init(state: .usable), checkedAt: now).resetCrossed(at: now.addingTimeInterval(1)),
+          "native quota reset also triggers health refresh")
+    check(CapacityMix.defaultCodex == 30 && CapacityMix.defaultClaude == 100 &&
+          nativeQuota.effectiveRemaining(accountID: "claude.default", now: now) == 1,
+          "configured capacity remains distinct from measured remaining quota")
+    let codexBody: [String: Any] = ["rateLimitsByLimitId": [
+        "codex": ["primary": ["usedPercent": 90, "resetsAt": quotaReset.timeIntervalSince1970],
+                  "secondary": ["usedPercent": 39, "resetsAt": now.addingTimeInterval(2_000).timeIntervalSince1970]],
+        "exact-model": ["limitName": "gpt-test", "primary": ["usedPercent": 100, "resetsAt": quotaReset.timeIntervalSince1970]],
+        "unknown-label": ["limitName": "Friendly model name", "primary": ["usedPercent": 100, "resetsAt": quotaReset.timeIntervalSince1970]]]]
+    let codexQuota = BackendHealth.QuotaSnapshot.codexRateLimits(codexBody, accountID: "codex.default",
+        models: ["gpt-test"], observedAt: now)!
+    check(codexQuota.windows.count == 3 && codexQuota.effectiveRemaining(accountID: "codex.default", now: now) == 10,
+          "shorter Codex 10% window constrains longer 61%; unknown friendly label never becomes general")
+    check(codexQuota.effectiveRemaining(accountID: "codex.default", model: "gpt-test", now: now) == 0 &&
+          codexQuota.effectiveRemaining(accountID: "codex.default", model: "other-model", now: now) == 10,
+          "Codex scoped bucket requires exact native model slug")
+    let legacyQuota = BackendHealth.QuotaSnapshot.codexRateLimits(["rateLimits": ["limitId": "codex",
+        "primary": ["usedPercent": 39, "resetsAt": quotaReset.timeIntervalSince1970]]],
+        accountID: "codex.default", models: [], observedAt: now)
+    check(legacyQuota?.effectiveRemaining(accountID: "codex.default", now: now) == 61, "native legacy single bucket remains supported")
+    check(BackendHealth.QuotaSnapshot.codexRateLimits(["rateLimitsByLimitId": [:]], accountID: "codex.default",
+        models: [], observedAt: now) == nil, "missing Codex windows remain unknown")
+    check(BackendHealth.QuotaSnapshot.codexRateLimits(["rateLimitsByLimitId": ["codex": ["primary": ["usedPercent": true]]]],
+        accountID: "codex.default", models: [], observedAt: now) == nil, "Codex boolean cannot become a percentage")
+    check(BackendHealth.QuotaSnapshot.codexRateLimits(["rateLimitsByLimitId": ["codex": ["primary": [
+        "usedPercent": 100, "resetsAt": now.addingTimeInterval(-1).timeIntervalSince1970]]]],
+        accountID: "codex.default", models: [], observedAt: now) == nil, "reset windows are not renewed by inference")
+
     // Cache: round trip, staleness, future timestamps, oversize and garbage.
     let root = FileManager.default.temporaryDirectory.appendingPathComponent("os1-backend-health-\(UUID().uuidString)")
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)

@@ -21,7 +21,52 @@ export type ExecutionContext = {
   completion_feedback?: CompletionFeedback;
   available_claude_models?: ClaudeModelCapability[];
   governed_delegation?: GovernedDelegation;
+  conversational_surface?: ConversationalSurface;
+  provider_quota?: ProviderQuota;
 };
+
+/** Host-classified bounded conversation. Never grants tools or parity. */
+export type ConversationalSurface = {
+  kind: "availability_checkin" | "smalltalk";
+  objective_sha256: string;
+  tools_allowed: false;
+  requires_external_evidence: false;
+};
+export function validConversationalSurface(value: unknown): value is ConversationalSurface {
+  return exactRecord(value, ["kind", "objective_sha256", "tools_allowed", "requires_external_evidence"]) &&
+    typeof value.kind === "string" && ["availability_checkin", "smalltalk"].includes(value.kind) &&
+    typeof value.objective_sha256 === "string" && /^[0-9a-f]{64}$/.test(value.objective_sha256) &&
+    value.tools_allowed === false && value.requires_external_evidence === false;
+}
+
+/** Fresh native plan metadata, not owner allowance or an API bill. */
+export type ProviderQuota = {
+  schema: 1;
+  observed_at: string;
+  providers: {
+    provider: "codex" | "claude";
+    state: "available" | "exhausted" | "unknown";
+    remaining_percent: number | null;
+    resets_at: string | null;
+    source: "native_account_rate_limits" | "native_get_usage";
+  }[];
+};
+const utcDate = (value: unknown): value is string => typeof value === "string" &&
+  /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/.test(value) && Number.isFinite(Date.parse(value));
+export function validProviderQuota(value: unknown): value is ProviderQuota {
+  return exactRecord(value, ["schema", "observed_at", "providers"]) && value.schema === 1 && utcDate(value.observed_at) &&
+    Array.isArray(value.providers) && value.providers.length > 0 && value.providers.length <= 2 &&
+    new Set(value.providers.map(row => typeof row === "object" && row !== null ? row.provider : null)).size === value.providers.length &&
+    value.providers.every(row => exactRecord(row, ["provider", "state", "remaining_percent", "resets_at", "source"]) &&
+      typeof row.provider === "string" && ["codex", "claude"].includes(row.provider) &&
+      typeof row.state === "string" && ["available", "exhausted", "unknown"].includes(row.state) &&
+      (row.remaining_percent === null || (typeof row.remaining_percent === "number" && Number.isFinite(row.remaining_percent) && row.remaining_percent >= 0 && row.remaining_percent <= 100)) &&
+      (row.resets_at === null || utcDate(row.resets_at)) &&
+      ((row.state === "unknown" && row.remaining_percent === null) ||
+       (row.state === "exhausted" && row.remaining_percent === 0) ||
+       (row.state === "available" && typeof row.remaining_percent === "number" && row.remaining_percent > 0)) &&
+      row.source === (row.provider === "codex" ? "native_account_rate_limits" : "native_get_usage"));
+}
 
 export type GovernedDelegation = {
   role: "planner" | "worker";
@@ -89,7 +134,9 @@ export function validExecutionContext(value: unknown): value is ExecutionContext
   const keys = ["history_utf8_bytes", "input_utf8_bytes", "source_utf8_bytes"];
   const expected = [...keys, ...(v.execution_permission_profile !== undefined ? ["execution_permission_profile"] : []), ...(v.completion_feedback !== undefined ? ["completion_feedback"] : []),
     ...(v.available_claude_models !== undefined ? ["available_claude_models"] : []),
-    ...(v.governed_delegation !== undefined ? ["governed_delegation"] : [])].sort();
+    ...(v.governed_delegation !== undefined ? ["governed_delegation"] : []),
+    ...(v.conversational_surface !== undefined ? ["conversational_surface"] : []),
+    ...(v.provider_quota !== undefined ? ["provider_quota"] : [])].sort();
   if (Object.keys(v).sort().join() !== expected.join() ||
       keys.some(key => !Number.isSafeInteger(v[key]) || (v[key] as number) < 0 || (v[key] as number) > 4_000_000)) return false;
   return (v.execution_permission_profile === undefined || v.execution_permission_profile === "read_only" || v.execution_permission_profile === "workspace_write") &&
@@ -97,7 +144,10 @@ export function validExecutionContext(value: unknown): value is ExecutionContext
     (v.source_utf8_bytes as number) + (v.history_utf8_bytes as number) <= (v.input_utf8_bytes as number) &&
     (v.completion_feedback === undefined || validCompletionFeedback(v.completion_feedback)) &&
     (v.available_claude_models === undefined || (validClaudeCatalog(v.available_claude_models) && validCompletionFeedback(v.completion_feedback))) &&
-    (v.governed_delegation === undefined || validGovernedDelegation(v.governed_delegation));
+    (v.governed_delegation === undefined || validGovernedDelegation(v.governed_delegation)) &&
+    (v.conversational_surface === undefined || (validConversationalSurface(v.conversational_surface) &&
+      v.execution_permission_profile === "read_only" && v.governed_delegation === undefined && v.source_utf8_bytes === 0)) &&
+    (v.provider_quota === undefined || validProviderQuota(v.provider_quota));
 }
 
 /** Bind observations to the exact transmitted UTF-8 routing task, not a label. */
@@ -106,6 +156,11 @@ export async function completionFeedbackMatchesTask(context: ExecutionContext | 
     const bytes = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(context.governed_delegation.parent_task));
     const digest = Array.from(new Uint8Array(bytes), byte => byte.toString(16).padStart(2, "0")).join("");
     if (context.governed_delegation.parent_objective_sha256 !== digest) return false;
+  }
+  if (context?.conversational_surface) {
+    const bytes = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(task));
+    const digest = Array.from(new Uint8Array(bytes), byte => byte.toString(16).padStart(2, "0")).join("");
+    if (context.conversational_surface.objective_sha256 !== digest) return false;
   }
   if (!context?.completion_feedback) return true;
   const bytes = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(task));

@@ -120,6 +120,10 @@ public enum ClaudeChatLane {
     /// release, code, OS-1 itself) keeps the agent: missing a lookup costs
     /// correctness, a full lane only costs tokens.
     public static func conversationalQuestion(_ prompt: String) -> Bool {
+        // A response/status check has its own bounded grammar, including
+        // first-person check openers and punctuation-free dictation. Reuse it
+        // before generic work-word filters mistake "체크해 볼게" for an order.
+        if StatusCheckIn.answersFromCard(prompt) { return true }
         let value = prompt.precomposedStringWithCanonicalMapping.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !value.isEmpty, value.count <= 200, !value.contains("\n"),
               !needsWorkspaceMaterial(value),

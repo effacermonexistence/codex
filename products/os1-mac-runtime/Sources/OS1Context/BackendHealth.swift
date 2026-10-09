@@ -1,10 +1,158 @@
 import Foundation
+import CoreFoundation
 
 /// Observed usability of the local backends: the reason each one cannot run
 /// and the earliest known recovery time. Public state only — never
 /// credentials, prompts, rankings or raw provider logs. A dead-backend
 /// preflight consults this to repair instead of ending the request.
 public struct BackendHealth: Codable, Equatable, Sendable {
+    /// Public, account-home-bound provider metadata, never configured capacity
+    /// or a credential. Missing/stale/reset-crossed observations remain unknown.
+    public struct QuotaSnapshot: Codable, Equatable, Sendable {
+        public enum Source: String, Codable, Sendable {
+            case codexNative = "native_codex_account_rate_limits"
+            case claudeNative = "native_claude_get_usage"
+        }
+        public struct Window: Codable, Equatable, Sendable {
+            public let bucket: String
+            public let usedPercent: Double
+            public let resetsAt: Date?
+            public var model: String? = nil
+            public var surface: String? = nil
+            public var severity: String? = nil
+            public var isActive: Bool? = nil
+            public init(bucket: String, usedPercent: Double, resetsAt: Date?, model: String? = nil,
+                        surface: String? = nil, severity: String? = nil, isActive: Bool? = nil) {
+                self.bucket = bucket; self.usedPercent = usedPercent; self.resetsAt = resetsAt
+                self.model = model; self.surface = surface; self.severity = severity; self.isActive = isActive
+            }
+        }
+        public let accountID: String
+        public let observedAt: Date
+        public let source: Source
+        public let windows: [Window]
+        public init(accountID: String, observedAt: Date, source: Source, windows: [Window]) {
+            self.accountID = accountID; self.observedAt = observedAt; self.source = source; self.windows = windows
+        }
+        public static let maximumAge: TimeInterval = 120
+        public func isFresh(accountID: String, now: Date = Date(), maxAge: TimeInterval = maximumAge) -> Bool {
+            let age = now.timeIntervalSince(observedAt)
+            return self.accountID == accountID && !accountID.isEmpty && maxAge > 0 && maxAge <= Self.maximumAge &&
+                age >= 0 && age <= maxAge && !windows.isEmpty && windows.count <= 64 && windows.allSatisfy {
+                    !$0.bucket.isEmpty && $0.bucket.count <= 64 && $0.usedPercent.isFinite &&
+                    (0...100).contains($0.usedPercent) && ($0.resetsAt.map { $0 > now } ?? true)
+                }
+        }
+        private func applies(_ window: Window, model: String?, surface: String?) -> Bool {
+            if let scopedSurface = window.surface {
+                guard let surface, scopedSurface.caseInsensitiveCompare(surface) == .orderedSame else { return false }
+            }
+            if let scopedModel = window.model {
+                guard let model else { return false }
+                if source == .claudeNative {
+                    return BackendRecovery.claudeModelFamily(scopedModel) == BackendRecovery.claudeModelFamily(model)
+                }
+                return scopedModel.caseInsensitiveCompare(model) == .orderedSame
+            }
+            return true
+        }
+        /// Every applicable general window constrains the model. The server's
+        /// isActive flag selects a display headline, not permission to ignore
+        /// a non-headline five-hour or weekly limit.
+        public func effectiveRemaining(accountID: String, model: String? = nil, surface: String? = nil,
+                                       now: Date = Date()) -> Double? {
+            guard isFresh(accountID: accountID, now: now) else { return nil }
+            return windows.filter { applies($0, model: model, surface: surface) }.map { 100 - $0.usedPercent }.min()
+        }
+        public func limitingReset(accountID: String, model: String? = nil, surface: String? = nil,
+                                  now: Date = Date()) -> Date? {
+            guard let remaining = effectiveRemaining(accountID: accountID, model: model, surface: surface, now: now) else { return nil }
+            return windows.filter { applies($0, model: model, surface: surface) && 100 - $0.usedPercent == remaining }
+                .compactMap(\.resetsAt).max()
+        }
+        /// Adopt only fresh server rows. Legacy utilization bars may be cached
+        /// by the CLI on a failed usage fetch and must not masquerade as fresh.
+        public static func claudeUsage(_ body: [String: Any], accountID: String, observedAt: Date = Date()) -> Self? {
+            guard let available = body["rate_limits_available"] as? NSNumber,
+                  CFGetTypeID(available) == CFBooleanGetTypeID(), available.boolValue,
+                  let limits = body["rate_limits"] as? [String: Any],
+                  let rows = limits["limits"] as? [[String: Any]], !rows.isEmpty, rows.count <= 64 else { return nil }
+            let formatter = ISO8601DateFormatter()
+            formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            let simple = ISO8601DateFormatter()
+            var windows: [Window] = []
+            func label(_ value: Any?) -> String? {
+                guard let value = value as? String, !value.isEmpty, value.count <= 64,
+                      value.rangeOfCharacter(from: .controlCharacters) == nil else { return nil }
+                return value
+            }
+            for row in rows {
+                guard let bucket = label(row["kind"]), let percent = row["percent"] as? NSNumber,
+                      CFGetTypeID(percent) != CFBooleanGetTypeID(), percent.doubleValue.isFinite,
+                      (0...100).contains(percent.doubleValue), let severity = label(row["severity"]),
+                      let active = row["is_active"] as? NSNumber, CFGetTypeID(active) == CFBooleanGetTypeID() else { return nil }
+                var reset: Date?
+                if let raw = row["resets_at"], !(raw is NSNull) {
+                    guard let text = raw as? String, let date = formatter.date(from: text) ?? simple.date(from: text),
+                          date > observedAt else { return nil }
+                    reset = date
+                }
+                var model: String?, surface: String?
+                if let raw = row["scope"], !(raw is NSNull) {
+                    guard let scope = raw as? [String: Any], Set(scope.keys).isSubset(of: ["model", "surface"]) else { return nil }
+                    for key in ["model", "surface"] {
+                        if let raw = scope[key], !(raw is NSNull) {
+                            guard let object = raw as? [String: Any], let name = label(object["display_name"]) else { return nil }
+                            if key == "model" { model = name } else { surface = name }
+                        }
+                    }
+                }
+                windows.append(Window(bucket: bucket, usedPercent: percent.doubleValue, resetsAt: reset,
+                                      model: model, surface: surface, severity: severity, isActive: active.boolValue))
+            }
+            return Self(accountID: accountID, observedAt: observedAt, source: .claudeNative, windows: windows)
+        }
+        /// Reuse the existing unpaid Codex probe. Every still-active general
+        /// primary/secondary window applies; a label scopes a model only when
+        /// it exactly names a slug in that same native model inventory.
+        public static func codexRateLimits(_ body: [String: Any], accountID: String, models: Set<String>,
+                                           observedAt: Date) -> Self? {
+            var buckets: [(key: String, value: [String: Any], model: String?)] = []
+            if let multi = body["rateLimitsByLimitId"] as? [String: [String: Any]] {
+                if let general = multi["codex"] { buckets.append(("codex", general, nil)) }
+                for key in multi.keys.sorted() where key != "codex" {
+                    guard let value = multi[key], let name = value["limitName"] as? String,
+                          models.contains(name) else { continue }
+                    buckets.append((key, value, name))
+                }
+            } else if body["rateLimitsByLimitId"] == nil, let legacy = body["rateLimits"] as? [String: Any],
+                      legacy["limitId"] as? String == "codex" {
+                buckets.append(("codex", legacy, nil))
+            }
+            var windows: [Window] = []
+            for bucket in buckets {
+                guard !bucket.key.isEmpty, bucket.key.count <= 50,
+                      bucket.key.rangeOfCharacter(from: .controlCharacters) == nil else { return nil }
+                for key in ["primary", "secondary"] {
+                    guard let raw = bucket.value[key], !(raw is NSNull) else { continue }
+                    guard let row = raw as? [String: Any], let used = row["usedPercent"] as? NSNumber,
+                          CFGetTypeID(used) != CFBooleanGetTypeID(), used.doubleValue.isFinite,
+                          (0...100).contains(used.doubleValue) else { return nil }
+                    var reset: Date?
+                    if let value = row["resetsAt"], !(value is NSNull) {
+                        guard let number = value as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID(),
+                              number.doubleValue.isFinite, number.doubleValue > 0 else { return nil }
+                        reset = Date(timeIntervalSince1970: number.doubleValue)
+                        if reset! <= observedAt { continue }
+                    }
+                    windows.append(Window(bucket: bucket.key + "." + key, usedPercent: used.doubleValue,
+                                          resetsAt: reset, model: bucket.model))
+                }
+            }
+            guard !windows.isEmpty, windows.count <= 64 else { return nil }
+            return Self(accountID: accountID, observedAt: observedAt, source: .codexNative, windows: windows)
+        }
+    }
     public enum State: String, Codable, Sendable {
         case usable
         case loggedOut = "logged_out"
@@ -24,6 +172,7 @@ public struct BackendHealth: Codable, Equatable, Sendable {
         /// used share and reset time. Optional so older caches still decode.
         public var windowUsedPercent: Double? = nil
         public var windowResetsAt: Date? = nil
+        public var quota: QuotaSnapshot? = nil
         public init(state: State, detail: String? = nil, recoversAt: Date? = nil) {
             self.state = state
             self.detail = detail.map { String($0.prefix(600)) }
@@ -94,7 +243,7 @@ public struct BackendHealth: Codable, Equatable, Sendable {
     /// it never grants availability without a new native probe.
     public func resetCrossed(at now: Date) -> Bool {
         [claude, codex].contains { backend in
-            [backend.recoversAt, backend.windowResetsAt].compactMap { $0 }
+            ([backend.recoversAt, backend.windowResetsAt] + (backend.quota?.windows.map(\.resetsAt) ?? [])).compactMap { $0 }
                 .contains { $0 > checkedAt && $0 <= now }
         }
     }
