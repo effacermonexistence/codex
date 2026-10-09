@@ -224,6 +224,9 @@ struct BackendAccountsPanel: View {
             ForEach(providers, id: \.self) { provider in
                 providerCard(provider)
             }
+            // Ordinary ChatGPT has its own explicit browser-control consent;
+            // hiding the Codex agent must not hide this separate connection.
+            ConsumerChatGPTConnectionPanel(dark: dark, readOnly: readOnly)
             if let notice = model.notice {
                 Text(notice).font(.system(size: 11)).foregroundStyle(Color.orange).textSelection(.enabled)
             }

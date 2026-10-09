@@ -191,7 +191,7 @@ if [[ "$source_input_clean" == "1" ]]; then
   plutil -insert OS1SourceRepository -string effacermonexistence/codex "$staged_info"
   plutil -insert OS1SourceTreeClean -bool true "$staged_info"
 fi
-for resource in OmarAGI.png Codex.png ClaudeCode.png Constellation.png CodexDictationCapture.html; do
+for resource in OmarAGI.png Codex.png ClaudeCode.png Constellation.png CodexDictationCapture.html consumer-chatgpt-driver.mjs; do
   install -m 0644 "$runtime_root/Resources/$resource" \
     "$stage_dir/Applications/OS-1 CLODEX.app/Contents/Resources/$resource"
 done
@@ -222,6 +222,7 @@ while IFS= read -r payload_file; do
     "Applications/OS-1 CLODEX.app/Contents/Resources/ClaudeCode.png"|\
     "Applications/OS-1 CLODEX.app/Contents/Resources/Constellation.png"|\
     "Applications/OS-1 CLODEX.app/Contents/Resources/CodexDictationCapture.html"|\
+    "Applications/OS-1 CLODEX.app/Contents/Resources/consumer-chatgpt-driver.mjs"|\
     "Applications/OS-1 CLODEX.app/Contents/Resources/OmarAGI.icns"|\
     "Applications/OS-1 CLODEX.app/Contents/Resources/config.json"|\
     "Applications/OS-1 CLODEX.app/Contents/Info.plist"|\
@@ -346,6 +347,7 @@ while IFS= read -r payload_file; do
     "Applications/OS-1 CLODEX.app/Contents/Resources/ClaudeCode.png"|\
     "Applications/OS-1 CLODEX.app/Contents/Resources/Constellation.png"|\
     "Applications/OS-1 CLODEX.app/Contents/Resources/CodexDictationCapture.html"|\
+    "Applications/OS-1 CLODEX.app/Contents/Resources/consumer-chatgpt-driver.mjs"|\
     "Applications/OS-1 CLODEX.app/Contents/Resources/OmarAGI.icns"|\
     "Applications/OS-1 CLODEX.app/Contents/Resources/config.json"|\
     "Applications/OS-1 CLODEX.app/Contents/Info.plist"|\

@@ -102,6 +102,16 @@ verify_unnotarized_beta_package() {
     requires_browser_capture=1
   fi
 
+  # 0.9.293 adds the signed public-UI consumer transport helper. Historical
+  # immutable package counts remain exact for earlier recovery versions.
+  local requires_consumer_chat=0
+  if (( 10#$release_major > 0 || 10#$release_minor > 9 ||
+        (10#$release_minor == 9 && 10#$release_patch >= 293) )); then
+    expected_payload_files=24
+    expected_component_files=27
+    requires_consumer_chat=1
+  fi
+
   pkgutil --expand-full "$package_path" "$expanded_root" || {
     echo "OS-1 beta verification could not expand the package." >&2
     return 1
@@ -145,6 +155,12 @@ verify_unnotarized_beta_package() {
       echo "OS-1 beta verification requires the browser capture document." >&2; return 1;
     }
   fi
+  if (( requires_consumer_chat )); then
+    [[ -f "$app_path/Contents/Resources/consumer-chatgpt-driver.mjs" &&
+       ! -L "$app_path/Contents/Resources/consumer-chatgpt-driver.mjs" ]] || {
+      echo "OS-1 beta verification requires the signed consumer ChatGPT helper." >&2; return 1;
+    }
+  fi
   [[ "$(/usr/bin/xmllint --xpath 'string(/pkg-info/@identifier)' "$package_info")" == "com.omaragi.os1" &&
      "$(/usr/bin/xmllint --xpath 'string(/pkg-info/@version)' "$package_info")" == "$manifest_version" &&
      "$(/usr/bin/xmllint --xpath 'string(/pkg-info/@install-location)' "$package_info")" == "/" &&
@@ -176,6 +192,7 @@ verify_unnotarized_beta_package() {
       "Applications/OS-1 CLODEX.app/Contents/Resources/ClaudeCode.png"|\
       "Applications/OS-1 CLODEX.app/Contents/Resources/Constellation.png"|\
       "Applications/OS-1 CLODEX.app/Contents/Resources/CodexDictationCapture.html"|\
+      "Applications/OS-1 CLODEX.app/Contents/Resources/consumer-chatgpt-driver.mjs"|\
       "Applications/OS-1 CLODEX.app/Contents/Resources/OmarAGI.icns"|\
       "Applications/OS-1 CLODEX.app/Contents/Resources/config.json"|\
       "Applications/OS-1 CLODEX.app/Contents/Info.plist"|\

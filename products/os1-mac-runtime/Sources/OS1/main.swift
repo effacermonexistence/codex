@@ -877,6 +877,210 @@ func providerQuotaContext(codex: BackendHealth.QuotaSnapshot?, claude: BackendHe
     guard let earliest = dates.min(), !rows.isEmpty else { return nil }
     return ProviderQuotaContext(observedAt: formatter.string(from: earliest), providers: rows)
 }
+/// Auth and billing facts observed from the provider's own selected-account
+/// process. This never reads/copies credential files or retains account emails.
+private struct NativeSurfaceAuth: Codable, Sendable {
+    let provider: String
+    let accountID: String
+    let mode: LocalSurfaceRouting.AuthenticationMode
+    let billing: LocalSurfaceRouting.BillingMode
+    let observedAt: Date
+    let source: String
+}
+
+private func nativeSurfaceAuthMode(provider: String, status: [String: Any],
+                                   configuration: [String: Any]?, environment: [String: String]) -> (LocalSurfaceRouting.AuthenticationMode, LocalSurfaceRouting.BillingMode) {
+    let keys = provider == "codex"
+        ? ["OPENAI_API_KEY", "CODEX_API_KEY", "CODEX_ACCESS_TOKEN", "OPENAI_BASE_URL", "CODEX_BASE_URL", "OPENAI_FEDERATION_RULE_ID", "OPENAI_IDENTITY_TOKEN_FILE"]
+        : ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_BASE_URL", "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY"]
+    guard !keys.contains(where: { !(environment[$0] ?? "").isEmpty }) else { return (.unknown, .unknown) }
+    if provider == "codex" {
+        guard let account = status["account"] as? [String: Any], account["type"] as? String == "chatgpt",
+              status["requiresOpenaiAuth"] as? Bool == true, let configuration else { return (.unknown, .unknown) }
+        // Official Codex core resolves an omitted model_provider to OpenAI
+        // (core/src/config/mod.rs). Missing effective config is still unknown;
+        // malformed/custom values are not defaults and cannot inherit this.
+        let configuredProvider = configuration["model_provider"]
+        guard configuredProvider == nil || configuredProvider is NSNull || configuredProvider as? String == "openai" else {
+            return (.unknown, .unknown)
+        }
+        if let base = configuration["openai_base_url"], !(base is NSNull),
+           (base as? String)?.isEmpty != true { return (.unknown, .unknown) }
+        if let providers = configuration["model_providers"] as? [String: Any], let configured = providers["openai"] as? [String: Any] {
+            if configured["requires_openai_auth"] as? Bool == false { return (.unknown, .unknown) }
+            for key in ["env_key", "experimental_bearer_token", "api_key", "api_key_helper"] {
+                if let value = configured[key], !(value is NSNull), (value as? String)?.isEmpty != true { return (.unknown, .unknown) }
+            }
+            if let url = configured["base_url"] as? String,
+               !["https://api.openai.com/v1", "https://chatgpt.com/backend-api/codex"].contains(url.trimmingCharacters(in: CharacterSet(charactersIn: "/"))) {
+                return (.unknown, .unknown)
+            }
+        }
+        return (.subscription, .includedSubscription)
+    }
+    guard provider == "claude", status["loggedIn"] as? Bool == true,
+          status["authMethod"] as? String == "claude.ai",
+          let plan = status["subscriptionType"] as? String,
+          ["pro", "max", "team", "enterprise"].contains(plan.lowercased()) else { return (.unknown, .unknown) }
+    if let keySource = status["apiKeySource"], !(keySource is NSNull) {
+        guard let source = keySource as? String,
+              ["", "none", "null"].contains(source.lowercased()) else { return (.unknown, .unknown) }
+    }
+    return (.subscription, .includedSubscription)
+}
+
+private func observeNativeSurfaceAuth(provider: String, workspace: String, book: BackendAccountBook) -> NativeSurfaceAuth? {
+    let account = BackendAccounts.active(provider: provider, in: book)
+    let overrides = BackendAccounts.environment(provider: provider, in: book)
+    let effective = ProcessInfo.processInfo.environment.merging(overrides) { _, new in new }
+    let mode: (LocalSurfaceRouting.AuthenticationMode, LocalSurfaceRouting.BillingMode)
+    if provider == "codex" {
+        guard let executable = try? findExecutable("codex"),
+              let client = try? CodexAppServerClient(executable: executable, workspace: workspace) else { return nil }
+        defer { client.close() }
+        let deadline = Date().addingTimeInterval(12)
+        guard (try? client.initialize(deadline: deadline)) != nil,
+              let facts = try? client.surfaceAuthenticationMetadata(deadline: deadline) else { return nil }
+        mode = nativeSurfaceAuthMode(provider: provider, status: facts.account, configuration: facts.configuration, environment: effective)
+    } else {
+        guard let executable = try? findExecutable("claude"),
+              let response = try? commandOutput(executable, ["auth", "status", "--json"], timeout: 12, environmentOverrides: overrides),
+              response.0 == 0, response.1.count <= 64_000,
+              let status = try? JSONSerialization.jsonObject(with: response.1) as? [String: Any] else { return nil }
+        mode = nativeSurfaceAuthMode(provider: provider, status: status, configuration: nil, environment: effective)
+    }
+    let after = BackendAccounts.load()
+    guard BackendAccounts.active(provider: provider, in: after).id == account.id,
+          BackendAccounts.environment(provider: provider, in: after) == overrides else { return nil }
+    return NativeSurfaceAuth(provider: provider, accountID: account.id, mode: mode.0, billing: mode.1,
+        observedAt: Date(), source: provider == "codex" ? "native_account_read_and_effective_config" : "native_claude_auth_status")
+}
+
+private struct NativeSurfaceSelection {
+    var preference: String
+    var receiptPath: String?
+    var allowedCodexModels: Set<String>
+    var allowedClaudeModels: Set<String>
+}
+
+/// Named choices remain owner/signed-core authority. This is a conservative
+/// lexical stop, not a model selector: discussion of a name may simply keep
+/// the prior core route rather than risking changing an explicit selection.
+private func requestNamesExecutionChoice(_ request: String, models: [String]) -> Bool {
+    let text = request.lowercased()
+    return (["chatgpt", "codex", "claude", "openai", "anthropic", "챗지피티", "코덱스", "클로드"] + models)
+        .filter { !$0.isEmpty }.contains { text.contains($0.lowercased()) }
+}
+
+private func selectLocalNativeSurface(request: String, providerPreference: String, workspace: String,
+                                     scope: TaskContext.Scope, hasSource: Bool, config: RuntimeConfig,
+                                     codexCatalog: ActiveCodexCatalog, claudeCatalog: [ClaudeModelCapability],
+                                     claudeQuota: BackendHealth.QuotaSnapshot?, codexCapacity: Int, claudeCapacity: Int,
+                                     now: Date = Date()) async throws -> NativeSurfaceSelection {
+    let unchanged = NativeSurfaceSelection(preference: providerPreference, receiptPath: nil,
+        allowedCodexModels: Set(codexCatalog.models.map(\.slug)), allowedClaudeModels: Set(claudeCatalog.map(\.model)))
+    guard providerPreference == "auto", !ConcurrentRouteFanoutRuntime.child,
+          publicDeterministicExpression(request) == nil,
+          !requestNamesExecutionChoice(request, models: codexCatalog.models.map(\.slug) + claudeCatalog.map(\.model)) else { return unchanged }
+    let book = BackendAccounts.load()
+    let codexAccount = BackendAccounts.active(provider: "codex", in: book).id
+    let claudeAccount = BackendAccounts.active(provider: "claude", in: book).id
+    let quotas = ["codex": codexCatalog.quotaSnapshot, "claude": claudeQuota]
+    let accounts = ["codex": codexAccount, "claude": claudeAccount]
+    let profiles = config.executionProfiles ?? [:]
+    let bounded = scope == .readOnly && claudeChatLaneRefusal(objective: request, hasSource: hasSource) == nil &&
+        claudeChatLane(provider: "claude", permission: "read_only", hasSource: hasSource, objective: request)
+    let needsShell = promptRequiresShellCapability(request)
+    let required = bounded ? ["answer"] : scope == .workspaceWrite ? ["write"] : needsShell ? ["read", "execute"] : ["read"]
+    let key = sha256Hex(Data((request + "\n" + config.executorContract.sha256).utf8))
+    let root = LocalRouterBridge.root.appendingPathComponent("route-surfaces", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+    let receipt = root.appendingPathComponent(UUID().uuidString.lowercased() + ".json")
+    let observed = Date()
+    let evidence = DynamicRouteAdmission.Observation(receiptID: receipt.path, observedAt: observed,
+        validUntil: observed.addingTimeInterval(60))
+    var inventory: [LocalSurfaceRouting.Descriptor] = []
+    var allowed: [String: Set<String>] = [:]
+    var exclusions: [String: String] = [:]
+    for provider in ["codex", "claude"] {
+        let available = provider == "codex" ? !codexCatalog.models.isEmpty && codexCapacity > 0 : !claudeCatalog.isEmpty && claudeCapacity > 0
+        guard available, let accountID = accounts[provider], let optional = quotas[provider], let quota = optional,
+              let remaining = quota.effectiveRemaining(accountID: accountID, now: Date()), remaining > 0,
+              quota.source == (provider == "codex" ? .codexNative : .claudeNative) else {
+            exclusions[provider] = "No fresh positive selected-account native quota/catalog"; continue
+        }
+        guard let auth = await Task.detached(priority: .utility, operation: {
+            observeNativeSurfaceAuth(provider: provider, workspace: workspace, book: book)
+        }).value, auth.mode == .subscription, auth.billing == .includedSubscription else {
+            exclusions[provider] = "Subscription authentication/billing context unknown or overridden"; continue
+        }
+        let eligibleProfiles = profiles.filter { _, p in
+            guard p.provider == provider,
+                  quota.effectiveRemaining(accountID: accountID, model: p.model, now: Date()).map({ $0 > 0 }) == true else { return false }
+            return provider == "codex" ? codexCatalog.models.contains { $0.slug == p.model && $0.supportedEfforts.contains(p.effort) }
+                : claudeCatalog.contains { $0.model == p.model && $0.supportedEfforts.contains(p.effort) }
+        }
+        guard !eligibleProfiles.isEmpty else { exclusions[provider] = "No configured executable profile with fresh positive model quota"; continue }
+        let configID = sha256Hex(Data(eligibleProfiles.map { $0.key + ":" + $0.value.model + ":" + $0.value.effort }.sorted().joined(separator: "\n").utf8))
+        let surface: ProviderSurface = bounded ? (provider == "codex" ? .gptChat : .claudeChat) : (provider == "codex" ? .codex : .claude)
+        let transport: DynamicRouteAdmission.Transport = provider == "codex" ? .codexAppServer : .claudeCLI
+        let caps = bounded ? ["answer"] : scope == .workspaceWrite ? ["answer", "read", "write", "execute"] : provider == "codex" ? ["answer", "read", "execute"] : ["answer", "read"]
+        let quotaProof = DynamicRouteAdmission.Observation(receiptID: receipt.path, observedAt: quota.observedAt,
+            validUntil: min(quota.observedAt.addingTimeInterval(BackendHealth.QuotaSnapshot.maximumAge), quota.limitingReset(accountID: accountID) ?? .distantFuture))
+        let candidate = DynamicRouteAdmission.Candidate(id: surface.rawValue, provider: provider, transport: transport,
+            quotaPool: transport.quotaPool, configurationID: configID, effort: "signed-core-pending", capabilities: caps,
+            authorityID: config.executorContract.sha256,
+            availability: .init(state: .available, observation: evidence),
+            quota: .init(remainingFraction: remaining / 100, observation: quotaProof),
+            quality: .init(state: .policyAdmitted, qualificationKey: key, configurationID: configID,
+                authorityID: config.executorContract.sha256, observation: evidence))
+        let requirement = DynamicRouteAdmission.Requirement(id: key, requiredCapabilities: required,
+            trustedAuthorityIDs: [config.executorContract.sha256], qualificationKey: key,
+            acceptedQualityStates: [.policyAdmitted], requireFreshAvailability: true, requireFreshQuota: true)
+        guard DynamicRouteAdmission.verifyActualTransport(candidate: candidate, requirement: requirement).state == .selected else {
+            exclusions[provider] = "Native capability/quality/quota pre-admission held"; continue
+        }
+        let authProof = DynamicRouteAdmission.Observation(receiptID: receipt.path, observedAt: auth.observedAt, validUntil: auth.observedAt.addingTimeInterval(60))
+        inventory.append(.init(logicalSurface: provider == "codex" ? .codexAgent : bounded ? .claudeChat : .claudeAgent,
+            lane: bounded ? .boundedChat : .agent, accountID: accountID, quotaAccountID: quota.accountID,
+            authentication: .init(mode: auth.mode, accountID: accountID, observation: authProof),
+            billing: .init(mode: auth.billing, accountID: accountID, observation: authProof), candidate: candidate))
+        allowed[provider] = Set(eligibleProfiles.values.map(\.model))
+    }
+    let requirement = DynamicRouteAdmission.Requirement(id: key, requiredCapabilities: required,
+        trustedAuthorityIDs: [config.executorContract.sha256], qualificationKey: key,
+        acceptedQualityStates: [.policyAdmitted], requireFreshAvailability: true, requireFreshQuota: true)
+    let input = LocalSurfaceRouting.Input(request: request, inventory: inventory,
+        eligibleCandidateIDs: inventory.map(\.id), requirement: requirement, criterion: .boundedQuotaPreference)
+    let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]; encoder.dateEncodingStrategy = .iso8601
+    var record: [String: Any] = ["schema": 1, "request_sha256": sha256Hex(Data(request.utf8)),
+        "qualification_key": key, "input_fingerprint": input.fingerprint,
+        "input": try JSONSerialization.jsonObject(with: encoder.encode(input)), "excluded": exclusions,
+        "consumer_chatgpt_available": false, "claim": "bounded native preference, not measured minimum cost or reference parity"]
+    func save() throws {
+        try JSONSerialization.data(withJSONObject: record, options: [.sortedKeys]).write(to: receipt, options: .atomic)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: receipt.path)
+    }
+    try save()
+    guard !inventory.isEmpty else {
+        throw OS1Error.message("Automatic routing held: no fresh verified native subscription route; no paid/API fallback. Receipt: " + receipt.path)
+    }
+    let decision = request.utf8.count <= 12_000 ? await LocalRouterBridge.rankSurface(input: input) : nil
+    if let decision { record["admission"] = try JSONSerialization.jsonObject(with: encoder.encode(decision)) }
+    var preference = "auto"
+    if let decision, decision.state == .candidateAccepted, let selected = decision.selectedDescriptor,
+       let surface = ProviderSurface(rawValue: selected.id), let provider = surface.gatewayPreference {
+        preference = provider
+        RuntimeActivity.emit(.routing, publicText: "Local OpenClaw preferred " + surface.routeTitle + " · verified native usage pool · outcome quality still unverified")
+    } else {
+        RuntimeActivity.emit(.routing, publicText: "Local surface proposal held; original signed-core route retained within verified subscription candidates")
+    }
+    record["provider_preference"] = preference
+    try save()
+    return NativeSurfaceSelection(preference: preference, receiptPath: receipt.path,
+        allowedCodexModels: allowed["codex"] ?? [], allowedClaudeModels: allowed["claude"] ?? [])
+}
+
 func quotaRoutingNotice(_ packet: ProviderQuotaContext?) -> String? {
     guard let packet else { return nil }
     return os1Tr("실제 남은 구독 한도", "Observed remaining plan quota") + ": " + ["codex", "claude"].map { provider in
@@ -1037,6 +1241,9 @@ struct RunStepSummary: Codable {
     var reviewedDraft: String? = nil
     /// Exact task/checker evidence, independent of native transport adoption.
     var taskQuality: TaskQualityEvidence.Evaluation? = nil
+    /// Actual ordinary ChatGPT browser response/receipt, never a native JSONL
+    /// or an assertion about subscription billing or reference-quality parity.
+    var consumerChatGPTRecord: ConsumerChatGPTTransport.Result? = nil
     /// This attempt ran confined from OS-1's live source instead of holding
     /// its shared lease (`OS1SourceConfinement`). In-process only: never
     /// encoded, so a resumed delivery is never escalated.
@@ -1062,6 +1269,7 @@ struct RunStepSummary: Codable {
         case ownerPolicyProjectionSHA256 = "owner_policy_projection_sha256"
         case reviewedDraft = "reviewed_draft"
         case taskQuality = "task_quality"
+        case consumerChatGPTRecord = "consumer_chatgpt_record"
     }
 }
 
@@ -1082,6 +1290,9 @@ struct RunSummary: Codable {
     /// Private local semantic candidate receipt, not a native execution receipt
     /// or an outcome-quality certification. Exact fast paths leave it absent.
     var localRouterReceipt: String? = nil
+    /// Holds approved browser execution or the exact approval/connection block.
+    /// A blocked consumer route never silently spends a native agent pool.
+    var consumerChatGPT: ConsumerChatGPTTransport.Result? = nil
 }
 
 struct ProviderExecution {
@@ -3646,7 +3857,41 @@ func localInterpretationRuntimeSelfTest() throws {
 
 /// The rail's routing decisions, checked against the lane predicates that
 /// actually run. Deterministic: no provider, no network, no clipboard.
+private func nativeSurfaceAuthenticationSelfTest() throws {
+    let codex: [String: Any] = ["account": ["type": "chatgpt"], "requiresOpenaiAuth": true]
+    let claude: [String: Any] = ["loggedIn": true, "authMethod": "claude.ai", "subscriptionType": "max", "apiKeySource": NSNull()]
+    let cases: [(String, Bool)] = [
+        ("Codex actual managed account/effective OpenAI provider", nativeSurfaceAuthMode(provider: "codex", status: codex,
+            configuration: ["model_provider": "openai"], environment: [:]).0 == .subscription),
+        ("Claude actual subscription, no API source", nativeSurfaceAuthMode(provider: "claude", status: claude, configuration: nil, environment: [:]).0 == .subscription),
+        ("Codex API environment overrides subscription evidence", nativeSurfaceAuthMode(provider: "codex", status: codex,
+            configuration: ["model_provider": "openai"], environment: ["OPENAI_API_KEY": "fixture-not-real"]).0 == .unknown),
+        ("Claude cloud override is unknown billing", nativeSurfaceAuthMode(provider: "claude", status: claude,
+            configuration: nil, environment: ["CLAUDE_CODE_USE_VERTEX": "1"]).1 == .unknown),
+        ("Codex unavailable effective config stays unknown", nativeSurfaceAuthMode(provider: "codex", status: codex,
+            configuration: nil, environment: [:]).0 == .unknown),
+        ("Custom Codex provider never becomes ChatGPT subscription", nativeSurfaceAuthMode(provider: "codex", status: codex,
+            configuration: ["model_provider": "other"], environment: [:]).0 == .unknown),
+        ("Codex API-key account stays unknown included billing", nativeSurfaceAuthMode(provider: "codex",
+            status: ["account": ["type": "apiKey"], "requiresOpenaiAuth": true], configuration: ["model_provider": "openai"], environment: [:]).1 == .unknown),
+        ("Claude API source cannot spend included pool", nativeSurfaceAuthMode(provider: "claude",
+            status: claude.merging(["apiKeySource": "api_key_helper"]) { _, new in new }, configuration: nil, environment: [:]).0 == .unknown),
+        ("Explicit owner provider name stays signed-core choice", requestNamesExecutionChoice("Use Codex to fix it", models: [])),
+        ("Opaque exact model selection stays core choice", requestNamesExecutionChoice("Use model-special-1 max", models: ["model-special-1"])),
+        ("Ordinary task is eligible for local surface ranking", !requestNamesExecutionChoice("Summarize this sentence", models: [])),
+        ("Omitted effective Codex provider uses official OpenAI default", nativeSurfaceAuthMode(provider: "codex", status: codex,
+            configuration: [:], environment: [:]).0 == .subscription),
+        ("Malformed effective Codex provider is not default", nativeSurfaceAuthMode(provider: "codex", status: codex,
+            configuration: ["model_provider": 7], environment: [:]).0 == .unknown),
+        ("Malformed Claude API source remains unknown", nativeSurfaceAuthMode(provider: "claude",
+            status: claude.merging(["apiKeySource": 1]) { _, new in new }, configuration: nil, environment: [:]).0 == .unknown)
+    ]
+    guard cases.allSatisfy({ $0.1 }) else { throw OS1Error.message("Native surface auth fixture: " + cases.filter { !$0.1 }.map(\.0).joined(separator: ", ")) }
+    print("Native surface authentication: \(cases.count) checks PASS; enum-only native metadata, unknown billing preserved; model/credential reads 0")
+}
+
 func providerSurfaceRoutingSelfTest() throws {
+    try nativeSurfaceAuthenticationSelfTest()
     try localInterpretationRuntimeSelfTest()
     let translate = "다음 문장을 영문으로 번역해줘: 내일 회의를 오후 3시로 옮겨도 될까요?"
     let fileWork = "README.md를 번역해서 README.en.md로 저장해"
@@ -3801,6 +4046,87 @@ func runChatGPTHandoff(prompt: String, workspace: String) throws -> RunSummary {
         workflowBlocker: ChatGPTHandoff.notice(clipboardVerified: handoff.clipboardVerified,
                                                applicationOpened: handoff.applicationOpened,
                                                receiptPath: handoff.receipt.path))
+}
+
+/// Map only a checked browser result. "returned" is a delivered answer, not
+/// completed project work; NativeRecordEvidence remains absent by construction.
+func consumerChatGPTRunSummary(_ result: ConsumerChatGPTTransport.Result, elapsedMS: Int64) -> RunSummary {
+    guard result.state == .returned, let answer = result.response, let receipt = result.receiptPath,
+          !answer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+        return RunSummary(status: "workflow_blocked", steps: [],
+            workflowBlocker: result.error ?? "ChatGPT consumer transport did not return a checked answer; no native fallback was executed.",
+            consumerChatGPT: result)
+    }
+    var step = RunStepSummary(sequence: 1, provider: "chatgpt", action: "consumer_chat", model: nil,
+        effort: "unobserved", revasDisposition: "adopted", sessionID: result.conversationURL ?? "unobserved",
+        permissionProfile: "consumer_chat_only", exitCode: 0, output: answer, stderr: "", durationMS: elapsedMS,
+        nativeRecord: nil, surface: "chatgpt")
+    step.consumerChatGPTRecord = result
+    step.taskQuality = TaskQualityEvidence.Evaluation(state: .executionOnly,
+        reason: "Matching ordinary ChatGPT browser request/response receipt: " + receipt + ". Model, effort, usage and reference parity are not verified.",
+        contractSHA256: sha256Hex(Data("consumer-chat-browser-transport-v1".utf8)), artifactSHA256: sha256Hex(Data(answer.utf8)),
+        requiredCheckIDs: [], failedCheckIDs: [])
+    return RunSummary(status: "consumer_returned", steps: [step], consumerChatGPT: result)
+}
+
+/// Disabled transport status is immediate: no policy helper, browser attach,
+/// clipboard write, app activation, auth prompt, or Codex/Claude fallback.
+func runConsumerChatGPTRequest(prompt: String) async throws -> RunSummary {
+    let started = Date()
+    if let reason = claudeChatLaneRefusal(objective: prompt, hasSource: false) {
+        return consumerChatGPTRunSummary(.init(state: .blocked,
+            error: "ChatGPT consumer surface cannot execute the requested file/tool action: " + reason), elapsedMS: 0)
+    }
+    let status = await ConsumerChatGPTTransport.status()
+    guard status.state == .ready else {
+        return consumerChatGPTRunSummary(status, elapsedMS: Int64(Date().timeIntervalSince(started) * 1_000))
+    }
+    let policy = try loadCurrentOwnerPolicy()
+    let summary = await OwnerPolicyContext.$snapshot.withValue(policy) {
+        let projection = (policy?.routing ?? "") + "\n" + (policy?.projection ?? "")
+        var bytes = Data(projection.utf8).prefix(24_000)
+        while String(data: bytes, encoding: .utf8) == nil && !bytes.isEmpty { bytes = bytes.dropLast() }
+        let sent = String(data: bytes, encoding: .utf8) ?? ""
+        RuntimeActivity.emit(.executing, provider: "chatgpt", surface: "chatgpt",
+            publicText: "Ordinary ChatGPT through approved browser control · native agent allowance not substituted · usage unverified")
+        let result = await ConsumerChatGPTTransport.run(prompt: prompt, policyProjection: sent)
+        var summary = consumerChatGPTRunSummary(result, elapsedMS: Int64(Date().timeIntervalSince(started) * 1_000))
+        // This is the bounded user-supplied policy projection sent to the web
+        // composer, not the platform's system/developer instructions channel.
+        if !summary.steps.isEmpty {
+            var step = summary.steps[0]
+            step.ownerPolicyProjectionSHA256 = sha256Hex(Data(sent.utf8))
+            summary = RunSummary(status: summary.status, steps: [step], consumerChatGPT: result)
+        }
+        return summary
+    }
+    return summary
+}
+
+func consumerChatGPTDispatchSelfTest() async throws {
+    let blocked = consumerChatGPTRunSummary(.init(state: .approvalRequired,
+        error: "fixture: approval required; no attach"), elapsedMS: 0)
+    let fake = ConsumerChatGPTTransport.Result(state: .returned, response: "fixture answer, not a live model call",
+        conversationURL: "https://chatgpt.com/c/fixture", receiptPath: "/fixture/browser-receipt.json")
+    let returned = consumerChatGPTRunSummary(fake, elapsedMS: 1)
+    let encoded = try JSONEncoder().encode(returned)
+    let decoded = try JSONDecoder().decode(RunSummary.self, from: encoded)
+    let empty = await ConsumerChatGPTTransport.run(prompt: "", policyProjection: "")
+    let oversized = await ConsumerChatGPTTransport.run(prompt: String(repeating: "x", count: 40_001), policyProjection: "")
+    let shell = try await runConsumerChatGPTRequest(prompt: "Run swift build and write files in /tmp/project")
+    guard shell.status == "workflow_blocked", shell.steps.isEmpty, shell.consumerChatGPT?.state == .blocked,
+          blocked.status == "workflow_blocked", blocked.steps.isEmpty,
+          blocked.consumerChatGPT?.state == .approvalRequired,
+          returned.status == "consumer_returned", decoded.steps.count == 1,
+          decoded.steps[0].provider == "chatgpt", decoded.steps[0].surface == "chatgpt",
+          decoded.steps[0].nativeRecord == nil,
+          decoded.steps[0].taskQuality?.state == .executionOnly,
+          decoded.steps[0].consumerChatGPTRecord?.receiptPath == fake.receiptPath,
+          decoded.consumerChatGPT?.usageAccountingVerified == false,
+          empty.state == .blocked, oversized.state == .blocked else {
+        throw OS1Error.message("Consumer ChatGPT summary/disabled-input boundary fixture failed")
+    }
+    print("Consumer ChatGPT dispatch: deterministic checked-result mapping PASS; browser/auth/model calls 0; no native record or parity fabricated")
 }
 
 /// Puts the request on the clipboard (verified by read-back), brings the
@@ -5862,6 +6188,13 @@ final class CodexAppServerClient: @unchecked Sendable {
         return (ModelAvailability.codexRows(rows), collected.optionalRateLimits, collected.rateLimitsObservedAt)
     }
 
+    func surfaceAuthenticationMetadata(deadline: Date) throws -> (account: [String: Any], configuration: [String: Any]) {
+        let account = try request("account/read", params: ["refreshToken": false], deadline: deadline)
+        let configuration = try request("config/read", params: ["includeLayers": false], deadline: deadline)
+        guard let effective = configuration["config"] as? [String: Any] else { throw OS1Error.message("Effective native configuration unavailable") }
+        return (account, effective)
+    }
+
     // Metadata only: never starts/resumes a turn or acquires its writer.
     func moveSidebarThread(id: String, pinned: Bool, before: String?, deadline: Date) throws {
         let sections = try request("threadSection/list", params: [:], deadline: deadline)
@@ -7021,7 +7354,8 @@ private func execute(
     onDispatch: ((String?) -> Void)? = nil,
     onInstructions: ((String) -> Void)? = nil,
     memoryTurn: MemoryExecutionManifest? = nil,
-    quotaContext: ProviderQuotaContext? = nil
+    quotaContext: ProviderQuotaContext? = nil,
+    surfaceChoiceReceipt: String? = nil
 ) throws -> ProviderExecution {
     AttemptLatencyTrace.mark("execute_entered")
     if ConcurrentRouteFanoutRuntime.child {
@@ -7054,6 +7388,7 @@ private func execute(
         "actual_transport": transport.rawValue, "quota_pool": transport.quotaPool.rawValue,
         "surface": executedSurface?.rawValue ?? "unknown", "model": model ?? "provider-default", "effort": effort,
         "request_sha256": sha256Hex(Data(lockedObjective.utf8)),
+        "initial_local_surface_preference_receipt": surfaceChoiceReceipt ?? NSNull(),
         "decision": try JSONSerialization.jsonObject(with: admissionEncoder.encode(admission))], options: [.sortedKeys])
     try admissionData.write(to: admissionPath, options: [.atomic])
     try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: admissionPath.path)
@@ -8405,6 +8740,13 @@ func routeFanoutAttemptEvidence(_ step: RunStepSummary) -> RouteFanoutAttemptEvi
 
 func routeFanoutRouteEvidence(_ outcome: RouteFanoutOutcome) -> RouteFanoutRouteEvidence {
     let step = outcome.adopted
+    let browser = step?.consumerChatGPTRecord.flatMap { record -> RouteFanoutBrowserRecordEvidence? in
+        guard record.state == .returned, let answer = record.response, let url = record.conversationURL,
+              let path = record.receiptPath, step?.output == answer else { return nil }
+        return RouteFanoutBrowserRecordEvidence(requestSHA256: sha256Hex(Data(outcome.target.payload.utf8)),
+            responseSHA256: sha256Hex(Data(answer.utf8)), conversationURL: url, receiptPath: path,
+            policyProjectionSHA256: step?.ownerPolicyProjectionSHA256)
+    }
     return RouteFanoutRouteEvidence(index: outcome.index + 1, surface: outcome.target.surface.rawValue,
         executionIndex: outcome.executionIndex, payload: outcome.target.payload,
         payloadSHA256: sha256Hex(Data(outcome.target.payload.utf8)), provider: step?.provider,
@@ -8414,7 +8756,7 @@ func routeFanoutRouteEvidence(_ outcome: RouteFanoutOutcome) -> RouteFanoutRoute
         nativeRecord: routeFanoutNativeEvidence(step?.nativeRecord),
         resultSHA256: step.map { sha256Hex(Data($0.output.utf8)) },
         failure: outcome.failure.map { String($0.prefix(500)) }, handoffReceipt: outcome.handoffReceipt,
-        attempts: outcome.attempts)
+        attempts: outcome.attempts, browserRecord: browser)
 }
 
 private func runRouteFanoutWithOwnerPolicy(
@@ -8504,19 +8846,24 @@ private func runRouteFanoutWithOwnerPolicy(
     }
     ClaudeChatLane.setExplicitSelection(previousSelection)
     if ExecutionCancellation.isCancelled { throw OS1Error.backendBlocked(.cancelled) }
-    if !handoffIndices.isEmpty {
-        let text = handoffIndices.map { plan.targets[$0].payload }.joined(separator: "\n")
+    for index in handoffIndices {
         do {
-            let handoff = try performChatGPTHandoff(prompt: text)
-            for index in handoffIndices {
-                outcomes.append(RouteFanoutOutcome(index: index, target: plan.targets[index], handoffReceipt: handoff.receipt.path,
-                    executionIndex: plan.targets.count - handoffIndices.count + 1))
+            let target = plan.targets[index]
+            let summary = try await runConsumerChatGPTRequest(prompt: target.payload)
+            guard summary.status == "consumer_returned", let result = summary.consumerChatGPT,
+                  let browserStep = summary.steps.first else {
+                outcomes.append(RouteFanoutOutcome(index: index, target: target,
+                    failure: summary.workflowBlocker ?? "ChatGPT consumer connection did not return an answer; no substitute call.",
+                    executionIndex: index + 1))
+                continue
             }
+            _ = try ConsumerChatGPTTransport.verifyReturned(result, prompt: target.payload)
+            steps.append(browserStep)
+            outcomes.append(RouteFanoutOutcome(index: index, target: target, adopted: browserStep, executionIndex: index + 1))
+            anyAdopted = true
         } catch {
-            for index in handoffIndices {
-                outcomes.append(RouteFanoutOutcome(index: index, target: plan.targets[index], failure: String(describing: error),
-                    executionIndex: plan.targets.count - handoffIndices.count + 1))
-            }
+            outcomes.append(RouteFanoutOutcome(index: index, target: plan.targets[index], failure: String(describing: error),
+                executionIndex: index + 1))
         }
     }
     outcomes.sort { $0.index < $1.index }
@@ -8529,9 +8876,12 @@ private func runRouteFanoutWithOwnerPolicy(
         .appendingPathComponent("Library/Application Support/OS-1/control-receipts", isDirectory: true)
     try FileManager.default.createDirectory(at: receiptRoot, withIntermediateDirectories: true)
     let receiptURL = receiptRoot.appendingPathComponent("\(operationID).json")
-    let receipt = RouteFanoutRecord(operationID: operationID,
-        checkedAt: ISO8601DateFormatter().string(from: Date()), monitorTaskID: monitorID,
-        frame: plan.frame, resultSHA256: sha256Hex(Data(output.utf8)), routes: outcomes.map(routeFanoutRouteEvidence))
+    let evidence = outcomes.map(routeFanoutRouteEvidence)
+    let hasBrowser = evidence.contains { $0.browserRecord != nil }
+    let receipt = RouteFanoutRecord(schema: hasBrowser ? 3 : 2, operationID: operationID,
+        checkedAt: ISO8601DateFormatter().string(from: Date()),
+        modelInvoked: hasBrowser ? RouteFanoutRecord.observedAnyInvocation(in: evidence) : false, monitorTaskID: monitorID,
+        frame: plan.frame, resultSHA256: sha256Hex(Data(output.utf8)), routes: evidence)
     let receiptEncoder = JSONEncoder()
     receiptEncoder.outputFormatting = [.sortedKeys]
     let receiptData = try receiptEncoder.encode(receipt)
@@ -8563,13 +8913,20 @@ private func runRouteFanoutWithOwnerPolicy(
 /// Destination identity only; usage and transport belong in separate details.
 func routeFanoutLabel(_ surface: ProviderSurface) -> String { surface.routeTitle }
 
+private func returnedConsumerStep(_ step: RunStepSummary, target: ProviderSurface) -> Bool {
+    target == .chatgpt && step.provider == "chatgpt" && step.surface == "chatgpt" && step.nativeRecord == nil &&
+        step.consumerChatGPTRecord?.state == .returned && step.consumerChatGPTRecord?.response == step.output &&
+        step.consumerChatGPTRecord?.receiptPath != nil
+}
+
 func routeFanoutSummary(plan: RouteFanout, outcomes: [RouteFanoutOutcome]) -> String {
     // Answered on the route the owner named; a substitute answer is shown but not counted.
     let answered = outcomes.filter {
         guard let adopted = $0.adopted, $0.failure == nil else { return false }
-        return ProviderSurface.resolveExecuted(rawSurface: adopted.surface, provider: adopted.provider) == $0.target.surface
+        return returnedConsumerStep(adopted, target: $0.target.surface) ||
+            ProviderSurface.resolveExecuted(rawSurface: adopted.surface, provider: adopted.provider) == $0.target.surface
     }.count
-    let executors = plan.targets.filter { $0.surface != .chatgpt }.count
+    let executors = plan.targets.count
     var lines = [os1Tr("라우팅 결과 · 실행 경로 \(answered)/\(executors) 답변",
                        "Routing result · \(answered)/\(executors) executed routes answered")]
     for outcome in outcomes {
@@ -8580,7 +8937,7 @@ func routeFanoutSummary(plan: RouteFanout, outcomes: [RouteFanoutOutcome]) -> St
             let model = adopted.model.map { " · \($0)" } ?? ""
             let substitute = outcome.failure.map { " (\($0))" } ?? ""
             let actual = ProviderSurface.resolveExecuted(rawSurface: adopted.surface, provider: adopted.provider)
-            let actualLine = actual == outcome.target.surface ? "" : os1Tr(
+            let actualLine = returnedConsumerStep(adopted, target: outcome.target.surface) || actual == outcome.target.surface ? "" : os1Tr(
                 " [실제 실행: \(actual?.routeTitle ?? adopted.provider)]",
                 " [actually ran: \(actual?.routeTitle ?? adopted.provider)]")
             lines.append("\(head)\(actualLine) → \(String(answer.prefix(200)))\(model)\(substitute)")
@@ -8721,7 +9078,7 @@ func routeFanoutSummarySelfTest() throws {
         ("surface survives delivery custody round trip", roundTrip.surface == ProviderSurface.gptChat.rawValue),
         ("legacy delivery summaries remain readable without inferring chat", legacy.surface == nil
             && ProviderSurface.resolveExecuted(rawSurface: legacy.surface, provider: legacy.provider) == .codex),
-        ("counts executed routes only", lines.first?.contains("2/3") == true),
+        ("unreturned requested consumer route remains in denominator", lines.first?.contains("2/4") == true),
         ("first answer line only", lines.count > 1 && lines[1].hasSuffix("→ 2 · m") && lines[1].contains("GPT")),
         ("codex answer", lines.count > 2 && lines[2].contains("Codex") && lines[2].contains("→ 4")),
         ("handoff never claims an answer", lines.count > 3 && lines[3].contains("ChatGPT") && !lines[3].contains("→ 6")),
@@ -8734,7 +9091,7 @@ func routeFanoutSummarySelfTest() throws {
             !blocksUnboundRouteFanout("GPT랑 코덱스랑 클로드랑 클로드 코드한테 1+1 이런거 해봐.", agentChild: false, fanoutChild: true)
             && !blocksUnboundRouteFanout("GPT랑 코덱스랑 클로드랑 클로드 코드한테 1+1 이런거 해봐.", agentChild: true, fanoutChild: false)),
         ("ordinary task remains ordinary", !blocksUnboundRouteFanout("패키지 버그를 고치고 회귀 테스트를 추가해", agentChild: false, fanoutChild: false)),
-        ("a substitute answer is shown, not counted", substitutedLines.first?.contains("1/3") == true
+        ("a substitute answer is shown, not counted", substitutedLines.first?.contains("1/4") == true
             && substitutedLines.count > 2 && substitutedLines[2].contains("→ 4") && substitutedLines[2].hasSuffix("(substitute)")),
     ]
     let failed = checks.filter { !$0.1 }.map(\.0)
@@ -11146,7 +11503,19 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
     }
     // Quota is not an owner provider order. RCC must admit and rank first;
     // an expiring window cannot displace an exact solver or another provider.
-    let routedPreference = providerPreference
+    let nativeSurfaceSelection = try await selectLocalNativeSurface(request: objectiveRequest,
+        providerPreference: providerPreference, workspace: canonicalWorkspace, scope: resolvedScope, hasSource: r2Evidence != nil,
+        config: config, codexCatalog: codexCatalog, claudeCatalog: claudeCatalog, claudeQuota: observedClaudeQuota,
+        codexCapacity: codexCapacity, claudeCapacity: claudeCapacity)
+    if nativeSurfaceSelection.receiptPath != nil {
+        codexCatalog = ActiveCodexCatalog(models: codexCatalog.models.filter { nativeSurfaceSelection.allowedCodexModels.contains($0.slug) },
+            source: codexCatalog.source, quotaResetsAt: codexCatalog.quotaResetsAt,
+            quotaWindow: codexCatalog.quotaWindow, quotaSnapshot: codexCatalog.quotaSnapshot)
+        claudeCatalog = claudeCatalog.filter { nativeSurfaceSelection.allowedClaudeModels.contains($0.model) }
+        hasClaudeExecutable = !claudeCatalog.isEmpty
+        inputContext.availableClaudeModels = claudeCatalog
+    }
+    let routedPreference = nativeSurfaceSelection.preference
     var burnNotice: String?
     if workflowStage == nil, providerPreference == "auto", !codexCatalog.models.isEmpty, codexCapacity > 0,
        let notice = QuotaWindowPolicy.notice(QuotaWindowPolicy.decision(window: codexCatalog.quotaWindow, settings: userSettings.burnPolicy)) {
@@ -11493,7 +11862,8 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
                             codexID: nativeSessions["codex"] ?? nil, claudeID: nativeSessions["claude"] ?? nil)
                     },
                     memoryTurn: memoryTurn,
-                    quotaContext: request.executionContext?.providerQuota
+                    quotaContext: request.executionContext?.providerQuota,
+                    surfaceChoiceReceipt: nativeSurfaceSelection.receiptPath
                 )
             } catch {
                 if claudeInventoryDeferred {
@@ -12299,12 +12669,16 @@ func printRunSummary(_ summary: RunSummary) {
         $0.revasDisposition == "adopted" || $0.revasDisposition == "control_verified"
     }
     for step in adopted {
-        let verificationLabel = step.revasDisposition == "control_verified"
-            ? "OS-1 control verified"
-            : "REVAS adopted"
-        let route = ProviderSurface.resolveExecuted(rawSurface: step.surface, provider: step.provider)?.routeTitle
+        let browserReturned = returnedConsumerStep(step, target: .chatgpt)
+        let verificationLabel = browserReturned ? "Browser response received" : step.revasDisposition == "control_verified"
+            ? "OS-1 control verified" : "REVAS adopted"
+        let route = browserReturned ? ProviderSurface.chatgpt.routeTitle :
+            ProviderSurface.resolveExecuted(rawSurface: step.surface, provider: step.provider)?.routeTitle
             ?? (step.provider == "local" ? "OS-1" : step.provider)
         print("\n[\(route) · \(step.action) · \(step.model ?? "provider-default") · \(step.effort) · \(verificationLabel) · \(step.permissionProfile) · \(step.sessionID)\(step.reviewedDraft.map { " · reviewed draft: " + $0 } ?? "")]")
+        if let browser = step.consumerChatGPTRecord, browserReturned {
+            print("browser receipt: " + (browser.receiptPath ?? "unobserved") + " · native record: none · usage accounting: unverified")
+        }
         if let record = step.nativeRecord {
             print("native record: \(record.persistence)"
                 + (record.recordPath.map { " · \($0)" } ?? "")
@@ -16421,6 +16795,7 @@ struct OS1Main {
                 // A fixture, never part of a live run it was started in.
                 LiveRunEnvironment.detachCurrentProcess()
                 try selfTest()
+                try await consumerChatGPTDispatchSelfTest()
                 try await os1AttemptSourceSelfTest()
                 try await fullAccessHandBackSelfTest()
                 try await parallelAgentCoordinatorSelfTest()
@@ -16646,7 +17021,7 @@ struct OS1Main {
                     throw OS1Error.message("Fan-out child requires an executable native surface")
                 }
                 if surface == .chatgpt {
-                    let summary = try runChatGPTHandoff(prompt: prompt, workspace: workspace)
+                    let summary = try await runConsumerChatGPTRequest(prompt: prompt)
                     if outputFormat == "json" {
                         let encoder = JSONEncoder()
                         encoder.outputFormatting = [.withoutEscapingSlashes]

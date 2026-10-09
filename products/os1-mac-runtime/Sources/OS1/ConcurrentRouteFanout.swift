@@ -116,10 +116,22 @@ func runConcurrentRouteFanout(_ plan: RouteFanout, originalPrompt: String, works
                 outcome.failure = "Cancelled; this target is not a completed result."
                 try? await graph.finish(ids[index], state: .cancelled, failure: outcome.failure)
             } else if target.surface == .chatgpt {
-                let handedOff = (try? JSONDecoder().decode(RunSummary.self, from: result.data))?.status == "handoff" && result.status == 0
-                outcome.failure = handedOff ? "Sent to external ChatGPT handoff; answer is unobserved." : "External ChatGPT handoff failed; no observed answer."
-                try? await graph.describe(ids[index], surface: "chatgpt", resultSummary: "Handoff only; external answer is unobserved.")
-                try? await graph.finish(ids[index], state: .blocked, failure: outcome.failure)
+                do {
+                    let summary = try JSONDecoder().decode(RunSummary.self, from: result.data)
+                    guard result.status == 0, summary.status == "consumer_returned",
+                          let browser = summary.consumerChatGPT, let step = summary.steps.last,
+                          step.surface == "chatgpt", step.provider == "chatgpt",
+                          step.nativeRecord == nil, step.revasDisposition == "adopted",
+                          step.output == browser.response else { throw OS1Error.message("No bound browser answer.") }
+                    _ = try ConsumerChatGPTTransport.verifyReturned(browser, prompt: target.payload)
+                    outcome.adopted = step
+                    try await graph.describe(ids[index], surface: "chatgpt", resultSummary: step.output)
+                    try await graph.finish(ids[index], state: .succeeded, step: step)
+                } catch {
+                    outcome.failure = "Ordinary ChatGPT has no verified completed reply; no Codex replacement was executed."
+                    try? await graph.describe(ids[index], surface: "chatgpt", resultSummary: "Browser transport unavailable or unverified; owner connection required.")
+                    try? await graph.finish(ids[index], state: .blocked, failure: outcome.failure)
+                }
             } else {
                 do {
                     let (_, step) = try verifiedFanoutAnswer(result, target: target)
@@ -145,8 +157,9 @@ func runConcurrentRouteFanout(_ plan: RouteFanout, originalPrompt: String, works
     let output = routeFanoutSummary(plan: plan, outcomes: outcomes)
     let operationID = UUID().uuidString.lowercased(), receiptURL = custody.appendingPathComponent("fanout-receipt.json")
     let routeEvidence = outcomes.map(routeFanoutRouteEvidence)
-    let receipt = RouteFanoutRecord(operationID: operationID, operation: "concurrent_route_fanout",
-        checkedAt: ISO8601DateFormatter().string(from: Date()), modelInvoked: RouteFanoutRecord.observedNativeInvocation(in: routeEvidence), frame: plan.frame,
+    let hasBrowser = routeEvidence.contains { $0.browserRecord != nil }
+    let receipt = RouteFanoutRecord(schema: hasBrowser ? 3 : 2, operationID: operationID, operation: "concurrent_route_fanout",
+        checkedAt: ISO8601DateFormatter().string(from: Date()), modelInvoked: hasBrowser ? RouteFanoutRecord.observedAnyInvocation(in: routeEvidence) : RouteFanoutRecord.observedNativeInvocation(in: routeEvidence), frame: plan.frame,
         resultSHA256: sha256Hex(Data(output.utf8)), routes: routeEvidence)
     let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
     let bytes = try encoder.encode(receipt)

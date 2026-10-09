@@ -6067,6 +6067,40 @@ private struct AppNativeRecord: Decodable, Sendable {
     var isVerified: Bool { persistence == "verified" }
 }
 
+private struct AppConsumerChatGPTRecord: Decodable, Sendable {
+    let state: String
+    let error: String?
+    let response: String?
+    let conversationURL: String?
+    let receiptPath: String?
+    enum CodingKeys: String, CodingKey {
+        case state, error, response
+        case conversationURL = "conversation_url"
+        case receiptPath = "receipt_path"
+    }
+    func verifies(request: String, answer: String) -> Bool {
+        guard state == "returned", response == answer,
+              let conversationURL, let url = URLComponents(string: conversationURL),
+              url.scheme == "https", url.host == "chatgpt.com", url.user == nil, url.password == nil,
+              url.port == nil || url.port == 443,
+              url.path.range(of: #"^/c/[A-Za-z0-9_-]+/?$"#, options: .regularExpression) != nil,
+              let receiptPath else { return false }
+        let root = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".os1/browser-transport/receipts").resolvingSymlinksInPath()
+        let file = URL(fileURLWithPath: receiptPath)
+        guard file.resolvingSymlinksInPath().path.hasPrefix(root.path + "/"),
+              let attrs = try? FileManager.default.attributesOfItem(atPath: receiptPath),
+              attrs[.type] as? FileAttributeType == .typeRegular,
+              (attrs[.size] as? NSNumber)?.intValue ?? Int.max <= 262_144,
+              (attrs[.posixPermissions] as? NSNumber)?.intValue == 0o600,
+              let data = try? Data(contentsOf: file),
+              let record = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return false }
+        return record["state"] as? String == "returned" && record["mode"] as? String == "chat" &&
+            record["request_sha256"] as? String == appSHA256Hex(request) &&
+            record["response_sha256"] as? String == appSHA256Hex(answer) &&
+            record["conversation_url"] as? String == conversationURL
+    }
+}
+
 private struct AppRunStep: Decodable, Sendable {
     let sequence: Int
     let provider: String
@@ -6087,6 +6121,7 @@ private struct AppRunStep: Decodable, Sendable {
     /// On a review's answer: the draft it checked against the code.
     var reviewedDraft: String? = nil
     var taskQuality: TaskQualityEvidence.Evaluation? = nil
+    var consumerChatGPTRecord: AppConsumerChatGPTRecord? = nil
 
     enum CodingKeys: String, CodingKey {
         case sequence, provider, action, model, effort, output, stderr, surface
@@ -6100,6 +6135,7 @@ private struct AppRunStep: Decodable, Sendable {
         case workflowStage = "workflow_stage"
         case reviewedDraft = "reviewed_draft"
         case taskQuality = "task_quality"
+        case consumerChatGPTRecord = "consumer_chatgpt_record"
     }
 
     /// Explicit lane evidence only. Display fallback must not become stored
@@ -6400,6 +6436,27 @@ private func executionReceipt(_ step: AppRunStep, source: SourceReference? = nil
 /// No prose or selected tile is execution authority. Read only the private,
 /// regular, non-symlink receipt whose identity and output digest match this turn.
 private func boundRouteFanoutRecord(path: URL, id: String, output: String) -> RouteFanoutRecord? {
+    func browserVerified(_ route: RouteFanoutRouteEvidence) -> Bool {
+        guard route.surface == "chatgpt", route.executedSurface == "chatgpt", route.provider == "chatgpt",
+              route.nativeRecord == nil, route.action == "consumer_chat", route.permissionProfile == "consumer_chat_only",
+              route.exitCode == 0, route.revasDisposition == "adopted", route.failure == nil,
+              let browser = route.browserRecord,
+              browser.matches(payloadSHA256: route.payloadSHA256, resultSHA256: route.resultSHA256) else { return false }
+        let root = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".os1/browser-transport/receipts").resolvingSymlinksInPath()
+        let file = URL(fileURLWithPath: browser.receiptPath)
+        guard file.resolvingSymlinksInPath().path.hasPrefix(root.path + "/"),
+              let attrs = try? FileManager.default.attributesOfItem(atPath: file.path),
+              attrs[.type] as? FileAttributeType == .typeRegular,
+              (attrs[.posixPermissions] as? NSNumber)?.intValue == 0o600,
+              (attrs[.size] as? NSNumber)?.intValue ?? Int.max <= 262_144,
+              let data = try? Data(contentsOf: file),
+              let receipt = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return false }
+        return receipt["state"] as? String == "returned" && receipt["mode"] as? String == "chat" &&
+            receipt["request_sha256"] as? String == route.payloadSHA256 &&
+            receipt["response_sha256"] as? String == route.resultSHA256 &&
+            receipt["conversation_url"] as? String == browser.conversationURL &&
+            (browser.policyProjectionSHA256 == nil || receipt["policy_projection_sha256"] as? String == browser.policyProjectionSHA256)
+    }
     guard path.resolvingSymlinksInPath() == path.standardizedFileURL,
           let attrs = try? FileManager.default.attributesOfItem(atPath: path.path),
           attrs[.type] as? FileAttributeType == .typeRegular,
@@ -6407,7 +6464,7 @@ private func boundRouteFanoutRecord(path: URL, id: String, output: String) -> Ro
           let size = attrs[.size] as? NSNumber, size.intValue <= 1_000_000,
           let data = try? Data(contentsOf: path), data.count <= 1_000_000,
           let record = try? JSONDecoder().decode(RouteFanoutRecord.self, from: data),
-          [1, 2].contains(record.schema),
+          [1, 2, 3].contains(record.schema),
           record.operationID == id.lowercased(),
           [output, output + "\n", output + "\r\n"].contains(where: { appSHA256Hex($0) == record.resultSHA256 }),
           !record.routes.isEmpty, record.routes.count <= 64,
@@ -6419,7 +6476,7 @@ private func boundRouteFanoutRecord(path: URL, id: String, output: String) -> Ro
               ProjectMaterialObject.validSHA(route.payloadSHA256) &&
               (route.payload == nil || appSHA256Hex(route.payload!) == route.payloadSHA256) &&
               (route.resultSHA256 == nil || ProjectMaterialObject.validSHA(route.resultSHA256!)) &&
-              (route.executedSurface == nil || ProviderSurface.resolveExecuted(rawSurface: route.executedSurface,
+              (route.executedSurface == nil || (record.schema == 3 && browserVerified(route)) || ProviderSurface.resolveExecuted(rawSurface: route.executedSurface,
                   provider: route.provider)?.rawValue == route.executedSurface) &&
               (record.schema == 1 || route.resultSHA256 == nil || (route.attempts ?? []).contains {
                   ["adopted", "control_verified"].contains($0.revasDisposition) && $0.exitCode == 0 &&
@@ -6427,7 +6484,7 @@ private func boundRouteFanoutRecord(path: URL, id: String, output: String) -> Ro
                   $0.sessionID == route.sessionID && $0.model == route.model && $0.resultSHA256 == route.resultSHA256
               }) && (route.attempts ?? []).allSatisfy {
                   $0.sequence > 0 && $0.durationMS >= 0 && ProjectMaterialObject.validSHA($0.resultSHA256) &&
-                  ($0.surface == nil || ProviderSurface.resolveExecuted(rawSurface: $0.surface,
+                  ($0.surface == nil || (record.schema == 3 && browserVerified(route) && $0.provider == "chatgpt" && $0.surface == "chatgpt" && $0.nativeRecord == nil) || ProviderSurface.resolveExecuted(rawSurface: $0.surface,
                       provider: $0.provider)?.rawValue == $0.surface)
               }
           }) else { return nil }
@@ -6435,12 +6492,13 @@ private func boundRouteFanoutRecord(path: URL, id: String, output: String) -> Ro
     case "route_fanout":
         // The legacy local controller did not itself invoke a model. Retain
         // its original bit semantics, including schema-1 evidence limits.
-        guard !record.modelInvoked else { return nil }
+        guard record.schema == 3 ? record.modelInvoked == RouteFanoutRecord.observedAnyInvocation(in: record.routes) : !record.modelInvoked else { return nil }
     case "concurrent_route_fanout":
-        guard record.schema == 2, (2...RouteFanout.maximumTargets).contains(record.routes.count),
-              record.modelInvoked == RouteFanoutRecord.observedNativeInvocation(in: record.routes),
+        guard [2, 3].contains(record.schema), (2...RouteFanout.maximumTargets).contains(record.routes.count),
+              record.modelInvoked == (record.schema == 3 ? RouteFanoutRecord.observedAnyInvocation(in: record.routes) : RouteFanoutRecord.observedNativeInvocation(in: record.routes)),
               record.routes.allSatisfy({ route in
                   guard route.resultSHA256 != nil else { return true }
+                  if route.surface == "chatgpt" { return record.schema == 3 && browserVerified(route) }
                   // An answer belongs to this exact requested surface. A
                   // failed/substituted attempt is evidence, not its completion.
                   guard route.failure == nil, route.handoffReceipt == nil,
@@ -6488,7 +6546,10 @@ private func routeFanoutDetails(_ record: RouteFanoutRecord, request: String? = 
         let payload = route.payload ?? legacyPayload
         lines.append(os1Tr("\n\(route.index). 요청: \(requestedSurface.routeTitle)", "\n\(route.index). Requested: \(requestedSurface.routeTitle)") + (payload.map { " — \($0)" } ?? os1Tr(" · 전달 내용 기록 없음", " · payload not recorded")))
         if let position = route.executionIndex { lines.append(os1Tr("   처리 순서: \(position)", "   Processing order: \(position)")) }
-        if let raw = route.executedSurface, let actual = ProviderSurface(rawValue: raw) {
+        if route.browserRecord != nil {
+            lines.append(os1Tr("   실제 실행: 일반 ChatGPT · 공개 브라우저 UI · 네이티브 세션 아님 · 품질·사용량 미검증",
+                               "   Actually ran: ordinary ChatGPT · public browser UI · not a native session · quality and usage unverified"))
+        } else if let raw = route.executedSurface, let actual = ProviderSurface(rawValue: raw) {
             lines.append(os1Tr("   실제 실행: \(actual.routeTitle) · \(actual.executionLine)", "   Actually ran: \(actual.routeTitle) · \(actual.executionLine)"))
         } else if route.provider != nil {
             lines.append(os1Tr("   실제 실행 모드 기록 없음 · 백엔드: \(route.provider!)", "   Actual execution mode not recorded · backend: \(route.provider!)"))
@@ -7115,6 +7176,7 @@ private struct AppRunSummary: Decodable, Sendable {
     /// Governance task id of this run, so an owner retry can be charged to it.
     var monitorTaskID: String? = nil
     var workflowBlocker: String? = nil
+    var consumerChatGPT: AppConsumerChatGPTRecord? = nil
     @AgentTaskSnapshotField var agentTask: ParallelAgentTask.Snapshot? = nil
 }
 
@@ -9992,6 +10054,36 @@ private final class SessionStore: ObservableObject {
                     throw RunnerError.message(summary.steps.first?.output ?? os1Tr("운영 원본 확보 대기 중 · 준비 미완료",
                                                                                    "Waiting to secure the production source · preparation incomplete"))
                 }
+                if summary.status == "consumer_returned" {
+                    guard summary.steps.count == 1, let step = summary.steps.first,
+                          step.provider == "chatgpt", step.surface == "chatgpt", step.action == "consumer_chat",
+                          step.nativeRecord == nil, step.exitCode == 0, step.revasDisposition == "adopted",
+                          let browser = summary.consumerChatGPT,
+                          browser.verifies(request: submission.executionRequest, answer: step.output) else {
+                        throw RunnerError.message("OS-1 rejected an unbound ordinary ChatGPT browser reply.")
+                    }
+                    let ended = Date()
+                    sessions[target].observedExecution = ObservedSingleExecution(id: submission.id,
+                        conversationID: submission.sessionID, objective: submission.request,
+                        state: "consumer_returned", observedAt: ended, provider: "chatgpt", model: nil,
+                        effort: "unobserved", surface: "chatgpt",
+                        startedAt: activeRuns[submission.sessionID]?.started, finishedAt: ended,
+                        receiptPath: browser.receiptPath, nativeSessionID: nil,
+                        nativeRecordVerified: false, taskQuality: "execution_only", publicAnswer: step.output)
+                    sessions[target].messages.append(ChatMessage(role: .assistant, text: step.output,
+                        provider: "chatgpt", executionSurface: "chatgpt", permissionProfile: "consumer_chat_only"))
+                    sessions[target].messages.append(ChatMessage(role: .receipt,
+                        text: os1Tr("일반 ChatGPT · 브라우저 요청/응답 영수증 대조됨 · 네이티브 에이전트 세션 아님 · 모델·추론·사용량·품질 동등성 미검증",
+                                    "Ordinary ChatGPT · browser request/response receipt matched · not a native agent session · model, reasoning, usage and quality parity unverified"),
+                        provider: "chatgpt", executionSurface: "chatgpt", permissionProfile: "consumer_chat_only",
+                        nativeRecordVerified: nil, taskQuality: step.taskQuality))
+                    sessions[target].updatedAt = ended
+                    appendTaskEvent(conversationID: submission.sessionID, kind: "consumer_returned",
+                        summary: "Ordinary ChatGPT reply delivered; separate browser receipt; no native session binding")
+                    statusText = os1Tr("ChatGPT 응답 수신", "ChatGPT reply received")
+                    save()
+                    return
+                }
                 if summary.status != "complete" {
                     // A handoff is not a failed run: the request left for the
                     // ChatGPT app and the owner runs it there. Record it in the
@@ -10010,6 +10102,20 @@ private final class SessionStore: ObservableObject {
                         return
                     }
                     if summary.status == "workflow_blocked" {
+                        if let browser = summary.consumerChatGPT {
+                            // A browser-control/login boundary is not a native
+                            // backend outage or uncertain file-write outcome.
+                            // Preserve the request via the existing failure
+                            // hold, never start a Codex readback/auth loop.
+                            sessions[target].lastBackendFailure = nil
+                            sessions[target].observedExecution = ObservedSingleExecution(id: submission.id,
+                                conversationID: submission.sessionID, objective: submission.request,
+                                state: browser.state, observedAt: Date(), provider: "chatgpt", model: nil,
+                                effort: "unobserved", surface: "chatgpt",
+                                startedAt: activeRuns[submission.sessionID]?.started, finishedAt: Date(),
+                                receiptPath: browser.receiptPath, nativeSessionID: nil,
+                                nativeRecordVerified: false, taskQuality: "unverified", publicAnswer: nil)
+                        }
                         if let result = summary.taskContext, result.conversationID == submission.sessionID {
                             sessions[target].taskContext = sessions[target].taskContext?.adopting(result,
                                 handedRevision: handedRevision) ?? result

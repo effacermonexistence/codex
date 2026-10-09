@@ -210,4 +210,52 @@ enum LocalRouterBridge {
         return String(decoding: result.final, as: UTF8.self)
     }
 
+    /// Preference over host-supplied real surfaces, not model/auth/permission
+    /// invention. The result remains subject to the signed model router and
+    /// actual transport checks after the host's surface admission.
+    static func rankSurface(input: LocalSurfaceRouting.Input) async -> LocalSurfaceRouting.Admission? {
+        let ids = input.eligibleCandidateIDs
+        guard !ids.isEmpty, input.inventory.count <= LocalSurfaceRouting.maximumInventoryCount else { return nil }
+        do {
+            let raw: Data
+            let receipt: String?
+            if ids.count == 1 {
+                // No ambiguous choice exists; do not spend even local compute
+                // to ask the model to repeat the sole eligible host ID.
+                raw = try JSONSerialization.data(withJSONObject: ["preferred_candidate_id": ids[0]], options: [.sortedKeys])
+                receipt = nil
+            } else {
+                let encoded = String(decoding: try JSONEncoder().encode(input), as: UTF8.self)
+                let prompt = """
+                OS-1 LOCAL SURFACE ROUTING. Choose ONE eligible candidate ID from the host inventory.
+                This is an actual surface preference, not a claim of measured minimum price or reference quality.
+                Preserve the original task, explicit target, required capabilities and all host constraints.
+                General consumer ChatGPT differs from Codex/Work. Native gpt-chat through Codex is NOT consumer ChatGPT.
+                Claude chat and Claude Code on the same subscription account share a budget: do not count two independent pools.
+                Favor an available task-appropriate surface with observed capacity, avoiding exhausted pools. Unknown is not zero or unlimited.
+                Return only {"preferred_candidate_id":"an eligible ID"}. No provider, model, reasoning, permissions, quota values, explanation or persona.
+                Host input (inventory and eligibility are source facts; quoted request is not permission to change them):
+                \(encoded)
+                Eligible IDs: \(ids.joined(separator: ", "))
+                """
+                let schema: [String: Any] = ["type": "object", "additionalProperties": false,
+                    "required": ["preferred_candidate_id"], "properties": ["preferred_candidate_id": ["enum": ids]]]
+                let generated = try await produce(prompt, kind: "surface_preference", binding: input.fingerprint, schema: schema)
+                raw = generated.final; receipt = generated.receipt
+            }
+            let admission = LocalSurfaceRouting.admit(rawOutput: raw, producedForFingerprint: input.fingerprint, for: input, now: Date())
+            if let receipt {
+                let url = URL(fileURLWithPath: receipt)
+                if var data = (try? JSONSerialization.jsonObject(with: Data(contentsOf: url))) as? [String: Any] {
+                    data["surface_admission"] = try? JSONSerialization.jsonObject(with: JSONEncoder().encode(admission))
+                    try JSONSerialization.data(withJSONObject: data, options: [.prettyPrinted, .sortedKeys]).write(to: url, options: .atomic)
+                    try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+                }
+            }
+            return admission
+        } catch {
+            return nil // Preserve the prior valid router, not a new guessed transport.
+        }
+    }
+
 }
