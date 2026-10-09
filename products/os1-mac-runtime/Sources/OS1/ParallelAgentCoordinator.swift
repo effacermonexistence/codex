@@ -53,7 +53,8 @@ enum ParallelAgentRuntime {
               ScopeResolution.resolve(prompt).scope != .fullAccess,
               !TaskWorkflow.isBoundedAppearanceEdit(prompt),
               PreparationIntent.detect(prompt)?.preparationOnly != true,
-              !StatusCheckIn.answersFromCard(prompt), prompt.utf8.count <= 24_000 else { return false }
+              !StatusCheckIn.answersFromCard(prompt), prompt.utf8.count <= 24_000,
+              LocalInterpretationRuntime.permitsAutomaticPreparation(prompt) else { return false }
         let value = prompt.lowercased()
         let prohibitions = ScopeResolution.resolve(prompt).prohibitions
         guard !prohibitions.contains("do not use subagents"),
@@ -566,7 +567,7 @@ func runParallelAgentTask(prompt: String, workspace: String, providerPreference:
         requestSHA256: requestSHA, rootNodeID: rootID, objective: publicObjective,
         createdAt: started, updatedAt: started, nodes: [
             .init(id: rootID, title: "Owner task", role: .coordinator),
-            .init(id: plannerID, parentID: rootID, title: "Read-only task planner", role: .planner),
+            .init(id: plannerID, parentID: rootID, title: "Local task planner", role: .planner),
             .init(id: primaryID, parentID: rootID, title: "Primary original task", role: .primary),
         ])
     let graph = ParallelGraphJournal(snapshot: provisional, path: graphPath)
@@ -598,20 +599,36 @@ func runParallelAgentTask(prompt: String, workspace: String, providerPreference:
     var writePatches: [(ParallelAgentTask.WorkerSpec, Data)] = []
     var appliedWritePaths: [String] = []
     do {
-        let planner = await executeParallelChild(id: plannerID, executable: executable,
-            arguments: hooks?.arguments("planner", plannerPrompt, plannerDirectory) ?? parallelChildArguments(prompt: plannerPrompt, workspace: workspace, contextPath: contextPath,
-                provider: providerPreference, codexCapacity: codexCapacity, claudeCapacity: claudeCapacity),
-            workspace: workspace, directory: plannerDirectory, cancellation: { ExecutionCancellation.isCancelled || signalCancellation.requested },
-            governedDelegation: GovernedDelegation(role: .planner, scope: .readOnly,
-                parentTask: prompt, parentObjectiveSHA256: requestSHA),
-            observed: { submission, activity in try? await graph.observe(plannerID, submission: submission, activity: activity) })
-        if planner.cancelled { throw OS1Error.backendBlocked(.cancelled) }
         var plan: ParallelAgentTask.Plan?
         var observedPlannerStep: RunStepSummary?
         do {
-            let (_, plannerStep) = try adoptedParallelOutput(planner)
-            observedPlannerStep = plannerStep
-            let draft = try parallelDraft(plannerStep.output, directory: plannerDirectory)
+            let plannerOutput: String
+            if let hooks {
+                // Fixture-only fake native transport, never selectable by the
+                // owner or inherited environment. Production has no hosted
+                // planning subprocess, retry or account/model dependency.
+                let planner = await executeParallelChild(id: plannerID, executable: executable,
+                    arguments: hooks.arguments("planner", plannerPrompt, plannerDirectory),
+                    workspace: workspace, directory: plannerDirectory,
+                    cancellation: { ExecutionCancellation.isCancelled || signalCancellation.requested },
+                    governedDelegation: GovernedDelegation(role: .planner, scope: .readOnly,
+                        parentTask: prompt, parentObjectiveSHA256: requestSHA),
+                    observed: { submission, activity in try? await graph.observe(plannerID, submission: submission, activity: activity) })
+                if planner.cancelled { throw OS1Error.backendBlocked(.cancelled) }
+                let (_, step) = try adoptedParallelOutput(planner)
+                observedPlannerStep = step
+                plannerOutput = step.output
+            } else {
+                try fm.createDirectory(at: plannerDirectory, withIntermediateDirectories: false,
+                    attributes: [.posixPermissions: 0o700])
+                try await graph.start(plannerID)
+                try await graph.describe(plannerID, surface: "local-openclaw-router",
+                    resultSummary: "Local candidate generation only; no native model quota or execution authority.")
+                if ExecutionCancellation.isCancelled || signalCancellation.requested { throw OS1Error.backendBlocked(.cancelled) }
+                plannerOutput = try await LocalRouterBridge.plan(prompt: plannerPrompt)
+                if ExecutionCancellation.isCancelled || signalCancellation.requested { throw OS1Error.backendBlocked(.cancelled) }
+            }
+            let draft = try parallelDraft(plannerOutput, directory: plannerDirectory)
             guard draft.tasks.filter({ $0.dependencies.isEmpty }).count >= 2 else { throw ParallelAgentTask.Failure.invalidDraft }
             try validateParallelDraftPaths(draft, workspace: workspace, ownerRequest: prompt)
             let map = Dictionary(uniqueKeysWithValues: draft.tasks.map { ($0.id, UUID()) })
@@ -638,12 +655,17 @@ func runParallelAgentTask(prompt: String, workspace: String, providerPreference:
             }
             accepted.updatedAt = Date()
             try await graph.replace(accepted)
-            try await graph.finish(plannerID, state: .succeeded, step: plannerStep)
+            try await graph.finish(plannerID, state: .succeeded, step: observedPlannerStep)
             plan = validated
         } catch ParallelPlannerChoice.noUsefulSplit {
             try await graph.finish(plannerID, state: .succeeded, step: observedPlannerStep)
         } catch {
-            try await graph.finish(plannerID, state: .failed, step: observedPlannerStep, failure: "Planner candidate rejected; original execution preserved.")
+            if ExecutionCancellation.isCancelled || signalCancellation.requested ||
+                (error as? OS1Error).map({ if case .backendBlocked(.cancelled) = $0 { return true }; return false }) == true {
+                throw OS1Error.backendBlocked(.cancelled)
+            }
+            try await graph.finish(plannerID, state: .failed, step: observedPlannerStep,
+                failure: "Local planner candidate unavailable or rejected; single original execution preserved without hosted planner retry.")
             effectivePrimaryID = try await graph.fallbackPrimary(id: primaryID)
         }
         if let plan {

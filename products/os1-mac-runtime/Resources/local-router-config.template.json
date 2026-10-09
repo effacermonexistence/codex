@@ -1,0 +1,76 @@
+{
+  "models": {
+    "mode": "replace",
+    "providers": {
+      "ollama": {
+        "baseUrl": "http://127.0.0.1:11434",
+        "apiKey": "ollama-local",
+        "api": "ollama",
+        "agentRuntime": {
+          "id": "openclaw"
+        },
+        "models": [
+          {
+            "id": "qwen3.5:4b",
+            "name": "OS1 Local Router",
+            "reasoning": true,
+            "input": [
+              "text"
+            ],
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0
+            },
+            "contextWindow": 8192,
+            "maxTokens": 768,
+            "contextTokens": 8192,
+            "params": {
+              "temperature": 0,
+              "num_ctx": 8192,
+              "num_predict": 512,
+              "format": "json",
+              "think": false,
+              "keep_alive": "5m"
+            }
+          }
+        ]
+      }
+    }
+  },
+  "agents": {
+    "defaults": {
+      "workspace": "__OS1_LOCAL_ROUTER_WORKSPACE__",
+      "skipBootstrap": true,
+      "timeoutSeconds": 35,
+      "model": {
+        "primary": "ollama/qwen3.5:4b",
+        "fallbacks": []
+      },
+      "models": {
+        "ollama/qwen3.5:4b": {
+          "agentRuntime": {
+            "id": "openclaw"
+          },
+          "params": {
+            "temperature": 0,
+            "num_ctx": 8192,
+            "num_predict": 512,
+            "format": "json",
+            "think": false,
+            "keep_alive": "5m"
+          }
+        }
+      }
+    }
+  },
+  "tools": {
+    "deny": [
+      "*"
+    ]
+  },
+  "browser": {
+    "enabled": false
+  }
+}

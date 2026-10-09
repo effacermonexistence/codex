@@ -770,6 +770,44 @@ struct ExecutionInputContext: Codable {
     }
 }
 
+/// Semantic interpretation is a local, untrusted candidate bound to one owner
+/// request. It may suppress unnecessary orchestration inside existing host
+/// guards, but never supplies a model, effort, permission, execution ticket,
+/// consumer ChatGPT transport or quality-equivalence proof.
+enum LocalInterpretationRuntime {
+    struct Binding: Sendable {
+        let input: LocalTaskInterpretation.Input
+        let admission: LocalTaskInterpretation.Admission?
+        let receiptPath: String?
+    }
+    @TaskLocal static var current: Binding?
+
+    static func acceptedCandidate(for request: String) -> LocalTaskInterpretation.Candidate? {
+        guard !ParallelAgentRuntime.readOnlyAgent, ParallelAgentRuntime.isolatedWriter == nil,
+              !ConcurrentRouteFanoutRuntime.child, let binding = current,
+              binding.input.request == request,
+              binding.input.policySHA256 == OwnerPolicyContext.snapshot?.sourceSHA256,
+              binding.admission?.state == .candidateAccepted,
+              binding.admission?.inputFingerprint == binding.input.fingerprint else { return nil }
+        return binding.admission?.candidate
+    }
+
+    static func isAnswerOnly(_ request: String) -> Bool {
+        guard ScopeResolution.resolve(request).scope == .readOnly,
+              !promptRequiresShellCapability(request), RequestNamedPaths.extract(request).isEmpty,
+              ClaudeChatLane.conversationalQuestion(request),
+              let candidate = acceptedCandidate(for: request) else { return false }
+        return candidate.intent == .answerOnly && candidate.needsActions == .no
+    }
+
+    static func permitsAutomaticPreparation(_ request: String) -> Bool {
+        let value = request.lowercased()
+        // Explicit owner parallelism is not overridden by a local classifier.
+        if value.contains("parallel") || value.contains("병렬") { return true }
+        return !isAnswerOnly(request)
+    }
+}
+
 /// A bounded response needs neither coding-agent authority nor reference effort.
 struct ConversationalSurfaceContext: Codable {
     let kind: String
@@ -816,7 +854,12 @@ func boundedConversationKind(_ request: String, hasSource: Bool, scope: TaskCont
           !promptRequiresShellCapability(request), RequestNamedPaths.extract(request).isEmpty,
           ImageInput.encodeAll(in: request).isEmpty else { return nil }
     if availabilityCheckIn(request) { return "availability_checkin" }
-    return ClaudeChatLane.conversationalQuestion(request) ? "smalltalk" : nil
+    guard ClaudeChatLane.conversationalQuestion(request) else { return nil }
+    if let candidate = LocalInterpretationRuntime.acceptedCandidate(for: request),
+       candidate.needsActions == .yes || candidate.intent == .execute || candidate.intent == .mixed {
+        return nil
+    }
+    return "smalltalk"
 }
 
 func providerQuotaContext(codex: BackendHealth.QuotaSnapshot?, claude: BackendHealth.QuotaSnapshot?,
@@ -1036,6 +1079,9 @@ struct RunSummary: Codable {
     var workflowBlocker: String? = nil
     /// Public bounded execution tree; executable worker inputs remain private.
     var agentTask: ParallelAgentTask.Snapshot? = nil
+    /// Private local semantic candidate receipt, not a native execution receipt
+    /// or an outcome-quality certification. Exact fast paths leave it absent.
+    var localRouterReceipt: String? = nil
 }
 
 struct ProviderExecution {
@@ -3534,9 +3580,74 @@ func claudeChatLaneRefusal(objective: String, hasSource: Bool) -> String? {
     )
 }
 
+/// The admitted local document is still a candidate: task-local ingress and
+/// policy binding cannot leak to a later turn, a workflow stage or a child.
+/// These tests contain no model invocation and no endpoint/file authority.
+func localInterpretationRuntimeSelfTest() throws {
+    let policySHA = String(repeating: "a", count: 64)
+    let policyBytes = try JSONSerialization.data(withJSONObject: [
+        "schema": 1, "sourceSHA256": policySHA, "sourceFile": policySHA + ".txt",
+        "projectionSHA256": String(repeating: "b", count: 64), "projection": "fixture",
+        "sourceID": "fixture", "sourceModified": "fixture", "checkedAt": Date().timeIntervalSince1970,
+        "routing": "fixture"
+    ])
+    let policy = try JSONDecoder().decode(OwnerPolicySnapshot.self, from: policyBytes)
+    let request = "Explain task routing architecture and compare alternatives with tests."
+    let input = LocalTaskInterpretation.Input(request: request, context: "fixture-context", policySHA256: policySHA)
+    func admission(_ changes: [String: Any] = [:]) throws -> LocalTaskInterpretation.Admission {
+        var value: [String: Any] = ["schema": 1, "request_sha256": input.requestSHA256,
+            "context_sha256": input.contextSHA256, "intent": "answer_only", "needs_actions": "no",
+            "required_capabilities": ["answer"], "evidence_spans": [
+                ["start_utf8": 0, "end_utf8": request.utf8.count, "supports": "intent"]], "ambiguities": []]
+        value.merge(changes) { _, replacement in replacement }
+        return LocalTaskInterpretation.admit(rawOutput: try JSONSerialization.data(withJSONObject: value), for: input)
+    }
+    let accepted = try admission(), held = try admission(["ambiguities": ["fixture unresolved scope"]])
+    var checks = 0
+    func check(_ condition: Bool, _ label: String) throws {
+        checks += 1
+        if !condition { throw OS1Error.message("Local interpretation runtime fixture: " + label) }
+    }
+    let binding = LocalInterpretationRuntime.Binding(input: input, admission: accepted, receiptPath: "/fixture/local.json")
+    try OwnerPolicyContext.$snapshot.withValue(policy) {
+        try LocalInterpretationRuntime.$current.withValue(binding) {
+            try check(LocalInterpretationRuntime.acceptedCandidate(for: request) != nil, "one hash-bound local semantic candidate is visible")
+            try check(LocalInterpretationRuntime.permitsAutomaticPreparation(request), "non-conversational technical task retains preparation despite a candidate answer-only label")
+            try check(!LocalInterpretationRuntime.isAnswerOnly(request + " Execute it."), "later/derived request cannot inherit the candidate")
+            try check(LocalInterpretationRuntime.permitsAutomaticPreparation(request + " Execute it."), "unmatched task retains original orchestration floor")
+            try check(boundedConversationKind(request, hasSource: false, scope: .workspaceWrite, workflow: nil, delegated: false) == nil,
+                "semantic answer-only cannot grant read-only/chat authority to a write envelope")
+            try check(boundedConversationKind(request, hasSource: true, scope: .readOnly, workflow: nil, delegated: false) == nil,
+                "semantic answer-only cannot hide material source evidence")
+            try ParallelAgentRuntime.$readOnlyAgent.withValue(true) {
+                try check(!LocalInterpretationRuntime.isAnswerOnly(request), "native delegated child does not reuse parent interpretation")
+            }
+            try OwnerPolicyContext.$snapshot.withValue(nil) {
+                try check(!LocalInterpretationRuntime.isAnswerOnly(request), "missing/changed policy invalidates semantic use")
+            }
+        }
+        try LocalInterpretationRuntime.$current.withValue(.init(input: input, admission: held, receiptPath: nil)) {
+            try check(!LocalInterpretationRuntime.isAnswerOnly(request), "ambiguity holds candidate and preserves original floor")
+        }
+        let parallelRequest = request + " Work in parallel."
+        let parallelInput = LocalTaskInterpretation.Input(request: parallelRequest, context: "", policySHA256: policySHA)
+        let parallelData = try JSONSerialization.data(withJSONObject: ["schema": 1, "request_sha256": parallelInput.requestSHA256,
+            "context_sha256": parallelInput.contextSHA256, "intent": "answer_only", "needs_actions": "no",
+            "required_capabilities": ["answer"], "evidence_spans": [["start_utf8": 0, "end_utf8": parallelRequest.utf8.count, "supports": "intent"]],
+            "ambiguities": []])
+        let parallelAdmission = LocalTaskInterpretation.admit(rawOutput: parallelData, for: parallelInput)
+        try LocalInterpretationRuntime.$current.withValue(.init(input: parallelInput, admission: parallelAdmission, receiptPath: nil)) {
+            try check(LocalInterpretationRuntime.permitsAutomaticPreparation(parallelRequest), "explicit owner parallel request is preserved")
+        }
+    }
+    try check(LocalInterpretationRuntime.current == nil, "semantic state ends with owner dispatch")
+    print("Local interpretation runtime: \(checks) checks PASS; closed candidates cannot supply permissions, provider or quality proof; model calls 0")
+}
+
 /// The rail's routing decisions, checked against the lane predicates that
 /// actually run. Deterministic: no provider, no network, no clipboard.
 func providerSurfaceRoutingSelfTest() throws {
+    try localInterpretationRuntimeSelfTest()
     let translate = "다음 문장을 영문으로 번역해줘: 내일 회의를 오후 3시로 옮겨도 될까요?"
     let fileWork = "README.md를 번역해서 README.en.md로 저장해"
     var checks: [(String, Bool)] = []
@@ -16214,6 +16325,7 @@ func usage() {
     OS-1 local runtime
 
       os1 doctor
+      os1 local-router-interpret --prompt "task" [--context-file /path]
       os1 self-test
       os1 accounts list [--json]
       os1 accounts discover --json
@@ -16343,6 +16455,41 @@ struct OS1Main {
                 }
                 try DriftPolicyStore().setEnabled(command == "drift-policy-enable", scope: ledger.scope)
                 print("Scoped corrections \(command == "drift-policy-enable" ? "enabled" : "disabled"); suspended rules remain suspended.")
+            case "local-router-interpret":
+                var request: String?, contextPath: String?
+                var index = 1
+                while index < arguments.count {
+                    guard index + 1 < arguments.count else {
+                        throw OS1Error.message("local-router-interpret expects --prompt TEXT [--context-file PATH]")
+                    }
+                    switch arguments[index] {
+                    case "--prompt" where request == nil:
+                        request = arguments[index + 1]
+                    case "--context-file" where contextPath == nil:
+                        contextPath = arguments[index + 1]
+                    default:
+                        throw OS1Error.message("Unknown or repeated local-router-interpret argument")
+                    }
+                    index += 2
+                }
+                guard let request, !request.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                    throw OS1Error.message("local-router-interpret requires --prompt TEXT")
+                }
+                let context = try readSessionContext(contextPath) ?? ""
+                let policy = try loadCurrentOwnerPolicy()
+                let result = await OwnerPolicyContext.$snapshot.withValue(policy) {
+                    await LocalRouterBridge.interpret(request: request, context: context,
+                        policySHA: policy?.sourceSHA256 ?? "")
+                }
+                struct LocalRouterReport: Encodable {
+                    let admission: LocalTaskInterpretation.Admission?
+                    let receiptPath: String?
+                    let failure: String?
+                    enum CodingKeys: String, CodingKey { case admission, failure; case receiptPath = "receipt_path" }
+                }
+                let report = LocalRouterReport(admission: result.admission, receiptPath: result.receiptPath, failure: result.failure)
+                let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+                print(String(decoding: try encoder.encode(report), as: UTF8.self))
             case "model-inventory":
                 let config = try RuntimeConfig.load()
                 let workspace = FileManager.default.currentDirectoryPath
@@ -16568,8 +16715,23 @@ struct OS1Main {
                         "The requested fan-out was not bound to a parallel plan in this execution mode, so OS-1 stopped before model dispatch and preserved the request. Use Auto and name each route and payload explicitly. It was not replaced with a single-model investigation or self-repair."))
                 }
                 let sessionContext = try readSessionContext(contextPath)
+                // One local semantic pass for the owner dispatch only. Exact
+                // response controls / named route fan-out returned above;
+                // native child processes never recurse into interpretation.
+                let localPolicy = !parallelAgentChild && !parallelFanoutChild && !requireReadOnly
+                    ? try loadCurrentOwnerPolicy() : nil
+                let localResult = !parallelAgentChild && !parallelFanoutChild && !requireReadOnly
+                    ? await LocalRouterBridge.interpret(request: prompt, context: sessionContext ?? "",
+                        policySHA: localPolicy?.sourceSHA256 ?? "") : nil
+                let localBinding = localResult.map {
+                    LocalInterpretationRuntime.Binding(input: LocalTaskInterpretation.Input(request: prompt,
+                        context: sessionContext ?? "", policySHA256: localPolicy?.sourceSHA256 ?? ""),
+                        admission: $0.admission, receiptPath: $0.receiptPath)
+                }
+                var summary = try await OwnerPolicyContext.$snapshot.withValue(localPolicy) {
+                try await LocalInterpretationRuntime.$current.withValue(localBinding) {
                 let boundProjectID = try SessionHandoff.decode(sessionContext).taskContext?.project?.projectID
-                let workflow = !requireReadOnly &&
+                let workflow = !requireReadOnly && !LocalInterpretationRuntime.isAnswerOnly(prompt) &&
                     TaskWorkflow.shouldDecompose(prompt, scope: ScopeResolution.resolve(prompt).scope,
                         projectID: boundProjectID) &&
                     PreparationIntent.detect(prompt)?.preparationOnly != true
@@ -16639,6 +16801,10 @@ struct OS1Main {
                     requireReadOnly: requireReadOnly
                 ))
                 }
+                return summary
+                }
+                }
+                summary.localRouterReceipt = localResult?.receiptPath
                 if outputFormat == "json" {
                     let encoder = JSONEncoder()
                     encoder.outputFormatting = [.withoutEscapingSlashes]
