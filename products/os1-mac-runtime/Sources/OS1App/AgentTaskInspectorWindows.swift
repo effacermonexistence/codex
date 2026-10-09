@@ -3,6 +3,84 @@ import Foundation
 import OS1Context
 import SwiftUI
 
+/// One actual request/runtime/receipt projected for display. This is neither
+/// a planner graph nor authority to dispatch an agent or certify task quality.
+/// The store supplies recorded fields; missing model/effort/quality stay nil.
+struct ObservedSingleExecution: Identifiable, Codable, Equatable, Sendable {
+    let id: UUID
+    let conversationID: UUID
+    let objective: String
+    let state: String
+    let observedAt: Date
+    let provider: String?
+    let model: String?
+    let effort: String?
+    let surface: String?
+    let progressText: String?
+    let startedAt: Date?
+    let finishedAt: Date?
+    let receiptPath: String?
+    let nativeSessionID: String?
+    let nativeRecordVerified: Bool?
+    let taskQuality: String?
+    let publicAnswer: String?
+
+    init(id: UUID, conversationID: UUID, objective: String, state: String, observedAt: Date,
+         provider: String? = nil, model: String? = nil, effort: String? = nil, surface: String? = nil,
+         progressText: String? = nil, startedAt: Date? = nil, finishedAt: Date? = nil,
+         receiptPath: String? = nil, nativeSessionID: String? = nil, nativeRecordVerified: Bool? = nil,
+         taskQuality: String? = nil, publicAnswer: String? = nil) {
+        self.id = id; self.conversationID = conversationID; self.objective = objective; self.state = state
+        self.observedAt = observedAt; self.provider = provider; self.model = model; self.effort = effort
+        self.surface = surface; self.progressText = progressText; self.startedAt = startedAt
+        self.finishedAt = finishedAt; self.receiptPath = receiptPath; self.nativeSessionID = nativeSessionID
+        self.nativeRecordVerified = nativeRecordVerified; self.taskQuality = taskQuality; self.publicAnswer = publicAnswer
+    }
+
+    var isValid: Bool {
+        !objective.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && !state.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && observedAt.timeIntervalSince1970.isFinite
+            && (startedAt?.timeIntervalSince1970.isFinite ?? true)
+            && (finishedAt?.timeIntervalSince1970.isFinite ?? true)
+            && !(startedAt.map { start in finishedAt.map { $0 < start } ?? false } ?? false)
+    }
+
+    var routeDescription: String {
+        guard let provider, !provider.isEmpty else {
+            return os1Tr("실행 제공자 아직 관측 안 됨", "Execution provider not observed yet")
+        }
+        let identity = provider == "local" ? os1Tr("OS-1 (로컬)", "OS-1 (local)") : surface.flatMap(ProviderSurface.init(rawValue:))
+            .flatMap { $0.gatewayPreference == provider ? $0.routeTitle : nil } ?? provider
+        return ([identity] + [model, effort].compactMap { $0 }).joined(separator: " · ")
+    }
+}
+
+/// Optional observation telemetry cannot poison the authoritative session
+/// store. Absent, corrupt or structurally invalid records decode to nil.
+@propertyWrapper
+struct ObservedExecutionField: Codable, Equatable, Sendable {
+    var wrappedValue: ObservedSingleExecution?
+    init(wrappedValue: ObservedSingleExecution? = nil) {
+        self.wrappedValue = wrappedValue?.isValid == true ? wrappedValue : nil
+    }
+    init(from decoder: Decoder) throws {
+        let decoded = try? ObservedSingleExecution(from: decoder)
+        wrappedValue = decoded?.isValid == true ? decoded : nil
+    }
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        if let wrappedValue, wrappedValue.isValid { try container.encode(wrappedValue) }
+        else { try container.encodeNil() }
+    }
+}
+
+extension KeyedDecodingContainer {
+    func decode(_ type: ObservedExecutionField.Type, forKey key: Key) throws -> ObservedExecutionField {
+        (try? decodeIfPresent(type, forKey: key)) ?? ObservedExecutionField()
+    }
+}
+
 /// A presentation adapter, never runtime authority. Opening a window cannot
 /// schedule work, change the selected conversation, or control a backend.
 struct AgentTaskInspectorState {
@@ -10,12 +88,16 @@ struct AgentTaskInspectorState {
     let snapshot: ParallelAgentTask.Snapshot?
     let sessionTitle: String
     let isLive: Bool
+    let observedExecution: ObservedSingleExecution?
 
-    init(conversationID: UUID, snapshot: ParallelAgentTask.Snapshot?, sessionTitle: String, isLive: Bool) {
+    init(conversationID: UUID, snapshot: ParallelAgentTask.Snapshot?, sessionTitle: String, isLive: Bool,
+         observedExecution: ObservedSingleExecution? = nil) {
         self.conversationID = conversationID
         self.snapshot = snapshot.flatMap { try? $0.validated(conversationID: conversationID) }
         self.sessionTitle = sessionTitle
         self.isLive = isLive
+        self.observedExecution = self.snapshot == nil && observedExecution?.conversationID == conversationID
+            && observedExecution?.isValid == true ? observedExecution : nil
     }
 }
 
@@ -102,6 +184,7 @@ final class AgentTaskInspectorWindows {
         var nodes: [UUID: NodeWindow] = [:]
         var nativeScopes: [NativeAgentScopeWindowKey: NSWindow] = [:]
         var nativeScopeDelegates: [NativeAgentScopeWindowKey: AgentTaskInspectorWindowDelegate] = [:]
+        var observedWindow: NodeWindow?
         init(window: NSWindow, model: AgentTaskInspectorModel, delegate: AgentTaskInspectorWindowDelegate,
              onClose: @escaping () -> Void) {
             self.window = window; self.model = model; self.delegate = delegate; self.onClose = onClose
@@ -129,8 +212,12 @@ final class AgentTaskInspectorWindows {
         let previous = entry.model.state.snapshot
         if let previous, let incoming = state.snapshot, previous.planID == incoming.planID,
            previous.submissionID == incoming.submissionID, incoming.updatedAt < previous.updatedAt { return }
+        let previousObservation = entry.model.state.observedExecution
+        if previous == nil, state.snapshot == nil, let old = previousObservation, let incoming = state.observedExecution,
+           old.id == incoming.id, incoming.observedAt < old.observedAt { return }
         let changedRun = previous?.planID != state.snapshot?.planID || previous?.submissionID != state.snapshot?.submissionID
-        if changedRun || state.snapshot == nil {
+            || previousObservation?.id != state.observedExecution?.id
+        if changedRun || (state.snapshot == nil && state.observedExecution == nil) {
             closeAllNodes(entry)
         } else if let graph = state.snapshot {
             let valid = Set(graph.nodes.map(\.id))
@@ -146,6 +233,9 @@ final class AgentTaskInspectorWindows {
         }
         entry.model.state = state
         entry.window.title = os1Tr("에이전트 작업 트리", "Agent task tree") + " · " + state.sessionTitle
+        if let observation = state.observedExecution, let detail = entry.observedWindow {
+            detail.window.title = os1Tr("실행 관측", "Execution observation") + " · " + String(observation.objective.prefix(100))
+        }
         if let graph = state.snapshot {
             for record in entry.nodes.values {
                 if let node = graph.nodes.first(where: { $0.id == record.id }) {
@@ -166,11 +256,14 @@ final class AgentTaskInspectorWindows {
     private func closeAllNodes(_ entry: Entry) {
         let records = Array(entry.nodes.values)
         let scopes = Array(entry.nativeScopes.values)
+        let observed = entry.observedWindow
         entry.nodes.removeAll()
         entry.nativeScopes.removeAll()
         entry.nativeScopeDelegates.removeAll()
+        entry.observedWindow = nil
         scopes.forEach { $0.close() }
         records.forEach { $0.window.close() }
+        observed?.window.close()
     }
 
     private func closeNode(conversationID: UUID, nodeID: UUID) {
@@ -203,10 +296,38 @@ final class AgentTaskInspectorWindows {
             onClose: { [weak window] in window?.close() },
             onInspect: { [weak self, weak window] node in
                 self?.openNode(conversationID: id, nodeID: node.id, adjacentTo: window)
+            }, onInspectObserved: { [weak self, weak window] observation in
+                self?.openObservedExecution(conversationID: id, executionID: observation.id, adjacentTo: window)
             }))
         entries[id] = Entry(window: window, model: model, delegate: delegate, onClose: onClose)
         // User clicked the marker: this reveal is intentional, unlike updates.
         window.makeKeyAndOrderFront(nil)
+    }
+
+    private func openObservedExecution(conversationID: UUID, executionID: UUID, adjacentTo source: NSWindow?) {
+        guard let entry = entries[conversationID], entry.model.state.snapshot == nil,
+              let observation = entry.model.state.observedExecution, observation.id == executionID else { return }
+        if let existing = entry.observedWindow {
+            existing.window.makeKeyAndOrderFront(nil)
+            return
+        }
+        let window = makeWindow(title: os1Tr("실행 관측", "Execution observation") + " · " + String(observation.objective.prefix(100)),
+            size: NSSize(width: 360, height: 620), adjacentTo: source ?? entry.window)
+        window.setAccessibilityIdentifier("os1.agent-inspector.observed." + executionID.uuidString.lowercased())
+        let delegate = AgentTaskInspectorWindowDelegate { [weak self] in
+            self?.closeObservedExecution(conversationID: conversationID, executionID: executionID)
+        }
+        window.delegate = delegate
+        window.contentView = NSHostingView(rootView: ObservedSingleExecutionInspectorView(model: entry.model, executionID: executionID))
+        entry.observedWindow = NodeWindow(id: executionID, parentNodeID: nil, window: window, delegate: delegate)
+        window.makeKeyAndOrderFront(nil)
+    }
+
+    private func closeObservedExecution(conversationID: UUID, executionID: UUID) {
+        guard let entry = entries[conversationID], entry.observedWindow?.id == executionID else { return }
+        let observed = entry.observedWindow
+        entry.observedWindow = nil
+        observed?.window.close()
     }
 
     private func openNode(conversationID: UUID, nodeID: UUID, adjacentTo source: NSWindow?) {
@@ -410,6 +531,99 @@ final class AgentTaskInspectorWindows {
         try check(entry.nodes.isEmpty && entry.model.state.snapshot == nil, "unknown active graph clears stale details")
         let wrong = AgentTaskInspectorState(conversationID: UUID(), snapshot: snapshot, sessionTitle: "Foreign", isLive: true)
         try check(wrong.snapshot == nil, "foreign conversation graph rejected at view adapter")
+        let observedID = UUID()
+        let observation = ObservedSingleExecution(id: observedID, conversationID: conversation,
+            objective: "Check the response path", state: "running", observedAt: now,
+            provider: "codex", model: "fixture-model", effort: "low", surface: "gpt-chat",
+            progressText: "Native request observed", startedAt: now)
+        struct ObservationEnvelope: Codable {
+            let authoritativeValue: String
+            @ObservedExecutionField var observedExecution: ObservedSingleExecution? = nil
+        }
+        let envelope = ObservationEnvelope(authoritativeValue: "preserved", observedExecution: observation)
+        let envelopeRoundTrip = try JSONDecoder().decode(ObservationEnvelope.self, from: JSONEncoder().encode(envelope))
+        try check(envelopeRoundTrip.authoritativeValue == "preserved" && envelopeRoundTrip.observedExecution == observation,
+            "single observation round trip preserves record independently from authoritative fields")
+        for raw in [#"{"authoritativeValue":"preserved"}"#,
+                    #"{"authoritativeValue":"preserved","observedExecution":null}"#,
+                    #"{"authoritativeValue":"preserved","observedExecution":"future-unknown"}"#,
+                    #"{"authoritativeValue":"preserved","observedExecution":{"unknown":true}}"#] {
+            let decoded = try JSONDecoder().decode(ObservationEnvelope.self, from: Data(raw.utf8))
+            try check(decoded.authoritativeValue == "preserved" && decoded.observedExecution == nil,
+                "absent/null/malformed optional observation never loses authoritative session fields")
+        }
+        var invalidRecord = try JSONSerialization.jsonObject(with: JSONEncoder().encode(observation)) as! [String: Any]
+        invalidRecord["objective"] = " "
+        let invalidEnvelope = try JSONSerialization.data(withJSONObject: ["authoritativeValue": "preserved", "observedExecution": invalidRecord])
+        let invalidDecoded = try JSONDecoder().decode(ObservationEnvelope.self, from: invalidEnvelope)
+        try check(invalidDecoded.authoritativeValue == "preserved" && invalidDecoded.observedExecution == nil,
+            "decodable but invalid optional observation is ignored without losing session data")
+        let localObservation = ObservedSingleExecution(id: UUID(), conversationID: conversation,
+            objective: "Check the local request path", state: "routing", observedAt: now, provider: "local")
+        try check(localObservation.routeDescription == os1Tr("OS-1 (로컬)", "OS-1 (local)")
+                  && localObservation.model == nil && localObservation.effort == nil,
+            "local request remains local and unrecorded model/effort remain unknown")
+        controller.update(state: .init(conversationID: conversation, snapshot: nil, sessionTitle: "One actual request", isLive: true,
+            observedExecution: observation))
+        try check(entry.model.state.snapshot == nil && entry.model.state.observedExecution?.id == observedID
+                  && entry.nodes.isEmpty && entry.nativeScopes.isEmpty,
+            "single observation does not fabricate a plan or planned child nodes")
+        try check(observation.routeDescription.contains("fixture-model") && observation.nativeRecordVerified == nil
+                  && observation.taskQuality == nil, "single observation preserves route and unknown verification fields")
+        entry.window.contentView?.layoutSubtreeIfNeeded()
+        try await Task.sleep(for: .milliseconds(40))
+        let observedButtons = inspectorButtons(entry.window.contentView).filter {
+            $0.accessibilityIdentifier() == "os1.agent-tree.inspect." + observedID.uuidString.lowercased()
+        }
+        guard let observedButton = observedButtons.first else { throw InspectorFixtureFailure.failed("single observed execution inspect button absent") }
+        try check(observedButtons.count == 1, "one actual request presents exactly one observed execution button")
+        _ = observedButton.sendAction(observedButton.action, to: observedButton.target)
+        guard let observedDetail = entry.observedWindow else { throw InspectorFixtureFailure.failed("single observation click did not open detail") }
+        try check(observedDetail.id == observedID && observedDetail.window.isVisible && observedDetail.window.level == .normal
+                  && observedDetail.window !== entry.window && entry.nodes.isEmpty,
+            "observed execution opens adjacent normal detail without becoming a planned node")
+        controller.openObservedExecution(conversationID: conversation, executionID: observedID, adjacentTo: entry.window)
+        try check(entry.observedWindow?.window === observedDetail.window, "same observation navigation reuses exact detail window")
+        let observedKeyWindow = NSApp.keyWindow
+        let recorded = ObservedSingleExecution(id: observedID, conversationID: conversation,
+            objective: observation.objective, state: "recorded", observedAt: now.addingTimeInterval(2),
+            provider: "codex", model: "fixture-model", effort: "low", surface: "gpt-chat",
+            progressText: "Recorded response returned", startedAt: now, finishedAt: now.addingTimeInterval(1),
+            receiptPath: "/fixture/receipt.json", nativeSessionID: "fixture-native-session",
+            nativeRecordVerified: true, taskQuality: "execution_only", publicAnswer: "A fixture response")
+        controller.update(state: .init(conversationID: conversation, snapshot: nil, sessionTitle: "Recorded request", isLive: false,
+            observedExecution: recorded))
+        try check(entry.observedWindow?.window === observedDetail.window && NSApp.keyWindow === observedKeyWindow,
+            "passive single-record update preserves detail identity and focus")
+        try check(entry.model.state.observedExecution?.nativeRecordVerified == true
+                  && entry.model.state.observedExecution?.taskQuality == "execution_only",
+            "native verification does not upgrade recorded task-quality state")
+        controller.update(state: .init(conversationID: conversation, snapshot: nil, sessionTitle: "Stale observation", isLive: true,
+            observedExecution: observation))
+        try check(entry.model.state.observedExecution?.state == "recorded", "older observation cannot replace newer record")
+        controller.openObservedExecution(conversationID: UUID(), executionID: observedID, adjacentTo: entry.window)
+        controller.openObservedExecution(conversationID: conversation, executionID: UUID(), adjacentTo: entry.window)
+        try check(entry.observedWindow?.window === observedDetail.window, "foreign conversation and unrecorded execution cannot open observations")
+        let foreignObservation = AgentTaskInspectorState(conversationID: UUID(), snapshot: nil, sessionTitle: "Foreign", isLive: true,
+            observedExecution: observation)
+        try check(foreignObservation.observedExecution == nil, "foreign observation rejected by conversation binding")
+        let invalidObservation = ObservedSingleExecution(id: UUID(), conversationID: conversation, objective: " ", state: "running", observedAt: now)
+        try check(AgentTaskInspectorState(conversationID: conversation, snapshot: nil, sessionTitle: "Invalid", isLive: true,
+            observedExecution: invalidObservation).observedExecution == nil, "empty objective cannot create an observation")
+        controller.closeObservedExecution(conversationID: conversation, executionID: observedID)
+        try check(entry.observedWindow == nil && !observedDetail.window.isVisible && controller.hasWindow(conversationID: conversation)
+                  && closeCalls == 0, "closing observed detail preserves root inspector and conversation")
+        controller.openObservedExecution(conversationID: conversation, executionID: observedID, adjacentTo: entry.window)
+        let replacement = ObservedSingleExecution(id: UUID(), conversationID: conversation, objective: "Next actual request", state: "routing", observedAt: now.addingTimeInterval(3))
+        controller.update(state: .init(conversationID: conversation, snapshot: nil, sessionTitle: "Next request", isLive: true,
+            observedExecution: replacement))
+        try check(entry.observedWindow == nil && entry.model.state.observedExecution?.id == replacement.id,
+            "new actual execution invalidates stale observed detail")
+        controller.openObservedExecution(conversationID: conversation, executionID: replacement.id, adjacentTo: entry.window)
+        controller.update(state: .init(conversationID: conversation, snapshot: snapshot, sessionTitle: "Actual plan", isLive: true,
+            observedExecution: replacement))
+        try check(entry.model.state.snapshot?.planID == snapshot.planID && entry.model.state.observedExecution == nil
+                  && entry.observedWindow == nil, "valid planned graph supersedes observation without merging identities")
         let visible = NSRect(x: -400, y: 30, width: 900, height: 650)
         let adjacent = Self.adjacentFrame(size: .init(width: 360, height: 620), source: .init(x: -350, y: 40, width: 250, height: 630), visible: visible)
         let bounded = Self.adjacentFrame(size: .init(width: 1_000, height: 900), source: .init(x: 300, y: 500, width: 400, height: 500), visible: visible)
@@ -417,7 +631,7 @@ final class AgentTaskInspectorWindows {
         try check(visible.contains(bounded), "screen overflow clamps entire window into visible area")
         entry.window.close()
         try check(!controller.hasWindow(conversationID: conversation) && closeCalls == 1, "graph close clears windows and invokes close callback once")
-        print("Agent inspector windows: \(checks) checks PASS; real production windows/buttons, keyed detail chain, passive update focus, plan invalidation; provider calls 0; live state writes 0")
+        print("Agent inspector windows: \(checks) checks PASS; real production windows/buttons, keyed detail chain, single execution observations, passive update focus, run invalidation; provider calls 0; live state writes 0")
     }
 }
 
@@ -461,11 +675,66 @@ private struct AgentTaskInspectorRootView: View {
     @ObservedObject var model: AgentTaskInspectorModel
     let onClose: () -> Void
     let onInspect: (ParallelAgentTask.Node) -> Void
+    let onInspectObserved: (ObservedSingleExecution) -> Void
     var body: some View {
         AgentTaskTreeView(snapshot: model.state.snapshot, sessionTitle: model.state.sessionTitle,
-            isLive: model.state.isLive, onClose: onClose, onInspectNode: onInspect)
+            isLive: model.state.isLive, onClose: onClose, onInspectNode: onInspect,
+            observedExecution: model.state.observedExecution, onInspectObservedExecution: onInspectObserved)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .environment(\.colorScheme, .dark)
+    }
+}
+
+@MainActor
+private struct ObservedSingleExecutionInspectorView: View {
+    @ObservedObject var model: AgentTaskInspectorModel
+    let executionID: UUID
+    var body: some View {
+        ScrollView {
+            if model.state.snapshot == nil, let observation = model.state.observedExecution,
+               observation.id == executionID {
+                VStack(alignment: .leading, spacing: 14) {
+                    Text(os1Tr("실제 실행 관측", "Observed execution"))
+                        .font(.system(size: 15, weight: .semibold)).foregroundStyle(Color(red: 0.93, green: 0.70, blue: 0.80))
+                    Text(model.state.isLive ? os1Tr("현재 요청/실행 상태", "Current request/execution state")
+                        : os1Tr("저장된 실행 기록 · 현재 실행 여부를 뜻하지 않습니다", "Recorded execution · not a claim of current liveness"))
+                        .font(.system(size: 10)).foregroundStyle(Color.white.opacity(0.5))
+                    field(os1Tr("요청 목표", "Request objective"), observation.objective)
+                    field(os1Tr("관측된 상태", "Recorded state"), observation.state)
+                    field(os1Tr("실행 경로", "Execution route"), observation.routeDescription)
+                    field(os1Tr("모델", "Model"), observation.model ?? os1Tr("미기록", "Not recorded"))
+                    field(os1Tr("추론 설정", "Reasoning setting"), observation.effort ?? os1Tr("미기록", "Not recorded"))
+                    if let surface = observation.surface { field(os1Tr("실제 실행 표면", "Actual execution surface"), surface) }
+                    if let progress = observation.progressText { field(os1Tr("현재 관측", "Observed progress"), progress) }
+                    field(os1Tr("실행 기록 검증", "Execution-record verification"), observation.nativeRecordVerified.map {
+                        $0 ? os1Tr("검증됨 · 작업 완료나 품질 동등성을 뜻하지 않습니다", "Verified · does not establish task completion or quality parity")
+                            : os1Tr("검증되지 않음", "Not verified")
+                    } ?? os1Tr("미기록", "Not recorded"))
+                    field(os1Tr("작업 품질 상태", "Task quality state"), observation.taskQuality ?? os1Tr("미확인", "Unverified"))
+                    field(os1Tr("관측 시각", "Observed at"), observation.observedAt.formatted(date: .abbreviated, time: .standard))
+                    if let start = observation.startedAt { field(os1Tr("시작", "Started"), start.formatted(date: .abbreviated, time: .standard)) }
+                    if let finish = observation.finishedAt { field(os1Tr("종료", "Finished"), finish.formatted(date: .abbreviated, time: .standard)) }
+                    field(os1Tr("요청/실행 ID", "Request/execution ID"), observation.id.uuidString.lowercased())
+                    if let native = observation.nativeSessionID { field(os1Tr("네이티브 세션", "Native session"), native) }
+                    if let receipt = observation.receiptPath { field(os1Tr("실행 영수증", "Execution receipt"), receipt) }
+                    if let answer = observation.publicAnswer { field(os1Tr("기록된 공개 응답", "Recorded public answer"), answer) }
+                    Text(os1Tr("실제 기록 한 건을 보여줍니다. 병렬 계획·하위 에이전트·완료율을 생성하지 않습니다.",
+                               "Displays one actual record. It does not create a parallel plan, child agents, or completion percentage."))
+                        .font(.system(size: 10)).foregroundStyle(Color.white.opacity(0.5))
+                }.padding(20).frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+                Text(os1Tr("현재 상태에서 이 실행 관측을 확인할 수 없습니다.", "This execution observation is unavailable in the current state."))
+                    .font(.system(size: 12)).padding(20)
+            }
+        }.foregroundStyle(Color.white.opacity(0.95))
+            .background(Color(red: 0.015, green: 0.014, blue: 0.017)).environment(\.colorScheme, .dark)
+            .accessibilityIdentifier("os1.agent-inspector.observed-content." + executionID.uuidString.lowercased())
+    }
+    private func field(_ title: String, _ value: String) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text(title).font(.system(size: 10, weight: .semibold)).foregroundStyle(Color.white.opacity(0.5))
+            Text(value).font(.system(size: 12)).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+        }
     }
 }
 

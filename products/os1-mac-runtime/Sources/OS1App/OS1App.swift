@@ -192,6 +192,7 @@ private func reviewedDrafts(_ steps: [AppRunStep]) -> [AppRunStep] {
 
 @MainActor
 private func taskContextSelfTest() throws {
+    try responseAvailabilityReceiptSelfTest()
     // v3 handoff carries the OS-1 task context through the session codec.
     var session = ConversationSession(workspace: "/tmp")
     var context = TaskContext.migrated(conversationID: session.id, request: "야 인스타그램 수정 좀 하자 준비해", workspace: "/tmp",
@@ -5704,6 +5705,7 @@ private struct ConversationSession: Codable, Identifiable, Sendable {
     /// Last bounded, session-owned observed agent graph. Optional and lossy so
     /// legacy/future telemetry cannot make the conversation unreadable.
     @AgentTaskSnapshotField var agentTask: ParallelAgentTask.Snapshot? = nil
+    @ObservedExecutionField var observedExecution: ObservedSingleExecution? = nil
     var queuePaused: Bool?
     var forkedFrom: ConversationForkOrigin?
     var completedForkCheckpoint: ConversationForkCheckpoint?
@@ -6130,6 +6132,19 @@ private func stepRecordIsVerified(_ step: AppRunStep) -> Bool {
           let attributes = try? FileManager.default.attributesOfItem(atPath: path),
           (attributes[.posixPermissions] as? NSNumber)?.intValue == 0o600 else { return false }
     switch step.action {
+    case "response_availability":
+        guard step.provider == "local", step.model == "os1-response-availability", step.effort == "none",
+              step.permissionProfile == "local_control", step.exitCode == 0,
+              receipt["operation"] as? String == "response_availability",
+              receipt["model_invoked"] as? Bool == false, receipt["native_provider_invoked"] as? Bool == false,
+              receipt["quota_pool"] as? String == "none", let request = receipt["request"] as? String,
+              receipt["request_sha256"] as? String == appSHA256Hex(request),
+              let id = UUID(uuidString: step.sessionID), let observation = receipt["observation"] as? [String: Any],
+              let bytes = try? JSONSerialization.data(withJSONObject: observation) else { return false }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return (try? decoder.decode(ResponseAvailability.Receipt.self, from: bytes))?.verifies(
+            requestID: id, request: request, response: step.output) == true
     case "preview_delivery_readback":
         return step.verifiedPreviewDelivery?.matchesControlReceipt(receipt) == true
     case "registered_source_retrieval":
@@ -6237,6 +6252,41 @@ private func stepRecordIsVerified(_ step: AppRunStep) -> Bool {
     default:
         return false
     }
+}
+
+/// Read back the same local receipt shape the CLI returns, including refusal
+/// of a forged provider attribution, altered answer and non-liveness request.
+private func responseAvailabilityReceiptSelfTest() throws {
+    try ResponseAvailability.selfTest()
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("os1-response-receipt-" + UUID().uuidString)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let id = UUID(), request = "야 체크해 봅시다. 너 되냐?"
+    guard let response = ResponseAvailability.execute(request, requestID: id) else { throw SourceContextError.invalid }
+    let encoder = JSONEncoder(); encoder.dateEncodingStrategy = .iso8601
+    let observation = try JSONSerialization.jsonObject(with: encoder.encode(response.receipt))
+    var receipt: [String: Any] = ["operation": "response_availability", "operation_id": id.uuidString.lowercased(),
+        "request": request, "request_sha256": appSHA256Hex(request), "result_sha256": appSHA256Hex(response.text),
+        "model_invoked": false, "native_provider_invoked": false, "quota_pool": "none", "observation": observation]
+    let path = root.appendingPathComponent("receipt.json")
+    func write() throws {
+        try JSONSerialization.data(withJSONObject: receipt).write(to: path)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path.path)
+    }
+    try write()
+    func step(_ output: String) -> AppRunStep { AppRunStep(sequence: 1, provider: "local", action: "response_availability", model: "os1-response-availability",
+        effort: "none", revasDisposition: "control_verified", sessionID: id.uuidString.lowercased(),
+        permissionProfile: "local_control", exitCode: 0, output: output, stderr: "", durationMS: 1,
+        nativeRecord: AppNativeRecord(turnID: id.uuidString.lowercased(), recordPath: path.path,
+            persistence: "verified", desktopVisibility: "control_only")) }
+    guard stepRecordIsVerified(step(response.text)) else { throw SourceContextError.invalid }
+    guard !stepRecordIsVerified(step(response.text + " modified")) else { throw SourceContextError.invalid }
+    receipt["model_invoked"] = true; try write()
+    guard !stepRecordIsVerified(step(response.text)) else { throw SourceContextError.invalid }
+    receipt["model_invoked"] = false; receipt["request"] = "다 했냐?"; receipt["request_sha256"] = appSHA256Hex("다 했냐?")
+    try write()
+    guard !stepRecordIsVerified(step(response.text)) else { throw SourceContextError.invalid }
+    print("OS-1 local response receipt binding: OK")
 }
 
 /// A request that names a route for each of its parts ("1+1 GPT한테. 2+2
@@ -8098,9 +8148,20 @@ private final class SessionStore: ObservableObject {
     }
 
     private func agentTaskInspectorState(_ id: UUID) -> AgentTaskInspectorState {
-        AgentTaskInspectorState(conversationID: id, snapshot: agentTaskSnapshot(for: id),
+        let session = sessions.first(where: { $0.id == id })
+        var observed: ObservedSingleExecution?
+        if let active = activeRuns[id], let request = inFlightSubmissions[id], request.id == active.submissionID {
+            let activity = active.activity
+            observed = ObservedSingleExecution(id: active.submissionID, conversationID: id,
+                objective: request.request, state: activity.phase.rawValue, observedAt: activity.timestamp,
+                provider: activity.provider, model: activity.model, effort: activity.effort, surface: activity.surface,
+                progressText: activity.publicText, startedAt: active.started, nativeSessionID: activity.nativeSessionID)
+        } else if inFlightSubmissions[id] == nil, !isSessionRunning(id) {
+            observed = session?.observedExecution
+        }
+        return AgentTaskInspectorState(conversationID: id, snapshot: agentTaskSnapshot(for: id),
             sessionTitle: sessions.first(where: { $0.id == id })?.title ?? os1Tr("작업", "Task"),
-            isLive: isSessionRunning(id) && !unconfirmedParallelCustody.contains(id))
+            isLive: isSessionRunning(id) && !unconfirmedParallelCustody.contains(id), observedExecution: observed)
     }
 
     func refreshAgentTaskInspectorWindows() {
@@ -9979,6 +10040,19 @@ private final class SessionStore: ObservableObject {
                     throw RunnerError.message("OS-1 did not return a completed governed run.")
                 }
                 let visibleSteps = visibleAdoptedSteps(summary.steps)
+                // Record the actual single execution, not an invented agent
+                // plan. Parallel plans retain their existing separate custody.
+                if summary.agentTask == nil, let step = summary.steps.last {
+                    let ended = Date()
+                    sessions[target].observedExecution = ObservedSingleExecution(id: submission.id,
+                        conversationID: submission.sessionID, objective: submission.request,
+                        state: summary.status, observedAt: ended, provider: step.provider, model: step.model,
+                        effort: step.effort, surface: step.executedSurface?.rawValue,
+                        startedAt: activeRuns[submission.sessionID]?.started, finishedAt: ended,
+                        receiptPath: step.nativeRecord?.recordPath, nativeSessionID: step.provider == "local" ? nil : step.sessionID,
+                        nativeRecordVerified: stepRecordIsVerified(step), taskQuality: step.taskQuality?.state.rawValue,
+                        publicAnswer: step.output)
+                }
                 guard !visibleSteps.isEmpty else {
                     throw RunnerError.message("OS-1 did not produce a verified result.")
                 }

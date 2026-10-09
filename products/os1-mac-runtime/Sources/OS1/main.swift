@@ -6791,6 +6791,98 @@ private func pagingBudget(manifest: MemoryExecutionManifest, provider: String, m
     return result
 }
 
+/// Revalidate the actual transport at every native attempt, not just the
+/// router's first choice. A tool-free Codex turn still spends Codex usage.
+/// The signed ticket permits a configuration; it does not prove answer parity.
+private func nativeTransportAdmission(ticket: Ticket, surface: ProviderSurface?, objective: String,
+                                      model: String?, effort: String, contract: ExecutorContract,
+                                      quotaContext: ProviderQuotaContext?, now: Date = Date(),
+                                      forbiddenPools: [DynamicRouteAdmission.QuotaPool] = []) throws -> DynamicRouteAdmission.Decision {
+    guard ticket.provider == "codex" || ticket.provider == "claude" else {
+        throw OS1Error.message("Native dispatch requires a known executable transport")
+    }
+    let transport: DynamicRouteAdmission.Transport = ticket.provider == "codex" ? .codexAppServer : .claudeCLI
+    guard surface?.gatewayPreference == ticket.provider,
+          surface?.quotaPool.rawValue == (ticket.provider == "codex" ? "openai_codex" : "anthropic") else {
+        throw OS1Error.message("Actual execution surface/usage pool mismatch; no native call")
+    }
+    let id = ticket.executionID + ":" + String(ticket.sequence)
+    let key = sha256Hex(Data(objective.utf8))
+    let configuration = sha256Hex(Data([ticket.provider, ticket.action, model ?? "provider-default", effort,
+        ticket.permissionProfile, contract.sha256].joined(separator: "\n").utf8))
+    guard let expiry = parseCodexRetirementDate(ticket.expiresAt), expiry > now else {
+        throw OS1Error.message("Native admission ticket expired before invocation")
+    }
+    let observation = DynamicRouteAdmission.Observation(receiptID: "signed-ticket:" + id,
+        observedAt: now, validUntil: expiry)
+    let capabilities = surface?.forcesChatLane == true ? ["answer"] :
+        ticket.permissionProfile == "workspace_write" ? ["answer", "read", "write"] : ["answer", "read"]
+    let required = surface?.forcesChatLane == true ? ["answer"] :
+        ticket.permissionProfile == "workspace_write" ? ["write"] : ["read"]
+    var quota: DynamicRouteAdmission.Quota?
+    if let packet = quotaContext, let observed = parseCodexRetirementDate(packet.observedAt),
+       let row = packet.providers.first(where: { $0.provider == ticket.provider }),
+       row.source == (ticket.provider == "codex" ? "native_account_rate_limits" : "native_get_usage"),
+       let remaining = row.remainingPercent, remaining.isFinite, (0...100).contains(remaining) {
+        let validUntil = min(observed.addingTimeInterval(120), row.resetsAt.flatMap(parseCodexRetirementDate) ?? expiry, expiry)
+        quota = .init(remainingFraction: remaining / 100,
+            observation: .init(receiptID: row.source + ":" + packet.observedAt, observedAt: observed, validUntil: validUntil))
+    }
+    let candidate = DynamicRouteAdmission.Candidate(id: id, provider: ticket.provider, transport: transport,
+        quotaPool: transport.quotaPool, configurationID: configuration, effort: effort, capabilities: capabilities,
+        authorityID: contract.sha256, quota: quota,
+        quality: .init(state: .policyAdmitted, qualificationKey: key, configurationID: configuration,
+            authorityID: contract.sha256, observation: observation))
+    let requirement = DynamicRouteAdmission.Requirement(id: key, requiredCapabilities: required,
+        trustedAuthorityIDs: [contract.sha256], qualificationKey: key, acceptedQualityStates: [.policyAdmitted],
+        requestedCandidateID: id, forbiddenQuotaPools: forbiddenPools)
+    let decision = DynamicRouteAdmission.verifyActualTransport(candidate: candidate, requirement: requirement, now: now)
+    guard decision.state == .selected else {
+        if decision.rejections.contains(where: { $0.reasons.contains("applicable_quota_exhausted") }) {
+            throw OS1Error.backendBlocked(.quotaExhausted)
+        }
+        throw OS1Error.message("Actual transport admission rejected before native call: " +
+            decision.rejections.flatMap(\.reasons).joined(separator: ", "))
+    }
+    return decision
+}
+
+private func nativeTransportAdmissionSelfTest() throws {
+    let now = Date(), formatter = ISO8601DateFormatter()
+    formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    let contract = ExecutorContract(version: "fixture", sha256: String(repeating: "a", count: 64), directives: [])
+    let ticket = Ticket(executionID: UUID().uuidString.lowercased(), sequence: 1, provider: "codex",
+        action: "fixture", permissionProfile: "read_only", expiresAt: formatter.string(from: now.addingTimeInterval(90)),
+        nonce: "fixture", signature: "fixture")
+    let admitted = try nativeTransportAdmission(ticket: ticket, surface: .gptChat, objective: "fixture question",
+        model: "fixture-model", effort: "low", contract: contract, quotaContext: nil, now: now)
+    guard admitted.state == .selected, admitted.executionQuality == .unverified else {
+        throw OS1Error.message("Native eligibility was incorrectly promoted to quality proof")
+    }
+    func denied(surface: ProviderSurface?, quota: ProviderQuotaContext? = nil,
+                forbidden: [DynamicRouteAdmission.QuotaPool] = []) -> Bool {
+        do { _ = try nativeTransportAdmission(ticket: ticket, surface: surface, objective: "fixture question",
+            model: "fixture-model", effort: "low", contract: contract, quotaContext: quota, now: now,
+            forbiddenPools: forbidden); return false } catch { return true }
+    }
+    let exhausted = ProviderQuotaContext(observedAt: formatter.string(from: now), providers: [
+        .init(provider: "codex", state: "exhausted", remainingPercent: 0,
+              resetsAt: formatter.string(from: now.addingTimeInterval(80)), source: "native_account_rate_limits")])
+    guard denied(surface: .gptChat, forbidden: [.openAICodex]), denied(surface: .chatgpt),
+          denied(surface: .claudeChat), denied(surface: .gptChat, quota: exhausted) else {
+        throw OS1Error.message("Actual transport/pool/exhaustion gate failed before dispatch")
+    }
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("os1-local-response-" + UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    guard let local = try runResponseAvailability("야 체크해 봅시다. 너 되냐?", receiptRoot: root),
+          local.steps.count == 1, local.steps[0].provider == "local", local.steps[0].action == "response_availability",
+          try runResponseAvailability("다 했냐?", receiptRoot: root) == nil,
+          try runResponseAvailability("너 되냐? 로그 읽어", receiptRoot: root) == nil else {
+        throw OS1Error.message("Local response dispatch domain widened into work/completion")
+    }
+    print("OS-1 dynamic native transport and exact local dispatch: OK; native calls 0")
+}
+
 private func execute(
     ticket: Ticket,
     prompt: String,
@@ -6810,7 +6902,8 @@ private func execute(
     onUsage: ((CompletionMeasuredUsage?) -> Void)? = nil,
     onDispatch: ((String?) -> Void)? = nil,
     onInstructions: ((String) -> Void)? = nil,
-    memoryTurn: MemoryExecutionManifest? = nil
+    memoryTurn: MemoryExecutionManifest? = nil,
+    quotaContext: ProviderQuotaContext? = nil
 ) throws -> ProviderExecution {
     AttemptLatencyTrace.mark("execute_entered")
     if ConcurrentRouteFanoutRuntime.child {
@@ -6828,6 +6921,27 @@ private func execute(
     let lockedObjective = objectivePrompt ?? prompt
     let executedSurface = executedProviderSurface(provider: ticket.provider, permission: ticket.permissionProfile,
         hasSource: preloadedR2Evidence != nil, objective: lockedObjective)
+    // This is checked again on retries/delegated native attempts. Never
+    // equate "no tools" or a chat label with a separate/free allowance.
+    let admission = try nativeTransportAdmission(ticket: ticket, surface: executedSurface, objective: lockedObjective,
+        model: model, effort: effort, contract: executorContract, quotaContext: quotaContext)
+    let admissionRoot = FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent("Library/Application Support/OS-1/route-admission")
+    try FileManager.default.createDirectory(at: admissionRoot, withIntermediateDirectories: true)
+    let admissionPath = admissionRoot.appendingPathComponent(UUID().uuidString.lowercased() + ".json")
+    let admissionEncoder = JSONEncoder(); admissionEncoder.outputFormatting = [.sortedKeys]
+    let transport = ticket.provider == "codex" ? DynamicRouteAdmission.Transport.codexAppServer : .claudeCLI
+    let admissionData = try JSONSerialization.data(withJSONObject: ["schema": 1,
+        "execution_id": ticket.executionID, "sequence": ticket.sequence,
+        "actual_transport": transport.rawValue, "quota_pool": transport.quotaPool.rawValue,
+        "surface": executedSurface?.rawValue ?? "unknown", "model": model ?? "provider-default", "effort": effort,
+        "request_sha256": sha256Hex(Data(lockedObjective.utf8)),
+        "decision": try JSONSerialization.jsonObject(with: admissionEncoder.encode(admission))], options: [.sortedKeys])
+    try admissionData.write(to: admissionPath, options: [.atomic])
+    try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: admissionPath.path)
+    guard try Data(contentsOf: admissionPath) == admissionData else {
+        throw OS1Error.message("Actual transport admission receipt readback failed; no native call")
+    }
     if ConcurrentRouteFanoutRuntime.child {
         guard let expected = ConcurrentRouteFanoutRuntime.expectedSurface,
               ticket.provider == expected.gatewayPreference, executedSurface == expected else {
@@ -6890,8 +7004,8 @@ private func execute(
         RuntimeActivity.emit(.preparing, provider: "codex", surface: executedSurface?.rawValue, model: model, effort: effort)
         if gptChat {
             RuntimeActivity.emit(.preparing, provider: "codex", surface: executedSurface?.rawValue, model: model, effort: effort,
-                publicText: os1Tr("GPT 채팅 모드로 실행합니다 · 코딩 도구·지침 없이 모델만 사용해 토큰을 아낍니다.",
-                                  "Running GPT in chat mode · the model alone, without coding tools or instructions, to save tokens."))
+                publicText: os1Tr("GPT 모델을 Codex 사용량으로 실행합니다 · 코딩 도구는 끄지만 일반 ChatGPT의 별도 채팅 경로는 아닙니다.",
+                                  "Running a tool-free GPT model using Codex allowance · this is not the separate ordinary ChatGPT chat transport."))
         }
         let codexWorkspace = gptChat ? executionWorkspace : workspace
         let previousID = try normalizedSessionID(providerSessionID)
@@ -10208,6 +10322,60 @@ func mergeReviewedRun(draft: RunSummary, review: RunSummary) -> RunSummary? {
 /// An owner request that runs on a read-only lane: no write authority, no
 /// OS-1 source lock. One predicate for the run's scope and for `runTask`
 /// deciding whether a request continues a pending OS-1 repair (build 327).
+/// The exact response-liveness domain needs no language-model prediction.
+/// Execute it before account probes, routing, source leases or native clients.
+/// A local receipt is not a ChatGPT call or a claim about backend readiness.
+func runResponseAvailability(_ prompt: String, hasAttachments: Bool = false,
+                             receiptRoot: URL = FileManager.default.homeDirectoryForCurrentUser
+                                .appendingPathComponent("Library/Application Support/OS-1/control-receipts")) throws -> RunSummary? {
+    let started = Date()
+    let id = UUID()
+    guard let response = ResponseAvailability.execute(prompt, hasAttachments: hasAttachments, requestID: id) else { return nil }
+    let authority = "os1.response-availability.v1"
+    let observed = response.receipt.observedAt
+    let proof = DynamicRouteAdmission.Observation(receiptID: response.receipt.id,
+        observedAt: observed, validUntil: observed.addingTimeInterval(30))
+    let candidate = DynamicRouteAdmission.Candidate(id: response.receipt.id, provider: "local", transport: .local,
+        quotaPool: .none, configurationID: authority, effort: "none", capabilities: ["response_liveness"], authorityID: authority,
+        availability: .init(state: .available, observation: proof),
+        quality: .init(state: .exactDomainVerified, qualificationKey: response.receipt.requestSHA256,
+            configurationID: authority, authorityID: authority, observation: proof),
+        cost: .init(metric: "model_tokens", expectedUsage: 0, observation: proof))
+    let admission = DynamicRouteAdmission.evaluate(requirement: .init(id: response.receipt.requestSHA256,
+        requiredCapabilities: ["response_liveness"], trustedAuthorityIDs: [authority],
+        qualificationKey: response.receipt.requestSHA256, acceptedQualityStates: [.exactDomainVerified],
+        forbiddenQuotaPools: [.openAICodex, .anthropicShared], costMetric: "model_tokens"), candidates: [candidate])
+    guard admission.state == .selected else { throw OS1Error.message("Exact local response executor failed its admission gate") }
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+    encoder.dateEncodingStrategy = .iso8601
+    let observation = try JSONSerialization.jsonObject(with: encoder.encode(response.receipt))
+    let operationID = id.uuidString.lowercased()
+    let envelope: [String: Any] = ["schema": 1, "operation": "response_availability", "operation_id": operationID,
+        "request": prompt, "request_sha256": sha256Hex(Data(prompt.utf8)),
+        "result_sha256": sha256Hex(Data(response.text.utf8)), "model_invoked": false,
+        "quota_pool": "none", "native_provider_invoked": false, "observation": observation,
+        "route_admission": try JSONSerialization.jsonObject(with: encoder.encode(admission))]
+    let data = try JSONSerialization.data(withJSONObject: envelope, options: [.sortedKeys])
+    try FileManager.default.createDirectory(at: receiptRoot, withIntermediateDirectories: true)
+    let path = receiptRoot.appendingPathComponent(operationID + ".json")
+    try data.write(to: path, options: [.atomic])
+    try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path.path)
+    guard try Data(contentsOf: path) == data,
+          response.receipt.verifies(requestID: id, request: prompt, response: response.text) else {
+        throw OS1Error.message("Local response receipt readback failed; no provider was called")
+    }
+    RuntimeActivity.emit(.verifying, provider: "local", model: "os1-response-availability", effort: "none",
+        publicText: os1Tr("응답 확인을 로컬에서 처리했습니다 · 모델 호출·구독 사용량 없음.",
+                          "Response check executed locally · no model invocation or subscription usage."))
+    return RunSummary(status: "complete", steps: [RunStepSummary(sequence: 1, provider: "local",
+        action: "response_availability", model: "os1-response-availability", effort: "none",
+        revasDisposition: "control_verified", sessionID: operationID, permissionProfile: "local_control",
+        exitCode: 0, output: response.text, stderr: "", durationMS: Int64(Date().timeIntervalSince(started) * 1_000),
+        nativeRecord: NativeRecordEvidence(turnID: operationID, recordPath: path.path,
+            persistence: "verified", desktopVisibility: "control_only"))])
+}
+
 func ownerRequestRunsReadOnly(_ prompt: String, attachedSource: Bool) -> Bool {
     // The owner selecting the bounded chat lane on the rail is the same
     // authority statement as a self-contained text operation: answer from the
@@ -11206,7 +11374,8 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
                         feedbackScope = instructionFeedbackScope(instructions, input: attemptPrompt,
                             codexID: nativeSessions["codex"] ?? nil, claudeID: nativeSessions["claude"] ?? nil)
                     },
-                    memoryTurn: memoryTurn
+                    memoryTurn: memoryTurn,
+                    quotaContext: request.executionContext?.providerQuota
                 )
             } catch {
                 if claudeInventoryDeferred {
@@ -15947,6 +16116,9 @@ func selfTest() throws {
     }
     print("OS-1 completion preflight, feedback wire, replay guard and adoption: \(completionChecks.count) checks OK")
     try ModelAvailability.selfTest()
+    try ResponseAvailability.selfTest()
+    try DynamicRouteAdmission.selfTest()
+    try nativeTransportAdmissionSelfTest()
     try ChatGPTHandoff.selfTest()
     try RouteFanout.selfTest()
     try routeFanoutSummarySelfTest()
@@ -16313,6 +16485,9 @@ struct OS1Main {
                         + ProviderSurface.allCases.map(\.rawValue).joined(separator: ", "))
                 }
                 if parallelAgentChild { try ParallelAgentRuntime.requireChildSurface(surface) }
+                guard ["text", "json"].contains(outputFormat) else {
+                    throw OS1Error.message("--output-format must be text or json")
+                }
                 if parallelFanoutChild, ![ProviderSurface.gptChat, .codex, .claude, .claudeChat, .chatgpt].contains(surface) {
                     throw OS1Error.message("Fan-out child requires an executable native surface")
                 }
@@ -16325,6 +16500,19 @@ struct OS1Main {
                     } else {
                         printRunSummary(summary)
                     }
+                    return
+                }
+                // An explicit provider/parallel target still visits that target.
+                // Only Auto may choose the exact local executor, and only when
+                // the entire current request is response liveness, not work.
+                if surface == .auto, !parallelAgentChild, !parallelFanoutChild, !requireReadOnly,
+                   let local = try runResponseAvailability(prompt,
+                        hasAttachments: !ImageInput.encodeAll(in: prompt).isEmpty || !PromptAttachments.imagePaths(in: prompt).isEmpty) {
+                    if outputFormat == "json" {
+                        let encoder = JSONEncoder()
+                        encoder.outputFormatting = [.withoutEscapingSlashes]
+                        print(String(decoding: try encoder.encode(local), as: UTF8.self))
+                    } else { printRunSummary(local) }
                     return
                 }
                 guard let gatewayPreference = surface.gatewayPreference else {

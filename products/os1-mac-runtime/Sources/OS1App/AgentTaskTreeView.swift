@@ -251,18 +251,24 @@ private struct AgentTreeBranchLines: Shape {
 @MainActor
 struct AgentTaskTreeView: View {
     let snapshot: ParallelAgentTask.Snapshot?
+    let observedExecution: ObservedSingleExecution?
     let sessionTitle: String
     let isLive: Bool
     let onClose: () -> Void
     /// Opening a separate inspector is distinct from inline disclosure. The
     /// controller binds this callback to the exact session/plan being shown.
     let onInspectNode: ((ParallelAgentTask.Node) -> Void)?
+    let onInspectObservedExecution: ((ObservedSingleExecution) -> Void)?
     @StateObject private var disclosure: AgentTaskTreeDisclosure
     init(snapshot: ParallelAgentTask.Snapshot?, sessionTitle: String, isLive: Bool = false, onClose: @escaping () -> Void,
          disclosure: AgentTaskTreeDisclosure? = nil,
-         onInspectNode: ((ParallelAgentTask.Node) -> Void)? = nil) {
+         onInspectNode: ((ParallelAgentTask.Node) -> Void)? = nil,
+         observedExecution: ObservedSingleExecution? = nil,
+         onInspectObservedExecution: ((ObservedSingleExecution) -> Void)? = nil) {
         self.snapshot = snapshot; self.sessionTitle = sessionTitle; self.isLive = isLive; self.onClose = onClose
         self.onInspectNode = onInspectNode
+        self.observedExecution = observedExecution?.isValid == true ? observedExecution : nil
+        self.onInspectObservedExecution = onInspectObservedExecution
         _disclosure = StateObject(wrappedValue: disclosure ?? AgentTaskTreeDisclosure(planID: snapshot?.planID))
     }
     private var validated: ParallelAgentTask.Snapshot? { snapshot.flatMap { try? $0.validated() } }
@@ -286,14 +292,23 @@ struct AgentTaskTreeView: View {
                         }
                     }.padding(14)
                 }
+            } else if let observation = observedExecution {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(os1Tr("실제 실행 관측 1건", "1 observed execution"))
+                        .font(.system(size: 12, weight: .semibold)).foregroundStyle(AgentTreeStyle.pink)
+                    Text(isLive ? os1Tr("현재 요청/실행 상태 · 병렬 계획이 아닙니다", "Current request/execution state · not a parallel plan")
+                        : os1Tr("저장된 실행 기록 · 현재 실행 여부를 뜻하지 않습니다", "Recorded execution · not a claim of current liveness"))
+                        .font(.system(size: 10)).foregroundStyle(AgentTreeStyle.muted)
+                }.padding(14).frame(maxWidth: .infinity, alignment: .leading).background(Color.white.opacity(0.025))
+                ScrollView { observedExecutionCard(observation).padding(14) }
             } else {
                 VStack(alignment: .leading, spacing: 12) {
                     Image(systemName: "point.3.connected.trianglepath.dotted").font(.system(size: 25))
                     Text(snapshot == nil ? os1Tr("이 대화에 기록된 에이전트 계획이 없습니다.", "No recorded agent plan for this conversation.")
                         : os1Tr("유효한 실행 트리를 확인할 수 없습니다.", "A valid execution tree is unavailable."))
                         .font(.system(size: 13, weight: .medium))
-                    Text(os1Tr("단일 실행·이전 대화에는 분기나 진행률을 만들어 표시하지 않습니다.",
-                               "Single runs and legacy conversations do not imply agent branches or progress."))
+                    Text(os1Tr("기록된 계획이나 요청/실행 관측이 없습니다. 분기나 진행률을 만들어 표시하지 않습니다.",
+                               "No plan or request/execution observation is recorded. Branches and progress are not invented."))
                         .font(.system(size: 11)).foregroundStyle(AgentTreeStyle.muted)
                 }.padding(20)
                 Spacer()
@@ -308,6 +323,35 @@ struct AgentTaskTreeView: View {
     }
     private var header: some View {
         AgentTreeNativeHeader(sessionTitle: sessionTitle, onClose: onClose).frame(height: 104)
+    }
+    private func observedExecutionCard(_ observation: ObservedSingleExecution) -> some View {
+        VStack(alignment: .leading, spacing: 9) {
+            HStack(alignment: .top, spacing: 8) {
+                Image(systemName: "circle.dotted").foregroundStyle(AgentTreeStyle.pink)
+                    .frame(width: 18, height: 22)
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(observation.objective).font(.system(size: 12, weight: .semibold)).lineLimit(4)
+                    Text(os1Tr("관측", "Observation") + " · " + observation.state)
+                        .font(.system(size: 10)).foregroundStyle(AgentTreeStyle.pink)
+                }.contentShape(Rectangle()).onTapGesture { onInspectObservedExecution?(observation) }
+                Spacer(minLength: 0)
+                if let onInspectObservedExecution {
+                    AgentTaskInspectNodeButton(nodeID: observation.id, title: observation.objective) {
+                        onInspectObservedExecution(observation)
+                    }.frame(width: 24, height: 24)
+                }
+            }
+            Text(observation.routeDescription).font(.system(size: 10)).foregroundStyle(AgentTreeStyle.muted)
+            if let progress = observation.progressText {
+                Text(progress).font(.system(size: 11)).lineLimit(3)
+            }
+            Text(os1Tr("실행 신호와 작업 품질은 별도로 확인합니다. 하위 에이전트나 진행률을 추정하지 않습니다.",
+                       "Execution signals and task quality are separate. No child agents or percentages are inferred."))
+                .font(.system(size: 10)).foregroundStyle(AgentTreeStyle.muted)
+        }.padding(11).frame(maxWidth: .infinity, alignment: .leading)
+            .background(AgentTreeStyle.card, in: RoundedRectangle(cornerRadius: 10))
+            .overlay(RoundedRectangle(cornerRadius: 10).stroke(AgentTreeStyle.pink.opacity(0.2), lineWidth: 1))
+            .accessibilityIdentifier("os1.agent-tree.observed." + observation.id.uuidString.lowercased())
     }
     private func graphSummary(_ graph: ParallelAgentTask.Snapshot) -> some View {
         let running = graph.nodes.filter { $0.role == .worker && $0.state == .running }.count

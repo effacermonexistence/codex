@@ -19,7 +19,7 @@ public enum StatusCheckIn {
     /// workspace: "야 나 한번 체크해 볼게. 너 되냐?" (build 355). Strip only
     /// this opener so ASR without punctuation still leaves the actual state
     /// question to validate. "너 체크해봐" is deliberately not an opener.
-    static let selfCheckOpener = #"^(?:(?:자|야|그럼|일단|아니|지금)\s*)*(?:(?:내가|나는|나|제가)\s*)?(?:한\s?번\s*)?(?:체크|확인)\s?해\s?(?:보자|볼까|볼게|볼께)(?=\s|$)|^(?:(?:hey|ok|okay|well|so)[\s,]*)*(?:let\s+me\s+check|i(?:'ll|\s+will)\s+check|let'?s\s+check)(?:\s+(?:once|quickly))?(?=\s|$)"#
+    static let selfCheckOpener = #"^(?:(?:자|야|그럼|일단|아니|지금)\s*)*(?:(?:내가|나는|나|제가|우리|우리가)\s*)?(?:한\s?번\s*)?(?:체크|확인)\s?해\s?(?:보자|볼까|볼게|볼께|봅시다|보겠습니다|보죠)(?=\s|$)|^(?:(?:hey|ok|okay|well|so)[\s,]*)*(?:let\s+me\s+check|i(?:'ll|\s+will)\s+check|let'?s\s+check)(?:\s+(?:once|quickly))?(?=\s|$)"#
     /// Sentences that carry no order: "야", "그래서", "근데", "뭐야", "짧게 대답해줘".
     static let neutral = #"^(?:(?:야|아니|그래서|근데|뭐야|아|음|도대체|진짜|그럼|너|지금)\s*)+$|^(?:그냥\s*)?(?:예\s*아니오로\s*|짧게\s*)?(?:대답|답|말)해\s?줘$"#
     /// A command ending, the same test the chat lane uses for questions.
@@ -154,7 +154,8 @@ public enum StatusCheckIn {
         func check(_ value: Bool, _ name: String) { if !value { failed.append(name) } }
         for text in ["되는지 확인해보자. 되냐?", "되는지 확인해보자. 되나?", "뭐 하고 있는 거야 다 한 거야 뭐야 어떻게 된 거야 도대체.",
                      "야 너 지금 작동하냐?", "설치됐어?", "아직 333이야?", "다 끝났어?", "is it working?", "did it work",
-                     "야 나 한번 체크해 볼게. 너 되냐?", "너 잘 되냐", "한번 체크해보자 되냐",
+                     "야 나 한번 체크해 볼게. 너 되냐?", "야 체크해 봅시다. 너 되냐?",
+                     "우리 확인해보죠 너 되니", "확인해 보겠습니다. 너 되냐?", "너 잘 되냐", "한번 체크해보자 되냐",
                      "야 나 한번 체크해볼게 너 되냐", "야 내가 한 번 확인해볼께 너 잘 되냐",
                      "Hey, let me check. Are you working?", "let me check are you working", "let's check. does this work?"] {
             check(matches(text), "check-in: \(text)")
