@@ -8956,7 +8956,7 @@ func routeFanoutSummary(plan: RouteFanout, outcomes: [RouteFanoutOutcome]) -> St
 
 func routeFanoutSummarySelfTest() throws {
     try runRequestFileSelfTest()
-    guard let plan = RouteFanout.plan("1+1 GPT한테. 2+2 Codex한테. 3+3 ChatGPT한테. 4+4 Claudecode한테. 답변 받아와.") else {
+    guard let plan = RouteFanout.plan("1+1 gpt-chat한테. 2+2 Codex한테. 3+3 ChatGPT한테. 4+4 Claudecode한테. 답변 받아와.") else {
         throw OS1Error.message("Route fan-out summary: plan missing")
     }
     func step(_ provider: String, _ output: String, surface: ProviderSurface? = nil) -> RunStepSummary {
@@ -8979,7 +8979,7 @@ func routeFanoutSummarySelfTest() throws {
     ClaudeChatLane.setExplicitSelection(true)
     let selected = ClaudeChatLane.ownerSelected
     ClaudeChatLane.setExplicitSelection(previous)
-    guard let fourPlan = RouteFanout.plan("1+1 GPT한테. 2+2 Codex한테. 3+3 Claude한테. 4+4 Claudecode한테. 답변 받아와.") else {
+    guard let fourPlan = RouteFanout.plan("1+1 gpt-chat한테. 2+2 Codex한테. 3+3 Claude한테. 4+4 Claudecode한테. 답변 받아와.") else {
         throw OS1Error.message("Four route labels: plan missing")
     }
     let fourOutcomes = fourPlan.targets.enumerated().map { index, target in

@@ -6629,7 +6629,7 @@ private func routeFanoutDetailsSelfTest() throws {
     let path = store.url(for: SourceReference(kind: .receipt, id: id, sha256: ""))
     try FileManager.default.createDirectory(at: path.deletingLastPathComponent(), withIntermediateDirectories: true)
     let surfaces: [ProviderSurface] = [.gptChat, .codex, .claudeChat, .claude]
-    let request = "1+1 GPT한테. 2+2 Codex한테. 3+3 Claude한테. 4+4 Claudecode한테. 답변 받아와."
+    let request = "1+1 gpt-chat한테. 2+2 Codex한테. 3+3 Claude한테. 4+4 Claudecode한테. 답변 받아와."
     guard let plan = RouteFanout.plan(request) else { throw RunnerError.message("routing details fixture plan") }
     let routes = surfaces.enumerated().map { index, surface in
         let answer = String((index + 1) * 2), session = UUID().uuidString.lowercased()

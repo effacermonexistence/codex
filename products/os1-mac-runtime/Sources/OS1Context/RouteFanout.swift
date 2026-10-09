@@ -12,10 +12,11 @@ import Foundation
 /// machine or asks for work keeps the existing single-route path, so a split
 /// never sends file changes to several agents at once.
 ///
-/// Names map to the surfaces OS-1 actually has: GPT → `gpt-chat` (GPT on the
-/// Codex account, chat lane), ChatGPT → `chatgpt` (a handoff: OS-1 cannot read
-/// ChatGPT's answer), Codex → `codex`, Claude → `claude-chat`, Claude Code →
-/// `claude`.
+/// Bare GPT, 지피티 and ChatGPT name ordinary consumer ChatGPT, never the
+/// Codex usage pool. The native bounded Codex lane requires an explicit
+/// `gpt-chat` or `Codex chat` name. Actual consumer execution/approval is a
+/// separate transport gate; aliases cannot manufacture its availability.
+/// Codex → `codex`, Claude → `claude-chat`, Claude Code → `claude`.
 public struct RouteFanout: Equatable, Sendable {
     public struct Target: Equatable, Sendable {
         public let surface: ProviderSurface
@@ -38,9 +39,10 @@ public struct RouteFanout: Equatable, Sendable {
     /// Longest names first, so "Claude Code" never reads as "Claude" + "Code"
     /// and "ChatGPT" never as "GPT". Voice-dictation spellings included.
     static let names: [(pattern: String, surface: ProviderSurface)] = [
+        (#"gpt-chat|codex[\s\-]+chat|코덱스\s*채팅"#, .gptChat),
         (#"claude[\s\-]?code|(?:클로[드더즈]|클라우드)[\s]?코드"#, .claude),
         (#"chat[\s\-]?gpt|챗[\s]?gpt|챗[\s]?지피티|채팅[\s]?gpt|채찌"#, .chatgpt),
-        (#"gpt|지피티|쥐피티"#, .gptChat),
+        (#"gpt|지피티|쥐피티"#, .chatgpt),
         (#"codex|코[덱댁][스세]|코덱센트|코덱선트"#, .codex),
         (#"claude|클로[드더즈]|클라우드(?!플레어)"#, .claudeChat),
     ]
@@ -1020,91 +1022,103 @@ public struct RouteFanout: Equatable, Sendable {
         func surfaces(_ prompt: String) -> [String]? { plan(prompt)?.targets.map { "\($0.surface.rawValue):\($0.payload)" } }
         var checks: [(String, Bool)] = []
         let owner = "자 내가 하나만 요청해볼게. 1+1 GPT한테. 2+2 Codex한테. 3+3 Claude한테. 4+4 Claudecode한테. 라우팅 시켜서 답변 받아와."
-        checks.append(("owner sentence", surfaces(owner) == ["gpt-chat:1+1", "codex:2+2", "claude-chat:3+3", "claude:4+4"]))
+        checks.append(("owner sentence", surfaces(owner) == ["chatgpt:1+1", "codex:2+2", "claude-chat:3+3", "claude:4+4"]))
         checks.append(("owner frame kept out of the parts", plan(owner)?.frame == ["자 내가 하나만 요청해볼게", "라우팅 시켜서 답변 받아와"]))
         checks.append(("name first", surfaces("GPT한테 1+1, Codex한테 2+2, Claude한테 3+3, Claude Code한테 4+4 물어봐")
-            == ["gpt-chat:1+1", "codex:2+2", "claude-chat:3+3", "claude:4+4"]))
+            == ["chatgpt:1+1", "codex:2+2", "claude-chat:3+3", "claude:4+4"]))
         checks.append(("one line", surfaces("1+1 GPT한테 2+2 Codex한테 3+3 Claude한테 4+4 Claudecode한테 라우팅 시켜서 답변 받아와")
-            == ["gpt-chat:1+1", "codex:2+2", "claude-chat:3+3", "claude:4+4"]))
+            == ["chatgpt:1+1", "codex:2+2", "claude-chat:3+3", "claude:4+4"]))
         checks.append(("korean names", surfaces("1+1 지피티한테. 2+2 코덱스한테. 3+3 클로드한테. 4+4 클로드 코드한테.")
-            == ["gpt-chat:1+1", "codex:2+2", "claude-chat:3+3", "claude:4+4"]))
-        checks.append(("chatgpt is the handoff", surfaces("1+1 ChatGPT한테. 2+2 Codex한테.") == ["chatgpt:1+1", "codex:2+2"]))
+            == ["chatgpt:1+1", "codex:2+2", "claude-chat:3+3", "claude:4+4"]))
+        checks.append(("bare English GPT keeps ordinary ChatGPT budget identity", surfaces("1+1 GPT한테. 2+2 Codex한테.")
+            == ["chatgpt:1+1", "codex:2+2"]))
+        checks.append(("voice GPT spellings keep ordinary ChatGPT", surfaces("1+1 쥐피티한테. 2+2 클로드한테.")
+            == ["chatgpt:1+1", "claude-chat:2+2"]))
+        checks.append(("explicit native bounded GPT alias", surfaces("1+1 gpt-chat한테. 2+2 Codex한테.")
+            == ["gpt-chat:1+1", "codex:2+2"]))
+        checks.append(("explicit Codex chat alias", surfaces("1+1 Codex chat한테. 2+2 Claude Code한테.")
+            == ["gpt-chat:1+1", "claude:2+2"]))
+        checks.append(("explicit Korean Codex chat alias", surfaces("1+1 코덱스 채팅한테. 2+2 클로드 코드한테.")
+            == ["gpt-chat:1+1", "claude:2+2"]))
+        checks.append(("consumer and native bounded chat are not interchangeable", surfaces("1+1 GPT한테. 2+2 gpt-chat한테.")
+            == ["chatgpt:1+1", "gpt-chat:2+2"]))
+        checks.append(("chatgpt is the ordinary consumer surface", surfaces("1+1 ChatGPT한테. 2+2 Codex한테.") == ["chatgpt:1+1", "codex:2+2"]))
         checks.append(("handoff runs last", plan("1+1 ChatGPT한테. 2+2 Codex한테. 3+3 클로드한테.")?.executionOrder == [1, 2, 0]))
-        checks.append(("english to", surfaces("send 1+1 to GPT. 2+2 to Codex") == ["gpt-chat:1+1", "codex:2+2"]))
-        checks.append(("topic particle", surfaces("1+1은 지피티한테, 2+2는 코덱스한테") == ["gpt-chat:1+1", "codex:2+2"]))
-        checks.append(("decimals stay", surfaces("3.14*2 GPT한테. 2.5+2.5 Codex한테.") == ["gpt-chat:3.14*2", "codex:2.5+2.5"]))
+        checks.append(("english to", surfaces("send 1+1 to GPT. 2+2 to Codex") == ["chatgpt:1+1", "codex:2+2"]))
+        checks.append(("topic particle", surfaces("1+1은 지피티한테, 2+2는 코덱스한테") == ["chatgpt:1+1", "codex:2+2"]))
+        checks.append(("decimals stay", surfaces("3.14*2 GPT한테. 2.5+2.5 Codex한테.") == ["chatgpt:3.14*2", "codex:2.5+2.5"]))
         checks.append(("voice spellings", surfaces("1+1 코덱세한테. 2+2 클로더 코드한테.") == ["codex:1+1", "claude:2+2"]))
-        checks.append(("handover endings", surfaces("1+1 GPT한테 보내고 2+2 Codex한테 보내") == ["gpt-chat:1+1", "codex:2+2"]))
-        checks.append(("same question again", surfaces("1+1 GPT한테. 같은 질문 Claude한테도.") == ["gpt-chat:1+1", "claude-chat:1+1"]))
+        checks.append(("handover endings", surfaces("1+1 GPT한테 보내고 2+2 Codex한테 보내") == ["chatgpt:1+1", "codex:2+2"]))
+        checks.append(("same question again", surfaces("1+1 GPT한테. 같은 질문 Claude한테도.") == ["chatgpt:1+1", "claude-chat:1+1"]))
         let listed = "야 라우팅 잘 됐는지 일단 확인해 보자. GPT랑 코덱스랑 클로드랑 클로드 코드한테 1+2 이런거 해봐. 간단한 거."
-        checks.append(("listed names", surfaces(listed) == ["gpt-chat:1+2", "codex:1+2", "claude-chat:1+2", "claude:1+2"]))
+        checks.append(("listed names", surfaces(listed) == ["chatgpt:1+2", "codex:1+2", "claude-chat:1+2", "claude:1+2"]))
         checks.append(("listed frame kept out of the parts", plan(listed)?.frame == ["야 라우팅 잘 됐는지 일단 확인해 보자", "간단한 거"]))
-        checks.append(("comma list", surfaces("GPT, Codex, Claude한테 2+2") == ["gpt-chat:2+2", "codex:2+2", "claude-chat:2+2"]))
+        checks.append(("comma list", surfaces("GPT, Codex, Claude한테 2+2") == ["chatgpt:2+2", "codex:2+2", "claude-chat:2+2"]))
         checks.append(("list beside a name", surfaces("GPT하고 Codex한테 1+1, Claude Code한테 2+2")
-            == ["gpt-chat:1+1", "codex:1+1", "claude:2+2"]))
-        checks.append(("part before a list", surfaces("1+2 지피티와 클로드 코드한테.") == ["gpt-chat:1+2", "claude:1+2"]))
+            == ["chatgpt:1+1", "codex:1+1", "claude:2+2"]))
+        checks.append(("part before a list", surfaces("1+2 지피티와 클로드 코드한테.") == ["chatgpt:1+2", "claude:1+2"]))
         // One each, in order (owner, 2026-10-06): no particle anywhere, the
         // parts in the next sentence.
         let oneEach = "그럼 클로드랑 클로드 코드 GPT 코덱스 다 라우팅 하나씩 시켜봐. 1 plus 1, 2 plus 2, 3 plus 3, 4 plus 4."
-        checks.append(("one each, in order", surfaces(oneEach) == ["claude-chat:1 plus 1", "claude:2 plus 2", "gpt-chat:3 plus 3", "codex:4 plus 4"]))
+        checks.append(("one each, in order", surfaces(oneEach) == ["claude-chat:1 plus 1", "claude:2 plus 2", "chatgpt:3 plus 3", "codex:4 plus 4"]))
         checks.append(("one each names as written", plan(oneEach)?.targets.map(\.mention) == ["클로드랑", "클로드 코드", "GPT", "코덱스"]))
         checks.append(("one each has no frame", plan(oneEach)?.frame == []))
         checks.append(("comma roster", surfaces("GPT, 코덱스, 클로드 하나씩 물어봐. 1+1, 2+2, 3+3")
-            == ["gpt-chat:1+1", "codex:2+2", "claude-chat:3+3"]))
-        checks.append(("parts before the roster", surfaces("1+1, 2+2. 클로드랑 GPT 하나씩 시켜봐.") == ["claude-chat:1+1", "gpt-chat:2+2"]))
+            == ["chatgpt:1+1", "codex:2+2", "claude-chat:3+3"]))
+        checks.append(("parts before the roster", surfaces("1+1, 2+2. 클로드랑 GPT 하나씩 시켜봐.") == ["claude-chat:1+1", "chatgpt:2+2"]))
         checks.append(("one part per sentence", surfaces("클로드랑 코덱스 하나씩 시켜봐. 1+1. 2+2.") == ["claude-chat:1+1", "codex:2+2"]))
-        checks.append(("english one each", surfaces("Ask Claude Code and GPT one each. 1+1, 2+2.") == ["claude:1+1", "gpt-chat:2+2"]))
-        checks.append(("thousands stay whole", surfaces("클로드랑 GPT 하나씩 시켜봐. 1,000+1, 2,500*2") == ["claude-chat:1,000+1", "gpt-chat:2,500*2"]))
+        checks.append(("english one each", surfaces("Ask Claude Code and GPT one each. 1+1, 2+2.") == ["claude:1+1", "chatgpt:2+2"]))
+        checks.append(("thousands stay whole", surfaces("클로드랑 GPT 하나씩 시켜봐. 1,000+1, 2,500*2") == ["claude-chat:1,000+1", "chatgpt:2,500*2"]))
         let framed = "자 이번엔 클로드랑 GPT 하나씩 시켜봐줘. 1+1, 2+2. 답변 받아와."
-        checks.append(("one each keeps its frame", surfaces(framed) == ["claude-chat:1+1", "gpt-chat:2+2"]
+        checks.append(("one each keeps its frame", surfaces(framed) == ["claude-chat:1+1", "chatgpt:2+2"]
             && plan(framed)?.frame == ["답변 받아와"]))
-        checks.append(("listed names one each", surfaces("GPT랑 클로드한테 하나씩 1+1, 2+2 물어봐") == ["gpt-chat:1+1", "claude-chat:2+2"]))
+        checks.append(("listed names one each", surfaces("GPT랑 클로드한테 하나씩 1+1, 2+2 물어봐") == ["chatgpt:1+1", "claude-chat:2+2"]))
         checks.append(("particle roster, parts after", surfaces("그럼 클로드랑 클로드 코드랑 GPT랑 코덱스한테 다 하나씩 시켜봐. 1 plus 1, 2 plus 2, 3 plus 3, 4 plus 4.")
-            == ["claude-chat:1 plus 1", "claude:2 plus 2", "gpt-chat:3 plus 3", "codex:4 plus 4"]))
+            == ["claude-chat:1 plus 1", "claude:2 plus 2", "chatgpt:3 plus 3", "codex:4 plus 4"]))
         checks.append(("space roster with a particle", surfaces("그럼 클로드랑 클로드 코드 GPT 코덱스한테 다 하나씩 시켜봐. 1 plus 1, 2 plus 2, 3 plus 3, 4 plus 4.")
-            == ["claude-chat:1 plus 1", "claude:2 plus 2", "gpt-chat:3 plus 3", "codex:4 plus 4"]))
-        checks.append(("parts without a period", surfaces("클로드랑 GPT 하나씩 시켜봐 1 plus 1, 2 plus 2") == ["claude-chat:1 plus 1", "gpt-chat:2 plus 2"]))
+            == ["claude-chat:1 plus 1", "claude:2 plus 2", "chatgpt:3 plus 3", "codex:4 plus 4"]))
+        checks.append(("parts without a period", surfaces("클로드랑 GPT 하나씩 시켜봐 1 plus 1, 2 plus 2") == ["claude-chat:1 plus 1", "chatgpt:2 plus 2"]))
         checks.append(("numbered parts", surfaces("클로드랑 클로드 코드 GPT 코덱스 하나씩 시켜봐.\n1. 1+1\n2. 2+2\n3. 3+3\n4. 4+4")
-            == ["claude-chat:1+1", "claude:2+2", "gpt-chat:3+3", "codex:4+4"]))
+            == ["claude-chat:1+1", "claude:2+2", "chatgpt:3+3", "codex:4+4"]))
         checks.append(("last part after 그리고", surfaces("클로드랑 GPT랑 코덱스 하나씩 돌려봐. 1+1, 2+2 그리고 3+3")
-            == ["claude-chat:1+1", "gpt-chat:2+2", "codex:3+3"]))
+            == ["claude-chat:1+1", "chatgpt:2+2", "codex:3+3"]))
         checks.append(("dictated plus", surfaces("그럼 클로드랑 클로드 코드 GPT 코덱스 다 라우팅 하나씩 시켜봐. 1 플러스 1, 2 플러스 2, 3 플러스 3, 4 플러스 4.")
-            == ["claude-chat:1 플러스 1", "claude:2 플러스 2", "gpt-chat:3 플러스 3", "codex:4 플러스 4"]))
+            == ["claude-chat:1 플러스 1", "claude:2 플러스 2", "chatgpt:3 플러스 3", "codex:4 플러스 4"]))
         checks.append(("parts without commas", surfaces("그럼 클로드랑 클로드 코드 GPT 코덱스 다 라우팅 하나씩 시켜봐 1 plus 1 2 plus 2 3 plus 3 4 plus 4")
-            == ["claude-chat:1 plus 1", "claude:2 plus 2", "gpt-chat:3 plus 3", "codex:4 plus 4"]))
-        checks.append(("voice openers", surfaces("음 클로드랑 GPT 하나씩 시켜봐. 1+1, 2+2") == ["claude-chat:1+1", "gpt-chat:2+2"]
-            && surfaces("다시 클로드랑 GPT 하나씩 시켜보자. 1+1은?, 2+2는 뭐야") == ["claude-chat:1+1은?", "gpt-chat:2+2는 뭐야"]))
+            == ["claude-chat:1 plus 1", "claude:2 plus 2", "chatgpt:3 plus 3", "codex:4 plus 4"]))
+        checks.append(("voice openers", surfaces("음 클로드랑 GPT 하나씩 시켜봐. 1+1, 2+2") == ["claude-chat:1+1", "chatgpt:2+2"]
+            && surfaces("다시 클로드랑 GPT 하나씩 시켜보자. 1+1은?, 2+2는 뭐야") == ["claude-chat:1+1은?", "chatgpt:2+2는 뭐야"]))
         checks.append(("the owner's test opener", surfaces("야 라우팅 잘 되는지 확인해보자. 클로드랑 GPT 하나씩 시켜봐. 1+1, 2+2. 답변 다 받아와줘.")
-            == ["claude-chat:1+1", "gpt-chat:2+2"]))
+            == ["claude-chat:1+1", "chatgpt:2+2"]))
         checks.append(("counted roster", surfaces("클로드, 클로드 코드, GPT, 코덱스 넷 다 하나씩 시켜봐. 1+1, 2+2, 3+3, 4+4")
-            == ["claude-chat:1+1", "claude:2+2", "gpt-chat:3+3", "codex:4+4"]))
+            == ["claude-chat:1+1", "claude:2+2", "chatgpt:3+3", "codex:4+4"]))
         checks.append(("english names keep their spelling", plan("Ask Claude Code and GPT one each. 1+1, 2+2.")?.targets.map(\.mention) == ["Claude Code", "GPT"]))
-        checks.append(("각각 shares one part", surfaces("GPT랑 클로드한테 각각 1+1 물어봐") == ["gpt-chat:1+1", "claude-chat:1+1"]))
+        checks.append(("각각 shares one part", surfaces("GPT랑 클로드한테 각각 1+1 물어봐") == ["chatgpt:1+1", "claude-chat:1+1"]))
         // Hunt of build 334: a side sentence may announce a test or ask for the
         // answers back; an opener or a joining word is never a part.
         for (prompt, expected) in [
-            ("자 테스트 해보자. 1+1 GPT한테. 2+2 Codex한테.", ["gpt-chat:1+1", "codex:2+2"]),
-            ("라우팅 테스트야. 1+1 GPT한테. 2+2 코덱스한테. 답변 받아와.", ["gpt-chat:1+1", "codex:2+2"]),
-            ("빌드 332 들어갔으니까 확인해보자. 1+1 GPT한테. 2+2 코덱스한테.", ["gpt-chat:1+1", "codex:2+2"]),
-            ("GPT랑 클로드한테 1+1 물어봐. 빌드 335 테스트야.", ["gpt-chat:1+1", "claude-chat:1+1"]),
-            ("Quick test. 1+1 to GPT. 2+2 to Codex.", ["gpt-chat:1+1", "codex:2+2"]),
-            ("1+1 GPT한테. 2+2 코덱스한테. 답이 뭔지 말해줘.", ["gpt-chat:1+1", "codex:2+2"]),
-            ("1+1 GPT한테. 2+2 코덱스한테. 안 되면 말해.", ["gpt-chat:1+1", "codex:2+2"]),
-            ("1+1 GPT한테. 2+2 코덱스한테. 헷갈리지 않게 따로 받아와.", ["gpt-chat:1+1", "codex:2+2"]),
-            ("음 GPT한테 1+1, 코덱스한테 2+2", ["gpt-chat:1+1", "codex:2+2"]),
-            ("Hey, to GPT 1+1, to Codex 2+2", ["gpt-chat:1+1", "codex:2+2"]),
-            ("GPT한테 3+3 그리고 코덱스한테 4+4", ["gpt-chat:3+3", "codex:4+4"]),
-            ("1+1은 GPT한테 주고 2+2는 코덱스한테", ["gpt-chat:1+1", "codex:2+2"]),
-            ("GPT한테 1+1, 코덱스한테 2+2 답 좀 알려줘", ["gpt-chat:1+1", "codex:2+2"]),
-            ("그럼 GPT랑 코덱스한테 1+1 물어봐", ["gpt-chat:1+1", "codex:1+1"]),
-            ("GPT랑 코덱스 하나씩 시켜봐. 1+1은 GPT한테, 2+2는 코덱스한테.", ["gpt-chat:1+1", "codex:2+2"]),
-            ("자 이번엔 GPT랑 클로드 하나씩. 1+1 GPT한테, 2+2 클로드한테.", ["gpt-chat:1+1", "claude-chat:2+2"]),
+            ("자 테스트 해보자. 1+1 GPT한테. 2+2 Codex한테.", ["chatgpt:1+1", "codex:2+2"]),
+            ("라우팅 테스트야. 1+1 GPT한테. 2+2 코덱스한테. 답변 받아와.", ["chatgpt:1+1", "codex:2+2"]),
+            ("빌드 332 들어갔으니까 확인해보자. 1+1 GPT한테. 2+2 코덱스한테.", ["chatgpt:1+1", "codex:2+2"]),
+            ("GPT랑 클로드한테 1+1 물어봐. 빌드 335 테스트야.", ["chatgpt:1+1", "claude-chat:1+1"]),
+            ("Quick test. 1+1 to GPT. 2+2 to Codex.", ["chatgpt:1+1", "codex:2+2"]),
+            ("1+1 GPT한테. 2+2 코덱스한테. 답이 뭔지 말해줘.", ["chatgpt:1+1", "codex:2+2"]),
+            ("1+1 GPT한테. 2+2 코덱스한테. 안 되면 말해.", ["chatgpt:1+1", "codex:2+2"]),
+            ("1+1 GPT한테. 2+2 코덱스한테. 헷갈리지 않게 따로 받아와.", ["chatgpt:1+1", "codex:2+2"]),
+            ("음 GPT한테 1+1, 코덱스한테 2+2", ["chatgpt:1+1", "codex:2+2"]),
+            ("Hey, to GPT 1+1, to Codex 2+2", ["chatgpt:1+1", "codex:2+2"]),
+            ("GPT한테 3+3 그리고 코덱스한테 4+4", ["chatgpt:3+3", "codex:4+4"]),
+            ("1+1은 GPT한테 주고 2+2는 코덱스한테", ["chatgpt:1+1", "codex:2+2"]),
+            ("GPT한테 1+1, 코덱스한테 2+2 답 좀 알려줘", ["chatgpt:1+1", "codex:2+2"]),
+            ("그럼 GPT랑 코덱스한테 1+1 물어봐", ["chatgpt:1+1", "codex:1+1"]),
+            ("GPT랑 코덱스 하나씩 시켜봐. 1+1은 GPT한테, 2+2는 코덱스한테.", ["chatgpt:1+1", "codex:2+2"]),
+            ("자 이번엔 GPT랑 클로드 하나씩. 1+1 GPT한테, 2+2 클로드한테.", ["chatgpt:1+1", "claude-chat:2+2"]),
             // Second hunt: the owner's dictation, an opener only before the parts, a spaced "x".
             ("그럼 클로드랑 클로드 코드 GPT 코덱스 다 라우팅 하나씩 시켜 봐 1 plus 1 2 plus 2 3 plus 3 4 plus 4",
-             ["claude-chat:1 plus 1", "claude:2 plus 2", "gpt-chat:3 plus 3", "codex:4 plus 4"]),
-            ("추가로 하나 더. 3+3 GPT한테. 4+4 클로드한테.", ["gpt-chat:3+3", "claude-chat:4+4"]),
+             ["claude-chat:1 plus 1", "claude:2 plus 2", "chatgpt:3 plus 3", "codex:4 plus 4"]),
+            ("추가로 하나 더. 3+3 GPT한테. 4+4 클로드한테.", ["chatgpt:3+3", "claude-chat:4+4"]),
             ("코덱스랑 클로드 코드 하나씩 시켜봐. 10 - 3, 7 x 8", ["codex:10 - 3", "claude:7 x 8"]),
-            ("GPT한테 1+1, 코덱스한테 2+2 좀 해봐", ["gpt-chat:1+1", "codex:2+2"]),
+            ("GPT한테 1+1, 코덱스한테 2+2 좀 해봐", ["chatgpt:1+1", "codex:2+2"]),
         ] {
             checks.append(("framed split: \(prompt)", surfaces(prompt) == expected))
         }
@@ -1134,7 +1148,7 @@ public struct RouteFanout: Equatable, Sendable {
             checks.append(("no framed split: \(prompt)", plan(prompt) == nil))
         }
         checks.append(("각각 shares the whole list", surfaces("GPT랑 클로드한테 각각 1+1, 2+2, 3+3 물어봐")
-            == ["gpt-chat:1+1, 2+2, 3+3", "claude-chat:1+1, 2+2, 3+3"]))
+            == ["chatgpt:1+1, 2+2, 3+3", "claude-chat:1+1, 2+2, 3+3"]))
         for prompt in ["클로드랑 GPT 하나씩 시켜봐. 1+1, 2+2, 3+3", "클로드랑 GPT 시켜봐. 1+1, 2+2",
                        "클로드랑 GPT 비교해서 하나씩 시켜봐. 1+1, 2+2", "클로드랑 GPT 하나씩 보냈어? 1+1, 2+2",
                        "클로드랑 GPT 하나씩 라우팅이 안 돼. 1+1, 2+2", "클로드랑 GPT 하나씩 시키지 마. 1+1, 2+2",

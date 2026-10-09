@@ -213,7 +213,7 @@ func concurrentRouteFanoutSelfTest() async throws {
     let keys = ["OS1_SUBMISSION_ID", "OS1_CONVERSATION_ID", "OS1_CANCEL_FILE", "OS1_ACTIVITY_FILE", "OS1_EVENT_JOURNAL", "OS1_AGENT_TASK_FILE"]
     let old = ProcessInfo.processInfo.environment
     defer { for key in keys { if let value = old[key] { setenv(key, value, 1) } else { unsetenv(key) } } }
-    let prompt = "GPT랑 코덱스랑 클로드 코드랑 클로드 병렬로 1+1, 2+2 돌려봐"
+    let prompt = "gpt-chat랑 코덱스랑 클로드 코드랑 클로드 병렬로 1+1, 2+2 돌려봐"
     guard let plan = RouteFanout.plan(prompt) else { throw OS1Error.message("Concurrent fanout fixture parse failed") }
     var count = 0
     func check(_ value: Bool, _ reason: String) throws {

@@ -1,4 +1,4 @@
-# Build 359: local surface selection and ordinary ChatGPT boundary
+# Build 360: local surface selection and ordinary ChatGPT boundary
 
 ## Scope and status
 
@@ -89,3 +89,8 @@ Official sources inspected for the applicable boundaries:
 - https://developer.chrome.com/docs/devtools/agents/get-started/configuration
 
 Handy is excluded from this change and every execution/check described here.
+
+Build359 was not installed: the release scan rejected two newly introduced
+compiler-emitted public-source diagnostic paths. The raw failure is retained.
+The correction does not weaken the scanner. Bare GPT now means ordinary
+ChatGPT; only explicit gpt-chat/Codex chat names select the Codex bounded lane.

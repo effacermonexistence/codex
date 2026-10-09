@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -9,14 +9,18 @@ import { scanClientArtifacts } from "../scripts/client-artifact-scan.mjs";
 
 const temporaryDirectories: string[] = [];
 
-async function auditedCompilerTokens() {
+async function auditedPublicTokens() {
   const policy = JSON.parse(await readFile(new URL("../security/client-artifact-scan-policy.json", import.meta.url), "utf8"));
   return Object.entries(policy.publicTokenProvenance).flatMap(([fingerprint, entry]) => {
-    const provenance = entry as { publicToken?: string; source: string };
-    if (typeof provenance.publicToken !== "string") return [];
+    const provenance = entry as { publicToken?: string; source: string; tokenKind: string };
+    if (typeof provenance.publicToken !== "string") {
+      expect(provenance.tokenKind).toBe("public_font_glyph_names");
+      return [];
+    }
+    expect(["compiler_type", "diagnostic_source_path"]).toContain(provenance.tokenKind);
     expect(createHash("sha256").update(provenance.publicToken).digest("hex")).toBe(fingerprint);
     expect(policy.entropy.allowedTokenSha256).toContain(fingerprint);
-    return [{ fingerprint, token: provenance.publicToken, source: provenance.source }];
+    return [{ fingerprint, token: provenance.publicToken, source: provenance.source, tokenKind: provenance.tokenKind }];
   });
 }
 
@@ -46,12 +50,19 @@ afterEach(async () => {
 
 describe("client release artifact hygiene gate", () => {
 
-  it("matches every audited compiler token exactly inside a scanned Mach-O cstring section", async () => {
+  it("matches every explicitly typed audited public token exactly inside a scanned Mach-O cstring section", async () => {
     const directory = await mkdtemp(join(tmpdir(), "os1-audited-cstrings-"));
     temporaryDirectories.push(directory);
     const file = join(directory, "client.bin");
-    const audited = await auditedCompilerTokens();
-    expect(audited).toHaveLength(18);
+    const audited = await auditedPublicTokens();
+    const policy = JSON.parse(await readFile(new URL("../security/client-artifact-scan-policy.json", import.meta.url), "utf8"));
+    const kinds = Object.values(policy.publicTokenProvenance).map(entry => (entry as { tokenKind: string }).tokenKind);
+    // Inventory follows the explicitly typed policy, not a stale symbol count.
+    expect(audited).toHaveLength(kinds.filter(kind => ["compiler_type", "diagnostic_source_path"].includes(kind)).length);
+    expect(new Set(audited.map(item => item.fingerprint)).size).toBe(audited.length);
+    expect(kinds).toContain("compiler_type");
+    expect(kinds).toContain("diagnostic_source_path");
+    expect(kinds).toContain("public_font_glyph_names");
     await writeFile(file, machoCStringFixture(audited.map(item => item.token).join("\0")));
     expect((await scanClientArtifacts([directory])).findings).toEqual([]);
 
@@ -68,11 +79,11 @@ describe("client release artifact hygiene gate", () => {
     expect(JSON.stringify(result)).not.toContain(secretLikeSuffix);
   });
 
-  it("diagnoses only exact audited compiler tokens without printing suspected bytes", async () => {
+  it("diagnoses only exact audited public tokens and distinguishes paths from compiler types without printing suspected bytes", async () => {
     const directory = await mkdtemp(join(tmpdir(), "os1-scan-diagnostics-"));
     temporaryDirectories.push(directory);
     const file = join(directory, "client.bin");
-    const audited = await auditedCompilerTokens();
+    const audited = await auditedPublicTokens();
     const unreviewed = audited[0]!.token + "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz+/";
     await writeFile(file, [...audited.map(item => item.token), unreviewed].join("\0"));
     const diagnostic = spawnSync(process.execPath, [
@@ -82,7 +93,10 @@ describe("client release artifact hygiene gate", () => {
     const rows = diagnostic.stdout.trim().split("\n").map(line => JSON.parse(line));
     expect(rows).toHaveLength(audited.length);
     for (const item of audited) {
-      expect(rows).toContainEqual(expect.objectContaining({ fingerprint: item.fingerprint, source: item.source }));
+      expect(rows).toContainEqual(expect.objectContaining({ fingerprint: item.fingerprint, source: item.source, tokenKind: item.tokenKind }));
+      if (item.tokenKind === "diagnostic_source_path") {
+        expect(rows.find(row => row.fingerprint === item.fingerprint).publicCompilerType).toBeNull();
+      }
       expect(diagnostic.stdout).not.toContain(item.token);
     }
     expect(diagnostic.stdout).not.toContain(unreviewed);
@@ -92,6 +106,68 @@ describe("client release artifact hygiene gate", () => {
     ], { encoding: "utf8" });
     expect(unknownOnly.status).toBe(0);
     expect(unknownOnly.stdout).toBe("");
+  });
+
+  it("allows only the two source-verified browser diagnostic paths, never similar paths or added credentials", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "os1-browser-diagnostics-"));
+    temporaryDirectories.push(directory);
+    const file = join(directory, "client.bin");
+    const policy = JSON.parse(await readFile(new URL("../security/client-artifact-scan-policy.json", import.meta.url), "utf8"));
+    const fingerprints = [
+      "88346c5e520d9727ddd33a01fa1d75a6209afb97a46e0fbca6465ff43f838d1a",
+      "9e6f24e5038f815a68210f01a6ec546e7fd045d442247cff85c43f40daadf6ab",
+    ];
+    const tokens: string[] = [];
+    for (const fingerprint of fingerprints) {
+      const entry = policy.publicTokenProvenance[fingerprint];
+      expect(entry.tokenKind).toBe("diagnostic_source_path");
+      expect(entry.sourceRevision).toBe("0bd91bfaa435441db5c0b27804a311d3c7f2b1e2");
+      expect(entry.sourceURL).toBe(`https://github.com/effacermonexistence/codex/blob/${entry.sourceRevision}/${entry.source}`);
+      const source = await readFile(new URL("../../../" + entry.source, import.meta.url));
+      expect(createHash("sha256").update(source).digest("hex")).toBe(entry.sourceSHA256);
+      expect(createHash("sha256").update(entry.publicToken).digest("hex")).toBe(fingerprint);
+      expect(policy.entropy.allowedTokenSha256).toContain(fingerprint);
+      tokens.push(entry.publicToken);
+    }
+    await writeFile(file, machoCStringFixture(tokens.map(token => token + ".swift").join("\0")));
+    expect((await scanClientArtifacts([directory])).findings).toEqual([]);
+    const credentialLikeSuffix = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz+/";
+    const mutants = tokens.flatMap(token => [token + "Extra", token + credentialLikeSuffix]);
+    await writeFile(file, machoCStringFixture(mutants.map(token => token + ".swift").join("\0")));
+    const result = await scanClientArtifacts([directory]);
+    const rejected = new Set(result.findings.filter(item => item.kind === "high_entropy").map(item => item.fingerprint));
+    for (const token of mutants) {
+      expect(rejected.has(createHash("sha256").update(token).digest("hex"))).toBe(true);
+    }
+    expect(JSON.stringify(result)).not.toContain(credentialLikeSuffix);
+  });
+
+  it("rejects incorrect diagnostic-path kind or provenance instead of treating every path as compiler evidence", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "os1-provenance-diagnostics-"));
+    temporaryDirectories.push(directory);
+    await mkdir(join(directory, "scripts"));
+    await mkdir(join(directory, "security"));
+    const helper = join(directory, "scripts", "explain-client-scan.mjs");
+    await writeFile(helper, await readFile(new URL("../scripts/explain-client-scan.mjs", import.meta.url)));
+    const original = JSON.parse(await readFile(new URL("../security/client-artifact-scan-policy.json", import.meta.url), "utf8"));
+    const fingerprint = "88346c5e520d9727ddd33a01fa1d75a6209afb97a46e0fbca6465ff43f838d1a";
+    const input = join(directory, "client.bin");
+    await writeFile(input, original.publicTokenProvenance[fingerprint].publicToken);
+    for (const delta of [
+      { tokenKind: "compiler_type" },
+      { sourceRevision: "not-an-immutable-revision" },
+      { sourceSHA256: "not-a-source-hash" },
+      { sourceURL: "https://example.invalid/not-the-audited-source" },
+      { source: "products/os1-mac-runtime/Sources/OS1App/Different.swift" },
+    ]) {
+      const policy = structuredClone(original);
+      Object.assign(policy.publicTokenProvenance[fingerprint], delta);
+      await writeFile(join(directory, "security", "client-artifact-scan-policy.json"), JSON.stringify(policy));
+      const diagnostic = spawnSync(process.execPath, [helper, input], { encoding: "utf8" });
+      expect(diagnostic.status).not.toBe(0);
+      expect(diagnostic.stdout).toBe("");
+      expect(diagnostic.stderr).not.toContain(original.publicTokenProvenance[fingerprint].publicToken);
+    }
   });
 
   it("allows exact audited public compiler type tokens, never a general binary exemption", async () => {
