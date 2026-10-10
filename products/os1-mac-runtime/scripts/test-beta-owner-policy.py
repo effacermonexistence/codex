@@ -38,7 +38,7 @@ for filename, missing_reason in resources:
             helper = expanded / 'OS-1-component.pkg/Payload/Applications/OS-1 CLODEX.app/Contents/Resources/' / filename
             assert helper.is_file()
             if mutation == 'rename':
-                helper.rename(helper.with_name('unexpected-' + filename))
+                helper.rename(helper.with_name('unexpected-' + helper.name))
             else:
                 with helper.open('a') as f:
                     f.write('\n# unauthorized payload mutation\n')

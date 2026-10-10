@@ -89,7 +89,7 @@ async function writeGateReceipt(c, env = process.env) {
 }
 
 export function systemFragment(c) {
-  return `OS-1 RCC/REVAS run ${c.run_id} policy ${c.policy_sha256}\n${c.policy}`;
+  return `OS-1 governed local run ${c.run_id} policy ${c.policy_sha256}\n${c.policy}`;
 }
 
 export default {

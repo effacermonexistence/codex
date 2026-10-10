@@ -417,6 +417,39 @@ if sys.argv[4]=='1':
     for token in [commit,root]:
         fingerprint=hashlib.sha256(token.encode()).hexdigest()
         if fingerprint not in policy['entropy']['allowedTokenSha256']: policy['entropy']['allowedTokenSha256'].append(fingerprint)
+    # The exact public npm lock is a reproducible acquisition contract, not
+    # a credential. Exempt only its registry SHA-512 integrity tokens, one by
+    # one, after validating the source file and every token's decoded shape.
+    # The generic scanner, forbidden paths/content, and all other entropy
+    # findings remain unchanged. No file-wide or prefix exemption exists.
+    lock_path=pathlib.Path(root)/'products/os1-mac-runtime/Resources/local-controller-package-lock.json'
+    source_path=pathlib.Path(root)/'products/os1-mac-runtime/Resources/local-controller-sources.json'
+    lock_bytes=lock_path.read_bytes(); lock=json.loads(lock_bytes); sources=json.loads(source_path.read_bytes())
+    top=lock['packages']['node_modules/openclaw']
+    assert top['integrity']==sources['controller']['integrity'] and top['resolved']==sources['controller']['url']
+    import base64
+    provenance=policy.setdefault('publicTokenProvenance',{})
+    lock_sha=hashlib.sha256(lock_bytes).hexdigest()
+    for name,row in lock['packages'].items():
+        if not isinstance(row,dict) or 'integrity' not in row: continue
+        integrity=row['integrity']; resolved=row.get('resolved','')
+        assert isinstance(integrity,str) and re.fullmatch(r'sha512-[A-Za-z0-9+/]+={0,2}',integrity)
+        assert len(base64.b64decode(integrity[7:],validate=True))==64
+        assert isinstance(resolved,str) and resolved.startswith('https://registry.npmjs.org/')
+        fingerprint=hashlib.sha256(integrity.encode()).hexdigest()
+        if fingerprint not in policy['entropy']['allowedTokenSha256']: policy['entropy']['allowedTokenSha256'].append(fingerprint)
+        provenance[fingerprint]={'tokenKind':'public_npm_sha512_integrity','source':resolved,
+            'sourceLockSHA256':lock_sha,'package':name,'description':'Exact public registry integrity in the pinned OS-1 acquisition lock; not a credential.'}
+    # One compiler-emitted path/type token is similarly public source data.
+    # Bind it to its exact source declaration, not to a path prefix.
+    type_file=pathlib.Path(root)/'products/os1-mac-runtime/Sources/OS1App/ConsumerChatGPTConnectionPanel.swift'
+    type_bytes=type_file.read_bytes()
+    assert b'struct ConsumerChatGPTConnectionPanel: View' in type_bytes
+    type_token=root+'/products/os1-mac-runtime/Sources/OS1App/ConsumerChatGPTConnectionPanel'
+    fingerprint=hashlib.sha256(type_token.encode()).hexdigest()
+    if fingerprint not in policy['entropy']['allowedTokenSha256']: policy['entropy']['allowedTokenSha256'].append(fingerprint)
+    provenance[fingerprint]={'tokenKind':'public_compiler_source_type_path','source':str(type_file),
+        'sourceSHA256':hashlib.sha256(type_bytes).hexdigest(),'description':'Exact compiler-emitted source/type path for a public OS-1 view.'}
 pathlib.Path(sys.argv[2]).write_text(json.dumps(policy,sort_keys=True))
 PYSCAN
 OS1_CLIENT_SCAN_POLICY_PATH="$scan_policy" node "$repository_root/products/os1-route-core/scripts/client-artifact-scan.mjs" \
