@@ -7359,9 +7359,14 @@ private func recordPreDispatchGovernance(
     root: URL = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent("Library/Application Support/OS-1/pre-dispatch-governance", isDirectory: true)
 ) throws -> String {
-    guard ["codex_developer", "claude_append_system", "host_preaction"].contains(channel),
+    let expectedChannel = ticket.provider == "codex" ? "codex_developer" :
+        (ticket.provider == "claude" ? "claude_append_system" :
+            (ticket.provider == "local" ? "host_preaction" : "unsupported"))
+    guard channel == expectedChannel,
           !objective.isEmpty, !input.isEmpty,
-          channel == "host_preaction" || (instructions?.isEmpty == false) else {
+          contractSHA256.count == 64, contractSHA256.allSatisfy({ $0.isHexDigit && !$0.isUppercase }),
+          (channel == "host_preaction" && instructions == nil) ||
+            (channel != "host_preaction" && instructions?.isEmpty == false) else {
         throw OS1Error.message("OS-1 pre-dispatch governance channel is invalid; no executor was called")
     }
     try OwnerPolicyContext.snapshot?.verifyOriginal()
@@ -7424,11 +7429,39 @@ private func preDispatchGovernanceSelfTest() throws {
           (try FileManager.default.attributesOfItem(atPath: path)[.posixPermissions] as? NSNumber)?.intValue == 0o600 else {
         throw OS1Error.message("Pre-dispatch governance receipt was not bound, private, and source-clean")
     }
+    let codexTicket = Ticket(executionID: "fixture-codex-governance", sequence: 3, provider: "codex",
+        action: "fixture", permissionProfile: "read_only", expiresAt: "2099-01-01T00:00:00Z",
+        nonce: "fixture-nonce", signature: "fixture-signature")
+    let codexPath = try recordPreDispatchGovernance(ticket: codexTicket, model: "fixture-model", effort: "medium",
+        objective: "2+2", input: "2+2", contractSHA256: String(repeating: "b", count: 64),
+        channel: "codex_developer", instructions: policy, driftState: "applied", root: root)
+    let codex = try JSONSerialization.jsonObject(with: Data(contentsOf: URL(fileURLWithPath: codexPath))) as? [String: Any]
+    guard codex?["channel"] as? String == "codex_developer" else {
+        throw OS1Error.message("Codex developer-channel pre-dispatch receipt changed")
+    }
+    let localTicket = Ticket(executionID: "fixture-local-governance", sequence: 4, provider: "local",
+        action: "os1_exact", permissionProfile: "read_only", expiresAt: "2099-01-01T00:00:00Z",
+        nonce: "fixture-nonce", signature: "fixture-signature")
+    let localPath = try recordPreDispatchGovernance(ticket: localTicket, model: "local-deterministic", effort: "none",
+        objective: "3+3", input: "3+3", contractSHA256: String(repeating: "c", count: 64),
+        channel: "host_preaction", instructions: nil, driftState: "not_applicable_no_model", root: root)
+    let local = try JSONSerialization.jsonObject(with: Data(contentsOf: URL(fileURLWithPath: localPath))) as? [String: Any]
+    guard local?["channel"] as? String == "host_preaction", local?["instructions_sha256"] is NSNull else {
+        throw OS1Error.message("Deterministic host gate was misreported as model prompt delivery")
+    }
     do {
         _ = try recordPreDispatchGovernance(ticket: ticket, model: "fixture-model", effort: "medium",
             objective: "1+1", input: "1+1", contractSHA256: "fixture",
             channel: "claude_append_system", instructions: "", driftState: "applied", root: root)
         throw OS1Error.message("Empty native governance instructions were admitted")
+    } catch let error as OS1Error {
+        guard String(describing: error).contains("channel is invalid") else { throw error }
+    }
+    do {
+        _ = try recordPreDispatchGovernance(ticket: codexTicket, model: "fixture-model", effort: "medium",
+            objective: "2+2", input: "2+2", contractSHA256: String(repeating: "b", count: 64),
+            channel: "claude_append_system", instructions: policy, driftState: "applied", root: root)
+        throw OS1Error.message("Provider/channel mismatch was admitted")
     } catch let error as OS1Error {
         guard String(describing: error).contains("channel is invalid") else { throw error }
     }
