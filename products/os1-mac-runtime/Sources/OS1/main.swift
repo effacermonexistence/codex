@@ -9493,11 +9493,33 @@ struct PreflightInventory: Sendable {
     }
 }
 
-// Refresh the device owner policy before dispatch; absence is never a silent
-// bypass. A workflow pins one verified version through every stage.
+// A private owner-policy directory is explicit enrollment. Its absence on a
+// clean third-party Mac selects the validated public RCC executor contract
+// (which still needs the server-signed route ticket before execution);
+// once enrolled, a missing/corrupt source is never a silent downgrade.
+private func ownerPolicyEnrolled(root: URL) throws -> Bool {
+    var info = stat()
+    if Darwin.lstat(root.path, &info) != 0 {
+        if errno == ENOENT { return false }
+        throw OwnerPolicyRefreshFailure()
+    }
+    guard (info.st_mode & S_IFMT) == S_IFDIR, info.st_uid == getuid(),
+          (info.st_mode & 0o077) == 0 else { throw OwnerPolicyRefreshFailure() }
+    return true
+}
+
+// Refresh the enrolled device owner policy before dispatch. A workflow pins
+// one verified version through every stage.
 func loadCurrentOwnerPolicy() throws -> OwnerPolicySnapshot? {
     if let pinned = OwnerPolicyContext.snapshot { try pinned.verifyOriginal(); return pinned }
     let root = OwnerPolicySnapshot.defaultRoot
+    // This Notes-backed source is an explicitly enrolled owner extension, not
+    // a prerequisite every third-party OS-1 install can possess. A clean Mac
+    // without that private state uses the validated public executor contract and
+    // RCC route/REVAS gates. Once a policy directory exists, keep its refresh
+    // fail-closed; losing active.json or Python must not silently downgrade an
+    // enrolled owner to the public baseline.
+    guard try ownerPolicyEnrolled(root: root) else { return nil }
     let resource = URL(fileURLWithPath: CommandLine.arguments[0]).resolvingSymlinksInPath()
         .deletingLastPathComponent().appendingPathComponent("sync-owner-policy.py")
     let helper = FileManager.default.fileExists(atPath: resource.path) ? resource
@@ -9594,6 +9616,14 @@ func ownerPolicyRefreshSelfTest() throws {
         guard value else { throw OS1Error.message("Owner-policy refresh: " + message) }
         checks += 1
     }
+    let fresh = root.appendingPathComponent("fresh-owner-policy")
+    try check(try !ownerPolicyEnrolled(root: fresh), "a clean external Mac must not inherit Ben's private Notes policy")
+    try fileManager.createDirectory(at: fresh, withIntermediateDirectories: false,
+        attributes: [.posixPermissions: 0o700])
+    try check(try ownerPolicyEnrolled(root: fresh), "an enrolled owner stays on the strict refresh path")
+    let alias = root.appendingPathComponent("alias-owner-policy")
+    try fileManager.createSymbolicLink(at: alias, withDestinationURL: fresh)
+    try check((try? ownerPolicyEnrolled(root: alias)) == nil, "a symlink cannot impersonate owner-policy enrollment")
     func helper(_ body: String) throws -> URL {
         let url = root.appendingPathComponent("helper-\(UUID().uuidString).py")
         try Data(("import sys, time\n" + body + "\n").utf8).write(to: url)
