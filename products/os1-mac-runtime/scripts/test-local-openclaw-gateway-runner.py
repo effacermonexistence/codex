@@ -14,6 +14,8 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 CONTROLLER = ROOT / "Sources/OS1Context/OpenClawAgentController.swift"
+SURFACE = ROOT / "Sources/OS1Context/LocalSurfaceRouting.swift"
+ADMISSION = ROOT / "Sources/OS1Context/DynamicRouteAdmission.swift"
 RUNNER = ROOT / "Sources/OS1/LocalOpenClawGatewayRunner.swift"
 FIXTURE = ROOT / "scripts/fixtures/LocalOpenClawGatewayRunnerFixture.swift"
 
@@ -32,7 +34,7 @@ def main() -> None:
         binary = temp / "fixture"
         subprocess.run([
             "swiftc", "-parse-as-library", "-o", str(binary), str(CONTROLLER),
-            str(local_runner), str(FIXTURE)
+            str(SURFACE), str(ADMISSION), str(local_runner), str(FIXTURE)
         ], check=True, cwd=temp)
         env = dict(os.environ, PYTHON_BIN=sys.executable)
         subprocess.run([str(binary), str(temp)], check=True, env=env, cwd=temp)

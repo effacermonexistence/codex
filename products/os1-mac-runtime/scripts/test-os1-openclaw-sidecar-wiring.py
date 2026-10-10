@@ -81,7 +81,7 @@ expect('"candidate_only_not_parity"' in BRIDGE and
        "a syntactically valid local output must not become quality or tool authority")
 PLUGIN = ROOT / "Resources/openclaw-os1-bridge"
 PINS = {
-    "index.mjs": "26c8dc7e6d11b383600b450463b1f42aa58de3f5a3c9c265c0bd217f5e75c92a",
+    "index.mjs": "4303dbcae180e3337c55fca39659e13494195097914d83ee483aee51ddcfcc85",
     "openclaw.plugin.json": "700710ab6124eabcc945f247b13e94451fc266b956c5ce991b5eb99cc6d62af3",
     "package.json": "583bd79e8bc75e98df186b7bd50f6d1ec580298e930e2dbd5674ce1e6296dbe4",
 }
@@ -100,19 +100,37 @@ expect('app_sealed_public_executor_contract' in BRIDGE and
        'validateExecutorContract(bundled.executorContract)' in BRIDGE and
        '"/usr/bin/codesign"' in BRIDGE,
        "public base policy uses an app-sealed contract, not an invented owner Notes policy")
-expect('OpenClawAgentController.prepare(' in BRIDGE and
-       'LocalOpenClawGatewayRunner.run(turn: turn, installed: identity)' in BRIDGE and
-       'OpenClawAgentController.proposeGateway(' in BRIDGE and
-       BRIDGE.index('LocalOpenClawGatewayRunner.run(turn: turn, installed: identity)') <
-       BRIDGE.index('OpenClawAgentController.proposeGateway(') < BRIDGE.index('raw = generated.final'),
-       "surface preference uses exact typed Gateway run and gate parser before host admission")
+gateway = BRIDGE.split('private static func produceGatewaySurface(', 1)[1].split(
+    'private static func produce(', 1)[0]
+expect('OpenClawAgentController.prepareRoute(' in gateway and
+       'hostInput: input' in gateway and
+       'LocalOpenClawGatewayRunner.run(turn: turn, installed: identity)' in gateway and
+       'OpenClawAgentController.proposeGateway(' in gateway and
+       'OpenClawAgentController.admitRoute(' in gateway and
+       'prepared: prepared, for: input' in gateway and
+       gateway.index('OpenClawAgentController.prepareRoute(') <
+       gateway.index('LocalOpenClawGatewayRunner.run(turn: turn, installed: identity)') <
+       gateway.index('OpenClawAgentController.proposeGateway(') <
+       gateway.index('OpenClawAgentController.admitRoute('),
+       "host route requires typed prepare, owned Gateway, premodel gate parser, and immutable host admission")
+expect('JSONEncoder().encode(input)' not in gateway and
+       'Eligible IDs:' not in gateway and
+       'OpenClawAgentController.State(' not in gateway,
+       "Gateway producer never passes host inventory or eligible IDs directly in its prompt")
+rank = BRIDGE.split('static func rankSurface(', 1)[1]
+expect('return try await produceGatewaySurface(input: input, resources: resources)' in rank and
+       'no alternate local model call' in rank and
+       'let encoded = String(decoding: try JSONEncoder().encode(input)' in rank and
+       rank.index('return try await produceGatewaySurface(input: input, resources: resources)') <
+       rank.index('let encoded = String(decoding: try JSONEncoder().encode(input)'),
+       "v1 typed route cannot fall through to v0 prompt-visible-ID producer")
 expect('kind: "surface_preference"' in BRIDGE and
        '"gateway_dispatch_may_have_started"' in BRIDGE and
        '"failed_or_unverified"' in BRIDGE and
        '"host_surface_admitted_task_quality_unverified"' in BRIDGE,
        "candidate/failed/host-admitted states remain distinct private receipts")
 expect('if installedPluginExists || activation?["provisioning_version"] as? Int == 1' in BRIDGE and
-       'else if activation?["provisioning_version"] == nil' in BRIDGE and
+       'if activation?["provisioning_version"] == nil' in BRIDGE and
        'no alternate local model call' in BRIDGE,
        "a failed Gateway does not trigger a second lean model call; v0 without plugin retains old producer")
 expect('!StatusCheckIn.answersFromCard(input.request)' in BRIDGE and

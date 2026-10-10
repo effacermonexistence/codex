@@ -1,10 +1,12 @@
 # OS-1 / OpenClaw typed local controller seam
 
-**State: source-only, disabled by default.** A disposable Gateway local-only
-fixture smoke passed its pre-model gate. A later real owner-projection route
-returned without calling its typed state tool, so that route was held. The
-new route-stage data-dependency repair is offline-tested but not model-tested.
-OS-1 host dispatch and package/install/recovery identity remain separate.
+**State: source-level host route wiring, not installed/runtime-verified.** A
+disposable Gateway local-only fixture smoke passed its pre-model gate. A later
+real owner-projection route returned without calling its typed state tool, so
+that route was held. The new route-stage data-dependency repair and its
+`LocalRouterBridge.rankSurface` host wiring are offline-tested but not
+model-tested. Signed native execution, package/install/recovery identity and
+end-to-end quality parity remain separate.
 No flagship-quality claim. Do not enable from source checkout alone. Handy is a
 separate trust domain and is never part of this path.
 
@@ -147,10 +149,12 @@ against its original gate/contract bytes. Private receipt:
 `~/.os1/openclaw-controller/gateway2-20261010T082254Z-5f65d19e/`.
 
 This is **one bounded local route/tool proof**, not a task-quality/flagship
-comparison and not a packaged or installed OS-1 path. Default routing remains
-disabled until the host process wires exact child supervision, receipt and
-adoption; the release embeds and verifies its own runtime/plugin/model; and
-source→package→installed→live→recovery identity checks pass.
+comparison and not a packaged or installed OS-1 path. The source now wires
+`prepareRoute → owned Gateway → proposeGateway → admitRoute` inside
+`LocalRouterBridge.rankSurface`; a held/zero-tool route leaves the signed-core
+fallback intact. This source wiring still needs a new local-only runtime proof,
+release/runtime/plugin identity checks, and source→package→installed→live→recovery
+verification before any stronger claim.
 
 ### Owner-projection context and tool-use boundary (2026-10-10)
 
