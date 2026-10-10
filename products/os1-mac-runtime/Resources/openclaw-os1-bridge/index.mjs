@@ -45,7 +45,9 @@ export async function readContract(env = process.env) {
       Buffer.byteLength(c.policy, 'utf8') < 1 || Buffer.byteLength(c.policy, 'utf8') > MAX_POLICY_BYTES ||
       digest(Buffer.from(c.policy, 'utf8')) !== c.policy_sha256) throw Error('contract_identity_invalid');
     const s = c.state;
-    if (!exactKeys(s, ['objective', 'stage', 'eligible_candidate_ids', 'quality_claim']) ||
+    const baseStateKeys = ['objective', 'stage', 'eligible_candidate_ids', 'quality_claim'];
+    const expectedStateKeys = s?.stage === 'route' ? [...baseStateKeys, 'route_options'] : baseStateKeys;
+    if (!exactKeys(s, expectedStateKeys) ||
       typeof s.objective !== 'string' || !s.objective.trim() ||
       Buffer.byteLength(s.objective, 'utf8') > MAX_OBJECTIVE_BYTES ||
       !STAGES.has(s.stage) || s.quality_claim !== 'unverified' ||
@@ -53,6 +55,22 @@ export async function readContract(env = process.env) {
       s.eligible_candidate_ids.some(x => typeof x !== 'string' || !RUN_ID.test(x)) ||
       new Set(s.eligible_candidate_ids).size !== s.eligible_candidate_ids.length) {
       throw Error('contract_state_invalid');
+    }
+    if (s.stage === 'route') {
+      const rows = s.route_options;
+      if (!Array.isArray(rows) || rows.length < 1 || rows.length !== s.eligible_candidate_ids.length ||
+          rows.some((row, index) => !exactKeys(row,
+            ['id', 'logical_surface', 'lane', 'transport', 'capabilities', 'quota_pool', 'quality_state']) ||
+            row.id !== s.eligible_candidate_ids[index] ||
+            !['consumer_chatgpt', 'codex_agent', 'claude_chat', 'claude_agent', 'local'].includes(row.logical_surface) ||
+            !['agent', 'bounded_chat', 'consumer_chat', 'local'].includes(row.lane) ||
+            !['local', 'codex_app_server', 'claude_cli', 'chatgpt_service', 'claude_service'].includes(row.transport) ||
+            !['none', 'unknown', 'openai_codex', 'openai_chat', 'anthropic_shared'].includes(row.quota_pool) ||
+            !['policy_admitted', 'exact_domain_verified', 'reference_equivalent', 'reference_above', 'unverified', 'mismatch'].includes(row.quality_state) ||
+            !Array.isArray(row.capabilities) || row.capabilities.length > 16 ||
+            row.capabilities.some(v => typeof v !== 'string' || !v || Buffer.byteLength(v, 'utf8') > 64))) {
+        throw Error('contract_route_inventory_invalid');
+      }
     }
     return c;
   } finally { await handle.close(); }
@@ -124,11 +142,17 @@ export default {
       parameters: { type: 'object', additionalProperties: false, properties: {} },
       outputSchema: {
         type: 'object', additionalProperties: false,
-        required: ['run_id', 'session_id', 'request_sha256', 'policy_sha256', 'objective', 'stage', 'eligible_candidate_ids', 'quality_claim'],
+        required: ['run_id', 'session_id', 'request_sha256', 'policy_sha256', 'objective', 'stage', 'eligible_candidate_ids', 'route_options', 'quality_claim'],
         properties: {
           run_id: { type: 'string' }, session_id: { type: 'string' }, request_sha256: { type: 'string' },
           policy_sha256: { type: 'string' }, objective: { type: 'string' }, stage: { type: 'string' },
-          eligible_candidate_ids: { type: 'array', items: { type: 'string' } }, quality_claim: { const: 'unverified' }
+          eligible_candidate_ids: { type: 'array', items: { type: 'string' } },
+          route_options: { type: 'array', items: { type: 'object', additionalProperties: false,
+            required: ['id', 'logical_surface', 'lane', 'transport', 'capabilities', 'quota_pool', 'quality_state'],
+            properties: { id: { type: 'string' }, logical_surface: { type: 'string' }, lane: { type: 'string' },
+              transport: { type: 'string' }, capabilities: { type: 'array', items: { type: 'string' } },
+              quota_pool: { type: 'string' }, quality_state: { type: 'string' } } } },
+          quality_claim: { const: 'unverified' }
         }
       },
       async execute(_toolCallId, _params, signal) {
@@ -138,7 +162,8 @@ export default {
         const details = {
           run_id: c.run_id, session_id: c.session_id, request_sha256: c.request_sha256,
           policy_sha256: c.policy_sha256, objective: c.state.objective, stage: c.state.stage,
-          eligible_candidate_ids: c.state.eligible_candidate_ids, quality_claim: 'unverified'
+          eligible_candidate_ids: c.state.eligible_candidate_ids, route_options: c.state.route_options ?? [],
+          quality_claim: 'unverified'
         };
         return { content: [{ type: 'text', text: JSON.stringify(details) }], details };
       }

@@ -57,7 +57,7 @@ test('exact host contract + system lane + read-only tool; no executor tools', as
   assert.equal(await hooks.get('before_tool_call')({ toolName: 'os1_state_read' }), undefined);
   const reply = await tools[0].tool.execute('tool-call', {}, new AbortController().signal);
   assert.deepEqual(Object.keys(reply.details).sort(),
-    ['run_id', 'session_id', 'request_sha256', 'policy_sha256', 'objective', 'stage', 'eligible_candidate_ids', 'quality_claim'].sort());
+    ['run_id', 'session_id', 'request_sha256', 'policy_sha256', 'objective', 'stage', 'eligible_candidate_ids', 'route_options', 'quality_claim'].sort());
   assert.equal(reply.details.quality_claim, 'unverified');
 });
 
@@ -83,4 +83,23 @@ test('invalid, symlink, non-private, or injected state is never admitted', async
   const changed = { ...contract(), state: { ...contract().state, quality_claim: 'verified' } };
   await writeFile(f.file, JSON.stringify(changed)); await chmod(f.file, 0o600);
   await assert.rejects(readContract({ ...f.env, OS1_AGENT_CONTRACT_SHA256: digest(JSON.stringify(changed)) }));
+});
+
+test('route inventory is tool-only and exact-ID bound', async t => {
+  const option = { id: 'codex-approved', logical_surface: 'codex_agent', lane: 'agent',
+    transport: 'codex_app_server', capabilities: ['answer', 'execute'],
+    quota_pool: 'openai_codex', quality_state: 'policy_admitted' };
+  const route = { ...contract(), state: { ...contract().state, stage: 'route',
+    eligible_candidate_ids: [option.id], route_options: [option] } };
+  const f = await fixture(t, route); Object.assign(process.env, f.env);
+  const value = await readContract(f.env);
+  assert.deepEqual(value.state.route_options, [option]);
+  const { tools } = registered();
+  const reply = await tools[0].tool.execute('tool-call', {}, new AbortController().signal);
+  assert.deepEqual(reply.details.route_options, [option]);
+  const wrong = { ...route, state: { ...route.state,
+    route_options: [{ ...option, id: 'invented' }] } };
+  const bytes = JSON.stringify(wrong);
+  await writeFile(f.file, bytes); await chmod(f.file, 0o600);
+  await assert.rejects(readContract({ ...f.env, OS1_AGENT_CONTRACT_SHA256: digest(bytes) }));
 });

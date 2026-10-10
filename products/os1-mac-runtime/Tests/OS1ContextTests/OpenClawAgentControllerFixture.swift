@@ -192,6 +192,59 @@ func runOpenClawAgentControllerFixture() throws {
     try rejects("tool-call count without names") {
         _ = try C.admit(envelope: envelope(["toolSummary": ["calls": 1]]), exitCode: 0)
     }
+    if let index = CommandLine.arguments.firstIndex(of: "--prepare-openclaw-owner-16k-smoke"),
+       CommandLine.arguments.count > index + 4 {
+        let root = URL(fileURLWithPath: CommandLine.arguments[index + 1], isDirectory: true)
+        let plugin = CommandLine.arguments[index + 2]
+        let snapshotURL = URL(fileURLWithPath: CommandLine.arguments[index + 3])
+        let priorRoot = URL(fileURLWithPath: CommandLine.arguments[index + 4], isDirectory: true)
+        guard !FileManager.default.fileExists(atPath: root.path) else {
+            throw NSError(domain: "OpenClawAgentControllerFixture", code: 2,
+                          userInfo: [NSLocalizedDescriptionKey: "owner smoke root already exists"])
+        }
+        let owner = try JSONSerialization.jsonObject(with: Data(contentsOf: snapshotURL)) as! [String: Any]
+        let sourceName = owner["sourceFile"] as! String
+        guard sourceName.range(of: "^[a-f0-9]{64}\\.txt$", options: .regularExpression) != nil,
+              let sourceSHA = owner["sourceSHA256"] as? String,
+              C.digest(try Data(contentsOf: snapshotURL.deletingLastPathComponent()
+                  .appendingPathComponent(sourceName))) == sourceSHA,
+              let routing = owner["routing"] as? String,
+              let projection = owner["projection"] as? String else {
+            throw NSError(domain: "OpenClawAgentControllerFixture", code: 3,
+                          userInfo: [NSLocalizedDescriptionKey: "source-bound owner projection unavailable"])
+        }
+        let policy = routing + "\n" + projection
+        let prior = try JSONDecoder().decode(C.Contract.self,
+            from: Data(contentsOf: priorRoot.appendingPathComponent("contract.json")))
+        let request = try String(contentsOf: priorRoot.appendingPathComponent("request.txt"), encoding: .utf8)
+        guard prior.policy == policy, prior.policySourceSHA256 == sourceSHA,
+              prior.requestSHA256 == C.digest(Data(request.utf8)),
+              prior.state.stage == .route, prior.state.eligibleCandidateIDs.count == 2 else {
+            throw NSError(domain: "OpenClawAgentControllerFixture", code: 4,
+                          userInfo: [NSLocalizedDescriptionKey: "prior route/source binding mismatch"])
+        }
+        let prepared = try C.prepare(enabled: true, runID: root.lastPathComponent,
+                                     sessionID: root.lastPathComponent, request: request,
+                                     policySourceSHA256: sourceSHA, policy: policy,
+                                     state: prior.state, pluginDirectory: plugin,
+                                     workspace: root.appendingPathComponent("workspace").path)
+        let gateway = try C.prepareGateway(turn: prepared)
+        let fs = FileManager.default
+        try fs.createDirectory(at: root, withIntermediateDirectories: true,
+                               attributes: [.posixPermissions: 0o700])
+        for child in ["home", "workspace"] {
+            try fs.createDirectory(at: root.appendingPathComponent(child), withIntermediateDirectories: true,
+                                   attributes: [.posixPermissions: 0o700])
+        }
+        for (name, bytes) in [("contract.json", prepared.contractBytes),
+                              ("config.json", gateway.configBytes),
+                              ("request.txt", Data(request.utf8))] {
+            let url = root.appendingPathComponent(name)
+            try bytes.write(to: url, options: .atomic)
+            try fs.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+        }
+        print("Source-bound owner Gateway smoke prepared: run=\(root.lastPathComponent) port=\(gateway.port) policyBytes=\(policy.utf8.count) requestBytes=\(request.utf8.count) eligibleCount=\(prior.state.eligibleCandidateIDs.count)")
+    }
     if let index = CommandLine.arguments.firstIndex(of: "--prepare-openclaw-gateway-smoke"),
        CommandLine.arguments.count > index + 2 {
         let root = URL(fileURLWithPath: CommandLine.arguments[index + 1], isDirectory: true)
@@ -223,6 +276,116 @@ func runOpenClawAgentControllerFixture() throws {
             try fs.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
         }
         print("OpenClaw Gateway smoke prepared: run=\(root.lastPathComponent) port=\(gateway.port) contractSHA=\(prepared.contractSHA256)")
+    }
+    // Route-stage data dependency: exact internal candidate IDs are absent
+    // from the prompt and appear only in os1_state_read's typed host snapshot.
+    let routeNow = Date(timeIntervalSince1970: 10_000)
+    let routeObservation = DynamicRouteAdmission.Observation(
+        receiptID: "route-fixture", observedAt: routeNow.addingTimeInterval(-1),
+        validUntil: routeNow.addingTimeInterval(60))
+    func routeDescriptor(_ id: String, surface: LocalSurfaceRouting.LogicalSurface,
+                         lane: LocalSurfaceRouting.Lane,
+                         transport: DynamicRouteAdmission.Transport,
+                         pool: DynamicRouteAdmission.QuotaPool,
+                         usage: Double) -> LocalSurfaceRouting.Descriptor {
+        let candidate = DynamicRouteAdmission.Candidate(
+            id: id, provider: transport == .codexAppServer ? "codex" : "openai",
+            transport: transport, quotaPool: pool, configurationID: "route-config-" + id,
+            effort: "opaque", capabilities: ["answer"], authorityID: "route-authority",
+            availability: .init(state: .available, observation: routeObservation),
+            quota: .init(remainingFraction: 0.7, observation: routeObservation),
+            quality: .init(state: .policyAdmitted, qualificationKey: "route-family",
+                           configurationID: "route-config-" + id, authorityID: "route-authority",
+                           observation: routeObservation),
+            cost: .init(metric: "tokens", expectedUsage: usage, observation: routeObservation))
+        return .init(logicalSurface: surface, lane: lane, accountID: "route-account",
+                     quotaAccountID: "route-account",
+                     authentication: .init(mode: .subscription, accountID: "route-account",
+                                            observation: routeObservation),
+                     billing: .init(mode: .includedSubscription, accountID: "route-account",
+                                     observation: routeObservation), candidate: candidate)
+    }
+    let chat = routeDescriptor("gpt-chat", surface: .consumerChatGPT, lane: .consumerChat,
+                               transport: .chatGPTService, pool: .openAIChat, usage: 1)
+    let codex = routeDescriptor("codex-agent", surface: .codexAgent, lane: .agent,
+                                transport: .codexAppServer, pool: .openAICodex, usage: 2)
+    func hostRouteInput(request: String = "Summarize supplied text", explicitID: String? = nil) -> LocalSurfaceRouting.Input {
+        let requirement = DynamicRouteAdmission.Requirement(
+            id: "route-fixture-request", requiredCapabilities: ["answer"],
+            trustedAuthorityIDs: ["route-authority"], qualificationKey: "route-family",
+            acceptedQualityStates: [.policyAdmitted], requestedCandidateID: explicitID,
+            requireFreshAvailability: true, requireFreshQuota: true, costMetric: "tokens")
+        return .init(request: request, inventory: [chat, codex],
+                     eligibleCandidateIDs: [chat.id, codex.id], requirement: requirement,
+                     criterion: .boundedQuotaPreference)
+    }
+    let routeInput = hostRouteInput()
+    let routePrepared = try C.prepareRoute(enabled: true, runID: "route-run", sessionID: "route-session",
+                                           hostInput: routeInput, policySourceSHA256: source,
+                                           policy: "RCC source-bound projection; do not promote a route candidate.",
+                                           pluginDirectory: "/signed/OS1/OpenClawBridge",
+                                           workspace: "/private/os1/workspace", now: routeNow)
+    try check(!routePrepared.turn.request.contains(chat.id) && !routePrepared.turn.request.contains(codex.id),
+              "host candidate IDs absent from model request")
+    try check(routePrepared.turn.contract.state.routeOptions?.map(\.id) == [chat.id, codex.id] &&
+              routePrepared.hostInputFingerprint == routeInput.fingerprint,
+              "typed options and host fingerprint bound outside model answer")
+    let routeGate: [String: Any] = ["schema": 1, "run_id": "route-run", "session_id": "route-session",
+                                    "request_sha256": routePrepared.turn.contract.requestSHA256,
+                                    "policy_sha256": routePrepared.turn.contract.policySHA256,
+                                    "contract_sha256": routePrepared.turn.contractSHA256,
+                                    "gate": "before_agent_run_passed", "model_invoked": false]
+    let routeGateData = try JSONSerialization.data(withJSONObject: routeGate, options: [.sortedKeys])
+    func routeEnvelope(id: String = "gpt-chat", usedTool: Bool = true, failures: Int = 0) throws -> Data {
+        var outer = try JSONSerialization.jsonObject(with: gatewayEnvelope()) as! [String: Any]
+        var result = outer["result"] as! [String: Any]
+        var meta = result["meta"] as! [String: Any]
+        let text = "{\"preferred_candidate_id\":\"" + id + "\"}"
+        meta["terminalReply"] = ["disposition": "visible", "text": text]
+        meta["finalAssistantVisibleText"] = text
+        var agentMeta = meta["agentMeta"] as! [String: Any]
+        var terminal = agentMeta["terminalReceipt"] as! [String: Any]
+        terminal["successfulToolNames"] = usedTool ? ["os1_state_read"] : []
+        agentMeta["terminalReceipt"] = terminal; meta["agentMeta"] = agentMeta
+        if usedTool { meta["toolSummary"] = ["calls": 1, "tools": ["os1_state_read"], "failures": failures] }
+        else { meta.removeValue(forKey: "toolSummary") }
+        result["meta"] = meta
+        result["payloads"] = [["text": text, "mediaUrl": NSNull()]]
+        outer["result"] = result
+        return try JSONSerialization.data(withJSONObject: outer, options: [.sortedKeys])
+    }
+    let routeProposal = try C.proposeGateway(prepared: routePrepared.turn, gateReceipt: routeGateData,
+                                             gateObservedBeforeTerminal: true,
+                                             gatewayEnvelope: routeEnvelope(), exitCode: 0)
+    let routeAdmission = try C.admitRoute(routeProposal, prepared: routePrepared, for: routeInput, now: routeNow)
+    try check(routeAdmission.state == .candidateAccepted && routeAdmission.selectedCandidateID == chat.id,
+              "tool-backed route remains subject to exact host admission")
+    try rejects("zero-tool route is not agentic success") {
+        _ = try C.proposeGateway(prepared: routePrepared.turn, gateReceipt: routeGateData,
+                                 gateObservedBeforeTerminal: true,
+                                 gatewayEnvelope: routeEnvelope(usedTool: false), exitCode: 0)
+    }
+    try rejects("wrong candidate ID") {
+        _ = try C.proposeGateway(prepared: routePrepared.turn, gateReceipt: routeGateData,
+                                 gateObservedBeforeTerminal: true,
+                                 gatewayEnvelope: routeEnvelope(id: "invented"), exitCode: 0)
+    }
+    try rejects("tool failure cannot become route success") {
+        _ = try C.proposeGateway(prepared: routePrepared.turn, gateReceipt: routeGateData,
+                                 gateObservedBeforeTerminal: true,
+                                 gatewayEnvelope: routeEnvelope(failures: 1), exitCode: 0)
+    }
+    try rejects("explicit owner route bypasses local auto router") {
+        _ = try C.prepareRoute(enabled: true, runID: "route-run", sessionID: "route-session",
+                               hostInput: hostRouteInput(explicitID: chat.id), policySourceSHA256: source,
+                               policy: "RCC source-bound projection", pluginDirectory: "/signed/bridge",
+                               workspace: "/private/work", now: routeNow)
+    }
+    try rejects("exact internal ID leak returns to host") {
+        _ = try C.prepareRoute(enabled: true, runID: "route-run", sessionID: "route-session",
+                               hostInput: hostRouteInput(request: "use gpt-chat"), policySourceSHA256: source,
+                               policy: "RCC source-bound projection", pluginDirectory: "/signed/bridge",
+                               workspace: "/private/work", now: routeNow)
     }
     if let index = CommandLine.arguments.firstIndex(of: "--verify-observed-gateway"),
        CommandLine.arguments.count > index + 1 {

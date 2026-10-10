@@ -1,8 +1,11 @@
 # OS-1 / OpenClaw typed local controller seam
 
 **State: source-only, disabled by default.** A disposable Gateway local-only
-smoke passed its pre-model gate, but OS-1 host dispatch and package/install/
-recovery identity remain unwired. No flagship-quality claim. Do not enable from source checkout alone. Handy is a
+fixture smoke passed its pre-model gate. A later real owner-projection route
+returned without calling its typed state tool, so that route was held. The
+new route-stage data-dependency repair is offline-tested but not model-tested.
+OS-1 host dispatch and package/install/recovery identity remain separate.
+No flagship-quality claim. Do not enable from source checkout alone. Handy is a
 separate trust domain and is never part of this path.
 
 ## Executed failure: `agent exec` is not a governed route
@@ -72,15 +75,25 @@ force-kill, ambient login, hosted model, browser, shell or filesystem tool.
    and terminates the exact Gateway child. A lost client connection after run
    acceptance is **ambiguous**: inspect that run's terminal state before any
    replay. Preserve all raw receipts and the original OS-1 session/queue.
-6. The plugin may offer only `os1_state_read`. It reads the immutable,
-   host-prepared state snapshot; it cannot dispatch a backend, choose model or
+6. The plugin may offer only `os1_state_read`. For automatic surface routing,
+   use `prepareRoute(...)`: the model prompt contains the user task but no
+   eligible candidate IDs/inventory. The host supplies closed typed
+   `route_options` in the immutable contract; only the tool returns them.
+   An explicit owner-selected target bypasses this local auto route and stays
+   with the signed host path. `os1_state_read` cannot dispatch a backend,
+   choose model or
    effort, grant permission, touch files, invoke a shell/browser or adopt final
    output. `before_prompt_build` appends the bounded policy to the OpenClaw
    system prompt. Because that modifier fails open, `before_agent_run` must
    verify exact request+policy+contract and atomically write a gate receipt
    **before** any model call, or block. A host run must be rejected if that
    receipt is absent or mismatched, even if the model returns a fluent answer.
-7. The Gateway-returned terminal status, effective local model, exact session
+7. Route-stage admission requires exactly one successful `os1_state_read`
+   in the terminal receipt. Zero-tool, failed-tool, wrong-ID, or source-binding
+   mismatch is held and the last valid host route/fallback remains. `admitRoute`
+   then calls existing `LocalSurfaceRouting.admit` with the original immutable
+   host input fingerprint; the model cannot author the signed ticket.
+8. The Gateway-returned terminal status, effective local model, exact session
    and Gateway run identity, successful tool list, pre-dispatch gate receipt,
    and raw output must be verified before feeding the candidate to existing
    OS-1 task-family admission. Use
@@ -106,8 +119,8 @@ as a shortcut.
 
 ## Offline verification for this branch
 
-- Pinned Node `--test Resources/openclaw-os1-bridge/bridge.test.mjs`: 3/3 pass.
-- `swift build --product OS1ContextTests` and focused fixture: 39 checks pass.
+- Pinned Node `--test Resources/openclaw-os1-bridge/bridge.test.mjs`: 4/4 pass.
+- `swift build --product OS1ContextTests` and focused fixture: 47 checks pass.
 - Pinned OpenClaw `config validate --json` on the Swift-generated Gateway
   config: valid, zero warnings.
 - Pinned `plugins inspect --runtime` on the generated config: one typed tool,
@@ -138,3 +151,25 @@ comparison and not a packaged or installed OS-1 path. Default routing remains
 disabled until the host process wires exact child supervision, receipt and
 adoption; the release embeds and verifies its own runtime/plugin/model; and
 source→package→installed→live→recovery identity checks pass.
+
+### Owner-projection context and tool-use boundary (2026-10-10)
+
+The installed build361 route with the owner policy and two host-eligible IDs
+hit `8662 prompt tokens > 8192 configured context`, before candidate return.
+The next **one** local-only owner-workload smoke used the same source-bound
+`routing + projection` (18,554 UTF-8 bytes), same 5,333-byte route request,
+16,384 context/num_ctx, and local `qwen3.5:4b`. It passed authenticated
+readiness, produced the exact pre-model gate receipt, returned a terminal local
+candidate in 18 seconds with no hosted attempt, no token in logs, and exact
+Gateway PID/port cleanup. But `meta.toolSummary` was absent and
+`terminalReceipt.successfulToolNames=[]`. The candidate ID had already been
+visible in the route prompt; the model did not need or call `os1_state_read`.
+`proposeGateway` rejected this run. Private evidence:
+`~/.os1/openclaw-controller/owner16k-20261010T092502Z-06d86357/`.
+
+The route-stage repair moves eligible IDs and typed descriptors out of the
+model prompt and into `os1_state_read` only, requires one successful call, and
+keeps existing exact host admission. This fix has deterministic tests for
+zero-tool, wrong-ID, tool-failure, explicit-target bypass and ID-leak return to
+host. **No model call was made after the repair**; do not claim its runtime
+reliability until a separate bounded local proof.
