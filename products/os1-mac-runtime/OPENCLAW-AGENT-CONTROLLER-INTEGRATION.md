@@ -1,7 +1,12 @@
 # OS-1 / OpenClaw typed local controller seam
 
-**State: source-level host route wiring with one bounded local model proof;
-updated build not yet installed/runtime-verified.** An earlier real
+**State: installed local development path, not public-distribution or
+flagship-quality proof.** Build 363 was installed on the owner Air with 252
+sessions and 7 queued requests preserved. One installed CLI translation run
+produced a Gateway receipt with one successful typed state read and host
+admission, followed by a native Codex result. The native executor selected
+`gpt-6-astra/ultra`, so this run did **not** demonstrate cheap-model routing
+or independent consumer ChatGPT quota access. An earlier real
 owner-projection route returned without calling its typed state tool, so that
 route was held. After moving route options behind `os1_state_read`, one
 local-only Gateway smoke used the real owner policy projection, made exactly
@@ -11,8 +16,11 @@ descriptors and their quota/quality observations were **fixture inputs**, not
 live provider-account evidence. The token was absent from the per-run logs
 checked; global logging was not audited. Private receipt:
 `~/.os1/openclaw-controller/typed-route-smoke-7d89882a-00d0-425e-aa8d-4bbd81ed78c0/typed-route-audit.json`.
-Signed native execution, package/install/recovery identity and end-to-end
-quality parity remain separate.
+The development package passed local build/signature/scan checks; public
+Apple notarization and a clean-device first-run download remain unverified.
+Pre-dispatch native governance has a private preparation receipt, which is not
+proof that the selected model obeyed every instruction or achieved task-quality
+parity.
 No flagship-quality claim. Do not enable from source checkout alone. Handy is a
 separate trust domain and is never part of this path.
 

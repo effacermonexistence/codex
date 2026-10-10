@@ -54,7 +54,9 @@
       "b23dab16c67dd09d06ad6d1be69f7f5ed45622904b037e68c51631f79eba31d9",
       "8fb392747ff78834ed9e35b886548bfc4b28c35f3efbb28ac1a662f95657f191",
       "88346c5e520d9727ddd33a01fa1d75a6209afb97a46e0fbca6465ff43f838d1a",
-      "9e6f24e5038f815a68210f01a6ec546e7fd045d442247cff85c43f40daadf6ab"
+      "9e6f24e5038f815a68210f01a6ec546e7fd045d442247cff85c43f40daadf6ab",
+      "db572c8b1c3c266fbb0452672d1eaaa0c93cc42b93d592a4c2a7cdd4d49e7d73",
+      "ac16563ffa53c91c323aba998aa63ae9d7f2de500d3f942f4400295714e1a359"
     ]
   },
   "publicTokenProvenance": {
@@ -222,6 +224,26 @@
       "sourceRevision": "2040dfad95ab205d8302e857321a70605d0b0127",
       "sourceSHA256": "0763a10ad613faf2456d666fd50c04df7c8767d1d43edd5f9215320ce2b0d1d0",
       "sourceURL": "https://github.com/effacermonexistence/codex/blob/2040dfad95ab205d8302e857321a70605d0b0127/products/os1-mac-runtime/Sources/OS1App/ProfileMenuVerification.swift",
+      "tokenKind": "compiler_type"
+    },
+    "db572c8b1c3c266fbb0452672d1eaaa0c93cc42b93d592a4c2a7cdd4d49e7d73": {
+      "description": "Exact public Swift compiler type encoding for the nested RedirectDenyDelegate in CodexNativeDictation; no Mach-O, symbol-prefix or section-wide exemption.",
+      "publicToken": "_TtCC10OS1Context33CodexDictationURLSessionTransportP33_5344470B87B9586304991203459F539B20RedirectDenyDelegate",
+      "demangledPublicType": "OS1Context.CodexDictationURLSessionTransport.(RedirectDenyDelegate in _5344470B87B9586304991203459F539B)",
+      "source": "products/os1-mac-runtime/Sources/OS1Context/CodexNativeDictation.swift",
+      "sourceRevision": "a41594f11239db6f5d8a5748983c27b5c986811a",
+      "sourceSHA256": "9e304fb75efb71cace4b4737a17ab22460f93eeed72d413afd480138161e0e28",
+      "sourceURL": "https://github.com/effacermonexistence/codex/blob/a41594f11239db6f5d8a5748983c27b5c986811a/products/os1-mac-runtime/Sources/OS1Context/CodexNativeDictation.swift",
+      "tokenKind": "compiler_type"
+    },
+    "ac16563ffa53c91c323aba998aa63ae9d7f2de500d3f942f4400295714e1a359": {
+      "description": "Exact public Swift compiler type encoding for the nested URLSessionSocket in CodexNativeDictation; no Mach-O, symbol-prefix or section-wide exemption.",
+      "publicToken": "_TtCC10OS1Context33CodexDictationURLSessionTransportP33_5344470B87B9586304991203459F539B16URLSessionSocket",
+      "demangledPublicType": "OS1Context.CodexDictationURLSessionTransport.(URLSessionSocket in _5344470B87B9586304991203459F539B)",
+      "source": "products/os1-mac-runtime/Sources/OS1Context/CodexNativeDictation.swift",
+      "sourceRevision": "a41594f11239db6f5d8a5748983c27b5c986811a",
+      "sourceSHA256": "9e304fb75efb71cace4b4737a17ab22460f93eeed72d413afd480138161e0e28",
+      "sourceURL": "https://github.com/effacermonexistence/codex/blob/a41594f11239db6f5d8a5748983c27b5c986811a/products/os1-mac-runtime/Sources/OS1Context/CodexNativeDictation.swift",
       "tokenKind": "compiler_type"
     },
     "8fb392747ff78834ed9e35b886548bfc4b28c35f3efbb28ac1a662f95657f191": {
