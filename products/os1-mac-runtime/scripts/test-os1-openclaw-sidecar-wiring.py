@@ -11,6 +11,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 BRIDGE = (ROOT / "Sources/OS1/LocalRouterBridge.swift").read_text()
+IDENTITY = (ROOT / "Sources/OS1/InstalledOS1Resources.swift").read_text()
 RELEASE = (ROOT / "scripts/build-release.sh").read_text()
 
 
@@ -28,8 +29,12 @@ def expect(condition: bool, message: str):
     checks += 1
 
 
-expect('provisionerResources()' in BRIDGE and 'OS-1 CLODEX.app/Contents/Resources' in BRIDGE,
+expect('provisionerResources()' in BRIDGE and 'OS-1 CLODEX.app/Contents/Resources' in IDENTITY,
        "a provisioned sidecar is bound to the installed app's signed resource directory")
+expect('InstalledOS1Resources.resolve()' in BRIDGE and
+       '/Applications/OS-1 CLODEX.app/Contents/Resources' in IDENTITY and
+       'bundledHash == actualHash' in IDENTITY,
+       "public/private standalone CLI resolves resources by exact executable identity")
 expect('provision-local-controller.py' in BRIDGE and 'local-controller-sources.json' in BRIDGE,
        "v1 cannot start without the installed app's pinned provisioner metadata")
 expect('node_sha256' in BRIDGE and 'fileSHA256(managedNode) == nodeHash' in BRIDGE,

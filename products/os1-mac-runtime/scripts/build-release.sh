@@ -196,6 +196,11 @@ for resource in OmarAGI.png Codex.png ClaudeCode.png Constellation.png CodexDict
   install -m 0644 "$runtime_root/Resources/$resource" \
     "$stage_dir/Applications/OS-1 CLODEX.app/Contents/Resources/$resource"
 done
+mkdir -p "$stage_dir/Applications/OS-1 CLODEX.app/Contents/Resources/openclaw-os1-bridge"
+for resource in index.mjs openclaw.plugin.json package.json; do
+  install -m 0644 "$runtime_root/Resources/openclaw-os1-bridge/$resource" \
+    "$stage_dir/Applications/OS-1 CLODEX.app/Contents/Resources/openclaw-os1-bridge/$resource"
+done
 install -m 0644 "$repository_root/scripts/setup-os1-openclaw-local-router.py" \
   "$stage_dir/Applications/OS-1 CLODEX.app/Contents/Resources/setup-os1-openclaw-local-router.py"
 install -m 0644 "$runtime_root/scripts/provision-local-controller.py" \
@@ -237,6 +242,9 @@ while IFS= read -r payload_file; do
     "Applications/OS-1 CLODEX.app/Contents/Resources/provision-local-controller.py"|\
     "Applications/OS-1 CLODEX.app/Contents/Resources/provision-local-controller.sh"|\
     "Applications/OS-1 CLODEX.app/Contents/Resources/provision-local-controller.mjs"|\
+    "Applications/OS-1 CLODEX.app/Contents/Resources/openclaw-os1-bridge/index.mjs"|\
+    "Applications/OS-1 CLODEX.app/Contents/Resources/openclaw-os1-bridge/openclaw.plugin.json"|\
+    "Applications/OS-1 CLODEX.app/Contents/Resources/openclaw-os1-bridge/package.json"|\
     "Applications/OS-1 CLODEX.app/Contents/Resources/OmarAGI.icns"|\
     "Applications/OS-1 CLODEX.app/Contents/Resources/config.json"|\
     "Applications/OS-1 CLODEX.app/Contents/Info.plist"|\
@@ -371,6 +379,9 @@ while IFS= read -r payload_file; do
     "Applications/OS-1 CLODEX.app/Contents/Resources/provision-local-controller.py"|\
     "Applications/OS-1 CLODEX.app/Contents/Resources/provision-local-controller.sh"|\
     "Applications/OS-1 CLODEX.app/Contents/Resources/provision-local-controller.mjs"|\
+    "Applications/OS-1 CLODEX.app/Contents/Resources/openclaw-os1-bridge/index.mjs"|\
+    "Applications/OS-1 CLODEX.app/Contents/Resources/openclaw-os1-bridge/openclaw.plugin.json"|\
+    "Applications/OS-1 CLODEX.app/Contents/Resources/openclaw-os1-bridge/package.json"|\
     "Applications/OS-1 CLODEX.app/Contents/Resources/OmarAGI.icns"|\
     "Applications/OS-1 CLODEX.app/Contents/Resources/config.json"|\
     "Applications/OS-1 CLODEX.app/Contents/Info.plist"|\

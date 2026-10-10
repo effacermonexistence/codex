@@ -140,8 +140,30 @@ async function ensureOllama(sources) {
   exact(!fs.existsSync(prefix) || !fs.lstatSync(prefix).isSymbolicLink(), 'ollama_prefix_symlink');
   const archive = path.join(root, 'recovery/ollama-darwin-v0.35.1.tgz');
   await download(sources.ollama.url, archive, sources.ollama.sha256, sources.ollama.size);
-  if (!fs.existsSync(prefix)) extract(archive, prefix);
   const executable = path.join(prefix, 'ollama');
+  // Never extract into the activated prefix. A crash during tar previously
+  // left that prefix present but incomplete, so every later launch skipped
+  // extraction and was permanently blocked. Preserve a bad old prefix for
+  // diagnosis; stage and verify a fresh one before the atomic rename.
+  if (fs.existsSync(prefix) && (!regular(executable) || fileHash(executable) !== sources.ollama.binary_sha256)) {
+    const preserved = path.join(root, 'recovery', 'ollama-incomplete-' + Date.now() + '-' + process.pid);
+    fs.renameSync(prefix, preserved);
+  }
+  if (!fs.existsSync(prefix)) {
+    const stage = path.join(tools, '.ollama-v0.35.1.stage.' + process.pid + '.' + Date.now());
+    try {
+      extract(archive, stage);
+      const stagedExecutable = path.join(stage, 'ollama');
+      exact(regular(stagedExecutable) && fileHash(stagedExecutable) === sources.ollama.binary_sha256,
+        'staged_ollama_binary_mismatch');
+      fs.renameSync(stage, prefix);
+    } catch (error) {
+      // This stage contains only bytes unpacked from our immutable archive,
+      // never an existing user state or model. It is safe to discard and retry.
+      if (fs.existsSync(stage)) fs.rmSync(stage, { recursive: true, force: true });
+      throw error;
+    }
+  }
   exact(regular(executable) && fileHash(executable) === sources.ollama.binary_sha256, 'installed_ollama_binary_mismatch');
   fs.mkdirSync(path.join(root, 'models'), { recursive: true, mode: 0o700 });
   fs.mkdirSync(path.join(root, 'runtime-home'), { recursive: true, mode: 0o700 });
@@ -314,8 +336,15 @@ async function main() {
     const inventory = sbom(c.sources, c.lock);
     const activation = path.join(root, 'manifest.json');
     if (!fs.existsSync(activation)) atomic(activation, JSON.stringify(manifest, null, 2) + '\n');
-    else exact(regular(activation) && JSON.stringify(readJSON(activation)) === JSON.stringify(manifest),
-      'existing_controller_activation_changed');
+    else {
+      exact(regular(activation), 'existing_controller_activation_changed');
+      const existing = readJSON(activation);
+      // JSON object key order is not architecture state. The optional Python
+      // maintenance path writes the same verified v1 fields in another order.
+      exact(Object.keys(existing).sort().join('|') === Object.keys(manifest).sort().join('|') &&
+        Object.entries(manifest).every(([key, value]) => existing[key] === value),
+        'existing_controller_activation_changed');
+    }
     mark('ready', '', { model_digest: c.sources.model.digest, runtime_mode: runtimeMode,
       controller_version: c.sources.controller.version, offline_bundle: false,
       hosted_provider_calls: 0, ...inventory });

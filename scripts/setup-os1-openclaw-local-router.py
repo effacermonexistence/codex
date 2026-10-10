@@ -406,6 +406,15 @@ def main(argv=None) -> int:
     if args.dependency_package is not None and args.dependency_lock is not None:
         package_bytes, lock_bytes = checked_dependency_lock(
             args.dependency_package.expanduser().resolve(), args.dependency_lock.expanduser().resolve())
+        # A verified pre-existing v0 install must not be relabelled v1 merely
+        # because the caller supplied signed dependency files. The managed
+        # private prefix must actually contain those exact bytes before the
+        # v1 activation is written or reported as verified.
+        if ((prefix / "package.json").is_symlink() or (prefix / "package-lock.json").is_symlink() or
+                not (prefix / "package.json").is_file() or not (prefix / "package-lock.json").is_file() or
+                (prefix / "package.json").read_bytes() != package_bytes or
+                (prefix / "package-lock.json").read_bytes() != lock_bytes):
+            raise SetupFailure("Managed dependency graph does not match the requested v1 activation")
         activation.update({"provisioning_version": 1, "node_sha256": sha256(node.read_bytes()),
                            "dependency_package_sha256": sha256(package_bytes),
                            "dependency_lock_sha256": sha256(lock_bytes),

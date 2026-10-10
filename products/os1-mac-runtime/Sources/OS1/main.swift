@@ -9501,8 +9501,8 @@ func loadCurrentOwnerPolicy() throws -> OwnerPolicySnapshot? {
     let resource = URL(fileURLWithPath: CommandLine.arguments[0]).resolvingSymlinksInPath()
         .deletingLastPathComponent().appendingPathComponent("sync-owner-policy.py")
     let helper = FileManager.default.fileExists(atPath: resource.path) ? resource
-        : FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Applications/OS-1 CLODEX.app/Contents/Resources/sync-owner-policy.py")
-    guard FileManager.default.fileExists(atPath: helper.path) else {
+        : InstalledOS1Resources.resolve()?.appendingPathComponent("sync-owner-policy.py")
+    guard let helper, FileManager.default.fileExists(atPath: helper.path) else {
         throw OS1Error.message(os1Tr("거버넌스 정책 동기화 도구가 설치되지 않아 호출하지 않았습니다. 기존 작업은 보존됩니다.",
                                      "The governance policy sync tool is missing, so it was not called. Existing work is preserved."))
     }
@@ -16809,6 +16809,7 @@ func selfTest() throws {
     try ResponseAvailability.selfTest()
     try DynamicRouteAdmission.selfTest()
     try nativeTransportAdmissionSelfTest()
+    try InstalledOS1Resources.selfTest()
     try preDispatchGovernanceSelfTest()
     try ChatGPTHandoff.selfTest()
     try RouteFanout.selfTest()

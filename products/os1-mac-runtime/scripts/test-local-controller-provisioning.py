@@ -110,7 +110,11 @@ for name in ("local-router-config.template.json", "local-controller-sources.json
              "provision-local-controller.sh", "provision-local-controller.mjs"):
     check(release.count('Contents/Resources/' + name) >= 2, "staged and expanded release allowlist: " + name)
     check(('Contents/Resources/' + name) in installer, "installer allowlist: " + name)
-check(installer.index("expected_payload_files=33") < installer.index("pkgutil --expand-full"), "versioned exact payload count")
+for name in ("index.mjs", "openclaw.plugin.json", "package.json"):
+    relative = "openclaw-os1-bridge/" + name
+    check(release.count('Contents/Resources/' + relative) >= 2, "signed plugin staged and allowed: " + relative)
+    check(('Contents/Resources/' + relative) in installer, "installer signed plugin allowlist: " + relative)
+check(installer.index("expected_payload_files=36") < installer.index("pkgutil --expand-full"), "versioned exact payload count")
 check(app.index("SelfUpdate.isInstalledApp") < app.index("provision-local-controller.sh"), "installed GUI only")
 check('process.environment = ["HOME":' in app and 'FileHandle.nullDevice' in app,
       "clean non-interactive provisioning child")
@@ -121,4 +125,14 @@ for architecture in ("arm64", "x86_64"):
           contract["node"][architecture]["binary_sha256"] in shell,
           "shell Node asset and binary pins match signed source contract: " + architecture)
 check('tools"' in (resources / "local-router-config.template.json").read_text(), "bounded tool configuration retained")
+provision_js = (resources / "provision-local-controller.mjs").read_text()
+check(provision_js.index("extract(archive, stage)") < provision_js.index("fs.renameSync(stage, prefix)") and
+      "staged_ollama_binary_mismatch" in provision_js and "ollama-incomplete-" in provision_js,
+      "interrupted Ollama extraction cannot activate an incomplete prefix")
+check("Object.keys(existing).sort().join('|') === Object.keys(manifest).sort().join('|')" in provision_js and
+      "Object.entries(manifest).every(([key, value]) => existing[key] === value)" in provision_js,
+      "manifest key order cannot reject a semantically identical activation")
+setup_text = (repo / "scripts/setup-os1-openclaw-local-router.py").read_text()
+check("Managed dependency graph does not match the requested v1 activation" in setup_text,
+      "optional Python v1 activation cannot relabel an unmatched private dependency graph")
 print(f"PASS: {count} local-controller provisioning contract checks; model calls 0; network calls 0")

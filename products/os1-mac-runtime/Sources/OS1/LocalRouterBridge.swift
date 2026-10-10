@@ -55,19 +55,13 @@ enum LocalRouterBridge {
     }
 
     private static func provisionerResources() -> URL? {
-        // The private binaries are provisioned from the signed app's pinned
-        // resources. The CLI may run from Contents/Resources or as the copied
-        // standalone executable; both must resolve the same installed bundle.
-        let executable = URL(fileURLWithPath: CommandLine.arguments[0]).resolvingSymlinksInPath().standardizedFileURL
-        let directory = executable.deletingLastPathComponent()
-        if directory.lastPathComponent == "Resources",
-           directory.deletingLastPathComponent().lastPathComponent == "Contents",
-           directory.deletingLastPathComponent().deletingLastPathComponent().lastPathComponent == "OS-1 CLODEX.app" {
-            return directory
-        }
-        let installed = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Applications/OS-1 CLODEX.app/Contents/Resources", isDirectory: true)
-        return FileManager.default.fileExists(atPath: installed.path) ? installed : nil
+        // /Applications/OS-1 CLODEX.app is the public package lane; the local
+        // installer uses ~/Applications. The copied CLI can be at either
+        // ~/.local/bin or /usr/local/bin, so bind by executable bytes instead
+        // of choosing a resource path from its directory name.
+        guard let installed = InstalledOS1Resources.resolve() else { return nil }
+        return regularFile(installed.appendingPathComponent("provision-local-controller.sh")) &&
+            regularFile(installed.appendingPathComponent("local-controller-sources.json")) ? installed : nil
     }
 
     private static func runtime(manifest: [String: Any]) throws -> RuntimeLocation {
