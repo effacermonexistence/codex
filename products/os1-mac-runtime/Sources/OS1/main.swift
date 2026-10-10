@@ -12395,12 +12395,12 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
             resultHash: resultHash,
             deviceSignature: v1Signature
         )
-        var pendingStep = RunStepSummary(sequence: ticket.sequence, provider: ticket.provider, action: ticket.action,
+        let pendingStep = RunStepSummary(sequence: ticket.sequence, provider: ticket.provider, action: ticket.action,
             model: model, effort: effort, revasDisposition: "verification_pending", sessionID: execution.sessionID,
             permissionProfile: ticket.permissionProfile, exitCode: artifact.exitCode, output: artifact.output,
             stderr: artifact.stderr, durationMS: artifact.durationMS, nativeRecord: execution.nativeRecord,
-            surface: execution.surface, verifiedPreviewDelivery: verifiedPreviewDelivery, taskQuality: taskQuality)
-        pendingStep.preDispatchGovernanceReceipt = execution.preDispatchGovernanceReceipt
+            surface: execution.surface, verifiedPreviewDelivery: verifiedPreviewDelivery,
+            preDispatchGovernanceReceipt: execution.preDispatchGovernanceReceipt, taskQuality: taskQuality)
         var delivery = DeliveryRecord(id: "\(ticket.executionID)-\(ticket.sequence)", apiURL: config.apiURL, deviceID: id,
             resultSHA256: resultHash, artifact: artifactData, upload: try JSONEncoder().encode(upload),
             submission: try JSONEncoder().encode(submission), step: try JSONEncoder().encode(pendingStep),
