@@ -202,8 +202,7 @@ enum LocalOpenClawGatewayRunner {
         while client.isRunning && Date() < clientDeadline {
             try checkCancel()
             if FileManager.default.fileExists(atPath: paths.gate.path), client.isRunning,
-               let outputSize = try? paths.clientOut.resourceValues(forKeys: [.fileSizeKey]).fileSize,
-               outputSize == 0 {
+               privateFileSize(paths.clientOut) == 0 {
                 gateObservedBeforeTerminal = true
             }
             Thread.sleep(forTimeInterval: 0.05)
@@ -416,6 +415,13 @@ enum LocalOpenClawGatewayRunner {
         }
         guard filled else { throw Failure.privateFileFailure }
         return bytes
+    }
+
+    private static func privateFileSize(_ url: URL) -> Int? {
+        var state = stat()
+        guard lstat(url.path, &state) == 0, (state.st_mode & S_IFMT) == S_IFREG,
+              (state.st_mode & 0o077) == 0 else { return nil }
+        return Int(state.st_size)
     }
 
     private static func fileSHA256(_ url: URL) throws -> String {
