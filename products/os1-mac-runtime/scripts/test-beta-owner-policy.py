@@ -25,6 +25,10 @@ verify(package, manifest, True, 'installation was not performed')
 resources = [('sync-owner-policy.py', 'requires the owner-policy helper')]
 if tuple(map(int, json.loads(manifest.read_text())['version'].split('.'))) >= (0, 9, 274):
     resources.append(('CodexDictationCapture.html', 'requires the browser capture document'))
+if tuple(map(int, json.loads(manifest.read_text())['version'].split('.'))) >= (0, 9, 295):
+    resources.append(('local-controller-sources.json', 'requires signed local-controller resource'))
+    resources.append(('provision-local-controller.mjs', 'requires signed local-controller resource'))
+    resources.append(('openclaw-os1-bridge/index.mjs', 'requires signed controller bridge'))
 for filename, missing_reason in resources:
     for mutation in ('rename', 'content'):
         with tempfile.TemporaryDirectory(prefix='os1-beta-policy-') as tmp:
@@ -34,7 +38,7 @@ for filename, missing_reason in resources:
             helper = expanded / 'OS-1-component.pkg/Payload/Applications/OS-1 CLODEX.app/Contents/Resources/' / filename
             assert helper.is_file()
             if mutation == 'rename':
-                helper.rename(helper.with_name('unexpected-' + filename))
+                helper.rename(helper.with_name('unexpected-' + helper.name))
             else:
                 with helper.open('a') as f:
                     f.write('\n# unauthorized payload mutation\n')

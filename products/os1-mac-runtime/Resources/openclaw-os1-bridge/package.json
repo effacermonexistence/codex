@@ -1,0 +1,11 @@
+{
+  "name": "@omaragi/openclaw-os1-bridge",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "openclaw": {
+    "extensions": ["./index.mjs"],
+    "compat": { "pluginApi": ">=2026.9.9 <2026.9.10" },
+    "build": { "openclawVersion": "2026.9.9", "pluginSdkVersion": "2026.9.9" }
+  }
+}

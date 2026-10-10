@@ -1,5 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
+# The macOS CI runner's Python 3.14 writes import bytecode into source-side
+# __pycache__ during the distribution-negative preflight. Keep both the
+# negative preflight and the real release input clean instead of hiding those
+# files from the source-identity check.
+export PYTHONDONTWRITEBYTECODE=1
 
 readonly script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 readonly runtime_root="$(cd "$script_dir/.." && pwd -P)"
@@ -34,6 +39,28 @@ PY
 # Capture before tests/builds and before release/ is rewritten. Dirty automatic
 # self-repairs are stamped only by their later post-commit install outcome.
 readonly source_input_clean="$(source_tree_is_clean)"
+if [[ "${CI:-}" == "true" && "$source_input_clean" != "1" ]]; then
+  # A CI artifact must never omit its source-commit identity. Show only path
+  # metadata; no file contents, credentials, or package bytes enter the log.
+  python3 - "$repository_root" <<'PY'
+import json, subprocess, sys
+raw = subprocess.run(
+    ["git", "--no-optional-locks", "-C", sys.argv[1], "status", "--porcelain=v1", "-z", "--untracked-files=all"],
+    capture_output=True, check=True,
+).stdout
+parts = raw.split(b"\0")
+index = 0
+while index < len(parts):
+    entry = parts[index]; index += 1
+    if not entry: continue
+    status = entry[:2].decode("ascii", "replace")
+    path = entry[3:].decode("utf-8", "surrogateescape")
+    print("CI source mutation path: " + json.dumps({"status": status, "path": path}, ensure_ascii=True), file=sys.stderr)
+    if "R" in status or "C" in status: index += 1
+PY
+  echo 'CI release source is dirty; refusing an unstamped public package.' >&2
+  exit 1
+fi
 python3 "$script_dir/check-startup-isolation.py"
 python3 "$script_dir/test-task-quality-wiring.py"
 python3 "$script_dir/test-memory-paging-wiring.py"
@@ -44,6 +71,10 @@ node "$script_dir/test-memory-paging-recovery.mjs"
 python3 "$script_dir/test-backend-window-focus.py"
 python3 "$script_dir/test-os1-source-confinement-wiring.py"
 python3 "$script_dir/test-owner-policy-sync.py"
+python3 "$script_dir/test-local-controller-provisioning.py"
+python3 "$script_dir/test-client-scan-policy.py"
+python3 "$script_dir/test-os1-openclaw-sidecar-wiring.py"
+python3 "$script_dir/test-local-openclaw-gateway-runner.py"
 # The bundle's own Info.plist is the single source of truth for the release
 # version. A hardcoded default silently diverged from it and the identity
 # check below then refused to package — every build since 0.9.57 produced no
@@ -191,10 +222,19 @@ if [[ "$source_input_clean" == "1" ]]; then
   plutil -insert OS1SourceRepository -string effacermonexistence/codex "$staged_info"
   plutil -insert OS1SourceTreeClean -bool true "$staged_info"
 fi
-for resource in OmarAGI.png Codex.png ClaudeCode.png Constellation.png CodexDictationCapture.html consumer-chatgpt-driver.mjs; do
+for resource in OmarAGI.png Codex.png ClaudeCode.png Constellation.png CodexDictationCapture.html consumer-chatgpt-driver.mjs local-router-config.template.json local-controller-sources.json local-controller-package.json local-controller-package-lock.json local-controller-NOTICES.txt provision-local-controller.sh provision-local-controller.mjs; do
   install -m 0644 "$runtime_root/Resources/$resource" \
     "$stage_dir/Applications/OS-1 CLODEX.app/Contents/Resources/$resource"
 done
+mkdir -p "$stage_dir/Applications/OS-1 CLODEX.app/Contents/Resources/openclaw-os1-bridge"
+for resource in index.mjs openclaw.plugin.json package.json; do
+  install -m 0644 "$runtime_root/Resources/openclaw-os1-bridge/$resource" \
+    "$stage_dir/Applications/OS-1 CLODEX.app/Contents/Resources/openclaw-os1-bridge/$resource"
+done
+install -m 0644 "$repository_root/scripts/setup-os1-openclaw-local-router.py" \
+  "$stage_dir/Applications/OS-1 CLODEX.app/Contents/Resources/setup-os1-openclaw-local-router.py"
+install -m 0644 "$runtime_root/scripts/provision-local-controller.py" \
+  "$stage_dir/Applications/OS-1 CLODEX.app/Contents/Resources/provision-local-controller.py"
 swift "$script_dir/build-brand-icon.swift" "$runtime_root/Resources/OmarAGI.png" "$audit_dir/OmarAGI.iconset"
 iconutil -c icns "$audit_dir/OmarAGI.iconset" -o "$stage_dir/Applications/OS-1 CLODEX.app/Contents/Resources/OmarAGI.icns"
 install -m 0644 "$runtime_root/Config/production.json" \
@@ -223,6 +263,18 @@ while IFS= read -r payload_file; do
     "Applications/OS-1 CLODEX.app/Contents/Resources/Constellation.png"|\
     "Applications/OS-1 CLODEX.app/Contents/Resources/CodexDictationCapture.html"|\
     "Applications/OS-1 CLODEX.app/Contents/Resources/consumer-chatgpt-driver.mjs"|\
+    "Applications/OS-1 CLODEX.app/Contents/Resources/local-router-config.template.json"|\
+    "Applications/OS-1 CLODEX.app/Contents/Resources/local-controller-sources.json"|\
+    "Applications/OS-1 CLODEX.app/Contents/Resources/local-controller-package.json"|\
+    "Applications/OS-1 CLODEX.app/Contents/Resources/local-controller-package-lock.json"|\
+    "Applications/OS-1 CLODEX.app/Contents/Resources/local-controller-NOTICES.txt"|\
+    "Applications/OS-1 CLODEX.app/Contents/Resources/setup-os1-openclaw-local-router.py"|\
+    "Applications/OS-1 CLODEX.app/Contents/Resources/provision-local-controller.py"|\
+    "Applications/OS-1 CLODEX.app/Contents/Resources/provision-local-controller.sh"|\
+    "Applications/OS-1 CLODEX.app/Contents/Resources/provision-local-controller.mjs"|\
+    "Applications/OS-1 CLODEX.app/Contents/Resources/openclaw-os1-bridge/index.mjs"|\
+    "Applications/OS-1 CLODEX.app/Contents/Resources/openclaw-os1-bridge/openclaw.plugin.json"|\
+    "Applications/OS-1 CLODEX.app/Contents/Resources/openclaw-os1-bridge/package.json"|\
     "Applications/OS-1 CLODEX.app/Contents/Resources/OmarAGI.icns"|\
     "Applications/OS-1 CLODEX.app/Contents/Resources/config.json"|\
     "Applications/OS-1 CLODEX.app/Contents/Info.plist"|\
@@ -348,6 +400,18 @@ while IFS= read -r payload_file; do
     "Applications/OS-1 CLODEX.app/Contents/Resources/Constellation.png"|\
     "Applications/OS-1 CLODEX.app/Contents/Resources/CodexDictationCapture.html"|\
     "Applications/OS-1 CLODEX.app/Contents/Resources/consumer-chatgpt-driver.mjs"|\
+    "Applications/OS-1 CLODEX.app/Contents/Resources/local-router-config.template.json"|\
+    "Applications/OS-1 CLODEX.app/Contents/Resources/local-controller-sources.json"|\
+    "Applications/OS-1 CLODEX.app/Contents/Resources/local-controller-package.json"|\
+    "Applications/OS-1 CLODEX.app/Contents/Resources/local-controller-package-lock.json"|\
+    "Applications/OS-1 CLODEX.app/Contents/Resources/local-controller-NOTICES.txt"|\
+    "Applications/OS-1 CLODEX.app/Contents/Resources/setup-os1-openclaw-local-router.py"|\
+    "Applications/OS-1 CLODEX.app/Contents/Resources/provision-local-controller.py"|\
+    "Applications/OS-1 CLODEX.app/Contents/Resources/provision-local-controller.sh"|\
+    "Applications/OS-1 CLODEX.app/Contents/Resources/provision-local-controller.mjs"|\
+    "Applications/OS-1 CLODEX.app/Contents/Resources/openclaw-os1-bridge/index.mjs"|\
+    "Applications/OS-1 CLODEX.app/Contents/Resources/openclaw-os1-bridge/openclaw.plugin.json"|\
+    "Applications/OS-1 CLODEX.app/Contents/Resources/openclaw-os1-bridge/package.json"|\
     "Applications/OS-1 CLODEX.app/Contents/Resources/OmarAGI.icns"|\
     "Applications/OS-1 CLODEX.app/Contents/Resources/config.json"|\
     "Applications/OS-1 CLODEX.app/Contents/Info.plist"|\
@@ -373,18 +437,9 @@ expanded_scripts="$audit_dir/expanded/OS-1-component.pkg/Scripts"
 # Keep the canonical scanner intact; only this clean build's verified commit
 # token receives a fingerprint exception. Other high-entropy values still fail.
 readonly scan_policy="$audit_dir/source-bound-scan-policy.json"
-python3 - "$repository_root/products/os1-route-core/security/client-artifact-scan-policy.json" "$scan_policy" "$source_commit" "$source_input_clean" "$repository_root" <<'PYSCAN'
-import hashlib,json,pathlib,re,sys
-policy=json.loads(pathlib.Path(sys.argv[1]).read_text()); commit=sys.argv[3]
-if sys.argv[4]=='1':
-    if re.fullmatch(r'[0-9a-f]{40}',commit) is None: raise SystemExit('Invalid source commit for release scan')
-    root=str(pathlib.Path(sys.argv[5]).resolve())
-    if not root.startswith(str(pathlib.Path.home())+'/'): raise SystemExit('Source root outside approved HOME')
-    for token in [commit,root]:
-        fingerprint=hashlib.sha256(token.encode()).hexdigest()
-        if fingerprint not in policy['entropy']['allowedTokenSha256']: policy['entropy']['allowedTokenSha256'].append(fingerprint)
-pathlib.Path(sys.argv[2]).write_text(json.dumps(policy,sort_keys=True))
-PYSCAN
+python3 "$script_dir/generate-client-scan-policy.py" \
+  "$repository_root/products/os1-route-core/security/client-artifact-scan-policy.json" \
+  "$scan_policy" "$source_commit" "$source_input_clean" "$repository_root" "$expanded_payload"
 OS1_CLIENT_SCAN_POLICY_PATH="$scan_policy" node "$repository_root/products/os1-route-core/scripts/client-artifact-scan.mjs" \
   "$audit_dir/expanded"
 

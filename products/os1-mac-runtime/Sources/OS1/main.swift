@@ -1237,6 +1237,10 @@ struct RunStepSummary: Codable {
     var verifiedPreviewDelivery: VerifiedPreviewDelivery? = nil
     var ownerPolicySourceSHA256: String? = OwnerPolicyContext.snapshot?.sourceSHA256
     var ownerPolicyProjectionSHA256: String? = OwnerPolicyContext.snapshot?.projectionSHA256
+    /// Read-back receipt for instruction bytes prepared before dispatch or a
+    /// deterministic host gate. Preparation does not prove that a backend
+    /// received them, complied, or produced a correct answer.
+    var preDispatchGovernanceReceipt: String? = nil
     /// On a review's answer: the draft it checked ("codex · gpt-6-astra · high").
     var reviewedDraft: String? = nil
     /// Exact task/checker evidence, independent of native transport adoption.
@@ -1267,6 +1271,7 @@ struct RunStepSummary: Codable {
         case workflowStage = "workflow_stage"
         case ownerPolicySourceSHA256 = "owner_policy_source_sha256"
         case ownerPolicyProjectionSHA256 = "owner_policy_projection_sha256"
+        case preDispatchGovernanceReceipt = "pre_dispatch_governance_receipt"
         case reviewedDraft = "reviewed_draft"
         case taskQuality = "task_quality"
         case consumerChatGPTRecord = "consumer_chatgpt_record"
@@ -1301,6 +1306,7 @@ struct ProviderExecution {
     let nativeRecord: NativeRecordEvidence
     var surface: String? = nil
     var driftApplication: DriftApplication? = nil
+    var preDispatchGovernanceReceipt: String? = nil
     /// A confined backend handed a change to OS-1 itself back (the marker).
     var os1ChangeRequired: Bool = false
     var os1FullAccessRequired: Bool = false
@@ -1316,7 +1322,8 @@ struct ProviderExecution {
             durationMS: a.durationMS, workspaceBeforeHash: a.workspaceBeforeHash, workspaceAfterHash: a.workspaceAfterHash,
             nativeRecord: a.nativeRecord)
         return ProviderExecution(artifact: artifact, sessionID: sessionID, nativeRecord: nativeRecord, surface: surface,
-                                 driftApplication: driftApplication, os1ChangeRequired: os1ChangeRequired, os1FullAccessRequired: os1FullAccessRequired)
+                                 driftApplication: driftApplication, preDispatchGovernanceReceipt: preDispatchGovernanceReceipt,
+                                 os1ChangeRequired: os1ChangeRequired, os1FullAccessRequired: os1FullAccessRequired)
     }
 }
 
@@ -7164,7 +7171,8 @@ func claudeTranscriptContains(_ url: URL, assistantText: String) -> Bool {
 
 private func interruptedExecution(ticket: Ticket, model: String?, effort: String, contract: ExecutorContract,
                                   sessionID: String, publicProgress: String, beforeHash: String,
-                                  workspace: String, started: Date, cause: Error, surface: String? = nil) -> RejectedProviderExecution {
+                                  workspace: String, started: Date, cause: Error, surface: String? = nil,
+                                  preDispatchGovernanceReceipt: String? = nil) -> RejectedProviderExecution {
     let record = NativeRecordEvidence(turnID: nil, recordPath: nil,
         persistence: "interrupted_unverified", desktopVisibility: "external_app_not_opened")
     let artifact = Artifact(provider: ticket.provider, action: ticket.action, permissionProfile: ticket.permissionProfile,
@@ -7172,7 +7180,8 @@ private func interruptedExecution(ticket: Ticket, model: String?, effort: String
         executorContractSHA256: contract.sha256, exitCode: 69, output: String(publicProgress.suffix(24_000)), stderr: "",
         durationMS: Int64(Date().timeIntervalSince(started) * 1_000), workspaceBeforeHash: beforeHash,
         workspaceAfterHash: observedStateHash(workspace), nativeRecord: record)
-    return RejectedProviderExecution(execution: ProviderExecution(artifact: artifact, sessionID: sessionID, nativeRecord: record, surface: surface), cause: cause)
+    return RejectedProviderExecution(execution: ProviderExecution(artifact: artifact, sessionID: sessionID, nativeRecord: record,
+        surface: surface, preDispatchGovernanceReceipt: preDispatchGovernanceReceipt), cause: cause)
 }
 
 private func driftScope(prompt: String, workspace: String, evidence: R2EvidenceBundle?, contract: ExecutorContract) -> DriftScope {
@@ -7334,6 +7343,136 @@ private func nativeTransportAdmissionSelfTest() throws {
     print("OS-1 dynamic native transport and exact local dispatch: OK; native calls 0")
 }
 
+/// Exact pre-dispatch boundary receipt. It records the intended channel and a
+/// digest of the input OS-1 has prepared before a model turn (or the host gate
+/// before an exact local executor). A later failed launch leaves this as
+/// prepared-not-delivered; neither a hash nor a prompt is a quality verdict.
+/// This is deliberately separate from post-return REVAS adoption.
+private func recordPreDispatchGovernance(
+    ticket: Ticket,
+    model: String?,
+    effort: String,
+    objective: String,
+    input: String,
+    contractSHA256: String,
+    channel: String,
+    instructions: String?,
+    driftState: String,
+    routeAdmission: URL? = nil,
+    root: URL = FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent("Library/Application Support/OS-1/pre-dispatch-governance", isDirectory: true)
+) throws -> String {
+    let expectedChannel = ticket.provider == "codex" ? "codex_developer" :
+        (ticket.provider == "claude" ? "claude_append_system" :
+            (ticket.provider == "local" ? "host_preaction" : "unsupported"))
+    guard channel == expectedChannel,
+          !objective.isEmpty, !input.isEmpty,
+          contractSHA256.count == 64, contractSHA256.allSatisfy({ $0.isHexDigit && !$0.isUppercase }),
+          (channel == "host_preaction" && instructions == nil) ||
+            (channel != "host_preaction" && instructions?.isEmpty == false) else {
+        throw OS1Error.message("OS-1 pre-dispatch governance channel is invalid; no executor was called")
+    }
+    try OwnerPolicyContext.snapshot?.verifyOriginal()
+    let admissionDigest = try routeAdmission.map { sha256Hex(try Data(contentsOf: $0)) }
+    let receipt: [String: Any] = [
+        "schema": 1,
+        "execution_id": ticket.executionID,
+        "sequence": ticket.sequence,
+        "ticket_sha256": sha256Hex(Data([ticket.executionID, String(ticket.sequence), ticket.nonce, ticket.signature]
+            .joined(separator: "\n").utf8)),
+        "provider": ticket.provider,
+        "action": ticket.action,
+        "permission_profile": ticket.permissionProfile,
+        "model": model ?? "provider-default",
+        "effort": effort,
+        "objective_sha256": sha256Hex(Data(objective.utf8)),
+        "input_sha256": sha256Hex(Data(input.utf8)),
+        "executor_contract_sha256": contractSHA256,
+        "channel": channel,
+        "instructions_sha256": instructions.map { sha256Hex(Data($0.utf8)) } ?? NSNull(),
+        "owner_policy_source_sha256": OwnerPolicyContext.snapshot?.sourceSHA256 ?? NSNull(),
+        "owner_policy_projection_sha256": OwnerPolicyContext.snapshot?.projectionSHA256 ?? NSNull(),
+        "owner_policy_original_verified": OwnerPolicyContext.snapshot != nil,
+        "drift_policy_state": driftState,
+        "route_admission_sha256": admissionDigest ?? NSNull(),
+        "meaning": "pre_dispatch_preparation_not_delivery_or_quality",
+        "backend_delivery": "not_verified_at_pre_dispatch",
+        "recorded_at": ISO8601DateFormatter().string(from: Date())
+    ]
+    let data = try JSONSerialization.data(withJSONObject: receipt, options: [.sortedKeys])
+    guard data.count <= 8_192 else { throw OS1Error.message("OS-1 pre-dispatch receipt exceeds its bound") }
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true,
+        attributes: [.posixPermissions: 0o700])
+    let path = root.appendingPathComponent("\(UUID().uuidString.lowercased()).json")
+    try data.write(to: path, options: [.atomic])
+    try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path.path)
+    guard try Data(contentsOf: path) == data else {
+        throw OS1Error.message("OS-1 pre-dispatch governance receipt read-back failed; no executor was called")
+    }
+    return path.path
+}
+
+private func preDispatchGovernanceSelfTest() throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("os1-pre-dispatch-fixture-" + UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let ticket = Ticket(executionID: "fixture-governance", sequence: 2, provider: "claude",
+        action: "fixture", permissionProfile: "read_only", expiresAt: "2099-01-01T00:00:00Z",
+        nonce: "fixture-nonce", signature: "fixture-signature")
+    let policy = "fixture private governance text: do not persist this"
+    let path = try recordPreDispatchGovernance(ticket: ticket, model: "fixture-model", effort: "medium",
+        objective: "1+1", input: "1+1", contractSHA256: String(repeating: "a", count: 64),
+        channel: "claude_append_system", instructions: policy, driftState: "applied", root: root)
+    let bytes = try Data(contentsOf: URL(fileURLWithPath: path))
+    guard let receipt = try JSONSerialization.jsonObject(with: bytes) as? [String: Any],
+          receipt["execution_id"] as? String == ticket.executionID,
+          receipt["sequence"] as? Int == ticket.sequence,
+          receipt["channel"] as? String == "claude_append_system",
+          receipt["instructions_sha256"] as? String == sha256Hex(Data(policy.utf8)),
+          receipt["meaning"] as? String == "pre_dispatch_preparation_not_delivery_or_quality",
+          receipt["backend_delivery"] as? String == "not_verified_at_pre_dispatch",
+          !String(decoding: bytes, as: UTF8.self).contains(policy),
+          (try FileManager.default.attributesOfItem(atPath: path)[.posixPermissions] as? NSNumber)?.intValue == 0o600 else {
+        throw OS1Error.message("Pre-dispatch governance receipt was not bound, private, and source-clean")
+    }
+    let codexTicket = Ticket(executionID: "fixture-codex-governance", sequence: 3, provider: "codex",
+        action: "fixture", permissionProfile: "read_only", expiresAt: "2099-01-01T00:00:00Z",
+        nonce: "fixture-nonce", signature: "fixture-signature")
+    let codexPath = try recordPreDispatchGovernance(ticket: codexTicket, model: "fixture-model", effort: "medium",
+        objective: "2+2", input: "2+2", contractSHA256: String(repeating: "b", count: 64),
+        channel: "codex_developer", instructions: policy, driftState: "applied", root: root)
+    let codex = try JSONSerialization.jsonObject(with: Data(contentsOf: URL(fileURLWithPath: codexPath))) as? [String: Any]
+    guard codex?["channel"] as? String == "codex_developer" else {
+        throw OS1Error.message("Codex developer-channel pre-dispatch receipt changed")
+    }
+    let localTicket = Ticket(executionID: "fixture-local-governance", sequence: 4, provider: "local",
+        action: "os1_exact", permissionProfile: "read_only", expiresAt: "2099-01-01T00:00:00Z",
+        nonce: "fixture-nonce", signature: "fixture-signature")
+    let localPath = try recordPreDispatchGovernance(ticket: localTicket, model: "local-deterministic", effort: "none",
+        objective: "3+3", input: "3+3", contractSHA256: String(repeating: "c", count: 64),
+        channel: "host_preaction", instructions: nil, driftState: "not_applicable_no_model", root: root)
+    let local = try JSONSerialization.jsonObject(with: Data(contentsOf: URL(fileURLWithPath: localPath))) as? [String: Any]
+    guard local?["channel"] as? String == "host_preaction", local?["instructions_sha256"] is NSNull else {
+        throw OS1Error.message("Deterministic host gate was misreported as model prompt delivery")
+    }
+    do {
+        _ = try recordPreDispatchGovernance(ticket: ticket, model: "fixture-model", effort: "medium",
+            objective: "1+1", input: "1+1", contractSHA256: "fixture",
+            channel: "claude_append_system", instructions: "", driftState: "applied", root: root)
+        throw OS1Error.message("Empty native governance instructions were admitted")
+    } catch let error as OS1Error {
+        guard String(describing: error).contains("channel is invalid") else { throw error }
+    }
+    do {
+        _ = try recordPreDispatchGovernance(ticket: codexTicket, model: "fixture-model", effort: "medium",
+            objective: "2+2", input: "2+2", contractSHA256: String(repeating: "b", count: 64),
+            channel: "claude_append_system", instructions: policy, driftState: "applied", root: root)
+        throw OS1Error.message("Provider/channel mismatch was admitted")
+    } catch let error as OS1Error {
+        guard String(describing: error).contains("channel is invalid") else { throw error }
+    }
+    print("OS-1 pre-dispatch governance: exact channel/input digests and private read-back PASS; provider calls 0")
+}
+
 private func execute(
     ticket: Ticket,
     prompt: String,
@@ -7353,6 +7492,7 @@ private func execute(
     onUsage: ((CompletionMeasuredUsage?) -> Void)? = nil,
     onDispatch: ((String?) -> Void)? = nil,
     onInstructions: ((String) -> Void)? = nil,
+    onPreDispatchReceipt: ((String) -> Void)? = nil,
     memoryTurn: MemoryExecutionManifest? = nil,
     quotaContext: ProviderQuotaContext? = nil,
     surfaceChoiceReceipt: String? = nil
@@ -7416,6 +7556,7 @@ private func execute(
     let result: (Int32, Data, Data)
     let sessionID: String
     let nativeRecord: NativeRecordEvidence
+    var preDispatchGovernanceReceipt: String?
     var validateCandidate: (() throws -> Void)?
     // A confined Claude run handing the request back as an OS-1 change.
     var os1ChangeRequired = false
@@ -7449,6 +7590,12 @@ private func execute(
         guard let codex = try? findExecutable("codex") else {
             throw OS1Error.backendBlocked(.capabilityUnavailable)
         }
+        preDispatchGovernanceReceipt = try recordPreDispatchGovernance(
+            ticket: ticket, model: model, effort: effort, objective: lockedObjective, input: prompt,
+            contractSHA256: executorContract.sha256, channel: "codex_developer", instructions: instructions,
+            driftState: driftApplication == nil ? "unavailable_base_contract_retained" : "applied",
+            routeAdmission: admissionPath)
+        onPreDispatchReceipt?(preDispatchGovernanceReceipt!)
         let deadline = Date().addingTimeInterval(TimeInterval(timeout))
         // GPT chat: the model alone, in the empty answer workspace, on a fresh
         // thread (resuming a full Codex thread would reload what the lane drops).
@@ -7591,7 +7738,8 @@ private func execute(
             // No alternate turn is dispatched after an ambiguous failure.
             throw interruptedExecution(ticket: ticket, model: model, effort: effort, contract: executorContract,
                 sessionID: actualSessionID, publicProgress: appServer.interruptedPublicProgress, beforeHash: workspaceBeforeHash,
-                workspace: executionWorkspace, started: started, cause: error, surface: executedSurface?.rawValue)
+                workspace: executionWorkspace, started: started, cause: error, surface: executedSurface?.rawValue,
+                preDispatchGovernanceReceipt: preDispatchGovernanceReceipt)
         }
         // Account for this exact native turn before any quality guard rejects
         // it. Never hide a second paid repair inside one signed route ticket.
@@ -7808,6 +7956,17 @@ private func execute(
             confinedEscalates: handBackEscalates,
             fullAccessProtectedPaths: fullAccessPaths
         )
+        guard let systemIndex = arguments.firstIndex(of: "--append-system-prompt"),
+              arguments.indices.contains(systemIndex + 1) else {
+            throw OS1Error.message("Claude pre-dispatch system-prompt channel is absent; no executor was called")
+        }
+        preDispatchGovernanceReceipt = try recordPreDispatchGovernance(
+            ticket: ticket, model: model, effort: effort, objective: lockedObjective, input: prompt,
+            contractSHA256: executorContract.sha256, channel: "claude_append_system",
+            instructions: arguments[systemIndex + 1],
+            driftState: driftApplication == nil ? "unavailable_base_contract_retained" : "applied",
+            routeAdmission: admissionPath)
+        onPreDispatchReceipt?(preDispatchGovernanceReceipt!)
         if projectlessRead && !sourceOnly && !chatLane { arguments.insert("--safe-mode", at: 1) }
         if CheckoutTurn.enabled && ticket.permissionProfile == "workspace_write" && !sourceOnly && !chatLane {
             arguments.insert(contentsOf: CheckoutTurn.claudeMCPArguments(os1Executable: currentOS1Executable(),
@@ -7868,7 +8027,8 @@ private func execute(
                 sessionID: activeSessionID,
                 publicProgress: confined ? OS1SourceConfinement.strippingMarker(stream.text, partialTail: true) : stream.text,
                 beforeHash: workspaceBeforeHash,
-                workspace: executionWorkspace, started: started, cause: error, surface: executedSurface?.rawValue)
+                workspace: executionWorkspace, started: started, cause: error, surface: executedSurface?.rawValue,
+                preDispatchGovernanceReceipt: preDispatchGovernanceReceipt)
         }
         stream.finishClaude()
         if let text = stream.takeClaudePublicFinal(sessionID: activeSessionID, after: &relayedResultCount) {
@@ -7912,7 +8072,8 @@ private func execute(
             let progress = confined ? OS1SourceConfinement.strippingMarker(rawProgress) : rawProgress
             var rejection = interruptedExecution(ticket: ticket, model: model, effort: effort, contract: executorContract,
                 sessionID: activeSessionID, publicProgress: progress, beforeHash: workspaceBeforeHash,
-                workspace: executionWorkspace, started: started, cause: error, surface: executedSurface?.rawValue)
+                workspace: executionWorkspace, started: started, cause: error, surface: executedSurface?.rawValue,
+                preDispatchGovernanceReceipt: preDispatchGovernanceReceipt)
             rejection.quotaRejectedBeforeExecution = backendBlocker(error) == .quotaExhausted &&
                 stream.claudeQuotaRejectedBeforeExecution(sessionID: activeSessionID)
             if backendBlocker(error) == .quotaExhausted, var scoped = object {
@@ -8035,6 +8196,7 @@ private func execute(
         nativeRecord: nativeRecord,
         surface: executedSurface?.rawValue,
         driftApplication: driftApplication,
+        preDispatchGovernanceReceipt: preDispatchGovernanceReceipt,
         os1ChangeRequired: os1ChangeRequired, os1FullAccessRequired: os1FullAccessRequired
     )
     AttemptLatencyTrace.mark("candidate_built")
@@ -9026,6 +9188,9 @@ func routeFanoutSummarySelfTest() throws {
     var legacyObject = try JSONSerialization.jsonObject(with: encoded) as! [String: Any]
     legacyObject.removeValue(forKey: "surface")
     let legacy = try JSONDecoder().decode(RunStepSummary.self, from: JSONSerialization.data(withJSONObject: legacyObject))
+    var savedForDelivery = fourOutcomes[0].adopted!
+    savedForDelivery.preDispatchGovernanceReceipt = "/tmp/fixture-pre-dispatch.json"
+    let resumedAdopted = adoptedSavedStep(savedForDelivery, native: savedForDelivery.nativeRecord)
     let metadataRoot = FileManager.default.temporaryDirectory.appendingPathComponent("os1-route-custody-\(UUID())")
     try FileManager.default.createDirectory(at: metadataRoot, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: metadataRoot) }
@@ -9034,7 +9199,8 @@ func routeFanoutSummarySelfTest() throws {
     let interrupted = interruptedExecution(ticket: ticket, model: "m", effort: "max",
         contract: ExecutorContract(version: "fixture", sha256: "fixture", directives: []),
         sessionID: UUID().uuidString.lowercased(), publicProgress: "partial answer", beforeHash: "fixture",
-        workspace: metadataRoot.path, started: Date(), cause: OS1Error.message("fixture interruption"), surface: "gpt-chat")
+        workspace: metadataRoot.path, started: Date(), cause: OS1Error.message("fixture interruption"), surface: "gpt-chat",
+        preDispatchGovernanceReceipt: "/tmp/fixture-pre-dispatch.json")
     let checks: [(String, Bool)] = [
         ("receipt schema 2 preserves all four requested and actual routes", decodedRecord == fanoutRecord
             && decodedRecord.schema == 2 && decodedRecord.routes.count == 4
@@ -9060,8 +9226,13 @@ func routeFanoutSummarySelfTest() throws {
             && failedEvidence.attempts?.isEmpty == true && handoffEvidence.surface == "chatgpt"
             && handoffEvidence.handoffReceipt == "/tmp/receipt.json" && handoffEvidence.provider == nil
             && handoffEvidence.revasDisposition == nil && handoffEvidence.nativeRecord == nil),
-        ("interrupted and appended candidates retain their actual lane", interrupted.execution.surface == "gpt-chat"
-            && interrupted.execution.appendingOutput("saved").surface == "gpt-chat"),
+        ("interrupted and appended candidates retain their actual lane and pre-dispatch custody", interrupted.execution.surface == "gpt-chat"
+            && interrupted.execution.appendingOutput("saved").surface == "gpt-chat"
+            && interrupted.execution.preDispatchGovernanceReceipt == "/tmp/fixture-pre-dispatch.json"
+            && interrupted.execution.appendingOutput("saved").preDispatchGovernanceReceipt == "/tmp/fixture-pre-dispatch.json"),
+        ("delivery recovery preserves the producing attempt's governance custody", resumedAdopted.revasDisposition == "adopted"
+            && resumedAdopted.preDispatchGovernanceReceipt == savedForDelivery.preDispatchGovernanceReceipt
+            && resumedAdopted.ownerPolicySourceSHA256 == savedForDelivery.ownerPolicySourceSHA256),
         ("only actual full-lane sessions continue the bound agent conversation",
             routeFanoutContinuesSession(requested: .codex, actual: .codex, provider: "codex")
             && !routeFanoutContinuesSession(requested: .codex, actual: .gptChat, provider: "codex")
@@ -9322,16 +9493,38 @@ struct PreflightInventory: Sendable {
     }
 }
 
-// Refresh the device owner policy before dispatch; absence is never a silent
-// bypass. A workflow pins one verified version through every stage.
+// A private owner-policy directory is explicit enrollment. Its absence on a
+// clean third-party Mac selects the validated public RCC executor contract
+// (which still needs the server-signed route ticket before execution);
+// once enrolled, a missing/corrupt source is never a silent downgrade.
+private func ownerPolicyEnrolled(root: URL) throws -> Bool {
+    var info = stat()
+    if Darwin.lstat(root.path, &info) != 0 {
+        if errno == ENOENT { return false }
+        throw OwnerPolicyRefreshFailure()
+    }
+    guard (info.st_mode & S_IFMT) == S_IFDIR, info.st_uid == getuid(),
+          (info.st_mode & 0o077) == 0 else { throw OwnerPolicyRefreshFailure() }
+    return true
+}
+
+// Refresh the enrolled device owner policy before dispatch. A workflow pins
+// one verified version through every stage.
 func loadCurrentOwnerPolicy() throws -> OwnerPolicySnapshot? {
     if let pinned = OwnerPolicyContext.snapshot { try pinned.verifyOriginal(); return pinned }
     let root = OwnerPolicySnapshot.defaultRoot
+    // This Notes-backed source is an explicitly enrolled owner extension, not
+    // a prerequisite every third-party OS-1 install can possess. A clean Mac
+    // without that private state uses the validated public executor contract and
+    // RCC route/REVAS gates. Once a policy directory exists, keep its refresh
+    // fail-closed; losing active.json or Python must not silently downgrade an
+    // enrolled owner to the public baseline.
+    guard try ownerPolicyEnrolled(root: root) else { return nil }
     let resource = URL(fileURLWithPath: CommandLine.arguments[0]).resolvingSymlinksInPath()
         .deletingLastPathComponent().appendingPathComponent("sync-owner-policy.py")
     let helper = FileManager.default.fileExists(atPath: resource.path) ? resource
-        : FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Applications/OS-1 CLODEX.app/Contents/Resources/sync-owner-policy.py")
-    guard FileManager.default.fileExists(atPath: helper.path) else {
+        : InstalledOS1Resources.resolve()?.appendingPathComponent("sync-owner-policy.py")
+    guard let helper, FileManager.default.fileExists(atPath: helper.path) else {
         throw OS1Error.message(os1Tr("거버넌스 정책 동기화 도구가 설치되지 않아 호출하지 않았습니다. 기존 작업은 보존됩니다.",
                                      "The governance policy sync tool is missing, so it was not called. Existing work is preserved."))
     }
@@ -9423,6 +9616,14 @@ func ownerPolicyRefreshSelfTest() throws {
         guard value else { throw OS1Error.message("Owner-policy refresh: " + message) }
         checks += 1
     }
+    let fresh = root.appendingPathComponent("fresh-owner-policy")
+    try check(try !ownerPolicyEnrolled(root: fresh), "a clean external Mac must not inherit Ben's private Notes policy")
+    try fileManager.createDirectory(at: fresh, withIntermediateDirectories: false,
+        attributes: [.posixPermissions: 0o700])
+    try check(try ownerPolicyEnrolled(root: fresh), "an enrolled owner stays on the strict refresh path")
+    let alias = root.appendingPathComponent("alias-owner-policy")
+    try fileManager.createSymbolicLink(at: alias, withDestinationURL: fresh)
+    try check((try? ownerPolicyEnrolled(root: alias)) == nil, "a symlink cannot impersonate owner-policy enrollment")
     func helper(_ body: String) throws -> URL {
         let url = root.appendingPathComponent("helper-\(UUID().uuidString).py")
         try Data(("import sys, time\n" + body + "\n").utf8).write(to: url)
@@ -11785,6 +11986,7 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
         var attemptFailure: String?
         var attemptRecorded = false
         var dispatchStage = BackendDispatchStage.notDispatched
+        var attemptPreDispatchGovernanceReceipt: String?
         var interruptedSessionID: String?
         // Capture paid work even when artifact encoding, signing, upload, or
         // validation fails. Such a result is unknown, never free or adopted.
@@ -11811,6 +12013,10 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
                 workspace: canonicalWorkspace
             )
         } else if ticket.provider == "local" {
+            let hostGate = try recordPreDispatchGovernance(
+                ticket: ticket, model: model, effort: effort, objective: objectiveRequest,
+                input: prompt, contractSHA256: config.executorContract.sha256,
+                channel: "host_preaction", instructions: nil, driftState: "not_applicable_no_model")
             execution = try executePublicDeterministic(
                 ticket: ticket,
                 prompt: prompt,
@@ -11820,6 +12026,7 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
                 executorContract: config.executorContract,
                 workspaceBeforeHash: beforeHash
             )
+            execution.preDispatchGovernanceReceipt = hostGate
         } else {
             AttemptLatencyTrace.mark("attempt_prepared")
             do {
@@ -11861,6 +12068,7 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
                         feedbackScope = instructionFeedbackScope(instructions, input: attemptPrompt,
                             codexID: nativeSessions["codex"] ?? nil, claudeID: nativeSessions["claude"] ?? nil)
                     },
+                    onPreDispatchReceipt: { attemptPreDispatchGovernanceReceipt = $0 },
                     memoryTurn: memoryTurn,
                     quotaContext: request.executionContext?.providerQuota,
                     surfaceChoiceReceipt: nativeSurfaceSelection.receiptPath
@@ -12093,6 +12301,9 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
                     workspaceBeforeHash: beforeHash,
                     workspace: observedWorkspace
                 )
+                if execution.preDispatchGovernanceReceipt == nil {
+                    execution.preDispatchGovernanceReceipt = attemptPreDispatchGovernanceReceipt
+                }
             }
         }
         if dispatchStage == .dispatched, attemptFailure == nil {
@@ -12188,7 +12399,8 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
             model: model, effort: effort, revasDisposition: "verification_pending", sessionID: execution.sessionID,
             permissionProfile: ticket.permissionProfile, exitCode: artifact.exitCode, output: artifact.output,
             stderr: artifact.stderr, durationMS: artifact.durationMS, nativeRecord: execution.nativeRecord,
-            surface: execution.surface, verifiedPreviewDelivery: verifiedPreviewDelivery, taskQuality: taskQuality)
+            surface: execution.surface, verifiedPreviewDelivery: verifiedPreviewDelivery,
+            preDispatchGovernanceReceipt: execution.preDispatchGovernanceReceipt, taskQuality: taskQuality)
         var delivery = DeliveryRecord(id: "\(ticket.executionID)-\(ticket.sequence)", apiURL: config.apiURL, deviceID: id,
             resultSHA256: resultHash, artifact: artifactData, upload: try JSONEncoder().encode(upload),
             submission: try JSONEncoder().encode(submission), step: try JSONEncoder().encode(pendingStep),
@@ -12536,7 +12748,11 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
                 durationMS: artifact.durationMS,
                 nativeRecord: adoptedRecord,
                 surface: execution.surface,
-                verifiedPreviewDelivery: verifiedPreviewDelivery, taskQuality: taskQuality,
+                verifiedPreviewDelivery: verifiedPreviewDelivery,
+                ownerPolicySourceSHA256: pendingStep.ownerPolicySourceSHA256,
+                ownerPolicyProjectionSHA256: pendingStep.ownerPolicyProjectionSHA256,
+                preDispatchGovernanceReceipt: pendingStep.preDispatchGovernanceReceipt,
+                taskQuality: taskQuality,
                 os1SourceConfined: attemptConfined,
                 os1ChangeRequired: attemptConfined && execution.os1ChangeRequired,
                 os1FullAccessRequired: attemptConfined && execution.os1FullAccessRequired
@@ -12558,6 +12774,22 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
     adoptedResultReturned = true
     return finishedRun(adopted)
 }
+/// Delivery recovery changes only adoption/native publication. It must not
+/// replace the producing attempt's policy, instruction or task-quality custody
+/// with today's defaults while reconstructing the public result.
+private func adoptedSavedStep(_ step: RunStepSummary, native: NativeRecordEvidence?) -> RunStepSummary {
+    RunStepSummary(sequence: step.sequence, provider: step.provider, action: step.action,
+        model: step.model, effort: step.effort, revasDisposition: "adopted", sessionID: step.sessionID,
+        permissionProfile: step.permissionProfile, exitCode: step.exitCode, output: step.output, stderr: step.stderr,
+        durationMS: step.durationMS, nativeRecord: native, surface: step.surface,
+        workflowStage: step.workflowStage, verifiedPreviewDelivery: step.verifiedPreviewDelivery,
+        ownerPolicySourceSHA256: step.ownerPolicySourceSHA256,
+        ownerPolicyProjectionSHA256: step.ownerPolicyProjectionSHA256,
+        preDispatchGovernanceReceipt: step.preDispatchGovernanceReceipt,
+        reviewedDraft: step.reviewedDraft, taskQuality: step.taskQuality,
+        consumerChatGPTRecord: step.consumerChatGPTRecord)
+}
+
 func resumeDelivery(_ identifier: String) async throws -> RunSummary {
     let config = try RuntimeConfig.load()
     let id = try deviceID()
@@ -12638,11 +12870,7 @@ func resumeDelivery(_ identifier: String) async throws -> RunSummary {
     let native = step.nativeRecord.map { publishAdoptedNativeRecord($0, provider: step.provider, sessionID: step.sessionID, mode: .background) }
     try? GovernanceActivityStore().deliveryAdopted(executionID: submission.ticket.executionID, sequence: submission.ticket.sequence)
     BackendFailureNotice.clear()
-    return RunSummary(status: "complete", steps: [RunStepSummary(sequence: step.sequence, provider: step.provider,
-        action: step.action, model: step.model, effort: step.effort, revasDisposition: "adopted", sessionID: step.sessionID,
-        permissionProfile: step.permissionProfile, exitCode: step.exitCode, output: step.output, stderr: step.stderr,
-        durationMS: step.durationMS, nativeRecord: native, surface: step.surface,
-        workflowStage: step.workflowStage, verifiedPreviewDelivery: step.verifiedPreviewDelivery, taskQuality: step.taskQuality)], sourceContext: record.source,
+    return RunSummary(status: "complete", steps: [adoptedSavedStep(step, native: native)], sourceContext: record.source,
         persistedCorrectionIDs: os1DeliveryCorrectionIDs(record))
 }
 
@@ -16611,6 +16839,8 @@ func selfTest() throws {
     try ResponseAvailability.selfTest()
     try DynamicRouteAdmission.selfTest()
     try nativeTransportAdmissionSelfTest()
+    try InstalledOS1Resources.selfTest()
+    try preDispatchGovernanceSelfTest()
     try ChatGPTHandoff.selfTest()
     try RouteFanout.selfTest()
     try routeFanoutSummarySelfTest()

@@ -159,16 +159,26 @@ struct PreparedTaskQuality {
                                               output: artifact.output, candidateWorkspace: candidateSuite?.path)
         try encoder.encode(payload).write(to: input, options: .atomic)
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: input.path)
-        let launch: (String, [String])
-        if partialRegression == nil { launch = ("/usr/bin/python3", [checker.path, input.path]) }
-        else { launch = try copiedPythonRegressionLaunch(runRoot: runRoot, checker: checker, input: input) }
-        let result = try commandOutput(launch.0, launch.1,
-            timeout: envelope.timeoutSeconds, currentDirectory: runRoot.path,
-            environmentOverrides: ["HOME": runRoot.path, "TMPDIR": runRoot.path, "PYTHONNOUSERSITE": "1", "PATH": "/usr/bin:/bin"],
-            removingEnvironment: Set(ProcessInfo.processInfo.environment.keys.filter {
-                let key = $0.uppercased()
-                return key.contains("TOKEN") || key.contains("KEY") || key.contains("SECRET") || key.contains("AUTH") || key.contains("PASSWORD")
-            }), captureDirectory: runRoot)
+        let result: (Int32, Data, Data)
+        do {
+            let launch: (String, [String])
+            if partialRegression == nil { launch = ("/usr/bin/python3", [checker.path, input.path]) }
+            else { launch = try copiedPythonRegressionLaunch(runRoot: runRoot, checker: checker, input: input) }
+            result = try commandOutput(launch.0, launch.1,
+                timeout: envelope.timeoutSeconds, currentDirectory: runRoot.path,
+                environmentOverrides: ["HOME": runRoot.path, "TMPDIR": runRoot.path, "PYTHONNOUSERSITE": "1", "PATH": "/usr/bin:/bin"],
+                removingEnvironment: Set(ProcessInfo.processInfo.environment.keys.filter {
+                    let key = $0.uppercased()
+                    return key.contains("TOKEN") || key.contains("KEY") || key.contains("SECRET") || key.contains("AUTH") || key.contains("PASSWORD")
+                }), captureDirectory: runRoot)
+        } catch {
+            guard partialRegression != nil else { throw error }
+            // A runner without an approved Apple interpreter/sandbox has no
+            // authority to execute copied project tests. Preserve a typed
+            // infrastructure-unverified receipt rather than aborting the
+            // whole self-test or silently running a different Python.
+            result = (127, Data(), Data("Partial unittest infrastructure unavailable before execution: \(error)\n".utf8))
+        }
         try result.1.write(to: runRoot.appendingPathComponent("stdout.json"), options: .atomic)
         try result.2.write(to: runRoot.appendingPathComponent("stderr.txt"), options: .atomic)
         if !envelope.workspacePaths.isEmpty, observedStateHash(workspace) != artifact.workspaceAfterHash {
@@ -335,6 +345,24 @@ print(json.dumps(results))
     }
 }
 
+/// Xcode's hosted macOS runners use versioned app names. The selected
+/// developer directory is the authority; a matching path under some other
+/// Xcode installation is not. Resolve symlinks before approving the tool.
+private func approvedDeveloperPythonRoot(developer: String, selected: String, resolved: String) -> String? {
+    let rawRoot = URL(fileURLWithPath: developer).standardizedFileURL.path
+    let canonicalRoot = URL(fileURLWithPath: rawRoot).resolvingSymlinksInPath().standardizedFileURL.path
+    let xcodeRoot = #"^/Applications/Xcode(?:_[0-9]+(?:\.[0-9]+){0,3})?\.app/Contents/Developer$"#
+    let approved = { (path: String) in
+        path == "/Library/Developer/CommandLineTools" || path.range(of: xcodeRoot, options: .regularExpression) != nil
+    }
+    guard approved(rawRoot), approved(canonicalRoot) else { return nil }
+    let selectedPath = URL(fileURLWithPath: selected).standardizedFileURL.path
+    guard selectedPath == rawRoot + "/usr/bin/python3" || selectedPath == canonicalRoot + "/usr/bin/python3" else { return nil }
+    let actualSelected = URL(fileURLWithPath: selectedPath).resolvingSymlinksInPath().standardizedFileURL.path
+    guard actualSelected == resolved, resolved.hasPrefix(canonicalRoot + "/") else { return nil }
+    return canonicalRoot
+}
+
 private func copiedPythonRegressionLaunch(runRoot: URL, checker: URL, input: URL) throws -> (String, [String]) {
     guard FileManager.default.isExecutableFile(atPath: "/usr/bin/sandbox-exec") else {
         throw OS1Error.message("Partial unittest copied-artifact isolation is unavailable")
@@ -345,11 +373,13 @@ private func copiedPythonRegressionLaunch(runRoot: URL, checker: URL, input: URL
     // sandbox instead of exposing selection caches or HOME to project code.
     let discovery = try commandOutput("/usr/bin/xcrun", ["--find", "python3"], timeout: 15)
     guard discovery.0 == 0 else { throw OS1Error.message("Approved system Python metadata is unavailable") }
+    let developerDiscovery = try commandOutput("/usr/bin/xcode-select", ["-p"], timeout: 15)
+    guard developerDiscovery.0 == 0 else { throw OS1Error.message("Selected Apple developer directory is unavailable") }
+    let developer = String(decoding: developerDiscovery.1, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
     let selected = String(decoding: discovery.1, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
     let resolved = URL(fileURLWithPath: selected).standardizedFileURL.resolvingSymlinksInPath().path
-    guard [selected, resolved].allSatisfy({
-        $0.hasPrefix("/Applications/Xcode.app/Contents/Developer/") || $0.hasPrefix("/Library/Developer/CommandLineTools/")
-    }), FileManager.default.isExecutableFile(atPath: resolved) else {
+    guard let developerRoot = approvedDeveloperPythonRoot(developer: developer, selected: selected, resolved: resolved),
+          FileManager.default.isExecutableFile(atPath: resolved) else {
         throw OS1Error.message("Partial unittest interpreter is not the approved system/developer Python")
     }
     // The approved bin/python launcher itself performs a denied realpath/
@@ -361,11 +391,14 @@ private func copiedPythonRegressionLaunch(runRoot: URL, checker: URL, input: URL
     if resolved.contains("/Python3.framework/Versions/"), FileManager.default.isExecutableFile(atPath: native.path) {
         python = native.standardizedFileURL.resolvingSymlinksInPath().path
     } else { python = resolved }
-    guard python.hasPrefix("/Applications/Xcode.app/Contents/Developer/") || python.hasPrefix("/Library/Developer/CommandLineTools/") else {
+    guard python.hasPrefix(developerRoot + "/") else {
         throw OS1Error.message("Native partial unittest interpreter escaped its approved SDK")
     }
     let scratch = runRoot.path
-    let readable = [scratch, "/System", "/usr/bin", "/usr/lib", "/usr/share", "/Applications/Xcode.app", "/Library/Developer", "/private/etc", "/dev"]
+    let selectedSDK = developerRoot == "/Library/Developer/CommandLineTools"
+        ? "/Library/Developer/CommandLineTools"
+        : URL(fileURLWithPath: developerRoot).deletingLastPathComponent().deletingLastPathComponent().path
+    let readable = [scratch, "/System", "/usr/bin", "/usr/lib", "/usr/share", selectedSDK, "/Library/Developer", "/private/etc", "/dev"]
     // realpath needs metadata on known ancestors (observed Xcode/bin EPERM).
     // Literals reveal no sibling/HOME contents and grant no directory data.
     var ancestorMetadata = Set<String>()
@@ -449,6 +482,21 @@ func taskQualityReferencePolicySHA256(config: RuntimeConfig) -> String {
 /// network, live registry, account credential or user worktree is involved.
 func taskQualityRuntimeSelfTest() throws {
     let fm = FileManager.default
+    let versionedDeveloper = "/Applications/Xcode_16.4.app/Contents/Developer"
+    let canonicalVersionedDeveloper = URL(fileURLWithPath: versionedDeveloper).resolvingSymlinksInPath().standardizedFileURL.path
+    let versionedTool = versionedDeveloper + "/usr/bin/python3"
+    let versionedResolved = URL(fileURLWithPath: versionedTool).resolvingSymlinksInPath().standardizedFileURL.path
+    guard approvedDeveloperPythonRoot(developer: versionedDeveloper, selected: versionedTool,
+                                      resolved: versionedResolved) == canonicalVersionedDeveloper,
+          approvedDeveloperPythonRoot(developer: versionedDeveloper, selected: "/usr/bin/python3",
+                                      resolved: "/usr/bin/python3") == nil,
+          approvedDeveloperPythonRoot(developer: versionedDeveloper, selected: versionedTool,
+                                      resolved: "/opt/homebrew/bin/python3") == nil,
+          approvedDeveloperPythonRoot(developer: "/Applications/XcodeFake.app/Contents/Developer",
+                                      selected: "/Applications/XcodeFake.app/Contents/Developer/usr/bin/python3",
+                                      resolved: "/Applications/XcodeFake.app/Contents/Developer/usr/bin/python3") == nil else {
+        throw OS1Error.message("Partial unittest selected-developer interpreter identity regression")
+    }
     let root = fm.temporaryDirectory.appendingPathComponent("os1-quality-fixture-" + UUID().uuidString, isDirectory: true)
     try fm.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
     defer { try? fm.removeItem(at: root) }

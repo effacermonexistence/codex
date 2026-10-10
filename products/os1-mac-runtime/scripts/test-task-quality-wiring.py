@@ -331,6 +331,10 @@ check('partial.original_unittest' in runtime and 'partial.candidate_unittest' in
       'both partial suites must produce observations through the bounded copied-artifact execution path')
 check('captureDirectory: runRoot' in runtime_code,
       'constrained checker stdout/stderr must remain inside its allowed scratch boundary')
+check('guard partialRegression != nil else { throw error }' in runtime_code
+      and 'result = (127, Data(), Data(' in runtime_code
+      and 'approvedDeveloperPythonRoot' in runtime,
+      'an unavailable/non-approved selected Apple Python must preserve typed partial-unittest unverified evidence, not execute a fallback')
 check('captureDirectory ?? FileManager.default.temporaryDirectory' in function(main, 'commandOutput'),
       'optional constrained capture must preserve the default for unrelated execution paths')
 check('allowRegressionAcquisition: !qualityRegressionAcquisitionAttempted' in code

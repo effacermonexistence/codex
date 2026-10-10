@@ -12,7 +12,7 @@ for (const [fingerprint, provenance] of Object.entries(policy.publicTokenProvena
     throw new Error('Invalid exact audited-token provenance');
   }
   if (provenance.tokenKind === 'compiler_type') {
-    if (!/^_TtC(?:[VFO])?\d/.test(provenance.publicToken)) {
+    if (!/^_TtC(?:[CVFO])?\d/.test(provenance.publicToken)) {
       throw new Error('Invalid audited compiler-token kind');
     }
   } else if (provenance.tokenKind === 'diagnostic_source_path') {

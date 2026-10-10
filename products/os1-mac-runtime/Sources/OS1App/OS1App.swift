@@ -14032,6 +14032,26 @@ private struct OS1DesktopApp: App {
             }
         }
         _store = StateObject(wrappedValue: SessionStore())
+        // Signed first-run acquisition is a separate, nonblocking sidecar
+        // operation. This point is after all fixture/preview exits and the
+        // installed-app/live-store ownership gates. No provider credentials,
+        // browser state or ambient shell environment are passed to the child.
+        // A local candidate is unavailable until the sidecar's own digest-
+        // bound status is ready; native RCC routing remains the fallback.
+        let resources = Bundle.main.bundleURL.appendingPathComponent("Contents/Resources", isDirectory: true)
+        let provisioner = resources.appendingPathComponent("provision-local-controller.sh")
+        if FileManager.default.fileExists(atPath: provisioner.path) {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/bin/bash")
+            process.arguments = [provisioner.path, "--ensure", "--resources", resources.path]
+            process.environment = ["HOME": FileManager.default.homeDirectoryForCurrentUser.path,
+                                   "PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "LANG": "en_US.UTF-8"]
+            process.standardInput = FileHandle.nullDevice
+            process.standardOutput = FileHandle.nullDevice
+            process.standardError = FileHandle.nullDevice
+            do { try process.run() }
+            catch { fputs("OS-1 local controller provisioning could not start; existing routes remain available.\n", stderr) }
+        }
     }
 
     var body: some Scene {
