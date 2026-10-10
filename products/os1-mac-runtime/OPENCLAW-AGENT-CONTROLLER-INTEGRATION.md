@@ -1,7 +1,8 @@
 # OS-1 / OpenClaw typed local controller seam
 
-**State: source-only, disabled.** No package, installed, live, recovery, or
-flagship-quality claim. Do not enable from source checkout alone. Handy is a
+**State: source-only, disabled by default.** A disposable Gateway local-only
+smoke passed its pre-model gate, but OS-1 host dispatch and package/install/
+recovery identity remain unwired. No flagship-quality claim. Do not enable from source checkout alone. Handy is a
 separate trust domain and is never part of this path.
 
 ## Executed failure: `agent exec` is not a governed route
@@ -82,11 +83,19 @@ force-kill, ambient login, hosted model, browser, shell or filesystem tool.
 7. The Gateway-returned terminal status, effective local model, exact session
    and Gateway run identity, successful tool list, pre-dispatch gate receipt,
    and raw output must be verified before feeding the candidate to existing
-   OS-1 task-family admission. A Gateway receipt schema adapter has not yet
-   been verified against a live Gateway turn; do not reuse the `agent exec`
-   parser as if it were that adapter. Native Codex/Claude retain their actual
-   pre-dispatch policy and post-return REVAS gates. Local model output is
-   candidate-only, not flagship-max parity or a new permission source.
+   OS-1 task-family admission. Use
+   `proposeGateway(prepared:gateReceipt:gateObservedBeforeTerminal:gatewayEnvelope:exitCode:)`
+   on the **actual Gateway `agent --json` envelope**. It requires outer
+   `status=ok`, matching run/session IDs across terminal receipt and metadata,
+   `openclaw` harness, requested/effective/response model all pinned local
+   Ollama, one coherent local execution trace, no reroute/fallback, zero tool
+   failures, allowed tool names, visible reply/payload consistency and exact
+   policy-gate binding. One exact JSON fence is normalized deterministically;
+   duplicates/prose/extra fences fail. The normalized raw JSON still goes to
+   the task-family verifier for candidate ID, source and quality admission.
+   Native Codex/Claude retain their actual pre-dispatch policy and
+   post-return REVAS gates. Local model output is candidate-only, not
+   flagship-max parity or a new permission source.
 
 **No `os1_work_submit` tool is present.** Safe host dispatch needs an exact
 run/attempt lease, typed host IPC, idempotency, workspace scope, signed route
@@ -98,14 +107,34 @@ as a shortcut.
 ## Offline verification for this branch
 
 - Pinned Node `--test Resources/openclaw-os1-bridge/bridge.test.mjs`: 3/3 pass.
-- `swift build --product OS1ContextTests` and focused fixture: 30 checks pass.
+- `swift build --product OS1ContextTests` and focused fixture: 39 checks pass.
 - Pinned OpenClaw `config validate --json` on the Swift-generated Gateway
   config: valid, zero warnings.
 - Pinned `plugins inspect --runtime` on the generated config: one typed tool,
   all three hooks, no diagnostics. This remains registration evidence only.
 
-**Still required before default routing:** a *new* local Gateway-run proof that
-its pre-model gate receipt exists and matches, only authorized tools were
-called, effective provider is local Ollama, terminal outcome is coherent, and
-OS-1's downstream verifier adopts or rejects correctly. No additional model
-call was made while writing this Gateway candidate path.
+### Gateway execution receipts
+
+The first Gateway attempt discovered a harness error: `openclaw health --json`
+exited 0 with `{status:"starting",startupPhase:"waiting for Gateway listener"}`.
+The client was sent too early, returned `ECONNREFUSED` before run admission,
+and no model/tool/gate operation occurred. Its exact child PID was stopped and
+port closed; private receipt:
+`~/.os1/openclaw-controller/gateway-smoke-20261010T082118Z-99ca963f/`.
+`gatewayHealthReady(_:)` now requires top-level `ok:true`, not CLI exit 0.
+
+One corrected **local-only** Gateway attempt passed: authenticated full-health
+readiness, a matching `before_agent_run` gate receipt observed while the agent
+result file was still empty, Gateway terminal `ok`, effective
+`ollama/qwen3.5:4b`, exactly one `os1_state_read` call and zero tool failures,
+a closed candidate after fence normalization, 10-second request wall time,
+no token in Gateway/client/result logs, exact Gateway child exit and closed
+loopback port. The observed Gateway envelope passed `proposeGateway` offline
+against its original gate/contract bytes. Private receipt:
+`~/.os1/openclaw-controller/gateway2-20261010T082254Z-5f65d19e/`.
+
+This is **one bounded local route/tool proof**, not a task-quality/flagship
+comparison and not a packaged or installed OS-1 path. Default routing remains
+disabled until the host process wires exact child supervision, receipt and
+adoption; the release embeds and verifies its own runtime/plugin/model; and
+source→package→installed→live→recovery identity checks pass.

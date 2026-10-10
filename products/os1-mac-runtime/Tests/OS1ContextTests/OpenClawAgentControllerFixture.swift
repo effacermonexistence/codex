@@ -45,6 +45,11 @@ func runOpenClawAgentControllerFixture() throws {
                           configPath: runRoot + "config.json", contractPath: runRoot + "contract.json",
                           messagePath: runRoot + "request.txt", workspace: runRoot + "workspace")
     }
+    try check(!C.gatewayHealthReady(Data(#"{"status":"starting","startupPhase":"waiting for Gateway listener"}"#.utf8)),
+              "health exit zero plus starting does not authorize agent dispatch")
+    try check(C.gatewayHealthReady(Data(#"{"ok":true,"channels":{}}"#.utf8)),
+              "authenticated full health snapshot admits readiness")
+    try check(!C.gatewayHealthReady(Data("garbled".utf8)), "malformed health remains not ready")
     let preparedGateway = try C.prepareGateway(turn: turn, port: 55_231)
     let gatewayConfig = try JSONSerialization.jsonObject(with: preparedGateway.configBytes) as! [String: Any]
     let gateway = gatewayConfig["gateway"] as! [String: Any]
@@ -119,6 +124,62 @@ func runOpenClawAgentControllerFixture() throws {
         _ = try C.propose(prepared: turn, gateReceipt: JSONSerialization.data(withJSONObject: wrongGate),
                           envelope: envelope(), exitCode: 0)
     }
+    // Sanitized projection of the exact Gateway `agent --json` success
+    // envelope observed on 2026-10-10. IDs and text are fixture-only.
+    let gatewayRunID = "gateway-run-fixture"
+    let gatewaySessionID = "gateway-session-fixture"
+    let fenced = "```json\n{\"preferred_candidate_id\":\"codex-approved\"}\n```"
+    func gatewayEnvelope(_ overrides: [String: Any] = [:]) throws -> Data {
+        let terminal: [String: Any] = ["runId": gatewayRunID, "sessionId": gatewaySessionID,
+                                       "turnId": gatewayRunID,
+                                       "requested": ["provider": "ollama", "model": C.model],
+                                       "effective": ["provider": "ollama", "model": C.model, "responseModel": C.model],
+                                       "successfulToolNames": ["os1_state_read"], "rerouted": false,
+                                       "terminalDisposition": "visible"]
+        var meta: [String: Any] = ["stopReason": "stop", "aborted": false,
+                                   "terminalReply": ["disposition": "visible", "text": fenced],
+                                   "finalAssistantVisibleText": fenced,
+                                   "toolSummary": ["calls": 1, "tools": ["os1_state_read"], "failures": 0],
+                                   "executionTrace": ["winnerProvider": "ollama", "winnerModel": C.model,
+                                                      "fallbackUsed": false, "runner": "embedded",
+                                                      "attempts": [["provider": "ollama", "model": C.model,
+                                                                    "result": "success", "stage": "assistant"]]],
+                                   "agentMeta": ["agentHarnessId": "openclaw", "provider": "ollama",
+                                                 "model": C.model, "sessionId": gatewaySessionID,
+                                                 "terminalReceipt": terminal]]
+        for (key, value) in overrides { meta[key] = value }
+        return try JSONSerialization.data(withJSONObject: ["status": "ok", "runId": gatewayRunID,
+            "summary": "fixture", "result": ["payloads": [["text": fenced, "mediaUrl": NSNull()]],
+                                               "meta": meta]], options: [.sortedKeys])
+    }
+    let gatewayProposal = try C.proposeGateway(prepared: turn, gateReceipt: gateData,
+                                               gateObservedBeforeTerminal: true,
+                                               gatewayEnvelope: gatewayEnvelope(), exitCode: 0)
+    try check(gatewayProposal.gatewayRunID == gatewayRunID && gatewayProposal.gatewaySessionID == gatewaySessionID &&
+              gatewayProposal.candidate.final == "{\"preferred_candidate_id\":\"codex-approved\"}" &&
+              gatewayProposal.candidate.qualityClaim == "unverified", "exact Gateway receipt and fenced candidate bind")
+    try rejects("pre-model gate not observed before terminal") {
+        _ = try C.proposeGateway(prepared: turn, gateReceipt: gateData,
+                                 gateObservedBeforeTerminal: false,
+                                 gatewayEnvelope: gatewayEnvelope(), exitCode: 0)
+    }
+    try rejects("missing Gateway pre-model receipt") {
+        _ = try C.proposeGateway(prepared: turn, gateReceipt: Data(),
+                                 gateObservedBeforeTerminal: true,
+                                 gatewayEnvelope: gatewayEnvelope(), exitCode: 0)
+    }
+    try rejects("Gateway shell trace") {
+        _ = try C.proposeGateway(prepared: turn, gateReceipt: gateData,
+                                 gateObservedBeforeTerminal: true,
+                                 gatewayEnvelope: gatewayEnvelope(["toolSummary": ["calls": 1, "tools": ["exec"], "failures": 0]]),
+                                 exitCode: 0)
+    }
+    try rejects("malformed fenced result") {
+        _ = try C.normalizeClosedJSONObject("intro\n```json\n{\"preferred_candidate_id\":\"x\"}\n```")
+    }
+    try rejects("duplicate JSON keys cannot be normalized") {
+        _ = try C.normalizeClosedJSONObject("{\"preferred_candidate_id\":\"a\",\"preferred_candidate_id\":\"b\"}")
+    }
     let candidate = try C.admit(envelope: envelope(), exitCode: 0)
     try check(candidate.final == "Candidate only" && candidate.toolCalls == 1 &&
               candidate.qualityClaim == "unverified", "agent reply is candidate only")
@@ -130,6 +191,57 @@ func runOpenClawAgentControllerFixture() throws {
     try rejects("empty final") { _ = try C.admit(envelope: envelope(["final": "  "]), exitCode: 0) }
     try rejects("tool-call count without names") {
         _ = try C.admit(envelope: envelope(["toolSummary": ["calls": 1]]), exitCode: 0)
+    }
+    if let index = CommandLine.arguments.firstIndex(of: "--prepare-openclaw-gateway-smoke"),
+       CommandLine.arguments.count > index + 2 {
+        let root = URL(fileURLWithPath: CommandLine.arguments[index + 1], isDirectory: true)
+        let plugin = CommandLine.arguments[index + 2]
+        guard !FileManager.default.fileExists(atPath: root.path) else {
+            throw NSError(domain: "OpenClawAgentControllerFixture", code: 2,
+                          userInfo: [NSLocalizedDescriptionKey: "smoke root already exists"])
+        }
+        let request = "Call os1_state_read exactly once to get the eligible candidate ID. Then return only JSON with the single key preferred_candidate_id and the first eligible ID. Never call another tool."
+        let policy = "OS-1 RCC/REVAS local smoke: use only the approved read-only state tool. Return a candidate, never claim task-quality parity, execution permission or final adoption."
+        let prepared = try C.prepare(enabled: true, runID: root.lastPathComponent, sessionID: "smoke-session",
+                                     request: request,
+                                     policySourceSHA256: C.digest(Data("offline-policy-source-smoke".utf8)),
+                                     policy: policy,
+                                     state: .init(objective: "Choose one host-listed candidate for a local routing smoke",
+                                                  stage: .route, eligibleCandidateIDs: ["codex-approved"]),
+                                     pluginDirectory: plugin, workspace: root.appendingPathComponent("workspace").path)
+        let gateway = try C.prepareGateway(turn: prepared)
+        let fs = FileManager.default
+        try fs.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        for child in ["home", "workspace"] {
+            try fs.createDirectory(at: root.appendingPathComponent(child), withIntermediateDirectories: true,
+                                   attributes: [.posixPermissions: 0o700])
+        }
+        for (name, bytes) in [("contract.json", prepared.contractBytes),
+                              ("config.json", gateway.configBytes), ("request.txt", Data(request.utf8))] {
+            let url = root.appendingPathComponent(name)
+            try bytes.write(to: url, options: .atomic)
+            try fs.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+        }
+        print("OpenClaw Gateway smoke prepared: run=\(root.lastPathComponent) port=\(gateway.port) contractSHA=\(prepared.contractSHA256)")
+    }
+    if let index = CommandLine.arguments.firstIndex(of: "--verify-observed-gateway"),
+       CommandLine.arguments.count > index + 1 {
+        let root = URL(fileURLWithPath: CommandLine.arguments[index + 1], isDirectory: true)
+        let recorded = try JSONDecoder().decode(C.Contract.self,
+                                                from: Data(contentsOf: root.appendingPathComponent("contract.json")))
+        let request = try String(contentsOf: root.appendingPathComponent("request.txt"), encoding: .utf8)
+        let prepared = try C.prepare(enabled: true, runID: recorded.runID,
+                                     sessionID: recorded.sessionID, request: request,
+                                     policySourceSHA256: recorded.policySourceSHA256,
+                                     policy: recorded.policy, state: recorded.state,
+                                     pluginDirectory: "/signed/OS1/OpenClawBridge",
+                                     workspace: "/private/os1/workspace")
+        let gateData = try Data(contentsOf: root.appendingPathComponent("gate-receipt.json"))
+        let envelopeData = try Data(contentsOf: root.appendingPathComponent("agent-result.json"))
+        let accepted = try C.proposeGateway(prepared: prepared, gateReceipt: gateData,
+                                            gateObservedBeforeTerminal: true,
+                                            gatewayEnvelope: envelopeData, exitCode: 0)
+        print("Observed Gateway parser: candidate_only run=\(accepted.gatewayRunID) tools=\(accepted.candidate.toolCalls) gatewaySession=\(accepted.gatewaySessionID)")
     }
     if let index = CommandLine.arguments.firstIndex(of: "--emit-openclaw-config"),
        CommandLine.arguments.count > index + 2 {

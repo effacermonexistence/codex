@@ -116,11 +116,154 @@ public enum OpenClawAgentController {
     /// fluent final text is rejected. This is still not a task-quality proof.
     public static func propose(prepared: PreparedTurn, gateReceipt: Data,
                                envelope: Data, exitCode: Int32) throws -> Proposal {
-        guard gateReceipt.count > 20, gateReceipt.count <= 2_048,
-              let object = try? JSONSerialization.jsonObject(with: gateReceipt) as? [String: Any],
+        let gate = try admitGateReceipt(gateReceipt, for: prepared)
+        let candidate = try admit(envelope: envelope, exitCode: exitCode)
+        return Proposal(candidate: candidate, gateReceipt: gate,
+                        gateReceiptSHA256: digest(gateReceipt),
+                        inputFingerprint: prepared.contractSHA256)
+    }
+
+    public struct GatewayProposal: Sendable {
+        public let candidate: Candidate
+        public let gatewayRunID: String
+        public let gatewaySessionID: String
+        public let terminalReceiptSHA256: String
+        public let gateReceiptSHA256: String
+        public let inputFingerprint: String
+    }
+
+    /// Remove only one exact Markdown JSON fence, if present, while retaining
+    /// the inner raw JSON bytes. Downstream closed task-family parsers must
+    /// still reject duplicate keys, unlisted IDs, or other semantic failures.
+    /// Prose, multiple fences, a non-object, or an oversized result are held.
+    public static func normalizeClosedJSONObject(_ text: String) throws -> Data {
+        var value = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty, value.utf8.count <= 16_384 else { throw Rejection.unboundedOutput }
+        if value.hasPrefix("```") {
+            let lines = value.components(separatedBy: "\n")
+            guard lines.count >= 3, ["```", "```json"].contains(lines[0]),
+                  lines.last == "```", !lines[1..<(lines.count - 1)].contains(where: { $0.hasPrefix("```") }) else {
+                throw Rejection.unsupportedEnvelope
+            }
+            value = lines[1..<(lines.count - 1)].joined(separator: "\n")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        guard value.hasPrefix("{"), value.hasSuffix("}"),
+              let raw = value.data(using: .utf8), raw.count <= 16_384,
+              (try? JSONSerialization.jsonObject(with: raw)) is [String: Any],
+              !hasDuplicateJSONKeys(raw) else {
+            throw Rejection.unsupportedEnvelope
+        }
+        return raw
+    }
+
+    private static func hasDuplicateJSONKeys(_ data: Data) -> Bool {
+        let bytes = Array(data)
+        var containers: [Set<String>?] = []
+        var index = 0
+        func whitespace(_ byte: UInt8) -> Bool { [9, 10, 13, 32].contains(byte) }
+        while index < bytes.count {
+            switch bytes[index] {
+            case 123: containers.append(Set<String>()); index += 1
+            case 91: containers.append(nil); index += 1
+            case 125, 93: if !containers.isEmpty { containers.removeLast() }; index += 1
+            case 34:
+                let start = index; index += 1
+                while index < bytes.count {
+                    if bytes[index] == 92 { index += 2; continue }
+                    if bytes[index] == 34 { index += 1; break }
+                    index += 1
+                }
+                var next = index
+                while next < bytes.count && whitespace(bytes[next]) { next += 1 }
+                if next < bytes.count, bytes[next] == 58, !containers.isEmpty,
+                   var keys = containers[containers.count - 1],
+                   let key = try? JSONDecoder().decode(String.self, from: Data(bytes[start..<index])) {
+                    guard keys.insert(key).inserted else { return true }
+                    containers[containers.count - 1] = keys
+                }
+            default: index += 1
+            }
+        }
+        return false
+    }
+
+    /// Admit the EXACT observed Gateway-backed `openclaw agent --json` shape,
+    /// not the unrelated `agent exec` envelope. A coherent terminal model/tool
+    /// receipt and a host-observed pre-terminal gate are mandatory. The answer
+    /// remains an unverified candidate for the existing RCC/REVAS adoption gate.
+    public static func proposeGateway(prepared: PreparedTurn, gateReceipt: Data,
+                                      gateObservedBeforeTerminal: Bool,
+                                      gatewayEnvelope: Data, exitCode: Int32) throws -> GatewayProposal {
+        guard gateObservedBeforeTerminal else { throw Rejection.missingPreDispatchGate }
+        let gate = try admitGateReceipt(gateReceipt, for: prepared)
+        guard exitCode == 0, gatewayEnvelope.count > 2, gatewayEnvelope.count <= maximumEnvelopeBytes,
+              let outer = try? JSONSerialization.jsonObject(with: gatewayEnvelope) as? [String: Any],
+              outer["status"] as? String == "ok", let gatewayRunID = outer["runId"] as? String,
+              valid(gatewayRunID, pattern: idPattern),
+              let result = outer["result"] as? [String: Any],
+              let meta = result["meta"] as? [String: Any],
+              meta["stopReason"] as? String == "stop", meta["aborted"] as? Bool == false,
+              let agentMeta = meta["agentMeta"] as? [String: Any],
+              agentMeta["agentHarnessId"] as? String == "openclaw",
+              agentMeta["provider"] as? String == "ollama",
+              agentMeta["model"] as? String == model,
+              let gatewaySessionID = agentMeta["sessionId"] as? String,
+              valid(gatewaySessionID, pattern: idPattern),
+              let terminal = agentMeta["terminalReceipt"] as? [String: Any],
+              terminal["runId"] as? String == gatewayRunID,
+              terminal["sessionId"] as? String == gatewaySessionID,
+              terminal["turnId"] as? String == gatewayRunID,
+              terminal["rerouted"] as? Bool == false,
+              terminal["terminalDisposition"] as? String == "visible",
+              let requested = terminal["requested"] as? [String: Any],
+              requested["provider"] as? String == "ollama", requested["model"] as? String == model,
+              let effective = terminal["effective"] as? [String: Any],
+              effective["provider"] as? String == "ollama", effective["model"] as? String == model,
+              effective["responseModel"] as? String == model,
+              let trace = meta["executionTrace"] as? [String: Any],
+              trace["winnerProvider"] as? String == "ollama", trace["winnerModel"] as? String == model,
+              trace["fallbackUsed"] as? Bool == false, trace["runner"] as? String == "embedded",
+              let attempts = trace["attempts"] as? [[String: Any]], !attempts.isEmpty,
+              attempts.allSatisfy({ $0["provider"] as? String == "ollama" && $0["model"] as? String == model }),
+              let toolSummary = meta["toolSummary"] as? [String: Any],
+              let calls = toolSummary["calls"] as? Int, (0...8).contains(calls),
+              toolSummary["failures"] as? Int == 0,
+              let names = toolSummary["tools"] as? [String],
+              (calls == 0 ? names.isEmpty : !names.isEmpty),
+              names.allSatisfy({ $0 == "os1_state_read" }),
+              let successful = terminal["successfulToolNames"] as? [String],
+              successful.allSatisfy({ $0 == "os1_state_read" }),
+              Set(successful) == Set(names),
+              let visible = meta["terminalReply"] as? [String: Any],
+              visible["disposition"] as? String == "visible",
+              let final = visible["text"] as? String,
+              meta["finalAssistantVisibleText"] as? String == final,
+              let payloads = result["payloads"] as? [[String: Any]], payloads.count == 1,
+              payloads[0]["text"] as? String == final,
+              payloads[0]["mediaUrl"] == nil || payloads[0]["mediaUrl"] is NSNull else {
+            throw Rejection.unsupportedEnvelope
+        }
+        let normalized = try normalizeClosedJSONObject(final)
+        let normalizedText = String(decoding: normalized, as: UTF8.self)
+        let rawUsage = agentMeta["usage"] as? [String: Any]
+        let usage = rawUsage?.compactMapValues { $0 as? Int }
+        let candidate = Candidate(final: normalizedText, sessionID: gatewaySessionID,
+                                  usage: usage, toolCalls: calls, envelopeSHA256: digest(gatewayEnvelope))
+        let terminalBytes = try JSONSerialization.data(withJSONObject: terminal, options: [.sortedKeys])
+        return GatewayProposal(candidate: candidate, gatewayRunID: gatewayRunID,
+                               gatewaySessionID: gatewaySessionID,
+                               terminalReceiptSHA256: digest(terminalBytes),
+                               gateReceiptSHA256: digest(gateReceipt),
+                               inputFingerprint: prepared.contractSHA256)
+    }
+
+    private static func admitGateReceipt(_ data: Data, for prepared: PreparedTurn) throws -> GateReceipt {
+        guard data.count > 20, data.count <= 2_048,
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               Set(object.keys) == Set(["schema", "run_id", "session_id", "request_sha256",
                                        "policy_sha256", "contract_sha256", "gate", "model_invoked"]),
-              let gate = try? JSONDecoder().decode(GateReceipt.self, from: gateReceipt),
+              let gate = try? JSONDecoder().decode(GateReceipt.self, from: data),
               gate.schema == 1, gate.runID == prepared.contract.runID,
               gate.sessionID == prepared.contract.sessionID,
               gate.requestSHA256 == prepared.contract.requestSHA256,
@@ -129,10 +272,7 @@ public enum OpenClawAgentController {
               gate.gate == "before_agent_run_passed", gate.modelInvoked == false else {
             throw Rejection.missingPreDispatchGate
         }
-        let candidate = try admit(envelope: envelope, exitCode: exitCode)
-        return Proposal(candidate: candidate, gateReceipt: gate,
-                        gateReceiptSHA256: digest(gateReceipt),
-                        inputFingerprint: prepared.contractSHA256)
+        return gate
     }
 
     /// `enabled` must come from a verified installed-resource identity. There
@@ -212,6 +352,19 @@ public enum OpenClawAgentController {
         /// terminal result. It is NOT `--local` and never falls back embedded.
         public let requestAndWait: LaunchCommand
         public let sessionKey: String
+    }
+
+    /// `openclaw health --json` exits 0 even while the Gateway is *starting*.
+    /// Do not send an agent request until the authenticated health RPC yields
+    /// a full snapshot with `ok: true`; process liveness and exact port
+    /// ownership are separate host checks. Missing/oversized/ambiguous data
+    /// remains not-ready rather than creating an optimistic send.
+    public static func gatewayHealthReady(_ health: Data) -> Bool {
+        guard health.count > 2, health.count <= 65_536,
+              let value = try? JSONSerialization.jsonObject(with: health) as? [String: Any],
+              value["ok"] as? Bool == true,
+              value["status"] as? String != "starting" else { return false }
+        return true
     }
 
     /// The pinned `agent exec` path is deliberately disabled: two actual
