@@ -1237,6 +1237,10 @@ struct RunStepSummary: Codable {
     var verifiedPreviewDelivery: VerifiedPreviewDelivery? = nil
     var ownerPolicySourceSHA256: String? = OwnerPolicyContext.snapshot?.sourceSHA256
     var ownerPolicyProjectionSHA256: String? = OwnerPolicyContext.snapshot?.projectionSHA256
+    /// Read-back receipt for the actual pre-dispatch instruction channel or
+    /// deterministic host gate. This proves input delivery, not model compliance
+    /// or answer quality; older steps legitimately have no such receipt.
+    var preDispatchGovernanceReceipt: String? = nil
     /// On a review's answer: the draft it checked ("codex · gpt-6-astra · high").
     var reviewedDraft: String? = nil
     /// Exact task/checker evidence, independent of native transport adoption.
@@ -1267,6 +1271,7 @@ struct RunStepSummary: Codable {
         case workflowStage = "workflow_stage"
         case ownerPolicySourceSHA256 = "owner_policy_source_sha256"
         case ownerPolicyProjectionSHA256 = "owner_policy_projection_sha256"
+        case preDispatchGovernanceReceipt = "pre_dispatch_governance_receipt"
         case reviewedDraft = "reviewed_draft"
         case taskQuality = "task_quality"
         case consumerChatGPTRecord = "consumer_chatgpt_record"
@@ -1301,6 +1306,7 @@ struct ProviderExecution {
     let nativeRecord: NativeRecordEvidence
     var surface: String? = nil
     var driftApplication: DriftApplication? = nil
+    var preDispatchGovernanceReceipt: String? = nil
     /// A confined backend handed a change to OS-1 itself back (the marker).
     var os1ChangeRequired: Bool = false
     var os1FullAccessRequired: Bool = false
@@ -1316,7 +1322,8 @@ struct ProviderExecution {
             durationMS: a.durationMS, workspaceBeforeHash: a.workspaceBeforeHash, workspaceAfterHash: a.workspaceAfterHash,
             nativeRecord: a.nativeRecord)
         return ProviderExecution(artifact: artifact, sessionID: sessionID, nativeRecord: nativeRecord, surface: surface,
-                                 driftApplication: driftApplication, os1ChangeRequired: os1ChangeRequired, os1FullAccessRequired: os1FullAccessRequired)
+                                 driftApplication: driftApplication, preDispatchGovernanceReceipt: preDispatchGovernanceReceipt,
+                                 os1ChangeRequired: os1ChangeRequired, os1FullAccessRequired: os1FullAccessRequired)
     }
 }
 
@@ -7334,6 +7341,100 @@ private func nativeTransportAdmissionSelfTest() throws {
     print("OS-1 dynamic native transport and exact local dispatch: OK; native calls 0")
 }
 
+/// Exact pre-dispatch boundary receipt. It records the channel and a digest of
+/// what OS-1 actually passes before a model turn (or the host gate before an
+/// exact local executor). Neither a hash nor a prompt is a quality verdict.
+/// This is deliberately separate from post-return REVAS adoption.
+private func recordPreDispatchGovernance(
+    ticket: Ticket,
+    model: String?,
+    effort: String,
+    objective: String,
+    input: String,
+    contractSHA256: String,
+    channel: String,
+    instructions: String?,
+    driftState: String,
+    routeAdmission: URL? = nil,
+    root: URL = FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent("Library/Application Support/OS-1/pre-dispatch-governance", isDirectory: true)
+) throws -> String {
+    guard ["codex_developer", "claude_append_system", "host_preaction"].contains(channel),
+          !objective.isEmpty, !input.isEmpty,
+          channel == "host_preaction" || (instructions?.isEmpty == false) else {
+        throw OS1Error.message("OS-1 pre-dispatch governance channel is invalid; no executor was called")
+    }
+    try OwnerPolicyContext.snapshot?.verifyOriginal()
+    let admissionDigest = try routeAdmission.map { sha256Hex(try Data(contentsOf: $0)) }
+    let receipt: [String: Any] = [
+        "schema": 1,
+        "execution_id": ticket.executionID,
+        "sequence": ticket.sequence,
+        "ticket_sha256": sha256Hex(Data([ticket.executionID, String(ticket.sequence), ticket.nonce, ticket.signature]
+            .joined(separator: "\n").utf8)),
+        "provider": ticket.provider,
+        "action": ticket.action,
+        "permission_profile": ticket.permissionProfile,
+        "model": model ?? "provider-default",
+        "effort": effort,
+        "objective_sha256": sha256Hex(Data(objective.utf8)),
+        "input_sha256": sha256Hex(Data(input.utf8)),
+        "executor_contract_sha256": contractSHA256,
+        "channel": channel,
+        "instructions_sha256": instructions.map { sha256Hex(Data($0.utf8)) } ?? NSNull(),
+        "owner_policy_source_sha256": OwnerPolicyContext.snapshot?.sourceSHA256 ?? NSNull(),
+        "owner_policy_projection_sha256": OwnerPolicyContext.snapshot?.projectionSHA256 ?? NSNull(),
+        "owner_policy_original_verified": OwnerPolicyContext.snapshot != nil,
+        "drift_policy_state": driftState,
+        "route_admission_sha256": admissionDigest ?? NSNull(),
+        "meaning": "pre_dispatch_input_receipt_not_compliance_or_quality",
+        "recorded_at": ISO8601DateFormatter().string(from: Date())
+    ]
+    let data = try JSONSerialization.data(withJSONObject: receipt, options: [.sortedKeys])
+    guard data.count <= 8_192 else { throw OS1Error.message("OS-1 pre-dispatch receipt exceeds its bound") }
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true,
+        attributes: [.posixPermissions: 0o700])
+    let path = root.appendingPathComponent("\(UUID().uuidString.lowercased()).json")
+    try data.write(to: path, options: [.atomic])
+    try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path.path)
+    guard try Data(contentsOf: path) == data else {
+        throw OS1Error.message("OS-1 pre-dispatch governance receipt read-back failed; no executor was called")
+    }
+    return path.path
+}
+
+private func preDispatchGovernanceSelfTest() throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("os1-pre-dispatch-fixture-" + UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let ticket = Ticket(executionID: "fixture-governance", sequence: 2, provider: "claude",
+        action: "fixture", permissionProfile: "read_only", expiresAt: "2099-01-01T00:00:00Z",
+        nonce: "fixture-nonce", signature: "fixture-signature")
+    let policy = "fixture private governance text: do not persist this"
+    let path = try recordPreDispatchGovernance(ticket: ticket, model: "fixture-model", effort: "medium",
+        objective: "1+1", input: "1+1", contractSHA256: String(repeating: "a", count: 64),
+        channel: "claude_append_system", instructions: policy, driftState: "applied", root: root)
+    let bytes = try Data(contentsOf: URL(fileURLWithPath: path))
+    guard let receipt = try JSONSerialization.jsonObject(with: bytes) as? [String: Any],
+          receipt["execution_id"] as? String == ticket.executionID,
+          receipt["sequence"] as? Int == ticket.sequence,
+          receipt["channel"] as? String == "claude_append_system",
+          receipt["instructions_sha256"] as? String == sha256Hex(Data(policy.utf8)),
+          receipt["meaning"] as? String == "pre_dispatch_input_receipt_not_compliance_or_quality",
+          !String(decoding: bytes, as: UTF8.self).contains(policy),
+          (try FileManager.default.attributesOfItem(atPath: path)[.posixPermissions] as? NSNumber)?.intValue == 0o600 else {
+        throw OS1Error.message("Pre-dispatch governance receipt was not bound, private, and source-clean")
+    }
+    do {
+        _ = try recordPreDispatchGovernance(ticket: ticket, model: "fixture-model", effort: "medium",
+            objective: "1+1", input: "1+1", contractSHA256: "fixture",
+            channel: "claude_append_system", instructions: "", driftState: "applied", root: root)
+        throw OS1Error.message("Empty native governance instructions were admitted")
+    } catch let error as OS1Error {
+        guard String(describing: error).contains("channel is invalid") else { throw error }
+    }
+    print("OS-1 pre-dispatch governance: exact channel/input digests and private read-back PASS; provider calls 0")
+}
+
 private func execute(
     ticket: Ticket,
     prompt: String,
@@ -7416,6 +7517,7 @@ private func execute(
     let result: (Int32, Data, Data)
     let sessionID: String
     let nativeRecord: NativeRecordEvidence
+    var preDispatchGovernanceReceipt: String?
     var validateCandidate: (() throws -> Void)?
     // A confined Claude run handing the request back as an OS-1 change.
     var os1ChangeRequired = false
@@ -7449,6 +7551,11 @@ private func execute(
         guard let codex = try? findExecutable("codex") else {
             throw OS1Error.backendBlocked(.capabilityUnavailable)
         }
+        preDispatchGovernanceReceipt = try recordPreDispatchGovernance(
+            ticket: ticket, model: model, effort: effort, objective: lockedObjective, input: prompt,
+            contractSHA256: executorContract.sha256, channel: "codex_developer", instructions: instructions,
+            driftState: driftApplication == nil ? "unavailable_base_contract_retained" : "applied",
+            routeAdmission: admissionPath)
         let deadline = Date().addingTimeInterval(TimeInterval(timeout))
         // GPT chat: the model alone, in the empty answer workspace, on a fresh
         // thread (resuming a full Codex thread would reload what the lane drops).
@@ -7808,6 +7915,16 @@ private func execute(
             confinedEscalates: handBackEscalates,
             fullAccessProtectedPaths: fullAccessPaths
         )
+        guard let systemIndex = arguments.firstIndex(of: "--append-system-prompt"),
+              arguments.indices.contains(systemIndex + 1) else {
+            throw OS1Error.message("Claude pre-dispatch system-prompt channel is absent; no executor was called")
+        }
+        preDispatchGovernanceReceipt = try recordPreDispatchGovernance(
+            ticket: ticket, model: model, effort: effort, objective: lockedObjective, input: prompt,
+            contractSHA256: executorContract.sha256, channel: "claude_append_system",
+            instructions: arguments[systemIndex + 1],
+            driftState: driftApplication == nil ? "unavailable_base_contract_retained" : "applied",
+            routeAdmission: admissionPath)
         if projectlessRead && !sourceOnly && !chatLane { arguments.insert("--safe-mode", at: 1) }
         if CheckoutTurn.enabled && ticket.permissionProfile == "workspace_write" && !sourceOnly && !chatLane {
             arguments.insert(contentsOf: CheckoutTurn.claudeMCPArguments(os1Executable: currentOS1Executable(),
@@ -8035,6 +8152,7 @@ private func execute(
         nativeRecord: nativeRecord,
         surface: executedSurface?.rawValue,
         driftApplication: driftApplication,
+        preDispatchGovernanceReceipt: preDispatchGovernanceReceipt,
         os1ChangeRequired: os1ChangeRequired, os1FullAccessRequired: os1FullAccessRequired
     )
     AttemptLatencyTrace.mark("candidate_built")
@@ -11811,6 +11929,10 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
                 workspace: canonicalWorkspace
             )
         } else if ticket.provider == "local" {
+            let hostGate = try recordPreDispatchGovernance(
+                ticket: ticket, model: model, effort: effort, objective: objectiveRequest,
+                input: prompt, contractSHA256: config.executorContract.sha256,
+                channel: "host_preaction", instructions: nil, driftState: "not_applicable_no_model")
             execution = try executePublicDeterministic(
                 ticket: ticket,
                 prompt: prompt,
@@ -11820,6 +11942,7 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
                 executorContract: config.executorContract,
                 workspaceBeforeHash: beforeHash
             )
+            execution.preDispatchGovernanceReceipt = hostGate
         } else {
             AttemptLatencyTrace.mark("attempt_prepared")
             do {
@@ -12184,11 +12307,12 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
             resultHash: resultHash,
             deviceSignature: v1Signature
         )
-        let pendingStep = RunStepSummary(sequence: ticket.sequence, provider: ticket.provider, action: ticket.action,
+        var pendingStep = RunStepSummary(sequence: ticket.sequence, provider: ticket.provider, action: ticket.action,
             model: model, effort: effort, revasDisposition: "verification_pending", sessionID: execution.sessionID,
             permissionProfile: ticket.permissionProfile, exitCode: artifact.exitCode, output: artifact.output,
             stderr: artifact.stderr, durationMS: artifact.durationMS, nativeRecord: execution.nativeRecord,
             surface: execution.surface, verifiedPreviewDelivery: verifiedPreviewDelivery, taskQuality: taskQuality)
+        pendingStep.preDispatchGovernanceReceipt = execution.preDispatchGovernanceReceipt
         var delivery = DeliveryRecord(id: "\(ticket.executionID)-\(ticket.sequence)", apiURL: config.apiURL, deviceID: id,
             resultSHA256: resultHash, artifact: artifactData, upload: try JSONEncoder().encode(upload),
             submission: try JSONEncoder().encode(submission), step: try JSONEncoder().encode(pendingStep),
@@ -16611,6 +16735,7 @@ func selfTest() throws {
     try ResponseAvailability.selfTest()
     try DynamicRouteAdmission.selfTest()
     try nativeTransportAdmissionSelfTest()
+    try preDispatchGovernanceSelfTest()
     try ChatGPTHandoff.selfTest()
     try RouteFanout.selfTest()
     try routeFanoutSummarySelfTest()
