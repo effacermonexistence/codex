@@ -34,6 +34,28 @@ PY
 # Capture before tests/builds and before release/ is rewritten. Dirty automatic
 # self-repairs are stamped only by their later post-commit install outcome.
 readonly source_input_clean="$(source_tree_is_clean)"
+if [[ "${CI:-}" == "true" && "$source_input_clean" != "1" ]]; then
+  # A CI artifact must never omit its source-commit identity. Show only path
+  # metadata; no file contents, credentials, or package bytes enter the log.
+  python3 - "$repository_root" <<'PY'
+import json, subprocess, sys
+raw = subprocess.run(
+    ["git", "--no-optional-locks", "-C", sys.argv[1], "status", "--porcelain=v1", "-z", "--untracked-files=all"],
+    capture_output=True, check=True,
+).stdout
+parts = raw.split(b"\0")
+index = 0
+while index < len(parts):
+    entry = parts[index]; index += 1
+    if not entry: continue
+    status = entry[:2].decode("ascii", "replace")
+    path = entry[3:].decode("utf-8", "surrogateescape")
+    print("CI source mutation path: " + json.dumps({"status": status, "path": path}, ensure_ascii=True), file=sys.stderr)
+    if "R" in status or "C" in status: index += 1
+PY
+  echo 'CI release source is dirty; refusing an unstamped public package.' >&2
+  exit 1
+fi
 python3 "$script_dir/check-startup-isolation.py"
 python3 "$script_dir/test-task-quality-wiring.py"
 python3 "$script_dir/test-memory-paging-wiring.py"
@@ -45,6 +67,7 @@ python3 "$script_dir/test-backend-window-focus.py"
 python3 "$script_dir/test-os1-source-confinement-wiring.py"
 python3 "$script_dir/test-owner-policy-sync.py"
 python3 "$script_dir/test-local-controller-provisioning.py"
+python3 "$script_dir/test-client-scan-policy.py"
 python3 "$script_dir/test-os1-openclaw-sidecar-wiring.py"
 python3 "$script_dir/test-local-openclaw-gateway-runner.py"
 # The bundle's own Info.plist is the single source of truth for the release
@@ -409,51 +432,9 @@ expanded_scripts="$audit_dir/expanded/OS-1-component.pkg/Scripts"
 # Keep the canonical scanner intact; only this clean build's verified commit
 # token receives a fingerprint exception. Other high-entropy values still fail.
 readonly scan_policy="$audit_dir/source-bound-scan-policy.json"
-python3 - "$repository_root/products/os1-route-core/security/client-artifact-scan-policy.json" "$scan_policy" "$source_commit" "$source_input_clean" "$repository_root" <<'PYSCAN'
-import hashlib,json,pathlib,re,sys
-policy=json.loads(pathlib.Path(sys.argv[1]).read_text()); commit=sys.argv[3]
-if sys.argv[4]=='1':
-    if re.fullmatch(r'[0-9a-f]{40}',commit) is None: raise SystemExit('Invalid source commit for release scan')
-    root=str(pathlib.Path(sys.argv[5]).resolve())
-    if not root.startswith(str(pathlib.Path.home())+'/'): raise SystemExit('Source root outside approved HOME')
-    for token in [commit,root]:
-        fingerprint=hashlib.sha256(token.encode()).hexdigest()
-        if fingerprint not in policy['entropy']['allowedTokenSha256']: policy['entropy']['allowedTokenSha256'].append(fingerprint)
-    # The exact public npm lock is a reproducible acquisition contract, not
-    # a credential. Exempt only its registry SHA-512 integrity tokens, one by
-    # one, after validating the source file and every token's decoded shape.
-    # The generic scanner, forbidden paths/content, and all other entropy
-    # findings remain unchanged. No file-wide or prefix exemption exists.
-    lock_path=pathlib.Path(root)/'products/os1-mac-runtime/Resources/local-controller-package-lock.json'
-    source_path=pathlib.Path(root)/'products/os1-mac-runtime/Resources/local-controller-sources.json'
-    lock_bytes=lock_path.read_bytes(); lock=json.loads(lock_bytes); sources=json.loads(source_path.read_bytes())
-    top=lock['packages']['node_modules/openclaw']
-    assert top['integrity']==sources['controller']['integrity'] and top['resolved']==sources['controller']['url']
-    import base64
-    provenance=policy.setdefault('publicTokenProvenance',{})
-    lock_sha=hashlib.sha256(lock_bytes).hexdigest()
-    for name,row in lock['packages'].items():
-        if not isinstance(row,dict) or 'integrity' not in row: continue
-        integrity=row['integrity']; resolved=row.get('resolved','')
-        assert isinstance(integrity,str) and re.fullmatch(r'sha512-[A-Za-z0-9+/]+={0,2}',integrity)
-        assert len(base64.b64decode(integrity[7:],validate=True))==64
-        assert isinstance(resolved,str) and resolved.startswith('https://registry.npmjs.org/')
-        fingerprint=hashlib.sha256(integrity.encode()).hexdigest()
-        if fingerprint not in policy['entropy']['allowedTokenSha256']: policy['entropy']['allowedTokenSha256'].append(fingerprint)
-        provenance[fingerprint]={'tokenKind':'public_npm_sha512_integrity','source':resolved,
-            'sourceLockSHA256':lock_sha,'package':name,'description':'Exact public registry integrity in the pinned OS-1 acquisition lock; not a credential.'}
-    # One compiler-emitted path/type token is similarly public source data.
-    # Bind it to its exact source declaration, not to a path prefix.
-    type_file=pathlib.Path(root)/'products/os1-mac-runtime/Sources/OS1App/ConsumerChatGPTConnectionPanel.swift'
-    type_bytes=type_file.read_bytes()
-    assert b'struct ConsumerChatGPTConnectionPanel: View' in type_bytes
-    type_token=root+'/products/os1-mac-runtime/Sources/OS1App/ConsumerChatGPTConnectionPanel'
-    fingerprint=hashlib.sha256(type_token.encode()).hexdigest()
-    if fingerprint not in policy['entropy']['allowedTokenSha256']: policy['entropy']['allowedTokenSha256'].append(fingerprint)
-    provenance[fingerprint]={'tokenKind':'public_compiler_source_type_path','source':str(type_file),
-        'sourceSHA256':hashlib.sha256(type_bytes).hexdigest(),'description':'Exact compiler-emitted source/type path for a public OS-1 view.'}
-pathlib.Path(sys.argv[2]).write_text(json.dumps(policy,sort_keys=True))
-PYSCAN
+python3 "$script_dir/generate-client-scan-policy.py" \
+  "$repository_root/products/os1-route-core/security/client-artifact-scan-policy.json" \
+  "$scan_policy" "$source_commit" "$source_input_clean" "$repository_root" "$expanded_payload"
 OS1_CLIENT_SCAN_POLICY_PATH="$scan_policy" node "$repository_root/products/os1-route-core/scripts/client-artifact-scan.mjs" \
   "$audit_dir/expanded"
 
