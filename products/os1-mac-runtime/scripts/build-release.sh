@@ -1,5 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
+# The macOS CI runner's Python 3.14 writes import bytecode into source-side
+# __pycache__ during the distribution-negative preflight. Keep both the
+# negative preflight and the real release input clean instead of hiding those
+# files from the source-identity check.
+export PYTHONDONTWRITEBYTECODE=1
 
 readonly script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 readonly runtime_root="$(cd "$script_dir/.." && pwd -P)"
