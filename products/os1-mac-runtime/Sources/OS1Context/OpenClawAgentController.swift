@@ -233,7 +233,7 @@ public enum OpenClawAgentController {
                                       gateObservedBeforeTerminal: Bool,
                                       gatewayEnvelope: Data, exitCode: Int32) throws -> GatewayProposal {
         guard gateObservedBeforeTerminal else { throw Rejection.missingPreDispatchGate }
-        let gate = try admitGateReceipt(gateReceipt, for: prepared)
+        _ = try admitGateReceipt(gateReceipt, for: prepared)
         guard exitCode == 0, gatewayEnvelope.count > 2, gatewayEnvelope.count <= maximumEnvelopeBytes,
               let outer = try? JSONSerialization.jsonObject(with: gatewayEnvelope) as? [String: Any],
               outer["status"] as? String == "ok", let gatewayRunID = outer["runId"] as? String,

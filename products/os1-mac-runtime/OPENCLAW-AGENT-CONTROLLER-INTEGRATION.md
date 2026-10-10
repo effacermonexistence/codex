@@ -1,12 +1,18 @@
 # OS-1 / OpenClaw typed local controller seam
 
-**State: source-level host route wiring, not installed/runtime-verified.** A
-disposable Gateway local-only fixture smoke passed its pre-model gate. A later
-real owner-projection route returned without calling its typed state tool, so
-that route was held. The new route-stage data-dependency repair and its
-`LocalRouterBridge.rankSurface` host wiring are offline-tested but not
-model-tested. Signed native execution, package/install/recovery identity and
-end-to-end quality parity remain separate.
+**State: source-level host route wiring with one bounded local model proof;
+updated build not yet installed/runtime-verified.** An earlier real
+owner-projection route returned without calling its typed state tool, so that
+route was held. After moving route options behind `os1_state_read`, one
+local-only Gateway smoke used the real owner policy projection, made exactly
+one successful typed state read, passed the pre-model gate and host route
+admission, then cleaned up its exact children and port. The two candidate
+descriptors and their quota/quality observations were **fixture inputs**, not
+live provider-account evidence. The token was absent from the per-run logs
+checked; global logging was not audited. Private receipt:
+`~/.os1/openclaw-controller/typed-route-smoke-7d89882a-00d0-425e-aa8d-4bbd81ed78c0/typed-route-audit.json`.
+Signed native execution, package/install/recovery identity and end-to-end
+quality parity remain separate.
 No flagship-quality claim. Do not enable from source checkout alone. Handy is a
 separate trust domain and is never part of this path.
 
