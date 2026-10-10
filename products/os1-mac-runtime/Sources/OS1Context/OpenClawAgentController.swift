@@ -313,10 +313,10 @@ public enum OpenClawAgentController {
     public static func configBytes(pluginDirectory: String, workspace: String) throws -> Data {
         guard pluginDirectory.hasPrefix("/"), workspace.hasPrefix("/") else { throw Rejection.invalidInput }
         let modelEntry: [String: Any] = ["id": model, "name": "OS-1 Local Controller", "input": ["text"],
-            "reasoning": true, "contextTokens": 8192, "contextWindow": 8192, "maxTokens": 768,
+            "reasoning": true, "contextTokens": 16384, "contextWindow": 16384, "maxTokens": 768,
             "cost": ["input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0],
             "agentRuntime": ["id": "openclaw"],
-            "params": ["temperature": 0, "num_ctx": 8192, "num_predict": 512, "think": false, "keep_alive": "5m"]]
+            "params": ["temperature": 0, "num_ctx": 16384, "num_predict": 512, "think": false, "keep_alive": "5m"]]
         let config: [String: Any] = [
             "models": ["mode": "replace", "providers": ["ollama": ["baseUrl": "http://127.0.0.1:11434",
                 "apiKey": "ollama-local", "api": "ollama", "agentRuntime": ["id": "openclaw"], "models": [modelEntry]]]],

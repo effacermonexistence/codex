@@ -45,6 +45,8 @@ python3 "$script_dir/test-backend-window-focus.py"
 python3 "$script_dir/test-os1-source-confinement-wiring.py"
 python3 "$script_dir/test-owner-policy-sync.py"
 python3 "$script_dir/test-local-controller-provisioning.py"
+python3 "$script_dir/test-os1-openclaw-sidecar-wiring.py"
+python3 "$script_dir/test-local-openclaw-gateway-runner.py"
 # The bundle's own Info.plist is the single source of truth for the release
 # version. A hardcoded default silently diverged from it and the identity
 # check below then refused to package — every build since 0.9.57 produced no
