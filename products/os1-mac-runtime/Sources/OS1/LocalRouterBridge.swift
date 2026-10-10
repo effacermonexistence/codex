@@ -14,6 +14,66 @@ struct LocalRouterResult: Codable, Sendable {
 /// permission, drive a browser, or adopt a result. Legacy lean interpretation
 /// remains a distinct tools-disabled producer.
 enum LocalRouterBridge {
+    /// Installed-resource bound single task owner. No legacy router fallback.
+    static func rccRuntimeConfiguration() async throws -> RCCRuntimeGatewayClient.Configuration {
+        let checked = try await preflight()
+        try await verifyGatewayOllamaVersion()
+        guard let resources = provisionerResources() else { throw OS1Error.message("Installed RCC resources unavailable") }
+        let old = try gatewayIdentity(resources: resources, manifest: checked.manifest, runtime: checked.runtime)
+        let plugin = URL(fileURLWithPath: old.pluginDirectory)
+        var hashes: [String: String] = [:]
+        for name in ["index.mjs", "openclaw.plugin.json", "package.json", "rcc-runtime.mjs", "rcc-plugin.mjs"] {
+            hashes[name] = try fileSHA256(plugin.appendingPathComponent(name))
+        }
+        // The module hashes below are generated from the reviewed source and
+        // sealed with the app/CLI. Never take these values from the model.
+        guard hashes["rcc-runtime.mjs"] == rccRuntimeModuleSHA256,
+              hashes["rcc-plugin.mjs"] == rccRuntimePluginSHA256 else {
+            throw OS1Error.message("Installed RCC task-runtime modules differ from the sealed source")
+        }
+        let native = URL(fileURLWithPath: CommandLine.arguments[0]).resolvingSymlinksInPath()
+        let nativeHash = try fileSHA256(native)
+        let coreRoot = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".os1/rcc-runtime")
+        var config = try JSONSerialization.jsonObject(with: OpenClawAgentController.configBytes(
+            pluginDirectory: plugin.path, workspace: coreRoot.appendingPathComponent("workspace").path)) as! [String: Any]
+        config["tools"] = ["profile": "minimal", "deny": ["*"], "toolSearch": false, "codeMode": ["enabled": false]]
+        // The legacy selector returned a single ID (512 tokens). A bounded
+        // four-child DAG needs a larger JSON output budget; otherwise valid
+        // parallel plans are structurally truncated before the core gate.
+        var models = config["models"] as! [String: Any]
+        var providers = models["providers"] as! [String: Any]
+        var ollama = providers["ollama"] as! [String: Any]
+        // Internal plan generation uses the supported tools-free native Ollama
+        // completion path, not an isolated agent that rejects responseFormat.
+        // The existing OpenClaw Gateway still owns the service and task state.
+        ollama.removeValue(forKey: "agentRuntime")
+        var entries = ollama["models"] as! [[String: Any]]
+        for index in entries.indices {
+            entries[index].removeValue(forKey: "agentRuntime")
+            // Actual pinned-model metadata supports 262144 tokens. The old
+            // 16K selector rejected a complete 20144-token policy/catalog
+            // prompt; do not solve that by dropping policy or model rows.
+            entries[index]["contextTokens"] = 32768
+            entries[index]["contextWindow"] = 32768
+            entries[index]["maxTokens"] = 4096
+            var parameters = entries[index]["params"] as! [String: Any]
+            parameters["num_ctx"] = 32768
+            parameters["num_predict"] = 4096
+            entries[index]["params"] = parameters
+        }
+        ollama["models"] = entries; providers["ollama"] = ollama
+        models["providers"] = providers; config["models"] = models
+        let publicPolicy = try RuntimeConfig.load().executorContract.directives.joined(separator: "\n")
+        return RCCRuntimeGatewayClient.Configuration(identity: .init(nodePath: old.nodePath, nodeSHA256: old.nodeSHA256,
+            entryPath: old.entryPath, entrySHA256: old.entrySHA256, pluginDirectory: plugin.path,
+            pluginFileSHA256: hashes, nativeOS1Path: native.path, nativeOS1SHA256: nativeHash),
+            baseConfig: try JSONSerialization.data(withJSONObject: config, options: [.sortedKeys]),
+            bridgeEnvironment: ["OS1_RCC_RUNTIME": "1", "OS1_RCC_NATIVE_PATH": native.path,
+                "OS1_RCC_NATIVE_SHA256": nativeHash, "OS1_RCC_NATIVE_HOME": FileManager.default.homeDirectoryForCurrentUser.path,
+                "OS1_RCC_PUBLIC_POLICY": publicPolicy])
+    }
+    static let rccRuntimeModuleSHA256 = "142d4daf2bb08e7b42ba2b705be92551a2bdedacbcc8c4d18c37ce9944c7eb94"
+    static let rccRuntimePluginSHA256 = "03677386223aa689b60975d22217f48c7e6d66b9f83a8e3f57c969a0d321c698"
     static let root = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".os1/local-router")
     static let version = "2026.9.9"
     static let model = "qwen3.5:4b"
@@ -27,7 +87,7 @@ enum LocalRouterBridge {
     static let privatePrefix = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/OS-1/tools/openclaw-2026.9.9")
     static let privateEntry = privatePrefix.appendingPathComponent("node_modules/openclaw/openclaw.mjs")
     private static let pinnedEntrySHA256 = "aa8606ca0d62ff133ef5b7bd2323ec8ff3f8eb384404399cd5e742918d63b0a1"
-    private static let pinnedPluginIndexSHA256 = "4303dbcae180e3337c55fca39659e13494195097914d83ee483aee51ddcfcc85"
+    private static let pinnedPluginIndexSHA256 = "0c1a8eb96a252e2610e4964069f069dfc344dcb2d4bf76fb77b2585222bba0a5"
     private static let pinnedPluginManifestSHA256 = "700710ab6124eabcc945f247b13e94451fc266b956c5ce991b5eb99cc6d62af3"
     private static let pinnedPluginPackageSHA256 = "583bd79e8bc75e98df186b7bd50f6d1ec580298e930e2dbd5674ce1e6296dbe4"
     #if arch(arm64)

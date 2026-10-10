@@ -5978,6 +5978,7 @@ private struct PendingSubmission: Identifiable, Codable, Equatable, Sendable {
     /// The `--provider` value this submission actually dispatches with. Falls
     /// back to the tile itself, which is the executing surface.
     var runtimeSurface: String {
+        if surfaceRaw == ProviderSurface.auto.rawValue { return ProviderSurface.auto.rawValue }
         guard let surfaceRaw, let surface = ProviderSurface(rawValue: surfaceRaw),
               surface.backend?.rawValue == provider.rawValue else { return provider.rawValue }
         return surface.rawValue
@@ -7178,6 +7179,8 @@ private struct AppRunSummary: Decodable, Sendable {
     var workflowBlocker: String? = nil
     var consumerChatGPT: AppConsumerChatGPTRecord? = nil
     @AgentTaskSnapshotField var agentTask: ParallelAgentTask.Snapshot? = nil
+    var rccRuntime: RCCRuntimeContract.Snapshot? = nil
+    var rccTransportFailure: String? = nil
 }
 
 private struct NativeIngestionOutcome: Sendable {
@@ -7626,6 +7629,7 @@ private enum OS1Runner {
         // does not name the surface. A stored value that does not belong to
         // this tile falls back to the tile's executing surface.
         let routedSurface: String = {
+            if surfaceRaw == ProviderSurface.auto.rawValue { return ProviderSurface.auto.rawValue }
             guard let surfaceRaw, let surface = ProviderSurface(rawValue: surfaceRaw),
                   surface.backend?.rawValue == provider.rawValue else { return provider.rawValue }
             return surface.rawValue
@@ -7638,6 +7642,7 @@ private enum OS1Runner {
             "--provider", routedSurface,
             "--output-format", "json",
         ]
+        if let submissionID { arguments += ["--rcc-task-id", submissionID.uuidString.lowercased()] }
         if !context.isEmpty {
             let contextURL = temporary.appendingPathComponent("session-context.txt")
             try Data(context.utf8).write(
@@ -10081,6 +10086,67 @@ private final class SessionStore: ObservableObject {
                     appendTaskEvent(conversationID: submission.sessionID, kind: "consumer_returned",
                         summary: "Ordinary ChatGPT reply delivered; separate browser receipt; no native session binding")
                     statusText = os1Tr("ChatGPT 응답 수신", "ChatGPT reply received")
+                    save()
+                    return
+                }
+                if summary.rccTransportFailure != nil {
+                    let note = summary.workflowBlocker ?? "OpenClaw connection unavailable · request preserved"
+                    sessions[target].messages.append(ChatMessage(role: .system, text: note))
+                    sessions[target].lastBackendFailure = nil
+                    sessions[target].lastFailure = nil
+                    sessions[target].updatedAt = Date()
+                    statusText = note
+                    appendTaskEvent(conversationID: submission.sessionID, kind: "rcc_transport_preserved",
+                        summary: "Core transport/policy boundary; no legacy replay or provider call")
+                    save()
+                    return
+                }
+                if let core = summary.rccRuntime {
+                    // UI projection only: a held/unverified core result never
+                    // starts the old independent readback/retry scheduler.
+                    if let graph = summary.agentTask { sessions[target].agentTask = graph }
+                    // Preserve real native continuity without selecting one of
+                    // several siblings as "the" conversation arbitrarily.
+                    if submission.recoveryParentID == nil {
+                        for provider in [ProviderChoice.codex, .claude] {
+                            let ids = Set(summary.steps.filter {
+                                $0.provider == provider.rawValue && stepRecordIsVerified($0) &&
+                                !isChatLaneRoutePart($0) && UUID(uuidString: $0.sessionID) != nil
+                            }.map(\.sessionID))
+                            if ids.count == 1, let nativeID = ids.first {
+                                recordNativeSession(provider, id: nativeID, conversationID: submission.sessionID)
+                            }
+                        }
+                    }
+                    for step in summary.steps where step.provider == "codex" {
+                        if let record = step.nativeRecord, record.isVerified,
+                           let turn = record.turnID, UUID(uuidString: turn) != nil {
+                            sessions[target].ownedCodexTurnIDs = Array(Set((sessions[target].ownedCodexTurnIDs ?? []) + [turn])).sorted()
+                        }
+                    }
+                    if let output = core.result?.output, !output.isEmpty {
+                        // The owner already selected the returned result. Do
+                        // not emit all intermediate children as separate final
+                        // answers or add another summarization/selection pass.
+                        let producers = summary.steps.filter { $0.output == output }
+                        let producer = producers.count == 1 ? producers.first : nil
+                        sessions[target].messages.append(ChatMessage(role: .assistant, text: output,
+                            provider: producer?.provider, executionSurface: producer?.executedSurface?.rawValue,
+                            permissionProfile: producer?.permissionProfile,
+                            nativeRecordVerified: producer.map(stepRecordIsVerified)))
+                    }
+                    let note = core.state == .completed
+                        ? os1Tr("OpenClaw 작업 조건 확인됨 · 품질 기준 비교는 별도 기록", "OpenClaw task conditions verified · reference quality is a separate record")
+                        : core.state == .returnedUnverified
+                        ? os1Tr("결과 수신 · 작업 완성도/최상위 품질 동등성 미검증", "Result received · task completeness/reference parity unverified")
+                        : os1Tr("OpenClaw 작업 보존: ", "OpenClaw task preserved: ") + (core.error ?? core.state.rawValue)
+                    sessions[target].messages.append(ChatMessage(role: .receipt, text: note))
+                    sessions[target].lastBackendFailure = nil
+                    sessions[target].lastFailure = nil
+                    sessions[target].updatedAt = Date()
+                    statusText = note
+                    appendTaskEvent(conversationID: submission.sessionID, kind: "rcc_runtime_return",
+                        summary: "task \(core.taskID) state \(core.state.rawValue); no independent UI replay")
                     save()
                     return
                 }

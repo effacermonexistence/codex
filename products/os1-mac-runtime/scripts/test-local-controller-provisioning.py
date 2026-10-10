@@ -110,11 +110,14 @@ for name in ("local-router-config.template.json", "local-controller-sources.json
              "provision-local-controller.sh", "provision-local-controller.mjs"):
     check(release.count('Contents/Resources/' + name) >= 2, "staged and expanded release allowlist: " + name)
     check(('Contents/Resources/' + name) in installer, "installer allowlist: " + name)
-for name in ("index.mjs", "openclaw.plugin.json", "package.json"):
+for name in ("index.mjs", "openclaw.plugin.json", "package.json", "rcc-runtime.mjs", "rcc-plugin.mjs"):
     relative = "openclaw-os1-bridge/" + name
     check(release.count('Contents/Resources/' + relative) >= 2, "signed plugin staged and allowed: " + relative)
     check(('Contents/Resources/' + relative) in installer, "installer signed plugin allowlist: " + relative)
-check(installer.index("expected_payload_files=36") < installer.index("pkgutil --expand-full"), "versioned exact payload count")
+check(installer.index("expected_payload_files=36") < installer.index("pkgutil --expand-full") and
+      installer.index("expected_payload_files=38") < installer.index("pkgutil --expand-full") and
+      "expected_component_files=41" in installer and "release_patch >= 302" in installer,
+      "versioned exact payload count preserves legacy and new runtime modules")
 check(app.index("SelfUpdate.isInstalledApp") < app.index("provision-local-controller.sh"), "installed GUI only")
 check('process.environment = ["HOME":' in app and 'FileHandle.nullDevice' in app,
       "clean non-interactive provisioning child")

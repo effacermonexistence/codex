@@ -198,6 +198,52 @@ export async function startExecution(request: Request, env: Env): Promise<Respon
   return publicJson(ticket);
 }
 
+/** The local OpenClaw owner chose a full tuple. Existing auth/signature and
+ * ledger gates authorize it unchanged; this path never calls /decide or a judge. */
+export async function authorizeExecution(request: Request, env: Env): Promise<Response> {
+  const identity = await authenticate(request, env);
+  const raw = await readBoundedJson(request, positiveInteger(env.MAX_REQUEST_BYTES));
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) reject();
+  const value = raw as Record<string, unknown>;
+  if (Object.keys(value).sort().join("|") !== "request|schema|selected" || value.schema !== 1) reject();
+  if (!value.selected || typeof value.selected !== "object" || Array.isArray(value.selected)) reject();
+  const selected = value.selected as Record<string, unknown>;
+  if (Object.keys(selected).sort().join("|") !== "effort|model|permission_profile|provider" ||
+      typeof selected.provider !== "string" || !["codex", "claude"].includes(selected.provider) ||
+      typeof selected.model !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(selected.model) ||
+      typeof selected.effort !== "string" || !["low", "medium", "high", "xhigh", "max", "ultra"].includes(selected.effort) ||
+      !["read_only", "workspace_write"].includes(String(selected.permission_profile))) reject();
+  const r = parseStartRequest(value.request, { allowEmptyCodexCatalog: selected.provider === "claude" });
+  if (r.required_startup_contract !== 1 || !r.execution_context) reject();
+  if (selected.permission_profile !== r.execution_context.execution_permission_profile ||
+      (r.provider_preference !== "auto" && selected.provider !== r.provider_preference) ||
+      r.capacity_plan[selected.provider as "codex" | "claude"] <= 0 ||
+      (selected.provider === "claude" && !Array.isArray(r.execution_context.available_claude_models)) ||
+      !availableModelTuple(r.execution_context, r.available_codex_models, selected.provider, selected.model, selected.effort) ||
+      !(await completionFeedbackMatchesTask(r.execution_context, r.task))) reject();
+  const executionId = crypto.randomUUID();
+  const response = await bindingJson(env.PRIVATE_ROUTE_CORE, "/authorize-profile", {
+    version: PRIVATE_CORE_PROTOCOL_VERSION, execution_id: executionId,
+    principal: { subject: identity.subject, device_id: identity.device_id }, selected: value.selected,
+    task: { trust: "untrusted_user_data", content: r.task, provider_preference: r.provider_preference,
+      capacity_plan: r.capacity_plan, available_codex_models: r.available_codex_models,
+      execution_context: r.execution_context, executor_contract_version: r.executor_contract_version,
+      executor_contract_sha256: r.executor_contract_sha256 },
+  }, positiveInteger(env.SERVICE_RESPONSE_BYTES));
+  const decision = parsePrivateDecision(response);
+  if (decision.status !== "step" || !decision.startup_contract) reject();
+  if (decision.provider !== selected.provider || decision.permission_profile !== selected.permission_profile ||
+      decision.startup_contract.model !== selected.model || decision.startup_contract.effort !== selected.effort ||
+      decision.startup_contract.executor_contract_sha256 !== r.executor_contract_sha256) reject();
+  const pool = env.EXECUTION_POOLS.getByName("startup-v1");
+  if (!(await pool.ready())) reject();
+  const ticket = await issueTicket(env, executionId, 1, decision, r.executor_contract_sha256);
+  if ((await executionLedger(env, ticket, pool).begin({ execution_id: executionId,
+    subject_hash: await sha256Hex(identity.subject), device_id: identity.device_id,
+    sequence: ticket.sequence, nonce: ticket.nonce, expires_at: Date.parse(ticket.expires_at), phase: "active" })) !== "created") reject();
+  return publicJson(ticket);
+}
+
 export async function registerDevice(
   request: Request,
   env: Env,

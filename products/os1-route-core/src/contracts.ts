@@ -204,7 +204,7 @@ function boundStartup(value: unknown, action: string): StartupContract {
   return startup;
 }
 
-export function parseStartRequest(value: unknown): {
+export function parseStartRequest(value: unknown, options: { allowEmptyCodexCatalog?: boolean } = {}): {
   task: string;
   provider_preference: ProviderPreference;
   capacity_plan: CapacityPlan;
@@ -237,7 +237,11 @@ export function parseStartRequest(value: unknown): {
     (capacity.codex as number) + (capacity.claude as number) > 0;
   const completionAware = isRecord(value) && validExecutionContext(value.execution_context) &&
     value.execution_context.completion_feedback !== undefined;
-  const validModels = Array.isArray(availableModels) && availableModels.length >= (completionAware ? 0 : 1) &&
+  // The exact-profile authorization lane can use a real Claude-only catalog.
+  // This option never invents a Codex model, grants a tuple, or changes the
+  // legacy default parser; the authorizer independently checks selected support.
+  const emptyCatalogAllowed = completionAware || options.allowEmptyCodexCatalog === true;
+  const validModels = Array.isArray(availableModels) && availableModels.length >= (emptyCatalogAllowed ? 0 : 1) &&
     availableModels.length <= 32 && new Set(availableModels.map((candidate) =>
       isRecord(candidate) ? candidate.slug : undefined)).size === availableModels.length &&
     availableModels.every((candidate) => isRecord(candidate) &&

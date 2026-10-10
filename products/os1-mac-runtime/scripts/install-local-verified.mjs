@@ -175,8 +175,69 @@ export const backupPagingState = ({ supportRoot, recoveryRoot }) => {
 // Fleet's original loaded state does not grant or remove rollback authority.
 // A newly failed paging gate still permits recovery of unadopted binaries when
 // fresh quiescence is established. Never replay live session/memory snapshots.
-export const binaryRollbackPermitted = ({ appStopped, pagingQuiesced: quiesced, anyBinaryMoved }) =>
-  appStopped === true && quiesced === true && anyBinaryMoved === true;
+export const binaryRollbackPermitted = ({ appStopped, pagingQuiesced: quiesced, rccQuiesced, anyBinaryMoved }) =>
+  appStopped === true && quiesced === true && rccQuiesced === true && anyBinaryMoved === true;
+
+const readPrivateRCCReceipt = file => {
+  const fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+  try {
+    const st = fs.fstatSync(fd);
+    assert(st.isFile() && st.nlink === 1 && st.uid === process.getuid() &&
+      (st.mode & 0o077) === 0 && st.size > 0 && st.size <= 16384, 'RCC quiescence receipt custody');
+    return JSON.parse(fs.readFileSync(fd, 'utf8'));
+  } finally { fs.closeSync(fd); }
+};
+
+// Used for both directions. The executable is the currently installed CLI,
+// never the staged candidate or restored predecessor. The native helper owns
+// PID/start-time/source binding and refuses active/unresolved work. This helper
+// neither signals a PID nor deletes the durable core database or queued tasks.
+// Injectable I/O permits offline fixtures without a real CLI or HOME access.
+export const quiesceRCCCoreForBinaryChange = ({ home, cli, execute,
+  exists = present, readReceipt = readPrivateRCCReceipt, processRows = os1ProcessRows }) => {
+  const core = path.join(home, '.os1/rcc-runtime');
+  const owner = path.join(core, 'transport-owner.json');
+  const starting = path.join(core, 'transport-starting.json');
+  const requireNativeIdle = () => {
+    const executables = [path.join(home, '.local/bin/os1'),
+      path.join(home, 'Applications/OS-1 CLODEX.app/Contents/Resources/os1')];
+    const active = [];
+    for (const row of processRows()) {
+      const match = row.trim().match(/^([1-9]\d*)\s+(.+)$/);
+      assert(match, 'RCC native process inventory malformed');
+      if (executables.some(exe => match[2].startsWith(exe + ' ') &&
+          /^rcc-adapter(?:\s|$)/.test(match[2].slice(exe.length + 1)))) active.push(Number(match[1]));
+    }
+    // Only public PID identities enter the failure receipt, never private
+    // ticket paths/arguments. A predecessor's native child may outlive its
+    // Gateway, so absence of owner metadata alone is insufficient.
+    assert.equal(active.length, 0, `RCC native executor still active (${active.join(',')}); leave installation unchanged`);
+  };
+  requireNativeIdle();
+  if (!exists(owner) && !exists(starting)) return { schema: 1, hadGateway: false };
+  assert.equal(cli, path.join(home, '.local/bin/os1'), 'RCC quiescence must use the current installed CLI');
+  assert.equal(typeof execute, 'function', 'RCC quiescence executor unavailable');
+  const quiet = JSON.parse(execute(cli, ['rcc-quiesce'], 180000));
+  assert.equal(quiet.schema, 1, 'RCC quiescence receipt schema');
+  assert.equal(quiet.hadGateway, true, 'existing RCC owner was not verified');
+  assert(typeof quiet.requestID === 'string' && /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(quiet.requestID), 'RCC quiescence request identity');
+  assert(Number.isInteger(quiet.ownerPID) && quiet.ownerPID > 1, 'RCC quiescence owner identity');
+  assert(Number.isInteger(quiet.queuedTasks) && quiet.queuedTasks >= 0, 'RCC queued-task preservation count');
+  assert.equal(quiet.receiptPath, path.join(core, 'upgrade-receipts', `quiescence-${quiet.requestID}.json`),
+    'RCC quiescence receipt is outside private owner custody');
+  const evidence = readReceipt(quiet.receiptPath);
+  assert(evidence.schema === 1 && evidence.request_id === quiet.requestID &&
+    evidence.owner_pid === quiet.ownerPID && evidence.active_dispatches === 0 &&
+    evidence.safe_to_stop === true && evidence.queued_preserved === true &&
+    evidence.queued_tasks === quiet.queuedTasks &&
+    /^[a-f0-9]{64}$/.test(evidence.identity_sha256) &&
+    /^[a-f0-9]{64}$/.test(evidence.configuration_sha256) &&
+    /^[a-f0-9]{64}$/.test(evidence.quiescence_rpc_sha256), 'RCC quiescence evidence incomplete');
+  assert(!exists(owner), 'RCC owner still active; no binary replacement');
+  assert(!exists(starting), 'RCC startup intent unresolved; no binary replacement');
+  requireNativeIdle();
+  return quiet;
+};
 
 // Discover only OS-1 process names, then inspect only those PIDs. A local
 // upgrade has no authority to read another application's process arguments.
@@ -347,6 +408,8 @@ try {
   idle();
   if (fleetLoaded) { run('/bin/launchctl', ['bootout', service]); paused = true; }
   idle(); // catches a claim racing with bootout, before any binary replacement
+  receipt.rccQuiescence = quiesceRCCCoreForBinaryChange({ home, cli, execute: run });
+  receipt.checks.push('authoritative OpenClaw core idle/quiesced; queued tasks preserved: PASS');
   for (const pid of wasRunning) {
     run('/usr/bin/swift', ['-e', `import AppKit; guard let a = NSRunningApplication(processIdentifier: ${pid}), a.bundleURL?.path == ${JSON.stringify(app)} else { exit(1) }; if !a.terminate() { exit(2) }`]);
   }
@@ -446,10 +509,17 @@ try {
   // No rollback of sessions: the user may have added newer work. If a restarted
   // process is using the new image, leave both verified binary versions in
   // custody for reconciliation rather than moving a live executable.
-  let rollbackQuiesced = false;
-  try { pagingQuiesced(); rollbackQuiesced = true; }
+  let rollbackQuiesced = false, rollbackCoreQuiesced = false;
+  try {
+    pagingQuiesced(); rollbackQuiesced = true;
+    // A persistent new Gateway can survive the failed GUI. Retire it through
+    // the CURRENT new CLI before moving any new binary back to recovery.
+    receipt.rccRollbackQuiescence = quiesceRCCCoreForBinaryChange({ home, cli, execute: run });
+    rollbackCoreQuiesced = true;
+  }
   catch (quiescenceError) { receipt.binaryRollbackBlocked = String(quiescenceError.message || quiescenceError); }
   if (binaryRollbackPermitted({ appStopped: appPIDs().length === 0, pagingQuiesced: rollbackQuiesced,
+    rccQuiesced: rollbackCoreQuiesced,
     anyBinaryMoved: appMoved || cliMoved || configMoved || configInstalled })) {
     if (cliMoved) { if (fs.existsSync(cli)) fs.renameSync(cli, path.join(recovery, 'unadopted-os1')); fs.renameSync(backupCLI, cli); }
     if (configInstalled && fs.existsSync(cliConfig)) fs.renameSync(cliConfig, path.join(recovery, 'unadopted-config.json'));

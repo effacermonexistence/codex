@@ -29,6 +29,9 @@ if tuple(map(int, json.loads(manifest.read_text())['version'].split('.'))) >= (0
     resources.append(('local-controller-sources.json', 'requires signed local-controller resource'))
     resources.append(('provision-local-controller.mjs', 'requires signed local-controller resource'))
     resources.append(('openclaw-os1-bridge/index.mjs', 'requires signed controller bridge'))
+if tuple(map(int, json.loads(manifest.read_text())['version'].split('.'))) >= (0, 9, 302):
+    resources.append(('openclaw-os1-bridge/rcc-runtime.mjs', 'requires signed RCC task-runtime module'))
+    resources.append(('openclaw-os1-bridge/rcc-plugin.mjs', 'requires signed RCC task-runtime module'))
 for filename, missing_reason in resources:
     for mutation in ('rename', 'content'):
         with tempfile.TemporaryDirectory(prefix='os1-beta-policy-') as tmp:

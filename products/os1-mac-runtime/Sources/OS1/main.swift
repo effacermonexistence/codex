@@ -1298,6 +1298,9 @@ struct RunSummary: Codable {
     /// Holds approved browser execution or the exact approval/connection block.
     /// A blocked consumer route never silently spends a native agent pool.
     var consumerChatGPT: ConsumerChatGPTTransport.Result? = nil
+    /// Authoritative OpenClaw projection. This is not an OS-1 retry instruction.
+    var rccRuntime: RCCRuntimeContract.Snapshot? = nil
+    var rccTransportFailure: String? = nil
 }
 
 struct ProviderExecution {
@@ -7495,7 +7498,9 @@ private func execute(
     onPreDispatchReceipt: ((String) -> Void)? = nil,
     memoryTurn: MemoryExecutionManifest? = nil,
     quotaContext: ProviderQuotaContext? = nil,
-    surfaceChoiceReceipt: String? = nil
+    surfaceChoiceReceipt: String? = nil,
+    surfaceOverride: ProviderSurface? = nil,
+    workspaceOverride: String? = nil
 ) throws -> ProviderExecution {
     AttemptLatencyTrace.mark("execute_entered")
     if ConcurrentRouteFanoutRuntime.child {
@@ -7511,7 +7516,7 @@ private func execute(
     }
     let started = Date()
     let lockedObjective = objectivePrompt ?? prompt
-    let executedSurface = executedProviderSurface(provider: ticket.provider, permission: ticket.permissionProfile,
+    let executedSurface = surfaceOverride ?? executedProviderSurface(provider: ticket.provider, permission: ticket.permissionProfile,
         hasSource: preloadedR2Evidence != nil, objective: lockedObjective)
     // This is checked again on retries/delegated native attempts. Never
     // equate "no tools" or a chat label with a separate/free allowance.
@@ -7541,7 +7546,7 @@ private func execute(
             throw OS1Error.message("Explicit parallel target is unavailable; no alternate surface was executed")
         }
     }
-    let executionWorkspace = try providerExecutionWorkspace(provider: ticket.provider,
+    let executionWorkspace = try workspaceOverride ?? providerExecutionWorkspace(provider: ticket.provider,
         permission: ticket.permissionProfile, hasSource: preloadedR2Evidence != nil, workspace: workspace,
         objective: lockedObjective)
     if let grant = ParallelAgentRuntime.isolatedWriter, executionWorkspace != grant.workspace {
@@ -7599,7 +7604,7 @@ private func execute(
         let deadline = Date().addingTimeInterval(TimeInterval(timeout))
         // GPT chat: the model alone, in the empty answer workspace, on a fresh
         // thread (resuming a full Codex thread would reload what the lane drops).
-        let gptChat = codexChatLane(provider: ticket.provider, permission: ticket.permissionProfile,
+        let gptChat = surfaceOverride.map { $0 == .gptChat } ?? codexChatLane(provider: ticket.provider, permission: ticket.permissionProfile,
                                     hasSource: hasPreloadedR2Evidence, objective: lockedObjective)
         RuntimeActivity.emit(.preparing, provider: "codex", surface: executedSurface?.rawValue, model: model, effort: effort)
         if gptChat {
@@ -7841,7 +7846,7 @@ private func execute(
         let sourceOnly = hasPreloadedR2Evidence && ticket.permissionProfile == "read_only"
         // Same customization-free shape as a source-only answer, chosen for an
         // objective that needs nothing from this machine.
-        let chatLane = claudeChatLane(provider: ticket.provider, permission: ticket.permissionProfile,
+        let chatLane = surfaceOverride.map { $0 == .claudeChat } ?? claudeChatLane(provider: ticket.provider, permission: ticket.permissionProfile,
                                       hasSource: hasPreloadedR2Evidence, objective: lockedObjective)
         RuntimeActivity.emit(.preparing, provider: "claude", surface: executedSurface?.rawValue, model: model, effort: effort)
         if chatLane {
@@ -8858,6 +8863,10 @@ func runRouteFanout(
     progress: Bool,
     desktopReveal: DesktopRevealMode
 ) async throws -> RunSummary {
+    guard ParallelAgentRuntime.fixtureHooks != nil || ConcurrentRouteFanoutRuntime.fixtureHooks != nil ||
+          ParallelAgentRuntime.readOnlyAgent || ConcurrentRouteFanoutRuntime.child else {
+        throw OS1Error.message("Legacy fan-out cannot own a new task; submit the original request to OpenClaw")
+    }
     let policy = try loadCurrentOwnerPolicy()
     return try await OwnerPolicyContext.$snapshot.withValue(policy) {
         try await runRouteFanoutWithOwnerPolicy(plan, workspace: workspace, context: context, codexSessionID: codexSessionID,
@@ -9283,6 +9292,12 @@ func runWorkflowTask(
     progress: Bool,
     desktopReveal: DesktopRevealMode
 ) async throws -> RunSummary {
+    if ParallelAgentRuntime.fixtureHooks == nil && ConcurrentRouteFanoutRuntime.fixtureHooks == nil &&
+       !ParallelAgentRuntime.readOnlyAgent && ParallelAgentRuntime.isolatedWriter == nil && !ConcurrentRouteFanoutRuntime.child {
+        return try await runOpenClawRCCTask(prompt: prompt, workspace: workspace, context: context,
+            surface: ProviderSurface(rawValue: providerPreference) ?? .auto, codexSessionID: codexSessionID,
+            claudeSessionID: claudeSessionID, requireReadOnly: false, taskID: nil)
+    }
     let policy = try loadCurrentOwnerPolicy()
     return try await OwnerPolicyContext.$snapshot.withValue(policy) {
         try await runWorkflowTaskWithOwnerPolicy(
@@ -10538,6 +10553,12 @@ func runTask(
     monitorTaskIDOverride: String? = nil,
     heldOS1SourceRoot: String? = nil
 ) async throws -> RunSummary {
+    if ParallelAgentRuntime.fixtureHooks == nil && ConcurrentRouteFanoutRuntime.fixtureHooks == nil &&
+       !ParallelAgentRuntime.readOnlyAgent && ParallelAgentRuntime.isolatedWriter == nil && !ConcurrentRouteFanoutRuntime.child {
+        return try await runOpenClawRCCTask(prompt: ownerPrompt ?? prompt, workspace: workspace, context: context,
+            surface: ProviderSurface(rawValue: providerPreference) ?? .auto, codexSessionID: codexSessionID,
+            claudeSessionID: claudeSessionID, requireReadOnly: requireReadOnly, taskID: monitorTaskIDOverride)
+    }
     // Inventories first: they overlap the policy refresh (≈1 s, 2026-09-24).
     // A refused policy still stops the run before any routing or model call.
     AttemptLatencyTrace.beginSubmission()
@@ -12893,6 +12914,12 @@ func os1DeliveredCorrectionIDs(submissionID: String?, mailbox: ExecutionSteering
 }
 
 func printRunSummary(_ summary: RunSummary) {
+    if let core = summary.rccRuntime {
+        if let result = core.result, !result.output.isEmpty { print(result.output) }
+        print("\n[OpenClaw task \(core.state.rawValue) · execution/quality/reference parity recorded separately]")
+        if let error = core.error { print("Preserved state: " + error) }
+        return
+    }
     let adopted = summary.steps.filter {
         $0.revasDisposition == "adopted" || $0.revasDisposition == "control_verified"
     }
@@ -16963,11 +16990,27 @@ struct OS1Main {
         do {
             let arguments = Array(CommandLine.arguments.dropFirst())
             guard let command = arguments.first else { usage(); return }
+            if ProcessInfo.processInfo.environment["OS1_RCC_ADAPTER_CHILD"] == "1",
+               ["run", "agent", "fleet-submit", "fleet-resume-submit", "self-repair", "self-update"].contains(command) {
+                throw OS1Error.message("RCC native executor cannot start a second task coordinator")
+            }
             if try await selfUpdateCommand(arguments) { return }
             if try await selfRepairCommand(arguments) { return }
             if try await fleetCommand(arguments) { return }
             if try await ManagedPreview.command(arguments) { return }
             switch command {
+            case "rcc-quiesce":
+                let configuration = try await LocalRouterBridge.rccRuntimeConfiguration()
+                let receipt = try await RCCRuntimeGatewayClient.quiesceForUpgrade(configuration: configuration)
+                print(String(decoding: try JSONEncoder().encode(receipt), as: UTF8.self))
+            case "rcc-catalog", "rcc-adapter":
+                guard arguments.count == 3,
+                      arguments[1] == (command == "rcc-catalog" ? "--request-file" : "--ticket-file") else {
+                    throw OS1Error.message("RCC native bridge accepts one private input file")
+                }
+                let input = try rccPrivateInput(arguments[2])
+                let output = command == "rcc-catalog" ? try rccNativeCatalog(input) : try await rccNativeAdapter(input)
+                print(String(decoding: output, as: UTF8.self))
             case "version", "--version", "-V": print(os1RuntimeVersionString)
             case "doctor": try doctor()
             // Owner-facing sign-in for the backends, with more than one
@@ -17169,9 +17212,13 @@ struct OS1Main {
                 var parallelAgentChild = false
                 var parallelFanoutChild = false
                 var parallelWriteGrantPath: String?
+                var rccTaskID: String?
                 var index = 1
                 while index < arguments.count {
                     switch arguments[index] {
+                    case "--rcc-task-id" where index + 1 < arguments.count:
+                        guard rccTaskID == nil, UUID(uuidString: arguments[index + 1]) != nil else { throw OS1Error.message("Invalid RCC task identity") }
+                        rccTaskID = arguments[index + 1].lowercased(); index += 2
                     case "--workspace" where index + 1 < arguments.count:
                         workspace = arguments[index + 1]; index += 2
                     case "--prompt" where index + 1 < arguments.count:
@@ -17249,6 +17296,27 @@ struct OS1Main {
                 }
                 if parallelFanoutChild, ![ProviderSurface.gptChat, .codex, .claude, .claudeChat, .chatgpt].contains(surface) {
                     throw OS1Error.message("Fan-out child requires an executable native surface")
+                }
+                // This is the owner dispatch boundary. The UI/CLI are clients,
+                // not a second scheduler. Legacy child/reconciliation executors
+                // remain libraries and never become an automatic fallback.
+                if !parallelAgentChild && !parallelFanoutChild {
+                    let summary: RunSummary
+                    do {
+                        summary = try await runOpenClawRCCTask(prompt: prompt, workspace: workspace,
+                            context: try readSessionContext(contextPath), surface: surface,
+                            codexSessionID: codexSessionID, claudeSessionID: claudeSessionID,
+                            requireReadOnly: requireReadOnly, taskID: rccTaskID)
+                    } catch {
+                        // Transport/policy failure is NOT permission for an old
+                        // OS-1 coordinator to redispatch this request.
+                        summary = RunSummary(status: "rcc_transport_preserved", steps: [],
+                            workflowBlocker: "OpenClaw task connection unavailable; request preserved; no alternate route",
+                            rccTransportFailure: "rcc_connection_or_policy_unavailable")
+                    }
+                    if outputFormat == "json" { print(String(decoding: try JSONEncoder().encode(summary), as: UTF8.self)) }
+                    else { printRunSummary(summary) }
+                    return
                 }
                 if surface == .chatgpt {
                     let summary = try await runConsumerChatGPTRequest(prompt: prompt)
@@ -17424,4 +17492,291 @@ struct OS1Main {
             exit(cliExitStatus(for: error))
         }
     }
+}
+
+// MARK: - OpenClaw single-owner native transport (no route/retry/parent adoption)
+private struct RCCAuthorizationWire: Encodable {
+    let schema = 1
+    let request: StartExecutionRequest
+    let selected: Selected
+    struct Selected: Encodable {
+        let provider: String, model: String, effort: String, permission_profile: String
+    }
+}
+
+private func rccPrivateInput(_ path: String) throws -> Data {
+    guard path.hasPrefix("/") else { throw OS1Error.message("RCC private input must be absolute") }
+    let fd = Darwin.open(path, O_RDONLY | O_NOFOLLOW)
+    guard fd >= 0 else { throw OS1Error.message("RCC private input unavailable") }
+    defer { Darwin.close(fd) }
+    var st = stat()
+    guard fstat(fd, &st) == 0, (st.st_mode & S_IFMT) == S_IFREG, st.st_uid == geteuid(),
+          (st.st_mode & 0o077) == 0, st.st_size > 0, st.st_size <= 1_048_576 else {
+        throw OS1Error.message("RCC input custody rejected")
+    }
+    var data = Data(count: Int(st.st_size)), offset = 0
+    while offset < data.count {
+        let remaining = data.count - offset
+        let n = data.withUnsafeMutableBytes { Darwin.read(fd, $0.baseAddress!.advanced(by: offset), remaining) }
+        guard n > 0 else { throw OS1Error.message("RCC input incomplete") }; offset += n
+    }
+    return data
+}
+
+private func rccNativeCatalog(_ bytes: Data) throws -> Data {
+    let request = try RCCRuntimeContract.decodeRequest(bytes)
+    guard let host = request.hostContext else { throw OS1Error.message("RCC host context missing") }
+    let config = try RuntimeConfig.load()
+    let codex = (try? ModelAvailability.codexCatalog(workspace: host.workspace, config: config)) ?? ActiveCodexCatalog(models: [], source: "unavailable")
+    let claude = (try? ModelAvailability.claudeCatalogs(workspace: host.workspace, config: config))?.routable ?? []
+    let claudeQuota = ModelAvailability.claudeQuota(workspace: host.workspace)
+    let book = BackendAccounts.load(), now = Date()
+    // Authentication is provider state, not per-model state. Observe each
+    // native account once per catalog snapshot rather than starting an
+    // app-server/auth process for every signed profile.
+    var authentication: [String: NativeSurfaceAuth] = [:]
+    for provider in ["codex", "claude"] {
+        if let observed = observeNativeSurfaceAuth(provider: provider, workspace: host.workspace, book: book) {
+            authentication[provider] = observed
+        }
+    }
+    var candidates: [[String: Any]] = []
+    for (action, profile) in (config.executionProfiles ?? [:]).sorted(by: { $0.key < $1.key }) {
+        guard ["codex", "claude"].contains(profile.provider),
+              profile.provider != "codex" || OS1Settings.load().showCodex else { continue }
+        let available = profile.provider == "codex" ? codex.models.contains { $0.slug == profile.model && $0.supportedEfforts.contains(profile.effort) }
+            : claude.contains { $0.model == profile.model && $0.supportedEfforts.contains(profile.effort) }
+        guard available, let auth = authentication[profile.provider],
+              auth.mode == .subscription, auth.billing == .includedSubscription else { continue }
+        let account = BackendAccounts.active(provider: profile.provider, in: book).id
+        let quota = profile.provider == "codex" ? codex.quotaSnapshot : claudeQuota
+        let remaining = quota?.effectiveRemaining(accountID: account, model: profile.model, now: now)
+        if remaining == 0 { continue }
+        let scopes = host.requireReadOnly || ScopeResolution.resolve(request.request).scope == .readOnly
+            ? ["read_only"] : ["read_only", "workspace_write"]
+        for scope in scopes {
+            let surfaces = scope == "read_only" ? [profile.provider, profile.provider == "codex" ? "gpt-chat" : "claude-chat"] : [profile.provider]
+            for surface in surfaces {
+                guard host.providerPreference == "auto" || host.providerPreference == surface else { continue }
+                // Conversation history is supplied text, not evidence that
+                // this request needs filesystem access. Actual attachments and
+                // the existing shell/path/image gates still exclude chat.
+                if surface.hasSuffix("-chat"), claudeChatLaneRefusal(objective: request.request,
+                    hasSource: !request.materialRefs.isEmpty) != nil { continue }
+                let tools = surface.hasSuffix("-chat") ? [] : scope == "read_only" ? ["read", "execute"] : ["read", "write", "execute"]
+                let tuple = [surface, profile.provider, account, profile.model, profile.effort, scope, config.executorContract.sha256].joined(separator: "\n")
+                let digest = sha256Hex(Data(tuple.utf8))
+                candidates.append(["id": "cfg-" + String(digest.prefix(32)), "surface": surface,
+                    "transport": profile.provider == "codex" ? "codex_app_server" : "claude_cli",
+                    "account_id": account, "model": profile.model, "effort": profile.effort, "tools": tools,
+                    "scope": scope, "permission_profile": scope,
+                    "quota_pool": profile.provider == "codex" ? "openai_codex" : "anthropic_shared",
+                    "allowed_paths": scope == "workspace_write" ? ["**"] : [], "configuration_sha256": digest,
+                    "availability": "available", "availability_observed_at_ms": Int64(now.timeIntervalSince1970 * 1000),
+                    "availability_valid_until_ms": Int64(now.addingTimeInterval(120).timeIntervalSince1970 * 1000),
+                    "quota_remaining_fraction": remaining.map { $0 / 100 } as Any? ?? NSNull(),
+                    "quota_observed_at_ms": quota.map { Int64($0.observedAt.timeIntervalSince1970 * 1000) } as Any? ?? NSNull(),
+                    "quota_valid_until_ms": quota.flatMap { $0.isFresh(accountID: account, now: now) ? Int64($0.observedAt.addingTimeInterval(120).timeIntervalSince1970 * 1000) : nil } as Any? ?? NSNull(),
+                    "quality_state": "policy_admitted", "estimated_cost_units": NSNull()])
+                _ = action
+            }
+        }
+    }
+    // Never truncate an alphabetical catalog: that erased the available
+    // 6.x/6.1 models while retaining older profiles. An oversize inventory is
+    // an explicit boundary, not permission to silently hide configurations.
+    guard candidates.count <= 256 else { throw OS1Error.message("RCC native catalog exceeds bounded capacity; no profiles discarded") }
+    let data = try JSONSerialization.data(withJSONObject: ["schema": 1, "task_id": request.taskID,
+        "request_sha256": request.requestSHA256, "candidates": candidates], options: [.sortedKeys, .withoutEscapingSlashes])
+    _ = try RCCRuntimeContract.decodeCatalog(data)
+    return data
+}
+
+private func rccNativeAdapter(_ bytes: Data) async throws -> Data {
+    let t = try RCCRuntimeContract.decodeTicket(bytes)
+    guard let h = t.hostContext, let original = t.originalRequest, let objective = t.originalObjective,
+          sha256Hex(Data(original.utf8)) == t.requestSHA256,
+          sha256Hex(try RCCRuntimeContract.encode(h)) == t.sourceFingerprint else { throw OS1Error.message("RCC source binding failed") }
+    let policy = h.ownerPolicy
+    try policy?.verifyOriginal()
+    let config = try RuntimeConfig.load()
+    let policyText = policy.map { $0.routing + "\n" + $0.projection } ?? config.executorContract.directives.joined(separator: "\n")
+    guard sha256Hex(Data(policyText.utf8)) == t.policySHA256,
+          let surface = ProviderSurface(rawValue: t.selectedConfig.surface.rawValue),
+          let provider = surface.gatewayPreference, ["codex", "claude"].contains(provider),
+          h.providerPreference == "auto" || h.providerPreference == surface.rawValue,
+          !h.requireReadOnly || t.selectedConfig.scope == .readOnly else { throw OS1Error.message("RCC exact capability rejected") }
+    let account = BackendAccounts.active(provider: provider, in: BackendAccounts.load()).id
+    guard account == t.selectedConfig.accountID,
+          (config.executionProfiles ?? [:]).values.contains(where: { $0.provider == provider && $0.model == t.selectedConfig.model && $0.effort == t.selectedConfig.effort.rawValue }) else {
+        throw OS1Error.message("RCC selected account/config no longer authorized")
+    }
+    var dispatched = false
+    let id = UUID().uuidString.lowercased()
+    let root = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".os1/rcc-runtime/native-receipts")
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+    let receipt = root.appendingPathComponent(id + ".json")
+    var record = RCCRuntimeContract.ExecutionRecord(taskID: t.taskID, nodeID: t.nodeID, attemptID: t.attemptID,
+        candidateID: t.candidateID, configurationSHA256: t.configurationSHA256, selectedConfig: t.selectedConfig,
+        acknowledgedConfig: nil, observedConfig: nil, status: .failed, output: nil,
+        executionVerified: false, taskVerified: false, taskQuality: .unverified, parityState: .unverified,
+        nativeReceipt: receipt.path, sideEffects: .none, usage: nil, dispatchStage: .notDispatched)
+    do {
+        let codex = (try? ModelAvailability.codexCatalog(workspace: h.workspace, config: config)) ?? ActiveCodexCatalog(models: [], source: "unavailable")
+        let claude = (try? ModelAvailability.claudeCatalogs(workspace: h.workspace, config: config))?.routable ?? []
+        let supported = provider == "codex" ? codex.models.contains { $0.slug == t.selectedConfig.model && $0.supportedEfforts.contains(t.selectedConfig.effort.rawValue) }
+            : claude.contains { $0.model == t.selectedConfig.model && $0.supportedEfforts.contains(t.selectedConfig.effort.rawValue) }
+        guard supported else { throw OS1Error.message("RCC configuration unavailable before dispatch") }
+        var input = ExecutionInputContext(inputUTF8Bytes: max(1, t.instruction.utf8.count + policyText.utf8.count + (h.context?.utf8.count ?? 0)), sourceUTF8Bytes: 0, historyUTF8Bytes: h.context?.utf8.count ?? 0)
+        input.executionPermissionProfile = t.selectedConfig.permissionProfile.rawValue
+        input.availableClaudeModels = claude
+        // The existing authorization boundary requires a task-bound feedback
+        // envelope even for a first attempt. Empty observations are explicit:
+        // they do not fabricate prior quality evidence or invoke a second owner.
+        input.completionFeedback = PublicCompletionFeedback(
+            objectiveSHA256: sha256Hex(Data(objective.utf8)), observations: [])
+        input.providerQuota = providerQuotaContext(codex: codex.quotaSnapshot, claude: ModelAvailability.claudeQuota(workspace: h.workspace),
+            codexAccountID: BackendAccounts.active(provider: "codex", in: BackendAccounts.load()).id,
+            claudeAccountID: BackendAccounts.active(provider: "claude", in: BackendAccounts.load()).id)
+        let request = StartExecutionRequest(task: objective, providerPreference: provider,
+            capacityPlan: .init(codex: 100, claude: 100), executorContractVersion: config.executorContract.version,
+            executorContractSHA256: config.executorContract.sha256, availableCodexModels: codex.models, executionContext: input)
+        let signed = try await APIClient(config: config, token: try githubToken(), deviceID: try deviceID()).post("/v1/execution-authorizations",
+            body: RCCAuthorizationWire(request: request, selected: .init(provider: provider,
+                model: t.selectedConfig.model, effort: t.selectedConfig.effort.rawValue,
+                permission_profile: t.selectedConfig.permissionProfile.rawValue)), as: Ticket.self)
+        try verifyTicket(signed, config: config, requiresStartupContract: true)
+        guard signed.provider == provider, signed.permissionProfile == t.selectedConfig.permissionProfile.rawValue,
+              signed.startupContract?.model == t.selectedConfig.model,
+              signed.startupContract?.effort == t.selectedConfig.effort.rawValue else { throw OS1Error.message("RCC authorization changed requested tuple") }
+        record.acknowledgedConfig = t.selectedConfig
+        var custody = OS1AttemptSourceState()
+        let sourceRoot = OS1SourceWatch.containedRoot(workspace: h.workspace)
+        let sourceStep = try await prepareOS1AttemptSource(provider: provider, permissionProfile: signed.permissionProfile,
+            sharedLeaseRoot: sourceRoot, firstAttempt: true, claudeAlternative: { false },
+            ticketFresh: { ticketValid(signed, forAtLeast: 10) }, state: &custody)
+        guard case .proceed = sourceStep else { throw OS1Error.message("RCC source custody requires fresh authorization; no backend dispatched") }
+        defer { OS1SourceConfinement.activeRoots = []; withExtendedLifetime(custody.lease) {} }
+        let workspace = surface.forcesChatLane ? try providerExecutionWorkspace(provider: provider, permission: "read_only", hasSource: false, workspace: h.workspace, objective: t.instruction) : h.workspace
+        let before = workspaceHash(workspace)
+        var measuredUsage: CompletionMeasuredUsage?
+        let delegated = "ORIGINAL OWNER OBJECTIVE:\n" + objective + "\n\nDELEGATED WORK ONLY:\n" + t.instruction +
+            "\n\nRCC task " + t.taskID + "; child " + t.nodeID + "; attempt " + t.attemptID +
+            "; scope " + t.selectedConfig.scope.rawValue + ". Do not spawn a competing orchestration or silently change model/account."
+        let execution = try ParallelAgentRuntime.$managedDelegation.withValue(true) {
+        try OwnerPolicyContext.$snapshot.withValue(policy) {
+            try execute(ticket: signed, prompt: try providerPrompt(current: delegated, context: h.context, r2Evidence: nil),
+                workspace: workspace, timeout: config.executionTimeoutSeconds, idleTimeout: config.providerIdleTimeoutSeconds,
+                trustedCodexModels: codex.models, providerSessionID: t.nativeResumeSessionID, model: t.selectedConfig.model,
+                effort: t.selectedConfig.effort.rawValue, executorContract: config.executorContract,
+                desktopReveal: .never, workspaceBeforeHash: before, objectivePrompt: t.instruction,
+                onUsage: { measuredUsage = $0 }, onDispatch: { _ in dispatched = true }, quotaContext: input.providerQuota,
+                surfaceOverride: surface, workspaceOverride: workspace)
+        }
+        }
+        let a = execution.artifact
+        let verified = a.exitCode == 0 && execution.nativeRecord.persistence == "verified"
+        let exact = publicDeterministicExpression(t.instruction).map { a.output.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines) == $0 } ?? false
+        record.status = verified ? .succeeded : .failed
+        record.dispatchStage = dispatched ? .dispatched : .unknown
+        record.output = a.output; record.executionVerified = verified
+        record.taskVerified = verified && exact; record.taskQuality = exact && verified ? .taskVerified : .executionOnly
+        record.sideEffects = t.selectedConfig.scope == .workspaceWrite ? (a.workspaceBeforeHash == a.workspaceAfterHash ? .possible : .confirmed) : .none
+        let readCache: Int64? = measuredUsage.flatMap { usage in
+            guard let total = usage.cacheTokens, let writes = usage.cacheWriteTokens, total >= writes else { return nil }
+            return Int64(total - writes)
+        }
+        record.usage = .init(inputTokens: measuredUsage?.inputTokens.map(Int64.init),
+            outputTokens: measuredUsage?.outputTokens.map(Int64.init),
+            cacheReadTokens: readCache, cacheWriteTokens: measuredUsage?.cacheWriteTokens.map(Int64.init),
+            providerCalls: dispatched ? 1 : nil, durationMS: a.durationMS,
+            metric: measuredUsage == nil ? nil : "native_usage_observation")
+        // Actual model/effort are not universally exposed; requested artifact fields are NOT independent observations.
+        record.observedConfig = nil
+        let step = RunStepSummary(sequence: 1, provider: provider, action: signed.action, model: t.selectedConfig.model,
+            effort: t.selectedConfig.effort.rawValue, revasDisposition: "execution_only", sessionID: execution.sessionID,
+            permissionProfile: signed.permissionProfile, exitCode: a.exitCode, output: a.output, stderr: a.stderr,
+            durationMS: a.durationMS, nativeRecord: execution.nativeRecord, surface: surface.rawValue,
+            preDispatchGovernanceReceipt: execution.preDispatchGovernanceReceipt)
+        record.nativeSummary = String(decoding: try JSONEncoder().encode(RunSummary(status: "returned_unverified", steps: [step])), as: UTF8.self)
+    } catch {
+        if let rejected = error as? RejectedProviderExecution {
+            // A post-check refusal does not erase a real finished candidate.
+            // Keep its exact native bytes and receipt; never relabel it complete.
+            let e = rejected.execution, a = e.artifact
+            record.output = a.output
+            record.executionVerified = a.exitCode == 0 && e.nativeRecord.persistence == "verified"
+            record.taskQuality = .failed
+            let step = RunStepSummary(sequence: 1, provider: provider, action: a.action, model: a.model,
+                effort: a.effort, revasDisposition: "rejected_preserved", sessionID: e.sessionID,
+                permissionProfile: a.permissionProfile, exitCode: a.exitCode, output: a.output, stderr: a.stderr,
+                durationMS: a.durationMS, nativeRecord: e.nativeRecord, surface: e.surface,
+                preDispatchGovernanceReceipt: e.preDispatchGovernanceReceipt)
+            record.nativeSummary = String(decoding: try JSONEncoder().encode(RunSummary(status: "returned_unverified", steps: [step])), as: UTF8.self)
+        }
+        record.status = dispatched ? .effectsUncertain : .failed
+        record.dispatchStage = dispatched ? .dispatched : .notDispatched
+        record.sideEffects = dispatched && t.selectedConfig.scope == .workspaceWrite ? .possible : .none
+        record.error = dispatched ? "native_outcome_uncertain_preserved" : "native_configuration_or_authorization_unavailable"
+    }
+    let data = try RCCRuntimeContract.encode(record)
+    try data.write(to: receipt, options: [.atomic]); try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: receipt.path)
+    guard try Data(contentsOf: receipt) == data else { throw OS1Error.message("RCC native receipt readback failed") }
+    return data
+}
+
+func runOpenClawRCCTask(prompt: String, workspace: String, context: String?, surface: ProviderSurface,
+    codexSessionID: String?, claudeSessionID: String?, requireReadOnly: Bool, taskID: String?) async throws -> RunSummary {
+    let owner = try loadCurrentOwnerPolicy(), cfg = try RuntimeConfig.load()
+    let text = owner.map { $0.routing + "\n" + $0.projection } ?? cfg.executorContract.directives.joined(separator: "\n")
+    let explicit = RouteFanout.plan(prompt)?.targets.map { target in
+        RCCRuntimeContract.ExplicitRoute(surface: RCCRuntimeContract.Surface(rawValue: target.surface.rawValue)!, instruction: target.payload)
+    }
+    let host = RCCRuntimeContract.HostContext(workspace: LocalProjectWorkspace.executionPath(workspace), context: context,
+        providerPreference: surface.rawValue, codexSessionID: codexSessionID, claudeSessionID: claudeSessionID,
+        requireReadOnly: requireReadOnly, ownerPolicy: owner, explicitRoutes: explicit)
+    let id = taskID ?? UUID().uuidString.lowercased(), observed = Date()
+    let request = RCCRuntimeContract.Request(taskID: id, request: prompt, requestSHA256: sha256Hex(Data(prompt.utf8)),
+        objective: prompt, policySHA256: sha256Hex(Data(text.utf8)), sourceFingerprint: sha256Hex(try RCCRuntimeContract.encode(host)),
+        mode: RouteFanout.plan(prompt) != nil ? .explicitRoutingTest : .auto, materialRefs: PromptAttachments.imagePaths(in: prompt),
+        budget: .init(maxAttempts: 2, maxParallel: 4, maxCostUnits: nil, maxDurationMS: 3_600_000),
+        policy: .init(sourceSHA256: owner?.sourceSHA256 ?? cfg.executorContract.sha256,
+            projectionSHA256: sha256Hex(Data(text.utf8)), text: text), hostContext: host)
+    let data = try RCCRuntimeContract.encode(request)
+    _ = try RCCRuntimeContract.decodeRequest(data)
+    let configuration = try await OwnerPolicyContext.$snapshot.withValue(owner) { try await LocalRouterBridge.rccRuntimeConfiguration() }
+    RuntimeActivity.emit(.routing, provider: "local", model: "qwen3.5:4b", effort: "dynamic", publicText: "OpenClaw RCC Runtime owns this task · automatic exact configuration")
+    let conversationID = ProcessInfo.processInfo.environment["OS1_CONVERSATION_ID"].flatMap(UUID.init(uuidString:))
+        ?? (try? SessionHandoff.decode(context).taskContext?.conversationID) ?? UUID()
+    let submissionID = UUID(uuidString: id) ?? UUID()
+    let terminal = try await RCCRuntimeGatewayClient.run(request: data, configuration: configuration) { snapshot in
+        guard let state = try? RCCRuntimeContract.decodeSnapshot(snapshot) else { return }
+        if let graph = try? RCCRuntimeProjection.project(state, conversationID: conversationID,
+            submissionID: submissionID, objective: prompt, observedAt: Date(), firstObservedAt: observed,
+            maxParallelism: 4, expectedRequestSHA256: request.requestSHA256) {
+            if let path = ProcessInfo.processInfo.environment["OS1_AGENT_TASK_FILE"] {
+                try? ParallelAgentTask.saveBound(graph, path: path)
+            }
+            RuntimeActivity.emit(.preparing, publicText: "OpenClaw task " + state.state.rawValue + " · " + String(state.children.count) + " child run(s)", agentTask: graph)
+        } else { RuntimeActivity.emit(.preparing, publicText: "OpenClaw task " + state.state.rawValue + " · " + String(state.children.count) + " child run(s)") }
+    }
+    let result = try RCCRuntimeContract.decodeSnapshot(terminal)
+    var steps: [RunStepSummary] = []
+    for serialized in result.result?.nativeSummaries ?? [] {
+        if let summary = try? JSONDecoder().decode(RunSummary.self, from: Data(serialized.utf8)) { steps += summary.steps }
+    }
+    if steps.isEmpty, let output = result.result?.output, !output.isEmpty,
+       result.state == .completed, result.result?.taskVerified == true,
+       result.children.count == 1, let child = result.children.first,
+       child.id == "local-core", child.candidateID == "local-core",
+       child.selectedConfig?.surface == .local, child.selectedConfig?.transport == .local,
+       child.selectedConfig?.model == "none", child.instruction == prompt {
+        steps = [RunStepSummary(sequence: 1, provider: "local", action: "rcc_deterministic", model: "deterministic",
+            effort: "none", revasDisposition: result.result?.taskVerified == true ? "control_verified" : "execution_only",
+            sessionID: id, permissionProfile: "local_control", exitCode: 0, output: output, stderr: "", durationMS: Int64(Date().timeIntervalSince(observed) * 1000), nativeRecord: nil)]
+    }
+    let graph = try? RCCRuntimeProjection.project(result, conversationID: conversationID, submissionID: submissionID,
+        objective: prompt, observedAt: Date(), firstObservedAt: observed, maxParallelism: 4, expectedRequestSHA256: request.requestSHA256)
+    return RunSummary(status: result.state == RCCRuntimeContract.State.completed ? "complete" : result.state == RCCRuntimeContract.State.returnedUnverified ? "returned_unverified" : "workflow_blocked",
+        steps: steps, monitorTaskID: id, workflowBlocker: result.error, agentTask: graph, localRouterReceipt: configuration.identity.pluginDirectory, rccRuntime: result)
 }

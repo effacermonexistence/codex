@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { constants } from 'node:fs';
 import { open } from 'node:fs/promises';
 import { basename, dirname } from 'node:path';
+import { registerRCCRuntime } from './rcc-plugin.mjs';
 
 const MAX_CONTRACT_BYTES = 65536;
 const MAX_POLICY_BYTES = 24000;
@@ -115,6 +116,10 @@ export default {
   name: 'OS-1 Typed State Bridge',
   description: 'Host-bound policy and one read-only typed state tool',
   register(api) {
+    if (process.env.OS1_RCC_RUNTIME === '1') {
+      registerRCCRuntime(api);
+      return;
+    }
     // This modifier may fail open in OpenClaw; the following gate MUST be present.
     api.on('before_prompt_build', async () => {
       const contract = await readContract();

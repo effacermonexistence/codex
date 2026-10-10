@@ -9,6 +9,7 @@ agentic-controller or bundled-package proof.
 from pathlib import Path
 import hashlib
 import json
+import re
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -80,13 +81,18 @@ expect('"candidate_only_not_parity"' in BRIDGE and
        '"tools_permitted": false' in BRIDGE,
        "a syntactically valid local output must not become quality or tool authority")
 PLUGIN = ROOT / "Resources/openclaw-os1-bridge"
-PINS = {
-    "index.mjs": "4303dbcae180e3337c55fca39659e13494195097914d83ee483aee51ddcfcc85",
-    "openclaw.plugin.json": "700710ab6124eabcc945f247b13e94451fc266b956c5ce991b5eb99cc6d62af3",
-    "package.json": "583bd79e8bc75e98df186b7bd50f6d1ec580298e930e2dbd5674ce1e6296dbe4",
+PIN_SYMBOLS = {
+    "index.mjs": "pinnedPluginIndexSHA256",
+    "openclaw.plugin.json": "pinnedPluginManifestSHA256",
+    "package.json": "pinnedPluginPackageSHA256",
+    "rcc-runtime.mjs": "rccRuntimeModuleSHA256",
+    "rcc-plugin.mjs": "rccRuntimePluginSHA256",
 }
-for name, digest in PINS.items():
-    expect(hashlib.sha256((PLUGIN / name).read_bytes()).hexdigest() == digest and digest in BRIDGE,
+for name, symbol in PIN_SYMBOLS.items():
+    match = re.search(r"(?:private )?static let " + re.escape(symbol) + r' = "([a-f0-9]{64})"', BRIDGE)
+    expect(match is not None, f"compiled installed-plugin pin exists for {name}")
+    digest = match.group(1)
+    expect(hashlib.sha256((PLUGIN / name).read_bytes()).hexdigest() == digest,
            f"the compiled installed-plugin pin matches {name} bytes")
 SOURCES = json.loads((ROOT / "Resources/local-controller-sources.json").read_text())
 for arch in ("arm64", "x86_64"):
@@ -140,4 +146,4 @@ expect('!StatusCheckIn.answersFromCard(input.request)' in BRIDGE and
 print(f"OS-1 local OpenClaw sidecar wiring: {checks} checks PASS; "
       "v1 managed-private runtime / v0 pinned legacy fallback; typed surface Gateway candidate + lean legacy; "
       "static/source checks only, no model calls; "
-      f"provisioner resource currently packaged={'provision-local-controller.py' in RELEASE}")
+      f"release provisioner resource wiring present={'provision-local-controller.py' in RELEASE}")

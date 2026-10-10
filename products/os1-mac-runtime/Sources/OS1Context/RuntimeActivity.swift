@@ -132,7 +132,7 @@ public struct RuntimeActivity: Codable, Equatable, Sendable {
         default: return os1Tr("도구 작업 진행 중", "Tool work in progress")
         }
     }
-    public static func emit(_ phase: Phase, provider: String? = nil, surface: String? = nil, model: String? = nil, effort: String? = nil, publicText: String? = nil, tool: String? = nil, nativeSessionID: String? = nil, progress: NativeExecutionProgress? = nil, publicTextOrigin: PublicTextOrigin = .systemStatus) {
+    public static func emit(_ phase: Phase, provider: String? = nil, surface: String? = nil, model: String? = nil, effort: String? = nil, publicText: String? = nil, tool: String? = nil, nativeSessionID: String? = nil, progress: NativeExecutionProgress? = nil, publicTextOrigin: PublicTextOrigin = .systemStatus, agentTask: ParallelAgentTask.Snapshot? = nil) {
         guard let path = ProcessInfo.processInfo.environment["OS1_ACTIVITY_FILE"] else { return }
         let routeDecoder = JSONDecoder()
         routeDecoder.userInfo[routeOnlyKey] = true
@@ -148,6 +148,7 @@ public struct RuntimeActivity: Codable, Equatable, Sendable {
         // submission identity and cannot attach a foreign parent snapshot.
         let environment = ProcessInfo.processInfo.environment
         let graph: ParallelAgentTask.Snapshot? = {
+            if let agentTask { return try? agentTask.validated() }
             guard let path = environment["OS1_AGENT_TASK_FILE"],
                   let conversation = environment["OS1_CONVERSATION_ID"].flatMap(UUID.init(uuidString:)),
                   let submission = environment["OS1_SUBMISSION_ID"].flatMap(UUID.init(uuidString:)) else { return nil }

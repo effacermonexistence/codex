@@ -17,6 +17,7 @@ import {
   submitResult,
   uploadArtifact,
   acknowledgeAttempt,
+  authorizeExecution,
 } from "./gateway";
 import { releaseRequest } from "./releases";
 import { completionCapabilities } from "./capabilities";
@@ -42,6 +43,7 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
       return await registerDevice(request, env);
     }
     if (url.pathname === "/v1/executions") return await startExecution(request, env);
+    if (url.pathname === "/v1/execution-authorizations") return await authorizeExecution(request, env);
     if (url.pathname === "/v1/attempts/start") return await acknowledgeAttempt(request, env);
     if (url.pathname === "/v1/artifacts") return await uploadArtifact(request, env);
     if (url.pathname === "/v1/results") return await submitResult(request, env);

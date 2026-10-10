@@ -1,4 +1,5 @@
 import { DurableObject } from "cloudflare:workers";
+import { admitExplicitProfile } from "./explicit-profile";
 import { appendCompletionObservation, completionFeedbackMatchesTask, validCompletionFeedback, validExecutionContext,
   type CompletionObservation, type ExecutionContext } from "./execution-context";
 import { capabilityCacheScope, completionCapabilityState, routeLearningSchema } from "./capabilities";
@@ -579,6 +580,50 @@ export default {
           ...(supported.modelAvailability ? { model_availability_schema: 1 } : {}) }, {
           headers: { "cache-control": "no-store" },
         });
+      }
+      if (request.method === "POST" && path === "/authorize-profile") {
+        const body = await request.json<unknown>();
+        if (!record(body) || !exact(body, ["execution_id", "principal", "selected", "task", "version"]) ||
+            body.version !== 3 || typeof body.execution_id !== "string" || !UUID.test(body.execution_id) ||
+            !record(body.principal) || !exact(body.principal, ["device_id", "subject"]) ||
+            typeof body.principal.subject !== "string" || !body.principal.subject || body.principal.subject.length > 512 ||
+            typeof body.principal.device_id !== "string" || !/^[A-Za-z0-9._:-]{8,128}$/.test(body.principal.device_id) ||
+            !record(body.task)) throw Error("denied");
+        const task = body.task;
+        if (!exact(task, ["content", "trust", "provider_preference", "capacity_plan", "available_codex_models", "execution_context", "executor_contract_version", "executor_contract_sha256"]) ||
+            typeof task.content !== "string" || !task.content || task.content.length > 48_000 || task.trust !== "untrusted_user_data" ||
+            !["auto", "codex", "claude"].includes(String(task.provider_preference)) ||
+            !validCatalog(task.available_codex_models, true) || !validExecutionContext(task.execution_context) ||
+            typeof task.executor_contract_version !== "string" || typeof task.executor_contract_sha256 !== "string" ||
+            !record(task.capacity_plan) || !exact(task.capacity_plan, ["codex", "claude"]) ||
+            !Number.isSafeInteger(task.capacity_plan.codex) || !Number.isSafeInteger(task.capacity_plan.claude) ||
+            (task.capacity_plan.codex as number) < 0 || (task.capacity_plan.codex as number) > 100 ||
+            (task.capacity_plan.claude as number) < 0 || (task.capacity_plan.claude as number) > 100 ||
+            !(await completionFeedbackMatchesTask(task.execution_context, task.content))) throw Error("denied");
+        const bundle = await loadPolicyBundle(env);
+        const { selected, action } = admitExplicitProfile(body.selected, bundle.execution_profiles,
+          bundle.executor_contracts, task.executor_contract_version, task.executor_contract_sha256,
+          task.execution_context.execution_permission_profile);
+        if ((task.provider_preference !== "auto" && task.provider_preference !== selected.provider) ||
+            (task.capacity_plan[selected.provider] as number) <= 0 ||
+            (selected.provider === "claude" && !Array.isArray(task.execution_context.available_claude_models)) ||
+            !availableModelTuple(task.execution_context as ExecutionContext, task.available_codex_models,
+            selected.provider, selected.model, selected.effort)) throw Error("denied");
+        const budget = env.ROUTING_BUDGETS.getByName(await budgetObjectName(env, body.principal.subject));
+        if (!(await budget.consumeStart(positiveInteger(env.MAX_ROUTE_STARTS_PER_HOUR)))) throw Error("denied");
+        const context: RouteContext = { task: task.content, provider_preference: selected.provider,
+          capacity_plan: task.capacity_plan as CapacityPlan, available_codex_models: task.available_codex_models,
+          execution_context: task.execution_context as ExecutionContext, attempt: 1 };
+        const state = pooledRouteState(env, body.execution_id);
+        if (!(await state.ready())) throw Error("denied");
+        const step: RoutedStep = { provider: selected.provider, action,
+          permission_profile: selected.permission_profile, max_steps: 1, provider_pinned: true,
+          route_id: "rcc-local-" + body.execution_id.toLowerCase().replaceAll("-", ""), verification_profile: "native_record" };
+        if ((await state.begin({ ...context, ...step, policy_version: bundle.policy_version,
+          policy_sha256: env.POLICY_BUNDLE_SHA256, rcc_policy_sha256: bundle.rcc.policy_sha256,
+          executor_contract_version: task.executor_contract_version, executor_contract_sha256: task.executor_contract_sha256,
+          execution_profiles: bundle.execution_profiles })) !== "created") throw Error("denied");
+        return stepResponse({ ...step, startup_contract: startupContract(selected.model, selected.effort, task.executor_contract_sha256) });
       }
       if (request.method !== "POST" || path !== "/decide") throw new Error("denied");
       stage.current = "parse";

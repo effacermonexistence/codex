@@ -21,6 +21,8 @@ final class SourceContextTests {
     static func main() throws {
         codexDictationAuthorizationChildIfRequested()
         voiceProcessChildIfRequested()
+        if CommandLine.arguments.contains("--rcc-runtime-contract-only") { try runRCCRuntimeContractFixture(); return }
+        if CommandLine.arguments.contains("--rcc-runtime-projection-only") { try runRCCRuntimeProjectionFixtures(); return }
         if CommandLine.arguments.contains("--openclaw-agent-controller-only") { try runOpenClawAgentControllerFixture(); return }
         if CommandLine.arguments.contains("--local-task-interpretation-only") { try runLocalTaskInterpretationFixtures(); return }
         if CommandLine.arguments.contains("--local-surface-routing-only") { try runLocalSurfaceRoutingFixtures(); return }
@@ -35,6 +37,8 @@ final class SourceContextTests {
         try runTaskQualityFixtures()
         try runTaskQualityCorrectionFixtures()
         try runLocalTaskInterpretationFixtures()
+        try runRCCRuntimeContractFixture()
+        try runRCCRuntimeProjectionFixtures()
         try runOpenClawAgentControllerFixture()
         try runLocalSurfaceRoutingFixtures()
         let bounded = "관련 회귀 테스트를 실행하고 실제 결과를 products/os1-mac-runtime/QUOTA-FALLBACK-VERIFICATION.md에 기록하세요. 새로운 기능이나 다른 제품 수정은 하지 마세요."

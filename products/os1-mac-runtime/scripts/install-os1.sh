@@ -122,6 +122,15 @@ verify_unnotarized_beta_package() {
     expected_component_files=39
     requires_local_controller=1
   fi
+  # 0.9.302 adds the two signed ONE-owner RCC Runtime bridge modules.
+  # Keep immutable 0.9.295--301 recovery package identities/counts unchanged.
+  local requires_rcc_runtime=0
+  if (( 10#$release_major > 0 || 10#$release_minor > 9 ||
+        (10#$release_minor == 9 && 10#$release_patch >= 302) )); then
+    expected_payload_files=38
+    expected_component_files=41
+    requires_rcc_runtime=1
+  fi
 
   pkgutil --expand-full "$package_path" "$expanded_root" || {
     echo "OS-1 beta verification could not expand the package." >&2
@@ -196,6 +205,17 @@ verify_unnotarized_beta_package() {
       echo "OS-1 beta verification refused a controller bridge in a legacy release." >&2; return 1
     fi
   done
+  for bridge_resource in rcc-runtime.mjs rcc-plugin.mjs; do
+    if (( requires_rcc_runtime )); then
+      [[ -f "$app_path/Contents/Resources/openclaw-os1-bridge/$bridge_resource" &&
+         ! -L "$app_path/Contents/Resources/openclaw-os1-bridge/$bridge_resource" ]] || {
+        echo "OS-1 beta verification requires signed RCC task-runtime module: $bridge_resource" >&2; return 1;
+      }
+    elif [[ -e "$app_path/Contents/Resources/openclaw-os1-bridge/$bridge_resource" ||
+            -L "$app_path/Contents/Resources/openclaw-os1-bridge/$bridge_resource" ]]; then
+      echo "OS-1 beta verification refused an RCC task-runtime module in a legacy release." >&2; return 1
+    fi
+  done
   [[ "$(/usr/bin/xmllint --xpath 'string(/pkg-info/@identifier)' "$package_info")" == "com.omaragi.os1" &&
      "$(/usr/bin/xmllint --xpath 'string(/pkg-info/@version)' "$package_info")" == "$manifest_version" &&
      "$(/usr/bin/xmllint --xpath 'string(/pkg-info/@install-location)' "$package_info")" == "/" &&
@@ -238,6 +258,8 @@ verify_unnotarized_beta_package() {
       "Applications/OS-1 CLODEX.app/Contents/Resources/provision-local-controller.sh"|\
       "Applications/OS-1 CLODEX.app/Contents/Resources/provision-local-controller.mjs"|\
       "Applications/OS-1 CLODEX.app/Contents/Resources/openclaw-os1-bridge/index.mjs"|\
+      "Applications/OS-1 CLODEX.app/Contents/Resources/openclaw-os1-bridge/rcc-runtime.mjs"|\
+      "Applications/OS-1 CLODEX.app/Contents/Resources/openclaw-os1-bridge/rcc-plugin.mjs"|\
       "Applications/OS-1 CLODEX.app/Contents/Resources/openclaw-os1-bridge/openclaw.plugin.json"|\
       "Applications/OS-1 CLODEX.app/Contents/Resources/openclaw-os1-bridge/package.json"|\
       "Applications/OS-1 CLODEX.app/Contents/Resources/OmarAGI.icns"|\

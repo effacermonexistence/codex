@@ -32,9 +32,10 @@ try {
  check(()=>assert.throws(()=>verifyPagingRecoveryTree(source,manifest,{allowAdditional:true})));
  check(()=>assert.equal(fs.readFileSync(path.join(source,'context-budget.json'),'utf8'),'changed'));
  check(()=>assert.equal(fs.readFileSync(path.join(receipt.backup,'context-budget.json'),'utf8'),'{}'));
- check(()=>assert.equal(binaryRollbackPermitted({appStopped:true,pagingQuiesced:true,anyBinaryMoved:true}),true));
- for(const key of ['appStopped','pagingQuiesced','anyBinaryMoved'])
-  check(()=>assert.equal(binaryRollbackPermitted({...{appStopped:true,pagingQuiesced:true,anyBinaryMoved:true},[key]:false}),false));
+ check(()=>assert.equal(binaryRollbackPermitted({appStopped:true,pagingQuiesced:true,rccQuiesced:true,anyBinaryMoved:true}),true));
+ for(const key of ['appStopped','pagingQuiesced','rccQuiesced','anyBinaryMoved'])
+  check(()=>assert.equal(binaryRollbackPermitted({...{appStopped:true,pagingQuiesced:true,rccQuiesced:true,anyBinaryMoved:true},[key]:false}),false));
+ check(()=>assert.equal(binaryRollbackPermitted({appStopped:true,pagingQuiesced:true,anyBinaryMoved:true}),false));
  const unsafe=path.join(root,'unsafe'), unsafeRecovery=path.join(root,'unsafe-recovery');
  fs.mkdirSync(unsafe,{mode:0o700});fs.mkdirSync(unsafeRecovery,{mode:0o700});
  fs.symlinkSync(source,path.join(unsafe,'episodic-memory'));
