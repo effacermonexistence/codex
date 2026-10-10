@@ -81,7 +81,7 @@ expect('"candidate_only_not_parity"' in BRIDGE and
        "a syntactically valid local output must not become quality or tool authority")
 PLUGIN = ROOT / "Resources/openclaw-os1-bridge"
 PINS = {
-    "index.mjs": "e9cd834a1fb57fcb61a2c53bc3c3a1a6d2fe393ab71bd3a14529f89901077e72",
+    "index.mjs": "464a99dadffbf0a6276d28a33c56d62f584b2b4a02e80ceba83759a493d262f8",
     "openclaw.plugin.json": "700710ab6124eabcc945f247b13e94451fc266b956c5ce991b5eb99cc6d62af3",
     "package.json": "583bd79e8bc75e98df186b7bd50f6d1ec580298e930e2dbd5674ce1e6296dbe4",
 }
