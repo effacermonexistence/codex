@@ -1237,9 +1237,9 @@ struct RunStepSummary: Codable {
     var verifiedPreviewDelivery: VerifiedPreviewDelivery? = nil
     var ownerPolicySourceSHA256: String? = OwnerPolicyContext.snapshot?.sourceSHA256
     var ownerPolicyProjectionSHA256: String? = OwnerPolicyContext.snapshot?.projectionSHA256
-    /// Read-back receipt for the actual pre-dispatch instruction channel or
-    /// deterministic host gate. This proves input delivery, not model compliance
-    /// or answer quality; older steps legitimately have no such receipt.
+    /// Read-back receipt for instruction bytes prepared before dispatch or a
+    /// deterministic host gate. Preparation does not prove that a backend
+    /// received them, complied, or produced a correct answer.
     var preDispatchGovernanceReceipt: String? = nil
     /// On a review's answer: the draft it checked ("codex · gpt-6-astra · high").
     var reviewedDraft: String? = nil
@@ -7171,7 +7171,8 @@ func claudeTranscriptContains(_ url: URL, assistantText: String) -> Bool {
 
 private func interruptedExecution(ticket: Ticket, model: String?, effort: String, contract: ExecutorContract,
                                   sessionID: String, publicProgress: String, beforeHash: String,
-                                  workspace: String, started: Date, cause: Error, surface: String? = nil) -> RejectedProviderExecution {
+                                  workspace: String, started: Date, cause: Error, surface: String? = nil,
+                                  preDispatchGovernanceReceipt: String? = nil) -> RejectedProviderExecution {
     let record = NativeRecordEvidence(turnID: nil, recordPath: nil,
         persistence: "interrupted_unverified", desktopVisibility: "external_app_not_opened")
     let artifact = Artifact(provider: ticket.provider, action: ticket.action, permissionProfile: ticket.permissionProfile,
@@ -7179,7 +7180,8 @@ private func interruptedExecution(ticket: Ticket, model: String?, effort: String
         executorContractSHA256: contract.sha256, exitCode: 69, output: String(publicProgress.suffix(24_000)), stderr: "",
         durationMS: Int64(Date().timeIntervalSince(started) * 1_000), workspaceBeforeHash: beforeHash,
         workspaceAfterHash: observedStateHash(workspace), nativeRecord: record)
-    return RejectedProviderExecution(execution: ProviderExecution(artifact: artifact, sessionID: sessionID, nativeRecord: record, surface: surface), cause: cause)
+    return RejectedProviderExecution(execution: ProviderExecution(artifact: artifact, sessionID: sessionID, nativeRecord: record,
+        surface: surface, preDispatchGovernanceReceipt: preDispatchGovernanceReceipt), cause: cause)
 }
 
 private func driftScope(prompt: String, workspace: String, evidence: R2EvidenceBundle?, contract: ExecutorContract) -> DriftScope {
@@ -7341,9 +7343,10 @@ private func nativeTransportAdmissionSelfTest() throws {
     print("OS-1 dynamic native transport and exact local dispatch: OK; native calls 0")
 }
 
-/// Exact pre-dispatch boundary receipt. It records the channel and a digest of
-/// what OS-1 actually passes before a model turn (or the host gate before an
-/// exact local executor). Neither a hash nor a prompt is a quality verdict.
+/// Exact pre-dispatch boundary receipt. It records the intended channel and a
+/// digest of the input OS-1 has prepared before a model turn (or the host gate
+/// before an exact local executor). A later failed launch leaves this as
+/// prepared-not-delivered; neither a hash nor a prompt is a quality verdict.
 /// This is deliberately separate from post-return REVAS adoption.
 private func recordPreDispatchGovernance(
     ticket: Ticket,
@@ -7392,7 +7395,8 @@ private func recordPreDispatchGovernance(
         "owner_policy_original_verified": OwnerPolicyContext.snapshot != nil,
         "drift_policy_state": driftState,
         "route_admission_sha256": admissionDigest ?? NSNull(),
-        "meaning": "pre_dispatch_input_receipt_not_compliance_or_quality",
+        "meaning": "pre_dispatch_preparation_not_delivery_or_quality",
+        "backend_delivery": "not_verified_at_pre_dispatch",
         "recorded_at": ISO8601DateFormatter().string(from: Date())
     ]
     let data = try JSONSerialization.data(withJSONObject: receipt, options: [.sortedKeys])
@@ -7424,7 +7428,8 @@ private func preDispatchGovernanceSelfTest() throws {
           receipt["sequence"] as? Int == ticket.sequence,
           receipt["channel"] as? String == "claude_append_system",
           receipt["instructions_sha256"] as? String == sha256Hex(Data(policy.utf8)),
-          receipt["meaning"] as? String == "pre_dispatch_input_receipt_not_compliance_or_quality",
+          receipt["meaning"] as? String == "pre_dispatch_preparation_not_delivery_or_quality",
+          receipt["backend_delivery"] as? String == "not_verified_at_pre_dispatch",
           !String(decoding: bytes, as: UTF8.self).contains(policy),
           (try FileManager.default.attributesOfItem(atPath: path)[.posixPermissions] as? NSNumber)?.intValue == 0o600 else {
         throw OS1Error.message("Pre-dispatch governance receipt was not bound, private, and source-clean")
@@ -7487,6 +7492,7 @@ private func execute(
     onUsage: ((CompletionMeasuredUsage?) -> Void)? = nil,
     onDispatch: ((String?) -> Void)? = nil,
     onInstructions: ((String) -> Void)? = nil,
+    onPreDispatchReceipt: ((String) -> Void)? = nil,
     memoryTurn: MemoryExecutionManifest? = nil,
     quotaContext: ProviderQuotaContext? = nil,
     surfaceChoiceReceipt: String? = nil
@@ -7589,6 +7595,7 @@ private func execute(
             contractSHA256: executorContract.sha256, channel: "codex_developer", instructions: instructions,
             driftState: driftApplication == nil ? "unavailable_base_contract_retained" : "applied",
             routeAdmission: admissionPath)
+        onPreDispatchReceipt?(preDispatchGovernanceReceipt!)
         let deadline = Date().addingTimeInterval(TimeInterval(timeout))
         // GPT chat: the model alone, in the empty answer workspace, on a fresh
         // thread (resuming a full Codex thread would reload what the lane drops).
@@ -7731,7 +7738,8 @@ private func execute(
             // No alternate turn is dispatched after an ambiguous failure.
             throw interruptedExecution(ticket: ticket, model: model, effort: effort, contract: executorContract,
                 sessionID: actualSessionID, publicProgress: appServer.interruptedPublicProgress, beforeHash: workspaceBeforeHash,
-                workspace: executionWorkspace, started: started, cause: error, surface: executedSurface?.rawValue)
+                workspace: executionWorkspace, started: started, cause: error, surface: executedSurface?.rawValue,
+                preDispatchGovernanceReceipt: preDispatchGovernanceReceipt)
         }
         // Account for this exact native turn before any quality guard rejects
         // it. Never hide a second paid repair inside one signed route ticket.
@@ -7958,6 +7966,7 @@ private func execute(
             instructions: arguments[systemIndex + 1],
             driftState: driftApplication == nil ? "unavailable_base_contract_retained" : "applied",
             routeAdmission: admissionPath)
+        onPreDispatchReceipt?(preDispatchGovernanceReceipt!)
         if projectlessRead && !sourceOnly && !chatLane { arguments.insert("--safe-mode", at: 1) }
         if CheckoutTurn.enabled && ticket.permissionProfile == "workspace_write" && !sourceOnly && !chatLane {
             arguments.insert(contentsOf: CheckoutTurn.claudeMCPArguments(os1Executable: currentOS1Executable(),
@@ -8018,7 +8027,8 @@ private func execute(
                 sessionID: activeSessionID,
                 publicProgress: confined ? OS1SourceConfinement.strippingMarker(stream.text, partialTail: true) : stream.text,
                 beforeHash: workspaceBeforeHash,
-                workspace: executionWorkspace, started: started, cause: error, surface: executedSurface?.rawValue)
+                workspace: executionWorkspace, started: started, cause: error, surface: executedSurface?.rawValue,
+                preDispatchGovernanceReceipt: preDispatchGovernanceReceipt)
         }
         stream.finishClaude()
         if let text = stream.takeClaudePublicFinal(sessionID: activeSessionID, after: &relayedResultCount) {
@@ -8062,7 +8072,8 @@ private func execute(
             let progress = confined ? OS1SourceConfinement.strippingMarker(rawProgress) : rawProgress
             var rejection = interruptedExecution(ticket: ticket, model: model, effort: effort, contract: executorContract,
                 sessionID: activeSessionID, publicProgress: progress, beforeHash: workspaceBeforeHash,
-                workspace: executionWorkspace, started: started, cause: error, surface: executedSurface?.rawValue)
+                workspace: executionWorkspace, started: started, cause: error, surface: executedSurface?.rawValue,
+                preDispatchGovernanceReceipt: preDispatchGovernanceReceipt)
             rejection.quotaRejectedBeforeExecution = backendBlocker(error) == .quotaExhausted &&
                 stream.claudeQuotaRejectedBeforeExecution(sessionID: activeSessionID)
             if backendBlocker(error) == .quotaExhausted, var scoped = object {
@@ -9177,6 +9188,9 @@ func routeFanoutSummarySelfTest() throws {
     var legacyObject = try JSONSerialization.jsonObject(with: encoded) as! [String: Any]
     legacyObject.removeValue(forKey: "surface")
     let legacy = try JSONDecoder().decode(RunStepSummary.self, from: JSONSerialization.data(withJSONObject: legacyObject))
+    var savedForDelivery = fourOutcomes[0].adopted!
+    savedForDelivery.preDispatchGovernanceReceipt = "/tmp/fixture-pre-dispatch.json"
+    let resumedAdopted = adoptedSavedStep(savedForDelivery, native: savedForDelivery.nativeRecord)
     let metadataRoot = FileManager.default.temporaryDirectory.appendingPathComponent("os1-route-custody-\(UUID())")
     try FileManager.default.createDirectory(at: metadataRoot, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: metadataRoot) }
@@ -9185,7 +9199,8 @@ func routeFanoutSummarySelfTest() throws {
     let interrupted = interruptedExecution(ticket: ticket, model: "m", effort: "max",
         contract: ExecutorContract(version: "fixture", sha256: "fixture", directives: []),
         sessionID: UUID().uuidString.lowercased(), publicProgress: "partial answer", beforeHash: "fixture",
-        workspace: metadataRoot.path, started: Date(), cause: OS1Error.message("fixture interruption"), surface: "gpt-chat")
+        workspace: metadataRoot.path, started: Date(), cause: OS1Error.message("fixture interruption"), surface: "gpt-chat",
+        preDispatchGovernanceReceipt: "/tmp/fixture-pre-dispatch.json")
     let checks: [(String, Bool)] = [
         ("receipt schema 2 preserves all four requested and actual routes", decodedRecord == fanoutRecord
             && decodedRecord.schema == 2 && decodedRecord.routes.count == 4
@@ -9211,8 +9226,13 @@ func routeFanoutSummarySelfTest() throws {
             && failedEvidence.attempts?.isEmpty == true && handoffEvidence.surface == "chatgpt"
             && handoffEvidence.handoffReceipt == "/tmp/receipt.json" && handoffEvidence.provider == nil
             && handoffEvidence.revasDisposition == nil && handoffEvidence.nativeRecord == nil),
-        ("interrupted and appended candidates retain their actual lane", interrupted.execution.surface == "gpt-chat"
-            && interrupted.execution.appendingOutput("saved").surface == "gpt-chat"),
+        ("interrupted and appended candidates retain their actual lane and pre-dispatch custody", interrupted.execution.surface == "gpt-chat"
+            && interrupted.execution.appendingOutput("saved").surface == "gpt-chat"
+            && interrupted.execution.preDispatchGovernanceReceipt == "/tmp/fixture-pre-dispatch.json"
+            && interrupted.execution.appendingOutput("saved").preDispatchGovernanceReceipt == "/tmp/fixture-pre-dispatch.json"),
+        ("delivery recovery preserves the producing attempt's governance custody", resumedAdopted.revasDisposition == "adopted"
+            && resumedAdopted.preDispatchGovernanceReceipt == savedForDelivery.preDispatchGovernanceReceipt
+            && resumedAdopted.ownerPolicySourceSHA256 == savedForDelivery.ownerPolicySourceSHA256),
         ("only actual full-lane sessions continue the bound agent conversation",
             routeFanoutContinuesSession(requested: .codex, actual: .codex, provider: "codex")
             && !routeFanoutContinuesSession(requested: .codex, actual: .gptChat, provider: "codex")
@@ -11936,6 +11956,7 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
         var attemptFailure: String?
         var attemptRecorded = false
         var dispatchStage = BackendDispatchStage.notDispatched
+        var attemptPreDispatchGovernanceReceipt: String?
         var interruptedSessionID: String?
         // Capture paid work even when artifact encoding, signing, upload, or
         // validation fails. Such a result is unknown, never free or adopted.
@@ -12017,6 +12038,7 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
                         feedbackScope = instructionFeedbackScope(instructions, input: attemptPrompt,
                             codexID: nativeSessions["codex"] ?? nil, claudeID: nativeSessions["claude"] ?? nil)
                     },
+                    onPreDispatchReceipt: { attemptPreDispatchGovernanceReceipt = $0 },
                     memoryTurn: memoryTurn,
                     quotaContext: request.executionContext?.providerQuota,
                     surfaceChoiceReceipt: nativeSurfaceSelection.receiptPath
@@ -12249,6 +12271,9 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
                     workspaceBeforeHash: beforeHash,
                     workspace: observedWorkspace
                 )
+                if execution.preDispatchGovernanceReceipt == nil {
+                    execution.preDispatchGovernanceReceipt = attemptPreDispatchGovernanceReceipt
+                }
             }
         }
         if dispatchStage == .dispatched, attemptFailure == nil {
@@ -12693,7 +12718,11 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
                 durationMS: artifact.durationMS,
                 nativeRecord: adoptedRecord,
                 surface: execution.surface,
-                verifiedPreviewDelivery: verifiedPreviewDelivery, taskQuality: taskQuality,
+                verifiedPreviewDelivery: verifiedPreviewDelivery,
+                ownerPolicySourceSHA256: pendingStep.ownerPolicySourceSHA256,
+                ownerPolicyProjectionSHA256: pendingStep.ownerPolicyProjectionSHA256,
+                preDispatchGovernanceReceipt: pendingStep.preDispatchGovernanceReceipt,
+                taskQuality: taskQuality,
                 os1SourceConfined: attemptConfined,
                 os1ChangeRequired: attemptConfined && execution.os1ChangeRequired,
                 os1FullAccessRequired: attemptConfined && execution.os1FullAccessRequired
@@ -12715,6 +12744,22 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
     adoptedResultReturned = true
     return finishedRun(adopted)
 }
+/// Delivery recovery changes only adoption/native publication. It must not
+/// replace the producing attempt's policy, instruction or task-quality custody
+/// with today's defaults while reconstructing the public result.
+private func adoptedSavedStep(_ step: RunStepSummary, native: NativeRecordEvidence?) -> RunStepSummary {
+    RunStepSummary(sequence: step.sequence, provider: step.provider, action: step.action,
+        model: step.model, effort: step.effort, revasDisposition: "adopted", sessionID: step.sessionID,
+        permissionProfile: step.permissionProfile, exitCode: step.exitCode, output: step.output, stderr: step.stderr,
+        durationMS: step.durationMS, nativeRecord: native, surface: step.surface,
+        workflowStage: step.workflowStage, verifiedPreviewDelivery: step.verifiedPreviewDelivery,
+        ownerPolicySourceSHA256: step.ownerPolicySourceSHA256,
+        ownerPolicyProjectionSHA256: step.ownerPolicyProjectionSHA256,
+        preDispatchGovernanceReceipt: step.preDispatchGovernanceReceipt,
+        reviewedDraft: step.reviewedDraft, taskQuality: step.taskQuality,
+        consumerChatGPTRecord: step.consumerChatGPTRecord)
+}
+
 func resumeDelivery(_ identifier: String) async throws -> RunSummary {
     let config = try RuntimeConfig.load()
     let id = try deviceID()
@@ -12795,11 +12840,7 @@ func resumeDelivery(_ identifier: String) async throws -> RunSummary {
     let native = step.nativeRecord.map { publishAdoptedNativeRecord($0, provider: step.provider, sessionID: step.sessionID, mode: .background) }
     try? GovernanceActivityStore().deliveryAdopted(executionID: submission.ticket.executionID, sequence: submission.ticket.sequence)
     BackendFailureNotice.clear()
-    return RunSummary(status: "complete", steps: [RunStepSummary(sequence: step.sequence, provider: step.provider,
-        action: step.action, model: step.model, effort: step.effort, revasDisposition: "adopted", sessionID: step.sessionID,
-        permissionProfile: step.permissionProfile, exitCode: step.exitCode, output: step.output, stderr: step.stderr,
-        durationMS: step.durationMS, nativeRecord: native, surface: step.surface,
-        workflowStage: step.workflowStage, verifiedPreviewDelivery: step.verifiedPreviewDelivery, taskQuality: step.taskQuality)], sourceContext: record.source,
+    return RunSummary(status: "complete", steps: [adoptedSavedStep(step, native: native)], sourceContext: record.source,
         persistedCorrectionIDs: os1DeliveryCorrectionIDs(record))
 }
 
