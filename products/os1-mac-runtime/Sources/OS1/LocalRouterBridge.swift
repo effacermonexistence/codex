@@ -27,7 +27,7 @@ enum LocalRouterBridge {
     static let privatePrefix = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/OS-1/tools/openclaw-2026.9.9")
     static let privateEntry = privatePrefix.appendingPathComponent("node_modules/openclaw/openclaw.mjs")
     private static let pinnedEntrySHA256 = "aa8606ca0d62ff133ef5b7bd2323ec8ff3f8eb384404399cd5e742918d63b0a1"
-    private static let pinnedPluginIndexSHA256 = "e9cd834a1fb57fcb61a2c53bc3c3a1a6d2fe393ab71bd3a14529f89901077e72"
+    private static let pinnedPluginIndexSHA256 = "464a99dadffbf0a6276d28a33c56d62f584b2b4a02e80ceba83759a493d262f8"
     private static let pinnedPluginManifestSHA256 = "700710ab6124eabcc945f247b13e94451fc266b956c5ce991b5eb99cc6d62af3"
     private static let pinnedPluginPackageSHA256 = "583bd79e8bc75e98df186b7bd50f6d1ec580298e930e2dbd5674ce1e6296dbe4"
     #if arch(arm64)

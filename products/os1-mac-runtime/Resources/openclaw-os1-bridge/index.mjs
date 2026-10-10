@@ -4,7 +4,7 @@ import { open } from 'node:fs/promises';
 import { basename, dirname } from 'node:path';
 
 const MAX_CONTRACT_BYTES = 65536;
-const MAX_POLICY_BYTES = 16384;
+const MAX_POLICY_BYTES = 24000;
 const MAX_OBJECTIVE_BYTES = 4096;
 const HEX64 = /^[a-f0-9]{64}$/;
 const RUN_ID = /^[A-Za-z0-9_-]{1,128}$/;

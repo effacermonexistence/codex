@@ -11,7 +11,10 @@ public enum OpenClawAgentController {
     public static let modelDigest = "d8b0f5e9760cd1682034f292d7ef72ec46f432149be0df7574bf2d6e92e38c04"
     public static let maximumContractBytes = 65_536
     public static let maximumEnvelopeBytes = 65_536
-    public static let maximumPolicyBytes = 16_384
+    // OwnerPolicySnapshot permits a <=24 KB task projection. Keep that
+    // content intact rather than making the normal owner Gateway path reject
+    // the currently verified 18.5 KB projection before a model call.
+    public static let maximumPolicyBytes = 24_000
     public static let maximumRequestBytes = 12_000
 
     public enum Stage: String, Codable, Sendable { case ingress, plan, route, execute, verify, adopt }
