@@ -66,6 +66,7 @@ public enum OpenClawAgentController {
         case unauthorizedTool = "unauthorized_tool"
         case unboundedOutput = "unbounded_output"
         case missingPreDispatchGate = "missing_pre_dispatch_gate"
+        case agentExecGovernanceUnavailable = "agent_exec_governance_unavailable"
     }
     public struct Candidate: Sendable {
         public let final: String
@@ -196,18 +197,73 @@ public enum OpenClawAgentController {
         public let arguments: [String]
         public let workingDirectory: String
     }
+    public struct PreparedGateway: Sendable {
+        public let turn: PreparedTurn
+        /// Contains a random 256-bit token. Write only to an OS-1-private 0600
+        /// file; never print or persist it in a public execution receipt.
+        public let configBytes: Data
+        public let configSHA256: String
+        public let port: Int
+        public let tokenSHA256: String
+    }
+    public struct GatewayCommands: Sendable {
+        public let gateway: LaunchCommand
+        /// Gateway-backed CLI: it sends the `agent` RPC then waits for the
+        /// terminal result. It is NOT `--local` and never falls back embedded.
+        public let requestAndWait: LaunchCommand
+        public let sessionKey: String
+    }
 
-    /// Returns an argv-only invocation; it does not start a model or write a
-    /// file. The host must first verify installed Node/OpenClaw/plugin hashes,
-    /// Ollama's exact local digest, and atomically write config/contract/request
-    /// as private regular files. The user request stays in --message-file, not
-    /// process arguments. OS-1 owns conversation persistence outside OpenClaw.
+    /// The pinned `agent exec` path is deliberately disabled: two actual
+    /// local-only smokes executed the plugin tool while skipping both pre-model
+    /// hooks. Offline plugin inspection cannot prove per-run governance.
     public static func command(prepared: PreparedTurn, privateHome: String,
                                nodePath: String, entryPath: String,
                                configPath: String, contractPath: String,
                                messagePath: String, workspace: String) throws -> LaunchCommand {
+        throw Rejection.agentExecGovernanceUnavailable
+    }
+
+    /// Build a disposable, loopback-only authenticated Gateway configuration.
+    /// Config bytes contain the token and are returned only for private write;
+    /// commands never carry the token in argv or environment. The Gateway must
+    /// be launched as an exact child owned by OS-1, never installed as a service.
+    public static func prepareGateway(turn: PreparedTurn, port: Int? = nil) throws -> PreparedGateway {
+        let selectedPort = port ?? Int.random(in: 49_152...65_535)
+        guard (49_152...65_535).contains(selectedPort),
+              var config = try JSONSerialization.jsonObject(with: turn.configBytes) as? [String: Any] else {
+            throw Rejection.invalidInput
+        }
+        let key = SymmetricKey(size: .bits256)
+        let token = key.withUnsafeBytes { raw in raw.map { String(format: "%02x", $0) }.joined() }
+        config["gateway"] = [
+            "mode": "local", "bind": "loopback", "port": selectedPort,
+            "auth": ["mode": "token", "token": token],
+            "controlUi": ["enabled": false], "uploads": ["enabled": false],
+            "cliAgents": ["enabled": false], "terminal": ["enabled": false],
+            "tailscale": ["mode": "off"]
+        ]
+        config["discovery"] = ["mdns": ["mode": "off"]]
+        let bytes = try JSONSerialization.data(withJSONObject: config, options: [.sortedKeys])
+        guard bytes.count <= maximumContractBytes else { throw Rejection.invalidInput }
+        return PreparedGateway(turn: turn, configBytes: bytes, configSHA256: digest(bytes),
+                               port: selectedPort, tokenSHA256: digest(Data(token.utf8)))
+    }
+
+    /// Exact supported CLI plan. The host must: verify pinned installed bytes,
+    /// create run-private 0700 directories and 0600 files, reserve/check the
+    /// chosen port, launch Gateway, wait for authenticated health on that exact
+    /// port, then launch requestAndWait. Do not use --force or --local. On
+    /// cancellation, signal the exact request PID (it sends chat.abort for an
+    /// accepted run), then drain and terminate the exact Gateway child PID.
+    /// A lost client connection after acceptance is ambiguous: reconcile the
+    /// accepted run/session before any replay. No success without gate receipt.
+    public static func gatewayCommands(prepared: PreparedGateway, privateHome: String,
+                                       nodePath: String, entryPath: String,
+                                       configPath: String, contractPath: String,
+                                       messagePath: String, workspace: String) throws -> GatewayCommands {
         let home = FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL.path
-        let prefix = home + "/.os1/openclaw-controller/" + prepared.contract.runID + "/"
+        let prefix = home + "/.os1/openclaw-controller/" + prepared.turn.contract.runID + "/"
         guard privateHome.hasPrefix(prefix), configPath.hasPrefix(prefix),
               contractPath.hasPrefix(prefix), messagePath.hasPrefix(prefix), workspace.hasPrefix(prefix),
               nodePath.hasPrefix("/"), entryPath.hasPrefix("/"),
@@ -215,18 +271,24 @@ public enum OpenClawAgentController {
               !privateHome.contains("/../"), !configPath.contains("/../"),
               !contractPath.contains("/../"), !messagePath.contains("/../"),
               !workspace.contains("/../") else { throw Rejection.invalidInput }
-        let env = ["HOME=" + privateHome, "OPENCLAW_HOME=" + privateHome,
-                   "OPENCLAW_STATE_DIR=" + privateHome + "/state",
-                   "OPENCLAW_CONFIG_PATH=" + configPath,
-                   "OS1_AGENT_CONTRACT_PATH=" + contractPath,
-                   "OS1_AGENT_CONTRACT_SHA256=" + prepared.contractSHA256,
-                   "OS1_AGENT_GATE_RECEIPT_PATH=" + URL(fileURLWithPath: contractPath).deletingLastPathComponent().appendingPathComponent("gate-receipt.json").path,
-                   "PATH=" + URL(fileURLWithPath: nodePath).deletingLastPathComponent().path + ":/usr/bin:/bin"]
-        let args = ["-i"] + env + [nodePath, entryPath, "agent", "exec", "--config", configPath,
-            "--cwd", workspace, "--model", "ollama/" + model,
-            "--thinking", "off", "--code-mode", "direct", "--message-file", messagePath,
-            "--json", "--timeout", "45"]
-        return LaunchCommand(executable: "/usr/bin/env", arguments: args, workingDirectory: workspace)
+        let common = ["HOME=" + privateHome, "OPENCLAW_HOME=" + privateHome,
+                      "OPENCLAW_STATE_DIR=" + privateHome + "/state",
+                      "OPENCLAW_CONFIG_PATH=" + configPath,
+                      "PATH=" + URL(fileURLWithPath: nodePath).deletingLastPathComponent().path + ":/usr/bin:/bin"]
+        let gate = ["OS1_AGENT_CONTRACT_PATH=" + contractPath,
+                    "OS1_AGENT_CONTRACT_SHA256=" + prepared.turn.contractSHA256,
+                    "OS1_AGENT_GATE_RECEIPT_PATH=" + URL(fileURLWithPath: contractPath).deletingLastPathComponent().appendingPathComponent("gate-receipt.json").path]
+        let gateway = LaunchCommand(executable: "/usr/bin/env",
+            arguments: ["-i"] + common + gate + [nodePath, entryPath, "gateway", "run",
+                "--bind", "loopback", "--auth", "token", "--port", String(prepared.port)],
+            workingDirectory: workspace)
+        let sessionKey = "agent:main:" + prepared.turn.contract.runID
+        let request = LaunchCommand(executable: "/usr/bin/env",
+            arguments: ["-i"] + common + [nodePath, entryPath, "agent", "--agent", "main",
+                "--session-key", sessionKey, "--message-file", messagePath,
+                "--model", "ollama/" + model, "--thinking", "off", "--json", "--timeout", "45"],
+            workingDirectory: workspace)
+        return GatewayCommands(gateway: gateway, requestAndWait: request, sessionKey: sessionKey)
     }
 
     /// Admit only OpenClaw's *agent exec* stable JSON envelope, never the lean

@@ -2,9 +2,30 @@
   "id": "os1-bridge",
   "name": "OS-1 Typed State Bridge",
   "description": "Read an OS-1-approved immutable run snapshot; no shell, browser, file write, backend or permission grant.",
-  "categories": ["agent-runtimes"],
-  "contracts": { "tools": ["os1_state_read"] },
-  "toolMetadata": { "os1_state_read": { "optional": true } },
-  "activation": { "onStartup": true },
-  "configSchema": { "type": "object", "additionalProperties": false }
+  "categories": [
+    "agent-runtimes"
+  ],
+  "contracts": {
+    "tools": [
+      "os1_state_read"
+    ]
+  },
+  "toolMetadata": {
+    "os1_state_read": {
+      "optional": true
+    }
+  },
+  "activation": {
+    "onStartup": false,
+    "onAgentHarnesses": [
+      "openclaw"
+    ],
+    "onConfigPaths": [
+      "plugins.entries.os1-bridge"
+    ]
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false
+  }
 }

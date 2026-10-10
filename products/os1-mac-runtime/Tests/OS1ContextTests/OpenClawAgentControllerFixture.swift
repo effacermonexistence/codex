@@ -39,20 +39,49 @@ func runOpenClawAgentControllerFixture() throws {
     try check(try JSONDecoder().decode(C.Contract.self, from: turn.contractBytes) == turn.contract,
               "contract round trip")
     let runRoot = FileManager.default.homeDirectoryForCurrentUser.path + "/.os1/openclaw-controller/fixture-run/"
-    let cmd = try C.command(prepared: turn, privateHome: runRoot + "home",
-                            nodePath: "/signed/node", entryPath: "/signed/openclaw.mjs",
-                            configPath: runRoot + "config.json", contractPath: runRoot + "contract.json",
-                            messagePath: runRoot + "request.txt", workspace: runRoot + "workspace")
-    try check(cmd.executable == "/usr/bin/env" && cmd.arguments.first == "-i" &&
-              cmd.arguments.contains("agent") && cmd.arguments.contains("exec") &&
-              cmd.arguments.contains("--message-file") && cmd.arguments.contains("--config") &&
-              cmd.arguments.contains("OS1_AGENT_GATE_RECEIPT_PATH=" + runRoot + "gate-receipt.json") &&
-              !cmd.arguments.contains(turn.request), "agent exec command has isolated env and no prompt in argv")
-    try rejects("other product path cannot become run home") {
-        _ = try C.command(prepared: turn, privateHome: "/tmp/other/home", nodePath: "/signed/node",
-                          entryPath: "/signed/openclaw.mjs", configPath: runRoot + "config.json",
-                          contractPath: runRoot + "contract.json", messagePath: runRoot + "request.txt",
-                          workspace: runRoot + "workspace")
+    try rejects("agent exec is disabled after real hook-bypass evidence") {
+        _ = try C.command(prepared: turn, privateHome: runRoot + "home",
+                          nodePath: "/signed/node", entryPath: "/signed/openclaw.mjs",
+                          configPath: runRoot + "config.json", contractPath: runRoot + "contract.json",
+                          messagePath: runRoot + "request.txt", workspace: runRoot + "workspace")
+    }
+    let preparedGateway = try C.prepareGateway(turn: turn, port: 55_231)
+    let gatewayConfig = try JSONSerialization.jsonObject(with: preparedGateway.configBytes) as! [String: Any]
+    let gateway = gatewayConfig["gateway"] as! [String: Any]
+    let auth = gateway["auth"] as! [String: Any]
+    let token = auth["token"] as! String
+    try check(gateway["mode"] as? String == "local" && gateway["bind"] as? String == "loopback" &&
+              gateway["port"] as? Int == 55_231 && auth["mode"] as? String == "token" && token.count == 64,
+              "disposable gateway is loopback/token only")
+    try check((gateway["controlUi"] as! [String: Any])["enabled"] as? Bool == false &&
+              (gateway["uploads"] as! [String: Any])["enabled"] as? Bool == false &&
+              (gateway["terminal"] as! [String: Any])["enabled"] as? Bool == false,
+              "no unrelated gateway surfaces")
+    let otherToken = ((try JSONSerialization.jsonObject(with: C.prepareGateway(turn: turn, port: 55_231).configBytes)
+                        as! [String: Any])["gateway"] as! [String: Any])["auth"] as! [String: Any]
+    try check(token != otherToken["token"] as? String, "per-run token is freshly random")
+    let commands = try C.gatewayCommands(prepared: preparedGateway, privateHome: runRoot + "home",
+                                          nodePath: "/signed/node", entryPath: "/signed/openclaw.mjs",
+                                          configPath: runRoot + "config.json", contractPath: runRoot + "contract.json",
+                                          messagePath: runRoot + "request.txt", workspace: runRoot + "workspace")
+    try check(commands.gateway.arguments.contains("gateway") && commands.gateway.arguments.contains("run") &&
+              commands.gateway.arguments.contains("--bind") && commands.gateway.arguments.contains("loopback") &&
+              !commands.gateway.arguments.contains("--force") && !commands.gateway.arguments.contains(token),
+              "gateway exact child has no token in argv and cannot kill another listener")
+    try check(commands.requestAndWait.arguments.contains("agent") &&
+              commands.requestAndWait.arguments.contains("--session-key") &&
+              commands.sessionKey == "agent:main:fixture-run" &&
+              commands.requestAndWait.arguments.contains("--message-file") &&
+              !commands.requestAndWait.arguments.contains("--local") &&
+              !commands.requestAndWait.arguments.contains(turn.request) &&
+              !commands.requestAndWait.arguments.contains(token),
+              "gateway agent request/wait binds exact session without leaking prompt or token")
+    try rejects("invalid gateway port") { _ = try C.prepareGateway(turn: turn, port: 18789) }
+    try rejects("other product path cannot become gateway home") {
+        _ = try C.gatewayCommands(prepared: preparedGateway, privateHome: "/tmp/other/home",
+                                  nodePath: "/signed/node", entryPath: "/signed/openclaw.mjs",
+                                  configPath: runRoot + "config.json", contractPath: runRoot + "contract.json",
+                                  messagePath: runRoot + "request.txt", workspace: runRoot + "workspace")
     }
     let config = try JSONSerialization.jsonObject(with: turn.configBytes) as! [String: Any]
     let providers = (config["models"] as! [String: Any])["providers"] as! [String: Any]
@@ -107,6 +136,19 @@ func runOpenClawAgentControllerFixture() throws {
         let bytes = try C.configBytes(pluginDirectory: CommandLine.arguments[index + 1],
                                       workspace: "/tmp/os1-offline-inspect-workspace")
         try bytes.write(to: URL(fileURLWithPath: CommandLine.arguments[index + 2]), options: .atomic)
+    }
+    if let index = CommandLine.arguments.firstIndex(of: "--emit-openclaw-gateway-config"),
+       CommandLine.arguments.count > index + 2 {
+        let sourceSHA = C.digest(Data("offline-gateway-source".utf8))
+        let smoke = try C.prepare(enabled: true, runID: "fixture-run", sessionID: "fixture-session",
+                                  request: "Read approved state", policySourceSHA256: sourceSHA,
+                                  policy: "Offline fixture only", state: state,
+                                  pluginDirectory: CommandLine.arguments[index + 1],
+                                  workspace: "/tmp/os1-offline-inspect-workspace")
+        let gatewayConfig = try C.prepareGateway(turn: smoke, port: 55_231).configBytes
+        try gatewayConfig.write(to: URL(fileURLWithPath: CommandLine.arguments[index + 2]), options: .atomic)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600],
+                                              ofItemAtPath: CommandLine.arguments[index + 2])
     }
     print("OpenClaw agent controller fixture: \(checks) offline checks PASS")
 }
