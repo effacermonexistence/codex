@@ -563,7 +563,13 @@ enum LocalRouterBridge {
     /// actual transport checks after the host's surface admission.
     static func rankSurface(input: LocalSurfaceRouting.Input) async -> LocalSurfaceRouting.Admission? {
         let ids = input.eligibleCandidateIDs
-        guard !ids.isEmpty, input.inventory.count <= LocalSurfaceRouting.maximumInventoryCount else { return nil }
+        guard !ids.isEmpty, input.inventory.count <= LocalSurfaceRouting.maximumInventoryCount,
+              input.request.utf8.count <= 12_000,
+              Set(ids).count == ids.count,
+              Set(ids).isSubset(of: Set(input.inventory.map(\.id))),
+              input.criterion == .boundedQuotaPreference,
+              input.requirement.requestedCandidateID == nil,
+              !StatusCheckIn.answersFromCard(input.request) else { return nil }
         do {
             let raw: Data
             let receipt: String?

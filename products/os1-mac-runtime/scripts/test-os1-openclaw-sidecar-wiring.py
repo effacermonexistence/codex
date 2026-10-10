@@ -115,6 +115,10 @@ expect('if installedPluginExists || activation?["provisioning_version"] as? Int 
        'else if activation?["provisioning_version"] == nil' in BRIDGE and
        'no alternate local model call' in BRIDGE,
        "a failed Gateway does not trigger a second lean model call; v0 without plugin retains old producer")
+expect('!StatusCheckIn.answersFromCard(input.request)' in BRIDGE and
+       'input.criterion == .boundedQuotaPreference' in BRIDGE and
+       'input.requirement.requestedCandidateID == nil' in BRIDGE,
+       "check-ins, deterministic measured-minimum routes and explicit targets never spend a Gateway turn")
 print(f"OS-1 local OpenClaw sidecar wiring: {checks} checks PASS; "
       "v1 managed-private runtime / v0 pinned legacy fallback; typed surface Gateway candidate + lean legacy; "
       "static/source checks only, no model calls; "
