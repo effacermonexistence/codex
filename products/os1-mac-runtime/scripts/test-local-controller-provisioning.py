@@ -120,6 +120,32 @@ check('process.environment = ["HOME":' in app and 'FileHandle.nullDevice' in app
       "clean non-interactive provisioning child")
 check("/usr/bin/python3" not in shell and "/bin/bash" in shell and "exec /usr/bin/env -i" in shell,
       "consumer first stage needs only stock macOS tools and a clean environment")
+check("/usr/bin/lockf -k -t 600" in shell and "--bootstrap-locked" in shell and
+      shell.index("/usr/bin/lockf -k -t 600") < shell.index('if [[ -e "$archive" ]]'),
+      "kernel lock encloses Node archive download and target rename")
+with tempfile.TemporaryDirectory(prefix="os1-stock-lock-fixture-") as temporary:
+    lock = str(Path(temporary) / "node-bootstrap.lock")
+    trace = str(Path(temporary) / "trace.txt")
+    worker = 'printf "enter-%s\\n" "$1" >> "$2"; /bin/sleep 0.15; printf "exit-%s\\n" "$1" >> "$2"'
+    first = subprocess.Popen(['/usr/bin/lockf', '-k', '-t', '5', lock,
+                              '/bin/bash', '-c', worker, '_', 'A', trace])
+    second = subprocess.Popen(['/usr/bin/lockf', '-k', '-t', '5', lock,
+                               '/bin/bash', '-c', worker, '_', 'B', trace])
+    check(first.wait(timeout=10) == 0 and second.wait(timeout=10) == 0,
+          "concurrent bootstrap contenders both finish after bounded wait")
+    lines = Path(trace).read_text().splitlines()
+    check(lines in (["enter-A", "exit-A", "enter-B", "exit-B"],
+                    ["enter-B", "exit-B", "enter-A", "exit-A"]),
+          "Node target writer is serialized, never simultaneous")
+    check(Path(lock).is_file(), "persistent advisory lock file is retained, not deleted")
+    crashed = subprocess.run(['/usr/bin/lockf', '-k', '-t', '5', lock,
+                              '/bin/bash', '-c', 'kill -9 $$'],
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
+    check(crashed.returncode != 0, "abnormal child exits while lock file remains")
+    recovered = subprocess.run(['/usr/bin/lockf', '-k', '-t', '5', lock, '/usr/bin/true'],
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
+    check(recovered.returncode == 0 and Path(lock).is_file(),
+          "kernel releases crashed owner lock and next launch reuses same inode")
 for architecture in ("arm64", "x86_64"):
     check(contract["node"][architecture]["sha256"] in shell and
           contract["node"][architecture]["binary_sha256"] in shell,

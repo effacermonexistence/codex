@@ -2,10 +2,15 @@
 # Stock-macOS, no-Xcode-CLT first stage. This fetches only the pinned Node
 # runtime, then hands the signed resource contract to Node for the rest.
 set -euo pipefail
-[[ "$#" == 3 && "$1" == --ensure && "$2" == --resources ]] || {
-  echo 'OS-1 local controller: invalid first-run invocation' >&2; exit 2;
-}
-readonly resources="$3"
+if [[ "$#" == 3 && "$1" == --ensure && "$2" == --resources ]]; then
+  readonly stage_mode=outer
+  readonly resources="$3"
+elif [[ "$#" == 2 && "$1" == --bootstrap-locked ]]; then
+  readonly stage_mode=locked
+  readonly resources="$2"
+else
+  echo 'OS-1 local controller: invalid first-run invocation' >&2; exit 2
+fi
 [[ "$resources" == /* && -d "$resources" && ! -L "$resources" &&
    -f "$resources/provision-local-controller.mjs" &&
    -f "$resources/local-controller-sources.json" ]] || {
@@ -37,6 +42,31 @@ case "$(/usr/bin/uname -m)" in
     *) echo 'OS-1 local controller: unsupported macOS architecture' >&2; exit 1 ;;
 esac
 readonly archive="$root/recovery/$archive_name"
+readonly bootstrap_lock="$root/node-bootstrap.lock"
+[[ ! -L "$bootstrap_lock" ]] || {
+  echo 'OS-1 local controller: bootstrap lock is a symlink' >&2; exit 1;
+}
+if [[ "$stage_mode" == outer ]]; then
+  # macOS lockf uses a kernel advisory lock, not file existence. -k keeps the
+  # owner-private inode, so concurrent launches serialize and a crashed owner
+  # releases its lock automatically. A stale file is harmless recovery state:
+  # no PID guessing, unlinking, or renaming user data is required.
+  /usr/bin/lockf -k -t 600 "$bootstrap_lock" /bin/bash \
+    "$resources/provision-local-controller.sh" --bootstrap-locked "$resources" || {
+      echo 'OS-1 local controller: bounded Node bootstrap lock wait failed' >&2; exit 1;
+    }
+  [[ -x "$managed_node" && ! -L "$managed_node" ]] || {
+    echo 'OS-1 local controller: pinned Node is unavailable after bootstrap' >&2; exit 1;
+  }
+  printf '%s  %s\n' "$binary_sha" "$managed_node" | /usr/bin/shasum -a 256 -c - >/dev/null || {
+    echo 'OS-1 local controller: pinned Node changed after bootstrap' >&2; exit 1;
+  }
+  exec /usr/bin/env -i HOME="$home" PATH="/usr/bin:/bin:/usr/sbin:/sbin" LANG=en_US.UTF-8 \
+    "$managed_node" "$resources/provision-local-controller.mjs" --ensure --resources "$resources"
+fi
+
+# The following section runs only inside the lockf-held shell. Its install
+# target is not touched by another OS-1 launch until this shell exits.
   if [[ -e "$archive" ]]; then
     [[ -f "$archive" && ! -L "$archive" ]] || { echo 'OS-1 local controller: pinned Node cache is not a file' >&2; exit 1; }
   else
@@ -68,9 +98,4 @@ readonly archive="$root/recovery/$archive_name"
   printf '%s  %s\n' "$binary_sha" "$managed_node" | /usr/bin/shasum -a 256 -c - >/dev/null || {
     echo 'OS-1 local controller: installed Node binary digest mismatch' >&2; exit 1;
   }
-readonly node="$managed_node"
-
-# Drop every ambient credential/configuration variable before starting the
-# JavaScript provisioner. Its private npm config files are empty and distinct.
-exec /usr/bin/env -i HOME="$home" PATH="/usr/bin:/bin:/usr/sbin:/sbin" LANG=en_US.UTF-8 \
-  "$node" "$resources/provision-local-controller.mjs" --ensure --resources "$resources"
+exit 0
