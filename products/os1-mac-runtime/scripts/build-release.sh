@@ -44,6 +44,7 @@ node "$script_dir/test-memory-paging-recovery.mjs"
 python3 "$script_dir/test-backend-window-focus.py"
 python3 "$script_dir/test-os1-source-confinement-wiring.py"
 python3 "$script_dir/test-owner-policy-sync.py"
+python3 "$script_dir/test-local-controller-provisioning.py"
 # The bundle's own Info.plist is the single source of truth for the release
 # version. A hardcoded default silently diverged from it and the identity
 # check below then refused to package — every build since 0.9.57 produced no
@@ -191,10 +192,14 @@ if [[ "$source_input_clean" == "1" ]]; then
   plutil -insert OS1SourceRepository -string effacermonexistence/codex "$staged_info"
   plutil -insert OS1SourceTreeClean -bool true "$staged_info"
 fi
-for resource in OmarAGI.png Codex.png ClaudeCode.png Constellation.png CodexDictationCapture.html consumer-chatgpt-driver.mjs; do
+for resource in OmarAGI.png Codex.png ClaudeCode.png Constellation.png CodexDictationCapture.html consumer-chatgpt-driver.mjs local-router-config.template.json local-controller-sources.json local-controller-package.json local-controller-package-lock.json local-controller-NOTICES.txt provision-local-controller.sh provision-local-controller.mjs; do
   install -m 0644 "$runtime_root/Resources/$resource" \
     "$stage_dir/Applications/OS-1 CLODEX.app/Contents/Resources/$resource"
 done
+install -m 0644 "$repository_root/scripts/setup-os1-openclaw-local-router.py" \
+  "$stage_dir/Applications/OS-1 CLODEX.app/Contents/Resources/setup-os1-openclaw-local-router.py"
+install -m 0644 "$runtime_root/scripts/provision-local-controller.py" \
+  "$stage_dir/Applications/OS-1 CLODEX.app/Contents/Resources/provision-local-controller.py"
 swift "$script_dir/build-brand-icon.swift" "$runtime_root/Resources/OmarAGI.png" "$audit_dir/OmarAGI.iconset"
 iconutil -c icns "$audit_dir/OmarAGI.iconset" -o "$stage_dir/Applications/OS-1 CLODEX.app/Contents/Resources/OmarAGI.icns"
 install -m 0644 "$runtime_root/Config/production.json" \
@@ -223,6 +228,15 @@ while IFS= read -r payload_file; do
     "Applications/OS-1 CLODEX.app/Contents/Resources/Constellation.png"|\
     "Applications/OS-1 CLODEX.app/Contents/Resources/CodexDictationCapture.html"|\
     "Applications/OS-1 CLODEX.app/Contents/Resources/consumer-chatgpt-driver.mjs"|\
+    "Applications/OS-1 CLODEX.app/Contents/Resources/local-router-config.template.json"|\
+    "Applications/OS-1 CLODEX.app/Contents/Resources/local-controller-sources.json"|\
+    "Applications/OS-1 CLODEX.app/Contents/Resources/local-controller-package.json"|\
+    "Applications/OS-1 CLODEX.app/Contents/Resources/local-controller-package-lock.json"|\
+    "Applications/OS-1 CLODEX.app/Contents/Resources/local-controller-NOTICES.txt"|\
+    "Applications/OS-1 CLODEX.app/Contents/Resources/setup-os1-openclaw-local-router.py"|\
+    "Applications/OS-1 CLODEX.app/Contents/Resources/provision-local-controller.py"|\
+    "Applications/OS-1 CLODEX.app/Contents/Resources/provision-local-controller.sh"|\
+    "Applications/OS-1 CLODEX.app/Contents/Resources/provision-local-controller.mjs"|\
     "Applications/OS-1 CLODEX.app/Contents/Resources/OmarAGI.icns"|\
     "Applications/OS-1 CLODEX.app/Contents/Resources/config.json"|\
     "Applications/OS-1 CLODEX.app/Contents/Info.plist"|\
@@ -348,6 +362,15 @@ while IFS= read -r payload_file; do
     "Applications/OS-1 CLODEX.app/Contents/Resources/Constellation.png"|\
     "Applications/OS-1 CLODEX.app/Contents/Resources/CodexDictationCapture.html"|\
     "Applications/OS-1 CLODEX.app/Contents/Resources/consumer-chatgpt-driver.mjs"|\
+    "Applications/OS-1 CLODEX.app/Contents/Resources/local-router-config.template.json"|\
+    "Applications/OS-1 CLODEX.app/Contents/Resources/local-controller-sources.json"|\
+    "Applications/OS-1 CLODEX.app/Contents/Resources/local-controller-package.json"|\
+    "Applications/OS-1 CLODEX.app/Contents/Resources/local-controller-package-lock.json"|\
+    "Applications/OS-1 CLODEX.app/Contents/Resources/local-controller-NOTICES.txt"|\
+    "Applications/OS-1 CLODEX.app/Contents/Resources/setup-os1-openclaw-local-router.py"|\
+    "Applications/OS-1 CLODEX.app/Contents/Resources/provision-local-controller.py"|\
+    "Applications/OS-1 CLODEX.app/Contents/Resources/provision-local-controller.sh"|\
+    "Applications/OS-1 CLODEX.app/Contents/Resources/provision-local-controller.mjs"|\
     "Applications/OS-1 CLODEX.app/Contents/Resources/OmarAGI.icns"|\
     "Applications/OS-1 CLODEX.app/Contents/Resources/config.json"|\
     "Applications/OS-1 CLODEX.app/Contents/Info.plist"|\

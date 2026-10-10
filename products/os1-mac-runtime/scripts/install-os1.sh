@@ -111,6 +111,16 @@ verify_unnotarized_beta_package() {
     expected_component_files=27
     requires_consumer_chat=1
   fi
+  # 0.9.295 adds nine signed, small first-run local-controller contracts.
+  # Node/OpenClaw/Ollama and model bytes are fetched and verified separately;
+  # they are not silently counted as present in this application package.
+  local requires_local_controller=0
+  if (( 10#$release_major > 0 || 10#$release_minor > 9 ||
+        (10#$release_minor == 9 && 10#$release_patch >= 295) )); then
+    expected_payload_files=33
+    expected_component_files=36
+    requires_local_controller=1
+  fi
 
   pkgutil --expand-full "$package_path" "$expanded_root" || {
     echo "OS-1 beta verification could not expand the package." >&2
@@ -161,6 +171,18 @@ verify_unnotarized_beta_package() {
       echo "OS-1 beta verification requires the signed consumer ChatGPT helper." >&2; return 1;
     }
   fi
+  local local_controller_resource
+  for local_controller_resource in local-router-config.template.json local-controller-sources.json local-controller-package.json local-controller-package-lock.json local-controller-NOTICES.txt setup-os1-openclaw-local-router.py provision-local-controller.py provision-local-controller.sh provision-local-controller.mjs; do
+    if (( requires_local_controller )); then
+      [[ -f "$app_path/Contents/Resources/$local_controller_resource" &&
+         ! -L "$app_path/Contents/Resources/$local_controller_resource" ]] || {
+        echo "OS-1 beta verification requires signed local-controller resource: $local_controller_resource" >&2; return 1;
+      }
+    elif [[ -e "$app_path/Contents/Resources/$local_controller_resource" ||
+            -L "$app_path/Contents/Resources/$local_controller_resource" ]]; then
+      echo "OS-1 beta verification refused a local-controller resource in a legacy release." >&2; return 1
+    fi
+  done
   [[ "$(/usr/bin/xmllint --xpath 'string(/pkg-info/@identifier)' "$package_info")" == "com.omaragi.os1" &&
      "$(/usr/bin/xmllint --xpath 'string(/pkg-info/@version)' "$package_info")" == "$manifest_version" &&
      "$(/usr/bin/xmllint --xpath 'string(/pkg-info/@install-location)' "$package_info")" == "/" &&
@@ -193,6 +215,15 @@ verify_unnotarized_beta_package() {
       "Applications/OS-1 CLODEX.app/Contents/Resources/Constellation.png"|\
       "Applications/OS-1 CLODEX.app/Contents/Resources/CodexDictationCapture.html"|\
       "Applications/OS-1 CLODEX.app/Contents/Resources/consumer-chatgpt-driver.mjs"|\
+      "Applications/OS-1 CLODEX.app/Contents/Resources/local-router-config.template.json"|\
+      "Applications/OS-1 CLODEX.app/Contents/Resources/local-controller-sources.json"|\
+      "Applications/OS-1 CLODEX.app/Contents/Resources/local-controller-package.json"|\
+      "Applications/OS-1 CLODEX.app/Contents/Resources/local-controller-package-lock.json"|\
+      "Applications/OS-1 CLODEX.app/Contents/Resources/local-controller-NOTICES.txt"|\
+      "Applications/OS-1 CLODEX.app/Contents/Resources/setup-os1-openclaw-local-router.py"|\
+      "Applications/OS-1 CLODEX.app/Contents/Resources/provision-local-controller.py"|\
+      "Applications/OS-1 CLODEX.app/Contents/Resources/provision-local-controller.sh"|\
+      "Applications/OS-1 CLODEX.app/Contents/Resources/provision-local-controller.mjs"|\
       "Applications/OS-1 CLODEX.app/Contents/Resources/OmarAGI.icns"|\
       "Applications/OS-1 CLODEX.app/Contents/Resources/config.json"|\
       "Applications/OS-1 CLODEX.app/Contents/Info.plist"|\

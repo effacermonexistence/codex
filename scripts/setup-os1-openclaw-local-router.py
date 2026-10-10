@@ -154,7 +154,10 @@ def isolated_env(node: Path, runtime_home: Path, state: Path, config: Path) -> d
         "HOME": str(runtime_home), "LANG": "en_US.UTF-8",
         "OPENCLAW_HOME": str(runtime_home), "OPENCLAW_STATE_DIR": str(state),
         "OPENCLAW_CONFIG_PATH": str(config), "OPENCLAW_LOAD_SHELL_ENV": "0",
-        "npm_config_userconfig": "/dev/null", "npm_config_globalconfig": "/dev/null",
+        # npm 11 rejects one file loaded as both user and global config.
+        # Distinct owner-private empty files also prevent inherited npmrc auth.
+        "npm_config_userconfig": str(runtime_home / "npm-user.npmrc"),
+        "npm_config_globalconfig": str(runtime_home / "npm-global.npmrc"),
         "npm_config_cache": str(runtime_home / "npm-cache"),
     }
 
@@ -227,6 +230,35 @@ def verify_archive(path: Path) -> str:
     return actual
 
 
+def checked_dependency_lock(package_file: Path, lock_file: Path) -> tuple[bytes, bytes]:
+    """Require a portable, integrity-pinned npm graph, not a machine-local lock."""
+    package_bytes, lock_bytes = package_file.read_bytes(), lock_file.read_bytes()
+    if len(package_bytes) > 4096 or len(lock_bytes) > 2_000_000:
+        raise SetupFailure("OpenClaw dependency contract exceeds its size bound")
+    package, lock = json.loads(package_bytes), json.loads(lock_bytes)
+    root = lock.get("packages", {}).get("", {})
+    if (package.get("private") is not True or package.get("dependencies") != {PACKAGE: TARBALL}
+            or lock.get("lockfileVersion") != 3
+            or package.get("name") != lock.get("name") or package.get("version") != lock.get("version")
+            or package.get("name") != root.get("name") or package.get("version") != root.get("version")
+            or root.get("dependencies") != {PACKAGE: TARBALL}):
+        raise SetupFailure("OpenClaw dependency contract does not pin the public package")
+    entries = lock["packages"]
+    entry = entries.get("node_modules/openclaw", {})
+    if (entry.get("version") != VERSION or entry.get("resolved") != TARBALL
+            or entry.get("integrity") != INTEGRITY):
+        raise SetupFailure("OpenClaw dependency lock has another package identity")
+    for name, dependency in entries.items():
+        resolved = dependency.get("resolved")
+        if not resolved:
+            continue
+        if not isinstance(resolved, str) or not resolved.startswith("https://registry.npmjs.org/"):
+            raise SetupFailure(f"Non-registry dependency in pinned lock: {name}")
+        if not isinstance(dependency.get("integrity"), str) or not dependency["integrity"].startswith("sha512-"):
+            raise SetupFailure(f"Dependency lacks SHA-512 integrity: {name}")
+    return package_bytes, lock_bytes
+
+
 def acquire_archive(path: Path):
     if path.exists():
         verify_archive(path)
@@ -268,6 +300,8 @@ def main(argv=None) -> int:
                         default=Path(__file__).resolve().parents[1] /
                         "products/os1-mac-runtime/Resources/local-router-config.template.json")
     parser.add_argument("--tarball", type=Path, help="An existing pinned archive for offline recovery")
+    parser.add_argument("--dependency-package", type=Path, help="Pinned portable npm package.json")
+    parser.add_argument("--dependency-lock", type=Path, help="Pinned portable package-lock.json")
     args = parser.parse_args(argv)
     root = args.root.expanduser().resolve()
     prefix = args.prefix.expanduser().resolve()
@@ -310,6 +344,12 @@ def main(argv=None) -> int:
     if args.apply:
         for directory in (root, runtime_home, state, prefix):
             directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+        for name in ("npm-user.npmrc", "npm-global.npmrc"):
+            path = runtime_home / name
+            if not path.exists():
+                atomic_write(path, b"")
+            elif path.is_symlink() or path.read_bytes() != b"":
+                raise SetupFailure("Private npm config is not empty")
         registry = fetch_json(REGISTRY)
         if (registry.get("name") != PACKAGE or registry.get("version") != VERSION
                 or registry.get("repository", {}).get("url") != REPOSITORY
@@ -322,13 +362,21 @@ def main(argv=None) -> int:
         receipt["archive_integrity"] = verify_archive(archive)
         receipt["archive_path"] = str(archive)
         if installed is None:
+            if args.dependency_package is None or args.dependency_lock is None:
+                raise SetupFailure("First install requires a portable pinned dependency graph")
+            package_bytes, lock_bytes = checked_dependency_lock(
+                args.dependency_package.expanduser().resolve(), args.dependency_lock.expanduser().resolve())
+            atomic_write(prefix / "package.json", package_bytes)
+            atomic_write(prefix / "package-lock.json", lock_bytes)
             npm_version = parse_version(command([str(node), str(npm), "--version"], env, root).strip())
             # Match the observed private local install. Third-party dependency
             # lifecycles are not authorized. Run only the two reviewed and
             # hash-bound OpenClaw lifecycle entries ourselves afterward.
-            call = [str(node), str(npm), "install", "--prefix", str(prefix),
-                    str(archive), "--ignore-scripts", "--no-audit", "--no-fund"]
-            command(call, env, root, timeout=1200)
+            # npm 11 interprets `--prefix` as the project identity and then
+            # demands a lock entry for that machine-specific directory name.
+            # Run in the exact pinned project directory instead.
+            call = [str(node), str(npm), "ci", "--ignore-scripts", "--no-audit", "--no-fund"]
+            command(call, env, prefix, timeout=1200)
             package_root = prefix / "node_modules/openclaw"
             for name, expected in LIFECYCLE_SHA256.items():
                 lifecycle = package_root / "scripts" / name
@@ -355,6 +403,13 @@ def main(argv=None) -> int:
     activation = {"enabled": True, "openclaw_version": VERSION, "model": args.model,
                   "model_digest": normalize_digest(args.expected_model_digest),
                   "entry_sha256": installed["entry_sha256"], "config_sha256": sha256(data)}
+    if args.dependency_package is not None and args.dependency_lock is not None:
+        package_bytes, lock_bytes = checked_dependency_lock(
+            args.dependency_package.expanduser().resolve(), args.dependency_lock.expanduser().resolve())
+        activation.update({"provisioning_version": 1, "node_sha256": sha256(node.read_bytes()),
+                           "dependency_package_sha256": sha256(package_bytes),
+                           "dependency_lock_sha256": sha256(lock_bytes),
+                           "ollama_version": "0.35.1"})
     activation_path = root / "manifest.json"
     if activation_path.exists():
         previous_activation = read_json(activation_path)

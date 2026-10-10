@@ -1,0 +1,8 @@
+{
+  "dependencies": {
+    "openclaw": "https://registry.npmjs.org/openclaw/-/openclaw-2026.9.9.tgz"
+  },
+  "name": "os1-local-controller-runtime",
+  "private": true,
+  "version": "1.0.0"
+}

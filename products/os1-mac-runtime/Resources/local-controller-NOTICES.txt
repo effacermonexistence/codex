@@ -1,0 +1,28 @@
+OS-1 local controller — verified first-run acquisition
+
+The OS-1 package includes a pinned acquisition contract and installer. It does
+not contain the OpenClaw npm dependency tree, Node.js runtime, Ollama binary,
+or Qwen model weights. Those public artifacts are fetched and verified during
+first-run provisioning. Until that succeeds, local-controller readiness is
+blocked; the app must not call this an offline or fully bundled installation.
+
+OpenClaw 2026.9.9 — MIT, copyright OpenClaw Foundation.
+https://github.com/openclaw/openclaw/blob/main/LICENSE
+The fetched npm package contains its LICENSE and THIRD_PARTY_NOTICES.md.
+Dependencies retain their own license files in the installed private tree.
+
+Node.js 24.20.0 — Node.js license and bundled third-party notices are retained
+in the fetched and verified Node.js distribution.
+https://github.com/nodejs/node/blob/v24.20.0/LICENSE
+
+Ollama 0.35.1 — MIT; the fetched archive is retained with its exact SHA-256.
+https://github.com/ollama/ollama/blob/v0.35.1/LICENSE
+
+Qwen3.5-4B / Ollama qwen3.5:4b — Apache-2.0. The model is accepted only if
+the local Ollama digest matches the pinned digest in local-controller-sources.json.
+https://huggingface.co/Qwen/Qwen3.5-4B
+https://ollama.com/library/qwen3.5:4b
+
+The source repository and this notice are not an endorsement by the upstream
+projects. No user credentials, browser sessions, conversation history, or
+other applications' state are part of the acquisition contract.

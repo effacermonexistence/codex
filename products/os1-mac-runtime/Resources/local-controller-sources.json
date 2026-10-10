@@ -1,0 +1,38 @@
+{
+  "schema": 1,
+  "controller": {
+    "name": "openclaw",
+    "version": "2026.9.9",
+    "url": "https://registry.npmjs.org/openclaw/-/openclaw-2026.9.9.tgz",
+    "integrity": "sha512-3sB6ejq5smBozfBhVEDfK48wFpbkx+0f6PJ19qZjC3ab3RoFrYO58CnE2mAsbUy8sXdxdBtjQ3vkAqcW9BZXAw==",
+    "license": "MIT"
+  },
+  "node": {
+    "version": "24.20.0",
+    "arm64": {
+      "url": "https://nodejs.org/dist/v24.20.0/node-v24.20.0-darwin-arm64.tar.gz",
+      "sha256": "40e5607e5ecb3db9192723776da2d75d966260fc74a7a9e731c1bd67dda96bc8",
+      "binary_sha256": "9d050fd455b56426e25d4d603c7c501cbb2630348e836cf221dcce748e90588a"
+    },
+    "x86_64": {
+      "url": "https://nodejs.org/dist/v24.20.0/node-v24.20.0-darwin-x64.tar.gz",
+      "sha256": "9e5b2644cf107befb6aefca676b96d3296bc10138096f022ed378d6233ed81f4",
+      "binary_sha256": "bb37f3a05d1104a9ca2488718a32ff07f3d0725b7b7b6a04bb26a5af7213fe12"
+    }
+  },
+  "ollama": {
+    "version": "0.35.1",
+    "url": "https://github.com/ollama/ollama/releases/download/v0.35.1/ollama-darwin.tgz",
+    "sha256": "3137dbf28948ee844e0fb3e584d9b5de6879d73d9f0cb7eff3ad64930601d307",
+    "binary_sha256": "5f0e245e8369a66b7b24654c51c8ec95f3eab9a1e263f6e95e20d2d4374b8e26",
+    "size": 159625239,
+    "license": "MIT"
+  },
+  "model": {
+    "name": "qwen3.5:4b",
+    "digest": "d8b0f5e9760cd1682034f292d7ef72ec46f432149be0df7574bf2d6e92e38c04",
+    "license": "Apache-2.0",
+    "acquisition": "ollama-pull-public-verified-after-download"
+  },
+  "delivery": "verified-first-run-fetch-not-offline-bundle"
+}
