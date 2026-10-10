@@ -1,4 +1,5 @@
 import CryptoKit
+import Darwin
 import Foundation
 import OS1Context
 
@@ -8,8 +9,10 @@ struct LocalRouterResult: Codable, Sendable {
     let failure: String?
 }
 
-/// Device-local candidate producer. No gateway, native agent, credentials,
-/// computer-use driver or permission grant is reachable through this bridge.
+/// Device-local candidate producer. The signed Gateway path can read only a
+/// host-prepared state snapshot; it cannot dispatch native agents, grant a
+/// permission, drive a browser, or adopt a result. Legacy lean interpretation
+/// remains a distinct tools-disabled producer.
 enum LocalRouterBridge {
     static let root = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".os1/local-router")
     static let version = "2026.9.9"
@@ -23,6 +26,20 @@ enum LocalRouterBridge {
     static let legacyNode = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".local/share/node-v24.20.0/bin/node")
     static let privatePrefix = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/OS-1/tools/openclaw-2026.9.9")
     static let privateEntry = privatePrefix.appendingPathComponent("node_modules/openclaw/openclaw.mjs")
+    private static let pinnedEntrySHA256 = "aa8606ca0d62ff133ef5b7bd2323ec8ff3f8eb384404399cd5e742918d63b0a1"
+    private static let pinnedPluginIndexSHA256 = "e9cd834a1fb57fcb61a2c53bc3c3a1a6d2fe393ab71bd3a14529f89901077e72"
+    private static let pinnedPluginManifestSHA256 = "700710ab6124eabcc945f247b13e94451fc266b956c5ce991b5eb99cc6d62af3"
+    private static let pinnedPluginPackageSHA256 = "583bd79e8bc75e98df186b7bd50f6d1ec580298e930e2dbd5674ce1e6296dbe4"
+    #if arch(arm64)
+    private static let pinnedArchitecture = "arm64"
+    private static let pinnedNodeSHA256 = "9d050fd455b56426e25d4d603c7c501cbb2630348e836cf221dcce748e90588a"
+    #elseif arch(x86_64)
+    private static let pinnedArchitecture = "x86_64"
+    private static let pinnedNodeSHA256 = "bb37f3a05d1104a9ca2488718a32ff07f3d0725b7b7b6a04bb26a5af7213fe12"
+    #else
+    private static let pinnedArchitecture = "unsupported"
+    private static let pinnedNodeSHA256 = ""
+    #endif
 
     private struct RuntimeLocation {
         let node: URL
@@ -145,6 +162,208 @@ enum LocalRouterBridge {
             }
         }
         return (m, selectedRuntime)
+    }
+
+    private struct GatewayPolicy {
+        let sourceSHA256: String
+        let sourceLabel: String
+        let text: String
+        let ownerSourceSHA256: String?
+    }
+
+    /// The owner Notes policy is used only when a verified snapshot is active.
+    /// A clean third-party Mac instead uses the app-sealed public executor
+    /// contract, only when it matches the active validated runtime contract.
+    /// A self-consistent SHA in an arbitrary OS1_CONFIG is not a signature.
+    /// Neither path fabricates Ben's private v26.
+    private static func gatewayPolicy() throws -> GatewayPolicy {
+        if let owner = OwnerPolicyContext.snapshot {
+            try owner.verifyOriginal()
+            guard validHash(owner.sourceSHA256) else { throw OS1Error.message("Owner policy identity is invalid") }
+            let text = owner.routing + "\n" + owner.projection
+            guard !text.isEmpty, text.utf8.count <= OpenClawAgentController.maximumPolicyBytes else {
+                throw OS1Error.message("Owner policy projection exceeds controller bound")
+            }
+            return .init(sourceSHA256: owner.sourceSHA256, sourceLabel: "verified_owner_projection",
+                         text: text, ownerSourceSHA256: owner.sourceSHA256)
+        }
+        let contract = try RuntimeConfig.load().executorContract
+        guard try validateExecutorContract(contract), validHash(contract.sha256),
+              let resources = provisionerResources(),
+              let bundled = try? JSONDecoder().decode(RuntimeConfig.self,
+                  from: boundedFile(resources.appendingPathComponent("config.json"), limit: 512_000)),
+              try validateExecutorContract(bundled.executorContract),
+              bundled.executorContract.sha256 == contract.sha256 else {
+            throw OS1Error.message("App-sealed public executor contract is unavailable or differs from active runtime")
+        }
+        let app = resources.deletingLastPathComponent().deletingLastPathComponent()
+        let seal = try commandOutput("/usr/bin/codesign", ["--verify", "--deep", "--strict", app.path],
+                                     timeout: 8)
+        guard seal.0 == 0 else {
+            throw OS1Error.message("Installed OS-1 app resource seal failed")
+        }
+        let text = contract.directives.joined(separator: "\n")
+        guard !text.isEmpty, text.utf8.count <= OpenClawAgentController.maximumPolicyBytes else {
+            throw OS1Error.message("Signed public executor contract exceeds controller bound")
+        }
+        return .init(sourceSHA256: contract.sha256, sourceLabel: "app_sealed_public_executor_contract",
+                     text: text, ownerSourceSHA256: nil)
+    }
+
+    private static func verifyGatewayPolicyStillCurrent(_ value: GatewayPolicy) throws {
+        let current = try gatewayPolicy()
+        guard current.sourceLabel == value.sourceLabel,
+              current.sourceSHA256 == value.sourceSHA256,
+              current.text == value.text,
+              current.ownerSourceSHA256 == value.ownerSourceSHA256 else {
+            throw OS1Error.message("Local Gateway policy source changed during candidate generation")
+        }
+    }
+
+    private static func gatewayIdentity(resources: URL, manifest: [String: Any],
+                                        runtime: RuntimeLocation) throws -> LocalOpenClawGatewayRunner.InstalledIdentity {
+        guard let sources = try JSONSerialization.jsonObject(with: boundedFile(
+            resources.appendingPathComponent("local-controller-sources.json"), limit: 16_384)) as? [String: Any],
+              let sourceNode = sources["node"] as? [String: Any],
+              sourceNode["version"] as? String == "24.20.0",
+              let architecture = sourceNode[pinnedArchitecture] as? [String: Any],
+              architecture["binary_sha256"] as? String == pinnedNodeSHA256,
+              let sourceController = sources["controller"] as? [String: Any],
+              sourceController["version"] as? String == version,
+              let sourceModel = sources["model"] as? [String: Any],
+              sourceModel["digest"] as? String == modelDigest,
+              manifest["entry_sha256"] as? String == pinnedEntrySHA256,
+              try fileSHA256(runtime.node) == pinnedNodeSHA256,
+              try fileSHA256(runtime.entry) == pinnedEntrySHA256 else {
+            throw OS1Error.message("Signed local Gateway Node/OpenClaw/model identity differs from the installed runtime")
+        }
+        let plugin = resources.appendingPathComponent("openclaw-os1-bridge", isDirectory: true)
+        guard let values = try? plugin.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey]),
+              values.isDirectory == true, values.isSymbolicLink != true,
+              try fileSHA256(plugin.appendingPathComponent("index.mjs")) == pinnedPluginIndexSHA256,
+              try fileSHA256(plugin.appendingPathComponent("openclaw.plugin.json")) == pinnedPluginManifestSHA256,
+              try fileSHA256(plugin.appendingPathComponent("package.json")) == pinnedPluginPackageSHA256 else {
+            throw OS1Error.message("Installed OS-1 typed Gateway plugin does not match its compiled signed pins")
+        }
+        return .init(nodePath: runtime.node.path, nodeSHA256: pinnedNodeSHA256,
+                     entryPath: runtime.entry.path, entrySHA256: pinnedEntrySHA256,
+                     pluginDirectory: plugin.path, pluginIndexSHA256: pinnedPluginIndexSHA256,
+                     pluginManifestSHA256: pinnedPluginManifestSHA256,
+                     pluginPackageSHA256: pinnedPluginPackageSHA256)
+    }
+
+    private static func verifyGatewayOllamaVersion() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.timeoutIntervalForRequest = 2
+        configuration.timeoutIntervalForResource = 3
+        let session = URLSession(configuration: configuration)
+        defer { session.invalidateAndCancel() }
+        let (bytes, response) = try await session.data(from: URL(string: "http://127.0.0.1:11434/api/version")!)
+        guard (response as? HTTPURLResponse)?.statusCode == 200, bytes.count <= 4_096,
+              let value = try JSONSerialization.jsonObject(with: bytes) as? [String: Any],
+              value["version"] as? String == "0.35.1" else {
+            throw OS1Error.message("Local Gateway requires exact verified Ollama 0.35.1")
+        }
+    }
+
+    private static func saveGatewayReceipt(_ value: [String: Any], to url: URL) throws {
+        let directory = url.deletingLastPathComponent()
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true,
+                                                 attributes: [.posixPermissions: 0o700])
+        let attrs = try FileManager.default.attributesOfItem(atPath: directory.path)
+        let info = try directory.resourceValues(forKeys: [.isSymbolicLinkKey])
+        guard attrs[.type] as? FileAttributeType == .typeDirectory,
+              let mode = (attrs[.posixPermissions] as? NSNumber)?.intValue, (mode & 0o077) == 0,
+              (attrs[.ownerAccountID] as? NSNumber)?.int32Value == Int32(getuid()),
+              info.isSymbolicLink != true else {
+            throw OS1Error.message("Local Gateway receipt directory is not owner-private")
+        }
+        let data = try JSONSerialization.data(withJSONObject: value, options: [.sortedKeys, .prettyPrinted])
+        guard data.count <= 16_384 else { throw OS1Error.message("Local Gateway receipt exceeds bound") }
+        try data.write(to: url, options: .atomic)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+    }
+
+    private static func recordGatewayPreflightFailure(_ input: LocalSurfaceRouting.Input,
+                                                      reason: String) {
+        let id = UUID().uuidString.lowercased()
+        let url = root.appendingPathComponent("receipts/\(id)-gateway.json")
+        try? saveGatewayReceipt(["schema": 1, "kind": "surface_preference", "run_id": id,
+                                 "input_fingerprint": input.fingerprint,
+                                 "execution_status": "preflight_failed_no_model_call",
+                                 "failure": reason, "task_quality": "unverified"], to: url)
+    }
+
+    private static func produceGatewaySurface(_ prompt: String, input: LocalSurfaceRouting.Input,
+                                              resources: URL) async throws -> Produced {
+        let runID = UUID().uuidString.lowercased()
+        let receiptURL = root.appendingPathComponent("receipts/\(runID)-gateway.json")
+        var receipt: [String: Any] = ["schema": 1, "kind": "surface_preference", "run_id": runID,
+            "input_fingerprint": input.fingerprint, "request_sha256": input.requestSHA256,
+            "model": model, "model_digest": modelDigest, "provider": "ollama",
+            "quota_pool": "none", "hosted_model_invoked": false,
+            "tool_scope": ["os1_state_read"], "task_quality": "candidate_only_not_parity",
+            "execution_status": "preflight_not_dispatched"]
+        try saveGatewayReceipt(receipt, to: receiptURL)
+        do {
+            guard prompt.utf8.count <= OpenClawAgentController.maximumRequestBytes,
+                  !Task.isCancelled, !ExecutionCancellation.isCancelled else {
+                throw OS1Error.message("Local Gateway prompt is unsupported or cancelled")
+            }
+            let (manifest, runtime) = try await preflight() // live model digest, private bytes, tools-disabled activation
+            try await verifyGatewayOllamaVersion()         // includes v0 legacy installations
+            let identity = try gatewayIdentity(resources: resources, manifest: manifest, runtime: runtime)
+            let policy = try gatewayPolicy()
+            let runRoot = FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent(".os1/openclaw-controller/\(runID)", isDirectory: true)
+            let state = OpenClawAgentController.State(
+                objective: "Choose only among host-eligible surfaces for request " + input.requestSHA256,
+                stage: .route, eligibleCandidateIDs: input.eligibleCandidateIDs)
+            let turn = try OpenClawAgentController.prepare(
+                enabled: true, runID: runID, sessionID: runID, request: prompt,
+                policySourceSHA256: policy.sourceSHA256, policy: policy.text, state: state,
+                pluginDirectory: identity.pluginDirectory,
+                workspace: runRoot.appendingPathComponent("workspace").path)
+            receipt["policy_source"] = policy.sourceLabel
+            receipt["policy_source_sha256"] = policy.sourceSHA256
+            receipt["contract_sha256"] = turn.contractSHA256
+            receipt["runtime_origin"] = runtime.origin
+            receipt["node_sha256"] = identity.nodeSHA256
+            receipt["entry_sha256"] = identity.entrySHA256
+            receipt["plugin_index_sha256"] = identity.pluginIndexSHA256
+            receipt["execution_status"] = "gateway_dispatch_may_have_started"
+            try saveGatewayReceipt(receipt, to: receiptURL)
+            let terminal = try await LocalOpenClawGatewayRunner.run(turn: turn, installed: identity)
+            receipt["execution_status"] = "returned_unverified"
+            receipt["run_directory"] = terminal.runDirectory
+            receipt["gateway_pid"] = Int(terminal.gatewayPID)
+            receipt["client_pid"] = Int(terminal.clientPID)
+            receipt["port"] = terminal.port
+            receipt["gate_receipt_sha256"] = terminal.gateReceiptSHA256
+            receipt["gateway_envelope_sha256"] = terminal.gatewayEnvelopeSHA256
+            try saveGatewayReceipt(receipt, to: receiptURL)
+            try verifyGatewayPolicyStillCurrent(policy)
+            let proposal = try OpenClawAgentController.proposeGateway(
+                prepared: turn, gateReceipt: terminal.gateReceipt,
+                gateObservedBeforeTerminal: terminal.gateObservedBeforeTerminal,
+                gatewayEnvelope: terminal.gatewayEnvelope, exitCode: terminal.exitCode)
+            guard proposal.inputFingerprint == turn.contractSHA256,
+                  proposal.candidate.qualityClaim == "unverified" else {
+                throw OS1Error.message("Gateway proposal lost its host contract binding")
+            }
+            receipt["execution_status"] = "candidate_verified_not_adopted"
+            receipt["gateway_run_id"] = proposal.gatewayRunID
+            receipt["gateway_session_id"] = proposal.gatewaySessionID
+            receipt["terminal_receipt_sha256"] = proposal.terminalReceiptSHA256
+            receipt["tool_calls"] = proposal.candidate.toolCalls
+            try saveGatewayReceipt(receipt, to: receiptURL)
+            return Produced(final: Data(proposal.candidate.final.utf8), receipt: receiptURL.path)
+        } catch {
+            receipt["execution_status"] = "failed_or_unverified"
+            receipt["failure"] = String(describing: error).prefix(512).description
+            try? saveGatewayReceipt(receipt, to: receiptURL)
+            throw OS1Error.message("Local Gateway candidate rejected; original host route preserved; receipt \(receiptURL.path)")
+        }
     }
 
     private static func produce(_ prompt: String, kind: String, binding: String, schema: [String: Any]) async throws -> Produced {
@@ -369,7 +588,27 @@ enum LocalRouterBridge {
                 """
                 let schema: [String: Any] = ["type": "object", "additionalProperties": false,
                     "required": ["preferred_candidate_id"], "properties": ["preferred_candidate_id": ["enum": ids]]]
-                let generated = try await produce(prompt, kind: "surface_preference", binding: input.fingerprint, schema: schema)
+                let activation = try? JSONSerialization.jsonObject(with: boundedFile(
+                    root.appendingPathComponent("manifest.json"), limit: 16_384)) as? [String: Any]
+                let resources = provisionerResources()
+                let installedPluginExists = resources.map { FileManager.default.fileExists(
+                    atPath: $0.appendingPathComponent("openclaw-os1-bridge").path) } ?? false
+                let generated: Produced
+                if installedPluginExists || activation?["provisioning_version"] as? Int == 1 {
+                    guard let resources else {
+                        recordGatewayPreflightFailure(input, reason: "installed_gateway_resources_unavailable")
+                        throw OS1Error.message("Signed installed Gateway resources unavailable; no alternate local model call")
+                    }
+                    generated = try await produceGatewaySurface(prompt, input: input, resources: resources)
+                } else if activation?["provisioning_version"] == nil {
+                    // Older v0 app packages lacked the typed plugin. This is
+                    // strictly the previous tools-disabled lean producer; a
+                    // failed Gateway attempt never retries through it.
+                    generated = try await produce(prompt, kind: "surface_preference",
+                                                   binding: input.fingerprint, schema: schema)
+                } else {
+                    throw OS1Error.message("Unsupported local controller activation; original host route preserved")
+                }
                 raw = generated.final; receipt = generated.receipt
             }
             let admission = LocalSurfaceRouting.admit(rawOutput: raw, producedForFingerprint: input.fingerprint, for: input, now: Date())
@@ -377,6 +616,10 @@ enum LocalRouterBridge {
                 let url = URL(fileURLWithPath: receipt)
                 if var data = (try? JSONSerialization.jsonObject(with: Data(contentsOf: url))) as? [String: Any] {
                     data["surface_admission"] = try? JSONSerialization.jsonObject(with: JSONEncoder().encode(admission))
+                    if data["kind"] as? String == "surface_preference", data["tool_scope"] != nil {
+                        data["execution_status"] = admission.state == .candidateAccepted ?
+                            "host_surface_admitted_task_quality_unverified" : "host_surface_held"
+                    }
                     try JSONSerialization.data(withJSONObject: data, options: [.prettyPrinted, .sortedKeys]).write(to: url, options: .atomic)
                     try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
                 }

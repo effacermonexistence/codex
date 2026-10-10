@@ -7,6 +7,8 @@ The Swift build is the separate type/compile gate; this is not an end-to-end
 agentic-controller or bundled-package proof.
 """
 from pathlib import Path
+import hashlib
+import json
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -77,6 +79,43 @@ expect('OwnerPolicyContext.snapshot?.sourceSHA256 == ownerPolicy.sourceSHA256' i
 expect('"candidate_only_not_parity"' in BRIDGE and
        '"tools_permitted": false' in BRIDGE,
        "a syntactically valid local output must not become quality or tool authority")
+PLUGIN = ROOT / "Resources/openclaw-os1-bridge"
+PINS = {
+    "index.mjs": "e9cd834a1fb57fcb61a2c53bc3c3a1a6d2fe393ab71bd3a14529f89901077e72",
+    "openclaw.plugin.json": "700710ab6124eabcc945f247b13e94451fc266b956c5ce991b5eb99cc6d62af3",
+    "package.json": "583bd79e8bc75e98df186b7bd50f6d1ec580298e930e2dbd5674ce1e6296dbe4",
+}
+for name, digest in PINS.items():
+    expect(hashlib.sha256((PLUGIN / name).read_bytes()).hexdigest() == digest and digest in BRIDGE,
+           f"the compiled installed-plugin pin matches {name} bytes")
+SOURCES = json.loads((ROOT / "Resources/local-controller-sources.json").read_text())
+for arch in ("arm64", "x86_64"):
+    digest = SOURCES["node"][arch]["binary_sha256"]
+    expect(digest in BRIDGE and len(digest) == 64, f"v0/v1 Node identity is pinned for {arch}")
+expect(SOURCES["model"]["digest"] in BRIDGE and
+       'manifest["entry_sha256"] as? String == pinnedEntrySHA256' in BRIDGE,
+       "pinned local model and OpenClaw entry are checked beyond mutable activation metadata")
+expect('app_sealed_public_executor_contract' in BRIDGE and
+       'RuntimeConfig.load().executorContract' in BRIDGE and
+       'validateExecutorContract(bundled.executorContract)' in BRIDGE and
+       '"/usr/bin/codesign"' in BRIDGE,
+       "public base policy uses an app-sealed contract, not an invented owner Notes policy")
+expect('OpenClawAgentController.prepare(' in BRIDGE and
+       'LocalOpenClawGatewayRunner.run(turn: turn, installed: identity)' in BRIDGE and
+       'OpenClawAgentController.proposeGateway(' in BRIDGE and
+       BRIDGE.index('LocalOpenClawGatewayRunner.run(turn: turn, installed: identity)') <
+       BRIDGE.index('OpenClawAgentController.proposeGateway(') < BRIDGE.index('raw = generated.final'),
+       "surface preference uses exact typed Gateway run and gate parser before host admission")
+expect('kind: "surface_preference"' in BRIDGE and
+       '"gateway_dispatch_may_have_started"' in BRIDGE and
+       '"failed_or_unverified"' in BRIDGE and
+       '"host_surface_admitted_task_quality_unverified"' in BRIDGE,
+       "candidate/failed/host-admitted states remain distinct private receipts")
+expect('if installedPluginExists || activation?["provisioning_version"] as? Int == 1' in BRIDGE and
+       'else if activation?["provisioning_version"] == nil' in BRIDGE and
+       'no alternate local model call' in BRIDGE,
+       "a failed Gateway does not trigger a second lean model call; v0 without plugin retains old producer")
 print(f"OS-1 local OpenClaw sidecar wiring: {checks} checks PASS; "
-      "v1 managed-private runtime / v0 exact legacy fallback; candidate governance only; no model calls; "
+      "v1 managed-private runtime / v0 pinned legacy fallback; typed surface Gateway candidate + lean legacy; "
+      "static/source checks only, no model calls; "
       f"provisioner resource currently packaged={'provision-local-controller.py' in RELEASE}")
