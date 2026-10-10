@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import OS1Context
 
@@ -14,8 +15,93 @@ enum LocalRouterBridge {
     static let version = "2026.9.9"
     static let model = "qwen3.5:4b"
     static let modelDigest = "d8b0f5e9760cd1682034f292d7ef72ec46f432149be0df7574bf2d6e92e38c04"
-    static let node = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".local/share/node-v24.20.0/bin/node")
-    static let entry = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/OS-1/tools/openclaw-2026.9.9/node_modules/openclaw/openclaw.mjs")
+    // Provisioning v1 is driven by the *signed OS-1 bundle's* pinned
+    // provisioner. It stages the exact binaries under OS-1's private tools
+    // root, not into the app's executable payload. A v1 miss must never fall
+    // through to a legacy Node, PATH, npm global state, or hosted provider.
+    static let managedNode = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/OS-1/tools/node-v24.20.0/bin/node")
+    static let legacyNode = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".local/share/node-v24.20.0/bin/node")
+    static let privatePrefix = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/OS-1/tools/openclaw-2026.9.9")
+    static let privateEntry = privatePrefix.appendingPathComponent("node_modules/openclaw/openclaw.mjs")
+
+    private struct RuntimeLocation {
+        let node: URL
+        let entry: URL
+        let origin: String
+        let nodeSHA256: String?
+    }
+
+    private static func validHash(_ value: String?) -> Bool {
+        guard let value, value.utf8.count == 64 else { return false }
+        return value.utf8.allSatisfy { ($0 >= 48 && $0 <= 57) || ($0 >= 97 && $0 <= 102) }
+    }
+
+    private static func regularFile(_ url: URL) -> Bool {
+        guard let value = try? url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey]) else { return false }
+        return value.isRegularFile == true && value.isSymbolicLink != true
+    }
+
+    private static func fileSHA256(_ url: URL) throws -> String {
+        guard regularFile(url) else { throw OS1Error.message("Local router runtime is not a regular file") }
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        var hash = SHA256()
+        while true {
+            let bytes = try handle.read(upToCount: 1_048_576) ?? Data()
+            if bytes.isEmpty { break }
+            hash.update(data: bytes)
+        }
+        return hash.finalize().map { String(format: "%02x", $0) }.joined()
+    }
+
+    private static func provisionerResources() -> URL? {
+        // The private binaries are provisioned from the signed app's pinned
+        // resources. The CLI may run from Contents/Resources or as the copied
+        // standalone executable; both must resolve the same installed bundle.
+        let executable = URL(fileURLWithPath: CommandLine.arguments[0]).resolvingSymlinksInPath().standardizedFileURL
+        let directory = executable.deletingLastPathComponent()
+        if directory.lastPathComponent == "Resources",
+           directory.deletingLastPathComponent().lastPathComponent == "Contents",
+           directory.deletingLastPathComponent().deletingLastPathComponent().lastPathComponent == "OS-1 CLODEX.app" {
+            return directory
+        }
+        let installed = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Applications/OS-1 CLODEX.app/Contents/Resources", isDirectory: true)
+        return FileManager.default.fileExists(atPath: installed.path) ? installed : nil
+    }
+
+    private static func runtime(manifest: [String: Any]) throws -> RuntimeLocation {
+        let expectedEntry = manifest["entry_sha256"] as? String
+        guard validHash(expectedEntry) else { throw OS1Error.message("Local router entry identity is missing") }
+        let provisioningVersion = manifest["provisioning_version"] as? Int
+        if provisioningVersion == 1 {
+            let nodeHash = manifest["node_sha256"] as? String
+            let packageHash = manifest["dependency_package_sha256"] as? String
+            let lockHash = manifest["dependency_lock_sha256"] as? String
+            guard let resources = provisionerResources(),
+                  regularFile(resources.appendingPathComponent("provision-local-controller.py")),
+                  regularFile(resources.appendingPathComponent("local-controller-sources.json")) else {
+                throw OS1Error.message("Signed local controller provisioning resources are unavailable")
+            }
+            guard validHash(nodeHash), validHash(packageHash), validHash(lockHash),
+                  manifest["ollama_version"] as? String == "0.35.1",
+                  regularFile(managedNode), regularFile(privateEntry),
+                  try fileSHA256(managedNode) == nodeHash,
+                  try fileSHA256(privateEntry) == expectedEntry,
+                  try fileSHA256(resources.appendingPathComponent("local-controller-package.json")) == packageHash,
+                  try fileSHA256(resources.appendingPathComponent("local-controller-package-lock.json")) == lockHash,
+                  try fileSHA256(privatePrefix.appendingPathComponent("package.json")) == packageHash,
+                  try fileSHA256(privatePrefix.appendingPathComponent("package-lock.json")) == lockHash else {
+                throw OS1Error.message("Managed local router sidecar identity is unavailable or changed")
+            }
+            return RuntimeLocation(node: managedNode, entry: privateEntry, origin: "os1_bundle_provisioned", nodeSHA256: nodeHash)
+        }
+        guard provisioningVersion == nil, regularFile(legacyNode), regularFile(privateEntry),
+              try fileSHA256(privateEntry) == expectedEntry else {
+            throw OS1Error.message("Legacy local router runtime identity is unavailable or changed")
+        }
+        return RuntimeLocation(node: legacyNode, entry: privateEntry, origin: "legacy_private_install", nodeSHA256: nil)
+    }
 
     private struct Produced { let final: Data; let receipt: String }
     private static func boundedFile(_ url: URL, limit: Int) throws -> Data {
@@ -26,15 +112,15 @@ enum LocalRouterBridge {
         return try Data(contentsOf: url)
     }
 
-    private static func preflight() async throws -> [String: Any] {
+    private static func preflight() async throws -> (manifest: [String: Any], runtime: RuntimeLocation) {
         let manifestData = try boundedFile(root.appendingPathComponent("manifest.json"), limit: 16_384)
         guard let m = try JSONSerialization.jsonObject(with: manifestData) as? [String: Any],
               m["enabled"] as? Bool == true, m["openclaw_version"] as? String == version,
               m["model"] as? String == model, m["model_digest"] as? String == modelDigest,
-              m["entry_sha256"] as? String == sha256Hex(try boundedFile(entry, limit: 64_000)),
               m["config_sha256"] as? String == sha256Hex(try boundedFile(root.appendingPathComponent("config.json"), limit: 32_000)) else {
             throw OS1Error.message("Local router installation/configuration identity is unavailable or changed")
         }
+        let selectedRuntime = try runtime(manifest: m)
         let data = try boundedFile(root.appendingPathComponent("config.json"), limit: 32_000)
         guard let c = try JSONSerialization.jsonObject(with: data) as? [String: Any],
               let models = c["models"] as? [String: Any], models["mode"] as? String == "replace",
@@ -56,13 +142,27 @@ enum LocalRouterBridge {
               installed.contains(where: { $0["name"] as? String == model && $0["digest"] as? String == modelDigest }) else {
             throw OS1Error.message("Local router model digest is not present in the live Ollama inventory")
         }
-        return m
+        if m["provisioning_version"] as? Int == 1 {
+            let (versionData, versionResponse) = try await session.data(from: URL(string: "http://127.0.0.1:11434/api/version")!)
+            guard (versionResponse as? HTTPURLResponse)?.statusCode == 200, versionData.count <= 4_096,
+                  let versionJSON = try JSONSerialization.jsonObject(with: versionData) as? [String: Any],
+                  versionJSON["version"] as? String == "0.35.1" else {
+                throw OS1Error.message("Managed local router Ollama runtime version differs from the activation contract")
+            }
+        }
+        return (m, selectedRuntime)
     }
 
     private static func produce(_ prompt: String, kind: String, binding: String, schema: [String: Any]) async throws -> Produced {
         guard prompt.utf8.count <= 40_000 else { throw OS1Error.message("Local router input exceeds its bounded context") }
-        let manifest = try await preflight()
-        let projection = OwnerPolicyContext.snapshot.map { String(($0.routing + "\n" + $0.projection).prefix(4_000)) } ?? ""
+        let (manifest, selectedRuntime) = try await preflight()
+        guard let ownerPolicy = OwnerPolicyContext.snapshot, validHash(ownerPolicy.sourceSHA256),
+              validHash(binding), ["interpretation", "parallel_plan", "surface_preference"].contains(kind) else {
+            throw OS1Error.message("Local controller proposal lacks an exact owner-policy/request binding")
+        }
+        try ownerPolicy.verifyOriginal()
+        let projection = String((ownerPolicy.routing + "\n" + ownerPolicy.projection).prefix(4_000))
+        guard !projection.isEmpty else { throw OS1Error.message("Local controller policy projection is empty") }
         let governedPrompt = "RCC owner-policy bounded projection (not full source; host authority remains final):\n" + projection + "\n\n" + prompt
         // The native Ollama format schema constrains candidate syntax before
         // generation. It is not a semantic checker or permission grant. Keep
@@ -92,40 +192,75 @@ enum LocalRouterBridge {
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: configURL.path)
         defer { try? FileManager.default.removeItem(at: configURL) }
         guard !Task.isCancelled, !ExecutionCancellation.isCancelled else { throw OS1Error.backendBlocked(.cancelled) }
+        // This is an admission to *produce a candidate*, not to read files,
+        // mutate state, select a provider, execute native agents or deliver an
+        // answer. Persist it before inference so a crash cannot make an
+        // unaudited local result look like an authorized action.
+        let receiptID = UUID().uuidString.lowercased()
+        let receiptURL = root.appendingPathComponent("receipts/\(receiptID).json")
+        try FileManager.default.createDirectory(at: receiptURL.deletingLastPathComponent(), withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        var receipt: [String: Any] = ["schema": 1, "id": receiptID, "kind": kind,
+            "input_fingerprint": binding, "policy_source_sha256": ownerPolicy.sourceSHA256,
+            "policy_projection_sha256": sha256Hex(Data(projection.utf8)),
+            "actual_prompt_sha256": sha256Hex(Data(governedPrompt.utf8)),
+            "model": model, "model_digest": modelDigest, "provider": "ollama", "quota_pool": "none",
+            "hosted_model_invoked": false, "tools_permitted": false,
+            "runtime_origin": selectedRuntime.origin, "runtime_node_sha256": selectedRuntime.nodeSHA256 ?? "not_pinned_in_legacy_manifest",
+            "entry_sha256": manifest["entry_sha256"] ?? "", "config_sha256": manifest["config_sha256"] ?? "",
+            "effective_config_sha256": sha256Hex(effectiveBytes),
+            "generation_schema_sha256": sha256Hex(try JSONSerialization.data(withJSONObject: schema, options: [.sortedKeys])),
+            "openclaw_version": version, "task_quality": "candidate_only_not_parity",
+            "pre_governance": "host_admitted_local_candidate_only", "execution_status": "not_started"]
+        try JSONSerialization.data(withJSONObject: receipt, options: [.sortedKeys, .prettyPrinted]).write(to: receiptURL, options: .atomic)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: receiptURL.path)
         let start = Date()
         let env = ["HOME=\(root.appendingPathComponent("home").path)",
                    "OPENCLAW_HOME=\(root.appendingPathComponent("home").path)",
                    "OPENCLAW_STATE_DIR=\(root.appendingPathComponent("state").path)",
                    "OPENCLAW_CONFIG_PATH=\(configURL.path)",
-                   "PATH=\(node.deletingLastPathComponent().path):/usr/bin:/bin"]
+                   "PATH=\(selectedRuntime.node.deletingLastPathComponent().path):/usr/bin:/bin"]
         // env -i is deliberate: neither OpenAI/Anthropic API keys, inherited
         // session identities nor any user's ambient OpenClaw settings survive.
-        let result = try await Task.detached {
-            // The official lean model-run path does not start an agent turn,
-            // bootstrap a workspace, open MCP servers or offer any tools.
-            try commandOutput("/usr/bin/env", ["-i"] + env + [node.path, entry.path,
-                "infer", "model", "run", "--local", "--model", "ollama/" + model,
-                "--thinking", "off", "--prompt", governedPrompt, "--json"],
-                timeout: 20, currentDirectory: root.appendingPathComponent("workspace").path)
-        }.value
+        // The command may begin immediately after this durable state write. A
+        // crash or transport error is deliberately "may have started", never
+        // misreported as a model that definitely did not run.
+        receipt["execution_status"] = "dispatch_may_have_started"
+        try JSONSerialization.data(withJSONObject: receipt, options: [.sortedKeys, .prettyPrinted]).write(to: receiptURL, options: .atomic)
+        let result: (Int32, Data, Data)
+        do {
+            result = try await Task.detached {
+                // The official lean model-run path does not start an agent
+                // turn, bootstrap a workspace, open MCP or offer tools.
+                try commandOutput("/usr/bin/env", ["-i"] + env + [selectedRuntime.node.path, selectedRuntime.entry.path,
+                    "infer", "model", "run", "--local", "--model", "ollama/" + model,
+                    "--thinking", "off", "--prompt", governedPrompt, "--json"],
+                    timeout: 20, currentDirectory: root.appendingPathComponent("workspace").path)
+            }.value
+        } catch {
+            receipt["execution_status"] = "failed_or_unverified"
+            try? JSONSerialization.data(withJSONObject: receipt, options: [.sortedKeys, .prettyPrinted]).write(to: receiptURL, options: .atomic)
+            throw OS1Error.message("Local controller candidate failed or is unverified; receipt \(receiptURL.path)")
+        }
+        receipt["execution_status"] = "returned_unverified"
+        receipt["exit_status"] = result.0
+        receipt["envelope_sha256"] = sha256Hex(result.1)
+        try JSONSerialization.data(withJSONObject: receipt, options: [.sortedKeys, .prettyPrinted]).write(to: receiptURL, options: .atomic)
         guard result.1.count <= 64_000,
               let envelope = try JSONSerialization.jsonObject(with: result.1) as? [String: Any] else {
-            throw OS1Error.message("Local router did not return a bounded execution envelope")
+            throw OS1Error.message("Local router did not return a bounded execution envelope; receipt \(receiptURL.path)")
         }
-        let receiptID = UUID().uuidString.lowercased()
-        let receiptURL = root.appendingPathComponent("receipts/\(receiptID).json")
+        try ownerPolicy.verifyOriginal()
+        guard OwnerPolicyContext.snapshot?.sourceSHA256 == ownerPolicy.sourceSHA256 else {
+            throw OS1Error.message("Local controller policy identity changed during candidate generation; receipt \(receiptURL.path)")
+        }
         let outputs = envelope["outputs"] as? [[String: Any]] ?? []
         let rawFinal = outputs.count == 1 ? (outputs[0]["text"] as? String ?? "") : ""
-        var receipt: [String: Any] = ["schema": 1, "id": receiptID, "kind": kind,
-            "input_fingerprint": binding, "policy_projection_sha256": sha256Hex(Data(projection.utf8)), "actual_prompt_sha256": sha256Hex(Data(governedPrompt.utf8)), "started_at": ISO8601DateFormatter().string(from: start),
-            "elapsed_ms": Int(Date().timeIntervalSince(start) * 1000), "exit_status": result.0,
-            "model": model, "model_digest": modelDigest, "provider": "ollama", "quota_pool": "none",
-            "hosted_model_invoked": false, "tools_permitted": false, "candidate_final": rawFinal,
-            "envelope_sha256": sha256Hex(result.1), "config_sha256": manifest["config_sha256"] ?? "",
-            "effective_config_sha256": sha256Hex(effectiveBytes), "generation_schema_sha256": sha256Hex(try JSONSerialization.data(withJSONObject: schema, options: [.sortedKeys])),
-            "openclaw_version": version, "entry_sha256": manifest["entry_sha256"] ?? "",
-            "task_quality": "candidate_only_not_parity", "execution_status": envelope["ok"] as? Bool == true ? "returned" : "failed",
-            "openclaw_capability": envelope["capability"] ?? "unknown", "transport": envelope["transport"] ?? "unknown"]
+        receipt["started_at"] = ISO8601DateFormatter().string(from: start)
+        receipt["elapsed_ms"] = Int(Date().timeIntervalSince(start) * 1000)
+        receipt["candidate_final"] = rawFinal
+        receipt["execution_status"] = envelope["ok"] as? Bool == true ? "returned" : "failed"
+        receipt["openclaw_capability"] = envelope["capability"] ?? "unknown"
+        receipt["transport"] = envelope["transport"] ?? "unknown"
         if let usage = envelope["usage"] { receipt["local_usage"] = usage }
         try FileManager.default.createDirectory(at: receiptURL.deletingLastPathComponent(), withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         try JSONSerialization.data(withJSONObject: receipt, options: [.sortedKeys, .prettyPrinted]).write(to: receiptURL, options: .atomic)
