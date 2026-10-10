@@ -53,6 +53,8 @@ struct LocalOpenClawGatewayRunnerFixture {
                 os.chmod(os.path.join(root, 'gate-receipt.json'), 0o600)
             time.sleep(3 if mode == 'client-timeout' else .30)
             if mode == 'client-fail': sys.exit(7)
+            if mode == 'client-flood':
+                print('X' * 70000, flush=True); time.sleep(2); sys.exit(0)
             print(json.dumps({'status':'ok', 'runId':'fake-gateway-run', 'result':{'payloads':[{'text':'candidate'}]}}))
             sys.exit(0)
         sys.exit(19)
@@ -99,7 +101,7 @@ struct LocalOpenClawGatewayRunnerFixture {
             result = nil
             let expected: LocalOpenClawGatewayRunner.Failure = mode == "never-ready" ? .gatewayNotReady :
                 mode == "client-fail" ? .clientFailed : mode == "cancelled" ? .cancelled :
-                mode == "client-timeout" ? .clientTimeout : .missingGate
+                mode == "client-timeout" ? .clientTimeout : mode == "client-flood" ? .unboundedOutput : .missingGate
             guard let failure = error as? LocalOpenClawGatewayRunner.Failure, failure == expected else {
                 throw NSError(domain: "GatewayFixture", code: 1,
                               userInfo: [NSLocalizedDescriptionKey: "Unexpected failure in \(mode): \(error)"])
@@ -130,6 +132,7 @@ struct LocalOpenClawGatewayRunnerFixture {
         try runCase("no-gate", fixtureRoot: root)
         try runCase("cancelled", fixtureRoot: root)
         try runCase("client-timeout", fixtureRoot: root)
+        try runCase("client-flood", fixtureRoot: root)
         try runCase("never-ready", fixtureRoot: root)
     }
 }

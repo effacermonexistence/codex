@@ -47,6 +47,7 @@ enum LocalOpenClawGatewayRunner {
         case clientFailed = "gateway_client_failed"
         case missingGate = "pre_model_gate_missing"
         case envelopeInvalid = "terminal_envelope_invalid"
+        case unboundedOutput = "unbounded_process_output"
         case cancelled = "cancelled"
     }
 
@@ -166,6 +167,7 @@ enum LocalOpenClawGatewayRunner {
         while Date() < readinessDeadline {
             try checkCancel()
             guard gateway.isRunning else { throw Failure.gatewayStartFailed }
+            guard logsWithinBounds(paths) else { throw Failure.unboundedOutput }
             healthAttempt += 1
             let out = paths.run.appendingPathComponent("health-\(healthAttempt).json")
             let err = paths.run.appendingPathComponent("health-\(healthAttempt).err")
@@ -201,6 +203,7 @@ enum LocalOpenClawGatewayRunner {
         var gateObservedBeforeTerminal = false
         while client.isRunning && Date() < clientDeadline {
             try checkCancel()
+            guard logsWithinBounds(paths) else { throw Failure.unboundedOutput }
             if FileManager.default.fileExists(atPath: paths.gate.path), client.isRunning,
                privateFileSize(paths.clientOut) == 0 {
                 gateObservedBeforeTerminal = true
@@ -422,6 +425,18 @@ enum LocalOpenClawGatewayRunner {
         guard lstat(url.path, &state) == 0, (state.st_mode & S_IFMT) == S_IFREG,
               (state.st_mode & 0o077) == 0 else { return nil }
         return Int(state.st_size)
+    }
+
+    private static func logsWithinBounds(_ paths: Paths) -> Bool {
+        let limits: [(URL, Int)] = [(paths.gatewayOut, 512_000), (paths.gatewayErr, 512_000),
+                                    (paths.clientOut, OpenClawAgentController.maximumEnvelopeBytes),
+                                    (paths.clientErr, 128_000)]
+        return limits.allSatisfy { path, limit in
+            var state = stat()
+            if lstat(path.path, &state) != 0 { return errno == ENOENT }
+            return (state.st_mode & S_IFMT) == S_IFREG && (state.st_mode & 0o077) == 0 &&
+                   state.st_size <= limit
+        }
     }
 
     private static func fileSHA256(_ url: URL) throws -> String {
