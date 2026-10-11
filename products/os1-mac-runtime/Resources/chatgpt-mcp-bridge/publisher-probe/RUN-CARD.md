@@ -298,3 +298,15 @@ A screenshot of that diagnostic response or actual conversation link was
 requested solely to bridge this identification boundary. No new OAuth, key,
 Tunnel, Chrome or inference-API setup was requested. Automatic ordinary submit,
 same-task OS1 return and exact quota attribution remain unverified.
+
+### User correction after the send confirmation
+
+The user later reported that the window is not visible now, was visible earlier,
+and may not have been sent. Supersede the previous confirmation: current send
+state is UNVERIFIED. Preserve both statements chronologically; do not invent a
+backend failure, sent turn or reply. The same nonce B was reopened through the
+registered native URI, without another model call. Window visibility/effective
+mode, actual submit, new reply, OS1 adoption and quota remain separate gates.
+
+Fixture regression rerun: 102/102 PASS, process exit0. This is source-fixture
+evidence only, not native delivery. No implementation/app build changed.

@@ -1,5 +1,21 @@
 # Native ordinary-Chat connection checkpoint — NOT COMPLETE
 
+## Current correction supersedes prior send confirmation
+
+The user subsequently reported that the diagnostic window is not visible now,
+was visible earlier, and the prompt may not have been sent. The earlier
+USER_CONFIRMED send state below is historical and withdrawn as current authority;
+the current send status is UNVERIFIED. Do not infer a successful request or
+reconstruct an assistant answer from the earlier confirmation.
+
+The same nonce B was reopened through the registered native deep link. This is
+only another composer-opening request, not model dispatch or a visible-window
+receipt. The user was asked to distinguish an actual ordinary-Chat answer from
+a missing draft or Work/Codex surface. No diagnostic was replayed through a model,
+no unrelated conversation was messaged, and installed OS1 was not changed.
+Private correction/launch receipt:
+`/Users/LUA/.os1/recovery/os1-native-chat-publisher-probe-20261011/native-chat-reopen-after-send-correction.json`.
+
 ## Latest native composer / user-confirmed send — still NOT COMPLETE
 
 - A source-supported native `codex://new?mode=chat&prompt=...` opening request
