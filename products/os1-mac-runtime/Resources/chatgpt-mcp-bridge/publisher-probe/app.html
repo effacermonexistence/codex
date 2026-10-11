@@ -12,7 +12,8 @@
 (() => {
   'use strict';
   const state=document.getElementById('state'),details=document.getElementById('details'),stopButton=document.getElementById('stop');
-  let serial=0,origin,stopped=false,timer,outstanding;
+  const IDLE_POLL_MS=5000,MAX_IDLE_POLLS=120,RATE_BACKOFF_MS=60000,MAX_RATE_BACKOFFS=2;
+  let serial=0,origin,stopped=false,timer,outstanding,idlePolls=0,rateBackoffs=0;
   const pending=new Map();
   function stop(text){stopped=true;clearTimeout(timer);state.textContent=text;stopButton.disabled=true;for(const p of pending.values()){clearTimeout(p.timer);p.reject(Error('connection_closed'));}pending.clear();}
   function rpc(method,params){
@@ -35,13 +36,13 @@
     const p=pending.get(m.id);if(!p)return;
     if(!origin&&event.origin&&event.origin!=='null')origin=event.origin;
     pending.delete(m.id);clearTimeout(p.timer);
-    if(m.error)p.reject(Error('host_rejected'));else p.resolve(m.result);
+    if(m.error)p.reject(Error(m.error.message==='probe_rate_limited'?'probe_rate_limited':'host_rejected'));else p.resolve(m.result);
   });
   stopButton.addEventListener('click',()=>stop('Observation stopped. Already submitted model work may continue; no replay or fallback.'));
   window.addEventListener('pagehide',()=>stop('Component hidden or closed. Delivery outcome must be inspected; no replay.'));
   async function tool(name,args){
     const r=await rpc('tools/call',{name,arguments:args});
-    if(r?.isError)throw Error('tool_rejected');
+    if(r?.isError)throw Error(r.content?.some(c=>c.type==='text'&&c.text==='probe_rate_limited')?'probe_rate_limited':'tool_rejected');
     return r?._meta?.bridge??r?.structuredContent;
   }
   async function tick(){
@@ -49,7 +50,13 @@
     try{
       if(outstanding){state.textContent='Message accepted by host. Waiting for the model result callback; ACK is not completion.';return;}
       const next=await tool('os1_probe_next',{});
-      if(next?.state==='idle'){state.textContent='Native component initialized. No diagnostic is activated.';timer=setTimeout(tick,1500);return;}
+      if(next?.state==='idle'){
+        if(++idlePolls>=MAX_IDLE_POLLS){stop('No diagnostic was activated during this observation window. Nothing sent.');return;}
+        state.textContent='Native component initialized. No diagnostic is activated.';timer=setTimeout(tick,IDLE_POLL_MS);return;
+      }
+      if(['expired','cancelled','returned','effects_uncertain'].includes(next?.state)){
+        stop('Diagnostic state: '+next.state+'. Observation stopped; no resend.');return;
+      }
       if(next?.state!=='offered'){stop('Diagnostic is held or already offered. No resend.');return;}
       const r=next.request;
       if(!r||typeof r.request_id!=='string'||typeof r.request_sha256!=='string'||typeof r.return_token!=='string'||typeof r.dispatch_token!=='string'||typeof r.prompt!=='string'){stop('Invalid diagnostic envelope. Nothing sent.');return;}
@@ -62,7 +69,15 @@
       await rpc('ui/message',{role:'user',content:[{type:'text',text:JSON.stringify(envelope)}],_meta:{'openai/message':{target:'new',send:true}}});
       await tool('os1_probe_dispatched',{request_id:r.request_id,dispatch_token:r.dispatch_token});
       state.textContent='Host accepted the message. Awaiting actual callback; this is not a completion claim.';
-    }catch{stop('Host submission or acknowledgement failed. Outcome may be uncertain; no resend or Codex fallback.');}
+    }catch(error){
+      // Retry only a definite read-only rate rejection before acquiring the
+      // one-shot offer. Never retry ui/message, an offered request, or its ACK.
+      if(!stopped&&!outstanding&&error.message==='probe_rate_limited'&&rateBackoffs++<MAX_RATE_BACKOFFS){
+        state.textContent='Diagnostic polling rate limited. Waiting before a bounded read-only retry; nothing sent.';
+        timer=setTimeout(tick,RATE_BACKOFF_MS);return;
+      }
+      stop(outstanding?'Host submission or acknowledgement failed. Outcome may be uncertain; no resend or Codex fallback.':'Diagnostic lookup failed or rate backoff exhausted. Nothing sent; no fallback.');
+    }
   }
   (async()=>{
     if(window.parent===window){stop('Open this component through the genuinely registered ChatGPT plugin.');return;}

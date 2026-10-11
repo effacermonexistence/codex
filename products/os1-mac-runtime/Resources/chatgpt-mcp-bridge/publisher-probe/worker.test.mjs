@@ -291,6 +291,40 @@ test('the sole resource is fixed HTML; arbitrary resource/file reads reject', as
   assert.equal(f.snapshot().length, 0);
 });
 
+test('native resource reads accept standard opaque request metadata without using or echoing it', async () => {
+  const f = fixture();
+  for (const _meta of [{progressToken:'synthetic-resource-read'},
+    {progressToken:4, 'openai/session':'synthetic-do-not-echo', nested:{unused:true}}]) {
+    const read = assertToolOK(await f.rpc('resources/read', {uri:RESOURCE_URI, _meta}));
+    assert.equal(read.contents[0].text,APP_HTML);
+    assert.equal(JSON.stringify(read).includes('synthetic-do-not-echo'),false);
+  }
+  assert.equal(f.snapshot().length,0);
+});
+
+test('request metadata cannot widen the resource allowlist or change execution state', async () => {
+  const f=fixture();
+  for (const _meta of [null,[],true,'invalid']) {
+    assertToolRejected(await f.rpc('resources/read',{uri:RESOURCE_URI,_meta}));
+  }
+  assertToolRejected(await f.rpc('resources/read',{uri:'file:///private/source',_meta:{progressToken:1}}));
+  assertToolRejected(await f.rpc('resources/read',{uri:RESOURCE_URI,_meta:{},filename:'/private/source'}));
+  assert.equal(f.snapshot().length,0);
+});
+
+test('common request metadata is transported consistently and cannot become business authority',async()=>{
+  const f=fixture();
+  const _meta={progressToken:'opaque-synthetic',authorization:'synthetic-not-authority'};
+  assertToolOK(await f.rpc('initialize',{protocolVersion:'2025-06-18',capabilities:{},clientInfo:{name:'fixture',version:'1'},_meta}));
+  assertToolOK(await f.rpc('ping',{_meta}));
+  assert.equal(assertToolOK(await f.rpc('tools/list',{_meta})).tools.length,4);
+  assert.equal(assertToolOK(await f.rpc('resources/list',{_meta})).resources.length,1);
+  assertToolOK(await f.rpc('tools/call',{name:'os1_probe_open',arguments:{},_meta}));
+  assertToolRejected(await f.rpc('resources/read',{uri:RESOURCE_URI,filename:'/private/file',_meta}));
+  assertToolRejected(await f.rpc('resources/read',{uri:RESOURCE_URI,_meta:{progressToken:true}}));
+  assert.equal(f.snapshot().length,0);
+});
+
 test('open is metadata-only and never acquires or replays a capability', async () => {
   const f = fixture();
   const idleBefore = f.snapshot();
@@ -508,6 +542,7 @@ test('verified callback completes the fixed result; identical duplicates are ide
     assert.deepEqual(f.snapshot(), completedBefore);
   }
   const next = await f.tool('os1_probe_next');
+  assert.equal(bridge(next).state, 'returned');
   assert.equal(bridge(next).request, undefined);
   assertNoCapabilities(next, offer);
   assertToolRejected(await f.start());
@@ -537,6 +572,7 @@ test('operator cancellation is terminal for queued and offered runs; no public c
     assert.equal((await f.result()).json.state, 'cancelled');
     const before = f.snapshot();
     const next = await f.tool('os1_probe_next');
+    assert.equal(bridge(next).state, 'cancelled');
     assert.equal(bridge(next).request, undefined);
     if (offer) {
       assertToolRejected(await f.tool('os1_probe_return', callback(offer)));
@@ -563,6 +599,7 @@ test('queued TTL expiry is expired and never automatically re-offers', async () 
   assert.equal(reply.json.output, null);
   for (let attempt = 0; attempt < 3; attempt++) {
     const next = await f.tool('os1_probe_next');
+    assert.equal(bridge(next).state, 'expired');
     assert.equal(bridge(next).request, undefined);
     assert.equal((await f.result()).json.state, 'expired');
   }

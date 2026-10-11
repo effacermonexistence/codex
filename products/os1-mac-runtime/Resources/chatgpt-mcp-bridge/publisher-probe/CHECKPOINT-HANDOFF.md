@@ -1,5 +1,41 @@
 # Native ordinary-Chat connection checkpoint — NOT COMPLETE
 
+## CURRENT REPAIR UPDATE — supersedes mount diagnosis below, not failed history
+
+- The user restarted the actual combined ChatGPT/Codex desktop. PID89862 was
+  observed; a standalone CLI restart was not substituted for that owner.
+- Own resource reads failed because standard MCP `_meta` was treated as an
+  extra business argument. This was reproduced and fixed by normalization,
+  without widening permitted URIs, tools, arguments or authorization.
+- Registered proxy resource read and native widget-running events now pass.
+  There is no basis to continue blaming deep-link delivery or absent mounting.
+- The next real own-widget error was `probe_rate_limited`. Terminal records
+  collapsed into idle, which allowed continued unnecessary polling. This is
+  repaired while retaining the rate guard and durable terminal evidence.
+- Source regressions: 57/57 PASS. Worker version:
+  `f056555b-1c1e-459f-b495-f61e066081bf`.
+- Entire existing bridge/setup plus probe suite: 101/101 PASS, no model calls.
+- Live HTTPS check: current HTML byte-identical; `next.state=expired`, no offer.
+  The official connected open tool returned `component_requested`; a native
+  entry refresh was requested. Those requests alone do not prove refresh.
+- No fresh model request. Ordinary Chat recipient/mode and quota attribution
+  remain unverified. An app-server global view is not an ordinary Chat target.
+- Read-only native contract audit found direct view-frame fallback selects
+  app-server when no recipient composer is bound. The public widget interface
+  cannot select or inspect that destination. Do not create a new run from that
+  view merely because the user previously selected Chat at the app's top level.
+- Current modified scope: Worker, widget, their tests and these two checkpoint
+  documents. No Swift, app install, credential, live store or queue mutation.
+- Next: correlate refreshed own-widget stages; establish a supported ordinary
+  recipient before creating an isolated fresh fixed test. Never call the
+  callback from this Codex task or substitute API/browser/Work inference.
+- Current private receipts:
+  `/Users/LUA/.os1/recovery/os1-native-chat-publisher-probe-20261011/` and
+  `/Users/LUA/.os1/recovery/native-chat-probe-evidence-20261011T123602Z/`.
+
+The remaining sections preserve the earlier ba46127 checkpoint. Refer to the
+update above and RUN-CARD.md for the current evidence boundary.
+
 ## CURRENT OBJECTIVE
 
 OS1/OpenClaw must send real requests to local ordinary ChatGPT and receive the

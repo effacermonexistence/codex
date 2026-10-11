@@ -13,6 +13,9 @@ customer OAuth, pairing, routing, or installers around an unproven host path.
 - Forbidden: current OS1 installs/stores/queues, Handy, existing services and
   credentials, arbitrary prompts/files, unverified ordinary-Chat/quota claims.
 - Request state: one durable offer; no automatic retries; expiry/cancel holds.
+- Read-only observation: idle polling is bounded; only a definite pre-offer
+  rate rejection permits at most two delayed reads. A model message, one-shot
+  offer, timeout, ambiguous failure or ACK never gains replay permission.
 - Host entry: documented global MCP App entrypoint and desktop plugin deep link
   after a genuine technical plugin ID exists. Never fabricate the ID.
 - Native gate: initialization -> ui/message -> actual model tool callback ->
@@ -130,3 +133,69 @@ Current official local-plugin instructions require restarting the ChatGPT
 desktop app after package changes. A fresh standalone CLI reload does not
 reload that existing desktop owner. Preserve this checkpoint before any host
 restart; no hidden host-pipe call or protected-UI automation is authorized.
+
+## Executed repair update — 2026-10-11 after the real desktop restart
+
+The earlier failed-run history above is retained. It is not the current mount
+diagnosis. The actual restarted desktop owner was independently observed.
+
+1. Own-resource native logs showed `mcp_app_resource_read_failed` with
+   `resource_not_allowed`. Standard request `_meta` was rejected as an extra
+   resource argument. A fixture reproduced the failure before modification.
+   The Worker now validates and discards common transport metadata before the
+   unchanged exact business-argument/URI checks. Metadata is not authorization.
+2. The fixed resource was read successfully through both HTTPS and the actual
+   registered `codex_apps` proxy, byte-identical to source. Native own-resource
+   events subsequently recorded sandbox creation and widget execution/running.
+   These events establish mounting, not ordinary-Chat inference.
+3. A later own-widget `os1_probe_next` call returned `probe_rate_limited`.
+   Actual arguments were not logged, so that event does not prove or disprove
+   lower-handler argument validity. The rate guard executes earlier.
+4. `next()` incorrectly rendered terminal expired/cancelled/returned rows as
+   idle, making observers continue polling. Three existing-state regression
+   assertions failed before repair. Terminal tombstones now retain their exact
+   state and observers stop; unknown state is not promoted into a new run.
+5. Idle lookup now waits five seconds and ends after 120 idle observations.
+   A definite rate rejection before any offer has at most two 60-second read
+   backoffs. Submission/ACK failures are never retried. The 120/minute public
+   rate guard, operator authorization, one-offer locking and old instance are
+   unchanged.
+
+Verification: 57/57 isolated regressions PASS; `git diff --check` PASS.
+Including the existing bridge/setup regressions: 101/101 PASS. These isolated
+tests do not invoke a model or establish native inference/usage attribution.
+The deployed Worker version is `f056555b-1c1e-459f-b495-f61e066081bf`.
+HTTPS verification read the current 7197-byte HTML with SHA-256
+`594b16c3db64e2c6eb9b7f6f80ced1a765fa613bead8ead8819bc398305ede01`,
+and `next` returned `expired` with no capability. A supported native entry
+refresh was requested; requesting a refresh is not itself a UI adoption proof.
+
+No new model request was activated. The old one-run instance remains expired;
+its failed trajectory is not replayed or erased. Installed OS1 build371,
+existing conversations, queues and authentication were not changed.
+
+Remaining gate: actual ordinary-Chat recipient binding, authenticated model
+callback, quota attribution and same-task OS1 integration. The public
+`ui/message` extension's targeting does not expose mode or accounting. A
+widget mounted in a generic app-server view must not be assumed to inherit
+ordinary Chat merely because both products are in one desktop application.
+
+## Recipient-binding investigation — no unsupported dispatch
+
+The public extension at
+`openai/mcp-extensions@0d606217705e0e71eb21fff009619b67b80611dc`
+declares only `target:active|new` and `send` for message targeting. It does not
+declare an ordinary-Chat mode, model or accounting selector/receipt.
+Read-only static inspection of installed native build20156 found the widget
+first inherits its recipient composer's destination. Without that recipient,
+the direct `view-frame` callback provides an app-server destination. A separate
+ChatGPT-hosted consumer can inherit a ChatGPT conversation origin; these are
+different executed paths, not interchangeable app names.
+
+Accordingly, do not activate a fresh run from the known direct app-server view.
+The top-level Chat selection alone is not a binding for this widget. A documented
+thread entrypoint also does not itself prove an ordinary-Chat destination.
+The missing gate is the actual recipient backend/origin, followed independently
+by accounting. Do not add invented `mode` parameters, impersonate native host
+callers, modify the vendor app or turn the fixed callback into a counterfeit
+ordinary-Chat result.

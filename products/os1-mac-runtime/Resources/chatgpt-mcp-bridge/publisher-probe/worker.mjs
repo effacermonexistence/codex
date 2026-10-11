@@ -178,7 +178,9 @@ export class NativeChatProbe {
   }
   async next() {
     return this.transaction(async ({storage, now, row, counts}) => {
-      if (!row || !ACTIVE.has(row.state)) return {state:row?.state === 'effects_uncertain' ? 'effects_uncertain' : 'idle'};
+      // A terminal tombstone is not an empty mailbox. Preserve it so native
+      // observers stop instead of repeatedly polling an expired/completed run.
+      if (!row || !ACTIVE.has(row.state)) return {state:row?.state ?? 'idle'};
       if (row.state !== 'queued') return {state:'busy', request_id:row.request_id};
       const returnToken = randomHex(32), dispatchToken = randomHex(32);
       row.state = 'offered'; row.offered_at_ms = now;
@@ -258,7 +260,19 @@ function validID(value) { return typeof value === 'string' && value.length <= 12
 function paramsFor(message) {
   const value = Object.hasOwn(message, 'params') ? message.params : {};
   requireThat(value !== null && typeof value === 'object' && !Array.isArray(value), 'rpc_params_invalid');
-  return value;
+  // Standard MCP transport metadata is not a business argument, resource
+  // selector, account authorization or probe capability. Native hosts attach
+  // it to resource reads as well as tool calls. Validate its container, then
+  // discard it before the unchanged exact per-method argument checks.
+  if (Object.hasOwn(value, '_meta')) {
+    const meta = value._meta;
+    requireThat(meta !== null && typeof meta === 'object' && !Array.isArray(meta), 'rpc_meta_invalid');
+    if (Object.hasOwn(meta, 'progressToken')) {
+      requireThat(typeof meta.progressToken === 'string' || Number.isFinite(meta.progressToken), 'rpc_meta_invalid');
+    }
+  }
+  const {_meta, ...businessParams} = value;
+  return businessParams;
 }
 export function createProbeWorker({appHTML = ''} = {}) {
   requireThat(typeof appHTML === 'string' && encoder.encode(appHTML).byteLength <= 1_000_000, 'resource_invalid');
