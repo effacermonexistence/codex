@@ -39,10 +39,10 @@ async function fixture({extended=true,messageError=false,nextState='offered',nex
   }
   return {elements,listeners,calls,timers,runTimer};
 }
-test('registered host sends one immutable synthetic request, then ACK—not a completion',async()=>{
+test('registered host sends one immutable request to the bound active recipient only, then ACK—not completion',async()=>{
   const f=await fixture();
   const sends=f.calls.filter(x=>x.message.method==='ui/message');assert.equal(sends.length,1);
-  assert.equal(sends[0].message.params._meta['openai/message'].target,'new');
+  assert.equal(sends[0].message.params._meta['openai/message'].target,'active');
   assert.equal(sends[0].message.params._meta['openai/message'].send,true);
   const payload=JSON.parse(sends[0].message.params.content[0].text);
   assert.equal(payload.request,'1+1');assert.equal(payload.binding.request_id,request.request_id);
@@ -62,8 +62,18 @@ test('host without advertised extended targeting is held without sending',async(
 test('denied host submission is not acknowledged, retried, or switched to another backend',async()=>{
   const f=await fixture({messageError:true});
   assert.equal(f.calls.filter(x=>x.message.method==='ui/message').length,1);
+  assert.equal(f.calls.filter(x=>x.message.method==='ui/message').every(x=>x.message.params._meta['openai/message'].target==='active'),true);
   assert.equal(f.calls.some(x=>x.message.params?.name==='os1_probe_dispatched'),false);
   assert.match(f.elements.get('state').textContent,/no resend or Codex fallback/);
+});
+test('missing active recipient cannot gain a new-thread fallback or fabricated mode',async()=>{
+  const f=await fixture({messageError:true});
+  const sends=f.calls.filter(x=>x.message.method==='ui/message');
+  assert.equal(sends.length,1);
+  assert.deepEqual(Object.keys(sends[0].message.params._meta['openai/message']).sort(),['send','target']);
+  assert.equal(sends[0].message.params._meta['openai/message'].target,'active');
+  assert.equal(f.timers.size,0);
+  assert.equal(f.calls.some(x=>x.message.params?.name==='os1_probe_dispatched'),false);
 });
 test('already-offered durable state cannot dispatch again',async()=>{
   const f=await fixture({nextState:'busy'});

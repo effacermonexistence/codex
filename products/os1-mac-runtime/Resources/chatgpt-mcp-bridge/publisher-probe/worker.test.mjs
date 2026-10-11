@@ -264,6 +264,10 @@ test('initialize/ping and tool inventory expose only fixed probe tools', async (
     assert.equal(tool.inputSchema.type, 'object');
     assert.equal(tool.inputSchema.additionalProperties, false);
   }
+  const open = listed.tools.find((item) => item.name === 'os1_probe_open');
+  assert.equal(open._meta.ui.resourceUri, RESOURCE_URI);
+  assert.deepEqual(open._meta['openai/ui'].entrypoints, [{type:'global'},{type:'thread'}]);
+  assert.equal(open._meta['openai/outputTemplate'], RESOURCE_URI);
   const next = listed.tools.find((item) => item.name === 'os1_probe_next');
   assert.deepEqual(next._meta?.ui?.visibility, ['app']);
   const dispatched = listed.tools.find((item) => item.name === 'os1_probe_dispatched');

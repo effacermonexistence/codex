@@ -25,7 +25,7 @@ export const TOOL_DEFINITIONS = [
   {name:'os1_probe_open', description:'Open the fixed synthetic native Chat probe. Opening is not dispatch or native execution proof.',
     inputSchema:object({}), annotations:annotations(true, true), outputSchema:{type:'object'},
     _meta:{ui:{resourceUri:RESOURCE_URI, visibility:['model','app']},
-      'openai/ui':{entrypoints:[{type:'global'}]}, 'openai/outputTemplate':RESOURCE_URI}},
+      'openai/ui':{entrypoints:[{type:'global'},{type:'thread'}]}, 'openai/outputTemplate':RESOURCE_URI}},
   {name:'os1_probe_next', description:'App-only: offer the one operator-authorized synthetic request once. Never retry or substitute another provider.',
     inputSchema:object({}), annotations:annotations(false), outputSchema:{type:'object'}, _meta:{ui:{visibility:['app']}}},
   {name:'os1_probe_dispatched', description:'App-only: record message submission acknowledgement, not a model answer.',

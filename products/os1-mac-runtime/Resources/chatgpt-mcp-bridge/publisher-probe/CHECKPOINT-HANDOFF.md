@@ -36,6 +36,28 @@
 The remaining sections preserve the earlier ba46127 checkpoint. Refer to the
 update above and RUN-CARD.md for the current evidence boundary.
 
+### Latest active-recipient update
+
+- Same open tool additionally registers a documented `type:thread` entrypoint.
+- Widget now uses only `target:active`; no new-thread creator fallback.
+  Existing recipient must still be independently identified as ordinary Chat.
+- All bridge/setup/probe regressions: 102/102 PASS. HTTPS current HTML exact;
+  SHA32e679ef4f6c740f91ca215d165d58906e821f2cdc374af7256b0765b2d81e1d.
+- Deployed Worker: `44b3e793-b101-4b28-9c34-275158a72871`.
+- No model send/start. Old expired instance unchanged. The currently deployed
+  diagnostic is not enabled for arbitrary OS1 tasks.
+- No later own widget/Next epoch observed through the bounded native scan.
+  UI adoption cannot be inferred from the successful HTTPS source check.
+- Exact remaining dependency: ordinary Chat recipient mount -> fixed actual
+  model request/callback -> independent quota evidence -> same-task OS1 adapter.
+- User-only current step requested: open the approved diagnostic from a fresh
+  local ordinary Chat conversation's Plugins menu and show the resulting state.
+  Do not ask for another login, API key or Tunnel; no such missing authorization
+  was demonstrated.
+- Preserve app state and do not switch to API/browser/Work/Codex. If the public
+  host cannot expose/establish this recipient, report that external interface
+  boundary rather than inventing mode fields or a successful callback.
+
 ## CURRENT OBJECTIVE
 
 OS1/OpenClaw must send real requests to local ordinary ChatGPT and receive the

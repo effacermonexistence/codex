@@ -199,3 +199,28 @@ The missing gate is the actual recipient backend/origin, followed independently
 by accounting. Do not add invented `mode` parameters, impersonate native host
 callers, modify the vendor app or turn the fixed callback into a counterfeit
 ordinary-Chat result.
+
+## Active-recipient repair — 2026-10-11
+
+The same approved open tool now additionally advertises the documented thread
+entrypoint; global metadata, fixed resource and four-tool permission scope are
+preserved. The widget sends only `target:active`. Installed source inspection
+found that the active branch needs a recipient composer and does not invoke the
+new-thread app-server creator fallback. Missing recipient is a failure, never
+permission to create a Codex task. An existing Work/Codex recipient is still not
+ordinary Chat; the operator must establish the destination before activating.
+
+Regressions: 102/102 PASS across bridge/setup/probe, including active-only
+targeting, no invented mode parameter, no fallback, no ACK on rejected message.
+Worker version `44b3e793-b101-4b28-9c34-275158a72871` deployed. HTTPS inspection
+confirmed current HTML byte identity, active-only target, global+thread entries,
+and the old expired state with no capability. HTML SHA-256:
+`32e679ef4f6c740f91ca215d165d58906e821f2cdc374af7256b0765b2d81e1d`.
+
+No new model request was activated. No new native widget epoch/Next event was
+observed in the bounded authorized-log interval after the entry refresh request;
+absence there is not proof of refresh or absence elsewhere. The native GUI and
+ordinary-Chat binding remain unresolved. The user was asked to open the approved
+resource inside a fresh ordinary Chat conversation (not to log in again).
+Until that actual recipient is verified, the active adapter is a tested source
+candidate/Worker diagnostic, not a functioning production OS1 Chat route.

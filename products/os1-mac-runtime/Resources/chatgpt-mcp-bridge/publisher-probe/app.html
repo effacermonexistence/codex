@@ -66,7 +66,12 @@
       details.textContent='Request: '+r.request_id+'\nOrigin: OS1 publisher diagnostic\nTask: 1+1\nMode/accounting: not exposed';
       state.textContent='Submitting the fixed diagnostic once through the native host.';
       const envelope={request:r.prompt,binding:{request_id:r.request_id,request_sha256:r.request_sha256,return_token:r.return_token},instruction:'Answer the fixed OS1 diagnostic using this registered plugin. Call os1_probe_return with the exact binding fields and output "2". Do not use a model API, browser, Work/Codex agent or different provider as a replacement. If the tool is unavailable, report OS1_PROBE_CALLBACK_UNAVAILABLE rather than inventing a callback. Do not claim quota or execution mode from this prompt.'};
-      await rpc('ui/message',{role:'user',content:[{type:'text',text:JSON.stringify(envelope)}],_meta:{'openai/message':{target:'new',send:true}}});
+      // Only the bound recipient conversation may accept this diagnostic.
+      // Never create a new thread: the direct global native view's creation
+      // fallback can select app-server/Codex despite a top-level Chat choice.
+      // Active is not a mode guarantee; the operator must establish ordinary
+      // Chat recipient binding before activating a fresh diagnostic instance.
+      await rpc('ui/message',{role:'user',content:[{type:'text',text:JSON.stringify(envelope)}],_meta:{'openai/message':{target:'active',send:true}}});
       await tool('os1_probe_dispatched',{request_id:r.request_id,dispatch_token:r.dispatch_token});
       state.textContent='Host accepted the message. Awaiting actual callback; this is not a completion claim.';
     }catch(error){
