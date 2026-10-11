@@ -7140,6 +7140,162 @@ private func rccInstallationObservationSelfTest() async throws {
     print("RCC installation UI observation: \(checks) deterministic checks PASS; provider/installer calls 0")
 }
 
+/// Real SessionStore terminal delivery paths, not pure projection tests.
+/// Every store is temporary, every execution is a held fake operation, and
+/// unrelated paused work is checked before and after each terminal return.
+@MainActor
+private func rccTerminalDeliverySelfTest() async throws {
+    typealias C = RCCRuntimeContract
+    final class Control {
+        var starts: [PendingSubmission] = []
+        var continuation: CheckedContinuation<Void, Never>?
+        var returned = false
+    }
+    let fm = FileManager.default
+    let root = fm.temporaryDirectory.appendingPathComponent("os1-rcc-terminal-ui-" + UUID().uuidString)
+    try fm.createDirectory(at: root, withIntermediateDirectories: false)
+    defer { try? fm.removeItem(at: root) }
+    var checks = 0
+    func check(_ condition: Bool, _ name: String) throws {
+        guard condition else { throw RunnerError.message("RCC terminal delivery: " + name) }; checks += 1
+    }
+    func eventually(_ label: String, _ condition: () -> Bool) async throws {
+        let end = Date().addingTimeInterval(4)
+        while !condition(), Date() < end { try await Task.sleep(for: .milliseconds(10)) }
+        try check(condition(), label)
+    }
+    func stored(_ folder: URL) throws -> SessionEnvelope {
+        try JSONDecoder().decode(SessionEnvelope.self, from: Data(contentsOf: folder.appendingPathComponent("sessions.json")))
+    }
+    func encoded(_ session: ConversationSession) throws -> Data {
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+        return try encoder.encode(session)
+    }
+    func make(_ folder: URL, _ control: Control, completed: Bool) -> SessionStore {
+        SessionStore(storageRoot: folder, runOperation: { submission, _, _, _, _ in
+            control.starts.append(submission)
+            await withCheckedContinuation { control.continuation = $0 }
+            control.returned = true
+            if !completed {
+                return AppRunSummary(status: "workflow_blocked", steps: [],
+                    workflowBlocker: "Fixture core connection unavailable; original request preserved",
+                    rccTransportFailure: "fixture_transport_unavailable")
+            }
+            let configuration = C.ExactConfig(surface: .local, transport: .local, accountID: "fixture-local",
+                model: "deterministic-arithmetic", effort: .none, tools: [], scope: .readOnly,
+                permissionProfile: .readOnly, quotaPool: .none, allowedPaths: [],
+                configurationSHA256: String(repeating: "a", count: 64))
+            let snapshot = C.Snapshot(taskID: submission.id.uuidString.lowercased(),
+                requestSHA256: C.digest(Data(submission.executionRequest.utf8)), state: .completed, revision: 3,
+                children: [.init(id: "math", state: .completed, attemptID: "fixture-attempt", candidateID: "fixture-local",
+                    selectedConfig: configuration, instruction: submission.request, dependencies: [], outputSummary: "2")],
+                result: .init(output: "2", executionVerified: true, taskVerified: true, parityState: .unverified,
+                    nativeReceipt: nil, taskQuality: .taskVerified), error: nil)
+            let observed = Date()
+            let graph = try RCCRuntimeProjection.project(snapshot, conversationID: submission.sessionID,
+                submissionID: submission.id, objective: submission.request, observedAt: observed,
+                firstObservedAt: observed, maxParallelism: 1)
+            return AppRunSummary(status: "complete", steps: [], agentTask: graph, rccRuntime: snapshot)
+        }, memoryPressureSampler: { .normal }, nativeSessionOpener: { _ in false })
+    }
+
+    for completed in [false, true] {
+        let label = completed ? "completed-core" : "transport-preserved"
+        let folder = root.appendingPathComponent(label), control = Control()
+        let store = make(folder, control, completed: completed)
+        let conversation = store.selectedSessionID!
+        store.sessions[0].workspace = folder.path
+        store.createSession(); let unrelated = store.selectedSessionID!
+        store.sessions[store.sessions.firstIndex { $0.id == unrelated }!].workspace = folder.path
+        store.sessions[store.sessions.firstIndex { $0.id == unrelated }!].messages.append(
+            ChatMessage(role: .assistant, text: "Unrelated accepted output must remain unchanged"))
+        store.pauseQueue(unrelated); store.composer = "Unrelated queued request"; store.send()
+        store.select(conversation); store.composer = "1+1"; store.send()
+        try await eventually(label + " fake operation began") { control.continuation != nil }
+        let submission = control.starts[0]
+        let unrelatedBefore = try encoded(store.sessions.first { $0.id == unrelated }!)
+        let queueBefore = store.queuedSubmissions
+        let before = try stored(folder)
+        try check(control.starts.count == 1 && store.activeRuns[conversation]?.submissionID == submission.id,
+                  label + " exact one-call admission")
+        try check(before.inFlight?.map(\.id) == [submission.id], label + " original in-flight ID persisted")
+        try check(store.isRunning && store.primaryAction == .stop, label + " running composer state")
+        control.continuation?.resume(); control.continuation = nil
+        try await eventually(label + " terminal return releases GUI slot") { !store.isSessionRunning(conversation) }
+        store.flushPendingState()
+        let after = try stored(folder)
+        let result = store.sessions.first { $0.id == conversation }!
+        try check(store.activeRuns.isEmpty && !store.isRunning && store.slotBearingRunCount == 0,
+                  label + " no active admission/spinner remains")
+        try check(store.primaryAction == .disabledSend && store.composer.isEmpty,
+                  label + " idle composer restored")
+        try check(after.inFlight?.isEmpty == true, label + " terminal in-flight removal is durable")
+        try check(store.queuedSubmissions == queueBefore && after.queued == queueBefore,
+                  label + " unrelated queue preserved exactly")
+        try check(try encoded(store.sessions.first { $0.id == unrelated }!) == unrelatedBefore,
+                  label + " unrelated conversation preserved exactly")
+        try check(try encoded(after.sessions.first { $0.id == unrelated }!) == unrelatedBefore,
+                  label + " unrelated persisted conversation preserved exactly")
+        try check(result.messages.filter { $0.role == .user && $0.id == submission.userMessageID && $0.text == "1+1" }.count == 1,
+                  label + " original user request retained once")
+        try check(result.lastFailure == nil && result.lastBackendFailure == nil,
+                  label + " core result never arms the legacy retry/reconciliation path")
+        try check(result.attemptFeedEnds?.contains { $0.submissionID == submission.id } == true,
+                  label + " terminal public-feed boundary recorded")
+        if completed {
+            try check(result.messages.filter { $0.role == .assistant && $0.text == "2" }.count == 1,
+                      label + " exact deterministic result delivered once")
+            try check(result.agentTask?.submissionID == submission.id &&
+                      result.agentTask?.nodes.filter { $0.role == .worker }.count == 1 &&
+                      result.agentTask?.nodes.allSatisfy { $0.state == .succeeded } == true,
+                      label + " actual one-child graph retained")
+            try check(after.sessions.first { $0.id == conversation }?.agentTask == result.agentTask,
+                      label + " terminal graph survives persistence")
+        } else {
+            try check(result.messages.contains { $0.role == .system && $0.text.contains("Fixture core connection unavailable") },
+                      label + " transport boundary displayed without invented answer")
+            try check(!result.messages.contains { $0.role == .assistant },
+                      label + " failed transport did not fabricate a result")
+        }
+        try await Task.sleep(for: .milliseconds(40))
+        try check(control.starts.count == 1 && !store.maintenanceLoopRunning,
+                  label + " no follow-up provider/maintenance replay")
+    }
+
+    // A delayed response from the old submission cannot clear a newer run.
+    // Replace only the fixture admission identity; this is deliberately not a
+    // second backend call, nor permission to rewrite the owner's live store.
+    for completed in [false, true] {
+        let label = completed ? "superseded-core" : "superseded-transport"
+        let folder = root.appendingPathComponent(label), control = Control()
+        let store = make(folder, control, completed: completed)
+        let conversation = store.selectedSessionID!
+        store.sessions[0].workspace = folder.path
+        store.composer = "1+1"; store.send()
+        try await eventually(label + " old operation began") { control.continuation != nil }
+        let old = control.starts[0], newer = UUID()
+        store.activeRuns[conversation] = .init(submissionID: newer, started: Date(),
+            activity: RuntimeActivity(.executing, provider: "local"), provider: .auto)
+        store.flushPendingState()
+        let before = try stored(folder)
+        control.continuation?.resume(); control.continuation = nil
+        try await eventually(label + " old fake operation returned") { control.returned }
+        try await Task.sleep(for: .milliseconds(40))
+        store.flushPendingState()
+        let after = try stored(folder)
+        try check(control.starts.count == 1 && store.activeRuns[conversation]?.submissionID == newer && store.isRunning,
+                  label + " superseded delivery cannot release newer admission")
+        try check(after.inFlight?.map(\.id) == before.inFlight?.map(\.id) && after.inFlight?.first?.id == old.id,
+                  label + " superseded delivery cannot delete another in-flight custody entry")
+        try check(store.sessions[0].agentTask == nil && store.sessions[0].lastFailure == nil,
+                  label + " superseded core/transport state cannot become current")
+        // End only the synthetic admission object. The old operation already
+        // returned; no process, provider or queued request exists in this case.
+        store.activeRuns.removeValue(forKey: conversation)
+    }
+    print("RCC terminal UI delivery: \(checks) deterministic checks PASS; actual SessionStore early-return/idle/persistence/queue/supersession; provider calls 0")
+}
+
 @MainActor
 private func savedFailurePreviewSelfTest() throws {
     var checks = 0
@@ -10225,6 +10381,7 @@ private final class SessionStore: ObservableObject {
                     appendTaskEvent(conversationID: submission.sessionID, kind: "rcc_transport_preserved",
                         summary: "Core transport/policy boundary; no legacy replay or provider call")
                     save()
+                    await releaseCoreProjectionRun(submission)
                     return
                 }
                 if let core = summary.rccRuntime {
@@ -10291,6 +10448,7 @@ private final class SessionStore: ObservableObject {
                     appendTaskEvent(conversationID: submission.sessionID, kind: "rcc_runtime_return",
                         summary: "task \(core.taskID) state \(core.state.rawValue); no independent UI replay")
                     save()
+                    await releaseCoreProjectionRun(submission)
                     if core.state == .awaitingInstall { applyPendingSelfUpdate() }
                     return
                 }
@@ -10727,6 +10885,33 @@ private final class SessionStore: ObservableObject {
             }
             runNextQueuedSubmissionIfNeeded()
         }
+    }
+
+    /// A core return is terminal for this UI delivery even when task quality or
+    /// installation remains unresolved. Early-return branches must release the
+    /// exact GUI slot, never run the old retry/reconciliation scheduler.
+    private func releaseCoreProjectionRun(_ submission: PendingSubmission) async {
+        guard activeRuns[submission.sessionID]?.submissionID == submission.id else { return }
+        if let log = activeRuns[submission.sessionID]?.publicRunLog {
+            await publicLogWriter.enqueue(log, store: publicLogStore)
+            await publicLogWriter.flush(submission.id, requestSHA256: log.requestSHA256)
+            // Actor reentrancy during journal IO can admit a newer identity.
+            // The pre-await guard does not authorize touching that newer run.
+            guard activeRuns[submission.sessionID]?.submissionID == submission.id else { return }
+            if let index = sessions.firstIndex(where: { $0.id == submission.sessionID }) {
+                Self.recordAttemptFeedEnd(&sessions[index], submissionID: submission.id,
+                    requestSHA256: log.requestSHA256, end: log.entries.count)
+            }
+        }
+        settleSteeringDelivery(conversationID: submission.sessionID, submissionID: submission.id)
+        activeRuns.removeValue(forKey: submission.sessionID)
+        inFlightSubmissions.removeValue(forKey: submission.sessionID)
+        publicFeedTexts.removeValue(forKey: submission.sessionID)
+        sessionStatuses[submission.sessionID] = statusText
+        if scheduledRepairResumes[submission.sessionID] == submission.id {
+            scheduledRepairResumes.removeValue(forKey: submission.sessionID)
+        }
+        save()
     }
 
     /// Advances every binding's ingestion cursor past the records that exist
@@ -13664,7 +13849,7 @@ private struct OS1DesktopApp: App {
         }
         if CommandLine.arguments.contains("--self-test-rcc-installation") {
             Task { @MainActor in
-                do { try await rccInstallationObservationSelfTest(); exit(EXIT_SUCCESS) }
+                do { try await rccInstallationObservationSelfTest(); try await rccTerminalDeliverySelfTest(); exit(EXIT_SUCCESS) }
                 catch { fputs("\(error.localizedDescription)\n", stderr); exit(EXIT_FAILURE) }
             }
             NSApplication.shared.run()
@@ -14325,7 +14510,7 @@ private struct OS1DesktopApp: App {
                 // Keep identity regressions in the standard release self-test,
                 // not only behind the focused development diagnostic.
                 Task { @MainActor in
-                    do { try await agentTaskTreeSelfTest(); try await profileMenuSelfTest(); try await rccInstallationObservationSelfTest(); exit(EXIT_SUCCESS) }
+                    do { try await agentTaskTreeSelfTest(); try await profileMenuSelfTest(); try await rccInstallationObservationSelfTest(); try await rccTerminalDeliverySelfTest(); exit(EXIT_SUCCESS) }
                     catch { fputs("\(error.localizedDescription)\n", stderr); exit(EXIT_FAILURE) }
                 }
                 NSApplication.shared.run()

@@ -198,3 +198,29 @@ Full objective remains unmet: ordinary native ChatGPT approved transport is abse
 real staged/install/restart core receipt reconciliation is not yet exercised,
 and latest/max reference quality/total-cost comparison is not established.
 No public push/merge; cloud merge attestation remains unavailable without credit.
+
+## GUI terminal-adoption repair — 2026-10-11 UTC / October10 Pacific
+
+- Actual installed369 UI1+1 failed pre-dispatch. Gateway root0700 was required,
+  while native-receipt creation had left the intermediate root0755. Only that
+  uid-owned directory was repaired live; installed CLI core math then returned2
+  with one deterministic child and zero model calls.
+- Actual UI then retained its preflight inFlight admission after transport failure.
+  Source370 adds matching terminal cleanup for both core/failure early returns,
+  including an exact-ID recheck after asynchronous log flush. No legacy replay.
+- Native directory creation uses openat/O_NOFOLLOW/fstat uid/fchmod0700;
+  isolated7-case fixture covers permissive-root repair/preserved content,
+  idempotency and rejecting symlink without changing its target.
+- Real temporary SessionStore.send/fake operation45-case regression verifies
+  transport/completed returns, durable idle state, one result/child, unrelated
+  paused session/queue preservation, and superseded admission protection.
+  Post-await ID guard source ordering checked; exact reentrancy window not injected.
+- Only own failed UI diagnostic recovered using a live exclusive maintenance PID
+  lease and normal GUI termination/reopen/termination.253 sessions,252 unrelated
+  sessions exact,7queue exact, original diagnostic messages and failed request
+  exact,0inFlight. No live session file rewrite or unrelated work cancellation.
+- CLI self-test and canonical1019+6/source43 passed; App focused12+45 passed.
+ 370 installation/live GUI outcomes must be read from later actual receipts.
+- Research actually inspected: https://arxiv.org/abs/2210.03629 and
+  https://arxiv.org/abs/2310.01798. Repair uses observed state, bounded change,
+  deterministic regressions and actual downstream observation, not self-report.

@@ -17088,6 +17088,7 @@ struct OS1Main {
                 try await consumerChatGPTDispatchSelfTest()
                 try await os1AttemptSourceSelfTest()
                 try rccNativeContinuationSelfTest()
+                try rccNativeDirectorySelfTest()
                 try await fullAccessHandBackSelfTest()
                 try await parallelAgentCoordinatorSelfTest()
                 try await concurrentRouteFanoutSelfTest()
@@ -17717,6 +17718,64 @@ private func rccNativeContinuationSelfTest() throws {
     print("RCC native continuation: \(checks) private receipt custody checks PASS; native/model calls 0")
 }
 
+/// Native results must not create a permissive intermediate Gateway state
+/// directory. Repair only directories owned by this uid, using descriptors;
+/// reject links/wrong owners before changing permissions or writing a receipt.
+private func rccNativeReceiptDirectory(home: URL) throws -> URL {
+    let fm = FileManager.default
+    guard home.standardizedFileURL == home.resolvingSymlinksInPath() else {
+        throw OS1Error.message("RCC home directory custody rejected")
+    }
+    var parent = Darwin.open(home.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+    guard parent >= 0 else { throw OS1Error.message("RCC home directory unavailable") }
+    defer { Darwin.close(parent) }
+    var result = home
+    for name in [".os1", "rcc-runtime", "native-receipts"] {
+        if mkdirat(parent, name, 0o700) != 0 && errno != EEXIST {
+            throw OS1Error.message("RCC private directory unavailable")
+        }
+        let child = openat(parent, name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard child >= 0 else { throw OS1Error.message("RCC private directory custody rejected") }
+        var info = stat()
+        guard fstat(child, &info) == 0, (info.st_mode & S_IFMT) == S_IFDIR, info.st_uid == getuid() else {
+            Darwin.close(child); throw OS1Error.message("RCC private directory owner rejected")
+        }
+        guard fchmod(child, 0o700) == 0 else {
+            Darwin.close(child); throw OS1Error.message("RCC private directory permission repair failed")
+        }
+        Darwin.close(parent); parent = child; result.appendPathComponent(name)
+    }
+    return result
+}
+
+private func rccNativeDirectorySelfTest() throws {
+    let fm = FileManager.default
+    let home = fm.temporaryDirectory.resolvingSymlinksInPath().appendingPathComponent("os1-rcc-directory-" + UUID().uuidString)
+    try fm.createDirectory(at: home, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+    defer { try? fm.removeItem(at: home) }
+    let root = home.appendingPathComponent(".os1/rcc-runtime")
+    try fm.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o755])
+    let sentinel = root.appendingPathComponent("preserved.txt")
+    try Data("preserve".utf8).write(to: sentinel)
+    let receipts = try rccNativeReceiptDirectory(home: home)
+    for directory in [home.appendingPathComponent(".os1"), root, receipts] {
+        let mode = (try fm.attributesOfItem(atPath: directory.path)[.posixPermissions] as? NSNumber)?.intValue
+        guard mode == 0o700 else { throw OS1Error.message("RCC private directory mode fixture failed") }
+    }
+    guard try Data(contentsOf: sentinel) == Data("preserve".utf8), try rccNativeReceiptDirectory(home: home) == receipts else {
+        throw OS1Error.message("RCC private directory preservation fixture failed")
+    }
+    try fm.removeItem(at: receipts)
+    let outside = home.appendingPathComponent("outside")
+    try fm.createDirectory(at: outside, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o755])
+    try fm.createSymbolicLink(at: receipts, withDestinationURL: outside)
+    do { _ = try rccNativeReceiptDirectory(home: home); throw OS1Error.message("RCC directory symlink accepted") }
+    catch { guard String(describing: error) != "RCC directory symlink accepted" else { throw error } }
+    let outsideMode = (try fm.attributesOfItem(atPath: outside.path)[.posixPermissions] as? NSNumber)?.intValue
+    guard outsideMode == 0o755 else { throw OS1Error.message("RCC directory symlink target mutated") }
+    print("RCC native directory: 7 custody/preservation checks PASS; model calls 0")
+}
+
 private func rccNativeAdapter(_ bytes: Data) async throws -> Data {
     let t = try RCCRuntimeContract.decodeTicket(bytes)
     guard let h = t.hostContext, let original = t.originalRequest, let objective = t.originalObjective,
@@ -17741,8 +17800,7 @@ private func rccNativeAdapter(_ bytes: Data) async throws -> Data {
     var protectedSourceAtDispatch: OS1SourceWatch?
     var sourceBeforeClean = false
     let id = UUID().uuidString.lowercased()
-    let root = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".os1/rcc-runtime/native-receipts")
-    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+    let root = try rccNativeReceiptDirectory(home: FileManager.default.homeDirectoryForCurrentUser)
     let receipt = root.appendingPathComponent(id + ".json")
     var record = RCCRuntimeContract.ExecutionRecord(taskID: t.taskID, nodeID: t.nodeID, attemptID: t.attemptID,
         candidateID: t.candidateID, configurationSHA256: t.configurationSHA256, selectedConfig: t.selectedConfig,
