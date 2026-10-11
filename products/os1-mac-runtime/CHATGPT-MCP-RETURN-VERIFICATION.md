@@ -100,3 +100,28 @@ Current RCC exact-config and nonlocal quota gates stay intact. Do not fabricate
 ## FINAL STATUS
 **BLOCKED_NOT_COMPLETE.** Component implementation/tests and local package
 installation are real; native ChatGPT connection and requested quota proof are not.
+
+## Subsequent setup progress — 2026-10-11, separate from the failed probe
+
+- User completed official Platform login and manually approved **Create tunnel**.
+  The resulting real tunnel ID was observed on the official settings page.
+- Installed official `openai/tunnel-client` v0.0.16 darwin-arm64. Release checksum,
+  GitHub asset digest and official Sigstore provenance were verified. This is
+  transport software, not a model-inference client.
+- Prepared named `os1-chatgpt` stdio profile with a file-based secret reference
+  and an ephemeral **loopback-only** health listener. Profile preparation did
+  not read a key, start the tunnel, register a ChatGPT plugin or invoke a model.
+- Prepared official key-creation form: Restricted, **Tunnels Read + Use only**,
+  model permissions None, 30-day expiration. Final key creation remains the
+  user's action; this paragraph is not a creation/authorization receipt.
+- Built and opened `OS1 MCP Setup`, a separate local secure-entry utility.
+  User alone pastes/saves the newly generated key. No automatic clipboard read,
+  existing credential import, network call, key printing or overwrite. Storage
+  is explicitly owner-only plaintext (0600), not claimed encryption.
+- Parent reran **41 isolated dummy helper assertions** and **44 Node tests**
+  (40 transport/UI + 4 profile-preparation tests), all PASS.
+- New source: `setup/SecretEntry.swift`, `setup/README.md`,
+  `setup/prepare-profile.mjs`, `setup/prepare-profile.test.mjs`.
+
+Runtime key entry, tunnel readiness, native ordinary Chat registration, actual
+OS1 roundtrip and quota attribution remain separate, still-open gates.
