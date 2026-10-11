@@ -45,13 +45,39 @@ restart/reconnect proof. This diagnostic must not accept private customer work.
 - Isolated durable namespace: `os1-native-chat-probe-20261011a`.
 - Publisher operation authorization is generated/stored privately; it is not
   a user API key and is never bundled into an OS1 download.
-- No diagnostic activated, registered plugin ID acquired, model callback,
-  native ordinary-Chat execution, or exact quota-debit evidence yet.
-- Safari's existing main-account registration form is prepared. Its connection
-  approval is pending; account permissions/organization membership unchanged.
+- Safari's existing main-account registration was explicitly approved and
+  completed. The plugin UI showed Installed / Connected; a genuine
+  `plugin_asdk_app...` identifier was returned by that registration.
+- The initial cloud-plugin deep link reached a real desktop `Plugin not found`
+  error. It did not send a model request.
+- The installed CLI `0.162.0-alpha.17.2` supports registered apps only through
+  its legacy package path. The source now uses `.codex-plugin/plugin.json` and
+  `.app.json`, with no duplicate direct MCP attachment. A fresh public CLI
+  `plugin/read` returned one registered mapping for installed version 0.1.1.
+  Standalone CLI discovery does not establish desktop host activation.
+- The corrected desktop launch progressed to the exact registered-connector
+  lookup and returned HTTP 404 `Connector not found`. This is a distinct gate
+  from manifest discovery. Registration and native Codex authentication have
+  different account contexts; that is a leading scope hypothesis, not a claim
+  about every native ordinary-Chat login.
+- Registering the identical fixed diagnostic in the current native account was
+  separately approved. Normal browser login currently requires Google device
+  verification. No credential cache is copied or account credential changed.
+- No diagnostic activated, model callback, native ordinary-Chat execution or
+  exact quota-debit evidence yet. The installed OS1 app remains unchanged.
 
 The public diagnostic endpoint accepts only a fixed server-owned 1+1 fixture,
 not arbitrary user prompts. Anonymous callback evidence remains unauthenticated
 until correlated with the actual registered native host and conversation.
 Private execution receipts are kept outside the source tree. No customer
 source, policy corpus, prompts, credentials, or existing app state was uploaded.
+
+Exact-version package source inspected:
+`openai/codex@740e5af33c71225640e0c1c1555c514c2c93ab74`,
+`core-plugins/src/loader.rs` and `app_mcp_routing.rs`.
+Current official local registered-server setup:
+https://developers.openai.com/plugins/build/plugins#create-and-test-a-plugin-locally-with-an-mcp-server
+
+The compatibility package is a source/local diagnostic package only, not a
+publicly submitted plugin. The current genuine identifier is account-scoped;
+it must be replaced only by a verified registration receipt, never by guessing.
