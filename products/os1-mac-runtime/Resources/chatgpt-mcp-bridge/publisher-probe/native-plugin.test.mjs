@@ -13,7 +13,7 @@ test('installed alpha-version native path uses only the supported legacy registe
   assert.equal(existsSync(join(root,'mcp.json')),false);
   assert.equal(existsSync(join(root,'.mcp.json')),false);
   assert.equal(manifest.apps,'./.app.json');
-  assert.equal(manifest.name,'os1-native-chat-probe');
+  assert.equal(manifest.name,'os1-native-chat-probe-active');
   assert.match(manifest.version,/^\d+\.\d+\.\d+$/);
 });
 
@@ -21,7 +21,10 @@ test('native package declares one genuine registered identifier and no parallel 
   const entries=Object.entries(mapping.apps);
   assert.equal(entries.length,1);
   assert.equal(entries[0][0],'os1_native_chat_probe');
-  assert.match(entries[0][1].id,/^plugin_asdk_app_[0-9a-f]{31,32}$/);
+  // The setup page's App ID is the execution object. The surrounding plugin
+  // page URL identifies a different object and is not an app lookup key.
+  assert.match(entries[0][1].id,/^asdk_app_[0-9a-f]{31,32}$/);
+  assert.equal(entries[0][1].id.startsWith('plugin_'),false);
   assert.deepEqual(Object.keys(entries[0][1]),['id']);
   assert.equal(manifest.mcpServers,undefined);
 });

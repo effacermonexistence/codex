@@ -1,6 +1,6 @@
 {
-  "name": "os1-native-chat-probe",
-  "version": "0.1.1",
+  "name": "os1-native-chat-probe-active",
+  "version": "0.1.4",
   "description": "One fixed synthetic native host connection diagnostic only; no customer tasks or verified quota claim.",
   "apps": "./.app.json",
   "interface": {

@@ -38,7 +38,7 @@ restart/reconnect proof. This diagnostic must not accept private customer work.
 ## Current executed state — 2026-10-11
 
 - Private source candidate only; not included in the current OS1 app/package.
-- Probe regression: 45/45 PASS. Prior local mailbox/setup: 44/44 PASS.
+- Probe/package regression: 48/48 PASS. Prior local mailbox/setup: 44/44 PASS.
 - Dedicated Worker HTTPS health, MCP initialize, tool inventory and exact
   widget-resource identity checked from outside the Worker.
 - Endpoint: `https://os1-native-chat-probe.omar-git-r2-backup.workers.dev/mcp`.
@@ -61,10 +61,29 @@ restart/reconnect proof. This diagnostic must not accept private customer work.
   different account contexts; that is a leading scope hypothesis, not a claim
   about every native ordinary-Chat login.
 - Registering the identical fixed diagnostic in the current native account was
-  separately approved. Normal browser login currently requires Google device
-  verification. No credential cache is copied or account credential changed.
-- No diagnostic activated, model callback, native ordinary-Chat execution or
-  exact quota-debit evidence yet. The installed OS1 app remains unchanged.
+  separately approved. Google device verification was completed by the user,
+  and Safari showed the second connection as Connected with all four tools.
+  No credential cache was copied or account credential changed.
+- A subsequent exact setup-page inspection exposed a separate App ID as well
+  as the plugin-page ID. They are different objects. The compatibility mapping
+  now uses the actual App ID from that page, not a derived/guessed identifier.
+  Existing native metadata caching still referenced the earlier wrapper ID;
+  a fresh diagnostic package identity excludes that stale lookup key without
+  restarting the current desktop session.
+- Native package is `os1-native-chat-probe-active@os1-native-chat-publisher-probe`
+  version 0.1.4. Old diagnostic source/cache evidence is preserved; the source
+  marketplace now exposes only the active replacement, not both bindings.
+- The approved connector's `os1_probe_open` became available and returned
+  `component_requested` through this task's official tool connection. That
+  confirms the tool connection, not an initialized UI, model request or answer.
+- The user explicitly confirmed native ChatGPT / Chat mode (not Work). The
+  native launch was attempted again and one fixed 1+1 request was queued. The
+  user reported that the diagnostic window itself did not appear. After the
+  bounded ten-minute deadline, the request terminated as expired with no offer,
+  submission acknowledgement or answer. This is a failed native transport test,
+  not a successful arithmetic result or proof that the widget was mounted.
+- Native ordinary-Chat execution, result callback, exact quota-debit evidence
+  and full OS1 integration remain unverified. The installed OS1 app is unchanged.
 
 The public diagnostic endpoint accepts only a fixed server-owned 1+1 fixture,
 not arbitrary user prompts. Anonymous callback evidence remains unauthenticated
@@ -79,5 +98,35 @@ Current official local registered-server setup:
 https://developers.openai.com/plugins/build/plugins#create-and-test-a-plugin-locally-with-an-mcp-server
 
 The compatibility package is a source/local diagnostic package only, not a
-publicly submitted plugin. The current genuine identifier is account-scoped;
-it must be replaced only by a verified registration receipt, never by guessing.
+publicly submitted plugin. A plugin ID, App ID and version ID are separate typed
+identifiers. The current App ID is account-scoped; it must be replaced only by
+the corresponding verified setup field, never by guessed prefix conversion.
+
+## Ordinary Chat / native mode boundary
+
+The complete public `ui/message` extension supports `target` and `send`, not a
+Chat/Work/Codex selector or a billing-pool field. Read-only inspection of the
+installed client found separate ChatGPT and app-server submission branches.
+Host name, user agent, `selectChat`, `kind:chat` and a visible draft alone do not
+identify ordinary Chat or zero Codex debit. The recipient binding must match.
+Static source evidence is not a runtime request receipt.
+
+Do not synthesize an answer through this Codex task's return tool and present
+it as a separate ordinary-Chat model response. Do not open the web widget while
+an active request is queued: that would create an unauthorized browser route.
+
+## Terminal test receipt
+
+- One request queued; offers 0, submission acknowledgements 0, returns 0.
+- Terminal state: expired. No automatic replay or fallback was invoked.
+- Actual model response and same-OS1-task answer adoption: not verified.
+- Native diagnostic window: absent according to the user's current report.
+- Fresh CLI mapping plus four-tool/global metadata discovery: verified.
+- Current desktop global-view selection/mounting/handshake: not verified.
+- Codex aggregate usage before/after was 15 percent in both reads. That does
+  not expose per-request debit and is not a zero-Codex-debit proof.
+
+Current official local-plugin instructions require restarting the ChatGPT
+desktop app after package changes. A fresh standalone CLI reload does not
+reload that existing desktop owner. Preserve this checkpoint before any host
+restart; no hidden host-pipe call or protected-UI automation is authorized.
