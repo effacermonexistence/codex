@@ -1,0 +1,15 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "os1-chatgpt-return",
+  "version": "0.1.0",
+  "description": "Bounded OS1 request and result transport. Native Chat registration and quota attribution require separate verification.",
+  "extensions": {
+    "com.openai": {
+      "interface": {
+        "displayName": "OS1 ChatGPT Return",
+        "shortDescription": "Return an explicitly requested OS1 task through a registered ChatGPT MCP connection.",
+        "brandColor": "#EEAAC9"
+      }
+    }
+  }
+}
