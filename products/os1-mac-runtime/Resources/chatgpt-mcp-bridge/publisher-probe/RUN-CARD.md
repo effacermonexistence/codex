@@ -273,3 +273,28 @@ Installed OS1 was not rebuilt or replaced. One test conversation/native Codex
 session was deliberately added. This attempt proves failure of the requested
 roundtrip under the executed configuration, not universal architectural
 impossibility and not product completion.
+
+## Native composer opening and user-confirmed send — bounded follow-up
+
+After the failed installed-OS1 attempt, the shipped native decoder supplied a
+legitimate composer-opening path: `codex://new?mode=chat&prompt=...`. The root
+issued that opening request at `2026-10-11T23:31:04.320Z`, with only the fixed
+synthetic nonce `OS1_NATIVE_CHAT_DRAFT_20261011_B` and 1+1. Native draft metadata
+verified the prefill. It did not expose an effective mode or server thread ID.
+Published command docs establish that prefill links do not send automatically:
+https://learn.chatgpt.com/docs/app/commands . Shipped-source support for the mode
+parameter is distinct from published documentation and observed mode adoption.
+
+The user then explicitly confirmed sending that prompt in ordinary Chat. This
+supplied state must remain attributed to the user, not to automatic OS1 sending.
+Two bounded public inventories, one temporally adjacent candidate read, and
+own-nonce native metadata/log inspection did not identify the sent server
+conversation or fresh assistant message. Unrelated chat content was not kept.
+The public reader is not restricted to Work; no Work-origin filter was found.
+No further prompt was sent and no synthetic callback answer was injected.
+
+Remaining gate: identify the exact sent diagnostic and read its fresh answer.
+A screenshot of that diagnostic response or actual conversation link was
+requested solely to bridge this identification boundary. No new OAuth, key,
+Tunnel, Chrome or inference-API setup was requested. Automatic ordinary submit,
+same-task OS1 return and exact quota attribution remain unverified.

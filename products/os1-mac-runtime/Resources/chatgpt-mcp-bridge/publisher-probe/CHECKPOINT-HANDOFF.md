@@ -1,5 +1,46 @@
 # Native ordinary-Chat connection checkpoint — NOT COMPLETE
 
+## Latest native composer / user-confirmed send — still NOT COMPLETE
+
+- A source-supported native `codex://new?mode=chat&prompt=...` opening request
+  was issued at `2026-10-11T23:31:04.320Z`. The exact synthetic nonce was
+  `OS1_NATIVE_CHAT_DRAFT_20261011_B`. Its text persisted in the native generic
+  new-conversation composer draft. This corrects the overly broad conclusion
+  that absence of an ordinary-Chat target on `create_thread` means no native
+  composer-opening path exists. It does not change the prior failed test.
+- Official desktop command documentation says prompt links prefill, not send:
+  https://learn.chatgpt.com/docs/app/commands . The `mode=chat` parameter was
+  supported by the inspected shipped decoder, not by that published parameter
+  table. Neither proves the effective mode or a server conversation was created.
+- The current user explicitly confirmed sending nonce B in ordinary Chat.
+  Preserve this as USER_CONFIRMED state. Do not claim the root agent sent it,
+  or treat an unobserved backend record as evidence that the user did not send.
+- Public list/read tools are not Work-only. The inspected listing has no
+  conversation-origin filter; exact-ID reads can handle ordinary Chat. Two
+  bounded inventories nevertheless did not identify this nonce. The newest
+  temporally adjacent candidate was checked once and had no nonce match;
+  unrelated body content was not retained or used. The later refreshed list
+  showed other activity but no identified diagnostic. No follow-up was sent.
+- Bounded current-owner logs and own-nonce draft metadata exposed no matched
+  server conversation/message ID or quota lane. The old draft remains; that
+  fact does not independently establish send failure or conflict with the user.
+- Current missing discriminator: the exact sent diagnostic conversation and
+  its new assistant response. One screenshot or actual conversation link was
+  requested, not another login/key or arbitrary session nomination.
+- No additional inference, API/Chrome fallback, protected-app automation,
+  vendor modification, private transport, Codex answer substitution, installed
+  OS1 change or production route activation occurred. A manual seed and an
+  opening URI do not establish the requested autonomous OS1 roundtrip.
+- Private receipt:
+  `/Users/LUA/.os1/recovery/native-chat-probe-evidence-20261011T123602Z/ordinary-chat-sent-nonce-b-native-metadata.json`.
+  The exact failed OS1 relay and original logs remain preserved separately.
+
+Next: identify the actually sent ordinary conversation, read its fresh response
+through the public exact-ID tool, then test one bound public send/read. Do not
+guess an ID, write to another personal chat, or locally manufacture the answer.
+Only after that gate passes can same-task OS1 integration and quota attribution
+be assessed. Unavailable metadata is an observation boundary, not completion.
+
 ## CURRENT REPAIR UPDATE — supersedes mount diagnosis below, not failed history
 
 - The user restarted the actual combined ChatGPT/Codex desktop. PID89862 was
