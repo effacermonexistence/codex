@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import test from 'node:test';
+import { DatabaseSync } from 'node:sqlite';
 import { createRCCRuntime, hostContextFingerprint } from '../../Resources/openclaw-os1-bridge/rcc-runtime.mjs';
 
 const sha = text => createHash('sha256').update(text).digest('hex');
@@ -464,6 +465,7 @@ test('four explicit route nodes execute; shared Anthropic pool never double-spen
   assert.equal(result.result.native_summaries.length, 4);
   assert.equal((await stat(result.result.native_receipt)).isFile(), true);
   assert.ok(result.children.every(child => child.selected_config && child.native_receipt));
+  assert.deepEqual(result.children.map(child => child.requested_surface), requested.map(route => route.surface));
 });
 
 test('unknown candidate, cycle and independent write conflict hold before execution', async t => {
@@ -891,7 +893,24 @@ test('explicit four-surface route is exact one-to-one and unavailable ChatGPT is
   assert.equal(held.state, 'held');
   assert.equal(held.error, 'explicit_route_surface_unavailable:chatgpt');
   assert.deepEqual(held.children.map(child => child.instruction), routes.map(route => route.instruction));
+  assert.deepEqual(held.children.map(child => child.requested_surface), routes.map(route => route.surface));
+  assert.ok(held.children.every(child => child.selected_config === null && child.native_receipt === null &&
+    child.candidate_id === null && child.attempt_id === null && child.state === 'held'));
+  assert.notEqual(held.children[0].requested_surface, 'gpt-chat');
   assert.equal(planned, 0); assert.equal(executed, 0);
+  await missing.close();
+  // A pre-field durable snapshot still has the immutable original route
+  // contract. Exercise migration in this private fixture database only.
+  const legacyDB = new DatabaseSync(join(dir, 'missing-chatgpt', 'rcc-runtime.sqlite'));
+  const legacy = JSON.parse(legacyDB.prepare('SELECT snapshot FROM tasks WHERE task_id=?').get(request.task_id).snapshot);
+  for (const child of legacy.children) delete child.requested_surface;
+  legacyDB.prepare('UPDATE tasks SET snapshot=? WHERE task_id=?').run(JSON.stringify(legacy), request.task_id);
+  legacyDB.close();
+  const recovered = await createRCCRuntime({stateDir: join(dir, 'missing-chatgpt')});
+  t.after(async () => { await recovered.close(); });
+  const recoveredHeld = recovered.status({schema: 1, task_id: request.task_id});
+  assert.deepEqual(recoveredHeld.children.map(child => child.requested_surface), routes.map(route => route.surface));
+  assert.ok(recoveredHeld.children.every(child => child.selected_config === null && child.native_receipt === null));
 
   const availableRows = [candidate('chatgpt', 'chatgpt', 'openai_chat'), ...rows];
   const good = await createRCCRuntime({stateDir: join(dir, 'all-four'),
@@ -907,6 +926,7 @@ test('explicit four-surface route is exact one-to-one and unavailable ChatGPT is
   assert.equal(result.state, 'completed'); assert.equal(result.children.length, 4);
   assert.deepEqual(result.children.map(child => child.selected_config.surface),
     routes.map(route => route.surface));
+  assert.deepEqual(result.children.map(child => child.requested_surface), routes.map(route => route.surface));
   assert.equal(executed, 4);
 });
 
@@ -942,6 +962,7 @@ test('explicit-route planner cannot drop, alias, mutate payload or serialize par
     assert.equal(result.state, 'held', variant.name);
     assert.equal(result.error, variant.reason, variant.name);
     assert.equal(result.children.length, 4, variant.name);
+    assert.deepEqual(result.children.map(child => child.requested_surface), routes.map(route => route.surface), variant.name);
     assert.equal(executions, 0, variant.name);
   }
 });

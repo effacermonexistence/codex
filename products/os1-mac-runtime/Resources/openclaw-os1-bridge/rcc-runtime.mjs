@@ -378,15 +378,34 @@ function validatePlan(plan, task, catalog) {
   return immutable(plan);
 }
 
+function requestedSurface(snapshot, child) {
+  if (child.requested_surface != null) return child.requested_surface;
+  // Older snapshots have no display field. Recover only the exact original
+  // explicit binding, not a model-selected alias or an observed execution.
+  const routes = snapshot.task.host_context?.explicit_routes;
+  if (snapshot.task.mode !== 'explicit_routing_test' || !Array.isArray(routes)) return null;
+  const ordinal = /^requested-([1-8])$/.exec(child.id);
+  if (ordinal) {
+    const route = routes[Number(ordinal[1]) - 1];
+    if (route?.instruction === child.instruction) return route.surface;
+  }
+  const candidate = snapshot.catalog?.candidates.find(row => row.id === child.candidate_id);
+  return routes.find(route => route.surface === candidate?.surface &&
+    route.instruction === child.instruction)?.surface ?? null;
+}
+
 function publicSnapshot(snapshot) {
   return { schema: 1, task_id: snapshot.task.task_id,
     request_sha256: snapshot.task.request_sha256, state: snapshot.state,
     revision: snapshot.revision,
-    children: snapshot.children.map(({id, state, attempt_id, candidate_id, selected_config,
-      instruction, dependencies, started_at_ms, finished_at_ms, native_receipt, output}) =>
-      ({id, state, attempt_id, candidate_id, selected_config, instruction, dependencies,
+    children: snapshot.children.map(child => {
+      const {id, state, attempt_id, candidate_id, selected_config,
+        instruction, dependencies, started_at_ms, finished_at_ms, native_receipt, output} = child;
+      return {id, state, attempt_id, candidate_id, selected_config,
+        requested_surface: requestedSurface(snapshot, child), instruction, dependencies,
         started_at_ms, finished_at_ms, native_receipt,
-        output_summary: typeof output === 'string' ? output.slice(0, 600) : null})),
+        output_summary: typeof output === 'string' ? output.slice(0, 600) : null};
+    }),
     result: snapshot.result ? immutable(snapshot.result) : null,
     install_handoff: snapshot.install_handoff ? immutable(snapshot.install_handoff) : null,
     error: snapshot.error ?? null };
@@ -513,7 +532,7 @@ class RCCRuntime {
         candidate_id: null, attempts: 0, attempt_history: [], repair_needed: false,
         dispatched_at_ms: null, output: null, execution_verified: false,
         task_quality: 'unverified', parity_state: 'unverified', native_receipt: null,
-        native_summary: null, usage: null, selected_config: null, instruction: route.instruction,
+        native_summary: null, usage: null, selected_config: null, requested_surface: route.surface, instruction: route.instruction,
         dependencies: [], started_at_ms: null, finished_at_ms: null}));
       snapshot.state = 'held'; snapshot.error = reason;
     });
@@ -1027,7 +1046,14 @@ class RCCRuntime {
         repair_needed: false,
         dispatched_at_ms: null, output: null, execution_verified: false,
         task_quality: 'unverified', parity_state: 'unverified', native_receipt: null,
-        native_summary: null, usage: null, selected_config: null, instruction: node.instruction,
+        native_summary: null, usage: null, selected_config: null,
+        // validatePlan already requires this exact surface/instruction pair
+        // to exist in the original host contract. Requested is not executed.
+        requested_surface: task.mode === 'explicit_routing_test'
+          ? task.host_context.explicit_routes.find(route =>
+              route.surface === catalog.candidates.find(candidate => candidate.id === node.candidate_id).surface &&
+              route.instruction === node.instruction).surface : null,
+        instruction: node.instruction,
         dependencies: node.dependencies, started_at_ms: null, finished_at_ms: null}));
     });
     if (typeof this.execute !== 'function') { this._hold(taskID, 'executor_unavailable'); return; }
@@ -1046,7 +1072,7 @@ class RCCRuntime {
         candidate_id: 'local-core', attempts: 0, attempt_history: [], repair_needed: false,
         dispatched_at_ms: null, output, execution_verified: true,
         task_quality: 'task_verified', parity_state: 'unverified', native_receipt: null,
-        native_summary: null, usage: null, selected_config: config, instruction: snapshot.task.request,
+        native_summary: null, usage: null, selected_config: config, requested_surface: null, instruction: snapshot.task.request,
         dependencies: [], started_at_ms: now, finished_at_ms: now}];
       snapshot.state = 'completed';
       snapshot.result = {output, execution_verified: true, task_verified: true,

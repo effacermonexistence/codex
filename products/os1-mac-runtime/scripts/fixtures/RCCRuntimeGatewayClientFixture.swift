@@ -24,11 +24,12 @@ struct RCCRuntimeGatewayClientFixture {
     static func require(_ condition: @autoclosure () throws -> Bool, _ note: String) throws {
         guard try condition() else { throw NSError(domain: "RCCRuntimeGatewayClientFixture", code: 1, userInfo: [NSLocalizedDescriptionKey: note]) }
     }
-    static func main() throws {
+    static func main() async throws {
         let fm = FileManager.default
         let root = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("os1-rcc-client-fixture-\(UUID().uuidString)", isDirectory: true)
         try fm.createDirectory(at: root, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
         var ownedPID: Int32?
+        var passed = false
         defer {
             if ownedPID == nil,
                let data = try? Data(contentsOf: root.appendingPathComponent("runtime/transport-owner.json")),
@@ -40,7 +41,8 @@ struct RCCRuntimeGatewayClientFixture {
                 usleep(100_000)
                 if kill(pid, 0) == 0 { _ = kill(pid, SIGKILL) }
             }
-            try? fm.removeItem(at: root)
+            if passed { try? fm.removeItem(at: root) }
+            else { print("Offline fixture failure evidence preserved privately: " + root.path) }
         }
         let plugin = root.appendingPathComponent("plugin", isDirectory: true)
         try fm.createDirectory(at: plugin, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
@@ -56,13 +58,18 @@ struct RCCRuntimeGatewayClientFixture {
         def read(p): return json.loads(p.read_text())
         def write(p,v): p.write_text(json.dumps(v))
         if len(sys.argv)>1 and sys.argv[1]=='gateway':
-            counter=root/'boots.json'; write(counter,(read(counter) if counter.exists() else 0)+1)
+            counter=root/'boots.json'; boots=(read(counter) if counter.exists() else 0)+1; write(counter,boots)
+            delay=float(os.environ.get('OS1_RCC_FIXTURE_READY_DELAY_SECONDS','0'))
+            time.sleep(delay if boots==1 else min(delay,.8))
+            (root/'ready').write_text('ready')
             listener=socket.socket(); listener.bind(('127.0.0.1',int(sys.argv[-1]))); listener.listen()
             while True: time.sleep(.1)
         method=os.environ['OS1_RCC_RPC_METHOD']
         params=read(pathlib.Path(os.environ['OS1_RCC_RPC_PARAMS']))
         audit=root/'argv.json'; write(audit,sys.argv)
-        if method=='health': print(json.dumps({'ok':True})); sys.exit(0)
+        if method=='health':
+            if not (root/'ready').exists(): print(json.dumps({'ok':False,'status':'starting'})); sys.exit(0)
+            print(json.dumps({'ok':True})); sys.exit(0)
         if method=='os1.rcc.quiesce':
             owner=read(root/'transport-owner.json');busy=(root/'busy').exists()
             print(json.dumps({'schema':1,'request_id':params['request_id'],'owner_pid':owner['pid'],'active_dispatches':1 if busy else 0,'safe_to_stop':not busy,'queued_preserved':True,'queued_tasks':2,'accepting_submissions':False}));sys.exit(0)
@@ -105,7 +112,8 @@ struct RCCRuntimeGatewayClientFixture {
             "plugins": ["enabled": true, "allow": ["os1-bridge"], "load": ["paths": [plugin.path]]],
             "browser": ["enabled": false], "agents": ["defaults": ["model": ["primary": "ollama/qwen3.5:4b", "fallbacks": []]]], "tools": ["deny": ["*"]]]
         let configuration = RCCRuntimeGatewayClient.Configuration(identity: identity,
-            baseConfig: try JSONSerialization.data(withJSONObject: base, options: [.sortedKeys]))
+            baseConfig: try JSONSerialization.data(withJSONObject: base, options: [.sortedKeys]),
+            bridgeEnvironment: ["OS1_RCC_FIXTURE_READY_DELAY_SECONDS": "21.1"])
         let privateRoot = root.appendingPathComponent("runtime", isDirectory: true)
         let maintenance = root.appendingPathComponent("self-update/install-maintenance.pid")
         try fm.createDirectory(at: maintenance.deletingLastPathComponent(), withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
@@ -115,6 +123,11 @@ struct RCCRuntimeGatewayClientFixture {
             try RCCRuntimeGatewayClient.checkMaintenanceForOfflineFixture(root: privateRoot)
             throw NSError(domain: "fixture", code: 1, userInfo: [NSLocalizedDescriptionKey: "live installer admitted a new task"])
         } catch RCCRuntimeGatewayClient.Failure.installerMaintenance { }
+        do {
+            _ = try RCCRuntimeGatewayClient.warmForOfflineFixture(configuration: configuration, root: privateRoot)
+            throw NSError(domain: "fixture", code: 1, userInfo: [NSLocalizedDescriptionKey: "warmup raced active installation"])
+        } catch RCCRuntimeGatewayClient.Failure.installerMaintenance { }
+        try require(!fm.fileExists(atPath: privateRoot.appendingPathComponent("boots.json").path), "blocked warmup spawned owner")
         try Data("2147483000".utf8).write(to: maintenance)
         try RCCRuntimeGatewayClient.checkMaintenanceForOfflineFixture(root: privateRoot)
         try require(fm.fileExists(atPath: maintenance.path), "dead installer marker was erased")
@@ -139,6 +152,30 @@ struct RCCRuntimeGatewayClientFixture {
             _ = try RCCRuntimeGatewayClient.quiesceForOfflineFixture(configuration: configuration, root: unresolved)
             throw NSError(domain: "fixture", code: 1, userInfo: [NSLocalizedDescriptionKey: "unrecorded launch declared absent"])
         } catch RCCRuntimeGatewayClient.Failure.existingGatewayUnavailable { }
+        try require(RCCRuntimeGatewayClient.startupReadinessBudget == 60, "startup readiness regressed to task/RPC timeout")
+        // An observer can expire while the exact owned Gateway is starting.
+        // The next health-only warmup must wait for THAT process, not replace
+        // it or invent a task. The first fake owner becomes ready after the
+        // old 20-second boundary; this uses no OpenClaw/model or live HOME.
+        let coldStartedAt = Date()
+        do {
+            _ = try RCCRuntimeGatewayClient.warmForOfflineFixture(configuration: configuration,
+                root: privateRoot, readinessTimeout: 0.25)
+            throw NSError(domain: "fixture", code: 1, userInfo: [NSLocalizedDescriptionKey: "delayed startup declared ready before health"])
+        } catch RCCRuntimeGatewayClient.Failure.gatewayNotReady { }
+        let beforeWarm = try JSONSerialization.jsonObject(with: Data(contentsOf: privateRoot.appendingPathComponent("transport-owner.json"))) as! [String: Any]
+        ownedPID = (beforeWarm["pid"] as! NSNumber).int32Value
+        let warmed = try RCCRuntimeGatewayClient.warmForOfflineFixture(configuration: configuration, root: privateRoot,
+            readinessTimeout: RCCRuntimeGatewayClient.startupReadinessBudget)
+        try require(Date().timeIntervalSince(coldStartedAt) > 20, "cold-start fixture did not cross original readiness deadline")
+        try require(warmed.ownerPID == ownedPID && warmed.ready && warmed.gatewayIdentityVerified,
+            "delayed existing owner not reconciled through verified readiness")
+        try require(!warmed.taskSubmitted && warmed.providerCalls == 0 &&
+            !fm.fileExists(atPath: privateRoot.appendingPathComponent("submits.json").path), "warmup dispatched a task/provider")
+        try require(try Data(contentsOf: privateRoot.appendingPathComponent("boots.json")) == Data("1".utf8), "warmup replaced starting owner")
+        let warmedJSON = try JSONSerialization.jsonObject(with: JSONEncoder().encode(warmed)) as! [String: Any]
+        try require(warmedJSON["gateway_identity_verified"] as? Bool == true && warmedJSON["task_submitted"] as? Bool == false &&
+            warmedJSON["provider_calls"] as? Int == 0 && warmedJSON["state"] as? String == "ready", "warmup output contract not verified")
         var progress = [String]()
         let first = try RCCRuntimeGatewayClient.runForOfflineFixture(request: request("first"), configuration: configuration, root: privateRoot,
             progress: { bytes in progress.append((try? state(bytes)) ?? "invalid") })
@@ -199,10 +236,24 @@ struct RCCRuntimeGatewayClientFixture {
         let upgrade = try RCCRuntimeGatewayClient.quiesceForOfflineFixture(configuration: configuration, root: privateRoot)
         try require(upgrade.hadGateway && upgrade.queuedTasks == 2 && upgrade.receiptPath != nil, "safe upgrade receipt missing")
         ownedPID = nil
-        _ = try RCCRuntimeGatewayClient.runForOfflineFixture(request: request("after_upgrade"), configuration: configuration, root: privateRoot)
+        try fm.removeItem(at: privateRoot.appendingPathComponent("ready"))
+        let nextRequest = try request("after_upgrade")
+        let warmTask = Task.detached {
+            try RCCRuntimeGatewayClient.warmForOfflineFixture(configuration: configuration, root: privateRoot)
+        }
+        let requestTask = Task.detached {
+            try RCCRuntimeGatewayClient.runForOfflineFixture(request: nextRequest, configuration: configuration, root: privateRoot)
+        }
+        let concurrentWarm = try await warmTask.value
+        let concurrentResult = try await requestTask.value
         let newOwner = try JSONSerialization.jsonObject(with: Data(contentsOf: privateRoot.appendingPathComponent("transport-owner.json"))) as! [String: Any]
         ownedPID = (newOwner["pid"] as! NSNumber).int32Value
+        try require(concurrentWarm.ownerPID == ownedPID && concurrentWarm.taskSubmitted == false,
+            "concurrent warm/request used different owners")
+        try require(try state(concurrentResult) == "returned_unverified", "concurrent request lost its exact result")
         try require(try Data(contentsOf: privateRoot.appendingPathComponent("boots.json")) == Data("2".utf8), "new generation not started exactly once")
+        let concurrentCounts = try JSONSerialization.jsonObject(with: Data(contentsOf: privateRoot.appendingPathComponent("submits.json"))) as! [String: Int]
+        try require(concurrentCounts["after_upgrade"] == 1, "concurrent warmup duplicated task submit")
         let oldTask = try JSONSerialization.jsonObject(with: Data(contentsOf: privateRoot.appendingPathComponent("first.json"))) as! [String: Any]
         try require(oldTask["state"] as? String == "returned_unverified", "upgrade discarded durable task state")
         try Data("mutated".utf8).write(to: plugin.appendingPathComponent("rcc-runtime.mjs"))
@@ -211,6 +262,7 @@ struct RCCRuntimeGatewayClientFixture {
             throw NSError(domain: "fixture", code: 1, userInfo: [NSLocalizedDescriptionKey: "mutated module accepted"])
         } catch RCCRuntimeGatewayClient.Failure.identityMismatch { }
         try require(progress == ["running", "returned_unverified"], "progress not monotonic exact task snapshots")
-        print("RCC Runtime Gateway client: 25 offline fake-transport checks PASS; hosted/model calls 0; live task state untouched")
+        passed = true
+        print("RCC Runtime Gateway client: offline fake-transport checks PASS; delayed startup/concurrent warmup PASS; hosted/model calls 0; live task state untouched")
     }
 }

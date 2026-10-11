@@ -51,6 +51,21 @@ check("summary = try await runOpenClawRCCTask(" in cli and "rcc_transport_preser
       "ordinary CLI success AND transport failure return without legacy route fallback")
 check("runTask(" not in cli and "runTaskWithOwnerPolicy(" not in cli,
       "CLI core connection failure never starts another task coordinator")
+check("(error as? RCCRuntimeGatewayClient.Failure)?.rawValue" in cli and "rccTransportFailure: code" in cli,
+      "ordinary core failures preserve typed sanitized failure instead of raw private stderr")
+warmup = section(MAIN, 'case "rcc-warmup":', 'case "rcc-quiesce":')
+check("loadCurrentOwnerPolicy()" in warmup and "OwnerPolicyContext.$snapshot.withValue(owner)" in warmup and
+      "LocalRouterBridge.rccRuntimeConfiguration()" in warmup and "RCCRuntimeGatewayClient.warm(" in warmup,
+      "CLI warmup binds current owner policy and sealed installed configuration")
+check("runOpenClawRCCTask" not in warmup and "runTask(" not in warmup and '"provider_calls": 0' in warmup,
+      "CLI warmup is health-only and cannot submit a user/provider task")
+warm = section(CLIENT, "private static func warmBlocking(", "static func run(request:")
+check(warm.count("checkInstallerMaintenance(root: root)") == 2 and "ensureGateway(" in warm and
+      "rpc(" not in warm and "submit" not in warm,
+      "warmup uses same startup owner and preserves installer gate before and after readiness")
+check("startupReadinessBudget: TimeInterval = 60" in CLIENT and
+      "var rpc: TimeInterval = 15" in CLIENT and "var observe: TimeInterval = 86_520" in CLIENT,
+      "startup readiness is independent of unchanged RPC/model-task observation limits")
 check('"--rcc-task-id"' in APP and '"--request-file"' in APP and '"run"' in APP,
       "GUI passes immutable request bytes and its stable task ID to normal CLI ingress")
 check("if summary.rccTransportFailure != nil" in APP and "if let core = summary.rccRuntime" in APP,

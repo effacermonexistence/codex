@@ -29,10 +29,31 @@ func runRCCRuntimeProjectionFixtures() throws {
     let single = try project(core)
     try check(single.nodes.count == 2 && single.nodes.filter { $0.role == .worker }.count == 1, "one actual child visible")
     try check(single.nodes.allSatisfy { $0.model == nil && $0.effort == nil && $0.provider == nil }, "unknown execution configuration not invented")
+    try check(single.nodes.last?.title == "Task 1 · one", "legacy child without requested identity keeps existing title")
     try check(single.nodes.last?.progressText?.contains("first observation") == true, "missing native timestamp stays labelled observation")
     let later = try project(core, at: now.addingTimeInterval(2), previous: single)
     try check(single.planID == later.planID && single.nodes.map(\.id) == later.nodes.map(\.id), "stable display identities")
     try check(single.nodes.last?.startedAt == later.nodes.last?.startedAt, "observer clock does not reset on each poll")
+    var heldTargets = core; heldTargets.state = .held
+    let targetSurfaces: [RCCRuntimeContract.Surface] = [.chatgpt, .codex, .claudeChat, .claude]
+    heldTargets.children = targetSurfaces.enumerated().map { index, surface in
+        .init(id: "requested-\(index + 1)", state: .held, attemptID: nil, candidateID: nil,
+              instruction: "\(index + 1)+\(index + 1)", requestedSurface: surface)
+    }
+    let heldTargetGraph = try project(heldTargets)
+    let heldWorkers = heldTargetGraph.nodes.filter { $0.role == .worker }
+    try check(heldWorkers.map(\.title) == ["ChatGPT · 1+1", "Codex · 2+2", "Claude chat · 3+3", "Claude Code · 4+4"],
+              "four literal requested target names and probes survive unavailable route hold")
+    try check(heldWorkers.count == 4 && heldWorkers.allSatisfy { $0.state == .blocked },
+              "unavailable explicit targets remain four held children, never fabricated execution")
+    try check(heldWorkers.allSatisfy { $0.provider == nil && $0.surface == nil && $0.model == nil &&
+        $0.effort == nil && $0.nativeSessionID == nil }, "requested title never upgrades to native observation")
+    try check(heldWorkers[0].progressText?.contains("requested ChatGPT") == true &&
+        heldWorkers[0].progressText?.contains("execution configuration not exposed") == true,
+              "requested and execution configuration are explicitly separated")
+    heldTargets.children[0].instruction = "Private source or credential details must not enter a public title"
+    try check(try project(heldTargets).nodes[1].title == "ChatGPT",
+              "arbitrary private instruction does not leak through a requested target title")
     core.children = (0..<4).map { .init(id: "node\($0)", state: .running, attemptID: "attempt\($0)", candidateID: "candidate\($0)",
                                     startedAtMS: Int64(now.timeIntervalSince1970 * 1000)) }
     let four = try project(core)

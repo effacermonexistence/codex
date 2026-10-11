@@ -82,9 +82,12 @@ enum RCCRuntimeGatewayClient {
         // drain; the original task remains durable in the same core.
         var deliverable: Bool { ["held", "completed", "returned_unverified", "awaiting_install", "cancelled", "effects_uncertain", "failed"].contains(state) }
     }
+    /// Startup readiness is an independent transport budget. It does not
+    /// shorten, extend, or otherwise change a model/task execution timeout.
+    static let startupReadinessBudget: TimeInterval = 60
     private struct Limits {
         var rpc: TimeInterval = 15
-        var ready: TimeInterval = 20
+        var ready: TimeInterval = RCCRuntimeGatewayClient.startupReadinessBudget
         var poll: TimeInterval = 1
         var observe: TimeInterval = 86_520
     }
@@ -102,6 +105,66 @@ enum RCCRuntimeGatewayClient {
       '--json', '--expect-url', process.env.OS1_RCC_RPC_URL, '--timeout', process.env.OS1_RCC_RPC_TIMEOUT];
     await import(pathToFileURL(entry).href);
     """
+
+    struct ReadinessReceipt: Encodable, Sendable {
+        let schema = 1
+        let state = "ready"
+        let ready = true
+        let gatewayIdentityVerified = true
+        let taskSubmitted = false
+        let providerCalls = 0
+        let ownerPID: Int32
+        let startedAt: Double
+        let identitySHA256: String
+        let configurationSHA256: String
+        let checkedAt: String
+        enum CodingKeys: String, CodingKey {
+            case schema, state, ready
+            case gatewayIdentityVerified = "gateway_identity_verified"
+            case taskSubmitted = "task_submitted"
+            case providerCalls = "provider_calls"
+            case ownerPID = "owner_pid"
+            case startedAt = "started_at"
+            case identitySHA256 = "identity_sha256"
+            case configurationSHA256 = "configuration_sha256"
+            case checkedAt = "checked_at"
+        }
+    }
+
+    /// Health-only startup supervision of the same persistent owner. It
+    /// creates no task, submits no prompt, and does not call a model/provider.
+    /// Readiness is observed, not assumed merely because spawn succeeded.
+    static func warm(configuration: Configuration) async throws -> ReadinessReceipt {
+        let cancellation = Cancellation()
+        return try await withTaskCancellationHandler {
+            try await Task.detached(priority: .utility) {
+                try warmBlocking(configuration: configuration,
+                    root: FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".os1/rcc-runtime"),
+                    limits: Limits(), fixture: false, cancelled: { cancellation.requested })
+            }.value
+        } onCancel: { cancellation.request() }
+    }
+
+    static func warmForOfflineFixture(configuration: Configuration, root: URL,
+                                      readinessTimeout: TimeInterval = 3) throws -> ReadinessReceipt {
+        guard root.standardizedFileURL.path.hasPrefix(NSTemporaryDirectory()),
+              readinessTimeout > 0, readinessTimeout <= startupReadinessBudget else { throw Failure.privateStateInvalid }
+        return try warmBlocking(configuration: configuration, root: root,
+            limits: Limits(rpc: 1, ready: readinessTimeout, poll: 0.03, observe: 5), fixture: true, cancelled: { false })
+    }
+
+    private static func warmBlocking(configuration: Configuration, root: URL, limits: Limits,
+                                     fixture: Bool, cancelled: () -> Bool) throws -> ReadinessReceipt {
+        // Warmup cannot be used to race or bypass a verified installation.
+        // The isolated fixture uses its own maintenance marker, never HOME.
+        try checkInstallerMaintenance(root: root)
+        let owner = try ensureGateway(configuration: configuration, paths: Paths(root: root),
+            limits: limits, fixture: fixture, cancelled: cancelled)
+        try checkInstallerMaintenance(root: root)
+        return ReadinessReceipt(ownerPID: owner.pid, startedAt: owner.startedAt,
+            identitySHA256: owner.identitySHA256, configurationSHA256: owner.configurationSHA256,
+            checkedAt: ISO8601DateFormatter().string(from: Date()))
+    }
 
     static func run(request: Data, configuration: Configuration,
                     progress: @escaping @Sendable (Data) -> Void = { _ in }) async throws -> Data {
@@ -423,9 +486,10 @@ enum RCCRuntimeGatewayClient {
                 guard previous.identitySHA256 == identityHash, previous.configurationSHA256 == configurationHash else {
                     throw Failure.gatewayIdentityChanged // live tasks may exist: never replace this owner
                 }
-                guard try health(previous, configuration: configuration, paths: paths, timeout: limits.rpc, fixture: fixture) else {
-                    throw Failure.existingGatewayUnavailable
-                }
+                // A prior observer may have ended while this exact owner was
+                // still starting. Wait for its readiness, never spawn another.
+                try awaitReadiness(previous, configuration: configuration, paths: paths,
+                    limits: limits, fixture: fixture, cancelled: cancelled, existing: true)
                 return previous
             }
             // Only a proved-dead PID permits a replacement. A PID reused by an
@@ -491,14 +555,33 @@ enum RCCRuntimeGatewayClient {
             if !process.isRunning { try? FileManager.default.removeItem(at: paths.startupIntent) }
             throw error
         }
-        let readyDeadline = Date().addingTimeInterval(limits.ready)
-        while Date() < readyDeadline {
-            if !process.isRunning { throw Failure.gatewayStartFailed }
-            if (try? health(owner, configuration: configuration, paths: paths, timeout: min(3, limits.rpc), fixture: fixture)) == true { return owner }
-            if cancelled() { throw CancellationError() } // gateway/tasks survive observer cancellation
+        try awaitReadiness(owner, configuration: configuration, paths: paths,
+            limits: limits, fixture: fixture, cancelled: cancelled, existing: false)
+        return owner
+    }
+
+    private static func awaitReadiness(_ owner: Owner, configuration: Configuration, paths: Paths,
+                                       limits: Limits, fixture: Bool, cancelled: () -> Bool,
+                                       existing: Bool) throws {
+        let deadline = Date().addingTimeInterval(limits.ready)
+        while Date() < deadline {
+            guard !cancelled() else { throw CancellationError() }
+            guard processMatches(owner, nodePath: configuration.identity.nodePath, fixture: fixture) else {
+                throw existing ? Failure.existingGatewayUnavailable : Failure.gatewayStartFailed
+            }
+            do {
+                if try health(owner, configuration: configuration, paths: paths,
+                    timeout: min(min(3, limits.rpc), max(0.05, deadline.timeIntervalSinceNow)), fixture: fixture) { return }
+            } catch let failure as Failure {
+                // Temporary connection refusal is a readiness observation.
+                // Custody/identity failures remain precise terminal failures.
+                guard [.rpcFailed, .rpcTimeout].contains(failure) else { throw failure }
+            }
             Thread.sleep(forTimeInterval: 0.15)
         }
-        throw Failure.gatewayNotReady // preserve supervised PID/config and durable state, no destructive reset
+        // Preserve this supervised PID/config and durable state on timeout.
+        // There is no task replay, destructive reset, or alternate owner.
+        throw existing ? Failure.existingGatewayUnavailable : Failure.gatewayNotReady
     }
 
     private static func checkedBaseConfig(_ bytes: Data, installed: InstalledIdentity) throws -> [String: Any] {

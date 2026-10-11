@@ -16981,6 +16981,7 @@ func usage() {
               [--codex-capacity 0...100] [--claude-capacity 0...100]
               [--desktop-reveal never|background|always]
       os1 version
+      os1 rcc-warmup
     """)
 }
 
@@ -16999,6 +17000,25 @@ struct OS1Main {
             if try await fleetCommand(arguments) { return }
             if try await ManagedPreview.command(arguments) { return }
             switch command {
+            case "rcc-warmup":
+                guard arguments.count == 1 else { throw OS1Error.message("RCC warmup accepts no request or execution settings") }
+                do {
+                    let owner = try loadCurrentOwnerPolicy()
+                    let configuration = try await OwnerPolicyContext.$snapshot.withValue(owner) {
+                        try await LocalRouterBridge.rccRuntimeConfiguration()
+                    }
+                    let receipt = try await RCCRuntimeGatewayClient.warm(configuration: configuration)
+                    print(String(decoding: try JSONEncoder().encode(receipt), as: UTF8.self))
+                } catch {
+                    // Only an enum code crosses the GUI boundary. Provider
+                    // stderr, configuration, source and credentials do not.
+                    let code = (error as? RCCRuntimeGatewayClient.Failure)?.rawValue ?? "rcc_connection_or_policy_unavailable"
+                    let receipt: [String: Any] = ["schema": 1, "state": "unavailable", "ready": false,
+                        "gateway_identity_verified": false, "task_submitted": false, "provider_calls": 0,
+                        "failure": code]
+                    print(String(decoding: try JSONSerialization.data(withJSONObject: receipt, options: [.sortedKeys]), as: UTF8.self))
+                    exit(1)
+                }
             case "rcc-quiesce":
                 let configuration = try await LocalRouterBridge.rccRuntimeConfiguration()
                 let receipt = try await RCCRuntimeGatewayClient.quiesceForUpgrade(configuration: configuration)
@@ -17329,9 +17349,10 @@ struct OS1Main {
                     } catch {
                         // Transport/policy failure is NOT permission for an old
                         // OS-1 coordinator to redispatch this request.
+                        let code = (error as? RCCRuntimeGatewayClient.Failure)?.rawValue ?? "rcc_connection_or_policy_unavailable"
                         summary = RunSummary(status: "rcc_transport_preserved", steps: [],
-                            workflowBlocker: "OpenClaw task connection unavailable; request preserved; no alternate route",
-                            rccTransportFailure: "rcc_connection_or_policy_unavailable")
+                            workflowBlocker: "OpenClaw task connection unavailable (" + code + "); request preserved; no alternate route",
+                            rccTransportFailure: code)
                     }
                     if outputFormat == "json" { print(String(decoding: try JSONEncoder().encode(summary), as: UTF8.self)) }
                     else { printRunSummary(summary) }

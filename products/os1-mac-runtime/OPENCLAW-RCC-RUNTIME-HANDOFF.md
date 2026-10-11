@@ -11,14 +11,14 @@ API fallback. Quality target is latest flagship/max output, not always that mode
 `os1/openclaw-rcc-runtime-20261010`
 Worktree: `/Users/LUA/Documents/Codex/OS1-openclaw-rcc-runtime-20261010`.
 Base: `117a68ef16b29c9e117d9b958a35977651f011f8`.
-Previous implementation checkpoint: `2a9d8aeeba191bb6cf9710d4766634d60f3bbfa9`.
-Current 370 source is a successor; its exact commit comes from Git/build receipt,
+Previous installed source checkpoint: `266cb52cfc5ceea9d1b2127562e46140568a6ea5`.
+Current 371 source is a successor; its exact commit comes from Git/build receipt,
 not a self-embedded circular identity. No public push or upstream merge.
 
 ## COMPLETED
 - Single persistent OpenClaw service/SQLite task owner; exact source/policy/config
   contracts, reservations, cancellation, uncertain-side-effect hold/no replay.
-- Native Ollama completion through OpenClaw SDK; pinned complete policy and all
+- Native Ollama completion through OpenClaw SDK; verified policy projection/source binding and all
   122 candidates; local schema/invariants, no hosted fallback.
 - App/CLI/Fleet ingress uses one owner. Exact child native responses preserved;
   public task graph is projection, not another scheduler.
@@ -29,7 +29,7 @@ not a self-embedded circular identity. No public push or upstream merge.
   signing key/policy/bindings. Exact-profile admission uses no remote planner.
 - Real two configured native tests returned Codex6.1-sol/low=2 and
   ClaudeFable5.1/low=4, verified native persistence; total two provider calls.
-- Installed369/0.9.303 checked replacement passed13 gates. Original252 sessions,
+- Installed369/0.9.303 checked replacement passed14 gates. Original252 sessions,
   7queued and19190 paging files preserved. This was an EXTERNAL Codex installer,
   NOT an OS1-origin self-repair.
 - Installed CLI core1+1 returned2, one local child and zero model calls.
@@ -39,13 +39,18 @@ not a self-embedded circular identity. No public push or upstream merge.
   with exact252 unrelated sessions/7queue/messages/failed request preserved.
 
 ## IN PROGRESS
-370 packaging/verified installation and actual GUI delivery/task-tree checks.
+371 packaging/verified installation and cold-start/UI receipt follow-up checks.
+Installed370 already passed14 gates with253→253 preservation; subsequent GUI
+diagnostics raised the session count to256. Actual warm GUI1+1 returned2, idle
+composer and root+one-child tree; clicking the child opened its linked window.
+Actual explicit4request produced4held children due the missing ordinaryChat
+transport, not4successful executions. Original252 sessions and7queue stayed exact.
 Do not treat this source document as a receipt of installation. Use the exact
 installer receipt and current installed executable/Info identities.
 
 ## NOT STARTED / NOT VERIFIED
 - Approved ordinary native ChatGPT automated request/readback transport.
-- Real GUI four-target delivery/adoption, not merely an isolated fixture.
+- Successful four-target delivery (actual tree4exists but ordinaryChat is held).
 - General live local selection -> native execution -> original GUI delivery.
 - Real OS1 request -> source change -> stage/install/restart -> original-task receipt.
 - Pre-registered representative latest/max quality and total-resource comparison.
@@ -119,9 +124,17 @@ Core source writes are serialized by actual active-workspace reservation.
 - Actual GUI369 failed before dispatch because a permissive intermediate
   `.os1/rcc-runtime` directory conflicted with Gateway custody.370 creates/checks
   uid-owned no-link0700 directories by descriptor, preserving existing contents.
-- GUI RCC transport/core early-return skipped common slot cleanup.370 releases
+- GUI RCC transport/core early-return skipped common slot cleanup. Installed370 releases
   only matching admission, rechecks after await, persists inFlight removal and
-  never falls into legacy replay. Actual370 installed-path test is still needed.
+  never falls into legacy replay. Actual warm370 installed-path result/idle/one-child window checks passed.
+- Cold370 Gateway became ready20.63s after startup but its readiness budget was
+ 20s: pre-submit failure, original inputs preserved.371 waits60s independently
+ from model/task budgets, adds single-owner health-only startup warm and typed
+ sanitized transport failures; current source fixtures pass, installation pending.
+-370 hid held reasons/local deterministic proof behind a generic unverified
+ receipt.371 exposes source-bound local proof and typed held boundary without
+ inventing native provenance. Requested targets are separate from selected/actual
+ configurations and survive legacy exact-request snapshot reads.
 - Foundation JSON serialization changed a checkedAt binary64 spelling; fixed
   canonical Swift/JS protocol,1019 vectors+6unsafe-value negatives pass.
 - Earlier schema/16K/readonly-hint/version/package/admission fixture failures are
@@ -145,8 +158,8 @@ actual routed self-repair are absent. No cloud attestation means no upstream
 merge; a local advisory agent/test is not a substitute.
 
 ## NEXT RECOMMENDED TASKS
-1. Complete370 tests/clean package/verified install, preserving253 sessions/7queue.
-2. Actual GUI1+1 ->2, idle composer/spinner and one child; exact four-target tree.
+1. Complete371 tests/clean package/verified install, preserving256 sessions/7queue.
+2. Repeat cold/warm GUI1+1 + local receipt and exact four-target labels/held reason.
 3. One permitted general auto-selection/native/UI task without substitutions.
 4. Same-core real self-repair receipt and fixed-reference representative comparison.
 5. Approved ordinary Chat transport only; otherwise exact unavailable hold.
@@ -175,5 +188,7 @@ logic based on an obsolete summary's unverified race allegation.
   c1c6f6d3fe189ac3232e68efad137c89f25f3a71a4759891452c93095591b6ce.
   Initial printed archive digest differed; reason not established, explicitly
   preserved. Final local/remote bytes and all file hashes matched.
--370 has not been archived at this document creation. Archive acquisition !=
+-266cb52 successor private R2 checkpoint47files readback is verified, archive
+ 892387B SHA d13646cd553efe1e85e71a63f23b246f577d583e03075b44890992ed4c3a504e.
+371 has not been archived at this document creation. Archive acquisition !=
   activation; filled metadata != source verification; test specs != executions.

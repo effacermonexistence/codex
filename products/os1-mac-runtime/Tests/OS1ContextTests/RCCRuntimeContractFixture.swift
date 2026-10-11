@@ -276,6 +276,28 @@ func runRCCRuntimeContractFixture() throws {
             candidateID: candidate.id, selectedConfig: config, outputSummary: nil)], result: nil, error: "Transport outcome unknown")
     try check(try C.decodeSnapshot(C.encode(uncertain)) == uncertain,
               "uncertain executed effect is preserved, not implicitly retried")
+    var requestedOnly = uncertain
+    requestedOnly.state = .held
+    requestedOnly.children = [.init(id: "requested-1", state: .held, attemptID: nil, candidateID: nil,
+        instruction: "1+1", requestedSurface: .chatgpt)]
+    try check(try C.decodeSnapshot(C.encode(requestedOnly)) == requestedOnly,
+              "held ordinary ChatGPT requested surface roundtrips without execution identity")
+    var legacySnapshotObject = try JSONSerialization.jsonObject(with: C.encode(requestedOnly)) as! [String: Any]
+    var legacyChildren = legacySnapshotObject["children"] as! [[String: Any]]
+    legacyChildren[0].removeValue(forKey: "requested_surface")
+    legacySnapshotObject["children"] = legacyChildren
+    let legacySnapshot = try C.decodeSnapshot(JSONSerialization.data(withJSONObject: legacySnapshotObject))
+    try check(legacySnapshot.children.first?.requestedSurface == nil,
+              "legacy child missing requested surface remains decodable and unknown")
+    var aliasedSnapshot = requestedOnly; aliasedSnapshot.children[0].selectedConfig = config
+    try reject("ordinary ChatGPT requested surface cannot alias Codex-funded gpt-chat selection") {
+        try C.validate(aliasedSnapshot)
+    }
+    legacyChildren[0]["requested_surface"] = "unknown-provider"
+    legacySnapshotObject["children"] = legacyChildren
+    try reject("requested surface must be a known typed surface") {
+        _ = try C.decodeSnapshot(JSONSerialization.data(withJSONObject: legacySnapshotObject))
+    }
     let event = C.Event(taskID: request.taskID, revision: snapshot.revision, type: .snapshot,
         nodeID: node.id, attemptID: ticket.attemptID, observedAtMS: 1_000, snapshot: snapshot)
     try check(try C.decodeEvent(C.encode(event)) == event, "UI event carries same task revision")

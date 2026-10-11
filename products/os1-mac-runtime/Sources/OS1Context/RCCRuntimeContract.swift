@@ -512,18 +512,23 @@ public enum RCCRuntimeContract {
         public var finishedAtMS: Int64?
         public var nativeReceipt: String?
         public var outputSummary: String?
+        /// Literal user-requested surface. This is not selected or observed execution.
+        public var requestedSurface: Surface?
         public init(id: String, state: ChildState, attemptID: String?, candidateID: String?, selectedConfig: ExactConfig? = nil,
                     instruction: String? = nil, dependencies: [String]? = nil, startedAtMS: Int64? = nil,
-                    finishedAtMS: Int64? = nil, nativeReceipt: String? = nil, outputSummary: String? = nil) {
+                    finishedAtMS: Int64? = nil, nativeReceipt: String? = nil, outputSummary: String? = nil,
+                    requestedSurface: Surface? = nil) {
             self.id = id; self.state = state; self.attemptID = attemptID; self.candidateID = candidateID
             self.selectedConfig = selectedConfig; self.instruction = instruction; self.dependencies = dependencies
             self.startedAtMS = startedAtMS; self.finishedAtMS = finishedAtMS; self.nativeReceipt = nativeReceipt
             self.outputSummary = outputSummary
+            self.requestedSurface = requestedSurface
         }
         enum CodingKeys: String, CodingKey {
             case id, state, dependencies, instruction, attemptID = "attempt_id", candidateID = "candidate_id"
             case selectedConfig = "selected_config", startedAtMS = "started_at_ms", finishedAtMS = "finished_at_ms", nativeReceipt = "native_receipt"
             case outputSummary = "output_summary"
+            case requestedSurface = "requested_surface"
         }
     }
     public struct Result: Codable, Equatable, Sendable {
@@ -873,6 +878,8 @@ public enum RCCRuntimeContract {
             guard id(child.id), child.attemptID.map(id) ?? true, child.candidateID.map(id) ?? true,
                   child.state != .running || (child.attemptID != nil && child.candidateID != nil) else { throw Rejection.invalidSnapshot }
             if let config = child.selectedConfig { try validate(config) }
+            if let requested = child.requestedSurface, let selected = child.selectedConfig,
+               requested != selected.surface { throw Rejection.invalidSnapshot }
             guard child.instruction.map({ text($0) }) ?? true, child.dependencies.map({ unique($0, max: maximumNodes) }) ?? true,
                   child.startedAtMS.map({ $0 >= 0 }) ?? true, child.finishedAtMS.map({ $0 >= (child.startedAtMS ?? 0) }) ?? true,
                   child.nativeReceipt.map({ text($0, max: 4_096) }) ?? true,
@@ -950,7 +957,7 @@ public enum RCCRuntimeContract {
     private static let usageShape = Shape.object(["input_tokens", "output_tokens", "reasoning_tokens", "cache_read_tokens", "cache_write_tokens", "provider_calls", "duration_ms", "cost_units", "metric"])
     private static let recordShape = Shape.object(["schema", "task_id", "node_id", "attempt_id", "candidate_id", "configuration_sha256", "selected_config", "acknowledged_config", "observed_config", "status", "output", "execution_verified", "task_verified", "task_quality", "parity_state", "native_receipt", "side_effects", "usage", "error", "dispatch_stage", "native_summary", "handback", "repair_source"], ["selected_config": configShape, "acknowledged_config": configShape, "observed_config": configShape, "usage": usageShape, "handback": handbackShape, "repair_source": repairSourceShape])
     private static let resultShape = Shape.object(["output", "execution_verified", "task_verified", "task_quality", "parity_state", "native_receipt", "native_summary", "native_summaries"])
-    private static let childShape = Shape.object(["id", "state", "attempt_id", "candidate_id", "selected_config", "instruction", "dependencies", "started_at_ms", "finished_at_ms", "native_receipt", "output_summary"], ["selected_config": configShape])
+    private static let childShape = Shape.object(["id", "state", "attempt_id", "candidate_id", "selected_config", "instruction", "dependencies", "started_at_ms", "finished_at_ms", "native_receipt", "output_summary", "requested_surface"], ["selected_config": configShape])
     private static let snapshotShape = Shape.object(["schema", "task_id", "request_sha256", "state", "revision", "children", "result", "error", "install_handoff"], ["children": .array(childShape), "result": resultShape, "install_handoff": installHandoffShape])
     private static let eventShape = Shape.object(["schema", "task_id", "revision", "type", "node_id", "attempt_id", "observed_at_ms", "snapshot"], ["snapshot": snapshotShape])
     private static func checkShape(_ object: Any, _ shape: Shape, depth: Int = 0) throws {
@@ -1052,7 +1059,7 @@ public enum RCCRuntimeContract {
             if dictionary["children"] != nil { optional += ["result", "error", "install_handoff"] }
             if dictionary["staged_intent_id"] != nil { optional += ["installed_receipt"] }
             if dictionary["parity_state"] != nil && dictionary["configuration_sha256"] == nil { optional += ["native_receipt", "native_summary", "native_summaries"] }
-            if dictionary["state"] != nil && dictionary["id"] != nil { optional += ["attempt_id", "candidate_id", "selected_config", "instruction", "dependencies", "started_at_ms", "finished_at_ms", "native_receipt", "output_summary"] }
+            if dictionary["state"] != nil && dictionary["id"] != nil { optional += ["attempt_id", "candidate_id", "selected_config", "instruction", "dependencies", "started_at_ms", "finished_at_ms", "native_receipt", "output_summary", "requested_surface"] }
             for key in optional where dictionary[key] == nil { dictionary[key] = NSNull() }
             for (key, child) in dictionary { dictionary[key] = normalize(child) }
             return dictionary

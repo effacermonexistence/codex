@@ -223,7 +223,27 @@ enum AgentTaskTreePresentation {
         case .interrupted: return os1Tr("중단 · 결과 미확인", "Interrupted · outcome unconfirmed")
         }
     }
+    /// Set only by the App's exact source-bound completed-core receipt. A
+    /// selected local model, prose, or coordinator role is not this evidence.
+    static func isLocalDeterministic(_ node: ParallelAgentTask.Node) -> Bool {
+        node.role == .worker && node.state == .succeeded && node.provider == "local" &&
+            node.tool == "rcc_local_exact" && node.model == "deterministic" && node.effort == "none" &&
+            node.nativeSessionID == nil && node.scope == .readOnly
+    }
+    static func scopeTitle(_ node: ParallelAgentTask.Node, detailed: Bool = false) -> String? {
+        guard let scope = node.scope else { return nil }
+        if isLocalDeterministic(node) {
+            return os1Tr("로컬 읽기 전용 실행 · 변경 또는 모델 호출 없음", "Local read-only execution · no modification or model call")
+        }
+        if scope == .readOnly {
+            return detailed ? os1Tr("읽기 전용 준비 · 구현 또는 변경 작업이 아닙니다", "Read-only preparation · not implementation or modification")
+                : os1Tr("읽기 전용 준비 작업", "Read-only preparation")
+        }
+        return detailed ? os1Tr("기록된 소유 범위 안에서 쓰기 작업", "Write work within the recorded owned scope")
+            : os1Tr("쓰기 범위", "Write scope") + " · " + scope.rawValue
+    }
     static func route(_ node: ParallelAgentTask.Node) -> String {
+        if isLocalDeterministic(node) { return os1Tr("로컬 결정적 실행", "Local deterministic execution") }
         guard let provider = node.provider else { return os1Tr("실행 제공자 아직 관측 안 됨", "Execution provider not observed yet") }
         return [provider, node.model, node.effort].compactMap { $0 }.joined(separator: " · ")
     }
@@ -386,9 +406,8 @@ struct AgentTaskTreeView: View {
                 }
             }
             Text(AgentTaskTreePresentation.route(node)).font(.system(size: 10)).foregroundStyle(AgentTreeStyle.muted)
-            if let scope = node.scope {
-                Text(scope == .readOnly ? os1Tr("읽기 전용 준비 작업", "Read-only preparation")
-                    : os1Tr("쓰기 범위", "Write scope") + " · " + scope.rawValue)
+            if let scope = AgentTaskTreePresentation.scopeTitle(node) {
+                Text(scope)
                     .font(.system(size: 10)).foregroundStyle(AgentTreeStyle.muted)
             }
             if let progress = node.progressText { Text(progress).font(.system(size: 11)).lineLimit(open ? nil : 2) }

@@ -5554,6 +5554,113 @@ private enum SteeringDeliveryState: String, Codable, Equatable, Sendable {
     var isInFlight: Bool { self == .waiting || self == .pending }
 }
 
+/// A local core receipt is not a native backend record. Its typed evidence
+/// retains the exact completed core snapshot and graph binding; neither prose
+/// nor a selected local configuration can create this presentation.
+private struct RCCDeterministicReceipt: Codable, Equatable, Sendable {
+    let core: RCCRuntimeContract.Snapshot
+    let graph: ParallelAgentTask.Snapshot
+    let snapshotSHA256: String
+    let outputSHA256: String
+
+    static func bound(_ core: RCCRuntimeContract.Snapshot, graph: ParallelAgentTask.Snapshot?,
+                      submission: PendingSubmission, steps: [AppRunStep]) -> Self? {
+        guard let graph, graph.conversationID == submission.sessionID, graph.submissionID == submission.id,
+              core.requestSHA256 == appSHA256Hex(submission.executionRequest),
+              steps.count == 1, let step = steps.first,
+              step.provider == "local", step.action == "rcc_deterministic", step.model == "deterministic",
+              step.effort == "none", step.permissionProfile == "local_control", step.exitCode == 0,
+              step.revasDisposition == "control_verified", step.nativeRecord == nil,
+              step.sessionID == core.taskID, core.result.map({ Data(step.output.utf8) == Data($0.output.utf8) }) == true,
+              let data = try? RCCRuntimeContract.encode(core), let output = core.result?.output else { return nil }
+        let value = Self(core: core, graph: graph, snapshotSHA256: RCCRuntimeContract.digest(data),
+                         outputSHA256: appSHA256Hex(output))
+        return value.isValid ? value : nil
+    }
+
+    var isValid: Bool {
+        guard (try? RCCRuntimeContract.validate(core)) != nil,
+              core.state == .completed, core.result?.executionVerified == true,
+              core.result?.taskVerified == true, core.result?.taskQuality == .taskVerified,
+              core.result?.parityState == .unverified, core.result?.nativeReceipt == nil,
+              core.result?.nativeSummary == nil, core.result?.nativeSummaries?.isEmpty ?? true,
+              core.children.count == 1, let child = core.children.first,
+              child.id == "local-core", child.candidateID == "local-core", child.state == .completed,
+              child.attemptID == nil, child.nativeReceipt == nil, child.dependencies?.isEmpty ?? true,
+              let config = child.selectedConfig, config.surface == .local, config.transport == .local,
+              config.accountID == "os1-core", config.model == "none", config.effort == .none,
+              config.tools.isEmpty, config.allowedPaths.isEmpty, config.scope == .readOnly,
+              config.permissionProfile == .readOnly, config.quotaPool == .none,
+              config.configurationSHA256 == appSHA256Hex("os1-rcc-core-local-exact-v1"),
+              let instruction = child.instruction, appSHA256Hex(instruction) == core.requestSHA256,
+              child.outputSummary.flatMap({ summary in core.result.map { Data(summary.utf8) == Data($0.output.utf8) } }) == true,
+              let bytes = try? RCCRuntimeContract.encode(core), RCCRuntimeContract.digest(bytes) == snapshotSHA256,
+              let output = core.result?.output, appSHA256Hex(output) == outputSHA256,
+              (try? graph.validated(conversationID: graph.conversationID, submissionID: graph.submissionID,
+                                    requestSHA256: core.requestSHA256)) != nil,
+              graph.nodes.count == 2, graph.nodes.allSatisfy({ $0.state == .succeeded }),
+              let projected = try? RCCRuntimeProjection.project(core, conversationID: graph.conversationID,
+                  submissionID: graph.submissionID, objective: graph.objective, observedAt: graph.updatedAt,
+                  firstObservedAt: graph.createdAt, maxParallelism: graph.maxParallelism,
+                  expectedRequestSHA256: core.requestSHA256),
+              projected.planID == graph.planID, projected.rootNodeID == graph.rootNodeID,
+              Set(projected.nodes.map(\.id)) == Set(graph.nodes.map(\.id)),
+              graph.nodes.filter({ $0.role == .worker && $0.parentID == graph.rootNodeID && $0.scope == .readOnly }).count == 1,
+              graph.nodes.allSatisfy({ $0.nativeSessionID == nil && $0.nativeProgress == nil &&
+                  $0.surface == nil && $0.provider == nil && $0.model == nil && $0.effort == nil && $0.tool == nil }) else { return false }
+        return true
+    }
+
+    var displayGraph: ParallelAgentTask.Snapshot {
+        var value = graph
+        guard isValid else { return value }
+        for index in value.nodes.indices where value.nodes[index].role == .worker {
+            value.nodes[index].provider = "local"
+            value.nodes[index].model = "deterministic"
+            value.nodes[index].effort = "none"
+            value.nodes[index].tool = "rcc_local_exact"
+            value.nodes[index].progressText = os1Tr("원래 작업·요청에 연결된 로컬 결정적 실행 확인됨 · 모델 호출 없음",
+                "Local deterministic execution verified for the original task/request · no model call")
+        }
+        return value
+    }
+
+    var detail: String {
+        "OpenClaw local deterministic execution · task \(core.taskID) · request \(core.requestSHA256) · revision \(core.revision) · snapshot \(snapshotSHA256) · output \(outputSHA256) · graph \(graph.planID.uuidString.lowercased()) · task conditions verified · no native model record · no reference quality comparison"
+    }
+}
+
+/// Invalid optional local display evidence is quarantined, not a reason to
+/// make an otherwise intact historical conversation undecodable.
+@propertyWrapper
+private struct RCCDeterministicReceiptField: Codable, Equatable, Sendable {
+    var wrappedValue: RCCDeterministicReceipt?
+    init(wrappedValue: RCCDeterministicReceipt? = nil) {
+        self.wrappedValue = wrappedValue?.isValid == true ? wrappedValue : nil
+    }
+    init(from decoder: Decoder) throws {
+        let value = try? RCCDeterministicReceipt(from: decoder)
+        wrappedValue = value?.isValid == true ? value : nil
+    }
+    func encode(to encoder: Encoder) throws {
+        if let value = wrappedValue, value.isValid { try value.encode(to: encoder) }
+        else { var container = encoder.singleValueContainer(); try container.encodeNil() }
+    }
+}
+private extension KeyedDecodingContainer {
+    func decode(_ type: RCCDeterministicReceiptField.Type, forKey key: Key) throws -> RCCDeterministicReceiptField {
+        try decodeIfPresent(type, forKey: key) ?? RCCDeterministicReceiptField()
+    }
+}
+
+private extension KeyedEncodingContainer {
+    mutating func encode(_ value: RCCDeterministicReceiptField, forKey key: Key) throws {
+        // Historical messages without this evidence keep the same shape;
+        // adding a new optional display field must not rewrite their custody.
+        try encodeIfPresent(value.wrappedValue?.isValid == true ? value.wrappedValue : nil, forKey: key)
+    }
+}
+
 private struct ChatMessage: Codable, Identifiable, Equatable, Sendable {
     let id: UUID
     let role: MessageRole
@@ -5568,6 +5675,7 @@ private struct ChatMessage: Codable, Identifiable, Equatable, Sendable {
     /// provisional custody only. Absent on historical adopted messages.
     let nativeRecordVerified: Bool?
     let taskQuality: TaskQualityEvidence.Evaluation?
+    @RCCDeterministicReceiptField var deterministicExecution: RCCDeterministicReceipt? = nil
     /// Set when the message was read back from a bound native session rather
     /// than sent or adopted through OS-1 (provider:recordID).
     let nativeIngestedID: String?
@@ -6415,6 +6523,19 @@ private func nativeRecordReceipt(_ step: AppRunStep) -> String {
 
 /// The ordinary step receipt stays unchanged. A fan-out's final receipt owns
 /// the whole request, not just the local summarizer that happened to run last.
+/// Visible non-completion status is a projection of the validated core's
+/// state/error, never a prose heuristic or permission to route somewhere else.
+private func rccCoreBoundaryHeadline(_ core: RCCRuntimeContract.Snapshot) -> String? {
+    guard (try? RCCRuntimeContract.validate(core)) != nil,
+          ![.completed, .returnedUnverified].contains(core.state) else { return nil }
+    if core.state == .held, core.error == "explicit_route_surface_unavailable:chatgpt" {
+        return os1Tr("일반 ChatGPT 경로 연결 불가 · 원래 요청과 작업 분기는 보존됨",
+                     "Ordinary ChatGPT route unavailable · original request and task branches preserved")
+    }
+    return os1Tr("OpenClaw 작업 상태: ", "OpenClaw task state: ") + core.state.rawValue +
+        (core.error.map { " · " + $0 } ?? "")
+}
+
 private func taskQualityReceiptStatus(_ quality: TaskQualityEvidence.Evaluation) -> String {
     switch quality.state {
     case .executionOnly, .unverified: return os1Tr("과제 품질 미검증", "Task quality unverified")
@@ -7181,13 +7302,13 @@ private func rccTerminalDeliverySelfTest() async throws {
                     workflowBlocker: "Fixture core connection unavailable; original request preserved",
                     rccTransportFailure: "fixture_transport_unavailable")
             }
-            let configuration = C.ExactConfig(surface: .local, transport: .local, accountID: "fixture-local",
-                model: "deterministic-arithmetic", effort: .none, tools: [], scope: .readOnly,
+            let configuration = C.ExactConfig(surface: .local, transport: .local, accountID: "os1-core",
+                model: "none", effort: .none, tools: [], scope: .readOnly,
                 permissionProfile: .readOnly, quotaPool: .none, allowedPaths: [],
-                configurationSHA256: String(repeating: "a", count: 64))
+                configurationSHA256: appSHA256Hex("os1-rcc-core-local-exact-v1"))
             let snapshot = C.Snapshot(taskID: submission.id.uuidString.lowercased(),
                 requestSHA256: C.digest(Data(submission.executionRequest.utf8)), state: .completed, revision: 3,
-                children: [.init(id: "math", state: .completed, attemptID: "fixture-attempt", candidateID: "fixture-local",
+                children: [.init(id: "local-core", state: .completed, attemptID: nil, candidateID: "local-core",
                     selectedConfig: configuration, instruction: submission.request, dependencies: [], outputSummary: "2")],
                 result: .init(output: "2", executionVerified: true, taskVerified: true, parityState: .unverified,
                     nativeReceipt: nil, taskQuality: .taskVerified), error: nil)
@@ -7195,7 +7316,10 @@ private func rccTerminalDeliverySelfTest() async throws {
             let graph = try RCCRuntimeProjection.project(snapshot, conversationID: submission.sessionID,
                 submissionID: submission.id, objective: submission.request, observedAt: observed,
                 firstObservedAt: observed, maxParallelism: 1)
-            return AppRunSummary(status: "complete", steps: [], agentTask: graph, rccRuntime: snapshot)
+            let step = AppRunStep(sequence: 1, provider: "local", action: "rcc_deterministic", model: "deterministic",
+                effort: "none", revasDisposition: "control_verified", sessionID: snapshot.taskID,
+                permissionProfile: "local_control", exitCode: 0, output: "2", stderr: "", durationMS: 0, nativeRecord: nil)
+            return AppRunSummary(status: "complete", steps: [step], agentTask: graph, rccRuntime: snapshot)
         }, memoryPressureSampler: { .normal }, nativeSessionOpener: { _ in false })
     }
 
@@ -7251,6 +7375,23 @@ private func rccTerminalDeliverySelfTest() async throws {
                       label + " actual one-child graph retained")
             try check(after.sessions.first { $0.id == conversation }?.agentTask == result.agentTask,
                       label + " terminal graph survives persistence")
+            let receipt = result.messages.last { $0.role == .receipt }
+            try check(receipt?.deterministicExecution?.isValid == true && receipt?.nativeRecordVerified == nil,
+                      label + " local evidence never fabricates a native record")
+            try check(after.sessions.first { $0.id == conversation }?.messages.last { $0.role == .receipt }?.deterministicExecution == receipt?.deterministicExecution,
+                      label + " exact local core receipt survives persistence")
+            let displayed = timelineAttributedDocument(messages: result.messages, queuedSubmissions: [],
+                isRunning: false, workspace: folder.path, expandAll: true).string
+            try check(displayed.contains("로컬 결정적 실행 확인됨") && !displayed.contains("실행 기록 미확인") &&
+                      displayed.contains("최상위 품질 동등성 검증을 뜻하지"),
+                      label + " accurate local receipt label without flagship parity claim")
+            let localWorker = result.agentTask!.nodes.first { $0.role == .worker }!
+            try check(AgentTaskTreePresentation.isLocalDeterministic(localWorker) &&
+                      AgentTaskTreePresentation.route(localWorker).contains("로컬 결정적 실행") &&
+                      AgentTaskTreePresentation.scopeTitle(localWorker)?.contains("준비") == false,
+                      label + " local child is execution, not a fictitious native provider/preparation")
+            try check(result.agentTask!.nodes.first { $0.role == .coordinator }?.provider == nil,
+                      label + " coordinator does not inherit child execution")
         } else {
             try check(result.messages.contains { $0.role == .system && $0.text.contains("Fixture core connection unavailable") },
                       label + " transport boundary displayed without invented answer")
@@ -7294,6 +7435,170 @@ private func rccTerminalDeliverySelfTest() async throws {
         store.activeRuns.removeValue(forKey: conversation)
     }
     print("RCC terminal UI delivery: \(checks) deterministic checks PASS; actual SessionStore early-return/idle/persistence/queue/supersession; provider calls 0")
+}
+
+@MainActor
+private func rccCoreBoundarySelfTest() async throws {
+    typealias C = RCCRuntimeContract
+    let fm = FileManager.default, root = fm.temporaryDirectory.appendingPathComponent("os1-core-boundary-" + UUID().uuidString)
+    try fm.createDirectory(at: root, withIntermediateDirectories: false)
+    defer { try? fm.removeItem(at: root) }
+    var checks = 0, calls = 0
+    func check(_ value: Bool, _ label: String) throws {
+        guard value else { throw RunnerError.message("RCC visible boundary: " + label) }; checks += 1
+    }
+    let store = SessionStore(storageRoot: root, runOperation: { submission, _, _, _, _ in
+        calls += 1
+        let core = C.Snapshot(taskID: submission.id.uuidString.lowercased(),
+            requestSHA256: appSHA256Hex(submission.executionRequest), state: .held, revision: 2,
+            children: (1...4).map { .init(id: "route-\($0)", state: .held, attemptID: nil, candidateID: nil,
+                instruction: "\($0)+\($0)", dependencies: []) }, result: nil,
+            error: "explicit_route_surface_unavailable:chatgpt")
+        let now = Date(), graph = try RCCRuntimeProjection.project(core, conversationID: submission.sessionID,
+            submissionID: submission.id, objective: submission.request, observedAt: now, firstObservedAt: now, maxParallelism: 4)
+        return AppRunSummary(status: "workflow_blocked", steps: [], agentTask: graph, rccRuntime: core)
+    }, memoryPressureSampler: { .normal }, nativeSessionOpener: { _ in false })
+    store.sessions[0].workspace = root.path; store.composer = "Route four original arithmetic requests"; store.send()
+    let deadline = Date().addingTimeInterval(3)
+    while store.isRunning && Date() < deadline { try await Task.sleep(for: .milliseconds(10)) }
+    let result = store.sessions[0]
+    try check(calls == 1 && !store.isRunning, "held return releases admission with no legacy replay")
+    try check(result.agentTask?.nodes.filter { $0.role == .worker && $0.state == .blocked }.count == 4,
+              "original four branches remain recorded")
+    try check(result.messages.contains { $0.role == .system && $0.text.contains("ChatGPT") && $0.text.contains("보존") },
+              "typed actual route boundary is visible without opening details")
+    try check(result.messages.contains { $0.role == .receipt && $0.text.contains("explicit_route_surface_unavailable:chatgpt") },
+              "raw core reason retained in receipt")
+    try check(!result.messages.contains { $0.role == .assistant || $0.nativeRecordVerified == true || $0.deterministicExecution != nil },
+              "held routes do not fabricate an answer/execution certificate")
+    try check(result.lastFailure == nil && result.lastBackendFailure == nil && store.queuedSubmissions.isEmpty,
+              "boundary does not arm another task, backend recovery, or fallback")
+    let display = timelineAttributedDocument(messages: result.messages, queuedSubmissions: [], isRunning: false, workspace: root.path).string
+    try check(display.contains("일반 ChatGPT 경로 연결 불가") && display.contains("원래 요청과 작업 분기는 보존됨"),
+              "collapsed transcript displays unavailable transport rather than only unverified")
+    try await Task.sleep(for: .milliseconds(40))
+    try check(calls == 1 && !store.maintenanceLoopRunning, "no model call or automatic queue created")
+    print("RCC visible core boundary: \(checks) checks PASS; source-bound four held children; model/native calls 0")
+}
+
+private func rccStartupWarmupSelfTest() throws {
+    var checks = 0
+    func check(_ value: Bool, _ label: String) throws {
+        guard value else { throw RunnerError.message("RCC startup warmup: " + label) }; checks += 1
+    }
+    var startup = RCCStartupWarmup()
+    try check(!startup.begin(isLiveStore: false, maintenanceHeld: false) && startup.state == .idle,
+              "fixture cannot start a HOME health/Gateway process")
+    try check(!startup.begin(isLiveStore: true, maintenanceHeld: true) && startup.state == .idle,
+              "installer lease defers startup without consuming the one-flight")
+    var stagedInstall = RCCStartupWarmup()
+    try check(!stagedInstall.begin(isLiveStore: true, maintenanceHeld: true) && stagedInstall.state == .idle,
+              "pending staged self-update has priority over health startup")
+    try check(startup.begin(isLiveStore: true, maintenanceHeld: false), "released live startup admitted")
+    try check(!startup.begin(isLiveStore: true, maintenanceHeld: false), "one health flight at a time")
+    startup.finish(ready: false, maintenanceDeferred: true)
+    try check(startup.state == .idle && startup.begin(isLiveStore: true, maintenanceHeld: false),
+              "lease race may defer only startup, never replay a task")
+    startup.finish(ready: true)
+    try check(startup.state == .ready && !startup.begin(isLiveStore: true, maintenanceHeld: false), "ready startup runs once")
+    var failure = RCCStartupWarmup()
+    _ = failure.begin(isLiveStore: true, maintenanceHeld: false); failure.finish(ready: false)
+    try check(!failure.begin(isLiveStore: true, maintenanceHeld: false), "ordinary warmup failure does not loop/retry")
+    let ready: [String: Any] = ["schema": 1, "state": "ready", "ready": true, "gateway_identity_verified": true,
+        "task_submitted": false, "provider_calls": 0, "owner_pid": 12345, "started_at": 1_791_691_742.0,
+        "checked_at": "2026-10-11T06:29:02Z", "identity_sha256": String(repeating: "a", count: 64),
+        "configuration_sha256": String(repeating: "b", count: 64)]
+    func bytes(_ value: [String: Any]) throws -> Data { try JSONSerialization.data(withJSONObject: value) }
+    try check(RCCStartupWarmup.readyReceipt(try bytes(ready)), "exact ready/no-task receipt accepted")
+    for (key, value) in [("schema", true as Any), ("schema", 1.5 as Any),
+                         ("provider_calls", 0.1 as Any), ("provider_calls", 1 as Any), ("task_submitted", true as Any),
+                         ("gateway_identity_verified", false as Any), ("gateway_identity_verified", 1 as Any),
+                         ("ready", false as Any), ("task_submitted", 0 as Any), ("owner_pid", 1 as Any),
+                         ("identity_sha256", "bad" as Any), ("checked_at", "bad" as Any)] {
+        var altered = ready; altered[key] = value
+        try check(!RCCStartupWarmup.readyReceipt(try bytes(altered)), "reject invalid " + key)
+    }
+    let deferred: [String: Any] = ["failure": "rcc_runtime_installer_maintenance_request_preserved", "task_submitted": false, "provider_calls": 0]
+    try check(RCCStartupWarmup.isMaintenanceDeferral(try bytes(deferred)), "typed maintenance deferral")
+    try check(!RCCStartupWarmup.isMaintenanceDeferral(try bytes(ready)), "readiness is not permission to reset startup")
+    print("RCC startup warmup: \(checks) checks PASS; pure receipt/one-flight tests; HOME/process/model calls 0")
+}
+
+@MainActor
+private func rccDeterministicReceiptSelfTest() throws {
+    typealias C = RCCRuntimeContract
+    var checks = 0
+    func check(_ value: Bool, _ label: String) throws {
+        guard value else { throw RunnerError.message("RCC local receipt: " + label) }; checks += 1
+    }
+    let conversation = UUID(), submissionID = UUID()
+    let submission = PendingSubmission(id: submissionID, sessionID: conversation, userMessageID: UUID(),
+        request: "1+1", provider: .auto, workspace: "/tmp", codexCapacity: 100, claudeCapacity: 100)
+    let now = Date(), taskID = UUID().uuidString.lowercased()
+    let config = C.ExactConfig(surface: .local, transport: .local, accountID: "os1-core", model: "none",
+        effort: .none, tools: [], scope: .readOnly, permissionProfile: .readOnly, quotaPool: .none, allowedPaths: [],
+        configurationSHA256: appSHA256Hex("os1-rcc-core-local-exact-v1"))
+    let core = C.Snapshot(taskID: taskID, requestSHA256: appSHA256Hex(submission.executionRequest), state: .completed,
+        revision: 2, children: [.init(id: "local-core", state: .completed, attemptID: nil, candidateID: "local-core",
+            selectedConfig: config, instruction: submission.executionRequest, dependencies: [], outputSummary: "2")],
+        result: .init(output: "2", executionVerified: true, taskVerified: true, parityState: .unverified,
+            nativeReceipt: nil, taskQuality: .taskVerified), error: nil)
+    let graph = try RCCRuntimeProjection.project(core, conversationID: conversation, submissionID: submissionID,
+        objective: "1+1", observedAt: now, firstObservedAt: now, maxParallelism: 1)
+    let step = AppRunStep(sequence: 1, provider: "local", action: "rcc_deterministic", model: "deterministic",
+        effort: "none", revasDisposition: "control_verified", sessionID: taskID, permissionProfile: "local_control",
+        exitCode: 0, output: "2", stderr: "", durationMS: 0, nativeRecord: nil)
+    func bound(_ value: C.Snapshot, graph valueGraph: ParallelAgentTask.Snapshot? = nil,
+               steps: [AppRunStep]? = nil) -> RCCDeterministicReceipt? {
+        RCCDeterministicReceipt.bound(value, graph: valueGraph ?? graph, submission: submission, steps: steps ?? [step])
+    }
+    guard let valid = bound(core) else { throw RunnerError.message("RCC local receipt: valid fixture rejected") }
+    try check(valid.isValid && valid.core.taskID == taskID, "exact task and request custody")
+    var wrong = core; wrong.requestSHA256 = String(repeating: "0", count: 64)
+    try check(bound(wrong) == nil, "foreign request rejected")
+    wrong = core; wrong.taskID = UUID().uuidString.lowercased()
+    try check(bound(wrong) == nil, "foreign task rejected")
+    for field in ["execution", "task", "parity", "output", "model", "scope", "config", "child"] {
+        wrong = core
+        switch field {
+        case "execution": wrong.result?.executionVerified = false
+        case "task": wrong.result?.taskVerified = false
+        case "parity": wrong.result?.parityState = .referenceEquivalent
+        case "output": wrong.children[0].outputSummary = "wrong"
+        case "model": wrong.children[0].selectedConfig?.model = "local-llm"
+        case "scope": wrong.children[0].selectedConfig?.scope = .workspaceWrite
+        case "config": wrong.children[0].selectedConfig?.configurationSHA256 = String(repeating: "0", count: 64)
+        default: wrong.children[0].state = .pending
+        }
+        try check(bound(wrong) == nil, "unsupported " + field + " is not local deterministic evidence")
+    }
+    var foreignGraph = graph; foreignGraph.submissionID = UUID()
+    try check(bound(core, graph: foreignGraph) == nil, "foreign submission graph rejected")
+    foreignGraph = graph; foreignGraph.nodes[1].id = UUID()
+    try check(bound(core, graph: foreignGraph) == nil, "foreign node graph rejected")
+    try check(bound(core, steps: []) == nil, "missing exact local step rejected")
+    let native = AppRunStep(sequence: 1, provider: "codex", action: "agent_run", model: "model", effort: "low",
+        revasDisposition: "adopted", sessionID: taskID, permissionProfile: "read_only", exitCode: 0,
+        output: "2", stderr: "", durationMS: 0, nativeRecord: nil)
+    try check(bound(core, steps: [native]) == nil, "unverified native result cannot borrow local receipt")
+    var message = ChatMessage(role: .receipt, text: valid.detail); message.deterministicExecution = valid
+    let roundtrip = try JSONDecoder().decode(ChatMessage.self, from: JSONEncoder().encode(message))
+    try check(roundtrip.deterministicExecution == valid && roundtrip.nativeRecordVerified == nil,
+              "stored evidence preserves local/native distinction")
+    var object = try JSONSerialization.jsonObject(with: JSONEncoder().encode(message)) as! [String: Any]
+    object["deterministicExecution"] = ["malformed": true]
+    let quarantined = try JSONDecoder().decode(ChatMessage.self, from: JSONSerialization.data(withJSONObject: object))
+    try check(quarantined.deterministicExecution == nil && quarantined.text == message.text,
+              "malformed optional receipt cannot poison conversation custody")
+    let absent = try JSONDecoder().decode(ChatMessage.self, from: JSONEncoder().encode(ChatMessage(role: .receipt, text: "historical")))
+    try check(absent.deterministicExecution == nil, "legacy receipt remains unverified without invented history")
+    let historicalJSON = try JSONSerialization.jsonObject(with: JSONEncoder().encode(absent)) as! [String: Any]
+    try check(historicalJSON["deterministicExecution"] == nil, "new optional receipt does not add null fields to historical messages")
+    let worker = valid.displayGraph.nodes.first { $0.role == .worker }!
+    try check(AgentTaskTreePresentation.isLocalDeterministic(worker) &&
+              !AgentTaskTreePresentation.isLocalDeterministic(graph.nodes.first { $0.role == .worker }!),
+              "selected-only local graph is not observed local execution")
+    print("RCC local deterministic receipt: \(checks) checks PASS; fixture core/graph/request binding; native/model calls 0")
 }
 
 @MainActor
@@ -7691,7 +7996,84 @@ private func runtimeRequestTransportSelfTest() throws {
     print("Request file transport: \(checks) checks PASS; raw argv bytes \(rawArgument == Data(composed.utf8) ? "unchanged" : "normalized by Foundation"); exact file bytes preserved; provider calls 0")
 }
 
+/// Startup transport preparation is not task admission or an execution
+/// scheduler. A failed health/startup attempt never retries a user request.
+private struct RCCStartupWarmup {
+    enum State: Equatable { case idle, inFlight, ready, unavailable }
+    private(set) var state: State = .idle
+    mutating func begin(isLiveStore: Bool, maintenanceHeld: Bool) -> Bool {
+        guard isLiveStore, !maintenanceHeld, state == .idle else { return false }
+        state = .inFlight; return true
+    }
+    mutating func finish(ready: Bool, maintenanceDeferred: Bool = false) {
+        guard state == .inFlight else { return }
+        state = maintenanceDeferred ? .idle : ready ? .ready : .unavailable
+    }
+    private static func boolean(_ value: Any?, _ expected: Bool) -> Bool {
+        guard let number = value as? NSNumber, CFGetTypeID(number) == CFBooleanGetTypeID() else { return false }
+        return number.boolValue == expected
+    }
+    static func readyReceipt(_ bytes: Data) -> Bool {
+        guard bytes.count <= 16_384,
+              let value = try? JSONSerialization.jsonObject(with: bytes) as? [String: Any],
+              let schema = value["schema"] as? NSNumber, CFGetTypeID(schema) != CFBooleanGetTypeID(), schema.doubleValue == 1,
+              value["state"] as? String == "ready", boolean(value["ready"], true),
+              boolean(value["gateway_identity_verified"], true), boolean(value["task_submitted"], false),
+              let calls = value["provider_calls"] as? NSNumber, CFGetTypeID(calls) != CFBooleanGetTypeID(), calls.doubleValue == 0,
+              let pid = value["owner_pid"] as? NSNumber, CFGetTypeID(pid) != CFBooleanGetTypeID(), pid.doubleValue > 1, pid.doubleValue.rounded(.towardZero) == pid.doubleValue,
+              let start = value["started_at"] as? Double, start.isFinite, start > 0,
+              let checked = value["checked_at"] as? String, ISO8601DateFormatter().date(from: checked) != nil,
+              let identity = value["identity_sha256"] as? String, RCCRuntimeContract.isHash(identity),
+              let config = value["configuration_sha256"] as? String, RCCRuntimeContract.isHash(config) else { return false }
+        return true
+    }
+    static func isMaintenanceDeferral(_ bytes: Data) -> Bool {
+        guard bytes.count <= 16_384,
+              let value = try? JSONSerialization.jsonObject(with: bytes) as? [String: Any] else { return false }
+        return value["failure"] as? String == "rcc_runtime_installer_maintenance_request_preserved" &&
+            value["task_submitted"] as? Bool == false && value["provider_calls"] as? Int == 0
+    }
+}
+private enum RCCWarmupFailure: Error { case maintenanceDeferred, unavailable }
+
 private enum OS1Runner {
+    /// One bounded invocation of the existing Gateway health/startup owner.
+    /// It cannot submit a task, select a model, or grant a fallback route.
+    static func warmRCCRuntime() async throws {
+        try await Task.detached(priority: .utility) {
+            let fm = FileManager.default
+            let directory = fm.temporaryDirectory.appendingPathComponent("os1-core-warmup-" + UUID().uuidString)
+            try fm.createDirectory(at: directory, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+            defer { try? fm.removeItem(at: directory) }
+            let file = directory.appendingPathComponent("health.json")
+            guard fm.createFile(atPath: file.path, contents: nil, attributes: [.posixPermissions: 0o600]) else {
+                throw RCCWarmupFailure.unavailable
+            }
+            let output = try FileHandle(forWritingTo: file)
+            defer { try? output.close() }
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: try executable())
+            process.arguments = ["rcc-warmup"]
+            process.currentDirectoryURL = fm.homeDirectoryForCurrentUser
+            var environment = ProcessInfo.processInfo.environment
+            for key in LiveRunEnvironment.variables { environment.removeValue(forKey: key) }
+            process.environment = environment
+            process.standardOutput = output; process.standardError = FileHandle.nullDevice
+            try process.run()
+            let deadline = Date().addingTimeInterval(75)
+            while process.isRunning && Date() < deadline { try await Task.sleep(for: .milliseconds(50)) }
+            if process.isRunning {
+                process.terminate() // Only this health observer, never the persistent Gateway/task/provider.
+                throw RCCWarmupFailure.unavailable
+            }
+            process.waitUntilExit(); try output.synchronize()
+            let attributes = try fm.attributesOfItem(atPath: file.path)
+            guard ((attributes[.size] as? NSNumber)?.intValue ?? Int.max) <= 16_384 else { throw RCCWarmupFailure.unavailable }
+            let bytes = try Data(contentsOf: file)
+            if RCCStartupWarmup.isMaintenanceDeferral(bytes) { throw RCCWarmupFailure.maintenanceDeferred }
+            guard process.terminationStatus == 0, RCCStartupWarmup.readyReceipt(bytes) else { throw RCCWarmupFailure.unavailable }
+        }.value
+    }
     static func observeRCCInstallation(taskID: String, requestSHA256: String,
                                        cancelling: Bool = false) async throws -> RCCRuntimeContract.Snapshot {
         try await Task.detached(priority: .utility) {
@@ -10385,9 +10767,11 @@ private final class SessionStore: ObservableObject {
                     return
                 }
                 if let core = summary.rccRuntime {
+                    let localReceipt = RCCDeterministicReceipt.bound(core, graph: summary.agentTask,
+                        submission: submission, steps: summary.steps)
                     // UI projection only: a held/unverified core result never
                     // starts the old independent readback/retry scheduler.
-                    if let graph = summary.agentTask { sessions[target].agentTask = graph }
+                    if let graph = localReceipt?.displayGraph ?? summary.agentTask { sessions[target].agentTask = graph }
                     // Preserve real native continuity without selecting one of
                     // several siblings as "the" conversation arbitrarily.
                     if submission.recoveryParentID == nil {
@@ -10416,7 +10800,7 @@ private final class SessionStore: ObservableObject {
                         sessions[target].messages.append(ChatMessage(role: .assistant, text: output,
                             provider: producer?.provider, executionSurface: producer?.executedSurface?.rawValue,
                             permissionProfile: producer?.permissionProfile,
-                            nativeRecordVerified: producer.map(stepRecordIsVerified)))
+                            nativeRecordVerified: localReceipt == nil ? producer.map(stepRecordIsVerified) : nil))
                     }
                     let note = core.state == .completed
                         ? os1Tr("OpenClaw 작업 조건 확인됨 · 품질 기준 비교는 별도 기록", "OpenClaw task conditions verified · reference quality is a separate record")
@@ -10440,7 +10824,12 @@ private final class SessionStore: ObservableObject {
                                       "Installation binding rejected · original core task preserved · no automatic replay")))
                         }
                     }
-                    sessions[target].messages.append(ChatMessage(role: .receipt, text: note))
+                    if let boundary = rccCoreBoundaryHeadline(core) {
+                        sessions[target].messages.append(ChatMessage(role: .system, text: boundary))
+                    }
+                    var receipt = ChatMessage(role: .receipt, text: localReceipt?.detail ?? note)
+                    receipt.deterministicExecution = localReceipt
+                    sessions[target].messages.append(receipt)
                     sessions[target].lastBackendFailure = nil
                     sessions[target].lastFailure = nil
                     sessions[target].updatedAt = Date()
@@ -11441,6 +11830,8 @@ private final class SessionStore: ObservableObject {
     private var backendHealthProbeStartedAt: Date?
     private var backendHealthProbeInFlight = false
     private var maintenanceTask: Task<Void, Never>?
+    private var rccStartupWarmup = RCCStartupWarmup()
+    private var rccStartupWarmupTask: Task<Void, Never>?
     private let storeLaunchedAt = Date()
     func resumeBackendRecoveries(healthURL: URL = BackendHealth.defaultURL, now: Date = Date()) {
         // Monitoring must run even when another provider works and no jobs wait.
@@ -11980,6 +12371,7 @@ private final class SessionStore: ObservableObject {
     func runMaintenanceTick() {
         refreshExternalParallelCustody()
         refreshAgentTaskInspectorWindows()
+        guard customStorageRoot == nil else { return }
         // The installer verifies a quiescent store after relaunch. Its live PID
         // lease suppresses automatic recovery only; a crashed installer cannot
         // leave a permanent hold. User requests retain their normal gates.
@@ -11988,9 +12380,8 @@ private final class SessionStore: ObservableObject {
         if let raw = try? String(contentsOf: installLease, encoding: .utf8),
            let pid = Int32(raw.trimmingCharacters(in: .whitespacesAndNewlines)), pid > 1,
            kill(pid, 0) == 0 { return }
-        // Live store only: a fixture store must never adopt the real machine's
-        // recovery state or self-update receipts.
-        guard customStorageRoot == nil else { return }
+        // Live store only: a fixture store never inspected the real lease
+        // above or adopts the machine's recovery/self-update state.
         refreshRCCInstallationReceipts()
         let submissions = Set(activeRuns.values.map(\.submissionID))
         if nativeAppApproval.map({ !submissions.contains($0.submissionID) || $0.expiresAt <= Date() }) == true {
@@ -12010,6 +12401,7 @@ private final class SessionStore: ObservableObject {
         // First, so a staged build's hold is in force before anything below
         // can start work in this tick.
         applyPendingSelfUpdate()
+        warmRCCRuntimeIfNeeded()
         resumeAdmissionWaiters()
         // Before the readbacks below: a resumed OS-1 repair needs none.
         resumeInterruptedWork()
@@ -12019,6 +12411,33 @@ private final class SessionStore: ObservableObject {
         resumeSourceWaitingSubmissions()
         releaseRestartHolds()
         resumeStaleReconciliations()
+    }
+    /// One live-store startup flight. The real maintenance lease is checked
+    /// by this tick and again by the CLI under its Gateway start lock. Fixture
+    /// stores never invoke it or inspect the owner's HOME transport state.
+    private func warmRCCRuntimeIfNeeded() {
+        guard rccStartupWarmup.begin(isLiveStore: customStorageRoot == nil, maintenanceHeld: selfUpdateHold != nil) else { return }
+        rccStartupWarmupTask = Task { [weak self] in
+            guard let self else { return }
+            // A pending stage can appear after the tick selected warmup.
+            // Preserve installation priority before starting the observer.
+            guard self.selfUpdateHold == nil else {
+                self.rccStartupWarmup.finish(ready: false, maintenanceDeferred: true)
+                self.rccStartupWarmupTask = nil
+                return
+            }
+            do {
+                try await OS1Runner.warmRCCRuntime()
+                self.rccStartupWarmup.finish(ready: true)
+            } catch RCCWarmupFailure.maintenanceDeferred {
+                // The installer may take its lease between tick and launch.
+                // Defer startup only; never replay a task or add another owner.
+                self.rccStartupWarmup.finish(ready: false, maintenanceDeferred: true)
+            } catch {
+                self.rccStartupWarmup.finish(ready: false)
+            }
+            self.rccStartupWarmupTask = nil
+        }
     }
     /// The restart hold exists so a relaunch (installer verification included)
     /// never fires saved queue entries by itself. It is not meant to freeze
@@ -13849,7 +14268,9 @@ private struct OS1DesktopApp: App {
         }
         if CommandLine.arguments.contains("--self-test-rcc-installation") {
             Task { @MainActor in
-                do { try await rccInstallationObservationSelfTest(); try await rccTerminalDeliverySelfTest(); exit(EXIT_SUCCESS) }
+                do { try await rccInstallationObservationSelfTest(); try await rccTerminalDeliverySelfTest();
+                    try rccDeterministicReceiptSelfTest(); try rccStartupWarmupSelfTest();
+                    try await rccCoreBoundarySelfTest(); exit(EXIT_SUCCESS) }
                 catch { fputs("\(error.localizedDescription)\n", stderr); exit(EXIT_FAILURE) }
             }
             NSApplication.shared.run()
@@ -14510,7 +14931,9 @@ private struct OS1DesktopApp: App {
                 // Keep identity regressions in the standard release self-test,
                 // not only behind the focused development diagnostic.
                 Task { @MainActor in
-                    do { try await agentTaskTreeSelfTest(); try await profileMenuSelfTest(); try await rccInstallationObservationSelfTest(); try await rccTerminalDeliverySelfTest(); exit(EXIT_SUCCESS) }
+                    do { try await agentTaskTreeSelfTest(); try await profileMenuSelfTest(); try await rccInstallationObservationSelfTest(); try await rccTerminalDeliverySelfTest();
+                        try rccDeterministicReceiptSelfTest(); try rccStartupWarmupSelfTest();
+                        try await rccCoreBoundarySelfTest(); exit(EXIT_SUCCESS) }
                     catch { fputs("\(error.localizedDescription)\n", stderr); exit(EXIT_FAILURE) }
                 }
                 NSApplication.shared.run()
@@ -18507,14 +18930,21 @@ private func timelineAttributedDocument(
             let show = expandAll || expanded.contains(key)
             // Pasted back, these lines are recognised as OS-1 output in both
             // languages (OS1SelfOutput.lineMarkers, OS1ReceiptText.fingerprints).
-            let status = message.nativeRecordVerified == true
+            let localVerified = message.deterministicExecution?.isValid == true
+            let status = localVerified
+                ? os1Tr("로컬 결정적 실행 확인됨", "Local deterministic execution verified")
+                : message.nativeRecordVerified == true
                 ? os1Tr("실행 기록 확인됨", "Execution record verified") : os1Tr("실행 기록 미확인", "Execution record unverified")
             let details = NSMutableAttributedString(attributedString: TranscriptMarkdown.detailLink(
                 "\(status)\(message.taskQuality.map { " · " + taskQualityReceiptStatus($0) } ?? "") · \(show ? os1Tr("세부 정보 접기", "Hide details") : os1Tr("세부 정보 보기", "Show details"))", key: key,
                 color: TimelinePalette.detail))
             if show {
-                details.append(NSAttributedString(string: os1Tr("\u{2028}백엔드 실행 기록의 확인 여부입니다. 답변의 정확성이나 과제 완수를 보증하지 않습니다.\u{2028}",
-                                                                "\u{2028}Whether the backend's execution record was verified. It does not vouch for the answer's accuracy or the task's completion.\u{2028}"),
+                let explanation = localVerified
+                    ? os1Tr("\u{2028}원래 작업·요청과 연결된 로컬 결정적 실행 및 해당 작업 조건을 확인했습니다. 네이티브 모델 실행이나 최상위 품질 동등성 검증을 뜻하지 않습니다.\u{2028}",
+                            "\u{2028}The original task/request-bound local deterministic execution and its bounded task conditions were verified. This is not native model execution or flagship quality parity.\u{2028}")
+                    : os1Tr("\u{2028}백엔드 실행 기록의 확인 여부입니다. 답변의 정확성이나 과제 완수를 보증하지 않습니다.\u{2028}",
+                            "\u{2028}Whether the backend's execution record was verified. It does not vouch for the answer's accuracy or the task's completion.\u{2028}")
+                details.append(NSAttributedString(string: explanation,
                                                   attributes: [.font: NSFont.systemFont(ofSize: 11), .foregroundColor: TimelinePalette.muted]))
                 details.append(NSAttributedString(string: timelineNormalizedText(historicalRouteFanoutDetails(messages: messages, index: index, sourceStore: sourceStore) ?? message.text), attributes: [.font: NSFont.monospacedSystemFont(ofSize: 11, weight: .regular), .foregroundColor: TimelinePalette.muted]))
             }

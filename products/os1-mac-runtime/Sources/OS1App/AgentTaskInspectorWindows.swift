@@ -760,8 +760,7 @@ private struct AgentTaskNodeInspectorView: View {
                     if let surface = node.surface { field(os1Tr("실제 실행 표면", "Actual execution surface"), surface) }
                     if let scope = node.scope {
                         field(os1Tr("실제 권한 범위", "Actual permission scope"), scope.rawValue)
-                        Text(scope == .readOnly ? os1Tr("읽기 전용 준비 · 구현 또는 변경 작업이 아닙니다", "Read-only preparation · not implementation or modification")
-                            : os1Tr("기록된 소유 범위 안에서 쓰기 작업", "Write work within the recorded owned scope"))
+                        Text(AgentTaskTreePresentation.scopeTitle(node, detailed: true) ?? scope.rawValue)
                             .font(.system(size: 10)).foregroundStyle(pink)
                     }
                     if let workspace = node.workspace { field(os1Tr("실제 작업 공간 / 워크트리", "Actual workspace / worktree"), workspace) }

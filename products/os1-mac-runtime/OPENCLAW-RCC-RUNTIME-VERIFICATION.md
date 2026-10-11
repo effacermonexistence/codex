@@ -224,3 +224,42 @@ No public push/merge; cloud merge attestation remains unavailable without credit
 - Research actually inspected: https://arxiv.org/abs/2210.03629 and
   https://arxiv.org/abs/2310.01798. Repair uses observed state, bounded change,
   deterministic regressions and actual downstream observation, not self-report.
+
+
+## Actual370 activation/UI follow-up — 2026-10-11 UTC
+
+External verified installer370/0.9.304 from clean source266cb52 succeeded14 gates,
+253→253 sessions,7queue and19210 paging files preserved; exact installed CLI/app
+hashes matched. Package SHA6d5d4999fff67bdfad9f909f599e4ab52c58fdcbc5806e5cf9f600601651b491.
+Correction: earlier document's369 "13 gates" count was imprecise; actual installer
+receipt enumerates14 checks. The underlying receipt/preservation was not altered.
+
+ActualUI first request under root's own maintenance lease was correctly held
+before dispatch: a test-harness condition, not a product failure. After release,
+actual cold Gateway startup20.63s exceeded20s readiness, with six ECONNREFUSED
+health RPCs, then a closed handshake; no submit/task/model call occurred for it.
+Mapped failure is source-grounded gateway_not_ready; old CLI discarded the exact
+failure code. This remains an observed product cold-start failure until371 passes.
+
+Against the ready same core, actualUI1+1 returned2, released its slot, showed one
+worker and opened the linked child progress window. Its collapsed receipt text
+was misleadingly generic/unverified despite independent deterministic core proof.
+Exact four-target Korean input produced4held children and error
+explicit_route_surface_unavailable:chatgpt, no fabricated native result. Their
+current titles omit target names;371 repairs typed requested-target projection.
+A prior malformed native computer-use typing attempt lost Korean characters;
+its raw input is retained and only that task was cancelled_before_dispatch.
+It is not relabeled as a natural user input or an OS1 transcription defect.
+
+Private actualUI/state receipt:
+~/.os1/recovery/os1-rcc370-ui-observations-20261010/receipt.json.
+At capture256sessions/0inFlight; original252 unchanged and7queue exact.
+Requested target names != execution proof. Whole product quality/reference and
+ordinaryChat transport remain unverified/unavailable; no public completion claim.
+
+371 source follow-up (pending activation): bounded60s readiness+same-owner
+health-only warmup, typed failure codes, native-proof-preserving local deterministic
+receipt, visible held boundary, requested vs selected route identities. Fake cold
+21.1s/concurrent warm+submit/install hold tests pass; requested-route JS59,
+Swift contract94/projection33 pass. These are source/fixture results, not live
+371 activation, latest/max parity, global quota reduction or routed self-repair.

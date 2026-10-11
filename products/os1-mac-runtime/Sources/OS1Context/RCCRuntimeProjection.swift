@@ -133,6 +133,9 @@ public enum RCCRuntimeProjection {
             let finish: Date? = state.isTerminal
                 ? child.finishedAtMS.map { Date(timeIntervalSince1970: Double($0) / 1000) } ?? priorNode?.finishedAt ?? observedAt : nil
             var description = "Core child state: " + child.state.rawValue
+            if let requested = child.requestedSurface {
+                description += " · requested " + surfaceTitle(requested)
+            }
             if let selected = child.selectedConfig {
                 // Selected configuration is NOT independently observed execution.
                 description += " · selected " + selected.surface.rawValue + " / " + selected.model + " / " + selected.effort.rawValue
@@ -142,7 +145,7 @@ public enum RCCRuntimeProjection {
             }
             nodes.append(ParallelAgentTask.Node(id: id, parentID: rootID,
                 dependencies: dependencyNames.compactMap { childIDs[$0] },
-                title: "Task \(index + 1) · " + child.id, role: .worker, state: state,
+                title: childTitle(child, index: index), role: .worker, state: state,
                 // No selected -> executed upgrade. Native-observed route/session
                 // can be attached by the caller from its real execution receipt.
                 provider: nil, surface: nil, model: nil, effort: nil, nativeSessionID: nil,
@@ -160,6 +163,30 @@ public enum RCCRuntimeProjection {
             createdAt: createdAt, updatedAt: observedAt, maxParallelism: maxParallelism,
             nodes: nodes).validated(conversationID: conversationID, submissionID: submissionID,
                                    requestSHA256: core.requestSHA256)
+    }
+
+    private static func surfaceTitle(_ surface: RCCRuntimeContract.Surface) -> String {
+        switch surface {
+        case .chatgpt: return "ChatGPT"
+        case .codex: return "Codex"
+        case .claude: return "Claude Code"
+        case .claudeChat: return "Claude chat"
+        case .gptChat: return "GPT chat (Codex pool)"
+        case .local: return "Local"
+        }
+    }
+
+    private static func childTitle(_ child: RCCRuntimeContract.ChildSnapshot, index: Int) -> String {
+        guard let requested = child.requestedSurface else { return "Task \(index + 1) · " + child.id }
+        let name = surfaceTitle(requested)
+        // Exact short arithmetic probes are safe, useful labels. Do not put
+        // arbitrary private instructions, source text or raw output in a public title.
+        if let instruction = child.instruction?.trimmingCharacters(in: .whitespacesAndNewlines),
+           instruction.utf8.count <= 80,
+           instruction.range(of: "^[0-9][0-9 ()+*/.^%−-]*$", options: .regularExpression) != nil {
+            return name + " · " + instruction
+        }
+        return name
     }
 
     private static func identifier(_ task: String, _ object: String) -> UUID {
