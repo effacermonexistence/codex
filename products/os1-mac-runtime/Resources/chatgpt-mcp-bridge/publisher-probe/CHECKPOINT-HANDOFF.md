@@ -58,6 +58,32 @@ update above and RUN-CARD.md for the current evidence boundary.
   host cannot expose/establish this recipient, report that external interface
   boundary rather than inventing mode fields or a successful callback.
 
+### Latest real UI relay test — failed, not complete
+
+- The user withdrew session-nomination/manual-selection requirements. New
+  sessions must be automatic; appropriate existing context must be resumed;
+  active duplicate work must not be sent again. These are authorized objectives,
+  not implemented ordinary-Chat features.
+- A dedicated installed-OS1 UI test was actually submitted once. RCC task:
+  `806ee12b-3cc4-4f25-b610-d952be327ec6`; OS1 conversation:
+  `CC771875-F0B9-4539-A2C6-19FE979241E0`.
+- Native Codex session `01a12d3c-e2c8-73e2-a584-46715691b711` returned
+  `NO_RELAY_TOOLS`. It did not send to ordinary ChatGPT or retrieve its answer.
+- Raw native tool output independently proves the safety rejection of Computer
+  Use access to `com.openai.codex` (combined ChatGPT/Codex app).
+- OS1 visible failure and original native record are preserved. State:
+  returned_unverified; no quality/parity/GPT-delivery claim.
+- Native call selected luna/high and reported a large context. Do not describe
+  this test as validated minimum cost or measured token savings.
+- Existing Codex/Claude exact session resume already exists. Ordinary Chat
+  automatic creation/identity remains unavailable through the inspected public
+  tools. Same-task idempotency is not cross-conversation semantic deduplication.
+- No API, Chrome, Work/Codex answer substitution, private-host caller copying,
+  bypass of protected UI, source implementation change or app reinstall occurred.
+- Remaining work requires a legitimate ordinary-Chat host control contract.
+  Repeating a longer Codex prompt does not supply that capability. Do not ask
+  for another login without new authentication evidence.
+
 ## CURRENT OBJECTIVE
 
 OS1/OpenClaw must send real requests to local ordinary ChatGPT and receive the

@@ -224,3 +224,52 @@ ordinary-Chat binding remain unresolved. The user was asked to open the approved
 resource inside a fresh ordinary Chat conversation (not to log in again).
 Until that actual recipient is verified, the active adapter is a tested source
 candidate/Worker diagnostic, not a functioning production OS1 Chat route.
+
+## Actual installed-OS1 Codex relay attempt — 2026-10-11
+
+This is a new executed diagnostic, not the earlier collaboration-subagent
+feasibility check. Through the verified installed OS1 native UI, one dedicated
+test conversation was created and its next turn was explicitly sent to Codex.
+The synthetic request required forwarding 1+1 to ordinary ChatGPT and returning
+the new session/message-bound response; self-answer, API, Chrome, Work and
+another Codex answer were explicitly excluded.
+
+- Conversation: `CC771875-F0B9-4539-A2C6-19FE979241E0`.
+- RCC task/submission: `806ee12b-3cc4-4f25-b610-d952be327ec6`.
+- Native Codex session: `01a12d3c-e2c8-73e2-a584-46715691b711`.
+- One native Codex provider call, selected `gpt-5.6-luna/high`, read-only.
+- Native execution returned in 20,754ms; this excludes the earlier local
+  planning/preparation interval and is not an end-to-end latency claim.
+- Raw final output began `NO_RELAY_TOOLS`. No ordinary Chat request or answer
+  was produced. OS1 displayed that failure in the originating conversation.
+- The raw tool record, independently of model self-report, contains the exact
+  rejection: `Computer Use is not allowed to use the app 'com.openai.codex' for
+  safety reasons.` This is the combined native ChatGPT/Codex application.
+- Runtime status is `returned_unverified`, task quality `execution_only`,
+  parity unverified. A completed Codex turn is not completed GPT delivery.
+
+Observed native usage was input_tokens198060, cache_read_tokens156416,
+output_tokens1043, provider_calls1. These are the receipt's native usage
+observations, not an invoice, exact quota debit or proof of minimum cost.
+The executed high-effort profile is not a validated minimal-relay configuration.
+
+Private raw extraction, screenshot and source pointers are preserved under
+`/Users/LUA/.os1/recovery/os1-native-chat-publisher-probe-20261011/` in
+`os1-native-codex-relay-actual-attempt.json` and
+`os1-native-relay-failure.png`. The original native JSONL remains in its original
+private location; encrypted/internal reasoning and authentication were not
+exported into this source checkpoint.
+
+Permission to create/resume appropriate diagnostic sessions is already supplied
+by the user; user nomination is not required. The unresolved contract is a
+legitimate ordinary-Chat creation/recipient control path and host-authorized
+relay tools available to OS1's actual executor. The official codex-app-tools
+plugin exists, but its host binding is not a transferable root process value.
+Do not copy host pipes/caller metadata, invoke hidden transport, or switch UI
+technology to circumvent the recorded safety restriction. Existing unrelated
+jobs, auth and Handy are outside this diagnostic and remain untouched.
+
+Installed OS1 was not rebuilt or replaced. One test conversation/native Codex
+session was deliberately added. This attempt proves failure of the requested
+roundtrip under the executed configuration, not universal architectural
+impossibility and not product completion.
