@@ -1,0 +1,13 @@
+{
+  "name": "os1-native-chat-probe",
+  "main": "entry.mjs",
+  "account_id": "d18c5d440fedbf100c4afd13b4b7a2c0",
+  "compatibility_date": "2026-10-11",
+  "workers_dev": true,
+  "preview_urls": false,
+  "vars": {"PROBE_INSTANCE_ID": "os1-native-chat-probe-20261011a"},
+  "rules": [{"type": "Text", "globs": ["**/*.html"], "fallthrough": true}],
+  "durable_objects": {"bindings": [{"name": "NATIVE_PROBE", "class_name": "NativeChatProbe"}]},
+  "migrations": [{"tag": "v1", "new_sqlite_classes": ["NativeChatProbe"]}],
+  "observability": {"enabled": false}
+}

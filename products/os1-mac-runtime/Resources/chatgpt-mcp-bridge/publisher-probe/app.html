@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>OS1 native Chat connection test</title>
+<style>body{font:14px system-ui;background:#100c10;color:#f5eef2;padding:24px}h1{font-size:19px;color:#eeaac9}button{color:inherit;background:#563447;border:1px solid #eeaac9;border-radius:9px;padding:8px 14px}pre{white-space:pre-wrap;overflow-wrap:anywhere}small{color:#b5a4ad}</style>
+<h1>OS1 · native Chat connection test</h1>
+<p id="state" role="status">Waiting for the registered native host.</p>
+<pre id="details"></pre>
+<button id="stop" disabled>Stop observing</button>
+<p><small>Diagnostic only. The publisher can activate one fixed 1+1 request. No private tasks, source, files, model API, browser automation or Codex fallback. A callback is not proof of Chat mode or zero Codex debit.</small></p>
+<script>
+(() => {
+  'use strict';
+  const state=document.getElementById('state'),details=document.getElementById('details'),stopButton=document.getElementById('stop');
+  let serial=0,origin,stopped=false,timer,outstanding;
+  const pending=new Map();
+  function stop(text){stopped=true;clearTimeout(timer);state.textContent=text;stopButton.disabled=true;for(const p of pending.values()){clearTimeout(p.timer);p.reject(Error('connection_closed'));}pending.clear();}
+  function rpc(method,params){
+    if(stopped)return Promise.reject(Error('connection_closed'));
+    const id=++serial;
+    return new Promise((resolve,reject)=>{
+      const timer=setTimeout(()=>{pending.delete(id);reject(Error('host_timeout'));},15000);
+      pending.set(id,{resolve,reject,timer});
+      window.parent.postMessage({jsonrpc:'2.0',id,method,params},origin||'*');
+    });
+  }
+  window.addEventListener('message',event=>{
+    if(event.source!==window.parent||event.data?.jsonrpc!=='2.0'||origin&&event.origin!==origin)return;
+    const m=event.data;
+    if(m.method==='ui/resource-teardown'){
+      stop('Host component closed. No request was replayed.');
+      if(m.id!==undefined)window.parent.postMessage({jsonrpc:'2.0',id:m.id,result:{}},origin||'*');
+      return;
+    }
+    const p=pending.get(m.id);if(!p)return;
+    if(!origin&&event.origin&&event.origin!=='null')origin=event.origin;
+    pending.delete(m.id);clearTimeout(p.timer);
+    if(m.error)p.reject(Error('host_rejected'));else p.resolve(m.result);
+  });
+  stopButton.addEventListener('click',()=>stop('Observation stopped. Already submitted model work may continue; no replay or fallback.'));
+  window.addEventListener('pagehide',()=>stop('Component hidden or closed. Delivery outcome must be inspected; no replay.'));
+  async function tool(name,args){
+    const r=await rpc('tools/call',{name,arguments:args});
+    if(r?.isError)throw Error('tool_rejected');
+    return r?._meta?.bridge??r?.structuredContent;
+  }
+  async function tick(){
+    if(stopped)return;
+    try{
+      if(outstanding){state.textContent='Message accepted by host. Waiting for the model result callback; ACK is not completion.';return;}
+      const next=await tool('os1_probe_next',{});
+      if(next?.state==='idle'){state.textContent='Native component initialized. No diagnostic is activated.';timer=setTimeout(tick,1500);return;}
+      if(next?.state!=='offered'){stop('Diagnostic is held or already offered. No resend.');return;}
+      const r=next.request;
+      if(!r||typeof r.request_id!=='string'||typeof r.request_sha256!=='string'||typeof r.return_token!=='string'||typeof r.dispatch_token!=='string'||typeof r.prompt!=='string'){stop('Invalid diagnostic envelope. Nothing sent.');return;}
+      outstanding=r.request_id;
+      // Never render/log capabilities. Only this exact fixed synthetic request
+      // crosses the registered host message interface.
+      details.textContent='Request: '+r.request_id+'\nOrigin: OS1 publisher diagnostic\nTask: 1+1\nMode/accounting: not exposed';
+      state.textContent='Submitting the fixed diagnostic once through the native host.';
+      const envelope={request:r.prompt,binding:{request_id:r.request_id,request_sha256:r.request_sha256,return_token:r.return_token},instruction:'Answer the fixed OS1 diagnostic using this registered plugin. Call os1_probe_return with the exact binding fields and output "2". Do not use a model API, browser, Work/Codex agent or different provider as a replacement. If the tool is unavailable, report OS1_PROBE_CALLBACK_UNAVAILABLE rather than inventing a callback. Do not claim quota or execution mode from this prompt.'};
+      await rpc('ui/message',{role:'user',content:[{type:'text',text:JSON.stringify(envelope)}],_meta:{'openai/message':{target:'new',send:true}}});
+      await tool('os1_probe_dispatched',{request_id:r.request_id,dispatch_token:r.dispatch_token});
+      state.textContent='Host accepted the message. Awaiting actual callback; this is not a completion claim.';
+    }catch{stop('Host submission or acknowledgement failed. Outcome may be uncertain; no resend or Codex fallback.');}
+  }
+  (async()=>{
+    if(window.parent===window){stop('Open this component through the genuinely registered ChatGPT plugin.');return;}
+    const init=await rpc('ui/initialize',{appInfo:{name:'os1-native-chat-probe',version:'0.1.0'},appCapabilities:{availableDisplayModes:['inline','fullscreen']},protocolVersion:'2026-01-26'});
+    const caps=init?.hostCapabilities;
+    const extended=caps?.experimental?.['openai/message']??caps?.extensions?.['openai/message'];
+    if(!extended||typeof extended!=='object'){stop('Host does not advertise OpenAI message targeting. Nothing sent.');return;}
+    window.parent.postMessage({jsonrpc:'2.0',method:'ui/notifications/initialized',params:{}},origin||'*');
+    stopButton.disabled=false;
+    details.textContent='Host: '+String(init?.hostInfo?.name??'NOT_EXPOSED')+'\nVersion: '+String(init?.hostInfo?.version??'NOT_EXPOSED')+'\nOrdinary Chat and quota attribution remain unverified.';
+    await tick();
+  })().catch(()=>stop('Native host initialization failed. Nothing sent.'));
+})();
+</script></html>
