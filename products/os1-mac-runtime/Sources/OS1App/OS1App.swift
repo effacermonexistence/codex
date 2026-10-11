@@ -5706,6 +5706,9 @@ private struct ConversationSession: Codable, Identifiable, Sendable {
     /// legacy/future telemetry cannot make the conversation unreadable.
     @AgentTaskSnapshotField var agentTask: ParallelAgentTask.Snapshot? = nil
     @ObservedExecutionField var observedExecution: ObservedSingleExecution? = nil
+    /// Durable observer bindings; installation remains the original OpenClaw
+    /// task, not an in-flight GUI run or a new recovery submission.
+    var rccInstallations: [RCCRuntimeProjection.InstallationBinding]? = nil
     var queuePaused: Bool?
     var forkedFrom: ConversationForkOrigin?
     var completedForkCheckpoint: ConversationForkCheckpoint?
@@ -7055,6 +7058,88 @@ private func selfUpdateReportSelfTest() throws {
     print("Self-update report: \(checks) checks passed; receipt posted once into the staging conversation, orphan to the selected one, no run started")
 }
 
+/// Passive installation-receipt continuity. No Gateway, provider, live HOME,
+/// build staging or installer is invoked by this fixture.
+@MainActor
+private func rccInstallationObservationSelfTest() async throws {
+    typealias C = RCCRuntimeContract
+    let fm = FileManager.default
+    let root = fm.temporaryDirectory.appendingPathComponent("os1-rcc-install-ui-" + UUID().uuidString)
+    try fm.createDirectory(at: root, withIntermediateDirectories: false)
+    defer { try? fm.removeItem(at: root) }
+    var checks = 0
+    func check(_ condition: Bool, _ name: String) throws {
+        guard condition else { throw RunnerError.message("RCC installation observation: " + name) }; checks += 1
+    }
+    let store = SessionStore(storageRoot: root)
+    let conversation = store.sessions[0].id, submission = UUID(), objective = "Repair the fixture source only."
+    let requestHash = C.digest(Data(objective.utf8))
+    let now = Date()
+    let handoff = C.InstallHandoff(taskID: submission.uuidString.lowercased(), requestSHA256: requestHash,
+        nodeID: "writer", parentAttemptID: "attempt", sourceFingerprint: String(repeating: "a", count: 64),
+        sourceRoot: root.path, sourceHead: String(repeating: "b", count: 40), protectedSourceSHA256: String(repeating: "c", count: 64),
+        stagedIntentID: "fixture-intent", stagedReceiptSHA256: String(repeating: "d", count: 64), state: .staged)
+    let staged = C.Snapshot(taskID: handoff.taskID, requestSHA256: requestHash, state: .awaitingInstall, revision: 4,
+        children: [.init(id: "writer", state: .succeeded, attemptID: "attempt", candidateID: "fixture")],
+        result: .init(output: "original raw writer output", executionVerified: true, taskVerified: false,
+                      parityState: .unverified, nativeReceipt: "/tmp/fixture-native"), error: nil, installHandoff: handoff)
+    let binding = try RCCRuntimeProjection.InstallationBinding(staged, submissionID: submission,
+        objective: objective, firstObservedAt: now)
+    store.sessions[0].rccInstallations = [binding]
+    store.sessions[0].messages.append(ChatMessage(role: .assistant, text: staged.result!.output))
+    store.flushPendingState()
+    try check(store.activeRuns.isEmpty && !store.isRunning && store.hasPendingRCCInstallation,
+              "staged observer must not hold an execution slot or become complete")
+    let reloaded = SessionStore(storageRoot: root)
+    try check(reloaded.sessions.first { $0.id == conversation }?.rccInstallations == [binding],
+              "original task/source binding survives GUI restart")
+    var intent = SelfUpdate.Intent(build: 999, version: "fixture", sourceRoot: root.path, sourceCommit: handoff.sourceHead,
+        stagedAppSHA256: String(repeating: "e", count: 64), stagedCLISHA256: String(repeating: "f", count: 64),
+        conversationID: conversation.uuidString, submissionID: submission.uuidString, checks: [])
+    intent.originalTaskID = handoff.taskID; intent.requestSHA256 = requestHash
+    intent.stagedIntentID = handoff.stagedIntentID; intent.stagedReceiptSHA256 = handoff.stagedReceiptSHA256
+    try check(store.rccInstallationIntentMayApply(intent), "matching original staged intent is admissible")
+    var wrongIntent = intent; wrongIntent.stagedIntentID = "foreign-intent"
+    try check(!store.rccInstallationIntentMayApply(wrongIntent), "foreign artifact cannot inherit install authority")
+    var wrong = staged; wrong.revision += 1; wrong.installHandoff?.sourceFingerprint = String(repeating: "0", count: 64)
+    let messagesBefore = store.sessions[0].messages.count
+    store.applyRCCInstallationObservation(wrong, conversationID: conversation, submissionID: submission)
+    try check(store.sessions[0].messages.count == messagesBefore && store.sessions[0].rccInstallations == [binding],
+              "foreign/stale observation cannot mutate source custody")
+    var cancelObserved = false
+    store.rccInstallationStatusOperation = { _, cancelling in cancelObserved = cancelling; return staged }
+    store.cancelSelectedRun()
+    let deadline = Date().addingTimeInterval(2)
+    while !cancelObserved && Date() < deadline { try await Task.sleep(for: .milliseconds(10)) }
+    try check(cancelObserved && store.sessions[0].rccInstallations?.first?.cancellationRequested == true,
+              "late Stop is same-core cancellation intent, never optimistic cancelled state")
+    try check(!store.rccInstallationIntentMayApply(intent), "pending cancellation cannot race an unapplied install")
+    var uncertain = staged; uncertain.revision += 1; uncertain.state = .effectsUncertain
+    uncertain.installHandoff?.state = .effectsUncertain
+    store.applyRCCInstallationObservation(uncertain, conversationID: conversation, submissionID: submission)
+    try check(store.sessions[0].rccInstallations?.count == 1,
+              "unknown installation effect retains observer for eventual exact receipt")
+    var next = staged; next.taskID = "later-task"; next.installHandoff = nil; next.state = .running; next.result = nil
+    next.children[0].state = .running
+    let laterSubmission = UUID()
+    let laterGraph = try RCCRuntimeProjection.project(next, conversationID: conversation, submissionID: laterSubmission,
+        objective: "Later owner task", firstObservedAt: now, maxParallelism: 1)
+    store.sessions[0].agentTask = laterGraph
+    var installed = staged; installed.revision += 2; installed.state = .returnedUnverified
+    installed.installHandoff?.state = .installed; installed.installHandoff?.installedReceipt = "/tmp/fixture-install-receipt.json"
+    store.applyRCCInstallationObservation(installed, conversationID: conversation, submissionID: submission)
+    try check(store.sessions[0].rccInstallations?.isEmpty == true && store.sessions[0].agentTask == laterGraph,
+              "exact original receipt resolves custody without replacing newer task graph")
+    try check(store.sessions[0].messages.filter { $0.role == .assistant && $0.text == staged.result!.output }.count == 1,
+              "same raw result is not replayed into transcript")
+    let settledCount = store.sessions[0].messages.count
+    store.applyRCCInstallationObservation(installed, conversationID: conversation, submissionID: submission)
+    try check(store.sessions[0].messages.count == settledCount && store.activeRuns.isEmpty,
+              "duplicate install receipt is idempotent and starts no work")
+    try check(!store.maintenanceLoopRunning && !reloaded.maintenanceLoopRunning, "fixture never observes live installation state")
+    print("RCC installation UI observation: \(checks) deterministic checks PASS; provider/installer calls 0")
+}
+
 @MainActor
 private func savedFailurePreviewSelfTest() throws {
     var checks = 0
@@ -7451,6 +7536,44 @@ private func runtimeRequestTransportSelfTest() throws {
 }
 
 private enum OS1Runner {
+    static func observeRCCInstallation(taskID: String, requestSHA256: String,
+                                       cancelling: Bool = false) async throws -> RCCRuntimeContract.Snapshot {
+        try await Task.detached(priority: .utility) {
+            let fm = FileManager.default
+            let directory = fm.temporaryDirectory.appendingPathComponent("os1-core-observation-" + UUID().uuidString)
+            try fm.createDirectory(at: directory, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+            defer { try? fm.removeItem(at: directory) }
+            let file = directory.appendingPathComponent("snapshot.json")
+            guard fm.createFile(atPath: file.path, contents: nil, attributes: [.posixPermissions: 0o600]) else {
+                throw RunnerError.message("Core observation output unavailable; original task preserved")
+            }
+            let output = try FileHandle(forWritingTo: file)
+            defer { try? output.close() }
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: try executable())
+            process.arguments = [cancelling ? "rcc-task-cancel" : "rcc-task-status",
+                                 "--task-id", taskID, "--request-sha256", requestSHA256]
+            process.currentDirectoryURL = fm.homeDirectoryForCurrentUser
+            process.standardOutput = output; process.standardError = FileHandle.nullDevice
+            try process.run()
+            let deadline = Date().addingTimeInterval(45)
+            while process.isRunning && Date() < deadline { try await Task.sleep(for: .milliseconds(50)) }
+            if process.isRunning {
+                process.terminate() // This exact read-only observer, not the task/Gateway or provider.
+                throw RunnerError.message("Core observation timed out; original task preserved")
+            }
+            process.waitUntilExit(); try output.synchronize()
+            let attributes = try fm.attributesOfItem(atPath: file.path)
+            guard process.terminationStatus == 0, ((attributes[.size] as? NSNumber)?.intValue ?? Int.max) <= 8_388_608 else {
+                throw RunnerError.message("Core observation unavailable; original task preserved")
+            }
+            let snapshot = try RCCRuntimeContract.decodeSnapshot(Data(contentsOf: file))
+            guard snapshot.taskID == taskID, snapshot.requestSHA256 == requestSHA256 else {
+                throw RunnerError.message("Core observation binding rejected; original task preserved")
+            }
+            return snapshot
+        }.value
+    }
     static func pinNativeSession(id: String, pinned: Bool, before: String?) async throws {
         try await Task.detached(priority: .userInitiated) {
             let process = Process(), output = Pipe()
@@ -8005,6 +8128,7 @@ private final class SessionStore: ObservableObject {
     @Published var nativeMessages: [NativeSessionMessage] = []
     @Published var isLoadingNativeSessions = false
     var isRunning: Bool { selectedSessionID.map(isSessionRunning) ?? false }
+    var hasPendingRCCInstallation: Bool { selectedSession?.rccInstallations?.isEmpty == false }
     var isStopping: Bool { selectedSessionID.flatMap { activeRuns[$0]?.cancellationRequested } ?? false }
     var activeSessionID: UUID? { isRunning ? selectedSessionID : nil }
     var pendingProvider: ProviderChoice? { selectedSessionID.flatMap { activeRuns[$0]?.provider } }
@@ -8226,9 +8350,11 @@ private final class SessionStore: ObservableObject {
         } else if inFlightSubmissions[id] == nil, !isSessionRunning(id) {
             observed = session?.observedExecution
         }
-        return AgentTaskInspectorState(conversationID: id, snapshot: agentTaskSnapshot(for: id),
+        let graph = agentTaskSnapshot(for: id)
+        let graphAwaitingInstall = session?.rccInstallations?.contains { $0.submissionID == graph?.submissionID } == true
+        return AgentTaskInspectorState(conversationID: id, snapshot: graph,
             sessionTitle: sessions.first(where: { $0.id == id })?.title ?? os1Tr("작업", "Task"),
-            isLive: isSessionRunning(id) && !unconfirmedParallelCustody.contains(id), observedExecution: observed)
+            isLive: (isSessionRunning(id) || graphAwaitingInstall) && !unconfirmedParallelCustody.contains(id), observedExecution: observed)
     }
 
     func refreshAgentTaskInspectorWindows() {
@@ -10139,7 +10265,24 @@ private final class SessionStore: ObservableObject {
                         ? os1Tr("OpenClaw 작업 조건 확인됨 · 품질 기준 비교는 별도 기록", "OpenClaw task conditions verified · reference quality is a separate record")
                         : core.state == .returnedUnverified
                         ? os1Tr("결과 수신 · 작업 완성도/최상위 품질 동등성 미검증", "Result received · task completeness/reference parity unverified")
+                        : core.state == .awaitingInstall
+                        ? os1Tr("소스·빌드 준비됨 · 원래 작업의 검증 설치 대기 · 아직 완료 아님", "Source/build staged · waiting for the original task's verified install · not complete")
                         : os1Tr("OpenClaw 작업 보존: ", "OpenClaw task preserved: ") + (core.error ?? core.state.rawValue)
+                    if core.state == .awaitingInstall {
+                        do {
+                            let binding = try RCCRuntimeProjection.InstallationBinding(core, submissionID: submission.id,
+                                objective: submission.request, firstObservedAt: activeRuns[submission.sessionID]?.started ?? Date())
+                            if let prior = sessions[target].rccInstallations?.first(where: { $0.handoff.taskID == core.taskID }) {
+                                guard try prior.accepts(core) else { throw RunnerError.message("Installation observer binding changed") }
+                            } else {
+                                sessions[target].rccInstallations = (sessions[target].rccInstallations ?? []) + [binding]
+                            }
+                        } catch {
+                            sessions[target].messages.append(ChatMessage(role: .receipt, text:
+                                os1Tr("설치 연결 검증 실패 · 원래 코어 작업은 보존됨 · 자동 재실행 없음",
+                                      "Installation binding rejected · original core task preserved · no automatic replay")))
+                        }
+                    }
                     sessions[target].messages.append(ChatMessage(role: .receipt, text: note))
                     sessions[target].lastBackendFailure = nil
                     sessions[target].lastFailure = nil
@@ -10148,6 +10291,7 @@ private final class SessionStore: ObservableObject {
                     appendTaskEvent(conversationID: submission.sessionID, kind: "rcc_runtime_return",
                         summary: "task \(core.taskID) state \(core.state.rawValue); no independent UI replay")
                     save()
+                    if core.state == .awaitingInstall { applyPendingSelfUpdate() }
                     return
                 }
                 if summary.status != "complete" {
@@ -11303,6 +11447,110 @@ private final class SessionStore: ObservableObject {
     /// installer restarts the app into the new build; the relaunched app
     /// reports the outcome into the conversation that asked for the change.
     private var selfUpdateRoots: [String] = []
+    private var rccInstallationPolls: [String: Task<Void, Never>] = [:]
+    private var rccInstallationPolledAt: [String: Date] = [:]
+    private var rccInstallationObservationFailures = Set<String>()
+    /// Test injection for a passive same-task status observation, not a model,
+    /// scheduler or installer. Fixture stores cannot call the live CLI.
+    fileprivate var rccInstallationStatusOperation: ((RCCRuntimeProjection.InstallationBinding, Bool) async throws -> RCCRuntimeContract.Snapshot)?
+
+    func refreshRCCInstallationReceipts(now: Date = Date()) {
+        guard customStorageRoot == nil || rccInstallationStatusOperation != nil else { return }
+        for session in sessions {
+            for binding in session.rccInstallations ?? [] {
+                let taskID = binding.handoff.taskID
+                guard rccInstallationPolls[taskID] == nil,
+                      (rccInstallationPolledAt[taskID].map({ now.timeIntervalSince($0) >= 10 }) ?? true) else { continue }
+                rccInstallationPolledAt[taskID] = now
+                let operation = rccInstallationStatusOperation
+                rccInstallationPolls[taskID] = Task { [weak self] in
+                    do {
+                        let snapshot: RCCRuntimeContract.Snapshot
+                        if let operation { snapshot = try await operation(binding, binding.cancellationRequested == true) }
+                        else {
+                            snapshot = try await OS1Runner.observeRCCInstallation(taskID: taskID, requestSHA256: binding.handoff.requestSHA256,
+                                                                                cancelling: binding.cancellationRequested == true)
+                        }
+                        guard let self else { return }
+                        self.applyRCCInstallationObservation(snapshot, conversationID: session.id, submissionID: binding.submissionID)
+                    } catch {
+                        guard let self else { return }
+                        if self.rccInstallationObservationFailures.insert(taskID).inserted,
+                           let index = self.sessions.firstIndex(where: { $0.id == session.id }),
+                           self.sessions[index].rccInstallations?.contains(where: { $0.handoff.taskID == taskID }) == true {
+                            self.sessions[index].messages.append(ChatMessage(role: .receipt, text:
+                                os1Tr("설치 상태 확인 불가 · 원래 코어 작업·산출물 보존 · 재실행하지 않습니다",
+                                      "Installation status unavailable · original core task/artifacts preserved · no replay")))
+                            self.save()
+                        }
+                    }
+                    self?.rccInstallationPolls.removeValue(forKey: taskID)
+                }
+            }
+        }
+    }
+
+    fileprivate func applyRCCInstallationObservation(_ snapshot: RCCRuntimeContract.Snapshot,
+                                                     conversationID: UUID, submissionID: UUID) {
+        guard let index = sessions.firstIndex(where: { $0.id == conversationID }),
+              let slot = sessions[index].rccInstallations?.firstIndex(where: {
+                  $0.submissionID == submissionID && $0.handoff.taskID == snapshot.taskID
+              }), var binding = sessions[index].rccInstallations?[slot],
+              (try? binding.accepts(snapshot)) == true else { return }
+        let revisionChanged = snapshot.revision > binding.observedRevision
+        let previous = sessions[index].agentTask
+        // A later user task can replace this conversation's visible graph.
+        // Reconciliation must never clobber that newer objective or live status.
+        let ownsGraph = previous == nil || previous?.submissionID == submissionID
+        if ownsGraph, let graph = try? RCCRuntimeProjection.project(snapshot,
+            conversationID: conversationID, submissionID: submissionID, objective: binding.objective,
+            firstObservedAt: binding.firstObservedAt, maxParallelism: max(1, min(8, snapshot.children.count)),
+            expectedRequestSHA256: binding.handoff.requestSHA256, previous: previous) {
+            sessions[index].agentTask = graph
+        }
+        if let result = snapshot.result, !result.output.isEmpty {
+            let digest = RCCRuntimeContract.digest(Data(result.output.utf8))
+            if digest != binding.deliveredOutputSHA256 {
+                // Raw source is preserved; no inferred provider or quality
+                // certificate is added by this read-only receipt observer.
+                sessions[index].messages.append(ChatMessage(role: .assistant, text: result.output))
+                binding.deliveredOutputSHA256 = digest
+            }
+        }
+        binding.observedRevision = snapshot.revision
+        if RCCRuntimeProjection.InstallationBinding.isResolved(snapshot) {
+            let installed = snapshot.installHandoff?.state == .installed
+            let note = installed
+                ? os1Tr("원래 작업의 설치 영수증 확인 · 작업 완성도와 최상위 품질 동등성은 별도 검증",
+                         "Original task install receipt verified · task completeness/reference parity require separate evidence")
+                : os1Tr("원래 코어 작업 상태: ", "Original core task state: ") + snapshot.state.rawValue
+            sessions[index].messages.append(ChatMessage(role: .receipt, text: note))
+            sessions[index].rccInstallations?.remove(at: slot)
+            appendTaskEvent(conversationID: conversationID, kind: "rcc_install_reconciled",
+                summary: "task \(snapshot.taskID) state \(snapshot.state.rawValue); same-task receipt; no submission/model replay")
+            if ownsGraph && activeRuns[conversationID] == nil {
+                sessionStatuses[conversationID] = note
+                if selectedSessionID == conversationID { statusText = note }
+            }
+        } else { sessions[index].rccInstallations?[slot] = binding }
+        rccInstallationObservationFailures.remove(snapshot.taskID)
+        if revisionChanged || RCCRuntimeProjection.InstallationBinding.isResolved(snapshot) {
+            sessions[index].updatedAt = Date(); save()
+        }
+    }
+
+    fileprivate func rccInstallationIntentMayApply(_ intent: SelfUpdate.Intent) -> Bool {
+        guard let taskID = intent.originalTaskID else { return true } // Existing legacy installer path.
+        return sessions.contains { session in
+            session.rccInstallations?.contains { binding in
+                let handoff = binding.handoff
+                return handoff.taskID == taskID && handoff.requestSHA256 == intent.requestSHA256 &&
+                    handoff.stagedIntentID == intent.stagedIntentID && handoff.stagedReceiptSHA256 == intent.stagedReceiptSHA256 &&
+                    handoff.sourceRoot == intent.sourceRoot && binding.cancellationRequested != true &&
+                    intent.submissionID == binding.submissionID.uuidString && intent.conversationID == session.id.uuidString
+            } == true
+        }
+    }
     private var selfUpdateRootsCachedAt: Date?
     private var selfUpdateLaunchedAt: Date?
     var installedBuildNumber: Int { SelfUpdate.installedBuild() }
@@ -11366,7 +11614,9 @@ private final class SessionStore: ObservableObject {
             selfUpdateRoots = LocalProjectWorkspace.candidates(projectID: "os1-clodex")
             selfUpdateRootsCachedAt = now
         }
-        let pending = SelfUpdate.pendingIntents(roots: selfUpdateRoots).first
+        let boundRoots = sessions.flatMap { $0.rccInstallations ?? [] }.map { $0.handoff.sourceRoot }
+        let pending = SelfUpdate.pendingIntents(roots: Array(Set(selfUpdateRoots + boundRoots)))
+            .first { rccInstallationIntentMayApply($0.intent) }
         // A running fleet job counts as busy: the installer would refuse
         // mid-job anyway, and refusals must not burn the apply budget.
         let fleetRoot = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".os1/fleet")
@@ -11378,16 +11628,16 @@ private final class SessionStore: ObservableObject {
         switch SelfUpdate.decision(intent: pending.intent, installedBuild: installedBuildNumber, busy: busy, now: now) {
         case .apply:
             guard selfUpdateLaunchedAt.map({ now.timeIntervalSince($0) > 120 }) ?? true else { return }
-            var marked = pending.intent
-            marked.state = "applying"; marked.lastAttemptAt = now
-            try? SelfUpdate.save(marked, root: pending.root)
+            // The verified CLI owns the intent lease and the applying commit
+            // point. A GUI write here raced same-core cancellation and could
+            // falsely make an unstarted install look irrevocable.
             selfUpdateLaunchedAt = now
-            let status = os1Tr("OS-1 자체 업데이트 설치 중 · build \(pending.intent.build) · 잠시 후 새 빌드로 재시작합니다",
-                               "Installing the OS-1 self-update · build \(pending.intent.build) · restarting into the new build shortly")
+            let status = os1Tr("OS-1 검증 설치 요청 · build \(pending.intent.build) · 실제 설치 결과는 영수증으로 확인합니다",
+                               "Requesting verified OS-1 install · build \(pending.intent.build) · the receipt confirms the actual outcome")
             if let id = pending.intent.conversationID.flatMap(UUID.init(uuidString:)), sessions.contains(where: { $0.id == id }) {
                 sessionStatuses[id] = status
                 appendTaskEvent(conversationID: id, kind: "self_update",
-                    summary: "Staged build \(pending.intent.build) accepted; OS-1 installs it now and restarts into it")
+                    summary: "Verified installer requested for staged build \(pending.intent.build); install remains unverified until its receipt")
             }
             statusText = status
             flushPendingState() // the installer reads the store's in-flight/queue state
@@ -11462,6 +11712,22 @@ private final class SessionStore: ObservableObject {
         cancelRun(id)
     }
     private func cancelRun(_ id: UUID) {
+        if activeRuns[id] == nil, externallyOwnedParallelSubmissions[id] == nil,
+           let index = sessions.firstIndex(where: { $0.id == id }),
+           let bindings = sessions[index].rccInstallations, !bindings.isEmpty {
+            for slot in bindings.indices {
+                sessions[index].rccInstallations?[slot].cancellationRequested = true
+                rccInstallationPolledAt.removeValue(forKey: bindings[slot].handoff.taskID)
+            }
+            // Preserve intent before sending: a lost acknowledgement or GUI
+            // restart still reconciles the same task, never deletes its source.
+            save()
+            sessionStatuses[id] = os1Tr("원래 코어에 설치 중지 요청 · 적용 시점 이후에는 영수증을 확인합니다",
+                                       "Requesting install cancellation from the original core · after apply begins, reconcile its receipt")
+            if selectedSessionID == id { statusText = sessionStatuses[id]! }
+            refreshRCCInstallationReceipts()
+            return
+        }
         // A restarted GUI has no Process to terminate, but the runtime still
         // owns this exact submission. Use its existing cancellation channel;
         // keep custody and the queue held until its real owner releases them.
@@ -11540,6 +11806,7 @@ private final class SessionStore: ObservableObject {
         // Live store only: a fixture store must never adopt the real machine's
         // recovery state or self-update receipts.
         guard customStorageRoot == nil else { return }
+        refreshRCCInstallationReceipts()
         let submissions = Set(activeRuns.values.map(\.submissionID))
         if nativeAppApproval.map({ !submissions.contains($0.submissionID) || $0.expiresAt <= Date() }) == true {
             nativeAppApproval = nil
@@ -13395,6 +13662,14 @@ private struct OS1DesktopApp: App {
             do { try boundNativeLookupSelfTest(); exit(EXIT_SUCCESS) }
             catch { fputs("\(error.localizedDescription)\n", stderr); exit(EXIT_FAILURE) }
         }
+        if CommandLine.arguments.contains("--self-test-rcc-installation") {
+            Task { @MainActor in
+                do { try await rccInstallationObservationSelfTest(); exit(EXIT_SUCCESS) }
+                catch { fputs("\(error.localizedDescription)\n", stderr); exit(EXIT_FAILURE) }
+            }
+            NSApplication.shared.run()
+            exit(EXIT_FAILURE)
+        }
         if CommandLine.arguments.contains("--self-test-agent-tree") {
             Task { @MainActor in
                 do { try await agentTaskTreeSelfTest(); exit(EXIT_SUCCESS) }
@@ -14050,7 +14325,7 @@ private struct OS1DesktopApp: App {
                 // Keep identity regressions in the standard release self-test,
                 // not only behind the focused development diagnostic.
                 Task { @MainActor in
-                    do { try await agentTaskTreeSelfTest(); try await profileMenuSelfTest(); exit(EXIT_SUCCESS) }
+                    do { try await agentTaskTreeSelfTest(); try await profileMenuSelfTest(); try await rccInstallationObservationSelfTest(); exit(EXIT_SUCCESS) }
                     catch { fputs("\(error.localizedDescription)\n", stderr); exit(EXIT_FAILURE) }
                 }
                 NSApplication.shared.run()
@@ -14146,7 +14421,7 @@ private struct OS1DesktopApp: App {
                     .disabled(store.selectedSessionID.map { !store.canResumeQueue($0) } ?? true)
                 Button(os1Tr("현재 작업 중지", "Stop current task")) { store.cancelSelectedRun() }
                     .keyboardShortcut(".", modifiers: [.command])
-                    .disabled(!store.isRunning || store.isStopping)
+                    .disabled((!store.isRunning && !store.hasPendingRCCInstallation) || store.isStopping)
             }
             CommandMenu(os1Tr("권한", "Permissions")) {
                 Button(os1Tr("검증된 R2 복구본 폴더 연결…", "Attach verified R2 recovery folder…")) { store.importArchiveMirror() }
@@ -20882,7 +21157,7 @@ private struct ComposerView: View {
                         .contextMenu {
                             Button(store.canSteerSelectedRun ? os1Tr("현재 작업에 반영", "Apply to current task") : os1Tr("중지 후 추가 지시로 이어가기", "Stop and continue with the new instruction")) { store.sendCorrectionToCurrentRun() }
                                 .disabled(!store.isRunning || store.isStopping || store.composer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                            Button(os1Tr("현재 작업 중지 · ⌘.", "Stop current task · ⌘.")) { store.cancelSelectedRun() }.disabled(!store.isRunning || store.isStopping)
+                            Button(os1Tr("현재 작업 중지 · ⌘.", "Stop current task · ⌘.")) { store.cancelSelectedRun() }.disabled((!store.isRunning && !store.hasPendingRCCInstallation) || store.isStopping)
                         }
                 }.font(.system(size: 13)).foregroundStyle(Theme.muted).padding(.horizontal, 12).padding(.bottom, 10)
             }

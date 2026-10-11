@@ -44,6 +44,7 @@ public enum RCCRuntimeContract {
         case queued, planning, running, waiting, cancelling, cancelled, completed, failed, held
         case returnedUnverified = "returned_unverified"
         case effectsUncertain = "effects_uncertain"
+        case awaitingInstall = "awaiting_install"
     }
     public enum ChildState: String, Codable, Sendable {
         case pending, ready, queued, running, waiting, succeeded, completed, failed, cancelled, held
@@ -94,18 +95,22 @@ public enum RCCRuntimeContract {
         public var requireReadOnly: Bool
         public var ownerPolicy: OwnerPolicySnapshot?
         public var explicitRoutes: [ExplicitRoute]?
+        public var conversationID: String?
+        public var submissionID: String?
         public init(workspace: String, context: String?, providerPreference: String, codexSessionID: String?,
                     claudeSessionID: String?, requireReadOnly: Bool, ownerPolicy: OwnerPolicySnapshot?,
-                    explicitRoutes: [ExplicitRoute]? = nil) {
+                    explicitRoutes: [ExplicitRoute]? = nil, conversationID: String? = nil, submissionID: String? = nil) {
             self.workspace = workspace; self.context = context; self.providerPreference = providerPreference
             self.codexSessionID = codexSessionID; self.claudeSessionID = claudeSessionID
             self.requireReadOnly = requireReadOnly; self.ownerPolicy = ownerPolicy
             self.explicitRoutes = explicitRoutes
+            self.conversationID = conversationID; self.submissionID = submissionID
         }
         enum CodingKeys: String, CodingKey {
             case workspace, context, providerPreference = "provider_preference", codexSessionID = "codex_session_id"
             case claudeSessionID = "claude_session_id", requireReadOnly = "require_read_only", ownerPolicy = "owner_policy"
             case explicitRoutes = "explicit_routes"
+            case conversationID = "conversation_id", submissionID = "submission_id"
         }
     }
     public struct Request: Codable, Equatable, Sendable {
@@ -257,6 +262,67 @@ public enum RCCRuntimeContract {
         }
         enum CodingKeys: String, CodingKey { case schema, nodes, taskID = "task_id", requestSHA256 = "request_sha256" }
     }
+    /// Native receipt facts, not marker text or a model-authored permission grant.
+    public enum HandbackKind: String, Codable, Sendable {
+        case fullAccessRequired = "full_access_required", os1ChangeRequired = "os1_change_required", both
+    }
+    public enum HandbackAdoption: String, Codable, Sendable { case returned, rejected }
+    public struct Handback: Codable, Equatable, Sendable {
+        public var kind: HandbackKind
+        public var nativeSessionID: String
+        public var protectedRoot: String
+        public var sourceHead: String
+        public var protectedSourceSHA256: String
+        public var sourceFingerprint: String
+        public var requestSHA256: String
+        public var parentAttemptID: String
+        public var exitCode: Int
+        public var cancelled: Bool
+        public var adoption: HandbackAdoption
+        public init(kind: HandbackKind, nativeSessionID: String, protectedRoot: String, sourceHead: String,
+                    protectedSourceSHA256: String, sourceFingerprint: String, requestSHA256: String,
+                    parentAttemptID: String, exitCode: Int = 0, cancelled: Bool = false,
+                    adoption: HandbackAdoption = .returned) {
+            self.kind = kind; self.nativeSessionID = nativeSessionID; self.protectedRoot = protectedRoot
+            self.sourceHead = sourceHead; self.protectedSourceSHA256 = protectedSourceSHA256
+            self.sourceFingerprint = sourceFingerprint; self.requestSHA256 = requestSHA256
+            self.parentAttemptID = parentAttemptID; self.exitCode = exitCode
+            self.cancelled = cancelled; self.adoption = adoption
+        }
+        enum CodingKeys: String, CodingKey {
+            case kind, cancelled, adoption
+            case nativeSessionID = "native_session_id", protectedRoot = "protected_root", sourceHead = "source_head"
+            case protectedSourceSHA256 = "protected_source_sha256", sourceFingerprint = "source_fingerprint"
+            case requestSHA256 = "request_sha256", parentAttemptID = "parent_attempt_id", exitCode = "exit_code"
+        }
+    }
+    public struct Continuation: Codable, Equatable, Sendable {
+        public var kind: HandbackKind
+        public var parentAttemptID: String
+        public var parentNativeReceipt: String
+        public var parentNativeReceiptSHA256: String
+        public var nativeSessionID: String
+        public var protectedRoot: String
+        public var sourceHead: String
+        public var protectedSourceSHA256: String
+        public var sourceFingerprint: String
+        public var requestSHA256: String
+        public init(kind: HandbackKind, parentAttemptID: String, parentNativeReceipt: String,
+                    parentNativeReceiptSHA256: String, nativeSessionID: String, protectedRoot: String,
+                    sourceHead: String, protectedSourceSHA256: String, sourceFingerprint: String, requestSHA256: String) {
+            self.kind = kind; self.parentAttemptID = parentAttemptID; self.parentNativeReceipt = parentNativeReceipt
+            self.parentNativeReceiptSHA256 = parentNativeReceiptSHA256; self.nativeSessionID = nativeSessionID
+            self.protectedRoot = protectedRoot; self.sourceHead = sourceHead
+            self.protectedSourceSHA256 = protectedSourceSHA256; self.sourceFingerprint = sourceFingerprint
+            self.requestSHA256 = requestSHA256
+        }
+        enum CodingKeys: String, CodingKey {
+            case kind, parentAttemptID = "parent_attempt_id", parentNativeReceipt = "parent_native_receipt"
+            case parentNativeReceiptSHA256 = "parent_native_receipt_sha256", nativeSessionID = "native_session_id"
+            case protectedRoot = "protected_root", sourceHead = "source_head", protectedSourceSHA256 = "protected_source_sha256"
+            case sourceFingerprint = "source_fingerprint", requestSHA256 = "request_sha256"
+        }
+    }
     public struct ExecutionTicket: Codable, Equatable, Sendable {
         public var schema: Int
         public var taskID: String
@@ -277,6 +343,7 @@ public enum RCCRuntimeContract {
         /// core may issue it only for a single full-native agent plan; adapters
         /// must independently retain the exact selected account authorization.
         public var nativeResumeSessionID: String?
+        public var continuation: Continuation?
         public var instruction: String
         public var contextRefs: [String]
         public var ownedPaths: [String]
@@ -285,7 +352,7 @@ public enum RCCRuntimeContract {
                     configurationSHA256: String, selectedConfig: ExactConfig, objective: String, instruction: String,
                     contextRefs: [String], ownedPaths: [String], originalRequest: String? = nil,
                     originalObjective: String? = nil, hostContext: HostContext? = nil,
-                    nativeResumeSessionID: String? = nil) {
+                    nativeResumeSessionID: String? = nil, continuation: Continuation? = nil) {
             self.schema = schema; self.taskID = taskID; self.nodeID = nodeID; self.attemptID = attemptID
             self.candidateID = candidateID; self.requestSHA256 = requestSHA256; self.policySHA256 = policySHA256
             self.policySourceSHA256 = policySourceSHA256; self.sourceFingerprint = sourceFingerprint
@@ -293,6 +360,7 @@ public enum RCCRuntimeContract {
             self.objective = objective; self.instruction = instruction; self.contextRefs = contextRefs; self.ownedPaths = ownedPaths
             self.originalRequest = originalRequest; self.originalObjective = originalObjective; self.hostContext = hostContext
             self.nativeResumeSessionID = nativeResumeSessionID
+            self.continuation = continuation
         }
         enum CodingKeys: String, CodingKey {
             case schema, objective, instruction
@@ -302,6 +370,7 @@ public enum RCCRuntimeContract {
             case selectedConfig = "selected_config", contextRefs = "context_refs", ownedPaths = "owned_paths"
             case originalRequest = "original_request", originalObjective = "original_objective", hostContext = "host_context"
             case nativeResumeSessionID = "native_resume_session_id"
+            case continuation
         }
     }
     public struct Usage: Codable, Equatable, Sendable {
@@ -327,6 +396,56 @@ public enum RCCRuntimeContract {
             case durationMS = "duration_ms", costUnits = "cost_units", metric
         }
     }
+    public struct RepairSource: Codable, Equatable, Sendable {
+        public var sourceRoot: String
+        public var sourceHead: String
+        public var sourceBeforeHead: String
+        public var sourceBeforeSHA256: String
+        public var protectedSourceSHA256: String
+        public var sourceBeforeClean: Bool
+        public var changedPaths: [String]
+        public init(sourceRoot: String, sourceHead: String, sourceBeforeHead: String, sourceBeforeSHA256: String,
+                    protectedSourceSHA256: String, sourceBeforeClean: Bool, changedPaths: [String]) {
+            self.sourceRoot = sourceRoot; self.sourceHead = sourceHead; self.sourceBeforeHead = sourceBeforeHead
+            self.sourceBeforeSHA256 = sourceBeforeSHA256; self.protectedSourceSHA256 = protectedSourceSHA256
+            self.sourceBeforeClean = sourceBeforeClean; self.changedPaths = changedPaths
+        }
+        enum CodingKeys: String, CodingKey {
+            case sourceRoot = "source_root", sourceHead = "source_head", sourceBeforeHead = "source_before_head"
+            case sourceBeforeSHA256 = "source_before_sha256", protectedSourceSHA256 = "protected_source_sha256"
+            case sourceBeforeClean = "source_before_clean", changedPaths = "changed_paths"
+        }
+    }
+    public enum InstallState: String, Codable, Sendable { case staged, installed, failed, cancelled, effectsUncertain = "effects_uncertain" }
+    public struct InstallHandoff: Codable, Equatable, Sendable {
+        public var schema: Int = 1
+        public var taskID: String
+        public var requestSHA256: String
+        public var nodeID: String
+        public var parentAttemptID: String
+        public var sourceFingerprint: String
+        public var sourceRoot: String
+        public var sourceHead: String
+        public var protectedSourceSHA256: String
+        public var stagedIntentID: String
+        public var stagedReceiptSHA256: String
+        public var state: InstallState
+        public var installedReceipt: String?
+        public init(taskID: String, requestSHA256: String, nodeID: String, parentAttemptID: String,
+                    sourceFingerprint: String, sourceRoot: String, sourceHead: String, protectedSourceSHA256: String,
+                    stagedIntentID: String, stagedReceiptSHA256: String, state: InstallState, installedReceipt: String? = nil) {
+            self.taskID = taskID; self.requestSHA256 = requestSHA256; self.nodeID = nodeID
+            self.parentAttemptID = parentAttemptID; self.sourceFingerprint = sourceFingerprint; self.sourceRoot = sourceRoot
+            self.sourceHead = sourceHead; self.protectedSourceSHA256 = protectedSourceSHA256; self.stagedIntentID = stagedIntentID
+            self.stagedReceiptSHA256 = stagedReceiptSHA256; self.state = state; self.installedReceipt = installedReceipt
+        }
+        enum CodingKeys: String, CodingKey {
+            case schema, state, taskID = "task_id", requestSHA256 = "request_sha256", nodeID = "node_id"
+            case parentAttemptID = "parent_attempt_id", sourceFingerprint = "source_fingerprint", sourceRoot = "source_root"
+            case sourceHead = "source_head", protectedSourceSHA256 = "protected_source_sha256"
+            case stagedIntentID = "staged_intent_id", stagedReceiptSHA256 = "staged_receipt_sha256", installedReceipt = "installed_receipt"
+        }
+    }
     public struct ExecutionRecord: Codable, Equatable, Sendable {
         public var schema: Int
         public var taskID: String
@@ -350,12 +469,15 @@ public enum RCCRuntimeContract {
         public var error: String?
         /// Opaque native RunSummary serialization; no re-authored result.
         public var nativeSummary: String?
+        public var handback: Handback?
+        public var repairSource: RepairSource?
         public init(schema: Int = 1, taskID: String, nodeID: String, attemptID: String, candidateID: String,
                     configurationSHA256: String, selectedConfig: ExactConfig, acknowledgedConfig: ExactConfig?,
                     observedConfig: ExactConfig?, status: ExecutionStatus, output: String?, executionVerified: Bool,
                     taskVerified: Bool, taskQuality: TaskQuality, parityState: Parity, nativeReceipt: String?,
                     sideEffects: SideEffects, usage: Usage?, error: String? = nil,
-                    dispatchStage: DispatchStage = .unknown, nativeSummary: String? = nil) {
+                    dispatchStage: DispatchStage = .unknown, nativeSummary: String? = nil, handback: Handback? = nil,
+                    repairSource: RepairSource? = nil) {
             self.schema = schema; self.taskID = taskID; self.nodeID = nodeID; self.attemptID = attemptID
             self.candidateID = candidateID; self.configurationSHA256 = configurationSHA256; self.selectedConfig = selectedConfig
             self.acknowledgedConfig = acknowledgedConfig; self.observedConfig = observedConfig; self.status = status
@@ -364,9 +486,12 @@ public enum RCCRuntimeContract {
             self.taskQuality = taskQuality; self.parityState = parityState; self.nativeReceipt = nativeReceipt
             self.sideEffects = sideEffects; self.usage = usage; self.error = error
             self.nativeSummary = nativeSummary
+            self.handback = handback
+            self.repairSource = repairSource
         }
         enum CodingKeys: String, CodingKey {
-            case schema, status, output, usage, error
+            case schema, status, output, usage, error, handback
+            case repairSource = "repair_source"
             case taskID = "task_id", nodeID = "node_id", attemptID = "attempt_id", candidateID = "candidate_id"
             case configurationSHA256 = "configuration_sha256", selectedConfig = "selected_config"
             case acknowledgedConfig = "acknowledged_config", observedConfig = "observed_config"
@@ -435,13 +560,16 @@ public enum RCCRuntimeContract {
         public var children: [ChildSnapshot]
         public var result: Result?
         public var error: String?
+        public var installHandoff: InstallHandoff?
         public init(schema: Int = 1, taskID: String, requestSHA256: String, state: State, revision: Int,
-                    children: [ChildSnapshot], result: Result?, error: String?) {
+                    children: [ChildSnapshot], result: Result?, error: String?, installHandoff: InstallHandoff? = nil) {
             self.schema = schema; self.taskID = taskID; self.requestSHA256 = requestSHA256; self.state = state
             self.revision = revision; self.children = children; self.result = result; self.error = error
+            self.installHandoff = installHandoff
         }
         enum CodingKeys: String, CodingKey {
             case schema, state, revision, children, result, error, taskID = "task_id", requestSHA256 = "request_sha256"
+            case installHandoff = "install_handoff"
         }
     }
     public struct Event: Codable, Equatable, Sendable {
@@ -514,7 +642,9 @@ public enum RCCRuntimeContract {
     public static func validate(_ value: HostContext) throws {
         guard absolutePath(value.workspace), value.context.map({ $0.utf8.count <= 500_000 && !$0.contains("\0") }) ?? true,
               ["auto", "codex", "claude", "chatgpt", "local", "gpt-chat", "claude-chat"].contains(value.providerPreference),
-              value.codexSessionID.map(id) ?? true, value.claudeSessionID.map(id) ?? true else { throw Rejection.invalidInput }
+              value.codexSessionID.map(id) ?? true, value.claudeSessionID.map(id) ?? true,
+              value.conversationID.map({ UUID(uuidString: $0) != nil }) ?? true,
+              value.submissionID.map({ UUID(uuidString: $0) != nil }) ?? true else { throw Rejection.invalidInput }
         if let routes = value.explicitRoutes {
             guard routes.count <= 8, routes.allSatisfy({ text($0.instruction, max: 12_000) }),
                   Set(routes.map { $0.surface.rawValue + "\0" + $0.instruction }).count == routes.count else { throw Rejection.invalidInput }
@@ -622,6 +752,11 @@ public enum RCCRuntimeContract {
         }
         if let sessionID = value.nativeResumeSessionID {
             guard id(sessionID), let host = value.hostContext else { throw Rejection.invalidIdentity }
+            if let continuation = value.continuation {
+                guard continuation.kind == .fullAccessRequired, continuation.nativeSessionID == sessionID else {
+                    throw Rejection.configurationMismatch
+                }
+            } else {
             let sourceSessionID: String?
             switch value.selectedConfig.surface {
             case .codex: sourceSessionID = host.codexSessionID
@@ -629,6 +764,22 @@ public enum RCCRuntimeContract {
             default: throw Rejection.configurationMismatch
             }
             guard sourceSessionID == sessionID else { throw Rejection.configurationMismatch }
+            }
+        }
+        if let continuation = value.continuation {
+            guard continuation.kind != .both, id(continuation.parentAttemptID),
+                  continuation.parentAttemptID != value.attemptID, id(continuation.nativeSessionID),
+                  text(continuation.parentNativeReceipt, max: 4_096), continuation.parentNativeReceipt.hasPrefix("/"),
+                  text(continuation.protectedRoot, max: 4_096), continuation.protectedRoot.hasPrefix("/"),
+                  continuation.sourceHead.range(of: "^[a-f0-9]{40}$", options: .regularExpression) != nil,
+                  [continuation.parentNativeReceiptSHA256, continuation.protectedSourceSHA256,
+                   continuation.sourceFingerprint, continuation.requestSHA256].allSatisfy(isHash),
+                  continuation.sourceFingerprint == value.sourceFingerprint, continuation.requestSHA256 == value.requestSHA256,
+                  value.selectedConfig.scope == .workspaceWrite, value.selectedConfig.permissionProfile == .workspaceWrite,
+                  value.selectedConfig.surface == .claude, value.selectedConfig.transport == .claudeCLI,
+                  value.hostContext?.requireReadOnly == false,
+                  (continuation.kind == .fullAccessRequired ? value.nativeResumeSessionID == continuation.nativeSessionID : value.nativeResumeSessionID == nil)
+            else { throw Rejection.configurationMismatch }
         }
         if let original = value.originalRequest {
             guard digest(Data(original.utf8)) == value.requestSHA256 else { throw Rejection.invalidHash }
@@ -678,6 +829,34 @@ public enum RCCRuntimeContract {
         }
         if value.dispatchStage == .notDispatched && value.sideEffects != .none { throw Rejection.invalidExecutionRecord }
         if value.status == .effectsUncertain && value.sideEffects == .none { throw Rejection.invalidExecutionRecord }
+        if let handback = value.handback {
+            guard value.executionVerified, value.status == .succeeded, !value.taskVerified, value.parityState == .unverified,
+                  value.selectedConfig.scope == .workspaceWrite, value.selectedConfig.permissionProfile == .workspaceWrite,
+                  value.selectedConfig.surface == .claude, value.selectedConfig.transport == .claudeCLI,
+                  id(handback.nativeSessionID), handback.parentAttemptID == value.attemptID,
+                  handback.exitCode == 0, !handback.cancelled,
+                  text(handback.protectedRoot, max: 4_096), handback.protectedRoot.hasPrefix("/"),
+                  handback.sourceHead.range(of: "^[a-f0-9]{40}$", options: .regularExpression) != nil,
+                  [handback.protectedSourceSHA256, handback.sourceFingerprint, handback.requestSHA256].allSatisfy(isHash),
+                  value.nativeReceipt != nil, value.nativeSummary != nil,
+                  value.output.map({ !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }) == true,
+                  ticket.map({ handback.sourceFingerprint == $0.sourceFingerprint && handback.requestSHA256 == $0.requestSHA256 }) ?? true
+            else { throw Rejection.invalidExecutionRecord }
+        }
+        if let source = value.repairSource {
+            guard value.executionVerified, value.status == .succeeded, value.handback == nil,
+                  value.taskQuality != .failed, value.selectedConfig.scope == .workspaceWrite,
+                  value.selectedConfig.permissionProfile == .workspaceWrite,
+                  [.codex, .claude].contains(value.selectedConfig.surface),
+                  text(source.sourceRoot, max: 4_096), source.sourceRoot.hasPrefix("/"),
+                  [source.sourceHead, source.sourceBeforeHead].allSatisfy({ $0.range(of: "^[a-f0-9]{40}$", options: .regularExpression) != nil }),
+                  [source.sourceBeforeSHA256, source.protectedSourceSHA256].allSatisfy(isHash),
+                  !source.changedPaths.isEmpty, unique(source.changedPaths), source.changedPaths.count <= 512,
+                  source.changedPaths.allSatisfy({ $0.hasPrefix("products/os1-mac-runtime/") && !$0.contains("..") &&
+                      text($0, max: 4_096) && $0 != "products/os1-mac-runtime/release" }),
+                  ticket.map({ $0.hostContext.map { $0.workspace == source.sourceRoot || $0.workspace.hasPrefix(source.sourceRoot + "/") } == true }) ?? true
+            else { throw Rejection.invalidExecutionRecord }
+        }
         if let usage = value.usage {
             guard [usage.inputTokens, usage.outputTokens, usage.reasoningTokens, usage.cacheReadTokens,
                    usage.cacheWriteTokens, usage.durationMS].allSatisfy({ $0.map({ $0 >= 0 }) ?? true }),
@@ -700,7 +879,8 @@ public enum RCCRuntimeContract {
                   child.outputSummary.map({ $0.utf8.count <= 4_096 && !$0.contains("\0") }) ?? true else { throw Rejection.invalidSnapshot }
         }
         if let result = value.result {
-            guard value.state == .completed || value.state == .returnedUnverified, text(result.output, max: 256_000),
+            guard value.state == .completed || value.state == .returnedUnverified || value.installHandoff != nil,
+                  text(result.output, max: 256_000),
                   !result.taskVerified || result.executionVerified,
                   !result.executionVerified || result.nativeReceipt != nil || (result.taskVerified && value.children.allSatisfy { $0.selectedConfig?.transport == .local }),
                   (result.parityState != .referenceAbove && result.parityState != .referenceEquivalent) || result.taskVerified else { throw Rejection.invalidSnapshot }
@@ -710,6 +890,15 @@ public enum RCCRuntimeContract {
         }
         if value.state == .completed { guard value.result?.taskVerified == true && value.error == nil else { throw Rejection.invalidSnapshot } }
         if value.state == .returnedUnverified { guard let result = value.result, !result.taskVerified, result.parityState == .unverified else { throw Rejection.invalidSnapshot } }
+        if let handoff = value.installHandoff {
+            try validate(handoff)
+            guard handoff.taskID == value.taskID, handoff.requestSHA256 == value.requestSHA256,
+                  value.children.contains(where: { $0.id == handoff.nodeID }),
+                  value.result?.taskVerified != true, value.state != .completed else { throw Rejection.invalidSnapshot }
+        }
+        if value.state == .awaitingInstall {
+            guard value.installHandoff?.state == .staged, value.result?.taskVerified != true else { throw Rejection.invalidSnapshot }
+        }
         guard value.error.map({ text($0, max: 8_192) }) ?? true else { throw Rejection.invalidSnapshot }
     }
     public static func validate(_ value: Event) throws {
@@ -720,6 +909,15 @@ public enum RCCRuntimeContract {
             try validate(snapshot)
             guard snapshot.taskID == value.taskID && snapshot.revision == value.revision else { throw Rejection.invalidSnapshot }
         }
+    }
+    public static func validate(_ value: InstallHandoff) throws {
+        guard value.schema == 1, [value.taskID, value.nodeID, value.parentAttemptID, value.stagedIntentID].allSatisfy(id),
+              [value.requestSHA256, value.sourceFingerprint, value.protectedSourceSHA256, value.stagedReceiptSHA256].allSatisfy(isHash),
+              value.sourceHead.range(of: "^[a-f0-9]{40}$", options: .regularExpression) != nil,
+              text(value.sourceRoot, max: 4_096), value.sourceRoot.hasPrefix("/"),
+              value.installedReceipt.map({ text($0, max: 4_096) && $0.hasPrefix("/") }) ?? true,
+              (value.state != .installed || value.installedReceipt != nil),
+              (value.state != .staged || value.installedReceipt == nil) else { throw Rejection.invalidSnapshot }
     }
 
     // Decoders reject unknown fields at EVERY typed nesting boundary, before
@@ -739,17 +937,21 @@ public enum RCCRuntimeContract {
     private static let policyShape = Shape.object(["source_sha256", "projection_sha256", "text"])
     private static let ownerPolicyShape = Shape.object(["schema", "sourceSHA256", "sourceFile", "projectionSHA256", "projection", "sourceID", "sourceModified", "checkedAt", "routing"])
     private static let explicitRouteShape = Shape.object(["surface", "instruction"])
-    private static let hostShape = Shape.object(["workspace", "context", "provider_preference", "codex_session_id", "claude_session_id", "require_read_only", "owner_policy", "explicit_routes"], ["owner_policy": ownerPolicyShape, "explicit_routes": .array(explicitRouteShape)])
+    private static let hostShape = Shape.object(["workspace", "context", "provider_preference", "codex_session_id", "claude_session_id", "require_read_only", "owner_policy", "explicit_routes", "conversation_id", "submission_id"], ["owner_policy": ownerPolicyShape, "explicit_routes": .array(explicitRouteShape)])
     private static let requestShape = Shape.object(["schema", "task_id", "request", "request_sha256", "objective", "policy_sha256", "source_fingerprint", "mode", "material_refs", "budget", "context", "workspace", "native_sessions", "provider_preference", "policy", "host_context"], ["budget": budgetShape, "policy": policyShape, "host_context": hostShape])
     private static let catalogShape = Shape.object(["schema", "task_id", "request_sha256", "candidates"], ["candidates": .array(candidateShape)])
     private static let nodeShape = Shape.object(["id", "instruction", "dependencies", "kind", "candidate_id", "scope", "owned_paths", "context_refs"])
     private static let planShape = Shape.object(["schema", "task_id", "request_sha256", "nodes"], ["nodes": .array(nodeShape)])
-    private static let ticketShape = Shape.object(["schema", "task_id", "node_id", "attempt_id", "candidate_id", "request_sha256", "policy_sha256", "policy_source_sha256", "source_fingerprint", "configuration_sha256", "selected_config", "objective", "instruction", "context_refs", "owned_paths", "original_request", "original_objective", "host_context", "native_resume_session_id"], ["selected_config": configShape, "host_context": hostShape])
+    private static let handbackShape = Shape.object(["kind", "native_session_id", "protected_root", "source_head", "protected_source_sha256", "source_fingerprint", "request_sha256", "parent_attempt_id", "exit_code", "cancelled", "adoption"])
+    private static let repairSourceShape = Shape.object(["source_root", "source_head", "source_before_head", "source_before_sha256", "protected_source_sha256", "source_before_clean", "changed_paths"])
+    private static let installHandoffShape = Shape.object(["schema", "task_id", "request_sha256", "node_id", "parent_attempt_id", "source_fingerprint", "source_root", "source_head", "protected_source_sha256", "staged_intent_id", "staged_receipt_sha256", "state", "installed_receipt"])
+    private static let continuationShape = Shape.object(["kind", "parent_attempt_id", "parent_native_receipt", "parent_native_receipt_sha256", "native_session_id", "protected_root", "source_head", "protected_source_sha256", "source_fingerprint", "request_sha256"])
+    private static let ticketShape = Shape.object(["schema", "task_id", "node_id", "attempt_id", "candidate_id", "request_sha256", "policy_sha256", "policy_source_sha256", "source_fingerprint", "configuration_sha256", "selected_config", "objective", "instruction", "context_refs", "owned_paths", "original_request", "original_objective", "host_context", "native_resume_session_id", "continuation"], ["selected_config": configShape, "host_context": hostShape, "continuation": continuationShape])
     private static let usageShape = Shape.object(["input_tokens", "output_tokens", "reasoning_tokens", "cache_read_tokens", "cache_write_tokens", "provider_calls", "duration_ms", "cost_units", "metric"])
-    private static let recordShape = Shape.object(["schema", "task_id", "node_id", "attempt_id", "candidate_id", "configuration_sha256", "selected_config", "acknowledged_config", "observed_config", "status", "output", "execution_verified", "task_verified", "task_quality", "parity_state", "native_receipt", "side_effects", "usage", "error", "dispatch_stage", "native_summary"], ["selected_config": configShape, "acknowledged_config": configShape, "observed_config": configShape, "usage": usageShape])
+    private static let recordShape = Shape.object(["schema", "task_id", "node_id", "attempt_id", "candidate_id", "configuration_sha256", "selected_config", "acknowledged_config", "observed_config", "status", "output", "execution_verified", "task_verified", "task_quality", "parity_state", "native_receipt", "side_effects", "usage", "error", "dispatch_stage", "native_summary", "handback", "repair_source"], ["selected_config": configShape, "acknowledged_config": configShape, "observed_config": configShape, "usage": usageShape, "handback": handbackShape, "repair_source": repairSourceShape])
     private static let resultShape = Shape.object(["output", "execution_verified", "task_verified", "task_quality", "parity_state", "native_receipt", "native_summary", "native_summaries"])
     private static let childShape = Shape.object(["id", "state", "attempt_id", "candidate_id", "selected_config", "instruction", "dependencies", "started_at_ms", "finished_at_ms", "native_receipt", "output_summary"], ["selected_config": configShape])
-    private static let snapshotShape = Shape.object(["schema", "task_id", "request_sha256", "state", "revision", "children", "result", "error"], ["children": .array(childShape), "result": resultShape])
+    private static let snapshotShape = Shape.object(["schema", "task_id", "request_sha256", "state", "revision", "children", "result", "error", "install_handoff"], ["children": .array(childShape), "result": resultShape, "install_handoff": installHandoffShape])
     private static let eventShape = Shape.object(["schema", "task_id", "revision", "type", "node_id", "attempt_id", "observed_at_ms", "snapshot"], ["snapshot": snapshotShape])
     private static func checkShape(_ object: Any, _ shape: Shape, depth: Int = 0) throws {
         guard depth <= 32 else { throw Rejection.oversized }
@@ -824,6 +1026,14 @@ public enum RCCRuntimeContract {
     public static func decodeRecord(_ data: Data, ticket: ExecutionTicket? = nil) throws -> ExecutionRecord { let x = try decode(ExecutionRecord.self, data: data, shape: recordShape); try validate(x, ticket: ticket); return x }
     public static func decodeSnapshot(_ data: Data) throws -> Snapshot { let x = try decode(Snapshot.self, data: data, shape: snapshotShape); try validate(x); return x }
     public static func decodeEvent(_ data: Data) throws -> Event { let x = try decode(Event.self, data: data, shape: eventShape); try validate(x); return x }
+    /// For mechanical envelopes: apply the same duplicate-key/size gate before
+    /// selecting their strictly named nested typed objects.
+    public static func checkedObject(_ data: Data) throws -> [String: Any] {
+        guard data.count <= maximumWireBytes else { throw Rejection.oversized }
+        var scanner = DuplicateKeyScanner(bytes: Array(data)); try scanner.scan()
+        guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { throw Rejection.invalidInput }
+        return object
+    }
     /// Canonical UTF-8 sorted-key JSON matches the core's stable JSON, and
     /// explicitly preserves unknown optional observations as JSON null.
     public static func encode<T: Encodable>(_ value: T) throws -> Data {
@@ -837,9 +1047,10 @@ public enum RCCRuntimeContract {
             if dictionary["max_attempts"] != nil { optional += ["max_cost_units"] }
             if dictionary["require_read_only"] != nil { optional += ["context", "codex_session_id", "claude_session_id", "owner_policy", "explicit_routes"] }
             if dictionary["quality_state"] != nil { optional += ["quota_remaining_fraction", "quota_observed_at_ms", "quota_valid_until_ms", "estimated_cost_units", "availability_observed_at_ms", "availability_valid_until_ms"] }
-            if dictionary["context_refs"] != nil && dictionary["selected_config"] != nil { optional += ["native_resume_session_id"] }
-            if dictionary["task_quality"] != nil && dictionary["configuration_sha256"] != nil { optional += ["acknowledged_config", "observed_config", "output", "native_receipt", "usage", "error", "native_summary"] }
-            if dictionary["children"] != nil { optional += ["result", "error"] }
+            if dictionary["context_refs"] != nil && dictionary["selected_config"] != nil { optional += ["native_resume_session_id", "continuation"] }
+            if dictionary["task_quality"] != nil && dictionary["configuration_sha256"] != nil { optional += ["acknowledged_config", "observed_config", "output", "native_receipt", "usage", "error", "native_summary", "handback", "repair_source"] }
+            if dictionary["children"] != nil { optional += ["result", "error", "install_handoff"] }
+            if dictionary["staged_intent_id"] != nil { optional += ["installed_receipt"] }
             if dictionary["parity_state"] != nil && dictionary["configuration_sha256"] == nil { optional += ["native_receipt", "native_summary", "native_summaries"] }
             if dictionary["state"] != nil && dictionary["id"] != nil { optional += ["attempt_id", "candidate_id", "selected_config", "instruction", "dependencies", "started_at_ms", "finished_at_ms", "native_receipt", "output_summary"] }
             for key in optional where dictionary[key] == nil { dictionary[key] = NSNull() }
@@ -847,7 +1058,7 @@ public enum RCCRuntimeContract {
             return dictionary
         }
         object = normalize(object)
-        let data = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys, .withoutEscapingSlashes])
+        let data = try RCCCanonicalJSON.encode(object)
         guard data.count <= maximumWireBytes else { throw Rejection.oversized }; return data
     }
 }

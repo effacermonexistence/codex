@@ -54,6 +54,35 @@ func runRCCRuntimeProjectionFixtures() throws {
     let candidate = try project(core)
     try check(candidate.nodes[0].state != .succeeded, "unverified return not task success")
     try check(!String(decoding: try candidate.encoded(), as: UTF8.self).contains("Private raw result"), "raw output not leaked to public graph")
+    var staged = core
+    staged.state = .awaitingInstall
+    staged.installHandoff = .init(taskID: staged.taskID, requestSHA256: hash, nodeID: "one", parentAttemptID: "attempt",
+        sourceFingerprint: String(repeating: "a", count: 64), sourceRoot: "/tmp/fixture-source",
+        sourceHead: String(repeating: "b", count: 40), protectedSourceSHA256: String(repeating: "c", count: 64),
+        stagedIntentID: "fixture-intent", stagedReceiptSHA256: String(repeating: "d", count: 64), state: .staged)
+    let stagingGraph = try project(staged)
+    try check(stagingGraph.nodes[0].state == .running && stagingGraph.nodes[0].finishedAt == nil,
+              "awaiting installation is unfinished, never task success")
+    let binding = try RCCRuntimeProjection.InstallationBinding(staged, submissionID: submission, objective: request, firstObservedAt: now)
+    let decodedBinding = try JSONDecoder().decode(RCCRuntimeProjection.InstallationBinding.self, from: JSONEncoder().encode(binding))
+    try check(binding == decodedBinding && (try binding.accepts(staged)), "original install binding persists across GUI restart")
+    var installed = staged; installed.state = .returnedUnverified; installed.revision += 1
+    installed.installHandoff?.state = .installed; installed.installHandoff?.installedReceipt = "/tmp/private-install-receipt.json"
+    try check(try binding.accepts(installed), "exact installed receipt reconciles original staged task")
+    try check(RCCRuntimeProjection.InstallationBinding.isResolved(installed) && !RCCRuntimeProjection.InstallationBinding.isResolved(staged),
+              "observer delivery is separate from original task resolution")
+    var heldStage = staged; heldStage.state = .held
+    try check(!RCCRuntimeProjection.InstallationBinding.isResolved(heldStage), "temporary stage hold cannot discard unfinished installation")
+    var unknownInstall = staged; unknownInstall.state = .effectsUncertain; unknownInstall.installHandoff?.state = .effectsUncertain
+    try check(!RCCRuntimeProjection.InstallationBinding.isResolved(unknownInstall), "uncertain installation retains eventual receipt observation")
+    var wrongInstall = installed; wrongInstall.installHandoff?.stagedIntentID = "another-intent"
+    try check(try !binding.accepts(wrongInstall), "another staged artifact cannot complete this task")
+    wrongInstall = installed; wrongInstall.installHandoff?.protectedSourceSHA256 = String(repeating: "e", count: 64)
+    try check(try !binding.accepts(wrongInstall), "source mutation cannot inherit prior stage proof")
+    wrongInstall = installed; wrongInstall.revision = 0
+    try check(try !binding.accepts(wrongInstall), "stale installation observation rejected")
+    var noHandoff = installed; noHandoff.installHandoff = nil
+    try check(try !binding.accepts(noHandoff), "new build alone is not proof this task installed")
     core.state = .completed; core.result?.taskVerified = true
     let complete = try project(core)
     try check(complete.nodes[0].state == .succeeded, "task-verified completion represented faithfully")

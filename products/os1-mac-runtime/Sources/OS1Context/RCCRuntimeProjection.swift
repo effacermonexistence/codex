@@ -9,6 +9,52 @@ public enum RCCRuntimeProjection {
         case invalidBinding, invalidClock, unsupportedDisplaySize, invalidDependency
     }
 
+    /// Observer custody only. The staged task survives GUI/CLI exit; neither
+    /// this binding nor its refresh authorizes a new execution or installation.
+    public struct InstallationBinding: Codable, Equatable, Sendable {
+        public let submissionID: UUID
+        public let objective: String
+        public let firstObservedAt: Date
+        public var observedRevision: Int
+        public var deliveredOutputSHA256: String?
+        public var cancellationRequested: Bool?
+        public let handoff: RCCRuntimeContract.InstallHandoff
+
+        public init(_ snapshot: RCCRuntimeContract.Snapshot, submissionID: UUID,
+                    objective: String, firstObservedAt: Date) throws {
+            try RCCRuntimeContract.validate(snapshot)
+            guard snapshot.state == .awaitingInstall, let handoff = snapshot.installHandoff,
+                  firstObservedAt.timeIntervalSince1970.isFinite,
+                  !objective.isEmpty else { throw Rejection.invalidBinding }
+            self.submissionID = submissionID; self.objective = objective
+            self.firstObservedAt = firstObservedAt; self.observedRevision = snapshot.revision
+            self.deliveredOutputSHA256 = snapshot.result.map { RCCRuntimeContract.digest(Data($0.output.utf8)) }
+            self.cancellationRequested = nil
+            self.handoff = handoff
+        }
+
+        /// New runtime receipts must identify the SAME original request,
+        /// source and staged artifact. Current build identity is not evidence
+        /// that this particular self-repair was installed.
+        public func accepts(_ snapshot: RCCRuntimeContract.Snapshot) throws -> Bool {
+            try RCCRuntimeContract.validate(snapshot)
+            guard let next = snapshot.installHandoff else { return false }
+            return snapshot.taskID == handoff.taskID && snapshot.requestSHA256 == handoff.requestSHA256 &&
+                snapshot.revision >= observedRevision && next.schema == handoff.schema &&
+                next.taskID == handoff.taskID && next.requestSHA256 == handoff.requestSHA256 &&
+                next.nodeID == handoff.nodeID && next.parentAttemptID == handoff.parentAttemptID &&
+                next.sourceFingerprint == handoff.sourceFingerprint && next.sourceRoot == handoff.sourceRoot &&
+                next.sourceHead == handoff.sourceHead && next.protectedSourceSHA256 == handoff.protectedSourceSHA256 &&
+                next.stagedIntentID == handoff.stagedIntentID && next.stagedReceiptSHA256 == handoff.stagedReceiptSHA256
+        }
+
+        public static func isResolved(_ snapshot: RCCRuntimeContract.Snapshot) -> Bool {
+            guard let handoff = snapshot.installHandoff,
+                  [.installed, .failed, .cancelled].contains(handoff.state) else { return false }
+            return [.completed, .returnedUnverified, .held, .failed, .cancelled, .effectsUncertain].contains(snapshot.state)
+        }
+    }
+
     public static func project(_ core: RCCRuntimeContract.Snapshot,
                                conversationID: UUID, submissionID: UUID,
                                objective: String, observedAt: Date = Date(),
@@ -43,7 +89,7 @@ public enum RCCRuntimeProjection {
         let rootState: ParallelAgentTask.State
         switch core.state {
         case .queued: rootState = .pending
-        case .planning, .running, .waiting, .cancelling: rootState = .running
+        case .planning, .running, .waiting, .cancelling, .awaitingInstall: rootState = .running
         case .completed: rootState = .succeeded
         case .returnedUnverified, .held: rootState = .blocked
         case .cancelled: rootState = .cancelled
@@ -55,6 +101,8 @@ public enum RCCRuntimeProjection {
         let rootFinished: Date? = rootState.isTerminal ? (priorRoot?.finishedAt ?? observedAt) : nil
         let rootDescription = core.state == .returnedUnverified
             ? "Output returned · task quality unverified; candidate retained."
+            : core.state == .awaitingInstall
+            ? "Verified staged artifact · installation pending; task is not complete."
             : "OpenClaw core state: " + core.state.rawValue
         let root = ParallelAgentTask.Node(id: rootID, title: "OpenClaw task", role: .coordinator,
             state: rootState, startedAt: rootStarted, finishedAt: rootFinished,

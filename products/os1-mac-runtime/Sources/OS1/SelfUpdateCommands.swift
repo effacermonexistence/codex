@@ -92,7 +92,7 @@ func selfRepairCommand(_ arguments: [String]) async throws -> Bool {
 /// Shared with the runtime hook in main.swift.
 let selfRepairFailurePrefixText = "OS-1 self-repair could not complete: "
 
-let os1RuntimeVersionString = "OS-1 Runtime 0.9.302 (openclaw-rcc-runtime-checkpoint-build368)"
+let os1RuntimeVersionString = "OS-1 Runtime 0.9.303 (openclaw-rcc-runtime-continuity-build369)"
 
 /// Where the source leases live. A fixture binds a scratch folder so its
 /// real flock leases on a temporary tree never leave lock files in the owner's
@@ -292,7 +292,7 @@ func stagedChildEnvironment(stagedApp app: String) throws -> (overrides: [String
 
 /// Builds the signed release for the tree at `root`, runs the release
 /// self-tests and writes the intent. The caller holds the source-write lease.
-func stageSelfUpdateRelease(root: String) throws -> SelfUpdate.Intent {
+func stageSelfUpdateRelease(root: String, persistIntent: Bool = true) throws -> SelfUpdate.Intent {
     let runtime = URL(fileURLWithPath: root).appendingPathComponent(SelfUpdate.runtimeRelativePath).path
     let installed = installedOS1Build()
     let plist = runtime + "/Resources/Info.plist"
@@ -350,7 +350,7 @@ func stageSelfUpdateRelease(root: String) throws -> SelfUpdate.Intent {
     let intent = SelfUpdate.Intent(build: build, version: version, sourceRoot: root, sourceCommit: gitHead(root),
         stagedAppSHA256: try fileSHA256(app + "/Contents/MacOS/OS1App"), stagedCLISHA256: try fileSHA256(cli),
         conversationID: environment["OS1_CONVERSATION_ID"], submissionID: environment["OS1_SUBMISSION_ID"], checks: checks)
-    try SelfUpdate.save(intent, root: root)
+    if persistIntent { try SelfUpdate.save(intent, root: root) }
     RuntimeActivity.emit(.verifying, publicText: os1Tr("OS-1 자체 업데이트 build \(build) 준비 완료 · 이 작업이 끝나면 OS-1이 스스로 설치하고 영수증을 이 대화에 남깁니다",
                                                        "The OS-1 self-update for build \(build) is ready · when this task ends, OS-1 installs it by itself and leaves the receipt in this conversation"))
     return intent
@@ -692,6 +692,16 @@ private func applySelfUpdate(root requested: String?) throws {
     }
     let root = pending.root
     var intent = pending.intent
+    var intentLease: SelfUpdate.IntentLease?
+    if intent.originalTaskID != nil {
+        guard let lease = try SelfUpdate.IntentLease.tryAcquire(root: root) else {
+            throw OS1Error.message("self-update apply: another task owns this staged intent; nothing changed")
+        }
+        intentLease = lease
+        guard let current = SelfUpdate.loadIntent(root: root), current == intent else {
+            throw OS1Error.message("self-update apply: staged intent changed before apply; nothing changed")
+        }
+    }
     let installed = installedOS1Build()
     let home = FileManager.default.homeDirectoryForCurrentUser
     func fail(_ error: String) throws -> Never {
@@ -714,6 +724,7 @@ private func applySelfUpdate(root requested: String?) throws {
     intent.applyAttempts += 1
     intent.lastAttemptAt = Date()
     try SelfUpdate.save(intent, root: root)
+    intentLease = nil // applying is durable before cancel may inspect it
 
     // Private copy: later edits in the checkout cannot change what gets installed.
     let stamp = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "")
@@ -1134,9 +1145,9 @@ struct OS1SourceWatch: Equatable {
     static func fingerprint(root: String) -> String? {
         guard let git = try? findExecutable("git") else { return nil }
         let runtime = SelfUpdate.runtimeRelativePath
-        guard let status = try? commandOutput(git, ["--no-optional-locks", "-C", root, "status", "--porcelain=v1", "-uall", "--", runtime], timeout: 20),
+        guard let status = try? commandOutput(git, ["--no-optional-locks", "-C", root, "status", "--porcelain=v1", "-uall", "--", runtime, ":(exclude)" + SelfUpdate.releaseEntryRelativePath], timeout: 20),
               status.0 == 0, status.1.count <= 4_000_000,
-              let diff = try? commandOutput(git, ["--no-optional-locks", "-C", root, "diff", "HEAD", "--", runtime], timeout: 30), diff.0 == 0 else { return nil }
+              let diff = try? commandOutput(git, ["--no-optional-locks", "-C", root, "diff", "HEAD", "--", runtime, ":(exclude)" + SelfUpdate.releaseEntryRelativePath], timeout: 30), diff.0 == 0 else { return nil }
         var data = status.1 + diff.1
         for line in String(decoding: status.1, as: UTF8.self).split(separator: "\n").prefix(500) where line.hasPrefix("?? ") {
             let url = URL(fileURLWithPath: root).appendingPathComponent(String(line.dropFirst(3)))

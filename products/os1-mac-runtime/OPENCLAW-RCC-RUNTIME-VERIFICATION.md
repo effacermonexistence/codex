@@ -162,3 +162,39 @@ once, not every intermediate child as an independently selected final answer.
 
 No Handy, auth-cache transfer, OS-1 session deletion, other-product change,
 billing mutation or repository-visibility mutation belongs to this work.
+
+## Continuity/exact native execution checkpoint — 2026-10-10
+
+SOURCE IMPLEMENTATION, not whole-product completion:
+- Same-owner receipt-bound full-access handback, protected source identity,
+  no native-write replay; staged installation is a separate non-complete state.
+- Passive UI observation and cancellation use the same core task/request IDs;
+  unknown outcomes remain observed, not re-submitted. Stop prioritizes current run.
+- Source staging requires original source/write grant, known clean baseline,
+  full-repository delta, unchanged source and stable protected gates. Version-only
+  literal preparation is distinct from changing the staging/checker implementation.
+- Real cross-language bug found: Foundation final numeric serialization altered
+  checkedAt spelling/roundtrip. Canonical JSON now preserves binary64 and matches
+  JS; 1019 vectors + 6 invalid-value cases passed without timestamp rounding.
+- Private/public authorization Workers activated, existing policy and bindings
+  preserved. Exact low/read_only Codex and Claude tickets verified against the
+  original public signing key; admission does not execute or certify quality.
+- Actual native read-only tests then returned exact numerals 2 and 4:
+  Codex gpt-6.1-sol/low: 7602ms, 27696 input/5 output/8960 cache-read tokens;
+  Claude claude-fable-5-1/low: 6555ms, 25478 input/3 output/25476 cache-write tokens.
+  Both native persistence/exact acknowledgement passed. Two provider calls total.
+  These are explicit configured adapter tests, NOT an automatic-routing, quota
+  savings, latest/max parity, install, or routed self-repair proof.
+- Tests: JS65; contract90; projection27; client25; native private receipt custody10;
+  App install observation12 and standard App self-test; CLI self-test passed.
+
+Private native receipt:
+`/tmp/os1-rcc-real-native-smoke-20261010T175022Z/receipt.json`.
+Worker deployment receipt:
+`/tmp/os1-exact-profile-deploy-20261010T173849Z/receipt.json`.
+Existing installed app remains build367; sessions252/queue7 preserved.
+Candidate source identity0.9.303/build369; packaging/activation is separately gated.
+Full objective remains unmet: ordinary native ChatGPT approved transport is absent,
+real staged/install/restart core receipt reconciliation is not yet exercised,
+and latest/max reference quality/total-cost comparison is not established.
+No public push/merge; cloud merge attestation remains unavailable without credit.

@@ -74,6 +74,9 @@ struct RCCRuntimeGatewayClientFixture {
             if name=='rejected':
                 print(json.dumps({'ok':False,'error':{'type':'gateway_request_error','code':'INVALID_REQUEST','message':'idempotency_conflict','retryable':False}})); sys.exit(1)
             obj={'schema':1,'task_id':name,'request_sha256':params['request_sha256'],'state':state,'revision':revision,'children':[],'result':None,'error':None}
+            if name=='awaiting_install':
+                obj['state']='awaiting_install'
+                obj['install_handoff']={'schema':1,'task_id':name,'request_sha256':params['request_sha256'],'node_id':'writer','parent_attempt_id':'attempt','source_fingerprint':'a'*64,'source_root':'/tmp/fixture','source_head':'b'*40,'protected_source_sha256':'c'*64,'staged_intent_id':'fixture-intent','staged_receipt_sha256':'d'*64,'state':'staged','installed_receipt':None}
             write(task,obj)
             if name=='lost_ack': sys.exit(2)
             if name=='wrong_binding': obj['request_sha256']='0'*64; write(task,obj)
@@ -81,7 +84,7 @@ struct RCCRuntimeGatewayClientFixture {
             obj=read(task)
             if method=='os1.rcc.cancel': obj['state']='cancelled'; obj['revision']+=1; write(task,obj)
             elif params['task_id']=='regression': obj['revision']=2
-            elif params['task_id']=='cancel': pass
+            elif params['task_id'] in ['cancel','awaiting_install']: pass
             else:
                 obj['state']='returned_unverified'; obj['revision']+=1
                 obj['result']={'output':'2','execution_verified':True,'task_verified':False,'parity_state':'unverified','native_receipt':None}
@@ -149,6 +152,17 @@ struct RCCRuntimeGatewayClientFixture {
         try require(try state(recovered) == "returned_unverified", "ambiguous submit not reconciled")
         let counts = try JSONSerialization.jsonObject(with: Data(contentsOf: privateRoot.appendingPathComponent("submits.json"))) as! [String: Int]
         try require(counts["lost_ack"] == 1, "ambiguous accepted request replayed")
+        let awaiting = try RCCRuntimeGatewayClient.runForOfflineFixture(request: request("awaiting_install"), configuration: configuration, root: privateRoot)
+        try require(try state(awaiting) == "awaiting_install", "installation must release observer without completion")
+        let taskHash = try JSONSerialization.jsonObject(with: request("awaiting_install")) as! [String: Any]
+        let observed = try RCCRuntimeGatewayClient.statusForOfflineFixture(taskID: "awaiting_install", requestSHA256: taskHash["request_sha256"] as! String,
+            configuration: configuration, root: privateRoot)
+        try require(try state(observed) == "awaiting_install", "same task installation status observed")
+        let statusCounts = try JSONSerialization.jsonObject(with: Data(contentsOf: privateRoot.appendingPathComponent("submits.json"))) as! [String: Int]
+        try require(statusCounts["awaiting_install"] == 1, "status observation must never submit/replay task")
+        let cancelledInstall = try RCCRuntimeGatewayClient.statusForOfflineFixture(taskID: "awaiting_install", requestSHA256: taskHash["request_sha256"] as! String,
+            configuration: configuration, root: privateRoot, cancelling: true)
+        try require(try state(cancelledInstall) == "cancelled", "cancel sent to original staged task without submit")
         do {
             _ = try RCCRuntimeGatewayClient.runForOfflineFixture(request: request("rejected"), configuration: configuration, root: privateRoot)
             throw NSError(domain: "fixture", code: 1, userInfo: [NSLocalizedDescriptionKey: "explicit rejection reused old state"])
@@ -197,6 +211,6 @@ struct RCCRuntimeGatewayClientFixture {
             throw NSError(domain: "fixture", code: 1, userInfo: [NSLocalizedDescriptionKey: "mutated module accepted"])
         } catch RCCRuntimeGatewayClient.Failure.identityMismatch { }
         try require(progress == ["running", "returned_unverified"], "progress not monotonic exact task snapshots")
-        print("RCC Runtime Gateway client: 21 offline fake-transport checks PASS; hosted/model calls 0; live task state untouched")
+        print("RCC Runtime Gateway client: 25 offline fake-transport checks PASS; hosted/model calls 0; live task state untouched")
     }
 }

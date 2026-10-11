@@ -66,7 +66,8 @@ async function verifyNative() {
  * fallback account, routing decision, API key, or autonomous retry. */
 export async function nativeOperation(operation, payload, signal,
                                       {cancelGraceMs = 6_000, cancelKillMs = 2_000} = {}) {
-  if (!['rcc-catalog', 'rcc-adapter'].includes(operation)) throw Error('native_operation_denied');
+  if (!['rcc-catalog', 'rcc-adapter', 'rcc-stage', 'rcc-install-status',
+    'rcc-install-cancel'].includes(operation)) throw Error('native_operation_denied');
   if (!Number.isSafeInteger(cancelGraceMs) || cancelGraceMs < 100 || cancelGraceMs > 30_000 ||
       !Number.isSafeInteger(cancelKillMs) || cancelKillMs < 100 || cancelKillMs > 10_000)
     throw Error('native_cancel_bounds_invalid');
@@ -87,9 +88,10 @@ export async function nativeOperation(operation, payload, signal,
   env.HOME = home; env.OS1_RCC_ADAPTER_CHILD = '1';
   // ExecutionCancellation in the native CLI already polls this exact marker.
   // It must reach that CLI but never another unrelated provider/session.
-  if (operation === 'rcc-adapter') env.OS1_CANCEL_FILE = cancelFile;
+  const cancellable = operation === 'rcc-adapter' || operation === 'rcc-stage';
+  if (cancellable) env.OS1_CANCEL_FILE = cancelFile;
   for (const key of ['OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN', 'OPENAI_AUTH_TOKEN']) delete env[key];
-  const flag = operation === 'rcc-catalog' ? '--request-file' : '--ticket-file';
+  const flag = operation === 'rcc-adapter' || operation === 'rcc-stage' ? '--ticket-file' : '--request-file';
   let markerWrite = Promise.resolve();
   let abortObserved = false;
   try {
@@ -138,7 +140,7 @@ export async function nativeOperation(operation, payload, signal,
       child.stdout.on('data', data => {
         if (output.length + data.length > 2_000_000) {
           overflow = true;
-          if (operation === 'rcc-adapter') cancel();
+          if (cancellable) cancel();
           else child.kill('SIGTERM');
         } else output = Buffer.concat([output, data]);
       });
@@ -413,6 +415,12 @@ export function registerRCCRuntime(api) {
           return parsed;
         },
         execute: (ticket, signal) => nativeOperation('rcc-adapter', ticket, signal),
+        // Same pinned native adapter and task owner. A typed, receipt-bound
+        // continuation never asks the local planner to choose another route.
+        executeContinuation: (ticket, signal) => nativeOperation('rcc-adapter', ticket, signal),
+        stageSelfUpdate: (request, signal) => nativeOperation('rcc-stage', request, signal),
+        reconcileInstallation: request => nativeOperation('rcc-install-status', request),
+        cancelInstallation: request => nativeOperation('rcc-install-cancel', request),
         verifyTask: evidence => verifyExactExplicitArithmetic(evidence, {stateDir}),
       });
       runtime = await starting;
@@ -430,7 +438,8 @@ export function registerRCCRuntime(api) {
         if (!runtime && starting) await starting;
         if (!runtime) throw Error('rcc_runtime_unavailable');
         const result = name === 'submit' ? await runtime.submit(params) : name === 'status'
-          ? await runtime.status(params) : name === 'cancel' ? await runtime.cancel(params) : await runtime.quiesce(params);
+          ? await runtime.statusWithInstallation(params) : name === 'cancel'
+          ? await runtime.cancelWithInstallation(params) : await runtime.quiesce(params);
         respond(true, result);
       } catch (error) { respond(false, undefined, { code: 'INVALID_REQUEST', message: error?.code ?? 'rcc_request_rejected' }); }
     }, { scope: 'operator.write', profileAccess: 'independent' });

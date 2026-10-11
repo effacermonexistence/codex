@@ -17003,6 +17003,23 @@ struct OS1Main {
                 let configuration = try await LocalRouterBridge.rccRuntimeConfiguration()
                 let receipt = try await RCCRuntimeGatewayClient.quiesceForUpgrade(configuration: configuration)
                 print(String(decoding: try JSONEncoder().encode(receipt), as: UTF8.self))
+            case "rcc-task-status", "rcc-task-cancel":
+                guard arguments.count == 5, arguments[1] == "--task-id", arguments[3] == "--request-sha256" else {
+                    throw OS1Error.message("RCC task observation requires exact task and request identity")
+                }
+                let configuration = try await LocalRouterBridge.rccRuntimeConfiguration()
+                let bytes = command == "rcc-task-status"
+                    ? try await RCCRuntimeGatewayClient.status(taskID: arguments[2], requestSHA256: arguments[4], configuration: configuration)
+                    : try await RCCRuntimeGatewayClient.cancel(taskID: arguments[2], requestSHA256: arguments[4], configuration: configuration)
+                print(String(decoding: bytes, as: UTF8.self))
+            case "rcc-stage", "rcc-install-status", "rcc-install-cancel":
+                guard arguments.count == 3, arguments[1] == "--ticket-file" else {
+                    throw OS1Error.message("RCC installation operation accepts one private bound input")
+                }
+                let input = try rccPrivateInput(arguments[2])
+                let output = command == "rcc-stage" ? try rccStageOperation(input)
+                    : try RCCRuntimeContract.encode(rccObserveInstallation(input, cancel: command == "rcc-install-cancel"))
+                print(String(decoding: output, as: UTF8.self))
             case "rcc-catalog", "rcc-adapter":
                 guard arguments.count == 3,
                       arguments[1] == (command == "rcc-catalog" ? "--request-file" : "--ticket-file") else {
@@ -17070,6 +17087,7 @@ struct OS1Main {
                 try selfTest()
                 try await consumerChatGPTDispatchSelfTest()
                 try await os1AttemptSourceSelfTest()
+                try rccNativeContinuationSelfTest()
                 try await fullAccessHandBackSelfTest()
                 try await parallelAgentCoordinatorSelfTest()
                 try await concurrentRouteFanoutSelfTest()
@@ -17504,14 +17522,14 @@ private struct RCCAuthorizationWire: Encodable {
     }
 }
 
-private func rccPrivateInput(_ path: String) throws -> Data {
+func rccPrivateInput(_ path: String) throws -> Data {
     guard path.hasPrefix("/") else { throw OS1Error.message("RCC private input must be absolute") }
     let fd = Darwin.open(path, O_RDONLY | O_NOFOLLOW)
     guard fd >= 0 else { throw OS1Error.message("RCC private input unavailable") }
     defer { Darwin.close(fd) }
     var st = stat()
     guard fstat(fd, &st) == 0, (st.st_mode & S_IFMT) == S_IFREG, st.st_uid == geteuid(),
-          (st.st_mode & 0o077) == 0, st.st_size > 0, st.st_size <= 1_048_576 else {
+          (st.st_mode & 0o077) == 0, st.st_nlink == 1, st.st_size > 0, st.st_size <= 1_048_576 else {
         throw OS1Error.message("RCC input custody rejected")
     }
     var data = Data(count: Int(st.st_size)), offset = 0
@@ -17592,6 +17610,113 @@ private func rccNativeCatalog(_ bytes: Data) throws -> Data {
     return data
 }
 
+/// A continuation inherits the SAME task's private executed receipt, never a
+/// marker, an earlier generated explanation, or a caller-supplied session alone.
+private func rccContinuationParent(_ ticket: RCCRuntimeContract.ExecutionTicket, receiptRoot: URL? = nil) throws -> RCCRuntimeContract.ExecutionRecord? {
+    guard let c = ticket.continuation else { return nil }
+    let directory = (receiptRoot ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".os1/rcc-runtime/native-receipts"))
+        .resolvingSymlinksInPath().standardizedFileURL.path
+    let path = URL(fileURLWithPath: c.parentNativeReceipt).standardizedFileURL.path
+    guard path.hasPrefix(directory + "/"), (path as NSString).deletingLastPathComponent == directory,
+          URL(fileURLWithPath: path).resolvingSymlinksInPath().path == path else {
+        throw OS1Error.message("RCC continuation receipt custody rejected")
+    }
+    let bytes = try rccPrivateInput(path)
+    guard sha256Hex(bytes) == c.parentNativeReceiptSHA256 else { throw OS1Error.message("RCC continuation receipt hash mismatch") }
+    let parent = try RCCRuntimeContract.decodeRecord(bytes)
+    guard parent.taskID == ticket.taskID, parent.nodeID == ticket.nodeID,
+          parent.attemptID == c.parentAttemptID, parent.candidateID == ticket.candidateID,
+          parent.configurationSHA256 == ticket.configurationSHA256, parent.selectedConfig == ticket.selectedConfig,
+          parent.nativeReceipt == path, let handback = parent.handback,
+          handback.nativeSessionID == c.nativeSessionID, handback.protectedRoot == c.protectedRoot,
+          handback.sourceHead == c.sourceHead, handback.protectedSourceSHA256 == c.protectedSourceSHA256,
+          handback.sourceFingerprint == ticket.sourceFingerprint, handback.requestSHA256 == ticket.requestSHA256,
+          handback.kind == c.kind || (handback.kind == .both && c.kind == .fullAccessRequired),
+          let rawSummary = parent.nativeSummary, let summary = try? JSONDecoder().decode(RunSummary.self, from: Data(rawSummary.utf8)),
+          summary.steps.count == 1, let native = summary.steps.first,
+          native.provider == "claude", native.sessionID == c.nativeSessionID, native.exitCode == 0,
+          native.nativeRecord?.persistence == "verified"
+    else { throw OS1Error.message("RCC continuation parent binding rejected") }
+    return parent
+}
+
+/// Real private-file custody negatives, isolated from live HOME/auth/state.
+private func rccNativeContinuationSelfTest() throws {
+    typealias C = RCCRuntimeContract
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("os1-rcc-parent-fixture-" + UUID().uuidString)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+    defer { try? FileManager.default.removeItem(at: root) }
+    let canonicalRoot = root.resolvingSymlinksInPath()
+    let path = canonicalRoot.appendingPathComponent("parent.json")
+    let request = "Install the requested plugin outside OS-1's source."
+    let hash = sha256Hex(Data("fixture".utf8)), requestHash = sha256Hex(Data(request.utf8))
+    let host = C.HostContext(workspace: "/tmp/parent-fixture", context: nil, providerPreference: "auto",
+        codexSessionID: nil, claudeSessionID: nil, requireReadOnly: false, ownerPolicy: nil)
+    let sourceHash = sha256Hex(try C.encode(host))
+    let config = C.ExactConfig(surface: .claude, transport: .claudeCLI, accountID: "fixture",
+        model: "fixture", effort: .low, tools: ["Bash"], scope: .workspaceWrite, permissionProfile: .workspaceWrite,
+        quotaPool: .anthropicShared, allowedPaths: ["**"], configurationSHA256: hash)
+    let nativeID = UUID().uuidString.lowercased()
+    var step = RunStepSummary(sequence: 1, provider: "claude", action: "execute", model: "fixture", effort: "low",
+        revasDisposition: "execution_only", sessionID: nativeID, permissionProfile: "workspace_write", exitCode: 0,
+        output: "Completed steps preserved; plugin installation was sandbox-blocked.", stderr: "", durationMS: 1,
+        nativeRecord: .init(turnID: nil, recordPath: "/tmp/native-fixture.jsonl", persistence: "verified", desktopVisibility: "not_revealed"))
+    step.os1SourceConfined = true; step.os1FullAccessRequired = true
+    let handback = C.Handback(kind: .fullAccessRequired, nativeSessionID: nativeID, protectedRoot: "/tmp/os1-source",
+        sourceHead: String(repeating: "a", count: 40), protectedSourceSHA256: hash,
+        sourceFingerprint: sourceHash, requestSHA256: requestHash, parentAttemptID: "parent-attempt")
+    var parent = C.ExecutionRecord(taskID: "fixture-task", nodeID: "node-1", attemptID: "parent-attempt",
+        candidateID: "candidate-1", configurationSHA256: hash, selectedConfig: config,
+        acknowledgedConfig: config, observedConfig: nil, status: .succeeded, output: step.output,
+        executionVerified: true, taskVerified: false, taskQuality: .unverified, parityState: .unverified,
+        nativeReceipt: path.path, sideEffects: .possible, usage: nil, dispatchStage: .dispatched,
+        nativeSummary: String(decoding: try JSONEncoder().encode(RunSummary(status: "returned_unverified", steps: [step])), as: UTF8.self), handback: handback)
+    func writeParent() throws -> Data {
+        let data = try C.encode(parent); try data.write(to: path, options: [.atomic])
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path.path); return data
+    }
+    var raw = try writeParent()
+    var ticket = C.ExecutionTicket(taskID: parent.taskID, nodeID: parent.nodeID, attemptID: "second-attempt",
+        candidateID: parent.candidateID, requestSHA256: requestHash, policySHA256: hash, policySourceSHA256: hash,
+        sourceFingerprint: sourceHash, configurationSHA256: hash, selectedConfig: config, objective: request,
+        instruction: request, contextRefs: [], ownedPaths: ["**"], originalRequest: request, originalObjective: request,
+        hostContext: host, nativeResumeSessionID: nativeID,
+        continuation: .init(kind: .fullAccessRequired, parentAttemptID: parent.attemptID, parentNativeReceipt: path.path,
+            parentNativeReceiptSHA256: sha256Hex(raw), nativeSessionID: nativeID, protectedRoot: handback.protectedRoot,
+            sourceHead: handback.sourceHead, protectedSourceSHA256: hash, sourceFingerprint: sourceHash, requestSHA256: requestHash))
+    var checks = 0
+    func accept(_ value: C.ExecutionTicket) throws {
+        guard try rccContinuationParent(value, receiptRoot: canonicalRoot) != nil else { throw OS1Error.message("fixture parent missing") }
+        checks += 1
+    }
+    func reject(_ value: C.ExecutionTicket) throws {
+        do { _ = try rccContinuationParent(value, receiptRoot: canonicalRoot) }
+        catch { checks += 1; return }
+        throw OS1Error.message("RCC native continuation fixture accepted an invalid receipt")
+    }
+    try accept(ticket)
+    var forged = ticket; forged.continuation?.nativeSessionID = UUID().uuidString; try reject(forged)
+    forged = ticket; forged.taskID = "other-task"; try reject(forged)
+    forged = ticket; forged.continuation?.protectedRoot = "/tmp/other-source"; try reject(forged)
+    forged = ticket; forged.continuation?.parentNativeReceiptSHA256 = String(repeating: "0", count: 64); try reject(forged)
+    try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: path.path); try reject(ticket)
+    try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path.path)
+    let hardlink = canonicalRoot.appendingPathComponent("hardlink.json")
+    try FileManager.default.linkItem(at: path, to: hardlink); try reject(ticket); try FileManager.default.removeItem(at: hardlink)
+    let symlink = canonicalRoot.appendingPathComponent("symlink.json")
+    try FileManager.default.createSymbolicLink(at: symlink, withDestinationURL: path)
+    forged = ticket; forged.continuation?.parentNativeReceipt = symlink.path; try reject(forged)
+    parent.handback = nil; raw = try writeParent(); ticket.continuation?.parentNativeReceiptSHA256 = sha256Hex(raw); try reject(ticket)
+    parent.handback = handback
+    let unverified = RunStepSummary(sequence: 1, provider: "claude", action: "execute", model: "fixture", effort: "low",
+        revasDisposition: "execution_only", sessionID: nativeID, permissionProfile: "workspace_write", exitCode: 0,
+        output: step.output, stderr: "", durationMS: 1,
+        nativeRecord: .init(turnID: nil, recordPath: nil, persistence: "unverified", desktopVisibility: "not_revealed"))
+    parent.nativeSummary = String(decoding: try JSONEncoder().encode(RunSummary(status: "returned_unverified", steps: [unverified])), as: UTF8.self)
+    raw = try writeParent(); ticket.continuation?.parentNativeReceiptSHA256 = sha256Hex(raw); try reject(ticket)
+    print("RCC native continuation: \(checks) private receipt custody checks PASS; native/model calls 0")
+}
+
 private func rccNativeAdapter(_ bytes: Data) async throws -> Data {
     let t = try RCCRuntimeContract.decodeTicket(bytes)
     guard let h = t.hostContext, let original = t.originalRequest, let objective = t.originalObjective,
@@ -17612,6 +17737,9 @@ private func rccNativeAdapter(_ bytes: Data) async throws -> Data {
         throw OS1Error.message("RCC selected account/config no longer authorized")
     }
     var dispatched = false
+    var sourceConfined = false
+    var protectedSourceAtDispatch: OS1SourceWatch?
+    var sourceBeforeClean = false
     let id = UUID().uuidString.lowercased()
     let root = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".os1/rcc-runtime/native-receipts")
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
@@ -17622,6 +17750,7 @@ private func rccNativeAdapter(_ bytes: Data) async throws -> Data {
         executionVerified: false, taskVerified: false, taskQuality: .unverified, parityState: .unverified,
         nativeReceipt: receipt.path, sideEffects: .none, usage: nil, dispatchStage: .notDispatched)
     do {
+        let parent = try rccContinuationParent(t)
         let codex = (try? ModelAvailability.codexCatalog(workspace: h.workspace, config: config)) ?? ActiveCodexCatalog(models: [], source: "unavailable")
         let claude = (try? ModelAvailability.claudeCatalogs(workspace: h.workspace, config: config))?.routable ?? []
         let supported = provider == "codex" ? codex.models.contains { $0.slug == t.selectedConfig.model && $0.supportedEfforts.contains(t.selectedConfig.effort.rawValue) }
@@ -17651,19 +17780,55 @@ private func rccNativeAdapter(_ bytes: Data) async throws -> Data {
               signed.startupContract?.effort == t.selectedConfig.effort.rawValue else { throw OS1Error.message("RCC authorization changed requested tuple") }
         record.acknowledgedConfig = t.selectedConfig
         var custody = OS1AttemptSourceState()
+        let boundRoot = LocalProjectWorkspace.root(containing: h.workspace, projectID: "os1-clodex")
         let sourceRoot = OS1SourceWatch.containedRoot(workspace: h.workspace)
+        let protectedRoot = sourceRoot ?? boundRoot
+        let isFullAccess = t.continuation?.kind == .fullAccessRequired
+        if let continuation = t.continuation {
+            guard let protectedRoot, LocalProjectWorkspace.executionPath(protectedRoot) == continuation.protectedRoot,
+                  gitHead(protectedRoot) == continuation.sourceHead,
+                  OS1SourceWatch.fingerprint(root: protectedRoot) == continuation.protectedSourceSHA256 else {
+                throw OS1Error.message("RCC protected source changed since handback; no continuation dispatched")
+            }
+            if continuation.kind == .os1ChangeRequired {
+                // A marker cannot add a new write target to a HOME task. Only
+                // an already source-bound owner may authorize its source repair.
+                guard boundRoot != nil, !h.requireReadOnly else {
+                    throw OS1Error.message("RCC OS-1 repair lacks original bound-source authority")
+                }
+            }
+        }
+        // A source-bound writer must not run beside another native or staging
+        // writer. The JS lease alone does not cover the native/legacy source lease.
+        if t.selectedConfig.scope == .workspaceWrite, let boundRoot {
+            custody.lease = try acquireOS1SourceWriteLease(root: boundRoot)
+        }
         let sourceStep = try await prepareOS1AttemptSource(provider: provider, permissionProfile: signed.permissionProfile,
-            sharedLeaseRoot: sourceRoot, firstAttempt: true, claudeAlternative: { false },
+            sharedLeaseRoot: sourceRoot, firstAttempt: true, fullAccess: isFullAccess, claudeAlternative: { false },
             ticketFresh: { ticketValid(signed, forAtLeast: 10) }, state: &custody)
         guard case .proceed = sourceStep else { throw OS1Error.message("RCC source custody requires fresh authorization; no backend dispatched") }
         defer { OS1SourceConfinement.activeRoots = []; withExtendedLifetime(custody.lease) {} }
         let workspace = surface.forcesChatLane ? try providerExecutionWorkspace(provider: provider, permission: "read_only", hasSource: false, workspace: h.workspace, objective: t.instruction) : h.workspace
         let before = workspaceHash(workspace)
         var measuredUsage: CompletionMeasuredUsage?
-        let delegated = "ORIGINAL OWNER OBJECTIVE:\n" + objective + "\n\nDELEGATED WORK ONLY:\n" + t.instruction +
+        let sourceCompletion = boundRoot == nil || t.selectedConfig.scope != .workspaceWrite ? "" : """
+        \nBOUND OS-1 SOURCE COMPLETION: modify only the delegated source scope. Do not call os1 run/self-repair/self-update, install, restart, merge or push. When source changes are ready, preserve existing changes, run appropriate checks, make the bundle/runtime identity version-ready above the installed build, and create an authorized LOCAL commit of only this task's changes. The original OpenClaw task performs separate mechanical staging and installation receipt checks; source/build alone is not installed or finished. If a checker/policy/installer needs changing, report it for separate stable review rather than weakening it to pass.
+        """
+        let delegated = (isFullAccess ? fullAccessContinuationPrompt(request: t.instruction, report: parent?.output ?? "") :
+            "ORIGINAL OWNER OBJECTIVE:\n" + objective + "\n\nDELEGATED WORK ONLY:\n" + t.instruction) +
             "\n\nRCC task " + t.taskID + "; child " + t.nodeID + "; attempt " + t.attemptID +
-            "; scope " + t.selectedConfig.scope.rawValue + ". Do not spawn a competing orchestration or silently change model/account."
-        let execution = try ParallelAgentRuntime.$managedDelegation.withValue(true) {
+            "; scope " + t.selectedConfig.scope.rawValue + ". Do not spawn a competing orchestration or silently change model/account." + sourceCompletion
+        let protected = protectedRoot.map { OS1SourceConfinement.protectedPaths(root: $0) } ?? []
+        sourceConfined = sourceRoot != nil && t.selectedConfig.scope == .workspaceWrite
+        if let protectedRoot {
+            protectedSourceAtDispatch = .init(root: protectedRoot, head: gitHead(protectedRoot),
+                                             fingerprint: OS1SourceWatch.fingerprint(root: protectedRoot))
+            sourceBeforeClean = rccSourceIsVerifiedClean(protectedRoot)
+        }
+        let execution = try await OS1FullAccessContinuation.$sessionID.withValue(isFullAccess ? t.nativeResumeSessionID : nil) {
+        try await OS1FullAccessContinuation.$protectedPaths.withValue(isFullAccess ? protected : []) {
+        try await OS1ChangeEscalation.$available.withValue(!h.requireReadOnly && t.selectedConfig.scope == .workspaceWrite && sourceRoot != nil) {
+        try ParallelAgentRuntime.$managedDelegation.withValue(true) {
         try OwnerPolicyContext.$snapshot.withValue(policy) {
             try execute(ticket: signed, prompt: try providerPrompt(current: delegated, context: h.context, r2Evidence: nil),
                 workspace: workspace, timeout: config.executionTimeoutSeconds, idleTimeout: config.providerIdleTimeoutSeconds,
@@ -17674,13 +17839,23 @@ private func rccNativeAdapter(_ bytes: Data) async throws -> Data {
                 surfaceOverride: surface, workspaceOverride: workspace)
         }
         }
+        }
+        }
+        }
         let a = execution.artifact
+        if isFullAccess, let continuation = t.continuation,
+           gitHead(continuation.protectedRoot) != continuation.sourceHead ||
+            OS1SourceWatch.fingerprint(root: continuation.protectedRoot) != continuation.protectedSourceSHA256 {
+            throw RejectedProviderExecution(execution: execution,
+                cause: OS1Error.message("RCC full-access continuation changed protected source; result preserved, not adopted"))
+        }
         let verified = a.exitCode == 0 && execution.nativeRecord.persistence == "verified"
         let exact = publicDeterministicExpression(t.instruction).map { a.output.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines) == $0 } ?? false
         record.status = verified ? .succeeded : .failed
         record.dispatchStage = dispatched ? .dispatched : .unknown
         record.output = a.output; record.executionVerified = verified
-        record.taskVerified = verified && exact; record.taskQuality = exact && verified ? .taskVerified : .executionOnly
+        record.taskVerified = verified && exact
+        record.taskQuality = verified ? (exact ? .taskVerified : .executionOnly) : .failed
         record.sideEffects = t.selectedConfig.scope == .workspaceWrite ? (a.workspaceBeforeHash == a.workspaceAfterHash ? .possible : .confirmed) : .none
         let readCache: Int64? = measuredUsage.flatMap { usage in
             guard let total = usage.cacheTokens, let writes = usage.cacheWriteTokens, total >= writes else { return nil }
@@ -17693,28 +17868,78 @@ private func rccNativeAdapter(_ bytes: Data) async throws -> Data {
             metric: measuredUsage == nil ? nil : "native_usage_observation")
         // Actual model/effort are not universally exposed; requested artifact fields are NOT independent observations.
         record.observedConfig = nil
-        let step = RunStepSummary(sequence: 1, provider: provider, action: signed.action, model: t.selectedConfig.model,
+        var step = RunStepSummary(sequence: 1, provider: provider, action: signed.action, model: t.selectedConfig.model,
             effort: t.selectedConfig.effort.rawValue, revasDisposition: "execution_only", sessionID: execution.sessionID,
             permissionProfile: signed.permissionProfile, exitCode: a.exitCode, output: a.output, stderr: a.stderr,
             durationMS: a.durationMS, nativeRecord: execution.nativeRecord, surface: surface.rawValue,
             preDispatchGovernanceReceipt: execution.preDispatchGovernanceReceipt)
+        step.os1SourceConfined = sourceConfined
+        step.os1ChangeRequired = step.os1SourceConfined && execution.os1ChangeRequired
+        step.os1FullAccessRequired = step.os1SourceConfined && execution.os1FullAccessRequired
         record.nativeSummary = String(decoding: try JSONEncoder().encode(RunSummary(status: "returned_unverified", steps: [step])), as: UTF8.self)
+        if verified, !ExecutionCancellation.isCancelled, step.os1SourceConfined,
+           step.os1ChangeRequired || step.os1FullAccessRequired,
+           let protectedRoot, let head = gitHead(protectedRoot), let fingerprint = OS1SourceWatch.fingerprint(root: protectedRoot) {
+            record.taskVerified = false; record.taskQuality = .unverified
+            record.handback = .init(kind: step.os1ChangeRequired && step.os1FullAccessRequired ? .both :
+                step.os1FullAccessRequired ? .fullAccessRequired : .os1ChangeRequired,
+                nativeSessionID: execution.sessionID, protectedRoot: LocalProjectWorkspace.executionPath(protectedRoot),
+                sourceHead: head, protectedSourceSHA256: fingerprint,
+                sourceFingerprint: t.sourceFingerprint, requestSHA256: t.requestSHA256, parentAttemptID: t.attemptID)
+        }
+        if verified, !ExecutionCancellation.isCancelled, record.handback == nil,
+           t.selectedConfig.scope == .workspaceWrite, let boundRoot, let prior = protectedSourceAtDispatch,
+           prior.changed(), let beforeHead = prior.head, let beforeSHA = prior.fingerprint,
+           let head = gitHead(boundRoot), let sourceSHA = OS1SourceWatch.fingerprint(root: boundRoot),
+           let git = try? findExecutable("git") {
+            let committed = try commandOutput(git, ["-C", boundRoot, "diff", "--name-only", beforeHead, head,
+                "--", "."], timeout: 30)
+            let pending = try commandOutput(git, ["-C", boundRoot, "status", "--porcelain", "-uall", "--", "."], timeout: 30)
+            let changes = SelfUpdate.sourceChanges(String(decoding: committed.1, as: UTF8.self).split(separator: "\n").map(String.init) +
+                String(decoding: pending.1, as: UTF8.self).split(separator: "\n").map { String($0.dropFirst(3)) })
+            if changes.contains(where: { !$0.hasPrefix(SelfUpdate.runtimeRelativePath + "/") }) {
+                record.taskVerified = false; record.taskQuality = .failed
+                record.error = "source_scope_breach_preserved_no_stage"
+            } else if committed.0 == 0, pending.0 == 0, !changes.isEmpty {
+                record.repairSource = .init(sourceRoot: LocalProjectWorkspace.executionPath(boundRoot), sourceHead: head,
+                    sourceBeforeHead: beforeHead, sourceBeforeSHA256: beforeSHA, protectedSourceSHA256: sourceSHA,
+                    sourceBeforeClean: sourceBeforeClean, changedPaths: Array(Set(changes)).sorted())
+            }
+        }
     } catch {
+        var knownFinishedCandidate = false
         if let rejected = error as? RejectedProviderExecution {
             // A post-check refusal does not erase a real finished candidate.
             // Keep its exact native bytes and receipt; never relabel it complete.
             let e = rejected.execution, a = e.artifact
             record.output = a.output
             record.executionVerified = a.exitCode == 0 && e.nativeRecord.persistence == "verified"
+            knownFinishedCandidate = record.executionVerified
             record.taskQuality = .failed
-            let step = RunStepSummary(sequence: 1, provider: provider, action: a.action, model: a.model,
+            var step = RunStepSummary(sequence: 1, provider: provider, action: a.action, model: a.model,
                 effort: a.effort, revasDisposition: "rejected_preserved", sessionID: e.sessionID,
                 permissionProfile: a.permissionProfile, exitCode: a.exitCode, output: a.output, stderr: a.stderr,
                 durationMS: a.durationMS, nativeRecord: e.nativeRecord, surface: e.surface,
                 preDispatchGovernanceReceipt: e.preDispatchGovernanceReceipt)
+            step.os1SourceConfined = sourceConfined
+            step.os1ChangeRequired = sourceConfined && e.os1ChangeRequired
+            step.os1FullAccessRequired = sourceConfined && e.os1FullAccessRequired
             record.nativeSummary = String(decoding: try JSONEncoder().encode(RunSummary(status: "returned_unverified", steps: [step])), as: UTF8.self)
+            if knownFinishedCandidate, !ExecutionCancellation.isCancelled, sourceConfined,
+               step.os1ChangeRequired || step.os1FullAccessRequired, let watch = protectedSourceAtDispatch,
+               !watch.changed(), let head = watch.head, let fingerprint = watch.fingerprint {
+                record.handback = .init(kind: step.os1ChangeRequired && step.os1FullAccessRequired ? .both :
+                    step.os1FullAccessRequired ? .fullAccessRequired : .os1ChangeRequired,
+                    nativeSessionID: e.sessionID, protectedRoot: LocalProjectWorkspace.executionPath(watch.root),
+                    sourceHead: head, protectedSourceSHA256: fingerprint,
+                    sourceFingerprint: t.sourceFingerprint, requestSHA256: t.requestSHA256,
+                    parentAttemptID: t.attemptID, adoption: .rejected)
+            }
         }
-        record.status = dispatched ? .effectsUncertain : .failed
+        // Native execution success and answer adoption are independent. A
+        // known finished candidate may be rejected without becoming an
+        // invented lost/uncertain execution, or being erased by strict decode.
+        record.status = knownFinishedCandidate ? .succeeded : dispatched && t.selectedConfig.scope == .workspaceWrite ? .effectsUncertain : .failed
         record.dispatchStage = dispatched ? .dispatched : .notDispatched
         record.sideEffects = dispatched && t.selectedConfig.scope == .workspaceWrite ? .possible : .none
         record.error = dispatched ? "native_outcome_uncertain_preserved" : "native_configuration_or_authorization_unavailable"
@@ -17732,10 +17957,14 @@ func runOpenClawRCCTask(prompt: String, workspace: String, context: String?, sur
     let explicit = RouteFanout.plan(prompt)?.targets.map { target in
         RCCRuntimeContract.ExplicitRoute(surface: RCCRuntimeContract.Surface(rawValue: target.surface.rawValue)!, instruction: target.payload)
     }
+    let id = taskID ?? UUID().uuidString.lowercased(), observed = Date()
+    let conversationID = ProcessInfo.processInfo.environment["OS1_CONVERSATION_ID"].flatMap(UUID.init(uuidString:))
+        ?? (try? SessionHandoff.decode(context).taskContext?.conversationID) ?? UUID()
+    let submissionID = UUID(uuidString: id) ?? UUID()
     let host = RCCRuntimeContract.HostContext(workspace: LocalProjectWorkspace.executionPath(workspace), context: context,
         providerPreference: surface.rawValue, codexSessionID: codexSessionID, claudeSessionID: claudeSessionID,
-        requireReadOnly: requireReadOnly, ownerPolicy: owner, explicitRoutes: explicit)
-    let id = taskID ?? UUID().uuidString.lowercased(), observed = Date()
+        requireReadOnly: requireReadOnly, ownerPolicy: owner, explicitRoutes: explicit,
+        conversationID: conversationID.uuidString, submissionID: submissionID.uuidString)
     let request = RCCRuntimeContract.Request(taskID: id, request: prompt, requestSHA256: sha256Hex(Data(prompt.utf8)),
         objective: prompt, policySHA256: sha256Hex(Data(text.utf8)), sourceFingerprint: sha256Hex(try RCCRuntimeContract.encode(host)),
         mode: RouteFanout.plan(prompt) != nil ? .explicitRoutingTest : .auto, materialRefs: PromptAttachments.imagePaths(in: prompt),
@@ -17746,9 +17975,6 @@ func runOpenClawRCCTask(prompt: String, workspace: String, context: String?, sur
     _ = try RCCRuntimeContract.decodeRequest(data)
     let configuration = try await OwnerPolicyContext.$snapshot.withValue(owner) { try await LocalRouterBridge.rccRuntimeConfiguration() }
     RuntimeActivity.emit(.routing, provider: "local", model: "qwen3.5:4b", effort: "dynamic", publicText: "OpenClaw RCC Runtime owns this task · automatic exact configuration")
-    let conversationID = ProcessInfo.processInfo.environment["OS1_CONVERSATION_ID"].flatMap(UUID.init(uuidString:))
-        ?? (try? SessionHandoff.decode(context).taskContext?.conversationID) ?? UUID()
-    let submissionID = UUID(uuidString: id) ?? UUID()
     let terminal = try await RCCRuntimeGatewayClient.run(request: data, configuration: configuration) { snapshot in
         guard let state = try? RCCRuntimeContract.decodeSnapshot(snapshot) else { return }
         if let graph = try? RCCRuntimeProjection.project(state, conversationID: conversationID,

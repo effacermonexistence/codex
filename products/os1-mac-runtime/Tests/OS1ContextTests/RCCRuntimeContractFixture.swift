@@ -361,5 +361,53 @@ func runRCCRuntimeContractFixture() throws {
     let parallelTickets = actualTickets.filter { $0.taskID == "task-node-verified" }
     try check(parallelTickets.count == 4 && parallelTickets.allSatisfy { $0.nativeResumeSessionID == nil },
               "REAL four-agent tickets never share the existing native session")
+    // Native handback is a typed receipt transition, not permission from prose.
+    var writeHost = host; writeHost.requireReadOnly = false; writeHost.codexSessionID = nil
+    var writeConfig = record.selectedConfig
+    writeConfig.surface = .claude; writeConfig.transport = .claudeCLI; writeConfig.quotaPool = .anthropicShared
+    writeConfig.scope = .workspaceWrite; writeConfig.permissionProfile = .workspaceWrite; writeConfig.allowedPaths = ["**"]
+    var parentRecord = record
+    parentRecord.selectedConfig = writeConfig; parentRecord.acknowledgedConfig = writeConfig
+    parentRecord.observedConfig = nil; parentRecord.nativeSummary = "{\"fixture\":true}"
+    parentRecord.handback = .init(kind: .fullAccessRequired, nativeSessionID: "native-claude-parent",
+        protectedRoot: "/tmp/os1-source-fixture", sourceHead: String(repeating: "a", count: 40),
+        protectedSourceSHA256: hash, sourceFingerprint: C.digest(try C.encode(writeHost)),
+        requestSHA256: ticket.requestSHA256, parentAttemptID: parentRecord.attemptID)
+    try check(try C.decodeRecord(C.encode(parentRecord)).handback == parentRecord.handback,
+              "native handback preserves every source/session/attempt field")
+    var badHandback = parentRecord; badHandback.handback?.cancelled = true
+    try reject("cancelled receipt cannot request continuation") { try C.validate(badHandback) }
+    badHandback = parentRecord; badHandback.handback?.parentAttemptID = "wrong-attempt"
+    try reject("handback cannot change parent attempt") { try C.validate(badHandback) }
+    badHandback = parentRecord; badHandback.selectedConfig = record.selectedConfig
+    try reject("read-only/chat cannot acquire write through handback") { try C.validate(badHandback) }
+    badHandback = parentRecord; badHandback.handback?.exitCode = 1
+    try reject("nonzero native exit cannot resume as handback") { try C.validate(badHandback) }
+    var continued = ticket
+    continued.hostContext = writeHost; continued.sourceFingerprint = C.digest(try C.encode(writeHost))
+    continued.selectedConfig = writeConfig; continued.attemptID = "second-native-attempt"
+    continued.nativeResumeSessionID = "native-claude-parent"
+    continued.continuation = .init(kind: .fullAccessRequired, parentAttemptID: parentRecord.attemptID,
+        parentNativeReceipt: "/tmp/private-parent-receipt.json", parentNativeReceiptSHA256: hash,
+        nativeSessionID: "native-claude-parent", protectedRoot: "/tmp/os1-source-fixture",
+        sourceHead: String(repeating: "a", count: 40), protectedSourceSHA256: hash,
+        sourceFingerprint: continued.sourceFingerprint, requestSHA256: continued.requestSHA256)
+    try check(try C.decodeTicket(C.encode(continued)).continuation == continued.continuation,
+              "same-task continuation can carry executed parent session, not a host identity claim")
+    var badContinuation = continued; badContinuation.continuation?.sourceFingerprint = hash
+    try reject("continuation must retain immutable host source") { try C.validate(badContinuation) }
+    badContinuation = continued; badContinuation.nativeResumeSessionID = "different-session"
+    try reject("full-access must resume exact verified parent session") { try C.validate(badContinuation) }
+    badContinuation = continued; badContinuation.continuation?.kind = .both
+    try reject("both phases cannot dispatch as one unverified transition") { try C.validate(badContinuation) }
+    badContinuation = continued; badContinuation.continuation?.parentAttemptID = continued.attemptID
+    try reject("continuation cannot depend on itself") { try C.validate(badContinuation) }
+    var repair = continued; repair.continuation?.kind = .os1ChangeRequired; repair.nativeResumeSessionID = nil
+    try check(try C.decodeTicket(C.encode(repair)).nativeResumeSessionID == nil,
+              "OS-1 repair starts fresh; parent non-OS-1 writes are never replayed")
+    // Returned execution can be rejected by the adoption gate without erasure.
+    parentRecord.handback?.adoption = .rejected; parentRecord.taskQuality = .failed
+    try check(try C.decodeRecord(C.encode(parentRecord)).handback?.adoption == .rejected,
+              "known executed rejected output remains handback evidence, not quality proof")
     print("RCC Runtime contract: \(checks) offline identity/schema/config/DAG/state checks PASS; provider calls 0")
 }

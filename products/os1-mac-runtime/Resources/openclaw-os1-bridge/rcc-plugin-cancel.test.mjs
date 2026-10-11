@@ -29,6 +29,8 @@ async function setup(t) {
   const script = `#!${process.execPath}
     const fs = require('node:fs');
     const {spawn} = require('node:child_process');
+    if (!['rcc-adapter', 'rcc-stage'].includes(process.argv[2]) ||
+        process.argv[3] !== '--ticket-file') process.exit(79);
     const input = JSON.parse(fs.readFileSync(process.argv[4], 'utf8'));
     if (!process.env.OS1_CANCEL_FILE) process.exit(80);
     const home = process.env.HOME;
@@ -72,11 +74,12 @@ async function setup(t) {
   return {root, home, ready};
 }
 
-test('abort writes exact private marker before SIGTERM; fake descendant exits and one record returns',
+for (const command of ['rcc-adapter', 'rcc-stage']) {
+test(`${command}: abort writes exact private marker before SIGTERM; fake descendant exits and one record returns`,
   {concurrency: false, timeout: 8_000}, async t => {
     const {root, home, ready} = await setup(t);
     const controller = new AbortController();
-    const operation = nativeOperation('rcc-adapter', {mode: 'graceful'}, controller.signal,
+    const operation = nativeOperation(command, {mode: 'graceful'}, controller.signal,
       {cancelGraceMs: 500, cancelKillMs: 100});
     const {pid, workerPid} = await ready();
     controller.abort();
@@ -93,11 +96,11 @@ test('abort writes exact private marker before SIGTERM; fake descendant exits an
     }
   });
 
-test('noncooperative exact direct child receives bounded TERM/KILL; no success receipt invented',
+test(`${command}: noncooperative exact direct child receives bounded TERM/KILL; no success receipt invented`,
   {concurrency: false, timeout: 8_000}, async t => {
     const {home, ready} = await setup(t);
     const controller = new AbortController();
-    const operation = nativeOperation('rcc-adapter', {mode: 'ignore'}, controller.signal,
+    const operation = nativeOperation(command, {mode: 'ignore'}, controller.signal,
       {cancelGraceMs: 100, cancelKillMs: 100});
     const {pid} = await ready();
     controller.abort();
@@ -105,3 +108,4 @@ test('noncooperative exact direct child receives bounded TERM/KILL; no success r
     assert.equal((await readFile(join(home, 'term.receipt'), 'utf8')), 'term received');
     assert.throws(() => process.kill(pid, 0), {code: 'ESRCH'});
   });
+}

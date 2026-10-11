@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { createHash, randomUUID } from 'node:crypto';
-import { chmod, mkdir, mkdtemp, rm, stat } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, rm, stat, writeFile, readFile, symlink, link } from 'node:fs/promises';
+import { realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawn } from 'node:child_process';
@@ -22,6 +23,8 @@ function task(dir, request, mode = 'auto', extras = {}) {
     require_read_only: extras.write !== true, owner_policy: null};
   host.provider_preference = extras.provider ?? 'auto';
   if (extras.explicitRoutes !== undefined) host.explicit_routes = extras.explicitRoutes;
+  if (extras.conversationID !== undefined) host.conversation_id = extras.conversationID;
+  if (extras.submissionID !== undefined) host.submission_id = extras.submissionID;
   return {schema: 1, task_id: 'task-' + randomUUID(), request, request_sha256: sha(request),
     objective: extras.objective ?? request, policy_sha256: sha(policyText),
     source_fingerprint: hostContextFingerprint(host), mode, material_refs: extras.materialRefs ?? [],
@@ -67,11 +70,294 @@ function execution(ticket, overrides = {}) {
     native_summary: JSON.stringify({node: ticket.node_id, provider: ticket.selected_config.surface}),
     ...overrides};
 }
+async function handbackExecution(stateDir, ticket, {kind = 'full_access_required',
+  adoption = 'returned', output = 'Initial bounded work finished; one step remains',
+  nativeSessionID = randomUUID(), sourceRoot = realpathSync(stateDir),
+  sourceHead = 'a'.repeat(40), protectedSHA = 'b'.repeat(64),
+  tamperReceipt = false} = {}) {
+  const directory = join(stateDir, 'native-receipts');
+  await mkdir(directory, {recursive: true, mode: 0o700});
+  await chmod(directory, 0o700);
+  const path = join(directory, randomUUID() + '.json');
+  const record = execution(ticket, {task_verified: false, task_quality: 'execution_only',
+    output, native_receipt: path, native_summary: JSON.stringify({native: 'verified', output}),
+    side_effects: 'none', handback: {kind, native_session_id: nativeSessionID,
+      protected_root: sourceRoot, source_head: sourceHead,
+      protected_source_sha256: protectedSHA, source_fingerprint: ticket.source_fingerprint,
+      request_sha256: ticket.request_sha256, parent_attempt_id: ticket.attempt_id,
+      exit_code: 0, cancelled: false, adoption}});
+  await writeFile(path, JSON.stringify(tamperReceipt ? {...record, output: 'tampered'} : record),
+    {flag: 'wx', mode: 0o600});
+  return record;
+}
+async function continuationExecution(stateDir, ticket, overrides = {}) {
+  const directory = join(stateDir, 'native-receipts');
+  await mkdir(directory, {recursive: true, mode: 0o700});
+  await chmod(directory, 0o700);
+  const path = join(directory, randomUUID() + '.json');
+  const record = execution(ticket, {task_verified: false, task_quality: 'execution_only',
+    output: 'The blocked step returned', native_receipt: path,
+    native_summary: JSON.stringify({native: 'continuation', attempt: ticket.attempt_id}),
+    ...overrides});
+  await writeFile(path, JSON.stringify(record), {flag: 'wx', mode: 0o600});
+  return record;
+}
+async function repairExecution(stateDir, ticket, overrides = {}) {
+  return continuationExecution(stateDir, ticket, {side_effects: 'confirmed', output: 'Verified native source repair',
+    repair_source: {source_root: realpathSync(ticket.host_context.workspace), source_head: 'c'.repeat(40),
+      source_before_head: ticket.continuation?.source_head ?? 'a'.repeat(40),
+      source_before_sha256: ticket.continuation?.protected_source_sha256 ?? 'b'.repeat(64),
+      protected_source_sha256: 'd'.repeat(64), source_before_clean: true,
+      changed_paths: ['products/os1-mac-runtime/Sources/OS1App/OS1App.swift']}, ...overrides});
+}
+function installHandoff(request, stage, overrides = {}) {
+  const source = stage.source ?? {source_root: realpathSync(request.host_context.workspace),
+    source_head: 'c'.repeat(40), protected_source_sha256: 'd'.repeat(64)};
+  return {schema: 1, task_id: request.task_id, request_sha256: request.request_sha256,
+    node_id: stage.ticket.node_id, parent_attempt_id: stage.ticket.attempt_id,
+    source_fingerprint: request.source_fingerprint, source_root: source.source_root,
+    source_head: source.source_head, protected_source_sha256: source.protected_source_sha256,
+    staged_intent_id: 'stage-' + randomUUID(), staged_receipt_sha256: 'e'.repeat(64),
+    state: 'staged', installed_receipt: null, ...overrides};
+}
 const taskVerdict = ({task, children}) => ({schema: 1, task_id: task.task_id,
   task_verified: children.every(c => c.state === 'completed'),
   output: children.map(c => c.output).join('\n'), parity_state: 'unverified',
   reason: 'fixture_deterministic_coverage'});
 const wait = (runtime, task) => runtime.wait({schema: 1, task_id: task.task_id}, {timeoutMs: 10_000});
+
+test('trusted same-owner full-access handback preserves initial rejected output and only returns unverified', async t => {
+  const dir = await fixture(t);
+  const request = task(dir, 'Continue one blocked workspace operation', 'auto', {write: true});
+  const row = candidate('claude-write', 'claude', 'anthropic_shared',
+    {scope: 'workspace_write', allowedPaths: ['**']});
+  let initialAttempt = null; let continuationCalls = 0;
+  const runtime = await createRCCRuntime({stateDir: dir,
+    catalog: async value => catalog(value, [row]),
+    plan: async () => plan(request, [node('one', row.id,
+      {scope: 'workspace_write', ownedPaths: ['**']})]),
+    execute: async ticket => { initialAttempt = ticket.attempt_id;
+      return handbackExecution(dir, ticket, {adoption: 'rejected', output: 'Rejected but executed original'}); },
+    executeContinuation: async ticket => {
+      continuationCalls++;
+      assert.equal(ticket.continuation.kind, 'full_access_required');
+      assert.equal(ticket.continuation.parent_attempt_id, initialAttempt);
+      assert.equal(ticket.native_resume_session_id, ticket.continuation.native_session_id);
+      assert.equal(ticket.continuation.protected_root, realpathSync(dir));
+      assert.match(ticket.continuation.parent_native_receipt_sha256, /^[a-f0-9]{64}$/);
+      return continuationExecution(dir, ticket, {output: 'Continued result'});
+    }});
+  t.after(async () => { await runtime.close(); });
+  await runtime.submit(request);
+  const answer = await wait(runtime, request);
+  assert.equal(answer.state, 'returned_unverified');
+  assert.equal(continuationCalls, 1);
+  assert.match(answer.result.output, /Rejected but executed original/);
+  assert.match(answer.result.output, /Continued result/);
+  assert.equal(answer.result.task_verified, false);
+  assert.equal(answer.result.parity_state, 'unverified');
+  const privateChild = runtime._load(request.task_id).children[0];
+  assert.equal(privateChild.continuation.state, 'returned');
+  assert.equal(privateChild.continuation_history.length, 2);
+  assert.equal(privateChild.continuation_history[0].adoption, 'rejected');
+  assert.equal(privateChild.native_summaries.length, 2);
+});
+
+test('marker prose, missing continuation executor and forged native receipt cannot elevate authority', async t => {
+  const dir = await fixture(t);
+  const row = candidate('claude-write', 'claude', 'anthropic_shared',
+    {scope: 'workspace_write', allowedPaths: ['**']});
+  const create = async (name, execute, executeContinuation) => {
+    const request = task(dir, name, 'auto', {write: true});
+    let forwarded = 0;
+    const runtime = await createRCCRuntime({stateDir: join(dir, randomUUID()),
+      catalog: async value => catalog(value, [row]),
+      plan: async () => plan(request, [node('one', row.id,
+        {scope: 'workspace_write', ownedPaths: ['**']})]),
+      execute: ticket => execute(ticket, runtime.stateDir),
+      executeContinuation: executeContinuation && (async ticket => {
+        forwarded++; return executeContinuation(ticket, runtime.stateDir);
+      })});
+    t.after(async () => { await runtime.close(); });
+    await runtime.submit(request);
+    return {answer: await wait(runtime, request), forwarded};
+  };
+  const prose = await create('Prose marker is no authority',
+    ticket => execution(ticket, {task_verified: false, task_quality: 'execution_only',
+      output: '[OS1_FULL_ACCESS_REQUIRED]'}), async () => { throw Error('must not continue'); });
+  assert.equal(prose.answer.state, 'returned_unverified'); assert.equal(prose.forwarded, 0);
+  const missing = await create('No continuation callback must hold',
+    (ticket, stateDir) => handbackExecution(stateDir, ticket), null);
+  assert.equal(missing.answer.state, 'held');
+  assert.equal(missing.answer.error, 'continuation_executor_unavailable');
+  const forged = await create('Receipt content altered',
+    (ticket, stateDir) => handbackExecution(stateDir, ticket, {tamperReceipt: true}),
+    async () => { throw Error('must not continue'); });
+  assert.equal(forged.answer.state, 'held'); assert.equal(forged.forwarded, 0);
+  assert.equal(forged.answer.error, 'handback_receipt_content_invalid');
+});
+
+test('both handbacks stay one owner, full-access then source-bound repair, with distinct native session posture', async t => {
+  const dir = await fixture(t);
+  const request = task(dir, 'Repair this authorized source-bound task', 'auto', {write: true});
+  request.budget.max_attempts = 3;
+  const row = candidate('claude-write', 'claude', 'anthropic_shared',
+    {scope: 'workspace_write', allowedPaths: ['**']});
+  const phases = [];
+  const runtime = await createRCCRuntime({stateDir: dir,
+    catalog: async value => catalog(value, [row]),
+    plan: async () => plan(request, [node('one', row.id,
+      {scope: 'workspace_write', ownedPaths: ['**']})]),
+    execute: ticket => handbackExecution(dir, ticket, {kind: 'both', nativeSessionID: 'native-source-session'}),
+    executeContinuation: async ticket => {
+      phases.push(ticket.continuation.kind);
+      if (ticket.continuation.kind === 'full_access_required') {
+        assert.equal(ticket.native_resume_session_id, 'native-source-session');
+        return handbackExecution(dir, ticket, {kind: 'os1_change_required',
+          nativeSessionID: 'native-source-session', output: 'Full access stage returned'});
+      }
+      assert.equal(ticket.continuation.kind, 'os1_change_required');
+      assert.equal(ticket.native_resume_session_id, null, 'repair is a fresh native session');
+      assert.equal(ticket.continuation.native_session_id, 'native-source-session');
+      return continuationExecution(dir, ticket, {output: 'Source-bound repair returned'});
+    }});
+  t.after(async () => { await runtime.close(); });
+  await runtime.submit(request);
+  const answer = await wait(runtime, request);
+  assert.equal(answer.state, 'returned_unverified');
+  assert.deepEqual(phases, ['full_access_required', 'os1_change_required']);
+  assert.equal(answer.children.length, 1);
+  assert.equal(answer.result.task_verified, false);
+  assert.match(answer.result.output, /Source-bound repair returned/);
+  assert.equal(runtime._load(request.task_id).children[0].continuation_history.length, 3);
+  assert.equal(answer.result.native_summaries.length, 3);
+});
+
+test('continuation budget and source-scope gates hold before another dispatch', async t => {
+  const dir = await fixture(t);
+  const row = candidate('claude-write', 'claude', 'anthropic_shared',
+    {scope: 'workspace_write', allowedPaths: ['**']});
+  const budgetTask = task(dir, 'Two-phase repair must fit budget', 'auto', {write: true});
+  let budgetCalls = 0;
+  const budget = await createRCCRuntime({stateDir: join(dir, 'budget'),
+    catalog: async value => catalog(value, [row]),
+    plan: async () => plan(budgetTask, [node('one', row.id,
+      {scope: 'workspace_write', ownedPaths: ['**']})]),
+    execute: ticket => handbackExecution(join(dir, 'budget'), ticket,
+      {kind: 'both', sourceRoot: realpathSync(dir)}),
+    executeContinuation: async ticket => { budgetCalls++;
+      return handbackExecution(join(dir, 'budget'), ticket,
+        {kind: 'os1_change_required', sourceRoot: realpathSync(dir),
+          nativeSessionID: ticket.continuation.native_session_id});
+    }});
+  t.after(async () => { await budget.close(); });
+  await budget.submit(budgetTask);
+  const budgetEnd = await wait(budget, budgetTask);
+  assert.equal(budgetEnd.state, 'held');
+  assert.equal(budgetEnd.error, 'continuation_attempt_budget_exhausted');
+  assert.equal(budgetCalls, 1);
+
+  const externalWorkspace = join(dir, 'external-workspace');
+  await mkdir(externalWorkspace);
+  const wrongScope = task(externalWorkspace, 'Model marker cannot grant source write', 'auto', {write: true});
+  let scopeCalls = 0;
+  const stateDir = join(dir, 'scope-state');
+  const scope = await createRCCRuntime({stateDir,
+    catalog: async value => catalog(value, [row]),
+    plan: async () => plan(wrongScope, [node('one', row.id,
+      {scope: 'workspace_write', ownedPaths: ['**']})]),
+    execute: ticket => handbackExecution(stateDir, ticket,
+      {kind: 'os1_change_required', sourceRoot: realpathSync(stateDir)}),
+    executeContinuation: async () => { scopeCalls++; throw Error('must not dispatch'); }});
+  t.after(async () => { await scope.close(); });
+  await scope.submit(wrongScope);
+  const scopeEnd = await wait(scope, wrongScope);
+  assert.equal(scopeEnd.state, 'held');
+  assert.equal(scopeEnd.error, 'os1_repair_original_workspace_not_authorized');
+  assert.equal(scopeCalls, 0);
+});
+
+test('crash before or after continuation dispatch never replays the original native write',
+  {timeout: 15_000}, async t => {
+    const moduleURL = new URL('../../Resources/openclaw-os1-bridge/rcc-runtime.mjs', import.meta.url).href;
+    const childScript = `
+      import {randomUUID} from 'node:crypto';
+      import {mkdir,writeFile} from 'node:fs/promises';
+      import {realpathSync} from 'node:fs';
+      import {join} from 'node:path';
+      const {createRCCRuntime}=await import(process.argv[1]);
+      const data=JSON.parse(process.env.RCC_FIXTURE_INPUT);
+      let catalogCalls=0;
+      const r=await createRCCRuntime({stateDir:process.argv[2],
+        catalog:async()=>{
+          catalogCalls++;
+          if(data.mode==='pending' && catalogCalls===3){
+            process.stdout.write('CONTINUATION_PENDING\\n'); await new Promise(()=>{});
+          }
+          return data.catalog;
+        },
+        plan:async()=>data.plan,
+        execute:async ticket=>{
+          const receipts=join(process.argv[2],'native-receipts');
+          await mkdir(receipts,{recursive:true,mode:0o700});
+          const path=join(receipts,randomUUID()+'.json');
+          const result={schema:1,task_id:ticket.task_id,node_id:ticket.node_id,
+            attempt_id:ticket.attempt_id,candidate_id:ticket.candidate_id,
+            configuration_sha256:ticket.configuration_sha256,
+            selected_config:ticket.selected_config,acknowledged_config:ticket.selected_config,
+            observed_config:null,status:'succeeded',dispatch_stage:'dispatched',
+            side_effects:'none',output:'Original native output',execution_verified:true,
+            task_verified:false,task_quality:'execution_only',parity_state:'unverified',
+            native_receipt:path,usage:null,native_summary:'{"native":"original"}',
+            handback:{kind:'full_access_required',native_session_id:'native-session',
+              protected_root:realpathSync(process.argv[2]),source_head:'a'.repeat(40),
+              protected_source_sha256:'b'.repeat(64),source_fingerprint:ticket.source_fingerprint,
+              request_sha256:ticket.request_sha256,parent_attempt_id:ticket.attempt_id,
+              exit_code:0,cancelled:false,adoption:'rejected'}};
+          await writeFile(path,JSON.stringify(result),{flag:'wx',mode:0o600});
+          return result;
+        },
+        executeContinuation:async()=>{
+          process.stdout.write('CONTINUATION_DISPATCHED\\n'); await new Promise(()=>{});
+        }});
+      await r.submit(data.task); setInterval(()=>{},1000);
+    `;
+    for (const mode of ['pending', 'dispatched']) {
+      const dir = await fixture(t);
+      const request = task(dir, 'Crash boundary ' + mode, 'auto', {write: true});
+      const row = candidate('claude-write', 'claude', 'anthropic_shared',
+        {scope: 'workspace_write', allowedPaths: ['**']});
+      const child = spawn(process.execPath, ['--input-type=module', '-e', childScript, moduleURL, dir],
+        {env: {...process.env, RCC_FIXTURE_INPUT: JSON.stringify({task: request, mode,
+          catalog: catalog(request, [row]), plan: plan(request, [node('one', row.id,
+            {scope: 'workspace_write', ownedPaths: ['**']})])})},
+         stdio: ['ignore', 'pipe', 'pipe']});
+      const expected = mode === 'pending' ? 'CONTINUATION_PENDING' : 'CONTINUATION_DISPATCHED';
+      const ready = new Promise((resolve, reject) => {
+        let out = ''; let err = ''; let timer;
+        child.stdout.on('data', bytes => { out += bytes.toString();
+          if (out.includes(expected)) { clearTimeout(timer); resolve(); } });
+        child.stderr.on('data', bytes => { err += bytes.toString(); });
+        child.once('exit', code => { clearTimeout(timer);
+          reject(Error('child_exited_before_boundary:' + code + ':' + err.slice(-300))); });
+        timer = setTimeout(() => { child.kill('SIGKILL');
+          reject(Error('boundary_timeout:' + mode + ':' + out.slice(-300) + ':' + err.slice(-300))); }, 3000);
+        timer.unref();
+      });
+      await ready; child.kill('SIGKILL'); await once(child, 'exit');
+      let replay = 0;
+      const restored = await createRCCRuntime({stateDir: dir,
+        execute: async () => { replay++; throw Error('original must never replay'); },
+        executeContinuation: async () => { replay++; throw Error('continuation must never replay'); }});
+      t.after(async () => { await restored.close(); });
+      const end = restored.status({schema: 1, task_id: request.task_id});
+      assert.equal(end.state, mode === 'pending' ? 'held' : 'effects_uncertain');
+      assert.equal(end.error, mode === 'pending' ? 'continuation_pending_recovery_required' :
+        'restart_active_dispatch_no_replay');
+      assert.equal(replay, 0);
+      assert.match(restored._load(request.task_id).children[0].output, /Original native output/);
+    }
+  });
 
 test('plain arithmetic is exact and zero-model; explicit routing test never shortcuts', async t => {
   const dir = await fixture(t);
@@ -740,4 +1026,300 @@ test('quiesce pauses new admission without cancelling a live child and reports s
     await new Promise(resolve => setTimeout(resolve, 20));
   }
   assert.equal(last.safe_to_stop, true); assert.equal(last.active_dispatches, 0);
+});
+
+test('trusted original source repair stages once, releases slot, and reconciles same task without quality upgrade', async t => {
+  const dir = await fixture(t);
+  const request = task(dir, 'Repair and stage this exact original source', 'auto', {write: true,
+    conversationID: randomUUID(), submissionID: randomUUID()});
+  const row = candidate('write', 'codex', 'openai_codex', {scope: 'workspace_write', allowedPaths: ['**']});
+  let writes = 0, stages = 0, observations = 0, selectedHandoff;
+  const runtime = await createRCCRuntime({stateDir: dir,
+    catalog: async value => catalog(value, [row]),
+    plan: async ({task: value}) => plan(value, [node('one', row.id,
+      {instruction: value.request, scope: 'workspace_write', ownedPaths: ['**']})]),
+    execute: async ticket => { writes++; return repairExecution(dir, ticket); },
+    stageSelfUpdate: async (payload, signal) => {
+      stages++; assert.equal(signal.aborted, false);
+      assert.deepEqual(Object.keys(payload).sort(), ['parent_record_path', 'parent_record_sha256', 'ticket']);
+      assert.equal(payload.ticket.original_request, request.request);
+      assert.equal(payload.ticket.host_context.conversation_id, request.host_context.conversation_id);
+      assert.equal(payload.ticket.host_context.submission_id, request.host_context.submission_id);
+      assert.equal(payload.parent_record_sha256, sha(await readFile(payload.parent_record_path)));
+      selectedHandoff = installHandoff(request, payload); return selectedHandoff;
+    },
+    reconcileInstallation: async payload => {
+      observations++; assert.equal(payload.task_id, request.task_id);
+      assert.deepEqual(payload.install_handoff, selectedHandoff);
+      return {...selectedHandoff, state: 'installed', installed_receipt: '/private/installed/verified.json'};
+    }, verifyTask: () => { throw Error('stage must not use semantic judge'); }});
+  t.after(async () => { await runtime.close(); });
+  await runtime.submit(request);
+  const awaiting = await wait(runtime, request);
+  assert.equal(awaiting.state, 'awaiting_install'); assert.equal(awaiting.result.task_verified, false);
+  assert.equal(awaiting.result.parity_state, 'unverified');
+  await new Promise(resolve => setTimeout(resolve, 10));
+  assert.equal(runtime.activeWorkers, 0); assert.equal(runtime.controllers.size, 0);
+  assert.equal(runtime.db.prepare('SELECT count(*) AS n FROM quota_leases').get().n, 0);
+  assert.equal(runtime.db.prepare('SELECT count(*) AS n FROM write_leases').get().n, 0);
+  await runtime.submit(request); assert.equal(writes, 1); assert.equal(stages, 1);
+  const installed = await runtime.statusWithInstallation({schema: 1, task_id: request.task_id});
+  assert.equal(installed.state, 'returned_unverified'); assert.equal(installed.result.task_verified, false);
+  assert.equal(installed.result.output, 'Verified native source repair'); assert.equal(observations, 1);
+  assert.equal(writes, 1); assert.equal(stages, 1);
+});
+
+test('both native handbacks stage source within one task and preserve every raw parent candidate', async t => {
+  const dir = await fixture(t), request = task(dir, 'Complete this source-bound original task', 'auto', {write: true});
+  request.budget.max_attempts = 3;
+  const row = candidate('write', 'claude', 'anthropic_shared', {scope: 'workspace_write', allowedPaths: ['**']});
+  const phases = []; let stageCalls = 0;
+  const runtime = await createRCCRuntime({stateDir: dir,
+    catalog: async value => catalog(value, [row]),
+    plan: async () => plan(request, [node('one', row.id,
+      {instruction: request.request, scope: 'workspace_write', ownedPaths: ['**']})]),
+    execute: ticket => handbackExecution(dir, ticket, {kind: 'both', adoption: 'rejected', output: 'RAW INITIAL REJECTED'}),
+    executeContinuation: async ticket => {
+      phases.push(ticket.continuation.kind);
+      return ticket.continuation.kind === 'full_access_required' ?
+        handbackExecution(dir, ticket, {kind: 'os1_change_required', output: 'RAW FULL ACCESS',
+          nativeSessionID: ticket.continuation.native_session_id}) :
+        repairExecution(dir, ticket, {output: 'RAW SOURCE REPAIR'});
+    }, stageSelfUpdate: async payload => { stageCalls++; return installHandoff(request, payload); }});
+  t.after(async () => { await runtime.close(); });
+  await runtime.submit(request); const answer = await wait(runtime, request);
+  assert.equal(answer.state, 'awaiting_install'); assert.equal(stageCalls, 1);
+  assert.deepEqual(phases, ['full_access_required', 'os1_change_required']);
+  for (const text of ['RAW INITIAL REJECTED', 'RAW FULL ACCESS', 'RAW SOURCE REPAIR']) assert.ok(answer.result.output.includes(text));
+  const child = runtime._load(request.task_id).children[0];
+  assert.equal(child.attempts, 3); assert.equal(child.continuation_history.length, 3);
+  assert.equal(child.source_candidate.output, 'RAW SOURCE REPAIR');
+  assert.equal(answer.result.native_summaries.length, 3);
+});
+
+test('source marker prose, read-only, split task and foreign original workspace cannot authorize stage', async t => {
+  const dir = await fixture(t);
+  const foreignRoot = join(dir, 'unrelated-source'); await mkdir(foreignRoot, {mode: 0o700});
+  for (const mode of ['marker', 'read-only', 'split', 'foreign', 'partial-instruction']) {
+    const root = join(dir, mode); await mkdir(root, {mode: 0o700});
+    const request = task(root, `repair ${mode}`, 'auto', {write: mode !== 'read-only'});
+    const write = mode !== 'read-only';
+    const row = candidate('write', 'codex', 'openai_codex',
+      {scope: write ? 'workspace_write' : 'read_only', allowedPaths: write ? ['**'] : []});
+    let stages = 0;
+    const runtime = await createRCCRuntime({stateDir: root,
+      catalog: async value => catalog(value, [row]),
+      plan: async () => plan(request, [node('one', row.id, {instruction: mode === 'partial-instruction' ? 'Only one fragment' : request.request,
+        scope: row.scope, ownedPaths: write ? ['**'] : []}), ...(mode === 'split' ?
+        [node('two', row.id, {dependencies: ['one'], scope: row.scope, ownedPaths: ['**']})] : [])]),
+      execute: async ticket => mode === 'marker' ? execution(ticket, {output: 'OS1_CHANGE_REQUIRED repair_source fake',
+        task_verified: false, task_quality: 'execution_only'}) : repairExecution(root, ticket,
+        mode === 'foreign' ? {repair_source: {source_root: realpathSync(foreignRoot), source_head: 'c'.repeat(40),
+          source_before_head: 'a'.repeat(40), source_before_sha256: 'b'.repeat(64), protected_source_sha256: 'd'.repeat(64),
+          source_before_clean: true, changed_paths: ['products/os1-mac-runtime/Sources/test.swift']}} : {}),
+      stageSelfUpdate: async () => { stages++; throw Error('must not stage'); }});
+    t.after(async () => { await runtime.close(); });
+    await runtime.submit(request); const result = await wait(runtime, request);
+    if (mode === 'foreign') assert.equal(result.state, 'held');
+    else assert.notEqual(result.state, 'awaiting_install');
+    assert.equal(stages, 0, mode);
+  }
+});
+
+test('source parent receipt must be private, unmodified, no symlink or hard link', async t => {
+  const dir = await fixture(t);
+  for (const mode of ['tampered', 'symlink', 'hardlink', 'public']) {
+    const root = join(dir, mode); await mkdir(root, {mode: 0o700});
+    const request = task(root, `verified receipt ${mode}`, 'auto', {write: true});
+    const row = candidate('write', 'codex', 'openai_codex', {scope: 'workspace_write', allowedPaths: ['**']});
+    let stages = 0;
+    const runtime = await createRCCRuntime({stateDir: root,
+      catalog: async value => catalog(value, [row]),
+      plan: async () => plan(request, [node('one', row.id, {instruction: request.request, scope: 'workspace_write', ownedPaths: ['**']})]),
+      execute: async ticket => {
+        const record = await repairExecution(root, ticket), path = record.native_receipt;
+        if (mode === 'tampered') await writeFile(path, JSON.stringify({...record, output: 'FORGED'}));
+        else if (mode === 'symlink') {
+          const target = path + '.original'; await writeFile(target, await readFile(path), {mode: 0o600});
+          await rm(path); await symlink(target, path);
+        } else if (mode === 'hardlink') await link(path, path + '.alias');
+        else await chmod(path, 0o644);
+        return record;
+      }, stageSelfUpdate: async () => { stages++; throw Error('must not stage'); }});
+    t.after(async () => { await runtime.close(); });
+    await runtime.submit(request); const result = await wait(runtime, request);
+    assert.equal(result.state, 'held', mode); assert.equal(stages, 0, mode);
+    assert.equal(runtime._load(request.task_id).children[0].source_candidate.output, 'Verified native source repair');
+  }
+});
+
+test('typed stage preflight denies without uncertainty/retry; malformed denial and lost result stay uncertain', async t => {
+  const dir = await fixture(t);
+  for (const reason of ['source_authority_missing', 'source_changed_or_uncommitted', 'staging_intent_busy',
+    'protected_gate_changed', 'foreign-parent', 'unknown-reason', 'lost-result']) {
+    const root = join(dir, reason); await mkdir(root, {mode: 0o700});
+    const request = task(root, `stage denial ${reason}`, 'auto', {write: true});
+    const row = candidate('write', 'codex', 'openai_codex', {scope: 'workspace_write', allowedPaths: ['**']});
+    let writes = 0, stages = 0;
+    const runtime = await createRCCRuntime({stateDir: root,
+      catalog: async value => catalog(value, [row]),
+      plan: async () => plan(request, [node('one', row.id, {instruction: request.request, scope: 'workspace_write', ownedPaths: ['**']})]),
+      execute: async ticket => { writes++; return repairExecution(root, ticket); },
+      stageSelfUpdate: async payload => { stages++; if (reason === 'lost-result') throw Error('return lost');
+        return {schema: 1, status: 'not_dispatched', reason,
+          parent_record_sha256: reason === 'foreign-parent' ? 'f'.repeat(64) : payload.parent_record_sha256}; }});
+    t.after(async () => { await runtime.close(); });
+    await runtime.submit(request); const result = await wait(runtime, request);
+    assert.equal(result.state, ['foreign-parent', 'unknown-reason', 'lost-result'].includes(reason) ? 'effects_uncertain' : 'held', reason);
+    await runtime.submit(request); assert.equal(writes, 1); assert.equal(stages, 1);
+    assert.equal(runtime._load(request.task_id).children[0].source_candidate.output, 'Verified native source repair');
+  }
+});
+
+test('late stage handoff after cancellation grace is preserved and cancelled without source replay', async t => {
+  const dir = await fixture(t), request = task(dir, 'repair with late cancellation', 'auto', {write: true});
+  const row = candidate('write', 'codex', 'openai_codex', {scope: 'workspace_write', allowedPaths: ['**']});
+  let started, release, saved, writes = 0, stages = 0, cancels = 0;
+  const dispatched = new Promise(resolve => { started = resolve; });
+  const waitStage = new Promise(resolve => { release = resolve; });
+  const runtime = await createRCCRuntime({stateDir: dir, cancelGraceMs: 100,
+    catalog: async value => catalog(value, [row]),
+    plan: async () => plan(request, [node('one', row.id, {instruction: request.request, scope: 'workspace_write', ownedPaths: ['**']})]),
+    execute: async ticket => { writes++; return repairExecution(dir, ticket); },
+    stageSelfUpdate: async (payload, signal) => { stages++; saved = installHandoff(request, payload);
+      started(); await waitStage; assert.equal(signal.aborted, true); return saved; },
+    cancelInstallation: async payload => { cancels++; assert.deepEqual(payload.install_handoff, saved);
+      return {...saved, state: 'cancelled'}; }});
+  t.after(async () => { await runtime.close(); });
+  await runtime.submit(request); await dispatched;
+  assert.equal((await runtime.cancelWithInstallation({schema: 1, task_id: request.task_id})).state, 'cancelling');
+  assert.equal((await wait(runtime, request)).state, 'effects_uncertain');
+  release();
+  for (let i = 0; i < 50 && !runtime.status({schema: 1, task_id: request.task_id}).install_handoff; i++)
+    await new Promise(resolve => setTimeout(resolve, 10));
+  const late = runtime.status({schema: 1, task_id: request.task_id});
+  assert.equal(late.state, 'effects_uncertain'); assert.deepEqual(late.install_handoff, saved);
+  const cancelled = await runtime.cancelWithInstallation({schema: 1, task_id: request.task_id});
+  assert.equal(cancelled.state, 'cancelled'); assert.equal(cancels, 1);
+  await runtime.submit(request); assert.equal(writes, 1); assert.equal(stages, 1);
+});
+
+test('restart reconciles awaiting, uncertain and held handoffs with no native write or restage', async t => {
+  const dir = await fixture(t), request = task(dir, 'repair survives restart', 'auto', {write: true});
+  const row = candidate('write', 'codex', 'openai_codex', {scope: 'workspace_write', allowedPaths: ['**']});
+  let handoff;
+  const runtime = await createRCCRuntime({stateDir: dir,
+    catalog: async value => catalog(value, [row]),
+    plan: async () => plan(request, [node('one', row.id, {instruction: request.request, scope: 'workspace_write', ownedPaths: ['**']})]),
+    execute: ticket => repairExecution(dir, ticket),
+    stageSelfUpdate: async payload => { handoff = installHandoff(request, payload); return handoff; }});
+  await runtime.submit(request); assert.equal((await wait(runtime, request)).state, 'awaiting_install');
+  await runtime.close();
+  let observations = 0;
+  const reopened = await createRCCRuntime({stateDir: dir,
+    execute: () => { throw Error('writer replay'); }, stageSelfUpdate: () => { throw Error('stage replay'); },
+    reconcileInstallation: async () => { observations++; return {...handoff,
+      state: observations === 1 ? 'effects_uncertain' : observations === 2 ? 'failed' : 'installed',
+      installed_receipt: observations < 3 ? null : '/private/installed/verified.json'}; }});
+  t.after(async () => { await reopened.close(); });
+  const status = {schema: 1, task_id: request.task_id};
+  assert.equal((await reopened.statusWithInstallation(status)).state, 'effects_uncertain');
+  assert.equal((await reopened.statusWithInstallation(status)).state, 'held');
+  const final = await reopened.statusWithInstallation(status);
+  assert.equal(final.state, 'returned_unverified'); assert.equal(final.result.task_verified, false);
+  assert.equal(observations, 3); await reopened.submit(request); assert.equal(observations, 3);
+});
+
+test('foreign installation receipt is rejected atomically, then valid later receipt reconciles', async t => {
+  const dir = await fixture(t), request = task(dir, 'reject foreign install receipt', 'auto', {write: true});
+  const row = candidate('write', 'codex', 'openai_codex', {scope: 'workspace_write', allowedPaths: ['**']});
+  let saved, reads = 0;
+  const runtime = await createRCCRuntime({stateDir: dir,
+    catalog: async value => catalog(value, [row]),
+    plan: async () => plan(request, [node('one', row.id, {instruction: request.request, scope: 'workspace_write', ownedPaths: ['**']})]),
+    execute: ticket => repairExecution(dir, ticket),
+    stageSelfUpdate: async payload => { saved = installHandoff(request, payload); return saved; },
+    reconcileInstallation: async () => ({...saved, task_id: ++reads === 1 ? 'foreign-task' : saved.task_id,
+      state: 'installed', installed_receipt: '/private/installed/receipt.json'})});
+  t.after(async () => { await runtime.close(); });
+  await runtime.submit(request); await wait(runtime, request);
+  const rejected = await runtime.statusWithInstallation({schema: 1, task_id: request.task_id});
+  assert.equal(rejected.state, 'effects_uncertain'); assert.deepEqual(rejected.install_handoff, saved);
+  assert.equal(rejected.result.output, 'Verified native source repair');
+  assert.equal((await runtime.statusWithInstallation({schema: 1, task_id: request.task_id})).state, 'returned_unverified');
+});
+
+test('optional host UUIDs pass unchanged, nil omission is accepted and explicit null or malformed IDs reject', async t => {
+  const dir = await fixture(t);
+  for (const extras of [{}, {conversationID: randomUUID(), submissionID: randomUUID()},
+    {conversationID: null}, {submissionID: 'bad-id'}]) {
+    const request = task(dir, '1+1', 'auto', extras);
+    const runtime = await createRCCRuntime({stateDir: join(dir, randomUUID())});
+    t.after(async () => { await runtime.close(); });
+    if (extras.conversationID === null || extras.submissionID === 'bad-id')
+      await assert.rejects(runtime.submit(request), /host_context_invalid/);
+    else { await runtime.submit(request); assert.equal((await wait(runtime, request)).state, 'completed'); }
+  }
+});
+
+test('admitted installation cancel is serialized, quiescence-visible and fully awaited before owner shutdown', async t => {
+  const dir = await fixture(t), request = task(dir, 'serialize installation observation', 'auto', {write: true});
+  const row = candidate('write', 'codex', 'openai_codex', {scope: 'workspace_write', allowedPaths: ['**']});
+  let saved, entered, release, calls = 0;
+  const started = new Promise(resolve => { entered = resolve; });
+  const pending = new Promise(resolve => { release = resolve; });
+  const runtime = await createRCCRuntime({stateDir: dir,
+    catalog: async value => catalog(value, [row]),
+    plan: async () => plan(request, [node('one', row.id, {instruction: request.request, scope: 'workspace_write', ownedPaths: ['**']})]),
+    execute: ticket => repairExecution(dir, ticket),
+    stageSelfUpdate: async payload => { saved = installHandoff(request, payload); return saved; },
+    cancelInstallation: async () => { calls++; entered(); await pending; return {...saved, state: 'cancelled'}; },
+    reconcileInstallation: async () => { throw Error('cancelled/paused task must not observe again'); }});
+  await runtime.submit(request); await wait(runtime, request);
+  const requestID = {schema: 1, task_id: request.task_id};
+  const cancel = runtime.cancelWithInstallation(requestID); await started;
+  const first = runtime.quiesce({schema: 1, request_id: 'upgrade-observation'});
+  assert.equal(first.safe_to_stop, false); assert.equal(first.active_dispatches, 1);
+  assert.equal((await runtime.statusWithInstallation(requestID)).state, 'awaiting_install');
+  let stopped = false;
+  const close = runtime.close().then(() => { stopped = true; });
+  await new Promise(resolve => setTimeout(resolve, 20)); assert.equal(stopped, false);
+  release(); assert.equal((await cancel).state, 'cancelled'); await close;
+  assert.equal(calls, 1);
+  const reopened = await createRCCRuntime({stateDir: dir});
+  t.after(async () => { await reopened.close(); });
+  assert.equal(reopened.status(requestID).state, 'cancelled');
+  assert.equal(reopened.quiesce({schema: 1, request_id: 'drained'}).safe_to_stop, true);
+});
+
+test('native stage can directly return each bound install state, and absent nullable fields remain compatible', async t => {
+  const dir = await fixture(t);
+  for (const state of ['staged', 'installed', 'failed', 'cancelled', 'effects_uncertain']) {
+    const root = join(dir, state); await mkdir(root, {mode: 0o700});
+    const request = task(root, `direct stage ${state}`, 'auto', {write: true});
+    const row = candidate('write', 'codex', 'openai_codex', {scope: 'workspace_write', allowedPaths: ['**']});
+    const runtime = await createRCCRuntime({stateDir: root,
+      catalog: async value => catalog(value, [row]),
+      plan: async () => plan(request, [node('one', row.id, {instruction: request.request, scope: 'workspace_write', ownedPaths: ['**']})]),
+      execute: ticket => repairExecution(root, ticket),
+      stageSelfUpdate: async payload => {
+        const result = installHandoff(request, payload, {state,
+          installed_receipt: state === 'installed' ? '/private/installed/verified.json' : null});
+        if (state !== 'installed') delete result.installed_receipt;
+        return result;
+      }});
+    t.after(async () => { await runtime.close(); });
+    await runtime.submit(request); const result = await wait(runtime, request);
+    assert.equal(result.state, {staged: 'awaiting_install', installed: 'returned_unverified', failed: 'held',
+      cancelled: 'cancelled', effects_uncertain: 'effects_uncertain'}[state], state);
+    assert.equal(result.install_handoff.state, state); assert.equal(result.result.task_verified, false);
+    if (state !== 'installed') assert.equal(result.install_handoff.installed_receipt, null);
+  }
+  const request = task(dir, 'Normal native record with null optional repair source');
+  const runtime = await createRCCRuntime({stateDir: join(dir, 'null-repair'),
+    catalog: async value => catalog(value, [candidate('read')]),
+    plan: async () => plan(request, [node('one', 'read')]),
+    execute: async ticket => execution(ticket, {repair_source: null})});
+  t.after(async () => { await runtime.close(); });
+  await runtime.submit(request); assert.equal((await wait(runtime, request)).state, 'returned_unverified');
 });

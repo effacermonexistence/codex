@@ -1,6 +1,7 @@
 import Foundation
 import Darwin
 import OS1System
+import CryptoKit
 
 
 /// OS-1 repairing OS-1, end to end. A write-scope task edits the source
@@ -11,6 +12,28 @@ import OS1System
 /// receipt into the conversation that asked for the change. Public state only;
 /// the installer's own signature, self-test and idle checks still apply.
 public enum SelfUpdate {
+    /// Serializes staged-intent mutations across UI, apply and core cancel.
+    /// Advisory ownership is never guessed from a stale filename or timestamp.
+    public final class IntentLease: @unchecked Sendable {
+        private let descriptor: Int32
+        private init(_ descriptor: Int32) { self.descriptor = descriptor }
+        deinit { flock(descriptor, LOCK_UN); Darwin.close(descriptor) }
+        public static func tryAcquire(root: String, home: URL = FileManager.default.homeDirectoryForCurrentUser) throws -> IntentLease? {
+            let directory = home.appendingPathComponent(".os1/self-update/intent-locks")
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+            let canonical = URL(fileURLWithPath: root).resolvingSymlinksInPath().path
+            let key = SHA256.hash(data: Data(canonical.utf8)).map { String(format: "%02x", $0) }.joined()
+            let fd = Darwin.open(directory.appendingPathComponent(key + ".lock").path, O_CREAT | O_RDWR | O_NOFOLLOW | O_CLOEXEC, 0o600)
+            guard fd >= 0 else { throw NSError(domain: "SelfUpdate.IntentLease", code: 1) }
+            var st = stat()
+            guard fstat(fd, &st) == 0, st.st_uid == geteuid(), (st.st_mode & S_IFMT) == S_IFREG,
+                  st.st_nlink == 1, (st.st_mode & 0o077) == 0 else {
+                Darwin.close(fd); throw NSError(domain: "SelfUpdate.IntentLease", code: 2)
+            }
+            guard flock(fd, LOCK_EX | LOCK_NB) == 0 else { Darwin.close(fd); return nil }
+            return IntentLease(fd)
+        }
+    }
     /// Installation identity is independent of whichever staged executable is running.
     public static func installedAppURL(home: URL = FileManager.default.homeDirectoryForCurrentUser) -> URL {
         home.appendingPathComponent("Applications/OS-1 CLODEX.app")
@@ -73,6 +96,11 @@ public enum SelfUpdate {
         public var applyAttempts = 0
         public var lastAttemptAt: Date? = nil
         public var lastError: String? = nil
+        /// Original OpenClaw task binding; absent in pre-RCC/historical intents.
+        public var originalTaskID: String? = nil
+        public var requestSHA256: String? = nil
+        public var stagedIntentID: String? = nil
+        public var stagedReceiptSHA256: String? = nil
 
         public init(build: Int, version: String, sourceRoot: String, sourceCommit: String?, stagedAppSHA256: String,
                     stagedCLISHA256: String, stagedAt: Date = Date(), conversationID: String?, submissionID: String?,
@@ -179,6 +207,8 @@ public enum SelfUpdate {
     /// applied, and only while no task is in flight; an "applying" mark that
     /// never produced an outcome is retried after `applyingStaleAfter`.
     public static func decision(intent: Intent, installedBuild: Int, busy: Bool, now: Date = Date()) -> ApplyDecision {
+        // A stopped RCC install is inert; it must never fall through to apply.
+        if intent.state == "cancelled" { return .stale }
         if intent.build <= installedBuild { return .notNewer }
         if now.timeIntervalSince(intent.stagedAt) > intentMaxAge { return .stale }
         if intent.applyAttempts >= maximumApplyAttempts { return .exhausted }

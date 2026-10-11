@@ -77,7 +77,10 @@ enum RCCRuntimeGatewayClient {
         let data: Data
         let state: String
         let revision: Int
-        var terminal: Bool { ["held", "completed", "returned_unverified", "cancelled", "effects_uncertain", "failed"].contains(state) }
+        // Observer delivery is not task completion. A staged installation
+        // must release this CLI/UI observer so the existing installer can
+        // drain; the original task remains durable in the same core.
+        var deliverable: Bool { ["held", "completed", "returned_unverified", "awaiting_install", "cancelled", "effects_uncertain", "failed"].contains(state) }
     }
     private struct Limits {
         var rpc: TimeInterval = 15
@@ -110,6 +113,60 @@ enum RCCRuntimeGatewayClient {
                                 limits: Limits(), fixture: false, cancellation: { cancellation.requested || ExecutionCancellation.isCancelled }, progress: progress)
             }.value
         } onCancel: { cancellation.request() }
+    }
+
+    /// One observation of the existing task, never another submission. The
+    /// post-install runtime may supervise its persistent Gateway, but it may
+    /// not replay the staged task or call a provider to recreate its result.
+    static func status(taskID: String, requestSHA256: String, configuration: Configuration) async throws -> Data {
+        try await Task.detached(priority: .utility) {
+            try queryExisting(taskID: taskID, requestSHA256: requestSHA256, cancelling: false,
+                configuration: configuration,
+                root: FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".os1/rcc-runtime"),
+                limits: Limits(), fixture: false)
+        }.value
+    }
+
+    /// Cancellation remains an idempotent intent owned by the original core.
+    /// A lost acknowledgement is reconciled by status, never by a new run.
+    static func cancel(taskID: String, requestSHA256: String, configuration: Configuration) async throws -> Data {
+        try await Task.detached(priority: .utility) {
+            try queryExisting(taskID: taskID, requestSHA256: requestSHA256, cancelling: true,
+                configuration: configuration,
+                root: FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".os1/rcc-runtime"),
+                limits: Limits(), fixture: false)
+        }.value
+    }
+
+    static func statusForOfflineFixture(taskID: String, requestSHA256: String,
+                                       configuration: Configuration, root: URL, cancelling: Bool = false) throws -> Data {
+        guard root.standardizedFileURL.path.hasPrefix(NSTemporaryDirectory()) else { throw Failure.privateStateInvalid }
+        return try queryExisting(taskID: taskID, requestSHA256: requestSHA256, cancelling: cancelling,
+            configuration: configuration, root: root, limits: Limits(rpc: 1, ready: 3, poll: 0.03, observe: 5), fixture: true)
+    }
+
+    private static func queryExisting(taskID: String, requestSHA256: String, cancelling: Bool,
+                                      configuration: Configuration, root: URL,
+                                      limits: Limits, fixture: Bool) throws -> Data {
+        guard taskID.range(of: "^[A-Za-z0-9_-]{1,128}$", options: .regularExpression) != nil,
+              requestSHA256.range(of: "^[a-f0-9]{64}$", options: .regularExpression) != nil else { throw Failure.invalidRequest }
+        if !fixture { try checkInstallerMaintenance(root: root) }
+        let paths = Paths(root: root)
+        let owner = try ensureGateway(configuration: configuration, paths: paths, limits: limits,
+                                      fixture: fixture, cancelled: { false })
+        let query = try JSONSerialization.data(withJSONObject: ["schema": 1, "task_id": taskID], options: [.sortedKeys])
+        if !fixture { try checkInstallerMaintenance(root: root) }
+        if cancelling {
+            do {
+                let raw = try rpc("os1.rcc.cancel", parameters: query, owner: owner, configuration: configuration,
+                                  paths: paths, timeout: limits.rpc, fixture: fixture)
+                return try snapshot(raw, id: taskID, requestSHA256: requestSHA256, minimumRevision: 0).data
+            } catch let error as Failure where error == .rpcRejected { throw error }
+            catch { /* effects of the cancel intent are reconciled below */ }
+        }
+        let raw = try rpc("os1.rcc.status", parameters: query, owner: owner, configuration: configuration,
+                          paths: paths, timeout: limits.rpc, fixture: fixture)
+        return try snapshot(raw, id: taskID, requestSHA256: requestSHA256, minimumRevision: 0).data
     }
 
     struct UpgradeReceipt: Codable, Sendable {
@@ -271,7 +328,7 @@ enum RCCRuntimeGatewayClient {
         var cancellationDeadline: Date?
         while let current = last {
             if current.revision > emittedRevision { progress(current.data); emittedRevision = current.revision }
-            if current.terminal { return current.data }
+            if current.deliverable { return current.data }
             if cancellation(), !cancellationSent {
                 cancellationSent = true
                 cancellationDeadline = Date().addingTimeInterval(min(15, limits.rpc + 2))
@@ -315,7 +372,7 @@ enum RCCRuntimeGatewayClient {
               value["request_sha256"] as? String == requestSHA256,
               let revision = value["revision"] as? Int, revision >= minimumRevision,
               let state = value["state"] as? String,
-              ["held", "queued", "planning", "running", "waiting", "cancelling", "completed", "returned_unverified", "cancelled", "effects_uncertain", "failed"].contains(state),
+              ["held", "queued", "planning", "running", "waiting", "cancelling", "completed", "returned_unverified", "awaiting_install", "cancelled", "effects_uncertain", "failed"].contains(state),
               let children = value["children"] as? [[String: Any]], children.count <= 64,
               children.allSatisfy({ ($0["id"] as? String).map { !$0.isEmpty && $0.utf8.count <= 128 } == true }),
               Set(children.compactMap { $0["id"] as? String }).count == children.count else { throw Failure.snapshotInvalid }
@@ -324,6 +381,12 @@ enum RCCRuntimeGatewayClient {
                   result["execution_verified"] is Bool, result["task_verified"] is Bool,
                   result["parity_state"] is String else { throw Failure.snapshotInvalid }
             if state == "completed", result["task_verified"] as? Bool != true { throw Failure.snapshotInvalid }
+        }
+        if state == "awaiting_install" {
+            guard let handoff = value["install_handoff"] as? [String: Any],
+                  handoff["task_id"] as? String == id,
+                  handoff["request_sha256"] as? String == requestSHA256,
+                  (value["result"] as? [String: Any])?["task_verified"] as? Bool != true else { throw Failure.snapshotInvalid }
         }
         return Snapshot(data: data, state: state, revision: revision)
     }

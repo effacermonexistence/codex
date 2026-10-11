@@ -1,15 +1,16 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
+import { constants } from 'node:fs';
 import { chmod, lstat, mkdir, open } from 'node:fs/promises';
 import { realpathSync } from 'node:fs';
-import { isAbsolute, join } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative } from 'node:path';
 
 // RCC owns the task state. Model output supplies candidates, never authority.
 // The pinned OpenClaw plugin must call this module from its long-lived Gateway
 // service; importing it alone does not activate a route, tool, or provider.
 const ID = /^[A-Za-z0-9_-]{1,128}$/;
 const HASH = /^[a-f0-9]{64}$/;
-const TERMINAL = new Set(['completed', 'returned_unverified', 'held', 'failed', 'cancelled', 'effects_uncertain']);
+const TERMINAL = new Set(['completed', 'returned_unverified', 'awaiting_install', 'held', 'failed', 'cancelled', 'effects_uncertain']);
 const QUALITY = new Set(['policy_admitted', 'exact_domain_verified', 'reference_equivalent', 'reference_above', 'unverified', 'mismatch']);
 const PARITY = new Set(['unverified', 'reference_equivalent', 'reference_above', 'mismatch']);
 const TASK_QUALITY = new Set(['execution_only', 'task_verified', 'failed', 'unverified']);
@@ -21,6 +22,13 @@ const EFFORTS = new Set(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'm
 const AVAILABILITY = new Set(['available', 'unavailable', 'unknown']);
 const DISPATCH = new Set(['not_dispatched', 'dispatched', 'unknown']);
 const SIDE_EFFECTS = new Set(['none', 'possible', 'confirmed']);
+const HANDBACK_KINDS = new Set(['full_access_required', 'os1_change_required', 'both']);
+const HANDBACK_ADOPTION = new Set(['returned', 'rejected']);
+const INSTALL_STATES = new Set(['staged', 'installed', 'failed', 'cancelled', 'effects_uncertain']);
+const INSTALL_UNRESOLVED = new Set(['staged', 'failed', 'effects_uncertain']);
+const STAGE_DENIALS = new Set(['source_authority_missing', 'source_changed_or_uncommitted',
+  'staging_intent_busy', 'protected_gate_changed']);
+const GIT_HEAD = /^[a-f0-9]{40}$/;
 const MAX_TASK_BYTES = 1_000_000;
 const MAX_CATALOG_BYTES = 1_000_000;
 const MAX_OUTPUT_BYTES = 256_000;
@@ -49,6 +57,10 @@ function allowedPaths(paths) {
     path.split('/').every(part => part && part !== '.' && part !== '..') && !path.includes('\\'))));
 }
 function pathsOverlap(a, b) { return a === '**' || b === '**' || a === b || a.startsWith(b + '/') || b.startsWith(a + '/'); }
+function within(root, target) {
+  const path = relative(root, target);
+  return path === '' || (!path.startsWith('..' + '/') && path !== '..' && !isAbsolute(path));
+}
 function validUsage(value) {
   if (value == null) return true;
   if (!plain(value) || Buffer.byteLength(stable(value)) > MAX_USAGE_BYTES) return false;
@@ -60,6 +72,95 @@ function validUsage(value) {
       key === 'metric' ? boundedText(item, 64) : false)) &&
     Object.keys(value).every(key => numeric.has(key) || key === 'cost_units' || key === 'metric') &&
     (value.cost_units == null || boundedText(value.metric, 64));
+}
+function validateHandback(handback, ticket, result) {
+  assert(keys(handback, ['kind', 'native_session_id', 'protected_root', 'source_head',
+    'protected_source_sha256', 'source_fingerprint', 'request_sha256',
+    'parent_attempt_id', 'exit_code', 'cancelled', 'adoption']) &&
+    HANDBACK_KINDS.has(handback.kind) && HANDBACK_ADOPTION.has(handback.adoption) &&
+    ID.test(handback.native_session_id) && boundedText(handback.protected_root, 4_096) &&
+    isAbsolute(handback.protected_root) && GIT_HEAD.test(handback.source_head) &&
+    HASH.test(handback.protected_source_sha256) &&
+    handback.source_fingerprint === ticket.source_fingerprint &&
+    handback.request_sha256 === ticket.request_sha256 &&
+    handback.parent_attempt_id === ticket.attempt_id &&
+    handback.exit_code === 0 && handback.cancelled === false &&
+    result.status === 'succeeded' && result.execution_verified === true &&
+    result.task_verified === false && result.task_quality === 'execution_only' &&
+    result.parity_state === 'unverified' &&
+    result.dispatch_stage === 'dispatched' &&
+    ticket.selected_config.surface === 'claude' &&
+    ticket.selected_config.transport === 'claude_cli' &&
+    ticket.selected_config.scope === 'workspace_write' &&
+    ticket.selected_config.permission_profile === 'workspace_write' &&
+    ticket.host_context?.require_read_only === false &&
+    boundedText(result.output, MAX_OUTPUT_BYTES) &&
+    boundedText(result.native_summary, MAX_NATIVE_SUMMARY_BYTES) &&
+    boundedText(result.native_receipt, 4_096), 'handback_receipt_invalid');
+  if (ticket.continuation) assert(
+    handback.protected_root === ticket.continuation.protected_root &&
+    handback.source_head === ticket.continuation.source_head &&
+    handback.protected_source_sha256 === ticket.continuation.protected_source_sha256 &&
+    (ticket.continuation.kind !== 'full_access_required' ||
+      handback.native_session_id === ticket.continuation.native_session_id),
+  'handback_source_changed_during_continuation');
+}
+
+function validateRepairSource(source, ticket, result) {
+  assert(keys(source, ['source_root', 'source_head', 'source_before_head',
+    'source_before_sha256', 'protected_source_sha256', 'source_before_clean', 'changed_paths']) &&
+    boundedText(source.source_root, 4_096) && isAbsolute(source.source_root) &&
+    GIT_HEAD.test(source.source_head) && GIT_HEAD.test(source.source_before_head) &&
+    HASH.test(source.source_before_sha256) && HASH.test(source.protected_source_sha256) &&
+    source.source_before_clean === true && Array.isArray(source.changed_paths) &&
+    source.changed_paths.length > 0 && source.changed_paths.length <= 512 &&
+    new Set(source.changed_paths).size === source.changed_paths.length &&
+    source.changed_paths.every(path => boundedText(path, 4_096) &&
+      path.startsWith('products/os1-mac-runtime/') && path !== 'products/os1-mac-runtime/release' &&
+      !isAbsolute(path) && !path.includes('\\') &&
+      path.split('/').every(part => part && part !== '.' && part !== '..')) &&
+    result.handback == null && result.status === 'succeeded' &&
+    result.execution_verified === true && result.task_quality !== 'failed' &&
+    ticket.host_context?.require_read_only === false &&
+    ['codex', 'claude'].includes(ticket.selected_config.surface) &&
+    ticket.selected_config.scope === 'workspace_write' &&
+    ticket.selected_config.permission_profile === 'workspace_write' &&
+    (ticket.continuation == null || ticket.continuation.kind === 'os1_change_required') &&
+    (ticket.continuation == null ||
+      (source.source_root === ticket.continuation.protected_root &&
+       source.source_before_head === ticket.continuation.source_head &&
+       source.source_before_sha256 === ticket.continuation.protected_source_sha256)),
+  'repair_source_receipt_invalid');
+}
+
+function installHandoffShape(value) {
+  const required = ['schema', 'task_id', 'request_sha256', 'node_id', 'parent_attempt_id',
+    'source_fingerprint', 'source_root', 'source_head', 'protected_source_sha256',
+    'staged_intent_id', 'staged_receipt_sha256', 'state'];
+  return plain(value) && required.every(key => Object.hasOwn(value, key)) &&
+    Object.keys(value).every(key => required.includes(key) || key === 'installed_receipt') &&
+    INSTALL_STATES.has(value.state) &&
+    (value.state === 'installed' ? boundedText(value.installed_receipt, 4_096) &&
+      isAbsolute(value.installed_receipt) : value.installed_receipt == null);
+}
+function validateInstallHandoff(value, task, node, source, parentAttemptID) {
+  assert(installHandoffShape(value) &&
+    value.schema === 1 && value.task_id === task.task_id &&
+    value.request_sha256 === task.request_sha256 && value.node_id === node.id &&
+    value.parent_attempt_id === parentAttemptID &&
+    value.source_fingerprint === task.source_fingerprint &&
+    value.source_root === source.source_root && value.source_head === source.source_head &&
+    value.protected_source_sha256 === source.protected_source_sha256 &&
+    ID.test(value.staged_intent_id) && HASH.test(value.staged_receipt_sha256),
+  'install_handoff_invalid');
+  return immutable({...value, installed_receipt: value.installed_receipt ?? null});
+}
+
+function validateReconciledInstall(value, prior) {
+  assert(installHandoffShape(value) && Object.entries(prior).every(([key, original]) =>
+      key === 'state' || key === 'installed_receipt' || value[key] === original),
+  'install_reconciliation_invalid');
+  return immutable({...value, installed_receipt: value.installed_receipt ?? null});
 }
 
 export class RCCRuntimeError extends Error {
@@ -106,12 +207,18 @@ function validateTask(task) {
   const h = task.host_context;
   const hostKeys = ['workspace', 'context', 'provider_preference', 'codex_session_id',
     'claude_session_id', 'require_read_only', 'owner_policy'];
-  assert((keys(h, hostKeys) || keys(h, [...hostKeys, 'explicit_routes'])) &&
+  const hostOptionalKeys = ['explicit_routes', 'conversation_id', 'submission_id'];
+  const uuid = value => typeof value === 'string' &&
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
+  assert(plain(h) && hostKeys.every(key => Object.hasOwn(h, key)) &&
+    Object.keys(h).every(key => hostKeys.includes(key) || hostOptionalKeys.includes(key)) &&
     boundedText(h.workspace, 4_096) && isAbsolute(h.workspace) &&
     (h.context === null || (typeof h.context === 'string' && Buffer.byteLength(h.context) <= 500_000)) &&
     boundedText(h.provider_preference, 256) &&
     (h.codex_session_id === null || boundedText(h.codex_session_id, 256)) &&
     (h.claude_session_id === null || boundedText(h.claude_session_id, 256)) &&
+    (h.conversation_id === undefined || uuid(h.conversation_id)) &&
+    (h.submission_id === undefined || uuid(h.submission_id)) &&
     typeof h.require_read_only === 'boolean' &&
     (h.owner_policy === null || plain(h.owner_policy)) &&
     (h.explicit_routes === undefined || h.explicit_routes === null ||
@@ -281,6 +388,7 @@ function publicSnapshot(snapshot) {
         started_at_ms, finished_at_ms, native_receipt,
         output_summary: typeof output === 'string' ? output.slice(0, 600) : null})),
     result: snapshot.result ? immutable(snapshot.result) : null,
+    install_handoff: snapshot.install_handoff ? immutable(snapshot.install_handoff) : null,
     error: snapshot.error ?? null };
 }
 
@@ -290,7 +398,8 @@ function alive(pid) {
   catch (error) { return error.code !== 'ESRCH'; }
 }
 
-export async function createRCCRuntime({stateDir, catalog, plan, execute, verifyTask, emit,
+export async function createRCCRuntime({stateDir, catalog, plan, execute, executeContinuation,
+                                         stageSelfUpdate, reconcileInstallation, cancelInstallation, verifyTask, emit,
                                          maximumWorkers = 4, cancelGraceMs = 5_000} = {}) {
   assert(typeof stateDir === 'string' && isAbsolute(stateDir) && !stateDir.includes('/../'), 'state_dir_invalid');
   assert(int(maximumWorkers, 1, 16), 'worker_limit_invalid');
@@ -329,7 +438,8 @@ export async function createRCCRuntime({stateDir, catalog, plan, execute, verify
     }, false);
   } catch (error) { db.close(); throw error; }
 
-  const runtime = new RCCRuntime({db, token, stateDir, catalog, plan, execute, verifyTask, emit,
+  const runtime = new RCCRuntime({db, token, stateDir, catalog, plan, execute, executeContinuation,
+                                 stageSelfUpdate, reconcileInstallation, cancelInstallation, verifyTask, emit,
                                  maximumWorkers, cancelGraceMs,
                                  transaction});
   runtime.reconcileRestart();
@@ -338,14 +448,20 @@ export async function createRCCRuntime({stateDir, catalog, plan, execute, verify
 }
 
 class RCCRuntime {
-  constructor({db, token, stateDir, catalog, plan, execute, verifyTask, emit,
+  constructor({db, token, stateDir, catalog, plan, execute, executeContinuation,
+               stageSelfUpdate, reconcileInstallation, cancelInstallation, verifyTask, emit,
                maximumWorkers, cancelGraceMs, transaction}) {
     this.db = db; this.token = token; this.stateDir = stateDir;
     this.catalog = catalog; this.plan = plan;
-    this.execute = execute; this.verifyTask = verifyTask; this.emit = emit;
+    this.execute = execute; this.executeContinuation = executeContinuation;
+    this.stageSelfUpdate = stageSelfUpdate;
+    this.reconcileInstallation = reconcileInstallation;
+    this.cancelInstallation = cancelInstallation;
+    this.verifyTask = verifyTask; this.emit = emit;
     this.maximumWorkers = maximumWorkers; this.cancelGraceMs = cancelGraceMs;
     this.transaction = transaction;
     this.runningTasks = new Map(); this.controllers = new Map();
+    this.installationObservations = new Map();
     this.poolReservations = new Set(); this.activeWriteWorkspaces = new Set();
     this.activeWorkers = 0; this.closed = false; this.stopping = false;
     this.quiescing = false;
@@ -413,6 +529,73 @@ class RCCRuntime {
       'status_request_invalid');
     return this._public(value.task_id);
   }
+
+  async statusWithInstallation(value) {
+    const snapshot = this.status(value); // Bind before queuing another native read.
+    if (this.stopping || this.quiescing) return snapshot;
+    return this._serializeInstallation(value.task_id, () => this._observeInstallation(value, false));
+  }
+
+  async cancelWithInstallation(value) {
+    const snapshot = this.status(value);
+    if (this.stopping || this.quiescing) return snapshot;
+    if (!snapshot.install_handoff) return this.cancel(value);
+    return this._serializeInstallation(value.task_id, () => this._observeInstallation(value, true));
+  }
+
+  _serializeInstallation(taskID, operation) {
+    const prior = this.installationObservations.get(taskID) ?? Promise.resolve();
+    const job = prior.catch(() => {}).then(operation);
+    this.installationObservations.set(taskID, job);
+    return job.finally(() => {
+      if (this.installationObservations.get(taskID) === job)
+        this.installationObservations.delete(taskID);
+    });
+  }
+
+  _adoptInstallation(state, observed) {
+    state.install_handoff = observed;
+    state.state = observed.state === 'installed' ? 'returned_unverified' :
+      observed.state === 'cancelled' ? 'cancelled' :
+      observed.state === 'failed' ? 'held' :
+      observed.state === 'effects_uncertain' || state.cancel_requested ? 'effects_uncertain' : 'awaiting_install';
+    state.error = observed.state === 'installed' ? 'installed_task_quality_unverified' :
+      observed.state === 'staged' && !state.cancel_requested ? null :
+      observed.state === 'staged' ? 'cancel_during_source_stage_install_unresolved' : `installation_${observed.state}`;
+  }
+
+  async _observeInstallation(value, cancel) {
+    let snapshot = this.status(value);
+    if (!INSTALL_UNRESOLVED.has(snapshot.install_handoff?.state)) return snapshot;
+    const callback = cancel ? this.cancelInstallation : this.reconcileInstallation;
+    if (cancel) snapshot = publicSnapshot(this._update(value.task_id, 'install_cancel_requested', state => {
+      state.cancel_requested = true;
+    }));
+    if (typeof callback !== 'function') return snapshot;
+    let observed;
+    try {
+      observed = validateReconciledInstall(await callback(immutable({schema: 1,
+        task_id: snapshot.task_id, request_sha256: snapshot.request_sha256,
+        install_handoff: snapshot.install_handoff})), snapshot.install_handoff);
+    } catch (error) {
+      if (!this.closed) this._update(value.task_id, 'install_observation_unverified', state => {
+        if (!INSTALL_UNRESOLVED.has(state.install_handoff?.state)) return;
+        state.state = 'effects_uncertain';
+        state.error = error instanceof RCCRuntimeError ? error.code : 'installation_observation_unavailable';
+      });
+      return this.status(value);
+    }
+    if (this.closed) throw new RCCRuntimeError('runtime_closed');
+    this._update(value.task_id, cancel ? 'install_cancel_reconciled' : 'install_receipt_reconciled', state => {
+      // Installed effect is not semantic quality/parity. Status/cancel never
+      // re-enter the native writer, planner, source stage or provider.
+      if (!INSTALL_UNRESOLVED.has(state.install_handoff?.state)) return;
+      validateReconciledInstall(observed, state.install_handoff);
+      this._adoptInstallation(state, observed);
+    });
+    this._releaseSafeLeases(value.task_id);
+    return this.status(value);
+  }
   events(value) {
     assert(keys(value, ['schema', 'task_id']) && value.schema === 1 && ID.test(value.task_id),
       'events_request_invalid');
@@ -435,7 +618,7 @@ class RCCRuntime {
       const now = Date.now();
       const snapshot = {schema: 1, task, fingerprint, state: 'queued', revision: 1,
         created_at_ms: now, cancel_requested: false, catalog: null, plan: null,
-        children: [], result: null, error: null, spent_cost_units: 0};
+        children: [], result: null, install_handoff: null, error: null, spent_cost_units: 0};
       this.db.prepare('INSERT INTO tasks(task_id,fingerprint,snapshot) VALUES(?,?,?)')
         .run(task.task_id, fingerprint, stable(snapshot));
       this.db.prepare('INSERT INTO events(task_id,revision,kind,at_ms,payload) VALUES(?,?,?,?,?)')
@@ -455,7 +638,8 @@ class RCCRuntime {
       const active = state.children.some(child => child.state === 'running' && child.dispatched_at_ms !== null);
       state.state = active ? 'cancelling' : 'cancelled';
       state.error = active ? 'cancellation_pending_effect_reconciliation' : 'cancelled_before_dispatch';
-      if (!active) for (const child of state.children) if (child.state === 'queued') child.state = 'cancelled';
+      if (!active) for (const child of state.children)
+        if (child.state === 'queued' || child.state === 'waiting') child.state = 'cancelled';
     });
     for (const [attemptID, item] of this.controllers) if (item.taskID === value.task_id)
       item.controller.abort(new RCCRuntimeError('cancel_requested'));
@@ -467,7 +651,8 @@ class RCCRuntime {
         this._update(value.task_id, 'cancel_terminal_missing', state => {
           state.state = 'effects_uncertain'; state.error = 'cancel_no_terminal_receipt';
           for (const child of state.children) if (child.state === 'running') {
-            child.state = 'effects_uncertain';
+            child.state = child.stage?.state === 'dispatched' ? 'completed' : 'effects_uncertain';
+            if (child.stage?.state === 'dispatched') child.stage.state = 'effects_uncertain';
             child.attempt_history.at(-1).state = 'effects_uncertain';
           }
         });
@@ -518,13 +703,13 @@ class RCCRuntime {
       child.state === 'running' && child.dispatched_at_ms !== null).length, 0);
     const inProgress = rows.some(snapshot => ['planning', 'running', 'cancelling'].includes(snapshot.state));
     return {schema: 1, request_id: value.request_id, owner_pid: process.pid,
-      active_dispatches: Math.max(active, this.controllers.size),
+      active_dispatches: Math.max(active, this.controllers.size) + this.installationObservations.size,
       queued_preserved: true, queued_tasks: rows.filter(snapshot => snapshot.state === 'queued').length,
       accepting_submissions: false,
       // A prior terminal effects_uncertain row remains durable and unreplayed;
       // it is not evidence that this owner still has a live child process.
       safe_to_stop: !inProgress && this.runningTasks.size === 0 &&
-        this.controllers.size === 0 && this.activeWorkers === 0};
+        this.controllers.size === 0 && this.activeWorkers === 0 && this.installationObservations.size === 0};
   }
 
   reconcileRestart() {
@@ -533,11 +718,18 @@ class RCCRuntime {
       const state = JSON.parse(row.snapshot);
       if (!['planning', 'running', 'cancelling'].includes(state.state)) continue;
       const dispatched = state.children.some(child => child.state === 'running' && child.dispatched_at_ms !== null);
+      const pendingContinuation = state.children.some(child =>
+        child.state === 'waiting' && child.continuation?.state === 'pending');
       this._update(row.task_id, 'restart_reconciled', snapshot => {
         snapshot.state = dispatched ? 'effects_uncertain' : 'held';
-        snapshot.error = dispatched ? 'restart_active_dispatch_no_replay' : 'restart_before_dispatch';
+        snapshot.error = dispatched ? 'restart_active_dispatch_no_replay' :
+          pendingContinuation ? 'continuation_pending_recovery_required' : 'restart_before_dispatch';
         for (const child of snapshot.children) if (child.state === 'running')
-          child.state = dispatched ? 'effects_uncertain' : 'held';
+          child.state = child.stage ? 'completed' : dispatched ? 'effects_uncertain' : 'held';
+        for (const child of snapshot.children) if (child.stage?.state === 'dispatched')
+          child.stage.state = 'effects_uncertain';
+        for (const child of snapshot.children) if (child.state === 'waiting' &&
+          child.continuation?.state === 'pending') child.state = 'held';
       });
     }
     for (const row of rows) this._releaseSafeLeases(row.task_id);
@@ -582,6 +774,182 @@ class RCCRuntime {
     try { await handle.writeFile(body); await handle.sync(); }
     finally { await handle.close(); }
     return path;
+  }
+
+  async _verifiedNativeReceiptDigest(result) {
+    const directory = join(this.stateDir, 'native-receipts');
+    const path = result.native_receipt;
+    assert(typeof path === 'string' && dirname(path) === directory &&
+      /^[a-f0-9-]{36}\.json$/.test(basename(path)), 'handback_receipt_path_invalid');
+    const parent = await lstat(directory);
+    assert(parent.isDirectory() && !parent.isSymbolicLink() && parent.uid === process.getuid() &&
+      (parent.mode & 0o077) === 0, 'handback_receipt_directory_invalid');
+    const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+    try {
+      const st = await handle.stat();
+      assert(st.isFile() && st.uid === process.getuid() && st.nlink === 1 &&
+        (st.mode & 0o777) === 0o600 && st.size > 0 && st.size <= 1_000_000,
+      'handback_receipt_file_invalid');
+      const bytes = await handle.readFile();
+      const parsed = JSON.parse(bytes.toString('utf8'));
+      assert(stable(parsed) === stable(result) &&
+        parsed.native_receipt === path && parsed.task_id === result.task_id &&
+        parsed.node_id === result.node_id && parsed.attempt_id === result.attempt_id &&
+        parsed.configuration_sha256 === result.configuration_sha256 &&
+        parsed.handback?.native_session_id === result.handback?.native_session_id,
+      'handback_receipt_content_invalid');
+      return sha(bytes);
+    } finally { await handle.close(); }
+  }
+
+  _authorizeHandback(snapshot, node, candidate, result) {
+    const h = result.handback;
+    assert(snapshot.plan.nodes.length === 1 && node.kind === 'agent' &&
+      candidate.surface === 'claude' && candidate.transport === 'claude_cli' &&
+      candidate.scope === 'workspace_write' && candidate.permission_profile === 'workspace_write' &&
+      snapshot.task.host_context.require_read_only === false &&
+      result.execution_verified && result.status === 'succeeded' &&
+      !snapshot.cancel_requested, 'handback_original_authority_unavailable');
+    let sourceRoot, workspace;
+    try {
+      sourceRoot = realpathSync(h.protected_root);
+      workspace = realpathSync(snapshot.task.host_context.workspace);
+    } catch { throw new RCCRuntimeError('handback_source_root_unavailable'); }
+    assert(sourceRoot === h.protected_root && isAbsolute(sourceRoot), 'handback_source_root_not_canonical');
+    if (h.kind === 'os1_change_required')
+      assert(within(sourceRoot, workspace), 'os1_repair_original_workspace_not_authorized');
+    return {sourceRoot, workspace};
+  }
+
+  _authorizeRepairSource(snapshot, node, candidate, result) {
+    const source = result.repair_source;
+    assert(snapshot.plan.nodes.length === 1 && node.kind === 'agent' &&
+      node.instruction === snapshot.task.request && node.dependencies.length === 0 &&
+      ['codex', 'claude'].includes(candidate.surface) &&
+      candidate.scope === 'workspace_write' && candidate.permission_profile === 'workspace_write' &&
+      snapshot.task.host_context.require_read_only === false &&
+      result.status === 'succeeded' && result.execution_verified &&
+      result.side_effects === 'confirmed' && source.source_before_clean === true &&
+      !snapshot.cancel_requested, 'repair_source_original_authority_unavailable');
+    let sourceRoot, workspace;
+    try {
+      sourceRoot = realpathSync(source.source_root);
+      workspace = realpathSync(snapshot.task.host_context.workspace);
+    } catch { throw new RCCRuntimeError('repair_source_root_unavailable'); }
+    assert(sourceRoot === source.source_root && within(sourceRoot, workspace),
+      'repair_source_workspace_unbound');
+  }
+
+  async _stageSourceAfterExecution(taskID, node, candidate, result, ticket) {
+    const source = result.repair_source;
+    // Preserve the raw native candidate before any later source/stage gate.
+    // A recovery failure must not erase earlier continuation reports.
+    this._update(taskID, 'source_candidate_returned', state => {
+      const child = state.children.find(c => c.id === node.id);
+      child.state = 'waiting'; child.dispatched_at_ms = null;
+      child.output ??= result.output;
+      child.execution_verified = false;
+      child.task_quality = 'execution_only'; child.parity_state = 'unverified';
+      child.native_receipt = result.native_receipt;
+      child.native_summary = result.native_summary ?? null;
+      child.native_summaries ??= result.native_summary ? [result.native_summary] : [];
+      child.usage = result.usage ?? null;
+      child.source_candidate = immutable(result);
+      const attempt = child.attempt_history.find(entry => entry.attempt_id === result.attempt_id);
+      if (attempt) {
+        attempt.state = 'source_candidate_returned'; attempt.output = result.output;
+        attempt.native_receipt = result.native_receipt; attempt.usage = result.usage ?? null;
+      }
+    });
+    let snapshot = this._load(taskID);
+    if (!boundedText(snapshot.children.find(c => c.id === node.id).output, MAX_OUTPUT_BYTES)) {
+      this._holdContinuation(taskID, node.id, 'source_combined_output_oversize'); return;
+    }
+    try { this._authorizeRepairSource(snapshot, node, candidate, result); }
+    catch (error) { this._holdContinuation(taskID, node.id,
+      error.code ?? 'repair_source_authority_unavailable'); return; }
+    let receiptSHA;
+    try { receiptSHA = await this._verifiedNativeReceiptDigest(result); }
+    catch (error) { this._holdContinuation(taskID, node.id,
+      error.code ?? 'repair_source_receipt_unavailable'); return; }
+    this._update(taskID, 'source_stage_intent_recorded', state => {
+      const child = state.children.find(c => c.id === node.id);
+      child.state = 'waiting'; child.dispatched_at_ms = null;
+      child.execution_verified = true;
+      child.task_quality = 'execution_only'; child.parity_state = 'unverified';
+      child.native_receipt = result.native_receipt;
+      child.native_summary = result.native_summary ?? null;
+      child.native_summaries ??= result.native_summary ? [result.native_summary] : [];
+      child.usage = result.usage ?? null;
+      child.stage = {state: 'pending', parent_attempt_id: result.attempt_id,
+        parent_native_receipt: result.native_receipt, parent_native_receipt_sha256: receiptSHA,
+        source_root: source.source_root, source_head: source.source_head,
+        protected_source_sha256: source.protected_source_sha256};
+      const attempt = child.attempt_history.find(entry => entry.attempt_id === result.attempt_id);
+      if (attempt) {
+        attempt.state = 'source_stage_intent_recorded';
+        attempt.native_receipt = result.native_receipt; attempt.usage = result.usage ?? null;
+      }
+    });
+    if (typeof this.stageSelfUpdate !== 'function') {
+      this._holdContinuation(taskID, node.id, 'source_stage_executor_unavailable'); return;
+    }
+    snapshot = this._load(taskID);
+    if (snapshot.cancel_requested || this.stopping) { this._markCancelled(taskID); return; }
+    this._update(taskID, 'source_stage_dispatch_started', state => {
+      const child = state.children.find(c => c.id === node.id);
+      child.state = 'running'; child.dispatched_at_ms = Date.now();
+      child.stage.state = 'dispatched';
+    });
+    const controller = new AbortController();
+    this.controllers.set(result.attempt_id, {taskID, controller});
+    let handoff;
+    try {
+      const response = await this.stageSelfUpdate(immutable({ticket,
+        parent_record_path: result.native_receipt,
+        parent_record_sha256: receiptSHA}), controller.signal);
+      if (response?.status === 'not_dispatched') {
+        assert(keys(response, ['schema', 'status', 'reason', 'parent_record_sha256']) &&
+          response.schema === 1 && STAGE_DENIALS.has(response.reason) &&
+          response.parent_record_sha256 === receiptSHA, 'stage_preflight_receipt_invalid');
+        if (!this.closed) this._update(taskID, 'source_stage_verified_not_dispatched', state => {
+          const child = state.children.find(c => c.id === node.id);
+          child.state = 'held'; child.dispatched_at_ms = null;
+          child.stage.state = 'not_dispatched';
+          state.state = state.cancel_requested ? 'cancelled' : 'held';
+          state.error = `source_stage_${response.reason}`;
+        });
+        return;
+      }
+      handoff = validateInstallHandoff(response, snapshot.task, node, source, result.attempt_id);
+    } catch (error) {
+      if (!this.closed)
+        this._update(taskID, 'source_stage_effects_uncertain', state => {
+          const child = state.children.find(c => c.id === node.id);
+          // Native writing is finished; uncertainty belongs to the stage,
+          // not an active provider attempt. Keep workspace custody, not quota.
+          child.state = 'completed'; child.dispatched_at_ms = null;
+          child.stage.state = 'effects_uncertain';
+          state.state = 'effects_uncertain';
+          state.error = error instanceof RCCRuntimeError ? error.code : 'source_stage_outcome_unknown';
+        });
+      return;
+    } finally {
+      this.controllers.delete(result.attempt_id);
+    }
+    if (this.closed) return;
+    this._update(taskID, 'source_stage_handoff_returned', state => {
+      const child = state.children.find(c => c.id === node.id);
+      child.state = 'completed'; child.finished_at_ms = Date.now();
+      child.dispatched_at_ms = null; child.stage.state = handoff.state;
+      state.result = {output: child.output, execution_verified: true,
+        task_verified: false, task_quality: 'execution_only', parity_state: 'unverified',
+        native_receipt: result.native_receipt, native_summary: result.native_summary ?? null,
+        native_summaries: child.native_summaries ?? []};
+      // A late valid handoff must survive cancellation grace/restart-bound
+      // uncertainty. It is the only key for later read-only reconciliation.
+      this._adoptInstallation(state, handoff);
+    });
   }
 
   async _runTask(taskID) {
@@ -892,7 +1260,8 @@ class RCCRuntime {
             task_quality: 'execution_only', parity_state: 'unverified',
             native_receipt: receipt,
             native_summary: returned.length === 1 ? returned[0].native_summary : null,
-            native_summaries: returned.flatMap(c => c.native_summary ? [c.native_summary] : [])} : null);
+            native_summaries: returned.flatMap(c => c.native_summaries ??
+              (c.native_summary ? [c.native_summary] : []))} : null);
         }
         return;
       }
@@ -984,7 +1353,7 @@ class RCCRuntime {
       'configuration_sha256', 'selected_config', 'status', 'dispatch_stage', 'side_effects',
       'execution_verified', 'task_verified', 'task_quality', 'parity_state'];
     const optional = ['acknowledged_config', 'observed_config', 'output', 'native_receipt',
-      'usage', 'error', 'native_summary'];
+      'usage', 'error', 'native_summary', 'handback', 'repair_source'];
     assert(plain(result) && required.every(key => Object.hasOwn(result, key)) &&
       Object.keys(result).every(key => required.includes(key) || optional.includes(key)) &&
       result.schema === 1 &&
@@ -1015,7 +1384,203 @@ class RCCRuntime {
       'task_quality_upgrade_invalid');
     if (['reference_equivalent', 'reference_above'].includes(result.parity_state))
       assert(result.task_verified, 'parity_upgrade_invalid');
+    if (result.handback != null) validateHandback(result.handback, ticket, result);
+    if (result.repair_source != null) validateRepairSource(result.repair_source, ticket, result);
     return immutable(result);
+  }
+
+  _holdContinuation(taskID, nodeID, reason) {
+    this._update(taskID, 'continuation_held', state => {
+      if (TERMINAL.has(state.state)) return;
+      const child = state.children.find(c => c.id === nodeID);
+      if (child && ['running', 'waiting'].includes(child.state)) {
+        child.state = 'held'; child.finished_at_ms = Date.now();
+      }
+      state.state = 'held'; state.error = reason;
+    });
+  }
+
+  async _continueHandback(taskID, node, candidate, initialResult) {
+    let prior = initialResult;
+    let phase = prior.handback.kind === 'both' ? 'full_access_required' : prior.handback.kind;
+    const reports = [{kind: 'initial', adoption: prior.handback.adoption, output: prior.output}];
+    const nativeSummaries = [prior.native_summary];
+    for (let phaseIndex = 0; phaseIndex < 2; phaseIndex++) {
+      let snapshot = this._load(taskID);
+      if (!snapshot || TERMINAL.has(snapshot.state)) return;
+      if (snapshot.cancel_requested || this.stopping) { this._markCancelled(taskID); return; }
+      try {
+        this._authorizeHandback(snapshot, node, candidate, prior);
+      } catch (error) {
+        this._holdContinuation(taskID, node.id, error.code ?? 'handback_authority_unavailable'); return;
+      }
+      let receiptSHA;
+      try { receiptSHA = await this._verifiedNativeReceiptDigest(prior); }
+      catch (error) {
+        this._holdContinuation(taskID, node.id, error.code ?? 'handback_native_receipt_unavailable'); return;
+      }
+      // The initial provider output and its exact receipt are now durable.
+      // A Gateway crash here may hold this task, but never reruns that output.
+      this._update(taskID, 'continuation_intent_recorded', state => {
+        const child = state.children.find(c => c.id === node.id);
+        child.state = 'waiting'; child.dispatched_at_ms = null;
+        child.output = reports.map((report, index) =>
+          `${index === 0 ? 'Initial execution report' : `Continuation ${index}`} (${report.adoption ?? 'returned'}, not task-verified):\n${report.output}`).join('\n\n');
+        child.native_receipt = prior.native_receipt;
+        child.native_summary = prior.native_summary;
+        child.native_summaries = [...nativeSummaries];
+        child.usage = prior.usage ?? null;
+        child.continuation = {state: 'pending', phase, parent_attempt_id: prior.attempt_id,
+          parent_native_receipt: prior.native_receipt,
+          parent_native_receipt_sha256: receiptSHA,
+          protected_root: prior.handback.protected_root,
+          source_head: prior.handback.source_head,
+          protected_source_sha256: prior.handback.protected_source_sha256};
+        child.continuation_history ??= [];
+        if (child.continuation_history.at(-1)?.attempt_id === prior.attempt_id)
+          child.continuation_history.at(-1).native_receipt_sha256 = receiptSHA;
+        else
+          child.continuation_history.push({phase: phaseIndex === 0 ? 'initial' : 'after_full_access',
+            attempt_id: prior.attempt_id, adoption: prior.handback.adoption,
+            output: prior.output, native_receipt: prior.native_receipt,
+            native_receipt_sha256: receiptSHA, native_summary: prior.native_summary,
+            usage: prior.usage ?? null});
+      });
+      if (typeof this.executeContinuation !== 'function') {
+        this._holdContinuation(taskID, node.id, 'continuation_executor_unavailable'); return;
+      }
+      snapshot = this._load(taskID);
+      if (snapshot.cancel_requested || this.stopping) { this._markCancelled(taskID); return; }
+      if (snapshot.children.find(c => c.id === node.id).attempts >= snapshot.task.budget.max_attempts) {
+        this._holdContinuation(taskID, node.id, 'continuation_attempt_budget_exhausted'); return;
+      }
+      if (Date.now() - snapshot.created_at_ms >= snapshot.task.budget.max_duration_ms) {
+        this._holdContinuation(taskID, node.id, 'continuation_duration_budget_exhausted'); return;
+      }
+      try {
+        const fresh = await this._refreshCatalog(taskID, [candidate.id]);
+        this._candidate(snapshot.task, fresh, node);
+      } catch (error) {
+        this._holdContinuation(taskID, node.id, error.code ?? 'continuation_candidate_unavailable'); return;
+      }
+      snapshot = this._load(taskID);
+      if (snapshot.cancel_requested || this.stopping) { this._markCancelled(taskID); return; }
+      const continuationAttemptID = randomUUID();
+      const ticket = this._ticket(snapshot, node, candidate, continuationAttemptID);
+      ticket.native_resume_session_id = phase === 'full_access_required' ? prior.handback.native_session_id : null;
+      ticket.continuation = {kind: phase, parent_attempt_id: prior.attempt_id,
+        parent_native_receipt: prior.native_receipt,
+        parent_native_receipt_sha256: receiptSHA,
+        native_session_id: prior.handback.native_session_id,
+        protected_root: prior.handback.protected_root,
+        source_head: prior.handback.source_head,
+        protected_source_sha256: prior.handback.protected_source_sha256,
+        source_fingerprint: snapshot.task.source_fingerprint,
+        request_sha256: snapshot.task.request_sha256};
+      this._update(taskID, 'continuation_dispatch_started', state => {
+        const child = state.children.find(c => c.id === node.id);
+        child.state = 'running'; child.attempt_id = continuationAttemptID;
+        child.attempts += 1; child.dispatched_at_ms = Date.now();
+        child.continuation.state = 'dispatched';
+        child.attempt_history.push({attempt_id: continuationAttemptID,
+          candidate_id: candidate.id, state: 'continuation_dispatch_started',
+          native_receipt: null, usage: null});
+      });
+      const controller = new AbortController();
+      this.controllers.set(continuationAttemptID, {taskID, controller});
+      let result;
+      try {
+        result = this._validateExecution(await this.executeContinuation(immutable(ticket), controller.signal), ticket);
+      } catch (error) {
+        this.controllers.delete(continuationAttemptID);
+        if (!this.closed && !TERMINAL.has(this._load(taskID)?.state))
+          this._update(taskID, 'continuation_effects_uncertain', state => {
+            const child = state.children.find(c => c.id === node.id);
+            child.state = 'effects_uncertain'; child.continuation.state = 'effects_uncertain';
+            child.attempt_history.at(-1).state = 'effects_uncertain';
+            state.state = 'effects_uncertain';
+            state.error = error instanceof RCCRuntimeError ? error.code : 'continuation_outcome_unknown';
+          });
+        return;
+      }
+      this.controllers.delete(continuationAttemptID);
+      if (this.closed || TERMINAL.has(this._load(taskID)?.state)) return;
+      if (this._load(taskID).cancel_requested || this.stopping) {
+        this._update(taskID, 'continuation_cancel_reconciled', state => {
+          const child = state.children.find(c => c.id === node.id);
+          const safe = result.status === 'failed' && result.dispatch_stage === 'not_dispatched' &&
+            result.side_effects === 'none' && result.native_receipt !== null;
+          child.state = safe ? 'cancelled' : 'effects_uncertain';
+          child.continuation.state = child.state;
+          child.attempt_history.at(-1).state = child.state;
+          child.attempt_history.at(-1).native_receipt = result.native_receipt;
+          state.state = child.state; state.error = safe ? 'continuation_cancelled_before_dispatch' :
+            'continuation_cancel_effects_uncertain';
+        });
+        return;
+      }
+      if (result.status !== 'succeeded' || !result.execution_verified) {
+        if (result.status === 'failed' && result.dispatch_stage === 'not_dispatched' &&
+            result.side_effects === 'none' && result.native_receipt !== null)
+          this._holdContinuation(taskID, node.id, 'continuation_verified_not_dispatched');
+        else this._update(taskID, 'continuation_failed_after_dispatch', state => {
+          const child = state.children.find(c => c.id === node.id);
+          child.state = 'effects_uncertain'; child.continuation.state = 'effects_uncertain';
+          state.state = 'effects_uncertain'; state.error = 'continuation_dispatched_failure_no_replay';
+        });
+        return;
+      }
+      if (!boundedText(result.output, MAX_OUTPUT_BYTES)) {
+        this._holdContinuation(taskID, node.id, 'continuation_empty_result'); return;
+      }
+      reports.push({kind: phase, adoption: result.handback?.adoption ?? 'returned', output: result.output});
+      if (result.native_summary) nativeSummaries.push(result.native_summary);
+      this._update(taskID, 'continuation_returned', state => {
+        const child = state.children.find(c => c.id === node.id);
+        child.attempt_history.at(-1).state = 'continuation_returned';
+        child.attempt_history.at(-1).native_receipt = result.native_receipt;
+        child.attempt_history.at(-1).usage = result.usage ?? null;
+        child.state = 'waiting'; child.continuation.state = 'pending'; child.dispatched_at_ms = null;
+        child.output = reports.map((report, index) =>
+          `${index === 0 ? 'Initial execution report' : `Continuation ${index}`} (${report.adoption}, not task-verified):\n${report.output}`).join('\n\n');
+        child.native_receipt = result.native_receipt;
+        child.native_summary = result.native_summary ?? null;
+        child.native_summaries = [...nativeSummaries]; child.usage = result.usage ?? null;
+        child.continuation_history.push({phase, attempt_id: result.attempt_id,
+          adoption: result.handback?.adoption ?? 'returned', output: result.output,
+          native_receipt: result.native_receipt, native_summary: result.native_summary ?? null,
+          usage: result.usage ?? null});
+      });
+      if (result.handback) {
+        if (phase === 'full_access_required' && result.handback.kind === 'os1_change_required') {
+          prior = result; phase = 'os1_change_required'; continue;
+        }
+        this._holdContinuation(taskID, node.id, 'continuation_marker_cycle_or_unexpected'); return;
+      }
+      if (result.repair_source) {
+        await this._stageSourceAfterExecution(taskID, node, candidate, result, ticket);
+        return;
+      }
+      if (phase === 'full_access_required' && initialResult.handback.kind === 'both') {
+        this._holdContinuation(taskID, node.id, 'os1_change_not_confirmed_after_full_access'); return;
+      }
+      const output = reports.map((report, index) =>
+        `${index === 0 ? 'Initial execution report' : `Continuation ${index}`} (${report.adoption}, not task-verified):\n${report.output}`).join('\n\n');
+      if (!boundedText(output, MAX_OUTPUT_BYTES)) {
+        this._holdContinuation(taskID, node.id, 'continuation_combined_output_oversize'); return;
+      }
+      this._update(taskID, 'continuation_candidate_returned', state => {
+        const child = state.children.find(c => c.id === node.id);
+        child.state = 'completed'; child.output = output; child.finished_at_ms = Date.now();
+        child.execution_verified = true; child.task_quality = 'execution_only';
+        child.parity_state = 'unverified'; child.native_receipt = result.native_receipt;
+        child.native_summary = result.native_summary;
+        child.native_summaries = [...nativeSummaries]; child.usage = result.usage ?? null;
+        child.continuation.state = 'returned';
+      });
+      return;
+    }
+    this._holdContinuation(taskID, node.id, 'continuation_phase_limit_reached');
   }
 
   async _executeNode(taskID, node, candidate) {
@@ -1074,6 +1639,14 @@ class RCCRuntime {
           snapshot.state = safe ? 'cancelled' : 'effects_uncertain';
           snapshot.error = safe ? 'cancelled_before_backend_dispatch' : 'cancel_effects_uncertain';
         });
+        return;
+      }
+      if (result.handback) {
+        await this._continueHandback(taskID, node, candidate, result);
+        return;
+      }
+      if (result.repair_source) {
+        await this._stageSourceAfterExecution(taskID, node, candidate, result, ticket);
         return;
       }
       if (result.status === 'succeeded') {
@@ -1155,7 +1728,8 @@ class RCCRuntime {
         output, execution_verified: true, task_verified: false,
         task_quality: 'execution_only', parity_state: 'unverified', native_receipt: receipt,
         native_summary: ordered.length === 1 ? ordered[0].native_summary : null,
-        native_summaries: ordered.flatMap(c => c.native_summary ? [c.native_summary] : [])});
+        native_summaries: ordered.flatMap(c => c.native_summaries ??
+          (c.native_summary ? [c.native_summary] : []))});
       return;
     }
     let verdict;
@@ -1187,7 +1761,8 @@ class RCCRuntime {
         task_verified: verified, task_quality: verified ? 'task_verified' : 'execution_only',
         parity_state: verdict.parity_state, native_receipt: receipt,
         native_summary: ordered.length === 1 ? ordered[0].native_summary : null,
-        native_summaries: ordered.flatMap(c => c.native_summary ? [c.native_summary] : [])};
+        native_summaries: ordered.flatMap(c => c.native_summaries ??
+          (c.native_summary ? [c.native_summary] : []))};
       state.error = verified ? null : verdict.reason;
     });
   }
@@ -1197,7 +1772,7 @@ class RCCRuntime {
     assert(int(timeoutMs, 0, 60_000), 'close_timeout_invalid');
     this.stopping = true;
     for (const item of this.controllers.values()) item.controller.abort(new RCCRuntimeError('runtime_closing'));
-    await Promise.race([Promise.allSettled([...this.runningTasks.values()]),
+    await Promise.race([Promise.allSettled([...this.runningTasks.values(), ...this.installationObservations.values()]),
       new Promise(resolve => setTimeout(resolve, timeoutMs))]);
     const rows = this.transaction(() => this.db.prepare('SELECT task_id,snapshot FROM tasks').all());
     for (const row of rows) {
