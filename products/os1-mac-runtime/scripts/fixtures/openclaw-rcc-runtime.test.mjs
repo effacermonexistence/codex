@@ -491,6 +491,38 @@ test('unknown candidate, cycle and independent write conflict hold before execut
   assert.equal(executions, 0);
 });
 
+test('full configuration hash and wrong-scope candidate remain rejected without aliasing; exact ID executes', async t => {
+  const dir = await fixture(t);
+  const id = 'cfg-87ac163f12496ea04747bad4bc19a621';
+  const configuration = '87ac163f12496ea04747bad4bc19a621a7df16ae1917aba2dcf53b7a742987d9';
+  const row = {...candidate(id), configuration_sha256: configuration};
+  const writer = candidate('writer', 'codex', 'openai_codex',
+    {scope: 'workspace_write', allowedPaths: ['**']});
+  for (const [name, candidateID, shouldExecute] of [
+    ['full-hash', 'cfg-' + configuration, false],
+    ['wrong-scope', writer.id, false],
+    ['exact-id', id, true]]) {
+    const request = task(dir, 'Return the result of one exact approved candidate');
+    let executions = 0;
+    const runtime = await createRCCRuntime({stateDir: join(dir, name),
+      catalog: async value => catalog(value, [row, writer]),
+      plan: async () => plan(request, [node('one', candidateID)]),
+      execute: async ticket => {
+        executions++;
+        assert.equal(ticket.candidate_id, id);
+        assert.equal(ticket.configuration_sha256, configuration);
+        return execution(ticket);
+      }, verifyTask: taskVerdict});
+    t.after(async () => { await runtime.close(); });
+    await runtime.submit(request);
+    const result = await wait(runtime, request);
+    assert.equal(result.state, shouldExecute ? 'completed' : 'held', name);
+    assert.equal(result.error, shouldExecute ? null : 'plan_node_invalid', name);
+    assert.equal(executions, shouldExecute ? 1 : 0, name);
+    assert.equal(result.children.length, shouldExecute ? 1 : 0, name);
+  }
+});
+
 test('safe not-dispatched feedback replans failed subset to another approved candidate', async t => {
   const dir = await fixture(t); const request = task(dir, 'Read current project status');
   const rows = [candidate('a'), candidate('b')];

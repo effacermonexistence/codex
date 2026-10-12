@@ -68,6 +68,10 @@ struct RCCRuntimeGatewayClientFixture {
         params=read(pathlib.Path(os.environ['OS1_RCC_RPC_PARAMS']))
         audit=root/'argv.json'; write(audit,sys.argv)
         if method=='health':
+            probes=root/'health-probes.json'; write(probes,(read(probes) if probes.exists() else 0)+1)
+            bootstrap=root/'rpc-bootstrap-delay'; delay=float(bootstrap.read_text()) if bootstrap.exists() else 0
+            time.sleep(delay)
+            if (root/'unreachable').exists(): sys.exit(2)
             if not (root/'ready').exists(): print(json.dumps({'ok':False,'status':'starting'})); sys.exit(0)
             print(json.dumps({'ok':True})); sys.exit(0)
         if method=='os1.rcc.quiesce':
@@ -176,6 +180,55 @@ struct RCCRuntimeGatewayClientFixture {
         let warmedJSON = try JSONSerialization.jsonObject(with: JSONEncoder().encode(warmed)) as! [String: Any]
         try require(warmedJSON["gateway_identity_verified"] as? Bool == true && warmedJSON["task_submitted"] as? Bool == false &&
             warmedJSON["provider_calls"] as? Int == 0 && warmedJSON["state"] as? String == "ready", "warmup output contract not verified")
+        // A healthy owner's authenticated CLI may take >5s to bootstrap before
+        // its 1s fixture RPC starts. The old timeout+2 watchdog killed that
+        // observer even though the owned Gateway was already healthy.
+        let probeCountBefore = try JSONDecoder().decode(Int.self, from: Data(contentsOf: privateRoot.appendingPathComponent("health-probes.json")))
+        let ownerBytesBeforeSlowProbe = try Data(contentsOf: privateRoot.appendingPathComponent("transport-owner.json"))
+        let bootstrapDelay = privateRoot.appendingPathComponent("rpc-bootstrap-delay")
+        try Data("5.2".utf8).write(to: bootstrapDelay)
+        let slowStarted = Date()
+        let slowWarm = try RCCRuntimeGatewayClient.warmForOfflineFixture(configuration: configuration, root: privateRoot,
+            readinessTimeout: 9)
+        try require(Date().timeIntervalSince(slowStarted) > 5 && Date().timeIntervalSince(slowStarted) < 9,
+            "slow CLI bootstrap not isolated from RPC network timeout")
+        try require(slowWarm.ownerPID == ownedPID && !slowWarm.taskSubmitted && slowWarm.providerCalls == 0,
+            "slow observer changed owner or dispatched model work")
+        let probeCountAfter = try JSONDecoder().decode(Int.self, from: Data(contentsOf: privateRoot.appendingPathComponent("health-probes.json")))
+        try require(probeCountAfter == probeCountBefore + 1, "healthy slow bootstrap caused a CLI retry storm")
+        try require(try Data(contentsOf: privateRoot.appendingPathComponent("transport-owner.json")) == ownerBytesBeforeSlowProbe,
+            "readiness rewrote existing owner identity")
+        // Contention must consume the SAME readiness budget as probing. Hold
+        // only this isolated fixture's lock, then let a slow CLI hit the
+        // remaining deadline. The persistent fixture owner must survive.
+        let lockFD = open(privateRoot.appendingPathComponent("transport-start.lock").path, O_RDWR)
+        try require(lockFD >= 0 && flock(lockFD, LOCK_EX | LOCK_NB) == 0, "fixture lock unavailable")
+        DispatchQueue.global().asyncAfter(deadline: .now() + 0.8) { _ = flock(lockFD, LOCK_UN) }
+        let boundedStarted = Date()
+        do {
+            _ = try RCCRuntimeGatewayClient.warmForOfflineFixture(configuration: configuration, root: privateRoot,
+                readinessTimeout: 1.5)
+            throw NSError(domain: "fixture", code: 1, userInfo: [NSLocalizedDescriptionKey: "slow bootstrap escaped readiness ceiling"])
+        } catch RCCRuntimeGatewayClient.Failure.existingGatewayUnavailable { }
+        _ = close(lockFD)
+        try require(Date().timeIntervalSince(boundedStarted) < 2.1, "lock wait restarted readiness deadline")
+        try require(kill(ownedPID!, 0) == 0 &&
+            (try Data(contentsOf: privateRoot.appendingPathComponent("boots.json"))) == Data("1".utf8),
+            "expired health observer killed or replaced the owned Gateway")
+        try fm.removeItem(at: bootstrapDelay)
+        let unreachable = privateRoot.appendingPathComponent("unreachable")
+        try Data("offline only".utf8).write(to: unreachable)
+        let unreachableStarted = Date()
+        do {
+            _ = try RCCRuntimeGatewayClient.warmForOfflineFixture(configuration: configuration, root: privateRoot,
+                readinessTimeout: 0.8)
+            throw NSError(domain: "fixture", code: 1, userInfo: [NSLocalizedDescriptionKey: "unreachable owner declared ready"])
+        } catch RCCRuntimeGatewayClient.Failure.existingGatewayUnavailable { }
+        try require(Date().timeIntervalSince(unreachableStarted) < 1.4 && kill(ownedPID!, 0) == 0,
+            "unreachable health exceeded deadline or killed owner")
+        try fm.removeItem(at: unreachable)
+        try require(!fm.fileExists(atPath: privateRoot.appendingPathComponent("submits.json").path),
+            "readiness regression tests submitted a task")
         var progress = [String]()
         let first = try RCCRuntimeGatewayClient.runForOfflineFixture(request: request("first"), configuration: configuration, root: privateRoot,
             progress: { bytes in progress.append((try? state(bytes)) ?? "invalid") })
@@ -263,6 +316,6 @@ struct RCCRuntimeGatewayClientFixture {
         } catch RCCRuntimeGatewayClient.Failure.identityMismatch { }
         try require(progress == ["running", "returned_unverified"], "progress not monotonic exact task snapshots")
         passed = true
-        print("RCC Runtime Gateway client: offline fake-transport checks PASS; delayed startup/concurrent warmup PASS; hosted/model calls 0; live task state untouched")
+        print("RCC Runtime Gateway client: offline fake-transport checks PASS; delayed startup/slow CLI/deadline/unreachable/concurrent warmup PASS; hosted/model calls 0; live task state untouched")
     }
 }

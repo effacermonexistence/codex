@@ -85,6 +85,9 @@ enum RCCRuntimeGatewayClient {
     /// Startup readiness is an independent transport budget. It does not
     /// shorten, extend, or otherwise change a model/task execution timeout.
     static let startupReadinessBudget: TimeInterval = 60
+    /// The official CLI must load before its own RPC timeout starts. This is
+    /// observer bootstrap allowance, not extra Gateway/model execution time.
+    private static let readinessCLIBootstrapAllowance: TimeInterval = 15
     private struct Limits {
         var rpc: TimeInterval = 15
         var ready: TimeInterval = RCCRuntimeGatewayClient.startupReadinessBudget
@@ -456,6 +459,9 @@ enum RCCRuntimeGatewayClient {
 
     private static func ensureGateway(configuration: Configuration, paths: Paths, limits: Limits,
                                       fixture: Bool, cancelled: () -> Bool) throws -> Owner {
+        // Lock contention, owner launch and every health observer share ONE
+        // readiness ceiling; taking the lock must not restart the clock.
+        let readinessDeadline = Date().addingTimeInterval(limits.ready)
         try verifyInstalled(configuration.identity)
         if !fixture {
             guard configuration.bridgeEnvironment["OS1_RCC_RUNTIME"] == "1",
@@ -472,9 +478,8 @@ enum RCCRuntimeGatewayClient {
         guard lockFD >= 0 else { throw Failure.privateStateInvalid }
         defer { _ = flock(lockFD, LOCK_UN); _ = close(lockFD) }
         try verifyPrivateDescriptor(lockFD)
-        let lockDeadline = Date().addingTimeInterval(limits.ready)
         while flock(lockFD, LOCK_EX | LOCK_NB) != 0 {
-            guard errno == EWOULDBLOCK, Date() < lockDeadline else { throw Failure.startupBusy }
+            guard errno == EWOULDBLOCK, Date() < readinessDeadline else { throw Failure.startupBusy }
             guard !cancelled() else { throw CancellationError() }
             Thread.sleep(forTimeInterval: 0.05)
         }
@@ -489,7 +494,7 @@ enum RCCRuntimeGatewayClient {
                 // A prior observer may have ended while this exact owner was
                 // still starting. Wait for its readiness, never spawn another.
                 try awaitReadiness(previous, configuration: configuration, paths: paths,
-                    limits: limits, fixture: fixture, cancelled: cancelled, existing: true)
+                    limits: limits, deadline: readinessDeadline, fixture: fixture, cancelled: cancelled, existing: true)
                 return previous
             }
             // Only a proved-dead PID permits a replacement. A PID reused by an
@@ -556,14 +561,14 @@ enum RCCRuntimeGatewayClient {
             throw error
         }
         try awaitReadiness(owner, configuration: configuration, paths: paths,
-            limits: limits, fixture: fixture, cancelled: cancelled, existing: false)
+            limits: limits, deadline: readinessDeadline, fixture: fixture, cancelled: cancelled, existing: false)
         return owner
     }
 
     private static func awaitReadiness(_ owner: Owner, configuration: Configuration, paths: Paths,
-                                       limits: Limits, fixture: Bool, cancelled: () -> Bool,
+                                       limits: Limits, deadline: Date, fixture: Bool, cancelled: () -> Bool,
                                        existing: Bool) throws {
-        let deadline = Date().addingTimeInterval(limits.ready)
+        var retryDelay: TimeInterval = 0.25
         while Date() < deadline {
             guard !cancelled() else { throw CancellationError() }
             guard processMatches(owner, nodePath: configuration.identity.nodePath, fixture: fixture) else {
@@ -571,13 +576,17 @@ enum RCCRuntimeGatewayClient {
             }
             do {
                 if try health(owner, configuration: configuration, paths: paths,
-                    timeout: min(min(3, limits.rpc), max(0.05, deadline.timeIntervalSinceNow)), fixture: fixture) { return }
+                    timeout: min(3, limits.rpc), readinessDeadline: deadline,
+                    fixture: fixture, cancelled: cancelled), Date() < deadline { return }
             } catch let failure as Failure {
                 // Temporary connection refusal is a readiness observation.
                 // Custody/identity failures remain precise terminal failures.
                 guard [.rpcFailed, .rpcTimeout].contains(failure) else { throw failure }
             }
-            Thread.sleep(forTimeInterval: 0.15)
+            // Only one CLI observer runs at a time. Back off cheap refusals or
+            // "starting" replies instead of repeatedly cold-loading the CLI.
+            Thread.sleep(forTimeInterval: max(0, min(retryDelay, deadline.timeIntervalSinceNow)))
+            retryDelay = min(2, retryDelay * 2)
         }
         // Preserve this supervised PID/config and durable state on timeout.
         // There is no task replay, destructive reset, or alternate owner.
@@ -631,14 +640,23 @@ enum RCCRuntimeGatewayClient {
         env["OS1_RCC_STATE_ROOT"] = paths.root.path
         return env
     }
-    private static func health(_ owner: Owner, configuration: Configuration, paths: Paths, timeout: TimeInterval, fixture: Bool) throws -> Bool {
+    private static func health(_ owner: Owner, configuration: Configuration, paths: Paths, timeout: TimeInterval,
+                               readinessDeadline: Date, fixture: Bool, cancelled: () -> Bool) throws -> Bool {
         let data = try rpc("health", parameters: Data("{}".utf8), owner: owner,
-                           configuration: configuration, paths: paths, timeout: timeout, fixture: fixture)
+                           configuration: configuration, paths: paths, timeout: timeout, fixture: fixture,
+                           cliBootstrapAllowance: readinessCLIBootstrapAllowance,
+                           hardDeadline: readinessDeadline, cancelled: cancelled)
         guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return false }
         return object["ok"] as? Bool == true && object["status"] as? String != "starting"
     }
     private static func rpc(_ method: String, parameters: Data, owner: Owner,
-                            configuration: Configuration, paths: Paths, timeout: TimeInterval, fixture: Bool) throws -> Data {
+                            configuration: Configuration, paths: Paths, timeout: TimeInterval, fixture: Bool,
+                            cliBootstrapAllowance: TimeInterval = 0, hardDeadline: Date? = nil,
+                            cancelled: () -> Bool = { false }) throws -> Data {
+        let boundedObserverDeadline = hardDeadline.map {
+            min(Date().addingTimeInterval(cliBootstrapAllowance + timeout + 2), $0)
+        }
+        guard boundedObserverDeadline == nil || Date() < boundedObserverDeadline! else { throw Failure.rpcTimeout }
         guard methodSet.contains(method), parameters.count <= maximumRequestBytes,
               processMatches(owner, nodePath: configuration.identity.nodePath, fixture: fixture) else { throw Failure.existingGatewayUnavailable }
         try verifyInstalled(configuration.identity)
@@ -654,18 +672,25 @@ enum RCCRuntimeGatewayClient {
         env["OS1_RCC_RPC_PARAMS"] = params.path
         env["OS1_RCC_RPC_URL"] = "ws://127.0.0.1:\(owner.port)"
         env["OS1_RCC_RPC_TIMEOUT"] = String(Int(timeout * 1000))
+        guard !cancelled() else { throw CancellationError() }
+        guard boundedObserverDeadline == nil || Date() < boundedObserverDeadline! else { throw Failure.rpcTimeout }
         let process = try launch(configuration.identity.nodePath,
             arguments: fixture ? [configuration.identity.entryPath, "fixture-rpc"] : ["--input-type=module", "--eval", rpcShim],
             environment: env, workspace: paths.workspace,
-            out: call.appendingPathComponent("stdout.json"), err: call.appendingPathComponent("stderr.txt"))
-        let deadline = Date().addingTimeInterval(timeout + 2)
-        while process.isRunning && Date() < deadline {
+            out: call.appendingPathComponent("stdout.json"), err: call.appendingPathComponent("stderr.txt"),
+            qualityOfService: method == "health" ? .userInitiated : nil)
+        // Ordinary task RPCs retain their existing post-launch watchdog. Only
+        // readiness observers carry the shared pre-launch absolute deadline.
+        let processDeadline = boundedObserverDeadline ?? Date().addingTimeInterval(timeout + 2)
+        while process.isRunning && Date() < processDeadline {
+            if cancelled() { stopChild(process); throw CancellationError() }
             if fileSize(call.appendingPathComponent("stdout.json")) > maximumResponseBytes || fileSize(call.appendingPathComponent("stderr.txt")) > 1_048_576 {
                 stopChild(process); throw Failure.rpcFailed
             }
             Thread.sleep(forTimeInterval: 0.02)
         }
         guard !process.isRunning else { stopChild(process); throw Failure.rpcTimeout }
+        guard hardDeadline == nil || Date() < processDeadline else { throw Failure.rpcTimeout }
         guard process.terminationReason == .exit, process.terminationStatus == 0 else {
             if let bytes = try? readPrivate(call.appendingPathComponent("stdout.json"), maximum: maximumResponseBytes),
                let failure = try? JSONSerialization.jsonObject(with: bytes) as? [String: Any],
@@ -766,7 +791,7 @@ enum RCCRuntimeGatewayClient {
         throw Failure.gatewayStartFailed
     }
     private static func launch(_ executable: String, arguments: [String], environment: [String: String],
-                               workspace: URL, out: URL, err: URL) throws -> Process {
+                               workspace: URL, out: URL, err: URL, qualityOfService: QualityOfService? = nil) throws -> Process {
         let outFD = open(out.path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0o600)
         guard outFD >= 0 else { throw Failure.privateStateInvalid }
         let errFD = open(err.path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0o600)
@@ -774,6 +799,9 @@ enum RCCRuntimeGatewayClient {
         let outHandle = FileHandle(fileDescriptor: outFD, closeOnDealloc: true)
         let errHandle = FileHandle(fileDescriptor: errFD, closeOnDealloc: true)
         let process = Process(); process.executableURL = URL(fileURLWithPath: executable); process.arguments = arguments
+        // Only ephemeral health observers request this priority. The persistent
+        // gateway/model worker launch keeps its existing scheduling policy.
+        if let qualityOfService { process.qualityOfService = qualityOfService }
         process.environment = environment; process.currentDirectoryURL = workspace
         process.standardOutput = outHandle; process.standardError = errHandle; process.standardInput = FileHandle.nullDevice
         try process.run(); try? outHandle.close(); try? errHandle.close()

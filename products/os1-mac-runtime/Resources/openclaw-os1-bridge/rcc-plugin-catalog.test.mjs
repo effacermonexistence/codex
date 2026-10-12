@@ -102,6 +102,8 @@ test('internal JSON mode is locked before/after full policy and official direct 
   assert.equal(params.responseFormat.properties.task_id.const, 'test-task');
   assert.equal(params.responseFormat.properties.request_sha256.const, 'a'.repeat(64));
   assert.equal(params.responseFormat.properties.nodes.items.properties.scope.const, 'read_only');
+  assert.deepEqual(params.responseFormat.properties.nodes.items.properties.candidate_id.enum,
+    catalog(70).candidates.map(candidate => candidate.id));
   assert.equal(params.responseFormat.properties.nodes.items.properties.owned_paths.maxItems, 0);
   assert.equal(params.responseFormat.properties.nodes.items.properties.context_refs.maxItems, 0);
   assert.equal(params.maxTokens, 4_096);
@@ -135,6 +137,7 @@ test('schema derives read-only, explicit count and mixed writer branch from trus
   assert.equal(locked.properties.nodes.items.properties.scope.const, 'read_only');
   assert.equal(locked.properties.nodes.items.properties.owned_paths.maxItems, 0);
   assert.equal(locked.properties.nodes.items.properties.kind.const, 'agent');
+  assert.deepEqual(locked.properties.nodes.items.properties.candidate_id.enum, ['cfg-000']);
   const writableTask = task(); writableTask.host_context.require_read_only = false;
   writableTask.material_refs = ['provided.txt'];
   const branched = buildRoutePlanSchema(writableTask, mixed).properties.nodes.items;
@@ -143,7 +146,62 @@ test('schema derives read-only, explicit count and mixed writer branch from trus
   assert.equal(branched.oneOf[0].properties.owned_paths.maxItems, 0);
   assert.equal(branched.oneOf[1].properties.scope.const, 'workspace_write');
   assert.equal(branched.oneOf[1].properties.owned_paths.minItems, 1);
+  assert.deepEqual(branched.oneOf[0].properties.candidate_id.enum, ['cfg-000']);
+  assert.deepEqual(branched.oneOf[1].properties.candidate_id.enum, ['cfg-001']);
   assert.deepEqual(branched.oneOf[0].properties.context_refs.items.enum, ['provided.txt']);
+});
+
+test('generation schema permits exact catalog IDs, not a full configuration hash or unknown ID', () => {
+  // Natural failure fixture: the planner used cfg-<configuration_sha256>
+  // instead of the distinct, shorter ID supplied in the candidate catalog.
+  const id = 'cfg-87ac163f12496ea04747bad4bc19a621';
+  const configuration = '87ac163f12496ea04747bad4bc19a621a7df16ae1917aba2dcf53b7a742987d9';
+  const original = catalog(1);
+  original.candidates[0].id = id;
+  original.candidates[0].configuration_sha256 = configuration;
+  const input = buildBoundedPlannerInput({task: task(), catalog: original,
+    feedback: {}, policyText: 'RCC identity fixture'});
+  const allowed = input.responseFormat.properties.nodes.items.properties.candidate_id.enum;
+  assert.deepEqual(allowed, [id]);
+  assert.equal(allowed.includes('cfg-' + configuration), false);
+  assert.equal(allowed.includes('invented'), false);
+  assert.equal(expandCandidateCatalog(JSON.parse(input.message.slice('OS1_RCC_PLAN\n'.length))
+    .candidate_catalog)[0].configuration_sha256, configuration);
+  assert.equal(original.candidates[0].id, id, 'schema must not rewrite catalog identity');
+});
+
+test('schema candidate choices are bounded, unique and valid rather than repaired or truncated', () => {
+  const all = catalog(256);
+  assert.equal(buildRoutePlanSchema(task(), all).properties.nodes.items.properties.candidate_id.enum.length, 256);
+  for (const candidates of [[], [...all.candidates, all.candidates[0]],
+    [all.candidates[0], {...all.candidates[1], id: all.candidates[0].id}],
+    [{...all.candidates[0], id: 'invalid.id'}],
+    [{...all.candidates[0], id: 'x'.repeat(129)}],
+    [{...all.candidates[0], id: null}],
+    [{...all.candidates[0], scope: 'unknown'}]]) {
+    assert.throws(() => buildRoutePlanSchema(task(), {candidates}), /planner_catalog_invalid/);
+  }
+  const writeOnly = catalog(1);
+  writeOnly.candidates[0].scope = 'workspace_write';
+  const locked = task(); locked.host_context.require_read_only = true;
+  assert.throws(() => buildRoutePlanSchema(locked, writeOnly), /planner_catalog_scope_unavailable/);
+  const writer = buildRoutePlanSchema(task(), writeOnly).properties.nodes.items;
+  assert.equal(writer.properties.scope.const, 'workspace_write');
+  assert.deepEqual(writer.properties.candidate_id.enum, ['cfg-000']);
+});
+
+test('exact ID enums preserve explicit routing and deterministic candidate kinds', () => {
+  const original = catalog(2);
+  original.candidates[1] = {...original.candidates[1], surface: 'local',
+    transport: 'local', quota_pool: 'none', tools: [], effort: 'none'};
+  const ordinary = buildRoutePlanSchema(task(), original).properties.nodes.items;
+  assert.deepEqual(ordinary.properties.kind.enum, ['agent', 'deterministic']);
+  assert.deepEqual(ordinary.properties.candidate_id.enum, ['cfg-000', 'cfg-001']);
+  const explicit = task(); explicit.mode = 'explicit_routing_test';
+  explicit.host_context.explicit_routes = [{surface: 'codex', instruction: '1+1'}];
+  const item = buildRoutePlanSchema(explicit, original).properties.nodes.items;
+  assert.equal(item.properties.kind.const, 'agent');
+  assert.deepEqual(item.properties.candidate_id.enum, ['cfg-000', 'cfg-001']);
 });
 
 test('pinned OpenClaw 2026.9.9 contract exposes direct responseFormat and Ollama native format', async t => {

@@ -11,8 +11,22 @@ const HASH = /^[a-f0-9]{64}$/;
 const LOCAL_MODEL = 'ollama/qwen3.5:4b';
 const ROUTER_MODE_LOCK = 'INTERNAL ROUTING PLAN ONLY. This is not the user-visible answer. Persona prefix Ben./LuaIsHere :3 is OFF for this internal JSON lane. Do not answer the user task, do not report completion, and do not emit Conclusion/Core reason/Breaking variable, prose, markdown or code fences. Return one JSON object only; actual execution and quality are verified after this candidate plan.';
 export function buildRoutePlanSchema(task, catalog) {
-  if (!Array.isArray(catalog?.candidates) || catalog.candidates.length === 0)
+  if (!Array.isArray(catalog?.candidates) || catalog.candidates.length === 0 ||
+      catalog.candidates.length > 256)
     throw new RCCRuntimeError('planner_catalog_invalid');
+  // These are identity choices, not free text. In particular, a configuration
+  // hash is not a candidate ID: only the exact catalog value may be generated.
+  // Keep scope branches separate so a writer cannot be selected in a read-only
+  // node. The runtime still independently validates the returned plan.
+  const candidateIDs = {read_only: [], workspace_write: []};
+  const seen = new Set();
+  for (const candidate of catalog.candidates) {
+    if (typeof candidate?.id !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(candidate.id) ||
+        seen.has(candidate.id) || !Object.hasOwn(candidateIDs, candidate.scope))
+      throw new RCCRuntimeError('planner_catalog_invalid');
+    seen.add(candidate.id);
+    candidateIDs[candidate.scope].push(candidate.id);
+  }
   const refs = task.material_refs ?? [];
   const contextRefs = {type: 'array', maxItems: refs.length === 0 ? 0 : Math.min(128, refs.length),
     items: {type: 'string'}};
@@ -27,14 +41,17 @@ export function buildRoutePlanSchema(task, catalog) {
     properties: {
       id: {type: 'string'}, instruction: {type: 'string'},
       dependencies: {type: 'array', maxItems: 8, items: {type: 'string'}},
-      kind, candidate_id: {type: 'string'}, scope: {type: 'string', const: scope},
+      kind, candidate_id: {type: 'string', enum: candidateIDs[scope]},
+      scope: {type: 'string', const: scope},
       owned_paths: scope === 'read_only' ?
         {type: 'array', maxItems: 0, items: {type: 'string'}} :
         {type: 'array', minItems: 1, maxItems: 64, items: {type: 'string'}},
       context_refs: contextRefs}});
   const readOnly = task.host_context?.require_read_only === true ||
-    catalog.candidates.every(candidate => candidate.scope === 'read_only');
-  const writeOnly = !readOnly && catalog.candidates.every(candidate => candidate.scope === 'workspace_write');
+    candidateIDs.workspace_write.length === 0;
+  if (readOnly && candidateIDs.read_only.length === 0)
+    throw new RCCRuntimeError('planner_catalog_scope_unavailable');
+  const writeOnly = !readOnly && candidateIDs.read_only.length === 0;
   const item = readOnly ? node('read_only') : writeOnly ? node('workspace_write') :
     {oneOf: [node('read_only'), node('workspace_write')]};
   const fixedCount = task.mode === 'explicit_routing_test' &&
