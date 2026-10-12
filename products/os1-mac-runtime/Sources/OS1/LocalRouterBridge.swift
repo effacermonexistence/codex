@@ -31,8 +31,12 @@ enum LocalRouterBridge {
               hashes["rcc-plugin.mjs"] == rccRuntimePluginSHA256 else {
             throw OS1Error.message("Installed RCC task-runtime modules differ from the sealed source")
         }
-        let native = URL(fileURLWithPath: CommandLine.arguments[0]).resolvingSymlinksInPath()
-        let nativeHash = try fileSHA256(native)
+        let nativeIdentity = try InstalledNativeEntry.resolve(
+            executable: URL(fileURLWithPath: CommandLine.arguments[0]), resources: resources,
+            home: FileManager.default.homeDirectoryForCurrentUser,
+            verifyResourceSeal: { try verifyInstalledResourceSeal($0); return true })
+        let native = nativeIdentity.executable
+        let nativeHash = nativeIdentity.sha256
         let coreRoot = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".os1/rcc-runtime")
         var config = try JSONSerialization.jsonObject(with: OpenClawAgentController.configBytes(
             pluginDirectory: plugin.path, workspace: coreRoot.appendingPathComponent("workspace").path)) as! [String: Any]
@@ -256,18 +260,24 @@ enum LocalRouterBridge {
               bundled.executorContract.sha256 == contract.sha256 else {
             throw OS1Error.message("App-sealed public executor contract is unavailable or differs from active runtime")
         }
-        let app = resources.deletingLastPathComponent().deletingLastPathComponent()
-        let seal = try commandOutput("/usr/bin/codesign", ["--verify", "--deep", "--strict", app.path],
-                                     timeout: 8)
-        guard seal.0 == 0 else {
-            throw OS1Error.message("Installed OS-1 app resource seal failed")
-        }
+        try verifyInstalledResourceSeal(resources)
         let text = contract.directives.joined(separator: "\n")
         guard !text.isEmpty, text.utf8.count <= OpenClawAgentController.maximumPolicyBytes else {
             throw OS1Error.message("Signed public executor contract exceeds controller bound")
         }
         return .init(sourceSHA256: contract.sha256, sourceLabel: "app_sealed_public_executor_contract",
                      text: text, ownerSourceSHA256: nil)
+    }
+
+    // Shared by the existing public-policy gate and installed CLI alias
+    // binding. A same-byte copy alone does not establish a signed app.
+    private static func verifyInstalledResourceSeal(_ resources: URL) throws {
+        let app = resources.deletingLastPathComponent().deletingLastPathComponent()
+        let seal = try commandOutput("/usr/bin/codesign", ["--verify", "--deep", "--strict", app.path],
+                                     timeout: 8)
+        guard seal.0 == 0 else {
+            throw OS1Error.message("Installed OS-1 app resource seal failed")
+        }
     }
 
     private static func verifyGatewayPolicyStillCurrent(_ value: GatewayPolicy) throws {

@@ -22,6 +22,7 @@ final class SourceContextTests {
         codexDictationAuthorizationChildIfRequested()
         voiceProcessChildIfRequested()
         if CommandLine.arguments.contains("--desktop-relay-checkpoint-only") { try runDesktopRelayCheckpointFixtures(); return }
+        if CommandLine.arguments.contains("--installed-native-entry-only") { try runInstalledNativeEntryFixtures(); return }
         if CommandLine.arguments.contains("--rcc-runtime-contract-only") { try runRCCRuntimeContractFixture(); return }
         if CommandLine.arguments.contains("--rcc-runtime-projection-only") { try runRCCRuntimeProjectionFixtures(); return }
         if CommandLine.arguments.contains("--openclaw-agent-controller-only") { try runOpenClawAgentControllerFixture(); return }
@@ -36,6 +37,7 @@ final class SourceContextTests {
         if CommandLine.arguments.contains("--task-quality-correction-only") { try runTaskQualityCorrectionFixtures(); return }
         if CommandLine.arguments.contains("--task-quality-only") { try runTaskQualityFixtures(); try runTaskQualityCorrectionFixtures(); return }
         try runDesktopRelayCheckpointFixtures()
+        try runInstalledNativeEntryFixtures()
         try runTaskQualityFixtures()
         try runTaskQualityCorrectionFixtures()
         try runLocalTaskInterpretationFixtures()
