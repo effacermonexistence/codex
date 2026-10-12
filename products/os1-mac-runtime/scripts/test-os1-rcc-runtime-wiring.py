@@ -136,4 +136,21 @@ check("requires signed RCC task-runtime module" in INSTALLER and
       "new required modules cannot silently disappear or contaminate a legacy recovery package")
 check('"--append-system-prompt"' in MAIN and '"developerInstructions": instructions' in MAIN,
       "native execution retains real provider-supported governance channels")
+DISPLAY = (ROOT / "Sources/OS1Context/RCCNativeDisplayReceipts.swift").read_text()
+PROJECTION = (ROOT / "Sources/OS1Context/RCCRuntimeProjection.swift").read_text()
+check(MAIN.count("nativeReceipts: RCCNativeDisplayReceipts.load(") == 2 and
+      "nativeReceipts: RCCNativeDisplayReceipts.load(snapshot)" in APP,
+      "running, terminal and installation-observer graph paths attach the same read-only receipt evidence")
+check('".os1", "rcc-runtime", "native-receipts"' in DISPLAY and
+      'openat(' in DISPLAY and "O_NOFOLLOW" in DISPLAY and "AT_SYMLINK_NOFOLLOW" in DISPLAY and
+      "getuid()" in DISPLAY and "st_nlink == 1" in DISPLAY and "st_mode & 0o077 == 0" in DISPLAY,
+      "graph receipt observer only opens exact private no-link custody files")
+check("RCCRuntimeContract.decodeRecord(bytes)" in PROJECTION and
+      "record.taskID == core.taskID" in PROJECTION and "record.nodeID == child.id" in PROJECTION and
+      "record.attemptID == attempt" in PROJECTION and "record.candidateID == candidate" in PROJECTION and
+      "record.selectedConfig == selected" in PROJECTION and "record.nativeReceipt == path" in PROJECTION,
+      "display witness cannot inherit a neighboring task, child, attempt, configuration or receipt")
+check("model: nil, effort: nil, nativeSessionID: native?.sessionID" in PROJECTION and
+      "record.dispatchStage == .dispatched" in PROJECTION and "record.executionVerified" in PROJECTION,
+      "receipt provenance cannot promote selected model/effort into observed settings or task/reference quality")
 print(f"PASS: {checks} RCC Runtime source/resource advisory checks; no runtime/quality proof; model calls 0; network calls 0")

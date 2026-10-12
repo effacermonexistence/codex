@@ -60,7 +60,8 @@ public enum RCCRuntimeProjection {
                                objective: String, observedAt: Date = Date(),
                                firstObservedAt: Date, maxParallelism: Int,
                                expectedRequestSHA256: String? = nil,
-                               previous: ParallelAgentTask.Snapshot? = nil) throws -> ParallelAgentTask.Snapshot {
+                               previous: ParallelAgentTask.Snapshot? = nil,
+                               nativeReceipts: [String: Data] = [:]) throws -> ParallelAgentTask.Snapshot {
         try RCCRuntimeContract.validate(core)
         if let expectedRequestSHA256, expectedRequestSHA256 != core.requestSHA256 { throw Rejection.invalidBinding }
         guard observedAt.timeIntervalSince1970.isFinite, firstObservedAt.timeIntervalSince1970.isFinite,
@@ -77,6 +78,19 @@ public enum RCCRuntimeProjection {
             prior = value
         } else { prior = nil }
         let childIDs = Dictionary(uniqueKeysWithValues: core.children.map { ($0.id, identifier(core.taskID, "child:" + $0.id)) })
+        // The caller acquires exact private receipt bytes; this pure projection
+        // does no filesystem/backend work. One receipt or witnessed native turn
+        // cannot be used to decorate more than one child. Bad display evidence
+        // is omitted, never a reason to reject an otherwise valid Core graph.
+        let receiptCounts = Dictionary(grouping: core.children.compactMap(\.nativeReceipt), by: { $0 }).mapValues(\.count)
+        let witnesses = core.children.compactMap { child -> (String, NativeWitness)? in
+            guard let path = child.nativeReceipt, receiptCounts[path] == 1,
+                  let bytes = nativeReceipts[path],
+                  let witness = nativeWitness(bytes, path: path, core: core, child: child) else { return nil }
+            return (child.id, witness)
+        }
+        let witnessCounts = Dictionary(grouping: witnesses, by: { $0.1.identity }).mapValues(\.count)
+        let nativeByChild = Dictionary(uniqueKeysWithValues: witnesses.filter { witnessCounts[$0.1.identity] == 1 })
         var knownTimes = [firstObservedAt]
         for child in core.children {
             for milliseconds in [child.startedAtMS, child.finishedAtMS].compactMap({ $0 }) {
@@ -140,15 +154,18 @@ public enum RCCRuntimeProjection {
                 // Selected configuration is NOT independently observed execution.
                 description += " · selected " + selected.surface.rawValue + " / " + selected.model + " / " + selected.effort.rawValue
             } else { description += " · execution configuration not exposed" }
+            let native = nativeByChild[child.id]
+            if let native { description += " · native " + native.provider + " execution verified" }
             if state != .pending, child.startedAtMS == nil {
                 description += " · clock is first observation, not native start"
             }
             nodes.append(ParallelAgentTask.Node(id: id, parentID: rootID,
                 dependencies: dependencyNames.compactMap { childIDs[$0] },
                 title: childTitle(child, index: index), role: .worker, state: state,
-                // No selected -> executed upgrade. Native-observed route/session
-                // can be attached by the caller from its real execution receipt.
-                provider: nil, surface: nil, model: nil, effort: nil, nativeSessionID: nil,
+                // Native receipt provenance can identify a real executor and
+                // session. Selected/ACK model and effort remain NOT observed.
+                provider: native?.provider, surface: native?.surface,
+                model: nil, effort: nil, nativeSessionID: native?.sessionID,
                 workerSubmissionID: identifier(core.taskID, "submission:" + child.id),
                 startedAt: start, finishedAt: finish,
                 progressText: ParallelAgentTask.publicText(description, maximum: 500),
@@ -163,6 +180,87 @@ public enum RCCRuntimeProjection {
             createdAt: createdAt, updatedAt: observedAt, maxParallelism: maxParallelism,
             nodes: nodes).validated(conversationID: conversationID, submissionID: submissionID,
                                    requestSHA256: core.requestSHA256)
+    }
+
+    private struct NativeWitness {
+        let provider: String
+        let surface: String
+        let sessionID: String
+        let recordPath: String
+        let turnID: String?
+        var identity: String { [provider, sessionID, recordPath, turnID ?? ""].joined(separator: "\0") }
+    }
+
+    /// Only the minimal witnessed fields are decoded. Raw instructions, output,
+    /// tool arguments and native paths never enter public graph text.
+    private struct NativeSummary: Decodable {
+        let steps: [Step]
+        struct Step: Decodable {
+            let provider: String
+            let surface: String
+            let sessionID: String
+            let exitCode: Int
+            let nativeRecord: Record
+            enum CodingKeys: String, CodingKey {
+                case provider, surface
+                case sessionID = "session_id", exitCode = "exit_code", nativeRecord = "native_record"
+            }
+            struct Record: Decodable {
+                let recordPath: String
+                let persistence: String
+                let turnID: String?
+                enum CodingKeys: String, CodingKey {
+                    case persistence, recordPath = "record_path", turnID = "turn_id"
+                }
+            }
+        }
+    }
+
+    private static func nativeWitness(_ bytes: Data, path: String,
+                                      core: RCCRuntimeContract.Snapshot,
+                                      child: RCCRuntimeContract.ChildSnapshot) -> NativeWitness? {
+        guard bytes.count <= 1_048_576, absoluteNativePath(path),
+              let selected = child.selectedConfig, let attempt = child.attemptID,
+              let candidate = child.candidateID,
+              let record = try? RCCRuntimeContract.decodeRecord(bytes),
+              record.taskID == core.taskID, record.nodeID == child.id,
+              record.attemptID == attempt, record.candidateID == candidate,
+              record.configurationSHA256 == selected.configurationSHA256,
+              record.selectedConfig == selected, record.nativeReceipt == path,
+              record.status == .succeeded, record.dispatchStage == .dispatched, record.executionVerified,
+              let raw = record.nativeSummary, raw.utf8.count <= 512_000 else { return nil }
+        let summaryBytes = Data(raw.utf8)
+        // Apply the shared duplicate-key/depth gate inside the opaque summary
+        // too, then type-decode (e.g. false is never accepted as exit code 0).
+        guard (try? RCCRuntimeContract.checkedObject(summaryBytes)) != nil,
+              let summary = try? JSONDecoder().decode(NativeSummary.self, from: summaryBytes),
+              summary.steps.count == 1, let step = summary.steps.first,
+              step.exitCode == 0, step.nativeRecord.persistence == "verified",
+              let session = UUID(uuidString: step.sessionID),
+              absoluteNativePath(step.nativeRecord.recordPath),
+              URL(fileURLWithPath: step.nativeRecord.recordPath).pathExtension == "jsonl",
+              step.surface == selected.surface.rawValue else { return nil }
+        let leaf = URL(fileURLWithPath: step.nativeRecord.recordPath).lastPathComponent.lowercased()
+        let sessionLeaf = session.uuidString.lowercased() + ".jsonl"
+        switch (step.provider, selected.transport, selected.surface) {
+        case ("codex", .codexAppServer, .codex), ("codex", .codexAppServer, .gptChat):
+            guard leaf.hasPrefix("rollout-"), leaf.hasSuffix("-" + sessionLeaf),
+                  let turn = step.nativeRecord.turnID, UUID(uuidString: turn) != nil else { return nil }
+        case ("claude", .claudeCLI, .claude), ("claude", .claudeCLI, .claudeChat):
+            // Claude native records need not expose a separate turn UUID.
+            guard leaf == sessionLeaf,
+                  step.nativeRecord.turnID.map({ UUID(uuidString: $0) != nil }) ?? true else { return nil }
+        default: return nil
+        }
+        return NativeWitness(provider: step.provider, surface: step.surface,
+            sessionID: session.uuidString.lowercased(), recordPath: step.nativeRecord.recordPath,
+            turnID: step.nativeRecord.turnID?.lowercased())
+    }
+
+    private static func absoluteNativePath(_ path: String) -> Bool {
+        !path.isEmpty && path.utf8.count <= 4_096 && path.hasPrefix("/") &&
+            !path.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) &&
+            URL(fileURLWithPath: path).standardizedFileURL.path == path
     }
 
     private static func surfaceTitle(_ surface: RCCRuntimeContract.Surface) -> String {

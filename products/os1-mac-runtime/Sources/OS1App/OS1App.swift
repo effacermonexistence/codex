@@ -12445,7 +12445,8 @@ private final class SessionStore: ObservableObject {
         if ownsGraph, let graph = try? RCCRuntimeProjection.project(snapshot,
             conversationID: conversationID, submissionID: submissionID, objective: binding.objective,
             firstObservedAt: binding.firstObservedAt, maxParallelism: max(1, min(8, snapshot.children.count)),
-            expectedRequestSHA256: binding.handoff.requestSHA256, previous: previous) {
+            expectedRequestSHA256: binding.handoff.requestSHA256, previous: previous,
+            nativeReceipts: RCCNativeDisplayReceipts.load(snapshot)) {
             sessions[index].agentTask = graph
         }
         if let result = snapshot.result, !result.output.isEmpty {

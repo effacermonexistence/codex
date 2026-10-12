@@ -18237,7 +18237,8 @@ func runOpenClawRCCTask(prompt: String, workspace: String, context: String?, sur
         guard let state = try? RCCRuntimeContract.decodeSnapshot(snapshot) else { return }
         if let graph = try? RCCRuntimeProjection.project(state, conversationID: conversationID,
             submissionID: submissionID, objective: prompt, observedAt: Date(), firstObservedAt: observed,
-            maxParallelism: 4, expectedRequestSHA256: request.requestSHA256) {
+            maxParallelism: 4, expectedRequestSHA256: request.requestSHA256,
+            nativeReceipts: RCCNativeDisplayReceipts.load(state)) {
             if let path = ProcessInfo.processInfo.environment["OS1_AGENT_TASK_FILE"] {
                 try? ParallelAgentTask.saveBound(graph, path: path)
             }
@@ -18260,7 +18261,8 @@ func runOpenClawRCCTask(prompt: String, workspace: String, context: String?, sur
             sessionID: id, permissionProfile: "local_control", exitCode: 0, output: output, stderr: "", durationMS: Int64(Date().timeIntervalSince(observed) * 1000), nativeRecord: nil)]
     }
     let graph = try? RCCRuntimeProjection.project(result, conversationID: conversationID, submissionID: submissionID,
-        objective: prompt, observedAt: Date(), firstObservedAt: observed, maxParallelism: 4, expectedRequestSHA256: request.requestSHA256)
+        objective: prompt, observedAt: Date(), firstObservedAt: observed, maxParallelism: 4, expectedRequestSHA256: request.requestSHA256,
+        nativeReceipts: RCCNativeDisplayReceipts.load(result))
     return RunSummary(status: result.state == RCCRuntimeContract.State.completed ? "complete" : result.state == RCCRuntimeContract.State.returnedUnverified ? "returned_unverified" : "workflow_blocked",
         steps: steps, monitorTaskID: id, workflowBlocker: result.error, agentTask: graph, localRouterReceipt: configuration.identity.pluginDirectory, rccRuntime: result)
 }
