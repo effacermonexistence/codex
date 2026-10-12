@@ -7131,6 +7131,13 @@ func publishAdoptedNativeRecord(
     )
 }
 
+/// Native persistence does not imply a Desktop renderer owned execution.
+/// Preserve the branch that actually dispatched the turn; normal publication
+/// still decides whether an independently executed record should be revealed.
+func codexExecutionDesktopVisibility(ownsThreadWriter: Bool) -> String {
+    ownsThreadWriter ? "not_revealed" : "desktop_owned"
+}
+
 /// Identifies the app-server's single-writer conflict. The runtime uses this
 /// signal to hand off to the existing Desktop owner without changing thread identity.
 func codexWriterConflictMessage(_ error: Error, threadID: String) -> String? {
@@ -7747,8 +7754,10 @@ private func execute(
         // app-server writer must execute it; waiting for a nonexistent UI owner
         // deadlocks dispatch. Only an actual writer conflict uses Desktop IPC.
         let turn: CodexTurnOutput
+        let executedDesktopVisibility: String
         do {
             if appServer.ownsThreadWriter {
+                executedDesktopVisibility = codexExecutionDesktopVisibility(ownsThreadWriter: true)
                 turn = try appServer.runTurn(threadID: actualSessionID, prompt: prompt,
                     workspace: codexWorkspace, model: model, effort: effort,
                     permissionProfile: ticket.permissionProfile, deadline: deadline,
@@ -7758,6 +7767,7 @@ private func execute(
                         onDispatch?(actualSessionID)
                     })
             } else {
+                executedDesktopVisibility = codexExecutionDesktopVisibility(ownsThreadWriter: false)
                 appServer.applyPendingThreadName(deadline: min(deadline, Date().addingTimeInterval(10)))
                 appServer.close()
                 turn = try runCodexDesktopTurn(executable: codex, threadID: actualSessionID,
@@ -7862,7 +7872,7 @@ private func execute(
             turnID: turn.turnID,
             recordPath: recordPath,
             persistence: persistence,
-            desktopVisibility: "desktop_owned"
+            desktopVisibility: executedDesktopVisibility
         )
         sessionID = actualSessionID
         if let memoryTurn, let recordPath, let data = try? Data(contentsOf: URL(fileURLWithPath: recordPath)) {
@@ -14539,6 +14549,11 @@ func selfTest() throws {
             title: "fixture", deadline: Date().addingTimeInterval(8))
         guard selectedID == ownerID, ownerServer.ownsThreadWriter == !desktopOwned else {
             throw OS1Error.message("Codex writer ownership must determine direct versus Desktop dispatch")
+        }
+        protocolRecoveryChecks += 1
+        let executionVisibility = codexExecutionDesktopVisibility(ownsThreadWriter: ownerServer.ownsThreadWriter)
+        guard executionVisibility == (desktopOwned ? "desktop_owned" : "not_revealed") else {
+            throw OS1Error.message("Native execution provenance must distinguish app-server writer from Desktop owner")
         }
         protocolRecoveryChecks += 1
     }

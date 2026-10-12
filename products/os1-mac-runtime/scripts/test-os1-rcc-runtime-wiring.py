@@ -16,6 +16,7 @@ APP = (ROOT / "Sources/OS1App/OS1App.swift").read_text()
 FLEET = (ROOT / "Sources/OS1/Fleet.swift").read_text()
 BRIDGE = (ROOT / "Sources/OS1/LocalRouterBridge.swift").read_text()
 CLIENT = (ROOT / "Sources/OS1/RCCRuntimeGatewayClient.swift").read_text()
+SEAL = (ROOT / "Sources/OS1Context/InstalledResourceSeal.swift").read_text()
 RELEASE = (ROOT / "scripts/build-release.sh").read_text()
 INSTALLER = (ROOT / "scripts/install-os1.sh").read_text()
 PLUGIN_ROOT = ROOT / "Resources/openclaw-os1-bridge"
@@ -66,6 +67,14 @@ check(warm.count("checkInstallerMaintenance(root: root)") == 2 and "ensureGatewa
 check("startupReadinessBudget: TimeInterval = 60" in CLIENT and
       "var rpc: TimeInterval = 15" in CLIENT and "var observe: TimeInterval = 86_520" in CLIENT,
       "startup readiness is independent of unchanged RPC/model-task observation limits")
+seal = section(BRIDGE, "private static func verifyInstalledResourceSeal(", "private static func verifyGatewayPolicyStillCurrent(")
+check("InstalledResourceSeal.verify(app: app)" in seal and
+      "commandOutput(executable, arguments, timeout: timeout).0" in seal and "timeout: 8" not in seal,
+      "installed resource seal uses bounded signature observer rather than eight-second bootstrap cutoff")
+check("verificationTimeout = 60" in SEAL and
+      '["--verify", "--deep", "--strict", app.path]' in SEAL and '"/usr/bin/codesign"' in SEAL and
+      "guard status == 0" in SEAL and "elapsed < TimeInterval(verificationTimeout)" in SEAL,
+      "signature flags/status verification retained; invalid or expired result cannot establish seal")
 check('"--rcc-task-id"' in APP and '"--request-file"' in APP and '"run"' in APP,
       "GUI passes immutable request bytes and its stable task ID to normal CLI ingress")
 check("if summary.rccTransportFailure != nil" in APP and "if let core = summary.rccRuntime" in APP,

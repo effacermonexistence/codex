@@ -5078,6 +5078,29 @@ private struct NativeSessionMessage: Identifiable, Sendable {
     var turnID: String? = nil
 }
 
+/// An exact existing record may seed a NEW conversation, not authorize a run.
+/// This value stays in memory; no source transcript or host credential is copied.
+private struct NativeSessionAssociationEvidence: Sendable {
+    let session: NativeSessionSummary
+    let accountID: String
+    let completedTurnID: String
+    let persistedMessageID: String
+    let consumedCursor: String
+
+    func accepts(_ selected: NativeSessionSummary, activeAccountID: String) -> Bool {
+        guard selected.provider == .codex, session.provider == .codex,
+              UUID(uuidString: selected.id) != nil,
+              session.id.lowercased() == selected.id.lowercased(),
+              accountID == activeAccountID, session.requiresExactIdentity,
+              UUID(uuidString: completedTurnID) != nil, !persistedMessageID.isEmpty,
+              persistedMessageID.utf8.count <= 512,
+              Int(consumedCursor).map({ $0 >= 0 }) == true,
+              session.sourcePath != nil else { return false }
+        return NativeSessionReader.canonicalExistingPath(URL(fileURLWithPath: session.workspace)) ==
+            NativeSessionReader.canonicalExistingPath(URL(fileURLWithPath: selected.workspace))
+    }
+}
+
 private func sidebarNativeLess(_ lhs: NativeSessionSummary, _ rhs: NativeSessionSummary) -> Bool {
     if lhs.isPinned != rhs.isPinned { return lhs.isPinned }
     if lhs.isPinned, lhs.pinPosition != rhs.pinPosition {
@@ -5207,6 +5230,52 @@ private enum NativeSessionReader {
             if pinReadback == nil { value.pinSyncNote = os1Tr("백엔드 핀 상태 미확인", "Backend pin state unverified") }
             return value
         }.sorted(by: sidebarNativeLess)
+    }
+
+    /// Read only the selected UUID from the ACTIVE account, never a browse-list
+    /// assumption. The native history must contain a completed public answer.
+    static func codexAssociationEvidence(_ selected: NativeSessionSummary,
+                                          book: BackendAccountBook) throws -> NativeSessionAssociationEvidence {
+        guard selected.provider == .codex, UUID(uuidString: selected.id) != nil else {
+            throw RunnerError.message("Select one exact Codex record before continuing.")
+        }
+        let account = BackendAccounts.active(provider: "codex", in: book)
+        let home = BackendAccounts.home(provider: "codex", in: book)
+        guard let bound = try boundSession(for: .codex, including: selected.id, accountHome: home),
+              let source = bound.sourcePath else {
+            throw RunnerError.message("The selected record is not present in the active Codex account.")
+        }
+        let expected = canonicalExistingPath(home.appendingPathComponent("thread_history_1.sqlite"))
+        let canonicalHome = canonicalExistingPath(home)
+        guard canonicalExistingPath(URL(fileURLWithPath: source)) == expected,
+              expected.hasPrefix(canonicalHome + "/"),
+              (try FileManager.default.attributesOfItem(atPath: expected))[.type] as? FileAttributeType == .typeRegular,
+              bound.workspace.hasPrefix("/"), !bound.workspace.contains("\0") else {
+            throw RunnerError.message("Native record custody could not be verified.")
+        }
+        let history = try transcript(for: bound, forIngestion: true)
+        var directory: ObjCBool = false
+        let workspace = canonicalExistingPath(URL(fileURLWithPath: bound.workspace))
+        guard FileManager.default.fileExists(atPath: workspace, isDirectory: &directory), directory.boolValue,
+              let last = history.last,
+              last.role == .assistant, last.complete, let turn = last.turnID,
+              UUID(uuidString: turn) != nil else {
+            throw RunnerError.message("The native record or workspace is not ready; no task was started.")
+        }
+        let records = history.enumerated().map { item in
+            NativeRecord(id: "codex:" + item.element.id, ordinal: item.element.ordinal ?? item.offset,
+                role: item.element.role.rawValue, text: item.element.text,
+                complete: item.element.complete, turnID: item.element.turnID)
+        }
+        guard let cursor = NativeIngestion.consumedCursor(records, after: nil) else {
+            throw RunnerError.message("Native history cursor could not be verified.")
+        }
+        let evidence = NativeSessionAssociationEvidence(session: bound, accountID: account.id,
+            completedTurnID: turn, persistedMessageID: last.id, consumedCursor: cursor)
+        guard evidence.accepts(selected, activeAccountID: account.id) else {
+            throw RunnerError.message("Native record identity or workspace changed; nothing was associated.")
+        }
+        return evidence
     }
 
     static func transcript(for session: NativeSessionSummary, forIngestion: Bool = false) throws -> [NativeSessionMessage] {
@@ -7837,6 +7906,67 @@ private func nativeProvenanceSelfTest() throws {
     print("Native provenance: exact managed rows hidden from UI/copy/context; originals, external quote, restart and idempotency PASS; model calls 0")
 }
 
+@MainActor
+private func nativeSessionAssociationSelfTest() throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("os1-native-association-" + UUID().uuidString)
+    let workspace = root.appendingPathComponent("workspace")
+    try FileManager.default.createDirectory(at: workspace, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let store = SessionStore(storageRoot: root.appendingPathComponent("store"), nativeSessionOpener: { _ in false })
+    guard let oldID = store.selectedSessionID else { throw SourceContextError.invalid }
+    store.composer = "preserved owner draft"
+    let oldMessages = store.selectedSession!.messages.map(\.id)
+    let nativeID = UUID().uuidString.lowercased()
+    let native = NativeSessionSummary(id: nativeID, provider: .codex, title: "fixture record", workspace: workspace.path,
+        workspaceLabel: nil, updatedAt: Date(), sourcePath: root.appendingPathComponent("history.sqlite").path,
+        linkedTitle: nil, requiresExactIdentity: true)
+    let account = BackendAccounts.active(provider: "codex", in: store.accountBook).id
+    let evidence = NativeSessionAssociationEvidence(session: native, accountID: account,
+        completedTurnID: UUID().uuidString.lowercased(), persistedMessageID: "fixture-final", consumedCursor: "1")
+    var checks = 0
+    func check(_ value: Bool, _ label: String) throws {
+        guard value else { throw RunnerError.message("Native association: " + label) }; checks += 1
+    }
+    store.surface = .codex; store.nativeSessions = [native]; store.selectedNativeSessionID = nativeID
+    store.createSessionFromSelectedCodexRecord()
+    try check(store.sessions.count == 1, "fixture must never fall through to live HOME lookup")
+    store.nativeSessionAssociationLookup = { _, _ in evidence }
+    store.createSessionFromSelectedCodexRecord()
+    guard let created = store.selectedSession else { throw SourceContextError.invalid }
+    try check(created.id != oldID && created.codexSessionID == nativeID && created.workspace == workspace.path,
+              "exact record did not seed a separate conversation")
+    try check(created.messages.count == 1 && created.messages.allSatisfy { $0.role == .receipt } &&
+        created.taskContext?.objective.requestText == "" && created.taskContext?.executions.isEmpty == true &&
+        created.taskContext?.sources.isEmpty == true && created.taskContext?.bindings.first?.lastIngestedCursor == "1",
+              "source messages or claimed execution were grafted onto the new task")
+    let old = store.sessions.first { $0.id == oldID }!
+    try check(old.draft == "preserved owner draft" && old.messages.map(\.id) == oldMessages && old.codexSessionID == nil,
+              "old conversation/draft/binding changed")
+    try check(store.queuedSubmissions.isEmpty && store.inFlightSubmissions.isEmpty && store.activeRuns.isEmpty,
+              "association dispatched or queued work")
+    store.surface = .codex; store.createSessionFromSelectedCodexRecord()
+    try check(store.sessions.count == 2, "duplicate native owner was created")
+    let baseline = [NativeRecord(id: "codex:prior", ordinal: 1, role: "assistant", text: "prior worker output", complete: true, turnID: evidence.completedTurnID)]
+    try check(NativeIngestion.newRecords(baseline, after: created.taskContext?.bindings.first?.lastIngestedCursor,
+        sentByOS1: [], seen: []).records.isEmpty, "old worker output would be re-ingested")
+    try check(!evidence.accepts(native, activeAccountID: "other-account"), "foreign account accepted")
+    let wrongID = NativeSessionSummary(id: UUID().uuidString, provider: .codex, title: native.title,
+        workspace: native.workspace, workspaceLabel: nil, updatedAt: native.updatedAt, sourcePath: native.sourcePath,
+        linkedTitle: nil, requiresExactIdentity: true)
+    try check(!evidence.accepts(wrongID, activeAccountID: account), "wrong UUID accepted")
+    let wrongWorkspace = NativeSessionSummary(id: nativeID, provider: .codex, title: native.title,
+        workspace: root.path, workspaceLabel: nil, updatedAt: native.updatedAt, sourcePath: native.sourcePath,
+        linkedTitle: nil, requiresExactIdentity: true)
+    try check(!evidence.accepts(wrongWorkspace, activeAccountID: account), "stale workspace accepted")
+    let incomplete = NativeSessionAssociationEvidence(session: native, accountID: account,
+        completedTurnID: "NOT_CAPTURED", persistedMessageID: "fixture-final", consumedCursor: "1")
+    try check(!incomplete.accepts(native, activeAccountID: account), "unverified persistence accepted")
+    let reloaded = SessionStore(storageRoot: root.appendingPathComponent("store"), nativeSessionOpener: { _ in false })
+    try check(reloaded.sessions.contains { $0.id == created.id && $0.codexSessionID == nativeID } &&
+        reloaded.sessions.contains { $0.id == oldID && $0.draft == "preserved owner draft" }, "restart lost association or draft")
+    print("Native association: \(checks) checks PASS; new conversation only; preserved old state; provider/model/network calls 0")
+}
+
 private func boundNativeLookupSelfTest() throws {
     var root = FileManager.default.temporaryDirectory.appendingPathComponent("os1-bound-native-\(UUID().uuidString)")
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -9425,6 +9555,66 @@ private final class SessionStore: ObservableObject {
 
     var selectedNativeSession: NativeSessionSummary? {
         nativeSessions.first(where: { $0.id == selectedNativeSessionID })
+    }
+
+    /// Offline fixtures alone may replace exact record lookup. Live UI always
+    /// uses the active-account native index/history; no environment switch.
+    fileprivate var nativeSessionAssociationLookup: ((NativeSessionSummary, BackendAccountBook) throws -> NativeSessionAssociationEvidence)?
+
+    var canAssociateSelectedCodexRecord: Bool {
+        guard surface == .codex, let native = selectedNativeSession,
+              native.provider == .codex, UUID(uuidString: native.id) != nil,
+              !isLoadingNativeSessions else { return false }
+        return nativeOwnerIndices(.codex, id: native.id.lowercased()).isEmpty
+    }
+
+    /// Association only: preserve every old conversation/draft/queue, create
+    /// one empty OS-1 conversation and reuse its ordinary OpenClaw send path.
+    func createSessionFromSelectedCodexRecord() {
+        guard canAssociateSelectedCodexRecord, let native = selectedNativeSession else {
+            alertMessage = "Select an unlinked Codex record; existing conversations were preserved."
+            return
+        }
+        do {
+            let book = customStorageRoot == nil ? BackendAccounts.load() : accountBook
+            let evidence: NativeSessionAssociationEvidence
+            if customStorageRoot != nil {
+                guard let lookup = nativeSessionAssociationLookup else {
+                    throw RunnerError.message("Fixture record lookup was not supplied; live lookup refused.")
+                }
+                evidence = try lookup(native, book)
+            } else {
+                evidence = try NativeSessionReader.codexAssociationEvidence(native, book: book)
+            }
+            let current = customStorageRoot == nil ? BackendAccounts.load() : accountBook
+            guard evidence.accepts(native, activeAccountID: BackendAccounts.active(provider: "codex", in: current).id),
+                  BackendAccounts.home(provider: "codex", in: current) == BackendAccounts.home(provider: "codex", in: book),
+                  nativeOwnerIndices(.codex, id: native.id.lowercased()).isEmpty else {
+                throw RunnerError.message("Account or native record changed; nothing was associated.")
+            }
+            alertMessage = nil
+            createSession(provider: .codex)
+            guard let index = selectedIndex else { return }
+            let conversation = sessions[index].id
+            sessions[index].workspace = NativeSessionReader.canonicalExistingPath(URL(fileURLWithPath: evidence.session.workspace))
+            sessions[index].title = "Codex · " + evidence.session.displayTitle
+            recordNativeSession(.codex, id: evidence.session.id.lowercased(), conversationID: conversation)
+            // Seed only continuity identity/cursor. Never graft the old worker's
+            // objective, transcript or result into this new OS-1 conversation.
+            var context = TaskContext.migrated(conversationID: conversation, request: "",
+                workspace: sessions[index].workspace, sourceContext: nil,
+                codexSessionID: evidence.session.id.lowercased(), claudeSessionID: nil)
+            context.bindings[0].lastIngestedCursor = evidence.consumedCursor
+            sessions[index].taskContext = context
+            sessions[index].messages.append(ChatMessage(role: .receipt, text:
+                os1Tr("기존 Codex 기록 연결 · 새 OS-1 대화 · 이전 메시지 미복사 · 실행·도구·쿼터·품질 검증과 별개",
+                      "Existing Codex record associated · new OS-1 conversation · no prior messages copied · separate from execution, tool, quota and quality verification")))
+            appendTaskEvent(conversationID: conversation, kind: "native_session_associated",
+                summary: "Exact active-account record associated; no provider dispatch or source transcript import")
+            surface = .auto
+            statusText = os1Tr("Codex 기록 연결됨 · 새 작업을 입력하세요", "Codex record associated · enter a new task")
+            save()
+        } catch { alertMessage = error.localizedDescription }
     }
 
     func createSession(provider: ProviderChoice? = nil) {
@@ -14262,6 +14452,10 @@ private struct OS1DesktopApp: App {
                 exit(EXIT_SUCCESS)
             } catch { fputs("\(error.localizedDescription)\n", stderr); exit(EXIT_FAILURE) }
         }
+        if CommandLine.arguments.contains("--self-test-native-association") {
+            do { try nativeSessionAssociationSelfTest(); exit(EXIT_SUCCESS) }
+            catch { fputs("\(error.localizedDescription)\n", stderr); exit(EXIT_FAILURE) }
+        }
         if CommandLine.arguments.contains("--self-test-bound-native") {
             do { try boundNativeLookupSelfTest(); exit(EXIT_SUCCESS) }
             catch { fputs("\(error.localizedDescription)\n", stderr); exit(EXIT_FAILURE) }
@@ -14910,6 +15104,7 @@ private struct OS1DesktopApp: App {
                 try governanceEvidenceMonitorSelfTest()
                 try nativeProvenanceSelfTest()
                 try boundNativeLookupSelfTest()
+                try nativeSessionAssociationSelfTest()
                 try nativeProgressPresentationSelfTest()
                 try savedFailurePreviewSelfTest()
                 try providerIntentSelfTest()
@@ -17145,6 +17340,16 @@ private struct NativeTranscriptView: View {
                     .help(store.isRunning
                         ? "The backend record is still being written; inspect it here until the run finishes"
                         : "Open this exact recorded session in its native app")
+                }
+                if provider == .codex, !store.isShowingLinkedNativeSession(provider) {
+                    Button { store.createSessionFromSelectedCodexRecord() } label: {
+                        Label(os1Tr("새 OS-1 작업으로 이어가기", "Continue in new OS-1 task"), systemImage: "arrow.turn.down.right")
+                            .font(.system(size: 10, weight: .semibold))
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(provider.tint)
+                    .disabled(!store.canAssociateSelectedCodexRecord)
+                    .help("Associate this verified record with a new conversation; do not import messages or start a model.")
                 }
                 Circle().fill(Theme.green).frame(width: 8, height: 8)
                     .shadow(color: Theme.green.opacity(0.75), radius: 5)

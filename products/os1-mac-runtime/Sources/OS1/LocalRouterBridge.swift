@@ -273,9 +273,13 @@ enum LocalRouterBridge {
     // binding. A same-byte copy alone does not establish a signed app.
     private static func verifyInstalledResourceSeal(_ resources: URL) throws {
         let app = resources.deletingLastPathComponent().deletingLastPathComponent()
-        let seal = try commandOutput("/usr/bin/codesign", ["--verify", "--deep", "--strict", app.path],
-                                     timeout: 8)
-        guard seal.0 == 0 else {
+        do {
+            try InstalledResourceSeal.verify(app: app) { executable, arguments, timeout in
+                try commandOutput(executable, arguments, timeout: timeout).0
+            }
+        } catch InstalledResourceSeal.Failure.timeout {
+            throw OS1Error.message("Installed OS-1 app resource seal verification timed out; seal remains unverified")
+        } catch InstalledResourceSeal.Failure.rejected {
             throw OS1Error.message("Installed OS-1 app resource seal failed")
         }
     }
