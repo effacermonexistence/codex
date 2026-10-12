@@ -17000,6 +17000,67 @@ struct OS1Main {
             if try await fleetCommand(arguments) { return }
             if try await ManagedPreview.command(arguments) { return }
             switch command {
+            // One bounded request handed to a Codex thread the Desktop already
+            // owns, over the transport OS-1 already uses for writer conflicts.
+            // The Desktop executes it, so the turn keeps the host's own tool
+            // catalog; OS-1 neither supplies nor borrows that authority. This
+            // is a diagnostic probe of that handoff, not a task coordinator:
+            // no RCC task, no queue, no retry, no alternate route.
+            case "codex-desktop-probe":
+                var threadID: String?, requestPath: String?, readOnly = true, discoverOnly = false
+                // A relay turn waits on a second model's reply, so it outlasts
+                // an ordinary local turn. Too short a window reports a timeout
+                // for work that actually completed, and the request must then
+                // be reconciled rather than replayed.
+                var deadlineSeconds: TimeInterval = 1_800
+                var index = 1
+                while index < arguments.count {
+                    switch arguments[index] {
+                    case "--thread" where index + 1 < arguments.count:
+                        threadID = arguments[index + 1]; index += 2
+                    case "--request-file" where index + 1 < arguments.count:
+                        requestPath = arguments[index + 1]; index += 2
+                    case "--deadline-seconds" where index + 1 < arguments.count:
+                        guard let value = TimeInterval(arguments[index + 1]), (60...7_200).contains(value) else {
+                            throw OS1Error.message("--deadline-seconds must be 60...7200")
+                        }
+                        deadlineSeconds = value; index += 2
+                    case "--allow-workspace-write":
+                        readOnly = false; index += 1
+                    // Owner reachability only: no turn is started, so a thread
+                    // the Desktop does not render costs nothing to rule out.
+                    case "--discover-only":
+                        discoverOnly = true; index += 1
+                    default: throw OS1Error.message("Unknown codex-desktop-probe argument")
+                    }
+                }
+                guard let threadID, UUID(uuidString: threadID) != nil else {
+                    throw OS1Error.message("codex-desktop-probe requires --thread UUID")
+                }
+                if discoverOnly {
+                    let connection = try CodexDesktopTransport()
+                    try connection.discover(threadID: threadID)
+                    print(String(decoding: try JSONSerialization.data(withJSONObject:
+                        ["schema": 1, "thread_id": threadID, "desktop_owner_reachable": true],
+                        options: [.sortedKeys]), as: UTF8.self))
+                    return
+                }
+                guard let requestPath else {
+                    throw OS1Error.message("codex-desktop-probe requires --request-file PATH")
+                }
+                let probePrompt = try readRunRequestFile(requestPath)
+                let codexExecutable = try findExecutable("codex")
+                let probeDeadline = Date().addingTimeInterval(deadlineSeconds)
+                let turn = try runCodexDesktopTurn(executable: codexExecutable, threadID: threadID,
+                    prompt: probePrompt, workspace: FileManager.default.currentDirectoryPath,
+                    model: nil, effort: "low",
+                    permissionProfile: readOnly ? "read_only" : "workspace_write",
+                    instructions: "Answer exactly what the request asks. Do not start unrelated work.",
+                    deadline: probeDeadline, onDispatch: {})
+                let receipt: [String: Any] = ["schema": 1, "thread_id": threadID, "turn_id": turn.turnID,
+                    "output": String(decoding: turn.output, as: UTF8.self)]
+                print(String(decoding: try JSONSerialization.data(withJSONObject: receipt,
+                    options: [.sortedKeys, .prettyPrinted]), as: UTF8.self))
             case "rcc-warmup":
                 guard arguments.count == 1 else { throw OS1Error.message("RCC warmup accepts no request or execution settings") }
                 do {
