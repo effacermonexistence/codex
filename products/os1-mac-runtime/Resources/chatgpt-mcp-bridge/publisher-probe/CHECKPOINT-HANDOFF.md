@@ -1,5 +1,81 @@
 # Native ordinary-Chat connection checkpoint — NOT COMPLETE
 
+## Superseding local relay finding — 2026-10-12 (NOT PRODUCT COMPLETE)
+
+This section supersedes older blanket statements below about private Desktop
+IPC being unable to reach ROOT. Do not conflate two different executed paths.
+
+- Historical E used staged `codex-desktop-probe`3400203 lineage, an existing
+  Desktop owner, then real official send/read inside that owner. GPT replied;
+  staged CLI observation expired first. Installed build371 did not contain it.
+- Fresh F/G/H used the existing idle diagnostic owner (never active ROOT).
+  OS1 -> Desktop owner reached a completed turn. F sent once but the host denied
+  the cross-conversation tool action. G stopped at authorization verification.
+  After actual informed human approval, H independently read that human reply
+  but its send was also denied: transcript/tool evidence was not accepted as
+  trusted current-user authorization. Neither F nor H entered the GPT target.
+- Stop this action. No different owner/account/transport, role relabeling,
+  host-pipe copying, token borrowing or private IPC authority forgery is allowed
+  to defeat that denial. Further same-outcome calls are not authorized by a
+  locally minted approval flag. A real host-supported authorization path is the
+  remaining boundary; the current adapter cannot manufacture it.
+- This owner was NOT a cheap fresh relay context: recorded input-token totals
+  were F676026 (cached247040), G1201739 (cached1169152), H766974
+  (cached764160). These are native token observations, not exact quota debit.
+  No zero-quota or minimum-cost claim is supported. No further model calls.
+
+Source checkpoint changes (not installed or promoted):
+1. Durable owner-only request/hash/thread/client-message/turn binding; one
+   intent; observation expiry/disconnection preserves pending without replay.
+2. `codex-desktop-probe --observe-turn UUID` reads an existing exact turn only;
+   never starts, steers or interrupts it. `--resume-checkpoint PATH` observes
+   an already acknowledged nonterminal checkpoint, never redispatches.
+3. Optional `--relay-target UUID --nonce ID` persists intent BEFORE dispatch
+   and acknowledgement before waiting. Terminal permission/cancel remains
+   terminal; no invented host grant or final GPT adoption is recorded.
+4. A completed owner with failed actual send/read tool items returns
+   `downstream_status=relay_tool_failed` and nonzero exit, not GPT success.
+   Explicit `error:null` is not a failure. Missing downstream evidence stays
+   unverified. Final owner prose alone cannot supply ChatGPT provenance.
+
+The pure checkpoint's officialThreadRead enum is caller-provided structural
+metadata, not a native-source verifier. Keep final-response adoption unwired
+until real correlated send/read evidence exists. No ordinary ChatGPT candidate
+was admitted into OpenClaw; no automatic product route, UI adoption, installation,
+distribution, quality parity or exact quota separation is claimed.
+
+Private failed-turn/evidence paths:
+`~/.os1/recovery/os1-desktop-relay-20261012-f/`
+`~/.os1/recovery/os1-desktop-relay-20261012-g/`
+`~/.os1/recovery/os1-desktop-relay-20261012-h/`
+`~/.os1/recovery/os1-desktop-relay-20261012-checkpoint/`
+
+Verification receipt for this checkpoint:
+- `swift build --product os1`: final stable source PASS (57.24s). First build
+  was INVALID because source was modified during compilation; not counted.
+- Pure checkpoint:38 checks PASS; actual-tool-state filter:7 cases PASS.
+- Desktop framed transport:5 groups PASS; owner stream:10 cases PASS;
+  acknowledgement reconciliation:6 cases PASS. Fixture compiler dependencies
+  were repaired rather than hiding their initial missing-module failures.
+- OpenClaw RCC core:40 tests PASS; source-only wiring:50 checks PASS.
+- Fresh staged binary read-only observed actual H turn and returned exit1,
+  `owner_status=completed`, `downstream_status=relay_tool_failed`, failed tool
+  `send_message_to_thread`, `quota_zero_verified=false`. No new turn was sent.
+  The latest relay turn remained H, and the target latest response remained E.
+- Staged binary SHA256:
+  `a08a5c2048386847fe01ace53da59a61b7e4e9eca0f74e57ddc6e5fecd2b1769`.
+- No production merge, installation or success/quality/quota promotion.
+
+Next gate: legitimate host current-user approval propagation for the exact
+single target/payload, not another relay retry. After that: independently verify
+new GPT message identity, same OpenClaw task/child receipt, actual OS1 UI adoption,
+new-session/context reuse and composite resource accounting. These are NOT STARTED.
+
+Repair method: external executed records rather than fluent self-correction.
+Sources inspected: arXiv2210.03629, arXiv2310.01798, and official
+https://learn.chatgpt.com/docs/app-server . Those sources guide bounded observation;
+they do not certify this private IPC protocol or confer host permissions.
+
 ## Current identified diagnostic / public-host roundtrip success
 
 The user supplied two screenshots of the earlier arithmetic/tool-discovery

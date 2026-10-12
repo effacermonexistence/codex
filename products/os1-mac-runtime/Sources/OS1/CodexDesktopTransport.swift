@@ -76,8 +76,10 @@ final class CodexDesktopTransport {
 
     /// A Desktop presentation/workspace callback can fail AFTER turn/start was
     /// accepted. Reconcile that acknowledgement, never send a second start.
-    func startTurn(threadID: String, request original: [String: Any], context: [String: Any], deadline: Date) throws -> String {
-        let messageID = UUID().uuidString
+    func startTurn(threadID: String, request original: [String: Any], context: [String: Any], deadline: Date,
+                   clientUserMessageID: String = UUID().uuidString) throws -> String {
+        guard UUID(uuidString: clientUserMessageID) != nil else { throw failure("invalid client message identity") }
+        let messageID = clientUserMessageID
         var request = original
         request["clientUserMessageId"] = messageID
         do {

@@ -21,6 +21,7 @@ final class SourceContextTests {
     static func main() throws {
         codexDictationAuthorizationChildIfRequested()
         voiceProcessChildIfRequested()
+        if CommandLine.arguments.contains("--desktop-relay-checkpoint-only") { try runDesktopRelayCheckpointFixtures(); return }
         if CommandLine.arguments.contains("--rcc-runtime-contract-only") { try runRCCRuntimeContractFixture(); return }
         if CommandLine.arguments.contains("--rcc-runtime-projection-only") { try runRCCRuntimeProjectionFixtures(); return }
         if CommandLine.arguments.contains("--openclaw-agent-controller-only") { try runOpenClawAgentControllerFixture(); return }
@@ -34,6 +35,7 @@ final class SourceContextTests {
         if CommandLine.arguments.contains("--parallel-agent-task-only") { try runParallelAgentTaskFixtures(); return }
         if CommandLine.arguments.contains("--task-quality-correction-only") { try runTaskQualityCorrectionFixtures(); return }
         if CommandLine.arguments.contains("--task-quality-only") { try runTaskQualityFixtures(); try runTaskQualityCorrectionFixtures(); return }
+        try runDesktopRelayCheckpointFixtures()
         try runTaskQualityFixtures()
         try runTaskQualityCorrectionFixtures()
         try runLocalTaskInterpretationFixtures()

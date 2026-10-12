@@ -12,7 +12,8 @@ with tempfile.TemporaryDirectory(prefix='os1-ack-') as d:
  print(try ipc.startTurn(threadID: "thread", request: [:], context: [:], deadline: Date().addingTimeInterval(0.5)))
  } catch { print("REJECTED") }
 ''')
- subprocess.run(['swiftc',str(root/'Sources/OS1/CodexDesktopTransport.swift'),str(d/'main.swift'),'-o',str(d/'test')],check=True)
+ subprocess.run(['swiftc','-emit-library','-emit-module','-module-name','OS1Context',str(root/'Sources/OS1Context/BackendWindowFocus.swift'),'-emit-module-path',str(d/'OS1Context.swiftmodule'),'-o',str(d/'libOS1Context.dylib')],check=True)
+ subprocess.run(['swiftc','-I',str(d),'-L',str(d),'-lOS1Context','-Xlinker','-rpath','-Xlinker',str(d),str(root/'Sources/OS1/CodexDesktopTransport.swift'),str(d/'main.swift'),'-o',str(d/'test')],check=True)
  def exact(c,n):
   b=b''
   while len(b)<n:

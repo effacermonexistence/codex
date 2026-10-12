@@ -6774,6 +6774,8 @@ final class CodexAppServerClient: @unchecked Sendable {
 func runCodexDesktopTurn(executable: String, threadID: String, prompt: String, workspace: String,
                          model: String?, effort: String, permissionProfile: String, instructions: String, deadline: Date,
                          idleTimeout: TimeInterval? = nil,
+                         observeTurnID: String? = nil, clientUserMessageID: String = UUID().uuidString,
+                         interruptOnTimeout: Bool = true, onAcknowledged: ((String) throws -> Void)? = nil,
                          onDispatch: () -> Void) throws -> CodexTurnOutput {
     // Automatic routing: never activate Desktop. A running owner is reached
     // through its IPC socket, so no reopen event is sent and the owner's
@@ -6806,19 +6808,29 @@ func runCodexDesktopTurn(executable: String, threadID: String, prompt: String, w
         "approvalsReviewer": UnifiedExecution.codexApprovalsReviewer, "sandboxPolicy": sandbox,
         "runtimeWorkspaceRoots": [workspace], "turnTrigger": "os1"]
     if let model { request["model"] = model }
-    onDispatch()
-    let turnID = try desktop.startTurn(threadID: threadID, request: request,
-        context: ["inheritThreadSettings": false,
-            "responseItems": [["type": "message", "role": "developer",
-                "content": [["type": "input_text", "text": instructions]]]]], deadline: deadline)
+    let turnID: String
+    if let observeTurnID {
+        guard UUID(uuidString: observeTurnID) != nil else { throw OS1Error.message("Invalid observed turn identity") }
+        // Recovery reads the exact accepted turn. It never starts, steers or
+        // interrupts work, even when observation expires or the owner vanishes.
+        turnID = observeTurnID
+    } else {
+        onDispatch()
+        turnID = try desktop.startTurn(threadID: threadID, request: request,
+            context: ["inheritThreadSettings": false,
+                "responseItems": [["type": "message", "role": "developer",
+                    "content": [["type": "input_text", "text": instructions]]]]], deadline: deadline,
+            clientUserMessageID: clientUserMessageID)
+        try onAcknowledged?(turnID)
+    }
     RuntimeActivity.emit(.executing, provider: "codex", model: model, effort: effort, nativeSessionID: threadID)
     let mailbox = ExecutionSteering()
-    if let submission = ExecutionSteering.currentSubmission {
+    if observeTurnID == nil, let submission = ExecutionSteering.currentSubmission {
         try ManagedNativeTurns(root: mailbox.root.deletingLastPathComponent().appendingPathComponent("managed-native-turns"))
             .record(submissionID: submission, threadID: threadID, turnID: turnID)
         try mailbox.open(submissionID: submission, threadID: threadID, turnID: turnID)
     }
-    defer { if let submission = ExecutionSteering.currentSubmission { mailbox.close(submission) } }
+    defer { if observeTurnID == nil, let submission = ExecutionSteering.currentSubmission { mailbox.close(submission) } }
     defer { try? desktop.follow(threadID: threadID, following: false) }
     var previous = ""
     let progressStream = ExecutionStream(workspace: workspace)
@@ -6829,11 +6841,13 @@ func runCodexDesktopTurn(executable: String, threadID: String, prompt: String, w
     var observed = ""
     while !watchdog.expired() {
         if ExecutionCancellation.isCancelled {
-            _ = try? desktop.request("thread-follower-interrupt-turn", version: 4, params: [
-                "conversationId": threadID, "expectedTurnId": turnID, "mode": "user-stop"])
+            if observeTurnID == nil {
+                _ = try? desktop.request("thread-follower-interrupt-turn", version: 4, params: [
+                    "conversationId": threadID, "expectedTurnId": turnID, "mode": "user-stop"])
+            }
             throw OS1Error.backendBlocked(.cancelled)
         }
-        if let submission = ExecutionSteering.currentSubmission {
+        if observeTurnID == nil, let submission = ExecutionSteering.currentSubmission {
             for correction in mailbox.inputs(submission) where mailbox.receipt(correction) == nil {
                 if protectedRouteMaterialInEvidence(correction.text) {
                     try mailbox.record(correction, state: .rejected, threadID: threadID, turnID: turnID); continue
@@ -6876,20 +6890,36 @@ func runCodexDesktopTurn(executable: String, threadID: String, prompt: String, w
                 AttemptLatencyTrace.mark("native_output_received")
                 RuntimeActivity.emit(.verifying, provider: "codex", publicText: final, progress: progressStream.progress, publicTextOrigin: .nativeAssistant)
                 AttemptLatencyTrace.mark("native_output_published")
-                return CodexTurnOutput(turnID: turnID, output: Data(final.utf8))
+                return CodexTurnOutput(turnID: turnID, output: Data(final.utf8), items: items)
             }
             if status == "failed" || status == "interrupted" { throw OS1Error.message("Desktop turn ended without completion") }
         }
         Thread.sleep(forTimeInterval: 0.5)
     }
-    _ = try? desktop.request("thread-follower-interrupt-turn", version: 4, params: [
-        "conversationId": threadID, "expectedTurnId": turnID, "mode": "system"])
+    if interruptOnTimeout, observeTurnID == nil {
+        _ = try? desktop.request("thread-follower-interrupt-turn", version: 4, params: [
+            "conversationId": threadID, "expectedTurnId": turnID, "mode": "system"])
+    }
     throw OS1Error.message("Desktop turn timed out (\(watchdog.expiryReason())); preserved for inspection, not replayed")
 }
 
 struct CodexTurnOutput {
     let turnID: String
     let output: Data
+    var items: [[String: Any]] = []
+}
+
+/// A completed relay turn is not evidence that its downstream send succeeded.
+/// Inspect actual host tool items, never words quoted in assistant prose.
+func desktopRelayFailedTools(_ items: [[String: Any]]) -> [String] {
+    items.compactMap { item in
+        guard item["type"] as? String == "mcpToolCall", item["server"] as? String == "codex_app",
+              let tool = item["tool"] as? String, ["send_message_to_thread", "read_thread"].contains(tool) else { return nil }
+        let result = item["result"] as? [String: Any]
+        let nonnullError = item["error"].map { !($0 is NSNull) } ?? false
+        return item["status"] as? String == "failed" || item["status"] as? String == "declined" ||
+            nonnullError || result?["isError"] as? Bool == true ? tool : nil
+    }
 }
 
 func codexSessionTitle(from prompt: String) -> String {
@@ -17007,7 +17037,8 @@ struct OS1Main {
             // is a diagnostic probe of that handoff, not a task coordinator:
             // no RCC task, no queue, no retry, no alternate route.
             case "codex-desktop-probe":
-                var threadID: String?, requestPath: String?, readOnly = true, discoverOnly = false
+                var threadID: String?, requestPath: String?, observeTurnID: String?, readOnly = true, discoverOnly = false
+                var relayTarget: String?, relayNonce: String?, resumeCheckpointPath: String?
                 // A relay turn waits on a second model's reply, so it outlasts
                 // an ordinary local turn. Too short a window reports a timeout
                 // for work that actually completed, and the request must then
@@ -17020,6 +17051,14 @@ struct OS1Main {
                         threadID = arguments[index + 1]; index += 2
                     case "--request-file" where index + 1 < arguments.count:
                         requestPath = arguments[index + 1]; index += 2
+                    case "--observe-turn" where index + 1 < arguments.count:
+                        observeTurnID = arguments[index + 1]; index += 2
+                    case "--relay-target" where index + 1 < arguments.count:
+                        relayTarget = arguments[index + 1]; index += 2
+                    case "--nonce" where index + 1 < arguments.count:
+                        relayNonce = arguments[index + 1]; index += 2
+                    case "--resume-checkpoint" where index + 1 < arguments.count:
+                        resumeCheckpointPath = arguments[index + 1]; index += 2
                     case "--deadline-seconds" where index + 1 < arguments.count:
                         guard let value = TimeInterval(arguments[index + 1]), (60...7_200).contains(value) else {
                             throw OS1Error.message("--deadline-seconds must be 60...7200")
@@ -17034,8 +17073,31 @@ struct OS1Main {
                     default: throw OS1Error.message("Unknown codex-desktop-probe argument")
                     }
                 }
+                var relay: (DesktopRelayCheckpointStore, DesktopRelayBinding)?
+                if let path = resumeCheckpointPath {
+                    guard threadID == nil, requestPath == nil, observeTurnID == nil,
+                          relayTarget == nil, relayNonce == nil, !discoverOnly, readOnly else {
+                        throw OS1Error.message("Checkpoint recovery is observation-only and exclusive")
+                    }
+                    let saved = try JSONDecoder().decode(DesktopRelayCheckpoint.self, from: rccPrivateInput(path))
+                    let store = try DesktopRelayCheckpointStore(rootURL:
+                        FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".os1/desktop-relay-checkpoints"))
+                    guard try store.fileURL(binding: saved.binding).path == path,
+                          let verified = try store.load(binding: saved.binding), !verified.status.isTerminal,
+                          let id = verified.turnID else {
+                        throw OS1Error.message("Checkpoint has no observable accepted turn; no replay allowed")
+                    }
+                    threadID = verified.binding.relayThreadID; observeTurnID = id
+                    relay = (store, verified.binding)
+                }
                 guard let threadID, UUID(uuidString: threadID) != nil else {
                     throw OS1Error.message("codex-desktop-probe requires --thread UUID")
+                }
+                guard observeTurnID.map({ UUID(uuidString: $0) != nil }) ?? true,
+                      (relayTarget == nil) == (relayNonce == nil),
+                      !discoverOnly || (observeTurnID == nil && relayTarget == nil),
+                      relayTarget == nil || (readOnly && observeTurnID == nil) else {
+                    throw OS1Error.message("Probe modes are exclusive; relay diagnostics require read-only scope")
                 }
                 if discoverOnly {
                     let connection = try CodexDesktopTransport()
@@ -17045,22 +17107,63 @@ struct OS1Main {
                         options: [.sortedKeys]), as: UTF8.self))
                     return
                 }
-                guard let requestPath else {
+                guard requestPath != nil || observeTurnID != nil else {
                     throw OS1Error.message("codex-desktop-probe requires --request-file PATH")
                 }
-                let probePrompt = try readRunRequestFile(requestPath)
+                let probePrompt = try requestPath.map(readRunRequestFile) ?? ""
                 let codexExecutable = try findExecutable("codex")
                 let probeDeadline = Date().addingTimeInterval(deadlineSeconds)
-                let turn = try runCodexDesktopTurn(executable: codexExecutable, threadID: threadID,
+                let clientMessageID = UUID().uuidString
+                if let relayTarget, let relayNonce {
+                    let directory = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".os1/desktop-relay-checkpoints")
+                    let store = try DesktopRelayCheckpointStore(rootURL: directory)
+                    let binding = try DesktopRelayBinding(requestID: relayNonce, taskID: relayNonce,
+                        requestSHA256: sha256Hex(Data(probePrompt.utf8)), relayThreadID: threadID,
+                        clientUserMessageID: clientMessageID, targetThreadID: relayTarget, nonce: relayNonce)
+                    _ = try store.createIntent(binding: binding)
+                    relay = (store, binding)
+                }
+                let turn: CodexTurnOutput
+                do {
+                turn = try runCodexDesktopTurn(executable: codexExecutable, threadID: threadID,
                     prompt: probePrompt, workspace: FileManager.default.currentDirectoryPath,
                     model: nil, effort: "low",
                     permissionProfile: readOnly ? "read_only" : "workspace_write",
                     instructions: "Answer exactly what the request asks. Do not start unrelated work.",
-                    deadline: probeDeadline, onDispatch: {})
+                    deadline: probeDeadline, observeTurnID: observeTurnID, clientUserMessageID: clientMessageID,
+                    interruptOnTimeout: relay == nil && observeTurnID == nil,
+                    onAcknowledged: { id in
+                        if let (store, binding) = relay { _ = try store.acknowledge(binding: binding, turnID: id) }
+                    }, onDispatch: {})
+                } catch {
+                    if let (store, binding) = relay {
+                        if let failure = error as? OS1Error, failure.isTerminalPermissionFailure {
+                            _ = try? store.markBlockedAuthorization(binding: binding, reason: "native_host_permission_denied")
+                        } else if ExecutionCancellation.isCancelled {
+                            _ = try? store.cancel(binding: binding)
+                        } else if case .backendBlocked(.cancelled)? = error as? OS1Error {
+                            _ = try? store.cancel(binding: binding)
+                        } else {
+                            _ = try? store.markPending(binding: binding, reason: .observationUnavailable)
+                        }
+                    }
+                    throw error
+                }
+                let failedTools = desktopRelayFailedTools(turn.items)
+                if let (store, binding) = relay {
+                    _ = try store.recordObserverCompletion(binding: binding, turnID: turn.turnID,
+                        rawOutput: String(decoding: turn.output, as: UTF8.self), nativeRecordID: turn.turnID)
+                    if !failedTools.isEmpty { _ = try store.markRejected(binding: binding, reason: "native_relay_tool_failed") }
+                    // Final owner prose is not a target send/read receipt.
+                }
                 let receipt: [String: Any] = ["schema": 1, "thread_id": threadID, "turn_id": turn.turnID,
-                    "output": String(decoding: turn.output, as: UTF8.self)]
+                    "output": String(decoding: turn.output, as: UTF8.self),
+                    "observation_only": observeTurnID != nil, "owner_status": "completed",
+                    "downstream_status": failedTools.isEmpty ? "unverified" : "relay_tool_failed",
+                    "failed_relay_tools": failedTools, "quota_zero_verified": false]
                 print(String(decoding: try JSONSerialization.data(withJSONObject: receipt,
                     options: [.sortedKeys, .prettyPrinted]), as: UTF8.self))
+                if !failedTools.isEmpty { throw OS1Error.message("Desktop owner completed, but native relay tool failed; no downstream adoption or replay") }
             case "rcc-warmup":
                 guard arguments.count == 1 else { throw OS1Error.message("RCC warmup accepts no request or execution settings") }
                 do {

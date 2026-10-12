@@ -344,3 +344,15 @@ independent OS1 child the ROOT native-host codex_app binding. Do not copy caller
 identity, host pipes or use private IPC as a shortcut. The real public-host
 send/read success and this cancelled resource fetch are distinct from OS1
 product integration. Preserve receipts and the unresolved accounting boundary.
+
+## Superseding Desktop relay checkpoint (2026-10-12)
+
+Current objective: recover exact accepted owner turns and never call failed GPT
+send successful. Allowed: staged source, isolated socket/state fixtures and
+observation of F/G/H only. Forbidden: new live sends after H denial, installation
+of an unverified GPT route, API/browser fallback, borrowed host identity, live
+sessions/queues/auth changes. Success gate for this checkpoint: compiled code,
+38 state fixtures, actual failed-tool/observation fixtures and live read-only H
+reconciliation. Product success remains blocked by host authorization; checkpoint
+is not product completion. Human approval was actually supplied, but rejected by
+the delegated host's trust classification. Do not request repeated generic login.
