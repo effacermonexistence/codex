@@ -310,3 +310,37 @@ mode, actual submit, new reply, OS1 adoption and quota remain separate gates.
 
 Fixture regression rerun: 102/102 PASS, process exit0. This is source-fixture
 evidence only, not native delivery. No implementation/app build changed.
+
+## Identified existing diagnostic / verified new public-host response
+
+The supplied screenshots exactly matched four historical turns in
+`6ac8d3d4-f684-83e8-9110-1cde1648a5a9` (`계산 요청`). Root sent one new fixed
+request with nonce `OS1_NATIVE_CHAT_ROUNDTRIP_20261011_C` using the public native
+send tool, with no host/model/thinking override. A later read retrieved NEW
+completed turn `6a411993-d920-4983-9412-e70aedd6ed5a` and assistant message
+`c6e155cf-62c0-4779-892b-12362a05da02`, exact output nonce C followed by `=2`.
+Before/after identity and prompt/answer nonce checks passed. Immediate stale
+history was not treated as failure requiring resend. No duplicate send occurred.
+
+This proves root-host public send/read, not the independent OS1 executor's
+official host provisioning, automatic fresh-chat creation, OS1-visible adoption,
+or zero Codex debit. Native metadata exposed no mode/model/quota receipt. Those
+remain separate completion gates. Nonce B remains UNVERIFIED; this new result
+does not retroactively make its withdrawn manual confirmation true.
+
+One follow-up tool-discovery request for the currently registered os1_probe_open
+was sent under nonce D to the same diagnostic. It must not activate a new
+operator run, use a substitute tool, or turn a locally computed 2 into a callback.
+
+D reached a NEW completed turn with COMPONENT_REQUESTED. Actual native logs
+independently tied the genuine connector and selected conversation to the
+ChatGPT-hosted `ui://os1/native-chat-probe` HTML request, then cancelled it with
+AbortError/code20. No later same-widget running/adoption was observed through
+the bounded check. Cause remains unresolved. Old Worker stayed expired with
+starts1/offers0/ACK0/returns0. No fresh operator run was activated.
+
+Official plugin source still exposes no public provisioning contract giving an
+independent OS1 child the ROOT native-host codex_app binding. Do not copy caller
+identity, host pipes or use private IPC as a shortcut. The real public-host
+send/read success and this cancelled resource fetch are distinct from OS1
+product integration. Preserve receipts and the unresolved accounting boundary.

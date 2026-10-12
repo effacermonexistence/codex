@@ -1,5 +1,56 @@
 # Native ordinary-Chat connection checkpoint — NOT COMPLETE
 
+## Current identified diagnostic / public-host roundtrip success
+
+The user supplied two screenshots of the earlier arithmetic/tool-discovery
+conversation. Public exact-ID inspection matched all four historical pairs:
+1+1 -> 2, 2+2 -> 4, 3+3 -> 6, and os1_chat_open discovery ->
+OS1_MCP_TOOL_UNAVAILABLE. The selected server conversation is
+`6ac8d3d4-f684-83e8-9110-1cde1648a5a9`, title `계산 요청`.
+This does not rehabilitate the withdrawn nonce B send confirmation.
+
+One NEW public native-host send/read test then passed. Nonce:
+`OS1_NATIVE_CHAT_ROUNDTRIP_20261011_C`; user turn
+`6a411993-d920-4983-9412-e70aedd6ed5a`; new assistant message
+`c6e155cf-62c0-4779-892b-12362a05da02`; exact output
+`OS1_NATIVE_CHAT_ROUNDTRIP_20261011_C=2`. The turn was absent in the before
+snapshot, its prompt and answer match the nonce, and it completed without error.
+The immediate read was stale; the bounded later read returned the new response.
+Do not replay merely because an immediate history read has not refreshed.
+
+Verified scope: ROOT host public send_message_to_thread/read_thread roundtrip
+to the exact selected ChatGPT server conversation. Not verified: actual OS1
+child tool provisioning, OS1 task/result adoption, autonomous new ordinary-Chat
+creation, effective model/effort or exact quota attribution. `kind:chatgpt` and
+instructions asking for Chat are not independent resource/accounting receipts.
+Private bound evidence:
+`/Users/LUA/.os1/recovery/os1-native-chat-publisher-probe-20261011/public-native-chat-roundtrip-c.json`.
+
+The correct registered `os1_probe_open` discovery was tested separately in that
+same conversation once, under nonce D. New turn
+`ed4c2b49-992e-4195-a5f7-6f98c9f82e17` returned COMPONENT_REQUESTED. Independently,
+native logs tied the selected conversation and registered connector to a real
+ChatGPT-hosted widget HTML fetch for `ui://os1/native-chat-probe`. Its lifecycle
+was availability check -> HTML request -> cancelled (AbortError, code20).
+No subsequent same-widget running/adoption evidence was found in the bounded
+interval. Cause is unresolved; do not blame the Worker parser or quota.
+
+The earlier unavailable name was `os1_chat_open`; names are not interchangeable.
+The discovery does not activate a new operator request or manufacture a callback.
+Old Worker remains expired: starts1, offers0, ACK0, returns0. The two inspectable
+own MCP panels also show expired; they are not proof of D recipient adoption.
+No installed OS1 rebuild or production route activation occurred. Fresh operator
+activation remains gated on actual recipient running/adoption, not model report.
+Private D receipt:
+`/Users/LUA/.os1/recovery/os1-native-chat-publisher-probe-20261011/public-native-chat-tool-discovery-d.json`.
+
+Independent source audit still found no public OS1 bootstrap for the official
+codex_app host binding. Independent app-server plus plugin-enabled settings do
+not supply that authority. ROOT host success cannot be transplanted by copying
+its host pipe/caller identity or by invoking private desktop IPC. The precise
+remaining gates are OS1 host provisioning and the owned hosted-widget lifecycle,
+then same-task delivery/accounting. Current product status remains NOT COMPLETE.
+
 ## Current correction supersedes prior send confirmation
 
 The user subsequently reported that the diagnostic window is not visible now,
