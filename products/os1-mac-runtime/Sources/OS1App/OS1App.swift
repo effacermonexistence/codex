@@ -7942,7 +7942,9 @@ private func nativeSessionAssociationSelfTest() throws {
     let old = store.sessions.first { $0.id == oldID }!
     try check(old.draft == "preserved owner draft" && old.messages.map(\.id) == oldMessages && old.codexSessionID == nil,
               "old conversation/draft/binding changed")
-    try check(store.queuedSubmissions.isEmpty && store.inFlightSubmissions.isEmpty && store.activeRuns.isEmpty,
+    let persisted = try JSONDecoder().decode(SessionEnvelope.self, from:
+        Data(contentsOf: root.appendingPathComponent("store/sessions.json")))
+    try check(store.queuedSubmissions.isEmpty && persisted.inFlight?.isEmpty == true && store.activeRuns.isEmpty,
               "association dispatched or queued work")
     store.surface = .codex; store.createSessionFromSelectedCodexRecord()
     try check(store.sessions.count == 2, "duplicate native owner was created")
