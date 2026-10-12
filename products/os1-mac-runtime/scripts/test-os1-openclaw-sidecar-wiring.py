@@ -17,6 +17,7 @@ BRIDGE = (ROOT / "Sources/OS1/LocalRouterBridge.swift").read_text()
 SEAL = (ROOT / "Sources/OS1Context/InstalledResourceSeal.swift").read_text()
 IDENTITY = (ROOT / "Sources/OS1/InstalledOS1Resources.swift").read_text()
 RELEASE = (ROOT / "scripts/build-release.sh").read_text()
+APP = (ROOT / "Sources/OS1App/OS1App.swift").read_text()
 
 
 def check(condition: bool, message: str):
@@ -31,6 +32,21 @@ def expect(condition: bool, message: str):
     global checks
     check(condition, message)
     checks += 1
+
+
+source_poll = APP.split("func resumeRegisteredSourcePreparations(", 1)[1].split("func resumeBackendRecoveries(", 1)[0]
+archive_check = 'root.appendingPathComponent(pending.manifestSHA256).appendingPathComponent("source.tar.gz").path'
+cancel_check = 'ExecutionCancellation.url(submissionID: failed.id).path'
+expect(source_poll.index(archive_check) < source_poll.index(cancel_check) <
+       source_poll.index("PreparationIntent.detect(failed.request)") < source_poll.index("refreshRunAdmissionPressure()"),
+       "source polling checks current eligibility/artifact/cancellation before parsing or sampling global admission")
+expect(source_poll.count(archive_check) == 2 and source_poll.count(cancel_check) == 2 and
+       'sessions[index].lastFailure?.request == failed.request' in source_poll and
+       source_poll.index('sessions[index].lastFailure?.request == failed.request') < source_poll.index('start(retry, admission: admission)'),
+       "source/cancellation/request identity are freshly rechecked before the existing single dispatch")
+expect("cache" not in source_poll.replace("cached", "") and 'retry.sourceRetryIdentity = pending.manifestSHA256' in source_poll and
+       source_poll.index('save()') < source_poll.index('start(retry, admission: admission)'),
+       "poll ordering does not cache authority or spend the persisted one-identity retry after dispatch")
 
 
 expect('provisionerResources()' in BRIDGE and 'OS-1 CLODEX.app/Contents/Resources' in IDENTITY,

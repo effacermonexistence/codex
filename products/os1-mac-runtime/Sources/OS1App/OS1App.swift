@@ -1930,6 +1930,7 @@ private func parallelInteractionSelfTest() async throws {
         "content_fingerprint_sha256": String(repeating: "b", count: 64), "release_manifest_sha256": manifestHash]])
     let live = try SCVLiveRelease(data: liveData)
     var preparationCalls = 0
+    var preparationPressureProbes = 0
     let sourceStore = SessionStore(storageRoot: sourceRoot, runOperation: { submission, context, _, _, _ in
         preparationCalls += 1
         var state = try SessionHandoff.decode(context).taskContext!
@@ -1939,7 +1940,7 @@ private func parallelInteractionSelfTest() async throws {
             action: "source_preparation_pending", model: nil, effort: "none", revasDisposition: "pending",
             sessionID: UUID().uuidString, permissionProfile: "local_control", exitCode: 0,
             output: "fixture exact source not acquired; original objective retained", stderr: "", durationMS: 1, nativeRecord: nil)], taskContext: state)
-    })
+    }, memoryPressureSampler: { preparationPressureProbes += 1; return .normal })
     let prepareRequest = "야 인스타그램 오토메이션 수정해야 되니까 준비해라"
     sourceStore.composer = prepareRequest; sourceStore.send()
     while !sourceStore.activeRuns.isEmpty { try await Task.sleep(for: .milliseconds(50)) }
@@ -1951,11 +1952,29 @@ private func parallelInteractionSelfTest() async throws {
     let pendingReload = SessionStore(storageRoot: sourceRoot)
     try check(pendingReload.selectedSession!.taskContext?.sourcePreparation?.releaseID == live.id &&
         pendingReload.selectedSession!.taskContext?.objectiveID == originalID, "pending source lost at restart")
-    sourceStore.resumeRegisteredSourcePreparations(root: registrationRoot)
+    sourceStore.sessions += (0..<256).map { _ in ConversationSession(workspace: "/tmp/fixture", provider: .auto,
+        messages: [ChatMessage(role: .user, text: "unrelated offline fixture")]) }
+    let probesBeforeMissingSource = preparationPressureProbes
+    for _ in 0..<3 { sourceStore.resumeRegisteredSourcePreparations(root: registrationRoot) }
+    try check(sourceStore.sessions.count == 257 && preparationPressureProbes == probesBeforeMissingSource,
+        "missing-source/unrelated conversations repeatedly sampled admission pressure")
     try check(preparationCalls == 1, "source polling must not retry without new evidence")
     let incoming = registrationRoot.appendingPathComponent(manifestHash).appendingPathComponent("source.tar.gz")
     try FileManager.default.createDirectory(at: incoming.deletingLastPathComponent(), withIntermediateDirectories: true)
     try Data("fixture registration arrival; verifier mocked here, real archive checked in context tests".utf8).write(to: incoming)
+    // Neither disappearance nor a changed request may be remembered as an
+    // eligible registration. These remain fresh observations on every poll.
+    try FileManager.default.removeItem(at: incoming)
+    sourceStore.resumeRegisteredSourcePreparations(root: registrationRoot)
+    try check(preparationPressureProbes == probesBeforeMissingSource && preparationCalls == 1,
+        "removed registration was reused by polling")
+    try Data("fixture registration arrival; verifier mocked here, real archive checked in context tests".utf8).write(to: incoming)
+    let sourceIndex = sourceStore.sessions.firstIndex { $0.id == sourceID }!
+    sourceStore.sessions[sourceIndex].lastFailure?.request = "인스타그램 현재 파일을 수정해"
+    sourceStore.resumeRegisteredSourcePreparations(root: registrationRoot)
+    try check(preparationPressureProbes == probesBeforeMissingSource && preparationCalls == 1,
+        "changed write request borrowed preparation-only retry eligibility")
+    sourceStore.sessions[sourceIndex].lastFailure?.request = prepareRequest
     sourceStore.createSession(); let foregroundID = sourceStore.selectedSessionID!
     sourceStore.composer = "untouched draft"
     sourceStore.resumeRegisteredSourcePreparations(root: registrationRoot)
@@ -12128,19 +12147,36 @@ private final class SessionStore: ObservableObject {
     func resumeRegisteredSourcePreparations(root: URL = RegisteredProjectSource.defaultRoot) {
         // One retry per identity: never spend it while a staged build holds new work.
         for session in sessions where selfUpdateHold == nil {
-            refreshRunAdmissionPressure()
-            let admission = runAdmission
-            guard admission.admitted,
-                  !isSessionRunning(session.id), session.lastBackendFailure == nil,
+            // Cheap current state and artifact presence precede request
+            // interpretation. An absent registration cannot authorize retry,
+            // so polling it must not repeatedly parse held owner requests or
+            // sample global pressure once for every unrelated conversation.
+            guard !isSessionRunning(session.id), session.lastBackendFailure == nil,
                   let pending = session.taskContext?.sourcePreparation, pending.canLookForRegistration,
                   let failed = session.lastFailure, failed.preflightOnly == true,
                   failed.sourceRetryIdentity != pending.manifestSHA256,
+                  FileManager.default.fileExists(atPath: root.appendingPathComponent(pending.manifestSHA256).appendingPathComponent("source.tar.gz").path),
+                  !FileManager.default.fileExists(atPath: ExecutionCancellation.url(submissionID: failed.id).path) else { continue }
+            guard
                   let intent = PreparationIntent.detect(failed.request), !intent.modifies,
                   intent.kind != .explainFromContext,
-                  RegisteredProjectSource.mayUseForPreparation(failed.request),
+                  RegisteredProjectSource.mayUseForPreparation(failed.request) else { continue }
+            // Admission remains a fresh observation immediately before a
+            // possible dispatch; none of these external conditions is cached.
+            refreshRunAdmissionPressure()
+            let admission = runAdmission
+            guard admission.admitted, selfUpdateHold == nil,
+                  !isSessionRunning(session.id),
+                  let index = sessions.firstIndex(where: { $0.id == session.id }),
+                  sessions[index].lastBackendFailure == nil,
+                  sessions[index].taskContext?.sourcePreparation?.canLookForRegistration == true,
+                  sessions[index].taskContext?.sourcePreparation?.manifestSHA256 == pending.manifestSHA256,
+                  sessions[index].lastFailure?.id == failed.id,
+                  sessions[index].lastFailure?.request == failed.request,
+                  sessions[index].lastFailure?.preflightOnly == true,
+                  sessions[index].lastFailure?.sourceRetryIdentity != pending.manifestSHA256,
                   !FileManager.default.fileExists(atPath: ExecutionCancellation.url(submissionID: failed.id).path),
-                  FileManager.default.fileExists(atPath: root.appendingPathComponent(pending.manifestSHA256).appendingPathComponent("source.tar.gz").path),
-                  let index = sessions.firstIndex(where: { $0.id == session.id }) else { continue }
+                  FileManager.default.fileExists(atPath: root.appendingPathComponent(pending.manifestSHA256).appendingPathComponent("source.tar.gz").path) else { continue }
             var retry = failed
             retry.sourceRetryIdentity = pending.manifestSHA256
             sessions[index].lastFailure = retry
