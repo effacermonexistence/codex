@@ -7933,7 +7933,8 @@ private func nativeSessionAssociationSelfTest() throws {
     store.nativeSessionAssociationLookup = { _, _ in evidence }
     store.createSessionFromSelectedCodexRecord()
     guard let created = store.selectedSession else { throw SourceContextError.invalid }
-    try check(created.id != oldID && created.codexSessionID == nativeID && created.workspace == workspace.path,
+    try check(created.id != oldID && created.codexSessionID == nativeID &&
+        created.workspace == NativeSessionReader.canonicalExistingPath(workspace),
               "exact record did not seed a separate conversation")
     try check(created.messages.count == 1 && created.messages.allSatisfy { $0.role == .receipt } &&
         created.taskContext?.objective.requestText == "" && created.taskContext?.executions.isEmpty == true &&
