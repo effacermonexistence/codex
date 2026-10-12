@@ -6605,6 +6605,57 @@ private func rccCoreBoundaryHeadline(_ core: RCCRuntimeContract.Snapshot) -> Str
         (core.error.map { " · " + $0 } ?? "")
 }
 
+/// Display only: native record verification and task/reference verification
+/// remain separate. Read the summaries carried by this exact Core result, not
+/// an unrelated final producer or a selected UI route. No model/readback runs.
+private func rccCoreReceipt(_ core: RCCRuntimeContract.Snapshot, submission: PendingSubmission,
+                            localReceipt: RCCDeterministicReceipt?, note: String) -> ChatMessage {
+    var unchanged = ChatMessage(role: .receipt, text: localReceipt?.detail ?? note)
+    unchanged.deterministicExecution = localReceipt
+    guard localReceipt == nil, (try? RCCRuntimeContract.validate(core)) != nil,
+          core.taskID == submission.id.uuidString.lowercased(),
+          core.requestSHA256 == appSHA256Hex(submission.executionRequest),
+          let result = core.result, result.executionVerified,
+          [.completed, .returnedUnverified, .awaitingInstall].contains(core.state) else { return unchanged }
+    let nativeChildren = core.children.filter {
+        $0.selectedConfig?.transport == .codexAppServer || $0.selectedConfig?.transport == .claudeCLI
+    }
+    let serialized = result.nativeSummaries ?? result.nativeSummary.map { [$0] } ?? []
+    guard !nativeChildren.isEmpty, !serialized.isEmpty else { return unchanged }
+    var steps: [AppRunStep] = []
+    for raw in serialized {
+        guard let summary = try? JSONDecoder().decode(AppRunSummary.self, from: Data(raw.utf8)),
+              !summary.steps.isEmpty else { return unchanged }
+        steps += summary.steps
+    }
+    let native = steps.filter { ["codex", "claude"].contains($0.provider) }
+    guard !native.isEmpty, steps.allSatisfy({ ["codex", "claude", "local"].contains($0.provider) }),
+          native.allSatisfy({ $0.exitCode == 0 && $0.nativeRecord?.isVerified == true &&
+              $0.nativeRecord?.recordPath?.hasPrefix("/") == true && UUID(uuidString: $0.sessionID) != nil }),
+          Set(native.map { $0.provider + ":" + $0.sessionID + ":" + ($0.nativeRecord?.turnID ?? "") }).count >= nativeChildren.count,
+          nativeChildren.allSatisfy({ child in
+              guard let configuration = child.selectedConfig else { return false }
+              return native.contains { step in
+                  step.executedSurface?.rawValue == configuration.surface.rawValue &&
+                  step.model == configuration.model && step.effort == configuration.effort.rawValue &&
+                  step.permissionProfile == configuration.permissionProfile.rawValue
+              }
+          }) else { return unchanged }
+    let quality: TaskQualityEvidence.Evaluation?
+    if !result.taskVerified, result.taskQuality == .executionOnly || result.taskQuality == .unverified {
+        quality = .init(state: result.taskQuality == .executionOnly ? .executionOnly : .unverified,
+            reason: "core_result_preserved_without_task_or_reference_verification", contractSHA256: "",
+            artifactSHA256: appSHA256Hex(result.output), requiredCheckIDs: [], failedCheckIDs: [])
+    } else { quality = nil } // No TaskQualityEvidence proof is manufactured from a Core flag.
+    let providers = Set(native.map(\.provider))
+    let detail = note + "\n" + native.map(nativeRecordReceipt).joined(separator: "\n")
+    return ChatMessage(role: .receipt, text: detail,
+        provider: providers.count == 1 ? providers.first : nil,
+        executionSurface: native.count == 1 ? native.first?.executedSurface?.rawValue : nil,
+        permissionProfile: native.count == 1 ? native.first?.permissionProfile : nil,
+        nativeRecordVerified: true, taskQuality: quality)
+}
+
 private func taskQualityReceiptStatus(_ quality: TaskQualityEvidence.Evaluation) -> String {
     switch quality.state {
     case .executionOnly, .unverified: return os1Tr("과제 품질 미검증", "Task quality unverified")
@@ -7668,6 +7719,91 @@ private func rccDeterministicReceiptSelfTest() throws {
               !AgentTaskTreePresentation.isLocalDeterministic(graph.nodes.first { $0.role == .worker }!),
               "selected-only local graph is not observed local execution")
     print("RCC local deterministic receipt: \(checks) checks PASS; fixture core/graph/request binding; native/model calls 0")
+}
+
+/// Exact Core-to-receipt projection only; temporary fixture values, no HOME,
+/// provider, readback, adoption, queue operation or task-verifier relaxation.
+@MainActor
+private func rccCoreNativeReceiptSelfTest() throws {
+    typealias C = RCCRuntimeContract
+    var checks = 0
+    func check(_ value: Bool, _ label: String) throws {
+        guard value else { throw RunnerError.message("RCC native receipt: " + label) }; checks += 1
+    }
+    let submission = PendingSubmission(id: UUID(), sessionID: UUID(), userMessageID: UUID(),
+        request: "Read the existing response only", provider: .auto, workspace: "/tmp/fixture",
+        codexCapacity: 100, claudeCapacity: 100)
+    func fixture(_ count: Int, verified: Bool = true, malformed: Bool = false,
+                 missing: Bool = false, duplicate: Bool = false, mixed: Bool = false) throws -> C.Snapshot {
+        let config = C.ExactConfig(surface: .codex, transport: .codexAppServer, accountID: "fixture",
+            model: "fixture-model", effort: .low, tools: ["read"], scope: .readOnly,
+            permissionProfile: .readOnly, quotaPool: .openAICodex, allowedPaths: [],
+            configurationSHA256: String(repeating: "a", count: 64))
+        let claudeConfig = C.ExactConfig(surface: .claude, transport: .claudeCLI, accountID: "fixture",
+            model: "fixture-model", effort: .low, tools: ["read"], scope: .readOnly,
+            permissionProfile: .readOnly, quotaPool: .anthropicShared, allowedPaths: [],
+            configurationSHA256: String(repeating: "b", count: 64))
+        let session = UUID().uuidString.lowercased()
+        let firstTurn = UUID().uuidString.lowercased()
+        var summaries: [String] = []
+        for index in 0..<count {
+            let turn = duplicate || index == 0 ? firstTurn : UUID().uuidString.lowercased()
+            let claude = mixed && index % 2 == 1
+            let step: [String: Any] = ["sequence": 1, "provider": claude ? "claude" : "codex", "action": "agent_run",
+                "model": "fixture-model", "effort": "low", "revas_disposition": "execution_only",
+                "session_id": session, "permission_profile": "read_only", "exit_code": 0,
+                "output": "NO_READ_TOOL", "stderr": "", "duration_ms": 1,
+                "surface": claude ? "claude" : "codex", "native_record": ["turn_id": claude ? NSNull() : turn as Any, "record_path": "/tmp/fixture-native.jsonl",
+                    "persistence": verified ? "verified" : "unverified", "desktop_visibility": "not_revealed"]]
+            let bytes = try JSONSerialization.data(withJSONObject: ["status": "returned_unverified", "steps": [step]])
+            summaries.append(malformed ? "not-json" : String(decoding: bytes, as: UTF8.self))
+        }
+        return C.Snapshot(taskID: submission.id.uuidString.lowercased(),
+            requestSHA256: appSHA256Hex(submission.executionRequest), state: .returnedUnverified,
+            revision: 3, children: (0..<count).map { .init(id: "worker-\($0)", state: .completed,
+                attemptID: UUID().uuidString.lowercased(), candidateID: "fixture",
+                selectedConfig: mixed && $0 % 2 == 1 ? claudeConfig : config) },
+            result: .init(output: count == 1 ? "NO_READ_TOOL" : "worker-0: NO_READ_TOOL\n\nworker-1: NO_READ_TOOL",
+                executionVerified: true, taskVerified: false, parityState: .unverified,
+                nativeReceipt: "/tmp/fixture-core.json", nativeSummaries: missing ? [] : summaries,
+                taskQuality: .executionOnly), error: "parent_task_verifier_unavailable")
+    }
+    for (count, mixed) in [(1, false), (2, false), (2, true)] {
+        let core = try fixture(count, mixed: mixed), before = try C.encode(core)
+        let receipt = rccCoreReceipt(core, submission: submission, localReceipt: nil, note: "Task incomplete")
+        try check(receipt.nativeRecordVerified == true, "\(count) native children retain verified execution")
+        try check(receipt.taskQuality?.state == .executionOnly && receipt.taskQuality?.taskCompletionVerified == false &&
+                  receipt.taskQuality?.referenceParityVerified == false, "\(count) no task/parity upgrade")
+        try check(receipt.deterministicExecution == nil, "\(count) native is not deterministic")
+        try check(try C.encode(core) == before, "\(count) original Core/adoption state unchanged")
+        let reloaded = try JSONDecoder().decode(ChatMessage.self, from: JSONEncoder().encode(receipt))
+        try check(reloaded.nativeRecordVerified == true && reloaded.taskQuality?.state == .executionOnly,
+                  "\(count) metadata survives message persistence")
+        let display = timelineAttributedDocument(messages: [receipt], queuedSubmissions: [], isRunning: false,
+            workspace: "/tmp/fixture", expandAll: true).string
+        let separated = (display.contains("실행 기록 확인됨") && display.contains("과제 품질 미검증")) ||
+            (display.contains("Execution record verified") && display.contains("Task quality unverified"))
+        try check(separated && !display.contains("실행 기록 미확인") && !display.contains("Execution record unverified"),
+                  "\(count) execution and quality labels stay separate in either interface language")
+        if mixed { try check(receipt.provider == nil && receipt.executionSurface == nil,
+                             "mixed native aggregation does not invent one final provider/surface") }
+    }
+    for core in [try fixture(1, verified: false), try fixture(1, malformed: true),
+                 try fixture(1, missing: true), try fixture(2, duplicate: true), try fixture(0)] {
+        let receipt = rccCoreReceipt(core, submission: submission, localReceipt: nil, note: "Unverified")
+        try check(receipt.nativeRecordVerified != true && receipt.taskQuality == nil,
+                  "missing/malformed/unverified/duplicate/zero-step evidence cannot certify native execution")
+    }
+    var wrong = try fixture(1); wrong.requestSHA256 = String(repeating: "b", count: 64)
+    try check(rccCoreReceipt(wrong, submission: submission, localReceipt: nil, note: "Foreign").nativeRecordVerified != true,
+              "foreign request cannot borrow native receipt")
+    wrong = try fixture(1); wrong.taskID = UUID().uuidString.lowercased()
+    try check(rccCoreReceipt(wrong, submission: submission, localReceipt: nil, note: "Foreign").nativeRecordVerified != true,
+              "foreign task cannot borrow native receipt")
+    wrong = try fixture(1); wrong.result?.executionVerified = false
+    try check(rccCoreReceipt(wrong, submission: submission, localReceipt: nil, note: "Failed").nativeRecordVerified != true,
+              "Core execution-false cannot borrow native receipt")
+    print("RCC native execution receipt projection: \(checks) checks PASS; original state/quality/aggregate preserved; provider/HOME calls 0")
 }
 
 @MainActor
@@ -11020,9 +11156,8 @@ private final class SessionStore: ObservableObject {
                     if let boundary = rccCoreBoundaryHeadline(core) {
                         sessions[target].messages.append(ChatMessage(role: .system, text: boundary))
                     }
-                    var receipt = ChatMessage(role: .receipt, text: localReceipt?.detail ?? note)
-                    receipt.deterministicExecution = localReceipt
-                    sessions[target].messages.append(receipt)
+                    sessions[target].messages.append(rccCoreReceipt(core, submission: submission,
+                        localReceipt: localReceipt, note: note))
                     sessions[target].lastBackendFailure = nil
                     sessions[target].lastFailure = nil
                     sessions[target].updatedAt = Date()
@@ -14466,7 +14601,7 @@ private struct OS1DesktopApp: App {
         if CommandLine.arguments.contains("--self-test-rcc-installation") {
             Task { @MainActor in
                 do { try await rccInstallationObservationSelfTest(); try await rccTerminalDeliverySelfTest();
-                    try rccDeterministicReceiptSelfTest(); try rccStartupWarmupSelfTest();
+                    try rccDeterministicReceiptSelfTest(); try rccCoreNativeReceiptSelfTest(); try rccStartupWarmupSelfTest();
                     try await rccCoreBoundarySelfTest(); exit(EXIT_SUCCESS) }
                 catch { fputs("\(error.localizedDescription)\n", stderr); exit(EXIT_FAILURE) }
             }
@@ -15130,7 +15265,7 @@ private struct OS1DesktopApp: App {
                 // not only behind the focused development diagnostic.
                 Task { @MainActor in
                     do { try await agentTaskTreeSelfTest(); try await profileMenuSelfTest(); try await rccInstallationObservationSelfTest(); try await rccTerminalDeliverySelfTest();
-                        try rccDeterministicReceiptSelfTest(); try rccStartupWarmupSelfTest();
+                        try rccDeterministicReceiptSelfTest(); try rccCoreNativeReceiptSelfTest(); try rccStartupWarmupSelfTest();
                         try await rccCoreBoundarySelfTest(); exit(EXIT_SUCCESS) }
                     catch { fputs("\(error.localizedDescription)\n", stderr); exit(EXIT_FAILURE) }
                 }

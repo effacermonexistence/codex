@@ -14,6 +14,7 @@ import re
 
 ROOT = Path(__file__).resolve().parents[1]
 BRIDGE = (ROOT / "Sources/OS1/LocalRouterBridge.swift").read_text()
+SEAL = (ROOT / "Sources/OS1Context/InstalledResourceSeal.swift").read_text()
 IDENTITY = (ROOT / "Sources/OS1/InstalledOS1Resources.swift").read_text()
 RELEASE = (ROOT / "scripts/build-release.sh").read_text()
 
@@ -104,7 +105,12 @@ expect(SOURCES["model"]["digest"] in BRIDGE and
 expect('app_sealed_public_executor_contract' in BRIDGE and
        'RuntimeConfig.load().executorContract' in BRIDGE and
        'validateExecutorContract(bundled.executorContract)' in BRIDGE and
-       '"/usr/bin/codesign"' in BRIDGE,
+       'try verifyInstalledResourceSeal(resources)' in BRIDGE and
+       'InstalledResourceSeal.verify(app: app)' in BRIDGE and
+       'commandOutput(executable, arguments, timeout: timeout).0' in BRIDGE and
+       '"/usr/bin/codesign"' in SEAL and
+       '["--verify", "--deep", "--strict", app.path]' in SEAL and
+       'guard status == 0' in SEAL,
        "public base policy uses an app-sealed contract, not an invented owner Notes policy")
 gateway = BRIDGE.split('private static func produceGatewaySurface(', 1)[1].split(
     'private static func produce(', 1)[0]
