@@ -3,13 +3,15 @@ import {readFile} from 'node:fs/promises';
 import {homedir} from 'node:os';
 import {join} from 'node:path';
 import test from 'node:test';
-import {assertLocalPlannerCompletion, buildBoundedPlannerInput, buildRoutePlanSchema,
+import {assertLocalPlannerCompletion, assertPlannerRouteChoice, buildBoundedPlannerInput, buildRoutePlanSchema,
   compactCandidateCatalog,
   plannerCompletionRequest,
   expandCandidateCatalog} from './rcc-plugin.mjs';
 
+// Rows are fresh at NOW; a non-explicit schema offers only what can run now.
+const NOW = 1_786_000_000_000;
 function catalog(count, distinctModels = false) {
-  const now = 1_786_000_000_000;
+  const now = NOW;
   return {schema: 1, task_id: 'test-task', request_sha256: 'a'.repeat(64),
     candidates: Array.from({length: count}, (_, i) => ({
       id: `cfg-${String(i).padStart(3, '0')}`, surface: 'codex',
@@ -29,6 +31,12 @@ function task() { return {task_id: 'test-task', request_sha256: 'a'.repeat(64),
   objective: 'Choose one exact surface for this bounded task',
   request: 'Choose one exact surface for this bounded task', material_refs: [],
   host_context: {explicit_routes: null, context: null}}; }
+// Only an explicit route test still carries the candidate catalog and IDs to
+// the planner (2026-10-13); compaction coverage therefore uses that mode.
+function explicitTask(routes = [{surface: 'codex', instruction: 'Choose one exact surface for this bounded task'}]) {
+  const value = task(); value.mode = 'explicit_routing_test';
+  value.host_context.explicit_routes = routes; return value;
+}
 
 test('lossless grouped catalog preserves every candidate and original index after 64', () => {
   for (const count of [65, 128, 256]) {
@@ -47,7 +55,7 @@ test('even distinct newer model rows remain exact, not filtered or re-ranked', (
   const expanded = expandCandidateCatalog(compact);
   assert.deepEqual(expanded, original.candidates);
   assert.equal(expanded[79].model, 'gpt-family-79');
-  const prompt = buildBoundedPlannerInput({task: task(), catalog: original,
+  const prompt = buildBoundedPlannerInput({task: explicitTask(), catalog: original,
     feedback: {}, policyText: 'RCC owner policy fixture'});
   const payload = JSON.parse(prompt.message.slice('OS1_RCC_PLAN\n'.length));
   assert.equal(payload.candidate_catalog.candidate_count, 80);
@@ -65,7 +73,7 @@ test('122-row fourteen-model inventory fits with 18.5KB policy after lossless va
   const compact = compactCandidateCatalog(original);
   assert.equal(compact.groups.length, 14);
   assert.deepEqual(expandCandidateCatalog(compact), original.candidates);
-  const prompt = buildBoundedPlannerInput({task: task(), catalog: original,
+  const prompt = buildBoundedPlannerInput({task: explicitTask(), catalog: original,
     feedback: {}, policyText: 'p'.repeat(18_554)});
   assert.ok(Buffer.byteLength(prompt.instructions) + Buffer.byteLength(prompt.message) <= 48_000);
   assert.equal(expandCandidateCatalog(JSON.parse(prompt.message.slice('OS1_RCC_PLAN\n'.length))
@@ -74,7 +82,9 @@ test('122-row fourteen-model inventory fits with 18.5KB policy after lossless va
 
 test('planner input refuses over-budget policy/inventory rather than truncating candidates', () => {
   const all = catalog(256, true);
-  assert.throws(() => buildBoundedPlannerInput({task: task(), catalog: all,
+  assert.throws(() => buildBoundedPlannerInput({task: task(), catalog: all, now: NOW,
+    feedback: {}, policyText: 'p'.repeat(47_000)}), /planner_input_budget_exceeded/);
+  assert.throws(() => buildBoundedPlannerInput({task: explicitTask(), catalog: all,
     feedback: {}, policyText: 'p'.repeat(47_000)}), /planner_input_budget_exceeded/);
   assert.throws(() => compactCandidateCatalog({candidates: Array(257).fill(all.candidates[0])}),
     /planner_catalog_invalid/);
@@ -84,7 +94,7 @@ test('planner input refuses over-budget policy/inventory rather than truncating 
 
 test('internal JSON mode is locked before/after full policy and official direct completion gets schema', () => {
   const policyText = 'RCC_FULL_POLICY_SENTINEL';
-  const input = buildBoundedPlannerInput({task: task(), catalog: catalog(70),
+  const input = buildBoundedPlannerInput({task: task(), catalog: catalog(70), now: NOW,
     feedback: {}, policyText});
   assert.ok(input.instructions.startsWith('INTERNAL ROUTING PLAN ONLY.'));
   assert.ok(input.instructions.indexOf(policyText) > 0);
@@ -102,8 +112,11 @@ test('internal JSON mode is locked before/after full policy and official direct 
   assert.equal(params.responseFormat.properties.task_id.const, 'test-task');
   assert.equal(params.responseFormat.properties.request_sha256.const, 'a'.repeat(64));
   assert.equal(params.responseFormat.properties.nodes.items.properties.scope.const, 'read_only');
-  assert.deepEqual(params.responseFormat.properties.nodes.items.properties.candidate_id.enum,
-    catalog(70).candidates.map(candidate => candidate.id));
+  // Outside an explicit route test the planner grades; it never picks a row.
+  assert.deepEqual(params.responseFormat.properties.nodes.items.properties.route_class.enum,
+    ['trivial', 'standard', 'deep']);
+  assert.equal(Object.hasOwn(params.responseFormat.properties.nodes.items.properties, 'candidate_id'), false);
+  assert.ok(params.responseFormat.properties.nodes.items.required.includes('route_class'));
   assert.equal(params.responseFormat.properties.nodes.items.properties.owned_paths.maxItems, 0);
   assert.equal(params.responseFormat.properties.nodes.items.properties.context_refs.maxItems, 0);
   assert.equal(params.maxTokens, 4_096);
@@ -140,14 +153,19 @@ test('schema derives read-only, explicit count and mixed writer branch from trus
   assert.deepEqual(locked.properties.nodes.items.properties.candidate_id.enum, ['cfg-000']);
   const writableTask = task(); writableTask.host_context.require_read_only = false;
   writableTask.material_refs = ['provided.txt'];
-  const branched = buildRoutePlanSchema(writableTask, mixed).properties.nodes.items;
+  const branched = buildRoutePlanSchema(writableTask, mixed, NOW).properties.nodes.items;
   assert.equal(branched.oneOf.length, 2);
   assert.equal(branched.oneOf[0].properties.scope.const, 'read_only');
   assert.equal(branched.oneOf[0].properties.owned_paths.maxItems, 0);
   assert.equal(branched.oneOf[1].properties.scope.const, 'workspace_write');
   assert.equal(branched.oneOf[1].properties.owned_paths.minItems, 1);
-  assert.deepEqual(branched.oneOf[0].properties.candidate_id.enum, ['cfg-000']);
-  assert.deepEqual(branched.oneOf[1].properties.candidate_id.enum, ['cfg-001']);
+  assert.deepEqual(branched.oneOf[0].properties.route_class.enum, ['trivial', 'standard', 'deep']);
+  assert.deepEqual(branched.oneOf[1].properties.route_class.enum, ['trivial', 'standard', 'deep']);
+  assert.equal(Object.hasOwn(branched.oneOf[1].properties, 'candidate_id'), false);
+  // A scope with no row that can run now is not offered to the planner.
+  const stale = catalog(2); stale.candidates[1] = {...mixed.candidates[1], quota_remaining_fraction: null};
+  const readOnly = buildRoutePlanSchema(writableTask, stale, NOW).properties.nodes.items;
+  assert.equal(readOnly.properties.scope.const, 'read_only');
   assert.deepEqual(branched.oneOf[0].properties.context_refs.items.enum, ['provided.txt']);
 });
 
@@ -159,7 +177,7 @@ test('generation schema permits exact catalog IDs, not a full configuration hash
   const original = catalog(1);
   original.candidates[0].id = id;
   original.candidates[0].configuration_sha256 = configuration;
-  const input = buildBoundedPlannerInput({task: task(), catalog: original,
+  const input = buildBoundedPlannerInput({task: explicitTask(), catalog: original,
     feedback: {}, policyText: 'RCC identity fixture'});
   const allowed = input.responseFormat.properties.nodes.items.properties.candidate_id.enum;
   assert.deepEqual(allowed, [id]);
@@ -172,7 +190,7 @@ test('generation schema permits exact catalog IDs, not a full configuration hash
 
 test('schema candidate choices are bounded, unique and valid rather than repaired or truncated', () => {
   const all = catalog(256);
-  assert.equal(buildRoutePlanSchema(task(), all).properties.nodes.items.properties.candidate_id.enum.length, 256);
+  assert.equal(buildRoutePlanSchema(explicitTask(), all).properties.nodes.items.properties.candidate_id.enum.length, 256);
   for (const candidates of [[], [...all.candidates, all.candidates[0]],
     [all.candidates[0], {...all.candidates[1], id: all.candidates[0].id}],
     [{...all.candidates[0], id: 'invalid.id'}],
@@ -183,9 +201,11 @@ test('schema candidate choices are bounded, unique and valid rather than repaire
   }
   const writeOnly = catalog(1);
   writeOnly.candidates[0].scope = 'workspace_write';
-  const locked = task(); locked.host_context.require_read_only = true;
+  const locked = explicitTask(); locked.host_context.require_read_only = true;
   assert.throws(() => buildRoutePlanSchema(locked, writeOnly), /planner_catalog_scope_unavailable/);
-  const writer = buildRoutePlanSchema(task(), writeOnly).properties.nodes.items;
+  const lockedGraded = task(); lockedGraded.host_context.require_read_only = true;
+  assert.throws(() => buildRoutePlanSchema(lockedGraded, writeOnly, NOW), /planner_catalog_scope_unavailable/);
+  const writer = buildRoutePlanSchema(explicitTask(), writeOnly).properties.nodes.items;
   assert.equal(writer.properties.scope.const, 'workspace_write');
   assert.deepEqual(writer.properties.candidate_id.enum, ['cfg-000']);
 });
@@ -194,9 +214,10 @@ test('exact ID enums preserve explicit routing and deterministic candidate kinds
   const original = catalog(2);
   original.candidates[1] = {...original.candidates[1], surface: 'local',
     transport: 'local', quota_pool: 'none', tools: [], effort: 'none'};
-  const ordinary = buildRoutePlanSchema(task(), original).properties.nodes.items;
+  const ordinary = buildRoutePlanSchema(task(), original, NOW).properties.nodes.items;
   assert.deepEqual(ordinary.properties.kind.enum, ['agent', 'deterministic']);
-  assert.deepEqual(ordinary.properties.candidate_id.enum, ['cfg-000', 'cfg-001']);
+  assert.deepEqual(ordinary.properties.route_class.enum, ['trivial', 'standard', 'deep']);
+  assert.equal(Object.hasOwn(ordinary.properties, 'candidate_id'), false);
   const explicit = task(); explicit.mode = 'explicit_routing_test';
   explicit.host_context.explicit_routes = [{surface: 'codex', instruction: '1+1'}];
   const item = buildRoutePlanSchema(explicit, original).properties.nodes.items;
@@ -233,4 +254,84 @@ test('planner schema and input carry only routes that still run; a GPT route is 
   const input = buildBoundedPlannerInput({task: explicit, catalog: original, feedback: {}, policyText: 'p'});
   const payload = JSON.parse(input.message.slice('OS1_RCC_PLAN\n'.length));
   assert.deepEqual(payload.explicit_routes, [{surface: 'codex', instruction: '2+2'}]);
+});
+
+// Production-sized catalog: Codex + Claude in both scopes with real 36-char
+// IDs, an 18.5KB owner policy and about 10KB of Korean context.
+function productionCatalog() {
+  const rows = [];
+  const models = [['openai_codex', 'codex', 'codex_app_server', ['gpt-5.7-sol', 'gpt-5.7-luna', 'gpt-5.7-terra', 'gpt-5.7-daybreak', 'gpt-5.6-astra', 'gpt-5.6-luna']],
+    ['anthropic_shared', 'claude', 'claude_cli', ['claude-fable-5', 'claude-opus-5-5', 'claude-sonnet-5']]];
+  for (const [pool, surface, transport, names] of models) for (const model of names)
+    for (const effort of ['minimal', 'low', 'medium', 'high', 'xhigh'])
+      for (const scope of ['read_only', 'workspace_write']) {
+        const surfaces = surface === 'claude' && scope === 'read_only' ? ['claude-chat', 'claude'] : [surface];
+        for (const rowSurface of surfaces) {
+          const index = rows.length;
+          rows.push({id: 'cfg-' + index.toString(16).padStart(32, '0'), surface: rowSurface, transport,
+            account_id: pool === 'openai_codex' ? 'user-openai-account-0001' : 'claude-account-0001',
+            model, effort, tools: rowSurface.endsWith('-chat') ? [] : scope === 'read_only' ? ['read', 'execute'] : ['read', 'write', 'execute'],
+            scope, permission_profile: scope, quota_pool: pool,
+            allowed_paths: scope === 'read_only' ? [] : ['**'],
+            configuration_sha256: index.toString(16).padStart(64, '0'),
+            availability: 'available', availability_observed_at_ms: NOW,
+            availability_valid_until_ms: NOW + 120_000, quota_remaining_fraction: 0.4,
+            quota_observed_at_ms: NOW, quota_valid_until_ms: NOW + 120_000,
+            quality_state: 'policy_admitted', estimated_cost_units: null});
+        }
+      }
+  return {schema: 1, task_id: 'test-task', request_sha256: 'a'.repeat(64), candidates: rows};
+}
+
+test('graded planner input carries no candidate ID and fits Codex+Claude write scope with Korean context', () => {
+  const full = productionCatalog();
+  assert.ok(full.candidates.length > 100 && full.candidates.every(row => row.id.length === 36));
+  const writable = task(); writable.mode = 'auto';
+  writable.host_context.require_read_only = false;
+  writable.host_context.context = '이 저장소의 라우팅 정책과 최근 대화 맥락을 그대로 보존한다. '.repeat(124);
+  assert.ok(Buffer.byteLength(writable.host_context.context) >= 10_000);
+  const input = buildBoundedPlannerInput({task: writable, catalog: full, now: NOW,
+    feedback: {}, policyText: 'p'.repeat(18_554)});
+  const bytes = Buffer.byteLength(input.instructions) + Buffer.byteLength(input.message) +
+    Buffer.byteLength(JSON.stringify(input.responseFormat));
+  assert.ok(bytes <= 48_000, `planner input ${bytes} bytes`);
+  const everything = input.instructions + input.message + JSON.stringify(input.responseFormat);
+  for (const row of full.candidates) {
+    assert.equal(everything.includes(row.id), false, row.id);
+    assert.equal(everything.includes(row.configuration_sha256), false);
+  }
+  for (const model of new Set(full.candidates.map(row => row.model)))
+    assert.equal(input.message.includes(model), false, model);
+  const payload = JSON.parse(input.message.slice('OS1_RCC_PLAN\n'.length));
+  assert.equal(Object.hasOwn(payload, 'candidate_catalog'), false);
+  assert.deepEqual(payload.availability, {scopes: ['read_only', 'workspace_write'], chat_lane: true,
+    providers: ['claude', 'codex'], deterministic: false});
+  assert.equal(input.responseFormat.properties.nodes.items.oneOf.length, 2);
+  assert.ok(input.instructions.includes('trivial = lookup'));
+  assert.ok(input.instructions.includes('deep = hard multi-step'));
+});
+
+test('availability summary hides dropped GPT and rows that cannot run now', () => {
+  const full = productionCatalog();
+  const graded = task(); graded.mode = 'auto'; graded.host_context.require_read_only = false;
+  full.candidates = full.candidates.map(row => row.quota_pool === 'anthropic_shared' ?
+    {...row, quota_remaining_fraction: null} : row);
+  full.candidates.push({...full.candidates[0], id: 'gpt-chat-row', surface: 'gpt-chat', tools: []});
+  const input = buildBoundedPlannerInput({task: graded, catalog: full, now: NOW, feedback: {}, policyText: 'p'});
+  const payload = JSON.parse(input.message.slice('OS1_RCC_PLAN\n'.length));
+  assert.deepEqual(payload.availability, {scopes: ['read_only', 'workspace_write'], chat_lane: false,
+    providers: ['codex'], deterministic: false});
+  // Past every row's validity nothing can run: the graded schema is refused.
+  assert.throws(() => buildRoutePlanSchema(graded, full, NOW + 600_000), /planner_catalog_scope_unavailable/);
+});
+
+test('a planner-chosen candidate ID is refused outside an explicit route test', () => {
+  const graded = task(); graded.mode = 'auto';
+  const chosen = {schema: 1, nodes: [{id: 'n1', candidate_id: 'cfg-000', route_class: 'trivial'}]};
+  assert.throws(() => assertPlannerRouteChoice(graded, chosen), /planner_candidate_choice_forbidden/);
+  const ok = {schema: 1, nodes: [{id: 'n1', route_class: 'trivial'}]};
+  assert.equal(assertPlannerRouteChoice(graded, ok), ok);
+  const explicit = explicitTask();
+  const exact = {schema: 1, nodes: [{id: 'n1', candidate_id: 'cfg-000'}]};
+  assert.equal(assertPlannerRouteChoice(explicit, exact), exact);
 });

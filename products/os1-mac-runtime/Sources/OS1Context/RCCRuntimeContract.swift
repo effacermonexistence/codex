@@ -533,6 +533,32 @@ public enum RCCRuntimeContract {
             case dispatchStage = "dispatch_stage", nativeSummary = "native_summary"
         }
     }
+    /// Why the OpenClaw Core host bound this exact row (2026-10-13). The local
+    /// planner grades a node (route_class); the host resolves the row. This is
+    /// a routing receipt, not observed execution or a quality claim. A nil
+    /// route class means a row bound by the trusted adapter, not graded.
+    public struct RoutingDecision: Codable, Equatable, Sendable {
+        public static let routeClasses: Set<String> = ["trivial", "standard", "deep"]
+        public var routeClass: String?
+        public var resolvedCandidateID: String
+        public var surface: Surface
+        public var model: String
+        public var effort: Effort
+        public var quotaPool: QuotaPool
+        public var reason: String
+        public var quotaRemainingFraction: Double?
+        public init(routeClass: String?, resolvedCandidateID: String, surface: Surface, model: String, effort: Effort,
+                    quotaPool: QuotaPool, reason: String, quotaRemainingFraction: Double?) {
+            self.routeClass = routeClass; self.resolvedCandidateID = resolvedCandidateID; self.surface = surface
+            self.model = model; self.effort = effort; self.quotaPool = quotaPool; self.reason = reason
+            self.quotaRemainingFraction = quotaRemainingFraction
+        }
+        enum CodingKeys: String, CodingKey {
+            case surface, model, effort, reason
+            case routeClass = "route_class", resolvedCandidateID = "resolved_candidate_id"
+            case quotaPool = "quota_pool", quotaRemainingFraction = "quota_remaining_fraction"
+        }
+    }
     public struct ChildSnapshot: Codable, Equatable, Sendable {
         public var id: String
         public var state: ChildState
@@ -547,21 +573,25 @@ public enum RCCRuntimeContract {
         public var outputSummary: String?
         /// Literal user-requested surface. This is not selected or observed execution.
         public var requestedSurface: Surface?
+        /// Optional; absent in snapshots written before 2026-10-13.
+        public var routingDecision: RoutingDecision?
         public init(id: String, state: ChildState, attemptID: String?, candidateID: String?, selectedConfig: ExactConfig? = nil,
                     instruction: String? = nil, dependencies: [String]? = nil, startedAtMS: Int64? = nil,
                     finishedAtMS: Int64? = nil, nativeReceipt: String? = nil, outputSummary: String? = nil,
-                    requestedSurface: Surface? = nil) {
+                    requestedSurface: Surface? = nil, routingDecision: RoutingDecision? = nil) {
             self.id = id; self.state = state; self.attemptID = attemptID; self.candidateID = candidateID
             self.selectedConfig = selectedConfig; self.instruction = instruction; self.dependencies = dependencies
             self.startedAtMS = startedAtMS; self.finishedAtMS = finishedAtMS; self.nativeReceipt = nativeReceipt
             self.outputSummary = outputSummary
             self.requestedSurface = requestedSurface
+            self.routingDecision = routingDecision
         }
         enum CodingKeys: String, CodingKey {
             case id, state, dependencies, instruction, attemptID = "attempt_id", candidateID = "candidate_id"
             case selectedConfig = "selected_config", startedAtMS = "started_at_ms", finishedAtMS = "finished_at_ms", nativeReceipt = "native_receipt"
             case outputSummary = "output_summary"
             case requestedSurface = "requested_surface"
+            case routingDecision = "routing_decision"
         }
     }
     public struct Result: Codable, Equatable, Sendable {
@@ -922,6 +952,16 @@ public enum RCCRuntimeContract {
             if let config = child.selectedConfig { try validate(config) }
             if let requested = child.requestedSurface, let selected = child.selectedConfig,
                requested != selected.surface { throw Rejection.invalidSnapshot }
+            if let decision = child.routingDecision {
+                // The receipt names the exact row this child is bound to.
+                guard id(decision.resolvedCandidateID), decision.resolvedCandidateID == child.candidateID,
+                      decision.routeClass.map({ RoutingDecision.routeClasses.contains($0) }) ?? true,
+                      text(decision.model, max: 256), text(decision.reason, max: 1_024),
+                      decision.quotaRemainingFraction.map({ $0.isFinite && $0 >= 0 && $0 <= 1 }) ?? true,
+                      child.selectedConfig.map({ $0.surface == decision.surface && $0.model == decision.model &&
+                          $0.effort == decision.effort && $0.quotaPool == decision.quotaPool }) ?? true
+                else { throw Rejection.invalidSnapshot }
+            }
             guard child.instruction.map({ text($0) }) ?? true, child.dependencies.map({ unique($0, max: maximumNodes) }) ?? true,
                   child.startedAtMS.map({ $0 >= 0 }) ?? true, child.finishedAtMS.map({ $0 >= (child.startedAtMS ?? 0) }) ?? true,
                   child.nativeReceipt.map({ text($0, max: 4_096) }) ?? true,
@@ -1001,7 +1041,8 @@ public enum RCCRuntimeContract {
     private static let usageShape = Shape.object(["input_tokens", "output_tokens", "reasoning_tokens", "cache_read_tokens", "cache_write_tokens", "provider_calls", "duration_ms", "cost_units", "metric"])
     private static let recordShape = Shape.object(["schema", "task_id", "node_id", "attempt_id", "candidate_id", "configuration_sha256", "selected_config", "acknowledged_config", "observed_config", "status", "output", "execution_verified", "task_verified", "task_quality", "parity_state", "native_receipt", "side_effects", "usage", "error", "dispatch_stage", "native_summary", "handback", "repair_source"], ["selected_config": configShape, "acknowledged_config": configShape, "observed_config": configShape, "usage": usageShape, "handback": handbackShape, "repair_source": repairSourceShape])
     private static let resultShape = Shape.object(["output", "execution_verified", "task_verified", "task_quality", "parity_state", "native_receipt", "native_summary", "native_summaries"])
-    private static let childShape = Shape.object(["id", "state", "attempt_id", "candidate_id", "selected_config", "instruction", "dependencies", "started_at_ms", "finished_at_ms", "native_receipt", "output_summary", "requested_surface"], ["selected_config": configShape])
+    private static let routingDecisionShape = Shape.object(["route_class", "resolved_candidate_id", "surface", "model", "effort", "quota_pool", "reason", "quota_remaining_fraction"])
+    private static let childShape = Shape.object(["id", "state", "attempt_id", "candidate_id", "selected_config", "instruction", "dependencies", "started_at_ms", "finished_at_ms", "native_receipt", "output_summary", "requested_surface", "routing_decision"], ["selected_config": configShape, "routing_decision": routingDecisionShape])
     private static let snapshotShape = Shape.object(["schema", "task_id", "request_sha256", "state", "revision", "children", "result", "error", "install_handoff"], ["children": .array(childShape), "result": resultShape, "install_handoff": installHandoffShape])
     private static let eventShape = Shape.object(["schema", "task_id", "revision", "type", "node_id", "attempt_id", "observed_at_ms", "snapshot"], ["snapshot": snapshotShape])
     private static func checkShape(_ object: Any, _ shape: Shape, depth: Int = 0) throws {

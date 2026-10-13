@@ -289,6 +289,33 @@ func runRCCRuntimeContractFixture() throws {
     let legacySnapshot = try C.decodeSnapshot(JSONSerialization.data(withJSONObject: legacySnapshotObject))
     try check(legacySnapshot.children.first?.requestedSurface == nil,
               "legacy child missing requested surface remains decodable and unknown")
+    try check(legacySnapshot.children.first?.routingDecision == nil,
+              "snapshot written before host routing decisions remains decodable")
+    let decision = C.RoutingDecision(routeClass: "deep", resolvedCandidateID: candidate.id, surface: config.surface,
+        model: config.model, effort: config.effort, quotaPool: config.quotaPool,
+        reason: "resolver;pool_rank_0;effort_exact", quotaRemainingFraction: 0.4)
+    var routed = uncertain; routed.children[0].routingDecision = decision
+    try check(try C.decodeSnapshot(C.encode(routed)) == routed, "host routing decision roundtrips with its child")
+    var badRouted = routed; badRouted.children[0].routingDecision?.resolvedCandidateID = "another-row"
+    try reject("routing decision must name the child's exact row") { try C.validate(badRouted) }
+    badRouted = routed; badRouted.children[0].routingDecision?.routeClass = "flagship"
+    try reject("route class is one of trivial/standard/deep") { try C.validate(badRouted) }
+    badRouted = routed; badRouted.children[0].routingDecision?.effort = .max
+    try reject("routing decision cannot disagree with the dispatched config") { try C.validate(badRouted) }
+    badRouted = routed; badRouted.children[0].routingDecision?.quotaRemainingFraction = 1.5
+    try reject("quota fraction stays within 0...1") { try C.validate(badRouted) }
+    var routedObject = try JSONSerialization.jsonObject(with: C.encode(routed)) as! [String: Any]
+    var routedChildren = routedObject["children"] as! [[String: Any]]
+    var routedDecision = routedChildren[0]["routing_decision"] as! [String: Any]
+    routedDecision["route_class"] = NSNull(); routedDecision["quota_remaining_fraction"] = NSNull()
+    routedChildren[0]["routing_decision"] = routedDecision; routedObject["children"] = routedChildren
+    try check(try C.decodeSnapshot(JSONSerialization.data(withJSONObject: routedObject)).children[0].routingDecision?.routeClass == nil,
+              "adapter-bound decision with null route class and unknown quota decodes")
+    routedDecision["planner_pick"] = "invented"; routedChildren[0]["routing_decision"] = routedDecision
+    routedObject["children"] = routedChildren
+    try reject("routing decision rejects an unknown field") {
+        _ = try C.decodeSnapshot(JSONSerialization.data(withJSONObject: routedObject))
+    }
     var aliasedSnapshot = requestedOnly; aliasedSnapshot.children[0].selectedConfig = config
     try reject("ordinary ChatGPT requested surface cannot alias Codex-funded gpt-chat selection") {
         try C.validate(aliasedSnapshot)
@@ -313,11 +340,11 @@ func runRCCRuntimeContractFixture() throws {
     const root=await mkdtemp(join(tmpdir(),'rcc-swift-node-wire-'));
     const sha=s=>createHash('sha256').update(s).digest('hex');
     const emittedTickets=[];
-    async function produce(verified,count){
+    async function produce(verified,count,graded=false){
       const host={workspace:root,context:null,provider_preference:'auto',codex_session_id:'native-codex-fixture',
         claude_session_id:null,require_read_only:true,owner_policy:null,explicit_routes:null};
       const request='Exercise the fixture adapter through the real durable runtime.';
-      const task={schema:1,task_id:verified?'task-node-verified':'task-node-unverified',request,
+      const task={schema:1,task_id:graded?'task-node-graded':verified?'task-node-verified':'task-node-unverified',request,
         request_sha256:sha(request),objective:request,policy_sha256:sha('fixture policy'),
         source_fingerprint:hostContextFingerprint(host),mode:'auto',material_refs:[],
         budget:{max_attempts:2,max_parallel:4,max_cost_units:null,max_duration_ms:60000},host_context:host,
@@ -329,9 +356,11 @@ func runRCCRuntimeContractFixture() throws {
         availability:'available',availability_observed_at_ms:now-100,availability_valid_until_ms:now+30000,
         quota_remaining_fraction:0.7,quota_observed_at_ms:now-100,quota_valid_until_ms:now+30000,
         quality_state:'policy_admitted',estimated_cost_units:1};
+      // A graded node carries route_class; the real core binds the row.
       const nodes=Array.from({length:count},(_,i)=>({id:'n'+(i+1),instruction:'Return '+(2*(i+1)),
-        dependencies:[],kind:'agent',candidate_id:candidate.id,scope:'read_only',owned_paths:[],context_refs:[]}));
-      const runtime=await createRCCRuntime({stateDir:join(root,verified?'verified':'unverified'),
+        dependencies:[],kind:'agent',...(graded?{route_class:'standard'}:{candidate_id:candidate.id}),
+        scope:'read_only',owned_paths:[],context_refs:[]}));
+      const runtime=await createRCCRuntime({stateDir:join(root,graded?'graded':verified?'verified':'unverified'),
         catalog:async()=>({schema:1,task_id:task.task_id,request_sha256:task.request_sha256,candidates:[candidate]}),
         plan:async()=>({schema:1,task_id:task.task_id,request_sha256:task.request_sha256,nodes}),
         execute:async ticket=>{emittedTickets.push(ticket);return ({schema:1,task_id:ticket.task_id,node_id:ticket.node_id,attempt_id:ticket.attempt_id,
@@ -353,7 +382,8 @@ func runRCCRuntimeContractFixture() throws {
         return snapshot;
       }finally{await runtime.close();}
     }
-    try{process.stdout.write(JSON.stringify({completed:await produce(true,4),unverified:await produce(false,1),tickets:emittedTickets}));}
+    try{process.stdout.write(JSON.stringify({completed:await produce(true,4),unverified:await produce(false,1),
+      graded:await produce(false,1,true),tickets:emittedTickets}));}
     finally{await rm(root,{recursive:true,force:true});}
     """
     let wireProcess = Process(), wireOutput = Pipe(), wireErrors = Pipe()
@@ -376,7 +406,18 @@ func runRCCRuntimeContractFixture() throws {
     let actualTickets = try (nativeSnapshots["tickets"] as! [[String: Any]]).map {
         try C.decodeTicket(JSONSerialization.data(withJSONObject: $0))
     }
-    try check(actualTickets.count == 5, "REAL Node execution tickets all pass the strict Swift schema")
+    try check(actualTickets.count == 6, "REAL Node execution tickets all pass the strict Swift schema")
+    // Host routing receipts (2026-10-13): the real core's graded and
+    // adapter-bound decisions decode under the strict child shape.
+    let nativeGraded = try C.decodeSnapshot(JSONSerialization.data(withJSONObject: nativeSnapshots["graded"]!))
+    let gradedDecision = nativeGraded.children.first?.routingDecision
+    try check(nativeGraded.state == .returnedUnverified && gradedDecision?.routeClass == "standard" &&
+              gradedDecision?.resolvedCandidateID == "fake-codex" && gradedDecision?.effort == .low &&
+              gradedDecision?.reason.hasPrefix("resolver;") == true && gradedDecision?.quotaRemainingFraction == 0.7,
+              "REAL Node graded node is bound by the host and its routing decision is public")
+    try check(nativeCompleted.children.allSatisfy { $0.routingDecision?.routeClass == nil && $0.routingDecision?.reason == "adapter_bound" },
+              "REAL Node adapter-bound rows are recorded as bound, not graded")
+    try check(try C.decodeSnapshot(C.encode(nativeGraded)) == nativeGraded, "routing decision roundtrips through Swift")
     let soloTickets = actualTickets.filter { $0.taskID == "task-node-unverified" }
     try check(soloTickets.count == 1 && soloTickets[0].nativeResumeSessionID == "native-codex-fixture",
               "REAL core-issued single full-agent ticket retains its exact host session")

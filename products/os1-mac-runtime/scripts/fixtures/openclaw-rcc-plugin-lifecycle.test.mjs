@@ -22,7 +22,7 @@ test('durable local planner does not inherit a released submit RPC root', async 
   const native = join(root, 'native.mjs');
   const body = `#!${process.execPath}\nimport{readFileSync}from'node:fs';import{createHash}from'node:crypto';
 const p=JSON.parse(readFileSync(process.argv[4],'utf8'));const sha=s=>createHash('sha256').update(s).digest('hex');
-if(process.argv[1]&&process.argv[2]==='rcc-catalog') {await new Promise(r=>setTimeout(r,35));const n=Date.now();console.log(JSON.stringify({schema:1,task_id:p.task_id,request_sha256:p.request_sha256,candidates:[{id:'fixture',surface:'gpt-chat',transport:'codex_app_server',account_id:'fixture',model:'fixture',effort:'low',tools:[],scope:'read_only',permission_profile:'read_only',quota_pool:'openai_codex',allowed_paths:[],configuration_sha256:sha('fixture'),availability:'available',availability_observed_at_ms:n,availability_valid_until_ms:n+300000,quota_remaining_fraction:1,quota_observed_at_ms:n,quota_valid_until_ms:n+300000,quality_state:'policy_admitted',estimated_cost_units:1}]}));}
+if(process.argv[1]&&process.argv[2]==='rcc-catalog') {await new Promise(r=>setTimeout(r,35));const n=Date.now();console.log(JSON.stringify({schema:1,task_id:p.task_id,request_sha256:p.request_sha256,candidates:[{id:'fixture',surface:'codex',transport:'codex_app_server',account_id:'fixture',model:'fixture',effort:'low',tools:[],scope:'read_only',permission_profile:'read_only',quota_pool:'openai_codex',allowed_paths:[],configuration_sha256:sha('fixture'),availability:'available',availability_observed_at_ms:n,availability_valid_until_ms:n+300000,quota_remaining_fraction:1,quota_observed_at_ms:n,quota_valid_until_ms:n+300000,quality_state:'policy_admitted',estimated_cost_units:1}]}));}
 else if(process.argv[2]==='rcc-adapter')console.log(JSON.stringify({schema:1,task_id:p.task_id,node_id:p.node_id,attempt_id:p.attempt_id,candidate_id:p.candidate_id,configuration_sha256:p.configuration_sha256,selected_config:p.selected_config,acknowledged_config:p.selected_config,observed_config:null,status:'succeeded',dispatch_stage:'dispatched',side_effects:'none',output:'hello',execution_verified:true,task_verified:false,task_quality:'execution_only',parity_state:'unverified',native_receipt:'private-fixture-receipt',usage:{provider_calls:0},error:null,native_summary:null}));else process.exit(91);`;
   await writeFile(native, body, { mode: 0o700 });
   const policy = 'Synthetic bounded source policy; no quality parity assertion.';
@@ -42,11 +42,14 @@ else if(process.argv[2]==='rcc-adapter')console.log(JSON.stringify({schema:1,tas
       assert.equal(params.responseFormat.type, 'object');
       assert.equal(params.messages.length, 1);
       const value = JSON.parse(params.messages[0].content.split('\n').slice(1).join('\n'));
+      // The planner grades; the candidate ID never reaches the local model.
+      assert.equal(JSON.stringify([params.systemPrompt, params.messages, params.responseFormat]).includes('"fixture"'), false);
+      assert.deepEqual(value.availability.providers, ['codex']);
       return { provider: 'ollama', model: 'qwen3.5:4b',
         execution: { mode: 'direct-provider', owner: { kind: 'provider', id: 'ollama' } },
         stopReason: 'stop', text: JSON.stringify({ schema: 1, task_id: value.task_id,
         request_sha256: value.request_sha256, nodes: [{ id: 'n1', instruction: value.request,
-          dependencies: [], kind: 'agent', candidate_id: 'fixture', scope: 'read_only',
+          dependencies: [], kind: 'agent', route_class: 'trivial', scope: 'read_only',
           owned_paths: [], context_refs: [] }] }) };
     } } } };
   registerRCCRuntime(api);
@@ -73,6 +76,9 @@ else if(process.argv[2]==='rcc-adapter')console.log(JSON.stringify({schema:1,tas
     assert.equal(snapshot.state, 'returned_unverified', snapshot.error);
     assert.equal(snapshot.children.length, 1);
     assert.equal(snapshot.children[0].output_summary, 'hello');
+    assert.equal(snapshot.children[0].candidate_id, 'fixture');
+    assert.equal(snapshot.children[0].routing_decision.route_class, 'trivial');
+    assert.equal(snapshot.children[0].routing_decision.resolved_candidate_id, 'fixture');
     assert.equal(snapshot.result.task_verified, false);
     assert.equal(snapshot.result.parity_state, 'unverified');
     assert.equal(modelCalls, 1);
@@ -178,7 +184,7 @@ if(command==='rcc-catalog') {
         execution: {mode: 'direct-provider', owner: {kind: 'provider', id: 'ollama'}},
         text: JSON.stringify({schema: 1, task_id: input.task_id, request_sha256: input.request_sha256,
           nodes: [{id: 'repair', instruction: input.request, dependencies: [], kind: 'agent',
-            candidate_id: 'fixture-write', scope: 'workspace_write', owned_paths: ['**'], context_refs: []}]})};
+            route_class: 'standard', scope: 'workspace_write', owned_paths: ['**'], context_refs: []}]})};
     }}}});
   const call = (name, params) => new Promise((resolve, reject) => {
     assert(methods.has('os1.rcc.' + name));

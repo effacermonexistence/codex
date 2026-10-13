@@ -4,13 +4,14 @@ import { open, mkdir, lstat, writeFile, readFile, chmod, unlink } from 'node:fs/
 import { join, dirname, basename, isAbsolute } from 'node:path';
 import { spawn } from 'node:child_process';
 import { AsyncResource } from 'node:async_hooks';
-import { createRCCRuntime, effectiveExplicitRoutes, RCCRuntimeError } from './rcc-runtime.mjs';
+import { createRCCRuntime, effectiveExplicitRoutes, RCCRuntimeError, ROUTE_CLASSES,
+  routingAvailability } from './rcc-runtime.mjs';
 
 const sha = bytes => createHash('sha256').update(bytes).digest('hex');
 const HASH = /^[a-f0-9]{64}$/;
 const LOCAL_MODEL = 'ollama/qwen3.5:4b';
 const ROUTER_MODE_LOCK = 'INTERNAL ROUTING PLAN ONLY. This is not the user-visible answer. Persona prefix Ben./LuaIsHere :3 is OFF for this internal JSON lane. Do not answer the user task, do not report completion, and do not emit Conclusion/Core reason/Breaking variable, prose, markdown or code fences. Return one JSON object only; actual execution and quality are verified after this candidate plan.';
-export function buildRoutePlanSchema(task, catalog) {
+export function buildRoutePlanSchema(task, catalog, now = Date.now()) {
   if (!Array.isArray(catalog?.candidates) || catalog.candidates.length === 0 ||
       catalog.candidates.length > 256)
     throw new RCCRuntimeError('planner_catalog_invalid');
@@ -27,31 +28,40 @@ export function buildRoutePlanSchema(task, catalog) {
     seen.add(candidate.id);
     candidateIDs[candidate.scope].push(candidate.id);
   }
+  // Outside an explicit route test the planner never chooses a row. It grades
+  // each node (route_class) in a scope that can run now; the host resolves
+  // the exact model, effort, surface and quota pool afterwards.
+  const explicit = task.mode === 'explicit_routing_test';
+  const availability = explicit ? null : routingAvailability(task, catalog, now);
+  const offered = explicit ? {read_only: candidateIDs.read_only.length > 0,
+    workspace_write: candidateIDs.workspace_write.length > 0} :
+    {read_only: availability.scopes.includes('read_only') || availability.deterministic,
+      workspace_write: availability.scopes.includes('workspace_write')};
   const refs = task.material_refs ?? [];
   const contextRefs = {type: 'array', maxItems: refs.length === 0 ? 0 : Math.min(128, refs.length),
     items: {type: 'string'}};
   if (refs.length > 0 && refs.length <= 8) contextRefs.items.enum = [...refs];
-  const kind = task.mode === 'explicit_routing_test' ||
-      !catalog.candidates.some(candidate => candidate.surface === 'local') ?
+  const kind = explicit || !(availability.deterministic) ?
       {type: 'string', const: 'agent'} :
       {type: 'string', enum: ['agent', 'deterministic']};
+  const choice = explicit ? 'candidate_id' : 'route_class';
   const node = scope => ({type: 'object', additionalProperties: false,
-    required: ['id', 'instruction', 'dependencies', 'kind', 'candidate_id',
+    required: ['id', 'instruction', 'dependencies', 'kind', choice,
       'scope', 'owned_paths', 'context_refs'],
     properties: {
       id: {type: 'string'}, instruction: {type: 'string'},
       dependencies: {type: 'array', maxItems: 8, items: {type: 'string'}},
-      kind, candidate_id: {type: 'string', enum: candidateIDs[scope]},
+      kind, [choice]: explicit ? {type: 'string', enum: candidateIDs[scope]} :
+        {type: 'string', enum: [...ROUTE_CLASSES]},
       scope: {type: 'string', const: scope},
       owned_paths: scope === 'read_only' ?
         {type: 'array', maxItems: 0, items: {type: 'string'}} :
         {type: 'array', minItems: 1, maxItems: 64, items: {type: 'string'}},
       context_refs: contextRefs}});
-  const readOnly = task.host_context?.require_read_only === true ||
-    candidateIDs.workspace_write.length === 0;
-  if (readOnly && candidateIDs.read_only.length === 0)
+  const readOnly = task.host_context?.require_read_only === true || !offered.workspace_write;
+  if (readOnly && !offered.read_only)
     throw new RCCRuntimeError('planner_catalog_scope_unavailable');
-  const writeOnly = !readOnly && candidateIDs.read_only.length === 0;
+  const writeOnly = !readOnly && !offered.read_only;
   const item = readOnly ? node('read_only') : writeOnly ? node('workspace_write') :
     {oneOf: [node('read_only'), node('workspace_write')]};
   const fixedCount = task.mode === 'explicit_routing_test' &&
@@ -267,21 +277,41 @@ export function expandCandidateCatalog(compact) {
   return candidates;
 }
 
-export function buildBoundedPlannerInput({task, catalog, feedback, policyText}) {
-  const instructions = ROUTER_MODE_LOCK + '\n\n' + policyText + '\n\n' + ROUTER_MODE_LOCK + '\n\nRCC EXECUTION PLAN: preserve the original objective and supplied source. Choose exact candidate IDs only; each ID already fixes model, effort, tools, quota and scope. Candidate catalog is lossless grouped data: each group.common uses common_keys, each group.variants row uses variant_keys (including the original index); do not omit, alias or invent an ID. Prefer the smallest total resources sufficient for this task, not a fixed strongest model. Unknown cost/quality stays unknown; policy_admitted means permission admission, NOT measured quality parity. Independent work may be parallel; dependent work must name dependencies. Explicit routes require exactly one independent node per supplied surface/instruction, without alias, substitution or payload rewrite. No command, account or permission invention. Return only JSON {schema:1,task_id,request_sha256,nodes:[{id,instruction,dependencies,kind:"agent",candidate_id,scope,owned_paths,context_refs}]}. For one indivisible task keep instruction equal to the original request. Integration, if actually needed, is an explicit dependent node, not a mandatory summarizer.';
-  const message = 'OS1_RCC_PLAN\n' + JSON.stringify({task_id: task.task_id,
+const EXPLICIT_PLAN_INSTRUCTIONS = 'RCC EXECUTION PLAN: preserve the original objective and supplied source. Choose exact candidate IDs only; each ID already fixes model, effort, tools, quota and scope. Candidate catalog is lossless grouped data: each group.common uses common_keys, each group.variants row uses variant_keys (including the original index); do not omit, alias or invent an ID. Prefer the smallest total resources sufficient for this task, not a fixed strongest model. Unknown cost/quality stays unknown; policy_admitted means permission admission, NOT measured quality parity. Independent work may be parallel; dependent work must name dependencies. Explicit routes require exactly one independent node per supplied surface/instruction, without alias, substitution or payload rewrite. No command, account or permission invention. Return only JSON {schema:1,task_id,request_sha256,nodes:[{id,instruction,dependencies,kind:"agent",candidate_id,scope,owned_paths,context_refs}]}. For one indivisible task keep instruction equal to the original request. Integration, if actually needed, is an explicit dependent node, not a mandatory summarizer.';
+const GRADED_PLAN_INSTRUCTIONS = 'RCC EXECUTION PLAN: preserve the original objective and supplied source. Decompose only into genuinely separable parts and grade each node with route_class: trivial = lookup, short factual answer or formatting; standard = normal coding or analysis; deep = hard multi-step design, debugging or proof. Grade the node, not the user: a short request can be deep and a long one trivial. The host then chooses the exact model, reasoning effort, surface and quota pool for each node from route_class and scope; never name a model, provider, account, effort or candidate. availability lists only scopes that can run now. read_only nodes never write and have no owned_paths; workspace_write nodes name the owned_paths they change. Independent work may be parallel; dependent work must name dependencies. No command, account or permission invention. Return only JSON {schema:1,task_id,request_sha256,nodes:[{id,instruction,dependencies,kind:"agent",route_class,scope,owned_paths,context_refs}]}. For one indivisible task keep instruction equal to the original request. Integration, if actually needed, is an explicit dependent node, not a mandatory summarizer.';
+
+export function buildBoundedPlannerInput({task, catalog, feedback, policyText, now = Date.now()}) {
+  const explicit = task.mode === 'explicit_routing_test';
+  const instructions = ROUTER_MODE_LOCK + '\n\n' + policyText + '\n\n' + ROUTER_MODE_LOCK + '\n\n' +
+    (explicit ? EXPLICIT_PLAN_INSTRUCTIONS : GRADED_PLAN_INSTRUCTIONS);
+  // Outside an explicit route test the planner gets no candidate catalog and
+  // no candidate ID (feedback included): only what can run now.
+  const message = 'OS1_RCC_PLAN\n' + JSON.stringify(explicit ? {task_id: task.task_id,
     request_sha256: task.request_sha256, original_objective: task.objective,
     request: task.request, material_refs: task.material_refs,
     explicit_routes: effectiveExplicitRoutes(task) ?? [],
     context: task.host_context.context,
-    candidate_catalog: compactCandidateCatalog(catalog), feedback});
+    candidate_catalog: compactCandidateCatalog(catalog), feedback} : {task_id: task.task_id,
+    request_sha256: task.request_sha256, original_objective: task.objective,
+    request: task.request, material_refs: task.material_refs,
+    context: task.host_context.context,
+    availability: routingAvailability(task, catalog, now)});
   // Only our own visible prompt bytes are bounded here; OpenClaw's hidden
   // system overhead still requires an actual local-model context smoke.
-  const responseFormat = buildRoutePlanSchema(task, catalog);
+  const responseFormat = buildRoutePlanSchema(task, catalog, now);
   if (Buffer.byteLength(instructions) + Buffer.byteLength(message) +
       Buffer.byteLength(JSON.stringify(responseFormat)) > MAX_PLANNER_OWN_INPUT_BYTES)
     throw new RCCRuntimeError('planner_input_budget_exceeded');
   return {instructions, message, responseFormat};
+}
+
+/** The local planner grades nodes; it never chooses a row outside an
+ * explicit route test, even if the model ignored the response schema. */
+export function assertPlannerRouteChoice(task, plan) {
+  if (task.mode !== 'explicit_routing_test' && Array.isArray(plan?.nodes) &&
+      plan.nodes.some(node => node !== null && typeof node === 'object' && Object.hasOwn(node, 'candidate_id')))
+    throw new RCCRuntimeError('planner_candidate_choice_forbidden');
+  return plan;
 }
 
 export function plannerCompletionRequest({instructions, message, responseFormat, signal}) {
@@ -429,7 +459,8 @@ export function registerRCCRuntime(api) {
           const parsed = JSON.parse(text);
           // The core's independent typed verifier checks objective binding, DAG,
           // permissions, scopes, catalogue and quota before any child dispatch.
-          return parsed;
+          // Outside explicit route tests the core binds each graded node.
+          return assertPlannerRouteChoice(task, parsed);
         },
         execute: (ticket, signal) => nativeOperation('rcc-adapter', ticket, signal),
         // Same pinned native adapter and task owner. A typed, receipt-bound

@@ -25,6 +25,21 @@ const EXCLUSION_REASONS = new Set(['signed_out', 'non_subscription', 'model_unav
 const TRANSPORTS = new Set(['local', 'codex_app_server', 'claude_cli', 'chatgpt_service', 'claude_service']);
 const SCOPES = new Set(['read_only', 'workspace_write']);
 const EFFORTS = new Set(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra', 'ultracode']);
+// Deterministic host routing (2026-10-13). The local planner grades each node
+// with a coarse route_class; the host maps it to an exact catalog row. The
+// catalog's own row order already encodes pool preference (capacity share,
+// fresh quota, reset time) and native model preference.
+const EFFORT_ORDER = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra', 'ultracode'];
+export const ROUTE_CLASSES = Object.freeze(['trivial', 'standard', 'deep']);
+const ROUTE_CLASS_TARGET_EFFORT = Object.freeze({trivial: 'low', standard: 'medium', deep: 'xhigh'});
+// Separate from the attempt budget: how often one node's host-resolved row may
+// be replaced after a pre-dispatch failure, always within the same scope.
+const MAX_RE_RESOLUTIONS = 2;
+const RE_RESOLVABLE_FAILURES = new Set(['candidate_unavailable', 'candidate_quota_unknown_or_exhausted',
+  'candidate_missing', 'selected_candidate_disappeared']);
+// A native catalog probe that failed (not a binding/configuration change) is
+// retried this many times before the task is held.
+const MAX_TRANSIENT_REFRESH_FAILURES = 3;
 const AVAILABILITY = new Set(['available', 'unavailable', 'unknown']);
 const DISPATCH = new Set(['not_dispatched', 'dispatched', 'unknown']);
 const SIDE_EFFECTS = new Set(['none', 'possible', 'confirmed']);
@@ -255,6 +270,145 @@ function validateTask(task) {
   return immutable(task);
 }
 
+/** The one dispatch rule. Returns null when the row may be dispatched now,
+ * otherwise the exact hold/failure code _candidate has always used. */
+function dispatchFailure(candidate, task, now) {
+  if (!(candidate.availability === 'available' && candidate.availability_valid_until_ms > now))
+    return 'candidate_unavailable';
+  if (candidate.quality_state === 'mismatch') return 'candidate_quality_mismatch';
+  if (candidate.quota_pool !== 'none' && !(candidate.quota_pool !== 'unknown' &&
+      candidate.quota_remaining_fraction !== null && candidate.quota_remaining_fraction > 0 &&
+      candidate.quota_valid_until_ms > now))
+    return 'candidate_quota_unknown_or_exhausted';
+  if ((task?.budget?.max_cost_units ?? null) !== null && candidate.estimated_cost_units === null)
+    return 'candidate_cost_unknown';
+  return null;
+}
+/** Same rule as _candidate. Unknown or stale rows stay catalog evidence only. */
+export function dispatchable(candidate, task, now = Date.now()) {
+  return dispatchFailure(candidate, task, now) === null;
+}
+// A dropped GPT surface stays decodable but is never chosen by the host.
+function hostRoutable(candidate) { return !DROPPED_ROUTE_SURFACES.has(candidate.surface); }
+function coversOwnedPaths(candidate, ownedPaths) {
+  return candidate.allowed_paths.includes('**') ?
+    stable(ownedPaths) === stable(['**']) :
+    ownedPaths.every(path => candidate.allowed_paths.some(allowed => path === allowed || path.startsWith(allowed + '/')));
+}
+function providerOfPool(pool) {
+  return pool === 'openai_codex' ? 'codex' : pool === 'anthropic_shared' ? 'claude' : pool === 'none' ? 'local' : pool;
+}
+function scopesAllowed(task) {
+  return task.host_context?.require_read_only === true ? ['read_only'] : ['read_only', 'workspace_write'];
+}
+
+/** What can run now, without any candidate ID: the non-explicit planner sees
+ * only this summary, never the catalog. */
+export function routingAvailability(task, catalog, now = Date.now()) {
+  const rows = catalog.candidates.filter(c => hostRoutable(c) && dispatchable(c, task, now));
+  const agent = rows.filter(c => c.surface !== 'local');
+  return {
+    scopes: ['read_only', 'workspace_write'].filter(scope => agent.some(c => c.scope === scope)),
+    chat_lane: agent.some(c => c.scope === 'read_only' && c.surface.endsWith('-chat')),
+    providers: [...new Set(agent.map(c => providerOfPool(c.quota_pool)))].sort(),
+    deterministic: rows.some(c => c.surface === 'local' && c.scope === 'read_only' &&
+      c.transport === 'local' && c.quota_pool === 'none' && c.tools.length === 0),
+  };
+}
+
+/** Null when something in an allowed scope can run; otherwise the visible
+ * hold reason with the per-pool failure of every routable row in scope. */
+function noDispatchableReason(task, catalog, now) {
+  const scopes = scopesAllowed(task);
+  const rows = catalog.candidates.filter(c => hostRoutable(c) && scopes.includes(c.scope));
+  if (rows.some(c => dispatchable(c, task, now))) return null;
+  const byPool = new Map();
+  for (const c of rows) {
+    const reasons = byPool.get(c.quota_pool) ?? new Set();
+    reasons.add(dispatchFailure(c, task, now).replace(/^candidate_/, ''));
+    byPool.set(c.quota_pool, reasons);
+  }
+  return 'no_dispatchable_candidate:' + (byPool.size === 0 ? 'no_candidate_in_scope' :
+    [...byPool.keys()].sort().map(pool => `${pool}=${[...byPool.get(pool)].sort().join('+')}`).join(','));
+}
+
+function lexicographicallyLess(a, b) {
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return a[i] < b[i];
+  return false;
+}
+function routingDecision(routeClass, candidate, reason) {
+  return {route_class: routeClass, resolved_candidate_id: candidate.id, surface: candidate.surface,
+    model: candidate.model, effort: candidate.effort, quota_pool: candidate.quota_pool, reason,
+    quota_remaining_fraction: candidate.quota_remaining_fraction};
+}
+
+/** Pick the exact row for one node. Key, lowest first:
+ * (avoided pool, chat lane for read_only, pool order, model order, effort
+ * distance to the route_class target, catalog index). Ranks come from the
+ * catalog order. Higher effort is preferred over lower when no exact match. */
+function selectRouteCandidate(node, routeClass, task, catalog, now, {avoidPool = null, avoidIDs = []} = {}) {
+  const target = EFFORT_ORDER.indexOf(ROUTE_CLASS_TARGET_EFFORT[routeClass]);
+  const poolFirst = new Map(), modelFirst = new Map();
+  catalog.candidates.forEach((c, index) => {
+    if (!poolFirst.has(c.quota_pool)) poolFirst.set(c.quota_pool, index);
+    const model = c.quota_pool + '\0' + c.model;
+    if (!modelFirst.has(model)) modelFirst.set(model, index);
+  });
+  const poolOrdinal = new Map([...poolFirst.keys()].map((pool, ordinal) => [pool, ordinal]));
+  let best = null;
+  catalog.candidates.forEach((c, index) => {
+    if (c.scope !== node.scope || avoidIDs.includes(c.id) || !hostRoutable(c) ||
+        !dispatchable(c, task, now)) return;
+    if (node.kind === 'deterministic' ? !(c.surface === 'local' && c.transport === 'local' &&
+        c.quota_pool === 'none' && c.tools.length === 0) : c.surface === 'local') return;
+    if (node.scope === 'workspace_write' && !coversOwnedPaths(c, node.owned_paths)) return;
+    const effort = EFFORT_ORDER.indexOf(c.effort);
+    const distance = Math.abs(effort - target);
+    const effortScore = effort === target ? 0 : effort > target ? 1 + distance : 100 + distance;
+    const key = [avoidPool !== null && c.quota_pool === avoidPool ? 1 : 0,
+      node.scope === 'read_only' && c.surface.endsWith('-chat') ? 0 : 1,
+      poolFirst.get(c.quota_pool), modelFirst.get(c.quota_pool + '\0' + c.model), effortScore, index];
+    if (best === null || lexicographicallyLess(key, best.key)) best = {candidate: c, key, effortScore};
+  });
+  if (best === null) throw new RCCRuntimeError('no_dispatchable_candidate:' + node.scope);
+  const [avoided, surfaceRank] = best.key;
+  const why = [surfaceRank === 0 ? 'chat_lane_read_only' : 'pool_rank_' + poolOrdinal.get(best.candidate.quota_pool),
+    best.effortScore === 0 ? 'effort_exact' : best.effortScore < 100 ? 'effort_nearest_higher' : 'effort_nearest_lower'];
+  if (avoidPool !== null) why.unshift(avoided ? 'same_pool_only' : 'other_pool');
+  return {candidate: best.candidate, why: why.join(';')};
+}
+
+const PLANNED_NODE_KEYS = ['id', 'instruction', 'dependencies', 'kind', 'route_class', 'scope',
+  'owned_paths', 'context_refs'];
+/** Assign each graded node's exact candidate_id deterministically. A node that
+ * already carries a candidate_id was bound by the trusted host adapter, not
+ * by the local planner (the plugin rejects a planner-chosen ID), and is kept.
+ * Explicit route tests are never resolved here. Pure: same input, same output. */
+export function resolveRoutePlan(plan, task, catalog, now = Date.now()) {
+  if (task.mode === 'explicit_routing_test' || !plain(plan) || !Array.isArray(plan.nodes))
+    return {plan, decisions: {}};
+  const decisions = {};
+  const nodes = plan.nodes.map(node => {
+    if (plain(node) && Object.hasOwn(node, 'route_class')) {
+      assert(keys(node, PLANNED_NODE_KEYS) && ID.test(node.id) && ROUTE_CLASSES.includes(node.route_class) &&
+        SCOPES.has(node.scope) && ['agent', 'deterministic'].includes(node.kind) &&
+        allowedPaths(node.owned_paths), 'plan_node_invalid');
+      const {route_class: routeClass, ...rest} = node;
+      const choice = selectRouteCandidate(node, routeClass, task, catalog, now);
+      decisions[node.id] = routingDecision(routeClass, choice.candidate, 'resolver;' + choice.why);
+      return {...rest, candidate_id: choice.candidate.id};
+    }
+    if (plain(node) && typeof node.candidate_id === 'string' && ID.test(node.id ?? '')) {
+      const bound = catalog.candidates.find(c => c.id === node.candidate_id);
+      // GPT is no longer routed, by the host or by a bound adapter plan.
+      assert(!bound || hostRoutable(bound), 'candidate_surface_dropped');
+      if (bound) decisions[node.id] = routingDecision(null, bound, 'adapter_bound');
+    }
+    return node;
+  });
+  return {plan: {...plan, nodes}, decisions};
+}
+
 function exactConfig(candidate) {
   return Object.fromEntries(['surface', 'transport', 'account_id', 'model', 'effort', 'tools',
     'scope', 'permission_profile', 'quota_pool', 'allowed_paths', 'configuration_sha256']
@@ -370,10 +524,7 @@ function validatePlan(plan, task, catalog) {
       assert(task.mode !== 'explicit_routing_test' && c.surface === 'local' && c.transport === 'local' &&
         c.quota_pool === 'none' && c.tools.length === 0 && node.scope === 'read_only' &&
         pureArithmetic(node.instruction) !== null, 'deterministic_node_not_exact');
-    assert(node.scope !== 'workspace_write' || (node.owned_paths.length > 0 &&
-      (c.allowed_paths.includes('**') ?
-        stable(node.owned_paths) === stable(['**']) :
-        node.owned_paths.every(path => c.allowed_paths.some(allowed => path === allowed || path.startsWith(allowed + '/'))))),
+    assert(node.scope !== 'workspace_write' || (node.owned_paths.length > 0 && coversOwnedPaths(c, node.owned_paths)),
     'plan_write_scope_invalid');
     assert(node.scope === 'workspace_write' || node.owned_paths.length === 0, 'plan_read_scope_invalid');
     if (task.host_context.require_read_only) assert(node.scope === 'read_only', 'owner_read_only_violation');
@@ -450,7 +601,9 @@ function publicSnapshot(snapshot) {
       return {id, state, attempt_id, candidate_id, selected_config,
         requested_surface: requestedSurface(snapshot, child), instruction, dependencies,
         started_at_ms, finished_at_ms, native_receipt,
-        output_summary: typeof output === 'string' ? output.slice(0, 600) : null};
+        output_summary: typeof output === 'string' ? output.slice(0, 600) : null,
+        // Why the host chose this exact row. Older snapshots have none.
+        routing_decision: child.routing_decision ? immutable(child.routing_decision) : null};
     }),
     result: snapshot.result ? immutable(snapshot.result) : null,
     install_handoff: snapshot.install_handoff ? immutable(snapshot.install_handoff) : null,
@@ -1074,18 +1227,26 @@ class RCCRuntime {
         this._holdExplicitRoutes(taskID, `explicit_route_surface_unavailable:${unavailable.surface}`);
         return;
       }
+    } else {
+      // Nothing that could run now: say why per pool, before a planner call.
+      const blocked = noDispatchableReason(task, catalog, Date.now());
+      if (blocked) { this._hold(taskID, blocked); return; }
     }
     if (typeof this.plan !== 'function') {
       if (task.mode === 'explicit_routing_test') this._holdExplicitRoutes(taskID, 'planner_unavailable');
       else this._hold(taskID, 'planner_unavailable');
       return;
     }
-    let plan;
+    let plan, decisions;
     try {
       // The injected planner adapter selects only task-relevant policy and
       // context for the local model. It receives the immutable host state,
-      // never a model-authored replacement for that state.
-      plan = validatePlan(await this.plan({task: immutable(task), catalog: immutable(catalog)}), task, catalog);
+      // never a model-authored replacement for that state. Outside explicit
+      // route tests it grades nodes; the host then binds exact rows.
+      const proposed = await this.plan({task: immutable(task), catalog: immutable(catalog)});
+      const resolved = resolveRoutePlan(proposed, task, catalog, Date.now());
+      plan = validatePlan(resolved.plan, task, catalog);
+      decisions = resolved.decisions;
     } catch (error) {
       const reason = error instanceof RCCRuntimeError ? error.code : 'planner_failed';
       if (task.mode === 'explicit_routing_test') this._holdExplicitRoutes(taskID, reason);
@@ -1107,6 +1268,7 @@ class RCCRuntime {
           ? effectiveExplicitRoutes(task).find(route =>
               route.surface === catalog.candidates.find(candidate => candidate.id === node.candidate_id).surface &&
               route.instruction === node.instruction).surface : null,
+        routing_decision: decisions[node.id] ?? null, re_resolutions: 0, avoided_candidate_ids: [],
         instruction: node.instruction,
         dependencies: node.dependencies, started_at_ms: null, finished_at_ms: null}));
     });
@@ -1147,18 +1309,67 @@ class RCCRuntime {
   _candidate(task, catalog, node) {
     const candidate = catalog.candidates.find(c => c.id === node.candidate_id);
     assert(candidate, 'candidate_missing');
-    const now = Date.now();
-    assert(candidate.availability === 'available' && candidate.availability_valid_until_ms > now,
-      'candidate_unavailable');
-    assert(candidate.quality_state !== 'mismatch', 'candidate_quality_mismatch');
-    if (candidate.quota_pool !== 'none') {
-      assert(candidate.quota_pool !== 'unknown' && candidate.quota_remaining_fraction !== null &&
-        candidate.quota_remaining_fraction > 0 && candidate.quota_valid_until_ms > now,
-      'candidate_quota_unknown_or_exhausted');
-    }
-    if (task.budget.max_cost_units !== null)
-      assert(candidate.estimated_cost_units !== null, 'candidate_cost_unknown');
+    const failure = dispatchFailure(candidate, task, Date.now());
+    if (failure !== null) throw new RCCRuntimeError(failure);
     return candidate;
+  }
+  /** A cheap, read-only look at whether this row could take a lease now. It
+   * avoids a native catalog probe while the pool or workspace is busy;
+   * _tryReserve remains the authoritative, transactional reservation. */
+  _leasePossible(candidate, task) {
+    if (this.activeWorkers >= this.maximumWorkers) return false;
+    const poolKey = this._poolKey(candidate);
+    if (poolKey && this.poolReservations.has(poolKey)) return false;
+    let workspaceKey = null;
+    if (candidate.scope === 'workspace_write') {
+      try { workspaceKey = realpathSync(task.host_context.workspace); } catch { return true; }
+      if (this.activeWriteWorkspaces.has(workspaceKey)) return false;
+    }
+    const foreign = (table, column, value) => {
+      if (!value) return false;
+      const row = this.db.prepare(`SELECT task_id FROM ${table} WHERE ${column}=?`).get(value);
+      // An effects-uncertain owner must surface as the existing hold, not wait.
+      return Boolean(row && row.task_id !== task.task_id &&
+        this._load(row.task_id)?.state !== 'effects_uncertain');
+    };
+    return !foreign('quota_leases', 'pool_key', poolKey) && !foreign('write_leases', 'workspace', workspaceKey);
+  }
+  _resolverNode(snapshot, nodeID) {
+    const child = snapshot.children.find(c => c.id === nodeID);
+    return snapshot.task.mode !== 'explicit_routing_test' &&
+      ROUTE_CLASSES.includes(child?.routing_decision?.route_class) ? child : null;
+  }
+  /** Replace one queued node's host-resolved row, against the supplied fresh
+   * catalog, same scope and route_class, preferring a different quota pool.
+   * Never used for an explicit route, an adapter-bound node, or a child that
+   * already dispatched successfully or is in a continuation. */
+  _reResolve(taskID, nodeID, fresh, failure) {
+    const snapshot = this._load(taskID);
+    const child = this._resolverNode(snapshot, nodeID);
+    const node = snapshot.plan.nodes.find(n => n.id === nodeID);
+    assert(child && node && child.state === 'queued' && child.continuation == null &&
+      child.stage == null, 're_resolution_unavailable');
+    assert((child.re_resolutions ?? 0) < MAX_RE_RESOLUTIONS, 're_resolution_exhausted');
+    const failed = fresh.candidates.find(c => c.id === node.candidate_id) ??
+      snapshot.catalog.candidates.find(c => c.id === node.candidate_id);
+    const avoidIDs = [...new Set([...(child.avoided_candidate_ids ?? []), node.candidate_id])];
+    const choice = selectRouteCandidate(node, child.routing_decision.route_class, snapshot.task, fresh,
+      Date.now(), {avoidPool: failed?.quota_pool ?? null, avoidIDs});
+    const next = {...snapshot.plan, nodes: snapshot.plan.nodes.map(n =>
+      n.id === nodeID ? {...n, candidate_id: choice.candidate.id} : n)};
+    const plan = validatePlan(next, snapshot.task, fresh);
+    const reason = /^[a-z0-9_]{1,64}$/.test(failure) ? failure : 'pre_dispatch_failure';
+    this._update(taskID, 'candidate_re_resolved', state => {
+      assert(!state.cancel_requested && !TERMINAL.has(state.state), 're_resolution_raced_cancel');
+      state.plan = plan;
+      const target = state.children.find(c => c.id === nodeID);
+      target.candidate_id = choice.candidate.id; target.repair_needed = false;
+      target.attempt_id = null; target.selected_config = null;
+      target.re_resolutions = (target.re_resolutions ?? 0) + 1;
+      target.avoided_candidate_ids = avoidIDs;
+      target.routing_decision = routingDecision(target.routing_decision.route_class, choice.candidate,
+        `re_resolved_after:${reason};${choice.why}`);
+    });
   }
   async _refreshCatalog(taskID, requiredIDs = []) {
     const prior = this._load(taskID);
@@ -1247,17 +1458,40 @@ class RCCRuntime {
       return;
     }
     const failed = snapshot.catalog.candidates.find(c => c.id === oldNode.candidate_id);
+    const resolverNode = this._resolverNode(snapshot, childID);
+    if (resolverNode && (resolverNode.re_resolutions ?? 0) >= MAX_RE_RESOLUTIONS) {
+      this._update(taskID, 'safe_re_resolution_exhausted', state => {
+        state.children.find(c => c.id === childID).state = 'failed';
+        state.state = 'failed'; state.error = 'verified_not_dispatched_re_resolution_exhausted';
+      });
+      return;
+    }
     let fresh;
     try { fresh = await this._refreshCatalog(taskID); }
     catch (error) { this._hold(taskID, error.code ?? 'catalog_refresh_failed'); return; }
+    if (resolverNode) {
+      // The planner never chose this row, so it is not asked to choose again:
+      // the host re-resolves the same node against the refreshed catalog,
+      // excluding the row that verifiably did not dispatch.
+      try {
+        const error = resolverNode.attempt_history.at(-1)?.error;
+        this._reResolve(taskID, childID, fresh,
+          typeof error === 'string' && /^[a-z0-9_]{1,64}$/.test(error) ? error : 'verified_not_dispatched');
+      } catch (error) {
+        this._hold(taskID, error instanceof RCCRuntimeError ? error.code : 'subset_re_resolution_unavailable');
+      }
+      return;
+    }
     let proposed;
     try {
+      // Validate against the refreshed catalog: an alternate row that became
+      // available only after the failure is a valid repair candidate.
       proposed = validatePlan(await this.plan({task: immutable(snapshot.task),
         catalog: immutable(fresh), repair: {
           failed_node_id: childID, failed_candidate_id: oldNode.candidate_id,
           failed_attempt_id: child.attempt_id,
           failure_receipt: child.attempt_history.at(-1)?.native_receipt ?? null,
-          allowed_change: 'candidate_id_only_same_scope_and_objective'}}), snapshot.task, snapshot.catalog);
+          allowed_change: 'candidate_id_only_same_scope_and_objective'}}), snapshot.task, fresh);
       assert(proposed.nodes.length === snapshot.plan.nodes.length, 'repair_plan_shape_changed');
       const currentByID = new Map(snapshot.plan.nodes.map(n => [n.id, n]));
       for (const next of proposed.nodes) {
@@ -1284,6 +1518,8 @@ class RCCRuntime {
       const target = state.children.find(c => c.id === childID);
       target.candidate_id = node.candidate_id; target.repair_needed = false;
       target.attempt_id = null; target.selected_config = null;
+      if (target.routing_decision) target.routing_decision = routingDecision(null,
+        fresh.candidates.find(c => c.id === node.candidate_id), 'adapter_bound');
     });
   }
 
@@ -1297,6 +1533,9 @@ class RCCRuntime {
 
   async _scheduleDAG(taskID) {
     const active = new Map();
+    // Waiting for a busy pool/workspace backs off instead of probing natively.
+    let idleDelay = 50;
+    const refreshFailures = new Map();
     while (!this.closed) {
       const snapshot = this._load(taskID);
       if (!snapshot || TERMINAL.has(snapshot.state)) return;
@@ -1350,6 +1589,7 @@ class RCCRuntime {
         const child = snapshot.children.find(c => c.id === node.id);
         return child?.state === 'queued' && node.dependencies.every(finished.has.bind(finished));
       });
+      let reResolved = false;
       for (const node of ready) {
         if (active.size >= cap || snapshot.cancel_requested) break;
         if (node.kind === 'deterministic') {
@@ -1364,14 +1604,39 @@ class RCCRuntime {
           });
           continue;
         }
-        let candidate;
+        const planned = snapshot.catalog.candidates.find(c => c.id === node.candidate_id);
+        if (planned && !this._leasePossible(planned, snapshot.task)) continue;
+        const resolverNode = this._resolverNode(snapshot, node.id);
+        let candidate, fresh;
         try {
-          const fresh = await this._refreshCatalog(taskID, [node.candidate_id]);
+          // A host-resolved row may be replaced if it vanished, so its absence
+          // is checked by _candidate instead of failing the refresh itself.
+          fresh = await this._refreshCatalog(taskID, resolverNode ? [] : [node.candidate_id]);
           candidate = this._candidate(snapshot.task, fresh, node);
+          refreshFailures.delete(node.id);
         }
         catch (error) {
+          const code = error?.code ?? 'candidate_unavailable';
+          const failures = (refreshFailures.get(node.id) ?? 0) + 1;
+          if (fresh === undefined && code === 'catalog_refresh_failed' &&
+              failures < MAX_TRANSIENT_REFRESH_FAILURES && !this._load(taskID).cancel_requested) {
+            // A failed native probe is retried for a node that has not
+            // dispatched; a changed or invalid catalog still holds.
+            refreshFailures.set(node.id, failures);
+            continue;
+          }
+          if (fresh !== undefined && resolverNode && RE_RESOLVABLE_FAILURES.has(code) &&
+              (resolverNode.re_resolutions ?? 0) < MAX_RE_RESOLUTIONS) {
+            try { this._reResolve(taskID, node.id, fresh, code); reResolved = true; break; }
+            catch (resolution) {
+              if (active.size) await this._waitForActiveOrTerminal(active, taskID);
+              if (!TERMINAL.has(this._load(taskID).state))
+                this._hold(taskID, resolution.code ?? 're_resolution_unavailable');
+              return;
+            }
+          }
           if (active.size) await this._waitForActiveOrTerminal(active, taskID);
-          if (!TERMINAL.has(this._load(taskID).state)) this._hold(taskID, error.code ?? 'candidate_unavailable');
+          if (!TERMINAL.has(this._load(taskID).state)) this._hold(taskID, code);
           return;
         }
         let reservation;
@@ -1395,12 +1660,18 @@ class RCCRuntime {
             });
           }).finally(() => { this._release(reservation); active.delete(node.id); });
         active.set(node.id, work);
+        idleDelay = 50;
       }
+      if (reResolved) { idleDelay = 50; continue; }
       if (active.size) {
         await Promise.race([...active.values(), new Promise(resolve => setTimeout(resolve, 100))]);
         continue;
       }
-      if (ready.length) { await new Promise(resolve => setTimeout(resolve, 50)); continue; }
+      if (ready.length) {
+        await new Promise(resolve => setTimeout(resolve, idleDelay));
+        idleDelay = Math.min(1_000, idleDelay * 2);
+        continue;
+      }
       this._hold(taskID, 'dag_no_ready_node'); return;
     }
   }
@@ -1755,6 +2026,10 @@ class RCCRuntime {
             child.state = 'queued'; child.dispatched_at_ms = null; child.repair_needed = true;
             child.attempt_history.at(-1).state = 'verified_not_dispatched';
             child.attempt_history.at(-1).native_receipt = result.native_receipt;
+            // A typed pre-execution reason (for example a provider quota
+            // rejection) names the host re-resolution; free text never does.
+            child.attempt_history.at(-1).error =
+              typeof result.error === 'string' && /^[a-z0-9_]{1,64}$/.test(result.error) ? result.error : null;
             child.usage = result.usage ?? null;
             child.attempt_history.at(-1).usage = result.usage ?? null;
           });
