@@ -239,6 +239,12 @@ enum ModelAvailability {
             excludingModelLimited(["fable", "opus", "sonnet", "claude-fable-5-1[1m]"].map {
                 ClaudeModelCapability(model: $0, supportedEfforts: ["low"]) }, limited: ["fable"]).map(\.model) == ["opus", "sonnet"],
             excludingModelLimited([ClaudeModelCapability(model: "opus", supportedEfforts: ["xhigh"])], limited: []).count == 1,
+            // RCC catalog preference follows Claude's own inventory order,
+            // not the alphabetical configured order; unknown rows keep theirs.
+            inventoryOrdered(["fable", "opus", "sonnet", "zeta"].map { ClaudeModelCapability(model: $0, supportedEfforts: ["low"]) },
+                native: ["opus", "sonnet", "fable"]).map(\.model) == ["opus", "sonnet", "fable", "zeta"],
+            inventoryOrdered([ClaudeModelCapability(model: "b", supportedEfforts: []), ClaudeModelCapability(model: "a", supportedEfforts: [])],
+                native: []).map(\.model) == ["b", "a"],
         ] + inventoryCacheChecks(claudeRows([sonnet])) + [
             deferAlternateInventory(preference: "codex", codexReady: true, workflow: false),
             !deferAlternateInventory(preference: "auto", codexReady: true, workflow: false),
@@ -468,6 +474,21 @@ enum ModelAvailability {
             return efforts.isEmpty ? nil : ClaudeModelCapability(model: model, supportedEfforts: efforts)
         }
         return (configured, excludingModelLimited(configured, limited: Set(ClaudeQuotaBackoff.activeModels())))
+    }
+
+    /// Configured capabilities in the native inventory's own order (the order
+    /// Claude itself lists its models), not the alphabetical configured order.
+    /// Uses this run's fresh inventory probe; without one the order is kept.
+    static func inventoryOrdered(_ capabilities: [ClaudeModelCapability], workspace: String) -> [ClaudeModelCapability] {
+        guard let native = ClaudeInventoryCache.shared.models(workspace: workspace, maxAge: 600) else { return capabilities }
+        return inventoryOrdered(capabilities, native: native.map(\.model))
+    }
+    static func inventoryOrdered(_ capabilities: [ClaudeModelCapability], native: [String]) -> [ClaudeModelCapability] {
+        let rank = Dictionary(native.enumerated().map { ($0.element, $0.offset) }, uniquingKeysWith: { first, _ in first })
+        return capabilities.enumerated().sorted { a, b in
+            let x = rank[a.element.model] ?? Int.max, y = rank[b.element.model] ?? Int.max
+            return x != y ? x < y : a.offset < b.offset
+        }.map(\.element)
     }
 
     /// A model-scoped limit removes only that family; the rest stays routable.

@@ -86,6 +86,16 @@ public enum RCCRuntimeContract {
         public var instruction: String
         public init(surface: Surface, instruction: String) { self.surface = surface; self.instruction = instruction }
     }
+    /// The owner's capacity mix per subscription pool, 0...100 each. It is a
+    /// routing input, never quota evidence: 0 removes the pool unless the
+    /// owner explicitly named that provider's surface. Absent means 100/100,
+    /// and an absent key keeps older host fingerprints byte-identical.
+    public struct CapacityPlan: Codable, Equatable, Sendable {
+        public var codex: Int
+        public var claude: Int
+        public init(codex: Int, claude: Int) { self.codex = codex; self.claude = claude }
+        public var isValid: Bool { (0...100).contains(codex) && (0...100).contains(claude) && codex + claude > 0 }
+    }
     public struct HostContext: Codable, Equatable, Sendable {
         public var workspace: String
         public var context: String?
@@ -97,20 +107,24 @@ public enum RCCRuntimeContract {
         public var explicitRoutes: [ExplicitRoute]?
         public var conversationID: String?
         public var submissionID: String?
+        public var capacityPlan: CapacityPlan?
         public init(workspace: String, context: String?, providerPreference: String, codexSessionID: String?,
                     claudeSessionID: String?, requireReadOnly: Bool, ownerPolicy: OwnerPolicySnapshot?,
-                    explicitRoutes: [ExplicitRoute]? = nil, conversationID: String? = nil, submissionID: String? = nil) {
+                    explicitRoutes: [ExplicitRoute]? = nil, conversationID: String? = nil, submissionID: String? = nil,
+                    capacityPlan: CapacityPlan? = nil) {
             self.workspace = workspace; self.context = context; self.providerPreference = providerPreference
             self.codexSessionID = codexSessionID; self.claudeSessionID = claudeSessionID
             self.requireReadOnly = requireReadOnly; self.ownerPolicy = ownerPolicy
             self.explicitRoutes = explicitRoutes
             self.conversationID = conversationID; self.submissionID = submissionID
+            self.capacityPlan = capacityPlan
         }
         enum CodingKeys: String, CodingKey {
             case workspace, context, providerPreference = "provider_preference", codexSessionID = "codex_session_id"
             case claudeSessionID = "claude_session_id", requireReadOnly = "require_read_only", ownerPolicy = "owner_policy"
             case explicitRoutes = "explicit_routes"
             case conversationID = "conversation_id", submissionID = "submission_id"
+            case capacityPlan = "capacity_plan"
         }
     }
     public struct Request: Codable, Equatable, Sendable {
@@ -223,15 +237,34 @@ public enum RCCRuntimeContract {
             case availabilityObservedAtMS = "availability_observed_at_ms", availabilityValidUntilMS = "availability_valid_until_ms"
         }
     }
+    /// Why configured profiles produced no candidate, counted per provider.
+    /// Evidence for an explicit hold, never a routing proposal or quota claim.
+    public struct Exclusion: Codable, Equatable, Sendable {
+        public static let reasons: Set<String> = ["signed_out", "non_subscription", "model_unavailable", "quota_zero",
+            "capacity_zero", "codex_hidden", "effort_requires_explicit_request", "explicit_constraint_unavailable",
+            "chat_gate_refused", "gpt_dropped"]
+        public static let providers: Set<String> = ["codex", "claude"]
+        public var provider: String
+        public var reason: String
+        public var count: Int
+        public init(provider: String, reason: String, count: Int) {
+            self.provider = provider; self.reason = reason; self.count = count
+        }
+    }
     public struct Catalog: Codable, Equatable, Sendable {
         public var schema: Int
         public var taskID: String
         public var requestSHA256: String
         public var candidates: [Candidate]
-        public init(schema: Int = 1, taskID: String, requestSHA256: String, candidates: [Candidate]) {
+        /// Optional: absent in older catalogs. Required (non-empty) when no
+        /// candidate is routable, so an empty catalog is never opaque.
+        public var exclusions: [Exclusion]?
+        public init(schema: Int = 1, taskID: String, requestSHA256: String, candidates: [Candidate],
+                    exclusions: [Exclusion]? = nil) {
             self.schema = schema; self.taskID = taskID; self.requestSHA256 = requestSHA256; self.candidates = candidates
+            self.exclusions = exclusions
         }
-        enum CodingKeys: String, CodingKey { case schema, candidates, taskID = "task_id", requestSHA256 = "request_sha256" }
+        enum CodingKeys: String, CodingKey { case schema, candidates, exclusions, taskID = "task_id", requestSHA256 = "request_sha256" }
     }
     public struct PlanNode: Codable, Equatable, Sendable {
         public var id: String
@@ -650,6 +683,7 @@ public enum RCCRuntimeContract {
               value.codexSessionID.map(id) ?? true, value.claudeSessionID.map(id) ?? true,
               value.conversationID.map({ UUID(uuidString: $0) != nil }) ?? true,
               value.submissionID.map({ UUID(uuidString: $0) != nil }) ?? true else { throw Rejection.invalidInput }
+        if let plan = value.capacityPlan { guard plan.isValid else { throw Rejection.invalidInput } }
         if let routes = value.explicitRoutes {
             guard routes.count <= 8, routes.allSatisfy({ text($0.instruction, max: 12_000) }),
                   Set(routes.map { $0.surface.rawValue + "\0" + $0.instruction }).count == routes.count else { throw Rejection.invalidInput }
@@ -693,6 +727,14 @@ public enum RCCRuntimeContract {
         guard id(value.taskID), isHash(value.requestSHA256), value.candidates.count <= 256,
               Set(value.candidates.map(\.id)).count == value.candidates.count else { throw Rejection.invalidIdentity }
         if let request { guard value.taskID == request.taskID && value.requestSHA256 == request.requestSHA256 else { throw Rejection.invalidIdentity } }
+        if let exclusions = value.exclusions {
+            guard !exclusions.isEmpty, exclusions.count <= 32,
+                  Set(exclusions.map { $0.provider + "\0" + $0.reason }).count == exclusions.count,
+                  exclusions.allSatisfy({ Exclusion.providers.contains($0.provider) && Exclusion.reasons.contains($0.reason) &&
+                      (1...10_000).contains($0.count) }) else { throw Rejection.invalidObservation }
+        }
+        // An empty catalog must say why; otherwise it is a malformed binding.
+        guard !value.candidates.isEmpty || value.exclusions != nil else { throw Rejection.invalidIdentity }
         for candidate in value.candidates { try validate(candidate) }
     }
     public static func validate(_ value: Plan, catalog: Catalog? = nil) throws {
@@ -944,9 +986,11 @@ public enum RCCRuntimeContract {
     private static let policyShape = Shape.object(["source_sha256", "projection_sha256", "text"])
     private static let ownerPolicyShape = Shape.object(["schema", "sourceSHA256", "sourceFile", "projectionSHA256", "projection", "sourceID", "sourceModified", "checkedAt", "routing"])
     private static let explicitRouteShape = Shape.object(["surface", "instruction"])
-    private static let hostShape = Shape.object(["workspace", "context", "provider_preference", "codex_session_id", "claude_session_id", "require_read_only", "owner_policy", "explicit_routes", "conversation_id", "submission_id"], ["owner_policy": ownerPolicyShape, "explicit_routes": .array(explicitRouteShape)])
+    private static let capacityPlanShape = Shape.object(["codex", "claude"])
+    private static let hostShape = Shape.object(["workspace", "context", "provider_preference", "codex_session_id", "claude_session_id", "require_read_only", "owner_policy", "explicit_routes", "conversation_id", "submission_id", "capacity_plan"], ["owner_policy": ownerPolicyShape, "explicit_routes": .array(explicitRouteShape), "capacity_plan": capacityPlanShape])
     private static let requestShape = Shape.object(["schema", "task_id", "request", "request_sha256", "objective", "policy_sha256", "source_fingerprint", "mode", "material_refs", "budget", "context", "workspace", "native_sessions", "provider_preference", "policy", "host_context"], ["budget": budgetShape, "policy": policyShape, "host_context": hostShape])
-    private static let catalogShape = Shape.object(["schema", "task_id", "request_sha256", "candidates"], ["candidates": .array(candidateShape)])
+    private static let exclusionShape = Shape.object(["provider", "reason", "count"])
+    private static let catalogShape = Shape.object(["schema", "task_id", "request_sha256", "candidates", "exclusions"], ["candidates": .array(candidateShape), "exclusions": .array(exclusionShape)])
     private static let nodeShape = Shape.object(["id", "instruction", "dependencies", "kind", "candidate_id", "scope", "owned_paths", "context_refs"])
     private static let planShape = Shape.object(["schema", "task_id", "request_sha256", "nodes"], ["nodes": .array(nodeShape)])
     private static let handbackShape = Shape.object(["kind", "native_session_id", "protected_root", "source_head", "protected_source_sha256", "source_fingerprint", "request_sha256", "parent_attempt_id", "exit_code", "cancelled", "adoption"])

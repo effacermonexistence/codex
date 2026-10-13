@@ -221,3 +221,16 @@ test('pinned OpenClaw 2026.9.9 contract exposes direct responseFormat and Ollama
   assert.ok(stream.includes('function resolveOllamaResponseFormat('));
   assert.ok(stream.includes('format: responseFormat'));
 });
+
+test('planner schema and input carry only routes that still run; a GPT route is dropped, not aliased', () => {
+  const explicit = task(); explicit.mode = 'explicit_routing_test';
+  explicit.host_context.explicit_routes = [{surface: 'chatgpt', instruction: '1+1'},
+    {surface: 'codex', instruction: '2+2'}, {surface: 'gpt-chat', instruction: '3+3'}];
+  const original = catalog(2);
+  const schema = buildRoutePlanSchema(explicit, original);
+  assert.equal(schema.properties.nodes.minItems, 1);
+  assert.equal(schema.properties.nodes.maxItems, 1);
+  const input = buildBoundedPlannerInput({task: explicit, catalog: original, feedback: {}, policyText: 'p'});
+  const payload = JSON.parse(input.message.slice('OS1_RCC_PLAN\n'.length));
+  assert.deepEqual(payload.explicit_routes, [{surface: 'codex', instruction: '2+2'}]);
+});

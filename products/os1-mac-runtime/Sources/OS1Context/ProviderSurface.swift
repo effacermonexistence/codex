@@ -103,9 +103,12 @@ public enum ProviderSurface: String, Codable, Sendable, CaseIterable {
 
         /// Surfaces this tile may route to, executing one first. The order is
         /// the menu order, so the default is never buried under an alternative.
+        /// GPT is no longer routed (owner, 2026-10-13): the OpenAI tile offers
+        /// Codex only, and a persisted `gpt-chat`/`chatgpt` choice resolves to
+        /// Codex. The enum cases stay so old receipts and records decode.
         public var surfaces: [ProviderSurface] {
             switch self {
-            case .openAI: return [.codex, .gptChat, .chatgpt]
+            case .openAI: return [.codex]
             case .anthropic: return [.claude, .claudeChat]
             }
         }
@@ -258,6 +261,24 @@ public enum ProviderSurface: String, Codable, Sendable, CaseIterable {
                                        "Usage: the same Anthropic subscription limit as Claude Code.")
         }
     }
+}
+
+/// One spelling table for provider names, shared by the fan-out parser
+/// (`RouteFanout`) and the app's directed-provider detection, so a name such
+/// as "클로드" cannot mean one provider in one place and another elsewhere.
+/// Voice-dictation spellings are included. "클라우드" is also the ordinary word
+/// for "cloud", so a detector that can change the paying account may use the
+/// stricter `claudeKoreanSpellings` instead of the dictation alias.
+public enum ProviderNameAliases {
+    public static let gptChat = #"gpt-chat|codex[\s\-]+chat|코덱스\s*채팅"#
+    public static let claudeKoreanSpellings = #"클로[드더즈]"#
+    public static let claudeDictation = #"클라우드(?!플레어)"#
+    public static let claudeCode = #"claude[\s\-]?code|(?:클로[드더즈]|클라우드)[\s]?코드"#
+    public static let chatGPT = #"chat[\s\-]?gpt|챗[\s]?gpt|챗[\s]?지피티|채팅[\s]?gpt|채찌"#
+    public static let gpt = #"gpt|지피티|쥐피티"#
+    public static let codexKorean = #"코[덱댁][스세]|코덱센트|코덱선트"#
+    public static let codex = "codex|" + codexKorean
+    public static let claude = "claude|" + claudeKoreanSpellings + "|" + claudeDictation
 }
 
 public enum ProviderSurfaceError: Error, CustomStringConvertible {
@@ -420,7 +441,7 @@ public enum ChatGPTHandoff {
         checks.append(!String(decoding: encoded, as: UTF8.self).contains("requestText"))
         // Every rail tile offers exactly its own two surfaces, executing one
         // first, and no surface belongs to two tiles.
-        checks.append(ProviderSurface.Backend.openAI.surfaces == [.codex, .gptChat, .chatgpt])
+        checks.append(ProviderSurface.Backend.openAI.surfaces == [.codex])
         checks.append(ProviderSurface.Backend.anthropic.surfaces == [.claude, .claudeChat])
         checks.append(ProviderSurface.Backend.allCases.allSatisfy { $0.surfaces.first == $0.defaultSurface })
         checks.append(ProviderSurface.Backend.allCases.allSatisfy { tile in
@@ -428,15 +449,20 @@ public enum ChatGPTHandoff {
         checks.append(ProviderSurface.Backend.allCases.allSatisfy { $0.defaultSurface.isExecutor })
         checks.append(ProviderSurface.auto.backend == nil)
         checks.append(Set(ProviderSurface.Backend.openAI.surfaces).isDisjoint(with: Set(ProviderSurface.Backend.anthropic.surfaces)))
-        checks.append(ProviderSurface.Backend.allCases.flatMap(\.surfaces).count + 1 == ProviderSurface.allCases.count)
+        // Every executor is still reachable from a tile except the two GPT
+        // surfaces, which remain decodable but are no longer routed.
+        checks.append(Set(ProviderSurface.Backend.allCases.flatMap(\.surfaces)) ==
+                      Set(ProviderSurface.allCases).subtracting([.auto, .gptChat, .chatgpt]))
+        checks.append(ProviderSurface.gptChat.backend == .openAI && ProviderSurface.chatgpt.backend == .openAI)
         // A tile's raw value is the backend the gateway already accepts, so the
         // rail identity and the route preference cannot drift apart.
         checks.append(ProviderSurface.Backend.openAI.rawValue == ProviderSurface.codex.gatewayPreference)
         checks.append(ProviderSurface.Backend.anthropic.rawValue == ProviderSurface.claude.gatewayPreference)
         // A stored or hand-edited value that does not belong to the tile falls
         // back to that tile's executor; it never crosses to the other account.
-        checks.append(ProviderSurface.Backend.openAI.resolve("chatgpt") == .chatgpt)
-        checks.append(ProviderSurface.Backend.openAI.resolve("gpt-chat") == .gptChat)
+        // A stored GPT choice from before the drop runs on Codex.
+        checks.append(ProviderSurface.Backend.openAI.resolve("chatgpt") == .codex)
+        checks.append(ProviderSurface.Backend.openAI.resolve("gpt-chat") == .codex)
         checks.append(ProviderSurface.Backend.anthropic.resolve("gpt-chat") == .claude)
         checks.append(ProviderSurface.Backend.openAI.resolve("claude-chat") == .codex)
         checks.append(ProviderSurface.Backend.openAI.resolve(nil) == .codex)

@@ -11,8 +11,9 @@ async function fixture(t) {
   await chmod(stateDir, 0o700);
   await mkdir(join(stateDir, 'native-receipts'), {mode: 0o700});
   t.after(async () => { await rm(stateDir, {recursive: true, force: true}); });
+  // GPT is no longer an explicit route (2026-10-13): four native routes.
   const routes = [
-    {surface: 'chatgpt', instruction: '1+1'},
+    {surface: 'codex', instruction: '1+1'},
     {surface: 'codex', instruction: '2+2'},
     {surface: 'claude-chat', instruction: '3+3'},
     {surface: 'claude', instruction: '4+4'}];
@@ -76,7 +77,7 @@ test('missing, substituted, altered or symlinked native evidence never verifies'
   x.children[0].output = '2';
   x.children[0].selected_config = {...x.children[0].selected_config, surface: 'gpt-chat'};
   assert.equal((await verifyExactExplicitArithmetic(x, {stateDir: x.stateDir})).task_verified, false);
-  x.children[0].selected_config = {...x.children[0].selected_config, surface: 'chatgpt'};
+  x.children[0].selected_config = {...x.children[0].selected_config, surface: 'codex'};
   const path = x.children[0].native_receipt;
   const altered = JSON.parse(await readFile(path, 'utf8'));
   altered.output = 'wrong';
@@ -93,4 +94,13 @@ test('missing, substituted, altered or symlinked native evidence never verifies'
 test('plan cannot nominate one of four answers as the parent proof', async t => {
   const x = await fixture(t); x.plan.final_node_id = x.plan.nodes[0].id;
   assert.equal((await verifyExactExplicitArithmetic(x, {stateDir: x.stateDir})).task_verified, false);
+});
+
+test('a GPT route in the host contract is dropped, not required, by the exact verifier', async t => {
+  const x = await fixture(t);
+  x.task.host_context.explicit_routes = [{surface: 'chatgpt', instruction: '0+0'},
+    ...x.task.host_context.explicit_routes];
+  const verdict = await verifyExactExplicitArithmetic(x, {stateDir: x.stateDir});
+  assert.equal(verdict.task_verified, true);
+  assert.equal(verdict.reason, 'exact_explicit_route_arithmetic_receipts');
 });

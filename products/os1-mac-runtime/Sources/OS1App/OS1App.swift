@@ -54,15 +54,21 @@ private func explicitlyRequestedProvider(in request: String) -> ProviderChoice? 
     // Voice dictation frequently turns 코덱스 into 코덱세/코덱센트/코덱선트.
     // This recognizes only directed backend requests; merely discussing a
     // provider keeps the private RCC auto route in control.
+    // Names come from the one shared spelling table (`ProviderNameAliases`),
+    // the same one the fan-out parser uses. The Claude dictation alias
+    // "클라우드" is left out here: it is also the ordinary word for "cloud", and
+    // this detector changes which account pays.
+    let codexName = "(?:" + ProviderNameAliases.codexKorean + ")"
+    let claudeName = "(?:" + ProviderNameAliases.claudeKoreanSpellings + ")"
     let codexPatterns = [
-        #"코덱(?:스|세|센트|선트)?\s*(?:(?:한테|에게|로|으로)(?:\s|\S){0,24}(?:시켜|시키|맡겨|보내|돌려|실행|해|하게|말|부탁)|(?:가|이)?\s*(?:뭐\s*)?(?:시켜|시키|맡겨|보내|돌려|실행|해|하게|말|부탁))"#,
-        #"(?:시켜|시키|맡겨|보내|돌려|실행|부탁)(?:\s|\S){0,18}코덱(?:스|세|센트|선트)?"#,
+        codexName + #"\s*(?:(?:한테|에게|로|으로)(?:\s|\S){0,24}(?:시켜|시키|맡겨|보내|돌려|실행|해|하게|말|부탁)|(?:가|이)?\s*(?:뭐\s*)?(?:시켜|시키|맡겨|보내|돌려|실행|해|하게|말|부탁))"#,
+        #"(?:시켜|시키|맡겨|보내|돌려|실행|부탁)(?:\s|\S){0,18}"# + codexName,
         #"(?:use|ask|route|send|run|delegate)(?:\s+\w+){0,3}\s+codex\b"#,
         #"\bcodex\b(?:\s+\w+){0,3}\s+(?:do|run|handle|execute)\b"#,
     ]
     let claudePatterns = [
-        #"클(?:로드|로더)\s*(?:코드)?\s*(?:(?:한테|에게|로|으로)(?:\s|\S){0,24}(?:시켜|시키|맡겨|보내|돌려|실행|해|하게|말|부탁)|(?:가|이)?\s*(?:뭐\s*)?(?:시켜|시키|맡겨|보내|돌려|실행|해|하게|말|부탁))"#,
-        #"(?:시켜|시키|맡겨|보내|돌려|실행|부탁)(?:\s|\S){0,18}클(?:로드|로더)(?:\s*코드)?"#,
+        claudeName + #"\s*(?:코드)?\s*(?:(?:한테|에게|로|으로)(?:\s|\S){0,24}(?:시켜|시키|맡겨|보내|돌려|실행|해|하게|말|부탁)|(?:가|이)?\s*(?:뭐\s*)?(?:시켜|시키|맡겨|보내|돌려|실행|해|하게|말|부탁))"#,
+        #"(?:시켜|시키|맡겨|보내|돌려|실행|부탁)(?:\s|\S){0,18}"# + claudeName + #"(?:\s*코드)?"#,
         #"(?:use|ask|route|send|run|delegate)(?:\s+\w+){0,3}\s+claude(?:\s+code)?\b"#,
         #"\bclaude(?:\s+code)?\b(?:\s+\w+){0,3}\s+(?:do|run|handle|execute)\b"#,
     ]
@@ -6176,11 +6182,12 @@ private struct PendingSubmission: Identifiable, Codable, Equatable, Sendable {
 
     /// The `--provider` value this submission actually dispatches with. Falls
     /// back to the tile itself, which is the executing surface.
+    /// The tile's own resolution: a foreign, unknown or dropped (GPT) stored
+    /// surface falls back to the tile's executor, never another account.
     var runtimeSurface: String {
         if surfaceRaw == ProviderSurface.auto.rawValue { return ProviderSurface.auto.rawValue }
-        guard let surfaceRaw, let surface = ProviderSurface(rawValue: surfaceRaw),
-              surface.backend?.rawValue == provider.rawValue else { return provider.rawValue }
-        return surface.rawValue
+        guard let backend = ProviderSurface.Backend(rawValue: provider.rawValue) else { return provider.rawValue }
+        return backend.resolve(surfaceRaw).rawValue
     }
     var correctionIDs: [UUID]? = nil
     var liveCorrections: [String]? = nil
@@ -7951,6 +7958,8 @@ private struct AppRunSummary: Decodable, Sendable {
     @AgentTaskSnapshotField var agentTask: ParallelAgentTask.Snapshot? = nil
     var rccRuntime: RCCRuntimeContract.Snapshot? = nil
     var rccTransportFailure: String? = nil
+    /// Routing adjustments the CLI made before Core (e.g. a dropped GPT route).
+    var routingNotices: [String]? = nil
 }
 
 private struct NativeIngestionOutcome: Sendable {
@@ -11100,6 +11109,11 @@ private final class SessionStore: ObservableObject {
                     statusText = os1Tr("ChatGPT 응답 수신", "ChatGPT reply received")
                     save()
                     return
+                }
+                // A dropped GPT route (or a GPT tile choice now run on Codex) is
+                // stated in the transcript, never silently omitted.
+                for notice in summary.routingNotices ?? [] {
+                    sessions[target].messages.append(ChatMessage(role: .system, text: notice))
                 }
                 if summary.rccTransportFailure != nil {
                     let note = summary.workflowBlocker ?? "OpenClaw connection unavailable · request preserved"
@@ -16908,9 +16922,16 @@ private func railSelectionSelfTest() throws {
         && store.routedSurface(for: .claude)?.railBadge == nil,
         "an unchanged tile carries no badge, so the rail looks exactly as it did")
 
+    // GPT is no longer routed (owner, 2026-10-13): the OpenAI tile offers
+    // Codex only, so a GPT choice is refused and nothing is persisted.
+    try check(openAI.surfaces == [.codex], "the OpenAI tile menu offers Codex only")
     store.chooseSurface(.chatgpt, for: openAI)
-    try check(store.appSettings.surface(for: openAI) == .chatgpt, "the ChatGPT choice persists in settings")
-    try check(store.routedSurface(for: .codex)?.railBadge != nil, "a changed tile says so on the rail")
+    try check(store.appSettings.surface(for: openAI) == .codex && store.appSettings.openAISurface == nil,
+        "a ChatGPT choice is refused, not persisted")
+    store.chooseSurface(.gptChat, for: openAI)
+    try check(store.appSettings.surface(for: openAI) == .codex && store.appSettings.openAISurface == nil,
+        "a GPT chat choice is refused, not persisted")
+    try check(store.routedSurface(for: .codex)?.railBadge == nil, "a refused GPT choice leaves the tile unbadged")
     // Pinning matters: on `auto` the router could send the turn to the other
     // account and the chosen surface would never fire. So the choice pins the
     // conversation to that tile. It does not change which pane is on screen.
@@ -16925,7 +16946,11 @@ private func railSelectionSelfTest() throws {
     var handoff = PendingSubmission(sessionID: store.sessions[index].id, userMessageID: UUID(),
         request: "x", provider: .codex, workspace: "/tmp", codexCapacity: 1, claudeCapacity: 1)
     handoff.surfaceRaw = store.appSettings.surface(for: openAI).rawValue
-    try check(handoff.runtimeSurface == "chatgpt", "a ChatGPT tile dispatches --provider chatgpt")
+    try check(handoff.runtimeSurface == "codex", "the OpenAI tile dispatches --provider codex")
+    handoff.surfaceRaw = "chatgpt"
+    try check(handoff.runtimeSurface == "codex", "an older queued ChatGPT submission now runs on Codex")
+    handoff.surfaceRaw = "gpt-chat"
+    try check(handoff.runtimeSurface == "codex", "an older queued GPT chat submission now runs on Codex")
     handoff.surfaceRaw = "claude-chat"
     try check(handoff.runtimeSurface == "codex",
         "a surface belonging to the other tile never routes this tile's account")

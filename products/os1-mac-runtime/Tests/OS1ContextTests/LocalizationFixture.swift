@@ -54,8 +54,11 @@ func runLocalizationFixtures() throws {
     chosen.setSurface(.claudeChat, for: .anthropic)
     try chosen.save(to: url)
     let reloaded = OS1Settings.load(from: url)
-    check(reloaded.surface(for: .openAI) == .chatgpt && reloaded.surface(for: .anthropic) == .claudeChat,
-          "both chosen surfaces survive a restart")
+    // GPT is no longer routed (2026-10-13): the OpenAI tile refuses a GPT
+    // choice and stays on Codex, while the Anthropic choice survives.
+    check(reloaded.surface(for: .openAI) == .codex && reloaded.openAISurface == nil
+          && reloaded.surface(for: .anthropic) == .claudeChat,
+          "a GPT choice is refused; the chosen Anthropic surface survives a restart")
     // Returning to the executor clears the stored override rather than pinning it.
     var cleared = reloaded
     cleared.setSurface(.codex, for: .openAI)
@@ -75,7 +78,10 @@ func runLocalizationFixtures() throws {
     check(normalized.openAISurface == nil && normalized.anthropicSurface == nil,
           "the foreign value is not carried forward in the stored file")
     try Data(#"{"interfaceLanguage":"en","outputLanguage":"auto","showCodex":true,"openAISurface":"chatgpt"}"#.utf8).write(to: url)
-    check(OS1Settings.load(from: url).surface(for: .openAI) == .chatgpt,
+    check(OS1Settings.load(from: url).surface(for: .openAI) == .codex,
+          "a persisted GPT choice from before the drop resolves to Codex")
+    try Data(#"{"interfaceLanguage":"en","outputLanguage":"auto","showCodex":true,"anthropicSurface":"claude-chat"}"#.utf8).write(to: url)
+    check(OS1Settings.load(from: url).surface(for: .anthropic) == .claudeChat,
           "a valid hand-edited surface is honoured")
 
     // Codex's language list: en-US plus its 64 locale bundles, one row each,

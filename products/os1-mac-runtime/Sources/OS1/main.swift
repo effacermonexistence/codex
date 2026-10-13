@@ -886,6 +886,9 @@ private struct NativeSurfaceAuth: Codable, Sendable {
     let billing: LocalSurfaceRouting.BillingMode
     let observedAt: Date
     let source: String
+    /// The native account reported its own sign-in state (Claude `loggedIn`,
+    /// Codex `account`). nil when the status did not say.
+    var signedIn: Bool? = nil
 }
 
 private func nativeSurfaceAuthMode(provider: String, status: [String: Any],
@@ -934,6 +937,7 @@ private func observeNativeSurfaceAuth(provider: String, workspace: String, book:
     let overrides = BackendAccounts.environment(provider: provider, in: book)
     let effective = ProcessInfo.processInfo.environment.merging(overrides) { _, new in new }
     let mode: (LocalSurfaceRouting.AuthenticationMode, LocalSurfaceRouting.BillingMode)
+    let signedIn: Bool?
     if provider == "codex" {
         guard let executable = try? findExecutable("codex"),
               let client = try? CodexAppServerClient(executable: executable, workspace: workspace) else { return nil }
@@ -942,18 +946,21 @@ private func observeNativeSurfaceAuth(provider: String, workspace: String, book:
         guard (try? client.initialize(deadline: deadline)) != nil,
               let facts = try? client.surfaceAuthenticationMetadata(deadline: deadline) else { return nil }
         mode = nativeSurfaceAuthMode(provider: provider, status: facts.account, configuration: facts.configuration, environment: effective)
+        signedIn = facts.account.keys.contains("account") ? facts.account["account"] is [String: Any] : nil
     } else {
         guard let executable = try? findExecutable("claude"),
               let response = try? commandOutput(executable, ["auth", "status", "--json"], timeout: 12, environmentOverrides: overrides),
               response.0 == 0, response.1.count <= 64_000,
               let status = try? JSONSerialization.jsonObject(with: response.1) as? [String: Any] else { return nil }
         mode = nativeSurfaceAuthMode(provider: provider, status: status, configuration: nil, environment: effective)
+        signedIn = status["loggedIn"] as? Bool
     }
     let after = BackendAccounts.load()
     guard BackendAccounts.active(provider: provider, in: after).id == account.id,
           BackendAccounts.environment(provider: provider, in: after) == overrides else { return nil }
     return NativeSurfaceAuth(provider: provider, accountID: account.id, mode: mode.0, billing: mode.1,
-        observedAt: Date(), source: provider == "codex" ? "native_account_read_and_effective_config" : "native_claude_auth_status")
+        observedAt: Date(), source: provider == "codex" ? "native_account_read_and_effective_config" : "native_claude_auth_status",
+        signedIn: signedIn)
 }
 
 private struct NativeSurfaceSelection {
@@ -1301,6 +1308,9 @@ struct RunSummary: Codable {
     /// Authoritative OpenClaw projection. This is not an OS-1 retry instruction.
     var rccRuntime: RCCRuntimeContract.Snapshot? = nil
     var rccTransportFailure: String? = nil
+    /// Owner-visible routing adjustments made before Core, e.g. a dropped GPT
+    /// route. Facts about this request's routing, never a retry instruction.
+    var routingNotices: [String]? = nil
 }
 
 struct ProviderExecution {
@@ -3748,14 +3758,19 @@ private func sourceAnswerWorkspace() throws -> String {
 /// condition below still has to hold, and `claudeChatLaneRefusal` stops a
 /// request that fails one before any model is called, so an explicit choice can
 /// never turn into the expensive full lane behind the owner's back.
-func claudeChatLane(provider: String, permission: String, hasSource: Bool, objective: String) -> Bool {
+///
+/// `ownerSelected` defaults to this process's explicit rail selection; the
+/// RCC catalog passes the host's own preference instead, since its process
+/// never makes that selection.
+func claudeChatLane(provider: String, permission: String, hasSource: Bool, objective: String,
+                    ownerSelected: Bool = ClaudeChatLane.ownerSelected) -> Bool {
     if ConcurrentRouteFanoutRuntime.child,
        let expected = ConcurrentRouteFanoutRuntime.expectedSurface, !expected.forcesChatLane { return false }
     return provider == "claude" && permission == "read_only" && !hasSource
         && (ClaudeChatLane.selfContainedTextOperation(objective)
             || ClaudeChatLane.conversationalQuestion(objective)
             || StatusCheckIn.answersFromCard(objective)
-            || (ClaudeChatLane.ownerSelected && !ClaudeChatLane.namesMachineMaterial(objective)))
+            || (ownerSelected && !ClaudeChatLane.namesMachineMaterial(objective)))
         && !promptRequiresShellCapability(objective)
         && RequestNamedPaths.extract(objective).isEmpty
         && ImageInput.encodeAll(in: objective).isEmpty
@@ -4033,6 +4048,26 @@ func providerSurfaceRoutingSelfTest() throws {
         !ScopeResolution.permitsTicket(scope: .readOnly, permission: "workspace_write")))
     checks.append(("the read-only ticket the lane needs is permitted by the read-only scope",
         ScopeResolution.permitsTicket(scope: .readOnly, permission: "read_only")))
+    // RCC catalog chat gate (2026-10-13): the narrow predicate, not merely
+    // the absence of a refusal. An explicit choice (or an explicit fan-out
+    // payload) is passed as ownerSelected without touching process state.
+    let wasSelected = ClaudeChatLane.ownerSelected
+    ClaudeChatLane.setExplicitSelection(false)
+    checks.append(("an explicit chat payload passes the gate as an owner selection",
+        claudeChatLane(provider: "claude", permission: "read_only", hasSource: false, objective: "4+4", ownerSelected: true)))
+    checks.append(("owner selection never admits machine material, shell or attached source",
+        !claudeChatLane(provider: "claude", permission: "read_only", hasSource: false, objective: fileWork, ownerSelected: true) &&
+        !claudeChatLane(provider: "claude", permission: "read_only", hasSource: true, objective: "4+4", ownerSelected: true) &&
+        !claudeChatLane(provider: "claude", permission: "read_only", hasSource: false,
+                        objective: "너 되냐? 셸 명령 실행해서 확인해", ownerSelected: true)))
+    checks.append(("the explicit ownerSelected argument does not read or change the process selection",
+        claudeChatLane(provider: "claude", permission: "read_only", hasSource: false, objective: translate, ownerSelected: false) &&
+        !ClaudeChatLane.ownerSelected))
+    ClaudeChatLane.setExplicitSelection(wasSelected)
+    checks.append(("the RCC adapter admits the gated Claude chat lane under the Anthropic tile, never GPT",
+        RCCNativeCatalogBuilder.admits(preference: "claude", surface: ProviderSurface.claudeChat.rawValue) &&
+        !RCCNativeCatalogBuilder.admits(preference: "auto", surface: ProviderSurface.gptChat.rawValue) &&
+        RCCNativeCatalogBuilder.admits(preference: ProviderSurface.gptChat.rawValue, surface: ProviderSurface.codex.rawValue)))
 
     guard checks.allSatisfy(\.1) else {
         throw OS1Error.message("Provider surface routing regression: "
@@ -4186,8 +4221,10 @@ func performChatGPTHandoff(prompt: String) throws -> (receipt: URL, clipboardVer
 /// Same resolver is used before dispatch, by the executor, and after return.
 private func providerExecutionWorkspace(provider: String, permission: String,
                                         hasSource: Bool, workspace: String,
-                                        objective: String) throws -> String {
-    if claudeChatLane(provider: provider, permission: permission, hasSource: hasSource, objective: objective)
+                                        objective: String,
+                                        ownerSelected: Bool = ClaudeChatLane.ownerSelected) throws -> String {
+    if claudeChatLane(provider: provider, permission: permission, hasSource: hasSource, objective: objective,
+                      ownerSelected: ownerSelected)
         || codexChatLane(provider: provider, permission: permission, hasSource: hasSource, objective: objective) {
         return try sourceAnswerWorkspace()
     }
@@ -12954,6 +12991,7 @@ func os1DeliveredCorrectionIDs(submissionID: String?, mailbox: ExecutionSteering
 }
 
 func printRunSummary(_ summary: RunSummary) {
+    for notice in summary.routingNotices ?? [] { print("[routing] " + notice) }
     if let core = summary.rccRuntime {
         if let result = core.result, !result.output.isEmpty { print(result.output) }
         print("\n[OpenClaw task \(core.state.rawValue) · execution/quality/reference parity recorded separately]")
@@ -17424,6 +17462,10 @@ struct OS1Main {
                 var claudeSessionID: String?
                 var codexCapacity = 30
                 var claudeCapacity = 100
+                // Only explicitly passed capacities reach Core; an unset one
+                // is 100 there (the legacy CLI default above is not a plan).
+                var rccCodexCapacity: Int?
+                var rccClaudeCapacity: Int?
                 var outputFormat = "text"
                 var desktopReveal = DesktopRevealMode.never
                 var requireReadOnly = false
@@ -17457,12 +17499,12 @@ struct OS1Main {
                         guard let value = Int(arguments[index + 1]), (0...100).contains(value) else {
                             throw OS1Error.message("--codex-capacity must be 0...100")
                         }
-                        codexCapacity = value; index += 2
+                        codexCapacity = value; rccCodexCapacity = value; index += 2
                     case "--claude-capacity" where index + 1 < arguments.count:
                         guard let value = Int(arguments[index + 1]), (0...100).contains(value) else {
                             throw OS1Error.message("--claude-capacity must be 0...100")
                         }
-                        claudeCapacity = value; index += 2
+                        claudeCapacity = value; rccClaudeCapacity = value; index += 2
                     case "--output-format" where index + 1 < arguments.count:
                         outputFormat = arguments[index + 1]; index += 2
                     case "--desktop-reveal" where index + 1 < arguments.count:
@@ -17504,9 +17546,19 @@ struct OS1Main {
                 }
                 // The rail offers both surfaces of both vendors. Only the
                 // executors reach the gateway; a handoff never asks for a route.
-                guard let surface = ProviderSurface(rawValue: providerPreference) else {
+                guard var surface = ProviderSurface(rawValue: providerPreference) else {
                     throw OS1Error.message("--provider must be "
                         + ProviderSurface.allCases.map(\.rawValue).joined(separator: ", "))
+                }
+                // GPT is no longer routed (owner, 2026-10-13). An owner request
+                // that still names a GPT surface (an older queued submission or
+                // a stored tile choice) runs on the same OpenAI account through
+                // Codex, and says so; it is never silently dropped or held.
+                var routingNotices: [String] = []
+                if !parallelAgentChild, !parallelFanoutChild, surface == .gptChat || surface == .chatgpt {
+                    routingNotices.append(os1Tr("GPT 경로는 더 이상 라우팅하지 않습니다. 같은 OpenAI 계정의 Codex로 실행합니다(--provider \(surface.rawValue) → codex).",
+                        "GPT is no longer a routed surface. Running on Codex with the same OpenAI account (--provider \(surface.rawValue) → codex)."))
+                    surface = .codex; providerPreference = surface.rawValue
                 }
                 if parallelAgentChild { try ParallelAgentRuntime.requireChildSurface(surface) }
                 guard ["text", "json"].contains(outputFormat) else {
@@ -17519,12 +17571,20 @@ struct OS1Main {
                 // not a second scheduler. Legacy child/reconciliation executors
                 // remain libraries and never become an automatic fallback.
                 if !parallelAgentChild && !parallelFanoutChild {
-                    let summary: RunSummary
+                    // The owner's capacity mix reaches Core when the caller set
+                    // it; absent flags mean no plan (both pools at 100).
+                    let capacityPlan = rccCodexCapacity == nil && rccClaudeCapacity == nil ? nil
+                        : RCCRuntimeContract.CapacityPlan(codex: rccCodexCapacity ?? 100, claude: rccClaudeCapacity ?? 100)
+                    guard capacityPlan?.isValid ?? true else {
+                        throw OS1Error.message("At least one backend capacity must be above zero")
+                    }
+                    var summary: RunSummary
                     do {
                         summary = try await runOpenClawRCCTask(prompt: prompt, workspace: workspace,
                             context: try readSessionContext(contextPath), surface: surface,
                             codexSessionID: codexSessionID, claudeSessionID: claudeSessionID,
-                            requireReadOnly: requireReadOnly, taskID: rccTaskID)
+                            requireReadOnly: requireReadOnly, taskID: rccTaskID,
+                            capacityPlan: capacityPlan, routingNotices: routingNotices)
                     } catch {
                         // Transport/policy failure is NOT permission for an old
                         // OS-1 coordinator to redispatch this request.
@@ -17532,6 +17592,7 @@ struct OS1Main {
                         summary = RunSummary(status: "rcc_transport_preserved", steps: [],
                             workflowBlocker: "OpenClaw task connection unavailable (" + code + "); request preserved; no alternate route",
                             rccTransportFailure: code)
+                        if !routingNotices.isEmpty { summary.routingNotices = routingNotices }
                     }
                     if outputFormat == "json" { print(String(decoding: try JSONEncoder().encode(summary), as: UTF8.self)) }
                     else { printRunSummary(summary) }
@@ -17742,71 +17803,69 @@ func rccPrivateInput(_ path: String) throws -> Data {
     return data
 }
 
+/// Gathers host observations for `RCCNativeCatalogBuilder` and prints its
+/// catalog. The builder owns row identity, admission and order; this wrapper
+/// only probes providers that can still yield a candidate under the current
+/// preference, capacity, intent and chat gate.
 private func rccNativeCatalog(_ bytes: Data) throws -> Data {
     let request = try RCCRuntimeContract.decodeRequest(bytes)
     guard let host = request.hostContext else { throw OS1Error.message("RCC host context missing") }
     let config = try RuntimeConfig.load()
-    let codex = (try? ModelAvailability.codexCatalog(workspace: host.workspace, config: config)) ?? ActiveCodexCatalog(models: [], source: "unavailable")
-    let claude = (try? ModelAvailability.claudeCatalogs(workspace: host.workspace, config: config))?.routable ?? []
-    let claudeQuota = ModelAvailability.claudeQuota(workspace: host.workspace)
-    let book = BackendAccounts.load(), now = Date()
+    let now = Date()
+    let hasMaterial = !request.materialRefs.isEmpty
+    // The narrow chat-lane predicate, the same one the executor uses. An
+    // explicit route names its own payload, so each Claude-chat route must
+    // pass on its own instruction (the owner named that lane for it).
+    let chatEligible: Bool
+    if request.mode == .explicitRoutingTest {
+        let chatRoutes = (host.explicitRoutes ?? []).filter { $0.surface == .claudeChat }
+        chatEligible = !chatRoutes.isEmpty && chatRoutes.allSatisfy {
+            claudeChatLane(provider: "claude", permission: "read_only", hasSource: hasMaterial,
+                           objective: $0.instruction, ownerSelected: true)
+        }
+    } else {
+        chatEligible = claudeChatLane(provider: "claude", permission: "read_only", hasSource: hasMaterial,
+            objective: request.request,
+            ownerSelected: RCCNativeCatalogBuilder.normalizedPreference(host.providerPreference) == "claude-chat")
+    }
+    var input = RCCNativeCatalogBuilder.Input(taskID: request.taskID, requestSHA256: request.requestSHA256,
+        request: request.request, providerPreference: host.providerPreference, requireReadOnly: host.requireReadOnly,
+        hasMaterialRefs: hasMaterial, capacityPlan: host.capacityPlan,
+        executorContractSHA256: config.executorContract.sha256, now: now, showCodex: OS1Settings.load().showCodex,
+        chatLaneEligible: chatEligible,
+        profiles: (config.executionProfiles ?? [:]).map { .init(action: $0.key, provider: $0.value.provider,
+            model: $0.value.model, effort: $0.value.effort) })
+    let book = BackendAccounts.load()
+    for provider in ["codex", "claude"] { input.accountIDs[provider] = BackendAccounts.active(provider: provider, in: book).id }
+    let probe = RCCNativeCatalogBuilder.providersToProbe(input)
+    if probe.contains("codex") {
+        let codex = (try? ModelAvailability.codexCatalog(workspace: host.workspace, config: config)) ?? ActiveCodexCatalog(models: [], source: "unavailable")
+        input.codexModels = codex.models.map { .init(slug: $0.slug, supportedEfforts: $0.supportedEfforts, priority: $0.priority) }
+        input.codexQuota = codex.quotaSnapshot
+    }
+    if probe.contains("claude") {
+        let claude = (try? ModelAvailability.claudeCatalogs(workspace: host.workspace, config: config))?.routable ?? []
+        input.claudeModels = ModelAvailability.inventoryOrdered(claude, workspace: host.workspace)
+            .map { .init(model: $0.model, supportedEfforts: $0.supportedEfforts) }
+        input.claudeQuota = ModelAvailability.claudeQuota(workspace: host.workspace)
+    }
     // Authentication is provider state, not per-model state. Observe each
-    // native account once per catalog snapshot rather than starting an
-    // app-server/auth process for every signed profile.
-    var authentication: [String: NativeSurfaceAuth] = [:]
-    for provider in ["codex", "claude"] {
-        if let observed = observeNativeSurfaceAuth(provider: provider, workspace: host.workspace, book: book) {
-            authentication[provider] = observed
-        }
+    // probed native account once per catalog snapshot.
+    for provider in probe.sorted() {
+        guard let observed = observeNativeSurfaceAuth(provider: provider, workspace: host.workspace, book: book) else { continue }
+        input.auth[provider] = observed.signedIn == false ? .signedOut
+            : observed.mode == .subscription && observed.billing == .includedSubscription ? .subscription : .nonSubscription
     }
-    var candidates: [[String: Any]] = []
-    for (action, profile) in (config.executionProfiles ?? [:]).sorted(by: { $0.key < $1.key }) {
-        guard ["codex", "claude"].contains(profile.provider),
-              profile.provider != "codex" || OS1Settings.load().showCodex else { continue }
-        let available = profile.provider == "codex" ? codex.models.contains { $0.slug == profile.model && $0.supportedEfforts.contains(profile.effort) }
-            : claude.contains { $0.model == profile.model && $0.supportedEfforts.contains(profile.effort) }
-        guard available, let auth = authentication[profile.provider],
-              auth.mode == .subscription, auth.billing == .includedSubscription else { continue }
-        let account = BackendAccounts.active(provider: profile.provider, in: book).id
-        let quota = profile.provider == "codex" ? codex.quotaSnapshot : claudeQuota
-        let remaining = quota?.effectiveRemaining(accountID: account, model: profile.model, now: now)
-        if remaining == 0 { continue }
-        let scopes = host.requireReadOnly || ScopeResolution.resolve(request.request).scope == .readOnly
-            ? ["read_only"] : ["read_only", "workspace_write"]
-        for scope in scopes {
-            let surfaces = scope == "read_only" ? [profile.provider, profile.provider == "codex" ? "gpt-chat" : "claude-chat"] : [profile.provider]
-            for surface in surfaces {
-                guard host.providerPreference == "auto" || host.providerPreference == surface else { continue }
-                // Conversation history is supplied text, not evidence that
-                // this request needs filesystem access. Actual attachments and
-                // the existing shell/path/image gates still exclude chat.
-                if surface.hasSuffix("-chat"), claudeChatLaneRefusal(objective: request.request,
-                    hasSource: !request.materialRefs.isEmpty) != nil { continue }
-                let tools = surface.hasSuffix("-chat") ? [] : scope == "read_only" ? ["read", "execute"] : ["read", "write", "execute"]
-                let tuple = [surface, profile.provider, account, profile.model, profile.effort, scope, config.executorContract.sha256].joined(separator: "\n")
-                let digest = sha256Hex(Data(tuple.utf8))
-                candidates.append(["id": "cfg-" + String(digest.prefix(32)), "surface": surface,
-                    "transport": profile.provider == "codex" ? "codex_app_server" : "claude_cli",
-                    "account_id": account, "model": profile.model, "effort": profile.effort, "tools": tools,
-                    "scope": scope, "permission_profile": scope,
-                    "quota_pool": profile.provider == "codex" ? "openai_codex" : "anthropic_shared",
-                    "allowed_paths": scope == "workspace_write" ? ["**"] : [], "configuration_sha256": digest,
-                    "availability": "available", "availability_observed_at_ms": Int64(now.timeIntervalSince1970 * 1000),
-                    "availability_valid_until_ms": Int64(now.addingTimeInterval(120).timeIntervalSince1970 * 1000),
-                    "quota_remaining_fraction": remaining.map { $0 / 100 } as Any? ?? NSNull(),
-                    "quota_observed_at_ms": quota.map { Int64($0.observedAt.timeIntervalSince1970 * 1000) } as Any? ?? NSNull(),
-                    "quota_valid_until_ms": quota.flatMap { $0.isFresh(accountID: account, now: now) ? Int64($0.observedAt.addingTimeInterval(120).timeIntervalSince1970 * 1000) : nil } as Any? ?? NSNull(),
-                    "quality_state": "policy_admitted", "estimated_cost_units": NSNull()])
-                _ = action
-            }
-        }
+    let output: RCCNativeCatalogBuilder.Output
+    do { output = try RCCNativeCatalogBuilder.build(input) }
+    catch RCCNativeCatalogBuilder.Failure.exceedsBound {
+        // Never truncate: that once erased the available newer models while
+        // retaining older profiles. Oversize is an explicit boundary.
+        throw OS1Error.message("RCC native catalog exceeds bounded capacity; no profiles discarded")
+    } catch RCCNativeCatalogBuilder.Failure.unexplainedEmptyCatalog {
+        throw OS1Error.message("RCC native catalog has no configured profile for the admitted providers")
     }
-    // Never truncate an alphabetical catalog: that erased the available
-    // 6.x/6.1 models while retaining older profiles. An oversize inventory is
-    // an explicit boundary, not permission to silently hide configurations.
-    guard candidates.count <= 256 else { throw OS1Error.message("RCC native catalog exceeds bounded capacity; no profiles discarded") }
-    let data = try JSONSerialization.data(withJSONObject: ["schema": 1, "task_id": request.taskID,
-        "request_sha256": request.requestSHA256, "candidates": candidates], options: [.sortedKeys, .withoutEscapingSlashes])
+    let data = try RCCNativeCatalogBuilder.catalogData(output, taskID: request.taskID, requestSHA256: request.requestSHA256)
     _ = try RCCRuntimeContract.decodeCatalog(data)
     return data
 }
@@ -17988,7 +18047,10 @@ private func rccNativeAdapter(_ bytes: Data) async throws -> Data {
     guard sha256Hex(Data(policyText.utf8)) == t.policySHA256,
           let surface = ProviderSurface(rawValue: t.selectedConfig.surface.rawValue),
           let provider = surface.gatewayPreference, ["codex", "claude"].contains(provider),
-          h.providerPreference == "auto" || h.providerPreference == surface.rawValue,
+          // The same preference rule the catalog used: GPT is never routed,
+          // and the Anthropic tile admits its gated chat lane.
+          surface != .gptChat, surface != .chatgpt,
+          RCCNativeCatalogBuilder.admits(preference: h.providerPreference, surface: surface.rawValue),
           !h.requireReadOnly || t.selectedConfig.scope == .readOnly else { throw OS1Error.message("RCC exact capability rejected") }
     let account = BackendAccounts.active(provider: provider, in: BackendAccounts.load()).id
     guard account == t.selectedConfig.accountID,
@@ -18025,8 +18087,10 @@ private func rccNativeAdapter(_ bytes: Data) async throws -> Data {
         input.providerQuota = providerQuotaContext(codex: codex.quotaSnapshot, claude: ModelAvailability.claudeQuota(workspace: h.workspace),
             codexAccountID: BackendAccounts.active(provider: "codex", in: BackendAccounts.load()).id,
             claudeAccountID: BackendAccounts.active(provider: "claude", in: BackendAccounts.load()).id)
+        // The owner's capacity mix when the host carried one; absent = 100/100.
+        let capacity = h.capacityPlan ?? .init(codex: 100, claude: 100)
         let request = StartExecutionRequest(task: objective, providerPreference: provider,
-            capacityPlan: .init(codex: 100, claude: 100), executorContractVersion: config.executorContract.version,
+            capacityPlan: .init(codex: capacity.codex, claude: capacity.claude), executorContractVersion: config.executorContract.version,
             executorContractSHA256: config.executorContract.sha256, availableCodexModels: codex.models, executionContext: input)
         let signed = try await APIClient(config: config, token: try githubToken(), deviceID: try deviceID()).post("/v1/execution-authorizations",
             body: RCCAuthorizationWire(request: request, selected: .init(provider: provider,
@@ -18066,7 +18130,9 @@ private func rccNativeAdapter(_ bytes: Data) async throws -> Data {
             ticketFresh: { ticketValid(signed, forAtLeast: 10) }, state: &custody)
         guard case .proceed = sourceStep else { throw OS1Error.message("RCC source custody requires fresh authorization; no backend dispatched") }
         defer { OS1SourceConfinement.activeRoots = []; withExtendedLifetime(custody.lease) {} }
-        let workspace = surface.forcesChatLane ? try providerExecutionWorkspace(provider: provider, permission: "read_only", hasSource: false, workspace: h.workspace, objective: t.instruction) : h.workspace
+        // The catalog admitted this chat-lane row through the chat gate, so
+        // it is a selected lane: never hand a tool-free lane the real workspace.
+        let workspace = surface.forcesChatLane ? try providerExecutionWorkspace(provider: provider, permission: "read_only", hasSource: false, workspace: h.workspace, objective: t.instruction, ownerSelected: true) : h.workspace
         let before = workspaceHash(workspace)
         var measuredUsage: CompletionMeasuredUsage?
         let sourceCompletion = boundRoot == nil || t.selectedConfig.scope != .workspaceWrite ? "" : """
@@ -18208,13 +18274,47 @@ private func rccNativeAdapter(_ bytes: Data) async throws -> Data {
     return data
 }
 
-func runOpenClawRCCTask(prompt: String, workspace: String, context: String?, surface: ProviderSurface,
-    codexSessionID: String?, claudeSessionID: String?, requireReadOnly: Bool, taskID: String?) async throws -> RunSummary {
+func runOpenClawRCCTask(prompt: String, workspace: String, context: String?, surface requestedSurface: ProviderSurface,
+    codexSessionID: String?, claudeSessionID: String?, requireReadOnly: Bool, taskID: String?,
+    capacityPlan: RCCRuntimeContract.CapacityPlan? = nil, routingNotices priorNotices: [String] = []) async throws -> RunSummary {
     let owner = try loadCurrentOwnerPolicy(), cfg = try RuntimeConfig.load()
     let text = owner.map { $0.routing + "\n" + $0.projection } ?? cfg.executorContract.directives.joined(separator: "\n")
-    let explicit = RouteFanout.plan(prompt)?.targets.map { target in
+    var routingNotices = priorNotices
+    // GPT is no longer routed (owner, 2026-10-13): a GPT preference runs on
+    // the same OpenAI account through Codex and says so.
+    var surface = requestedSurface
+    if surface == .gptChat || surface == .chatgpt {
+        routingNotices.append(os1Tr("GPT 경로는 더 이상 라우팅하지 않습니다. 같은 OpenAI 계정의 Codex로 실행합니다(\(surface.rawValue) → codex).",
+            "GPT is no longer a routed surface. Running on Codex with the same OpenAI account (\(surface.rawValue) → codex)."))
+        surface = .codex
+    }
+    // A GPT-named part of an explicit fan-out is dropped, visibly; the other
+    // named routes still run. Only when EVERY part named GPT is the original
+    // list sent, so Core holds it with the dropped routes shown.
+    let fanout = RouteFanout.plan(prompt)
+    var explicit = fanout?.targets.map { target in
         RCCRuntimeContract.ExplicitRoute(surface: RCCRuntimeContract.Surface(rawValue: target.surface.rawValue)!, instruction: target.payload)
     }
+    if let targets = fanout?.targets {
+        let partition = RouteFanout.droppingGPT(targets)
+        if !partition.dropped.isEmpty {
+            routingNotices.append(RouteFanout.gptDroppedNotice(partition.dropped, remaining: partition.kept.count))
+            if !partition.kept.isEmpty {
+                explicit = partition.kept.map { RCCRuntimeContract.ExplicitRoute(surface: RCCRuntimeContract.Surface(rawValue: $0.surface.rawValue)!, instruction: $0.payload) }
+            }
+        }
+    }
+    // An explicit Claude chat choice the chat gate refuses is held by Core
+    // with chat_gate_refused; say why here, before any provider call.
+    let materialRefs = PromptAttachments.imagePaths(in: prompt)
+    if fanout == nil, surface == .claudeChat,
+       !claudeChatLane(provider: "claude", permission: "read_only", hasSource: !materialRefs.isEmpty,
+                       objective: prompt, ownerSelected: true) {
+        routingNotices.append(claudeChatLaneRefusal(objective: prompt, hasSource: !materialRefs.isEmpty)
+            ?? os1Tr("이 요청은 도구 없는 Claude 채팅 레인 조건에 맞지 않아 실행하지 않고 보존했습니다. Claude Code나 자동을 고르세요.",
+                     "This request does not qualify for the tool-free Claude chat lane, so nothing ran and it is preserved. Choose Claude Code or Auto."))
+    }
+    for notice in routingNotices { RuntimeActivity.emit(.routing, publicText: notice) }
     let id = taskID ?? UUID().uuidString.lowercased(), observed = Date()
     let conversationID = ProcessInfo.processInfo.environment["OS1_CONVERSATION_ID"].flatMap(UUID.init(uuidString:))
         ?? (try? SessionHandoff.decode(context).taskContext?.conversationID) ?? UUID()
@@ -18222,10 +18322,10 @@ func runOpenClawRCCTask(prompt: String, workspace: String, context: String?, sur
     let host = RCCRuntimeContract.HostContext(workspace: LocalProjectWorkspace.executionPath(workspace), context: context,
         providerPreference: surface.rawValue, codexSessionID: codexSessionID, claudeSessionID: claudeSessionID,
         requireReadOnly: requireReadOnly, ownerPolicy: owner, explicitRoutes: explicit,
-        conversationID: conversationID.uuidString, submissionID: submissionID.uuidString)
+        conversationID: conversationID.uuidString, submissionID: submissionID.uuidString, capacityPlan: capacityPlan)
     let request = RCCRuntimeContract.Request(taskID: id, request: prompt, requestSHA256: sha256Hex(Data(prompt.utf8)),
         objective: prompt, policySHA256: sha256Hex(Data(text.utf8)), sourceFingerprint: sha256Hex(try RCCRuntimeContract.encode(host)),
-        mode: RouteFanout.plan(prompt) != nil ? .explicitRoutingTest : .auto, materialRefs: PromptAttachments.imagePaths(in: prompt),
+        mode: fanout != nil ? .explicitRoutingTest : .auto, materialRefs: materialRefs,
         budget: .init(maxAttempts: 2, maxParallel: 4, maxCostUnits: nil, maxDurationMS: 3_600_000),
         policy: .init(sourceSHA256: owner?.sourceSHA256 ?? cfg.executorContract.sha256,
             projectionSHA256: sha256Hex(Data(text.utf8)), text: text), hostContext: host)
@@ -18263,6 +18363,8 @@ func runOpenClawRCCTask(prompt: String, workspace: String, context: String?, sur
     let graph = try? RCCRuntimeProjection.project(result, conversationID: conversationID, submissionID: submissionID,
         objective: prompt, observedAt: Date(), firstObservedAt: observed, maxParallelism: 4, expectedRequestSHA256: request.requestSHA256,
         nativeReceipts: RCCNativeDisplayReceipts.load(result))
-    return RunSummary(status: result.state == RCCRuntimeContract.State.completed ? "complete" : result.state == RCCRuntimeContract.State.returnedUnverified ? "returned_unverified" : "workflow_blocked",
+    var summary = RunSummary(status: result.state == RCCRuntimeContract.State.completed ? "complete" : result.state == RCCRuntimeContract.State.returnedUnverified ? "returned_unverified" : "workflow_blocked",
         steps: steps, monitorTaskID: id, workflowBlocker: result.error, agentTask: graph, localRouterReceipt: configuration.identity.pluginDirectory, rccRuntime: result)
+    if !routingNotices.isEmpty { summary.routingNotices = routingNotices }
+    return summary
 }

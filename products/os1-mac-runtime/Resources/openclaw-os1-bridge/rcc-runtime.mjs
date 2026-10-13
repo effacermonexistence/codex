@@ -16,6 +16,12 @@ const PARITY = new Set(['unverified', 'reference_equivalent', 'reference_above',
 const TASK_QUALITY = new Set(['execution_only', 'task_verified', 'failed', 'unverified']);
 const POOLS = new Set(['none', 'unknown', 'openai_codex', 'openai_chat', 'anthropic_shared']);
 const SURFACES = new Set(['chatgpt', 'codex', 'claude', 'local', 'gpt-chat', 'claude-chat']);
+// GPT surfaces stay decodable for old receipts, but are no longer routed.
+const DROPPED_ROUTE_SURFACES = new Set(['chatgpt', 'gpt-chat']);
+const EXCLUSION_PROVIDERS = new Set(['codex', 'claude']);
+const EXCLUSION_REASONS = new Set(['signed_out', 'non_subscription', 'model_unavailable', 'quota_zero',
+  'capacity_zero', 'codex_hidden', 'effort_requires_explicit_request', 'explicit_constraint_unavailable',
+  'chat_gate_refused', 'gpt_dropped']);
 const TRANSPORTS = new Set(['local', 'codex_app_server', 'claude_cli', 'chatgpt_service', 'claude_service']);
 const SCOPES = new Set(['read_only', 'workspace_write']);
 const EFFORTS = new Set(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra', 'ultracode']);
@@ -170,6 +176,21 @@ export class RCCRuntimeError extends Error {
 export function canonicalHostContext(value) { return stable(value); }
 export function hostContextFingerprint(value) { return sha(Buffer.from(canonicalHostContext(value))); }
 
+/** The explicit routes that still run. A GPT/ChatGPT-named route is dropped,
+ * never substituted; the immutable host contract keeps the original list. */
+export function effectiveExplicitRoutes(task) {
+  const routes = task?.host_context?.explicit_routes;
+  return Array.isArray(routes) ? routes.filter(route => !DROPPED_ROUTE_SURFACES.has(route.surface)) : routes;
+}
+function droppedExplicitRoutes(task) {
+  const routes = task?.host_context?.explicit_routes;
+  return Array.isArray(routes) ? routes.filter(route => DROPPED_ROUTE_SURFACES.has(route.surface)) : [];
+}
+function validCapacityPlan(plan) {
+  return plan === undefined || plan === null || (keys(plan, ['codex', 'claude']) &&
+    int(plan.codex, 0, 100) && int(plan.claude, 0, 100) && plan.codex + plan.claude > 0);
+}
+
 function validateTask(task) {
   const required = ['schema', 'task_id', 'request', 'request_sha256', 'objective', 'policy_sha256',
     'source_fingerprint', 'mode', 'material_refs', 'budget', 'host_context'];
@@ -207,7 +228,7 @@ function validateTask(task) {
   const h = task.host_context;
   const hostKeys = ['workspace', 'context', 'provider_preference', 'codex_session_id',
     'claude_session_id', 'require_read_only', 'owner_policy'];
-  const hostOptionalKeys = ['explicit_routes', 'conversation_id', 'submission_id'];
+  const hostOptionalKeys = ['explicit_routes', 'conversation_id', 'submission_id', 'capacity_plan'];
   const uuid = value => typeof value === 'string' &&
     /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
   assert(plain(h) && hostKeys.every(key => Object.hasOwn(h, key)) &&
@@ -219,6 +240,7 @@ function validateTask(task) {
     (h.claude_session_id === null || boundedText(h.claude_session_id, 256)) &&
     (h.conversation_id === undefined || uuid(h.conversation_id)) &&
     (h.submission_id === undefined || uuid(h.submission_id)) &&
+    validCapacityPlan(h.capacity_plan) &&
     typeof h.require_read_only === 'boolean' &&
     (h.owner_policy === null || plain(h.owner_policy)) &&
     (h.explicit_routes === undefined || h.explicit_routes === null ||
@@ -238,12 +260,28 @@ function exactConfig(candidate) {
     'scope', 'permission_profile', 'quota_pool', 'allowed_paths', 'configuration_sha256']
     .map(key => [key, immutable(candidate[key])]));
 }
+function validExclusions(exclusions) {
+  return Array.isArray(exclusions) && exclusions.length > 0 && exclusions.length <= 32 &&
+    exclusions.every(item => keys(item, ['provider', 'reason', 'count']) &&
+      EXCLUSION_PROVIDERS.has(item.provider) && EXCLUSION_REASONS.has(item.reason) &&
+      int(item.count, 1, 10_000)) &&
+    new Set(exclusions.map(item => `${item.provider}\0${item.reason}`)).size === exclusions.length;
+}
 function validateCatalog(catalog, task) {
-  assert(keys(catalog, ['schema', 'task_id', 'request_sha256', 'candidates']) &&
+  const required = ['schema', 'task_id', 'request_sha256', 'candidates'];
+  assert(plain(catalog) && required.every(key => Object.hasOwn(catalog, key)) &&
+    Object.keys(catalog).every(key => required.includes(key) || key === 'exclusions') &&
     catalog.schema === 1 && catalog.task_id === task.task_id &&
     catalog.request_sha256 === task.request_sha256 && Array.isArray(catalog.candidates) &&
-    catalog.candidates.length > 0 && catalog.candidates.length <= 256, 'catalog_binding_invalid');
+    catalog.candidates.length <= 256 &&
+    (catalog.exclusions === undefined || validExclusions(catalog.exclusions)) &&
+    (catalog.candidates.length > 0 || catalog.exclusions !== undefined), 'catalog_binding_invalid');
   assert(Buffer.byteLength(stable(catalog)) <= MAX_CATALOG_BYTES, 'catalog_oversize');
+  // An empty catalog is an explicit, explained hold rather than an opaque
+  // binding error: say which configured profiles were excluded and why.
+  if (catalog.candidates.length === 0)
+    throw new RCCRuntimeError('no_routable_candidate:' +
+      [...new Set(catalog.exclusions.map(item => item.reason))].sort().join(','));
   const ids = new Set();
   for (const c of catalog.candidates) {
     assert(keys(c, ['id', 'surface', 'transport', 'account_id', 'model', 'effort', 'tools', 'scope',
@@ -342,7 +380,7 @@ function validatePlan(plan, task, catalog) {
     ids.add(node.id);
   }
   if (task.mode === 'explicit_routing_test') {
-    const requested = task.host_context.explicit_routes;
+    const requested = effectiveExplicitRoutes(task);
     assert(Array.isArray(requested) && requested.length === plan.nodes.length,
       'explicit_route_count_mismatch');
     const remaining = new Set(requested.map(route => stable(route)));
@@ -378,11 +416,19 @@ function validatePlan(plan, task, catalog) {
   return immutable(plan);
 }
 
+/** Routes displayed by an explicit-route hold: the routes that still run,
+ * or (when every route named GPT) the original GPT routes, so the hold shows
+ * exactly what was dropped instead of an empty tree. */
+function heldExplicitRoutes(task) {
+  const effective = effectiveExplicitRoutes(task);
+  return Array.isArray(effective) && effective.length === 0 ? task.host_context.explicit_routes : effective;
+}
+
 function requestedSurface(snapshot, child) {
   if (child.requested_surface != null) return child.requested_surface;
   // Older snapshots have no display field. Recover only the exact original
   // explicit binding, not a model-selected alias or an observed execution.
-  const routes = snapshot.task.host_context?.explicit_routes;
+  const routes = heldExplicitRoutes(snapshot.task);
   if (snapshot.task.mode !== 'explicit_routing_test' || !Array.isArray(routes)) return null;
   const ordinal = /^requested-([1-8])$/.exec(child.id);
   if (ordinal) {
@@ -526,7 +572,7 @@ class RCCRuntime {
   _holdExplicitRoutes(taskID, reason) {
     return this._update(taskID, 'explicit_routes_held', snapshot => {
       if (TERMINAL.has(snapshot.state)) return;
-      const routes = snapshot.task.host_context.explicit_routes;
+      const routes = heldExplicitRoutes(snapshot.task);
       if (Array.isArray(routes)) snapshot.children = routes.map((route, index) => ({
         id: `requested-${index + 1}`, state: 'held', attempt_id: null,
         candidate_id: null, attempts: 0, attempt_history: [], repair_needed: false,
@@ -978,6 +1024,14 @@ class RCCRuntime {
     if (task.mode === 'explicit_routing_test' && !Array.isArray(task.host_context.explicit_routes)) {
       this._hold(taskID, 'explicit_route_contract_missing'); return;
     }
+    // GPT is no longer routed. Other named routes still run; only a request
+    // in which EVERY route named GPT is held, visibly, before any catalog
+    // probe or planner call. Nothing is substituted for a dropped route.
+    if (task.mode === 'explicit_routing_test' && effectiveExplicitRoutes(task).length === 0) {
+      this._holdExplicitRoutes(taskID, 'explicit_route_surface_dropped:' +
+        [...new Set(droppedExplicitRoutes(task).map(route => route.surface))].sort().join(','));
+      return;
+    }
     if (task.mode === 'auto' && task.host_context.provider_preference === 'auto' &&
         (task.provider_preference == null || task.provider_preference === 'auto') &&
         task.host_context.explicit_routes == null &&
@@ -1010,7 +1064,7 @@ class RCCRuntime {
     this._update(taskID, 'catalog_bound', snapshot => { snapshot.catalog = catalog; });
     if (task.mode === 'explicit_routing_test') {
       const now = Date.now();
-      const unavailable = task.host_context.explicit_routes.find(route =>
+      const unavailable = effectiveExplicitRoutes(task).find(route =>
         !catalog.candidates.some(candidate => candidate.surface === route.surface &&
           candidate.availability === 'available' && candidate.availability_valid_until_ms > now &&
           candidate.quality_state !== 'mismatch' &&
@@ -1050,7 +1104,7 @@ class RCCRuntime {
         // validatePlan already requires this exact surface/instruction pair
         // to exist in the original host contract. Requested is not executed.
         requested_surface: task.mode === 'explicit_routing_test'
-          ? task.host_context.explicit_routes.find(route =>
+          ? effectiveExplicitRoutes(task).find(route =>
               route.surface === catalog.candidates.find(candidate => candidate.id === node.candidate_id).surface &&
               route.instruction === node.instruction).surface : null,
         instruction: node.instruction,

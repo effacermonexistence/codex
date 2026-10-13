@@ -8,7 +8,7 @@ import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import test from 'node:test';
 import { DatabaseSync } from 'node:sqlite';
-import { createRCCRuntime, hostContextFingerprint } from '../../Resources/openclaw-os1-bridge/rcc-runtime.mjs';
+import { canonicalHostContext, createRCCRuntime, effectiveExplicitRoutes, hostContextFingerprint } from '../../Resources/openclaw-os1-bridge/rcc-runtime.mjs';
 
 const sha = text => createHash('sha256').update(text).digest('hex');
 async function fixture(t) {
@@ -436,7 +436,9 @@ test('idempotent submit, exclusive runtime owner and durable event journal', asy
 
 test('four explicit route nodes execute; shared Anthropic pool never double-spends', async t => {
   const dir = await fixture(t);
-  const rows = [candidate('chat', 'chatgpt', 'openai_chat'),
+  // GPT is no longer an explicit route (2026-10-13); two Codex routes keep
+  // four independent nodes for the pool-concurrency check.
+  const rows = [candidate('codex-2', 'codex', 'openai_codex'),
     candidate('codex', 'codex', 'openai_codex'),
     candidate('claude-chat', 'claude-chat', 'anthropic_shared'),
     candidate('claude-code', 'claude', 'anthropic_shared')];
@@ -902,84 +904,105 @@ test('multi-node graph and malformed host session never resume an unapproved nat
   assert.equal(dispatched, 0);
 });
 
-test('explicit four-surface route is exact one-to-one and unavailable ChatGPT is never gpt-chat', async t => {
+test('explicit GPT route is dropped, never substituted; other named routes run; all-GPT holds visibly', async t => {
   const dir = await fixture(t);
   const routes = [
     {surface: 'chatgpt', instruction: '1+1'},
     {surface: 'codex', instruction: '2+2'},
     {surface: 'claude', instruction: '3+3'},
     {surface: 'claude-chat', instruction: '4+4'}];
+  const native = routes.slice(1);
   const request = task(dir, 'Send four independent arithmetic probes to four named surfaces',
     'explicit_routing_test', {explicitRoutes: routes});
+  // An older catalog may still carry a Codex-funded gpt-chat row. It must
+  // never stand in for the dropped ordinary ChatGPT route.
   const rows = [candidate('gpt-code', 'gpt-chat'), candidate('codex', 'codex'),
     candidate('claude-code', 'claude', 'anthropic_shared'),
     candidate('claude-chat', 'claude-chat', 'anthropic_shared', {account: 'other-account'})];
-  let planned = 0, executed = 0;
-  const missing = await createRCCRuntime({stateDir: join(dir, 'missing-chatgpt'),
+  let executed = 0, plannerRoutes = null;
+  const good = await createRCCRuntime({stateDir: join(dir, 'gpt-dropped'),
     catalog: async value => catalog(value, rows),
-    plan: async () => { planned++; throw Error('must hold before model plan'); },
-    execute: async () => { executed++; throw Error('must not execute'); }});
-  t.after(async () => { await missing.close(); });
-  await missing.submit(request);
-  const held = await wait(missing, request);
-  assert.equal(held.state, 'held');
-  assert.equal(held.error, 'explicit_route_surface_unavailable:chatgpt');
-  assert.deepEqual(held.children.map(child => child.instruction), routes.map(route => route.instruction));
-  assert.deepEqual(held.children.map(child => child.requested_surface), routes.map(route => route.surface));
-  assert.ok(held.children.every(child => child.selected_config === null && child.native_receipt === null &&
-    child.candidate_id === null && child.attempt_id === null && child.state === 'held'));
-  assert.notEqual(held.children[0].requested_surface, 'gpt-chat');
-  assert.equal(planned, 0); assert.equal(executed, 0);
-  await missing.close();
-  // A pre-field durable snapshot still has the immutable original route
-  // contract. Exercise migration in this private fixture database only.
-  const legacyDB = new DatabaseSync(join(dir, 'missing-chatgpt', 'rcc-runtime.sqlite'));
-  const legacy = JSON.parse(legacyDB.prepare('SELECT snapshot FROM tasks WHERE task_id=?').get(request.task_id).snapshot);
-  for (const child of legacy.children) delete child.requested_surface;
-  legacyDB.prepare('UPDATE tasks SET snapshot=? WHERE task_id=?').run(JSON.stringify(legacy), request.task_id);
-  legacyDB.close();
-  const recovered = await createRCCRuntime({stateDir: join(dir, 'missing-chatgpt')});
-  t.after(async () => { await recovered.close(); });
-  const recoveredHeld = recovered.status({schema: 1, task_id: request.task_id});
-  assert.deepEqual(recoveredHeld.children.map(child => child.requested_surface), routes.map(route => route.surface));
-  assert.ok(recoveredHeld.children.every(child => child.selected_config === null && child.native_receipt === null));
-
-  const availableRows = [candidate('chatgpt', 'chatgpt', 'openai_chat'), ...rows];
-  const good = await createRCCRuntime({stateDir: join(dir, 'all-four'),
-    catalog: async value => catalog(value, availableRows),
-    plan: async () => plan(request, routes.map((route, index) =>
-      node(`route-${index + 1}`, ['chatgpt', 'codex', 'claude-code', 'claude-chat'][index],
-        {instruction: route.instruction}))),
+    plan: async ({task: planned}) => { plannerRoutes = planned.host_context.explicit_routes;
+      return plan(request, native.map((route, index) =>
+        node(`route-${index + 1}`, ['codex', 'claude-code', 'claude-chat'][index], {instruction: route.instruction}))); },
     execute: async ticket => { executed++; return execution(ticket); },
     verifyTask: taskVerdict});
   t.after(async () => { await good.close(); });
   await good.submit(request);
   const result = await wait(good, request);
-  assert.equal(result.state, 'completed'); assert.equal(result.children.length, 4);
-  assert.deepEqual(result.children.map(child => child.selected_config.surface),
-    routes.map(route => route.surface));
-  assert.deepEqual(result.children.map(child => child.requested_surface), routes.map(route => route.surface));
-  assert.equal(executed, 4);
+  assert.equal(result.state, 'completed'); assert.equal(result.children.length, 3);
+  assert.deepEqual(result.children.map(child => child.selected_config.surface), ['codex', 'claude', 'claude-chat']);
+  assert.deepEqual(result.children.map(child => child.requested_surface), native.map(route => route.surface));
+  assert.ok(result.children.every(child => child.selected_config.surface !== 'gpt-chat'));
+  assert.deepEqual(plannerRoutes, routes, 'the immutable host contract still records what the owner named');
+  assert.equal(executed, 3);
+
+  // A plan that keeps the GPT route by substituting gpt-chat is rejected.
+  executed = 0;
+  const substituted = await createRCCRuntime({stateDir: join(dir, 'gpt-substituted'),
+    catalog: async value => catalog(value, rows),
+    plan: async () => plan(request, routes.map((route, index) =>
+      node(`route-${index + 1}`, ['gpt-code', 'codex', 'claude-code', 'claude-chat'][index],
+        {instruction: route.instruction}))),
+    execute: async () => { executed++; throw Error('must not execute'); }});
+  t.after(async () => { await substituted.close(); });
+  await substituted.submit(request);
+  const rejected = await wait(substituted, request);
+  assert.equal(rejected.state, 'held'); assert.equal(rejected.error, 'explicit_route_count_mismatch');
+  assert.deepEqual(rejected.children.map(child => child.requested_surface), native.map(route => route.surface));
+  assert.equal(executed, 0);
+
+  // Every route named GPT: hold before any catalog probe or planner call.
+  const gptOnly = [{surface: 'chatgpt', instruction: '1+1'}, {surface: 'gpt-chat', instruction: '2+2'}];
+  const onlyRequest = task(dir, 'Send two arithmetic probes to GPT', 'explicit_routing_test', {explicitRoutes: gptOnly});
+  let probed = 0, planned = 0;
+  const missing = await createRCCRuntime({stateDir: join(dir, 'gpt-only'),
+    catalog: async value => { probed++; return catalog(value, rows); },
+    plan: async () => { planned++; throw Error('must hold before model plan'); },
+    execute: async () => { executed++; throw Error('must not execute'); }});
+  t.after(async () => { await missing.close(); });
+  await missing.submit(onlyRequest);
+  const held = await wait(missing, onlyRequest);
+  assert.equal(held.state, 'held');
+  assert.equal(held.error, 'explicit_route_surface_dropped:chatgpt,gpt-chat');
+  assert.deepEqual(held.children.map(child => child.instruction), gptOnly.map(route => route.instruction));
+  assert.deepEqual(held.children.map(child => child.requested_surface), gptOnly.map(route => route.surface));
+  assert.ok(held.children.every(child => child.selected_config === null && child.native_receipt === null &&
+    child.candidate_id === null && child.attempt_id === null && child.state === 'held'));
+  assert.equal(probed, 0); assert.equal(planned, 0); assert.equal(executed, 0);
+  await missing.close();
+  // A pre-field durable snapshot still has the immutable original route
+  // contract. Exercise migration in this private fixture database only.
+  const legacyDB = new DatabaseSync(join(dir, 'gpt-only', 'rcc-runtime.sqlite'));
+  const legacy = JSON.parse(legacyDB.prepare('SELECT snapshot FROM tasks WHERE task_id=?').get(onlyRequest.task_id).snapshot);
+  for (const child of legacy.children) delete child.requested_surface;
+  legacyDB.prepare('UPDATE tasks SET snapshot=? WHERE task_id=?').run(JSON.stringify(legacy), onlyRequest.task_id);
+  legacyDB.close();
+  const recovered = await createRCCRuntime({stateDir: join(dir, 'gpt-only')});
+  t.after(async () => { await recovered.close(); });
+  const recoveredHeld = recovered.status({schema: 1, task_id: onlyRequest.task_id});
+  assert.deepEqual(recoveredHeld.children.map(child => child.requested_surface), gptOnly.map(route => route.surface));
+  assert.ok(recoveredHeld.children.every(child => child.selected_config === null && child.native_receipt === null));
 });
 
 test('explicit-route planner cannot drop, alias, mutate payload or serialize parallel probes', async t => {
   const dir = await fixture(t);
-  const routes = [{surface: 'chatgpt', instruction: '1+1'}, {surface: 'codex', instruction: '2+2'},
-    {surface: 'claude', instruction: '3+3'}, {surface: 'claude-chat', instruction: '4+4'}];
-  const rows = [candidate('a', 'chatgpt', 'openai_chat'), candidate('b', 'codex'),
-    candidate('c', 'claude', 'anthropic_shared'),
-    candidate('d', 'claude-chat', 'anthropic_shared', {account: 'other-account'})];
+  // Three native surfaces: GPT is no longer an explicit route (2026-10-13).
+  const routes = [{surface: 'codex', instruction: '1+1'}, {surface: 'claude', instruction: '2+2'},
+    {surface: 'claude-chat', instruction: '3+3'}];
+  const rows = [candidate('a', 'codex'), candidate('b', 'claude', 'anthropic_shared'),
+    candidate('c', 'claude-chat', 'anthropic_shared', {account: 'other-account'})];
   const variants = [
     {name: 'drop', nodes: [node('a', 'a', {instruction: '1+1'})], reason: 'explicit_route_count_mismatch'},
     {name: 'alias', nodes: [node('a', 'b', {instruction: '1+1'}), node('b', 'a', {instruction: '2+2'}),
-      node('c', 'c', {instruction: '3+3'}), node('d', 'd', {instruction: '4+4'})],
+      node('c', 'c', {instruction: '3+3'})],
      reason: 'explicit_route_binding_mismatch'},
     {name: 'payload', nodes: [node('a', 'a', {instruction: '9+9'}), node('b', 'b', {instruction: '2+2'}),
-      node('c', 'c', {instruction: '3+3'}), node('d', 'd', {instruction: '4+4'})],
+      node('c', 'c', {instruction: '3+3'})],
      reason: 'explicit_route_binding_mismatch'},
     {name: 'serialized', nodes: [node('a', 'a', {instruction: '1+1'}),
       node('b', 'b', {instruction: '2+2', dependencies: ['a']}),
-      node('c', 'c', {instruction: '3+3'}), node('d', 'd', {instruction: '4+4'})],
+      node('c', 'c', {instruction: '3+3'})],
      reason: 'explicit_route_binding_mismatch'}];
   for (const variant of variants) {
     const request = task(dir, `explicit-${variant.name}`, 'explicit_routing_test', {explicitRoutes: routes});
@@ -993,7 +1016,7 @@ test('explicit-route planner cannot drop, alias, mutate payload or serialize par
     const result = await wait(runtime, request);
     assert.equal(result.state, 'held', variant.name);
     assert.equal(result.error, variant.reason, variant.name);
-    assert.equal(result.children.length, 4, variant.name);
+    assert.equal(result.children.length, 3, variant.name);
     assert.deepEqual(result.children.map(child => child.requested_surface), routes.map(route => route.surface), variant.name);
     assert.equal(executions, 0, variant.name);
   }
@@ -1375,4 +1398,113 @@ test('native stage can directly return each bound install state, and absent null
     execute: async ticket => execution(ticket, {repair_source: null})});
   t.after(async () => { await runtime.close(); });
   await runtime.submit(request); assert.equal((await wait(runtime, request)).state, 'returned_unverified');
+});
+
+// Shared with Tests/OS1ContextTests/RCCNativeCatalogBuilderFixture.swift: the
+// Swift encoder must produce these exact bytes for the same host.
+const CAPACITY_HOST_CANONICAL = '{"capacity_plan":{"claude":100,"codex":30},"claude_session_id":null,' +
+  '"codex_session_id":null,"context":null,"explicit_routes":null,"owner_policy":null,' +
+  '"provider_preference":"auto","require_read_only":true,"workspace":"/tmp/rcc-fixture"}';
+
+test('optional host capacity_plan is validated, fingerprinted like Swift, and absent keeps old bytes', async t => {
+  const dir = await fixture(t);
+  const host = {workspace: '/tmp/rcc-fixture', context: null, provider_preference: 'auto',
+    codex_session_id: null, claude_session_id: null, require_read_only: true, owner_policy: null,
+    explicit_routes: null, capacity_plan: {codex: 30, claude: 100}};
+  assert.equal(canonicalHostContext(host), CAPACITY_HOST_CANONICAL);
+  assert.equal(hostContextFingerprint(host), sha(CAPACITY_HOST_CANONICAL));
+  const legacy = {...host}; delete legacy.capacity_plan;
+  assert.equal(canonicalHostContext(legacy).includes('capacity_plan'), false,
+    'an absent plan is omitted, so older host fingerprints are unchanged');
+  let catalogCalls = 0;
+  const runtime = await createRCCRuntime({stateDir: dir,
+    catalog: async value => { catalogCalls++; return catalog(value, [candidate('a')]); },
+    plan: async ({task: planned}) => plan(planned, [node('one', 'a')]),
+    execute: async ticket => execution(ticket), verifyTask: taskVerdict});
+  t.after(async () => { await runtime.close(); });
+  for (const plan of [{codex: 0, claude: 100}, {codex: 30, claude: 100}, {codex: 100, claude: 0}]) {
+    const request = task(dir, 'Answer one bounded question ' + plan.codex);
+    request.host_context.capacity_plan = plan;
+    request.source_fingerprint = hostContextFingerprint(request.host_context);
+    await runtime.submit(request);
+    assert.equal((await wait(runtime, request)).state, 'completed');
+  }
+  const admittedCalls = catalogCalls;
+  assert.ok(admittedCalls >= 3);
+  for (const bad of [{codex: 0, claude: 0}, {codex: 101, claude: 0}, {codex: -1, claude: 50},
+    {codex: 1.5, claude: 50}, {codex: 50}, {codex: 50, claude: 50, chatgpt: 10}, [50, 50], 'all']) {
+    const request = task(dir, 'Answer one bounded question with an invalid plan');
+    request.host_context.capacity_plan = bad;
+    request.source_fingerprint = hostContextFingerprint(request.host_context);
+    await assert.rejects(runtime.submit(request), /host_context_invalid/);
+  }
+  assert.equal(catalogCalls, admittedCalls, 'an invalid plan never reaches the catalog');
+});
+
+test('an empty catalog with exclusions holds with its reasons; without them it is an invalid binding', async t => {
+  const dir = await fixture(t);
+  const exclusions = [{provider: 'claude', reason: 'signed_out', count: 15},
+    {provider: 'codex', reason: 'capacity_zero', count: 62}, {provider: 'codex', reason: 'signed_out', count: 1}];
+  const cases = [
+    {name: 'explained', catalog: value => ({...catalog(value, []), exclusions}),
+     error: 'no_routable_candidate:capacity_zero,signed_out'},
+    {name: 'opaque', catalog: value => catalog(value, []), error: 'catalog_binding_invalid'},
+    {name: 'empty-list', catalog: value => ({...catalog(value, []), exclusions: []}), error: 'catalog_binding_invalid'},
+    {name: 'unknown-reason', catalog: value => ({...catalog(value, []),
+      exclusions: [{provider: 'codex', reason: 'cheaper_elsewhere', count: 1}]}), error: 'catalog_binding_invalid'},
+    {name: 'gpt-provider', catalog: value => ({...catalog(value, []),
+      exclusions: [{provider: 'chatgpt', reason: 'gpt_dropped', count: 1}]}), error: 'catalog_binding_invalid'},
+    {name: 'zero-count', catalog: value => ({...catalog(value, []),
+      exclusions: [{provider: 'codex', reason: 'quota_zero', count: 0}]}), error: 'catalog_binding_invalid'},
+    {name: 'duplicate', catalog: value => ({...catalog(value, []),
+      exclusions: [{provider: 'codex', reason: 'quota_zero', count: 1}, {provider: 'codex', reason: 'quota_zero', count: 2}]}),
+     error: 'catalog_binding_invalid'},
+    {name: 'extra-field', catalog: value => ({...catalog(value, []),
+      exclusions: [{provider: 'codex', reason: 'quota_zero', count: 1, model: 'x'}]}), error: 'catalog_binding_invalid'}];
+  for (const item of cases) {
+    const request = task(dir, 'Answer one bounded question: ' + item.name);
+    let planned = 0, executed = 0;
+    const runtime = await createRCCRuntime({stateDir: join(dir, item.name),
+      catalog: async value => item.catalog(value),
+      plan: async () => { planned++; throw Error('must not plan'); },
+      execute: async () => { executed++; throw Error('must not execute'); }});
+    t.after(async () => { await runtime.close(); });
+    await runtime.submit(request);
+    const held = await wait(runtime, request);
+    assert.equal(held.state, 'held', item.name); assert.equal(held.error, item.error, item.name);
+    assert.equal(planned, 0, item.name); assert.equal(executed, 0, item.name);
+  }
+  // Exclusions beside routable candidates are evidence only; routing proceeds.
+  const request = task(dir, 'Answer one bounded question with partial exclusions');
+  const runtime = await createRCCRuntime({stateDir: join(dir, 'partial'),
+    catalog: async value => ({...catalog(value, [candidate('a')]), exclusions}),
+    plan: async ({task: planned, catalog: bound}) => {
+      assert.deepEqual(bound.exclusions, exclusions);
+      return plan(planned, [node('one', 'a')]); },
+    execute: async ticket => execution(ticket), verifyTask: taskVerdict});
+  t.after(async () => { await runtime.close(); });
+  await runtime.submit(request);
+  assert.equal((await wait(runtime, request)).state, 'completed');
+  // An explicit-route task with nothing routable keeps its requested routes visible.
+  const routes = [{surface: 'codex', instruction: '1+1'}, {surface: 'claude', instruction: '2+2'}];
+  const explicit = task(dir, 'Route two probes', 'explicit_routing_test', {explicitRoutes: routes});
+  const empty = await createRCCRuntime({stateDir: join(dir, 'explicit-empty'),
+    catalog: async value => ({...catalog(value, []), exclusions}),
+    plan: async () => { throw Error('must not plan'); }, execute: async () => { throw Error('must not execute'); }});
+  t.after(async () => { await empty.close(); });
+  await empty.submit(explicit);
+  const heldExplicit = await wait(empty, explicit);
+  assert.equal(heldExplicit.state, 'held');
+  assert.equal(heldExplicit.error, 'no_routable_candidate:capacity_zero,signed_out');
+  assert.deepEqual(heldExplicit.children.map(child => child.requested_surface), ['codex', 'claude']);
+});
+
+test('effective explicit routes drop only GPT surfaces and keep order', () => {
+  const routes = [{surface: 'gpt-chat', instruction: '0+0'}, {surface: 'codex', instruction: '1+1'},
+    {surface: 'chatgpt', instruction: '2+2'}, {surface: 'claude-chat', instruction: '3+3'},
+    {surface: 'claude', instruction: '4+4'}];
+  assert.deepEqual(effectiveExplicitRoutes({host_context: {explicit_routes: routes}}),
+    [routes[1], routes[3], routes[4]]);
+  assert.equal(effectiveExplicitRoutes({host_context: {explicit_routes: null}}), null);
+  assert.deepEqual(effectiveExplicitRoutes({host_context: {explicit_routes: [routes[0], routes[2]]}}), []);
 });

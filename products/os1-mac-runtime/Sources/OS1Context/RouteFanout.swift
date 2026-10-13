@@ -38,14 +38,35 @@ public struct RouteFanout: Equatable, Sendable {
 
     /// Longest names first, so "Claude Code" never reads as "Claude" + "Code"
     /// and "ChatGPT" never as "GPT". Voice-dictation spellings included.
+    /// The spellings live in `ProviderNameAliases`, shared with the app's
+    /// directed-provider detection.
     static let names: [(pattern: String, surface: ProviderSurface)] = [
-        (#"gpt-chat|codex[\s\-]+chat|코덱스\s*채팅"#, .gptChat),
-        (#"claude[\s\-]?code|(?:클로[드더즈]|클라우드)[\s]?코드"#, .claude),
-        (#"chat[\s\-]?gpt|챗[\s]?gpt|챗[\s]?지피티|채팅[\s]?gpt|채찌"#, .chatgpt),
-        (#"gpt|지피티|쥐피티"#, .chatgpt),
-        (#"codex|코[덱댁][스세]|코덱센트|코덱선트"#, .codex),
-        (#"claude|클로[드더즈]|클라우드(?!플레어)"#, .claudeChat),
+        (ProviderNameAliases.gptChat, .gptChat),
+        (ProviderNameAliases.claudeCode, .claude),
+        (ProviderNameAliases.chatGPT, .chatgpt),
+        (ProviderNameAliases.gpt, .chatgpt),
+        (ProviderNameAliases.codex, .codex),
+        (ProviderNameAliases.claude, .claudeChat),
     ]
+
+    /// GPT is no longer routed (owner, 2026-10-13). A GPT-named part of a
+    /// fan-out is dropped, never re-sent to another surface; the other parts
+    /// still run. Parsing still recognises GPT names, so "1+1 GPT한테" is a
+    /// named part that is visibly dropped rather than a sentence sent whole.
+    public static func isDroppedGPT(_ surface: ProviderSurface) -> Bool { surface == .chatgpt || surface == .gptChat }
+    public static func droppingGPT(_ targets: [Target]) -> (kept: [Target], dropped: [Target]) {
+        (targets.filter { !isDroppedGPT($0.surface) }, targets.filter { isDroppedGPT($0.surface) })
+    }
+    /// The owner-facing line for dropped GPT parts. Names each dropped part by
+    /// what was written, so nothing disappears silently.
+    public static func gptDroppedNotice(_ dropped: [Target], remaining: Int) -> String {
+        let parts = dropped.map { "\($0.mention): \($0.payload)" }.joined(separator: ", ")
+        return remaining > 0
+            ? os1Tr("GPT 경로는 더 이상 라우팅하지 않아 제외했습니다(\(parts)). 나머지 \(remaining)개 경로는 그대로 실행합니다.",
+                    "GPT is no longer routed, so these parts were dropped (\(parts)). The other \(remaining) route(s) still run.")
+            : os1Tr("GPT 경로는 더 이상 라우팅하지 않습니다. 요청한 모든 경로가 GPT라 실행하지 않고 보존했습니다(\(parts)).",
+                    "GPT is no longer routed. Every requested route named GPT, so nothing ran and the request is preserved (\(parts)).")
+    }
     /// The Korean dative particle that turns a name into a destination.
     static let particle = #"(?:한테|에게|께)(?:는|도|만)?"#
     /// Names listed before a destination share its particle: a Korean case

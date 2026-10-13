@@ -4,7 +4,7 @@ import { open, mkdir, lstat, writeFile, readFile, chmod, unlink } from 'node:fs/
 import { join, dirname, basename, isAbsolute } from 'node:path';
 import { spawn } from 'node:child_process';
 import { AsyncResource } from 'node:async_hooks';
-import { createRCCRuntime, RCCRuntimeError } from './rcc-runtime.mjs';
+import { createRCCRuntime, effectiveExplicitRoutes, RCCRuntimeError } from './rcc-runtime.mjs';
 
 const sha = bytes => createHash('sha256').update(bytes).digest('hex');
 const HASH = /^[a-f0-9]{64}$/;
@@ -55,7 +55,7 @@ export function buildRoutePlanSchema(task, catalog) {
   const item = readOnly ? node('read_only') : writeOnly ? node('workspace_write') :
     {oneOf: [node('read_only'), node('workspace_write')]};
   const fixedCount = task.mode === 'explicit_routing_test' &&
-    Array.isArray(task.host_context?.explicit_routes) ? task.host_context.explicit_routes.length : null;
+    Array.isArray(task.host_context?.explicit_routes) ? effectiveExplicitRoutes(task).length : null;
   const properties = {
     schema: {type: 'integer', const: 1},
     task_id: {type: 'string', const: task.task_id},
@@ -272,7 +272,7 @@ export function buildBoundedPlannerInput({task, catalog, feedback, policyText}) 
   const message = 'OS1_RCC_PLAN\n' + JSON.stringify({task_id: task.task_id,
     request_sha256: task.request_sha256, original_objective: task.objective,
     request: task.request, material_refs: task.material_refs,
-    explicit_routes: task.host_context.explicit_routes ?? [],
+    explicit_routes: effectiveExplicitRoutes(task) ?? [],
     context: task.host_context.context,
     candidate_catalog: compactCandidateCatalog(catalog), feedback});
   // Only our own visible prompt bytes are bounded here; OpenClaw's hidden
@@ -322,7 +322,7 @@ async function readExactNativeReceipt(path, stateDir) {
 export async function verifyExactExplicitArithmetic({task, plan, children}, {stateDir} = {}) {
   const verdict = (verified, output, reason) => ({schema: 1, task_id: task.task_id,
     task_verified: verified, output, parity_state: 'unverified', reason});
-  const routes = task.host_context?.explicit_routes;
+  const routes = effectiveExplicitRoutes(task);
   if (task.mode !== 'explicit_routing_test' || !Array.isArray(routes) ||
       routes.length === 0 || !Array.isArray(plan?.nodes) || !Array.isArray(children) ||
       routes.length !== plan.nodes.length || routes.length !== children.length ||
